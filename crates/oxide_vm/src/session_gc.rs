@@ -1741,6 +1741,149 @@ mod tests {
         assert!(vm.gc_state.session_bigint_ptrs.borrow().contains(&bi_ptr));
     }
 
+    /// 挂起帧内期望值 BigInt 查找：挂起点唯一持有期望值（帧内死槽残留的
+    /// 字面量值与之不同值，不命中匹配）。
+    fn find_suspended_bigint(
+        frame: &crate::suspended::SuspendedFrame, vm: &Vm, expected: &num_bigint::BigInt,
+    ) -> JsValue {
+        let mut found = None;
+        frame.for_each_value(|v| {
+            if found.is_none() && v.is_bigint() && vm.bigint_value(v) == expected {
+                found = Some(v);
+            }
+        });
+        found.expect("挂起帧应持有期望 BigInt")
+    }
+
+    /// Promise 结算值持唯一引用的 session 串与 BigInt：清寄存器仅留两个 Promise
+    /// 根后完整收集，两值仍登记在 session 表。
+    #[test]
+    fn session_gc_traces_promise_string_and_bigint_result() {
+        let mut vm = vm_with_low_threshold();
+        let (promise, _resolve, _reject) = vm.new_promise_capability();
+        let str = vm.new_string("promise-box-string");
+        let str_ptr = str.as_string_ptr_mut();
+        vm.fulfill_promise(promise, str).expect("fulfill string");
+        let (promise2, _resolve2, _reject2) = vm.new_promise_capability();
+        let bi = vm.new_bigint(num_bigint::BigInt::from(4611686018427387904u128));
+        let bi_ptr = bi.as_bigint_ptr() as *mut num_bigint::BigInt;
+        vm.fulfill_promise(promise2, bi).expect("fulfill bigint");
+
+        let promise_session = vm.promote_object(promise.as_js_object_ptr());
+        let promise2_session = vm.promote_object(promise2.as_js_object_ptr());
+        vm.regs.fill(JsValue::undefined());
+        vm.regs[0] = JsValue::from_js_object(promise_session);
+        vm.regs[1] = JsValue::from_js_object(promise2_session);
+        collect(&mut vm);
+
+        // 只断言表成员——sweep 已释放的指针解引用即 UB。
+        assert!(vm.gc_state.session_string_ptrs.contains(&str_ptr));
+        assert!(vm.gc_state.session_bigint_ptrs.borrow().contains(&bi_ptr));
+    }
+
+    /// 挂起生成器帧寄存器持唯一引用 session BigInt：yield 挂起时 b 存活
+    ///（恢复后 return 用），快照入盒；清寄存器仅留生成器根后完整收集，
+    /// 仍登记在 session 表。
+    #[test]
+    fn session_gc_traces_suspended_generator_bigint_value() {
+        let mut vm = vm_with_low_threshold();
+        vm.run(&Arc::new(compile(
+            "(function(){ \
+             function* gen() { var b = 987654321n * 123456789n; yield 1; return b; } \
+             var g = gen(); g.next(); globalThis.g = g; })(); 0",
+        )))
+        .expect("run");
+
+        let g_val = global_prop_opt(&vm, "g").expect("g 应挂在 global 上");
+        let g_session = vm.promote_object(g_val.as_js_object_ptr());
+        let g_obj = unsafe { &*g_session };
+        // SAFETY: 生成器状态盒经 Box::into_raw 挂对象构造，生命周期与对象一致。
+        let state = g_obj.native_data() as *mut crate::generator::GeneratorState;
+        let expected = num_bigint::BigInt::from(987654321u64) * num_bigint::BigInt::from(123456789u64);
+        let bi = find_suspended_bigint(unsafe { &(*state).suspended }, &vm, &expected);
+        let bi_ptr = bi.as_bigint_ptr() as *mut num_bigint::BigInt;
+
+        vm.regs.fill(JsValue::undefined());
+        vm.regs[0] = JsValue::from_js_object(g_session);
+        collect(&mut vm);
+
+        // 只断言表成员——sweep 已释放的指针解引用即 UB。
+        assert!(vm.gc_state.session_bigint_ptrs.borrow().contains(&bi_ptr));
+    }
+
+    /// 挂起异步函数帧持唯一引用 session BigInt：body await 永不结算的 promise，
+    /// 挂起点 b 存活（恢复后 return 用），快照入盒；挂起链经 await 目标
+    /// promise 的反应闭包持有上下文对象。清寄存器仅留 await 目标 promise 根
+    /// 后完整收集，BigInt 仍登记在 session 表。
+    #[test]
+    fn session_gc_traces_suspended_async_function_bigint_value() {
+        let mut vm = vm_with_low_threshold();
+        vm.run(&Arc::new(compile(
+            "(function(){ \
+             var p = new Promise(function(){}); \
+             async function f() { var b = 987654321n * 123456789n; await p; return b; } \
+             f(); globalThis.p = p; })(); 0",
+        )))
+        .expect("run");
+
+        // 挂起链：await 目标 promise → 恢复反应 → 闭包 → 异步上下文对象（状态盒）
+        // → 挂起帧。读盒发生在收集前（BigInt 全部存活，解引用安全）。
+        let p_val = global_prop_opt(&vm, "p").expect("p 应挂在 global 上");
+        let p_obj = unsafe { &*p_val.as_js_object_ptr() };
+        // SAFETY: Promise 状态盒经 Box::into_raw 挂构造，生命周期与对象一致。
+        let p_state = p_obj.native_data() as *mut crate::promise::PromiseState;
+        let handler = unsafe { &(*p_state).reactions }
+            .iter()
+            .find(|r| r.handler.is_object())
+            .expect("await 恢复反应应已登记")
+            .handler;
+        let handler_obj = unsafe { &*handler.as_js_object_ptr() };
+        let ctx_si = vm.kernel_core().perm_interner().intern(crate::async_func::ASYNC_CTX_PROP).0;
+        let ctx = vm.resolve_property(handler_obj, ctx_si).expect("恢复闭包应携带异步上下文");
+        let ctx_obj = unsafe { &*ctx.as_js_object_ptr() };
+        // SAFETY: 异步状态盒经 Box::into_raw 挂上下文构造，生命周期与对象一致。
+        let state = ctx_obj.native_data() as *mut crate::async_func::AsyncState;
+        let expected = num_bigint::BigInt::from(987654321u64) * num_bigint::BigInt::from(123456789u64);
+        let bi = find_suspended_bigint(unsafe { &(*state).suspended }, &vm, &expected);
+        let bi_ptr = bi.as_bigint_ptr() as *mut num_bigint::BigInt;
+
+        vm.regs.fill(JsValue::undefined());
+        vm.regs[0] = p_val;
+        collect(&mut vm);
+
+        // 只断言表成员——sweep 已释放的指针解引用即 UB。
+        assert!(vm.gc_state.session_bigint_ptrs.borrow().contains(&bi_ptr));
+    }
+
+    /// 挂起异步生成器帧持唯一引用 session BigInt：首次 next() 挂起于 yield，
+    /// 挂起点 b 存活（恢复后 return 用），快照入盒；请求 promise 结果只持 1、
+    /// 与 b 无关。清寄存器仅留迭代器根后完整收集，BigInt 仍登记在 session 表。
+    #[test]
+    fn session_gc_traces_suspended_async_generator_bigint_value() {
+        let mut vm = vm_with_low_threshold();
+        vm.run(&Arc::new(compile(
+            "async function* gen() { var b = 987654321n * 123456789n; yield 1; return b; } \
+             var it = gen(); it.next(); globalThis.it = it; 0",
+        )))
+        .expect("run");
+
+        let it_val = global_prop_opt(&vm, "it").expect("it 应挂在 global 上");
+        let it_session = vm.promote_object(it_val.as_js_object_ptr());
+        let it_obj = unsafe { &*it_session };
+        // SAFETY: 异步生成器状态盒经 Box::into_raw 挂迭代器构造，生命周期与对象一致。
+        let state = it_obj.native_data() as *mut crate::async_generator::AsyncGeneratorState;
+        let expected = num_bigint::BigInt::from(987654321u64) * num_bigint::BigInt::from(123456789u64);
+        let bi = find_suspended_bigint(unsafe { &(*state).suspended }, &vm, &expected);
+        let bi_ptr = bi.as_bigint_ptr() as *mut num_bigint::BigInt;
+
+        vm.regs.fill(JsValue::undefined());
+        vm.regs[0] = JsValue::from_js_object(it_session);
+        collect(&mut vm);
+
+        // 只断言表成员——sweep 已释放的指针解引用即 UB。
+        assert!(vm.gc_state.session_bigint_ptrs.borrow().contains(&bi_ptr));
+    }
+
     #[test]
     fn session_gc_keeps_shared_array_buffer_alive_through_view_native_edges() {
         let mut vm = vm_with_low_threshold();
