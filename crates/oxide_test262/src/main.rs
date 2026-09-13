@@ -489,11 +489,10 @@ fn eval_family_excluded(path: &str) -> Option<&'static str> {
     }
     let is_direct = path.contains("eval-code/direct/");
     let common = [
-        "declare-arguments",        // 直接 eval 的 arguments 语义族（档 3）
-        "non-definable-global-var", // CanDeclareGlobalVar（var 面）c:false 语义与全局描述符面裁决绑定
-        "this-value-func",          // 调用者 this 传递（档 3）
-        "new.target",               // new.target 语义（档 3）
-        "strict-caller",            // 严格调用者传播（档 3）
+        "declare-arguments", // 直接 eval 的 arguments 语义族（档 3）
+        "this-value-func",   // 调用者 this 传递（档 3）
+        "new.target",        // new.target 语义（档 3）
+        "strict-caller",     // 严格调用者传播（档 3）
         "strict-source",
         "strictness-override", // 直接 eval 严格性覆盖
         "onlystrict",          // onlyStrict 块声明族

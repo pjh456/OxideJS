@@ -25,6 +25,7 @@ use std::sync::OnceLock;
 /// `Cons` 首字为 tag（0xffff_ffff_ffff_ffff）@0、子节点指针@8；`utf16_len`
 /// 两形态统一 @24（4B），尾部 4B 填充。`String` 原样存储（零 realloc 收缩）；
 /// Cons 专属状态（子节点/产物缓存）独立分配在 [`ConsNode`]，仅大链持有。
+/// 尺寸锚见下方 size_of/offset_of 断言。
 ///
 /// 生命周期约定：
 /// - `Cons` 子节点各自独立登记 session 字符串表（或为 perm 串），由 GC 的
@@ -42,6 +43,14 @@ pub struct JsString {
     utf16_len: AtomicU32,
 }
 
+// 布局锚：32B = 载荷 24B（Flat 内联 String / Cons tag+子指针）+ utf16_len 4B
+// + 尾部填充 4B。tag 并入载荷首字（Cons 以 0xffff.. marker 占位），无独立索引字——
+// 换变体形状/字段类型可能改变该折叠，布局变更先同步结构体头注释再改本断言。
+const _: () = assert!(
+    std::mem::size_of::<JsString>() == 32 && std::mem::offset_of!(JsString, utf16_len) == 24,
+    "JsString 布局漂移：锚定布局见结构体头注释（32B，utf16_len@24）"
+);
+
 /// 字符串内容变体。
 #[derive(Debug)]
 enum StringKind {
@@ -52,7 +61,8 @@ enum StringKind {
 /// Cons（rope）节点的载荷：左右子节点指针 + O(1) 拼接字节长 + 扁平化产物缓存。
 ///
 /// 独立于 `JsString` 分配，使 Flat 路径的 `JsString` 保持与 rope 前相同的 32B
-/// 结构；仅超过字节阈值的拼接（`Vm::new_cons_string`）才创建本节点。
+/// 结构（tag 并入载荷首字，见其尺寸断言）；仅超过字节阈值的拼接
+/// （`Vm::new_cons_string`）才创建本节点。
 ///
 /// 生命周期约定：节点由 `Box::into_raw` 分配，只经 [`JsString::drop_cons_node`]
 /// 释放（连带扁平化产物）；`left`/`right` 由 GC 传播闭包保证随父存活。

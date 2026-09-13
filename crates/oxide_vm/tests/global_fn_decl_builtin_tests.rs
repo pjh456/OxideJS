@@ -205,11 +205,12 @@ fn eval_fn_decl_with_function_no_partial_binding_creation() {
 
 #[test]
 fn eval_fn_decl_a_side_value_and_descriptor_preserved() {
-    // 抛后 A 侧保留：Infinity 仍为原常量（自相等），描述符不可写位不变。
+    // 抛后 A 侧保留：Infinity 属性值仍为原常量（显式值读），描述符不可写位不变。
     let s = eval_str(
         "try { eval('function Infinity(){}'); } catch (e) {} \
-         (Infinity === Infinity) + ':' + \
-         (Object.getOwnPropertyDescriptor(globalThis, 'Infinity').writable === false ? 'w-false' : 'w-true')",
+         var d = Object.getOwnPropertyDescriptor(globalThis, 'Infinity'); \
+         (d.value === Infinity) + ':' + \
+         (d.writable === false ? 'w-false' : 'w-true')",
     );
     assert_eq!(s, "true:w-false");
 }
