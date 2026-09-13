@@ -7194,6 +7194,72 @@ pub fn zoned_date_time_subtract<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeRes
     zoned_date_time_apply_duration(vm, args, -1)
 }
 
+/// `Temporal.ZonedDateTime.prototype.toInstant()`：直读纪元槽构造 Instant，零时区换算。
+///
+/// # 边界与前提
+/// - 纪元槽非 BigInt 值（品牌对象被篡改）→ RangeError。
+pub fn zoned_date_time_to_instant<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let ptr = native_try!(receiver_obj(vm, args));
+    let obj = unsafe { &*ptr };
+    native_try!(ensure_zoned_date_time(vm, obj));
+    let Some(epoch_ns) = get_instant_epoch_ns(obj) else {
+        return NativeResult::Err(crate::error::create_range_error(vm, "invalid ZonedDateTime"));
+    };
+    make_instant(vm, epoch_ns)
+}
+
+/// `Temporal.ZonedDateTime.prototype.toPlainDate()`：本地日期分量 + 日历槽传播。
+///
+/// # 边界与前提
+/// - 本地分量经 zoned_date_time_plain_parts 换算：时区槽解析失败或日期时间越界 → RangeError。
+pub fn zoned_date_time_to_plain_date<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let ptr = native_try!(receiver_obj(vm, args));
+    let obj = unsafe { &*ptr };
+    native_try!(ensure_zoned_date_time(vm, obj));
+    let (year, month, day, _) = native_try!(zoned_date_time_plain_parts(vm, obj));
+    make_plain_date(vm, year, month, day, &get_calendar_id(obj, 2))
+}
+
+/// `Temporal.ZonedDateTime.prototype.toPlainDateTime()`：本地全分量 + 日历槽传播。
+///
+/// # 边界与前提
+/// - 本地分量经 zoned_date_time_plain_parts 换算：时区槽解析失败或日期时间越界 → RangeError。
+pub fn zoned_date_time_to_plain_date_time<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let ptr = native_try!(receiver_obj(vm, args));
+    let obj = unsafe { &*ptr };
+    native_try!(ensure_zoned_date_time(vm, obj));
+    let (year, month, day, time_ns) = native_try!(zoned_date_time_plain_parts(vm, obj));
+    make_plain_date_time(vm, year, month, day, time_ns, &get_calendar_id(obj, 2))
+}
+
+/// `Temporal.ZonedDateTime.prototype.toPlainTime()`：本地时间分量（PlainTime 无日历槽）。
+///
+/// # 边界与前提
+/// - 本地分量经 zoned_date_time_plain_parts 换算：时区槽解析失败或日期时间越界 → RangeError。
+pub fn zoned_date_time_to_plain_time<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let ptr = native_try!(receiver_obj(vm, args));
+    let obj = unsafe { &*ptr };
+    native_try!(ensure_zoned_date_time(vm, obj));
+    let (_, _, _, time_ns) = native_try!(zoned_date_time_plain_parts(vm, obj));
+    make_plain_time(vm, time_ns)
+}
+
+/// `Temporal.ZonedDateTime.prototype.startOfDay()`：当地午夜 ZDT，时区/日历槽保留。
+///
+/// # 边界与前提
+/// - 当地午夜换算委托 start_of_day_epoch_ns（含 Instant 范围校验），越界 → RangeError。
+pub fn zoned_date_time_start_of_day<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let ptr = native_try!(receiver_obj(vm, args));
+    let obj = unsafe { &*ptr };
+    native_try!(ensure_zoned_date_time(vm, obj));
+    let (year, month, day, _) = native_try!(zoned_date_time_plain_parts(vm, obj));
+    let offset_minutes = native_try!(zoned_date_time_offset_minutes(vm, obj));
+    let Some(epoch_ns) = start_of_day_epoch_ns(year, month, day, offset_minutes) else {
+        return NativeResult::Err(crate::error::create_range_error(vm, "invalid date"));
+    };
+    make_zoned_date_time(vm, epoch_ns, &to_string(obj.get_prop_at(1)), &get_calendar_id(obj, 2))
+}
+
 /// `Temporal.PlainDateTime.prototype.toJSON()`：输出默认 ISO 日期时间。
 pub fn plain_date_time_to_json<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     plain_date_time_iso_string(vm, args)
