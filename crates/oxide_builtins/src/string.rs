@@ -1522,9 +1522,7 @@ fn builder_wrapper<H: VmHost>(vm: &mut H, input: &str, re_obj: JsValue) -> Nativ
     // matchAll 迭代器挂 %RegExpStringIteratorPrototype%（链到 %IteratorPrototype%），
     // next 由原型提供（不挂实例 own）。
     let regexp_iter_proto = vm.session().builtin_world().regexp_string_iterator_proto.as_ptr() as *mut JsObject;
-    let wrapper = vm
-        .epoch()
-        .alloc(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(regexp_iter_proto)));
+    let wrapper = vm.alloc_object(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(regexp_iter_proto)));
 
     let wrapper_obj = unsafe { &mut *wrapper };
     let input_si = vm.kernel_core().perm_interner().intern(MALL_INPUT).0;
@@ -1642,9 +1640,7 @@ pub fn string_match_all_next<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult
 fn make_match_done_result<H: VmHost>(vm: &mut H, value: JsValue) -> NativeResult {
     let done = value.is_undefined();
     let object_proto = vm.session().builtin_world().object_proto.as_ptr() as *mut JsObject;
-    let obj = vm
-        .epoch()
-        .alloc(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(object_proto)));
+    let obj = vm.alloc_object(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(object_proto)));
     let value_si = vm.kernel_core().perm_interner().intern("value").0;
     let done_si = vm.kernel_core().perm_interner().intern("done").0;
     let obj_ref = unsafe { &mut *obj };

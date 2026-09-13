@@ -563,9 +563,7 @@ pub fn regexp_symbol_match_all<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResu
     // 复用 String.prototype.matchAll 的迭代器包装（next 经 string_match_all_next 推进，
     // 挂 %RegExpStringIteratorPrototype% 原型，不设实例 own next）。
     let regexp_iter_proto = vm.session().builtin_world().regexp_string_iterator_proto.as_ptr() as *mut JsObject;
-    let wrapper = vm
-        .epoch()
-        .alloc(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(regexp_iter_proto)));
+    let wrapper = vm.alloc_object(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(regexp_iter_proto)));
     let wrapper_obj = unsafe { &mut *wrapper };
     let input_si = vm.kernel_core().perm_interner().intern(crate::string::MALL_INPUT).0;
     let index_si = vm.kernel_core().perm_interner().intern(crate::string::MALL_INDEX).0;

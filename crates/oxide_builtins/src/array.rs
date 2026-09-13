@@ -1755,9 +1755,7 @@ pub(crate) fn make_array_iterator<H: VmHost>(vm: &mut H, this_val: JsValue, kind
         Err(msg) => return Err(array_type_error(vm, &msg)),
     };
     let array_iter_proto = vm.session().builtin_world().array_iterator_proto.as_ptr() as *mut JsObject;
-    let iter = vm
-        .epoch()
-        .alloc(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(array_iter_proto)));
+    let iter = vm.alloc_object(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(array_iter_proto)));
     let target_si = vm.kernel_core().perm_interner().intern(ARRAY_ITER_TARGET_PROP).0;
     let index_si = vm.kernel_core().perm_interner().intern(ARRAY_ITER_INDEX_PROP).0;
     let kind_si = vm.kernel_core().perm_interner().intern(ARRAY_ITER_KIND_PROP).0;

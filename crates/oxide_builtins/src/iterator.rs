@@ -434,9 +434,7 @@ fn make_iterator_helper<H: VmHost>(
     vm: &mut H, inner: JsValue, next: JsValue, kind: IteratorHelperKind, callback: JsValue, counter: JsValue,
 ) -> JsValue {
     let helper_proto = vm.session().builtin_world().iterator_helper_proto.as_ptr() as *mut JsObject;
-    let wrapper = vm
-        .epoch()
-        .alloc(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(helper_proto)));
+    let wrapper = vm.alloc_object(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(helper_proto)));
     let wrapper_obj = unsafe { &mut *wrapper };
     let inner_si = vm.kernel_core().perm_interner().intern(INNER_PROP).0;
     let next_si = vm.kernel_core().perm_interner().intern(NEXT_CACHE_PROP).0;
@@ -1232,9 +1230,7 @@ pub(crate) fn try_make_iterator_inner_proto<H: VmHost>(
         Some(proto) => proto,
         None => vm.session().builtin_world().iterator_proto.as_ptr() as *mut JsObject,
     };
-    let wrapper = vm
-        .epoch()
-        .alloc(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(iterator_proto)));
+    let wrapper = vm.alloc_object(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(iterator_proto)));
 
     let inner_si = vm.kernel_core().perm_interner().intern(INNER_PROP).0;
     let index_si = vm.kernel_core().perm_interner().intern(INDEX_PROP).0;
@@ -1576,9 +1572,7 @@ fn current_index<H: VmHost>(vm: &mut H, wrapper: &JsObject, index_si: u32) -> us
 /// 构造迭代器结果对象 `{value, done}`（生成器 next/return 结果复用）。
 pub fn make_iter_result<H: VmHost>(vm: &mut H, value: JsValue, done: bool) -> JsValue {
     let object_proto = vm.session().builtin_world().object_proto.as_ptr() as *mut JsObject;
-    let obj = vm
-        .epoch()
-        .alloc(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(object_proto)));
+    let obj = vm.alloc_object(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(object_proto)));
     let value_si = vm.kernel_core().perm_interner().intern("value").0;
     let done_si = vm.kernel_core().perm_interner().intern("done").0;
     let obj_ref = unsafe { &mut *obj };
@@ -1854,9 +1848,7 @@ pub(crate) fn make_collection_iterator<H: VmHost>(
     } else {
         std::ptr::null_mut()
     };
-    let wrapper = vm
-        .epoch()
-        .alloc(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(proto_ptr)));
+    let wrapper = vm.alloc_object(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(proto_ptr)));
     let inner_si = vm.kernel_core().perm_interner().intern(INNER_PROP).0;
     let index_si = vm.kernel_core().perm_interner().intern(INDEX_PROP).0;
     let mode_si = vm.kernel_core().perm_interner().intern(MODE_PROP).0;
