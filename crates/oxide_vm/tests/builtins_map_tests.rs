@@ -131,3 +131,82 @@ fn map_new_mixed_array_and_object_entries() {
     let r = eval(&mut vm, "var m = new Map([['a',1],{0:'b',1:2}]); m.get('a') + '/' + m.get('b')").unwrap();
     assert_eq!(str_val(&vm, r), "1/2");
 }
+
+// ── SameValueZero 键语义：运行期构造键（非常量池指针）与同值字面量互为同键 ──
+
+#[test]
+fn map_runtime_string_key_get_by_literal() {
+    let mut vm = Vm::new();
+    let r = eval(&mut vm, "var m = new Map(); m.set(String.fromCharCode(120), 1); m.get('x')").unwrap();
+    assert_eq!(r.as_int(), 1);
+}
+
+#[test]
+fn map_same_content_string_keys_merge() {
+    // 同内容键 set 第二次是覆盖而非新增：size 保持 1、值更新。
+    let mut vm = Vm::new();
+    let r = eval(
+        &mut vm,
+        "var m = new Map(); m.set('x', 1); m.set(String.fromCharCode(120), 2); m.size + ':' + m.get('x')",
+    )
+    .unwrap();
+    assert_eq!(str_val(&vm, r), "1:2");
+}
+
+#[test]
+fn map_string_key_delete_by_runtime_key() {
+    let mut vm = Vm::new();
+    let r = eval(
+        &mut vm,
+        "var m = new Map(); m.set('x', 1); m.delete(String.fromCharCode(120)); m.has('x')",
+    )
+    .unwrap();
+    assert!(!r.as_bool());
+}
+
+#[test]
+fn map_bigint_key_same_value_different_boxes() {
+    let mut vm = Vm::new();
+    let r = eval(&mut vm, "var m = new Map(); m.set(10n, 'v'); m.get(BigInt(10)) + '/' + m.has(11n)").unwrap();
+    assert_eq!(str_val(&vm, r), "v/false");
+}
+
+#[test]
+fn map_nan_and_zero_keys() {
+    // NaN 同 NaN 键、0/-0 同键：两键共存，has 双向命中。
+    let mut vm = Vm::new();
+    let r = eval(
+        &mut vm,
+        "var m = new Map(); m.set(NaN, 'n'); m.set(-0, 'z'); m.has(NaN) && m.has(0) && m.size === 2",
+    )
+    .unwrap();
+    assert!(r.as_bool());
+}
+
+#[test]
+fn map_object_key_identity() {
+    // 对象键按引用相等：同对象命中，等值异对象 miss（get 回 undefined）。
+    let mut vm = Vm::new();
+    let r = eval(
+        &mut vm,
+        "var o = {}; var m = new Map(); m.set(o, 1); m.get(o) === 1 && m.get({}) === undefined",
+    )
+    .unwrap();
+    assert!(r.as_bool());
+}
+
+#[test]
+fn map_many_runtime_string_keys() {
+    // 键量越过小表线性探测阈值后查找走哈希索引，哈希与值等值的一致性在此兑现。
+    let mut vm = Vm::new();
+    let r = eval(
+        &mut vm,
+        "var m = new Map(); \
+         for (var i = 0; i < 200; i++) { m.set('k' + i, i); } \
+         var bad = -1; \
+         for (var i = 0; i < 200; i++) { if (m.get(String.fromCharCode(107) + i) !== i) { bad = i; break; } } \
+         bad < 0 ? (m.size === 200 ? 'ok' : 'size') : 'bad:' + bad",
+    )
+    .unwrap();
+    assert_eq!(str_val(&vm, r), "ok");
+}

@@ -139,3 +139,90 @@ fn set_new_delete() {
     let r = eval(&mut vm, "var s = new Set(); s.add(1); s.add(2); s.delete(1); s.has(1)").unwrap();
     assert!(!r.as_bool());
 }
+
+// ── SameValueZero 键语义：运行期构造键（非常量池指针）与同值字面量互为同键 ──
+
+#[test]
+fn set_runtime_string_key_lookup_by_literal() {
+    let mut vm = Vm::new();
+    let r = eval(&mut vm, "var s = new Set(); s.add(String.fromCharCode(120)); s.has('x')").unwrap();
+    assert!(r.as_bool());
+}
+
+#[test]
+fn set_literal_key_lookup_by_runtime() {
+    let mut vm = Vm::new();
+    let r = eval(&mut vm, "var s = new Set(); s.add('x'); s.has(String.fromCharCode(120))").unwrap();
+    assert!(r.as_bool());
+}
+
+#[test]
+fn set_runtime_concat_key_matches_literal() {
+    let mut vm = Vm::new();
+    let r = eval(&mut vm, "var s = new Set(); s.add('a' + 'b'); s.has('ab') && !s.has('a')").unwrap();
+    assert!(r.as_bool());
+}
+
+#[test]
+fn set_same_content_string_is_one_key() {
+    // 同内容两构造（字面量 + 运行期拼接）只占一个键位。
+    let mut vm = Vm::new();
+    let r = eval(
+        &mut vm,
+        "var s = new Set(); s.add('ab'); \
+         s.add(String.fromCharCode(97) + String.fromCharCode(98)); s.size",
+    )
+    .unwrap();
+    assert_eq!(r.as_double(), 1.0);
+}
+
+#[test]
+fn set_runtime_string_key_delete() {
+    let mut vm = Vm::new();
+    let r = eval(&mut vm, "var s = new Set(); s.add('x'); s.delete(String.fromCharCode(120)); s.has('x')").unwrap();
+    assert!(!r.as_bool());
+}
+
+#[test]
+fn set_many_runtime_string_keys_lookup() {
+    // 键量越过小表线性探测阈值后查找走哈希索引，哈希与值等值的一致性在此兑现。
+    let mut vm = Vm::new();
+    let r = eval(
+        &mut vm,
+        "var s = new Set(); \
+         for (var i = 0; i < 200; i++) { s.add('k' + i); } \
+         var bad = -1; \
+         for (var i = 0; i < 200; i++) { if (!s.has(String.fromCharCode(107) + i)) { bad = i; break; } } \
+         bad < 0 ? (s.size === 200 ? 'ok' : 'size') : 'bad:' + bad",
+    )
+    .unwrap();
+    assert_eq!(vm.lookup_str(r).unwrap_or_default(), "ok");
+}
+
+#[test]
+fn set_bigint_key_same_value_different_boxes() {
+    let mut vm = Vm::new();
+    let r = eval(&mut vm, "var s = new Set([10n]); s.has(BigInt(10)) && !s.has(11n) && !s.has(10)").unwrap();
+    assert!(r.as_bool());
+}
+
+#[test]
+fn set_nan_and_zero_key_semantics() {
+    // NaN 同 NaN 键、0/-0 同键；NaN 与最小正非规格化数（2^-1074）不得同键。
+    let mut vm = Vm::new();
+    let r = eval(
+        &mut vm,
+        "var s = new Set([NaN, 0]); \
+         s.size === 2 && s.has(NaN) && s.has(-0) && !s.has(Math.pow(2, -1074))",
+    )
+    .unwrap();
+    assert!(r.as_bool());
+}
+
+#[test]
+fn set_object_key_identity() {
+    // 对象键按引用相等：同对象命中，等值异对象不命中。
+    let mut vm = Vm::new();
+    let r = eval(&mut vm, "var o = { a: 1 }; var s = new Set(); s.add(o); s.has(o) && !s.has({ a: 1 })").unwrap();
+    assert!(r.as_bool());
+}

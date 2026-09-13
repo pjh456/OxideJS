@@ -2,9 +2,9 @@ use std::hash::{Hash, Hasher};
 
 use oxide_kernel::shape_forge::EMPTY_SHAPE_ID;
 use oxide_types::object::JsObject;
-use oxide_types::value::JsValue;
+use oxide_types::value::{JsType, JsValue};
 
-use oxide_runtime_api::{NativeResult, VmHost};
+use oxide_runtime_api::{bigint_data, same_value_zero, NativeResult, VmHost};
 
 macro_rules! native_try {
     ($expr:expr) => {
@@ -15,38 +15,16 @@ macro_rules! native_try {
     };
 }
 
-/// Set/Map 的键包装：用 SameValue 语义比较（NaN 视为相同、±0 视为相同），
-/// 非 double 值按原始位比较。
-#[derive(Clone, Copy)]
+/// Set/Map 的键包装：相等与哈希都按 SameValueZero（ECMA-262 §7.2.11）值语义：
+/// - Number：数值相等——NaN 与自身相同、+0/-0 同键、int/double 表示合并；
+/// - String/BigInt：内容相等——运行期构造与常量池的同内容值互为同键；
+/// - Object/Function：引用相等；Symbol 按下标相同；Bool/null/undefined 按值。
+#[derive(Clone, Copy, Debug)]
 pub struct SetKey(pub JsValue);
-
-/// 把 int/double 数值统一归一化为可比较的位模式：NaN 用专属哨兵、±0 归 +0，
-/// 使 `0`(int) 与 `0.0`/`-0.0`(double) 视为同一键，且 NaN 与任何数值都不同。
-fn numeric_key_bits(val: JsValue) -> Option<u64> {
-    let d = if val.is_int() {
-        val.as_int() as f64
-    } else if val.is_double() {
-        val.as_double()
-    } else {
-        return None;
-    };
-    if d.is_nan() {
-        // 哨兵必须避开 0 与所有合法 f64 位模式碰撞（f64 位模式永不为 1）。
-        Some(1)
-    } else if d == 0.0 {
-        Some(0.0f64.to_bits())
-    } else {
-        Some(d.to_bits())
-    }
-}
 
 impl PartialEq for SetKey {
     fn eq(&self, other: &Self) -> bool {
-        if let (Some(a), Some(b)) = (numeric_key_bits(self.0), numeric_key_bits(other.0)) {
-            return a == b;
-        }
-        // SAFETY: JsValue 是 8 字节 NaN-box Copy 值；此处以原始位定义非数值值的同一性。
-        unsafe { std::mem::transmute::<JsValue, u64>(self.0) == std::mem::transmute::<JsValue, u64>(other.0) }
+        same_value_zero(self.0, other.0)
     }
 }
 
@@ -54,11 +32,50 @@ impl Eq for SetKey {}
 
 impl Hash for SetKey {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        if let Some(bits) = numeric_key_bits(self.0) {
-            bits.hash(state);
-        } else {
-            // SAFETY: JsValue 是 8 字节 NaN-box Copy 值；哈希原始位与上面的相等判定一致。
-            unsafe { std::mem::transmute::<JsValue, u64>(self.0).hash(state) }
+        let v = self.0;
+        // 先写类标签再写载荷：SameValueZero 相等的值哈希必须一致，
+        // 标签使跨类碰撞（合法但浪费探测）尽量不发生。
+        match v.js_type() {
+            // Number：规范位——NaN 经 `JsValue::float` 归一到统一位模式，
+            // ±0 归 +0，int/double 混合表示经 f64 转换后一致。
+            JsType::Int | JsType::Double => {
+                0u8.hash(state);
+                let d = if v.is_int() { v.as_int() as f64 } else { v.as_double() };
+                let bits = if d == 0.0 { 0.0f64.to_bits() } else { JsValue::float(d).to_bits() };
+                bits.hash(state);
+            }
+            // String：内容字节（rope 经 `as_str` 惰性扁平化，幂等）。
+            JsType::String => {
+                1u8.hash(state);
+                // SAFETY: 串指针在 native 调用期间存活（session 串不在调用中途释放），
+                // 借出在本哈希调用内即时消费。
+                unsafe { (*v.as_string_ptr()).as_str().as_bytes().hash(state) };
+            }
+            // BigInt：`to_bytes_le` 规范形（零号统一 NoZero，同值同字节）。
+            JsType::BigInt => {
+                2u8.hash(state);
+                // SAFETY: bigint box 由 VM 登记，存活至 full_reset。
+                let (sign, mag) = unsafe { bigint_data(v) }.to_bytes_le();
+                matches!(sign, num_bigint::Sign::Minus).hash(state);
+                mag.hash(state);
+            }
+            // Object：引用同一性。
+            JsType::Object => {
+                3u8.hash(state);
+                v.to_bits().hash(state);
+            }
+            // Symbol：符号表下标。
+            JsType::Symbol => {
+                4u8.hash(state);
+                v.as_symbol_index().hash(state);
+            }
+            // Bool：值本身。
+            JsType::Bool => {
+                5u8.hash(state);
+                v.as_bool().hash(state);
+            }
+            JsType::Null => 6u8.hash(state),
+            JsType::Undefined => 7u8.hash(state),
         }
     }
 }
@@ -739,4 +756,68 @@ pub fn set_is_disjoint_from<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult 
         }
     };
     NativeResult::Ok(JsValue::bool(disjoint))
+}
+
+#[cfg(test)]
+mod set_key_tests {
+    use super::SetKey;
+    use oxide_types::object::JsString;
+    use oxide_types::value::JsValue;
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+
+    fn hash_of(key: &SetKey) -> u64 {
+        let mut h = DefaultHasher::new();
+        key.hash(&mut h);
+        h.finish()
+    }
+
+    /// 构造两个独立分配的串键；返回键与持有 Box（键指针在测试内须保持有效）。
+    fn string_keys(a: &str, b: &str) -> (SetKey, SetKey, Box<JsString>, Box<JsString>) {
+        let ba = Box::new(JsString::new(a.to_string()));
+        let bb = Box::new(JsString::new(b.to_string()));
+        (SetKey(JsValue::string(&*ba)), SetKey(JsValue::string(&*bb)), ba, bb)
+    }
+
+    #[test]
+    fn string_key_content_equality_and_hash() {
+        // 同内容不同分配的串键：值相等且哈希一致；不同内容不等。
+        let (ka, kb, _ba, _bb) = string_keys("hello", "hello");
+        assert_eq!(ka, kb);
+        assert_eq!(hash_of(&ka), hash_of(&kb));
+        let (_kc, kd, _bc, _bd) = string_keys("hello", "world");
+        assert_ne!(ka, kd);
+    }
+
+    #[test]
+    fn number_key_same_value_zero_canonical() {
+        // NaN 同自身；±0 同键（含 int 0 与 double -0.0 混表示）；
+        // NaN 与最小正非规格化数（位模式 1）不得同键。
+        let nan = SetKey(JsValue::float(f64::NAN));
+        assert_eq!(nan, nan);
+        assert_eq!(hash_of(&nan), hash_of(&nan));
+        let zero_int = SetKey(JsValue::int(0));
+        let neg_zero = SetKey(JsValue::float(-0.0));
+        assert_eq!(zero_int, neg_zero);
+        assert_eq!(hash_of(&zero_int), hash_of(&neg_zero));
+        assert_eq!(hash_of(&SetKey(JsValue::int(42))), hash_of(&SetKey(JsValue::float(42.0))));
+        let subnormal = SetKey(JsValue::float(f64::from_bits(1)));
+        assert_ne!(nan, subnormal);
+        assert_ne!(zero_int, subnormal);
+        assert_ne!(hash_of(&nan), hash_of(&subnormal));
+    }
+
+    #[test]
+    fn bigint_key_value_equality_and_hash() {
+        // 同值不同盒相等且哈希一致；异值不等。
+        let ba = Box::new(num_bigint::BigInt::from(123));
+        let bb = Box::new(num_bigint::BigInt::from(123));
+        let bc = Box::new(num_bigint::BigInt::from(-123));
+        let ka = SetKey(JsValue::bigint(&*ba));
+        let kb = SetKey(JsValue::bigint(&*bb));
+        let kc = SetKey(JsValue::bigint(&*bc));
+        assert_eq!(ka, kb);
+        assert_eq!(hash_of(&ka), hash_of(&kb));
+        assert_ne!(ka, kc);
+    }
 }
