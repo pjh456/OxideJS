@@ -70,3 +70,9 @@ opt-level = 3
 lto = true
 codegen-units = 1
 panic = "abort"
+
+# 上游 0.11.1 的 Unicode 表缺 Script/Script_Extensions 的 Unknown（Zzzz，未分配
+# 码点集）取值，规范合法模式 \p{Script=Unknown} 无法编译。vendor 补丁在 0.11.1
+# 上补齐该取值，其余行为与上游 0.11.1 逐位一致。
+[patch.crates-io]
+regress = { path = "third_party/regress" }

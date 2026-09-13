@@ -249,3 +249,47 @@ fn regexp_to_string() {
     let result = eval(&mut vm, "/abc/gi.toString()").unwrap();
     assert_eq!(to_str(&vm, result), "/abc/gi");
 }
+
+// --- Unicode property escapes：Script/Script_Extensions 的 Unknown（Zzzz）取值 ---
+// vendor 的 Unicode 表须含 Unknown（未分配码点集），否则合法模式编译期 SyntaxError。
+
+#[test]
+fn regexp_unicode_property_script_unknown_matches_unassigned() {
+    let mut vm = Vm::new();
+    // U+038B 未分配：Script 与 Script_Extensions 均为 Unknown
+    let result = eval(&mut vm, "/\\p{Script=Unknown}/u.test(String.fromCodePoint(0x038B))").unwrap();
+    assert!(result.as_bool(), "未分配码点应匹配 Script=Unknown");
+    let result = eval(&mut vm, "/\\p{Script_Extensions=Unknown}/u.test(String.fromCodePoint(0x038B))").unwrap();
+    assert!(result.as_bool(), "未分配码点应匹配 Script_Extensions=Unknown");
+}
+
+#[test]
+fn regexp_unicode_property_script_unknown_rejects_assigned() {
+    let mut vm = Vm::new();
+    // 已分配拉丁字母不属于 Unknown
+    let result = eval(&mut vm, "/\\p{Script=Unknown}/u.test('d')").unwrap();
+    assert!(!result.as_bool(), "已分配码点不应匹配 Script=Unknown");
+    let result = eval(&mut vm, "/\\P{Script=Unknown}/u.test('d')").unwrap();
+    assert!(result.as_bool(), "取反后已分配码点应匹配");
+}
+
+#[test]
+fn regexp_unicode_property_script_unknown_aliases() {
+    let mut vm = Vm::new();
+    // 单字母缩写与符号名须同义解析
+    for pattern in [r"\p{sc=Unknown}", r"\p{scx=Unknown}", r"\p{Script=Zzzz}", r"\p{scx=Zzzz}"] {
+        let source = format!("/{pattern}/u.test(String.fromCodePoint(0x038B))");
+        let result = eval(&mut vm, &source).unwrap();
+        assert!(result.as_bool(), "别名 {pattern} 应匹配未分配码点");
+    }
+}
+
+#[test]
+fn regexp_unicode_property_script_existing_values_unchanged() {
+    // 补齐 Unknown 不得扰动既有取值：Adlam 等已分配 Script 行为保持
+    let mut vm = Vm::new();
+    let result = eval(&mut vm, "/\\p{Script=Adlam}/u.test(String.fromCodePoint(0x1E900))").unwrap();
+    assert!(result.as_bool(), "既有 Script 取值行为应保持不变");
+    let result = eval(&mut vm, "/\\p{Script=Adlam}/u.test('d')").unwrap();
+    assert!(!result.as_bool(), "既有 Script 取值行为应保持不变");
+}
