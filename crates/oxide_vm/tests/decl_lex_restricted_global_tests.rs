@@ -1,7 +1,10 @@
-//! 脚本顶层 lexical 声明撞受限全局名的编译期拒绝：let/const/class 声明名撞
-//! 受限集（undefined/eval/NaN/Infinity——三常量不可配置自有属性 + eval 静态
-//! 受限臂）→ SyntaxError（整程序编译失败）。局部作用域（函数体/块/try）与
+//! 脚本顶层 lexical 声明撞受限全局名的编译期拒绝：let/const 声明名撞
+//! 受限集（undefined/NaN/Infinity——三常量，全局对象 {configurable:false}
+//! 自有属性名）→ SyntaxError（整程序编译失败）。局部作用域（函数体/块/try）与
 //! eval 代码为合法遮蔽不拒；三常数值使用不受影响。
+//!
+//! class 名撞 eval 不在本集（解析器 early-error 族独立拒绝，类体恒严格模式，
+//! 与受限集检查无关，见 top_level_class_eval_name_rejected）。
 
 use std::sync::Arc;
 
@@ -108,21 +111,25 @@ fn top_level_let_uses_nan_value_allowed() {
 }
 
 #[test]
-fn top_level_let_eval_name_rejected() {
-    // eval 属静态受限臂：顶层 lexical 声明不得遮蔽（var/function 路径不受
-    // 本集约束）。
-    assert_compile_err("let eval;");
+fn top_level_let_eval_name_allowed() {
+    // eval 是全局对象可配置自有属性（受限判定走自有属性臂，eval 不命中）：
+    // 合法遮蔽，不在受限集。
+    let r = assert_ok("let eval; 1");
+    assert_eq!(r.as_int(), 1);
 }
 
 #[test]
-fn top_level_const_eval_name_rejected() {
-    assert_compile_err("const eval = 1;");
+fn top_level_const_eval_name_allowed() {
+    let r = assert_ok("const eval = 1; 1");
+    assert_eq!(r.as_int(), 1);
 }
 
 #[test]
 fn top_level_class_eval_name_rejected() {
-    // 若解析器更早拒绝（early error 族），亦接受该拒绝相位（整程序拒绝可观察
-    // 行为同形）。
+    // eval 不在受限集（let/const 合法遮蔽），但 class 名撞 eval 由解析器
+    // early-error 族拒绝：类体恒严格模式，类名绑定检查落在类作用域 strict
+    // 判定内（V8 同形：sloppy `class eval {}` 亦 SyntaxError）。与本受限集
+    // 检查无关，整程序拒绝可观察行为同形，断言任意拒绝相位。
     assert!(eval("class eval {}").is_err(), "class eval 类名应被拒绝");
 }
 

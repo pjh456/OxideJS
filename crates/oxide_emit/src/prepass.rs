@@ -9,13 +9,13 @@ use oxide_parser::{
     BindingPattern, Declaration, ExportDefaultDeclarationKind, Expression, Statement, VariableDeclarationKind,
 };
 
-/// 脚本顶层 lexical 声明（let/const/class）禁止使用的受限全局名：4 名静态集。
-/// 三常量是全局对象上 {configurable:false} 的自有属性名（声明实例化无法建立
-/// 遮蔽绑定）；eval 属静态受限臂（顶层 lexical 声明不得遮蔽，var/function
-/// 路径不受本集约束）。名基静态集（编译期不可查运行时描述符）。与
+/// 脚本顶层 lexical 声明（let/const/class）禁止使用的受限全局名：3 名静态集。
+/// 受限判定走规范自有属性臂：全局对象上 {configurable:false} 自有属性名（声明
+/// 实例化无法建立遮蔽绑定）——现行规范下恰为三常量；eval 与各 builtin 属性皆
+/// 可配置（合法遮蔽），不在此列。名基静态集（编译期不可查运行时描述符）。与
 /// BUILTIN_GLOBALS 语义不同（后者是 put 写拦截/双写名单），不互相派生，交叠
 /// 名由漂移守卫单测断言恒同步。
-pub(crate) const RESTRICTED_GLOBAL_LEXICAL_NAMES: &[&str] = &["undefined", "eval", "NaN", "Infinity"];
+pub(crate) const RESTRICTED_GLOBAL_LEXICAL_NAMES: &[&str] = &["undefined", "NaN", "Infinity"];
 
 /// 脚本顶层 lexical 声明撞受限全局名 → SyntaxError（声明实例化期拒绝，整程序
 /// 编译失败）。错误消息与既有重复声明错同形；非顶层或名不在受限集 → Ok。
