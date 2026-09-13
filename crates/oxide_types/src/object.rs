@@ -21,9 +21,10 @@ use std::sync::OnceLock;
 ///   惰性扁平化缓存）。二元 `+`/`+=` 拼接 O(1) 链接不拷贝文本，整块文本在
 ///   首次消费时扁平化并原子发布。
 ///
-/// 结构体大小恒为 40B（`Flat(String)` 24B + utf16_len 4B + tag），较 rope 前的
-/// 32B 大一个分配 bin 级，但换来 `String` 原样存储（零 realloc 收缩）；Cons
-/// 专属状态（子节点/产物缓存）独立分配在 [`ConsNode`]，仅大链持有。
+/// 结构体大小恒为 32B：`Flat` 内联 `String`（cap@0 / data@8 / len@16），
+/// `Cons` 首字为 tag（0xffff_ffff_ffff_ffff）@0、子节点指针@8；`utf16_len`
+/// 两形态统一 @24（4B），尾部 4B 填充。`String` 原样存储（零 realloc 收缩）；
+/// Cons 专属状态（子节点/产物缓存）独立分配在 [`ConsNode`]，仅大链持有。
 ///
 /// 生命周期约定：
 /// - `Cons` 子节点各自独立登记 session 字符串表（或为 perm 串），由 GC 的
