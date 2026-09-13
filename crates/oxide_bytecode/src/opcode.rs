@@ -566,6 +566,12 @@ define_opcodes! {
     NEW_SESSION_OBJECT = 0x9B => "NEW_SESSION_OBJECT",
         def = Some(SlotSpec::Slot(Slot::Rd)), uses = [],
         pure = true, jump = false, term = false, ic = false,
+    // 删除全局内置数据属性（delete 标识符）：ext 字 = 键常量池下标（u16）、
+    // rd = 布尔结果槽、a 槽 = 内置镜像槽寄存器（删除成功时该槽写 undefined；
+    // 0 = 无槽）。全局对象由 VM 运行期从 session 取（不依赖 this 寄存器）。
+    DELETE_GLOBAL_PROP_C = 0x9C => "DELETE_GLOBAL_PROP_C",
+        def = Some(SlotSpec::Slot(Slot::Rd)), uses = [SlotSpec::Slot(Slot::A)],
+        pure = false, jump = false, term = false, ic = false,
 
     // ── 成员复合赋值：位/移位 (0x64-0x69) ──
     COMPOUND_MEMBER_BIT_AND = 0x64 => "COMPOUND_MEMBER_BIT_AND",

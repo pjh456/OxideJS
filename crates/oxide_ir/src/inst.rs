@@ -260,6 +260,13 @@ impl Inst {
         Self::with_ext(OpCode::DELETE_PROP_STATIC, obj, obj, Operand::None, &[const_idx])
     }
 
+    /// 删除全局内置数据属性（delete 标识符）：ext = [key_idx]（键常量池下标），
+    /// `result` 放 rd 槽（布尔删除结果），`slot` 放 a 槽（内置镜像槽寄存器，删除
+    /// 成功时写 undefined；无槽传 None）。全局对象由 VM 运行期从 session 解析。
+    pub fn delete_global_prop_c(result: Operand, slot: Operand, key_idx: u16) -> Self {
+        Self::with_ext(OpCode::DELETE_GLOBAL_PROP_C, result, slot, Operand::None, &[key_idx as u32])
+    }
+
     /// 对象 rest 展开：`{...src, 排除 excluded_idx 常量列出的键}` 存入 `rest`。
     /// `excl_arr` 为可选运行时 excluded 键数组寄存器（computed key 求值结果），
     /// None 时仅用编译期 excluded_idx 常量。

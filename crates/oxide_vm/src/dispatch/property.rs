@@ -660,4 +660,43 @@ impl Vm {
         self.regs[rd] = JsValue::bool(deleted);
         Ok(false)
     }
+
+    /// 删除全局内置数据属性（delete 标识符）：ext 字 = 键常量池下标（u16），
+    /// `rd` = 布尔结果槽，`slot` = 内置镜像槽寄存器（0 = 无槽）。全局对象由
+    /// session 解析——函数体内 delete 不依赖 this 寄存器。
+    ///
+    /// # 步骤
+    /// 1. 键常量 → intern si → 对全局对象走共享删除逻辑（不可配置 → false 且属性
+    ///    保留；缺失 → true；可配置 → 真删并返回 true）
+    /// 2. 删除成功且 a 槽为有效镜像槽时槽写 undefined
+    ///
+    /// # 副作用
+    /// - 删除成功时修改全局对象 shape/属性表/generation
+    /// - 删除成功时写镜像槽寄存器（该槽随后裸读回 undefined）
+    ///
+    /// # 边界与前提
+    /// - 键常量必须是字符串（emit 侧保证）；非字符串按错误返回
+    /// - 镜像槽仅在 run/帧入口重载，不清槽则删除后裸读回入口预载的旧值——
+    ///   清槽与真删同生共死：删除失败（c:false）属性保留，槽值不动
+    pub(crate) fn dispatch_delete_global_prop_c(&mut self, rd: usize, slot: usize, key_idx: u16) -> Result<(), String> {
+        vm_trace!("DELETE_GLOBAL_PROP_C slot={} idx={}", slot, key_idx);
+        let idx = key_idx as usize;
+        let key_val = self.immutables().get(idx).copied().unwrap_or(JsValue::undefined());
+        if !key_val.is_string() {
+            return Err(format!("DELETE_GLOBAL_PROP_C constant index {idx} is not a string key"));
+        }
+        let si = self.property_key_si(key_val)?;
+        let global_ptr = self.session.global_object().as_ptr() as *mut JsObject;
+        // SAFETY: 全局对象钉在 session 永久区，指针在 VM 生命周期内有效。
+        let obj = unsafe { &mut *global_ptr };
+        // 统一走共享删除逻辑（与 Reflect.deleteProperty 同源）；不可配置返回
+        // false 且属性保留。
+        let deleted = oxide_builtins::object::delete_own_property(self, obj, si);
+        // 仅删除成功才清镜像槽（无槽 0 不写，reg 0 是返回槽不可误写）。
+        if deleted && slot > 0 {
+            self.regs[slot] = JsValue::undefined();
+        }
+        self.regs[rd] = JsValue::bool(deleted);
+        Ok(())
+    }
 }

@@ -2129,6 +2129,12 @@ impl Vm {
                     self.dispatch_define_global_prop_c_if_absent(a, key_idx)?;
                 }
 
+                OpCode::DELETE_GLOBAL_PROP_C => {
+                    let key_idx = self.bytecode[self.pc] as u16;
+                    self.pc += 1;
+                    self.dispatch_delete_global_prop_c(rd, a, key_idx)?;
+                }
+
                 OpCode::DEFINE_PROP_ATTRS => {
                     let attrs = self.bytecode[self.pc] as u8;
                     self.pc += 1;

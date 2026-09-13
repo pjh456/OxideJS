@@ -130,8 +130,18 @@ impl Emitter {
                         ctx.labels.set_label_pos(end_label, ctx.insts.len());
                         return Ok(result_reg);
                     }
-                    // 严格模式的 delete 标识符由 oxc_semantic 提前拦截为早期错误；
-                    // 非严格语义返回 false（标识符不可删除）。
+                    // 可删全局内置（可写全局名除 globalThis 与宿主名）：运行期真删
+                    // 全局对象属性（c:true 数据描述符）并返 true；删除成功时清镜像
+                    // 槽，裸读与 globalThis 反射不失步。
+                    if let Some(slot_reg) = ctx.global_builtin_delete_slot(name) {
+                        let key_idx = ctx.add_constant(Constant::String(name.to_string()));
+                        let reg = ctx.alloc_reg();
+                        ctx.inst(Inst::delete_global_prop_c(Operand::Reg(reg), Operand::Reg(slot_reg), key_idx));
+                        return Ok(reg);
+                    }
+                    // 其余标识符（三常量 c:false / 局部遮蔽 / var 名等）非严格语义
+                    // 返回 false；严格模式的 delete 标识符由 oxc_semantic 提前拦截
+                    // 为早期错误（未声明名 delete 应返 true 的缺失是既有缺口）。
                     let idx = ctx.add_constant(Constant::Boolean(false));
                     let reg = ctx.alloc_reg();
                     ctx.inst(Inst::load_const(Operand::Reg(reg), idx));

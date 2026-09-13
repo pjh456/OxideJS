@@ -707,6 +707,24 @@ impl CompileCtx {
         BUILTIN_GLOBALS.contains(&name) && !NON_WRITABLE_GLOBAL_BUILTINS.contains(&name)
     }
 
+    /// 可删除全局内置名：可写全局名再除 globalThis（规范 configurable:false，
+    /// 不可删）与两个宿主名（$262/TypedArray，非规范全局，删除会破坏宿主面）——
+    /// 自只读/可写单一真源派生，不另立名单。余名描述符皆
+    /// {writable:true, configurable:true}，delete 真删且返 true。
+    pub(crate) fn is_deletable_global_builtin(name: &str) -> bool {
+        Self::is_writable_builtin_global(name) && !matches!(name, "globalThis" | "$262" | "TypedArray")
+    }
+
+    /// delete 标识符是否解析到可删除的全局内置镜像槽：名可删（上谓词）且预注册
+    /// 镜像槽在册时返回槽寄存器。局部 var/let/参数遮蔽同名时该名不注册镜像槽
+    /// （预扫描解析到局部绑定），不命中；槽值在 run/帧入口由全局属性预载。
+    pub(crate) fn global_builtin_delete_slot(&self, name: &str) -> Option<u32> {
+        if !Self::is_deletable_global_builtin(name) {
+            return None;
+        }
+        self.scopes.builtin_reg_map.iter().find(|(n, _)| n == name).map(|(_, r)| *r)
+    }
+
     pub(crate) fn is_known_builtin(name: &str) -> bool {
         BUILTIN_GLOBALS.contains(&name)
     }
@@ -1843,6 +1861,23 @@ mod tests {
             let readonly = NON_WRITABLE_GLOBAL_BUILTINS.contains(name);
             let writable = crate::CompileCtx::is_writable_builtin_global(name);
             assert!(readonly ^ writable, "builtin 名只读/可写归属漂移：{name}");
+        }
+    }
+
+    /// 漂移守卫：可删名集自可写划分派生（可删 ⊆ 可写、只读三常量不入可删），
+    /// 且 globalThis/宿主名恒不可删——防派生口径改动时 delete 面单边漂移。
+    #[test]
+    fn deletable_global_builtins_derive_from_writable_partition() {
+        for name in BUILTIN_GLOBALS {
+            let deletable = crate::CompileCtx::is_deletable_global_builtin(name);
+            let writable = crate::CompileCtx::is_writable_builtin_global(name);
+            assert!(!deletable || writable, "可删名缺失于可写划分：{name}");
+            if NON_WRITABLE_GLOBAL_BUILTINS.contains(name) {
+                assert!(!deletable, "只读三常量名误入可删集：{name}");
+            }
+        }
+        for name in ["globalThis", "$262", "TypedArray"] {
+            assert!(!crate::CompileCtx::is_deletable_global_builtin(name), "不可删名误入可删集：{name}");
         }
     }
 }

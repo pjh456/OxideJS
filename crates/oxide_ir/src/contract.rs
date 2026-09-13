@@ -746,6 +746,8 @@ mod tests {
             false,
         );
         assert_group(&[OpCode::DEFINE_GLOBAL_PROP_C, OpCode::DEFINE_GLOBAL_PROP_C_IF_ABSENT], None, &[2], false);
+        // delete 全局内置：结果写 rd、镜像槽寄存器是 a 槽 use
+        assert_contract(OpCode::DELETE_GLOBAL_PROP_C, Some(1), &[2], false);
         assert_contract(OpCode::DEFINE_PROP_ATTRS, None, &[1, 2, 3], false);
         assert_contract(OpCode::DEFINE_ACCESSOR_ATTRS, None, &[1, 2, 3], false);
         assert_group(&[OpCode::CREATE_ARGUMENTS, OpCode::CREATE_REST_ARRAY], Some(1), &[], false);
