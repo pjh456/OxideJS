@@ -44,8 +44,9 @@ impl Vm {
             self.regs[rd] = val;
             Ok(false)
         } else {
-            // SAFETY: key_val 已校验为字符串值，as_str 桥接 JsString 内容。
-            let name = unsafe { (*key_val.as_string_ptr()).as_str() };
+            // SAFETY: key_val 已校验为字符串值；错误消息走 lossy 文本（不可解析名
+            // 含孤立 surrogate 时映射为 FFFD，仅为展示用途）。
+            let name = unsafe { (*key_val.as_string_ptr()).as_lossy_str() };
             self.raise_error_kind("ReferenceError", &format!("{name} is not defined"))?;
             Ok(true)
         }

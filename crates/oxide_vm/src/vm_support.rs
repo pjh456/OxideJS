@@ -16,10 +16,11 @@ use oxide_types::object::{JsObject, JsString, PropAttributes};
 use oxide_types::value::JsValue;
 
 impl Vm {
-    /// Cons（rope）节点保留的字节阈值：拼接总长 ≤ 该值时急切扁平为 Flat。
-    /// 小链的"链接 + 首次消费扁平化"双重分配高于直接拷贝，直接扁平更优；
-    /// 超过阈值后 O(n²) 拷贝成本超过节点开销，Cons 的 O(1) 链接才值得。
-    pub(crate) const CONS_FLATTEN_BYTES: usize = 128;
+    /// Cons（rope）节点保留的单元阈值：拼接总长（UTF-16 单元数）≤ 该值时
+    /// 急切扁平。小链的"链接 + 首次消费扁平化"双重分配高于直接拷贝，直接
+    /// 扁平更优；超过阈值后 O(n²) 拷贝成本超过节点开销，Cons 的 O(1) 链接
+    /// 才值得。
+    pub(crate) const CONS_FLATTEN_UNITS: usize = 128;
 
     /// 替换本 VM 独占的内建 P 对象：先恰好释放旧副本的属性区一次，
     /// 再让旧 Arc 归零（旧副本无 Drop 口径兜底，full_reset 重初始化
@@ -640,24 +641,47 @@ impl Vm {
     ///   接线点调用（CONCAT_N 保持急切扁平，不经此路径）。
     ///
     /// # 副作用
-    /// - 登记节点到 session 字符串表（账目 = `size_of::<JsString>() + byte_len`）。
+    /// - 登记节点到 session 字符串表（账目 = `size_of::<JsString>() + payload_bytes`）。
     ///
     /// # 注意事项
     /// - 调用方须保证 `left`/`right` 在调用期间存活：子节点（coerce 新鲜字符串 /
     ///   新建叶子）要么已是执行根，要么在写入根前不被任何回收点触达——当前
     ///   回收点仅在指令边界，链接结果写寄存器先于下一次检查，天然满足。
-    /// - 调用方（`concat_strings`）已按字节阈值过滤：仅大链（总长 >
-    ///   [`Self::CONS_FLATTEN_BYTES`]）进入本方法，小链由其急切扁平。
+    /// - 调用方（`concat_strings`）已按单元阈值过滤：仅大链（总长 >
+    ///   [`Self::CONS_FLATTEN_UNITS`]）进入本方法，小链由其急切扁平。
     #[inline]
     pub fn new_cons_string(&mut self, left: JsValue, right: JsValue) -> JsValue {
         debug_assert!(left.is_string() && right.is_string(), "new_cons_string 只接收字符串操作数");
         let left_ptr = left.as_string_ptr_mut();
         let right_ptr = right.as_string_ptr_mut();
-        // SAFETY: 两指针指向存活的 JsString（调用方保证），len() 各为 O(1)。
-        let byte_len = unsafe { (*left_ptr).len() + (*right_ptr).len() };
         // SAFETY: new_cons 的调用方（本函数）负责保证子节点随节点存活。
         let ptr = Box::into_raw(Box::new(unsafe { JsString::new_cons(left_ptr, right_ptr) }));
-        self.register_session_string(ptr, byte_len)
+        // SAFETY: ptr 指向刚创建的存活节点，账目口径 = 单元数 × 2。
+        let bytes = unsafe { (*ptr).payload_bytes() };
+        self.register_session_string(ptr, bytes)
+    }
+
+    /// 以单元序列分配可被 session GC 回收的字符串值：智能路由（含孤立
+    /// surrogate 落 FlatU16，否则 Flat），语义与副作用同 `new_string_owned`。
+    pub fn new_string_units_owned(&mut self, units: Vec<u16>) -> JsValue {
+        let ptr = Box::into_raw(Box::new(JsString::from_units(units)));
+        // SAFETY: ptr 指向刚创建的存活 JsString。
+        let bytes = unsafe { (*ptr).payload_bytes() };
+        self.register_session_string(ptr, bytes)
+    }
+
+    /// 同 `new_string_units_owned`，以借用单元序列接收。
+    pub fn new_string_units(&mut self, units: &[u16]) -> JsValue {
+        self.new_string_units_owned(units.to_vec())
+    }
+
+    /// 单单元的属性值：ASCII 单元命中共享 perm 串（零分配、可指针短路），
+    /// 非 ASCII（含孤立 surrogate）物化为 1 单元会话串。
+    pub(crate) fn unit_char_value(&mut self, u: u16) -> JsValue {
+        if let Some(v) = oxide_runtime_api::VmHost::single_unit(self, u) {
+            return v;
+        }
+        self.new_string_units(&[u])
     }
 
     /// 把字符串 intern 为永久 key id（属性名/方法名），进程生命周期内稳定。

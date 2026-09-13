@@ -53,6 +53,33 @@ fn canonical_index_of(s: &str) -> Option<u32> {
     }
 }
 
+/// 从单元序列判定字符串是否为规范数组下标（无前导零的纯 ASCII 数字串），
+/// 并反解其值。口径与 [`canonical_index_of`] 一致，单元口径覆盖非 Flat
+/// 载荷的键推导。只覆盖 `[0, INT_KEY_COUNT)`，更大的数字串走普通字符串键。
+fn canonical_index_units(units: &[u16]) -> Option<u32> {
+    if units.is_empty() {
+        return None;
+    }
+    if !matches!(units[0], 0x30..=0x39) {
+        return None;
+    }
+    if units.len() > 1 && units[0] == 0x30 {
+        return None;
+    }
+    if units.len() > 10 {
+        return None;
+    }
+    let mut v: u32 = 0;
+    for &u in units.iter() {
+        let d = match u {
+            0x30..=0x39 => u - 0x30,
+            _ => return None,
+        };
+        v = v.checked_mul(10)? + d as u32;
+    }
+    (v < INT_KEY_COUNT).then_some(v)
+}
+
 /// 将 [`NativeFnPtr`] 转换为可调用的 [`NativeFn`]。
 ///
 /// # Safety
@@ -1169,7 +1196,7 @@ impl Vm {
         }
         for &ptr in &self.gc_state.session_string_ptrs {
             // SAFETY: ptr 来自字符串表登记，收尾前始终有效。
-            bytes += (std::mem::size_of::<oxide_types::object::JsString>() + unsafe { (*ptr).len() }) as u64;
+            bytes += (std::mem::size_of::<oxide_types::object::JsString>() + unsafe { (*ptr).payload_bytes() }) as u64;
         }
         bytes += (self.gc_state.session_bigint_ptrs.borrow().len() * std::mem::size_of::<num_bigint::BigInt>()) as u64;
         bytes += (self.gc_state.session_cell_ptrs.borrow().len() * std::mem::size_of::<Cell>()) as u64;
@@ -1362,12 +1389,18 @@ impl Vm {
                 return Ok(make_int_key(d as u32));
             }
         } else if val.is_string() {
-            // SAFETY: val 是字符串值，把其内容桥接为永久 key id（rope 经惰性扁平化）。
-            let s = unsafe { (*val.as_string_ptr()).as_str() };
-            if let Some(i) = canonical_index_of(s) {
-                return Ok(make_int_key(i));
+            // SAFETY: val 是字符串值，按载荷形态桥接为永久 key id。
+            let s = unsafe { &*val.as_string_ptr() };
+            if s.is_flat() {
+                // Flat：良形 UTF-8 文本，键推导与旧路径逐位一致。
+                let text = s.as_str();
+                if let Some(i) = canonical_index_of(text) {
+                    return Ok(make_int_key(i));
+                }
+                return Ok(self.kernel_core.perm_interner().intern(text).0);
             }
-            return Ok(self.kernel_core.perm_interner().intern(s).0);
+            // 单元载荷：键推导同规范（见 string_key_units）。
+            return Ok(self.string_key_units(&s.units()));
         }
         // Symbol 值直接编码为 Symbol 键（不进字符串 interner，键相互独立）。
         if val.is_symbol() {
@@ -1380,18 +1413,30 @@ impl Vm {
                 return Ok(make_well_known_symbol_key(id));
             }
             // ToPropertyKey：对象经 ToPrimitive(string hint)，结果为 Symbol 时直接作键；
-            // 其余字符串经规范化（规范数字串映射整数键）与字符串分支统一口径。
+            // 其余字符串按单元序列推导键（避免 lossy 文本桥接破坏孤立 surrogate 键）。
             let prim = coercion::to_primitive(val, coercion::ToPrimitiveHint::String, self)?;
             if prim.is_symbol() {
                 return Ok(make_symbol_key(prim.as_symbol_index()));
             }
-            let key = coercion::to_string(prim);
-            return Ok(oxide_runtime_api::VmHost::string_key_si(self, &key));
+            let units = oxide_runtime_api::to_units_full(prim, self)?;
+            return Ok(self.string_key_units(&units));
         }
         // 其它原始值（BigInt 等）：ToPropertyKey 一律转字符串并走规范化，避免与
         // 数字键区间分裂（`o[5n]` 与 `o["5"]`/`o[5]` 必须同键）。
-        let key = coercion::to_string(val);
-        Ok(oxide_runtime_api::VmHost::string_key_si(self, &key))
+        let units = oxide_runtime_api::to_units_full(val, self)?;
+        Ok(self.string_key_units(&units))
+    }
+
+    /// 从单元序列推导属性键 si（`property_key_si` 字符串分支的口径抽取）：
+    /// 规范数组下标 → 整数键，其余以 `encode_key` 形态入键空间（孤立 surrogate
+    /// 以转义形态区分，不与良形键碰撞）。
+    pub(crate) fn string_key_units(&self, units: &[u16]) -> u32 {
+        if let Some(i) = canonical_index_units(units) {
+            make_int_key(i)
+        } else {
+            let key = oxide_kernel::string_forge::encode_key(units);
+            self.kernel_core.perm_interner().intern(&key).0
+        }
     }
 
     pub(crate) fn array_index_from_property_key(&self, prop_name_si: u32) -> Option<u32> {
@@ -2496,12 +2541,6 @@ impl oxide_runtime_api::VmHost for Vm {
     fn new_string_owned(&mut self, s: String) -> JsValue {
         Vm::new_string_owned(self, s)
     }
-    fn string_ref(&self, val: JsValue) -> &str {
-        // SAFETY: 调用方保证 val 为字符串值。perm 串由内核持有永不释放；session
-        // 串仅经 &mut self 路径（new_string/new_string_owned/GC）释放，此处 &self
-        // 借用期间编译器强制不存在 &mut 存续，字符串不会在借用期内回收。
-        unsafe { (*val.as_string_ptr()).as_str() }
-    }
     fn new_bigint(&mut self, v: num_bigint::BigInt) -> JsValue {
         Vm::new_bigint(self, v)
     }
@@ -2541,6 +2580,18 @@ impl oxide_runtime_api::VmHost for Vm {
         } else {
             self.kernel_core.perm_interner().intern(s).0
         }
+    }
+    fn string_units(&self, val: JsValue) -> std::borrow::Cow<'_, [u16]> {
+        // SAFETY: 调用方保证 val 为字符串值。perm 串由内核持有永不释放；session
+        // 串仅经 &mut self 路径（new_string/GC）释放，&self 借用期间编译器强制
+        // 不存在 &mut 存续，字符串不会在借用期内回收。
+        unsafe { (*val.as_string_ptr()).units() }
+    }
+    fn new_string_units(&mut self, units: &[u16]) -> JsValue {
+        Vm::new_string_units(self, units)
+    }
+    fn new_string_units_owned(&mut self, units: Vec<u16>) -> JsValue {
+        Vm::new_string_units_owned(self, units)
     }
     fn resolve_property(&self, obj: &JsObject, prop_name_si: u32) -> Option<JsValue> {
         self.resolve_property(obj, prop_name_si)

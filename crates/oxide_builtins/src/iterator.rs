@@ -1487,6 +1487,30 @@ fn get_iterator<H: VmHost>(vm: &mut H, value: JsValue) -> Result<Option<(JsValue
     Ok(None)
 }
 
+/// 字符串迭代的一个产出元素：单个码元，或整个合法代理对（超平面字符，
+/// 按 Unicode 标量产出单元素）。
+#[derive(Clone, Copy)]
+enum StrIterElem {
+    One(u16),
+    Pair(u16, u16),
+}
+
+/// 单元序列的字符串迭代步进（Unicode 标量口径）：合法代理对整体产出一个
+/// 2 单元元素（游标推进 2），否则产出单单元元素（推进 1）；越界产出 None。
+fn str_iter_step(units: &[u16], at: usize) -> (usize, Option<StrIterElem>) {
+    let Some(&u) = units.get(at) else {
+        return (0, None);
+    };
+    if (0xD800..=0xDBFF).contains(&u) {
+        if let Some(lo) = units.get(at + 1) {
+            if (0xDC00..=0xDFFF).contains(lo) {
+                return (at + 2, Some(StrIterElem::Pair(u, *lo)));
+            }
+        }
+    }
+    (at + 1, Some(StrIterElem::One(u)))
+}
+
 fn next_array_like<H: VmHost>(
     vm: &mut H, wrapper: &mut JsObject, inner: JsValue, index_si: u32,
 ) -> Result<Option<JsValue>, JsValue> {
@@ -1513,18 +1537,47 @@ fn next_array_like<H: VmHost>(
     }
 
     if inner.is_string() {
-        // index 槽在字符串分支存字节游标（每步推进一个 char 的 UTF-8 宽度）而非
-        // 元素序号：该槽只被 next 内部读写、无外部消费者，包装器创建后类型固定
-        // 不跨类型复用，故可安全借用语义（字符串=字节偏移）。
-        let byteoff = current_index(vm, wrapper, index_si);
-        // 源串裸指针借用压缩到单个表达式：ch 是 Copy 的 char，不携带借用，
+        // index 槽在字符串分支存游标（按载荷形态钉死）：单元形态（FlatU16/Cons）
+        // 存单元偏移；Flat 形态存 字节偏移×2（与单元口径对齐，每字符步长按其
+        // UTF-16 单元数）。游标只被 next 内部读写、无外部消费者，包装器创建后
+        // 类型固定不跨类型复用。
+        //
+        // 产出按 Unicode 标量（规格口径）：合法代理对整体产出一个 2 单元元素，
+        // 孤立 surrogate 各产出 1 单元元素。
+        let cursor = current_index(vm, wrapper, index_si);
+        // 源串裸指针借用压缩到单个表达式：产出元素为 Copy 值，不携带借用，
         // 之后对 VM 状态的可变访问不再与源串借用共存。
-        let ch = unsafe { &*inner.as_string_ptr() }.as_str()[byteoff..].chars().next();
-        if let Some(ch) = ch {
-            vm.set_or_create_prop_value(wrapper, index_si, JsValue::int((byteoff + ch.len_utf8()) as i32));
-            let value = match vm.single_char(ch) {
-                Some(v) => v,
-                None => vm.new_string(&ch.to_string()),
+        let (next_cursor, elem): (usize, Option<StrIterElem>) = unsafe {
+            let sp = &*inner.as_string_ptr();
+            if sp.is_flat() {
+                let byteoff = cursor / 2;
+                match sp.as_str().get(byteoff..).unwrap_or("").chars().next() {
+                    // 超平面字符：出整个代理对（单元素），游标跳越字符。
+                    Some(c) if c.len_utf8() == 4 => {
+                        let v = c as u32;
+                        let hi = (0xD800 + (((v - 0x10000) >> 10) & 0x3FF)) as u16;
+                        let lo = (0xDC00 + ((v - 0x10000) & 0x3FF)) as u16;
+                        ((byteoff + 4) * 2, Some(StrIterElem::Pair(hi, lo)))
+                    }
+                    Some(c) => ((byteoff + c.len_utf8()) * 2, Some(StrIterElem::One(c as u16))),
+                    None => (0, None),
+                }
+            } else if let Some(units) = sp.units_borrowed() {
+                str_iter_step(units, cursor)
+            } else {
+                let units = sp.units();
+                str_iter_step(&units, cursor)
+            }
+        };
+        if let Some(elem) = elem {
+            vm.set_or_create_prop_value(wrapper, index_si, JsValue::int(next_cursor as i32));
+            let value = match elem {
+                // ASCII 单元走单字符缓存零分配，其余（含孤立 surrogate）落串创建。
+                StrIterElem::One(u) => match vm.single_unit(u) {
+                    Some(v) => v,
+                    None => vm.new_string_units(&[u]),
+                },
+                StrIterElem::Pair(hi, lo) => vm.new_string_units(&[hi, lo]),
             };
             return Ok(Some(make_iter_result(vm, value, false)));
         }

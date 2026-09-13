@@ -940,25 +940,45 @@ fn string_methods_null_receiver_throw_type_error() {
 #[test]
 fn string_slice_astral_character_indices() {
     // UTF-16 单元索引语义：astral 字符占 2 单元，切片边界落在代理对中间时
-    // 保留所在 astral 字符（孤立代理无法在 UTF-8 表示，见架构限制）。
+    // 单元原样保留（单元载荷可承载孤立 surrogate，规格口径）。
     let mut vm = Vm::new();
-    let s = eval(&mut vm, "'\\u{1F600}ab'.slice(1, 3)").unwrap();
-    assert_eq!(to_str(&vm, s), "\u{1F600}a");
-    let s = eval(&mut vm, "'\\u{1F600}ab'.slice(0, 1)").unwrap();
-    assert_eq!(to_str(&vm, s), "\u{1F600}");
+    let r = eval(
+        &mut vm,
+        "var s = '\\u{1F600}ab'.slice(1, 3); s.length === 2 && s.charCodeAt(0) === 0xDE00 && s.charCodeAt(1) === 0x61",
+    )
+    .unwrap();
+    assert!(r.as_bool());
+    let r = eval(
+        &mut vm,
+        "var s = '\\u{1F600}ab'.slice(0, 1); s.length === 1 && s.charCodeAt(0) === 0xD83D",
+    )
+    .unwrap();
+    assert!(r.as_bool());
     let s = eval(&mut vm, "'\\u{1F600}'.padStart(3, 'x')").unwrap();
     assert_eq!(to_str(&vm, s), "xx\u{1F600}");
 }
 
 #[test]
 fn string_char_at_ascii_and_astral() {
-    // charAt 产出：ASCII 走单字符缓存，astral 按 UTF-16 单元定位（落在代理对
-    // 中间时返回所在 astral 字符，架构限制），越界空串，缺省参数取首字符。
+    // charAt 按码元定位：单单元子串（代理对各出 1 单元，规格口径——
+    // 规格返回单元子串而非 Unicode 标量），越界空串，缺省参数取首字符。
     let mut vm = Vm::new();
     let s = eval(&mut vm, "'abc'.charAt(1)").unwrap();
     assert_eq!(to_str(&vm, s), "b");
-    let s = eval(&mut vm, "'\\u{1F600}ab'.charAt(0)").unwrap();
-    assert_eq!(to_str(&vm, s), "\u{1F600}");
+    let r = eval(
+        &mut vm,
+        "'\\u{1F600}ab'.charAt(0).length === 1 && '\\u{1F600}ab'.charAt(0).charCodeAt(0) === 0xD83D",
+    )
+    .unwrap();
+    assert!(r.as_bool());
+    let r = eval(
+        &mut vm,
+        "'\\u{1F600}ab'.charAt(1).length === 1 && '\\u{1F600}ab'.charAt(1).charCodeAt(0) === 0xDE00",
+    )
+    .unwrap();
+    assert!(r.as_bool());
+    let r = eval(&mut vm, "'\\u{1F600}ab'.charAt(2) === 'a'").unwrap();
+    assert!(r.as_bool());
     let s = eval(&mut vm, "'ab'.charAt(5)").unwrap();
     assert_eq!(to_str(&vm, s), "");
     let s = eval(&mut vm, "'xy'.charAt()").unwrap();
@@ -975,13 +995,16 @@ fn string_char_at_eq_perm_string() {
 
 #[test]
 fn string_split_empty_separator_chars() {
-    // 空分隔 split 逐字符产出：ASCII 走单字符缓存，混合 astral 按标量切分。
+    // 空分隔 split 逐码元产出：ASCII 走单字符缓存，代理对各出 1 单元元素
+    // （规格口径：空分隔按单元切分，孤立 surrogate 各为独立元素）。
     let mut vm = Vm::new();
     let s = eval(&mut vm, "'abc'.split('').join('-')").unwrap();
     assert_eq!(to_str(&vm, s), "a-b-c");
     let result = eval(&mut vm, "'\\u{1F600}a'.split('').length").unwrap();
-    assert_eq!(result.as_int(), 2);
-    let result = eval(&mut vm, "'\\u{1F600}a'.split('')[1]").unwrap();
+    assert_eq!(result.as_int(), 3);
+    let r = eval(&mut vm, "'\\u{1F600}a'.split('')[1].charCodeAt(0) === 0xDE00").unwrap();
+    assert!(r.as_bool());
+    let result = eval(&mut vm, "'\\u{1F600}a'.split('')[2]").unwrap();
     assert_eq!(to_str(&vm, result), "a");
 }
 
@@ -1016,10 +1039,17 @@ fn string_utf16_length_char_at_code_at() {
     assert_eq!(r.as_int(), 0xDE00);
     let r = eval(&mut vm, "'\\u{1F600}a'.charCodeAt(2)").unwrap();
     assert_eq!(r.as_int(), 0x61);
-    let r = eval(&mut vm, "'\\u{1F600}ab'.charAt(2)").unwrap();
-    assert_eq!(to_str(&vm, r), "a");
-    let r = eval(&mut vm, "'\\u{1F600}ab'.charAt(1)").unwrap();
-    assert_eq!(to_str(&vm, r), "\u{1F600}");
+    let r = eval(&mut vm, "'\\u{1F600}ab'.charAt(2) === 'a'").unwrap();
+    assert!(r.as_bool());
+    // charAt 出单单元子串：代理对位置各出 1 单元（高/低 surrogate）。
+    let r = eval(
+        &mut vm,
+        "'\\u{1F600}ab'.charAt(0).length === 1 && '\\u{1F600}ab'.charAt(0).charCodeAt(0) === 0xD83D",
+    )
+    .unwrap();
+    assert!(r.as_bool());
+    let r = eval(&mut vm, "'\\u{1F600}ab'.charAt(1).charCodeAt(0) === 0xDE00").unwrap();
+    assert!(r.as_bool());
     let r = eval(&mut vm, "'\\u{1F600}ab'.charAt(4)").unwrap();
     assert_eq!(to_str(&vm, r), "");
 }
@@ -1040,7 +1070,8 @@ fn string_utf16_at() {
 
 #[test]
 fn string_utf16_slice_substring_substr() {
-    // 切片族按 UTF-16 单元计数：边界落在代理对中间时保留所在 astral 字符。
+    // 切片族按 UTF-16 单元计数：边界落在代理对中间时单元原样保留（孤立
+    // surrogate 由单元载荷承载，规格口径）。
     let mut vm = Vm::new();
     let s = eval(&mut vm, "'\\u{1F600}ab'.slice(2)").unwrap();
     assert_eq!(to_str(&vm, s), "ab");
@@ -1054,8 +1085,12 @@ fn string_utf16_slice_substring_substr() {
     assert_eq!(to_str(&vm, s), "\u{1F600}");
     let s = eval(&mut vm, "'\\u{1F600}ab'.substr(2, 2)").unwrap();
     assert_eq!(to_str(&vm, s), "ab");
-    let s = eval(&mut vm, "'\\u{1F600}ab'.substr(1, 2)").unwrap();
-    assert_eq!(to_str(&vm, s), "\u{1F600}a");
+    let r = eval(
+        &mut vm,
+        "var s = '\\u{1F600}ab'.substr(1, 2); s.length === 2 && s.charCodeAt(0) === 0xDE00 && s.charCodeAt(1) === 0x61",
+    )
+    .unwrap();
+    assert!(r.as_bool());
 }
 
 #[test]

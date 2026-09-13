@@ -196,8 +196,8 @@ pub fn module_data<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
             }
         }
         "text" => {
-            // 经借用路径拷贝出 owned String 后再入堆，避免借用跨过 new_string 分配点。
-            let text = vm.string_ref(content_val).to_string();
+            // lossy 文本拷贝出 owned String 再入堆（模块数据文本桥接，131.2 边界）。
+            let text = vm.lookup_str(content_val).unwrap_or_default();
             vm.new_string_owned(text)
         }
         _ => return type_error(vm, "__moduleData: unsupported data kind"),

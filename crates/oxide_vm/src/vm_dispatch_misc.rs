@@ -1,6 +1,6 @@
 use crate::vm::{ForInIter, FrameArgs, FrameContinuation, Vm, MAX_PROTO_CHAIN_DEPTH};
 use crate::vm_trace;
-use oxide_runtime_api::{push_to_string, to_boolean, to_string_full, VmHost};
+use oxide_runtime_api::{push_units_to, to_boolean, to_units_full};
 use oxide_types::object::{JsObject, PropAttributes};
 use oxide_types::private_key::{int_key_value, is_int_key, is_private_name_key, is_symbol_key, make_int_key};
 use oxide_types::value::JsValue;
@@ -267,7 +267,9 @@ impl Vm {
         let segment_count = (header >> 16) as usize;
         let len_hint = (header & 0xFFFF) as usize;
 
-        let mut result = String::with_capacity(len_hint.max(16));
+        // 单元缓冲：字符串操作数按单元序列展开（lone surrogate 保真），
+        // len_hint 为单元数口径（emit 侧同口径）。
+        let mut units: Vec<u16> = Vec::with_capacity(len_hint.max(16));
         for _ in 0..segment_count {
             let seg = self.bytecode[self.pc];
             self.pc += 1;
@@ -275,17 +277,16 @@ impl Vm {
                 let reg = (seg & 0x7FFF_FFFF) as usize;
                 let val = self.regs[reg];
                 if val.is_string() {
-                    // SAFETY: val 是字符串值；借用仅在本次 push 内消费，不跨分配点。
-                    let s = unsafe { (*val.as_string_ptr()).as_str() };
-                    result.push_str(s);
+                    // SAFETY: val 是字符串值；借用仅在本次展开内消费，不跨分配点。
+                    let s = unsafe { &*val.as_string_ptr() };
+                    units.extend_from_slice(s.units().as_ref());
                 } else if val.is_object() || val.is_symbol() {
-                    // 对象走完整 ToString（ToPrimitive 副作用顺序）；Symbol 由
-                    // to_string_full 抛 TypeError（push_to_string 无 symbol 分支）。
-                    let s = to_string_full(val, self)?;
-                    result.push_str(&s);
+                    // 对象走完整 ToString（ToPrimitive 副作用顺序，结果保单元）；
+                    // Symbol 抛 TypeError（to_units_full 无 symbol 直写分支）。
+                    units.extend(to_units_full(val, self)?);
                 } else {
                     // 原始值直写结果缓冲，免中间 String。
-                    push_to_string(val, &mut result);
+                    push_units_to(val, &mut units);
                 }
             } else {
                 let const_idx = (seg & 0x7FFF_FFFF) as usize;
@@ -293,14 +294,14 @@ impl Vm {
                 if const_idx < imm.len() {
                     let val = imm[const_idx];
                     if val.is_string() {
-                        // SAFETY: val 是字符串值；借用仅在本次 push 内消费，不跨分配点。
-                        let s = unsafe { (*val.as_string_ptr()).as_str() };
-                        result.push_str(s);
+                        // SAFETY: val 是字符串值；借用仅在本次展开内消费，不跨分配点。
+                        let s = unsafe { &*val.as_string_ptr() };
+                        units.extend_from_slice(s.units().as_ref());
                     }
                 }
             }
         }
-        self.regs[rd] = self.new_string_owned(result);
+        self.regs[rd] = self.new_string_units_owned(units);
         Ok(())
     }
 
@@ -825,16 +826,11 @@ impl Vm {
                 JsValue::from_js_object(proto_ptr),
             ));
             if src.is_string() {
-                let code_units: Vec<u16> = unsafe { (*src.as_string_ptr()).as_str().encode_utf16().collect() };
+                // SAFETY: src 是字符串值；单元序列展开（lone surrogate 保真）。
+                let code_units: Vec<u16> = unsafe { (*src.as_string_ptr()).units().into_owned() };
                 for (i, unit) in code_units.iter().enumerate() {
                     let si = make_int_key(i as u32);
-                    let ch_val = match char::from_u32(*unit as u32) {
-                        Some(c) => match self.single_char(c) {
-                            Some(v) => v,
-                            None => self.new_string(&c.to_string()),
-                        },
-                        None => self.new_string(""),
-                    };
+                    let ch_val = self.unit_char_value(*unit);
                     let rest = unsafe { &mut *rest_ptr };
                     self.set_or_create_prop_value(rest, si, ch_val);
                 }
@@ -842,23 +838,34 @@ impl Vm {
             self.regs[rd] = JsValue::from_js_object(rest_ptr);
             return Ok(());
         }
+        // 排除名单常量按单元序列展开（lone surrogate 名保真），0x0000 分隔。
         let excluded_const = self
             .immutables()
             .get(excluded_idx)
             .and_then(|v| {
                 if v.is_string() {
                     // SAFETY: v 是字符串常量值。
-                    Some(unsafe { (*v.as_string_ptr()).to_owned_string() })
+                    Some(unsafe { (*v.as_string_ptr()).units().into_owned() })
                 } else {
                     None
                 }
             })
             .unwrap_or_default();
-        let mut excluded: std::collections::HashSet<u32> = excluded_const
-            .split('\0')
-            .filter(|s| !s.is_empty())
-            .map(|s| self.string_key_si(s))
-            .collect();
+        let mut excluded: std::collections::HashSet<u32> = std::collections::HashSet::new();
+        let mut seg: Vec<u16> = Vec::new();
+        for &u in excluded_const.iter() {
+            if u == 0x0000 {
+                if !seg.is_empty() {
+                    excluded.insert(self.string_key_units(&seg));
+                    seg.clear();
+                }
+                continue;
+            }
+            seg.push(u);
+        }
+        if !seg.is_empty() {
+            excluded.insert(self.string_key_units(&seg));
+        }
         // 运行时 excluded：b 槽数组（computed key 求值结果）的元素 ToPropertyKey 后排除。
         if b != 0 {
             let arr_val = self.regs[b];
@@ -883,20 +890,14 @@ impl Vm {
         // 字符串包装对象：索引字符是可枚举自有属性（ToObject("str") 的 0..len-1）。
         if src_obj.type_tag == JsObject::OBJ_TYPE_STRING_OBJ {
             let raw = src_obj.get_prop_at(0);
-            let s = unsafe { (*raw.as_string_ptr()).to_owned_string() };
-            let code_units: Vec<u16> = s.encode_utf16().collect();
+            // SAFETY: 包装对象槽 0 恒为字符串值；单元序列展开（lone surrogate 保真）。
+            let code_units: Vec<u16> = unsafe { (*raw.as_string_ptr()).units().into_owned() };
             for (i, unit) in code_units.iter().enumerate() {
                 let si = make_int_key(i as u32);
                 if excluded.contains(&si) {
                     continue;
                 }
-                let ch_val = match char::from_u32(*unit as u32) {
-                    Some(c) => match self.single_char(c) {
-                        Some(v) => v,
-                        None => self.new_string(&c.to_string()),
-                    },
-                    None => self.new_string(""),
-                };
+                let ch_val = self.unit_char_value(*unit);
                 assignments.push((si, ch_val));
             }
         }
@@ -964,19 +965,14 @@ impl Vm {
             return Ok(());
         }
 
-        // 字符串源：按索引复制字符（可枚举索引属性）。
+        // 字符串源：按单元下标复制（可枚举索引属性，lone surrogate 保真）。
         if src.is_string() {
             let target = unsafe { &mut *target_val.as_js_object_ptr() };
-            let code_units: Vec<u16> = unsafe { (*src.as_string_ptr()).as_str().encode_utf16().collect() };
+            // SAFETY: src 是字符串值。
+            let code_units: Vec<u16> = unsafe { (*src.as_string_ptr()).units().into_owned() };
             for (i, unit) in code_units.iter().enumerate() {
                 let si = make_int_key(i as u32);
-                let ch_val = match char::from_u32(*unit as u32) {
-                    Some(c) => match self.single_char(c) {
-                        Some(v) => v,
-                        None => self.new_string(&c.to_string()),
-                    },
-                    None => self.new_string(""),
-                };
+                let ch_val = self.unit_char_value(*unit);
                 self.set_or_create_prop_value(target, si, ch_val);
             }
             return Ok(());

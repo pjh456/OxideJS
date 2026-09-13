@@ -99,11 +99,11 @@ impl Vm {
     }
 
     /// 字符串拼接接线点（二元 `+`/`+=` 共用）：O(1) 链接为 Cons（rope）节点，
-    /// 消除逐次整串重拷贝。文本在消费时（`.length`/`==`/string_ref 等）惰性扁平化。
+    /// 消除逐次整串重拷贝。单元序列在消费时（`.length`/`==`/单元读取等）惰性扁平化。
     ///
     /// # 步骤
-    /// 1. 非字符串操作数先转成叶子字符串（`push_to_string` 同文本语义；小整数走
-    ///    永久缓存零分配，其余 `to_string` + owned）。
+    /// 1. 非字符串操作数先转成叶子字符串（`to_string` 同文本语义；小整数走
+    ///    永久缓存零分配，其余 owned）。
     /// 2. 两个字符串经 `new_cons_string` 链接（每链接 1 次节点分配，对比原 O(n)
     ///    拷贝 + 结果串分配）。
     ///
@@ -112,18 +112,26 @@ impl Vm {
     ///   dispatch 指令边界（结果已写寄存器后检查），链接期子节点天然安全，
     ///   无需在途保护。
     fn concat_strings(&mut self, lhs: JsValue, rhs: JsValue) -> JsValue {
-        // 小链急切扁平（与 rope 前同款实现）：总字节长 ≤ 阈值时单次预分配
-        // 写齐，零叶子转换 / Cons 节点 / 惰性扁平化开销——拼接即消费的小串
-        // 场景与基线逐字节等价（该场景 rope 的 O(1) 链接收益低于其固定开销）。
-        let lbytes = if lhs.is_string() { unsafe { (*lhs.as_string_ptr()).len() } } else { 0 };
-        let rbytes = if rhs.is_string() { unsafe { (*rhs.as_string_ptr()).len() } } else { 0 };
-        if lbytes + rbytes <= Self::CONS_FLATTEN_BYTES {
-            let mut buf = String::with_capacity(lbytes + rbytes + 32);
-            coercion::push_to_string(lhs, &mut buf);
-            coercion::push_to_string(rhs, &mut buf);
-            return self.new_string_owned(buf);
+        // 小链急切扁平：总单元长 ≤ 阈值时单次预分配写齐，零叶子转换 / Cons 节点 /
+        // 惰性扁平化开销——良形小串场景载荷与旧字节路径逐位一致（该场景 rope 的
+        // O(1) 链接收益低于其固定开销）。
+        let lu = if lhs.is_string() {
+            unsafe { (*lhs.as_string_ptr()).utf16_len() as usize }
+        } else {
+            0
+        };
+        let ru = if rhs.is_string() {
+            unsafe { (*rhs.as_string_ptr()).utf16_len() as usize }
+        } else {
+            0
+        };
+        if lu + ru <= Self::CONS_FLATTEN_UNITS {
+            let mut units = Vec::with_capacity(lu + ru);
+            coercion::push_units_to(lhs, &mut units);
+            coercion::push_units_to(rhs, &mut units);
+            return self.new_string_units_owned(units);
         }
-        // 大链走 Cons rope：非字符串操作数先转叶子，再 O(1) 链接（文本惰性扁平化）。
+        // 大链走 Cons rope：非字符串操作数先转叶子，再 O(1) 链接（单元惰性扁平化）。
         let lv = if lhs.is_string() { lhs } else { self.string_leaf(lhs) };
         let rv = if rhs.is_string() { rhs } else { self.string_leaf(rhs) };
         self.new_cons_string(lv, rv)
@@ -227,9 +235,9 @@ impl Vm {
     ///
     /// # 步骤
     /// 1. 剩余操作数按序 coerce（对象 ToPrimitive 副作用顺序与左结合一致，抛错点先于分配）。
-    /// 2. 精确总长：字符串操作数取字节长，非字符串给 32 字节余量（int/double/bool/null/
-    ///    undefined 的十进制文本上界；BigInt 超长时 String 自动扩容兜底）。
-    /// 3. 单趟 push_to_string + new_string_owned（零二次拷贝）。
+    /// 2. 精确总长：字符串操作数取单元长，非字符串给 32 单元余量（int/double/bool/null/
+    ///    undefined 的十进制文本上界；BigInt 超长时 Vec 自动扩容兜底）。
+    /// 3. 单趟单元展开 + 智能路由创建（零二次拷贝；良形内容落 Flat 与旧路径逐位一致）。
     ///
     /// # 副作用
     /// 新建一个会话字符串。
@@ -245,16 +253,16 @@ impl Vm {
         let cap = parts.iter().fold(0usize, |acc, p| {
             acc + if p.is_string() {
                 // SAFETY: p 是字符串值。
-                unsafe { (*p.as_string_ptr()).len() }
+                unsafe { (*p.as_string_ptr()).utf16_len() as usize }
             } else {
                 32
             }
         });
-        let mut buf = String::with_capacity(cap);
+        let mut units = Vec::with_capacity(cap);
         for p in &parts {
-            coercion::push_to_string(*p, &mut buf);
+            coercion::push_units_to(*p, &mut units);
         }
-        Ok(self.new_string_owned(buf))
+        Ok(self.new_string_units_owned(units))
     }
 
     #[inline(always)]

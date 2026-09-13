@@ -528,9 +528,9 @@ fn symbol_dispose_and_async_dispose_registered() {
         let result = eval(&mut vm, src).unwrap();
         assert_eq!(result.as_bool(), expected, "for {}", src);
     }
-    // 描述性名称经 String 构造器反射（well_known_symbol_name 表）。
-    let desc = eval(&mut vm, "String(Symbol.dispose)").unwrap();
-    assert_eq!(to_str(&vm, desc), "Symbol(Symbol.dispose)");
+    // ToString(Symbol) 按规格抛 TypeError（String 构造器无描述性名称通道）。
+    let err = eval(&mut vm, "try { String(Symbol.dispose); 'no-throw' } catch (e) { e.name }").unwrap();
+    assert_eq!(to_str(&vm, err), "TypeError");
 }
 
 #[test]

@@ -27,7 +27,7 @@ pub fn eval<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     if !arg.is_string() {
         return NativeResult::Ok(arg);
     }
-    let code = vm.string_ref(arg).to_string();
+    let code = vm.lookup_str(arg).unwrap_or_default();
     match vm.create_dynamic_script(&code) {
         Ok(func) => {
             let global = JsValue::from_js_object(vm.session().global_object().as_ptr() as *mut JsObject);

@@ -44,12 +44,13 @@ impl Hash for SetKey {
                 let bits = if d == 0.0 { 0.0f64.to_bits() } else { JsValue::float(d).to_bits() };
                 bits.hash(state);
             }
-            // String：内容字节（rope 经 `as_str` 惰性扁平化，幂等）。
+            // String：单元序列（rope 经扁平化缓存，幂等；单元口径与
+            // same_value_zero 的内容比较同域，同值同哈希）。
             JsType::String => {
                 1u8.hash(state);
                 // SAFETY: 串指针在 native 调用期间存活（session 串不在调用中途释放），
                 // 借出在本哈希调用内即时消费。
-                unsafe { (*v.as_string_ptr()).as_str().as_bytes().hash(state) };
+                unsafe { (*v.as_string_ptr()).units().as_ref().hash(state) };
             }
             // BigInt：`to_bytes_le` 规范形（零号统一 NoZero，同值同字节）。
             JsType::BigInt => {

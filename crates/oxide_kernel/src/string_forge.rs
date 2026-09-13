@@ -15,6 +15,111 @@ fn hash64(s: &str) -> u64 {
     h.finish()
 }
 
+/// 把字符串单元序列编码为 interner 键文本。配对感知：
+/// - 良配 surrogate 对（高+低）编码为对应单字符（超平面字符逐字保留，
+///   键文本保持恒等）；
+/// - 孤立 surrogate 编码为 U+FFFD 后跟 4 位小写十六进制；
+/// - 单元 U+FFFD 编码为 U+FFFD 后跟字面文本 `fffd`（与任何 surrogate
+///   的转义文本可区分）。
+///
+/// 编码无损：`decode_key` 是其精确逆变换（对无 FFFD 的良形文本为恒等）。
+pub fn encode_key(units: &[u16]) -> String {
+    let mut out = String::with_capacity(units.len());
+    let mut i = 0;
+    while i < units.len() {
+        let u = units[i];
+        if (0xD800..=0xDBFF).contains(&u) && i + 1 < units.len() {
+            let lo = units[i + 1];
+            if (0xDC00..=0xDFFF).contains(&lo) {
+                let cp = 0x10000u32 + (((u as u32) - 0xD800) << 10) + (lo as u32 - 0xDC00);
+                out.push(char::from_u32(cp).expect("良配 surrogate 对必映射为合法码点"));
+                i += 2;
+                continue;
+            }
+        }
+        if (0xD800..=0xDFFF).contains(&u) {
+            out.push('\u{FFFD}');
+            out.push_str(&format!("{:04x}", u));
+        } else if u == 0xFFFD {
+            out.push('\u{FFFD}');
+            out.push_str("fffd");
+        } else {
+            // 非 surrogate 单元恒可单字符表示（BMP 或超平面字符由对分支处理）。
+            out.push(char::from_u32(u as u32).expect("非 surrogate 单元必为合法码点"));
+        }
+        i += 1;
+    }
+    out
+}
+
+/// `encode_key` 的逆变换：把键文本还原为单元序列。
+///
+/// 转义约定：U+FFFD 后跟 `fffd` 还原为单元 U+FFFD；U+FFFD 后跟 surrogate
+/// 段内的 4 位小写十六进制还原为对应孤立 surrogate 单元。FFFD 后跟其他
+/// 文本是防御性兜底（`encode_key` 不产生该形态）：输出 FFFD 单元并把后续
+/// 已消费字符原样补回。
+///
+/// 已知边界：用户来源的键文本若含裸 FFFD 且其后恰为 `fffd` 或 surrogate
+/// 段 4 位十六进制，物化时该 4 字符会被当作转义吞掉。物化面仅限 builtin
+/// 永久键（恒为良形恒等文本），故该歧义不实际发生。
+pub fn decode_key(text: &str) -> Vec<u16> {
+    let mut out: Vec<u16> = Vec::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c != '\u{FFFD}' {
+            if (c as u32) > 0xFFFF {
+                // 超平面字符还原为其良配 surrogate 对。
+                let v = (c as u32) - 0x10000;
+                out.push(0xD800 + (v >> 10) as u16);
+                out.push(0xDC00 + (v & 0x3FF) as u16);
+            } else {
+                out.push(c as u16);
+            }
+            continue;
+        }
+        // FFFD：消费其后最多 4 字符判定转义形态。
+        let mut tail: [char; 4] = [' '; 4];
+        let mut n = 0;
+        while n < 4 {
+            if let Some(&ch) = chars.peek() {
+                tail[n] = ch;
+                chars.next();
+                n += 1;
+            } else {
+                break;
+            }
+        }
+        if n == 4 && tail == ['f', 'f', 'f', 'd'] {
+            out.push(0xFFFD);
+            continue;
+        }
+        if n == 4 {
+            let mut v: u16 = 0;
+            let mut ok = true;
+            for &ch in tail.iter() {
+                // 编码端恒产小写十六进制（0-9 或 a-f），大写/非 hex 一律视为裸文本。
+                match ch.to_digit(16) {
+                    Some(d) if matches!(ch, '0'..='9' | 'a'..='f') => v = v * 16 + d as u16,
+                    _ => {
+                        ok = false;
+                        break;
+                    }
+                }
+            }
+            if ok && (0xD800..=0xDFFF).contains(&v) {
+                out.push(v);
+                continue;
+            }
+        }
+        // 防御性兜底：裸 FFFD，后续字符原样补回。
+        out.push(0xFFFD);
+        for ch in tail.iter().take(n) {
+            out.push(*ch as u16);
+        }
+    }
+    out
+}
+
 /// 一条 intern 过的键。`data` 是泄漏的 `&'static str`——永久键从不释放
 /// （按设计 append-only），所以泄漏即存储模型，而非 bug。键 id 与 64 位
 /// 哈希经 `DashMap` 的哈希键→候选 id 表寻址，条目自身不存哈希。
@@ -129,7 +234,10 @@ impl PermInterner {
             perm.resize_with(id as usize + 1, || None);
         }
         if perm[id as usize].is_none() {
-            perm[id as usize] = Some(Box::new(JsString::new(text.to_string())));
+            // 键文本经逆编码还原为单元序列再物化：良形键为逐字恒等，
+            // 含转义的键（见 encode_key 约定）还原出孤立 surrogate 单元。
+            let units = decode_key(text);
+            perm[id as usize] = Some(Box::new(JsString::from_units(units)));
         }
         perm[id as usize].as_ref().unwrap().as_ref() as *const JsString
     }
@@ -327,6 +435,58 @@ mod tests {
     }
 
     #[test]
+    fn encode_key_identity_and_escapes() {
+        // 良形且无 FFFD（含超平面良配对）编码为恒等文本。
+        assert_eq!(encode_key(&"abc🚀".encode_utf16().collect::<Vec<u16>>()), "abc🚀");
+        // 孤立 surrogate：FFFD + 4 位小写十六进制。
+        assert_eq!(encode_key(&[0xD800]), "\u{FFFD}d800");
+        assert_eq!(encode_key(&[0xDFFF]), "\u{FFFD}dfff");
+        assert_eq!(encode_key(&[0xDBFF, 0x61]), "\u{FFFD}dbffa");
+        // FFFD 单元：FFFD + 字面 "fffd"。
+        assert_eq!(encode_key(&[0xFFFD]), "\u{FFFD}fffd");
+        // 两种不同单元序列的键文本互异（解码可区分）。
+        assert_ne!(encode_key(&[0xFFFD]), encode_key(&[0xD800]));
+    }
+
+    #[test]
+    fn encode_decode_roundtrip() {
+        let cases: Vec<Vec<u16>> = vec![
+            Vec::new(),
+            "a".encode_utf16().collect(),
+            "abc🚀😀".encode_utf16().collect(),
+            vec![0xD800, 0x42, 0xDC00],
+            vec![0xFFFD, 0xFFFD, 0x41, 0xFFFD, 0x66, 0x66, 0x66, 0x64],
+            vec![0xFFFF, 0x0041, 0xDBFF, 0xDC00, 0xD800],
+        ];
+        for units in &cases {
+            let key = encode_key(units);
+            assert_eq!(decode_key(&key), units.as_slice(), "roundtrip 失败: key={key:?}");
+        }
+    }
+
+    #[test]
+    fn decode_key_defensive_raw_fffd() {
+        // 裸 FFFD（文本末尾或后跟非转义文本）还原为 FFFD 单元，后续字符不被吞。
+        assert_eq!(decode_key("a\u{FFFD}"), &[0x61, 0xFFFD]);
+        assert_eq!(decode_key("a\u{FFFD}zz"), &[0x61, 0xFFFD, 0x7A, 0x7A]);
+    }
+
+    #[test]
+    fn string_ptr_materializes_units() {
+        let interner = PermInterner::new();
+        // 良形键：物化内容与旧行为逐位一致，且二次调用返回同一稳定指针。
+        let (id, _) = interner.intern("perm");
+        let ptr = interner.string_ptr(id);
+        assert_eq!(unsafe { (*ptr).as_str() }, "perm");
+        assert_eq!(interner.string_ptr(id), ptr);
+        // 含转义的键：物化出孤立 surrogate 单元形态。
+        let (id2, _) = interner.intern(&encode_key(&[0xD800]));
+        let ptr2 = interner.string_ptr(id2);
+        assert!(unsafe { (*ptr2).has_lone_surrogate() });
+        assert_eq!(unsafe { (*ptr2).units() }, &[0xD800][..]);
+    }
+
+    #[test]
     fn perm_table_concurrent_first_use_unique_ptr() {
         // 并发首用竞态回归：96 线程同一时刻命中冷表槽，强制多线程同入慢路径。
         // 所有调用方必须拿到同一稳定指针，且该指针恒指向存活的 JsString。
@@ -365,6 +525,6 @@ mod tests {
         assert_eq!(unsafe { (*(c0 as *const JsString)).as_str() }, "x");
         let t0 = t0 as *const JsString;
         assert_eq!(unsafe { (*t0).as_str() }, "object");
-        assert_eq!(unsafe { (*t0).len() }, 6);
+        assert_eq!(unsafe { (*t0).utf16_len() }, 6);
     }
 }

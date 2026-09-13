@@ -120,13 +120,23 @@ pub trait VmHost {
             None
         }
     }
-    /// 借出字符串值的文本内容，生命周期绑定到 `&self` 借用。
-    ///
-    /// perm 字符串由内核持有、永不释放；session 字符串只在 `&mut self` 路径
-    /// （`new_string`/`new_string_owned`/`maybe_collect_session_gc`）释放，`&self`
-    /// 借用与 `&mut` 互斥由编译器强制，借用期内该字符串不会回收。实现内部
-    /// `unsafe` 解引用，调用方须保证 `val` 为字符串值。
-    fn string_ref(&self, val: JsValue) -> &str;
+    /// 借出字符串值的 UTF-16 单元序列（Flat 惰性编码 / FlatU16 直接借用 /
+    /// Cons 扁平化缓存），生命周期绑定到 `&self` 借用。调用方须保证
+    /// `val` 为字符串值。
+    fn string_units(&self, val: JsValue) -> std::borrow::Cow<'_, [u16]>;
+    /// 取单单元的永久字符串值：ASCII 单元命中共享 perm 串（零分配、可指针
+    /// 短路），非 ASCII 返回 `None` 由调用方回落单元创建。
+    fn single_unit(&self, u: u16) -> Option<JsValue> {
+        if u < 0x80 {
+            Some(JsValue::string(oxide_kernel::string_forge::single_char_ptr(u as u8)))
+        } else {
+            None
+        }
+    }
+    /// 以单元序列创建会话字符串（智能路由：含孤立 surrogate 落 FlatU16）。
+    fn new_string_units(&mut self, units: &[u16]) -> JsValue;
+    /// 同 `new_string_units`，以 owned 单元序列接收，避免一次克隆。
+    fn new_string_units_owned(&mut self, units: Vec<u16>) -> JsValue;
     /// 分配 BigInt 值（num_bigint::BigInt box 登记到 VM，返回携带指针的 `JsValue`）。
     fn new_bigint(&mut self, v: num_bigint::BigInt) -> JsValue;
     /// 读取 BigInt 值；调用方须保证 `val.is_bigint()`。
@@ -217,23 +227,25 @@ pub fn format_error_message(name: &str, msg: &str) -> String {
     }
 }
 
-/// 借出字符串值的文本内容，生命周期为 `'static`。仅限同一函数内即时消费。
+/// 取字符串值的 lossy 文本（孤立 surrogate 单元映射为 U+FFFD），生命周期为
+/// `'static`。仅限同一函数内即时消费。
 ///
 /// # Safety
-/// 调用方必须保证：从取用返回值到最后一次使用之间，不发生任何可能释放该字符串
+/// 调用方必须保证：从取用返回值到最后一次消费之间，不发生任何可能释放该字符串
 /// 的操作（分配、GC、`full_reset`）——session 字符串在执行期 GC 或 reset 时会被
-/// 释放，跨分配点持有引用即悬垂。需要跨分配点消费的场景改用 [`VmHost::string_ref`]
-/// 或公开的 [`to_string`] owned 路径。
+/// 释放，跨分配点持有即悬垂。需要单元语义（不可 lossy）的场景走
+/// [`VmHost::string_units`] / [`to_units_full`]。
 #[inline]
-pub(crate) unsafe fn string_data(val: JsValue) -> &'static str {
-    (*val.as_string_ptr()).as_str()
+pub(crate) unsafe fn string_data(val: JsValue) -> std::borrow::Cow<'static, str> {
+    // Borrowed 臂借用期名义绑定解引用临时；与旧 `&'static str` 版本同款契约
+    // （同函数内即时消费），生命周期统一升为 'static。
+    std::mem::transmute((*val.as_string_ptr()).as_lossy_str())
 }
 
 /// 按内容比较两个字符串 `JsValue` 是否相等。
 ///
-/// 先做指针级短路（同一 interned 字符串必等），否则比较 `JsString` 的整块文本
-/// （rope 未扁平化时经 `as_str` 惰性扁平化；内容比较对"rope vs 同内容不同指针"
-/// 也正确）。
+/// 先做指针级短路（同一 interned 字符串必等）；双 Flat 比文本（与旧路径逐位
+/// 一致），其余按单元序列比较（对"rope vs 同内容不同指针"也正确）。
 #[inline]
 pub fn string_value_eq(a: JsValue, b: JsValue) -> bool {
     if a.as_string_ptr() == b.as_string_ptr() {
@@ -241,7 +253,10 @@ pub fn string_value_eq(a: JsValue, b: JsValue) -> bool {
     }
     let sa = unsafe { &*a.as_string_ptr() };
     let sb = unsafe { &*b.as_string_ptr() };
-    sa.as_str() == sb.as_str()
+    if sa.is_flat() && sb.is_flat() {
+        return sa.as_str() == sb.as_str();
+    }
+    sa.units() == sb.units()
 }
 
 /// BigInt 转 f64 的近似转换（连续整数用 to_u64，大数用 Display 解析）。
@@ -288,8 +303,8 @@ pub fn to_number(val: JsValue) -> f64 {
         JsType::Null => 0.0,
         JsType::Undefined => f64::NAN,
         JsType::String => {
-            let s = unsafe { string_data(val) };
-            parse_js_number(s)
+            // 孤立 surrogate 的 lossy 文本不含数字/数字前缀，解析结果与单元口径一致（NaN）。
+            parse_js_number(&unsafe { string_data(val) })
         }
         JsType::BigInt => {
             // BigInt → Number 近似转换：i128 超出 f64 精度时舍入为近似值。
@@ -520,7 +535,7 @@ pub fn push_to_string(val: JsValue, buf: &mut String) {
         return;
     }
     if val.is_string() {
-        unsafe { buf.push_str(string_data(val)) };
+        unsafe { buf.push_str(&string_data(val)) };
         return;
     }
     if val.is_bigint() {
@@ -563,6 +578,38 @@ pub fn to_string(val: JsValue) -> String {
         return "[object]".to_string();
     }
     String::new()
+}
+
+/// 把任意值转为 UTF-16 单元序列（`ToPrimitive(string hint)` 的单元口径）：
+/// 字符串值直接借出单元（Flat 惰性编码、rope 扁平化）；Symbol 返回 TypeError
+/// 错误；其余值经 ToString 原始值路径后 UTF-16 编码。
+pub fn to_units_full<H: VmHost>(val: JsValue, host: &mut H) -> Result<Vec<u16>, String> {
+    if val.is_string() {
+        return Ok(host.string_units(val).into_owned());
+    }
+    if val.is_symbol() {
+        return Err(host.error_message_text("TypeError", "Cannot convert a Symbol value to a string"));
+    }
+    let prim = to_primitive(val, ToPrimitiveHint::String, host)?;
+    if prim.is_string() {
+        return Ok(host.string_units(prim).into_owned());
+    }
+    // 非字符串原始值（数字等）：先格式化再编码。
+    let s = to_string(prim);
+    Ok(s.encode_utf16().collect())
+}
+
+/// 把值追加其 UTF-16 单元到 `buf`：字符串值直接扩单元序列，非字符串值经
+/// ToString 后 UTF-16 编码。字符串拼接的单元通道路径（不可 lossy）。
+pub fn push_units_to(val: JsValue, buf: &mut Vec<u16>) {
+    if val.is_string() {
+        // SAFETY: val 为字符串值，借用即时消费。
+        let s = unsafe { &*val.as_string_ptr() };
+        buf.extend_from_slice(s.units().as_ref());
+        return;
+    }
+    let s = to_string(val);
+    buf.extend(s.encode_utf16());
 }
 
 /// ToBoolean（ECMA-262 §7.1.2）：falsy 值仅限 undefined/null/false/±0/NaN/空串，其余为 true。
@@ -608,13 +655,13 @@ pub fn abstract_eq<H: VmHost>(lhs: JsValue, rhs: JsValue, host: &mut H) -> Resul
         (JsType::Int | JsType::Double, JsType::BigInt) => {
             Ok(to_number(lhs) == bigint_to_f64(unsafe { bigint_data(rhs) }))
         }
-        // BigInt 与 String：字符串解析为数字后比较。
+        // BigInt 与 String：字符串解析为数字后比较（lossy 文本口径，见 to_number）。
         (JsType::BigInt, JsType::String) => {
-            let r = parse_js_number(unsafe { string_data(rhs) });
+            let r = parse_js_number(&unsafe { string_data(rhs) });
             Ok(bigint_to_f64(unsafe { bigint_data(lhs) }) == r)
         }
         (JsType::String, JsType::BigInt) => {
-            let l = parse_js_number(unsafe { string_data(lhs) });
+            let l = parse_js_number(&unsafe { string_data(lhs) });
             Ok(l == bigint_to_f64(unsafe { bigint_data(rhs) }))
         }
         // Number 与 String：字符串经 ToNumber 后按严格数值比较。
@@ -651,9 +698,15 @@ fn strict_double_eq(a: f64, b: f64) -> bool {
 /// 双字符串按字典序；否则转数值比较，任一侧为 NaN 时返回 `None`（表示比较未定义，调用方据此处理 `<`/`>`）。
 pub fn relational_compare(lhs: JsValue, rhs: JsValue) -> Option<bool> {
     if lhs.is_string() && rhs.is_string() {
-        let ls = unsafe { string_data(lhs) };
-        let rs = unsafe { string_data(rhs) };
-        return Some(ls < rs);
+        // SAFETY: 两侧均为字符串值，借用即时消费。
+        let l = unsafe { &*lhs.as_string_ptr() };
+        let r = unsafe { &*rhs.as_string_ptr() };
+        if l.is_flat() && r.is_flat() {
+            // 双 Flat：文本比较与旧路径逐位一致。
+            return Some(l.as_str() < r.as_str());
+        }
+        // 单元口径：码元字典序即规范序，Flat 编码与 rope 扁平化统一走单元通道。
+        return Some(l.units() < r.units());
     }
     if lhs.is_bigint() && rhs.is_bigint() {
         let l = unsafe { bigint_data(lhs) };
@@ -933,6 +986,23 @@ pub fn to_string_full<H: VmHost>(val: JsValue, host: &mut H) -> Result<String, S
         return Err(host.error_message_text("TypeError", "Cannot convert a Symbol value to a string"));
     }
     Ok(to_string(primitive))
+}
+
+/// ToPrimitive(string hint) 完整转换并返回字符串*值*：字符串值原样返回（载荷
+/// 形态保留，非 Flat 不 lossy）；Symbol 返回 TypeError；其余值经 ToString 后
+/// 以新字符串值返回（非 Flat 源的转换结果落良形 Flat）。
+pub fn to_string_value_full<H: VmHost>(val: JsValue, host: &mut H) -> Result<JsValue, String> {
+    if val.is_string() {
+        return Ok(val);
+    }
+    let primitive = to_primitive(val, ToPrimitiveHint::String, host)?;
+    if primitive.is_symbol() {
+        return Err(host.error_message_text("TypeError", "Cannot convert a Symbol value to a string"));
+    }
+    if primitive.is_string() {
+        return Ok(primitive);
+    }
+    Ok(host.new_string_owned(to_string(primitive)))
 }
 
 /// 带完整对象强制转换的 ToBigInt(input)（§7.1.14）：BigInt 原样；Boolean → 0/1；

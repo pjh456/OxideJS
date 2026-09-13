@@ -541,7 +541,7 @@ impl SessionGc {
     /// `ptr` 必须是 `Box::into_raw(Box::new(JsString))` 产生的非空指针，仍存在
     /// 于 `session_string_ptrs`，且恰好释放一次。
     unsafe fn drop_dead_session_string(ptr: *mut JsString) -> u64 {
-        let bytes = (size_of::<JsString>() + (*ptr).len()) as u64;
+        let bytes = (size_of::<JsString>() + (*ptr).payload_bytes()) as u64;
         Self::drop_session_string_box(ptr);
         bytes
     }
@@ -701,7 +701,7 @@ impl SessionGc {
             if self.live_strings.contains(&ptr) {
                 // 存活——地址不变，无需重写。
                 // SAFETY: ptr 是仍归 VM 所有的存活 session 字符串 box。
-                live_bytes += unsafe { size_of::<JsString>() + (*ptr).len() };
+                live_bytes += unsafe { size_of::<JsString>() + (*ptr).payload_bytes() };
                 live.push(ptr);
             } else {
                 // SAFETY: ptr 在 session_string_ptrs 中但不可达，恰好释放一次。
@@ -1032,7 +1032,7 @@ impl SessionGc {
                 continue;
             }
             // SAFETY: ptr 在字符串表登记，收尾前有效。
-            string_bytes += size_of::<JsString>() + unsafe { (*ptr).len() };
+            string_bytes += size_of::<JsString>() + unsafe { (*ptr).payload_bytes() };
         }
         let bigint_bytes = vm.gc_state.session_bigint_ptrs.borrow().len() * size_of::<num_bigint::BigInt>();
         vm.gc_state.session_bytes_allocated = object_bytes + string_bytes + bigint_bytes;
@@ -2311,7 +2311,7 @@ mod tests {
         vm.maybe_collect_session_strings();
 
         // 账目 = 对象头 + 存活串（size_of::<JsString>() + len），死串不再计入。
-        let expected = size_of::<JsObject>() + (size_of::<JsString>() + unsafe { (*live_ptr).len() });
+        let expected = size_of::<JsObject>() + (size_of::<JsString>() + unsafe { (*live_ptr).payload_bytes() });
         assert_eq!(vm.gc_state.session_bytes_allocated, expected);
         assert!(!vm.gc_state.session_string_ptrs.contains(&dead.as_string_ptr_mut()));
     }
@@ -2349,7 +2349,7 @@ mod tests {
         assert!(vm.gc_state.session_string_ptrs.contains(&parent_ptr));
         assert!(vm.gc_state.session_string_ptrs.contains(&l_ptr));
         assert!(vm.gc_state.session_string_ptrs.contains(&r_ptr));
-        assert_eq!(unsafe { (*parent_ptr).as_str() }, "left-partright-part");
+        assert_eq!(unsafe { (*parent_ptr).as_lossy_str() }, "left-partright-part");
     }
 
     #[test]
@@ -2373,7 +2373,7 @@ mod tests {
         let (parent, _, _) = make_cons_pair(&mut vm, "left-part", "right-part");
         let parent_ptr = parent.as_string_ptr_mut();
         // 触发扁平化：产物发布到 flat_cache。
-        assert_eq!(unsafe { (*parent_ptr).flat_str() }, "left-partright-part");
+        assert_eq!(unsafe { (*parent_ptr).as_lossy_str() }, "left-partright-part");
         let flat_ptr = unsafe { (*parent_ptr).flat_cache_ptr() };
         assert!(!flat_ptr.is_null());
 
@@ -2400,7 +2400,7 @@ mod tests {
         collect(&mut vm);
 
         assert!(vm.gc_state.session_string_ptrs.contains(&chain_ptr));
-        assert_eq!(unsafe { (*chain_ptr).as_str() }, format!("root{}", "x".repeat(1024)));
+        assert_eq!(unsafe { (*chain_ptr).as_lossy_str() }, format!("root{}", "x".repeat(1024)));
     }
 
     #[test]
@@ -2418,7 +2418,7 @@ mod tests {
         // perm 子节点永不释放（不在 session 表）；session 子节点随父存活。
         assert!(!vm.gc_state.session_string_ptrs.contains(&perm_ptr));
         assert!(vm.gc_state.session_string_ptrs.contains(&session_ptr));
-        assert_eq!(unsafe { (*parent.as_string_ptr_mut()).as_str() }, "perm-leafsession-leaf");
+        assert_eq!(unsafe { (*parent.as_string_ptr_mut()).as_lossy_str() }, "perm-leafsession-leaf");
     }
 
     #[test]
@@ -2426,7 +2426,7 @@ mod tests {
         let mut vm = Vm::new();
         let (parent, _, _) = make_cons_pair(&mut vm, "left-part", "right-part");
         // 触发扁平化（产物挂在父上）。
-        assert_eq!(unsafe { (*parent.as_string_ptr_mut()).flat_str() }, "left-partright-part");
+        assert_eq!(unsafe { (*parent.as_string_ptr_mut()).as_lossy_str() }, "left-partright-part");
         vm.regs[0] = parent;
 
         // full_reset 清空全部 session 字符串（连带产物）：无泄漏、无 double-free。
