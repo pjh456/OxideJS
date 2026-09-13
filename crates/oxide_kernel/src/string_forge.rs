@@ -165,11 +165,13 @@ pub fn single_char_ptr(ch: u8) -> *const JsString {
     let ptr = Box::into_raw(Box::new(JsString::new((ch as char).to_string())));
     match slot.set(StringPtr(ptr)) {
         Ok(()) => ptr,
-        Err(existing) => {
-            // 并发首用竞态：另一线程已物化，本线程指针尚未暴露给调用方，恰好释放一次。
+        Err(_) => {
+            // 并发首用竞态：另一线程已物化。`set` 的 Err 载荷是本线程传入的值
+            // （非槽内旧值），故先取槽内值，再把本线程副本恰好释放一次。
+            let existing = slot.get().expect("set 失败时槽必已初始化").0;
             // SAFETY: ptr 来自本线程的 Box::into_raw，无任何外部引用。
             unsafe { drop(Box::from_raw(ptr)) };
-            existing.0
+            existing
         }
     }
 }
@@ -192,11 +194,12 @@ pub fn small_int_ptr(n: u32) -> Option<*const JsString> {
     let ptr = Box::into_raw(Box::new(JsString::new(n.to_string())));
     match slot.set(StringPtr(ptr)) {
         Ok(()) => Some(ptr),
-        Err(existing) => {
+        Err(_) => {
             // 并发首用竞态：与 single_char_ptr 同款处置，本线程产物恰好释放一次。
+            let existing = slot.get().expect("set 失败时槽必已初始化").0;
             // SAFETY: ptr 来自本线程的 Box::into_raw，无任何外部引用。
             unsafe { drop(Box::from_raw(ptr)) };
-            Some(existing.0)
+            Some(existing)
         }
     }
 }
@@ -220,11 +223,12 @@ pub fn typeof_string_ptr(kind: u8) -> *const JsString {
     let ptr = Box::into_raw(Box::new(JsString::new(TYPEOF_TEXTS[kind as usize].to_string())));
     match slot.set(StringPtr(ptr)) {
         Ok(()) => ptr,
-        Err(existing) => {
+        Err(_) => {
             // 并发首用竞态：与 single_char_ptr 同款处置，本线程产物恰好释放一次。
+            let existing = slot.get().expect("set 失败时槽必已初始化").0;
             // SAFETY: ptr 来自本线程的 Box::into_raw，无任何外部引用。
             unsafe { drop(Box::from_raw(ptr)) };
-            existing.0
+            existing
         }
     }
 }
@@ -320,5 +324,47 @@ mod tests {
             assert_eq!(unsafe { (*ptr).as_str() }, *t);
             assert_eq!(typeof_string_ptr(i as u8), ptr, "下标 {i} 二次调用应返回同一指针");
         }
+    }
+
+    #[test]
+    fn perm_table_concurrent_first_use_unique_ptr() {
+        // 并发首用竞态回归：96 线程同一时刻命中冷表槽，强制多线程同入慢路径。
+        // 所有调用方必须拿到同一稳定指针，且该指针恒指向存活的 JsString。
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
+
+        const N: usize = 96;
+        let go = Arc::new(AtomicBool::new(false));
+        let mut handles = Vec::with_capacity(N);
+        for _ in 0..N {
+            let go = Arc::clone(&go);
+            handles.push(std::thread::spawn(move || {
+                while !go.load(Ordering::Acquire) {
+                    std::hint::spin_loop();
+                }
+                // 裸指针 !Send，跨线程以 usize 传递，出口再转回。
+                let (i, c, t) = (small_int_ptr(42).unwrap(), single_char_ptr(b'x'), typeof_string_ptr(1));
+                (i as usize, c as usize, t as usize)
+            }));
+        }
+        go.store(true, Ordering::Release);
+
+        let mut results = Vec::with_capacity(N);
+        for h in handles {
+            results.push(h.join().expect("竞态线程"));
+        }
+        let (i0, c0, t0) = results[0];
+        for (i, c, t) in &results[1..] {
+            assert_eq!(*i, i0, "小整数表首用应全局唯一指针");
+            assert_eq!(*c, c0, "单字符表首用应全局唯一指针");
+            assert_eq!(*t, t0, "typeof 表首用应全局唯一指针");
+        }
+
+        // 返回指针必须指向存活 JsString：内容与长度可回读。
+        assert_eq!(unsafe { (*(i0 as *const JsString)).as_str() }, "42");
+        assert_eq!(unsafe { (*(c0 as *const JsString)).as_str() }, "x");
+        let t0 = t0 as *const JsString;
+        assert_eq!(unsafe { (*t0).as_str() }, "object");
+        assert_eq!(unsafe { (*t0).len() }, 6);
     }
 }
