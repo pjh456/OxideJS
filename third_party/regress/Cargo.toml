@@ -1,3 +1,9 @@
+# Standalone workspace root: this vendored crate is built and tested on its own
+# (standalone `cargo build` / `cargo test` in this directory), not as a member
+# of the host workspace that vendors it. The empty table keeps it out of the
+# parent workspace's member resolution.
+[workspace]
+
 [package]
 name = "regress"
 version = "0.11.1"
@@ -23,7 +29,8 @@ index-positions = []
 # Prohibits all uses of unsafe code, for the paranoid.
 prohibit-unsafe = []
 
-# Enables UTF-16 support. This disables some optimizations, so it should only be used when necessary.
+# Enables UTF-16 support. Byte-literal optimization is decided per compilation
+# (runtime gate), so enabling this feature no longer degrades the str path.
 utf16 = []
 
 # Enables Pattern trait implementation for str::find, str::contains, etc.

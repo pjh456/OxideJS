@@ -405,9 +405,9 @@ fn promote_1char_loops(n: &mut Node, _w: &Walk) -> PassAction {
 
 /// Replace Cat(Char) with ByteSeq.
 /// Also replace chars with literal bytes.
-/// Don't do this in utf16 mode because UTF-16 should never match against bytes.
+/// 字节指令无法在单元输入（UTF-16/UCS-2）上执行，面向单元的编译由调用方
+/// 关闭本 pass（见 `optimize_with_byte_literals`）。
 /// TODO: this seems to do too much; consider breaking this up.
-#[cfg(not(feature = "utf16"))]
 fn form_literal_bytes(n: &mut Node, walk: &Walk) -> PassAction {
     // Helper to return a mutable reference to the nodes of a literal bytes.
     fn get_literal_bytes(n: &mut Node) -> Option<&mut Vec<u8>> {
@@ -521,7 +521,17 @@ fn simplify_brackets(n: &mut Node, _walk: &Walk) -> PassAction {
     }
 }
 
+/// 编译主入口：字节字面量 pass 恒开，编译产物与旧的全局 feature 门控形态逐位一致。
 pub fn optimize(r: &mut Regex) {
+    optimize_with_byte_literals(r, true)
+}
+
+/// 与 `optimize` 同一条定点 pass 链，仅字节字面量 pass
+/// （Char → ByteSequence、ASCII 集合 → ByteSet）由 `byte_literals` 控制。
+///
+/// 字节指令无法在单元输入（UTF-16/UCS-2）上执行：面向单元输入的 IR 必须以
+/// `false` 编译，字节输入（UTF-8）IR 以 `true` 编译保持编译与执行策略不变。
+pub fn optimize_with_byte_literals(r: &mut Regex, byte_literals: bool) {
     run_pass(r, &mut simplify_brackets);
     loop {
         let mut changed = false;
@@ -531,10 +541,12 @@ pub fn optimize(r: &mut Regex) {
         }
         changed |= run_pass(r, &mut unroll_loops);
         changed |= run_pass(r, &mut promote_1char_loops);
-        #[cfg(not(feature = "utf16"))]
-        {
+
+        // 字节字面量 pass：仅字节输入编译允许，单元输入 IR 不得含字节指令。
+        if byte_literals {
             changed |= run_pass(r, &mut form_literal_bytes);
         }
+
         changed |= run_pass(r, &mut remove_empties);
         changed |= run_pass(r, &mut propagate_early_fails);
         if !changed {

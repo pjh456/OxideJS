@@ -17,6 +17,7 @@ use crate::{
 #[cfg(feature = "backend-pikevm")]
 use crate::pikevm;
 use crate::util::to_char_sat;
+use std::sync::OnceLock;
 
 use core::{fmt, str::FromStr};
 #[cfg(feature = "std")]
@@ -373,11 +374,24 @@ impl<'m> FusedIterator for NamedGroups<'m> {}
 #[derive(Debug, Clone)]
 pub struct Regex {
     cr: CompiledRegex,
+
+    // 模式源码码点序列：str 路径编译一次消费，留存供单元向 IR 惰性重解析。
+    // 仅 `From<CompiledRegex>` 构造无源码（None）。
+    #[cfg_attr(not(feature = "utf16"), allow(dead_code))]
+    pattern: Option<Vec<u32>>,
+
+    // 单元向编译产物（未跑字节字面量 pass），首次单元输入入口时惰性物化。
+    #[cfg_attr(not(feature = "utf16"), allow(dead_code))]
+    units_cr: OnceLock<CompiledRegex>,
 }
 
 impl From<CompiledRegex> for Regex {
     fn from(cr: CompiledRegex) -> Self {
-        Self { cr }
+        Self {
+            cr,
+            pattern: None,
+            units_cr: OnceLock::new(),
+        }
     }
 }
 
@@ -415,12 +429,39 @@ impl Regex {
         F: Into<Flags>,
     {
         let flags = flags.into();
-        let mut ire = parse::try_parse(pattern, flags)?;
+
+        // 先收集源码：str 路径编译照旧消费一次，留存的码点序列供单元向 IR 惰性重解析。
+        let pattern: Vec<u32> = pattern.collect();
+        let mut ire = parse::try_parse(pattern.iter().copied(), flags)?;
         if !flags.no_opt {
             optimizer::optimize(&mut ire);
         }
         let cr = emit::emit(&ire);
-        Ok(Regex { cr })
+        Ok(Regex {
+            cr,
+            pattern: Some(pattern),
+            units_cr: OnceLock::new(),
+        })
+    }
+
+    /// 单元向编译产物：首次使用时按同源码同 flags 重解析、关字节字面量 pass
+    /// 重新优化并 emit，得到可在 UTF-16/UCS-2 单元输入上执行的 IR。
+    /// 无源码构造（`From<CompiledRegex>`）无重解析来源，回退复用既有产物。
+    #[cfg(feature = "utf16")]
+    fn units_cr(&self) -> &CompiledRegex {
+        self.units_cr.get_or_init(|| {
+            let Some(pattern) = &self.pattern else {
+                return self.cr.clone();
+            };
+
+            // 同源码同 flags 在构造期已成功解析编译，重解析不可能失败。
+            let mut ire =
+                parse::try_parse(pattern.iter().copied(), self.cr.flags).expect("构造期已成功解析的模式重解析失败");
+            if !self.cr.flags.no_opt {
+                optimizer::optimize_with_byte_literals(&mut ire, false);
+            }
+            emit::emit(&ire)
+        })
     }
 
     /// Searches `text` to find the first match.
@@ -487,11 +528,13 @@ impl Regex {
         start: usize,
     ) -> exec::Matches<super::classicalbacktrack::BacktrackExecutor<'r, indexing::Utf16Input<'t>>>
     {
-        let input = Utf16Input::new(text, self.cr.flags.unicode);
+        // 单元向 IR 无字节指令，UTF-16 单元输入可执行。
+        let cr = self.units_cr();
+        let input = Utf16Input::new(text, cr.flags.unicode);
         exec::Matches::new(
             super::classicalbacktrack::BacktrackExecutor::new(
                 input,
-                MatchAttempter::new(&self.cr, input.left_end()),
+                MatchAttempter::new(cr, input.left_end()),
             ),
             start,
         )
@@ -505,11 +548,14 @@ impl Regex {
         start: usize,
     ) -> exec::Matches<super::classicalbacktrack::BacktrackExecutor<'r, indexing::Ucs2Input<'t>>>
     {
-        let input = Ucs2Input::new(text, self.cr.flags.unicode);
+        // 与 `find_from_utf16` 共用单元向 IR：UCS-2 同为单元输入，
+        // str IR 的字节指令在单元索引器上不可执行。
+        let cr = self.units_cr();
+        let input = Ucs2Input::new(text, cr.flags.unicode);
         exec::Matches::new(
             super::classicalbacktrack::BacktrackExecutor::new(
                 input,
-                MatchAttempter::new(&self.cr, input.left_end()),
+                MatchAttempter::new(cr, input.left_end()),
             ),
             start,
         )
@@ -912,7 +958,7 @@ pub mod backends {
     use super::exec;
     use super::indexing;
     pub use crate::emit::emit;
-    pub use crate::optimizer::optimize;
+    pub use crate::optimizer::{optimize, optimize_with_byte_literals};
     pub use crate::parse::try_parse;
 
     /// An Executor using the classical backtracking algorithm.
@@ -983,4 +1029,221 @@ pub fn escape(text: &str) -> String {
     }
 
     result
+}
+
+#[cfg(all(test, feature = "utf16"))]
+mod utf16_tests {
+    use super::*;
+    use crate::insn::{Insn, StartPredicate};
+
+    /// 单元序列解码为码点序列：代理对合并为单码点，孤立 surrogate 保留单元值。
+    fn decode_units(units: &[u16]) -> Vec<u32> {
+        let mut out = Vec::with_capacity(units.len());
+        let mut i = 0;
+        while i < units.len() {
+            let u = units[i];
+
+            // 高 surrogate 后随低 surrogate 时合并为代理对码点。
+            if (0xD800..0xDC00).contains(&u) && i + 1 < units.len() {
+                let lo = units[i + 1];
+                if (0xDC00..0xE000).contains(&lo) {
+                    out.push(0x10000 + ((u as u32 - 0xD800) << 10) + (lo as u32 - 0xDC00));
+                    i += 2;
+                    continue;
+                }
+            }
+            out.push(u as u32);
+            i += 1;
+        }
+        out
+    }
+
+    fn to_units(text: &str) -> Vec<u16> {
+        let mut out = Vec::with_capacity(text.len());
+        for c in text.chars() {
+            let mut buf = [0u16; 2];
+            out.extend_from_slice(c.encode_utf16(&mut buf));
+        }
+        out
+    }
+
+    /// 单元下标 → 码点下标映射：代理对的两个单元同指一个码点。
+    fn unit_to_cp_index(units: &[u16]) -> Vec<usize> {
+        let mut map = Vec::with_capacity(units.len());
+        let mut cp = 0usize;
+        let mut i = 0;
+        while i < units.len() {
+            let u = units[i];
+            if (0xD800..0xDC00).contains(&u)
+                && i + 1 < units.len()
+                && (0xDC00..0xE000).contains(&units[i + 1])
+            {
+                map.push(cp);
+                map.push(cp);
+                cp += 1;
+                i += 2;
+            } else {
+                map.push(cp);
+                cp += 1;
+                i += 1;
+            }
+        }
+        map
+    }
+
+    /// 收集全部匹配（主匹配 + 捕获组，均码点序列）。
+    /// 两种输入形态的偏移口径（字节 / 单元）经码点归一后直接可比。
+    type MatchCps = (Vec<u32>, Vec<Option<Vec<u32>>>);
+
+    fn str_matches(re: &Regex, text: &str) -> Vec<MatchCps> {
+        let decode = |s: &str| s.chars().map(u32::from).collect::<Vec<_>>();
+        re.find_iter(text)
+            .map(|m| {
+                let caps = m
+                    .captures
+                    .iter()
+                    .map(|c| c.as_ref().map(|r| decode(&text[r.clone()])))
+                    .collect();
+                (decode(m.as_str(text)), caps)
+            })
+            .collect()
+    }
+
+    fn utf16_matches(re: &Regex, units: &[u16]) -> Vec<MatchCps> {
+        let cps = decode_units(units);
+        let idx = unit_to_cp_index(units);
+
+        // 空匹配不占码点（含尾部位）；非空匹配经单元→码点下标映射切片。
+        let cp_slice = |r: &core::ops::Range<usize>| -> Vec<u32> {
+            if r.start == r.end {
+                return Vec::new();
+            }
+            cps[idx[r.start]..(idx[r.end - 1] + 1)].to_vec()
+        };
+        re.find_from_utf16(units, 0)
+            .map(|m| {
+                let caps = m
+                    .captures
+                    .iter()
+                    .map(|c| c.as_ref().map(|r| cp_slice(&r)))
+                    .collect();
+                (cp_slice(&m.range()), caps)
+            })
+            .collect()
+    }
+
+    fn is_byte_insn(i: &Insn) -> bool {
+        matches!(
+            i,
+            Insn::ByteSet2(_) | Insn::ByteSet3(_) | Insn::ByteSet4(_)
+                | Insn::ByteSeq1(_)
+                | Insn::ByteSeq2(_)
+                | Insn::ByteSeq3(_)
+                | Insn::ByteSeq4(_)
+                | Insn::ByteSeq5(_)
+                | Insn::ByteSeq6(_)
+                | Insn::ByteSeq7(_)
+                | Insn::ByteSeq8(_)
+                | Insn::ByteSeq9(_)
+                | Insn::ByteSeq10(_)
+                | Insn::ByteSeq11(_)
+                | Insn::ByteSeq12(_)
+                | Insn::ByteSeq13(_)
+                | Insn::ByteSeq14(_)
+                | Insn::ByteSeq15(_)
+                | Insn::ByteSeq16(_)
+        )
+    }
+
+    /// well-formed 语料：units IR 与 str IR 匹配结果逐一相等。
+    #[test]
+    fn units_ir_matches_equal_str_path_on_well_formed() {
+        let cases = [
+            (r"\d+", "abc123x456"),
+            (r"a[bc]d", "xabcdyabd"),
+            (r"(f+)(o+)(r*)", "foo of foo"),
+            (r"\w+\s+\w+", "héllo wörld"),
+            (r"x*", "abab"),
+            (r"(a)|(b)", "abab"),
+            (r"nope", "nothing here"),
+        ];
+        for (pattern, text) in cases {
+            let re = Regex::new(pattern).unwrap();
+            let units = to_units(text);
+            assert_eq!(str_matches(&re, text), utf16_matches(&re, &units), "pattern {pattern}");
+        }
+    }
+
+    /// 孤立 surrogate 单元在 \p{General_Category=Surrogate} 下命中，
+    /// 普通字符不命中，代理对（单码点）不命中。
+    #[test]
+    fn units_ir_matches_lone_surrogate_property() {
+        let re = Regex::with_flags(r"\p{General_Category=Surrogate}", "u").unwrap();
+        let m = re.find_from_utf16(&[0xD800], 0).next();
+        assert!(m.is_some(), "孤立 surrogate 单元应命中 GC=Surrogate");
+        assert_eq!(m.unwrap().range(), 0..1);
+        assert!(re.find_from_utf16(&[0x41], 0).next().is_none(), "A 不应命中");
+
+        // 代理对是单码点，不是两个孤立 surrogate。
+        assert!(re.find_from_utf16(&[0xD834, 0xDE00], 0).next().is_none());
+    }
+
+    /// 代理对单元序列按单码点匹配，与 str 路径逐位等价。
+    #[test]
+    fn units_ir_surrogate_pair_equals_str_path() {
+        let cp: u32 = 0x1D11E;
+        let re = Regex::from_unicode([cp].iter().copied(), "").unwrap();
+        let ch = char::from_u32(cp).unwrap();
+        let text: String = [ch, 'a', 'b', 'c'].iter().copied().collect();
+        let m_str = re.find(&text).expect("str 路径应命中");
+        assert_eq!(m_str.range(), 0..4, "str 路径命中 1 个码点（4 字节）");
+
+        let units = to_units(&text);
+        let m_u16 = re.find_from_utf16(&units, 0).next().expect("单元路径应命中");
+        assert_eq!(m_u16.range(), 0..2, "单元路径命中 1 个码点（2 个单元）");
+        assert_eq!(decode_units(&units[m_u16.range()]), vec![cp]);
+        assert_eq!(str_matches(&re, &text), utf16_matches(&re, &units));
+    }
+
+    /// 字节字面量 pass 的运行时门控：str IR 含字节指令与字节形起始谓词，
+    /// units IR 两者皆无；well-formed 输入上两 IR 匹配结果一致。
+    #[test]
+    fn byte_literal_pass_gated_per_ir() {
+        let re = Regex::new("abcdef").unwrap();
+        assert!(
+            re.cr.insns.iter().any(is_byte_insn),
+            "str IR 应含字节指令（字节字面量 pass 生效）"
+        );
+        assert!(
+            !matches!(re.cr.start_pred, StartPredicate::Arbitrary),
+            "str 起始谓词应为字节形"
+        );
+
+        let units = re.units_cr();
+        assert!(!units.insns.iter().any(is_byte_insn), "units IR 不得含字节指令");
+        assert!(
+            matches!(units.start_pred, StartPredicate::Arbitrary),
+            "units 起始谓词应为 Arbitrary"
+        );
+
+        let text = "xxabcdefyy";
+        assert_eq!(str_matches(&re, text), utf16_matches(&re, &to_units(text)));
+    }
+
+    /// no_opt 标志贯穿单元向惰性编译：两 IR 均不跑优化 pass，指令流同长且匹配一致。
+    #[test]
+    fn no_opt_flag_respected_by_units_ir() {
+        let flags = Flags {
+            no_opt: true,
+            ..Default::default()
+        };
+        let re = Regex::with_flags("abcdef", flags).unwrap();
+        assert!(!re.cr.insns.iter().any(is_byte_insn), "no_opt 下 str IR 不含字节指令");
+        let units = re.units_cr();
+        assert!(!units.insns.iter().any(is_byte_insn));
+        assert_eq!(re.cr.insns.len(), units.insns.len(), "no_opt 下两 IR 指令流同长");
+
+        let text = "xxabcdefyy";
+        assert_eq!(str_matches(&re, text), utf16_matches(&re, &to_units(text)));
+    }
 }
