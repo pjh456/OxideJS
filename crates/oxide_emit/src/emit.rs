@@ -707,12 +707,12 @@ impl CompileCtx {
         BUILTIN_GLOBALS.contains(&name) && !NON_WRITABLE_GLOBAL_BUILTINS.contains(&name)
     }
 
-    /// 可删除全局内置名：可写全局名再除 globalThis（规范 configurable:false，
-    /// 不可删）与两个宿主名（$262/TypedArray，非规范全局，删除会破坏宿主面）——
-    /// 自只读/可写单一真源派生，不另立名单。余名描述符皆
-    /// {writable:true, configurable:true}，delete 真删且返 true。
+    /// 可删除全局内置名：可写全局名再除宿主名 $262（harness 全局
+    /// {configurable:false}，删除会破坏宿主面）——自只读/可写单一真源派生，
+    /// 不另立名单。余名描述符皆 {writable:true, configurable:true}，delete
+    /// 真删且返 true。
     pub(crate) fn is_deletable_global_builtin(name: &str) -> bool {
-        Self::is_writable_builtin_global(name) && !matches!(name, "globalThis" | "$262" | "TypedArray")
+        Self::is_writable_builtin_global(name) && name != "$262"
     }
 
     /// delete 标识符是否解析到可删除的全局内置镜像槽：名可删（上谓词）且预注册
@@ -1865,7 +1865,7 @@ mod tests {
     }
 
     /// 漂移守卫：可删名集自可写划分派生（可删 ⊆ 可写、只读三常量不入可删），
-    /// 且 globalThis/宿主名恒不可删——防派生口径改动时 delete 面单边漂移。
+    /// 且宿主名 $262 恒不可删——防派生口径改动时 delete 面单边漂移。
     #[test]
     fn deletable_global_builtins_derive_from_writable_partition() {
         for name in BUILTIN_GLOBALS {
@@ -1876,7 +1876,7 @@ mod tests {
                 assert!(!deletable, "只读三常量名误入可删集：{name}");
             }
         }
-        for name in ["globalThis", "$262", "TypedArray"] {
+        for name in ["$262"] {
             assert!(!crate::CompileCtx::is_deletable_global_builtin(name), "不可删名误入可删集：{name}");
         }
     }

@@ -1,10 +1,10 @@
 //! delete 全局内置标识符（DELETE_GLOBAL_PROP_C）回归测试。
 //!
-//! 可删全局内置（可写全局名除 globalThis 与宿主名，描述符
+//! 可删全局内置（可写全局名除宿主名 $262，描述符
 //! {writable:true, configurable:true}）的 delete 标识符运行期真删全局对象属性
 //! 并返 true，删除成功时清镜像槽（裸读与 globalThis 反射不失步）。覆盖：删除返
-//! 值、属性真删、镜像槽清、删后重写、重复删、三常量 c:false 拒绝、globalThis 拒
-//! 绝、成员形不受影响、参数遮蔽不命中。
+//! 值、属性真删、镜像槽清、删后重写、重复删、三常量 c:false 拒绝、globalThis 真
+//! 删、成员形不受影响、参数遮蔽不命中。
 
 use std::sync::Arc;
 
@@ -72,12 +72,12 @@ fn delete_three_constants_refused_property_kept() {
     );
 }
 
-// ── globalThis c:false：拒绝且属性保留 ──
+// ── globalThis c:true：真删且返 true，镜像槽清 ──
 #[test]
-fn delete_global_this_refused_property_kept() {
+fn delete_global_this_returns_true_and_property_removed() {
     eval_truthy(
-        "delete globalThis === false \
-         && Object.getOwnPropertyDescriptor(globalThis, 'globalThis') !== undefined",
+        "var g = globalThis; var d = delete globalThis; \
+         d === true && g.globalThis === undefined && globalThis === undefined",
     );
 }
 

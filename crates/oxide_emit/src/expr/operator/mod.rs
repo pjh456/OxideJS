@@ -130,7 +130,7 @@ impl Emitter {
                         ctx.labels.set_label_pos(end_label, ctx.insts.len());
                         return Ok(result_reg);
                     }
-                    // 可删全局内置（可写全局名除 globalThis 与宿主名）：运行期真删
+                    // 可删全局内置（可写全局名除宿主名 $262）：运行期真删
                     // 全局对象属性（c:true 数据描述符）并返 true；删除成功时清镜像
                     // 槽，裸读与 globalThis 反射不失步。
                     if let Some(slot_reg) = ctx.global_builtin_delete_slot(name) {
