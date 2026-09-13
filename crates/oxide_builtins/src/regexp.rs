@@ -129,9 +129,9 @@ pub fn regexp_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     NativeResult::Ok(JsValue::from_js_object(obj_ptr))
 }
 
-/// 只读核算 RegExp 编译正则字节（不释放）。
+/// 只读核算持有编译正则对象（RegExp / matchAll 载体）的正则字节（不释放）。
 pub fn regexp_native_size(obj: &JsObject) -> u64 {
-    if !obj.is_regexp_obj() {
+    if !obj.holds_compiled_regex() {
         return 0;
     }
     let Some(ptr) = obj.native_fn() else {
@@ -144,7 +144,8 @@ pub fn regexp_native_size(obj: &JsObject) -> u64 {
     std::mem::size_of::<regress::Regex>() as u64
 }
 
-/// 释放 RegExp 对象 native_fn 槽中编译的 `regress::Regex`，返回释放字节数。
+/// 释放持有编译正则对象（RegExp / matchAll 载体）native_fn 槽中的
+/// `regress::Regex`，返回释放字节数。
 pub fn drop_regexp_native(obj: &mut JsObject) -> u64 {
     let bytes = regexp_native_size(obj);
     if bytes == 0 {
@@ -164,8 +165,9 @@ pub fn drop_regexp_native(obj: &mut JsObject) -> u64 {
 ///
 /// 与 drop 配对：新对象获得独立的 `Box<regress::Regex>`，源对象保留自己的指针，
 /// 两侧各自释放恰好一次，杜绝跨 arena 克隆后的指针别名双释放。
+/// 作用于全部持编译正则的对象形态（RegExp / matchAll 载体）。
 pub fn clone_regexp_native(old_obj: &JsObject, new_obj: &mut JsObject) {
-    if !old_obj.is_regexp_obj() {
+    if !old_obj.holds_compiled_regex() {
         return;
     }
     let Some(ptr) = old_obj.native_fn() else {
@@ -555,6 +557,9 @@ pub fn regexp_symbol_match_all<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResu
         };
         let object_proto = vm.session().builtin_world().object_proto.as_ptr() as *mut JsObject;
         let mut stub = JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(object_proto));
+        // 载体专型标签：native_fn 槽的 Box 经 RegExp 同一守卫释放/深拷贝，
+        // 避免每次 matchAll 泄漏一个已编译正则。
+        stub.type_tag = JsObject::OBJ_TYPE_REGEX_STUB;
         let raw = Box::into_raw(Box::new(compiled)) as *const u8;
         stub.set_native_fn(Some(unsafe { NativeFnPtr::from_raw(raw as *const ()) }));
         JsValue::from_js_object(vm.alloc_object(stub))

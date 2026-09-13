@@ -669,6 +669,10 @@ impl JsObject {
     pub const OBJ_TYPE_PLAIN_MONTH_DAY: u8 = 26;
     /// Temporal.PlainYearMonth 对象：年/月/参考日/日历 ID 存于 prop 0-3。
     pub const OBJ_TYPE_PLAIN_YEAR_MONTH: u8 = 27;
+    /// matchAll 迭代器内部载体对象：仅持有编译后的 `regress::Regex`（存于
+    /// `native_fn` 槽），无 RegExp 可见属性面；`native_fn` 的释放与深拷贝
+    /// 守卫与 RegExp 对象一致。
+    pub const OBJ_TYPE_REGEX_STUB: u8 = 28;
     /// `is_session_epoch` 字段中的 session 标记位。
     pub const SESSION_EPOCH_BIT: u8 = 0x01;
     /// `is_session_epoch` 字段中的 GC 标记位。
@@ -685,6 +689,17 @@ impl JsObject {
     #[inline]
     pub fn is_regexp_obj(&self) -> bool {
         self.type_tag == Self::OBJ_TYPE_REGEXP
+    }
+    /// 是否 matchAll 迭代器内部载体（`native_fn` 槽存编译后的 `regress::Regex`）。
+    #[inline]
+    pub fn is_regex_stub_obj(&self) -> bool {
+        self.type_tag == Self::OBJ_TYPE_REGEX_STUB
+    }
+    /// 是否持有编译正则：`native_fn` 槽存 `Box<regress::Regex>` 的两种对象形态
+    /// （RegExp 对象 / matchAll 载体）——其释放、深拷贝、字节核算守卫统一走此谓词。
+    #[inline]
+    pub fn holds_compiled_regex(&self) -> bool {
+        matches!(self.type_tag, Self::OBJ_TYPE_REGEXP | Self::OBJ_TYPE_REGEX_STUB)
     }
     /// 是否装箱 Boolean 对象。
     #[inline]

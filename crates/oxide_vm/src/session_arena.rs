@@ -96,7 +96,7 @@ impl Vm {
             crate::async_generator::clone_async_generator_native_with_rewrite(src_ref, dst_ref, |value| {
                 self.promote_value_if_epoch_object(value, forwarding)
             });
-        } else if src_ref.is_regexp_obj() {
+        } else if src_ref.holds_compiled_regex() {
             // 已编译正则是 Box 深拷贝到新对象：源盒随 epoch 释放，互不共享。
             regexp::clone_regexp_native(src_ref, dst_ref);
         }

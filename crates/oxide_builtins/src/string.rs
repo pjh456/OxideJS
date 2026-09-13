@@ -1507,6 +1507,9 @@ pub fn string_match_all<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         };
         let object_proto = vm.session().builtin_world().object_proto.as_ptr() as *mut JsObject;
         let mut stub = JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(object_proto));
+        // 载体专型标签：native_fn 槽的 Box 经 RegExp 同一守卫释放/深拷贝，
+        // 避免每次 matchAll 泄漏一个已编译正则。
+        stub.type_tag = oxide_types::object::JsObject::OBJ_TYPE_REGEX_STUB;
         let boxed = Box::new(compiled);
         let raw = Box::into_raw(boxed) as *const u8;
         stub.set_native_fn(Some(unsafe { oxide_types::object::NativeFnPtr::from_raw(raw as *const ()) }));

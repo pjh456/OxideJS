@@ -586,7 +586,7 @@ impl SessionGc {
                     crate::async_generator::clone_async_generator_native_with_rewrite(old_ref, new_ref, |value| value);
                 } else if old_ref.is_generator_obj() {
                     crate::generator::clone_generator_native_with_rewrite(old_ref, new_ref, |value| value);
-                } else if old_ref.is_regexp_obj() {
+                } else if old_ref.holds_compiled_regex() {
                     // 已编译正则是 Box 深拷贝到新对象：源 Box 由 drop 释放，互不共享。
                     regexp::clone_regexp_native(old_ref, new_ref);
                 }

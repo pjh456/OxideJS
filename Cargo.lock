@@ -1351,6 +1351,7 @@ dependencies = [
  "oxide_types",
  "proptest",
  "regex",
+ "regress",
  "rustc-hash",
  "ryu",
  "serde_json",

@@ -31,6 +31,7 @@ num-traits = "0.2"
 
 [dev-dependencies]
 proptest.workspace = true
+regress.workspace = true
 oxide_ir = { path = "../oxide_ir" }
 oxide_emit = { path = "../oxide_emit" }
 criterion = { version = "0.5", features = ["html_reports"] }
