@@ -72,8 +72,9 @@ impl Emitter {
                                     Operand::None,
                                 ));
                                 // 顶层 for-in var 头：迭代值落全局对象属性（A 侧单一真值）。
-                                // builtin 名（writable 如 Math）保留既有全局属性值，不 clobber。
-                                if self.is_global_tier_name(ctx, name) && !CompileCtx::is_known_builtin(name) {
+                                // 只读三常量已在上方拦截臂跳过；其余 builtin 名属性可写，
+                                // 迭代键照规范覆写既有全局属性。
+                                if self.is_global_tier_name(ctx, name) {
                                     self.emit_tier_global_write(name, key_reg, ctx);
                                 }
                             }
@@ -99,9 +100,10 @@ impl Emitter {
                     if is_implicit && ctx.is_strict {
                         // 严格模式未声明写：抛 ReferenceError，跳过寄存器写（值无关）。
                         self.emit_strict_undeclared_write(name, ctx)?;
-                    } else if is_tier && !CompileCtx::is_known_builtin(name) {
+                    } else if is_tier {
                         // 顶层 for-in 赋值头：迭代值落全局对象属性（A 侧单一真值）。
-                        // builtin 名保留既有全局属性值，不 clobber。
+                        // 只读三常量已在上方拦截臂跳过；其余 builtin 名属性可写，
+                        // 迭代键照规范覆写既有全局属性。
                         self.emit_tier_global_write(name, key_reg, ctx);
                     } else {
                         ctx.inst(Inst::new(
@@ -112,6 +114,9 @@ impl Emitter {
                         ));
                         if is_implicit {
                             self.emit_implicit_global_write(name, var_reg, ctx);
+                        } else if ctx.targets_writable_builtin(name, var_reg) {
+                            // 可写内置名：迭代键同步落全局对象属性。
+                            self.emit_global_put_write(name, var_reg, ctx);
                         }
                     }
                 }

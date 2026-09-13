@@ -161,6 +161,9 @@ impl Emitter {
                 ));
                 if is_implicit {
                     self.emit_implicit_global_write(name, var_reg, ctx);
+                } else if ctx.targets_writable_builtin(name, var_reg) {
+                    // 可写内置名：值同步落全局对象属性。
+                    self.emit_global_put_write(name, var_reg, ctx);
                 }
                 Ok(())
             }
@@ -369,6 +372,9 @@ impl Emitter {
                 ));
                 if is_implicit {
                     self.emit_implicit_global_write(name, var_reg, ctx);
+                } else if ctx.targets_writable_builtin(name, var_reg) {
+                    // 可写内置名：值同步落全局对象属性。
+                    self.emit_global_put_write(name, var_reg, ctx);
                 }
                 Ok(())
             }
@@ -459,6 +465,9 @@ impl Emitter {
                     ));
                     if is_implicit {
                         self.emit_implicit_global_write(name, var_reg, ctx);
+                    } else if ctx.targets_writable_builtin(name, var_reg) {
+                        // 可写内置名：值同步落全局对象属性（其余属性继续赋值）。
+                        self.emit_global_put_write(name, var_reg, ctx);
                     }
                 }
                 AssignmentTargetProperty::AssignmentTargetPropertyProperty(prop) => {

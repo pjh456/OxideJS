@@ -1,7 +1,7 @@
 //! 全局三常量（undefined/NaN/Infinity）描述符与 var 声明交互的回归测试。
 //!
-//! 覆盖规范全局对象属性描述符 { writable:false, enumerable:false, configurable:true }：
-//! 描述符读、delete 真删、delete 后镜像裸读、var 无初始化声明的描述符不漂移与值
+//! 覆盖规范全局对象属性描述符 { writable:false, enumerable:false, configurable:false }：
+//! 描述符读、delete 拒绝且属性保留、delete 后镜像裸读、var 无初始化声明的描述符不漂移与值
 //! 保持（writable 不翻位、NaN/Infinity 不被抹成 undefined）、var 初始化声明的值
 //! 落槽、枚举面不泄漏、任务只读拦截与 strict TypeError、eval 路径、for-in 枚举面。
 
@@ -45,31 +45,31 @@ const CONSTANTS: [&str; 3] = ["undefined", "NaN", "Infinity"];
 
 #[test]
 fn three_constants_descriptor_matches_spec() {
-    // #1：描述符 { writable:false, enumerable:false, configurable:true } ×3 常量。
+    // #1：描述符 { writable:false, enumerable:false, configurable:false } ×3 常量。
     for name in CONSTANTS {
         let src = format!(
             "var d = Object.getOwnPropertyDescriptor(globalThis, '{name}'); \
-             d.writable === false && d.enumerable === false && d.configurable === true"
+             d.writable === false && d.enumerable === false && d.configurable === false"
         );
         run_truthy(&src);
     }
 }
 
 #[test]
-fn delete_three_constants_removes_property() {
-    // #2：configurable → delete 返 true 且属性真删（描述符读为 undefined）×3 常量。
+fn delete_three_constants_refused_property_kept() {
+    // #2：configurable:false → delete 返 false 且属性保留（描述符仍在、值不变）×3 常量。
     for name in CONSTANTS {
         let src = format!(
-            "delete globalThis.{name} === true \
-             && Object.getOwnPropertyDescriptor(globalThis, '{name}') === undefined"
+            "delete globalThis.{name} === false \
+             && Object.getOwnPropertyDescriptor(globalThis, '{name}') !== undefined"
         );
         run_truthy(&src);
     }
 }
 
 #[test]
-fn delete_then_bare_read_via_mirror() {
-    // #3：删后裸读走镜像预载（入口值），无 ReferenceError。
+fn refused_delete_then_bare_read_via_mirror() {
+    // #3：delete 拒绝后裸读走镜像预载（入口值），无 ReferenceError。
     assert_eq!(run_string("delete globalThis.undefined; typeof undefined"), "undefined");
 }
 
@@ -86,7 +86,7 @@ fn var_no_init_descriptor_unchanged() {
         let src = format!(
             "var {name}; var d = Object.getOwnPropertyDescriptor(globalThis, '{name}'); \
              {value_check} && d.writable === false && d.enumerable === false \
-             && d.configurable === true",
+             && d.configurable === false",
         );
         run_truthy(&src);
     }
@@ -157,7 +157,7 @@ fn eval_var_readonly_builtin() {
     run_truthy(
         "eval('var undefined = 3'); \
          var d = Object.getOwnPropertyDescriptor(globalThis, 'undefined'); \
-         d.writable === false && d.configurable === true",
+         d.writable === false && d.configurable === false",
     );
 }
 
@@ -199,10 +199,10 @@ fn function_declaration_builtin_name() {
 }
 
 #[test]
-fn for_in_var_head_builtin_name_compiles_and_keeps_property() {
-    // 顶层 for-in var 头撞 builtin 名：序言预登记槽复用后可编译，
-    // 迭代键不触及全局属性（Math 对象保）。
-    run_truthy("var m = Math; for (var Math in {a:1,b:2}) {} globalThis.Math === m");
+fn for_in_var_head_writable_builtin_name_clobbers_property() {
+    // 顶层 for-in var 头撞可写 builtin 名：序言预登记槽复用后可编译，
+    // 迭代键照规范覆写既有全局属性（末键 'b' 落 Math 属性）。
+    run_truthy("var m = Math; for (var Math in {a:1,b:2}) {} globalThis.Math === 'b'");
 }
 
 #[test]

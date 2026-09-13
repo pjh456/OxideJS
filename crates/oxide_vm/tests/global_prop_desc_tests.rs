@@ -1,6 +1,6 @@
 //! 内置全局属性描述符测试：规范要求全局构造器/命名空间对象属性
-//! enumerable=false（不泄漏进 Object.keys(globalThis) / for-in），
-//! 全局 NaN/undefined/Infinity 三常量不可写不可枚举可配置。
+//! enumerable=false（不泄漏进 Object.keys(globalThis) / for-in）且可写可配置，
+//! 全局 NaN/undefined/Infinity 三常量不可写不可枚举不可配置。
 
 use std::sync::Arc;
 
@@ -63,11 +63,11 @@ fn for_in_global_this_excludes_builtins() {
 }
 
 #[test]
-fn nan_undefined_infinity_are_non_writable_configurable() {
+fn nan_undefined_infinity_are_non_writable_non_configurable() {
     for name in ["NaN", "undefined", "Infinity"] {
         let src = format!(
             "var d = Object.getOwnPropertyDescriptor(globalThis, '{name}'); \
-             d.writable === false && d.enumerable === false && d.configurable === true"
+             d.writable === false && d.enumerable === false && d.configurable === false"
         );
         eval_truthy(&src);
     }

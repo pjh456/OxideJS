@@ -159,6 +159,10 @@ impl Emitter {
                     return;
                 }
                 ctx.inst(Inst::new(OpCode::STORE_VAR, Operand::Reg(reg), Operand::Reg(val_reg), Operand::Imm(0)));
+                // 可写内置名：值同步落全局对象属性，裸读（镜像）与反射不失步。
+                if ctx.targets_writable_builtin(name, reg) {
+                    self.emit_global_put_write(name, reg, ctx);
+                }
                 return;
             }
         }
@@ -211,6 +215,10 @@ impl Emitter {
         ));
         if is_implicit {
             self.emit_implicit_global_write(name, var_reg, ctx);
+        } else if ctx.targets_writable_builtin(name, var_reg) {
+            // 可写内置名：值同步落全局对象属性（0x98 对既有可写属性仅更值、
+            // 保 e/c 位），否则镜像槽与 globalThis 反射失步。
+            self.emit_global_put_write(name, var_reg, ctx);
         }
     }
 

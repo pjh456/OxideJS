@@ -1,7 +1,7 @@
 //! 脚本顶层 lexical 声明撞受限全局名的编译期拒绝：let/const/class 声明名撞
-//! 全局对象不可配置自有属性（undefined/NaN/Infinity）→ SyntaxError（整程序
-//! 编译失败）。局部作用域（函数体/块/try）与 eval 代码为合法遮蔽不拒；三常量
-//! 值使用不受影响。
+//! 受限集（undefined/eval/NaN/Infinity——三常量不可配置自有属性 + eval 静态
+//! 受限臂）→ SyntaxError（整程序编译失败）。局部作用域（函数体/块/try）与
+//! eval 代码为合法遮蔽不拒；三常数值使用不受影响。
 
 use std::sync::Arc;
 
@@ -108,10 +108,22 @@ fn top_level_let_uses_nan_value_allowed() {
 }
 
 #[test]
-fn top_level_let_eval_name_allowed() {
-    // eval 是全局对象可配置自有属性：合法遮蔽，不在受限集。
-    let r = assert_ok("let eval; 1");
-    assert_eq!(r.as_int(), 1);
+fn top_level_let_eval_name_rejected() {
+    // eval 属静态受限臂：顶层 lexical 声明不得遮蔽（var/function 路径不受
+    // 本集约束）。
+    assert_compile_err("let eval;");
+}
+
+#[test]
+fn top_level_const_eval_name_rejected() {
+    assert_compile_err("const eval = 1;");
+}
+
+#[test]
+fn top_level_class_eval_name_rejected() {
+    // 若解析器更早拒绝（early error 族），亦接受该拒绝相位（整程序拒绝可观察
+    // 行为同形）。
+    assert!(eval("class eval {}").is_err(), "class eval 类名应被拒绝");
 }
 
 #[test]

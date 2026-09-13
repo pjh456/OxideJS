@@ -134,9 +134,10 @@ const BUILTIN_GLOBALS: &[&str] = &[
     "$262",
 ];
 
-/// 不可写全局内置名：全局对象上的数据属性为 {writable:false, configurable:false}，
+/// 只读全局内置名：全局对象上的数据属性为 {writable:false, configurable:false}，
 /// 对它们的 put 永不成功。写路径命中这些名字的全局绑定（非局部遮蔽）时编译期
-/// 拦截：sloppy 静默丢弃、strict 抛 TypeError；其余内置名属性可写，写路径放行。
+/// 拦截：sloppy 静默丢弃、strict 抛 TypeError；BUILTIN_GLOBALS 内其余名属性可写
+/// （writable:true），标识符写须双写全局属性（见 targets_writable_builtin）。
 const NON_WRITABLE_GLOBAL_BUILTINS: &[&str] = &["undefined", "NaN", "Infinity"];
 
 pub(crate) struct FieldBuffer {
@@ -675,18 +676,35 @@ impl CompileCtx {
         false
     }
 
-    /// 写目标是否为不可写全局内置（undefined/NaN/Infinity 的全局绑定）。
-    /// 名字在名单内且解析寄存器是全局内置槽（builtin_reg_map 登记），或名字落到
-    /// 全局作用域绑定（顶层 var 预声明/隐式全局，含继承的全局槽）——局部
+    /// 名字是否解析到全局内置槽：builtin_reg_map 登记（预注册镜像槽），或绑定
+    /// 落全局作用域（scope 0，顶层 var 预声明/隐式全局，含继承的全局槽）。局部
     /// var/let/参数遮蔽同名时解析到局部寄存器/局部作用域，两条件均不命中。
-    pub(crate) fn targets_readonly_builtin(&self, name: &str, reg: u32) -> bool {
-        if !NON_WRITABLE_GLOBAL_BUILTINS.contains(&name) {
-            return false;
-        }
+    fn resolves_to_global_builtin_slot(&self, name: &str, reg: u32) -> bool {
         if self.scopes.builtin_reg_map.iter().any(|(n, r)| n == name && *r == reg) {
             return true;
         }
         matches!(self.scopes.symbols.lookup_any_binding(name), Some((_, 0)))
+    }
+
+    /// 写目标是否为只读全局内置（undefined/NaN/Infinity 的全局绑定——全局对象上
+    /// 数据属性 {writable:false, configurable:false}，put 永不成功）。名字在只读
+    /// 名单内且解析到全局内置槽；声明臂与赋值臂共用本谓词。
+    pub(crate) fn targets_readonly_builtin(&self, name: &str, reg: u32) -> bool {
+        NON_WRITABLE_GLOBAL_BUILTINS.contains(&name) && self.resolves_to_global_builtin_slot(name, reg)
+    }
+
+    /// 写目标是否为可写全局内置（全局对象上数据属性 {writable:true,
+    /// configurable:true}）。标识符写须双写镜像槽 + 全局对象属性，否则裸读
+    /// （镜像）与 globalThis 反射（属性）失步。
+    pub(crate) fn targets_writable_builtin(&self, name: &str, reg: u32) -> bool {
+        Self::is_writable_builtin_global(name) && self.resolves_to_global_builtin_slot(name, reg)
+    }
+
+    /// 规范可写全局名：BUILTIN_GLOBALS 减只读三常量集——11 个 w:true 函数、
+    /// 48 个构造器/命名空间、globalThis 与宿主名，描述符皆
+    /// {writable:true, enumerable:false, configurable:true}。
+    pub(crate) fn is_writable_builtin_global(name: &str) -> bool {
+        BUILTIN_GLOBALS.contains(&name) && !NON_WRITABLE_GLOBAL_BUILTINS.contains(&name)
     }
 
     pub(crate) fn is_known_builtin(name: &str) -> bool {
@@ -1802,7 +1820,7 @@ impl Default for Emitter {
 
 #[cfg(test)]
 mod tests {
-    use super::BUILTIN_GLOBALS;
+    use super::{BUILTIN_GLOBALS, NON_WRITABLE_GLOBAL_BUILTINS};
     use crate::prepass::RESTRICTED_GLOBAL_LEXICAL_NAMES;
 
     /// 漂移守卫：受限全局名集与 put 写拦截名单交叠名恒同步（两名单语义独立、
@@ -1811,6 +1829,20 @@ mod tests {
     fn restricted_lexical_names_within_builtin_globals() {
         for name in RESTRICTED_GLOBAL_LEXICAL_NAMES {
             assert!(BUILTIN_GLOBALS.contains(name), "受限全局名缺失于 builtin 名单：{name}");
+        }
+    }
+
+    /// 漂移守卫：只读名单是 builtin 母集子集，且只读/可写两谓词对母集构成
+    /// 划分（不重不漏）——防三常量集或母集改名/删名时拦截面与双写面单边漂移。
+    #[test]
+    fn readonly_and_writable_partition_builtin_globals() {
+        for name in NON_WRITABLE_GLOBAL_BUILTINS {
+            assert!(BUILTIN_GLOBALS.contains(name), "只读全局名缺失于 builtin 名单：{name}");
+        }
+        for name in BUILTIN_GLOBALS {
+            let readonly = NON_WRITABLE_GLOBAL_BUILTINS.contains(name);
+            let writable = crate::CompileCtx::is_writable_builtin_global(name);
+            assert!(readonly ^ writable, "builtin 名只读/可写归属漂移：{name}");
         }
     }
 }

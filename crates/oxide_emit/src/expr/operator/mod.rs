@@ -548,6 +548,10 @@ impl Emitter {
                 }
                 let result_reg = ctx.alloc_reg();
                 ctx.inst(Inst::new(op, Operand::Reg(reg), Operand::Reg(result_reg), Operand::Reg(result_reg)));
+                // 可写内置名：RMW 新值同步落全局对象属性。
+                if ctx.targets_writable_builtin(name, reg) {
+                    self.emit_global_put_write(name, reg, ctx);
+                }
                 return Ok(result_reg);
             }
         }
@@ -663,9 +667,11 @@ impl Emitter {
             if is_tier {
                 // 顶层已声明 var 自增/自减：新值落全局对象属性（A 侧单一真值）。
                 self.emit_tier_global_write(name, var_reg, ctx);
-            }
-            if is_implicit {
+            } else if is_implicit {
                 self.emit_implicit_global_write(name, var_reg, ctx);
+            } else if ctx.targets_writable_builtin(name, var_reg) {
+                // 可写内置名：RMW 新值同步落全局对象属性。
+                self.emit_global_put_write(name, var_reg, ctx);
             }
             Ok(result_reg)
         }
