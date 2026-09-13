@@ -148,6 +148,21 @@ impl Emitter {
         }
     }
 
+    /// 收集语句列表**直接子级**函数声明的绑定名（顶层函数声明是全局 var 绑定，
+    /// 裸读/裸写与 var 名同路由全局对象属性）。不递归进块：块内函数声明是块
+    /// 作用域，不参与全局对象同步；`export default function` 是 lexical 绑定，不纳。
+    pub(crate) fn collect_top_level_function_names(&self, stmts: &[Statement]) -> HashSet<String> {
+        let mut names = HashSet::new();
+        for stmt in stmts {
+            if let Statement::FunctionDeclaration(fd) = stmt {
+                if let Some(id) = &fd.id {
+                    names.insert(id.name.to_string());
+                }
+            }
+        }
+        names
+    }
+
     /// 收集当前函数作用域声明的绑定名（参数 + 变量/函数声明，含嵌套 block，不含嵌套函数体）。
     pub(crate) fn collect_own_binding_names(&self, param_names: &[&str], stmts: &[Statement]) -> HashSet<String> {
         let mut names = HashSet::new();

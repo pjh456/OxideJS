@@ -207,9 +207,10 @@ pub struct CompileCtx {
     /// 捕获判断（MAKE_CELL / CELL_GET / CELL_SET）与子函数 upvalue cell_idx 统一查此映射，
     /// 消除符号表时序依赖与 cell 索引错位。
     pub(crate) captured_bindings: BTreeMap<String, u8>,
-    /// 顶层已声明 var 名（脚本全局 GDI 提升名）：裸读走全局对象属性（LOAD_GLOBAL）、
-    /// 裸写走描述符感知 A 侧写，单一真值不落镜像 cell。仅脚本顶层 emit_program 计算，
-    /// 逐层继承给嵌套函数（嵌套函数的局部同名遮蔽不属此集，由作用域索引判定）。
+    /// 顶层已声明 var 名与顶层函数声明名（脚本全局 GDI 提升名）：裸读走全局对象
+    /// 属性（LOAD_GLOBAL）、裸写走描述符感知 A 侧写，单一真值不落镜像 cell。
+    /// 仅脚本顶层 emit_program 计算，逐层继承给嵌套函数（嵌套函数的局部同名
+    /// 遮蔽不属此集，由作用域索引判定）。
     pub(crate) global_tier_names: HashSet<String>,
     /// 本函数从父函数捕获的 const 绑定名：子 ctx 不继承父函数作用域符号表，
     /// 捕获 const 信息随 upvalue 收集一并快照，供 const 写检查（编译期拦截）使用。
@@ -1676,18 +1677,23 @@ impl Emitter {
 
         // 闭包捕获分析（AST 级，emit 前确定）
         ctx.own_bindings = self.collect_own_binding_names(&[], &program.body);
-        // 顶层已声明 var 名（A 侧单一真值）：裸读走全局对象属性、裸写走描述符感知
+        // 顶层已声明名（A 侧单一真值）：裸读走全局对象属性、裸写走描述符感知
         // A 侧写，不落镜像 cell——从捕获集剔除，使嵌套函数经继承 scope-0 直连全局。
+        // 集 = 顶层 var 名 ∪ 顶层函数声明名：函数值是编译闭包，编译期不可得，
+        // 其 A 侧值由首 sub-pass 以真闭包建立，先于任何用户代码。
         // 仅在此顶层调用点过滤：嵌套函数的局部同名遮蔽是独立绑定，其调用点不过滤。
-        ctx.global_tier_names = self.collect_var_binding_names(&program.body);
+        let var_names = self.collect_var_binding_names(&program.body);
+        let mut tier_names = var_names.clone();
+        tier_names.extend(self.collect_top_level_function_names(&program.body));
+        ctx.global_tier_names = tier_names;
         ctx.captured_bindings = self.collect_captured_bindings(&program.body, &[], &ctx.own_bindings);
         ctx.captured_bindings.retain(|n, _| !ctx.global_tier_names.contains(n));
 
         // 顶层 var 入口实例化：被捕获的 var 名统一 MAKE_CELL(undefined)，使 var
         // 声明语句执行前创建的闭包读取到 undefined（脚本 GlobalDeclarationInstantiation
         // 语义），而非占位 cell 的 TDZ 误报。声明语句的 MAKE_CELL 覆盖此初值。
-        let var_names: Vec<String> = self
-            .collect_var_binding_names(&program.body)
+        // 名集保持 var-only：函数声明名从不入捕获集（tier 剔除），无需入口 cell。
+        let var_names: Vec<String> = var_names
             .into_iter()
             .filter(|n| ctx.captured_bindings.contains_key(n))
             .collect();
@@ -1706,15 +1712,16 @@ impl Emitter {
         }
 
         // 全局声明实例化序言：脚本求值前为顶层 var 名创建全局对象属性（值 undefined），
-        // 使声明语句执行前的读取（typeof、反射、自引用）可经全局对象见绑定；同名
-        // 函数声明的属性由首个 sub-pass 以函数值覆盖，声明语句保持值更新语义。
+        // 使声明语句执行前的读取（typeof、反射、自引用）可经全局对象见绑定。
+        // 顶层函数声明名不进序言：函数值是编译闭包，编译期不可得，其 A 侧值由
+        // 首 sub-pass 的声明写以真闭包建立，先于任何用户代码（首 sub-pass 仅发
+        // 函数声明），无 undefined 读窗口。
         // CreateGlobalVarBinding 对既有属性零动作：define-if-absent 只在属性缺失时
         // 新建，可写/不可写/可配置既有属性（含值）一律保留。builtin 名的全局属性
         // 运行期预存（session 绑定）：缺失分支写入值取 builtin 镜像槽（run 起点
         // 预载全局属性值），既有属性零动作，值幂等保留。
-        // 复用顶层 var 名集（global_tier_names，与捕获集剔除同源）；克隆到本地
-        // 避免序言循环内 &mut ctx 与名集借用冲突。
-        let gdi_var_names = ctx.global_tier_names.clone();
+        // 序言名集 var-only，不随 tier 集扩宽。
+        let gdi_var_names = self.collect_var_binding_names(&program.body);
         if !gdi_var_names.is_empty() {
             let undef_reg = self.emit_undefined(&mut ctx);
             for name in &gdi_var_names {

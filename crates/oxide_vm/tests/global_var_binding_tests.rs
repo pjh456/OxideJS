@@ -389,6 +389,76 @@ fn tier_declaration_respects_existing_property() {
     ));
 }
 
+// ── 顶层函数声明名与 var 名同列单一真值：再赋值/裸读/GOPD 收敛全局对象属性 ──
+
+/// 顶层函数声明名再赋值：裸读、globalThis 别名、GOPD 反射三者见同一值——
+/// 写点落全局对象属性（A 侧），声明处的函数值建立不随裸写失步。
+#[test]
+fn top_level_function_reassign_single_source() {
+    eval_truthy("function f(){} f = 5; f === 5 && globalThis.f === 5");
+    eval_truthy("function f(){} f = 5; Object.getOwnPropertyDescriptor(globalThis, 'f').value === 5 && f === 5");
+    // 复合赋值 RMW 取属性侧旧值：基址须跟随属性而非声明期残留。
+    eval_truthy("function f(){return 1;} f = 5; f += 2; f === 7 && globalThis.f === 7");
+    // 嵌套 strict 写经 session 落属性（写点不依赖 this）。
+    eval_truthy("function f(){} (function(){ \"use strict\"; f = 9; })(); f === 9 && globalThis.f === 9");
+}
+
+/// 声明处 A 侧写新建描述符 {writable, enumerable, configurable:false}，与 var
+/// 声明描述符同形。
+#[test]
+fn top_level_function_decl_descriptor_match_var_shape() {
+    eval_truthy(
+        "function f(){} var d = Object.getOwnPropertyDescriptor(globalThis, 'f'); \
+         d.writable === true && d.enumerable === true && d.configurable === false",
+    );
+}
+
+/// 嵌套局部同名遮蔽不穿透顶层函数绑定；无初始化 var 不抹函数值，带初始化
+/// var 按 PutValue 覆盖函数值。
+#[test]
+fn top_level_function_shadow_and_var_no_init() {
+    eval_truthy(
+        "function f(){return 1;} (function(){ var f = 9; return f; })() === 9 \
+         && typeof f === 'function' && globalThis.f() === 1",
+    );
+    eval_truthy("function f(){return 1;} var f; typeof f === 'function' && globalThis.f === f");
+    eval_truthy("function f(){return 1;} var f = 5; f === 5 && globalThis.f === 5");
+}
+
+/// 声明处描述符感知写：既有不可写不可配置属性声明不更值（定义不变量静默
+/// no-op），裸读与反射一致见既有值。
+#[test]
+fn top_level_function_decl_respects_nonwritable_property() {
+    assert_two_phases_truthy(
+        "Object.defineProperty(globalThis, 'f', {value: 1, writable: false, configurable: false})",
+        "function f(){} f === 1 && globalThis.f === 1 && typeof f === 'number'",
+    );
+}
+
+/// 跨 run（reset）契约：函数对象的 A 侧值直落 session，run2 经全局别名
+/// 调用值正确。
+#[test]
+fn top_level_function_survives_reset() {
+    assert!(eval_two_phases(
+        "function f(){ return 1; } 0",
+        "typeof globalThis.f === 'function' && globalThis.f() === 1",
+    ));
+}
+
+/// builtin 名形零污染：可写 builtin 名（Math）声明更值保描述符；不可写
+/// builtin 名（undefined）声明不更新，裸读与反射一致见既有值。
+#[test]
+fn top_level_function_decl_builtin_name_zero_pollution() {
+    eval_truthy("function Math(){ return 7; } Math() === 7 && globalThis.Math() === 7 && Math === globalThis.Math");
+    eval_truthy(
+        "function Math(){} var d = Object.getOwnPropertyDescriptor(globalThis, 'Math'); \
+         d.writable === true && d.enumerable === false && d.configurable === true",
+    );
+    eval_truthy(
+        "function undefined(){ return 1; } typeof undefined === 'undefined' && globalThis.undefined === undefined",
+    );
+}
+
 // ── 声明带初始化的 A 侧写是 PutValue：strict 撞既有不可写用户属性抛 TypeError ──
 
 #[test]
