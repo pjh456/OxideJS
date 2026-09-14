@@ -2112,3 +2112,62 @@ fn iterator_helper_rebound_after_full_reset() {
         assert_eq!(result.as_bool(), expected, "for {}", src);
     }
 }
+
+#[test]
+fn for_of_respects_overridden_array_prototype_iterator() {
+    let mut vm = Vm::new();
+    // 红形钉：内置原型上改写的 @@iterator 必须被迭代入口调用（展开与 for-of
+    // 同面），红形为短路直取内建迭代器、无视覆盖。
+    let r = eval(
+        &mut vm,
+        "(() => {
+           const old = Array.prototype[Symbol.iterator];
+           Array.prototype[Symbol.iterator] = function* () { yield 42; };
+           try {
+             const spread = [...[1, 2, 3]].join(',');
+             let looped = '';
+             for (const v of [7]) looped += v;
+             return spread + '|' + looped;
+           } finally { Array.prototype[Symbol.iterator] = old; }
+         })()",
+    )
+    .unwrap();
+    assert_eq!(to_str(&vm, r), "42|42");
+}
+
+#[test]
+fn for_of_respects_own_iterator_override_internal_paths_unaffected() {
+    let mut vm = Vm::new();
+    // 红形钉：实例自身属性的 @@iterator 覆盖须生效；slice 走内部元素直读面，
+    // 不受覆盖影响（内部路径不观测用户迭代器）。
+    let r = eval(
+        &mut vm,
+        "(() => {
+           const a = [7, 8];
+           a[Symbol.iterator] = function* () { yield 99; };
+           return [...a].join(',') + '|' + a.slice(0, 2).join(',');
+         })()",
+    )
+    .unwrap();
+    assert_eq!(to_str(&vm, r), "99|7,8");
+}
+
+#[test]
+fn for_of_throws_when_array_prototype_iterator_deleted() {
+    let mut vm = Vm::new();
+    // 红形钉：原型 @@iterator 被删除后 GetMethod 取不到方法，迭代入口须抛
+    // TypeError（红形为短路直取元素区、静默迭代成功）。
+    let r = eval(
+        &mut vm,
+        "(() => {
+           const old = Array.prototype[Symbol.iterator];
+           delete Array.prototype[Symbol.iterator];
+           try {
+             try { for (const _v of [1, 2]) {} return 'no'; }
+             catch (e) { return e.constructor.name; }
+           } finally { Array.prototype[Symbol.iterator] = old; }
+         })()",
+    )
+    .unwrap();
+    assert_eq!(to_str(&vm, r), "TypeError");
+}

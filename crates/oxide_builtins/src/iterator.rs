@@ -1406,9 +1406,42 @@ pub(crate) fn peek_iterator_method<H: VmHost>(vm: &mut H, value: JsValue) -> Res
     Ok(false)
 }
 
-/// 经迭代协议取内层迭代器：内建集合直接作为内层（无缓存 next），`@@iterator`
-/// 调用结果作为内层（无缓存 next），鸭子回退路径同时回传读到的 `next` 闭包
-/// 供调用方缓存进包装器 `__next__` 槽（消费期不重触发 getter）。
+/// 判断已读到的 `@@iterator` 结果是否仍是内建集合的默认迭代器函数
+/// （内建原型别名槽上的同一函数对象）。
+///
+/// # 边界
+/// value 须为内建集合（Array/TypedArray/Map/Set），锚点槽按种类选取
+/// （Array/TypedArray/Set 为 `values`、Map 为 `entries`）。
+///
+/// # 注意
+/// 锚点槽读取失败（如用户把别名改写为抛出 getter）一律返回 false，
+/// 落入通用协议按 `method` 继续处理，不在此处吞错。
+fn builtin_iterator_default_intact<H: VmHost>(vm: &mut H, value: JsValue, method: JsValue) -> bool {
+    if !method.is_object() {
+        return false;
+    }
+    let world = vm.session().builtin_world();
+    let (anchor_ptr, anchor_name) = if is_array_value(value) {
+        (world.array_proto.as_ptr() as *mut JsObject, "values")
+    } else if is_typed_array_value(value) {
+        (world.typed_array_proto.as_ptr() as *mut JsObject, "values")
+    } else if is_map_value(value) {
+        (world.map_proto.as_ptr() as *mut JsObject, "entries")
+    } else {
+        (world.set_proto.as_ptr() as *mut JsObject, "values")
+    };
+    let anchor_obj = unsafe { &*anchor_ptr };
+    let anchor_si = vm.kernel_core().perm_interner().intern(anchor_name).0;
+    let Ok(anchor) = vm.ordinary_get(anchor_obj, anchor_si, JsValue::from_js_object(anchor_ptr)) else {
+        return false;
+    };
+    anchor.is_object() && std::ptr::eq(method.as_js_object_ptr(), anchor.as_js_object_ptr())
+}
+
+/// 经迭代协议取内层迭代器：内建集合（原型链 `@@iterator` 未被覆盖时）直接
+/// 作为内层（无缓存 next），用户覆盖的 `@@iterator` 或 duck-next 回退路径
+/// 的调用结果作为内层（无缓存 next），鸭子回退路径同时回传读到的 `next`
+/// 闭包供调用方缓存进包装器 `__next__` 槽（消费期不重触发 getter）。
 ///
 /// # 返回值
 /// - `Ok(Some((inner, next)))`：`inner` 为内层迭代器；鸭子回退时 `next` 为
@@ -1416,14 +1449,16 @@ pub(crate) fn peek_iterator_method<H: VmHost>(vm: &mut H, value: JsValue) -> Res
 /// - `Ok(None)`：不可迭代；
 /// - `Err`：`@@iterator` 或 `next` getter 抛错，透传原异常值。
 fn get_iterator<H: VmHost>(vm: &mut H, value: JsValue) -> Result<Option<(JsValue, Option<JsValue>)>, JsValue> {
-    if value.is_string()
-        || is_array_value(value)
-        || is_typed_array_value(value)
-        || is_map_value(value)
-        || is_set_value(value)
-    {
+    if value.is_string() {
         return Ok(Some((value, None)));
     }
+    // 内建集合标记：仅当 @@iterator 经原型链读到的仍是内建默认迭代器函数
+    // 时才走快速路径；用户覆盖（自身属性或原型链改写/删除）走通用协议
+    // 调用用户函数。
+    let builtin_value = is_array_value(value)
+        || is_typed_array_value(value)
+        || is_map_value(value)
+        || is_set_value(value);
 
     // 非字符串 primitive（boolean/number/symbol/bigint）：GetIterator 先 ToObject，
     // 再走迭代协议（如 `yield* true` 委托 Boolean.prototype[Symbol.iterator]）。
@@ -1449,6 +1484,9 @@ fn get_iterator<H: VmHost>(vm: &mut H, value: JsValue) -> Result<Option<(JsValue
             return Err(exc);
         }
     };
+    if builtin_value && builtin_iterator_default_intact(vm, value, method) {
+        return Ok(Some((value, None)));
+    }
     if is_callable(method) {
         let iterator = match vm.call_function_sync(method, obj_value, &[]) {
             Ok(it) => it,
