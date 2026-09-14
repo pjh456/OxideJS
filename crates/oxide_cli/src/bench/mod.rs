@@ -39,6 +39,7 @@ pub fn run_benchmarks(config: BenchConfig, kernel: Arc<KernelCore>, pool: Arc<Vm
         // leak 模式内按 case 过滤参数分派校准用例；缺省保持原泄漏检测行为。
         "leak" => match config.filter.as_deref() {
             Some("vm_creation") => leak_detect::run_mem_vm_creation_leak(&kernel),
+            Some("builtin_world_build") => leak_detect::run_mem_builtin_world_build(&kernel),
             Some("dirty_rebuild") => leak_detect::run_mem_dirty_rebuild_leak(&kernel),
             Some("closure_dead_leak") => leak_detect::run_mem_closure_dead_leak(&kernel),
             Some("pool_high_water") => leak_detect::run_mem_pool_high_water(&kernel),

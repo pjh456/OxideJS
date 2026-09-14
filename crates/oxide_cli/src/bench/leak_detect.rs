@@ -246,6 +246,62 @@ pub fn run_mem_vm_creation_leak(kernel: &Arc<KernelCore>) -> ExitCode {
     report_series("vm_creation", "iter", &series)
 }
 
+/// 校准用例：每 VM BuiltinWorld 构造成本测量基座。口径覆盖完整
+/// `with_kernel_core` 构造链（`KernelSession::new` + `init_kernel_builtins`
+/// 全量绑定 + 内建 intrinsic 重挂）：构造-释放轮（N 次构造、用完即弃，
+/// 度量每次构造 wall time 均值）+ 保留段（逐个 spawn 并保活、每 spawn 采
+/// 一次 VmRSS，斜率 = 每保留 VM 的边际常驻，池规模放大锚）。
+///
+/// # 注意事项
+/// 保留段正斜率即预期签名（每保留 VM 钉住一份 world 副本），独立打印
+/// 逻辑，不进 `report_series` 泄漏判据；保留段前 `release_free_heap` 把
+/// 释放轮滞留页归还 OS，免复用导致斜率结构性低估。构造-释放轮均值为
+/// 热态口径（共享 kernel intern 缓存命中占主导）。
+pub fn run_mem_builtin_world_build(kernel: &Arc<KernelCore>) -> ExitCode {
+    const CONSTRUCTIONS: usize = 1000;
+    const RETAINED: usize = 400;
+
+    // 构造-释放轮：只构造不 run，仅计时不采 RSS（释放后分配器滞留页无观测意义）。
+    let t0 = Instant::now();
+    for _ in 0..CONSTRUCTIONS {
+        let _vm = Vm::with_kernel_core(Arc::clone(kernel));
+    }
+    let total = t0.elapsed();
+    eprintln!(
+        "[builtin_world_build] construct-release: n={CONSTRUCTIONS} total={:.3}s mean={:.4} ms/VM",
+        total.as_secs_f64(),
+        total.as_secs_f64() * 1000.0 / CONSTRUCTIONS as f64
+    );
+    // 释放轮滞留页归还 OS，保留段增长相不得复用（斜率低估源）。
+    release_free_heap();
+
+    // 保留段：逐个 spawn 保活，每 spawn 采一次 VmRSS，斜率 = 每保留 VM 边际常驻。
+    let mut series: Vec<(usize, f64)> = Vec::new();
+    if let Some(kb) = read_vmrss_kb() {
+        series.push((0, kb as f64));
+    }
+    let mut retained = Vec::with_capacity(RETAINED);
+    for i in 0..RETAINED {
+        retained.push(Vm::with_kernel_core(Arc::clone(kernel)));
+        if let Some(kb) = read_vmrss_kb() {
+            series.push((i + 1, kb as f64));
+        }
+    }
+    let (slope, r2) = linreg(&series);
+    let (rss_first, rss_last) = (series.first().map(|(_, v)| *v), series.last().map(|(_, v)| *v));
+    eprintln!(
+        "[builtin_world_build] retained: n={RETAINED} rss_kb={}..{} (delta {:+.0}) slope={:.4} kB/VM (~{:.0} B/VM) R²={:.4} [info: 正斜率即预期签名，不进 report_series 判据]",
+        rss_first.unwrap_or(0.0),
+        rss_last.unwrap_or(0.0),
+        rss_last.unwrap_or(0.0) - rss_first.unwrap_or(0.0),
+        slope,
+        slope * 1024.0,
+        r2
+    );
+    drop(retained);
+    ExitCode::SUCCESS
+}
+
 /// S2 校准用例：单 VM 每轮「新键写脏 object/array/string 三家族原型 →
 /// full_reset」，共 3000 轮，每 10 轮采一次 VmRSS，输出选择性重建释放
 /// 路径的每轮内存增量（斜率 + 窗口总增量）。
