@@ -104,11 +104,12 @@ pub fn key_si_to_js_value<H: VmHost>(vm: &mut H, si: u32) -> JsValue {
 }
 
 /// 收集对象自身全部 Symbol 键（shape 链），按键序排列（根→叶，即插入序）。
-/// 与 [`walk_own_keys`] 互补：只返回 Symbol 键，供 `getOwnPropertySymbols` 使用。
+/// 与 [`walk_own_keys`] 互补：只返回 Symbol 键。返回 `(属性键 si, 绝对存储索引)`：
+/// 槽位计数须含全部非空节点（含字符串键）并对数组加元素区偏移，与物理存储及
+/// [`walk_own_keys`] 的口径一致，消费方（delete 重建）才能按槽位取回正确值。
 fn walk_own_symbol_keys<H: VmHost>(vm: &H, obj: &JsObject) -> Vec<(u32, u32)> {
     let mut keys: Vec<(u32, u32)> = Vec::new();
     let shape_id = obj.shape_id();
-    let mut pos: u32 = 0;
     let mut shape_ids = Vec::new();
     let mut cursor = Some(shape_id);
     while let Some(id) = cursor {
@@ -117,20 +118,21 @@ fn walk_own_symbol_keys<H: VmHost>(vm: &H, obj: &JsObject) -> Vec<(u32, u32)> {
         }
         if let Some(shape) = vm.kernel_core().shape_forge().get_shape(id) {
             cursor = shape.parent;
-            if shape.property_name != u32::MAX && is_symbol_key(shape.property_name) {
+            if shape.property_name != u32::MAX {
                 shape_ids.push(id);
             }
         } else {
             break;
         }
     }
-    for id in shape_ids.iter().rev() {
+    for (pos, id) in (0_u32..).zip(shape_ids.iter().rev()) {
         if let Some(shape) = vm.kernel_core().shape_forge().get_shape(*id) {
+            // Symbol 键节点按绝对槽位回传（数组命名属性位于元素区之后）。
+            let store = if obj.is_array() { obj.array_prop_count + pos } else { pos };
             if shape.property_name != 0 && is_symbol_key(shape.property_name) {
-                keys.push((shape.property_name, pos));
+                keys.push((shape.property_name, store));
             }
         }
-        pos += 1;
     }
     keys
 }

@@ -1367,16 +1367,17 @@ pub fn iterator_wrapper_next<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult
 
 /// 判断 value 是否可迭代，只读取 `@@iterator` 方法而不调用它（GetMethod 语义）。
 ///
-/// 与 [`get_iterator`] 的判定一致：内建集合（String/Array/TypedArray/Map/Set）恒可迭代；
-/// 其它对象读取 `@@iterator`，可调用即视为可迭代，否则回退到自身可调用的 `next`。
+/// 与 [`get_iterator`] 的判定一致：统一经原型链解析 `@@iterator`（String 臂与
+/// `get_iterator` 同为无条件快速路径），解析到可调用才视为可迭代；解析为
+/// null/undefined（或非对象值）时返回 false，由调用方落 array-like 索引读臂。
+/// 不可调用时再回退到自身可调用的 `next`。
+///
+/// # 边界
+/// 非对象原始值（number/boolean 等）不装箱，直接判不可迭代。
 /// `@@iterator` getter 抛错时透传 `Err`。
 pub(crate) fn peek_iterator_method<H: VmHost>(vm: &mut H, value: JsValue) -> Result<bool, JsValue> {
-    if value.is_string()
-        || is_array_value(value)
-        || is_typed_array_value(value)
-        || is_map_value(value)
-        || is_set_value(value)
-    {
+    // String 臂无条件可迭代（与 get_iterator 的 String 臂同一近似）。
+    if value.is_string() {
         return Ok(true);
     }
     if value.is_object() {

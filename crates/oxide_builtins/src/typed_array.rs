@@ -406,7 +406,16 @@ fn write_element<H: VmHost>(vm: &mut H, kind: TypedArrayKind, bytes: &mut [u8], 
     }
 }
 
-fn collect_array_like<H: VmHost>(vm: &mut H, value: JsValue) -> Result<Vec<JsValue>, JsValue> {
+/// 收集源对象的元素值。
+///
+/// # 步骤
+/// 1. Array/TypedArray 源走元素区直读（不经迭代协议）。
+/// 2. `consult_iterator` 为 true 且 `@@iterator` 解析到可调用时走迭代路径
+///    （含用户自定义迭代器）；否则按 array-like 读 `length` 逐索引取值。
+///
+/// # 边界
+/// 源须为对象，否则抛 TypeError。
+fn collect_array_like<H: VmHost>(vm: &mut H, value: JsValue, consult_iterator: bool) -> Result<Vec<JsValue>, JsValue> {
     if !value.is_object() {
         return Err(type_error(vm, "TypedArray source must be array-like or iterable"));
     }
@@ -428,8 +437,9 @@ fn collect_array_like<H: VmHost>(vm: &mut H, value: JsValue) -> Result<Vec<JsVal
             .collect());
     }
 
-    // 有 @@iterator 走迭代路径（含用户自定义迭代器），否则按 array-like 读 length 逐索引取值。
-    if crate::iterator::peek_iterator_method(vm, value)? {
+    // 咨询迭代器的入口（构造器）仅在 @@iterator 解析到可调用时走迭代路径，
+    // 否则落 array-like 读 length 逐索引取值（方法解析为 null/undefined 时同此）。
+    if consult_iterator && crate::iterator::peek_iterator_method(vm, value)? {
         let mut values = Vec::new();
         crate::iterator::iterate_elements(vm, value, |_vm, elem| {
             values.push(elem);
@@ -497,7 +507,7 @@ fn typed_array_new<H: VmHost>(vm: &mut H, args: &[u8], kind: TypedArrayKind) -> 
             }
             (first, byte_offset, length)
         } else {
-            let values = native_try!(collect_array_like(vm, first));
+            let values = native_try!(collect_array_like(vm, first, true));
             let byte_len = values.len().saturating_mul(bpe);
             let buffer = JsValue::from_js_object(new_array_buffer(vm, vec![0; byte_len]));
             let buffer_ptr = native_try!(array_buffer_data_ptr(vm, buffer));
@@ -646,6 +656,10 @@ pub fn typed_array_subarray<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult 
 
 /// `TypedArray.prototype.set(source, offset)`：从 array-like/另一个 TypedArray 拷贝元素；
 /// 越界抛 RangeError。
+///
+/// # 边界
+/// 源为 TypedArray 时直读元素区；否则恒按 array-like 索引读
+/// （不咨询源的 `@@iterator`，即便其可调用）。
 pub fn typed_array_set<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
     let view = native_try!(get_typed_array_data(vm, this_val));
@@ -658,7 +672,7 @@ pub fn typed_array_set<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     } else {
         0
     };
-    let values = native_try!(collect_array_like(vm, source));
+    let values = native_try!(collect_array_like(vm, source, false));
     if offset > view.length || values.len() > view.length - offset {
         return NativeResult::Err(range_error(vm, "TypedArray.set offset out of bounds"));
     }

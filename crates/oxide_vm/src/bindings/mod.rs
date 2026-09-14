@@ -332,6 +332,13 @@ pub(crate) fn bind_well_known_method(
 }
 
 /// 把原型上 `source` 属性已绑定的函数值复制到 well-known symbol 键名下（共享同一函数对象）。
+///
+/// # 边界
+/// `source` 键不在原型上时静默跳过。
+///
+/// # 注意
+/// well-known 键已在位时原位更新值，不追加重复 shape 槽：初始化与重绑可多轮
+/// 经过同一原型，重复槽会让 delete 只删其一、读仍命中残留槽。
 pub(crate) fn bind_well_known_method_alias(
     core: &Arc<KernelCore>, proto: &mut JsObject, source: &str, well_known_id: u32,
 ) {
@@ -343,6 +350,12 @@ pub(crate) fn bind_well_known_method_alias(
     };
     let value = proto.get_prop_at(pos);
     let key = oxide_types::private_key::make_well_known_symbol_key(well_known_id);
+    if let Some(existing) = shape_forge.lookup_position(proto.shape_id(), key) {
+        proto.set_prop_at(existing, value);
+        proto.set_data_meta(existing, PropAttributes::new(true, false, true));
+        proto.bump_generation();
+        return;
+    }
     let new_shape = shape_forge.make_shape(proto.shape_id(), key);
     proto.set_shape_id(new_shape);
     let alias_pos = proto.push_prop(value);

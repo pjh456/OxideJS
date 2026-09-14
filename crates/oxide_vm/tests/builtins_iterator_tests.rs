@@ -2171,3 +2171,80 @@ fn for_of_throws_when_array_prototype_iterator_deleted() {
     .unwrap();
     assert_eq!(to_str(&vm, r), "TypeError");
 }
+
+#[test]
+fn array_from_falls_back_to_array_like_when_iterator_unresolvable() {
+    let mut vm = Vm::new();
+    // 红形钉：真集合的 @@iterator 解析为 null/undefined（原型删除、自身置 null）
+    // 时，Array.from 须经 GetMethod-可选语义落 array-like 索引读臂，红形为误抛
+    // TypeError。
+    let r = eval(
+        &mut vm,
+        "(() => {
+           const old = Array.prototype[Symbol.iterator];
+           delete Array.prototype[Symbol.iterator];
+           let deleted;
+           try { deleted = Array.from([1, 2]).join(','); }
+           catch (e) { deleted = e.constructor.name; }
+           finally { Array.prototype[Symbol.iterator] = old; }
+           const own = [1, 2];
+           own[Symbol.iterator] = null;
+           let ownNull;
+           try { ownNull = Array.from(own).join(','); }
+           catch (e) { ownNull = e.constructor.name; }
+           return deleted + '|' + ownNull;
+         })()",
+    )
+    .unwrap();
+    assert_eq!(to_str(&vm, r), "1,2|1,2");
+}
+
+#[test]
+fn typed_array_ctor_and_set_fall_back_when_iterator_unresolvable() {
+    let mut vm = Vm::new();
+    // 红形钉：真集合的 @@iterator 被删除时，TA 构造器（GetMethod-可选语义）
+    // 须落 array-like 臂（无 length 得 0 元素），set 恒索引读；红形为误抛
+    // TypeError。真数组经构造器恒走元素区直读（不受 @@iterator 解析影响），
+    // 一并作回归守卫。
+    let r = eval(
+        &mut vm,
+        "(() => {
+           const old = Map.prototype[Symbol.iterator];
+           delete Map.prototype[Symbol.iterator];
+           const m = new Map(); m.set(7, 8);
+           let ctor;
+           try { ctor = new Uint8Array(m).length; }
+           catch (e) { ctor = e.constructor.name; }
+           let setResult;
+           const t = new Uint8Array([5, 6]);
+           try { t.set(m); setResult = t.join(','); }
+           catch (e) { setResult = e.constructor.name; }
+           let arrCtor;
+           try { arrCtor = new Uint8Array([1, 2, 3]).join(','); }
+           catch (e) { arrCtor = e.constructor.name; }
+           Map.prototype[Symbol.iterator] = old;
+           return ctor + '|' + setResult + '|' + arrCtor;
+         })()",
+    )
+    .unwrap();
+    assert_eq!(to_str(&vm, r), "0|5,6|1,2,3");
+}
+
+#[test]
+fn typed_array_set_reads_array_like_source_by_index() {
+    let mut vm = Vm::new();
+    // 红形钉：TA.set 对非 TypedArray 源恒按 array-like 索引读，不咨询源的
+    // @@iterator（即便其可调用）；红形为走用户迭代器得 99 填充。
+    let r = eval(
+        &mut vm,
+        "(() => {
+           const src = { 0: 7, 1: 8, length: 2 };
+           src[Symbol.iterator] = function* () { yield 99; };
+           const t = new Uint8Array(4);
+           t.set(src);
+           return t.join(',');
+         })()",
+    )
+    .unwrap();
+    assert_eq!(to_str(&vm, r), "7,8,0,0");
+}
