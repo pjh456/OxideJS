@@ -51,6 +51,45 @@ fn parse_multiple_statements() {
 }
 
 #[test]
+fn parse_unicode_escape_insufficient_hex_digits() {
+    // \u 后不足 4 位 hex 即非法转义：解析期报 SyntaxError。
+    let allocator = Allocator::default();
+    let result = oxide_parser::parse(&allocator, "\"\\u12\".length");
+    assert!(result.is_err(), "\"\\u12\"（不足 4 位 hex）应解析失败");
+    assert_eq!(
+        result.unwrap_err().first().map(|e| e.message.as_str()),
+        Some("Invalid escape sequence"),
+        "诊断口径应与现行非法转义消息一致"
+    );
+}
+
+#[test]
+fn parse_unicode_escape_non_hex_digits() {
+    // \u 后 4 位含非 hex 字符即非法转义：解析期报 SyntaxError。
+    let allocator = Allocator::default();
+    let result = oxide_parser::parse(&allocator, "\"\\uZZZZ\".length");
+    assert!(result.is_err(), "\"\\uZZZZ\"（非 hex 位）应解析失败");
+    assert_eq!(
+        result.unwrap_err().first().map(|e| e.message.as_str()),
+        Some("Invalid escape sequence"),
+        "诊断口径应与现行非法转义消息一致"
+    );
+}
+
+#[test]
+fn parse_unicode_brace_escape_out_of_code_point_range() {
+    // 花括号 \u{...} 值超 U+10FFFF 即非法码点：解析期报 SyntaxError。
+    let allocator = Allocator::default();
+    let result = oxide_parser::parse(&allocator, "\"\\u{110000}\".length");
+    assert!(result.is_err(), "\"\\u{{110000}}\"（超 0x10FFFF）应解析失败");
+    assert_eq!(
+        result.unwrap_err().first().map(|e| e.message.as_str()),
+        Some("Invalid escape sequence"),
+        "诊断口径应与现行非法转义消息一致"
+    );
+}
+
+#[test]
 fn parse_concise_arrow_array_member_call() {
     // concise 箭头体 + 数组字面量 + 成员调用形是合法 JS：必须解析成功。
     let allocator = Allocator::default();

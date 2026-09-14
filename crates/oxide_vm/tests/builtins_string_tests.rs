@@ -1374,3 +1374,33 @@ fn utf16_fffd_hex4_key_materialization() {
     .unwrap();
     assert!(r.as_bool());
 }
+
+#[test]
+fn unicode_escape_exactly_four_hex_digits() {
+    // \u 恰取 4 位 hex：第 5 位 hex 数字是串内字面字符。
+    // "\u10400" = U+1040 + '0'，长度 2，码位 [0x1040, 0x30]。
+    let mut vm = Vm::new();
+    let r = eval(
+        &mut vm,
+        "\"\\u10400\".length === 2 && \"\\u10400\".charCodeAt(0) === 0x1040 && \"\\u10400\".charCodeAt(1) === 0x30",
+    )
+    .unwrap();
+    assert!(r.as_bool());
+}
+
+#[test]
+fn unicode_brace_escape_supplementary_and_lone_surrogate() {
+    // 花括号 \u{...} 取任意长度 hex：超平面码点 U+10400 落 UTF-16 单元对
+    // （长度 2、codePointAt(0) = 0x10400、与 \uD801\uDC00 形态等值）；
+    // \u{D800} 现行 spec 无 surrogate 限制——孤立 surrogate 字面量合法（与
+    // V8/node 同接受），长度 1 且与 \ud800 形态等值。
+    let mut vm = Vm::new();
+    let r = eval(
+        &mut vm,
+        "\"\\u{10400}\".length === 2 && \"\\u{10400}\".codePointAt(0) === 0x10400 \
+         && \"\\u{10400}\" === \"\\uD801\\uDC00\" \
+         && \"\\u{D800}\".length === 1 && \"\\u{D800}\" === \"\\ud800\"",
+    )
+    .unwrap();
+    assert!(r.as_bool());
+}
