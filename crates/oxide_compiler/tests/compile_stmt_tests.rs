@@ -269,10 +269,10 @@ fn compile_class_declaration_emits_constructor_and_prototype_setup() {
         module
             .bytecode
             .iter()
-            .filter(|&&i| opcode::opcode(i) == OpCode::NEW_OBJECT)
+            .filter(|&&i| opcode::opcode(i) == OpCode::NEW_SESSION_OBJECT)
             .count()
             >= 1,
-        "class should allocate a prototype object"
+        "class prototype should be allocated as a session object (identity stable across promotion)"
     );
     assert!(
         module
