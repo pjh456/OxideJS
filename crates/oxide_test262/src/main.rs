@@ -1136,9 +1136,12 @@ fn supervise_window(
     };
 
     while cur < wend {
+        // 心跳文件每子进程重开；旁路失败行跨重启保留（追加而非清空）：
+        // 超时/崩溃重启若删旁路会丢掉此前子进程的全部失败记录，收尾差分
+        // 只剩末段。跨重启同一测试最多重复一条（心跳先写、旁路后追加的写序
+        // 决定重跑测试至多重录一次），消费侧按下标去重即可。
         let _ = std::fs::remove_file(&hb_path);
         let _ = std::fs::remove_file(format!("{}.tmp", hb_path.display()));
-        let _ = std::fs::remove_file(hb_path.with_extension("fails"));
         let max_tests = wend - cur;
 
         let mut child = match Command::new(exe)
@@ -1252,7 +1255,9 @@ fn supervise_window(
 
     let _ = std::fs::remove_file(&hb_path);
     let _ = std::fs::remove_file(format!("{}.tmp", hb_path.display()));
-    let _ = std::fs::remove_file(hb_path.with_extension("fails"));
+    // 旁路失败行归档而非删除：统计已由心跳合并入父进程，此文件是收尾逐文件
+    // 差分的终态依据（删除即永久丢记录）。
+    let _ = std::fs::rename(&hb_path.with_extension("fails"), &hb_path.with_extension("fails.done"));
     stats
 }
 
