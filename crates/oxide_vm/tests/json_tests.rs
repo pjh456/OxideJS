@@ -313,3 +313,53 @@ fn json_parse_numeric_keys_stringify_roundtrip() {
     let s = string_value(&vm, result);
     assert_eq!(s, "{\"5\":1}");
 }
+
+// -- JSON.stringify 单元语义（孤立 surrogate 转义 / 代理对原样 / 真实键串） --
+
+#[test]
+fn json_stringify_unpaired_surrogate_escaped() {
+    // 非配对孤立 surrogate 输出 \uXXXX（well-formed JSON 要求）。
+    let mut vm = Vm::new();
+    let r1 = eval(&mut vm, "JSON.stringify(String.fromCharCode(0xD800)) === '\"\\\\ud800\"'").unwrap();
+    assert!(r1.as_bool(), "unpaired high surrogate must be \\ud800-escaped");
+    let r2 = eval(&mut vm, "JSON.stringify(String.fromCharCode(0xDF06)) === '\"\\\\udf06\"'").unwrap();
+    assert!(r2.as_bool(), "unpaired low surrogate must be \\udf06-escaped");
+}
+
+#[test]
+fn json_stringify_surrogate_pair_raw() {
+    // 配对 surrogate 原样输出 astral 字符；混串按 spec 逐单元处置。
+    let mut vm = Vm::new();
+    let r1 = eval(&mut vm, "JSON.stringify(String.fromCharCode(0xD834, 0xDF06)) === '\"\\u{1D306}\"'").unwrap();
+    assert!(r1.as_bool(), "paired surrogates must serialize as the raw astral char");
+    let r2 = eval(
+        &mut vm,
+        "JSON.stringify(String.fromCharCode(0xD834, 0xD834, 0xDF06, 0xD834)) === '\"\\\\ud834\\u{1D306}\\\\ud834\"'",
+    )
+    .unwrap();
+    assert!(r2.as_bool(), "unpaired units around a pair must each be escaped");
+}
+
+#[test]
+fn json_stringify_key_units_real() {
+    // 键序列化用真实键串（孤立 surrogate 转义），toJSON/replacer 键参数同口径。
+    let mut vm = Vm::new();
+    let r1 = eval(
+        &mut vm,
+        "var o = {}; o[String.fromCharCode(0xD800)] = 1; JSON.stringify(o) === '{\"\\\\ud800\":1}'",
+    )
+    .unwrap();
+    assert!(r1.as_bool(), "object key with lone surrogate must serialize escaped");
+    let r2 = eval(
+        &mut vm,
+        "var ks = []; JSON.stringify({[String.fromCharCode(0xD800)]: 1}, function(k, v) { if (k !== '') ks.push(k.charCodeAt(0)); return v; }); ks.length === 1 && ks[0] === 0xD800",
+    )
+    .unwrap();
+    assert!(r2.as_bool(), "replacer must receive the real key string (lone unit, not FFFD)");
+    let r3 = eval(
+        &mut vm,
+        "var tk = -1; var inner = { toJSON: function(k) { tk = k.charCodeAt(0); return 'x'; } }; var outer = {}; outer[String.fromCharCode(0xD800)] = inner; JSON.stringify(outer); tk === 0xD800",
+    )
+    .unwrap();
+    assert!(r3.as_bool(), "toJSON must receive the real key string (lone unit, not FFFD)");
+}

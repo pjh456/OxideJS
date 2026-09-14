@@ -3,10 +3,10 @@ use std::fmt::Write;
 
 use oxide_kernel::shape_forge::EMPTY_SHAPE_ID;
 use oxide_types::object::{JsObject, PropAttributes};
-use oxide_types::private_key::make_int_key;
+use oxide_types::private_key::{int_key_value, is_int_key, make_int_key};
 use oxide_types::value::JsValue;
 
-use crate::object::{key_si_to_string, walk_own_keys};
+use crate::object::walk_own_keys;
 
 use oxide_runtime_api::{NativeResult, VmHost};
 
@@ -91,7 +91,7 @@ fn walk_reviver<H: VmHost>(
         }
     }
 
-    // 对当前值调用 reviver，用返回值覆盖属性槽（键物化为 JS 可见串值，含孤立 surrogate 单元）。
+    // 对当前值调用 reviver，用返回值覆盖属性槽。
     let key_val = crate::object::key_si_to_js_value(vm, key_si);
     let holder_val = JsValue::from_js_object(holder_ptr);
     match vm.call_function_sync(reviver, holder_val, &[key_val, val]) {
@@ -179,7 +179,21 @@ fn process_space(val: JsValue) -> String {
     }
 }
 
-fn call_to_json<H: VmHost>(vm: &mut H, obj_val: JsValue, key: &str) -> Result<JsValue, JsValue> {
+/// 键 si 物化为单元序列：整数键 → ASCII 数字串，字符串键 → 码表键经 `decode_key`
+/// 还原（含孤立 surrogate 单元）。序列化文本与 toJSON/replacer 键参数均用此真实串。
+fn key_si_to_units<H: VmHost>(vm: &H, si: u32) -> Vec<u16> {
+    if is_int_key(si) {
+        int_key_value(si).to_string().encode_utf16().collect()
+    } else {
+        vm.kernel_core()
+            .perm_interner()
+            .lookup(si)
+            .map(oxide_kernel::string_forge::decode_key)
+            .unwrap_or_default()
+    }
+}
+
+fn call_to_json<H: VmHost>(vm: &mut H, obj_val: JsValue, key: &[u16]) -> Result<JsValue, JsValue> {
     if !obj_val.is_object() {
         return Ok(obj_val);
     }
@@ -193,7 +207,7 @@ fn call_to_json<H: VmHost>(vm: &mut H, obj_val: JsValue, key: &str) -> Result<Js
         Some(fn_val) if fn_val.is_object() => {
             let fn_ptr = fn_val.as_js_object_ptr();
             if !fn_ptr.is_null() && unsafe { (*fn_ptr).is_function() } {
-                let key_val = vm.new_string(key);
+                let key_val = vm.new_string_units_owned(key.to_vec());
                 match vm.call_function_sync(fn_val, obj_val, &[key_val]) {
                     Ok(v) => Ok(v),
                     Err(msg) => Err(crate::error::create_type_error(vm, &msg)),
@@ -246,7 +260,7 @@ pub fn json_stringify<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 
     let holder = create_wrapper(vm, value);
 
-    let value = match call_to_json(vm, value, "") {
+    let value = match call_to_json(vm, value, &[]) {
         Ok(v) => v,
         Err(e) => return NativeResult::Err(e),
     };
@@ -264,7 +278,6 @@ pub fn json_stringify<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let mut visited = HashSet::new();
     let mut output = String::new();
     let indent_level: usize = 0;
-    let key = "";
     if jsvalue_to_json(
         vm,
         value,
@@ -274,7 +287,7 @@ pub fn json_stringify<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         replacer_whitelist.as_ref(),
         &space,
         indent_level,
-        key,
+        &[],
     )
     .is_err()
     {
@@ -286,7 +299,7 @@ pub fn json_stringify<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 #[allow(clippy::too_many_arguments)]
 fn jsvalue_to_json<H: VmHost>(
     vm: &mut H, val: JsValue, visited: &mut HashSet<*const JsObject>, out: &mut String, replacer_fn: Option<JsValue>,
-    replacer_whitelist: Option<&HashSet<String>>, space: &str, indent_level: usize, key: &str,
+    replacer_whitelist: Option<&HashSet<String>>, space: &str, indent_level: usize, key: &[u16],
 ) -> Result<(), ()> {
     let val = call_to_json(vm, val, key).map_err(|_| ())?;
     if val.is_null() {
@@ -304,8 +317,9 @@ fn jsvalue_to_json<H: VmHost>(
             oxide_runtime_api::write_number_into(n, out);
         }
     } else if val.is_string() {
-        let s = unsafe { (*val.as_string_ptr()).to_owned_string() };
-        stringify_string(&s, out);
+        // SAFETY: val 已确认是字符串值；单元视图按码单元流序列化（见 stringify_string_units）。
+        let units = unsafe { (*val.as_string_ptr()).units() };
+        stringify_string_units(&units, out);
     } else if val.is_object() {
         let obj_ptr = val.as_js_object_ptr();
         if obj_ptr.is_null() {
@@ -329,24 +343,38 @@ fn jsvalue_to_json<H: VmHost>(
     Ok(())
 }
 
-fn stringify_string(s: &str, out: &mut String) {
+/// JSON 字符串序列化（按码单元流）：代理对原样输出 astral 字符，非配对孤立
+/// surrogate 输出 \uXXXX（well-formed JSON 要求，round-trip 经 JSON.parse 复原同值），
+/// C0/C1 控制码输出 \uXXXX，其余按 JSON 转义规则。
+fn stringify_string_units(units: &[u16], out: &mut String) {
     out.push('"');
-    for c in s.chars() {
-        match c {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            c if c.is_control() => {
-                let mut buf = [0u16; 2];
-                let encoded = c.encode_utf16(&mut buf);
-                for unit in encoded {
-                    out.push_str(&format!("\\u{:04x}", unit));
+    let mut i = 0;
+    while i < units.len() {
+        let u = units[i];
+        if (0xD800..=0xDBFF).contains(&u) && i + 1 < units.len() && (0xDC00..=0xDFFF).contains(&units[i + 1]) {
+            let cp = 0x10000 + ((u32::from(u) - 0xD800) << 10) + (u32::from(units[i + 1]) - 0xDC00);
+            if let Some(c) = char::from_u32(cp) {
+                out.push(c);
+            }
+            i += 2;
+            continue;
+        }
+        match u {
+            0x22 => out.push_str("\\\""),
+            0x5C => out.push_str("\\\\"),
+            0x0A => out.push_str("\\n"),
+            0x0D => out.push_str("\\r"),
+            0x09 => out.push_str("\\t"),
+            0x00..=0x1F | 0x7F..=0x9F | 0xD800..=0xDFFF => {
+                let _ = write!(out, "\\u{:04x}", u);
+            }
+            _ => {
+                if let Some(c) = char::from_u32(u32::from(u)) {
+                    out.push(c);
                 }
             }
-            _ => out.push(c),
         }
+        i += 1;
     }
     out.push('"');
 }
@@ -361,7 +389,7 @@ fn stringify_object<H: VmHost>(
 
     let keys = walk_own_keys(vm, obj);
     // 仅序列化可枚举自身属性（规范 EnumerableOwnPropertyNames）。
-    let entries: Vec<(String, u32)> = keys
+    let entries: Vec<(Vec<u16>, String, u32)> = keys
         .into_iter()
         .filter(|(_si, pos)| {
             obj.prop_meta_at(*pos)
@@ -369,23 +397,25 @@ fn stringify_object<H: VmHost>(
                 .unwrap_or(PropAttributes::DEFAULT_DATA.enumerable())
         })
         .filter_map(|(si, pos)| {
-            let name = key_si_to_string(vm, si);
+            let units = key_si_to_units(vm, si);
+            // 白名单匹配走 lossy 串形态（与白名单构造侧 to_string 同口径）。
+            let name = String::from_utf16_lossy(&units);
             if let Some(whitelist) = replacer_whitelist {
                 if !whitelist.contains(&name) {
                     return None;
                 }
             }
-            Some((name, pos))
+            Some((units, name, pos))
         })
         .collect();
 
     let mut first = true;
-    for (name, pos) in entries {
+    for (units, _name, pos) in entries {
         let val = obj.get_prop_at(pos);
 
         // replacer 函数回调（toJSON 已在 jsvalue_to_json 中处理）。
         let val = if let Some(replacer) = replacer_fn {
-            let key_val = vm.new_string(&name);
+            let key_val = vm.new_string_units_owned(units.clone());
             let holder = JsValue::from_js_object(obj as *const JsObject as *mut JsObject);
             match vm.call_function_sync(replacer, holder, &[key_val, val]) {
                 Ok(v) => {
@@ -419,15 +449,15 @@ fn stringify_object<H: VmHost>(
             for _ in 0..indent_level + 1 {
                 out.push_str(space);
             }
-            stringify_string(&name, out);
+            stringify_string_units(&units, out);
             out.push(':');
             out.push(' ');
         } else {
-            stringify_string(&name, out);
+            stringify_string_units(&units, out);
             out.push(':');
         }
 
-        jsvalue_to_json(vm, val, visited, out, replacer_fn, replacer_whitelist, space, indent_level + 1, &name)?;
+        jsvalue_to_json(vm, val, visited, out, replacer_fn, replacer_whitelist, space, indent_level + 1, &units)?;
     }
 
     if has_space && !first {
@@ -466,6 +496,7 @@ fn stringify_array<H: VmHost>(
         let val = obj.get_prop_at(i);
 
         let index_str = i.to_string();
+        let index_units: Vec<u16> = index_str.encode_utf16().collect();
 
         // replacer 函数回调（toJSON 已在 jsvalue_to_json 中处理）。
         let val = if let Some(replacer) = replacer_fn {
@@ -501,7 +532,7 @@ fn stringify_array<H: VmHost>(
                 replacer_whitelist,
                 space,
                 indent_level + 1,
-                &index_str,
+                &index_units,
             )?;
         }
     }
