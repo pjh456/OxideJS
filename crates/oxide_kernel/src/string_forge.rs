@@ -59,9 +59,9 @@ pub fn encode_key(units: &[u16]) -> String {
 /// 文本是防御性兜底（`encode_key` 不产生该形态）：输出 FFFD 单元并把后续
 /// 已消费字符原样补回。
 ///
-/// 已知边界：用户来源的键文本若含裸 FFFD 且其后恰为 `fffd` 或 surrogate
-/// 段 4 位十六进制，物化时该 4 字符会被当作转义吞掉。物化面仅限 builtin
-/// 永久键（恒为良形恒等文本），故该歧义不实际发生。
+/// 已知边界：键空间只收 `encode_key` 形态（无 FFFD 的良形文本即恒等形态），
+/// 含 FFFD 的用户键同样经编码形态入键空间——裸 FFFD 文本不是键空间的合法
+/// 输入，"FFFD 后 4 字符被吞"在物化面不实际发生；防御性兜底仅覆盖越约文本。
 pub fn decode_key(text: &str) -> Vec<u16> {
     let mut out: Vec<u16> = Vec::with_capacity(text.len());
     let mut chars = text.chars().peekable();

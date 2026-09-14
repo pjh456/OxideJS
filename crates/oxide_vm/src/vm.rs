@@ -1394,12 +1394,8 @@ impl Vm {
             // SAFETY: val 是字符串值，按载荷形态桥接为永久 key id。
             let s = unsafe { &*val.as_string_ptr() };
             if s.is_flat() {
-                // Flat：良形 UTF-8 文本，键推导与旧路径逐位一致。
-                let text = s.as_str();
-                if let Some(i) = canonical_index_of(text) {
-                    return Ok(make_int_key(i));
-                }
-                return Ok(self.kernel_core.perm_interner().intern(text).0);
+                // Flat：良形 UTF-8 文本，走与单元路径同口径的编码入键空间。
+                return Ok(self.string_key_text(s.as_str()));
             }
             // 单元载荷：键推导同规范（见 string_key_units）。
             return Ok(self.string_key_units(&s.units()));
@@ -1434,6 +1430,23 @@ impl Vm {
             eprintln!("[KEYPROBE] tail result si={}", si);
         }
         Ok(si)
+    }
+
+    /// 从良形文本串推导属性键 si（`property_key_si` Flat 分支与 `string_key_si`
+    /// 条目的共享入口）：规范数组下标 → 整数键，其余以 `encode_key` 形态入键空间
+    /// ——无 FFFD 的良形文本编码恒等，含 FFFD 的键与单元路径（Cons 载荷、
+    /// `string_key_si`）收敛到同一编码形态，同一逻辑键不因构造路径分裂。
+    pub(crate) fn string_key_text(&self, text: &str) -> u32 {
+        if let Some(i) = canonical_index_of(text) {
+            return make_int_key(i);
+        }
+        if text.contains('\u{FFFD}') {
+            let units: Vec<u16> = text.encode_utf16().collect();
+            let key = oxide_kernel::string_forge::encode_key(&units);
+            self.kernel_core.perm_interner().intern(&key).0
+        } else {
+            self.kernel_core.perm_interner().intern(text).0
+        }
     }
 
     /// 从单元序列推导属性键 si（`property_key_si` 字符串分支的口径抽取）：
@@ -2584,11 +2597,9 @@ impl oxide_runtime_api::VmHost for Vm {
         self.property_key_si(val)
     }
     fn string_key_si(&mut self, s: &str) -> u32 {
-        if let Some(i) = canonical_index_of(s) {
-            make_int_key(i)
-        } else {
-            self.kernel_core.perm_interner().intern(s).0
-        }
+        // 与运行时字符串键同口径：含 FFFD 的键文本按 encode_key 形态入键空间
+        // （FFFD 键的 JSON.parse 键与字面量/拼接构造的运行时键身份一致）。
+        self.string_key_text(s)
     }
     fn string_units(&self, val: JsValue) -> std::borrow::Cow<'_, [u16]> {
         // SAFETY: 调用方保证 val 为字符串值。perm 串由内核持有永不释放；session

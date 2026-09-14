@@ -153,7 +153,9 @@ pub trait VmHost {
     /// hint)，转换异常以 `Err` 返回（调用方须取 `take_uncaught_value` 传播原异常）。
     /// 与 `property_key_si` 的区别：后者对转换失败退化为空键，不传播异常。
     fn to_property_key_si(&mut self, val: JsValue) -> Result<u32, String>;
-    /// 字符串→键规范化：规范数字串（`"5"`）映射整数键，其余 intern 字符串键。
+    /// 字符串→键规范化：规范数字串（`"5"`）映射整数键，其余文本以 `encode_key`
+    /// 形态入键空间（无 FFFD 的良形文本恒等，含 FFFD 与运行时单元路径同形态，
+    /// 见 `string_key_units`）。
     /// 供建键入口（fromEntries/json/rest excluded）与 `property_key_si` 的字符串分支统一口径。
     fn string_key_si(&mut self, s: &str) -> u32;
     fn resolve_property(&self, obj: &JsObject, prop_name_si: u32) -> Option<JsValue>;

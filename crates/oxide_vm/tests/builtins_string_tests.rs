@@ -1347,3 +1347,30 @@ fn utf16_normalize_astral_identity() {
     .unwrap();
     assert!(r.as_bool());
 }
+
+#[test]
+fn utf16_fffd_key_identity_flat_vs_concat() {
+    // FFFD 键收口：单字面量（Flat 载荷）与拼接（Cons 载荷，>128 单元）同一逻辑
+    // 键在键空间同编码形态——仅一个属性；物化键值与原始串值相等。
+    let mut vm = Vm::new();
+    let r = eval(
+        &mut vm,
+        "(function(){ const k2 = \"\\uFFFDxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\"; if (k2.length !== 131) { return false; } const o = {}; o[\"\\uFFFD\" + \"x\".repeat(130)] = 1; o[k2] = 2; const ks = Object.keys(o); return ks.length === 1 && ks[0] === k2 && o[k2] === 2; })()",
+    )
+    .unwrap();
+    assert!(r.as_bool());
+}
+
+#[test]
+fn utf16_fffd_hex4_key_materialization() {
+    // FFFD+hex4 键物化恒等：键 "\uFFFDd800"（5 单元）经编码形态入键空间，
+    // Object.keys 出 5 单元真值（"d800"/"fffd" 4 字符不被当转义吞掉），
+    // JSON.stringify/parse 键面复原同值。
+    let mut vm = Vm::new();
+    let r = eval(
+        &mut vm,
+        "(function(){ const o = {}; o[\"\\uFFFDd800\"] = 1; o[\"\\uFFFDfffd\"] = 2; const ks = Object.keys(o); const rks = Object.keys(JSON.parse(JSON.stringify(o))); return ks[0].length === 5 && ks[1].length === 5 && rks[0] === ks[0] && rks[1] === ks[1]; })()",
+    )
+    .unwrap();
+    assert!(r.as_bool());
+}
