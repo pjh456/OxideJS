@@ -16,7 +16,7 @@ pub use oxc_span::Span;
 ///
 /// 使用 oxc 默认 `SourceType`（严格模式由语法自身决定）。返回 `Ok(program)`
 /// 或 `Err`（收集全部解析错误，按源码顺序排列）；若 oxc 内部 panic（不可恢复
-/// 语法错误）则返回单个通用错误。
+/// 语法错误）则透传其已收集的诊断（消息 + 位置），无诊断时返回单个通用错误。
 fn parse_with_source_type<'a>(
     allocator: &'a Allocator, source: &'a str, source_type: oxc_span::SourceType,
 ) -> Result<Program<'a>, Vec<OxideError>> {
@@ -25,6 +25,11 @@ fn parse_with_source_type<'a>(
     let ret = Parser::new(allocator, source, source_type).parse();
 
     if ret.panicked {
+        // 不可恢复语法错误：oxc 已为出错 token 累积诊断时按既有路径透传
+        // （消息 + 位置），直指真实触发点；无诊断时兜底通用文本。
+        if !ret.errors.is_empty() {
+            return Err(ret.errors.into_iter().map(OxideError::from).collect());
+        }
         return Err(vec![OxideError {
             message: "Parser panicked: unrecoverable syntax error".to_string(),
             span: (0, 0),
