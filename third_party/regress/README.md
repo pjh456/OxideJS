@@ -62,9 +62,9 @@ registry, licenses preserved in `LICENSE-APACHE` / `LICENSE-MIT`), consumed via
 the workspace root `[patch.crates-io]` instead of the registry copy.
 
 Deviations from upstream (the remaining vendored files are bit-for-bit
-upstream 0.11.1; upstream repo-only files — `tests/`, `.github/`,
-`Cargo.toml.orig`, `perf.md`, `regress_dfa_plan.txt`, `rustfmt.toml` — are
-not vendored):
+upstream 0.11.1, other than this note; upstream repo-only files —
+`tests/`, `.github/`, `Cargo.toml.orig`, `perf.md`, `regress_dfa_plan.txt`,
+`rustfmt.toml` — are not vendored):
 
 1. `src/unicodetables.rs` gains the `Unknown` (`Zzzz`) script value —
    script and script-extensions interval sets covering the unassigned code
