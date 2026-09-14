@@ -41,11 +41,16 @@ fn host_methods_are_callable() {
     assert_eq!(eval("typeof $262.createRealm"), "function");
 }
 
-/// evalScript 执行脚本并返回显式 `return` 的完成值；无 return 为 undefined。
+/// evalScript 以普通脚本执行并返回完成值：末条语句的正常完成值；顶层
+/// `return` 在 Script goal 下是编译期 SyntaxError。
 #[test]
 fn eval_script_runs_code_and_returns_value() {
-    assert_eq!(eval("$262.evalScript('return 40 + 2')"), "42");
-    assert_eq!(eval("$262.evalScript('var y = 1; y')"), "undefined");
+    // 普通脚本语义：顶层语句的正常完成值即脚本完成值（var 声明语句本身完成值为
+    // undefined，末条表达式语句 `y` 完成值为 1）。
+    assert_eq!(eval("$262.evalScript('var y = 1; y')"), "1");
+    // Script goal 顶层 return 非法：编译期错误转 JS 层可捕获的 SyntaxError。
+    let r = eval("try { $262.evalScript('return 40 + 2'); 'no-throw' } catch (e) { e.name }");
+    assert_eq!(r, "SyntaxError");
 }
 
 /// evalScript 编译失败转 SyntaxError（可由 JS catch 捕获）。

@@ -2821,6 +2821,49 @@ impl Vm {
         table.immutables.resize(table.modules.len(), OnceLock::new());
         Ok(self.create_function_object(base, self.current_gen, false, false, false, false))
     }
+
+    /// 动态编译脚本（普通脚本模式）：顶层 var/function 声明落全局对象
+    /// configurable:false，与静态脚本顶层一致（区别于 [`create_dynamic_script`]
+    /// 的 eval 脚本 configurable:true 面）。
+    ///
+    /// 供 test262 宿主 `$262.evalScript` 使用：按 test262 harness 规范它是
+    /// 当前 realm 的一段普通 script，不是 eval。
+    ///
+    /// # 步骤
+    /// 1. parse（脚本模式）→ compile（emit_program 置 is_global_scope=true，
+    ///    不设 is_eval_script，与普通脚本同一编译臂）。
+    /// 2. 整棵模块树追加进平表：同 [`create_dynamic_script`]
+    ///    （`rehome_subtree(&module, base+1)`，根落 base、子函数 old→base+old）。
+    /// 3. 扩容当前代际的常量缓存，建函数对象（sub_module_index = base）返回。
+    ///
+    /// # 边界与前提
+    /// - 编译或解析失败返回 `Err`（由宿主层转 SyntaxError）。
+    /// - 动态模块在函数对象存活期间跨 run 有效（同 create_dynamic_function）。
+    /// - 返回函数对象仅供内部同步调用，不设 name/length（用户不可见）。
+    ///
+    /// # 副作用
+    /// - 扩展当前代际平表（`tables[current_gen]`）与常量缓存。
+    pub fn create_plain_dynamic_script(&mut self, code: &str) -> Result<JsValue, String> {
+        let allocator = oxide_parser::Allocator::default();
+        let program = oxide_parser::parse(&allocator, code)
+            .map_err(|errs| errs.into_iter().map(|e| e.message).collect::<Vec<_>>().join("\n"))?;
+        // 普通脚本：顶层 var/function 声明落全局属性 configurable:false，
+        // let/const 落全局词法环境。动态路径源契约同 `create_dynamic_function`
+        // （源码域转义形态传源）。
+        let module = oxide_compiler::compiler::Compiler::new()
+            .with_source_encoded(true)
+            .compile(&program)?;
+        // 根模块 flat_id=0 传 base+1，重编号后落 base（避开 sub_module_index()==0
+        // 守卫）。make_mut 彼时平表 Arc 强引用唯一持有者是本表，原地扩展不分叉。
+        let table = self.current_table_mut();
+        let base = table.modules.len() as u32;
+        let mut added = Vec::new();
+        rehome_subtree(&module, base + 1, &mut added);
+        Arc::make_mut(&mut table.modules).extend(added);
+        // 平表变长后同步扩容常量缓存，否则激活新模块常量时越界 panic。
+        table.immutables.resize(table.modules.len(), OnceLock::new());
+        Ok(self.create_function_object(base, self.current_gen, false, false, false, false))
+    }
 }
 
 /// 把 flatten 后的子模块子树重编号到平表偏移 `base`：DFS 前序拷贝进 `out`，

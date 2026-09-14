@@ -21,16 +21,19 @@ fn not_supported(vm: &mut Vm, feature: &str) -> NativeResult {
     NativeResult::Err(oxide_builtins::error::create_type_error(vm, &format!("{feature} is not supported")))
 }
 
-/// `$262.evalScript(code)`：在当前 realm 编译执行一段脚本并返回其完成值。
+/// `$262.evalScript(code)`：在当前 realm 编译执行一段普通脚本并返回其完成值。
+///
+/// 按 test262 harness 规范 evalScript 即当前 realm 的 script（非 eval）：
+/// 顶层 var/function 声明落全局对象，完成值为末条语句的正常完成值。
 ///
 /// # 步骤
 /// 1. 实参 ToString 取脚本源码。
-/// 2. 经动态函数构造编译执行（`create_dynamic_function` + 同步调用）。
+/// 2. 经普通脚本动态编译（`create_plain_dynamic_script` + 同步调用）。
 /// 3. 编译失败转 SyntaxError；运行异常原样透传异常值。
 ///
 /// # 边界与前提
-/// - 最小实现：函数作用域语义——var/函数声明不泄漏到全局，完成值仅限显式
-///   `return`（全局作用域 eval 落地前为已知上限）。
+/// - 普通脚本语义：var/函数声明落全局对象（configurable:false），let/const
+///   落全局词法环境，完成值保留（`evalScript('var y = 1; y')` → 1）。
 /// - 无实参或非字符串实参按 ToString 规范处理。
 pub fn eval_script(vm: &mut Vm, args: &[u8]) -> NativeResult {
     if args.len() < 2 {
@@ -42,7 +45,7 @@ pub fn eval_script(vm: &mut Vm, args: &[u8]) -> NativeResult {
     };
     // 动态路径源契约：源码域转义形态传源（见 `create_dynamic_function`）。
     let code = oxide_kernel::string_forge::source_escape(&units);
-    match vm.create_dynamic_function(&[], &code) {
+    match vm.create_plain_dynamic_script(&code) {
         Ok(func) => {
             let global = JsValue::from_js_object(vm.session().global_object().as_ptr() as *mut JsObject);
             match vm.call_function_sync(func, global, &[]) {
