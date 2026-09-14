@@ -81,143 +81,12 @@ impl Emitter {
 
     fn emit_unary_expression(&self, un: &oxide_parser::UnaryExpression, ctx: &mut CompileCtx) -> Result<u32, String> {
         if matches!(un.operator, UnaryOperator::Delete) {
-            return match &un.argument {
-                Expression::Identifier(ident) => {
-                    let name = ident.name.as_str();
-                    // with 体内自由标识符：对象有该属性则删除对象属性（返回删除结果），
-                    // 否则非严格语义返回 true。
-                    if !ctx.with_stack.is_empty() && !ctx.is_with_internal_binding(name) {
-                        let obj_reg = ctx.innermost_with_obj().expect("with stack non-empty");
-                        let key_idx = ctx.add_constant(Constant::String(name.to_string()));
-                        let key_reg = ctx.alloc_reg();
-                        ctx.inst(Inst::load_const(Operand::Reg(key_reg), key_idx));
-                        let has_reg = ctx.alloc_reg();
-                        ctx.inst(Inst::new(
-                            OpCode::IN,
-                            Operand::Reg(has_reg),
-                            Operand::Reg(key_reg),
-                            Operand::Reg(obj_reg),
-                        ));
-                        let fallback_label = ctx.next_label_id();
-                        let end_label = ctx.next_label_id();
-                        ctx.inst(Inst::jmp_if_false(has_reg, fallback_label));
-                        // 复制 obj 到临时寄存器执行删除：DELETE_PROP_DYNAMIC 把结果写回
-                        // rd 槽，直接用它会把 with 对象寄存器覆盖为布尔值。
-                        let tmp_reg = ctx.alloc_reg();
-                        ctx.inst(Inst::new(
-                            OpCode::LOAD_VAR,
-                            Operand::Reg(tmp_reg),
-                            Operand::Reg(obj_reg),
-                            Operand::None,
-                        ));
-                        ctx.inst(Inst::new(
-                            OpCode::DELETE_PROP_DYNAMIC,
-                            Operand::Reg(tmp_reg),
-                            Operand::Reg(tmp_reg),
-                            Operand::Reg(key_reg),
-                        ));
-                        let result_reg = ctx.alloc_reg();
-                        ctx.inst(Inst::new(
-                            OpCode::LOAD_VAR,
-                            Operand::Reg(result_reg),
-                            Operand::Reg(tmp_reg),
-                            Operand::None,
-                        ));
-                        ctx.inst(Inst::jmp(end_label));
-                        ctx.labels.set_label_pos(fallback_label, ctx.insts.len());
-                        let true_idx = ctx.add_constant(Constant::Boolean(true));
-                        ctx.inst(Inst::load_const(Operand::Reg(result_reg), true_idx));
-                        ctx.labels.set_label_pos(end_label, ctx.insts.len());
-                        return Ok(result_reg);
-                    }
-                    // 可删全局内置（可写全局名除宿主名 $262）：运行期真删
-                    // 全局对象属性（c:true 数据描述符）并返 true；删除成功时清镜像
-                    // 槽，裸读与 globalThis 反射不失步。
-                    if let Some(slot_reg) = ctx.global_builtin_delete_slot(name) {
-                        let key_idx = ctx.add_constant(Constant::String(name.to_string()));
-                        let reg = ctx.alloc_reg();
-                        ctx.inst(Inst::delete_global_prop_c(Operand::Reg(reg), Operand::Reg(slot_reg), key_idx));
-                        return Ok(reg);
-                    }
-                    // 其余标识符（三常量 c:false / 局部遮蔽 / var 名等）非严格语义
-                    // 返回 false；严格模式的 delete 标识符由 oxc_semantic 提前拦截
-                    // 为早期错误（未声明名 delete 应返 true 的缺失是既有缺口）。
-                    let idx = ctx.add_constant(Constant::Boolean(false));
-                    let reg = ctx.alloc_reg();
-                    ctx.inst(Inst::load_const(Operand::Reg(reg), idx));
-                    Ok(reg)
-                }
-                Expression::StaticMemberExpression(member) => {
-                    let obj_reg = self.emit_expression(&member.object, ctx)?;
-                    let prop_name = member.property.name.as_str();
-                    let const_idx = ctx.add_constant(Constant::String(prop_name.to_string()));
-                    ctx.inst(Inst::delete_prop_static(Operand::Reg(obj_reg), const_idx as u32));
-                    Ok(obj_reg)
-                }
-                Expression::ComputedMemberExpression(member) => {
-                    let obj_reg = self.emit_expression(&member.object, ctx)?;
-                    let key_reg = self.emit_expression(&member.expression, ctx)?;
-                    ctx.inst(Inst::new(
-                        OpCode::DELETE_PROP_DYNAMIC,
-                        Operand::Reg(obj_reg),
-                        Operand::Reg(obj_reg),
-                        Operand::Reg(key_reg),
-                    ));
-                    Ok(obj_reg)
-                }
-                Expression::ChainExpression(chain) => {
-                    let short_label = ctx.next_label_id();
-                    let result_reg = match &chain.expression {
-                        ChainElement::StaticMemberExpression(member) => {
-                            let obj_reg = self.emit_expression(&member.object, ctx)?;
-                            if member.optional {
-                                let dup_reg = ctx.alloc_reg();
-                                ctx.inst(Inst::new(
-                                    OpCode::LOAD_VAR,
-                                    Operand::Reg(dup_reg),
-                                    Operand::Reg(obj_reg),
-                                    Operand::None,
-                                ));
-                                ctx.inst(Inst::jmp_if_nullish(dup_reg, short_label));
-                            }
-                            let prop_name = member.property.name.as_str();
-                            let const_idx = ctx.add_constant(Constant::String(prop_name.to_string()));
-                            ctx.inst(Inst::delete_prop_static(Operand::Reg(obj_reg), const_idx as u32));
-                            obj_reg
-                        }
-                        ChainElement::ComputedMemberExpression(member) => {
-                            let obj_reg = self.emit_expression(&member.object, ctx)?;
-                            if member.optional {
-                                let dup_reg = ctx.alloc_reg();
-                                ctx.inst(Inst::new(
-                                    OpCode::LOAD_VAR,
-                                    Operand::Reg(dup_reg),
-                                    Operand::Reg(obj_reg),
-                                    Operand::None,
-                                ));
-                                ctx.inst(Inst::jmp_if_nullish(dup_reg, short_label));
-                            }
-                            let key_reg = self.emit_expression(&member.expression, ctx)?;
-                            ctx.inst(Inst::new(
-                                OpCode::DELETE_PROP_DYNAMIC,
-                                Operand::Reg(obj_reg),
-                                Operand::Reg(obj_reg),
-                                Operand::Reg(key_reg),
-                            ));
-                            obj_reg
-                        }
-                        _ => return Err("invalid delete target".into()),
-                    };
-                    let end_label = ctx.next_label_id();
-                    ctx.inst(Inst::jmp(end_label));
-                    ctx.labels.set_label_pos(short_label, ctx.insts.len());
-                    let true_idx = ctx.add_constant(Constant::Boolean(true));
-                    ctx.inst(Inst::load_const(Operand::Reg(result_reg), true_idx));
-                    ctx.labels.set_label_pos(end_label, ctx.insts.len());
-                    Ok(result_reg)
-                }
-                _ => Err("invalid delete target".into()),
-            };
+            // 括号的引用性透传内层操作数：先逐层剥括号，再按内层形态分派。
+            let mut operand = &un.argument;
+            while let Expression::ParenthesizedExpression(paren) = operand {
+                operand = &paren.expression;
+            }
+            return self.emit_delete_operand(operand, ctx);
         }
         let arg = if matches!(un.operator, UnaryOperator::Typeof) {
             self.emit_typeof_operand(&un.argument, ctx)?
@@ -250,6 +119,167 @@ impl Emitter {
                 Ok(arg)
             }
             UnaryOperator::Delete => Err("invalid delete target".into()),
+        }
+    }
+
+    /// delete 操作数求值：引用形态（标识符/静态成员/计算成员/链式）按引用语义
+    /// 删除并返回删除结果；非引用操作数返回 true。
+    ///
+    /// # 步骤
+    /// 1. 标识符：with 体动态解析、可删全局内置镜像槽先行；未声明名（含隐式
+    ///    全局槽，引用不可解析或全局属性可配置）返回 true；其余已声明绑定
+    ///    （var/let/函数名/参数，非可配置或属性引用）返回 false。严格模式的
+    ///    delete 标识符是早期错误，由语义分析阶段拦截，不在此出现。
+    /// 2. 静态/计算成员与链式成员：从对象真删属性，结果为删除返回值。
+    /// 3. 其余形态（字面量/调用/new/this/一元形/序列/嵌套 delete 等）：先求值
+    ///    操作数（副作用与操作数求值期错误不被吞），再发常量 true。
+    fn emit_delete_operand(&self, operand: &Expression, ctx: &mut CompileCtx) -> Result<u32, String> {
+        match operand {
+            Expression::Identifier(ident) => {
+                let name = ident.name.as_str();
+                // with 体内自由标识符：对象有该属性则删除对象属性（返回删除结果），
+                // 否则非严格语义返回 true。
+                if !ctx.with_stack.is_empty() && !ctx.is_with_internal_binding(name) {
+                    let obj_reg = ctx.innermost_with_obj().expect("with stack non-empty");
+                    let key_idx = ctx.add_constant(Constant::String(name.to_string()));
+                    let key_reg = ctx.alloc_reg();
+                    ctx.inst(Inst::load_const(Operand::Reg(key_reg), key_idx));
+                    let has_reg = ctx.alloc_reg();
+                    ctx.inst(Inst::new(
+                        OpCode::IN,
+                        Operand::Reg(has_reg),
+                        Operand::Reg(key_reg),
+                        Operand::Reg(obj_reg),
+                    ));
+                    let fallback_label = ctx.next_label_id();
+                    let end_label = ctx.next_label_id();
+                    ctx.inst(Inst::jmp_if_false(has_reg, fallback_label));
+                    // 复制 obj 到临时寄存器执行删除：DELETE_PROP_DYNAMIC 把结果写回
+                    // rd 槽，直接用它会把 with 对象寄存器覆盖为布尔值。
+                    let tmp_reg = ctx.alloc_reg();
+                    ctx.inst(Inst::new(OpCode::LOAD_VAR, Operand::Reg(tmp_reg), Operand::Reg(obj_reg), Operand::None));
+                    ctx.inst(Inst::new(
+                        OpCode::DELETE_PROP_DYNAMIC,
+                        Operand::Reg(tmp_reg),
+                        Operand::Reg(tmp_reg),
+                        Operand::Reg(key_reg),
+                    ));
+                    let result_reg = ctx.alloc_reg();
+                    ctx.inst(Inst::new(
+                        OpCode::LOAD_VAR,
+                        Operand::Reg(result_reg),
+                        Operand::Reg(tmp_reg),
+                        Operand::None,
+                    ));
+                    ctx.inst(Inst::jmp(end_label));
+                    ctx.labels.set_label_pos(fallback_label, ctx.insts.len());
+                    let true_idx = ctx.add_constant(Constant::Boolean(true));
+                    ctx.inst(Inst::load_const(Operand::Reg(result_reg), true_idx));
+                    ctx.labels.set_label_pos(end_label, ctx.insts.len());
+                    return Ok(result_reg);
+                }
+                // 可删全局内置（可写全局名除宿主名 $262）：运行期真删
+                // 全局对象属性（c:true 数据描述符）并返 true；删除成功时清镜像
+                // 槽，裸读与 globalThis 反射不失步。
+                if let Some(slot_reg) = ctx.global_builtin_delete_slot(name) {
+                    let key_idx = ctx.add_constant(Constant::String(name.to_string()));
+                    let reg = ctx.alloc_reg();
+                    ctx.inst(Inst::delete_global_prop_c(Operand::Reg(reg), Operand::Reg(slot_reg), key_idx));
+                    return Ok(reg);
+                }
+                // 已声明绑定（upvalue/捕获 cell/局部 var/let/函数名/参数/顶层 var）
+                // 是非属性引用或全局对象上不可配置绑定，返回 false；未声明名
+                // （引用不可解析）与隐式全局槽（全局属性可配置）返回 true。
+                // 严格模式的 delete 标识符由语义分析提前拦截为早期错误。
+                let declared = ctx.captured_bindings.contains_key(name)
+                    || ctx.current_upvalue_captures.iter().any(|u| u.name == name)
+                    || match ctx.lookup(name) {
+                        Err(_) => false,
+                        Ok(reg) => !ctx.is_implicit_global_reg(reg),
+                    };
+                let idx = ctx.add_constant(Constant::Boolean(!declared));
+                let reg = ctx.alloc_reg();
+                ctx.inst(Inst::load_const(Operand::Reg(reg), idx));
+                Ok(reg)
+            }
+            Expression::StaticMemberExpression(member) => {
+                let obj_reg = self.emit_expression(&member.object, ctx)?;
+                let prop_name = member.property.name.as_str();
+                let const_idx = ctx.add_constant(Constant::String(prop_name.to_string()));
+                ctx.inst(Inst::delete_prop_static(Operand::Reg(obj_reg), const_idx as u32));
+                Ok(obj_reg)
+            }
+            Expression::ComputedMemberExpression(member) => {
+                let obj_reg = self.emit_expression(&member.object, ctx)?;
+                let key_reg = self.emit_expression(&member.expression, ctx)?;
+                ctx.inst(Inst::new(
+                    OpCode::DELETE_PROP_DYNAMIC,
+                    Operand::Reg(obj_reg),
+                    Operand::Reg(obj_reg),
+                    Operand::Reg(key_reg),
+                ));
+                Ok(obj_reg)
+            }
+            Expression::ChainExpression(chain) => {
+                let short_label = ctx.next_label_id();
+                let result_reg = match &chain.expression {
+                    ChainElement::StaticMemberExpression(member) => {
+                        let obj_reg = self.emit_expression(&member.object, ctx)?;
+                        if member.optional {
+                            let dup_reg = ctx.alloc_reg();
+                            ctx.inst(Inst::new(
+                                OpCode::LOAD_VAR,
+                                Operand::Reg(dup_reg),
+                                Operand::Reg(obj_reg),
+                                Operand::None,
+                            ));
+                            ctx.inst(Inst::jmp_if_nullish(dup_reg, short_label));
+                        }
+                        let prop_name = member.property.name.as_str();
+                        let const_idx = ctx.add_constant(Constant::String(prop_name.to_string()));
+                        ctx.inst(Inst::delete_prop_static(Operand::Reg(obj_reg), const_idx as u32));
+                        obj_reg
+                    }
+                    ChainElement::ComputedMemberExpression(member) => {
+                        let obj_reg = self.emit_expression(&member.object, ctx)?;
+                        if member.optional {
+                            let dup_reg = ctx.alloc_reg();
+                            ctx.inst(Inst::new(
+                                OpCode::LOAD_VAR,
+                                Operand::Reg(dup_reg),
+                                Operand::Reg(obj_reg),
+                                Operand::None,
+                            ));
+                            ctx.inst(Inst::jmp_if_nullish(dup_reg, short_label));
+                        }
+                        let key_reg = self.emit_expression(&member.expression, ctx)?;
+                        ctx.inst(Inst::new(
+                            OpCode::DELETE_PROP_DYNAMIC,
+                            Operand::Reg(obj_reg),
+                            Operand::Reg(obj_reg),
+                            Operand::Reg(key_reg),
+                        ));
+                        obj_reg
+                    }
+                    _ => return Err("invalid delete target".into()),
+                };
+                let end_label = ctx.next_label_id();
+                ctx.inst(Inst::jmp(end_label));
+                ctx.labels.set_label_pos(short_label, ctx.insts.len());
+                let true_idx = ctx.add_constant(Constant::Boolean(true));
+                ctx.inst(Inst::load_const(Operand::Reg(result_reg), true_idx));
+                ctx.labels.set_label_pos(end_label, ctx.insts.len());
+                Ok(result_reg)
+            }
+            _ => {
+                // 非引用操作数恒 true，但操作数本身须先求值：副作用与操作数
+                // 求值期错误（如未声明基引用）不被吞。
+                let _ = self.emit_expression(operand, ctx)?;
+                let idx = ctx.add_constant(Constant::Boolean(true));
+                let reg = ctx.alloc_reg();
+                ctx.inst(Inst::load_const(Operand::Reg(reg), idx));
+                Ok(reg)
+            }
         }
     }
 
