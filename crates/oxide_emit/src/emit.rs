@@ -1874,9 +1874,10 @@ impl Emitter {
             if matches!(stmt, Statement::FunctionDeclaration(_)) {
                 continue; // Already emitted above
             }
-            match self.emit_statement(stmt, &mut ctx)? {
-                Some(r) => last_result = Some(r),
-                None => last_result = None,
+            // 空完成值语句（变量/函数等声明）不覆写此前结果：保留最后一个非空
+            // 完成值，与函数体 emit_body_stmts 的收敛口径一致。
+            if let Some(r) = self.emit_statement(stmt, &mut ctx)? {
+                last_result = Some(r);
             }
         }
         if let Some(r) = last_result {

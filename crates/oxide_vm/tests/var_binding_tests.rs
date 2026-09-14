@@ -23,7 +23,8 @@ fn eval(source: &str) -> String {
 
 #[test]
 fn eval_var_declaration() {
-    assert_eq!(eval("var x = 42"), "42");
+    // 变量声明语句完成值按规范为空记录（对外 undefined），不回填初始化器值。
+    assert_eq!(eval("var x = 42"), "undefined");
 }
 
 #[test]

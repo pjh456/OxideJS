@@ -18,10 +18,10 @@ impl Emitter {
     }
 
     /// 变量声明本体：供 export 声明复用（导出声明需先按普通声明 emit，再就地注册导出值）。
+    /// 变量声明语句完成值按规范为空记录（对外 undefined），不回填结果寄存器。
     pub(crate) fn emit_variable_declaration(
         &self, decl: &VariableDeclaration, ctx: &mut CompileCtx,
     ) -> Result<Option<u32>, String> {
-        let mut r = None;
         for d in &decl.declarations {
             let is_const = matches!(decl.kind, VariableDeclarationKind::Const);
             if is_const && d.init.is_none() {
@@ -39,7 +39,6 @@ impl Emitter {
                         }
                     }
                 }
-                r = Some(val_reg);
             } else {
                 let BindingPattern::BindingIdentifier(bi) = &d.id else {
                     return Err("destructuring declaration requires an initializer".into());
@@ -82,9 +81,8 @@ impl Emitter {
                     ctx.inst(Inst::new(OpCode::STORE_VAR, Operand::Reg(target_reg), Operand::Reg(tmp), Operand::None));
                 }
                 ctx.init_var(bi.name.as_str());
-                r = Some(var_reg);
             }
         }
-        Ok(r)
+        Ok(None)
     }
 }
