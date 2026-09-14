@@ -3844,6 +3844,58 @@ fn plain_time_ctor_negative_time_components_throw_range_error() {
 }
 
 #[test]
+fn plain_time_with_reject_invalid_components_throw_range_error() {
+    let mut vm = Vm::new();
+    // 红形钉：with 的 reject 语义对越界分量先查范围——负值与上界越界均抛
+    // RangeError（红形为 with 未绑定或负值被饱和吞掉时不抛/抛错类型不符）；
+    // constrain 钳制臂与 undefined 字段不覆盖面同时锁定。
+    let r = eval(
+        &mut vm,
+        "(() => {
+           const t = new Temporal.PlainTime(12, 34, 56, 123, 456, 789);
+           const kind = (fn) => { try { fn(); return 'no'; } catch (e) { return e.constructor.name; } };
+           const val = (fn) => { try { return String(fn()); } catch (e) { return e.constructor.name; } };
+           return [
+             kind(() => t.with({ hour: -1 }, { overflow: 'reject' })),
+             kind(() => t.with({ nanosecond: -1 }, { overflow: 'reject' })),
+             kind(() => t.with({ hour: 24 }, { overflow: 'reject' })),
+             kind(() => t.with({ minute: 60 }, { overflow: 'reject' })),
+             val(() => t.with({ hour: 25, minute: 90 }, { overflow: 'constrain' }).toString()),
+             val(() => t.with({ hour: 18, second: undefined }).toString()),
+           ].join('|');
+         })()",
+    )
+    .unwrap();
+    assert_eq!(
+        str_val(&vm, r),
+        "RangeError|RangeError|RangeError|RangeError|23:59:56.123456789|18:34:56.123456789"
+    );
+}
+
+#[test]
+fn zoned_date_time_with_reject_negative_time_component_throws_range_error() {
+    let mut vm = Vm::new();
+    // 红形钉：zdt.with 的 reject 臂负合并分量须先查范围后转换（截断后为负的
+    // 分量直接 RangeError），红形为负值经饱和归 0 逃过检查静默产出错位对象；
+    // constrain 臂钳制到 0 的规范语义同钉锁定。
+    let r = eval(
+        &mut vm,
+        "(() => {
+           const z = new Temporal.ZonedDateTime(1577880000_000_000_000n, 'UTC');
+           const kind = (fn) => { try { fn(); return 'no'; } catch (e) { return e.constructor.name; } };
+           const val = (fn) => { try { return String(fn()); } catch (e) { return e.constructor.name; } };
+           return [
+             kind(() => z.with({ hour: -1 }, { overflow: 'reject' })),
+             kind(() => z.with({ nanosecond: -1 }, { overflow: 'reject' })),
+             val(() => z.with({ hour: -1 }, { overflow: 'constrain' }).hour),
+           ].join('|');
+         })()",
+    )
+    .unwrap();
+    assert_eq!(str_val(&vm, r), "RangeError|RangeError|0");
+}
+
+#[test]
 fn plain_date_time_ctor_undefined_time_components_default() {
     let mut vm = Vm::new();
     // 红形钉：显式 undefined 时间分量（时/分/秒/毫秒）与缺参同义取默认 0，

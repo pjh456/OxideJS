@@ -2321,6 +2321,9 @@ pub fn zoned_date_time_with<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult 
             merged.nanosecond.clamp(0.0, 999.0),
         )
     } else {
+        // reject 语义须先做范围校验再截断：负分量或超上限分量立即抛错，
+        // 不允许 f64→u32 饱和把负值静默归 0 而逃过范围检查。
+        let limits = [23.0, 59.0, 59.0, 999.0, 999.0, 999.0];
         let values = [
             merged.hour,
             merged.minute,
@@ -2329,14 +2332,7 @@ pub fn zoned_date_time_with<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult 
             merged.microsecond,
             merged.nanosecond,
         ];
-        if !valid_plain_time(
-            values[0] as u32,
-            values[1] as u32,
-            values[2] as u32,
-            values[3] as u32,
-            values[4] as u32,
-            values[5] as u32,
-        ) {
+        if values.iter().zip(limits.iter()).any(|(value, limit)| *value < 0.0 || *value > *limit) {
             return NativeResult::Err(crate::error::create_range_error(vm, "invalid time component"));
         }
         (values[0], values[1], values[2], values[3], values[4], values[5])
@@ -4723,6 +4719,92 @@ pub fn plain_time_microsecond<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResul
 /// `Temporal.PlainTime.prototype.nanosecond` getter。
 pub fn plain_time_nanosecond<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     plain_time_get(vm, args, |_, _, _, _, _, ns| ns)
+}
+
+/// `Temporal.PlainTime.prototype.with(temporalTimeLike [, options])`：替换
+/// receiver 的指定时间分量，返回新 PlainTime。
+///
+/// # 步骤
+/// 1. branding + ToTemporalTimeLike（非对象 / Temporal 实例 / calendar、
+///    timeZone 有定义 → TypeError；字段按字典序读 hour → microsecond →
+///    millisecond → minute → nanosecond → second，非数字 → TypeError，
+///    NaN/±Inf → RangeError）。
+/// 2. 分量全 undefined → TypeError。
+/// 3. options → overflow（缺省 constrain）。
+/// 4. RegulateTime：constrain 钳制；reject 先校验范围再截断（负 / 超界分量
+///    立即抛 RangeError）。
+/// 5. 合并分量算午夜后纳秒，构造新 PlainTime。
+///
+/// # 边界与前提
+/// - 字段读取先于选项解析（options-wrong-type 先报字段错误，与 ZDT with 同口径）。
+/// - receiver 分量取自午夜后纳秒槽；partial 中 undefined 的分量保留 receiver 值。
+pub fn plain_time_with<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let ptr = native_try!(receiver_obj(vm, args));
+    let obj = unsafe { &*ptr };
+    native_try!(ensure_plain_time(vm, obj));
+    let value = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
+    native_try!(reject_partial_object_with_calendar_or_time_zone(vm, value));
+
+    // 字段读取按字典序，undefined 不覆盖；number-only 路径（Symbol/BigInt →
+    // TypeError，NaN/±Inf → RangeError）。
+    let bag = unsafe { &*value.as_js_object_ptr() };
+    let read = |vm: &mut H, name: &str| -> Result<Option<f64>, JsValue> {
+        let raw = temporal_option_value(vm, bag, value, name)?;
+        if raw.is_undefined() {
+            Ok(None)
+        } else {
+            Ok(Some(temporal_number_component(vm, raw)?))
+        }
+    };
+    let hour = native_try!(read(vm, "hour"));
+    let microsecond = native_try!(read(vm, "microsecond"));
+    let millisecond = native_try!(read(vm, "millisecond"));
+    let minute = native_try!(read(vm, "minute"));
+    let nanosecond = native_try!(read(vm, "nanosecond"));
+    let second = native_try!(read(vm, "second"));
+    if [hour, microsecond, millisecond, minute, nanosecond, second].iter().all(|c| c.is_none()) {
+        return NativeResult::Err(crate::error::create_type_error(vm, "no properties present"));
+    }
+
+    // options：字段读取完成后解析 overflow。
+    let constrain = native_try!(temporal_overflow(vm, args));
+
+    // RegulateTime：partial 有定义的分量覆盖 receiver 分量。
+    let (recv_hour, recv_minute, recv_second, recv_ms, recv_us, recv_ns) =
+        plain_time_components(get_double_prop(obj, 0));
+    let merged = [
+        hour.unwrap_or(recv_hour as f64),
+        minute.unwrap_or(recv_minute as f64),
+        second.unwrap_or(recv_second as f64),
+        millisecond.unwrap_or(recv_ms as f64),
+        microsecond.unwrap_or(recv_us as f64),
+        nanosecond.unwrap_or(recv_ns as f64),
+    ];
+    let values = if constrain {
+        [
+            merged[0].clamp(0.0, 23.0),
+            merged[1].clamp(0.0, 59.0),
+            merged[2].clamp(0.0, 59.0),
+            merged[3].clamp(0.0, 999.0),
+            merged[4].clamp(0.0, 999.0),
+            merged[5].clamp(0.0, 999.0),
+        ]
+    } else {
+        // reject 语义须先做范围校验再截断：负分量或超上限分量立即抛错，
+        // 不允许 f64→u32 饱和把负值静默归 0 而逃过范围检查。
+        let limits = [23.0, 59.0, 59.0, 999.0, 999.0, 999.0];
+        if merged.iter().zip(limits.iter()).any(|(v, limit)| *v < 0.0 || *v > *limit) {
+            return NativeResult::Err(crate::error::create_range_error(vm, "invalid time component"));
+        }
+        merged
+    };
+    let total_ns = values[0] * 3_600_000_000_000.0
+        + values[1] * 60_000_000_000.0
+        + values[2] * 1_000_000_000.0
+        + values[3] * 1_000_000.0
+        + values[4] * 1_000.0
+        + values[5];
+    make_plain_time(vm, total_ns)
 }
 
 /// 按是否含秒与小数位格式化当日纳秒为 `HH:MM:SS[.frac]`。

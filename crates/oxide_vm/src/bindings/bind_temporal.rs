@@ -722,6 +722,7 @@ pub fn bind_temporal(core: &Arc<KernelCore>, session: &KernelSession, global: &m
             ("add", oxide_builtins::temporal::plain_time_add::<crate::vm::Vm> as *const (), 1),
             ("subtract", oxide_builtins::temporal::plain_time_subtract::<crate::vm::Vm> as *const (), 1),
             ("round", oxide_builtins::temporal::plain_time_round::<crate::vm::Vm> as *const (), 1),
+            ("with", oxide_builtins::temporal::plain_time_with::<crate::vm::Vm> as *const (), 1),
         ],
     );
     bind_well_known_data_property(
