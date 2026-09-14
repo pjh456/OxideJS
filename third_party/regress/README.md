@@ -61,11 +61,33 @@ This directory is a vendored copy of upstream `regress 0.11.1` (source at
 registry, licenses preserved in `LICENSE-APACHE` / `LICENSE-MIT`), consumed via
 the workspace root `[patch.crates-io]` instead of the registry copy.
 
-Single deviation from upstream: the Unicode script value table
-(`src/unicodetables.rs`) gains the `Unknown` (`Zzzz`) value — script and
-script-extensions interval sets covering the unassigned code points — plus its
-name/alias arm in the script-value parser. Upstream 0.11.1 lacks the value,
-which rejects spec-legal patterns such as `\p{Script=Unknown}`; upstream 0.12.0
-has it, but the 0.11.1 → 0.12.0 delta changes broader parser/matcher behavior
-this project does not want to absorb. All other files are unmodified upstream
-0.11.1.
+Deviations from upstream (the remaining vendored files are bit-for-bit
+upstream 0.11.1; upstream repo-only files — `tests/`, `.github/`,
+`Cargo.toml.orig`, `perf.md`, `regress_dfa_plan.txt`, `rustfmt.toml` — are
+not vendored):
+
+1. `src/unicodetables.rs` gains the `Unknown` (`Zzzz`) script value —
+   script and script-extensions interval sets covering the unassigned code
+   points — plus its name/alias arm in the script-value parser. Purely
+   additive: no upstream line is modified. Upstream 0.11.1 lacks the value,
+   which rejects spec-legal patterns such as `\p{Script=Unknown}`; upstream
+   0.12.0 has it, but the 0.11.1 → 0.12.0 delta changes broader
+   parser/matcher behavior this project does not want to absorb.
+2. The byte-literal optimization gate moves from compile-time `cfg` (the
+   `utf16` feature) to a per-compilation runtime flag, so enabling `utf16`
+   no longer disables the byte passes on the str path:
+   - `src/optimizer.rs` — the literal-byte pass is gated by the new
+     `optimize_with_byte_literals(ire, byte_literals)` entry; `optimize`
+     keeps the previous behavior as its wrapper.
+   - `src/classicalbacktrack.rs` — the start-predicate dispatch in the
+     matcher's next-match loop switches on input encoding at runtime: byte
+     inputs (UTF-8/ASCII) keep the anchored/byte-positioning fast paths,
+     unit inputs (UTF-16/UCS-2) fall back to position-by-position tries.
+   - `src/api.rs` — `Regex` retains the pattern's source code-point
+     sequence plus a lazily materialized unit-side IR (`OnceLock`),
+     re-parsed with the byte-literal pass disabled on first unit-input
+     entry; the unit entry points compile through that IR.
+3. `Cargo.toml` — the upstream workspace-members table (for the repo's
+   `regress-tool`/`gen-unicode` subdirectories, not vendored here) is
+   replaced by a standalone empty `[workspace]` table, and the `utf16`
+   feature comment is refreshed to describe the runtime gate.
