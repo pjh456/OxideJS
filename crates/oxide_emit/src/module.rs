@@ -148,15 +148,18 @@ impl Emitter {
         // ES module 顶层恒严格模式（模块代码是严格模式代码，嵌套函数经父 ctx 继承）。
         ctx.is_strict = true;
         let mut path_stack = vec![module_path.to_string()];
-        self.emit_module_into_ctx(program, module_path, loader, &mut path_stack, &mut ctx)?;
+        self.emit_module_into_ctx(program, module_path, loader, &mut path_stack, &mut ctx, true)?;
         Ok(ctx.assemble_ir(ParamLayout { base: 0, count: 0 }, None))
     }
 
     /// 模块体 emit（顶层与依赖模块共用入口）。
+    ///
+    /// `top_level` 区分收尾返回口径：顶层模块求值完成值按规范为空记录
+    /// （对外 undefined），依赖模块经 `__moduleEval` 以返回值作命名空间对象。
     #[allow(clippy::too_many_arguments)]
     fn emit_module_into_ctx(
         &self, program: &oxide_parser::Program, module_path: &str, loader: &mut dyn ModuleSourceLoader,
-        path_stack: &mut Vec<String>, ctx: &mut CompileCtx,
+        path_stack: &mut Vec<String>, ctx: &mut CompileCtx, top_level: bool,
     ) -> Result<(), String> {
         let body = &program.body;
 
@@ -387,7 +390,16 @@ impl Emitter {
 
         // —— 收尾：封冻命名空间并返回（顶层 RETURN 亦终止 run）——
         self.emit_module_call(ctx, "__moduleSeal", &[ns_reg])?;
-        ctx.inst(Inst::ret(Operand::Reg(ns_reg), 0, 0));
+        if top_level {
+            // 顶层模块求值完成值为空记录：对外表现 undefined（依赖面不得
+            // 同口径——__moduleEval 以依赖返回值作命名空间，contract 不可破）。
+            let undef_idx = ctx.add_constant(Constant::Undefined);
+            let r = ctx.alloc_reg();
+            ctx.inst(Inst::load_const(Operand::Reg(r), undef_idx));
+            ctx.inst(Inst::ret(Operand::Reg(r), 0, 0));
+        } else {
+            ctx.inst(Inst::ret(Operand::Reg(ns_reg), 0, 0));
+        }
         Ok(())
     }
 
@@ -406,7 +418,7 @@ impl Emitter {
         ctx.is_global_scope = false;
         // 依赖模块经 parse_module 解析，顶层恒严格模式。
         ctx.is_strict = true;
-        self.emit_module_into_ctx(&program, &resolved.path, loader, path_stack, &mut ctx)?;
+        self.emit_module_into_ctx(&program, &resolved.path, loader, path_stack, &mut ctx, false)?;
         Ok(ctx.assemble_ir(ParamLayout { base: 0, count: 0 }, None))
     }
 
