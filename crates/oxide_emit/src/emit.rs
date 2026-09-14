@@ -1721,7 +1721,7 @@ impl Emitter {
     ///
     /// # 边界与前提
     /// - 仅普通脚本调用（`is_eval_script` 面由调用点门控）；eval 动态臂与
-    ///   80 门禁（三常量编译期面）零触碰。
+    ///   eval 三常量编译期门禁零触碰。
     /// - 仅遍历语句列表直接子级具名函数声明（生成器/异步声明同节点类型，天然
     ///   覆盖）；块内函数声明与 `export default function` 不入全局检查面。
     pub(crate) fn emit_gdi_func_decl_checks(&self, stmts: &[Statement], ctx: &mut CompileCtx) {
@@ -1781,7 +1781,7 @@ impl Emitter {
 
         // GDI step 9 函数臂检查阶段（运行期，先于任何绑定实例化）：普通脚本
         // 顶层函数声明撞既有不可配置全局属性抛 TypeError，sloppy/strict 同形。
-        // eval 面零触碰：静态三常量面由上方 80 门禁编译期拦，动态臂另归口。
+        // eval 面零触碰：静态三常量面由上方 eval 三常量编译期门禁拦，动态臂另归口。
         if !ctx.is_eval_script {
             self.emit_gdi_func_decl_checks(&program.body, &mut ctx);
         }
