@@ -3739,3 +3739,80 @@ fn zdt_start_of_day_range_and_direct_read_prop_shape() {
         "true|true|true|true|true|true|true|true|true|true|true|true|true|true|true|true|true|true|true|true|true|true|true|true|true|true|true|true"
     );
 }
+
+// -- PlainDate / PlainTime 构造器数字分量转换面 --
+
+#[test]
+fn plain_date_ctor_number_component_rejects() {
+    let mut vm = Vm::new();
+    // 红形钉：BigInt/Symbol 分量 → TypeError；NaN/不可解析串/±Inf → RangeError；
+    // 缺参（全缺与部分缺）→ RangeError；非 new 调用 → TypeError。
+    let r = eval(
+        &mut vm,
+        "(() => {
+           const kind = (fn) => { try { fn(); return 'no'; } catch (e) { return e.constructor.name; } };
+           return [
+             kind(() => new Temporal.PlainDate(2020n, 1, 1)),
+             kind(() => new Temporal.PlainDate(Symbol(), 1, 1)),
+             kind(() => new Temporal.PlainDate(undefined, 1, 1)),
+             kind(() => new Temporal.PlainDate(2020, 'invalid', 1)),
+             kind(() => new Temporal.PlainDate(Infinity, 1, 1)),
+             kind(() => new Temporal.PlainDate(2020, 1, -Infinity)),
+             kind(() => new Temporal.PlainDate()),
+             kind(() => new Temporal.PlainDate(2021)),
+             kind(() => Temporal.PlainDate(2020, 1, 1)),
+           ].join('|');
+         })()",
+    )
+    .unwrap();
+    assert_eq!(
+        str_val(&vm, r),
+        "TypeError|TypeError|RangeError|RangeError|RangeError|RangeError|RangeError|RangeError|TypeError"
+    );
+}
+
+#[test]
+fn plain_date_ctor_truncation_and_green_forms() {
+    let mut vm = Vm::new();
+    // 绿形钉：小数截断、字符串数字经 ToNumber、缺省日历 iso8601。
+    let r = eval(
+        &mut vm,
+        "(() => {
+           return [
+             new Temporal.PlainDate(2020.6, 11.7, 24.1).toString(),
+             new Temporal.PlainDate('2020', 1, 1).toString(),
+             new Temporal.PlainDate(2020, 2, 29).toString(),
+           ].join('|');
+         })()",
+    )
+    .unwrap();
+    assert_eq!(str_val(&vm, r), "2020-11-24|2020-01-01|2020-02-29");
+}
+
+#[test]
+fn plain_time_ctor_number_component_rejects_and_undefined_default() {
+    let mut vm = Vm::new();
+    // 红形钉：BigInt/Symbol → TypeError；不可解析串/±Inf → RangeError。
+    // 绿形钉：显式 undefined 与缺参时间分量取默认 0（*-undefined.js 现绿面不翻红）。
+    let r = eval(
+        &mut vm,
+        "(() => {
+           const kind = (fn) => { try { fn(); return 'no'; } catch (e) { return e.constructor.name; } };
+           return [
+             kind(() => new Temporal.PlainTime(1n, 0, 0)),
+             kind(() => new Temporal.PlainTime(Symbol(), 0, 0)),
+             kind(() => new Temporal.PlainTime(0, 0, 0, 0, 0, 'invalid')),
+             kind(() => new Temporal.PlainTime(Infinity, 0, 0)),
+             kind(() => new Temporal.PlainTime(0, 0, -Infinity)),
+             new Temporal.PlainTime(undefined).hour,
+             new Temporal.PlainTime(1, undefined, undefined, 1, undefined, undefined).toString(),
+             new Temporal.PlainTime(2, undefined).toString(),
+           ].join('|');
+         })()",
+    )
+    .unwrap();
+    assert_eq!(
+        str_val(&vm, r),
+        "TypeError|TypeError|RangeError|RangeError|RangeError|0|01:00:00.001|02:00:00"
+    );
+}

@@ -4494,9 +4494,20 @@ pub fn plain_date_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResul
             "Class constructor Temporal.PlainDate cannot be invoked without 'new'",
         ));
     }
-    let year = if args.len() > 1 { to_number(vm.reg(args[1])).trunc() as i32 } else { 0 };
-    let month = if args.len() > 2 { to_number(vm.reg(args[2])).trunc() as u32 } else { 1 };
-    let day = if args.len() > 3 { to_number(vm.reg(args[3])).trunc() as u32 } else { 1 };
+    // 分量转换序：year → month → day；缺参归 undefined 经 number-only 路径
+    // 统一落 RangeError（日期分量无缺省值，缺参不是合法分量）。
+    let year = native_try!(temporal_number_component(
+        vm,
+        if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() },
+    )) as i32;
+    let month = native_try!(temporal_number_component(
+        vm,
+        if args.len() > 2 { vm.reg(args[2]) } else { JsValue::undefined() },
+    )) as u32;
+    let day = native_try!(temporal_number_component(
+        vm,
+        if args.len() > 3 { vm.reg(args[3]) } else { JsValue::undefined() },
+    )) as u32;
     if !valid_iso_date(year, month, day) {
         return NativeResult::Err(crate::error::create_range_error(vm, "invalid ISO date"));
     }
@@ -4604,19 +4615,22 @@ pub fn plain_time_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResul
             "Class constructor Temporal.PlainTime cannot be invoked without 'new'",
         ));
     }
-    let get = |i: usize, default: f64| -> f64 {
-        if args.len() > i {
-            to_number(vm.reg(args[i])).trunc()
-        } else {
-            default
+    // 时间分量：缺参或显式 undefined 取默认 0（undefined 是合法分量，与 PD
+    // 缺参抛错相反）；其余经 number-only 路径（Symbol/BigInt → TypeError，
+    // NaN/±Inf/不可解析串 → RangeError）。
+    let mut get = |i: usize| -> Result<f64, JsValue> {
+        let raw = if args.len() > i { vm.reg(args[i]) } else { JsValue::undefined() };
+        if raw.is_undefined() {
+            return Ok(0.0);
         }
+        temporal_number_component(vm, raw)
     };
-    let hour = get(1, 0.0) as u32;
-    let minute = get(2, 0.0) as u32;
-    let second = get(3, 0.0) as u32;
-    let ms = get(4, 0.0) as u32;
-    let us = get(5, 0.0) as u32;
-    let ns = get(6, 0.0) as u32;
+    let hour = native_try!(get(1)) as u32;
+    let minute = native_try!(get(2)) as u32;
+    let second = native_try!(get(3)) as u32;
+    let ms = native_try!(get(4)) as u32;
+    let us = native_try!(get(5)) as u32;
+    let ns = native_try!(get(6)) as u32;
     if !valid_plain_time(hour, minute, second, ms, us, ns) {
         return NativeResult::Err(crate::error::create_range_error(vm, "invalid time component"));
     }
