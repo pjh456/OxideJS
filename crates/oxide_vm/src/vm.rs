@@ -859,6 +859,19 @@ impl Vm {
             .map(|m| m.as_ref())
     }
 
+    /// 活动帧所属代际平表里 `active_flat_id` 指向的模块条目（镜像槽同步 /
+    /// 重载的名集载体）。
+    ///
+    /// # 边界与前提
+    /// - 活动代际表在执行期恒在注册表中（首 run 前为预登记的空表占位），
+    ///   `active_flat_id` 越界返回 None（调用方按无模块处理）。
+    pub(crate) fn active_module(&self) -> Option<&CompiledModule> {
+        self.active_table()
+            .modules
+            .get(self.active_flat_id as usize)
+            .map(|m| m.as_ref())
+    }
+
     /// 子模块表注册表的当前代际条目总数（run 边界回收行为的测试钉）。
     pub fn table_gen_count(&self) -> usize {
         self.tables.len()
@@ -1772,20 +1785,7 @@ impl Vm {
         self.bytecode = sub_bytecode;
         self.activate_immutables(gen, sub_idx, &sub.constants);
         self.cell_stack.push(Vec::with_capacity(sub.cells_needed as usize));
-        for (name, reg) in &sub.builtin_reg_map.clone() {
-            let si = self.kernel_core.perm_interner().intern(name.as_str()).0;
-            let global = self.session.global_object();
-            if let Some(pos) = self.kernel_core.shape_forge().lookup_position(global.shape_id(), si) {
-                self.regs[*reg as usize] = global.get_prop_at(pos);
-            } else {
-                vm_debug!(
-                    "push_frame: builtin '{}' reg={} NOT on global object (stays {})",
-                    name,
-                    reg,
-                    self.regs[*reg as usize]
-                );
-            }
-        }
+        self.reload_builtin_mirror_slots(&sub.builtin_reg_map);
 
         self.active_reg_limit = sub_n_registers.max(1);
         self.pc = 0;
@@ -2632,6 +2632,9 @@ impl oxide_runtime_api::VmHost for Vm {
     }
     fn set_or_create_prop_value(&mut self, obj: &mut JsObject, prop_name_si: u32, val: JsValue) {
         self.set_or_create_prop_value(obj, prop_name_si, val)
+    }
+    fn sync_global_builtin_mirror(&mut self, obj: &JsObject, key_si: u32, val: JsValue) {
+        self.sync_global_builtin_mirror(obj, key_si, val)
     }
     fn lookup_str(&self, val: JsValue) -> Option<String> {
         self.lookup_str(val)

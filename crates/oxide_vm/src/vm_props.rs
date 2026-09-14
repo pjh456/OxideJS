@@ -152,6 +152,95 @@ impl Vm {
         None
     }
 
+    /// 全局 builtin 属性 A 侧写成功后反向同步当前帧镜像槽（成员写 / define /
+    /// delete 成功后调用）。
+    ///
+    /// # 边界与前提
+    /// - 仅当接收者为会话全局对象时生效：非全局写经指针判等短路（热路径成本
+    ///   = 一次指针比较）。
+    /// - 名集以活动模块 `builtin_reg_map` 为准（与编译期登记同源）：键不在表
+    ///   内即无镜像槽，不写。
+    /// # 副作用
+    /// - 写当前帧寄存器文件镜像槽。
+    /// # 注意事项
+    /// - 只可挂在真实 A 侧写发生之后；写失败路径（只读 no-op / 抛错）不得
+    ///   调用，否则污染镜像槽。
+    pub(crate) fn sync_global_builtin_mirror(&mut self, obj: &JsObject, key_si: u32, val: JsValue) {
+        if !std::ptr::eq(obj as *const JsObject, self.session.global_object().as_ptr()) {
+            return;
+        }
+        let Some(module) = self.active_module() else {
+            return;
+        };
+        for (name, reg) in &module.builtin_reg_map {
+            if self.kernel_core.perm_interner().intern(name.as_str()).0 == key_si {
+                self.regs[*reg as usize] = val;
+                return;
+            }
+        }
+    }
+
+    /// IC 命中快路径的防御变体（命中分支不解析键）：按 (shape, slot) 定位被
+    /// 写属性，自镜像名集反查键后同步。
+    ///
+    /// # 边界与前提
+    /// - 仅当写落在全局对象自身时生效：原型链目标命中（depth > 0）不改全局
+    ///   自身属性，不同步。
+    /// - 全局对象自构造起恒带 prop_meta，IC 命中分支对今日不可达；本挂点防
+    ///   该不变量被未来优化破坏后镜像静默失步。
+    pub(crate) fn sync_global_builtin_mirror_slot(
+        &mut self, obj: &JsObject, shape_id: u32, slot: u32, depth: u8, val: JsValue,
+    ) {
+        if !std::ptr::eq(obj as *const JsObject, self.session.global_object().as_ptr()) {
+            return;
+        }
+        if depth != 0 || shape_id != obj.shape_id() {
+            return;
+        }
+        let Some(module) = self.active_module() else {
+            return;
+        };
+        for (name, reg) in &module.builtin_reg_map {
+            let si = self.kernel_core.perm_interner().intern(name.as_str()).0;
+            if self.kernel_core.shape_forge().lookup_position(shape_id, si) == Some(slot) {
+                self.regs[*reg as usize] = val;
+                return;
+            }
+        }
+    }
+
+    /// 重载活动帧模块（`active_flat_id`）的 builtin 镜像槽：先按值取出名集再
+    /// 写寄存器，避免借用交叉。帧恢复 / 重执行边界调用。
+    pub(crate) fn reload_active_module_mirror_slots(&mut self) {
+        let map = self.active_module().map(|m| m.builtin_reg_map.clone()).unwrap_or_default();
+        self.reload_builtin_mirror_slots(&map);
+    }
+
+    /// 从全局对象 A 侧重载模块 builtin 名集的镜像槽：属性在位取原始存储值，
+    /// 缺位写 undefined。
+    ///
+    /// # 边界与前提
+    /// - 缺位臂语义为"写 undefined"，各入口（run / 帧 / inline / 恢复）统一，
+    ///   使成员形删除后的裸读与入口预载看到同一值。
+    /// # 副作用
+    /// - 只写镜像槽寄存器（槽下标受编译期登记约束）。
+    pub(crate) fn reload_builtin_mirror_slots(&mut self, map: &[(String, u32)]) {
+        if map.is_empty() {
+            return;
+        }
+        let global = self.session.global_object();
+        for (name, reg) in map {
+            let si = self.kernel_core.perm_interner().intern(name.as_str()).0;
+            let val = self
+                .kernel_core
+                .shape_forge()
+                .lookup_position(global.shape_id(), si)
+                .map(|pos| global.get_prop_at(pos))
+                .unwrap_or_else(JsValue::undefined);
+            self.regs[*reg as usize] = val;
+        }
+    }
+
     /// `strict` 为写方（执行赋值的那个函数/脚本）的严格模式：写失败时严格抛
     /// TypeError，sloppy 静默 no-op（ECMA-262 OrdinarySetOwnProperty 失败分支）。
     pub(crate) fn ordinary_set(
@@ -285,6 +374,7 @@ impl Vm {
             }
             // pos 是存储索引（get_own_property_slot 对数组已加元素区偏移）。
             obj.set_prop_storage(pos as usize, val);
+            self.sync_global_builtin_mirror(obj, prop_name_si, val);
             return Ok(());
         }
 
@@ -469,11 +559,15 @@ impl Vm {
         }
         if crate::ic_helper::ic_set_hit_own(obj, &self.bytecode, ext_pc, val) {
             self.profiling.record_ic_hit();
+            // IC 写命中快路径防御：今日全局对象带 meta 不可达，防不变量被破坏
+            // 后静默失步。
+            self.sync_global_builtin_mirror(obj, prop_name_si, val);
             return Ok(());
         }
         self.profiling.record_ic_miss();
         if let Some(pos) = self.kernel_core.shape_forge().lookup_position(obj.shape_id(), prop_name_si) {
             obj.set_prop_shape(pos, val);
+            self.sync_global_builtin_mirror(obj, prop_name_si, val);
             crate::ic_helper::write_ic_back(self.bytecode_mut(), ext_pc, obj.shape_id(), pos, 0);
         } else if self.named_prop_create_needs_ordinary_set(obj, prop_name_si) {
             // 数组 length / 整数索引键写新属性：分流回 ordinary_set（ArraySetLength /
@@ -533,6 +627,7 @@ impl Vm {
         obj.set_shape_id(new_shape_id);
         obj.push_prop(val);
         obj.bump_generation();
+        self.sync_global_builtin_mirror(obj, prop_name_si, val);
         crate::ic_helper::write_ic_back(self.bytecode_mut(), ext_pc, new_shape_id, slot, 0);
         self.kernel_core.prop_forge().upsert(
             new_shape_id,
@@ -580,6 +675,7 @@ impl Vm {
         }
         if let Some(pos) = self.kernel_core.shape_forge().lookup_position(obj.shape_id(), prop_name_si) {
             obj.set_prop_shape(pos, val);
+            self.sync_global_builtin_mirror(obj, prop_name_si, val);
         } else {
             // 不可扩展对象禁止新增命名属性（兜底路径，常规入口已拦截）。
             if !obj.is_extensible() {
@@ -590,6 +686,7 @@ impl Vm {
             // 数组对象：属性追加到 hash_props 属性区（元素之后），array_prop_count 不变。
             obj.push_prop(val);
             obj.bump_generation();
+            self.sync_global_builtin_mirror(obj, prop_name_si, val);
         }
     }
 
@@ -662,6 +759,7 @@ impl Vm {
         obj.set_prop_storage(pos, val);
         obj.set_data_meta(pos, attributes);
         obj.bump_generation();
+        self.sync_global_builtin_mirror(obj, prop_name_si, val);
         Ok(())
     }
 
@@ -713,6 +811,9 @@ impl Vm {
         obj.set_prop_storage(pos, JsValue::undefined());
         obj.set_accessor_meta(pos, get, set, attributes);
         obj.bump_generation();
+        // accessor 化同步原始存储值（undefined），与入口预载读裸槽同不变式；
+        // getter 穿透属镜像模型结构残面，不在本挂点扩面。
+        self.sync_global_builtin_mirror(obj, prop_name_si, JsValue::undefined());
         Ok(())
     }
 

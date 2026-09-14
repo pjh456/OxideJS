@@ -177,6 +177,15 @@ pub trait VmHost {
         &mut self, obj: &mut JsObject, prop_name_si: u32, get: JsValue, set: JsValue, attributes: PropAttributes,
     ) -> Result<(), String>;
     fn set_or_create_prop_value(&mut self, obj: &mut JsObject, prop_name_si: u32, val: JsValue);
+    /// 全局 builtin 属性 A 侧写/删成功后，把当前帧对应镜像槽反向同步为 `val`
+    ///（维护"槽 = A 侧原始存储"不变式）。
+    ///
+    /// # 边界与前提
+    /// - `obj` 非会话全局对象时立即 no-op（接收者指针判等，热路径零额外成本）。
+    /// - 键未登记在活动模块 builtin 镜像名集时无槽可写，no-op。
+    /// # 副作用
+    /// - 写当前帧寄存器文件的镜像槽。
+    fn sync_global_builtin_mirror(&mut self, obj: &JsObject, key_si: u32, val: JsValue);
 
     // 查找 / 强制转换
     fn lookup_str(&self, val: JsValue) -> Option<String>;

@@ -255,6 +255,9 @@ pub fn delete_own_property<H: VmHost>(vm: &mut H, obj: &mut JsObject, key_si: u3
         all_keys.extend(walk_own_symbol_keys(vm, obj));
     }
     let Some(delete_pos) = all_keys.iter().find(|(si, _)| *si == key_si).map(|(_, pos)| *pos) else {
+        // 属性缺失：delete 按规范返 true，镜像槽同步 undefined 保持
+        // "槽 = A 侧原始存储"不变式（与入口预载缺位语义幂等）。
+        vm.sync_global_builtin_mirror(obj, key_si, JsValue::undefined());
         return true;
     };
     // walk_own_keys 已返回绝对存储索引（数组含元素区偏移），直接使用。
@@ -319,6 +322,9 @@ pub fn delete_own_property<H: VmHost>(vm: &mut H, obj: &mut JsObject, key_si: u3
         }
     }
     obj.bump_generation();
+    // 删除成功：镜像槽同步 undefined（成员形删除 / Reflect.deleteProperty /
+    // 0x9C 清槽同源收口，后两者对此幂等）。
+    vm.sync_global_builtin_mirror(obj, key_si, JsValue::undefined());
     true
 }
 

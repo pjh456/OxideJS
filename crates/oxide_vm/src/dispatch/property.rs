@@ -419,6 +419,9 @@ impl Vm {
         {
             self.profiling.record_ic_hit();
             ic_trace!("IC_SET hit shape={} slot={} depth={}", cached_shape_id, cached_slot, cached_depth);
+            // IC 命中快路径防御：今日全局对象带 meta 不可达，防 meta 不变量
+            // 被未来优化破坏后镜像静默失步（键由 (shape, slot) 反查）。
+            self.sync_global_builtin_mirror_slot(obj, cached_shape_id, cached_slot, cached_depth, value);
             return Ok(());
         }
 
@@ -443,6 +446,7 @@ impl Vm {
             self.profiling.record_ic_miss();
             prop_cache_miss();
             obj.set_prop_shape(pos, value);
+            self.sync_global_builtin_mirror(obj, prop_name_si, value);
             ic_helper::write_ic_back(self.bytecode_mut(), ic_pc, obj.shape_id(), pos, 0);
             ic_debug!("IC_SET write-back shape={} slot={}", obj.shape_id(), pos);
         } else {

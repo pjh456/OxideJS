@@ -331,6 +331,9 @@ impl Vm {
         let vm = self;
         let _window_regs: Vec<JsValue> = Vec::new();
         inline_core_fields!(vm, saved, inline_restore, _window_regs);
+        // 窗口回拷已复活调用方陈旧镜像槽：重载调用方模块的 builtin 名集
+        // （active_flat_id 已随宏回写还原到调用方）。
+        vm.reload_active_module_mirror_slots();
     }
 
     /// 首次执行的 VM 就绪：清空执行核心（regs/pc/bytecode/各栈段/迭代器/内联态），
@@ -459,13 +462,7 @@ impl Vm {
             receiver
         };
         self.regs[255] = JsValue::undefined();
-        for (name, reg) in &sub.builtin_reg_map {
-            let si = self.kernel_core.perm_interner().intern(name.as_str()).0;
-            let global = self.session.global_object();
-            if let Some(pos) = self.kernel_core.shape_forge().lookup_position(global.shape_id(), si) {
-                self.regs[*reg as usize] = global.get_prop_at(pos);
-            }
-        }
+        self.reload_builtin_mirror_slots(&sub.builtin_reg_map);
         let _ = callee;
 
         vm_trace!(
@@ -522,6 +519,9 @@ impl Vm {
         // active_reg_limit 还原为调用方真实值（caller_reg_limit 可能被存活上界截断）。
         self.active_reg_limit = frame.caller_active_reg_limit;
         self.pc = frame.return_addr;
+        // 窗口回拷已复活调用方陈旧镜像槽：重载调用方模块的 builtin 名集
+        // （active_flat_id 已随保存栈弹回还原到调用方）。
+        self.reload_active_module_mirror_slots();
     }
 
     /// 重新执行当前已加载的 bytecode：清空执行状态并重置 IC 缓存后再次 dispatch。
@@ -535,6 +535,8 @@ impl Vm {
         self.clear_execution_state();
         self.active_reg_limit = self.root_reg_limit;
         self.regs[254] = self.top_level_this;
+        // 寄存器文件清空后镜像槽须重载（与 run 入口同语义），否则裸读回陈旧值。
+        self.reload_active_module_mirror_slots();
         crate::ic_helper::clear_ic_caches(self.bytecode_mut());
         self.dispatch()
     }
@@ -606,13 +608,7 @@ impl Vm {
         self.root_reg_limit = module.n_registers.max(1);
         self.active_reg_limit = self.root_reg_limit;
 
-        for (name, reg) in &module.builtin_reg_map {
-            let si = self.kernel_core.perm_interner().intern(name.as_str()).0;
-            let global = self.session.global_object();
-            if let Some(pos) = self.kernel_core.shape_forge().lookup_position(global.shape_id(), si) {
-                self.regs[*reg as usize] = global.get_prop_at(pos);
-            }
-        }
+        self.reload_builtin_mirror_slots(&module.builtin_reg_map);
 
         // 顶层 this：脚本为全局对象（ECMA-262 全局执行上下文）；
         // ES module 顶层环境 GetThisBinding 返回 undefined。记录到
