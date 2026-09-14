@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use oxide_kernel::kernel::{KernelCore, KernelSession};
 use oxide_kernel::shape_forge::EMPTY_SHAPE_ID;
-use oxide_runtime_api::{to_string_full, NativeResult};
+use oxide_runtime_api::{to_units_full, NativeResult};
 use oxide_types::object::JsObject;
 use oxide_types::value::JsValue;
 
@@ -36,10 +36,12 @@ pub fn eval_script(vm: &mut Vm, args: &[u8]) -> NativeResult {
     if args.len() < 2 {
         return NativeResult::Ok(JsValue::undefined());
     }
-    let code = match to_string_full(vm.reg(args[1]), vm) {
-        Ok(s) => s,
+    let units = match to_units_full(vm.reg(args[1]), vm) {
+        Ok(u) => u,
         Err(e) => return NativeResult::Err(oxide_builtins::error::create_from_text(vm, &e)),
     };
+    // 动态路径源契约：源码域转义形态传源（见 `create_dynamic_function`）。
+    let code = oxide_kernel::string_forge::source_escape(&units);
     match vm.create_dynamic_function(&[], &code) {
         Ok(func) => {
             let global = JsValue::from_js_object(vm.session().global_object().as_ptr() as *mut JsObject);

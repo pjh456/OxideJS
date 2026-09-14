@@ -2,7 +2,7 @@ use oxide_kernel::shape_forge::EMPTY_SHAPE_ID;
 use oxide_types::object::{JsObject, NativeFnPtr, PropAttributes};
 use oxide_types::value::JsValue;
 
-use oxide_runtime_api::{to_integer_or_infinity, to_string_full, NativeResult, VmHost};
+use oxide_runtime_api::{to_integer_or_infinity, to_units_full, NativeResult, VmHost};
 
 fn invoke_target<H: VmHost>(vm: &mut H, target_val: JsValue, this_val: JsValue, arg_regs: &[u8]) -> NativeResult {
     let args: Vec<JsValue> = arg_regs.iter().map(|&r| vm.reg(r)).collect();
@@ -16,7 +16,8 @@ fn invoke_target<H: VmHost>(vm: &mut H, target_val: JsValue, this_val: JsValue, 
 /// `Function(...)` / `new Function(...)` 构造器：动态编译一个匿名函数。
 ///
 /// 除最后一个实参为函数体外，其余实参为形参名；无实参时函数体为空串。
-/// 编译成功返回函数对象，语法错误抛 SyntaxError，实参 ToString 失败抛 TypeError。
+/// 实参转单元序列后经 `source_escape` 源码域转义再动态编译。
+/// 编译成功返回函数对象，语法错误抛 SyntaxError，实参 ToPrimitive 失败抛 TypeError。
 pub fn function_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let arg_regs = &args[1..];
     let (param_regs, body_reg) = if arg_regs.is_empty() {
@@ -26,16 +27,18 @@ pub fn function_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult 
         (head.to_vec(), Some(tail[0]))
     };
 
+    // 动态路径源契约（见 `create_dynamic_function`）：形参名与函数体经
+    // `source_escape` 源码域转义后拼接 wrap 源码。
     let mut params = Vec::with_capacity(param_regs.len());
     for &r in &param_regs {
-        match to_string_full(vm.reg(r), vm) {
-            Ok(s) => params.push(s),
+        match to_units_full(vm.reg(r), vm) {
+            Ok(u) => params.push(oxide_kernel::string_forge::source_escape(&u)),
             Err(e) => return NativeResult::Err(to_string_error_value(vm, &e)),
         }
     }
     let body = match body_reg {
-        Some(r) => match to_string_full(vm.reg(r), vm) {
-            Ok(s) => s,
+        Some(r) => match to_units_full(vm.reg(r), vm) {
+            Ok(u) => oxide_kernel::string_forge::source_escape(&u),
             Err(e) => return NativeResult::Err(to_string_error_value(vm, &e)),
         },
         None => String::new(),

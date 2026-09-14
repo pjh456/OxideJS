@@ -77,16 +77,28 @@ fn set_prop_at(obj: *mut JsObject, idx: usize, val: JsValue) {
 /// 支持 backreference/lookaround/命名组/v-flag）；非法模式抛 SyntaxError。
 /// 编译结果存于对象的 native_fn 槽。
 pub fn regexp_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
-    let (pattern, flags) = if args.len() < 2 {
-        (String::new(), String::new())
-    } else if args.len() < 3 {
-        let pat = oxide_runtime_api::to_string(vm.reg(args[1]));
-        (pat, String::new())
+    // [[Source]]/[[Flags]] 是 ToString 结果的**单元序列**：`to_units_full` 直取
+    // （lossy `to_string` 会把孤立 surrogate 单元折成 FFFD，破坏 source 往返）。
+    // regress 编译用 lossy 文本（其匹配语义对孤立 surrogate 本即既有缺口，
+    // 不因本处改变）。
+    let pattern_units = if args.len() < 2 {
+        Vec::<u16>::new()
     } else {
-        let pat = oxide_runtime_api::to_string(vm.reg(args[1]));
-        let fl = oxide_runtime_api::to_string(vm.reg(args[2]));
-        (pat, fl)
+        match oxide_runtime_api::to_units_full(vm.reg(args[1]), vm) {
+            Ok(u) => u,
+            Err(e) => return NativeResult::Err(crate::error::create_from_text(vm, &e)),
+        }
     };
+    let flags_units = if args.len() < 3 {
+        Vec::<u16>::new()
+    } else {
+        match oxide_runtime_api::to_units_full(vm.reg(args[2]), vm) {
+            Ok(u) => u,
+            Err(e) => return NativeResult::Err(crate::error::create_from_text(vm, &e)),
+        }
+    };
+    let pattern = String::from_utf16_lossy(&pattern_units);
+    let flags = String::from_utf16_lossy(&flags_units);
 
     let (global, ignore_case, multi_line, dot_all, sticky, unicode, has_indices) = parse_flags(&flags);
 
@@ -116,8 +128,9 @@ pub fn regexp_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     }
 
     set_prop(&mut obj, "lastIndex", JsValue::int(0), vm);
-    set_prop(&mut obj, "source", vm.new_string(&pattern), vm);
-    set_prop(&mut obj, "flags", vm.new_string(&flags), vm);
+    // 单元口径物化 source/flags（孤立 surrogate 单元保持往返）。
+    set_prop(&mut obj, "source", vm.new_string_units_owned(pattern_units), vm);
+    set_prop(&mut obj, "flags", vm.new_string_units_owned(flags_units), vm);
     set_prop(&mut obj, "global", JsValue::bool(global), vm);
     set_prop(&mut obj, "ignoreCase", JsValue::bool(ignore_case), vm);
     set_prop(&mut obj, "multiline", JsValue::bool(multi_line), vm);

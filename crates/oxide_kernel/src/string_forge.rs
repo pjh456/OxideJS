@@ -120,6 +120,124 @@ pub fn decode_key(text: &str) -> Vec<u16> {
     out
 }
 
+/// 动态编译源（eval / Function 构造器 / `$262.evalScript`）的单元 → 源码文本
+/// 编码。产物直接是可被 oxc 词法分析的源码文本；文本本身是 JS 程序，反斜杠
+/// 是语法字符（字面量内构成转义序列），必须原样透传，不得改写：
+/// - 孤立 surrogate 单元 U → 文本 `\uXXXX`（4 位小写十六进制）；
+/// - 单元 `U+FFFD` → 文本 `\ufffd`（裸 FFFD 会被 oxc 判为二进制文件而终止
+///   解析，源码域必须转义）；
+/// - 良配 surrogate 对 → 对应超平面字符，其余单元（含反斜杠）逐字恒等。
+///
+/// 字符串/模板字面量中的 `\uXXXX` 转义经 oxc 值域还原为真值（孤立 surrogate
+/// 置 `lone_surrogates` 位），再按值域 marker 形态入池，与静态源码同路径。
+/// 编码源中的正则字面量按源文本切片经 [`source_escape_to_key`] 还原注入
+/// marker 后入池键（静态源切片走 `pool_key_plain`），物化时 `decode_key`
+/// 还原原始单元。
+pub fn source_escape(units: &[u16]) -> String {
+    let mut out = String::with_capacity(units.len());
+    let mut i = 0;
+    while i < units.len() {
+        let u = units[i];
+        if (0xD800..=0xDBFF).contains(&u) && i + 1 < units.len() {
+            let lo = units[i + 1];
+            if (0xDC00..=0xDFFF).contains(&lo) {
+                let cp = 0x10000u32 + (((u as u32) - 0xD800) << 10) + (lo as u32 - 0xDC00);
+                out.push(char::from_u32(cp).expect("良配 surrogate 对必映射为合法码点"));
+                i += 2;
+                continue;
+            }
+        }
+        match u {
+            0xD800..=0xDFFF => out.push_str(&format!("\\u{:04x}", u)),
+            0xFFFD => out.push_str("\\ufffd"),
+            _ => out.push(char::from_u32(u as u32).expect("非 surrogate 单元必为合法码点")),
+        }
+        i += 1;
+    }
+    out
+}
+
+/// [`source_escape`] 的逆路径（源文本域 → 池键域）：仅当文本确为
+/// `source_escape` 产物（动态编译源的正则字面量源文本切片）时调用；静态源
+/// 切片不含注入 marker，直接走 `pool_key_plain`：
+/// - `\ud800`..`\udfff`（小写 hex）→ FFFD+hex4（键域孤立 surrogate 形态，
+///   对应 `source_escape` 注入的孤立 surrogate 单元）；
+/// - `\ufffd` → FFFD+`fffd`（键域 FFFD 转义形态）；
+/// - 其余反斜杠序列（`\u0041`、`\u{1d306}`、`\n` 等用户转义文本）逐字透传：
+///   正则引擎自行解析转义，物化 pattern 保持源文本形态，`.source` 按书写
+///   返回；
+/// - `\\` + marker 转义 形态（数据反斜杠紧邻注入 marker，`source_escape`
+///   拼接产物）按 [数据反斜杠, 单元] 还原；`\\` 后非 marker 时整对透传
+///   （用户转义反斜杠）。
+///
+/// 已知边界：动态源中用户自写的 `\ud800`..`\udfff`/`\ufffd` 小写转义文本
+/// （及 `\\` 紧邻该文本）与注入 marker 不可区分，一律还原为单元——只影响
+/// 该边缘场景下动态正则 `.source` 的形态（转义文本 vs 原始单元），静态源
+/// 不受影响。
+pub fn source_escape_to_key(text: &str) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    let mut out = String::with_capacity(text.len());
+    let mut i = 0;
+    while i < chars.len() {
+        if chars[i] != '\\' {
+            out.push(chars[i]);
+            i += 1;
+            continue;
+        }
+        // `\\` 前瞻：次反斜杠后若紧跟 marker 转义（`u`+4 位小写 hex），首
+        // 反斜杠归数据、marker 归注入（`source_escape` 把数据反斜杠与
+        // 注入 marker 拼接成 `\\ud800` 形态）；否则 `\\` 对整体透传
+        // （用户转义反斜杠，正则引擎自行解析）。
+        if i + 1 < chars.len() && chars[i + 1] == '\\' {
+            let is_marker = i + 7 <= chars.len()
+                && chars[i + 2] == 'u'
+                && chars[i + 3..i + 7]
+                    .iter()
+                    .all(|c| matches!(c, '0'..='9' | 'a'..='f'));
+            if is_marker {
+                out.push('\\');
+                i += 1;
+            } else {
+                out.push('\\');
+                out.push('\\');
+                i += 2;
+            }
+            continue;
+        }
+        // `\u` marker / 透传：仅 4 位小写 hex 且值域命中（FFFD / surrogate
+        // 段）还原为键域 marker，其余转义文本逐字透传。
+        if i + 1 < chars.len() && chars[i + 1] == 'u' {
+            let tail_len = 4.min(chars.len() - i - 2);
+            let tail = &chars[i + 2..i + 2 + tail_len];
+            let ok = tail
+                .iter()
+                .all(|c| matches!(c, '0'..='9' | 'a'..='f'));
+            let v: u32 = ok
+                .then(|| tail.iter().fold(0u32, |v, c| v * 16 + c.to_digit(16).unwrap()))
+                .unwrap_or(0);
+            if tail_len == 4 && ok && (v == 0xFFFD || (0xD800..=0xDFFF).contains(&v)) {
+                out.push('\u{FFFD}');
+                out.extend(tail);
+            } else {
+                out.push('\\');
+                out.push('u');
+                out.extend(tail);
+            }
+            i += 2 + tail_len;
+            continue;
+        }
+        // 其余反斜杠组合透传（`\n`、行尾孤立反斜杠等）。
+        out.push('\\');
+        if i + 1 < chars.len() {
+            out.push(chars[i + 1]);
+            i += 2;
+        } else {
+            i += 1;
+        }
+    }
+    out
+}
+
 /// 一条 intern 过的键。`data` 是泄漏的 `&'static str`——永久键从不释放
 /// （按设计 append-only），所以泄漏即存储模型，而非 bug。键 id 与 64 位
 /// 哈希经 `DashMap` 的哈希键→候选 id 表寻址，条目自身不存哈希。
@@ -471,6 +589,62 @@ mod tests {
         // 裸 FFFD（文本末尾或后跟非转义文本）还原为 FFFD 单元，后续字符不被吞。
         assert_eq!(decode_key("a\u{FFFD}"), &[0x61, 0xFFFD]);
         assert_eq!(decode_key("a\u{FFFD}zz"), &[0x61, 0xFFFD, 0x7A, 0x7A]);
+    }
+
+    #[test]
+    fn source_escape_marker_forms() {
+        // 孤立 surrogate / FFFD → 源码域 \u 转义形态；配对与 BMP 恒等。
+        assert_eq!(source_escape(&[0xD800]), "\\ud800");
+        assert_eq!(source_escape(&[0xDFFF]), "\\udfff");
+        assert_eq!(source_escape(&[0xFFFD]), "\\ufffd");
+        assert_eq!(source_escape(&[0x61, 0xD800, 0x62]), "a\\ud800b");
+        assert_eq!(source_escape(&[0xD83D, 0xDE00]), "\u{1F600}");
+    }
+
+    /// 源码是 JS 程序，反斜杠为语法字符：原样透传，转义文本形态逐字保留
+    /// （正则/字符串字面量内 `\u{1d306}`、`\\` 等序列不得被改写）。
+    #[test]
+    fn source_escape_backslash_passthrough() {
+        // 正则字面量源文本（u 模式 \u{..} 转义）：逐字恒等。
+        let re_src: Vec<u16> = "/\\u{1d306}/u".encode_utf16().collect();
+        assert_eq!(source_escape(&re_src), "/\\u{1d306}/u");
+        // 转义文本（反斜杠 + "ud800" 字面文本）与孤立 surrogate 单元同形：
+        // 源码域中 `\ud800` 文本即孤立 surrogate 的源码表示，两者编码同一
+        // 源码文本是设计使然（源码即程序，oxc 只见转义文本）。
+        let text: Vec<u16> = "\\ud800".encode_utf16().collect();
+        assert_eq!(source_escape(&text), "\\ud800");
+        assert_eq!(source_escape(&[0xD800]), source_escape(&text));
+        // 双反斜杠（字面量内转义反斜杠）恒等。
+        let dbl: Vec<u16> = "\\\\".encode_utf16().collect();
+        assert_eq!(source_escape(&dbl), "\\\\");
+    }
+
+    /// 键域闭环：`decode_key ∘ source_escape_to_key ∘ source_escape` 对单元
+    /// 序列恒等（注入 marker 还原、用户转义文本透传、双反斜杠与 astral 对）。
+    #[test]
+    fn source_escape_roundtrip_via_key() {
+        let cases: Vec<Vec<u16>> = vec![
+            vec![0xD800],
+            vec![0xDFFF],
+            vec![0xFFFD],
+            vec![0x5C],
+            // 用户字面转义文本（非 marker 值域 / \u{..} 形态）：逐字透传。
+            vec![0x5C, 0x75, 0x30, 0x30, 0x34, 0x31],
+            vec![0x5C, 0x75, 0x7B, 0x31, 0x64, 0x33, 0x30, 0x36, 0x7D],
+            vec![0x5C, 0x5C],
+            // 数据反斜杠紧邻注入 marker（`\\ud800`/`\\ufffd` 拼接形态）。
+            vec![0x5C, 0xD800],
+            vec![0x5C, 0xFFFD],
+            // FFFD 单元后跟 "d800" 文本：marker 消费恰 4 字符，不吞后续。
+            vec![0xFFFD, 0x64, 0x38, 0x30, 0x30],
+            vec![0x66, 0x66, 0x66, 0x64],
+            vec![0xD83D, 0xDE00],
+        ];
+        for units in &cases {
+            let escaped = source_escape(units);
+            let key = source_escape_to_key(&escaped);
+            assert_eq!(&decode_key(&key), units.as_slice(), "roundtrip 失败: escaped={escaped:?}");
+        }
     }
 
     #[test]

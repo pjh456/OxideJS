@@ -18,6 +18,8 @@ pub struct Compiler {
     repl_persist: bool,
     /// 是否为 eval 脚本：顶层 var/function 声明落全局属性 configurable:true。
     is_eval_script: bool,
+    /// 源码是否为 `source_escape` 产物（动态编译入口：eval / Function 构造器）。
+    is_source_encoded: bool,
 }
 
 impl Compiler {
@@ -28,6 +30,7 @@ impl Compiler {
             enable_regalloc: true,
             repl_persist: false,
             is_eval_script: false,
+            is_source_encoded: false,
         }
     }
 
@@ -54,10 +57,17 @@ impl Compiler {
         Self { is_eval_script: enable, ..self }
     }
 
+    /// 标记源码为 `source_escape` 产物（动态编译入口：eval / Function 构造器）。
+    pub fn with_source_encoded(self, enable: bool) -> Self {
+        Self { is_source_encoded: enable, ..self }
+    }
+
     /// 编译整个 script program：AST → IR（`Emitter::emit_program`）→ 统一 IR 管线。
     pub fn compile(&self, program: &oxide_parser::Program) -> Result<CompiledModule, String> {
         crate::compiler_debug!("compile: starting...");
-        let ir = Emitter::new().emit_program(program, self.repl_persist, self.is_eval_script)?;
+        let ir = Emitter::new()
+            .with_source_encoded(self.is_source_encoded)
+            .emit_program(program, self.repl_persist, self.is_eval_script)?;
         self.compile_ir(ir)
     }
 

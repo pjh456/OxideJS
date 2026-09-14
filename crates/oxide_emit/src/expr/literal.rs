@@ -89,10 +89,22 @@ impl Emitter {
                 if regress::Regex::with_flags(&pattern, flags.as_str()).is_err() {
                     return Err(format!("SyntaxError: Invalid regular expression: /{pattern}/{flags}"));
                 }
-                let pat_ci = ctx.add_constant(Constant::String(pattern));
+                // 源文本池键：静态源切片经 `pool_key_plain` 逃逸真实 FFFD（防
+                // 物化侧把裸 FFFD+hex4 误读为 surrogate marker），转义文本
+                // `decode_key` 逐字透传，正则引擎自行解析转义；编码源切片经
+                // `source_escape_to_key` 把注入的 `\ud800`..`\udfff`/`\ufffd`
+                // 转义文本还原为池键 marker 形态（物化还原原始单元，
+                // `.source` 按原始源返回），用户转义文本逐字透传。
+                let pattern_key = if ctx.source_encoded {
+                    oxide_kernel::string_forge::source_escape_to_key(&pattern)
+                } else {
+                    crate::shared::string_pool::pool_key_plain(&pattern)
+                };
+                let flags_key = crate::shared::string_pool::pool_key_plain(&flags);
+                let pat_ci = ctx.add_constant(Constant::String(pattern_key));
                 let pat_reg = ctx.alloc_reg();
                 ctx.inst(Inst::load_const(Operand::Reg(pat_reg), pat_ci));
-                let flags_ci = ctx.add_constant(Constant::String(flags));
+                let flags_ci = ctx.add_constant(Constant::String(flags_key));
                 let flags_reg = ctx.alloc_reg();
                 ctx.inst(Inst::load_const(Operand::Reg(flags_reg), flags_ci));
                 let r = ctx.alloc_reg();

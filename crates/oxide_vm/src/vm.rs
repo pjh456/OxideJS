@@ -75,7 +75,9 @@ fn canonical_index_units(units: &[u16]) -> Option<u32> {
             0x30..=0x39 => u - 0x30,
             _ => return None,
         };
-        v = v.checked_mul(10)? + d as u32;
+        // 两位都须 overflow 检查：`checked_mul(10) + d` 的裸加在 10 位串
+        // （如 "4294967296"）会 mod 2^32 回绕出假规范下标。
+        v = v.checked_mul(10)?.checked_add(d as u32)?;
     }
     (v < INT_KEY_COUNT).then_some(v)
 }
@@ -1424,7 +1426,14 @@ impl Vm {
         // 其它原始值（BigInt 等）：ToPropertyKey 一律转字符串并走规范化，避免与
         // 数字键区间分裂（`o[5n]` 与 `o["5"]`/`o[5]` 必须同键）。
         let units = oxide_runtime_api::to_units_full(val, self)?;
-        Ok(self.string_key_units(&units))
+        if std::env::var("OXIDE_KEY_PROBE").is_ok() {
+            eprintln!("[KEYPROBE] tail fallback units={:?}", units);
+        }
+        let si = self.string_key_units(&units);
+        if std::env::var("OXIDE_KEY_PROBE").is_ok() {
+            eprintln!("[KEYPROBE] tail result si={}", si);
+        }
+        Ok(si)
     }
 
     /// 从单元序列推导属性键 si（`property_key_si` 字符串分支的口径抽取）：
@@ -2697,6 +2706,11 @@ impl Vm {
     /// 动态编译函数（`Function` 构造器路径）：把参数列表与函数体 wrap 成匿名函数
     /// 源码，走完整编译链后取匿名函数模块追加进 VM 平表，返回对应函数对象。
     ///
+    /// # 源契约
+    /// `params` 与 `body` 须为 `string_forge::source_escape` 产物（源码域转义
+    /// 形态）：孤立 surrogate / FFFD 单元以 `\uXXXX` 转义文本承载，反斜杠
+    /// 原样透传。
+    ///
     /// # 步骤
     /// 1. wrap 源码 `function anonymous(p...) { body }`，parse + compile。
     /// 2. 取 `sub_modules[0]`（匿名函数模块），把其子树 flat_id 重编号到平表末尾
@@ -2720,7 +2734,10 @@ impl Vm {
         let allocator = oxide_parser::Allocator::default();
         let program = oxide_parser::parse(&allocator, &source)
             .map_err(|errs| errs.into_iter().map(|e| e.message).collect::<Vec<_>>().join("\n"))?;
-        let mut module = oxide_compiler::compiler::Compiler::new().compile(&program)?;
+        // 动态路径源契约：调用方以源码域转义（`string_forge::source_escape`）
+        // 形态传源；正则字面量源文本常量与静态同路径（`pool_key_plain`）。
+        let mut module =
+            oxide_compiler::compiler::Compiler::new().with_source_encoded(true).compile(&program)?;
         let anonymous = module.sub_modules.remove(0);
         // 形参数以编译结果为准：单个实参 "a,b,c" 拼接后解析为 3 个形参
         // （ES 动态函数把非末位实参以逗号连接成参数串再解析）。
@@ -2771,8 +2788,10 @@ impl Vm {
         let program = oxide_parser::parse(&allocator, code)
             .map_err(|errs| errs.into_iter().map(|e| e.message).collect::<Vec<_>>().join("\n"))?;
         // eval 脚本：顶层 var/function 声明落全局属性 configurable:true。
+        // 动态路径源契约同 `create_dynamic_function`（源码域转义形态传源）。
         let module = oxide_compiler::compiler::Compiler::new()
             .with_eval_script(true)
+            .with_source_encoded(true)
             .compile(&program)?;
         // 根模块 flat_id=0 传 base+1，重编号后落 base（避开 sub_module_index()==0
         // 守卫）。make_mut 彼时平表 Arc 强引用唯一持有者是本表，原地扩展不分叉。
@@ -2833,6 +2852,8 @@ impl Vm {
 #[cfg(test)]
 mod tests {
     use super::{opcode, ForOfEntry, JsValue, TryHandler, Vm};
+    use super::{canonical_index_of, canonical_index_units};
+    use oxide_types::private_key::INT_KEY_COUNT;
     use oxide_bytecode::module::CompiledModule;
     use oxide_runtime_api::{NativeResult, VmHost};
     use oxide_types::object::NativeFnPtr;
@@ -3388,5 +3409,41 @@ mod tests {
             "基类构造路径 constructed_this 应为新对象"
         );
         assert!(!frame.is_derived_constructor, "普通函数非 derived 构造器");
+    }
+
+    fn units_of(s: &str) -> Vec<u16> {
+        s.chars().map(|c| c as u16).collect()
+    }
+
+    #[test]
+    fn canonical_index_str_boundaries() {
+        assert_eq!(canonical_index_of("0"), Some(0));
+        assert_eq!(canonical_index_of("1073741823"), Some(INT_KEY_COUNT - 1));
+        // 2^30 起不再是整数键候选；2^32 边界串（ToUint32 回绕源）必须走字符串键
+        assert_eq!(canonical_index_of("1073741824"), None);
+        assert_eq!(canonical_index_of("4294967295"), None);
+        assert_eq!(canonical_index_of("4294967296"), None);
+        assert_eq!(canonical_index_of("4294967299"), None);
+        // 非规范形态：前导零、符号、小数、空串
+        assert_eq!(canonical_index_of("007"), None);
+        assert_eq!(canonical_index_of("-1"), None);
+        assert_eq!(canonical_index_of("1.5"), None);
+        assert_eq!(canonical_index_of(""), None);
+    }
+
+    #[test]
+    fn canonical_index_units_boundaries() {
+        assert_eq!(canonical_index_units(&units_of("0")), Some(0));
+        assert_eq!(canonical_index_units(&units_of("1073741823")), Some(INT_KEY_COUNT - 1));
+        assert_eq!(canonical_index_units(&units_of("1073741824")), None);
+        // 10 位串在 u32 累加尾位溢出：回绕会造出假规范下标，须溢出检查归 None
+        assert_eq!(canonical_index_units(&units_of("4294967295")), None);
+        assert_eq!(canonical_index_units(&units_of("4294967296")), None);
+        assert_eq!(canonical_index_units(&units_of("4294967299")), None);
+        assert_eq!(canonical_index_units(&units_of("9999999999")), None);
+        assert_eq!(canonical_index_units(&units_of("007")), None);
+        assert_eq!(canonical_index_units(&units_of("-1")), None);
+        assert_eq!(canonical_index_units(&units_of("1.5")), None);
+        assert_eq!(canonical_index_units(&[]), None);
     }
 }

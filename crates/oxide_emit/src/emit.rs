@@ -34,8 +34,17 @@ pub use oxide_parser::VariableDeclarationKind;
 /// AST 语法树节点与运算符类型，re-export 自 parser。
 pub use oxide_parser::{AssignmentOperator, BinaryOperator, Expression, Statement, UnaryOperator};
 
-/// 编译入口（marker 类型）。方法按语法域组织在 `impl Emitter` 中。
-pub struct Emitter;
+/// 编译入口。方法按语法域组织在 `impl Emitter` 中。
+pub struct Emitter {
+    /// 源码是否为 `oxide_kernel::string_forge::source_escape` 产物
+    /// （eval/Function 动态编译）：源文本内的孤立 surrogate 单元 / FFFD 以
+    /// `\uXXXX` 转义文本承载（oxc 不可见裸单元——Rust str 无孤立 surrogate，
+    /// 转义文本是唯一注入形态），反斜杠原样透传。正则字面量的源文本切片据此
+    /// 经 `source_escape_to_key` 还原池键 marker 形态入池（物化时
+    /// `decode_key` 还原为原始单元，`.source` 按原始源返回）；静态源切片不含
+    /// 注入 marker，走 `pool_key_plain`。
+    source_encoded: bool,
+}
 
 /// 判断 f64 是否为整数值且在 i32 范围内（整数常量编码用）。
 pub fn is_int_literal(value: f64) -> bool {
@@ -194,6 +203,9 @@ pub struct CompileCtx {
     /// 是否为 eval 脚本：脚本顶层 var/function 声明落全局对象时属性
     /// configurable:true（普通脚本顶层为 false）。仅动态脚本入口设置。
     pub(crate) is_eval_script: bool,
+    /// 源码是否为 `source_escape` 产物（动态编译入口）：正则字面量源文本切片
+    /// 的池键形态据此选择（见 [`Emitter::source_encoded`]）。
+    pub(crate) source_encoded: bool,
     pub(crate) static_block_this_reg: Option<u8>,
     pub(crate) field_buffer: Option<FieldBuffer>,
     /// 类构造器模块中 `@@field_keys` upvalue 下标（实例字段 computed key 数组）。
@@ -343,6 +355,7 @@ impl CompileCtx {
             is_global_scope: false,
             repl_persist: false,
             is_eval_script: false,
+            source_encoded: false,
             static_block_this_reg: None,
             field_buffer: None,
             field_keys_uv: None,
@@ -825,9 +838,16 @@ impl ConstantKey {
 }
 
 impl Emitter {
-    /// 构造空 `Emitter`（无内部状态，所有状态在 `CompileCtx` 中）。
+    /// 构造空 `Emitter`（静态编译口径：源文本为良形 UTF-8，无注入 marker）。
     pub fn new() -> Self {
-        Self
+        Self { source_encoded: false }
+    }
+
+    /// 置位编码源口径（见 [`Emitter::source_encoded`]）：仅动态编译入口
+    /// （eval / Function 构造器）经编译器设置。
+    pub fn with_source_encoded(mut self, enable: bool) -> Self {
+        self.source_encoded = enable;
+        self
     }
 
     /// 生成运行时抛 `kind` 类型错误的指令序列，返回一个未定义 dummy 寄存器
@@ -1151,6 +1171,8 @@ impl Emitter {
 
         // 传递 enclosing_this_reg：嵌套箭头函数捕获正确的 `this`。
         ctx.enclosing_this_reg = parent_ctx.enclosing_this_reg;
+        // 编码源口径是整棵编译树属性（嵌套函数仍在同一编码源内）。
+        ctx.source_encoded = parent_ctx.source_encoded;
 
         // 箭头函数词法继承 super；类方法体顶层编译也需要类提供的 super 上下文。
         if matches!(body_context, FunctionBodyContext::Arrow | FunctionBodyContext::ClassElement) {
@@ -1694,6 +1716,7 @@ impl Emitter {
         ctx.is_global_scope = true;
         ctx.repl_persist = repl_persist;
         ctx.is_eval_script = is_eval_script;
+        ctx.source_encoded = self.source_encoded;
         // 脚本顶层严格模式由源码 "use strict" directive 决定（嵌套函数经父 ctx 继承）。
         ctx.is_strict = program.has_use_strict_directive();
 
