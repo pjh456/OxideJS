@@ -1876,8 +1876,6 @@ mod tests {
                 assert!(!deletable, "只读三常量名误入可删集：{name}");
             }
         }
-        for name in ["$262"] {
-            assert!(!crate::CompileCtx::is_deletable_global_builtin(name), "不可删名误入可删集：{name}");
-        }
+        assert!(!crate::CompileCtx::is_deletable_global_builtin("$262"), "不可删名误入可删集：$262");
     }
 }

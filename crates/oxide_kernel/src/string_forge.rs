@@ -446,6 +446,8 @@ mod tests {
         assert_eq!(encode_key(&[0xFFFD]), "\u{FFFD}fffd");
         // 两种不同单元序列的键文本互异（解码可区分）。
         assert_ne!(encode_key(&[0xFFFD]), encode_key(&[0xD800]));
+        // 文本 [FFFD,'d','8','0','0'] 与单元 [D800] 的键必须可区分（防物化串键）。
+        assert_ne!(encode_key(&[0xFFFD, 0x64, 0x38, 0x30, 0x30]), encode_key(&[0xD800]));
     }
 
     #[test]

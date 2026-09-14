@@ -20,18 +20,20 @@ impl Emitter {
             .map(|e| self.emit_expression(e, ctx))
             .collect::<Result<Vec<_>, _>>()?;
 
-        let quasi_const_idxs: Vec<u16> = quasis
+        let mut quasi_keys: Vec<String> = Vec::with_capacity(quasis.len());
+        for q in quasis {
+            quasi_keys.push(match &q.value.cooked {
+                Some(c) => crate::shared::string_pool::pool_key_marker(c, q.lone_surrogates),
+                None => String::new(),
+            });
+        }
+        let quasi_const_idxs: Vec<u16> = quasi_keys
             .iter()
-            .map(|q| {
-                let s = q.value.cooked.as_ref().map(|c| c.to_string()).unwrap_or_default();
-                ctx.add_constant(Constant::String(s))
-            })
+            .map(|s| ctx.add_constant(Constant::String(s.clone())))
             .collect();
 
-        let total_len_hint: usize = quasis
-            .iter()
-            .map(|q| q.value.cooked.as_ref().map(|c| c.len()).unwrap_or(0))
-            .sum();
+        // 容量提示按单元数口径（键文本经物化解码还原单元序列）。
+        let total_len_hint: usize = quasi_keys.iter().map(|k| oxide_kernel::string_forge::decode_key(k).len()).sum();
 
         let mut parts = Vec::with_capacity(quasi_const_idxs.len() * 2);
         let mut expr_iter = expr_regs.iter();

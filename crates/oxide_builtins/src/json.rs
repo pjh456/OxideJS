@@ -91,9 +91,8 @@ fn walk_reviver<H: VmHost>(
         }
     }
 
-    // 对当前值调用 reviver，用返回值覆盖属性槽。
-    let key_str = key_si_to_string(vm, key_si);
-    let key_val = vm.new_string(&key_str);
+    // 对当前值调用 reviver，用返回值覆盖属性槽（键物化为 JS 可见串值，含孤立 surrogate 单元）。
+    let key_val = crate::object::key_si_to_js_value(vm, key_si);
     let holder_val = JsValue::from_js_object(holder_ptr);
     match vm.call_function_sync(reviver, holder_val, &[key_val, val]) {
         Ok(new_val) => {

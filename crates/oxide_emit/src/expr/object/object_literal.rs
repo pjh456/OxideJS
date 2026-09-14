@@ -24,7 +24,7 @@ impl Emitter {
                     let ObjectPropertyKind::ObjectProperty(p) = prop else {
                         unreachable!("批量前缀必为 ObjectProperty");
                     };
-                    let name = self.class_property_name(&p.key).expect("批量前缀键为静态名");
+                    let name = crate::shared::string_pool::pool_key_property(&p.key).expect("批量前缀键为静态名");
                     u32::from(ctx.add_constant(Constant::String(name)))
                 })
                 .collect();
@@ -141,7 +141,8 @@ impl Emitter {
                         ));
                     }
                     None => {
-                        let idx = ctx.add_constant(Constant::String(prop_name.to_string()));
+                        let key = crate::shared::string_pool::pool_key_property(&p.key)?;
+                        let idx = ctx.add_constant(Constant::String(key));
                         ctx.inst(Inst::define_accessor(
                             Operand::Reg(obj_reg),
                             Operand::Reg(get_reg),
@@ -155,7 +156,8 @@ impl Emitter {
                 let key_reg = if computed {
                     self.emit_expression(p.key.to_expression(), ctx)?
                 } else {
-                    let idx = ctx.add_constant(Constant::String(prop_name.to_string()));
+                    let key = crate::shared::string_pool::pool_key_property(&p.key)?;
+                    let idx = ctx.add_constant(Constant::String(key));
                     let reg = ctx.alloc_reg();
                     ctx.inst(Inst::load_const(Operand::Reg(reg), idx));
                     reg

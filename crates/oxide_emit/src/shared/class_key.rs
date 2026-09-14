@@ -59,7 +59,7 @@ impl Emitter {
         &self, key: &PropertyKey, computed: bool, ctx: &mut CompileCtx,
     ) -> Result<u32, String> {
         if !computed {
-            let name = self.class_property_name(key)?;
+            let name = crate::shared::string_pool::pool_key_property(key)?;
             let idx = ctx.add_constant(Constant::String(name));
             let reg = ctx.alloc_reg();
             ctx.inst(Inst::load_const(Operand::Reg(reg), idx));
@@ -70,16 +70,6 @@ impl Emitter {
             return Err("private class elements not yet supported".into());
         }
         self.emit_expression(key.to_expression(), ctx)
-    }
-
-    pub(crate) fn static_property_name(&self, key: &PropertyKey) -> Result<String, String> {
-        match key {
-            PropertyKey::StaticIdentifier(ident) => Ok(ident.name.as_str().to_string()),
-            PropertyKey::Identifier(ident) => Ok(ident.name.as_str().to_string()),
-            PropertyKey::StringLiteral(s) => Ok(s.value.to_string()),
-            PropertyKey::NumericLiteral(n) => Ok(n.value.to_string()),
-            _ => Err("computed destructuring keys not yet supported".into()),
-        }
     }
 
     /// 从类定义期 computed key 数组按 slot 取键（方法/静态字段在类定义期使用）。

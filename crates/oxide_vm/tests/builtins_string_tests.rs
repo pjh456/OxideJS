@@ -150,6 +150,9 @@ fn string_pad_end() {
     let mut vm = Vm::new();
     let s = eval(&mut vm, "'hi'.padEnd(4)").unwrap();
     assert_eq!(to_str(&vm, s), "hi  ");
+    // 显式 undefined 填充与缺省同义：回落空格（规范 PadString 步骤）。
+    let s = eval(&mut vm, "'hi'.padEnd(4, undefined)").unwrap();
+    assert_eq!(to_str(&vm, s), "hi  ");
 }
 
 #[test]
@@ -262,6 +265,17 @@ fn string_missing_arg_searches_undefined() {
     // 显式传 undefined 与缺参等价（同走 "undefined" 查找）。
     let r = eval(&mut vm, "'undefined'.indexOf(undefined)").unwrap();
     assert_eq!(r.as_int(), 0);
+}
+
+#[test]
+fn string_ctor_symbol_paths() {
+    // 函数调用：Symbol → SymbolDescriptiveString（描述串，不抛）。
+    let mut vm = Vm::new();
+    let s = eval(&mut vm, "String(Symbol('66'))").unwrap();
+    assert_eq!(to_str(&vm, s), "Symbol(66)");
+    // new 语义：构造器路径走 ToString，Symbol 抛 TypeError。
+    let name = eval(&mut vm, "try { new String(Symbol('66')); 'no-throw' } catch (e) { e.name }").unwrap();
+    assert_eq!(to_str(&vm, name), "TypeError");
 }
 
 #[test]
@@ -423,6 +437,37 @@ fn string_replace_function_replacer_string_pattern() {
     assert_eq!(to_str(&vm, s), "Ab");
     let s = eval(&mut vm, "'abc'.replace('b', function(m, o){ return o })").unwrap();
     assert_eq!(to_str(&vm, s), "a1c");
+}
+
+#[test]
+fn string_replace_dollar_group_expansion() {
+    // `$n` 展开按规范 GetSubstitution：两位数值越界回退一位、仍越界（含 $0）
+    // 整段 ref 字面、未参与捕获组为空。预言值对照 V8（node）实测。
+    let mut vm = Vm::new();
+    let cases = [
+        // 两位越界回退一位（次位留字面）。
+        ("\"uid=31\".replace(/(uid=)(\\d+)/, \"$11\" + 15)", "uid=115"),
+        ("\"x\".replace(/(x)/, \"$12\")", "x2"),
+        ("\"xy\".replace(/(x)(y)/, \"$12\")", "x2"),
+        // 越界（含 $0）→ ref 字面；无捕获组全字面。
+        ("\"xy\".replace(/(x)(y)/, \"$3\")", "$3"),
+        ("\"abc\".replace(/b/, \"$0$1\")", "a$0$1c"),
+        ("\"abc\".replace(/(b)/, \"$22\")", "a$22c"),
+        ("\"x\".replace(/x/, \"$10\")", "$10"),
+        // $& / $` 与组引用混排。
+        ("\"aaaaa,aaaaa\".replace(/(a+),/, \"$1$&$`$1\")", "aaaaaaaaaa,aaaaaaaaaa"),
+        // $$ 折叠与文本内 $ 无关；$ 序列多位数字逐段消费。
+        ("\"a$b$c\".replace(/b/, \"$$$$\")", "a$$$$c"),
+        ("\"x12y\".replace(/1/, \"$1$12$123\")", "x$1$12$1232y"),
+        ("\"x12y\".replace(/(1)/, \"$1$12$123\")", "x1121232y"),
+        ("\"x12y\".replace(/(1)(2)/, \"$1$12$123\")", "x112123y"),
+        // 组参与但未匹配 → 空。
+        ("\"x12y\".replace(/(1)(2)(3)?/, \"$3\")", "xy"),
+    ];
+    for (src, expected) in cases {
+        let s = eval(&mut vm, src).unwrap();
+        assert_eq!(to_str(&vm, s), expected, "for {}", src);
+    }
 }
 
 #[test]
@@ -1153,4 +1198,152 @@ fn string_utf16_replace_position_callback() {
     assert_eq!(to_str(&vm, s), "\u{1F600}a3");
     let s = eval(&mut vm, "'\\u{1F600}ab'.replaceAll('a', function(m, o){ return o })").unwrap();
     assert_eq!(to_str(&vm, s), "\u{1F600}2b");
+}
+
+// UTF-16 载荷层回归钉：孤立 surrogate 一等单元（fromCodePoint/fromCharCode 直推单元、
+// 字面量/模板 oxc marker 解码、切片/迭代/搜索/键/正则面单元语义）。
+
+#[test]
+fn utf16_from_code_point_lone_surrogate() {
+    let mut vm = Vm::new();
+    let r = eval(
+        &mut vm,
+        "String.fromCodePoint(0xD800).length===1 && String.fromCodePoint(0xD800).charCodeAt(0)===0xD800",
+    )
+    .unwrap();
+    assert!(r.as_bool());
+}
+
+#[test]
+fn utf16_from_char_code_pair_units() {
+    let mut vm = Vm::new();
+    let r = eval(
+        &mut vm,
+        "String.fromCharCode(0xD800,0xDC00).length===2 && String.fromCharCode(0xD800,0xDC00).charCodeAt(1)===0xDC00",
+    )
+    .unwrap();
+    assert!(r.as_bool());
+}
+
+#[test]
+fn utf16_from_code_point_astral_pair() {
+    let mut vm = Vm::new();
+    let r = eval(
+        &mut vm,
+        "String.fromCodePoint(0x1F600).length===2 && String.fromCodePoint(0x1F600).charCodeAt(0)===0xD83D && String.fromCodePoint(0x1F600).charCodeAt(1)===0xDE00",
+    )
+    .unwrap();
+    assert!(r.as_bool());
+}
+
+#[test]
+fn utf16_literal_lone_surrogate_emit_decode() {
+    let mut vm = Vm::new();
+    let r = eval(&mut vm, "'\\ud800'.length===1 && '\\ud800'.charCodeAt(0)===0xD800").unwrap();
+    assert!(r.as_bool());
+}
+
+#[test]
+fn utf16_template_cooked_lone_surrogate() {
+    let mut vm = Vm::new();
+    let r = eval(&mut vm, "`\\ud800`.length===1").unwrap();
+    assert!(r.as_bool());
+}
+
+#[test]
+fn utf16_char_at_single_unit_astral() {
+    // charAt 按单元取：astral 字符首单元为高代理（非整码点）。
+    let mut vm = Vm::new();
+    let r = eval(&mut vm, "'\u{1D11E}'.charAt(0).charCodeAt(0)===0xD834").unwrap();
+    assert!(r.as_bool());
+}
+
+#[test]
+fn utf16_slice_substr_single_unit_astral() {
+    // slice/substr 单元精确：'\u{1D11E}' = [0xD834, 0xDD1E]。
+    let mut vm = Vm::new();
+    let r = eval(
+        &mut vm,
+        "'\u{1D11E}'.slice(-1).charCodeAt(0)===0xDD1E && '\u{1D11E}'.substr(1).charCodeAt(0)===0xDD1E && '\u{1D11E}'.slice(0,1).charCodeAt(0)===0xD834",
+    )
+    .unwrap();
+    assert!(r.as_bool());
+}
+
+#[test]
+fn utf16_iterator_lone_surrogate_units() {
+    let mut vm = Vm::new();
+    let r = eval(
+        &mut vm,
+        "(function(){ let n=0, ok=true; for (const c of 'a\\ud800') { n++; if (n===2) ok = c.length===1 && c.charCodeAt(0)===0xD800; } return n===2 && ok; })()",
+    )
+    .unwrap();
+    assert!(r.as_bool());
+}
+
+#[test]
+fn utf16_spread_and_to_object_lone_surrogate() {
+    // 迭代/spread 按单元产出；rest 解构的 ToObject 字符串下标读得 1 单元串
+    // （非空串）。字符串包装对象的索引/length 读（new String(...)[0]）另有
+    // 独立既有缺口，不在此钉。
+    let mut vm = Vm::new();
+    let r = eval(
+        &mut vm,
+        "(function(){ const arr=[...'a\\ud800']; const o={...'a\\ud800'}; const { ...rest } = 'a\\ud800'; return arr.length===2 && arr[1].length===1 && arr[1].charCodeAt(0)===0xD800 && o[1].length===1 && o[1].charCodeAt(0)===0xD800 && rest[1].length===1 && rest[1].charCodeAt(0)===0xD800; })()",
+    )
+    .unwrap();
+    assert!(r.as_bool());
+}
+
+#[test]
+fn utf16_regex_surrogate_property_class() {
+    // 属性转义须 u 标志（无 u 为规范 SyntaxError，引擎宽容面不在此钉）。
+    let mut vm = Vm::new();
+    let r = eval(
+        &mut vm,
+        "/\\p{General_Category=Surrogate}/u.test(String.fromCodePoint(0xD800))===true && /\\P{ASCII}/u.test(String.fromCodePoint(0xD800))===true && /\\p{General_Category=Surrogate}/u.test('a')===false",
+    )
+    .unwrap();
+    assert!(r.as_bool());
+}
+
+#[test]
+fn utf16_is_well_formed_to_well_formed() {
+    let mut vm = Vm::new();
+    let r = eval(
+        &mut vm,
+        "'a\\ud800b'.isWellFormed()===false && 'a\\ud800b'.toWellFormed().length===3 && 'a\\ud800b'.toWellFormed().charCodeAt(1)===0xFFFD",
+    )
+    .unwrap();
+    assert!(r.as_bool());
+}
+
+#[test]
+fn utf16_index_of_lone_surrogate() {
+    let mut vm = Vm::new();
+    let r = eval(&mut vm, "'a\\ud800\\ud800'.indexOf('\\ud800')===1").unwrap();
+    assert!(r.as_bool());
+}
+
+#[test]
+fn utf16_property_key_round_trip() {
+    let mut vm = Vm::new();
+    // 孤立 surrogate 计算键：写入/读取 round-trip，Object.keys 出 1 单元键。
+    let r = eval(
+        &mut vm,
+        "(function(){ const k='\\ud800'; const o={}; o[k]=1; const keys=Object.keys(o); return o[k]===1 && keys.length===1 && keys[0].length===1 && keys[0].charCodeAt(0)===0xD800; })()",
+    )
+    .unwrap();
+    assert!(r.as_bool());
+}
+
+#[test]
+fn utf16_normalize_astral_identity() {
+    let mut vm = Vm::new();
+    let r = eval(
+        &mut vm,
+        "'\u{1F441}'.normalize('NFD')==='\u{1F441}' && '\u{1F441}'.normalize('NFC').length===2",
+    )
+    .unwrap();
+    assert!(r.as_bool());
 }

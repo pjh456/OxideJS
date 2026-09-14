@@ -3,7 +3,7 @@ use oxide_types::mem::P;
 use oxide_types::object::{JsObject, PropAttributes};
 use oxide_types::value::JsValue;
 
-use crate::object::{delete_own_property, key_si_to_string, walk_own_keys};
+use crate::object::{delete_own_property, key_si_to_js_value, walk_own_keys};
 
 use oxide_runtime_api::{NativeResult, VmHost};
 
@@ -191,11 +191,25 @@ pub fn reflect_own_keys<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         return type_error(vm, "Reflect.ownKeys target is not an object");
     };
     let target = unsafe { &*target_ptr };
-    let key_names: Vec<String> = walk_own_keys(vm, target)
-        .into_iter()
-        .map(|(si, _)| key_si_to_string(vm, si))
-        .collect();
-    NativeResult::Ok(make_string_array(vm, &key_names))
+    let keys = walk_own_keys(vm, target);
+    let n = keys.len();
+    let array_proto = vm.session().builtin_world().array_proto.as_ptr() as *mut JsObject;
+    let arr = vm.alloc_object(JsObject::new_array(
+        EMPTY_SHAPE_ID,
+        JsValue::from_js_object(array_proto),
+        n,
+        vm.epoch().bump(),
+    ));
+    for (i, (si, _)) in keys.iter().enumerate() {
+        let key_val = key_si_to_js_value(vm, *si);
+        unsafe {
+            (*arr).set_prop_at(i, key_val);
+        }
+    }
+    unsafe {
+        (*arr).set_prop_count(n);
+    }
+    NativeResult::Ok(JsValue::from_js_object(arr))
 }
 
 /// `Reflect.preventExtensions(target)`：阻止扩展，返回 true。
@@ -272,20 +286,4 @@ fn own_field<H: VmHost>(vm: &mut H, desc: JsValue, prop_si: u32) -> Option<JsVal
     let obj = unsafe { &*desc.as_js_object_ptr() };
     vm.resolve_property(obj, prop_si)?;
     vm.ordinary_get(obj, prop_si, desc).ok()
-}
-
-fn make_string_array<H: VmHost>(vm: &mut H, parts: &[String]) -> JsValue {
-    let proto = vm.session().builtin_world().array_proto.as_ptr() as *mut JsObject;
-    let arr = vm.alloc_object(JsObject::new_array(
-        EMPTY_SHAPE_ID,
-        JsValue::from_js_object(proto),
-        parts.len(),
-        vm.epoch().bump(),
-    ));
-    for (idx, part) in parts.iter().enumerate() {
-        let value = vm.new_string(part);
-        unsafe { &mut *arr }.set_prop_at(idx, value);
-    }
-    unsafe { &mut *arr }.set_prop_count(parts.len());
-    JsValue::from_js_object(arr)
 }

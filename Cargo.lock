@@ -1205,6 +1205,7 @@ dependencies = [
  "oxc_allocator",
  "oxide_bytecode",
  "oxide_ir",
+ "oxide_kernel",
  "oxide_log",
  "oxide_parser",
  "regex",

@@ -267,7 +267,10 @@ impl Emitter {
             // 只读局部符号表，嵌套函数引用外层绑定会静默回退读全局。
             PropertyKey::Identifier(_) => self.emit_expression(key.to_expression(), ctx),
             PropertyKey::StringLiteral(s) => {
-                let key_idx = ctx.add_constant(Constant::String(s.value.to_string()));
+                let key_idx = ctx.add_constant(Constant::String(crate::shared::string_pool::pool_key_marker(
+                    &s.value,
+                    s.lone_surrogates,
+                )));
                 let key_reg = ctx.alloc_reg();
                 ctx.inst(Inst::load_const(Operand::Reg(key_reg), key_idx));
                 Ok(key_reg)
@@ -294,7 +297,7 @@ impl Emitter {
         &self, src_reg: u32, key: &PropertyKey, computed: bool, ctx: &mut CompileCtx,
     ) -> Result<(u32, Option<String>, Option<u32>), String> {
         if !computed {
-            let key_name = self.static_property_name(key)?;
+            let key_name = crate::shared::string_pool::pool_key_property(key)?;
             let prop_reg = self.emit_object_property_read(src_reg, &key_name, ctx);
             return Ok((prop_reg, Some(key_name), None));
         }
@@ -302,7 +305,7 @@ impl Emitter {
         ctx.inst(Inst::new(OpCode::LOAD_VAR, Operand::Reg(prop_reg), Operand::Reg(src_reg), Operand::None));
         // 字符串字面量计算键折叠为 IC 静态路径；标识符/数字键走 DYNAMIC。
         if let PropertyKey::StringLiteral(s) = key {
-            let key_str = s.value.to_string();
+            let key_str = crate::shared::string_pool::pool_key_marker(&s.value, s.lone_surrogates);
             if !is_array_index_str(&key_str) {
                 let key_idx = ctx.add_constant(Constant::String(key_str));
                 let key_reg = ctx.alloc_reg();

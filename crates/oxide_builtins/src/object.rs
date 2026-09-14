@@ -88,12 +88,31 @@ fn int_or_string_index<H: VmHost>(vm: &H, si: u32) -> Option<u32> {
 }
 
 /// 键 si 物化为字符串文本：整数键反解数字串，其余查 interner。
+///
+/// 注意返回的是**键空间文本**（孤立 surrogate 为 FFFD+hex4 转义形态），仅可用于
+/// 键比较/数字判定等键空间用途；产 JS 可见串值用 `key_si_to_js_value`。
 pub fn key_si_to_string<H: VmHost>(vm: &H, si: u32) -> String {
     if is_int_key(si) {
         int_key_value(si).to_string()
     } else {
         vm.kernel_core().perm_interner().lookup(si).unwrap_or("").to_string()
     }
+}
+
+/// 键 si 物化为 JS 可见字符串值（Object.keys / ownKeys / entries 族）：
+/// 整数键反解数字串，字符串键经 `decode_key` 还原单元序列（孤立 surrogate
+/// 物化为 FlatU16，良形键与旧行为逐位一致）。
+pub fn key_si_to_js_value<H: VmHost>(vm: &mut H, si: u32) -> JsValue {
+    if is_int_key(si) {
+        return vm.new_string(&int_key_value(si).to_string());
+    }
+    let units = vm
+        .kernel_core()
+        .perm_interner()
+        .lookup(si)
+        .map(oxide_kernel::string_forge::decode_key)
+        .unwrap_or_default();
+    vm.new_string_units_owned(units)
 }
 
 /// 收集对象自身全部 Symbol 键（shape 链），按键序排列（根→叶，即插入序）。
@@ -377,21 +396,16 @@ pub fn object_keys<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         Err(err) => return NativeResult::Err(err),
     };
 
-    let key_names: Vec<String>;
-    {
-        let obj = unsafe { &*obj_ptr };
-        let keys = walk_own_keys(vm, obj);
-        let owned_keys: Vec<(u32, u32)> = keys
-            .into_iter()
-            .filter(|(_si, offset)| {
-                obj.prop_meta_at(*offset)
-                    .map(|m| m.attributes.enumerable())
-                    .unwrap_or(PropAttributes::DEFAULT_DATA.enumerable())
-            })
-            .collect();
-        key_names = owned_keys.iter().map(|(si, _offset)| key_si_to_string(vm, *si)).collect();
-    }
-    let n = key_names.len();
+    let obj = unsafe { &*obj_ptr };
+    let owned_keys: Vec<(u32, u32)> = walk_own_keys(vm, obj)
+        .into_iter()
+        .filter(|(_si, offset)| {
+            obj.prop_meta_at(*offset)
+                .map(|m| m.attributes.enumerable())
+                .unwrap_or(PropAttributes::DEFAULT_DATA.enumerable())
+        })
+        .collect();
+    let n = owned_keys.len();
     let array_proto = vm.session().builtin_world().array_proto.as_ptr() as *mut JsObject;
     let arr = vm.alloc_object(JsObject::new_array(
         EMPTY_SHAPE_ID,
@@ -399,10 +413,10 @@ pub fn object_keys<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         n,
         vm.epoch().bump(),
     ));
-    for (i, k) in key_names.iter().enumerate() {
-        let str_val = vm.new_string(k);
+    for (i, (si, _offset)) in owned_keys.iter().enumerate() {
+        let key_val = key_si_to_js_value(vm, *si);
         unsafe {
-            (*arr).set_prop_at(i, str_val);
+            (*arr).set_prop_at(i, key_val);
         }
     }
     unsafe {
@@ -1009,13 +1023,9 @@ pub fn object_is_extensible<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult 
 pub fn object_get_own_property_names<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let obj_ptr = native_try!(require_obj_arg(vm, args, "getOwnPropertyNames"));
 
-    let key_names: Vec<String> = {
-        let obj = unsafe { &*obj_ptr };
-        let keys = walk_own_keys(vm, obj);
-        keys.iter().map(|(si, _)| key_si_to_string(vm, *si)).collect()
-    };
-
-    let n = key_names.len();
+    let obj = unsafe { &*obj_ptr };
+    let keys = walk_own_keys(vm, obj);
+    let n = keys.len();
     let array_proto = vm.session().builtin_world().array_proto.as_ptr() as *mut JsObject;
     let arr = vm.alloc_object(JsObject::new_array(
         EMPTY_SHAPE_ID,
@@ -1023,10 +1033,10 @@ pub fn object_get_own_property_names<H: VmHost>(vm: &mut H, args: &[u8]) -> Nati
         n,
         vm.epoch().bump(),
     ));
-    for (i, k) in key_names.iter().enumerate() {
-        let str_val = vm.new_string(k);
+    for (i, (si, _)) in keys.iter().enumerate() {
+        let key_val = key_si_to_js_value(vm, *si);
         unsafe {
-            (*arr).set_prop_at(i, str_val);
+            (*arr).set_prop_at(i, key_val);
         }
     }
     unsafe {
@@ -1333,8 +1343,7 @@ pub fn object_entries<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         vm.epoch().bump(),
     ));
     for (i, (si, offset)) in owned_keys.iter().enumerate() {
-        let key_str = key_si_to_string(vm, *si);
-        let key_val = vm.new_string(&key_str);
+        let key_val = key_si_to_js_value(vm, *si);
         let val = obj.get_prop_at(*offset);
         let pair = vm.alloc_object(JsObject::new_array(
             EMPTY_SHAPE_ID,

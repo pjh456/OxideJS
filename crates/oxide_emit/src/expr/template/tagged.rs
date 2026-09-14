@@ -23,12 +23,15 @@ impl Emitter {
         for quasi in &tt.quasi.quasis {
             match quasi.value.cooked.as_ref() {
                 Some(c) => {
-                    let idx = ctx.add_constant(Constant::String(c.to_string()));
+                    let key = crate::shared::string_pool::pool_key_marker(c, quasi.lone_surrogates);
+                    let idx = ctx.add_constant(Constant::String(key));
                     cooked_words.push(idx as u32);
                 }
                 None => cooked_words.push(0x8000_0000),
             }
-            let raw_idx = ctx.add_constant(Constant::String(quasi.value.raw.to_string()));
+            // raw 是源文本（保留转义原文），无 marker 语义，走普通编码。
+            let raw_idx =
+                ctx.add_constant(Constant::String(crate::shared::string_pool::pool_key_plain(&quasi.value.raw)));
             raw_idxs.push(raw_idx);
         }
         let site_no = ctx.next_template_site;

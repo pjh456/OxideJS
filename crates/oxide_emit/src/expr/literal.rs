@@ -52,7 +52,8 @@ impl Emitter {
     fn emit_string_literal_expression(
         &self, s: &oxide_parser::StringLiteral, ctx: &mut CompileCtx,
     ) -> Result<u32, String> {
-        let idx = ctx.add_constant(Constant::String(s.value.to_string()));
+        let idx = ctx
+            .add_constant(Constant::String(crate::shared::string_pool::pool_key_marker(&s.value, s.lone_surrogates)));
         let r = ctx.alloc_reg();
         ctx.inst(Inst::load_const(Operand::Reg(r), idx));
         Ok(r)

@@ -133,10 +133,13 @@ pub(crate) fn is_array_index_str(s: &str) -> bool {
 /// （运行期非常量 / 键求值有副作用）与规范数组下标串返回 `None`，维持 DYNAMIC 路径。
 pub(crate) fn computed_const_key(expr: &Expression) -> Option<String> {
     let key = match expr {
-        Expression::StringLiteral(s) => s.value.to_string(),
-        Expression::TemplateLiteral(tl) if tl.expressions.is_empty() && tl.quasis.len() == 1 => {
-            tl.quasis[0].value.cooked.as_ref().map(|c| c.to_string()).unwrap_or_default()
-        }
+        Expression::StringLiteral(s) => crate::shared::string_pool::pool_key_marker(&s.value, s.lone_surrogates),
+        Expression::TemplateLiteral(tl) if tl.expressions.is_empty() && tl.quasis.len() == 1 => tl.quasis[0]
+            .value
+            .cooked
+            .as_ref()
+            .map(|c| crate::shared::string_pool::pool_key_marker(c, tl.quasis[0].lone_surrogates))
+            .unwrap_or_default(),
         _ => return None,
     };
     if is_array_index_str(&key) {

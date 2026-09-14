@@ -409,22 +409,33 @@ fn expand_dollar_units(text: &[u16], m: &regress::Match, replacement: &[u16]) ->
         } else if rest.starts_with(&[0x24, 0x27]) {
             out.extend_from_slice(&text[range.end..]);
             i += 2;
-        } else {
-            // $n（1-2 位数字）→ 捕获组；未匹配/越界 → 空串。
-            let mut j = 1;
-            while i + j < replacement.len() && (0x30..=0x39).contains(&replacement[i + j]) {
-                j += 1;
-            }
-            if j == 0 {
-                out.push(0x24);
-                i += 1;
+        } else if i + 1 < replacement.len() && (0x30..=0x39).contains(&replacement[i + 1]) {
+            // $digits：digitCount 取 2（后续尚有数字）否则 1；两位数值越界回退
+            // 一位（次位留给后续按字面处理）；仍越界（含 $0）→ 整段 ref 字面。
+            let digit_count = if i + 2 < replacement.len() && (0x30..=0x39).contains(&replacement[i + 2]) {
+                2
             } else {
-                let n: u32 = (0..j).fold(0, |acc, k| acc * 10 + (replacement[i + k] - 0x30) as u32);
-                if let Some(g) = m.group(n as usize) {
+                1
+            };
+            let d1 = (replacement[i + 1] - 0x30) as u32;
+            let mut index = if digit_count == 2 { d1 * 10 + (replacement[i + 2] - 0x30) as u32 } else { d1 };
+            let mut ref_len = 1 + digit_count;
+            let capture_len = (m.groups().count() - 1) as u32;
+            if index > capture_len && digit_count == 2 {
+                index = d1;
+                ref_len = 2;
+            }
+            if (1..=capture_len).contains(&index) {
+                if let Some(g) = m.group(index as usize) {
                     out.extend_from_slice(&text[g.start..g.end]);
                 }
-                i += 1 + j;
+            } else {
+                out.extend_from_slice(&replacement[i..i + ref_len]);
             }
+            i += ref_len;
+        } else {
+            out.push(0x24);
+            i += 1;
         }
     }
     out
@@ -692,22 +703,6 @@ pub fn string_value_of<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 /// JS `String()` 构造逻辑：把参数转成字符串（单元保真）；new 语义返回
 /// `[[StringData]]` 包装对象。
 pub fn string_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
-    let str_val = if args.len() > 1 {
-        // 对象参数须经 ToPrimitive/ToString 完整转换（字符串结果按载荷形态保留）。
-        match oxide_runtime_api::to_string_value_full(vm.reg(args[1]), vm) {
-            Ok(v) => v,
-            Err(_) => {
-                // ToString on an object may throw via toString/valueOf; propagate the original exception.
-                if let Some(exc) = vm.take_uncaught_value() {
-                    return NativeResult::Err(exc);
-                }
-                return NativeResult::Err(crate::error::create_type_error(vm, "Cannot convert value to a string"));
-            }
-        }
-    } else {
-        vm.new_string("")
-    };
-
     let string_proto = vm.session().builtin_world().string_proto.as_ptr() as *mut JsObject;
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
     let is_ctor = if this_val.is_object() {
@@ -720,6 +715,30 @@ pub fn string_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         }
     } else {
         false
+    };
+
+    let str_val = if args.len() > 1 {
+        let v = vm.reg(args[1]);
+        if is_ctor && v.is_symbol() {
+            // new String(Symbol)：构造器路径走 ToString（规范步骤 3b），
+            // 对 Symbol 抛 TypeError——与函数调用路径（3a 描述串）相异。
+            return NativeResult::Err(crate::error::create_type_error(vm, "Cannot convert a Symbol value to a string"));
+        }
+        // 对象参数须经 ToPrimitive/ToString 完整转换；函数调用路径的 Symbol
+        // 走 SymbolDescriptiveString（规范步骤 3a，不经 ToString）。
+        let v = oxide_runtime_api::to_string_for_string_constructor(v, vm);
+        match v {
+            Ok(s) => vm.new_string_owned(s),
+            Err(_) => {
+                // ToString on an object may throw via toString/valueOf; propagate the original exception.
+                if let Some(exc) = vm.take_uncaught_value() {
+                    return NativeResult::Err(exc);
+                }
+                return NativeResult::Err(crate::error::create_type_error(vm, "Cannot convert value to a string"));
+            }
+        }
+    } else {
+        vm.new_string("")
     };
 
     if !is_ctor {
@@ -1155,10 +1174,12 @@ pub fn string_pad_start<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     } else {
         None
     };
-    let pad: Vec<u16> = if args.len() > 2 {
-        try_string!(as_units(vm, vm.reg(args[2]))).into_owned()
-    } else {
+    let pad_val = if args.len() > 2 { vm.reg(args[2]) } else { JsValue::undefined() };
+    // 规范口径：padString 为 undefined（含显式传入）回落空格填充。
+    let pad: Vec<u16> = if pad_val.is_undefined() {
         vec![0x20]
+    } else {
+        try_string!(as_units(vm, pad_val)).into_owned()
     };
     let s: Vec<u16> = try_string!(this_units(vm, args)).into_owned();
     let s_len = code_point_count(&s);
@@ -1194,10 +1215,12 @@ pub fn string_pad_end<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     } else {
         None
     };
-    let pad: Vec<u16> = if args.len() > 2 {
-        try_string!(as_units(vm, vm.reg(args[2]))).into_owned()
-    } else {
+    let pad_val = if args.len() > 2 { vm.reg(args[2]) } else { JsValue::undefined() };
+    // 规范口径：padString 为 undefined（含显式传入）回落空格填充。
+    let pad: Vec<u16> = if pad_val.is_undefined() {
         vec![0x20]
+    } else {
+        try_string!(as_units(vm, pad_val)).into_owned()
     };
     let s: Vec<u16> = try_string!(this_units(vm, args)).into_owned();
     let s_len = code_point_count(&s);

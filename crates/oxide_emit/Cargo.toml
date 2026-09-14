@@ -8,6 +8,7 @@ description = "OxideJS - AST to IR emit pass"
 
 [dependencies]
 oxide_parser = { path = "../oxide_parser" }
+oxide_kernel = { path = "../oxide_kernel" }
 oxc_allocator.workspace = true
 oxide_bytecode = { path = "../oxide_bytecode" }
 oxide_ir = { path = "../oxide_ir" }

@@ -74,7 +74,7 @@ impl Emitter {
                         } else {
                             (undef_reg, accessor_reg)
                         };
-                        let key_name = self.class_property_name(&method.key)?;
+                        let key_name = crate::shared::string_pool::pool_key_property(&method.key)?;
                         let key_idx = ctx.add_constant(Constant::String(key_name));
                         ctx.inst(Inst::define_accessor_attrs(
                             Operand::Reg(home_reg),
