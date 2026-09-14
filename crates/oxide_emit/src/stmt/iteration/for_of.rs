@@ -26,7 +26,16 @@ impl Emitter {
         ctx.push_scope();
         let start_label = ctx.next_label_id();
         let end_label = ctx.next_label_id();
+        // 词法头 TDZ 环境：右值区头名绑定未初始化 cell，右值区求值后切到
+        // 每迭代 fresh cell，体发射后恢复捕获映射（同 for-in 覆盖）。
+        let mut head_env = self
+            .collect_for_head_lexical_names(&fo.left)
+            .map(|names| self.begin_for_head_env(names, ctx))
+            .transpose()?;
         let iter_src_reg = self.emit_expression(&fo.right, ctx)?;
+        if let Some(env) = &mut head_env {
+            self.switch_for_head_env_to_body(env, ctx);
+        }
         ctx.inst(Inst::new(OpCode::FOR_OF_INIT, Operand::None, Operand::Reg(iter_src_reg), Operand::None));
         ctx.labels.set_label_pos(start_label, ctx.insts.len());
         ctx.push_loop(end_label, start_label, crate::emit_ctx::LoopKind::ForOf);
@@ -38,6 +47,9 @@ impl Emitter {
         ctx.inst(Inst::new(OpCode::FOR_OF_NEXT, Operand::Reg(val_reg), Operand::None, Operand::None));
         self.emit_for_of_left_assignment(&fo.left, val_reg, ctx)?;
         let body_result = self.emit_statement(&fo.body, ctx)?;
+        if let Some(env) = head_env {
+            self.restore_for_head_env(env, ctx);
+        }
         ctx.inst(Inst::jmp(start_label));
         ctx.labels.set_label_pos(end_label, ctx.insts.len());
         ctx.inst(Inst::new(OpCode::FOR_OF_CLOSE, Operand::None, Operand::None, Operand::None));
@@ -62,7 +74,15 @@ impl Emitter {
         ctx.push_scope();
         let start_label = ctx.next_label_id();
         let end_label = ctx.next_label_id();
+        // 词法头 TDZ 环境：同同步 for-of（右值区未初始化 cell → 体区 fresh cell）。
+        let mut head_env = self
+            .collect_for_head_lexical_names(&fo.left)
+            .map(|names| self.begin_for_head_env(names, ctx))
+            .transpose()?;
         let iter_src_reg = self.emit_expression(&fo.right, ctx)?;
+        if let Some(env) = &mut head_env {
+            self.switch_for_head_env_to_body(env, ctx);
+        }
         ctx.inst(Inst::new(
             OpCode::FOR_AWAIT_OF_INIT,
             Operand::None,
@@ -89,6 +109,9 @@ impl Emitter {
         ctx.inst(Inst::new(OpCode::FOR_OF_NEXT, Operand::Reg(val_reg), Operand::None, Operand::None));
         self.emit_for_of_left_assignment(&fo.left, val_reg, ctx)?;
         let body_result = self.emit_statement(&fo.body, ctx)?;
+        if let Some(env) = head_env {
+            self.restore_for_head_env(env, ctx);
+        }
         ctx.inst(Inst::jmp(start_label));
         ctx.labels.set_label_pos(end_label, ctx.insts.len());
         ctx.inst(Inst::new(OpCode::FOR_AWAIT_OF_CLOSE, Operand::None, Operand::None, Operand::None));

@@ -199,7 +199,10 @@ impl Vm {
 
     #[allow(dead_code)]
     pub(crate) fn dispatch_make_cell(&mut self, rd: usize, instr: u32) -> Result<(), String> {
-        let cell_idx = opcode::imm16(instr) as usize;
+        // a 槽为 cell 索引；b 槽承载未初始化标志（1 = 绑定永不被初始化，
+        // 读写抛 ReferenceError，for-in/for-of 词法头 TDZ 环境建模用）。
+        let cell_idx = opcode::a(instr) as usize;
+        let initialized = opcode::b(instr) == 0;
         let value = self.regs[rd];
         let current = self.cell_stack.last_mut().unwrap();
         while current.len() <= cell_idx {
@@ -207,14 +210,14 @@ impl Vm {
         }
         if current[cell_idx].is_null() {
             // 无占位 cell：新建。
-            current[cell_idx] = self.gc_state.alloc_cell(value, true);
+            current[cell_idx] = self.gc_state.alloc_cell(value, initialized);
         } else {
             // 更新占位 cell（CREATE_CLOSURE 已建），使闭包 upvalue 指向的
-            // cell 值跟随初始化；赋值即解除 TDZ。
+            // cell 值跟随初始化；初始化标志随指令 b 槽。
             unsafe {
                 let cell = &mut *current[cell_idx];
                 cell.value = value;
-                cell.set_initialized(true);
+                cell.set_initialized(initialized);
             }
         }
         Ok(())

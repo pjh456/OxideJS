@@ -1,4 +1,10 @@
 //! for-in 语句 emit：`emit_for_in_statement` 遍历可枚举属性名。
+//!
+//! 词法头（let/const/using）按规范建模为独立环境：右值区头名绑定未初始化
+//! cell（读与捕获均抛 ReferenceError），体区绑定每迭代 fresh cell；捕获映射
+//! 于语句结束后恢复，for-of 经同一套覆盖复用。
+
+use std::collections::HashSet;
 
 use crate::{CompileCtx, Emitter};
 use oxide_bytecode::opcode::OpCode;
@@ -6,7 +12,93 @@ use oxide_ir::inst::Inst;
 use oxide_ir::operand::Operand;
 use oxide_parser::{ForStatementLeft, Statement, VariableDeclarationKind};
 
+/// for-in/for-of 词法头的捕获映射覆盖：每头名一条记录，依次为名字、旧条目
+/// （无旧条目为 None）、右值区 TDZ cell、体区 fresh cell（切换后填入）。
+pub(crate) struct ForHeadEnv {
+    entries: Vec<(String, Option<u8>, u8, u8)>,
+}
+
 impl Emitter {
+    /// 收集 for-in/for-of 词法声明头（let/const/using，含解构 pattern 叶）的
+    /// 头名（排序保证稳定）；var 头与赋值头无 TDZ 环境，返回 None。
+    pub(crate) fn collect_for_head_lexical_names(&self, left: &ForStatementLeft) -> Option<Vec<String>> {
+        let ForStatementLeft::VariableDeclaration(decl) = left else {
+            return None;
+        };
+        if matches!(decl.kind, VariableDeclarationKind::Var) {
+            return None;
+        }
+        let mut names = HashSet::new();
+        for d in &decl.declarations {
+            self.collect_binding_pattern_names(&d.id, &mut names);
+        }
+        let mut v: Vec<String> = names.into_iter().collect();
+        v.sort();
+        Some(v)
+    }
+
+    /// 把词法头名覆盖到捕获映射（右值区阶段）：保存旧条目、分配 TDZ cell 并
+    /// 发射未初始化 MAKE_CELL、头名映射 TDZ cell。右值区内对头名的直读与
+    /// 该区内创建闭包的捕获均命中未初始化 cell（读抛 ReferenceError）。
+    ///
+    /// # 步骤
+    /// 1. 逐头名：移除旧条目并记入恢复清单。
+    /// 2. 按现有最大 cell 索引顺序分配 TDZ cell（与类 brand 合成 cell 同口径）。
+    /// 3. 发射未初始化 MAKE_CELL 并覆盖映射。
+    ///
+    /// # 副作用
+    /// - 捕获映射被改动；须经 `switch_for_head_env_to_body` 与
+    ///   `restore_for_head_env` 成对收尾，防头名泄漏进兄弟语句的捕获映射。
+    pub(crate) fn begin_for_head_env(&self, names: Vec<String>, ctx: &mut CompileCtx) -> Result<ForHeadEnv, String> {
+        let mut entries = Vec::with_capacity(names.len());
+        let mut next = ctx.captured_bindings.values().copied().max().map_or(0, |m| m.saturating_add(1));
+        for name in names {
+            let saved = ctx.captured_bindings.remove(&name);
+            let tdz_idx = next;
+            next = next.saturating_add(1);
+            ctx.captured_bindings.insert(name.clone(), tdz_idx);
+            // 未初始化标志走 b 槽：a 槽 Imm 的高字节会覆写 b 槽，故标志并入
+            // 立即数高字节，dispatch 侧按 a/b 分槽取回。
+            let undef_reg = self.emit_undefined(ctx);
+            ctx.inst(Inst::new(
+                OpCode::MAKE_CELL,
+                Operand::Reg(undef_reg),
+                Operand::Imm(tdz_idx as u16 | 0x0100),
+                Operand::None,
+            ));
+            entries.push((name, saved, tdz_idx, 0));
+        }
+        Ok(ForHeadEnv { entries })
+    }
+
+    /// 右值区求值完毕后把覆盖从 TDZ cell 切到体区 fresh cell：每头名分配新
+    /// cell 并改写映射，头发射捕获臂与体区读/捕获自然命中（每迭代
+    /// MAKE_CELL_FRESH 建新 cell，本迭代闭包捕获新 cell）。
+    pub(crate) fn switch_for_head_env_to_body(&self, env: &mut ForHeadEnv, ctx: &mut CompileCtx) {
+        let mut next = ctx.captured_bindings.values().copied().max().map_or(0, |m| m.saturating_add(1));
+        for (name, _, _, body_idx) in &mut env.entries {
+            let idx = next;
+            next = next.saturating_add(1);
+            *body_idx = idx;
+            ctx.captured_bindings.insert(name.clone(), idx);
+        }
+    }
+
+    /// 语句收尾恢复捕获映射：旧条目放回（无旧条目则移除），头名不进入后续
+    /// 兄弟语句的捕获判定。
+    pub(crate) fn restore_for_head_env(&self, env: ForHeadEnv, ctx: &mut CompileCtx) {
+        for (name, saved, _, _) in env.entries {
+            match saved {
+                Some(old) => {
+                    ctx.captured_bindings.insert(name, old);
+                }
+                None => {
+                    ctx.captured_bindings.remove(&name);
+                }
+            }
+        }
+    }
+
     pub(crate) fn emit_for_in_statement(&self, stmt: &Statement, ctx: &mut CompileCtx) -> Result<Option<u32>, String> {
         let Statement::ForInStatement(fi) = stmt else {
             return Ok(None);
@@ -14,7 +106,16 @@ impl Emitter {
         ctx.push_scope();
         let start_label = ctx.next_label_id();
         let end_label = ctx.next_label_id();
+        // 词法头 TDZ 环境：右值区头名绑定未初始化 cell，右值区求值后切到
+        // 每迭代 fresh cell，体发射后恢复捕获映射。
+        let mut head_env = self
+            .collect_for_head_lexical_names(&fi.left)
+            .map(|names| self.begin_for_head_env(names, ctx))
+            .transpose()?;
         let obj_reg = self.emit_expression(&fi.right, ctx)?;
+        if let Some(env) = &mut head_env {
+            self.switch_for_head_env_to_body(env, ctx);
+        }
         ctx.inst(Inst::new(OpCode::FOR_IN_INIT, Operand::None, Operand::Reg(obj_reg), Operand::None));
         ctx.labels.set_label_pos(start_label, ctx.insts.len());
         ctx.push_loop(end_label, start_label, crate::emit_ctx::LoopKind::ForIn);
@@ -124,6 +225,9 @@ impl Emitter {
             _ => return Err("unsupported for-in left-hand side".into()),
         }
         let body_result = self.emit_statement(&fi.body, ctx)?;
+        if let Some(env) = head_env {
+            self.restore_for_head_env(env, ctx);
+        }
         ctx.inst(Inst::jmp(start_label));
         ctx.labels.set_label_pos(end_label, ctx.insts.len());
         ctx.inst(Inst::new(OpCode::FOR_IN_CLEANUP, Operand::None, Operand::None, Operand::None));
