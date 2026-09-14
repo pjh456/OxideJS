@@ -3816,3 +3816,30 @@ fn plain_time_ctor_number_component_rejects_and_undefined_default() {
         "TypeError|TypeError|RangeError|RangeError|RangeError|0|01:00:00.001|02:00:00"
     );
 }
+
+#[test]
+fn plain_date_time_ctor_undefined_time_components_default() {
+    let mut vm = Vm::new();
+    // 红形钉：显式 undefined 时间分量（时/分/秒/毫秒）与缺参同义取默认 0，
+    // 与全缺省构造等值；旧形为 RangeError。日期分量无缺省臂：undefined 仍抛
+    // RangeError。
+    let r = eval(
+        &mut vm,
+        "(() => {
+           const kind = (fn) => { try { fn(); return 'no'; } catch (e) { return e.constructor.name; } };
+           return [
+             new Temporal.PlainDateTime(2020, 1, 1, undefined, undefined, undefined).toString(),
+             new Temporal.PlainDateTime(2020, 1, 1, 10, undefined, undefined, 5, undefined, undefined).toString(),
+             new Temporal.PlainDateTime(2020, 1, 1).toString(),
+             kind(() => new Temporal.PlainDateTime(undefined, 1, 1)),
+             kind(() => new Temporal.PlainDateTime(2020, undefined, 1)),
+             kind(() => new Temporal.PlainDateTime(2020, 1, undefined)),
+           ].join('|');
+         })()",
+    )
+    .unwrap();
+    assert_eq!(
+        str_val(&vm, r),
+        "2020-01-01T00:00:00|2020-01-01T10:00:00.005|2020-01-01T00:00:00|RangeError|RangeError|RangeError"
+    );
+}

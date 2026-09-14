@@ -5111,6 +5111,12 @@ pub fn plain_date_time_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> Native
     let mut component = |index: usize, default: f64| -> Result<f64, JsValue> {
         if args.len() > index {
             let raw = vm.reg(args[index]);
+            // 时间分量（缺省臂为有限值）：显式 undefined 与缺参同义，取缺省值；
+            // 日期分量无缺省臂（缺省值为 NaN），undefined 仍经 NaN 统一抛
+            // RangeError。
+            if raw.is_undefined() && default.is_finite() {
+                return Ok(default);
+            }
             temporal_option_number(vm, raw).map(f64::trunc)
         } else {
             Ok(default)
