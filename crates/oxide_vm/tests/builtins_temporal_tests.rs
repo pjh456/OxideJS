@@ -3818,6 +3818,32 @@ fn plain_time_ctor_number_component_rejects_and_undefined_default() {
 }
 
 #[test]
+fn plain_time_ctor_negative_time_components_throw_range_error() {
+    let mut vm = Vm::new();
+    // 红形钉：六分量（时/分/秒/毫秒/微秒/纳秒）负值各一例均抛 RangeError，
+    // 消息复用既有范围错口径 "invalid time component"。
+    let r = eval(
+        &mut vm,
+        "(() => {
+           const kind = (fn) => { try { fn(); return 'no'; } catch (e) { return e.constructor.name + ':' + e.message; } };
+           return [
+             kind(() => new Temporal.PlainTime(-1, 0, 0, 0, 0, 0)),
+             kind(() => new Temporal.PlainTime(0, -1, 0, 0, 0, 0)),
+             kind(() => new Temporal.PlainTime(0, 0, -1, 0, 0, 0)),
+             kind(() => new Temporal.PlainTime(0, 0, 0, -1, 0, 0)),
+             kind(() => new Temporal.PlainTime(0, 0, 0, 0, -1, 0)),
+             kind(() => new Temporal.PlainTime(0, 0, 0, 0, 0, -1)),
+           ].join('|');
+         })()",
+    )
+    .unwrap();
+    assert_eq!(
+        str_val(&vm, r),
+        "RangeError:invalid time component|RangeError:invalid time component|RangeError:invalid time component|RangeError:invalid time component|RangeError:invalid time component|RangeError:invalid time component"
+    );
+}
+
+#[test]
 fn plain_date_time_ctor_undefined_time_components_default() {
     let mut vm = Vm::new();
     // 红形钉：显式 undefined 时间分量（时/分/秒/毫秒）与缺参同义取默认 0，

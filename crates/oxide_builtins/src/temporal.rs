@@ -4625,12 +4625,26 @@ pub fn plain_time_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResul
         }
         temporal_number_component(vm, raw)
     };
-    let hour = native_try!(get(1)) as u32;
-    let minute = native_try!(get(2)) as u32;
-    let second = native_try!(get(3)) as u32;
-    let ms = native_try!(get(4)) as u32;
-    let us = native_try!(get(5)) as u32;
-    let ns = native_try!(get(6)) as u32;
+    // 负值在 u32 转换前检查：截断后为负的整分量（含负分数整数化为负）须先抛错，
+    // 不能让 f64→u32 饱和把其静默归 0 而逃过范围检查。
+    let hour_value = native_try!(get(1));
+    let minute_value = native_try!(get(2));
+    let second_value = native_try!(get(3));
+    let ms_value = native_try!(get(4));
+    let us_value = native_try!(get(5));
+    let ns_value = native_try!(get(6));
+    if [hour_value, minute_value, second_value, ms_value, us_value, ns_value]
+        .iter()
+        .any(|value| *value < 0.0)
+    {
+        return NativeResult::Err(crate::error::create_range_error(vm, "invalid time component"));
+    }
+    let hour = hour_value as u32;
+    let minute = minute_value as u32;
+    let second = second_value as u32;
+    let ms = ms_value as u32;
+    let us = us_value as u32;
+    let ns = ns_value as u32;
     if !valid_plain_time(hour, minute, second, ms, us, ns) {
         return NativeResult::Err(crate::error::create_range_error(vm, "invalid time component"));
     }
