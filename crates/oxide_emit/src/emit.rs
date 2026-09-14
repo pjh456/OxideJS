@@ -1870,6 +1870,12 @@ impl Emitter {
 
         // 第二个 sub-pass：发其余所有语句。
         let mut last_result: Option<u32> = None;
+        // directive 序言是 AST 独立字段（顶格字符串字面量，不在 body）：作为语句
+        // 序列的头前缀按源序先于 body 发射。完成值即字符串值本身，参与"最后非空
+        // 完成值"收敛；严格模式标志由 has_use_strict_directive 独立处理，此处不涉。
+        for dir in &program.directives {
+            last_result = Some(self.emit_string_literal_expression(&dir.expression, &mut ctx)?);
+        }
         for stmt in &program.body {
             if matches!(stmt, Statement::FunctionDeclaration(_)) {
                 continue; // Already emitted above

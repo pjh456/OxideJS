@@ -365,6 +365,11 @@ impl Emitter {
         }
 
         // —— body（函数声明 hoisting 先发，随后其余；import 已由 prelude 处理）——
+        // directive 序言是 AST 独立字段（顶格字符串字面量，不在 body）：纯字符串
+        // 无副作用，按源序先于 body 发射，与脚本 emit_program 的发射口径一致。
+        for dir in &program.directives {
+            self.emit_string_literal_expression(&dir.expression, ctx)?;
+        }
         for stmt in body {
             if is_hoisted_function_decl(stmt) {
                 self.emit_statement(stmt, ctx)?;

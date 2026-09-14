@@ -49,7 +49,7 @@ impl Emitter {
         Ok(r)
     }
 
-    fn emit_string_literal_expression(
+    pub(crate) fn emit_string_literal_expression(
         &self, s: &oxide_parser::StringLiteral, ctx: &mut CompileCtx,
     ) -> Result<u32, String> {
         let idx = ctx
