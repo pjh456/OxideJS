@@ -35,16 +35,26 @@ impl Emitter {
         if !has_default {
             ctx.inst(Inst::jmp(end_label));
         }
+        let mut last: Option<u32> = None;
         for (case_idx, case) in cases.iter().enumerate() {
             let case_label = case_labels[case_idx];
             ctx.labels.set_label_pos(case_label, ctx.insts.len());
             for s in &case.consequent {
-                self.emit_statement(s, ctx)?;
+                if let Some(r) = self.emit_statement(s, ctx)? {
+                    last = Some(r);
+                }
             }
         }
         ctx.labels.set_label_pos(end_label, ctx.insts.len());
         ctx.pop_switch();
-        Ok(None)
+        // switch 完成值 = 已执行 case 链最后一次非空完成值（源序最后非空语句的
+        // 收敛寄存器：命中后穿落到 break/尾即为其值，无命中则该寄存器不被写入而
+        // 持 undefined）；无命中物化 undefined 作为带值完成返回。
+        let result = match last {
+            Some(r) => r,
+            None => self.emit_undefined(ctx),
+        };
+        Ok(Some(result))
     }
 
     pub(crate) fn emit_switch_domain(&self, stmt: &Statement, ctx: &mut CompileCtx) -> Result<Option<u32>, String> {

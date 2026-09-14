@@ -123,13 +123,19 @@ impl Emitter {
             }
             _ => return Err("unsupported for-in left-hand side".into()),
         }
-        self.emit_statement(&fi.body, ctx)?;
+        let body_result = self.emit_statement(&fi.body, ctx)?;
         ctx.inst(Inst::jmp(start_label));
         ctx.labels.set_label_pos(end_label, ctx.insts.len());
         ctx.inst(Inst::new(OpCode::FOR_IN_CLEANUP, Operand::None, Operand::None, Operand::None));
         ctx.pop_label_scopes(n_labeled);
         ctx.pop_loop();
         ctx.pop_scope();
-        Ok(None)
+        // 循环完成值 = 循环体最后一次非空完成值；空体物化 undefined 作为带值完成
+        // 返回，不沿用循环前的值。
+        let result = match body_result {
+            Some(r) => r,
+            None => self.emit_undefined(ctx),
+        };
+        Ok(Some(result))
     }
 }

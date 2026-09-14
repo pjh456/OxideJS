@@ -19,13 +19,19 @@ impl Emitter {
         // 不能指回体首（否则条件永不被求值）。
         ctx.push_loop(end_label, cont_label, crate::emit_ctx::LoopKind::Plain);
         let n_labeled = ctx.take_pending_loop_labels(end_label, cont_label);
-        self.emit_statement(&dw.body, ctx)?;
+        let body_result = self.emit_statement(&dw.body, ctx)?;
         ctx.labels.set_label_pos(cont_label, ctx.insts.len());
         let test_reg = self.emit_expression(&dw.test, ctx)?;
         ctx.inst(Inst::jmp_if_true(test_reg, start_label));
         ctx.labels.set_label_pos(end_label, ctx.insts.len());
         ctx.pop_label_scopes(n_labeled);
         ctx.pop_loop();
-        Ok(None)
+        // 循环完成值 = 循环体最后一次非空完成值（体收敛寄存器每迭代覆写）；空体
+        // 物化 undefined 作为带值完成返回，不沿用循环前的值。
+        let result = match body_result {
+            Some(r) => r,
+            None => self.emit_undefined(ctx),
+        };
+        Ok(Some(result))
     }
 }

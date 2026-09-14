@@ -224,3 +224,64 @@ fn eval_script_throw_still_rethrows() {
     let result = eval(&mut vm, "try { (0,eval)('throw 5') } catch(e) { e }").unwrap();
     assert_num(result, 5.0);
 }
+
+#[test]
+fn compound_statement_completion_values() {
+    let mut vm = Vm::new();
+    // 混合形完成值：switch 命中 case 链最后非空值、无命中 undefined；空命中不沿用前值。
+    let result = eval(&mut vm, "7; switch(1){case 1: 9}").unwrap();
+    assert_num(result, 9.0);
+    let result = eval(&mut vm, "7; switch(2){case 1: 9}").unwrap();
+    assert_eq!(result, JsValue::undefined());
+    // if 完成值 = 执行分支值，空/缺失分支物化 undefined（不沿用前值）。
+    let result = eval(&mut vm, "7; if(true){}").unwrap();
+    assert_eq!(result, JsValue::undefined());
+    let result = eval(&mut vm, "7; if(true){3}").unwrap();
+    assert_num(result, 3.0);
+    // for 循环体完成值 = 末次迭代体值；不迭代则 undefined（不沿用前值）。
+    let result = eval(&mut vm, "7; for(var i = 0; i < 2; i++) i * 10").unwrap();
+    assert_num(result, 10.0);
+    let result = eval(&mut vm, "7; for(; false;) 3").unwrap();
+    assert_eq!(result, JsValue::undefined());
+    // try 完成值 = try/catch 值，finally 体值按规范被丢弃。
+    let result = eval(&mut vm, "7; try { 5 } finally { 6 }").unwrap();
+    assert_num(result, 5.0);
+    let result = eval(&mut vm, "7; try { throw 3 } catch (e) { 6 } finally { 8 }").unwrap();
+    assert_num(result, 6.0);
+    // while 循环体完成值 = 末次体值；不迭代则 undefined。
+    let result = eval(&mut vm, "7; while (true) { 8; break }").unwrap();
+    assert_num(result, 8.0);
+    let result = eval(&mut vm, "2; while (false) { 3 }").unwrap();
+    assert_eq!(result, JsValue::undefined());
+    // with 完成值 = 体值；空体物化 undefined（不沿用前值）。
+    let result = eval(&mut vm, "2; with({}) { 3 }").unwrap();
+    assert_num(result, 3.0);
+    let result = eval(&mut vm, "1; with({}) {}").unwrap();
+    assert_eq!(result, JsValue::undefined());
+}
+
+#[test]
+fn iteration_labeled_completion_values() {
+    let mut vm = Vm::new();
+    // do-while 循环体完成值 = 末次体值。
+    let result = eval(&mut vm, "7; do { 8 } while (false)").unwrap();
+    assert_num(result, 8.0);
+    let result = eval(&mut vm, "1; do { 2; break; } while (true)").unwrap();
+    assert_num(result, 2.0);
+    // for-of 循环体完成值 = 末次迭代体值；空可迭代对象不迭代则 undefined。
+    let result = eval(&mut vm, "7; for (var x of [1, 2]) x * 10").unwrap();
+    assert_num(result, 20.0);
+    let result = eval(&mut vm, "7; for (var x of [1, 2]) { x * 10; break }").unwrap();
+    assert_num(result, 10.0);
+    let result = eval(&mut vm, "7; for (var x of []) x * 10").unwrap();
+    assert_eq!(result, JsValue::undefined());
+    // for-in 循环体完成值 = 末次迭代体值。
+    let result = eval(&mut vm, "7; for (var k in { a: 1 }) k").unwrap();
+    let rendered = vm.lookup_str(result).unwrap_or_default();
+    assert_eq!(rendered, "a");
+    // labeled 完成值 = 体值透传：块体取块收敛值，标签前缀/表达式体取体值。
+    let result = eval(&mut vm, "9; a: { 8 }").unwrap();
+    assert_num(result, 8.0);
+    let result = eval(&mut vm, "test262id: 2;").unwrap();
+    assert_num(result, 2.0);
+}

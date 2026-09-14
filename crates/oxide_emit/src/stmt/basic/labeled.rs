@@ -19,16 +19,19 @@ impl Emitter {
         &self, stmt: &oxide_parser::LabeledStatement, ctx: &mut CompileCtx,
     ) -> Result<Option<u32>, String> {
         let name = stmt.label.name.as_str();
-        if Self::is_iteration_statement(&stmt.body) {
+        // 标签语句完成值 = 体完成值（透传）：迭代体返回其循环值，块/表达式体返回其
+        // 收敛值；标签本身不改变完成值。
+        let body_result = if Self::is_iteration_statement(&stmt.body) {
             ctx.queue_loop_label(name)?;
-            self.emit_statement(&stmt.body, ctx)?;
+            self.emit_statement(&stmt.body, ctx)?
         } else {
             let id = ctx.next_label_id();
             ctx.push_label_scope(name, id, None)?;
-            self.emit_statement(&stmt.body, ctx)?;
+            let r = self.emit_statement(&stmt.body, ctx)?;
             ctx.labels.set_label_pos(id, ctx.insts.len());
             ctx.pop_label_scope();
-        }
-        Ok(None)
+            r
+        };
+        Ok(body_result)
     }
 }

@@ -134,7 +134,7 @@ impl Emitter {
             let test_reg = self.emit_expression(test, ctx)?;
             ctx.inst(Inst::jmp_if_false(test_reg, end_label));
         }
-        self.emit_statement(&fr.body, ctx)?;
+        let body_result = self.emit_statement(&fr.body, ctx)?;
         ctx.labels.set_label_pos(update_label, ctx.insts.len());
         if let Some(update) = &fr.update {
             // update 段写寄存器（而非 cell）：被捕获的 let/const 循环变量每迭代 fresh，
@@ -150,6 +150,12 @@ impl Emitter {
         ctx.pop_label_scopes(n_labeled);
         ctx.pop_loop();
         ctx.pop_scope();
-        Ok(None)
+        // 循环完成值 = 循环体最后一次非空完成值；空体物化 undefined 作为带值完成
+        // 返回，不沿用循环前的值。
+        let result = match body_result {
+            Some(r) => r,
+            None => self.emit_undefined(ctx),
+        };
+        Ok(Some(result))
     }
 }

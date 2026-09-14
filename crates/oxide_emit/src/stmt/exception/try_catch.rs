@@ -87,23 +87,16 @@ impl Emitter {
             // 落到 finally_label 起始的这条标记，统一完成置位；catch 体直落路径此前
             // 无任何置位，finally 内 break/continue/return/throw 会重入 finally 体。
             ctx.inst(Inst::try_finally_enter());
-            let mut last_finally_result: Option<u32> = None;
+            // finally 体按规范只求值副作用，其完成值被丢弃（不覆写 result_reg）：
+            // try/catch 收敛值保持 try 体或 catch 体值，finally 值不渗入。
             // finally block 同为独立块作用域，lexical 声明互不泄漏。
             ctx.push_scope();
             // finally 块 lexical 声明同为局部绑定：不做受限全局名检查。
             let _ = self.predeclare_lexical_declarations(&ts.finalizer.as_ref().unwrap().body, ctx, false);
             for s in &ts.finalizer.as_ref().unwrap().body {
-                if let Some(r) = self.emit_statement(s, ctx)? {
-                    last_finally_result = Some(r);
-                }
+                self.emit_statement(s, ctx)?;
             }
             ctx.pop_scope();
-            ctx.inst(Inst::new(
-                OpCode::LOAD_VAR,
-                Operand::Reg(result_reg),
-                Operand::Reg(last_finally_result.unwrap_or(result_reg)),
-                Operand::None,
-            ));
             ctx.inst(Inst::new(OpCode::TRY_FINALLY_END, Operand::None, Operand::None, Operand::None));
             ctx.pop_open_try_handler();
             ctx.pop_finally_domain();

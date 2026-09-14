@@ -20,9 +20,15 @@ impl Emitter {
         let obj_reg = self.emit_expression(&with.object, ctx)?;
         ctx.inst(Inst::new(OpCode::TO_OBJECT, Operand::Reg(obj_reg), Operand::None, Operand::None));
         ctx.push_with(obj_reg);
-        let result = self.emit_statement(&with.body, ctx)?;
+        let body_result = self.emit_statement(&with.body, ctx)?;
         ctx.pop_with();
-        Ok(result)
+        // with 完成值 = 体完成值；体为空（空完成）时按规范物化 undefined 作为带值
+        // 完成返回，不沿用 with 前的值。
+        let result = match body_result {
+            Some(r) => r,
+            None => self.emit_undefined(ctx),
+        };
+        Ok(Some(result))
     }
 
     pub(crate) fn emit_with_domain(&self, stmt: &Statement, ctx: &mut CompileCtx) -> Result<Option<u32>, String> {

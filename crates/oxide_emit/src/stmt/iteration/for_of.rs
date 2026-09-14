@@ -37,14 +37,20 @@ impl Emitter {
         let val_reg = ctx.alloc_reg();
         ctx.inst(Inst::new(OpCode::FOR_OF_NEXT, Operand::Reg(val_reg), Operand::None, Operand::None));
         self.emit_for_of_left_assignment(&fo.left, val_reg, ctx)?;
-        self.emit_statement(&fo.body, ctx)?;
+        let body_result = self.emit_statement(&fo.body, ctx)?;
         ctx.inst(Inst::jmp(start_label));
         ctx.labels.set_label_pos(end_label, ctx.insts.len());
         ctx.inst(Inst::new(OpCode::FOR_OF_CLOSE, Operand::None, Operand::None, Operand::None));
         ctx.pop_label_scopes(n_labeled);
         ctx.pop_loop();
         ctx.pop_scope();
-        Ok(None)
+        // 循环完成值 = 循环体最后一次非空完成值；空体物化 undefined 作为带值完成
+        // 返回，不沿用循环前的值。
+        let result = match body_result {
+            Some(r) => r,
+            None => self.emit_undefined(ctx),
+        };
+        Ok(Some(result))
     }
 
     /// for-await-of：异步迭代器协议遍历，每步经 `AWAIT` 挂起等待 next() 结果。
@@ -82,14 +88,20 @@ impl Emitter {
         let val_reg = ctx.alloc_reg();
         ctx.inst(Inst::new(OpCode::FOR_OF_NEXT, Operand::Reg(val_reg), Operand::None, Operand::None));
         self.emit_for_of_left_assignment(&fo.left, val_reg, ctx)?;
-        self.emit_statement(&fo.body, ctx)?;
+        let body_result = self.emit_statement(&fo.body, ctx)?;
         ctx.inst(Inst::jmp(start_label));
         ctx.labels.set_label_pos(end_label, ctx.insts.len());
         ctx.inst(Inst::new(OpCode::FOR_AWAIT_OF_CLOSE, Operand::None, Operand::None, Operand::None));
         ctx.pop_label_scopes(n_labeled);
         ctx.pop_loop();
         ctx.pop_scope();
-        Ok(None)
+        // 循环完成值 = 循环体最后一次非空完成值；空体物化 undefined 作为带值完成
+        // 返回，不沿用循环前的值。
+        let result = match body_result {
+            Some(r) => r,
+            None => self.emit_undefined(ctx),
+        };
+        Ok(Some(result))
     }
 
     /// for-of/for-await-of 左侧绑定：把当前迭代值 `val_reg` 写入声明/赋值目标。
