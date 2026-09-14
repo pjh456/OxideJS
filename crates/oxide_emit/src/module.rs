@@ -128,11 +128,20 @@ fn is_hoisted_function_decl(stmt: &Statement) -> bool {
 
 impl Emitter {
     /// 编译 ES module：顶层 body + 递归依赖。
-    /// `module_path` 为模块文件的规范路径（依赖解析基准 = 其父目录）。
+    /// `module_path` 为模块文件路径；入口即归一为规范绝对路径（依赖解析基准 =
+    /// 其父目录），与加载器 resolve 的绝对规范口径对齐，使自导入身份比较稳定。
     pub fn emit_program_module(
         &self, program: &oxide_parser::Program, module_path: &str, loader: &mut dyn ModuleSourceLoader,
     ) -> Result<IRFunction, String> {
         crate::emit_debug!("emit_program_module: {} stmts", program.body.len());
+        // 顶层模块路径归一为规范绝对路径：自导入身份比较（resolved.path ==
+        // module_path）与 base_dir 需与加载器 resolve 的 canonicalize 绝对口径
+        // 一致——若保留相对发现路径，自导入比较恒 false、自导入被当外部依赖
+        // 重编译。文件不存在（虚拟/内存模块）时 canonicalize 失败，保留原路径。
+        let canonical = std::fs::canonicalize(module_path)
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_else(|_| module_path.to_string());
+        let module_path = canonical.as_str();
         let mut ctx = CompileCtx::new();
         // 模块顶层 var/function 不写全局对象（模块作用域绑定）。
         ctx.is_global_scope = false;
