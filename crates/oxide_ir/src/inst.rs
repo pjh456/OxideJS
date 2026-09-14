@@ -255,6 +255,20 @@ impl Inst {
         )
     }
 
+    /// 顶层函数声明的全局绑定声明检查（GDI step 9）：target 为全局对象，key 为
+    /// 声明名寄存器。运行期按 CanDeclareGlobalFunction 判定——撞既有不可配置
+    /// 非可写数据属性（或不可扩展上的缺失名）抛 TypeError。
+    pub fn can_declare_global_func(target: Operand, key: Operand) -> Self {
+        Self::new(OpCode::CAN_DECLARE_GLOBAL_FUNC, target, Operand::None, key)
+    }
+
+    /// 创建全局函数绑定（CreateGlobalFunctionBinding，脚本面 deletable=false）：
+    /// target 为全局对象，value/key 为寄存器。缺失或既有可配置属性定义可写/可枚举/
+    /// 不可配置数据属性；既有不可配置可写数据属性仅更新值保描述符。
+    pub fn define_global_func_bind(target: Operand, value: Operand, key: Operand) -> Self {
+        Self::new(OpCode::DEFINE_GLOBAL_FUNC_BIND, target, value, key)
+    }
+
     /// 静态删除属性：obj 同时放 rd/a 槽，const_idx 为属性名常量下标。
     pub fn delete_prop_static(obj: Operand, const_idx: u32) -> Self {
         Self::with_ext(OpCode::DELETE_PROP_STATIC, obj, obj, Operand::None, &[const_idx])

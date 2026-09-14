@@ -1646,6 +1646,21 @@ impl Emitter {
         }
     }
 
+    /// 顶层函数声明的 A 侧同步写：eval 脚本沿用 [`emit_global_prop_write`] 的
+    /// 0x98 分支（属性可配置，创建检查面不覆盖 eval 动态臂）；普通脚本经顶层
+    /// This 走 0x9E（CreateGlobalFunctionBinding 三臂，声明检查由 GDI 序言的
+    /// 0x9D 段预先完成）。
+    pub(crate) fn emit_global_func_bind_write(&self, name: &str, val_reg: u32, ctx: &mut CompileCtx) {
+        if ctx.is_eval_script {
+            self.emit_global_prop_write(name, val_reg, ctx);
+            return;
+        }
+        let idx = ctx.add_constant(Constant::String(name.to_string()));
+        let key_reg = ctx.alloc_reg();
+        ctx.inst(Inst::load_const(Operand::Reg(key_reg), idx));
+        ctx.inst(Inst::define_global_func_bind(Operand::This, Operand::Reg(val_reg), Operand::Reg(key_reg)));
+    }
+
     /// 顶层 var 声明带初始化的 A 侧同步：PutValue 语义——既有不可写数据属性
     /// strict 抛 TypeError / sloppy 静默 no-op；可写照原描述符仅更值。脚本与
     /// eval 均经 session 解析全局对象，不依赖顶层 this。
@@ -1699,6 +1714,31 @@ impl Emitter {
         }
     }
 
+    /// GDI step 9 检查阶段：顶层函数声明名按声明逆序逐名去重，每名发一条 0x9D
+    /// （CanDeclareGlobalFunction 运行期判定，撞既有不可配置非可写数据属性或
+    /// 不可扩展上的缺失名抛 TypeError）。发射位必须位于 GDI var 序言之先——
+    /// 检查失败时任何绑定（含 var 序言新建属性）不得实例化。
+    ///
+    /// # 边界与前提
+    /// - 仅普通脚本调用（`is_eval_script` 面由调用点门控）；eval 动态臂与
+    ///   80 门禁（三常量编译期面）零触碰。
+    /// - 仅遍历语句列表直接子级具名函数声明（生成器/异步声明同节点类型，天然
+    ///   覆盖）；块内函数声明与 `export default function` 不入全局检查面。
+    pub(crate) fn emit_gdi_func_decl_checks(&self, stmts: &[Statement], ctx: &mut CompileCtx) {
+        let names = self.collect_top_level_function_names_ordered(stmts);
+        let mut seen = HashSet::new();
+        for name in names.iter().rev() {
+            // 逆序首见即源序最后声明者（规范去重口径），重名只查一次。
+            if !seen.insert(name.as_str()) {
+                continue;
+            }
+            let idx = ctx.add_constant(Constant::String(name.clone()));
+            let key_reg = ctx.alloc_reg();
+            ctx.inst(Inst::load_const(Operand::Reg(key_reg), idx));
+            ctx.inst(Inst::can_declare_global_func(Operand::This, Operand::Reg(key_reg)));
+        }
+    }
+
     /// 把完整程序编译为顶层模块体的 IRFunction。
     ///
     /// 调用方为 `oxide_compiler::Compiler::compile`：本函数完成 emit 半程，
@@ -1737,6 +1777,13 @@ impl Emitter {
                     break;
                 }
             }
+        }
+
+        // GDI step 9 函数臂检查阶段（运行期，先于任何绑定实例化）：普通脚本
+        // 顶层函数声明撞既有不可配置全局属性抛 TypeError，sloppy/strict 同形。
+        // eval 面零触碰：静态三常量面由上方 80 门禁编译期拦，动态臂另归口。
+        if !ctx.is_eval_script {
+            self.emit_gdi_func_decl_checks(&program.body, &mut ctx);
         }
 
         self.predeclare_function_declarations(&program.body, &mut ctx);

@@ -2195,6 +2195,14 @@ impl Vm {
                     self.dispatch_delete_global_prop_c(rd, a, key_idx)?;
                 }
 
+                OpCode::CAN_DECLARE_GLOBAL_FUNC => {
+                    self.dispatch_can_declare_global_func(rd, b)?;
+                }
+
+                OpCode::DEFINE_GLOBAL_FUNC_BIND => {
+                    self.dispatch_define_global_func_bind(rd, a, b)?;
+                }
+
                 OpCode::DEFINE_PROP_ATTRS => {
                     let attrs = self.bytecode[self.pc] as u8;
                     self.pc += 1;

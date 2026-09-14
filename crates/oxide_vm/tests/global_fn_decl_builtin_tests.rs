@@ -1,10 +1,12 @@
-//! 顶层函数声明撞不可写全局内置（undefined/NaN/Infinity）：脚本面声明不更新绑定
-//! （A 侧保留原常量，读/调/typeof 面收敛全局对象，用户名与模块面不受影响）；
-//! eval 代码面——sloppy 函数声明在建立全局绑定前抛 TypeError（程序首指令 abrupt，
-//! 无部分创建，A 侧保留），strict 函数声明为局部绑定不抛、不落全局。
+//! 顶层函数声明撞不可配置全局属性（三常量 c:false）：脚本面 GDI 检查阶段在任何
+//! 绑定实例化前抛 TypeError（sloppy/strict 同形），A 侧保留原常量、无部分 var
+//! 绑定，用户名与模块面不受影响；eval 代码面——sloppy 函数声明在建立全局绑定前抛
+//! TypeError（程序首指令 abrupt，无部分创建，A 侧保留），strict 函数声明为局部
+//! 绑定不抛、不落全局。
 
 use std::sync::Arc;
 
+use oxide_bytecode::module::CompiledModule;
 use oxide_compiler::compiler::Compiler;
 use oxide_emit::module::{ModuleSourceLoader, ResolvedModule};
 use oxide_types::value::JsValue;
@@ -45,6 +47,33 @@ fn script_str(vm: &mut Vm, source: &str) -> Option<String> {
     vm.lookup_str(r)
 }
 
+/// 单脚本未捕获异常文本（脚本正常完成时 panic）。
+fn script_err_text(source: &str) -> String {
+    let allocator = oxide_parser::Allocator::default();
+    let program = oxide_parser::parse(&allocator, source).expect("parse");
+    let module = Compiler::new().compile(&program).expect("compile");
+    let mut vm = Vm::new();
+    match vm.run(&Arc::new(module)) {
+        Err(e) => e,
+        Ok(v) => panic!("expected uncaught error, got: {v:?}\nsource: {source}"),
+    }
+}
+
+/// 声明脚本跑完（必须抛）后续跑探针脚本，返回探针的字符串化完成值——抛后
+/// A 侧保留面的判别探针。
+fn err_then_script_str(decl: &str, probe: &str) -> String {
+    let compile = |src: &str| -> Arc<CompiledModule> {
+        let allocator = oxide_parser::Allocator::default();
+        let program = oxide_parser::parse(&allocator, src).expect("parse");
+        Arc::new(Compiler::new().compile(&program).expect("compile"))
+    };
+    let mut vm = Vm::new();
+    let err = vm.run(&compile(decl));
+    assert!(err.is_err(), "声明脚本应抛未捕获异常，实际: {err:?}\ndecl: {decl}");
+    let result = vm.run(&compile(probe)).expect("probe run");
+    vm.lookup_str(result).unwrap_or_else(|| format!("{result}"))
+}
+
 /// 无依赖模块加载器：本组测试模块源无 import，resolve 不被调用。
 struct NoopLoader;
 
@@ -56,57 +85,61 @@ impl ModuleSourceLoader for NoopLoader {
     }
 }
 
-// ── 脚本面：三常量函数声明静默 no-op，绑定不更新 ──
+// ── 脚本面：三常量函数声明 GDI 检查阶段抛 TypeError，A 侧保留 ──
 
 #[test]
-fn script_fn_decl_three_constants_sloppy_typeof_keeps_original_type() {
-    assert_eq!(eval_str("function undefined(){} typeof undefined"), "undefined");
-    assert_eq!(eval_str("function NaN(){} typeof NaN"), "number");
-    assert_eq!(eval_str("function Infinity(){} typeof Infinity"), "number");
+fn script_fn_decl_three_constants_sloppy_throws_type_error() {
+    // GDI step 9 检查阶段先于任何代码运行：撞三常量（c:false）抛声明期 TypeError，
+    // sloppy 面。
+    let err = script_err_text("function undefined(){} typeof undefined");
+    assert!(err.contains("TypeError"), "sloppy undefined 声明应抛 TypeError，实际: {err}");
+    let err = script_err_text("function NaN(){} typeof NaN");
+    assert!(err.contains("TypeError"), "sloppy NaN 声明应抛 TypeError，实际: {err}");
+    let err = script_err_text("function Infinity(){} typeof Infinity");
+    assert!(err.contains("TypeError"), "sloppy Infinity 声明应抛 TypeError，实际: {err}");
+    // A 侧保留：抛后探针脚本读三常量仍见原类型。
+    assert_eq!(
+        err_then_script_str(
+            "function undefined(){} typeof undefined",
+            "typeof undefined + ':' + typeof NaN + ':' + typeof Infinity",
+        ),
+        "undefined:number:number",
+    );
 }
 
 #[test]
-fn script_fn_decl_three_constants_strict_no_throw_typeof_keeps_original_type() {
-    assert_eq!(eval_str("'use strict'; function undefined(){} typeof undefined"), "undefined");
-    assert_eq!(eval_str("'use strict'; function NaN(){} typeof NaN"), "number");
-    assert_eq!(eval_str("'use strict'; function Infinity(){} typeof Infinity"), "number");
+fn script_fn_decl_three_constants_strict_throws_type_error() {
+    // GDI 无严格性区分：strict 面同形抛 TypeError。
+    let err = script_err_text("'use strict'; function undefined(){} typeof undefined");
+    assert!(err.contains("TypeError"), "strict undefined 声明应抛 TypeError，实际: {err}");
+    let err = script_err_text("'use strict'; function NaN(){} typeof NaN");
+    assert!(err.contains("TypeError"), "strict NaN 声明应抛 TypeError，实际: {err}");
+    let err = script_err_text("'use strict'; function Infinity(){} typeof Infinity");
+    assert!(err.contains("TypeError"), "strict Infinity 声明应抛 TypeError，实际: {err}");
 }
 
 #[test]
 fn script_fn_decl_nan_infinity_self_equality_preserved() {
-    let r = eval("'use strict'; function NaN(){}; NaN !== NaN").unwrap();
-    assert!(r.is_bool() && r.as_bool(), "声明后 NaN 自反不等性应保留，实际 {r:?}");
-    let r = eval("'use strict'; function Infinity(){}; Infinity === Infinity").unwrap();
-    assert!(r.is_bool() && r.as_bool(), "声明后 Infinity 自相等性应保留，实际 {r:?}");
+    // 抛点在前置检查阶段，函数体与尾表达式均不可达；A 侧值不动，探针脚本的
+    // 自反不等/自相等性仍成立。
+    let err = script_err_text("'use strict'; function NaN(){}; NaN !== NaN");
+    assert!(err.contains("TypeError"), "NaN 声明应抛 TypeError，实际: {err}");
+    assert_eq!(err_then_script_str("function NaN(){}", "NaN !== NaN && Infinity === Infinity",), "true",);
 }
 
 #[test]
 fn script_fn_decl_global_descriptor_value_and_writability_preserved() {
-    // undefined：值保留原常量（=== undefined），writable 保持 false。
-    let r = eval(
-        "function undefined(){} var d = Object.getOwnPropertyDescriptor(globalThis, 'undefined'); d.value === undefined && d.writable === false",
-    )
-    .unwrap();
-    assert!(r.is_bool() && r.as_bool(), "undefined 描述符应保留原常量值与不可写，实际 {r:?}");
-    // NaN：值保留原常量（自反不等），writable 保持 false。
-    let r = eval(
-        "function NaN(){} var d = Object.getOwnPropertyDescriptor(globalThis, 'NaN'); d.value !== d.value && d.writable === false",
-    )
-    .unwrap();
-    assert!(r.is_bool() && r.as_bool(), "NaN 描述符应保留原常量值与不可写，实际 {r:?}");
-    // Infinity：值保留原常量，writable 保持 false。
-    let r = eval(
-        "function Infinity(){} var d = Object.getOwnPropertyDescriptor(globalThis, 'Infinity'); d.value === Infinity && d.writable === false",
-    )
-    .unwrap();
-    assert!(r.is_bool() && r.as_bool(), "Infinity 描述符应保留原常量值与不可写，实际 {r:?}");
-    // 声明不改变描述符：三常量属性不可枚举，Object.keys 不新增名字。
-    let r = eval(
-        "function undefined(){} function NaN(){} function Infinity(){} \
-         Object.keys(globalThis).filter(function (k) { return k === 'undefined' || k === 'NaN' || k === 'Infinity'; }).length === 0",
-    )
-    .unwrap();
-    assert!(r.is_bool() && r.as_bool(), "声明不应新增可枚举全局名，实际 {r:?}");
+    // 抛后 A 侧描述符不变：值原常量、不可写/不可枚举/不可配置；同脚本 var 绑定
+    // 无部分创建（检查阶段先于 GDI 序言）；Object.keys 不新增三常量名。
+    let s = err_then_script_str(
+        "var x; function undefined(){}",
+        "var d = Object.getOwnPropertyDescriptor(globalThis, 'undefined'); \
+         (d.value === undefined && d.writable === false && d.enumerable === false \
+          && d.configurable === false) \
+         && Object.getOwnPropertyDescriptor(globalThis, 'x') === undefined \
+         && Object.keys(globalThis).filter(function (k) { return k === 'undefined' || k === 'NaN' || k === 'Infinity'; }).length === 0",
+    );
+    assert_eq!(s, "true", "A 侧描述符应保留且无部分 var 绑定，实际: {s}");
 }
 
 #[test]

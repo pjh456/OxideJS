@@ -73,7 +73,7 @@ impl Emitter {
         // 严格 eval 代码函数声明绑定 eval 自身 lexical 环境、不落全局对象：抑制 A
         // 侧写（局部绑定读面未暴露），同时避免不可写全局内置在 0x98 上误抛 strict。
         if ctx.is_global_scope && ctx.scopes.symbols.scopes.len() == 1 && !(ctx.is_eval_script && ctx.is_strict) {
-            self.emit_global_prop_write(&name, var_reg, ctx);
+            self.emit_global_func_bind_write(&name, var_reg, ctx);
         }
         Ok(None)
     }

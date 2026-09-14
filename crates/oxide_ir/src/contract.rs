@@ -740,11 +740,18 @@ mod tests {
         assert_group(&[OpCode::NEW_OBJECT, OpCode::NEW_SESSION_OBJECT, OpCode::NEW_ARRAY], Some(1), &[], true);
         // define 语义属性写入 / arguments / rest
         assert_group(
-            &[OpCode::DEFINE_PROP, OpCode::DEFINE_GLOBAL_PROP, OpCode::DEFINE_GLOBAL_PROP_IF_ABSENT],
+            &[
+                OpCode::DEFINE_PROP,
+                OpCode::DEFINE_GLOBAL_PROP,
+                OpCode::DEFINE_GLOBAL_PROP_IF_ABSENT,
+                OpCode::DEFINE_GLOBAL_FUNC_BIND,
+            ],
             None,
             &[1, 2, 3],
             false,
         );
+        // 全局函数绑定声明检查：a 槽无操作数，use 集只含 rd/b。
+        assert_contract(OpCode::CAN_DECLARE_GLOBAL_FUNC, None, &[1, 3], false);
         assert_group(&[OpCode::DEFINE_GLOBAL_PROP_C, OpCode::DEFINE_GLOBAL_PROP_C_IF_ABSENT], None, &[2], false);
         // delete 全局内置：结果写 rd、镜像槽寄存器是 a 槽 use
         assert_contract(OpCode::DELETE_GLOBAL_PROP_C, Some(1), &[2], false);

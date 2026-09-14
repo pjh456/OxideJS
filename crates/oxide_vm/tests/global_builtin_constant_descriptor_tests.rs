@@ -188,13 +188,13 @@ fn control_shapes_unchanged() {
 
 #[test]
 fn function_declaration_builtin_name() {
-    // 边界：function Math(){}——顶层函数声明取函数值（规范 var 绑定语义），
-    // 描述符保 e:false/c:true、值可调用。
+    // 边界：function Math(){}——顶层函数声明取函数值（CreateGlobalFunctionBinding
+    // 重配臂：既有 c:true 属性重配为可写/可枚举/不可配置），值可调用。
     run_truthy(
         "function Math(){ return 1; } \
          var d = Object.getOwnPropertyDescriptor(globalThis, 'Math'); \
          Math() === 1 && d.value === Math && d.writable === true \
-         && d.enumerable === false && d.configurable === true",
+         && d.enumerable === true && d.configurable === false",
     );
 }
 

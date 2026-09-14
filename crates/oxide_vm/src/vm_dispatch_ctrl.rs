@@ -437,6 +437,123 @@ impl Vm {
         }
     }
 
+    /// 顶层函数声明的全局绑定声明检查（GDI step 9，CanDeclareGlobalFunction）：
+    /// rd=全局对象，b=声明名寄存器。
+    ///
+    /// 三臂判定（与规范同形，sloppy/strict 无区分）：
+    /// - 属性缺失：全局对象不可扩展 → TypeError。
+    /// - 既有可配置属性（数据或 accessor）：通过。
+    /// - 既有不可配置属性：仅可写且可枚举的数据描述符通过，余（不可写数据 /
+    ///   不可枚举数据 / accessor）抛 TypeError。
+    ///
+    /// # 边界与前提
+    /// - rd 槽固定为顶层 `this`：本形以所有脚本（含严格模式）顶层 this 即全局
+    ///   对象为成立前提。
+    /// - rd 非对象（非对象 this）时按 no-op 处理，不抛错（同 0x99 族）。
+    /// - 检查阶段发射于任何绑定实例化之前，抛错即整脚本无部分绑定。
+    pub(crate) fn dispatch_can_declare_global_func(&mut self, rd: usize, b: usize) -> Result<(), String> {
+        vm_trace!("CAN_DECLARE_GLOBAL_FUNC rd={} key={}", rd, b);
+        let obj_val = self.regs[rd];
+        if !obj_val.is_object() {
+            return Ok(());
+        }
+        let key_val = self.regs[b];
+        if !key_val.is_string() {
+            return Err(format!("CAN_DECLARE_GLOBAL_FUNC key register {b} is not a string"));
+        }
+        let si = self.property_key_si(key_val)?;
+        // SAFETY: key_val 已校验为字符串值；错误消息走 lossy 文本（不可解析名
+        // 含孤立 surrogate 时映射为 FFFD，仅为展示用途）。
+        let name = unsafe { (*key_val.as_string_ptr()).as_lossy_str() };
+        // SAFETY: rd 持当前帧存活对象值（顶层 this 为全局对象），指针在本指令
+        // 派发期间有效。
+        let obj = unsafe { &mut *obj_val.as_js_object_ptr() };
+        if let Some(pos) = self.kernel_core.shape_forge().lookup_position(obj.shape_id(), si) {
+            if let Some(current) = obj.prop_meta_at(pos) {
+                if !current.attributes.configurable()
+                    && (current.is_accessor || !current.attributes.writable() || !current.attributes.enumerable())
+                {
+                    return self.raise_error_kind(
+                        "TypeError",
+                        &format!("Cannot declare function '{name}': global property is not configurable"),
+                    );
+                }
+            }
+            // 无 meta 的 shape 槽按可配置缺省通过。
+            return Ok(());
+        }
+        // 属性缺失：唯一失败面是全局对象不可扩展（两模式均抛 TypeError）。
+        if !obj.is_extensible() {
+            return self.raise_error_kind(
+                "TypeError",
+                &format!("Cannot declare function '{name}': global object is not extensible"),
+            );
+        }
+        Ok(())
+    }
+
+    /// 创建全局函数绑定（CreateGlobalFunctionBinding，脚本面 deletable=false）：
+    /// rd=全局对象，a=函数值，b=声明名寄存器。
+    ///
+    /// 三臂（与规范同形）：
+    /// - 属性缺失：全局对象不可扩展 → TypeError（两模式均抛）；否则新建可写/
+    ///   可枚举/不可配置数据属性。
+    /// - 既有可配置属性（数据或 accessor）：全重配为 {value, 可写, 可枚举,
+    ///   不可配置}（c:true 定义必成）。
+    /// - 既有不可配置属性：可写数据属性仅更新值保描述符；不可写数据或 accessor
+    ///   → TypeError（对称防御——正常面已由 0x9D 检查阶段预先排除）。
+    ///
+    /// # 边界与前提
+    /// - rd 槽固定为顶层 `this`（同 0x99 族前提）；rd 非对象时 no-op。
+    pub(crate) fn dispatch_define_global_func_bind(&mut self, rd: usize, a: usize, b: usize) -> Result<(), String> {
+        vm_trace!("DEFINE_GLOBAL_FUNC_BIND rd={} value={} key={}", rd, a, b);
+        let obj_val = self.regs[rd];
+        if !obj_val.is_object() {
+            return Ok(());
+        }
+        let key_val = self.regs[b];
+        if !key_val.is_string() {
+            return Err(format!("DEFINE_GLOBAL_FUNC_BIND key register {b} is not a string"));
+        }
+        let si = self.property_key_si(key_val)?;
+        let value = self.regs[a];
+        // SAFETY: key_val 已校验为字符串值；错误消息走 lossy 文本（不可解析名
+        // 含孤立 surrogate 时映射为 FFFD，仅为展示用途）。
+        let name = unsafe { (*key_val.as_string_ptr()).as_lossy_str() };
+        // SAFETY: rd 持当前帧存活对象值（顶层 this 为全局对象），指针在本指令
+        // 派发期间有效。
+        let obj = unsafe { &mut *obj_val.as_js_object_ptr() };
+        if let Some(pos) = self.kernel_core.shape_forge().lookup_position(obj.shape_id(), si) {
+            if let Some(current) = obj.prop_meta_at(pos) {
+                if current.attributes.configurable() {
+                    // 既有可配置属性：全重配 {可写, 可枚举, 不可配置}。
+                    return match self.define_data_property(obj, si, value, PropAttributes::new(true, true, false)) {
+                        Ok(()) => Ok(()),
+                        Err(msg) => self.raise_error_kind("TypeError", &msg),
+                    };
+                }
+                if !current.is_accessor && current.attributes.writable() {
+                    // 不可配置可写数据：保描述符仅更值（0x98 同形）。
+                    return match self.define_data_property(obj, si, value, current.attributes) {
+                        Ok(()) => Ok(()),
+                        Err(msg) => self.raise_error_kind("TypeError", &msg),
+                    };
+                }
+                // 不可写数据 / accessor：检查阶段后不可达，对称防御抛 TypeError。
+                return self.raise_error_kind(
+                    "TypeError",
+                    &format!("Cannot declare function '{name}': global property is not writable"),
+                );
+            }
+            // 无 meta 的 shape 槽按可配置缺省走全重配。
+        }
+        // 属性缺失：新建可写/可枚举/不可配置；唯一失败面是全局对象不可扩展。
+        match self.define_data_property(obj, si, value, PropAttributes::new(true, true, false)) {
+            Ok(()) => Ok(()),
+            Err(msg) => self.raise_error_kind("TypeError", &msg),
+        }
+    }
+
     /// break 完成：`crossed`（rd 槽）为 emit 词法算出的逃出 finally 域数。
     /// 逐个穿越 finally 后跳转到目标；crossed 为 0 时直接跳转。
     /// ext 字携带逃出的迭代器层数：无 finally 穿越时立即关闭后跳转，有 finally

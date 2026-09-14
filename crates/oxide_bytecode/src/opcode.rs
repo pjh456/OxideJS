@@ -572,6 +572,19 @@ define_opcodes! {
     DELETE_GLOBAL_PROP_C = 0x9C => "DELETE_GLOBAL_PROP_C",
         def = Some(SlotSpec::Slot(Slot::Rd)), uses = [SlotSpec::Slot(Slot::A)],
         pure = false, jump = false, term = false, ic = false,
+    // 全局函数绑定声明检查（GDI step 9，脚本顶层函数声明）：rd=目标对象（顶层
+    // This=全局对象）、b=键寄存器。CanDeclareGlobalFunction 三臂：缺失 →
+    // IsExtensible、c:true → 过、data{w:true,e:true} → 过，余抛 TypeError。
+    // 检查阶段发射于任何绑定创建之前（先于 GDI var 序言），失败即无部分绑定。
+    CAN_DECLARE_GLOBAL_FUNC = 0x9D => "CAN_DECLARE_GLOBAL_FUNC",
+        def = None, uses = [SlotSpec::Slot(Slot::Rd), SlotSpec::Slot(Slot::B)],
+        pure = false, jump = false, term = false, ic = false,
+    // 创建全局函数绑定（CreateGlobalFunctionBinding，脚本面 deletable=false）：
+    // rd=目标对象、a=值、b=键，与 DEFINE_GLOBAL_PROP 同形。缺失或既有 c:true →
+    // 定义可写/可枚举/不可配置数据属性；既有 c:false 可写数据 → 仅更新值保描述符。
+    DEFINE_GLOBAL_FUNC_BIND = 0x9E => "DEFINE_GLOBAL_FUNC_BIND",
+        def = None, uses = [SlotSpec::Slot(Slot::Rd), SlotSpec::Slot(Slot::A), SlotSpec::Slot(Slot::B)],
+        pure = false, jump = false, term = false, ic = false,
 
     // ── 成员复合赋值：位/移位 (0x64-0x69) ──
     COMPOUND_MEMBER_BIT_AND = 0x64 => "COMPOUND_MEMBER_BIT_AND",

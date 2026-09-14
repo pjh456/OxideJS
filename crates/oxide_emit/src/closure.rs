@@ -163,6 +163,20 @@ impl Emitter {
         names
     }
 
+    /// 同 [`collect_top_level_function_names`] 的收集面，但按**声明序**返回 Vec
+    /// （供 GDI 检查阶段逆序遍历逐名去重，规范"逆序首见 = 源序最后声明"）。
+    pub(crate) fn collect_top_level_function_names_ordered(&self, stmts: &[Statement]) -> Vec<String> {
+        let mut names = Vec::new();
+        for stmt in stmts {
+            if let Statement::FunctionDeclaration(fd) = stmt {
+                if let Some(id) = &fd.id {
+                    names.push(id.name.to_string());
+                }
+            }
+        }
+        names
+    }
+
     /// 收集当前函数作用域声明的绑定名（参数 + 变量/函数声明，含嵌套 block，不含嵌套函数体）。
     pub(crate) fn collect_own_binding_names(&self, param_names: &[&str], stmts: &[Statement]) -> HashSet<String> {
         let mut names = HashSet::new();
