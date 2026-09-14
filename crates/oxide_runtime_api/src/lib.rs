@@ -623,7 +623,8 @@ pub fn push_units_to(val: JsValue, buf: &mut Vec<u16>) {
     buf.extend(s.encode_utf16());
 }
 
-/// ToBoolean（ECMA-262 §7.1.2）：falsy 值仅限 undefined/null/false/±0/NaN/空串，其余为 true。
+/// ToBoolean（ECMA-262 §7.1.2）：falsy 值仅限 undefined/null/false/±0/NaN/空串，其余为 true；
+/// [[IsHTMLDDA]] 宿主对象按 undefined 处理（B.3.4）。
 pub fn to_boolean(val: JsValue) -> bool {
     match val.js_type() {
         JsType::Undefined | JsType::Null => false,
@@ -636,7 +637,12 @@ pub fn to_boolean(val: JsValue) -> bool {
         }
         JsType::String => !unsafe { (*val.as_string_ptr()).is_empty() },
         JsType::BigInt => !unsafe { bigint_data(val) }.is_zero(),
-        JsType::Object | JsType::Symbol => true,
+        JsType::Object => {
+            // SAFETY: Object 型 JsValue 的载荷位是存活对象的裸指针，借用即时消费。
+            let obj = unsafe { &*val.as_js_object_ptr() };
+            !obj.is_html_dda_obj()
+        }
+        JsType::Symbol => true,
     }
 }
 
@@ -650,6 +656,20 @@ pub fn to_boolean(val: JsValue) -> bool {
 pub fn abstract_eq<H: VmHost>(lhs: JsValue, rhs: JsValue, host: &mut H) -> Result<bool, String> {
     let tl = lhs.js_type();
     let tr = rhs.js_type();
+    // [[IsHTMLDDA]] 宿主对象：宽松相等一律按 undefined 处理（B.3.4），
+    // 重入 undefined 口径（undefined/null 互等、与其余类型不等）。
+    if tl == JsType::Object {
+        // SAFETY: Object 型 JsValue 的载荷位是存活对象的裸指针，借用即时消费。
+        if unsafe { &*lhs.as_js_object_ptr() }.is_html_dda_obj() {
+            return abstract_eq(JsValue::undefined(), rhs, host);
+        }
+    }
+    if tr == JsType::Object {
+        // SAFETY: 同上。
+        if unsafe { &*rhs.as_js_object_ptr() }.is_html_dda_obj() {
+            return abstract_eq(lhs, JsValue::undefined(), host);
+        }
+    }
     // 同类型 → 严格相等。
     if tl == tr {
         return Ok(strict_equality(lhs, rhs));

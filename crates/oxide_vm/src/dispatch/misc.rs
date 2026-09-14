@@ -85,10 +85,13 @@ impl Vm {
             JsType::Symbol => 5,
             JsType::BigInt => 6,
             JsType::Object => {
-                // 函数对象归为 "function"（语言类型是 object，typeof 有专属分支）。
+                // 函数对象归为 "function"（语言类型是 object，typeof 有专属分支）；
+                // [[IsHTMLDDA]] 宿主对象按 "undefined" 报告（B.3.4，Type 仍是 object）。
                 let obj = unsafe { &*val.as_js_object_ptr() };
                 if obj.is_function() {
                     7
+                } else if obj.is_html_dda_obj() {
+                    0
                 } else {
                     1
                 }

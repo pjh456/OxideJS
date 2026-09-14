@@ -1365,16 +1365,22 @@ pub fn iterator_wrapper_next<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult
     NativeResult::Err(crate::error::create_type_error(vm, "value is not iterable"))
 }
 
-/// 判断 value 是否可迭代，只读取 `@@iterator` 方法而不调用它（GetMethod 语义）。
+/// 只读取 value 的 `@@iterator` 方法而不调用，按 GetMethod-可选入口的三态语义
+/// 判定可迭代性（Array.from / TypedArray 构造器 / TypedArray.from 共用）。
 ///
-/// 与 [`get_iterator`] 的判定一致：统一经原型链解析 `@@iterator`（String 臂与
-/// `get_iterator` 同为无条件快速路径），解析到可调用才视为可迭代；解析为
-/// null/undefined（或非对象值）时返回 false，由调用方落 array-like 索引读臂。
-/// 不可调用时再回退到自身可调用的 `next`。
+/// 统一经原型链解析 `@@iterator`（String 臂与 `get_iterator` 同为无条件快速
+/// 路径）：解析到可调用返 true（调用方走迭代臂）；解析为 null/undefined 返
+/// false（调用方落 array-like 索引读臂），此时再按引擎扩展回退到自身可调用的
+/// `next`；解析为非空不可调用值时抛 TypeError（GetMethod 步 4），不落入
+/// array-like 臂。
 ///
 /// # 边界
 /// 非对象原始值（number/boolean 等）不装箱，直接判不可迭代。
-/// `@@iterator` getter 抛错时透传 `Err`。
+/// `@@iterator` getter 抛错时透传 `Err`（不落入鸭子回退）。
+///
+/// # 注意事项
+/// 三态是 GetMethod-可选入口的规范语义：非空不可调用（含 [[IsHTMLDDA]]
+/// 宿主值等不可调用对象）必须抛错而非静默 array-like。
 pub(crate) fn peek_iterator_method<H: VmHost>(vm: &mut H, value: JsValue) -> Result<bool, JsValue> {
     // String 臂无条件可迭代（与 get_iterator 的 String 臂同一近似）。
     if value.is_string() {
@@ -1396,7 +1402,12 @@ pub(crate) fn peek_iterator_method<H: VmHost>(vm: &mut H, value: JsValue) -> Res
         if is_callable(method) {
             return Ok(true);
         }
-        // 鸭子回退：对象自身有可调用 next。
+        // GetMethod 步 4：非空不可调用方法是 TypeError（不落入鸭子回退与
+        // array-like 臂）；null/undefined 才放行到回退判定。
+        if !method.is_null() && !method.is_undefined() {
+            return Err(crate::error::create_type_error(vm, "value is not iterable"));
+        }
+        // 鸭子回退：@@iterator 解析为 null/undefined 且对象自身有可调用 next。
         let next_si = vm.kernel_core().perm_interner().intern("next").0;
         if let Ok(next) = vm.ordinary_get(obj, next_si, value) {
             if is_callable(next) {

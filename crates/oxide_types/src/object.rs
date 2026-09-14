@@ -880,6 +880,10 @@ impl JsObject {
     /// `native_fn` 槽），无 RegExp 可见属性面；`native_fn` 的释放与深拷贝
     /// 守卫与 RegExp 对象一致。
     pub const OBJ_TYPE_REGEX_STUB: u8 = 28;
+    /// [[IsHTMLDDA]] 宿主对象（test262 `$262.IsHTMLDDA`）：ToBoolean、typeof
+    /// 与宽松相等按 undefined 处理，Type 与其余强制转换按普通对象处理；无额外
+    /// 内部载荷。
+    pub const OBJ_TYPE_HTML_DDA: u8 = 29;
     /// `is_session_epoch` 字段中的 session 标记位。
     pub const SESSION_EPOCH_BIT: u8 = 0x01;
     /// `is_session_epoch` 字段中的 GC 标记位。
@@ -907,6 +911,11 @@ impl JsObject {
     #[inline]
     pub fn holds_compiled_regex(&self) -> bool {
         matches!(self.type_tag, Self::OBJ_TYPE_REGEXP | Self::OBJ_TYPE_REGEX_STUB)
+    }
+    /// 是否 [[IsHTMLDDA]] 宿主对象（ToBoolean/typeof/宽松相等按 undefined 处理）。
+    #[inline]
+    pub fn is_html_dda_obj(&self) -> bool {
+        self.type_tag == Self::OBJ_TYPE_HTML_DDA
     }
     /// 是否装箱 Boolean 对象。
     #[inline]

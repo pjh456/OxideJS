@@ -2238,13 +2238,90 @@ fn typed_array_set_reads_array_like_source_by_index() {
     let r = eval(
         &mut vm,
         "(() => {
-           const src = { 0: 7, 1: 8, length: 2 };
-           src[Symbol.iterator] = function* () { yield 99; };
-           const t = new Uint8Array(4);
-           t.set(src);
-           return t.join(',');
-         })()",
+            const src = { 0: 7, 1: 8, length: 2 };
+            src[Symbol.iterator] = function* () { yield 99; };
+            const t = new Uint8Array(4);
+            t.set(src);
+            return t.join(',');
+          })()",
     )
     .unwrap();
     assert_eq!(to_str(&vm, r), "7,8,0,0");
+}
+
+#[test]
+fn array_from_throws_when_iterator_not_callable() {
+    let mut vm = Vm::new();
+    // 红形钉：GetMethod-可选入口（Array.from）对"非空不可调用" @@iterator 须抛
+    // TypeError（GetMethod 步 4），红形为静默回退 array-like 得元素。自身置
+    // 对象/原始值两形皆红；null 仍走 array-like（对照不抛）。
+    let r = eval(
+        &mut vm,
+        "(() => {
+            const o = { length: 2, 0: 1, 1: 2 };
+            o[Symbol.iterator] = {};
+            let objErr;
+            try { objErr = Array.from(o).join(','); }
+            catch (e) { objErr = e.constructor.name; }
+            o[Symbol.iterator] = 5;
+            let primErr;
+            try { primErr = Array.from(o).join(','); }
+            catch (e) { primErr = e.constructor.name; }
+            o[Symbol.iterator] = null;
+            let nullFb;
+            try { nullFb = Array.from(o).join(','); }
+            catch (e) { nullFb = e.constructor.name; }
+            return objErr + '|' + primErr + '|' + nullFb;
+          })()",
+    )
+    .unwrap();
+    assert_eq!(to_str(&vm, r), "TypeError|TypeError|1,2");
+}
+
+#[test]
+fn typed_array_ctor_throws_when_iterator_not_callable() {
+    let mut vm = Vm::new();
+    // 红形钉：TA 构造器（GetMethod-可选入口）对"非空不可调用" @@iterator 须抛
+    // TypeError，红形为静默回退 array-like（无 length 得 0 元素）。
+    let r = eval(
+        &mut vm,
+        "(() => {
+            const o = { length: 2, 0: 1, 1: 2 };
+            o[Symbol.iterator] = {};
+            let objErr;
+            try { objErr = new Uint8Array(o).length; }
+            catch (e) { objErr = e.constructor.name; }
+            o[Symbol.iterator] = true;
+            let boolErr;
+            try { boolErr = new Uint8Array(o).length; }
+            catch (e) { boolErr = e.constructor.name; }
+            return objErr + '|' + boolErr;
+          })()",
+    )
+    .unwrap();
+    assert_eq!(to_str(&vm, r), "TypeError|TypeError");
+}
+
+#[test]
+fn typed_array_from_throws_when_iterator_not_callable() {
+    let mut vm = Vm::new();
+    // 红形钉：TypedArray.from（GetMethod-可选入口）对"非空不可调用" @@iterator
+    // 须抛 TypeError，红形为静默回退 array-like。
+    let r = eval(
+        &mut vm,
+        "(() => {
+            const o = { length: 2, 0: 1, 1: 2 };
+            o[Symbol.iterator] = {};
+            let objErr;
+            try { objErr = Uint8Array.from(o).length; }
+            catch (e) { objErr = e.constructor.name; }
+            o[Symbol.iterator] = 42;
+            let primErr;
+            try { primErr = Uint8Array.from(o).length; }
+            catch (e) { primErr = e.constructor.name; }
+            return objErr + '|' + primErr;
+          })()",
+    )
+    .unwrap();
+    assert_eq!(to_str(&vm, r), "TypeError|TypeError");
 }

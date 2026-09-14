@@ -111,6 +111,13 @@ pub fn bind_test262_host(core: &Arc<KernelCore>, session: &KernelSession, global
     );
     let global_this = JsValue::from_js_object(global as *mut JsObject);
     bind_global_value(core, &mut host, "global", global_this);
+    // [[IsHTMLDDA]] 宿主值（B.3.4）：ToBoolean/typeof/宽松相等按 undefined 处理，
+    // Type 与其余强制转换按普通对象处理。无额外内部载荷，挂 Object.prototype。
+    let mut dda = JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(object_proto));
+    dda.type_tag = JsObject::OBJ_TYPE_HTML_DDA;
+    let dda_ptr = Box::into_raw(Box::new(dda));
+    session.builtin_world().track_leaked_object(dda_ptr);
+    bind_global_value(core, &mut host, "IsHTMLDDA", JsValue::from_js_object(dda_ptr));
     let host_ptr = Box::into_raw(Box::new(host));
     session.builtin_world().track_leaked_object(host_ptr);
     bind_global_value(core, global, "$262", JsValue::from_js_object(host_ptr));
