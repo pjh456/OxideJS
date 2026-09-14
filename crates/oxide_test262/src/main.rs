@@ -1081,16 +1081,24 @@ fn merge_heartbeat(stats: &mut RunStats, hb: &Heartbeat) {
 /// 把 supervise 旁路失败行文件并入统计：逐行重建 FailRecord（类别经本表 id
 /// 重映射 + push_fail_record 的 cap 逻辑）。
 ///
-/// # 注意事项
+/// # 边界与前提
 /// - 失败计数（fail_categories）已由对应心跳合并覆盖，此处只补 fail_records，
 ///   不得再累计计数，避免双计。worker 循环先写心跳后追加旁路，故"无心跳退出"
 ///   分支旁路必为空（防御性 no-op）。
-fn merge_fail_log(stats: &mut RunStats, hb_path: &Path) {
+/// - 旁路文件跨子进程重启追加保留，本函数只解析自上次消费以来的新增段
+///   （`consumed` 由调用方按窗口持有）；文件缩至已消费偏移之下（删除/重建）
+///   回绕到文件头重读，避免丢记录。
+fn merge_fail_log(stats: &mut RunStats, hb_path: &Path, consumed: &mut usize) {
     let content = match std::fs::read_to_string(hb_path.with_extension("fails")) {
         Ok(c) => c,
         Err(_) => return,
     };
-    for (index, cat, subkey, message) in parse_fail_log(&content) {
+    if content.len() < *consumed {
+        *consumed = 0;
+    }
+    let fresh = &content[*consumed..];
+    *consumed = content.len();
+    for (index, cat, subkey, message) in parse_fail_log(fresh) {
         stats.push_fail_record(index, cat, subkey, message);
     }
 }
@@ -1126,6 +1134,8 @@ fn supervise_window(
 ) -> RunStats {
     let mut stats = RunStats::default();
     let mut cur = wstart;
+    // 旁路失败行已消费字节偏移：跨重启只并入新增段（见 merge_fail_log）。
+    let mut fails_consumed: usize = 0;
     let hb_path = std::env::temp_dir().join(format!("oxide_t262_hb_{}_{}.txt", std::process::id(), window_id));
 
     let describe = |idx: usize| -> String {
@@ -1138,8 +1148,9 @@ fn supervise_window(
     while cur < wend {
         // 心跳文件每子进程重开；旁路失败行跨重启保留（追加而非清空）：
         // 超时/崩溃重启若删旁路会丢掉此前子进程的全部失败记录，收尾差分
-        // 只剩末段。跨重启同一测试最多重复一条（心跳先写、旁路后追加的写序
-        // 决定重跑测试至多重录一次），消费侧按下标去重即可。
+        // 只剩末段。merge_fail_log 按已消费字节偏移只并入新增段（每行恰
+        // 并入一次）；重跑测试至多重录一条（心跳先写、旁路后追加的写序），
+        // 新行是真实新事件而非重复并入。
         let _ = std::fs::remove_file(&hb_path);
         let _ = std::fs::remove_file(format!("{}.tmp", hb_path.display()));
         let max_tests = wend - cur;
@@ -1177,13 +1188,13 @@ fn supervise_window(
                     match read_heartbeat(&hb_path) {
                         Some(hb) if hb.phase == "DONE" => {
                             merge_heartbeat(&mut stats, &hb);
-                            merge_fail_log(&mut stats, &hb_path);
+                            merge_fail_log(&mut stats, &hb_path, &mut fails_consumed);
                             cur = wend;
                         }
                         Some(hb) => {
                             merge_heartbeat(&mut stats, &hb);
                             let culprit = hb.index + 1;
-                            merge_fail_log(&mut stats, &hb_path);
+                            merge_fail_log(&mut stats, &hb_path, &mut fails_consumed);
                             eprintln!(
                                 "  [warn] window {window_id}: child exited ({status}) mid-test #{}: {}",
                                 culprit,
@@ -1196,7 +1207,7 @@ fn supervise_window(
                             eprintln!(
                                 "  [warn] window {window_id}: child exited ({status}) with no heartbeat at index {cur}; skipping one"
                             );
-                            merge_fail_log(&mut stats, &hb_path);
+                            merge_fail_log(&mut stats, &hb_path, &mut fails_consumed);
                             record_timeout_or_crash(&mut stats, no_skip, cur, 0);
                             cur += 1;
                         }
@@ -1209,7 +1220,7 @@ fn supervise_window(
                     stats.wait_errors += 1;
                     let _ = child.kill();
                     let _ = child.wait();
-                    merge_fail_log(&mut stats, &hb_path);
+                    merge_fail_log(&mut stats, &hb_path, &mut fails_consumed);
                     record_timeout_or_crash(&mut stats, no_skip, cur, 0);
                     cur += 1;
                     break;
@@ -1238,7 +1249,7 @@ fn supervise_window(
                 if let Some(h) = &hb {
                     merge_heartbeat(&mut stats, h);
                 }
-                merge_fail_log(&mut stats, &hb_path);
+                merge_fail_log(&mut stats, &hb_path, &mut fails_consumed);
                 eprintln!(
                     "  [timeout] window {window_id}: TIMEOUT ({}s) on test #{culprit}: {}",
                     deadline.as_secs(),
@@ -2326,7 +2337,11 @@ mod tests {
         append_fail_log(&sidecar, 2, "vm: not callable", "", "x is not callable").expect("追加失败");
         append_fail_log(&sidecar, 7, "compile: unsupported", "", "y").expect("追加失败");
         let mut stats = RunStats::default();
-        merge_fail_log(&mut stats, &hb_path);
+        let mut fails_consumed = 0usize;
+        merge_fail_log(&mut stats, &hb_path, &mut fails_consumed);
+        assert_eq!(stats.fail_records.len(), 2);
+        // 无新增内容的二次合并不产生重复记录（已消费偏移）。
+        merge_fail_log(&mut stats, &hb_path, &mut fails_consumed);
         assert_eq!(stats.fail_records.len(), 2);
         assert_eq!(stats.fail_records[0].index, 2);
         assert_eq!(stats.categories[stats.fail_records[0].category_id as usize], "vm: not callable");
@@ -2334,6 +2349,39 @@ mod tests {
         assert_eq!(stats.fail_records[1].index, 7);
         assert_eq!(stats.categories[stats.fail_records[1].category_id as usize], "compile: unsupported");
         assert!(stats.fail_categories.is_empty(), "计数不双计：fail_categories 必须保持空");
+        let _ = std::fs::remove_file(&sidecar);
+        let _ = std::fs::remove_file(&hb_path);
+    }
+
+    /// 跨重启合并序列：旁路文件两次"子进程死亡"间追加保留，第二次合并只并入
+    /// 新增段（不重复并入前段行）；重跑测试的新行是真实新事件；文件重建得比
+    /// 已消费偏移更短时回绕重读。
+    #[test]
+    fn merge_fail_log_restart_sequence_no_reread_duplicates() {
+        let dir = std::env::temp_dir();
+        let hb_path = dir.join(format!("oxide_t262_hb_test_rst_{}.txt", std::process::id()));
+        let sidecar = hb_path.with_extension("fails");
+        // 段 1：首个子进程死亡前的失败行。
+        append_fail_log(&sidecar, 10, "vm: not callable", "", "a").expect("追加失败");
+        append_fail_log(&sidecar, 11, "vm: not callable", "", "b").expect("追加失败");
+        let mut stats = RunStats::default();
+        let mut fails_consumed = 0usize;
+        merge_fail_log(&mut stats, &hb_path, &mut fails_consumed);
+        assert_eq!(stats.fail_records.len(), 2);
+        // 段 2：第二个子进程追加（重跑的测试 11 至多重录一条 + 新测试 12）。
+        append_fail_log(&sidecar, 11, "vm: not callable", "", "b again").expect("追加失败");
+        append_fail_log(&sidecar, 12, "compile: unsupported", "", "c").expect("追加失败");
+        merge_fail_log(&mut stats, &hb_path, &mut fails_consumed);
+        assert_eq!(stats.fail_records.len(), 4, "只应并入新增段: {:?}", stats.fail_records);
+        assert_eq!(stats.fail_records.iter().map(|r| r.index).collect::<Vec<_>>(), vec![10, 11, 11, 12]);
+        // 段 3：无新增内容的合并幂等。
+        merge_fail_log(&mut stats, &hb_path, &mut fails_consumed);
+        assert_eq!(stats.fail_records.len(), 4);
+        // 文件重建得比已消费偏移短：回绕到文件头重读。
+        std::fs::write(&sidecar, "20\tvm: not callable\t\td\n").expect("重写失败");
+        merge_fail_log(&mut stats, &hb_path, &mut fails_consumed);
+        assert_eq!(stats.fail_records.len(), 5);
+        assert_eq!(stats.fail_records[4].index, 20);
         let _ = std::fs::remove_file(&sidecar);
         let _ = std::fs::remove_file(&hb_path);
     }
