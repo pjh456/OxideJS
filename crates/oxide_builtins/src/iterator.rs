@@ -1455,10 +1455,8 @@ fn get_iterator<H: VmHost>(vm: &mut H, value: JsValue) -> Result<Option<(JsValue
     // 内建集合标记：仅当 @@iterator 经原型链读到的仍是内建默认迭代器函数
     // 时才走快速路径；用户覆盖（自身属性或原型链改写/删除）走通用协议
     // 调用用户函数。
-    let builtin_value = is_array_value(value)
-        || is_typed_array_value(value)
-        || is_map_value(value)
-        || is_set_value(value);
+    let builtin_value =
+        is_array_value(value) || is_typed_array_value(value) || is_map_value(value) || is_set_value(value);
 
     // 非字符串 primitive（boolean/number/symbol/bigint）：GetIterator 先 ToObject，
     // 再走迭代协议（如 `yield* true` 委托 Boolean.prototype[Symbol.iterator]）。

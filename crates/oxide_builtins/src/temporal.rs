@@ -2332,7 +2332,11 @@ pub fn zoned_date_time_with<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult 
             merged.microsecond,
             merged.nanosecond,
         ];
-        if values.iter().zip(limits.iter()).any(|(value, limit)| *value < 0.0 || *value > *limit) {
+        if values
+            .iter()
+            .zip(limits.iter())
+            .any(|(value, limit)| *value < 0.0 || *value > *limit)
+        {
             return NativeResult::Err(crate::error::create_range_error(vm, "invalid time component"));
         }
         (values[0], values[1], values[2], values[3], values[4], values[5])
@@ -4762,7 +4766,10 @@ pub fn plain_time_with<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let minute = native_try!(read(vm, "minute"));
     let nanosecond = native_try!(read(vm, "nanosecond"));
     let second = native_try!(read(vm, "second"));
-    if [hour, microsecond, millisecond, minute, nanosecond, second].iter().all(|c| c.is_none()) {
+    if [hour, microsecond, millisecond, minute, nanosecond, second]
+        .iter()
+        .all(|c| c.is_none())
+    {
         return NativeResult::Err(crate::error::create_type_error(vm, "no properties present"));
     }
 
