@@ -59,15 +59,20 @@ impl Compiler {
 
     /// 标记源码为 `source_escape` 产物（动态编译入口：eval / Function 构造器）。
     pub fn with_source_encoded(self, enable: bool) -> Self {
-        Self { is_source_encoded: enable, ..self }
+        Self {
+            is_source_encoded: enable,
+            ..self
+        }
     }
 
     /// 编译整个 script program：AST → IR（`Emitter::emit_program`）→ 统一 IR 管线。
     pub fn compile(&self, program: &oxide_parser::Program) -> Result<CompiledModule, String> {
         crate::compiler_debug!("compile: starting...");
-        let ir = Emitter::new()
-            .with_source_encoded(self.is_source_encoded)
-            .emit_program(program, self.repl_persist, self.is_eval_script)?;
+        let ir = Emitter::new().with_source_encoded(self.is_source_encoded).emit_program(
+            program,
+            self.repl_persist,
+            self.is_eval_script,
+        )?;
         self.compile_ir(ir)
     }
 

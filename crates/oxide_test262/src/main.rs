@@ -1257,7 +1257,7 @@ fn supervise_window(
     let _ = std::fs::remove_file(format!("{}.tmp", hb_path.display()));
     // 旁路失败行归档而非删除：统计已由心跳合并入父进程，此文件是收尾逐文件
     // 差分的终态依据（删除即永久丢记录）。
-    let _ = std::fs::rename(&hb_path.with_extension("fails"), &hb_path.with_extension("fails.done"));
+    let _ = std::fs::rename(hb_path.with_extension("fails"), hb_path.with_extension("fails.done"));
     stats
 }
 

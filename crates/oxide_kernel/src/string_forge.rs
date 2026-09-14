@@ -191,9 +191,7 @@ pub fn source_escape_to_key(text: &str) -> String {
         if i + 1 < chars.len() && chars[i + 1] == '\\' {
             let is_marker = i + 7 <= chars.len()
                 && chars[i + 2] == 'u'
-                && chars[i + 3..i + 7]
-                    .iter()
-                    .all(|c| matches!(c, '0'..='9' | 'a'..='f'));
+                && chars[i + 3..i + 7].iter().all(|c| matches!(c, '0'..='9' | 'a'..='f'));
             if is_marker {
                 out.push('\\');
                 i += 1;
@@ -209,12 +207,12 @@ pub fn source_escape_to_key(text: &str) -> String {
         if i + 1 < chars.len() && chars[i + 1] == 'u' {
             let tail_len = 4.min(chars.len() - i - 2);
             let tail = &chars[i + 2..i + 2 + tail_len];
-            let ok = tail
-                .iter()
-                .all(|c| matches!(c, '0'..='9' | 'a'..='f'));
-            let v: u32 = ok
-                .then(|| tail.iter().fold(0u32, |v, c| v * 16 + c.to_digit(16).unwrap()))
-                .unwrap_or(0);
+            let ok = tail.iter().all(|c| matches!(c, '0'..='9' | 'a'..='f'));
+            let v: u32 = if ok {
+                tail.iter().fold(0u32, |v, c| v * 16 + c.to_digit(16).unwrap())
+            } else {
+                0
+            };
             if tail_len == 4 && ok && (v == 0xFFFD || (0xD800..=0xDFFF).contains(&v)) {
                 out.push('\u{FFFD}');
                 out.extend(tail);

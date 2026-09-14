@@ -2736,8 +2736,9 @@ impl Vm {
             .map_err(|errs| errs.into_iter().map(|e| e.message).collect::<Vec<_>>().join("\n"))?;
         // 动态路径源契约：调用方以源码域转义（`string_forge::source_escape`）
         // 形态传源；正则字面量源文本常量与静态同路径（`pool_key_plain`）。
-        let mut module =
-            oxide_compiler::compiler::Compiler::new().with_source_encoded(true).compile(&program)?;
+        let mut module = oxide_compiler::compiler::Compiler::new()
+            .with_source_encoded(true)
+            .compile(&program)?;
         let anonymous = module.sub_modules.remove(0);
         // 形参数以编译结果为准：单个实参 "a,b,c" 拼接后解析为 3 个形参
         // （ES 动态函数把非末位实参以逗号连接成参数串再解析）。
@@ -2851,13 +2852,13 @@ impl Vm {
 
 #[cfg(test)]
 mod tests {
-    use super::{opcode, ForOfEntry, JsValue, TryHandler, Vm};
     use super::{canonical_index_of, canonical_index_units};
-    use oxide_types::private_key::INT_KEY_COUNT;
+    use super::{opcode, ForOfEntry, JsValue, TryHandler, Vm};
     use oxide_bytecode::module::CompiledModule;
     use oxide_runtime_api::{NativeResult, VmHost};
     use oxide_types::object::NativeFnPtr;
     use oxide_types::object::{JsObject, PropAttributes};
+    use oxide_types::private_key::INT_KEY_COUNT;
     use std::sync::Arc;
 
     fn native_return_7(_vm: &mut Vm, _args: &[u8]) -> NativeResult {
