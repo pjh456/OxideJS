@@ -442,6 +442,33 @@ impl Emitter {
                     }
                     self.predeclare_var_declarations(std::slice::from_ref(&fs.body), ctx);
                 }
+                Statement::ForInStatement(fi) => {
+                    // var 头名提升到函数/全局作用域（与 For 臂同规则），先于提升
+                    // 函数声明发射预声明，使函数体按既有 var 绑定解析头名；
+                    // let/const 头是迭代级绑定，不入提升面。
+                    if let oxide_parser::ForStatementLeft::VariableDeclaration(decl) = &fi.left {
+                        if matches!(decl.kind, VariableDeclarationKind::Var) {
+                            for d in &decl.declarations {
+                                if let oxide_parser::BindingPattern::BindingIdentifier(bi) = &d.id {
+                                    self.predeclare_var_name(bi.name.as_str(), ctx);
+                                }
+                            }
+                        }
+                    }
+                    self.predeclare_var_declarations(std::slice::from_ref(&fi.body), ctx);
+                }
+                Statement::ForOfStatement(fo) => {
+                    if let oxide_parser::ForStatementLeft::VariableDeclaration(decl) = &fo.left {
+                        if matches!(decl.kind, VariableDeclarationKind::Var) {
+                            for d in &decl.declarations {
+                                if let oxide_parser::BindingPattern::BindingIdentifier(bi) = &d.id {
+                                    self.predeclare_var_name(bi.name.as_str(), ctx);
+                                }
+                            }
+                        }
+                    }
+                    self.predeclare_var_declarations(std::slice::from_ref(&fo.body), ctx);
+                }
                 Statement::SwitchStatement(sw) => {
                     for case in &sw.cases {
                         self.predeclare_var_declarations(&case.consequent, ctx);

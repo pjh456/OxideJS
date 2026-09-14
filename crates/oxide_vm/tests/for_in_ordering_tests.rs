@@ -102,3 +102,37 @@ fn for_in_var_head_fresh_name() {
         "for-in var head binds iteration keys into the hoisted var slot"
     );
 }
+
+// ── 提升函数引用 for-in/for-of 头 var 名：头名须编译期预声明（hoisting 面）──
+
+#[test]
+fn for_in_var_head_hoisted_fn_read() {
+    // 顶层提升函数读 for-in 头 var：头名预声明入全局 var 名集，函数体按
+    // 全局 var 绑定解析，完成值为迭代键。
+    assert_eq!(
+        eval("function f(){ return x; } for (var x in {a:1}) {} f() === \"a\""),
+        "true",
+        "hoisted function reads for-in head var through the global var binding"
+    );
+}
+
+#[test]
+fn for_in_var_head_hoisted_fn_strict_write() {
+    // strict 嵌套写：头名预声明为全局 var 绑定后，写落全局属性（A 侧）；
+    // 头名缺预声明时该写按未声明名抛 ReferenceError（本钉判别面）。
+    assert_eq!(
+        eval("'use strict'; function f(){ x = 5; } for (var x in {a:1}) { f(); } x === 5"),
+        "true",
+        "strict hoisted-function write to for-in head var hits the global binding"
+    );
+}
+
+#[test]
+fn for_of_var_head_hoisted_fn_strict_write() {
+    // for-of 头同形：预声明臂覆盖 for-in 与 for-of 两臂。
+    assert_eq!(
+        eval("'use strict'; function f(){ x = 5; } for (var x of [1,2]) { f(); } x === 5"),
+        "true",
+        "strict hoisted-function write to for-of head var hits the global binding"
+    );
+}
