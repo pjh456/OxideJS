@@ -1422,14 +1422,7 @@ impl Vm {
         // 其它原始值（BigInt 等）：ToPropertyKey 一律转字符串并走规范化，避免与
         // 数字键区间分裂（`o[5n]` 与 `o["5"]`/`o[5]` 必须同键）。
         let units = oxide_runtime_api::to_units_full(val, self)?;
-        if std::env::var("OXIDE_KEY_PROBE").is_ok() {
-            eprintln!("[KEYPROBE] tail fallback units={:?}", units);
-        }
-        let si = self.string_key_units(&units);
-        if std::env::var("OXIDE_KEY_PROBE").is_ok() {
-            eprintln!("[KEYPROBE] tail result si={}", si);
-        }
-        Ok(si)
+        Ok(self.string_key_units(&units))
     }
 
     /// 从良形文本串推导属性键 si（`property_key_si` Flat 分支与 `string_key_si`
@@ -2746,7 +2739,8 @@ impl Vm {
         let program = oxide_parser::parse(&allocator, &source)
             .map_err(|errs| errs.into_iter().map(|e| e.message).collect::<Vec<_>>().join("\n"))?;
         // 动态路径源契约：调用方以源码域转义（`string_forge::source_escape`）
-        // 形态传源；正则字面量源文本常量与静态同路径（`pool_key_plain`）。
+        // 形态传源；正则字面量源切片经 `source_escape_to_key` 还原注入
+        // marker 后入池（编码源口径，区别于静态源的 `pool_key_plain`）。
         let mut module = oxide_compiler::compiler::Compiler::new()
             .with_source_encoded(true)
             .compile(&program)?;

@@ -87,18 +87,6 @@ fn int_or_string_index<H: VmHost>(vm: &H, si: u32) -> Option<u32> {
     is_integer_index(key).then(|| key.parse::<u32>().unwrap())
 }
 
-/// 键 si 物化为字符串文本：整数键反解数字串，其余查 interner。
-///
-/// 注意返回的是**键空间文本**（孤立 surrogate 为 FFFD+hex4 转义形态），仅可用于
-/// 键比较/数字判定等键空间用途；产 JS 可见串值用 `key_si_to_js_value`。
-pub fn key_si_to_string<H: VmHost>(vm: &H, si: u32) -> String {
-    if is_int_key(si) {
-        int_key_value(si).to_string()
-    } else {
-        vm.kernel_core().perm_interner().lookup(si).unwrap_or("").to_string()
-    }
-}
-
 /// 键 si 物化为 JS 可见字符串值（Object.keys / ownKeys / entries 族）：
 /// 整数键反解数字串，字符串键经 `decode_key` 还原单元序列（孤立 surrogate
 /// 物化为 FlatU16，良形键与旧行为逐位一致）。
