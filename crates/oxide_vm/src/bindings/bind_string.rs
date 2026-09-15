@@ -72,6 +72,18 @@ pub fn bind_string(core: &Arc<KernelCore>, session: &KernelSession, global: &mut
         oxide_builtins::string::string_symbol_iterator::<crate::vm::Vm> as *const (),
         0,
     );
+    // 捕获默认迭代器函数对象指针写入 world：String 臂覆盖判定以此做指针比较。
+    // 此时槽为初始数据属性（用户覆盖尚未可能），读回即默认函数本体。
+    let iter_key = oxide_types::private_key::make_well_known_symbol_key(0);
+    if let Some(pos) = core.shape_forge().lookup_position(proto.shape_id(), iter_key) {
+        let v = proto.get_prop_at(pos);
+        if v.is_object() {
+            session
+                .builtin_world()
+                .string_default_iterator
+                .set(v.as_js_object_ptr() as *const JsObject);
+        }
+    }
 
     // 全局 String 槽位既有槽原位更新（旧家族构造器指针不得滞留在属性 vec），
     // 无槽时开新槽；描述符非枚举（规范 { writable:true, enumerable:false, configurable:true }）。

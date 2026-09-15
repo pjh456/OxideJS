@@ -301,6 +301,11 @@ pub struct BuiltinWorld {
     pub set_iterator_proto: P<JsObject>,
     /// `%StringIteratorPrototype%`：String.prototype[@@iterator] 返回的迭代器。
     pub string_iterator_proto: P<JsObject>,
+    /// String.prototype[@@iterator] 默认迭代器函数对象指针（绑定层捕获，原始值指针、
+    /// 所有权归 wrapper 释放表）。String 臂覆盖判定以此做指针比较：默认迭代器即
+    /// @@iterator 槽本身（自别名），集合式锚点槽比较不可复用，须独立存指针。
+    /// `Cell` 供绑定层经 `&Arc<BuiltinWorld>` 共享引用写入。
+    pub string_default_iterator: std::cell::Cell<*const JsObject>,
     /// `%RegExpStringIteratorPrototype%`：matchAll 返回的迭代器。
     pub regexp_string_iterator_proto: P<JsObject>,
     /// `%IteratorHelperPrototype%`：Iterator helpers 结果对象的共享原型，链到 %IteratorPrototype%。
@@ -1246,9 +1251,12 @@ impl BuiltinWorld {
         let iterator_helper_proto = P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()));
         let disposable_stack_proto = P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()));
         let async_disposable_stack_proto = P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()));
+        // 默认迭代器指针初值空（绑定层随后经 bind_string 捕获写入）。
+        let string_default_iterator = std::cell::Cell::new(std::ptr::null());
 
         let world = Self {
             object_proto,
+            string_default_iterator,
             array_proto,
             function_proto,
             string_proto,
@@ -1687,6 +1695,11 @@ impl BuiltinWorld {
 
         let world = BuiltinWorld {
             object_proto,
+            string_default_iterator: std::cell::Cell::new(if dirty.string {
+                std::ptr::null()
+            } else {
+                current.string_default_iterator.get()
+            }),
             array_proto,
             function_proto,
             string_proto,

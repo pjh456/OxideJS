@@ -1156,6 +1156,12 @@ pub fn iterator_symbol_iterator<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeRes
 /// 包装器带 `next` 与 `return`（用于 for-of 提前退出时的 IteratorClose 清理）。
 pub fn iterator_from<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let iterable = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
+    // GetIteratorFlattenable 语义：非字符串原始值非对象 → TypeError（不装箱，
+    // 区别于 Array.from 的 GetIterator 装箱路径）。字符串保留原始值，由 String
+    // 臂以原始值 receiver 读 @@iterator（typeof this === 'string'）。
+    if !iterable.is_object() && !iterable.is_string() {
+        return NativeResult::Err(crate::error::create_type_error(vm, "value is not an object"));
+    }
     match make_iterator_for_value(vm, iterable) {
         Ok(iterator) => NativeResult::Ok(iterator),
         Err(err) => NativeResult::Err(err),
@@ -1386,10 +1392,21 @@ pub(crate) fn peek_iterator_method<H: VmHost>(vm: &mut H, value: JsValue) -> Res
     if value.is_string() {
         return Ok(true);
     }
-    if value.is_object() {
-        let obj = unsafe { &*value.as_js_object_ptr() };
+    // 原始值（number/bigint/boolean/symbol）先装箱再按对象读 @@iterator
+    // （如 `Array.from(5)` 经 Number.prototype[Symbol.iterator]）；
+    // null/undefined 装箱失败按不可迭代处理。
+    let recv = if value.is_object() {
+        value
+    } else {
+        match to_object(value, vm) {
+            Ok(o) => o,
+            Err(_) => return Ok(false),
+        }
+    };
+    if recv.is_object() {
+        let obj = unsafe { &*recv.as_js_object_ptr() };
         let sym_iter_si = make_well_known_symbol_key(0);
-        let method = match vm.ordinary_get(obj, sym_iter_si, value) {
+        let method = match vm.ordinary_get(obj, sym_iter_si, recv) {
             Ok(m) => m,
             Err(err) => {
                 // GetMethod 取 @@iterator 时 getter 抛出：透传原值，不落入鸭子回退。
@@ -1409,7 +1426,7 @@ pub(crate) fn peek_iterator_method<H: VmHost>(vm: &mut H, value: JsValue) -> Res
         }
         // 鸭子回退：@@iterator 解析为 null/undefined 且对象自身有可调用 next。
         let next_si = vm.kernel_core().perm_interner().intern("next").0;
-        if let Ok(next) = vm.ordinary_get(obj, next_si, value) {
+        if let Ok(next) = vm.ordinary_get(obj, next_si, recv) {
             if is_callable(next) {
                 return Ok(true);
             }
@@ -1461,8 +1478,83 @@ fn builtin_iterator_default_intact<H: VmHost>(vm: &mut H, value: JsValue, method
 /// - `Ok(None)`：不可迭代；
 /// - `Err`：`@@iterator` 或 `next` getter 抛错，透传原异常值。
 fn get_iterator<H: VmHost>(vm: &mut H, value: JsValue) -> Result<Option<(JsValue, Option<JsValue>)>, JsValue> {
-    if value.is_string() {
-        return Ok(Some((value, None)));
+    // 字符串面：原始串与装箱串（is_string_obj）同走本臂，GetMethod 语义。
+    // receiver = value：原始串 typeof this 'string'，装箱串 'object'。读 @@iterator
+    // 从值的自身对象起（原始串无自身对象，落 String.prototype；装箱串自身 → 原型链），
+    // 覆盖默认快速路径的码元步进，并避免调默认迭代器再递归回本臂二次触发 getter。
+    let value_is_string_box = if value.is_string() {
+        false
+    } else if value.is_object() {
+        unsafe { &*value.as_js_object_ptr() }.is_string_obj()
+    } else {
+        false
+    };
+    if value.is_string() || value_is_string_box {
+        // 读 @@iterator 的对象起点：装箱串读自身（可命中自身 @@iterator），
+        // 原始串读 String.prototype（原始串无自身属性）。
+        let read_ptr = if value_is_string_box {
+            value.as_js_object_ptr()
+        } else {
+            vm.session().builtin_world().string_proto.as_ptr() as *mut JsObject
+        };
+        let read_obj = unsafe { &*read_ptr };
+        let sym_iter_si = make_well_known_symbol_key(0);
+        let method = match vm.ordinary_get(read_obj, sym_iter_si, value) {
+            Ok(m) => m,
+            Err(err) => {
+                // GetMethod 取 @@iterator 时 getter 抛出：透传原值，不落入码元快速路径。
+                let exc = vm
+                    .take_uncaught_value()
+                    .unwrap_or_else(|| crate::error::create_type_error(vm, &err));
+                return Err(exc);
+            }
+        };
+        // 码元快速路径的 inner：原始串取 value 本身；装箱串取其内容（槽 0 恒为
+        // 原始串）——wrapper 码元步进按原始串产出，装箱串不直接作 inner。
+        let inner = if value_is_string_box {
+            let raw = unsafe { (&*value.as_js_object_ptr()).get_prop_at(0) };
+            if raw.is_string() {
+                raw
+            } else {
+                value
+            }
+        } else {
+            value
+        };
+        // 默认迭代器（自别名：即 @@iterator 槽本身）走码元快速路径、不调方法——
+        // 调默认函数会递归回本 String 臂。指针未捕获（绑定前瞬时）亦回退快速路径。
+        let default_ptr = vm.session().builtin_world().string_default_iterator.get();
+        if !default_ptr.is_null()
+            && is_callable(method)
+            && std::ptr::eq(method.as_js_object_ptr() as *const JsObject, default_ptr)
+        {
+            return Ok(Some((inner, None)));
+        }
+        if is_callable(method) {
+            // 用户覆盖：调用，receiver = value（原始串/装箱串）。
+            let iterator = match vm.call_function_sync(method, value, &[]) {
+                Ok(it) => it,
+                Err(err) => {
+                    let exc = vm
+                        .take_uncaught_value()
+                        .unwrap_or_else(|| crate::error::create_type_error(vm, &err));
+                    return Err(exc);
+                }
+            };
+            if !iterator.is_object() {
+                return Err(crate::error::create_type_error(
+                    vm,
+                    "Result of the Symbol.iterator method is not an object",
+                ));
+            }
+            return Ok(Some((iterator, None)));
+        }
+        if !method.is_null() && !method.is_undefined() {
+            // GetMethod 步 4：非空不可调用方法 → TypeError。
+            return Err(crate::error::create_type_error(vm, "value is not iterable"));
+        }
+        // null/undefined：String 恒可迭代 → 码元快速路径。
+        return Ok(Some((inner, None)));
     }
     // 内建集合标记：仅当 @@iterator 经原型链读到的仍是内建默认迭代器函数
     // 时才走快速路径；用户覆盖（自身属性或原型链改写/删除）走通用协议
