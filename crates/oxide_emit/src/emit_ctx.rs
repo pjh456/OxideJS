@@ -6,7 +6,6 @@
 //! 平铺在 `CompileCtx` 上。
 
 use crate::symbol_table::SymbolTable;
-use crate::LabelScope;
 use oxide_ir::operand::LabelId;
 use oxide_parser::MethodDefinitionKind;
 
@@ -46,6 +45,21 @@ pub(crate) struct LoopEntry {
     /// 循环打开时已打开的 for-in 循环数。
     pub(crate) for_in_depth_at_open: usize,
     pub(crate) kind: LoopKind,
+}
+
+/// 标签语句作用域：编译期内登记 `break label` / `continue label` 的跳转目标。
+/// `continue_label` 仅在标签直接包裹迭代语句时存在。
+#[derive(Debug, Clone)]
+pub struct LabelScope {
+    pub(crate) name: String,
+    pub(crate) break_label: LabelId,
+    pub(crate) continue_label: Option<LabelId>,
+    /// 标签打开时嵌套的 finally 域数：break/continue 跨越 finally 的计数依据。
+    pub(crate) finally_depth_at_open: usize,
+    /// 标签打开时已打开的 for-of 循环数：break/continue 逃出计数依据。
+    pub(crate) for_of_depth_at_open: usize,
+    /// 标签打开时已打开的 for-in 循环数。
+    pub(crate) for_in_depth_at_open: usize,
 }
 
 /// 跳转目标 / 标签语句解析状态。
