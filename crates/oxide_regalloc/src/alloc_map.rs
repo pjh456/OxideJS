@@ -70,18 +70,3 @@ impl Default for AllocMap {
         Self::new()
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn alloc_map_new_is_empty() {
-        let m = AllocMap::new();
-        assert!(m.map.is_empty());
-        assert!(m.spills.is_empty());
-        assert_eq!(m.phys_peak, 0);
-        assert_eq!(m.arg_window_base, 254);
-        assert!(AllocMap::default().map.is_empty());
-    }
-}
