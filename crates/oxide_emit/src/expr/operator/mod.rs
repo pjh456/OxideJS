@@ -128,7 +128,7 @@ impl Emitter {
     /// # 步骤
     /// 1. 标识符：with 体动态解析、可删全局内置镜像槽先行；其余按 DeleteBinding
     ///    三分类（见标识符臂注释）——局部绑定与脚本自身顶层已声明名发 false
-    ///    常数，未声明名/隐式全局槽/eval 程序自身顶层已声明名发全局对象运行期
+    ///    常数，未声明名/隐式全局槽/eval 程序自身顶层 var/函数名发全局对象运行期
     ///    探针。严格模式的 delete 标识符是早期错误，由语义分析阶段拦截，不在此出现。
     /// 2. 静态/计算成员与链式成员：从对象真删属性，结果为删除返回值。
     /// 3. 其余形态（字面量/调用/new/this/一元形/序列/嵌套 delete 等）：先求值
@@ -188,16 +188,18 @@ impl Emitter {
                     return Ok(reg);
                 }
                 // DeleteBinding 三分类（13.5.1.2 步5 绑定引用走 base.DeleteBinding）：
-                // - 局部绑定（捕获 cell/upvalue/lookup 命中函数或块作用域槽）与
-                //   非 eval 脚本自身顶层已声明名（脚本 var/函数名 c:false）→ false 常数；
+                // - 局部绑定（捕获 cell/upvalue/lookup 命中函数或块作用域槽）、
+                //   非 eval 脚本自身顶层已声明名（脚本 var/函数名 c:false）、eval
+                //   程序自身顶层 let/const（落 eval 自身 lexical 环境，declarative
+                //   环境记录 DeleteBinding 恒 false 且不物化全局属性）→ false 常数；
                 // - 其余——未声明名（引用不可解析）、隐式全局槽、eval 程序自身顶层
-                //   已声明名（c:true）——发全局对象运行期探针（与 Reflect.deleteProperty
-                //   同源 DeleteBinding 语义：缺失 → true；不可配置 → false 且保留；
-                //   可配置 → 真删且 true）。三类全局属性的 c 位已由各自写点物化，
-                //   探针取值即规范值；独立编译的 eval 程序见不到调用方域变量，静态
-                //   "当前程序内是否声明"粗于规范动态判定，故不可解析面一律运行期定值。
-                //   严格模式的 delete 标识符由语义分析提前拦截为早期错误，本臂在
-                //   strict 代码不可达。
+                //   var/函数名（物化 c:true 全局属性）——发全局对象运行期探针（与
+                //   Reflect.deleteProperty 同源 DeleteBinding 语义：缺失 → true；
+                //   不可配置 → false 且保留；可配置 → 真删且 true）。三类全局属性的
+                //   c 位已由各自写点物化，探针取值即规范值；独立编译的 eval 程序见
+                //   不到调用方域变量，静态"当前程序内是否声明"粗于规范动态判定，故
+                //   不可解析面一律运行期定值。严格模式的 delete 标识符由语义分析
+                //   提前拦截为早期错误，本臂在 strict 代码不可达。
                 let local = ctx.captured_bindings.contains_key(name)
                     || ctx.current_upvalue_captures.iter().any(|u| u.name == name);
                 let probe = if local {
@@ -209,9 +211,13 @@ impl Emitter {
                         Some((binding, scope_idx)) => {
                             if scope_idx == 0 {
                                 // 全局作用域：隐式全局槽（未声明名读写登记，属性
-                                // c:true）与 eval 程序自身顶层名（c:true）可删；
-                                // 非 eval 脚本自身顶层 var/函数名（c:false）保留 false。
-                                ctx.is_implicit_global_reg(binding.reg) || ctx.is_eval_script
+                                // c:true）与 eval 程序自身顶层 var/函数名（顶层
+                                // var 名集 ∪ 顶层函数声明名，物化 c:true 全局属性）
+                                // 可删；eval 顶层 let/const 不在名集内（自身 lexical
+                                // 环境不可删），与非 eval 脚本自身顶层 var/函数名
+                                // （c:false）同保留 false。
+                                ctx.is_implicit_global_reg(binding.reg)
+                                    || (ctx.is_eval_script && ctx.global_tier_names.contains(name))
                             } else {
                                 // 函数/块作用域局部绑定：非属性引用，恒 false。
                                 false

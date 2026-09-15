@@ -1,11 +1,13 @@
 //! delete 标识符 DeleteBinding 面：eval 程序独立编译见不到调用方域变量，静态
 //! "当前程序内是否声明"粗于规范动态判定，未声明名/隐式全局槽/eval 程序自身
-//! 顶层已声明名一律发全局对象运行期探针（缺失 → true；不可配置 → false 且保留；
-//! 可配置 → 真删且 true）。局部绑定与非 eval 脚本自身顶层已声明名保留 false
-//! 常数。覆盖：direct eval 对调用方脚本 var、eval 自身 var 真删、跨 eval 真删、
-//! 函数内隐式全局真删、读侧真删可见（删后裸读抛 ReferenceError）、typeof 对
-//! 删后缺失名不抛、删后重写同步、绿基线（脚本 var/顶层函数名/未声明缺失/builtin
-//! 槽优先级/strict 调用方 indirect eval）。
+//! 顶层 var/函数名（物化 c:true 全局属性）一律发全局对象运行期探针（缺失 →
+//! true；不可配置 → false 且保留；可配置 → 真删且 true）。局部绑定、非 eval
+//! 脚本自身顶层已声明名、eval 程序自身顶层 let/const（落 eval 自身 lexical
+//! 环境，declarative 环境不可删）保留 false 常数。覆盖：direct eval 对调用方
+//! 脚本 var、eval 自身 var 真删、跨 eval 真删、函数内隐式全局真删、读侧真删
+//! 可见（删后裸读抛 ReferenceError）、typeof 对删后缺失名不抛、删后重写同步、
+//! 绿基线（脚本 var/顶层函数名/未声明缺失/builtin 槽优先级/strict 调用方
+//! indirect eval）、eval 自身顶层 let/const false 且无全局属性副作用。
 
 use std::sync::Arc;
 
@@ -105,4 +107,22 @@ fn reassign_after_real_delete_resyncs_both_sides() {
 #[test]
 fn read_before_delete_unchanged() {
     eval_truthy("x = 1; var r = x; delete x; r === 1");
+}
+
+// ── eval 自身顶层 let（lexical 环境不可删）：false 且不物化全局属性 ──
+#[test]
+fn eval_delete_own_let_returns_false_without_global_property() {
+    eval_truthy("eval('let l = 1; delete l') === false && typeof l === 'undefined' && !('l' in globalThis)");
+}
+
+// ── eval 自身顶层 const（lexical 环境不可删）：false 且不物化全局属性 ──
+#[test]
+fn eval_delete_own_const_returns_false_without_global_property() {
+    eval_truthy("eval('const c = 1; delete c') === false && typeof c === 'undefined' && !('c' in globalThis)");
+}
+
+// ── 同名单元：调用方脚本 var（c:false）+ eval 自身顶层 let，false 且调用方值保留 ──
+#[test]
+fn eval_delete_own_let_shadowing_caller_var_returns_false_and_kept() {
+    eval_truthy("var l = 5; eval('let l = 1; delete l') === false && l === 5 && globalThis.l === 5");
 }
