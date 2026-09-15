@@ -11,8 +11,8 @@ use oxide_ir::inst::Inst;
 use oxide_ir::operand::LabelId;
 use oxide_ir::IRFunction;
 
-use crate::emit::{BUILTIN_GLOBALS, NON_WRITABLE_GLOBAL_BUILTINS};
 use crate::emit_ctx::{LabelCtx, LabelScope, LoopEntry, LoopKind, ScopeCtx};
+use crate::program::{BUILTIN_GLOBALS, NON_WRITABLE_GLOBAL_BUILTINS};
 use crate::symbol_table::{ScopeKind, SymbolTable};
 use oxide_parser::VariableDeclarationKind;
 

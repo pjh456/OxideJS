@@ -16,6 +16,7 @@ pub mod expr;
 mod function_body;
 pub mod module;
 pub mod prepass;
+mod program;
 pub mod shared;
 pub mod stmt;
 pub mod symbol_table;

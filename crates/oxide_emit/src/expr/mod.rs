@@ -22,6 +22,45 @@ pub mod this;
 pub mod yield_expr;
 
 impl Emitter {
+    pub(crate) fn emit_expression(&self, expr: &Expression, ctx: &mut CompileCtx) -> Result<u32, String> {
+        match expr {
+            Expression::NumericLiteral(_)
+            | Expression::BigIntLiteral(_)
+            | Expression::StringLiteral(_)
+            | Expression::BooleanLiteral(_)
+            | Expression::NullLiteral(_)
+            | Expression::RegExpLiteral(_) => self.emit_literal(expr, ctx),
+            Expression::BinaryExpression(_)
+            | Expression::PrivateInExpression(_)
+            | Expression::UnaryExpression(_)
+            | Expression::ConditionalExpression(_)
+            | Expression::LogicalExpression(_)
+            | Expression::UpdateExpression(_) => self.emit_operator(expr, ctx),
+            Expression::StaticMemberExpression(_)
+            | Expression::ComputedMemberExpression(_)
+            | Expression::PrivateFieldExpression(_)
+            | Expression::ChainExpression(_) => self.emit_member_domain(expr, ctx),
+            Expression::ObjectExpression(_) | Expression::ArrayExpression(_) => self.emit_object_domain(expr, ctx),
+            Expression::AssignmentExpression(assign) => self.emit_assignment_expression(assign, ctx),
+            Expression::TemplateLiteral(_) | Expression::TaggedTemplateExpression(_) => {
+                self.emit_template_domain(expr, ctx)
+            }
+            Expression::ArrowFunctionExpression(_)
+            | Expression::FunctionExpression(_)
+            | Expression::ClassExpression(_)
+            | Expression::NewExpression(_) => self.emit_function_domain(expr, ctx),
+            Expression::Identifier(ident) => self.emit_identifier_expression(ident, ctx),
+            Expression::YieldExpression(ye) => self.emit_yield_expression(ye, ctx),
+            Expression::AwaitExpression(ae) => self.emit_await_expression(ae, ctx),
+            Expression::CallExpression(_) => self.emit_call_domain(expr, ctx),
+            Expression::ThisExpression(_) => self.emit_this_expression(ctx),
+            Expression::SequenceExpression(seq) => self.emit_sequence_expression(seq, ctx),
+            Expression::ParenthesizedExpression(p) => self.emit_parenthesized_expression(p, ctx),
+            Expression::MetaProperty(mp) => self.emit_meta_property_expression(mp, ctx),
+            _ => self.emit_unsupported_expression(expr, ctx),
+        }
+    }
+
     pub(crate) fn emit_unsupported_expression(&self, expr: &Expression, ctx: &mut CompileCtx) -> Result<u32, String> {
         let _ = ctx;
         Err(format!("unsupported expression type: {:?}", expr))
