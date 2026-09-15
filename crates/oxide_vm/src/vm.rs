@@ -1478,6 +1478,42 @@ impl Vm {
         key.parse::<u32>().ok()
     }
 
+    /// 删除属性引用基非对象面（delete 成员表达式的 ToObject 基求值）：
+    /// null/undefined 基 ToObject 抛 TypeError（规范 12.5.3.2 步 5.b）；其余原始
+    /// 基装箱后按自身属性集判删除成败——字符串装箱体自身属性恰为规范下标
+    /// 0..len-1 与 "length"（均不可配置，删除失败返回 false），其它键与其它
+    /// 原始装箱体（number/boolean/BigInt/Symbol 无自身属性）删除成功返回
+    /// true。
+    ///
+    /// # 步骤
+    /// 1. null/undefined 基抛 TypeError（调用方经 `?` 传播异常）
+    /// 2. 字符串基按下标键区间判自身属性；非字符串基恒真
+    /// 3. 布尔结果写 `rd` 槽（与对象基臂同槽位）
+    ///
+    /// # 边界与前提
+    /// - 调用点已证基非对象；对象基走既有对象臂，不进本函数
+    /// - 字符串长度口径按 UTF-16 码元（与字符串自身属性面一致）；非规范数字串
+    ///   键（前导零等）与 symbol 键走"无自身属性"面
+    pub(crate) fn delete_prop_non_object_base(
+        &mut self, base: JsValue, rd: usize, key_si: u32,
+    ) -> Result<bool, String> {
+        if base.is_null() || base.is_undefined() {
+            self.raise_error_kind("TypeError", "delete on non-object")?;
+        }
+        let deleted = if base.is_string() {
+            let len = unsafe { (*base.as_string_ptr()).units().len() };
+            match self.array_index_from_property_key(key_si) {
+                Some(i) if (i as usize) < len => false,
+                Some(_) => true,
+                None => key_si != self.length_si,
+            }
+        } else {
+            true
+        };
+        self.regs[rd] = JsValue::bool(deleted);
+        Ok(false)
+    }
+
     pub(crate) fn resolve_property(&self, obj: &JsObject, prop_name_si: u32) -> Option<JsValue> {
         vm_trace!("resolve_property: shape_id={} prop_name_si={}", obj.shape_id(), prop_name_si);
         let length_si = self.length_si;

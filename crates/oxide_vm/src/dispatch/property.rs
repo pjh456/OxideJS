@@ -640,8 +640,12 @@ impl Vm {
         self.pc += 1;
         let key_val = self.immutables().get(prop_idx).copied().unwrap_or_else(JsValue::undefined);
         let prop_name_si = self.property_key_si(key_val)?;
+        if !self.regs[rd].is_object() {
+            // 非对象基：ToObject 基求值——null/undefined 抛 TypeError，其余原始
+            // 基装箱后按自身属性面判删除成败。
+            return self.delete_prop_non_object_base(self.regs[rd], rd, prop_name_si);
+        }
         let Some(obj_ptr) = self.checked_object_ptr(self.regs[rd], "delete on non-object")? else {
-            self.regs[rd] = JsValue::bool(true);
             return Ok(false);
         };
         let obj = unsafe { &mut *obj_ptr };
@@ -654,8 +658,12 @@ impl Vm {
     pub(crate) fn dispatch_delete_prop_dynamic(&mut self, rd: usize, b: usize) -> Result<bool, String> {
         vm_trace!("DELETE_PROP_DYNAMIC rd={}", rd);
         let prop_name_si = self.property_key_si(self.regs[b])?;
+        if !self.regs[rd].is_object() {
+            // 非对象基：ToObject 基求值——null/undefined 抛 TypeError，其余原始
+            // 基装箱后按自身属性面判删除成败。
+            return self.delete_prop_non_object_base(self.regs[rd], rd, prop_name_si);
+        }
         let Some(obj_ptr) = self.checked_object_ptr(self.regs[rd], "delete on non-object")? else {
-            self.regs[rd] = JsValue::bool(true);
             return Ok(false);
         };
         let obj = unsafe { &mut *obj_ptr };
