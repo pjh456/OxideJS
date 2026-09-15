@@ -8,47 +8,17 @@
 
 use crate::value::JsValue;
 
+mod cell;
+mod native_fn;
+mod prop_meta;
 mod string;
+mod typed_array;
 
+pub use cell::Cell;
+pub use native_fn::NativeFnPtr;
+pub use prop_meta::{PropAttributes, PropIndex, PropMetaEntry};
 pub use string::{ConsNode, JsString};
-
-/// 原生函数指针的类型安全不透明包装。
-///
-/// 以 `*const ()` 存储而非具体 `fn` 类型，使 `oxide_types` 无需依赖
-/// `oxide_vm::Vm`。`oxide_vm` 中的调用方经 `NativeFnPtr::call_with` 转回
-/// `NativeFn`——transmute 被限制在单个泛型辅助函数中。
-///
-/// # Safety 不变量
-///
-/// `NativeFnPtr` 必须总是由合法的 `NativeFn` 函数指针（裸 `fn` 项或函数项
-/// 强制转换——**不是**闭包）创建。指针永不为空。`Send + Sync` 安全是因为
-/// 函数项指针天然线程安全（不含数据）。
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[repr(transparent)]
-pub struct NativeFnPtr(pub *const ());
-
-impl NativeFnPtr {
-    /// 包装裸函数指针。指针必须指向合法的 `NativeFn` 函数项。
-    ///
-    /// # Safety
-    /// `ptr` 必须是类型为 `fn(&mut Vm, &[u8]) -> NativeResult` 的非空函数指针
-    /// 转成的 `*const ()`。使用任何其它指针值在调用时是 UB。
-    #[inline(always)]
-    pub unsafe fn from_raw(ptr: *const ()) -> Self {
-        debug_assert!(!ptr.is_null(), "NativeFnPtr must not be null");
-        Self(ptr)
-    }
-
-    /// 返回底层裸指针。
-    #[inline(always)]
-    pub fn as_ptr(self) -> *const () {
-        self.0
-    }
-}
-
-// SAFETY: 函数项指针不含可变状态，可安全跨线程共享。
-unsafe impl Send for NativeFnPtr {}
-unsafe impl Sync for NativeFnPtr {}
+pub use typed_array::TypedArrayKind;
 
 /// 形状标识符（对象 header 低位 24 位）。
 pub type ShapeId = u32;
@@ -56,191 +26,14 @@ pub type ShapeId = u32;
 /// dense 属性向量长度的硬上限，防止索引失控导致内存膨胀。
 pub const MAX_DENSE_PROPS: usize = 1_000_000;
 
-/// TypedArray 的元素类型，决定 `bytes_per_element` 与内存视图的字节序解读。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TypedArrayKind {
-    Int8,
-    Uint8,
-    Uint8Clamped,
-    Int16,
-    Uint16,
-    Int32,
-    Uint32,
-    Float32,
-    Float64,
-    BigInt64,
-    BigUint64,
-}
-
-impl TypedArrayKind {
-    /// 每个元素的字节数（1/2/4/8）。
-    pub const fn bytes_per_element(self) -> usize {
-        match self {
-            Self::Int8 | Self::Uint8 | Self::Uint8Clamped => 1,
-            Self::Int16 | Self::Uint16 => 2,
-            Self::Int32 | Self::Uint32 | Self::Float32 => 4,
-            Self::Float64 | Self::BigInt64 | Self::BigUint64 => 8,
-        }
-    }
-
-    /// 对应的具体构造器名（如 `Int16Array`），供 `@@toStringTag` getter 返回。
-    pub const fn name(self) -> &'static str {
-        match self {
-            Self::Int8 => "Int8Array",
-            Self::Uint8 => "Uint8Array",
-            Self::Uint8Clamped => "Uint8ClampedArray",
-            Self::Int16 => "Int16Array",
-            Self::Uint16 => "Uint16Array",
-            Self::Int32 => "Int32Array",
-            Self::Uint32 => "Uint32Array",
-            Self::Float32 => "Float32Array",
-            Self::Float64 => "Float64Array",
-            Self::BigInt64 => "BigInt64Array",
-            Self::BigUint64 => "BigUint64Array",
-        }
-    }
-}
-
-/// 属性描述符标志位集合，压缩在单个 `u8` 中。
+/// 定长对象头 + 堆外数据指针的 JS 普通/外来对象。
 ///
-/// 位定义：bit0 = writable，bit1 = enumerable，bit2 = configurable。
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct PropAttributes(pub u8);
-
-impl PropAttributes {
-    /// writable 标志位（bit0）。
-    pub const WRITABLE: u8 = 0b001;
-    /// enumerable 标志位（bit1）。
-    pub const ENUMERABLE: u8 = 0b010;
-    /// configurable 标志位（`0b100`）。
-    pub const CONFIGURABLE: u8 = 0b100;
-    /// 数据属性默认描述符：三标志全开。
-    pub const DEFAULT_DATA: Self = Self(Self::WRITABLE | Self::ENUMERABLE | Self::CONFIGURABLE);
-
-    /// 由三个布尔标志构造描述符。
-    pub const fn new(writable: bool, enumerable: bool, configurable: bool) -> Self {
-        let mut bits = 0;
-        if writable {
-            bits |= Self::WRITABLE;
-        }
-        if enumerable {
-            bits |= Self::ENUMERABLE;
-        }
-        if configurable {
-            bits |= Self::CONFIGURABLE;
-        }
-        Self(bits)
-    }
-
-    /// 是否 writable。
-    pub const fn writable(self) -> bool {
-        self.0 & Self::WRITABLE != 0
-    }
-
-    /// 是否 enumerable。
-    pub const fn enumerable(self) -> bool {
-        self.0 & Self::ENUMERABLE != 0
-    }
-
-    /// 是否 configurable。
-    pub const fn configurable(self) -> bool {
-        self.0 & Self::CONFIGURABLE != 0
-    }
-}
-
-/// 单个属性的元数据条目。
+/// 内联字段：`header`（shape_id + 一组标志位）、`type_tag`（外来对象种类）、
+/// `proto`、`generation` 等；dense 属性向量、属性元数据、native payload 与
+/// upvalue cell 列表以裸指针挂在堆上，由 VM / GC 维护。对象可分配在
+/// session arena（`Epoch`）或全局堆（`Arc`），通过
+/// `is_session_epoch` 位区分。
 ///
-/// 数据属性仅用 `attributes`；访问器属性额外携带 getter / setter
-/// 的 [`JsValue`] 与 `is_accessor = true` 标记。`hole` 标记数组元素被删除
-/// 后保留的稀疏空洞（数组元素区存在性判定依据）。
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct PropMetaEntry {
-    pub attributes: PropAttributes,
-    pub get: JsValue,
-    pub set: JsValue,
-    pub is_accessor: bool,
-    pub hole: bool,
-}
-
-impl PropMetaEntry {
-    /// 构造数据属性条目。
-    pub fn data(attributes: PropAttributes) -> Self {
-        Self {
-            attributes,
-            get: JsValue::undefined(),
-            set: JsValue::undefined(),
-            is_accessor: false,
-            hole: false,
-        }
-    }
-
-    /// 构造访问器属性条目（getter/setter 可为 `undefined`）。
-    pub fn accessor(get: JsValue, set: JsValue, attributes: PropAttributes) -> Self {
-        Self {
-            attributes,
-            get,
-            set,
-            is_accessor: true,
-            hole: false,
-        }
-    }
-
-    /// 构造数组元素删除后的 hole 标记条目。
-    pub fn hole() -> Self {
-        Self {
-            attributes: PropAttributes::DEFAULT_DATA,
-            get: JsValue::undefined(),
-            set: JsValue::undefined(),
-            is_accessor: false,
-            hole: true,
-        }
-    }
-
-    /// 是否数组元素 hole 标记（删除后保留的稀疏空洞）。
-    pub fn is_hole(&self) -> bool {
-        self.hole
-    }
-}
-
-/// 可转换为 dense 属性下标的值。
-///
-/// 为 `u8` / `u16` / `u32` / `usize` / 非负 `i32` 实现，统一属性向量
-/// 下标参数的类型。
-pub trait PropIndex {
-    fn to_u32(self) -> u32;
-}
-
-impl PropIndex for u8 {
-    fn to_u32(self) -> u32 {
-        self as u32
-    }
-}
-
-impl PropIndex for u16 {
-    fn to_u32(self) -> u32 {
-        self as u32
-    }
-}
-
-impl PropIndex for u32 {
-    fn to_u32(self) -> u32 {
-        self
-    }
-}
-
-impl PropIndex for usize {
-    fn to_u32(self) -> u32 {
-        self as u32
-    }
-}
-
-impl PropIndex for i32 {
-    fn to_u32(self) -> u32 {
-        debug_assert!(self >= 0, "property index must be non-negative");
-        self.max(0) as u32
-    }
-}
-
 /// 布局：
 ///   header: u32 位
 ///     \[0:23\]   shape_id
@@ -274,64 +67,6 @@ impl PropIndex for i32 {
 ///
 ///   总计：112 字节
 ///   对齐：8 字节
-#[repr(C)]
-pub struct Cell {
-    pub value: JsValue,
-    pub flags: u8,
-    pub _pad: [u8; 7],
-}
-
-impl Cell {
-    /// 已初始化标志（TDZ / 未赋值检测）。
-    pub const INITIALIZED: u8 = 0x01;
-    /// GC 标记位。
-    pub const GC_MARK: u8 = 0x02;
-
-    /// 构造 cell，`initialized` 决定是否立即置 [`INITIALIZED`](Cell::INITIALIZED) 位。
-    pub fn new(value: JsValue, initialized: bool) -> Self {
-        Cell {
-            value,
-            flags: if initialized { Self::INITIALIZED } else { 0 },
-            _pad: [0; 7],
-        }
-    }
-
-    /// 是否已初始化。
-    pub fn is_initialized(&self) -> bool {
-        self.flags & Self::INITIALIZED != 0
-    }
-
-    /// 设置 / 清除已初始化标志。
-    pub fn set_initialized(&mut self, val: bool) {
-        if val {
-            self.flags |= Self::INITIALIZED;
-        } else {
-            self.flags &= !Self::INITIALIZED;
-        }
-    }
-
-    /// 是否被 GC 标记。
-    pub fn is_gc_marked(&self) -> bool {
-        self.flags & Self::GC_MARK != 0
-    }
-
-    /// 设置 / 清除 GC 标记。
-    pub fn set_gc_mark(&mut self, marked: bool) {
-        if marked {
-            self.flags |= Self::GC_MARK;
-        } else {
-            self.flags &= !Self::GC_MARK;
-        }
-    }
-}
-
-/// 定长对象头 + 堆外数据指针的 JS 普通/外来对象。
-///
-/// 内联字段：`header`（shape_id + 一组标志位）、`type_tag`（外来对象种类）、
-/// `proto`、`generation` 等；dense 属性向量、属性元数据、native payload 与
-/// upvalue cell 列表以裸指针挂在堆上，由 VM / GC 维护。对象可分配在
-/// session arena（`Epoch`）或全局堆（`Arc`），通过
-/// `is_session_epoch` 位区分。
 pub struct JsObject {
     header: u32,
     native_arg_count: u8,
