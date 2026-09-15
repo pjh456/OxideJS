@@ -1,19 +1,31 @@
-//! 对象模型：字符串、对象、属性元数据、闭包 cell 与原生函数指针。
+//! 本模块是对象模型的门面与对象本体——`JsObject` 定长 header、类型标签、
+//! 构造与 epoch/GC 位、堆外区生命周期与形状链接面；字符串、属性元数据、
+//! 闭包 cell、原生函数指针与 TypedArray 种类已下沉子模块，经门面显式重导出。
 //!
-//! `JsObject` 为定长 `repr(C)` 结构（112 字节 + 对齐），核心字段内联在
-//! header 位域中；dense 属性向量、属性元数据与 upvalue cell 列表通过裸指针
-//! 挂在堆上，由 VM / GC 负责生命周期。本模块同时定义属性标志
-//! (`PropAttributes`)、访问器/数据属性元数据 (`PropMetaEntry`) 与
-//! 闭包共享 cell (`Cell`)。
+//! 子模块布局：
+//! - `string`：字符串三形态与 rope（重导出 `JsString`、`ConsNode`）
+//! - `prop_meta`：属性标志与元数据（重导出 `PropAttributes`、`PropMetaEntry`、`PropIndex`）
+//! - `cell` / `native_fn` / `typed_array`：闭包 cell、原生函数指针、TypedArray
+//!   种类（重导出 `Cell`、`NativeFnPtr`、`TypedArrayKind`）
+//! - `props`：私有模块，`JsObject` 的属性槽读写 36 方法，无外部名称
+//! - `tests`：`#[cfg(test)]` 对象测试
+//!
+//! 冻结公共面：外部可见名称为 11 名清单（8 名重导出 + 3 名原生定义
+//! `JsObject` / `ShapeId` / `MAX_DENSE_PROPS`），显式名单防 `pub` 面无声扩大。
+//!
+//! 布局锚点：布局说明块锚在 `JsObject` 定义上方（随结构体，不在头部文档）；
+//! 尺寸守护为 `object_size_bounds` 测试的 256B 上界，与布局块总账口径
+//! 并存、不统一。
 
 use crate::value::JsValue;
 
-mod cell;
-mod native_fn;
-mod prop_meta;
-mod props;
-mod string;
-mod typed_array;
+// —— 子模块声明与显式重导出：11 名冻结面，不用通配 ——
+mod cell; // 闭包共享单元
+mod native_fn; // 原生函数指针不透明包装
+mod prop_meta; // 属性标志与元数据
+mod props; // 属性槽读写（私有模块，无重导出）
+mod string; // 字符串三形态与 rope
+mod typed_array; // TypedArray 种类
 
 pub use cell::Cell;
 pub use native_fn::NativeFnPtr;
@@ -56,7 +68,9 @@ pub const MAX_DENSE_PROPS: usize = 1_000_000;
 ///   prop_meta: *mut u8 (8 字节，命名属性元数据 Box\<Vec\<Option\<PropMetaEntry\>\>\>)
 ///   native_data: *mut u8 (8 字节，VM 拥有的不透明 native/外来载荷)
 ///   proto: JsValue (8 字节)
-///   generation: u32 (4 字节 + 4 填充)
+///   generation: u32 (4 字节)
+///   array_prop_count: u32 (4 字节，数组元素数，普通对象恒 0)
+///   array_len_override: u32 (4 字节，逻辑长度覆盖，length 超 dense 上限时非 0)
 ///   native_fn: Option\<NativeFnPtr\> (16 字节 — 裸 `*const ()` 无法利用 Option\<NonNull\>
 ///              优化；因 repr(Rust) 布局规则存为包装 8 字节指针的 Option，带 8 字节
 ///              判别式填充)
@@ -66,7 +80,8 @@ pub const MAX_DENSE_PROPS: usize = 1_000_000;
 ///   home_object: JsValue (8 字节，\[\[HomeObject\]\]，供 super 查找)
 ///   upvalues: *mut u8 (8 字节，指向闭包的 Box<Vec<*mut Cell>>)
 ///
-///   总计：112 字节
+///   字段自和：116 字节，另有 4 字节对齐填充（native_fn 之前）
+///   总计：120 字节
 ///   对齐：8 字节
 pub struct JsObject {
     header: u32,
