@@ -42,12 +42,13 @@ impl Emitter {
         // 块内函数声明求值写回外层 var 绑定（sloppy web-compat）：预声明期为该
         // 名实例化的外层 var 绑定（函数作用域）在此写入块槽位里的函数对象，
         // 求值一次写回一次（循环体内每迭代覆写头绑定）。形参/词法声明同名
-        // （抑制集）与顶层 builtin 名不写回；顶层 A 侧补全局对象属性写（与
-        // for 头写同形）。
+        // （抑制集）与顶层只读三常量名不写回（对不可写属性 put 在 sloppy 下
+        // 永不成功，跳过与执行等价）；顶层 A 侧补全局对象属性写（与 for 头写
+        // 同形）。
         if !ctx.is_strict
             && ctx.scopes.symbols.scopes.len() > 1
             && !ctx.block_fn_suppressed.contains(&name)
-            && !(ctx.is_global_scope && CompileCtx::is_known_builtin(&name))
+            && !(ctx.is_global_scope && CompileCtx::is_non_writable_global_builtin(&name))
         {
             let var_target = ctx.scopes.symbols.find_var_target_scope();
             if let Some(outer) = ctx.scopes.symbols.scopes[var_target].bindings.get(&name) {

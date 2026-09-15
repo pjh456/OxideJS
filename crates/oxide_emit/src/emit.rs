@@ -751,6 +751,14 @@ impl CompileCtx {
         BUILTIN_GLOBALS.contains(&name)
     }
 
+    /// 规范不可声明的全局名：只读三常量（全局对象上数据属性
+    /// {writable:false, configurable:false}）——顶层块级函数名仅这一面不建
+    /// 外层绑定、不求值写回（sloppy put 永不成功，跳过与执行等价）；其余
+    /// 已知 builtin（parseInt 等）属性可配置，可声明（求值期覆写全局属性）。
+    pub(crate) fn is_non_writable_global_builtin(name: &str) -> bool {
+        NON_WRITABLE_GLOBAL_BUILTINS.contains(&name)
+    }
+
     /// 进入 with 语句体：记录对象寄存器与当前作用域深度，供动态标识符解析。
     pub(crate) fn push_with(&mut self, obj_reg: u32) {
         let depth = self.scopes.symbols.scopes.len();
@@ -1834,14 +1842,15 @@ impl Emitter {
         self.predeclare_lexical_declarations(&program.body, &mut ctx, global_lexical)?;
 
         // 顶层块级函数名 web-compat 外层绑定（sloppy、非 eval）：实例化 var 绑定
-        // （新建 var 槽；顶层 builtin 名不可声明不建）、并入顶层 var 名集（裸读/
-        // 写路由全局对象属性）、GDI 序言建属性（define-if-absent，既有属性零动作）。
+        // （新建 var 槽；顶层只读三常量名不可声明不建）、并入顶层 var 名集（裸
+        // 读/写路由全局对象属性）、GDI 序言建属性（define-if-absent，既有属性
+        // 零动作）。
         let mut block_fn_names: Vec<String> = Vec::new();
         if !ctx.is_strict && !ctx.is_eval_script {
             ctx.block_fn_suppressed = self.collect_block_fn_suppressed_names(&program.body, &ctx.param_names);
             block_fn_names = self.collect_block_function_names(&program.body);
             for name in &block_fn_names {
-                if !ctx.block_fn_suppressed.contains(name) && !CompileCtx::is_known_builtin(name) {
+                if !ctx.block_fn_suppressed.contains(name) && !CompileCtx::is_non_writable_global_builtin(name) {
                     self.predeclare_var_name(name, &mut ctx);
                 }
             }
@@ -1859,7 +1868,7 @@ impl Emitter {
         tier_names.extend(self.collect_top_level_function_names(&program.body));
         // 块级函数泄漏名并入：求值期写回与头写同走全局对象属性（A 侧单一真值）。
         for name in &block_fn_names {
-            if !ctx.block_fn_suppressed.contains(name) && !CompileCtx::is_known_builtin(name) {
+            if !ctx.block_fn_suppressed.contains(name) && !CompileCtx::is_non_writable_global_builtin(name) {
                 tier_names.insert(name.clone());
             }
         }
@@ -1904,7 +1913,7 @@ impl Emitter {
         gdi_var_names.extend(
             block_fn_names
                 .iter()
-                .filter(|n| !ctx.block_fn_suppressed.contains(*n) && !CompileCtx::is_known_builtin(n))
+                .filter(|n| !ctx.block_fn_suppressed.contains(*n) && !CompileCtx::is_non_writable_global_builtin(n))
                 .cloned(),
         );
         if !gdi_var_names.is_empty() {

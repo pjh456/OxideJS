@@ -3,7 +3,8 @@
 //!
 //! 覆盖：顶层/函数作用域 for-in 头形、嵌套块/switch case/for-of 变体、
 //! 无碰撞泄漏名、while 块、arguments 名守卫、既有全局属性保留、形参/词法
-//! 碰撞守卫、strict 无写回对照。
+//! 碰撞守卫、strict 无写回对照、顶层可配置 builtin 名覆写形、函数作用域
+//! builtin 名局部影子对照、不可写三常量跳过对照。
 
 use std::sync::Arc;
 
@@ -124,4 +125,46 @@ fn strict_for_body_no_write_back() {
     truthy(
         "function f(){ \"use strict\"; var o={a:1,b:2}; for (var x in o){function x(){}} return typeof x } f() === 'string'",
     );
+}
+
+#[test]
+fn top_level_block_fn_named_parseint_overwrites_global_property() {
+    // 顶层可配置 builtin 名：实例化期建外层并入 var 名集，求值期写回覆写全局
+    // 对象属性，块后调用见函数对象（空体返 undefined）；写回被跳过则此钉读
+    // builtin 值 42 红。
+    let result = eval("{function parseInt(){}} parseInt('42')").unwrap();
+    assert!(result.is_undefined(), "parseInt 形应为 undefined，得 {:?}", result);
+}
+
+#[test]
+fn top_level_block_fn_named_object_overwrites_global_property() {
+    // Object 名孪生形：构造器名是可配置全局属性，写回同样覆写；空体函数对象
+    // 非 new 调用返 undefined（builtin 形会返字符串包装）。
+    let result = eval("{function Object(){}} Object('x')").unwrap();
+    assert!(result.is_undefined(), "Object 形应为 undefined，得 {:?}", result);
+}
+
+#[test]
+fn top_level_block_fn_named_parseint_kept_before_decl() {
+    // builtin 名全局属性运行期预存：GDI 序言 define-if-absent 零动作，声明点前
+    // 读仍见 builtin 原值，声明点后读见覆写函数。
+    truthy("var r = parseInt('77') === 77; {function parseInt(){}} r && parseInt('42') === undefined");
+}
+
+#[test]
+fn function_scope_block_fn_named_parseint_local_shadow() {
+    // 函数作用域对照：写回守卫只门顶层不可写面，函数体内 builtin 名走局部 var
+    // 影子（全局属性不受影响），收窄误入函数作用域面在此红。
+    truthy(
+        "function f(){ {function parseInt(){}} return parseInt('42') === undefined } f() && typeof globalThis.parseInt === 'function'",
+    );
+}
+
+#[test]
+fn readonly_global_constants_skip_write_back() {
+    // 不可写三常量对照：写回守卫只豁免这一面（put 永不成功），块后读不变——
+    // 收窄事故（三常量误入写回或可配置面误跳）在此红。
+    truthy("{function undefined(){}} typeof undefined === 'undefined'");
+    truthy("{function Infinity(){}} typeof Infinity === 'number'");
+    truthy("{function NaN(){}} typeof NaN === 'number'");
 }
