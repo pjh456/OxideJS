@@ -16,6 +16,10 @@ use oxide_ir::operand::Operand;
 use oxide_ir::IRFunction;
 use oxide_parser::Statement;
 
+use crate::capture::{
+    collect_captured_bindings, collect_own_binding_names, collect_top_level_function_names,
+    collect_top_level_function_names_ordered, collect_var_binding_names,
+};
 use crate::compile_ctx::CompileCtx;
 use crate::Emitter;
 
@@ -220,7 +224,7 @@ impl Emitter {
     /// - 仅遍历语句列表直接子级具名函数声明（生成器/异步声明同节点类型，天然
     ///   覆盖）；块内函数声明与 `export default function` 不入全局检查面。
     pub(crate) fn emit_gdi_func_decl_checks(&self, stmts: &[Statement], ctx: &mut CompileCtx) {
-        let names = self.collect_top_level_function_names_ordered(stmts);
+        let names = collect_top_level_function_names_ordered(stmts);
         let mut seen = HashSet::new();
         for name in names.iter().rev() {
             // 逆序首见即源序最后声明者（规范去重口径），重名只查一次。
@@ -262,7 +266,7 @@ impl Emitter {
         // 严格 eval 代码函数声明绑定 eval 自身 lexical 环境、不触全局、不抛，门禁
         // 随 !is_strict 关闭，其写点抑制在声明发射处。
         if ctx.is_eval_script && !ctx.is_strict {
-            for name in self.collect_top_level_function_names(&program.body) {
+            for name in collect_top_level_function_names(&program.body) {
                 if NON_WRITABLE_GLOBAL_BUILTINS.contains(&name.as_str()) {
                     let _ = self.emit_throw_error(
                         "TypeError",
@@ -312,15 +316,15 @@ impl Emitter {
         }
 
         // 闭包捕获分析（AST 级，emit 前确定）
-        ctx.own_bindings = self.collect_own_binding_names(&[], &program.body);
+        ctx.own_bindings = collect_own_binding_names(&[], &program.body);
         // 顶层已声明名（A 侧单一真值）：裸读走全局对象属性、裸写走描述符感知
         // A 侧写，不落镜像 cell——从捕获集剔除，使嵌套函数经继承 scope-0 直连全局。
         // 集 = 顶层 var 名 ∪ 顶层函数声明名：函数值是编译闭包，编译期不可得，
         // 其 A 侧值由首 sub-pass 以真闭包建立，先于任何用户代码。
         // 仅在此顶层调用点过滤：嵌套函数的局部同名遮蔽是独立绑定，其调用点不过滤。
-        let var_names = self.collect_var_binding_names(&program.body);
+        let var_names = collect_var_binding_names(&program.body);
         let mut tier_names = var_names.clone();
-        tier_names.extend(self.collect_top_level_function_names(&program.body));
+        tier_names.extend(collect_top_level_function_names(&program.body));
         // 块级函数泄漏名并入：求值期写回与头写同走全局对象属性（A 侧单一真值）。
         for name in &block_fn_names {
             if !ctx.block_fn_suppressed.contains(name) && !CompileCtx::is_non_writable_global_builtin(name) {
@@ -328,7 +332,7 @@ impl Emitter {
             }
         }
         ctx.global_tier_names = tier_names;
-        ctx.captured_bindings = self.collect_captured_bindings(&program.body, &[], &ctx.own_bindings);
+        ctx.captured_bindings = collect_captured_bindings(&program.body, &[], &ctx.own_bindings);
         ctx.captured_bindings.retain(|n, _| !ctx.global_tier_names.contains(n));
 
         // 顶层 var 入口实例化：被捕获的 var 名统一 MAKE_CELL(undefined)，使 var
@@ -364,7 +368,7 @@ impl Emitter {
         // 预载全局属性值），既有属性零动作，值幂等保留。
         // 序言名集 = 顶层 var 名 ∪ 顶层块级函数泄漏名（web-compat 外层绑定同样
         // 在求值前实例化，同走 define-if-absent）。
-        let mut gdi_var_names = self.collect_var_binding_names(&program.body);
+        let mut gdi_var_names = collect_var_binding_names(&program.body);
         gdi_var_names.extend(
             block_fn_names
                 .iter()

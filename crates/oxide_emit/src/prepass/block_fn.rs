@@ -4,6 +4,7 @@
 
 use std::collections::HashSet;
 
+use crate::capture::collect_binding_pattern_names;
 use crate::Emitter;
 use oxide_parser::{Declaration, Statement, VariableDeclarationKind};
 
@@ -98,7 +99,7 @@ impl Emitter {
                 Statement::VariableDeclaration(vd) => {
                     if !matches!(vd.kind, VariableDeclarationKind::Var) {
                         for d in &vd.declarations {
-                            self.collect_binding_pattern_names(&d.id, names);
+                            collect_binding_pattern_names(&d.id, names);
                         }
                     }
                 }
@@ -111,7 +112,7 @@ impl Emitter {
                     if let Some(oxide_parser::ForStatementInit::VariableDeclaration(decl)) = &fs.init {
                         if !matches!(decl.kind, VariableDeclarationKind::Var) {
                             for d in &decl.declarations {
-                                self.collect_binding_pattern_names(&d.id, names);
+                                collect_binding_pattern_names(&d.id, names);
                             }
                         }
                     }
@@ -121,7 +122,7 @@ impl Emitter {
                     if let oxide_parser::ForStatementLeft::VariableDeclaration(decl) = &fi.left {
                         if !matches!(decl.kind, VariableDeclarationKind::Var) {
                             for d in &decl.declarations {
-                                self.collect_binding_pattern_names(&d.id, names);
+                                collect_binding_pattern_names(&d.id, names);
                             }
                         }
                     }
@@ -131,7 +132,7 @@ impl Emitter {
                     if let oxide_parser::ForStatementLeft::VariableDeclaration(decl) = &fo.left {
                         if !matches!(decl.kind, VariableDeclarationKind::Var) {
                             for d in &decl.declarations {
-                                self.collect_binding_pattern_names(&d.id, names);
+                                collect_binding_pattern_names(&d.id, names);
                             }
                         }
                     }
@@ -141,7 +142,7 @@ impl Emitter {
                     // catch 参数是 handler 环境的词法绑定。
                     if let Some(handler) = &ts.handler {
                         if let Some(param) = &handler.param {
-                            self.collect_binding_pattern_names(&param.pattern, names);
+                            collect_binding_pattern_names(&param.pattern, names);
                         }
                         self.collect_lexical_name_suppressions(&handler.body.body, names);
                     }
@@ -178,7 +179,7 @@ impl Emitter {
                     if let Some(Declaration::VariableDeclaration(vd)) = &exp.declaration {
                         if !matches!(vd.kind, VariableDeclarationKind::Var) {
                             for d in &vd.declarations {
-                                self.collect_binding_pattern_names(&d.id, names);
+                                collect_binding_pattern_names(&d.id, names);
                             }
                         }
                     }

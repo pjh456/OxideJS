@@ -5,8 +5,8 @@
 //! `oxide_ir::lower` 降为 bytecode。语法按域拆分：`expr/`、`stmt/`、`class/`、
 //! `shared/`；作用域与闭包捕获分析在 emit 前完成，消除符号表时序依赖。
 
+mod capture;
 pub mod class;
-pub mod closure;
 mod compile_ctx;
 pub mod emit;
 pub mod emit_ctx;

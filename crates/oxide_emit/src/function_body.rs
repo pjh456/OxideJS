@@ -2,7 +2,7 @@
 //! （参数 prologue、参数默认值与闭包捕获分析、双 sub-pass 语句发射）。
 //!
 //! 两类型经 lib.rs 重导出供各语法域构造实参；编译链为 `Emitter` 方法，
-//! 捕获分析经 `self.*` 调用 closure 族，与所在文件无关。
+//! 捕获分析经自由函数调用 capture 族，与所在文件无关。
 
 use std::collections::HashSet;
 
@@ -13,6 +13,10 @@ use oxide_ir::operand::{LabelId, Operand};
 use oxide_ir::IRFunction;
 use oxide_parser::{Expression, Statement, VariableDeclarationKind};
 
+use crate::capture::{
+    collect_binding_pattern_names, collect_captured_bindings, collect_own_binding_names, collect_upvalue_names,
+    collect_var_binding_names,
+};
 use crate::compile_ctx::{CompileCtx, FieldBuffer};
 use crate::symbol_table::{Binding, ScopeKind};
 use crate::Emitter;
@@ -299,7 +303,7 @@ impl Emitter {
         for spec in param_specs {
             param_names.insert(spec.register_name().to_string());
             if let ParamSpec::Pattern { pattern, .. } = spec {
-                self.collect_binding_pattern_names(pattern, &mut param_names);
+                collect_binding_pattern_names(pattern, &mut param_names);
             }
         }
         ctx.param_names = param_names;
@@ -527,10 +531,10 @@ impl Emitter {
                 ParamSpec::Rest { .. } => {}
             }
         }
-        ctx.own_bindings = self.collect_own_binding_names(&param_names, body_stmts);
+        ctx.own_bindings = collect_own_binding_names(&param_names, body_stmts);
         for spec in param_specs {
             if let ParamSpec::Pattern { pattern, .. } = spec {
-                self.collect_binding_pattern_names(pattern, &mut ctx.own_bindings);
+                collect_binding_pattern_names(pattern, &mut ctx.own_bindings);
             }
         }
 
@@ -548,13 +552,13 @@ impl Emitter {
         // 字段初始化表达式（值表达式）与参数默认值一并纳入捕获分析。
         let mut capture_exprs: Vec<&oxide_parser::Expression> = param_defaults.clone();
         capture_exprs.extend_from_slice(extra_capture_exprs);
-        ctx.captured_bindings = self.collect_captured_bindings(body_stmts, &capture_exprs, &ctx.own_bindings);
+        ctx.captured_bindings = collect_captured_bindings(body_stmts, &capture_exprs, &ctx.own_bindings);
         // 自由变量分析：收集 upvalue 捕获（类方法也是普通函数，可捕获外层变量）。
         if matches!(
             body_context,
             FunctionBodyContext::Ordinary | FunctionBodyContext::Arrow | FunctionBodyContext::ClassElement
         ) {
-            ctx.current_upvalue_captures = self.collect_upvalue_names(
+            ctx.current_upvalue_captures = collect_upvalue_names(
                 body_stmts,
                 &capture_exprs,
                 &parent_ctx.captured_bindings,
@@ -659,8 +663,7 @@ impl Emitter {
         // 只是赋值；否则声明语句前创建的闭包读取占位 cell → TDZ 误报。参数与
         // arguments 已在上方初始化（跳过以免覆盖参数值）；let/const/class 保持
         // TDZ 语义不动。声明语句的 MAKE_CELL 按占位更新语义覆盖此初值。
-        let var_names: Vec<String> = self
-            .collect_var_binding_names(body_stmts)
+        let var_names: Vec<String> = collect_var_binding_names(body_stmts)
             .into_iter()
             .filter(|n| !param_names.contains(&n.as_str()) && n != "arguments")
             .filter(|n| ctx.captured_bindings.contains_key(n))

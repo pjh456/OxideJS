@@ -6,6 +6,7 @@
 
 use std::collections::HashSet;
 
+use crate::capture::collect_binding_pattern_names;
 use crate::{CompileCtx, Emitter};
 use oxide_bytecode::opcode::OpCode;
 use oxide_ir::inst::Inst;
@@ -30,7 +31,7 @@ impl Emitter {
         }
         let mut names = HashSet::new();
         for d in &decl.declarations {
-            self.collect_binding_pattern_names(&d.id, &mut names);
+            collect_binding_pattern_names(&d.id, &mut names);
         }
         let mut v: Vec<String> = names.into_iter().collect();
         v.sort();

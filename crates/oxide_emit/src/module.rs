@@ -7,6 +7,7 @@
 use std::collections::HashSet;
 use std::path::Path;
 
+use crate::capture::{collect_captured_bindings, collect_own_binding_names};
 use crate::expr::call::pack_arg_regs;
 use crate::{CompileCtx, Emitter};
 use oxc_allocator::Box;
@@ -171,8 +172,8 @@ impl Emitter {
         let _ = self.predeclare_lexical_declarations(body, ctx, false);
 
         // 闭包捕获分析（import 绑定名纳入 own_bindings，供嵌套函数 cell 捕获）。
-        ctx.own_bindings = self.collect_own_binding_names(&[], body);
-        ctx.captured_bindings = self.collect_captured_bindings(body, &[], &ctx.own_bindings);
+        ctx.own_bindings = collect_own_binding_names(&[], body);
+        ctx.captured_bindings = collect_captured_bindings(body, &[], &ctx.own_bindings);
 
         // —— 模块命名空间对象 ——
         let ns_reg = self.emit_module_call(ctx, "__moduleObject", &[])?;
