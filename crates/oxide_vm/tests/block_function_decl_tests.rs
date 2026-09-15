@@ -56,10 +56,12 @@ fn block_function_decl_capture_escape() {
 }
 
 #[test]
-fn block_function_decl_scope_isolated() {
-    // 嵌套块内函数是块级绑定：块外不可见（typeof 未声明标识符返回 undefined）。
-    let result = eval("{ { function g(){return 2;} } } typeof g === 'undefined'").unwrap();
-    assert!(result.as_bool());
+fn block_function_decl_leaks_outer_in_sloppy_script() {
+    // sloppy 块级函数声明名泄漏外层（web-compat 外层 var 绑定 + 求值写回）：
+    // 块后读见函数对象而非未声明名。块内声明前读仍为 undefined（块入口初始化
+    // 未建，见 hoisted_call 测试），块内声明后读为函数。
+    let result = eval("{ { function g(){return 2;} } } typeof g === 'function'").unwrap();
+    assert!(result.as_bool(), "sloppy 块函数名应泄漏外层，got {:?}", result);
 }
 
 #[test]

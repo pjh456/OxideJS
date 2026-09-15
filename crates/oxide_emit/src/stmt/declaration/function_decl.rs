@@ -68,8 +68,35 @@ impl Emitter {
         } else {
             ctx.inst(Inst::new(OpCode::STORE_VAR, Operand::Reg(var_reg), Operand::Reg(var_reg), Operand::None));
         }
+        // 块内函数声明求值写回外层 var 绑定（sloppy web-compat）：预声明期为该
+        // 名实例化的外层 var 绑定（函数作用域）在此写入块槽位里的函数对象，
+        // 求值一次写回一次（循环体内每迭代覆写头绑定）。形参/词法声明同名
+        // （抑制集）与顶层 builtin 名不写回；顶层 A 侧补全局对象属性写（与
+        // for 头写同形）。
+        if !ctx.is_strict
+            && ctx.scopes.symbols.scopes.len() > 1
+            && !ctx.block_fn_suppressed.contains(&name)
+            && !(ctx.is_global_scope && CompileCtx::is_known_builtin(&name))
+        {
+            let var_target = ctx.scopes.symbols.find_var_target_scope();
+            if let Some(outer) = ctx.scopes.symbols.scopes[var_target].bindings.get(&name) {
+                ctx.inst(Inst::new(
+                    OpCode::STORE_VAR,
+                    Operand::Reg(outer.reg),
+                    Operand::Reg(var_reg),
+                    Operand::None,
+                ));
+                // 顶层 A 侧同步写以外层绑定是否落全局作用域为准：此处块内
+                // Let 绑定已占内层作用域，按名解析（is_global_tier_name）会
+                // 命中块绑定误判为非顶层；嵌套函数作用域同名局部 var 不在
+                // 全局 ctx 上，经 is_global_scope 门禁不走全局对象写。
+                if ctx.is_global_scope && var_target == 0 && ctx.global_tier_names.contains(&name) {
+                    self.emit_tier_global_write(&name, var_reg, ctx);
+                }
+            }
+        }
         // 脚本顶层（非块内）函数声明：同步写全局对象，使 globalThis 可反射函数名。
-        // 块内函数声明是块级绑定，不得落全局对象（作用域隔离，块外不可见）。
+        // 块内声明不走本臂（其全局可见性只经上方外层 var 写回面建立）。
         // 严格 eval 代码函数声明绑定 eval 自身 lexical 环境、不落全局对象：抑制 A
         // 侧写（局部绑定读面未暴露），同时避免不可写全局内置在 0x98 上误抛 strict。
         if ctx.is_global_scope && ctx.scopes.symbols.scopes.len() == 1 && !(ctx.is_eval_script && ctx.is_strict) {

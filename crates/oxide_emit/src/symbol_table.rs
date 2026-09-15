@@ -70,7 +70,7 @@ impl SymbolTable {
         }
     }
 
-    fn find_var_target_scope(&self) -> usize {
+    pub(crate) fn find_var_target_scope(&self) -> usize {
         for (i, scope) in self.scopes.iter().enumerate().rev() {
             if scope.kind == ScopeKind::FunctionScope {
                 return i;

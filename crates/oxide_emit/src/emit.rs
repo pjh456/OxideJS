@@ -216,6 +216,13 @@ pub struct CompileCtx {
     pub(crate) current_upvalue_captures: Vec<UpvalueCapture>,
     /// 本函数作用域声明的绑定名（参数 + 变量/函数声明，AST 收集，emit 前确定）。
     pub(crate) own_bindings: HashSet<String>,
+    /// 本函数形参名集（含解构形参叶子与 rest，编译入口收集）：块级函数名与
+    /// 形参同名时不建外层绑定、不求值写回（规范 paramNames 守卫面）。子函数
+    /// ctx 为新建，不继承。
+    pub(crate) param_names: HashSet<String>,
+    /// 块级函数名 web-compat 外层绑定抑制集（形参 ∪ 函数作用域树内词法声明名）：
+    /// 抑制集内名字退化为纯块作用域。预声明期定稿，实例化与声明点写回两侧同查。
+    pub(crate) block_fn_suppressed: HashSet<String>,
     /// 本函数被嵌套函数捕获的绑定名 → cell_idx（名字排序分配，稳定跨 run）。
     /// 捕获判断（MAKE_CELL / CELL_GET / CELL_SET）与子函数 upvalue cell_idx 统一查此映射，
     /// 消除符号表时序依赖与 cell 索引错位。
@@ -362,6 +369,8 @@ impl CompileCtx {
             class_keys_reg: None,
             current_upvalue_captures: Vec::new(),
             own_bindings: HashSet::new(),
+            param_names: HashSet::new(),
+            block_fn_suppressed: HashSet::new(),
             captured_bindings: BTreeMap::new(),
             global_tier_names: HashSet::new(),
             upvalue_const_flags: HashSet::new(),
@@ -1147,6 +1156,16 @@ impl Emitter {
         // 类元素方法/构造器恒 strict（ClassBody 是严格模式代码）。
         ctx.is_strict = own_strict || matches!(body_context, FunctionBodyContext::ClassElement) || parent_ctx.is_strict;
 
+        // 形参名集（含解构叶子与 rest）：块级函数名同名的 web-compat 守卫查此集。
+        let mut param_names = HashSet::new();
+        for spec in param_specs {
+            param_names.insert(spec.register_name().to_string());
+            if let ParamSpec::Pattern { pattern, .. } = spec {
+                self.collect_binding_pattern_names(pattern, &mut param_names);
+            }
+        }
+        ctx.param_names = param_names;
+
         // length = 第一个带默认值形参之前的形参数（解构默认与标识符默认同规则）；
         // rest 参数不计入 length（以 0 结尾即止）。
         ctx.function_length = param_specs
@@ -1252,6 +1271,19 @@ impl Emitter {
         // 使声明点前读取可编译为运行时 ReferenceError。函数体 lexical 声明是
         // 局部绑定，不做受限全局名检查；重复声明错在 emit 期报。
         let _ = self.predeclare_lexical_declarations(body_stmts, &mut ctx, false);
+
+        // 块级函数名 web-compat 外层 var 绑定（sloppy）：块内函数声明名在实例化
+        // 期于函数作用域建外层 var 绑定——无同名绑定则新建 var 槽；名在抑制集
+        // （形参/词法声明同名，该形退化为纯块作用域）则不建。求值期声明点把
+        // 函数对象写回此绑定（见函数声明 emit）。
+        if !ctx.is_strict {
+            ctx.block_fn_suppressed = self.collect_block_fn_suppressed_names(body_stmts, &ctx.param_names);
+            for name in self.collect_block_function_names(body_stmts) {
+                if !ctx.block_fn_suppressed.contains(&name) {
+                    self.predeclare_var_name(&name, &mut ctx);
+                }
+            }
+        }
 
         // 生成器：body 起点标记——调用时参数初始化（emit_params_prologue）结束后挂起于此，
         // 参数副作用/异常在 `g()` 调用时刻生效，首次 next() 从这继续执行 body。
@@ -1801,6 +1833,20 @@ impl Emitter {
         let global_lexical = !ctx.is_eval_script;
         self.predeclare_lexical_declarations(&program.body, &mut ctx, global_lexical)?;
 
+        // 顶层块级函数名 web-compat 外层绑定（sloppy、非 eval）：实例化 var 绑定
+        // （新建 var 槽；顶层 builtin 名不可声明不建）、并入顶层 var 名集（裸读/
+        // 写路由全局对象属性）、GDI 序言建属性（define-if-absent，既有属性零动作）。
+        let mut block_fn_names: Vec<String> = Vec::new();
+        if !ctx.is_strict && !ctx.is_eval_script {
+            ctx.block_fn_suppressed = self.collect_block_fn_suppressed_names(&program.body, &ctx.param_names);
+            block_fn_names = self.collect_block_function_names(&program.body);
+            for name in &block_fn_names {
+                if !ctx.block_fn_suppressed.contains(name) && !CompileCtx::is_known_builtin(name) {
+                    self.predeclare_var_name(name, &mut ctx);
+                }
+            }
+        }
+
         // 闭包捕获分析（AST 级，emit 前确定）
         ctx.own_bindings = self.collect_own_binding_names(&[], &program.body);
         // 顶层已声明名（A 侧单一真值）：裸读走全局对象属性、裸写走描述符感知
@@ -1811,6 +1857,12 @@ impl Emitter {
         let var_names = self.collect_var_binding_names(&program.body);
         let mut tier_names = var_names.clone();
         tier_names.extend(self.collect_top_level_function_names(&program.body));
+        // 块级函数泄漏名并入：求值期写回与头写同走全局对象属性（A 侧单一真值）。
+        for name in &block_fn_names {
+            if !ctx.block_fn_suppressed.contains(name) && !CompileCtx::is_known_builtin(name) {
+                tier_names.insert(name.clone());
+            }
+        }
         ctx.global_tier_names = tier_names;
         ctx.captured_bindings = self.collect_captured_bindings(&program.body, &[], &ctx.own_bindings);
         ctx.captured_bindings.retain(|n, _| !ctx.global_tier_names.contains(n));
@@ -1846,8 +1898,15 @@ impl Emitter {
         // 新建，可写/不可写/可配置既有属性（含值）一律保留。builtin 名的全局属性
         // 运行期预存（session 绑定）：缺失分支写入值取 builtin 镜像槽（run 起点
         // 预载全局属性值），既有属性零动作，值幂等保留。
-        // 序言名集 var-only，不随 tier 集扩宽。
-        let gdi_var_names = self.collect_var_binding_names(&program.body);
+        // 序言名集 = 顶层 var 名 ∪ 顶层块级函数泄漏名（web-compat 外层绑定同样
+        // 在求值前实例化，同走 define-if-absent）。
+        let mut gdi_var_names = self.collect_var_binding_names(&program.body);
+        gdi_var_names.extend(
+            block_fn_names
+                .iter()
+                .filter(|n| !ctx.block_fn_suppressed.contains(*n) && !CompileCtx::is_known_builtin(n))
+                .cloned(),
+        );
         if !gdi_var_names.is_empty() {
             let undef_reg = self.emit_undefined(&mut ctx);
             for name in &gdi_var_names {
