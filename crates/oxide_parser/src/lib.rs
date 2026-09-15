@@ -2,6 +2,7 @@
 
 mod error;
 mod parser_log;
+mod redeclaration_filter;
 
 /// 解析错误：消息 + 源文件字节区间（起始，结束）。
 pub use error::OxideError;
@@ -46,7 +47,13 @@ fn parse_with_source_type<'a>(
         .with_check_syntax_error(true)
         .build(&ret.program);
     if !semantic_ret.errors.is_empty() {
-        return Err(semantic_ret.errors.into_iter().map(OxideError::from).collect());
+        // 重名诊断先经 AST 复核剔除跨语句列合法合并的误报（须在归一化前，
+        // 归一化只留首标签会丢失复核所需的新声明 span）；复核后无剩余
+        // 错误时按解析成功落回。
+        let filtered = redeclaration_filter::filter_semantic_diagnostics(semantic_ret.errors, &ret.program);
+        if !filtered.is_empty() {
+            return Err(filtered.into_iter().map(OxideError::from).collect());
+        }
     }
 
     Ok(ret.program)
