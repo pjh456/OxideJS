@@ -26,16 +26,26 @@ impl Emitter {
         } else {
             return Err("FunctionDeclaration without name".into());
         };
-        // 块级函数声明：闭包已在块入口物化写入预声明块槽（块绑定块入口即持有
-        // 函数对象，声明语句前读命中它），声明点不重编闭包，只处理下方外层
-        // var 写回。
+        // 块级函数声明按入口物化状态三分（块槽预声明 Let 绑定）：
+        // - 本声明已入口物化（块直接子/标签直接子体）：块槽持有本声明闭包，
+        //   复用槽位保闭包同一，不重编；
+        // - 同名直接子已入口物化（支臂与直接子共享块槽）：支臂声明只更新外层
+        //   var 绑定、块绑定不动（V8 双绑定面，引擎以块槽 + 外层 var 两槽模拟），
+        //   闭包落 fresh 寄存器写回外层 var；
+        // - 其余（支臂首次求值）：执行期自物化闭包写入块槽。
+        // 非块路径（顶层/函数作用域声明点）恒自物化。
         let binding_scope_kind = ctx
             .scopes
             .symbols
             .lookup_any_binding(&name)
             .map(|(_, scope_idx)| ctx.scopes.symbols.scopes[scope_idx].kind);
+        let node = fd as *const _ as *const ();
         let var_reg = if binding_scope_kind == Some(ScopeKind::BlockScope) {
-            ctx.lookup(&name)?
+            match ctx.block_fn_entry_mats.last().and_then(|m| m.get(&name)) {
+                Some(&m) if m == node => ctx.lookup(&name)?,
+                Some(_) => self.materialize_function_declaration_var_only(fd, &name, ctx)?,
+                None => self.materialize_function_declaration(fd, &name, ctx)?,
+            }
         } else {
             self.materialize_function_declaration(fd, &name, ctx)?
         };
@@ -94,6 +104,26 @@ impl Emitter {
     pub(crate) fn materialize_function_declaration(
         &self, fd: &oxide_parser::Function, name: &str, ctx: &mut CompileCtx,
     ) -> Result<u32, String> {
+        let var_reg = ctx.lookup(name)?;
+        ctx.reserve_reg(var_reg);
+        self.materialize_function_closure(fd, name, var_reg, ctx, true)?;
+        Ok(var_reg)
+    }
+
+    /// G 形支臂物化变体：闭包落 fresh 寄存器，不写块槽、不建 cell（同名
+    /// 直接子占用块槽，嵌套捕获读槽 cell 与 V8 块绑定一致）。调用点经返回
+    /// 寄存器把闭包写回外层 var 绑定。
+    pub(crate) fn materialize_function_declaration_var_only(
+        &self, fd: &oxide_parser::Function, name: &str, ctx: &mut CompileCtx,
+    ) -> Result<u32, String> {
+        let reg = ctx.alloc_reg();
+        self.materialize_function_closure(fd, name, reg, ctx, false)?;
+        Ok(reg)
+    }
+
+    fn materialize_function_closure(
+        &self, fd: &oxide_parser::Function, name: &str, reg: u32, ctx: &mut CompileCtx, write_slot: bool,
+    ) -> Result<(), String> {
         let mut param_names = Vec::new();
         for (idx, param) in fd.params.items.iter().enumerate() {
             match &param.pattern {
@@ -124,19 +154,19 @@ impl Emitter {
         };
         sub_module.function_name = Some(name.to_string());
         ctx.nested.push(sub_module);
-        let var_reg = ctx.lookup(name)?;
-        ctx.reserve_reg(var_reg);
-        ctx.inst(Inst::create_closure(Operand::Reg(var_reg), ctx.nested.len() as u16));
-        if let Some(&cell_idx) = ctx.captured_bindings.get(name) {
-            ctx.inst(Inst::new(
-                OpCode::MAKE_CELL,
-                Operand::Reg(var_reg),
-                Operand::Imm(cell_idx as u16),
-                Operand::None,
-            ));
-        } else {
-            ctx.inst(Inst::new(OpCode::STORE_VAR, Operand::Reg(var_reg), Operand::Reg(var_reg), Operand::None));
+        ctx.inst(Inst::create_closure(Operand::Reg(reg), ctx.nested.len() as u16));
+        if write_slot {
+            if let Some(&cell_idx) = ctx.captured_bindings.get(name) {
+                ctx.inst(Inst::new(
+                    OpCode::MAKE_CELL,
+                    Operand::Reg(reg),
+                    Operand::Imm(cell_idx as u16),
+                    Operand::None,
+                ));
+            } else {
+                ctx.inst(Inst::new(OpCode::STORE_VAR, Operand::Reg(reg), Operand::Reg(reg), Operand::None));
+            }
         }
-        Ok(var_reg)
+        Ok(())
     }
 }

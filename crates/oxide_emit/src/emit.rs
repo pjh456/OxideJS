@@ -223,6 +223,13 @@ pub struct CompileCtx {
     /// 块级函数名 web-compat 外层绑定抑制集（形参 ∪ 函数作用域树内词法声明名）：
     /// 抑制集内名字退化为纯块作用域。预声明期定稿，实例化与声明点写回两侧同查。
     pub(crate) block_fn_suppressed: HashSet<String>,
+    /// 块入口已物化声明登记表（按块层级压/弹）：块直接子与标签直接子体
+    /// 的函数声明在块入口物化闭包后，按 名 → 声明节点 arena 指针 登记。
+    /// 声明点据此三分：同节点命中（本声明已入口物化）→ 复用块槽保闭包
+    /// 同一；仅同名命中（支臂声明与直接子同名共享块槽）→ 闭包落 fresh
+    /// 寄存器只写回外层 var、块槽不动；均未命中 → 执行期自物化入块槽。
+    /// 节点指针解析产物 arena 地址，同一编译单元内稳定。
+    pub(crate) block_fn_entry_mats: Vec<HashMap<String, *const ()>>,
     /// 本函数被嵌套函数捕获的绑定名 → cell_idx（名字排序分配，稳定跨 run）。
     /// 捕获判断（MAKE_CELL / CELL_GET / CELL_SET）与子函数 upvalue cell_idx 统一查此映射，
     /// 消除符号表时序依赖与 cell 索引错位。
@@ -371,6 +378,7 @@ impl CompileCtx {
             own_bindings: HashSet::new(),
             param_names: HashSet::new(),
             block_fn_suppressed: HashSet::new(),
+            block_fn_entry_mats: Vec::new(),
             captured_bindings: BTreeMap::new(),
             global_tier_names: HashSet::new(),
             upvalue_const_flags: HashSet::new(),
