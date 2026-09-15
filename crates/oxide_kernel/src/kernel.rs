@@ -526,6 +526,18 @@ impl BuiltinId {
     ];
 }
 
+// 顺序钉：ALL 与判别值 0..NUM_BUILTINS 严格同序（无换序、无重复、无遗漏）；
+// 错位即快照/脏检查按下标误读，钉成编译失败。
+const _: () = {
+    let mut i = 0;
+    while i < BuiltinId::ALL.len() {
+        if BuiltinId::ALL[i] as usize != i {
+            panic!("BuiltinId::ALL 顺序与判别值不一致");
+        }
+        i += 1;
+    }
+};
+
 /// 内置对象世代（generation）快照：记录构造时各对象及其 stub 的世代号与数量。
 ///
 /// 供 [`KernelSession::dirty_since_snapshot`] 对比，判断哪些 builtin 家族在运行期被污染。
