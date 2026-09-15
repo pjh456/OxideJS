@@ -32,11 +32,10 @@ fn block_function_decl_call_after_decl() {
 }
 
 #[test]
-fn block_function_decl_hoisted_call_before_decl_is_not_callable() {
-    // 阶段 1：声明点之前调用读到未初始化槽 undefined，报 not callable
-    // （比修复前的编译错好；完整 hoisting 属后续阶段）。
-    let err = eval("{ g(); function g(){return 1;} }").unwrap_err();
-    assert!(err.contains("not callable") || err.contains("not an object"), "got: {err}");
+fn block_function_decl_call_before_decl() {
+    // 声明点之前调用：块绑定块入口即持有函数对象，提前调用正常返回。
+    let result = eval("{ g(); function g(){return 1;} }").unwrap();
+    assert_eq!(result.as_int(), 1);
 }
 
 #[test]
@@ -58,8 +57,8 @@ fn block_function_decl_capture_escape() {
 #[test]
 fn block_function_decl_leaks_outer_in_sloppy_script() {
     // sloppy 块级函数声明名泄漏外层（web-compat 外层 var 绑定 + 求值写回）：
-    // 块后读见函数对象而非未声明名。块内声明前读仍为 undefined（块入口初始化
-    // 未建，见 hoisted_call 测试），块内声明后读为函数。
+    // 块后读见函数对象而非未声明名；块内声明前读同样为函数对象（块入口
+    // 初始化），块内声明后读为函数。
     let result = eval("{ { function g(){return 2;} } } typeof g === 'function'").unwrap();
     assert!(result.as_bool(), "sloppy 块函数名应泄漏外层，got {:?}", result);
 }
