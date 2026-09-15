@@ -11,6 +11,7 @@ mod compile_ctx;
 pub mod emit;
 pub mod emit_ctx;
 mod emit_log;
+mod errors;
 pub mod expr;
 pub mod module;
 pub mod prepass;
