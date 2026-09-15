@@ -126,10 +126,10 @@ impl Emitter {
     /// 删除并返回删除结果；非引用操作数返回 true。
     ///
     /// # 步骤
-    /// 1. 标识符：with 体动态解析、可删全局内置镜像槽先行；未声明名（含隐式
-    ///    全局槽，引用不可解析或全局属性可配置）返回 true；其余已声明绑定
-    ///    （var/let/函数名/参数，非可配置或属性引用）返回 false。严格模式的
-    ///    delete 标识符是早期错误，由语义分析阶段拦截，不在此出现。
+    /// 1. 标识符：with 体动态解析、可删全局内置镜像槽先行；其余按 DeleteBinding
+    ///    三分类（见标识符臂注释）——局部绑定与脚本自身顶层已声明名发 false
+    ///    常数，未声明名/隐式全局槽/eval 程序自身顶层已声明名发全局对象运行期
+    ///    探针。严格模式的 delete 标识符是早期错误，由语义分析阶段拦截，不在此出现。
     /// 2. 静态/计算成员与链式成员：从对象真删属性，结果为删除返回值。
     /// 3. 其余形态（字面量/调用/new/this/一元形/序列/嵌套 delete 等）：先求值
     ///    操作数（副作用与操作数求值期错误不被吞），再发常量 true。
@@ -187,17 +187,53 @@ impl Emitter {
                     ctx.inst(Inst::delete_global_prop_c(Operand::Reg(reg), Operand::Reg(slot_reg), key_idx));
                     return Ok(reg);
                 }
-                // 已声明绑定（upvalue/捕获 cell/局部 var/let/函数名/参数/顶层 var）
-                // 是非属性引用或全局对象上不可配置绑定，返回 false；未声明名
-                // （引用不可解析）与隐式全局槽（全局属性可配置）返回 true。
-                // 严格模式的 delete 标识符由语义分析提前拦截为早期错误。
-                let declared = ctx.captured_bindings.contains_key(name)
-                    || ctx.current_upvalue_captures.iter().any(|u| u.name == name)
-                    || match ctx.lookup(name) {
-                        Err(_) => false,
-                        Ok(reg) => !ctx.is_implicit_global_reg(reg),
-                    };
-                let idx = ctx.add_constant(Constant::Boolean(!declared));
+                // DeleteBinding 三分类（13.5.1.2 步5 绑定引用走 base.DeleteBinding）：
+                // - 局部绑定（捕获 cell/upvalue/lookup 命中函数或块作用域槽）与
+                //   非 eval 脚本自身顶层已声明名（脚本 var/函数名 c:false）→ false 常数；
+                // - 其余——未声明名（引用不可解析）、隐式全局槽、eval 程序自身顶层
+                //   已声明名（c:true）——发全局对象运行期探针（与 Reflect.deleteProperty
+                //   同源 DeleteBinding 语义：缺失 → true；不可配置 → false 且保留；
+                //   可配置 → 真删且 true）。三类全局属性的 c 位已由各自写点物化，
+                //   探针取值即规范值；独立编译的 eval 程序见不到调用方域变量，静态
+                //   "当前程序内是否声明"粗于规范动态判定，故不可解析面一律运行期定值。
+                //   严格模式的 delete 标识符由语义分析提前拦截为早期错误，本臂在
+                //   strict 代码不可达。
+                let local = ctx.captured_bindings.contains_key(name)
+                    || ctx.current_upvalue_captures.iter().any(|u| u.name == name);
+                let probe = if local {
+                    false
+                } else {
+                    match ctx.scopes.symbols.lookup_any_binding(name) {
+                        // 未声明名（引用不可解析）：运行期按全局属性定值。
+                        None => true,
+                        Some((binding, scope_idx)) => {
+                            if scope_idx == 0 {
+                                // 全局作用域：隐式全局槽（未声明名读写登记，属性
+                                // c:true）与 eval 程序自身顶层名（c:true）可删；
+                                // 非 eval 脚本自身顶层 var/函数名（c:false）保留 false。
+                                ctx.is_implicit_global_reg(binding.reg) || ctx.is_eval_script
+                            } else {
+                                // 函数/块作用域局部绑定：非属性引用，恒 false。
+                                false
+                            }
+                        }
+                    }
+                };
+                if probe {
+                    let key_idx = ctx.add_constant(Constant::String(name.to_string()));
+                    let reg = ctx.alloc_reg();
+                    ctx.inst(Inst::delete_global_prop_c(Operand::Reg(reg), Operand::None, key_idx));
+                    // 隐式全局槽被真删后，同程序后续裸读该名须走全局对象属性
+                    // （A 侧单一真值）：缺失属性读抛 ReferenceError，delete 的
+                    // 真删效应在读侧可见。
+                    if let Some((binding, _)) = ctx.scopes.symbols.lookup_any_binding(name) {
+                        if ctx.is_implicit_global_reg(binding.reg) {
+                            ctx.implicit_global_reads.insert(binding.reg);
+                        }
+                    }
+                    return Ok(reg);
+                }
+                let idx = ctx.add_constant(Constant::Boolean(false));
                 let reg = ctx.alloc_reg();
                 ctx.inst(Inst::load_const(Operand::Reg(reg), idx));
                 Ok(reg)
@@ -309,8 +345,12 @@ impl Emitter {
                 ctx.current_upvalue_captures.iter().any(|u| u.name == name) || ctx.captured_bindings.contains_key(name);
             // 顶层已声明 var：typeof 读全局对象属性（A 侧单一真值），缺失 → "undefined"
             // （非抛，IsUnresolvableReference 语义）。未声明名同走此路（lookup 未命中）。
+            // 隐式全局槽（未声明名读写登记）同走属性路：delete 真删后缺失 → "undefined"
+            // 而非经镜像槽读旧值或抛 ReferenceError（typeof 对 unresolvable 引用不抛）。
+            let binding = ctx.scopes.symbols.lookup_any_binding(name);
+            let implicit_global = binding.is_some_and(|(b, _)| ctx.is_implicit_global_reg(b.reg));
             let is_tier = self.is_global_tier_name(ctx, name);
-            if !in_with_dynamic && !captured && (is_tier || ctx.scopes.symbols.lookup_any_binding(name).is_none()) {
+            if !in_with_dynamic && !captured && (is_tier || binding.is_none() || implicit_global) {
                 let key_idx = ctx.add_constant(Constant::String(name.to_string()));
                 let r = ctx.alloc_reg();
                 ctx.inst(Inst::new(

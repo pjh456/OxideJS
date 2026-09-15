@@ -1,0 +1,108 @@
+//! delete 标识符 DeleteBinding 面：eval 程序独立编译见不到调用方域变量，静态
+//! "当前程序内是否声明"粗于规范动态判定，未声明名/隐式全局槽/eval 程序自身
+//! 顶层已声明名一律发全局对象运行期探针（缺失 → true；不可配置 → false 且保留；
+//! 可配置 → 真删且 true）。局部绑定与非 eval 脚本自身顶层已声明名保留 false
+//! 常数。覆盖：direct eval 对调用方脚本 var、eval 自身 var 真删、跨 eval 真删、
+//! 函数内隐式全局真删、读侧真删可见（删后裸读抛 ReferenceError）、typeof 对
+//! 删后缺失名不抛、删后重写同步、绿基线（脚本 var/顶层函数名/未声明缺失/builtin
+//! 槽优先级/strict 调用方 indirect eval）。
+
+use std::sync::Arc;
+
+use oxide_compiler::compiler::Compiler;
+use oxide_parser::Allocator;
+use oxide_vm::vm::Vm;
+
+fn eval_truthy(source: &str) {
+    let allocator = Allocator::default();
+    let program = oxide_parser::parse(&allocator, source).expect("parse");
+    let module = Compiler::new().compile(&program).expect("compile");
+    let mut vm = Vm::new();
+    let result = vm.run(&Arc::new(module)).expect("run");
+    assert!(result.is_bool() && result.as_bool(), "expected true, got: {result:?}\nsource: {source}");
+}
+
+// ── direct eval 对调用方脚本 var（c:false）：false 且属性保留 ──
+#[test]
+fn eval_delete_caller_script_var_returns_false_and_kept() {
+    eval_truthy("var x = 1; var d = eval('delete x'); d === false && x === 1 && globalThis.x === 1");
+}
+
+// ── eval 程序自身顶层 var（c:true）：true 且真删 ──
+#[test]
+fn eval_delete_own_var_returns_true_and_removed() {
+    eval_truthy("eval('var w = 5; delete w') === true && typeof w === 'undefined'");
+}
+
+// ── 跨 eval：前一 eval 建的 var（c:true），后一 eval 真删 ──
+#[test]
+fn eval_delete_var_from_previous_eval_returns_true_and_removed() {
+    eval_truthy("eval('var y2 = 5'); var d = eval('delete y2'); d === true && typeof y2 === 'undefined'");
+}
+
+// ── 函数内隐式全局（未声明写登记，c:true）：true 且真删 ──
+#[test]
+fn fn_scope_delete_implicit_global_returns_true_and_removed() {
+    eval_truthy(
+        "q = 2; (function() { var d = delete q; return d === true && (function() { \
+         try { void q; return false; } catch (e) { return e instanceof ReferenceError; } \
+         })(); })() === true",
+    );
+}
+
+// ── 未声明缺失名：探针缺失臂 true（非引用目标语义保留） ──
+#[test]
+fn delete_undeclaring_missing_name_returns_true() {
+    eval_truthy("delete nomatch_xyz_probe === true");
+}
+
+// ── 绿基线：脚本自身顶层 var（c:false）false 常数，值保留 ──
+#[test]
+fn delete_script_top_var_returns_false_and_kept() {
+    eval_truthy("var y = 2; delete y === false && y === 2");
+}
+
+// ── 绿基线：函数作用域读脚本顶层 var，作用域链判定局部性，false ──
+#[test]
+fn delete_top_var_from_function_scope_returns_false() {
+    eval_truthy("var p = 1; (function() { return delete p; })() === false && p === 1");
+}
+
+// ── 绿基线：strict 调用方 + indirect eval（eval 代码不继承调用方严格性） ──
+#[test]
+fn strict_caller_indirect_eval_delete_undeclared_returns_true() {
+    eval_truthy("(function() { \"use strict\"; return (0, eval)(\"delete zqq_probe\"); })() === true");
+}
+
+// ── 可删全局内置镜像槽臂优先：探针臂不吞 builtin 槽（真删 + 清槽） ──
+#[test]
+fn deletable_builtin_slot_arm_precedes_probe() {
+    eval_truthy("var m = Math; delete Math === true && globalThis.Math === undefined");
+}
+
+// ── 读侧真删可见：删后同程序裸读抛 ReferenceError（A 侧单一真值） ──
+#[test]
+fn bare_read_after_real_delete_throws_reference_error() {
+    eval_truthy(
+        "x = 1; delete x === true && (function() { try { void x; return false; } \
+         catch (e) { return e instanceof ReferenceError; } })() === true",
+    );
+}
+
+// ── typeof 对删后缺失名不抛（IsUnresolvableReference → "undefined"） ──
+#[test]
+fn typeof_after_real_delete_returns_undefined_not_throw() {
+    eval_truthy("x = 1; delete x; typeof x === 'undefined'");
+}
+
+// ── 删后重写：寄存器与全局对象属性重新同步 ──
+#[test]
+fn reassign_after_real_delete_resyncs_both_sides() {
+    eval_truthy("x = 1; delete x; x = 5; x === 5 && globalThis.x === 5");
+}
+
+// ── 删前读值不受影响（读集登记仅自探针起） ──
+#[test]
+fn read_before_delete_unchanged() {
+    eval_truthy("x = 1; var r = x; delete x; r === 1");
+}
