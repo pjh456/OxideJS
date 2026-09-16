@@ -867,3 +867,173 @@ impl Vm {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use oxide_runtime_api::NativeResult;
+    use oxide_types::object::NativeFnPtr;
+
+    fn native_return_7(_vm: &mut Vm, _args: &[u8]) -> NativeResult {
+        NativeResult::Ok(JsValue::int(7))
+    }
+
+    fn native_get_marker(vm: &mut Vm, args: &[u8]) -> NativeResult {
+        let this_val = vm.reg(args[0]);
+        if !this_val.is_object() {
+            return NativeResult::Ok(JsValue::undefined());
+        }
+        let marker_si = vm.kernel_core.perm_interner().intern("marker").0;
+        let obj = unsafe { &*this_val.as_js_object_ptr() };
+        NativeResult::Ok(vm.resolve_property(obj, marker_si).unwrap_or(JsValue::undefined()))
+    }
+
+    fn native_set_marker(vm: &mut Vm, args: &[u8]) -> NativeResult {
+        let this_val = vm.reg(args[0]);
+        let value = vm.reg(args[1]);
+        if !this_val.is_object() {
+            return NativeResult::Ok(JsValue::undefined());
+        }
+        let marker_si = vm.kernel_core.perm_interner().intern("marker").0;
+        let obj = unsafe { &mut *this_val.as_js_object_ptr() };
+        vm.set_or_create_prop_value(obj, marker_si, value);
+        NativeResult::Ok(JsValue::undefined())
+    }
+
+    fn native_function(vm: &mut Vm, f: crate::native::NativeFn) -> JsValue {
+        let proto = vm.session.builtin_world().function_proto.as_ptr() as *mut JsObject;
+        let mut obj = JsObject::new_empty(oxide_kernel::shape_forge::EMPTY_SHAPE_ID, JsValue::from_js_object(proto));
+        obj.set_function(true);
+        // SAFETY: f 是 NativeFn 函数项，可作为 NativeFnPtr 存储。
+        obj.set_native_fn(Some(unsafe { NativeFnPtr::from_raw(f as *const ()) }));
+        JsValue::object(vm.alloc_object(obj) as *mut u8)
+    }
+
+    fn plain_object(vm: &mut Vm) -> JsValue {
+        let proto = vm.session.builtin_world().object_proto.as_ptr() as *mut JsObject;
+        let obj = JsObject::new_empty(oxide_kernel::shape_forge::EMPTY_SHAPE_ID, JsValue::from_js_object(proto));
+        JsValue::object(vm.alloc_object(obj) as *mut u8)
+    }
+
+    fn add_accessor(vm: &mut Vm, obj_val: JsValue, name: &str, get: JsValue, set: JsValue) {
+        let si = vm.kernel_core.perm_interner().intern(name).0;
+        let obj = unsafe { &mut *obj_val.as_js_object_ptr() };
+        let shape_id = vm.kernel_core.shape_forge().make_shape(obj.shape_id(), si);
+        obj.set_shape_id(shape_id);
+        let pos = obj.push_prop(JsValue::undefined());
+        obj.set_accessor_meta(pos, get, set, PropAttributes::DEFAULT_DATA);
+        obj.bump_generation();
+    }
+
+    fn set_data(vm: &mut Vm, obj_val: JsValue, name: &str, val: JsValue) {
+        let si = vm.kernel_core.perm_interner().intern(name).0;
+        let obj = unsafe { &mut *obj_val.as_js_object_ptr() };
+        vm.set_or_create_prop_value(obj, si, val);
+    }
+
+    #[test]
+    fn ordinary_get_calls_own_native_getter() {
+        let mut vm = Vm::new();
+        let obj_val = plain_object(&mut vm);
+        let getter = native_function(&mut vm, native_return_7);
+        add_accessor(&mut vm, obj_val, "x", getter, JsValue::undefined());
+
+        let x_si = vm.kernel_core.perm_interner().intern("x").0;
+        let obj = unsafe { &*obj_val.as_js_object_ptr() };
+        let value = vm.ordinary_get(obj, x_si, obj_val).expect("getter");
+        assert_eq!(value, JsValue::int(7));
+    }
+
+    #[test]
+    fn ordinary_set_calls_own_native_setter() {
+        let mut vm = Vm::new();
+        let obj_val = plain_object(&mut vm);
+        let setter = native_function(&mut vm, native_set_marker);
+        add_accessor(&mut vm, obj_val, "x", JsValue::undefined(), setter);
+
+        let x_si = vm.kernel_core.perm_interner().intern("x").0;
+        let obj = unsafe { &mut *obj_val.as_js_object_ptr() };
+        vm.ordinary_set(obj, x_si, JsValue::int(9), obj_val, true).expect("setter");
+
+        let marker_si = vm.kernel_core.perm_interner().intern("marker").0;
+        let obj = unsafe { &*obj_val.as_js_object_ptr() };
+        assert_eq!(vm.resolve_property(obj, marker_si), Some(JsValue::int(9)));
+    }
+
+    #[test]
+    fn inherited_getter_uses_original_receiver() {
+        let mut vm = Vm::new();
+        let proto_val = plain_object(&mut vm);
+        let child_val = plain_object(&mut vm);
+        let getter = native_function(&mut vm, native_get_marker);
+        add_accessor(&mut vm, proto_val, "x", getter, JsValue::undefined());
+        set_data(&mut vm, child_val, "marker", JsValue::int(42));
+        unsafe {
+            (*child_val.as_js_object_ptr()).set_proto(proto_val).expect("proto");
+        }
+
+        let x_si = vm.kernel_core.perm_interner().intern("x").0;
+        let child = unsafe { &*child_val.as_js_object_ptr() };
+        let value = vm.ordinary_get(child, x_si, child_val).expect("getter");
+        assert_eq!(value, JsValue::int(42));
+    }
+
+    #[test]
+    fn inherited_setter_uses_original_receiver() {
+        let mut vm = Vm::new();
+        let proto_val = plain_object(&mut vm);
+        let child_val = plain_object(&mut vm);
+        let setter = native_function(&mut vm, native_set_marker);
+        add_accessor(&mut vm, proto_val, "x", JsValue::undefined(), setter);
+        unsafe {
+            (*child_val.as_js_object_ptr()).set_proto(proto_val).expect("proto");
+        }
+
+        let x_si = vm.kernel_core.perm_interner().intern("x").0;
+        let child = unsafe { &mut *child_val.as_js_object_ptr() };
+        vm.ordinary_set(child, x_si, JsValue::int(12), child_val, true).expect("setter");
+
+        let marker_si = vm.kernel_core.perm_interner().intern("marker").0;
+        let child = unsafe { &*child_val.as_js_object_ptr() };
+        let proto = unsafe { &*proto_val.as_js_object_ptr() };
+        assert_eq!(vm.resolve_property(child, marker_si), Some(JsValue::int(12)));
+        assert_eq!(vm.resolve_property(proto, marker_si), None);
+    }
+
+    #[test]
+    fn deep_inherited_setter_uses_original_receiver() {
+        let mut vm = Vm::new();
+        let grand_proto_val = plain_object(&mut vm);
+        let proto_val = plain_object(&mut vm);
+        let child_val = plain_object(&mut vm);
+        let setter = native_function(&mut vm, native_set_marker);
+        add_accessor(&mut vm, grand_proto_val, "x", JsValue::undefined(), setter);
+        unsafe {
+            (*proto_val.as_js_object_ptr()).set_proto(grand_proto_val).expect("proto");
+            (*child_val.as_js_object_ptr()).set_proto(proto_val).expect("proto");
+        }
+
+        let x_si = vm.kernel_core.perm_interner().intern("x").0;
+        let child = unsafe { &mut *child_val.as_js_object_ptr() };
+        vm.ordinary_set(child, x_si, JsValue::int(15), child_val, true).expect("setter");
+
+        let marker_si = vm.kernel_core.perm_interner().intern("marker").0;
+        let child = unsafe { &*child_val.as_js_object_ptr() };
+        assert_eq!(vm.resolve_property(child, marker_si), Some(JsValue::int(15)));
+    }
+
+    #[test]
+    fn ordinary_data_property_still_reads_and_writes_without_meta() {
+        let mut vm = Vm::new();
+        let obj_val = plain_object(&mut vm);
+        set_data(&mut vm, obj_val, "x", JsValue::int(1));
+
+        let x_si = vm.kernel_core.perm_interner().intern("x").0;
+        let obj = unsafe { &mut *obj_val.as_js_object_ptr() };
+        assert!(!obj.has_prop_meta());
+        assert_eq!(vm.ordinary_get(obj, x_si, obj_val).expect("get"), JsValue::int(1));
+        vm.ordinary_set(obj, x_si, JsValue::int(2), obj_val, true).expect("set");
+        assert_eq!(vm.ordinary_get(obj, x_si, obj_val).expect("get"), JsValue::int(2));
+    }
+}

@@ -1698,4 +1698,85 @@ mod tests {
         let te = run_source(&mut vm, "try { Object(1n) - 1 } catch(e) { e.name }");
         assert_eq!(vm.lookup_str(te).as_deref(), Some("TypeError"));
     }
+
+    #[test]
+    fn reset_clears_runtime_state_like_rerun() {
+        let mut vm = Vm::new();
+        vm.regs[1] = JsValue::int(7);
+        vm.pc = 3;
+        vm.frames.push(crate::vm::CallFrame {
+            return_addr: 1,
+            function_name: 0,
+            caller_reg_limit: 2,
+            caller_active_reg_limit: 2,
+            saved_reg_offset: 0,
+            spill_offset: 0,
+            arguments_base: 0,
+            arguments_count: 0,
+            saved_this: JsValue::undefined(),
+            saved_new_target: JsValue::undefined(),
+            callee: JsValue::undefined(),
+            construct_result_reg: None,
+            strict: false,
+            constructed_this: None,
+            is_derived_constructor: false,
+            super_called: false,
+            continuation: crate::vm::FrameContinuation::None,
+        });
+        vm.save_stack.push(JsValue::undefined());
+        vm.iters
+            .for_in_iters
+            .push(std::ptr::dangling_mut::<crate::vm::ForInIter<'static>>());
+        vm.iters.for_of_iters.push(crate::vm_state::ForOfEntry {
+            iterator: JsValue::undefined(),
+            last_result: JsValue::undefined(),
+            is_async: false,
+        });
+        vm.saved_bytecode_stack.push(Arc::from(vec![oxide_bytecode::opcode::encode(
+            oxide_bytecode::opcode::OpCode::HALT,
+            0,
+            0,
+            0,
+        )]));
+        vm.saved_immutables_stack
+            .push(std::ptr::slice_from_raw_parts(std::ptr::null(), 0));
+        vm.try_stack.push(crate::vm::TryHandler {
+            catch_pc: Some(1),
+            finally_pc: None,
+            finally_active: false,
+            frame_depth: 0,
+            for_of_depth: 0,
+        });
+        vm.exception_value = Some(JsValue::int(2));
+        vm.pending_exception = Some(JsValue::int(3));
+        vm.pending_error_kind = Some("TypeError");
+
+        vm.reset();
+
+        assert_eq!(vm.pc, 0);
+        assert!(vm.frames.is_empty());
+        assert!(vm.save_stack.is_empty());
+        assert!(vm.iters.for_in_iters.is_empty());
+        assert!(vm.iters.for_of_iters.is_empty());
+        assert!(vm.saved_bytecode_stack.is_empty());
+        assert!(vm.saved_immutables_stack.is_empty());
+        assert!(vm.try_stack.is_empty());
+        assert!(vm.exception_value.is_none());
+        assert!(vm.pending_exception.is_none());
+        assert!(vm.pending_error_kind.is_none());
+        assert!(vm.bytecode.is_empty());
+        assert!(vm.immutables().is_empty());
+    }
+
+    #[test]
+    fn full_reset_clears_symbol_state() {
+        let mut vm = Vm::new();
+        vm.symbols.intern(Some("shared".to_string()));
+
+        vm.full_reset();
+
+        assert_eq!(vm.symbols.symbol_counter, 0);
+        assert!(vm.symbols.symbol_descriptions.is_empty());
+        assert!(vm.symbols.symbol_registry.is_empty());
+    }
 }

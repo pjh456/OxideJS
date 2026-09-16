@@ -1118,3 +1118,79 @@ impl Vm {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use std::sync::Arc;
+
+    use oxide_bytecode::module::CompiledModule;
+    use oxide_bytecode::opcode;
+
+    use crate::vm_state::ForOfEntry;
+
+    #[test]
+    fn for_of_close_pops_iterator_stack() {
+        let module = CompiledModule {
+            bytecode: Arc::from(vec![
+                opcode::encode(opcode::OpCode::FOR_OF_CLOSE, 0, 0, 0),
+                opcode::encode(opcode::OpCode::HALT, 0, 0, 0),
+            ]),
+            n_registers: 1,
+            ..CompiledModule::new()
+        };
+        let mut vm = Vm::new();
+        vm.iters.for_of_iters.push(ForOfEntry {
+            iterator: JsValue::undefined(),
+            last_result: JsValue::undefined(),
+            is_async: false,
+        });
+
+        vm.run(&Arc::new(module))
+            .expect("FOR_OF_CLOSE should tolerate non-object sentinel");
+
+        assert!(vm.iters.for_of_iters.is_empty());
+    }
+
+    #[test]
+    fn dispatch_new_expression_param_overlap_reads_spill_first() {
+        // NEW 收敛路径同款重叠几何（实参源 regs[1..3) 与 callee 形参写入区 regs[2..4)
+        // 重叠，first < param_base）：经 NEW_EXPRESSION 入口压帧，形参与 spill 实参区
+        // （arguments 对象源）必须取原始实参值，不得先写后读串值。
+        let mut vm = Vm::new();
+        // sub_modules[1] = 构造器：2 个形参，param_base=2（与调用方实参槽 2 重叠）
+        let mut ctor_mod = CompiledModule::new();
+        ctor_mod.n_args = 2;
+        ctor_mod.param_base = 2;
+        ctor_mod.n_registers = 5;
+        ctor_mod.bytecode = Arc::from(vec![opcode::encode(opcode::OpCode::RETURN, 0, 0, 0)]);
+        vm.install_module_table_for_test(Arc::new(vec![Arc::new(CompiledModule::new()), Arc::new(ctor_mod)]));
+        vm.active_reg_limit = 8;
+        // NEW_EXPRESSION 指令：ext 低 8 位 = 实参个数 2，高 8 位 = 窗口 0（全量）
+        vm.bytecode = Arc::from(vec![opcode::encode(opcode::OpCode::NEW_EXPRESSION, 0, 0, 0), 2]);
+        vm.pc = 0;
+        // 调用方实参区 regs[1..3)：arg0=10, arg1=20；regs[2] 同时是 callee 形参槽（param_base=2）
+        vm.regs[1] = JsValue::int(10);
+        vm.regs[2] = JsValue::int(20);
+        vm.regs[5] = vm.create_function_object(1, vm.current_gen, false, false, false, false);
+
+        vm.dispatch_new_expression(0, 5, 1).expect("NEW 压帧成功");
+
+        let frame = vm.frames.last().expect("压帧后应有帧");
+        // 形参从 spill 实参区取源：regs[2]=arg0=10，regs[3]=arg1=20（不得被先写覆盖）
+        assert_eq!(vm.regs[2], JsValue::int(10), "形参 a 应为实参 arg0");
+        assert_eq!(vm.regs[3], JsValue::int(20), "形参 b 应为实参 arg1（不受先写覆盖）");
+        // spill 实参区（arguments 对象源）保持原实参值
+        let base = frame.arguments_base as usize;
+        assert_eq!(vm.spill_stack[base], JsValue::int(10), "spill 实参区 arg0");
+        assert_eq!(vm.spill_stack[base + 1], JsValue::int(20), "spill 实参区 arg1");
+        // NEW 帧契约：构造结果寄存器与 constructed_this 随帧携带
+        assert_eq!(frame.construct_result_reg, Some(0), "构造结果写回 regs[0]");
+        assert!(
+            frame.constructed_this.is_some_and(|v| v.is_object()),
+            "基类构造路径 constructed_this 应为新对象"
+        );
+        assert!(!frame.is_derived_constructor, "普通函数非 derived 构造器");
+    }
+}

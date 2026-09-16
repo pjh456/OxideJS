@@ -278,3 +278,216 @@ impl Vm {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use oxide_bytecode::module::CompiledModule;
+    use oxide_bytecode::opcode;
+    use oxide_runtime_api::VmHost;
+    use oxide_types::object::NativeFnPtr;
+
+    fn native_return_last_arg(vm: &mut Vm, args: &[u8]) -> NativeResult {
+        let reg = *args.last().expect("receiver + args");
+        NativeResult::Ok(vm.reg(reg))
+    }
+
+    fn native_return_arg_count(_vm: &mut Vm, args: &[u8]) -> NativeResult {
+        NativeResult::Ok(JsValue::int(args.len().saturating_sub(1) as i32))
+    }
+
+    fn native_return_full_arg_count(vm: &mut Vm, args: &[u8]) -> NativeResult {
+        NativeResult::Ok(JsValue::int(vm.native_arg_count(args) as i32))
+    }
+
+    fn native_return_last_full_arg(vm: &mut Vm, args: &[u8]) -> NativeResult {
+        let n = vm.native_arg_count(args);
+        NativeResult::Ok(vm.native_arg_at(args, n - 1))
+    }
+
+    fn native_nested_inline_254(vm: &mut Vm, args: &[u8]) -> NativeResult {
+        // 外层 native 回调：receiver 落 regs[253]（native 分支单存槽），内嵌执行
+        // n_registers=254 的 inline 字节码回调后，receiver 槽必须保持外层值。
+        let receiver = vm.reg(args[0]);
+        let callee = vm.reg(args[1]);
+        let callee_obj = unsafe { &*callee.as_js_object_ptr() };
+        let mut call_args = Vec::with_capacity(args.len().saturating_sub(2));
+        for &r in &args[2..] {
+            call_args.push(vm.reg(r));
+        }
+        let kept = match vm.call_bytecode_function_inline(callee, callee_obj, receiver, &call_args) {
+            Ok(_) => vm.regs[253] == receiver,
+            Err(_) => false,
+        };
+        NativeResult::Ok(JsValue::int(if kept { 1 } else { 0 }))
+    }
+
+    fn native_function(vm: &mut Vm, f: crate::native::NativeFn) -> JsValue {
+        let proto = vm.session.builtin_world().function_proto.as_ptr() as *mut JsObject;
+        let mut obj = JsObject::new_empty(oxide_kernel::shape_forge::EMPTY_SHAPE_ID, JsValue::from_js_object(proto));
+        obj.set_function(true);
+        // SAFETY: f 是 NativeFn 函数项，可作为 NativeFnPtr 存储。
+        obj.set_native_fn(Some(unsafe { NativeFnPtr::from_raw(f as *const ()) }));
+        JsValue::object(vm.alloc_object(obj) as *mut u8)
+    }
+
+    #[test]
+    fn call_function_sync_passes_high_arity_native_args_without_truncation() {
+        let mut vm = Vm::new();
+        let callee = native_function(&mut vm, native_return_last_arg);
+        let args: Vec<JsValue> = (0..20).map(JsValue::int).collect();
+
+        let result = vm
+            .call_function_sync(callee, JsValue::undefined(), &args)
+            .expect("high-arity sync call should succeed");
+
+        assert_eq!(result, JsValue::int(19));
+    }
+
+    #[test]
+    fn call_function_sync_reports_actual_native_arg_count() {
+        let mut vm = Vm::new();
+        let callee = native_function(&mut vm, native_return_arg_count);
+        let args: Vec<JsValue> = (0..32).map(JsValue::int).collect();
+
+        let result = vm
+            .call_function_sync(callee, JsValue::undefined(), &args)
+            .expect("arg count should be preserved");
+
+        assert_eq!(result, JsValue::int(32));
+    }
+
+    #[test]
+    fn call_function_sync_overflow_preserves_large_native_arity_and_registers() {
+        // 大实参集（超寄存器窗口 253）经 spill 溢出区完整送达 native：
+        // 全量计数与末位实参都可读，且调用方寄存器不被打包过程污染。
+        let mut vm = Vm::new();
+        let callee = native_function(&mut vm, native_return_full_arg_count);
+        vm.set_reg(1, JsValue::int(7));
+        vm.set_reg(253, JsValue::int(11));
+        vm.set_reg(254, JsValue::int(12));
+        vm.set_reg(255, JsValue::int(13));
+
+        let args: Vec<JsValue> = (0..(Vm::SYNC_NATIVE_ARG_LIMIT + 100)).map(|i| JsValue::int(i as i32)).collect();
+        let count = vm
+            .call_function_sync(callee, JsValue::undefined(), &args)
+            .expect("大实参集应经 spill 溢出区完整送达 native");
+        assert_eq!(count, JsValue::int(args.len() as i32));
+
+        let last_callee = native_function(&mut vm, native_return_last_full_arg);
+        let last = vm
+            .call_function_sync(last_callee, JsValue::undefined(), &args)
+            .expect("溢出区末位实参应可读");
+        assert_eq!(last, JsValue::int((args.len() - 1) as i32));
+
+        assert_eq!(vm.reg(1), JsValue::int(7));
+        assert_eq!(vm.reg(253), JsValue::int(11));
+        assert_eq!(vm.reg(254), JsValue::int(12));
+        assert_eq!(vm.reg(255), JsValue::int(13));
+        // 溢出区随调用结束截断回收，不残留 spill 增长。
+        assert!(vm.spill_stack.is_empty(), "溢出区应已回收: {:?}", vm.spill_stack);
+        assert_eq!(vm.native_overflow_count, 0);
+    }
+
+    /// 构造 `n_registers = 254` 的子模块：RegAlloc 合法产物（builtin 槽落 253 或
+    /// 高活度着色），其函数体写物理槽 253 后返回。
+    fn sub_module_254_with_r253_write() -> CompiledModule {
+        CompiledModule {
+            bytecode: Arc::from(vec![
+                opcode::encode(opcode::OpCode::MOV, 253, 0, 0),
+                opcode::encode(opcode::OpCode::HALT, 0, 0, 0),
+            ]),
+            n_registers: 254,
+            ..CompiledModule::new()
+        }
+    }
+
+    #[test]
+    fn inline_callee_254_registers_preserves_caller_active_r253() {
+        // 窗口化边界回归：inline 回调 callee 的 n_registers = 254（写物理槽 253）
+        // 且调用方 active_reg_limit = 254（regs[253] 为活动值）时，调用后
+        // regs[253] 必须恢复为调用方值，不得被 callee 写值覆盖。
+        let mut vm = Vm::new();
+        vm.install_module_table_for_test(Arc::new(vec![
+            Arc::new(CompiledModule::new()),
+            Arc::new(sub_module_254_with_r253_write()),
+        ]));
+        vm.active_reg_limit = 254;
+        vm.regs[253] = JsValue::int(42);
+
+        let callee = vm.create_function_object(1, vm.current_gen, false, false, false, false);
+        let callee_obj = unsafe { &*callee.as_js_object_ptr() };
+        let result = vm
+            .call_bytecode_function_inline(callee, callee_obj, JsValue::undefined(), &[])
+            .expect("inline call should succeed");
+
+        assert_eq!(result, JsValue::undefined());
+        assert_eq!(vm.regs[253], JsValue::int(42), "调用方 regs[253] 活动值不得被 callee 覆盖");
+        assert_eq!(vm.active_reg_limit, 254, "restore 应还原调用方活动寄存器上限");
+    }
+
+    #[test]
+    fn native_callback_nested_254_register_inline_callee_keeps_receiver() {
+        // 嵌套回归防线：native 回调体（receiver 落 regs[253]）内嵌 n_registers=254
+        // 的 inline 字节码回调时，内层写 regs[253] 不得污染外层 receiver 槽。
+        let mut vm = Vm::new();
+        vm.install_module_table_for_test(Arc::new(vec![
+            Arc::new(CompiledModule::new()),
+            Arc::new(sub_module_254_with_r253_write()),
+        ]));
+        vm.active_reg_limit = 254;
+        vm.regs[253] = JsValue::int(7);
+        vm.regs[254] = JsValue::int(8);
+
+        let inner_callee = vm.create_function_object(1, vm.current_gen, false, false, false, false);
+        let outer_native = native_function(&mut vm, native_nested_inline_254);
+        let result = vm
+            .call_function_sync(outer_native, JsValue::int(99), &[inner_callee])
+            .expect("native callback should succeed");
+
+        assert_eq!(result, JsValue::int(1), "内嵌 inline 回调后外层 receiver 槽必须保持原值");
+        assert_eq!(vm.regs[253], JsValue::int(7), "native 分支恢复后调用方 regs[253] 保持");
+        assert_eq!(vm.regs[254], JsValue::int(8), "native 分支恢复后调用方 regs[254] 保持");
+    }
+
+    #[test]
+    fn push_bytecode_frame_param_overlap_reads_spill_first() {
+        // 实参源区间 regs[1..3) 与 callee 形参写入区 regs[2..4) 重叠（first < param_base）：
+        // 压帧必须先拷 spill 实参区、形参再从 spill 区取源，避免边写形参边读实参
+        // 造成先写后读串值（形参 b 与 spill 实参区都取错）。
+        let mut vm = Vm::new();
+        // sub_modules[1] = callee：2 个形参，param_base=2（与调用方实参槽 2 重叠）
+        let mut callee_mod = CompiledModule::new();
+        callee_mod.n_args = 2;
+        callee_mod.param_base = 2;
+        callee_mod.n_registers = 5;
+        callee_mod.bytecode = Arc::from(vec![opcode::encode(opcode::OpCode::RETURN, 0, 0, 0)]);
+        vm.install_module_table_for_test(Arc::new(vec![Arc::new(CompiledModule::new()), Arc::new(callee_mod)]));
+        vm.active_reg_limit = 8;
+        // 调用方实参区 regs[1..3)：arg0=10, arg1=20；regs[2] 同时是 callee 形参槽（param_base=2）
+        vm.regs[1] = JsValue::int(10);
+        vm.regs[2] = JsValue::int(20);
+
+        let callee = vm.create_function_object(1, vm.current_gen, false, false, false, false);
+        vm.push_bytecode_frame(
+            callee,
+            JsValue::undefined(),
+            super::FrameArgs::RegRange { first: 1, count: 2 },
+            None,
+            None,
+            JsValue::undefined(),
+            super::FrameContinuation::None,
+            0,
+        )
+        .expect("压帧成功");
+        // 形参从 spill 实参区取源：regs[2]=arg0=10，regs[3]=arg1=20（不得被先写覆盖）
+        assert_eq!(vm.regs[2], JsValue::int(10), "形参 a 应为实参 arg0");
+        assert_eq!(vm.regs[3], JsValue::int(20), "形参 b 应为实参 arg1（不受先写覆盖）");
+        // spill 实参区（arguments 对象源）保持原实参值
+        let frame = vm.frames.last().expect("压帧后应有帧");
+        let base = frame.arguments_base as usize;
+        assert_eq!(vm.spill_stack[base], JsValue::int(10), "spill 实参区 arg0");
+        assert_eq!(vm.spill_stack[base + 1], JsValue::int(20), "spill 实参区 arg1");
+    }
+}
