@@ -1,6 +1,6 @@
 //! 脏重建职责：按脏标记选择性重建 builtin world（干净家族 Arc::clone 复用、
-//! Function/Object 四件套保活钉），收尾重指保留对象 proto 槽并恰好释放一次被替换
-//! 旧 P 对象的属性区。
+//! Function/Object 4 个对象经 `mem::forget` 抬升 Arc 计数永久保留），收尾把保留
+//! 对象 proto 槽改写到新指针，并恰好释放一次被替换旧 P 对象的属性区。
 
 use oxide_types::mem::P;
 use oxide_types::object::JsObject;
@@ -16,29 +16,37 @@ use crate::shape_forge::{ShapeForge, EMPTY_SHAPE_ID};
 use crate::string_forge::PermInterner;
 
 impl BuiltinWorld {
-    /// 选择性重建收尾：把保留对象（登记表 wrapper + 新旧 world 共用的保留 P
-    /// 字段）的 proto 槽从被替换旧指针重指到新指针，随后逐一释放被替换旧 P
-    /// 对象的属性区（含保活钉住的 Function/Object 四件；本体钉保留，见
-    /// `rebuild_with_dirty` 的保活注记）。
+    /// 选择性重建收尾：把保留对象的原型槽改写到新对象，并释放被替换旧对象的
+    /// 属性区。
+    ///
+    /// 选择性重建（[`Self::rebuild_with_dirty`]）只为脏家族新建对象，未脏家族
+    /// 的新旧 world 持有同一个 `Arc` 对象。本函数在旧 world 被丢弃前做两件事：
+    ///
+    /// 1. 原型槽改写：保留对象（登记表 wrapper 与新旧 world 共享的 P 字段）
+    ///    的 [[Prototype]] 槽若仍指向已被替换的旧对象，改写为对应的新对象；
+    /// 2. 释放：被替换旧 P 对象的四处堆外属性区（命名属性值 / 命名属性元数据 /
+    ///    数组元素 / 数组元素元数据）逐一释放并置空。
     ///
     /// # 边界与前提
-    /// - 须在 `inherit_leaked_objects` 之后、旧 world 换出前调用（登记表完整；
-    ///   full_reset 安全点无并发读者）；重指必须先于释放完成，否则保留对象
-    ///   的原型链读到已释放属性区。
-    /// - 替换集由逐字段新旧指针比较（stubs 按指针集合）判定，与保留集天然
-    ///   不相交：未替换字段新旧 world 沿用同一 Arc，其属性区归 session 收尾
-    ///   （`teardown_heap_data`）释放，此处不碰，不双放。
-    /// - 保活钉住的 4 件本体不经任何路径释放（Arc 计数已被 `mem::forget`
-    ///   抬升）；此处只释放其属性区，漏重指时读者降级为属性静默缺失
-    ///   （zombie 本体）而非 UAF。
-    /// - 只重指 proto 槽；属性值链接由同家族同批替换与绑定层 sync_* 覆盖，
-    ///   不在此重指。
+    /// - 须在 `inherit_leaked_objects` 之后、旧 world 被替换前调用，且此刻
+    ///   无存活 VM（宿主的重置边界）；
+    /// - 原型槽改写必须先于释放完成，否则保留对象的原型链会读到已释放的
+    ///   属性区；
+    /// - 替换集按逐字段新旧指针比较判定（stub 按指针集合），与保留集不相交：
+    ///   未替换字段的属性区归 session 收尾（`teardown_heap_data`）释放，此处
+    ///   不碰，不双放；
+    /// - Function/Object 4 个对象本体由 `rebuild_with_dirty` 经 `mem::forget`
+    ///   抬升 Arc 计数后永久保留（兜底用途见该函数注意事项）；此处只释放其
+    ///   属性区——原型槽改写遗漏时读者看到的是属性静默缺失（本体存活），
+    ///   不是 use-after-free；
+    /// - 只改写原型槽；属性值之间的链接由同家族同批替换与绑定层重新同步
+    ///   覆盖，不在此处改写。
     ///
     /// # 副作用
-    /// 保留对象 proto 槽重指（generation 递增）；被替换旧 P 对象属性区四区
-    /// 释放并置空（幂等，重入为 no-op）。
+    /// - 保留对象原型槽改写，每次改写递增该对象 generation；
+    /// - 被替换旧 P 对象四处属性区释放并置空（幂等，重入为 no-op）。
     pub fn retire_replaced(&self, old: &BuiltinWorld) {
-        // 替换映射：逐字段新旧指针比较（stubs 按指针集合），记录被换出的
+        // 替换映射：逐字段新旧指针比较（stubs 按指针集合），记录被替换的
         // 旧指针 → 新指针；stub 无继任者记空指针，只进释放集。
         let old_fields = old.all_p_fields();
         let new_fields = self.all_p_fields();
@@ -58,8 +66,9 @@ impl BuiltinWorld {
         if remap.is_empty() {
             return;
         }
-        // 重指：保留对象（新旧 world 同一指针）proto 槽仍指被替换旧指针的，
-        // 换新指针——与 `wire_builtin_world_links` 的 set_proto_if_changed 同模式。
+        // 原型槽改写：保留对象（新旧 world 同一指针）proto 槽仍指被替换旧
+        // 指针的，改写到新指针——与 `wire_builtin_world_links` 的
+        // set_proto_if_changed 同模式。
         let repoint = |obj: &mut JsObject| {
             let cur = obj.proto();
             if !cur.is_object() {
@@ -72,15 +81,16 @@ impl BuiltinWorld {
             if np.is_null() {
                 return;
             }
-            // SAFETY: np 是本 world 的 P 对象；full_reset 安全点无并发读者，
-            // 成环检查由 set_proto 内部完成。
+            // SAFETY: np 是本 world 的 P 对象；full_reset 是无存活 VM 的
+            // 时刻，无并发读者，成环检查由 set_proto 内部完成。
             obj.set_proto(JsValue::from_js_object(np)).ok();
         };
         for (o, n) in old_fields.iter().zip(new_fields.iter()) {
             let op = o.as_ptr() as *mut JsObject;
             let np = n.as_ptr() as *mut JsObject;
             if std::ptr::eq(op, np) {
-                // SAFETY: op/np 指向同一保留 P 对象，重指安全点无并发读者。
+                // SAFETY: op/np 指向同一保留 P 对象；full_reset 是无存活 VM
+                // 的时刻，无并发读者。
                 unsafe {
                     repoint(&mut *np);
                 }
@@ -88,12 +98,13 @@ impl BuiltinWorld {
         }
         for slot in self.leaked_objects.borrow().iter() {
             let ptr = slot.ptr;
-            // SAFETY: 登记表指针 session 存活期内有效，重指安全点无并发读者。
+            // SAFETY: 登记表指针 session 存活期内有效；full_reset 是无存活 VM
+            // 的时刻，无并发读者。
             unsafe {
                 repoint(&mut *ptr);
             }
         }
-        // 守约：重指后保留对象 proto 槽不得残留任何被替换旧指针。
+        // 后置条件检查：原型槽改写后保留对象 proto 槽不得残留任何被替换旧指针。
         for (o, n) in old_fields.iter().zip(new_fields.iter()) {
             let op = o.as_ptr() as *mut JsObject;
             let np = n.as_ptr() as *mut JsObject;
@@ -112,11 +123,11 @@ impl BuiltinWorld {
                 "登记表 wrapper proto 槽不得残留被替换旧指针"
             );
         }
-        // 释放：被替换旧 P 对象属性区逐一恰好释放一次（本体不释放；保活钉住
-        // 的 4 件保留本体钉、属性区同样释放）。
+        // 释放：被替换旧 P 对象属性区逐一恰好释放一次（本体不释放；经
+        // `mem::forget` 抬升 Arc 计数的 4 个对象保留本体、属性区同样释放）。
         for &op in remap.keys() {
-            // SAFETY: op 是旧 world 被换出的 P 对象，属性区仅此一处释放并置空
-            // （幂等）；full_reset 安全点无并发读者。
+            // SAFETY: op 是旧 world 被替换的 P 对象，属性区仅此一处释放并置空
+            // （幂等）；full_reset 是无存活 VM 的时刻，无并发读者。
             unsafe {
                 (&mut *op).release_raw_heap();
             }
@@ -126,22 +137,25 @@ impl BuiltinWorld {
     /// 按脏标记选择性重建 builtin world：仅重建被污染的对象家族，未污染的保留原指针。
     ///
     /// # 注意事项
-    /// - Function/Object 家族脏时，旧 fn_proto/object_proto 对须先保活再重建：
-    ///   释放表统一持有的方法 wrapper 永久泄漏（`Box::into_raw`），其 proto 裸指针
-    ///   指向绑定时的 function_proto——执行期原型链查找（如 `push.call` 沿 wrapper
-    ///   原型链取 `call`）仍走这些对象，reset 清空执行状态不阻断该路径，旧对
-    ///   Arc 归零即悬空。`retire_replaced` 重指完成后旧对无读者；本体钉保留
-    ///   （每次 dirty rebuild 至多 4 个对象本体永久泄漏）作重指遗漏兜底——漏
-    ///   重指时读者降级为属性静默缺失（zombie 本体）而非 UAF，属性区于重指
-    ///   完成时由 `retire_replaced` 释放。
+    /// - Function/Object 家族脏时，先对旧的 `function_proto` /
+    ///   `function_constructor` / `object_proto` / `object_constructor` 各用
+    ///   `mem::forget` 抬升一次 Arc 计数（本体永久保留）再重建。原因：方法
+    ///   wrapper 经 `Box::into_raw` 分配后登记在释放登记表、跨重建存活，其
+    ///   [[Prototype]] 裸指针指向绑定时的旧 function_proto；执行期原型链查找
+    ///   （如 `push.call` 沿 wrapper 原型链取 `call`）仍走这些对象，session
+    ///   重置只清执行态、不切断该路径，旧对 Arc 若在此归零则指针悬空。保留的
+    ///   本体同时充当 `retire_replaced` 原型槽改写遗漏的兜底：遗漏时读者仅见
+    ///   属性缺失，不产生 use-after-free。属性区于原型槽改写完成后由
+    ///   `retire_replaced` 释放。
     pub fn rebuild_with_dirty(
         current: &BuiltinWorld, string_forge: &PermInterner, shape_forge: &ShapeForge, dirty: &BuiltinDirtySet,
     ) -> BuiltinWorld {
         let labels = builtin_labels(string_forge);
 
-        // 保活：钉住旧 Function/Object 对的 Arc 计数使其永不归零——保留对象的
-        // proto 槽重指在 `retire_replaced`（本函数返回后、旧 world 换出前）
-        // 完成，钉住的本体是重指遗漏的兜底，不经任何路径释放。
+        // 用 `mem::forget` 抬升 4 个对象（旧 Function/Object 对）的 Arc 计数
+        // 使其永不归零——保留对象的原型槽改写在 `retire_replaced`（本函数
+        // 返回后、旧 world 被替换前）完成，抬升计数的本体是原型槽改写遗漏
+        // 的兜底，不经任何路径释放。
         if dirty.function || dirty.object {
             std::mem::forget(current.function_proto.clone());
             std::mem::forget(current.function_constructor.clone());

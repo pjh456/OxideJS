@@ -256,7 +256,7 @@ impl BuiltinWorld {
     /// # 注意事项
     /// session 收尾（`teardown_heap_data`）与选择性重建收尾（`retire_replaced`）
     /// 的 P 字段枚举唯一入口：`BuiltinWorld` 新增 P 字段须在此同步补一行，否则
-    /// 收尾时该字段属性区永久泄漏、重建重指/释放漏掉该字段。
+    /// 收尾时该字段属性区永久泄漏、重建原型槽改写/释放漏掉该字段。
     pub(crate) fn all_p_fields(&self) -> [&P<JsObject>; 104] {
         [
             &self.object_proto,
@@ -376,8 +376,8 @@ impl BuiltinWorld {
     ///
     /// # 注意事项
     /// 仅由 session 收尾调用（`KernelSession` 的 `Drop` 与 session 替换前），
-    /// 幂等：登记表按值取走，属性区释放后置空。选择性重建（dirty rebuild）
-    /// 不走本路径：登记表整体并入新 world（`inherit_leaked_objects`），仍由
+    /// 幂等：登记表按值取走，属性区释放后置空。选择性重建不走本路径：
+    /// 登记表整体并入新 world（`inherit_leaked_objects`），仍由
     /// session 收尾统一释放；被替换家族的旧 P 字段属性区在重建收尾
     /// （`retire_replaced`）恰好释放一次，与本路径对象集不相交，不双放。
     pub fn teardown_heap_data(&self) {
