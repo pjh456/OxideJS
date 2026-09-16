@@ -15,7 +15,7 @@ macro_rules! native_try {
     };
 }
 
-/// Set/Map 的键包装：相等与哈希都按 SameValueZero（ECMA-262 §7.2.11）值语义：
+/// Set/Map 的键包装：相等与哈希都按 SameValueZero 值语义：
 /// - Number：数值相等——NaN 与自身相同、+0/-0 同键、int/double 表示合并；
 /// - String/BigInt：内容相等——运行期构造与常量池的同内容值互为同键；
 /// - Object/Function：引用相等；Symbol 按下标相同；Bool/null/undefined 按值。
