@@ -7,8 +7,8 @@ use super::{JsObject, PropAttributes, PropIndex, PropMetaEntry, MAX_DENSE_PROPS}
 use crate::value::JsValue;
 
 impl JsObject {
-    /// 返回 hash_props vec 的长度作为属性数。
-    /// hash_props 未分配时返回 0。
+    /// 返回对象属性数：数组对象为数组元素数（`array_prop_count`），
+    /// 普通对象为命名属性区长度（未分配时 0）。
     pub fn prop_count(&self) -> u32 {
         if self.is_array() {
             return self.array_prop_count;
@@ -100,9 +100,15 @@ impl JsObject {
         !self.prop_meta.is_null() || !self.array_elements_meta.is_null()
     }
 
-    /// 同 `set_prop_count`，但假定 `hash_props` 已分配。
-    /// 调用方须保证对象至少含一个元素（或经 `new_array` 创建）。
-    /// 用于热路径数组 builtin，跳过每次变更时冗余的 `ensure_hash_props` 空检查。
+    /// 设置数组元素数（数组对象高频入口，与 `set_prop_count` 行为一致）。
+    ///
+    /// # 边界与前提
+    /// - 参数为新元素数；截断或补 `undefined` 扩展。
+    /// - 数组对象只调整独立元素区（`array_elements` 与 `array_prop_count`），
+    ///   命名属性区（`hash_props`）零搬移。
+    ///
+    /// # 副作用
+    /// - 修改 `array_prop_count` 与元素区；元素区扩缩时同步扩缩元素元数据区。
     #[inline]
     pub fn set_prop_count_fast(&mut self, count: impl PropIndex) {
         self.set_prop_count(count);
