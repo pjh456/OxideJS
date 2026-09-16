@@ -1,7 +1,7 @@
-//! 内存管理抽象：跨 epoch 持久存储与每次调用（agent call）内的 arena 分配。
+//! 内存管理抽象：跨 epoch 持久存储与单次 run 内的 arena 分配。
 //!
 //! `P<T>` 是 `Arc` 的透明包装，持有者跨 `Epoch::reset()` 存活；
-//! `Epoch` 则是对 `bumpalo::Bump` 的封装，用于每次调用内的高频分配，
+//! `Epoch` 则是对 `bumpalo::Bump` 的封装，用于单次 run 内的高频分配，
 //! `reset()` 换新 arena 整体回收（旧 arena 全量归还系统分配器，地址空间
 //! 不复用），并通过 epoch ID 辅助悬挂指针检测。
 
@@ -34,8 +34,9 @@ impl<T> P<T> {
         self.as_ptr() as *mut T
     }
 
-    /// 当前强引用数。收尾路径据此区分「本 VM 独占」与「与 world 等共享」
-    /// 的 P 对象，避免对仍被其他引用方使用的对象做归属误判。
+    /// 当前强引用数。session 收尾路径据此判断该 `P` 对象是否与其他
+    /// 持有方（如 `BuiltinWorld`）共享，避免对仍被其他引用方使用的
+    /// 对象做归属误判。
     pub fn strong_count(&self) -> usize {
         Arc::strong_count(&self.0)
     }
@@ -68,7 +69,7 @@ impl<T: fmt::Display> fmt::Display for P<T> {
 }
 
 /// 包装 `bumpalo::Bump` 并携带 epoch ID 计数器用于悬挂指针检测。
-/// 所有 Agent 调用级对象分配于此；`reset()` 在每次调用结束时换新 arena，
+/// 所有 run 级对象分配于此；`reset()` 在每次 run 结束时换新 arena，
 /// 旧 arena 内存全量归还系统分配器。
 pub struct Epoch {
     bump: bumpalo::Bump,
@@ -76,7 +77,7 @@ pub struct Epoch {
 }
 
 impl Epoch {
-    /// 创建从 epoch 0 开始、空 arena 的调用级分配器。
+    /// 创建从 epoch 0 开始、空 arena 的 run 级分配器。
     pub fn new() -> Self {
         Self {
             bump: bumpalo::Bump::new(),
@@ -130,13 +131,18 @@ impl Epoch {
         }
     }
 
-    /// 换新空 `Bump` 整体回收：旧 arena 的全部 chunk 归还系统分配器，
-    /// 地址空间不复用，此前所有分配立即失效。
-    /// 递增 epoch ID 以使过期指针失效（debug_assert 守卫）。
+    /// 整体回收 arena：换新空 `Bump`，旧 arena 的全部 chunk 归还系统分配器。
     ///
-    /// # 注意事项
-    /// 调用点须保证该边界无存活旧 arena 指针（登记表已清、执行态已空）。
-    /// 换 Bump 使漏晋升的陈旧指针由静默别名新对象转为显式 UAF，属护栏加强。
+    /// # 副作用
+    /// - 此前的全部分配立即失效；地址空间不复用（新 arena 不占用旧地址）。
+    /// - epoch ID 加 1：旧 arena 对象中存储的 epoch 值此后与当前值不一致，
+    ///   解引用时可据此检出过期指针（仅 debug 断言）。
+    ///
+    /// # 边界与前提
+    /// - 调用点须保证此刻无指向旧 arena 的存活指针（登记表已清、执行态已空）。
+    ///   违反时换 arena 后旧指针要么解引用到同地址新对象（静默错值），要么成为
+    ///   use-after-free；换 Bump 正是把这类漏网指针从静默错值转为可检出的
+    ///   use-after-free，属护栏加强。
     pub fn reset(&mut self) {
         self.bump = bumpalo::Bump::new();
         self.epoch_id += 1;
