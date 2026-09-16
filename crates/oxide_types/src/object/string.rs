@@ -1,7 +1,7 @@
 //! `JsString` 三形态载荷（Flat UTF-8 文本 / FlatU16 单元 / Cons rope）与 rope 节点 `ConsNode`。
 //!
 //! - 布局恒为 32B：载荷 24B @0、`utf16_len` @24、`tag` @28，由文件内 size_of/
-//!   offset_of 断言锚定；
+//!   offset_of 断言保证；
 //! - `Cons` 子节点各自独立登记 session 字符串表（或为 perm 串），扁平化产物只挂
 //!   `ConsNode::flat_cache`、随节点连带释放；
 //! - 地址稳定不搬移（Box 堆分配），GC 无需 forwarding / rewrite。
@@ -21,10 +21,10 @@ use std::sync::OnceLock;
 ///   惰性扁平化缓存）。二元 `+`/`+=` 拼接 O(1) 链接不拷贝文本，单元序列在
 ///   首次消费时扁平化并原子发布。
 ///
-/// 布局恒为 32B：载荷 24B @0、`utf16_len` @24（4B）、`tag` @28（1B，原 NLL
-/// enum 的尾部填充位，显式 repr(C) 钉死）、尾部 3B 填充。`String` 原样存储
-/// （零 realloc 收缩）；Cons 专属状态（子节点/产物缓存）独立分配在 [`ConsNode`]，
-/// 仅大链持有。尺寸锚见下方 size_of/offset_of 断言。
+/// 布局恒为 32B：载荷 24B @0、`utf16_len` @24（4B）、`tag` @28（1B，
+/// 占用尾部填充位，显式 repr(C) 固定）、尾部 3B 填充。`String` 原样存储
+/// （不收缩分配）；Cons 专属状态（子节点/产物缓存）独立分配在 [`ConsNode`]，
+/// 仅大链持有。布局约束见下方 size_of/offset_of 断言。
 ///
 /// 生命周期约定：
 /// - `Cons` 子节点各自独立登记 session 字符串表（或为 perm 串），由 GC 的
@@ -47,15 +47,15 @@ pub struct JsString {
     tag: u8,
 }
 
-// 布局锚：32B = 载荷 24B（三形态同形 ptr/len/cap 或节点指针）+ utf16_len 4B
+// 布局：32B = 载荷 24B（三形态同形 ptr/len/cap 或节点指针）+ utf16_len 4B
 // + tag 1B + 尾部填充 3B。三变体 NLL enum 需独立 tag 字（撑到 40B、utf16_len@32）
-// 故以 repr(C) + 尾部 tag 字节钉死本布局；换载荷形状/字段类型先同步结构体头
+// 故以 repr(C) + 尾部 tag 字节固定本布局；换载荷形状/字段类型先同步结构体头
 // 注释再改本断言。
 const _: () = assert!(
     std::mem::size_of::<JsString>() == 32
         && std::mem::offset_of!(JsString, utf16_len) == 24
         && std::mem::offset_of!(JsString, tag) == 28,
-    "JsString 布局漂移：锚定布局见结构体头注释（32B，utf16_len@24，tag@28）"
+    "JsString 布局已变更：期望布局见结构体头注释（32B，utf16_len@24，tag@28）"
 );
 
 /// 载荷形态标签（`JsString::tag` 取值）。
@@ -277,8 +277,8 @@ impl JsString {
     /// （内容含孤立 surrogate 或需扁平化），一律改走 [`Self::units`] /
     /// [`Self::as_lossy_str`]。
     ///
-    /// # Panics
-    /// 非 Flat 形态 panic（调用契约违反，非运行时正常路径）。
+    /// # 边界与前提
+    /// - 非 Flat 形态 panic（调用契约违反，非运行时正常路径）。
     pub fn as_str(&self) -> &str {
         if self.tag != TAG_FLAT {
             panic!("JsString::as_str 仅限 Flat 形态");
@@ -352,7 +352,7 @@ impl JsString {
     /// 是否含孤立 surrogate 单元（well-formed 判定的取反）。
     ///
     /// Flat 恒 false（不变式：UTF-8 载荷结构上不可承载）；FlatU16 恒 true
-    /// （保守口径：直构造路径可能持有 well-formed 单元，单元消费路径对
+    /// （保守判定：直构造路径可能持有 well-formed 单元，单元消费路径对
     /// well-formed 内容结果仍正确，仅多走单元通道）；Cons 扁平化后扫描。
     pub fn has_lone_surrogate(&self) -> bool {
         match self.tag {
@@ -366,8 +366,8 @@ impl JsString {
         }
     }
 
-    /// 载荷的记账字节数（GC 账目口径）：Flat = UTF-8 内容字节；FlatU16 /
-    /// Cons = 单元数 × 2。
+    /// 载荷的记账字节数（GC 记账使用的字节数）：Flat = UTF-8 内容字节；
+    /// FlatU16 / Cons = 单元数 × 2。
     pub fn payload_bytes(&self) -> usize {
         match self.tag {
             TAG_FLAT => self.flat_ref().len(),
