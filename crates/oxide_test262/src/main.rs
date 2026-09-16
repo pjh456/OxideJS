@@ -1,6 +1,5 @@
 #![allow(clippy::arc_with_non_send_sync)]
 
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -10,114 +9,24 @@ use std::time::{Duration, Instant};
 mod config;
 mod discovery;
 mod harness;
+mod heartbeat;
 mod judge;
 mod meta;
 mod report;
 mod runner;
+mod stats;
 mod test262_log;
 use config::RunConfig;
 use discovery::discover_tests;
 use harness::{HarnessPrefixCache, HarnessSources, HARNESS};
-use judge::{categorize_fail, TestOutcome, TestResult};
+use heartbeat::{merge_heartbeat, read_heartbeat, write_heartbeat};
+use judge::{categorize_fail, TestOutcome};
 use oxide_log::{Level, LogConfig, Output, SUBSYSTEM_COUNT};
 use report::{
     append_fail_log, first_line, format_fail_categories, format_fail_groupings, format_fail_list, parse_fail_log,
-    FailRecord, MAX_FAIL_MSG_CHARS, MAX_FAIL_RECORD_BYTES,
 };
 use runner::{build_runner_kernel, process_path, CURRENT_TEST_PATH};
-
-/// 全部已运行测试的累计统计：通过/失败/跳过计数、总耗时、失败原因分类
-/// 与逐路径失败记录（fail_records，供汇总区聚合报告）。
-#[derive(Default)]
-struct RunStats {
-    pass: usize,
-    fail: usize,
-    skip: usize,
-    total_ms: u64,
-    fail_categories: HashMap<String, usize>, // 计数口径不变（兼容心跳序列化与既有基线对比）
-    // ↓ 新增 ↓
-    categories: Vec<String>, // 类别 id 表（FailRecord.category_id 索引）
-    fail_records: Vec<FailRecord>,
-    fail_record_bytes: usize, // 累计 message 字节（OOM cap）
-    // supervise 模式异常计数：spawn 失败 / try_wait 错误 / 心跳写失败（子进程侧
-    // 累计后经心跳第 6 字段回传）。
-    spawn_errors: usize,
-    wait_errors: usize,
-    hb_write_errors: usize,
-    /// 超时/崩溃清单：(index, elapsed_ms)；elapsed_ms=0 表示非超时崩溃。
-    timeout_crashes: Vec<(usize, u64)>,
-}
-
-impl RunStats {
-    /// 把另一个 worker 的部分统计并入本对象。用于并行执行后把各 worker 的
-    /// 结果合并回单一总计。失败记录的类别 id 按本表重映射（两侧类别表独立编号）。
-    fn merge(&mut self, other: RunStats) {
-        self.pass += other.pass;
-        self.fail += other.fail;
-        self.skip += other.skip;
-        self.total_ms += other.total_ms;
-        for (cat, count) in other.fail_categories {
-            *self.fail_categories.entry(cat).or_insert(0) += count;
-        }
-        for rec in other.fail_records {
-            let name = other.categories[rec.category_id as usize].clone();
-            let id = self.category_id_of(&name);
-            self.fail_records.push(FailRecord { category_id: id, ..rec });
-        }
-        self.fail_record_bytes += other.fail_record_bytes;
-        self.spawn_errors += other.spawn_errors;
-        self.wait_errors += other.wait_errors;
-        self.hb_write_errors += other.hb_write_errors;
-        self.timeout_crashes.extend(other.timeout_crashes);
-    }
-
-    /// 把单个测试结果记入运行累计；失败同时追加逐路径失败记录（含类别）。
-    fn record(&mut self, index: usize, result: &TestResult) {
-        match &result.outcome {
-            TestOutcome::Pass(_) => self.pass += 1,
-            TestOutcome::Fail(msg) => {
-                let (cat, subkey) = categorize_fail(msg);
-                *self.fail_categories.entry(cat.clone()).or_insert(0) += 1;
-                self.push_fail_record(index, cat, subkey, msg.clone());
-                self.fail += 1;
-            }
-            TestOutcome::Skip(_) => self.skip += 1,
-        }
-        self.total_ms += result.duration_ms;
-    }
-
-    /// 取得类别名在 categories 表中的 id（不存在则追加）。
-    fn category_id_of(&mut self, name: &str) -> u16 {
-        debug_assert!(self.categories.len() < u16::MAX as usize, "categories 表超出 u16 容量");
-        if let Some(pos) = self.categories.iter().position(|c| c == name) {
-            return pos as u16;
-        }
-        self.categories.push(name.to_string());
-        (self.categories.len() - 1) as u16
-    }
-
-    /// 追加一条失败记录：单条消息截断到 2 KiB；累计字节超 64 MiB 后本条
-    /// 降级为消息首行摘要且不再累计字节，防止 OOM。
-    fn push_fail_record(&mut self, index: usize, category: String, subkey: String, message: String) {
-        let message = message.chars().take(MAX_FAIL_MSG_CHARS).collect::<String>();
-        let bytes = message.len();
-        let category_id = self.category_id_of(&category);
-        let message = if self.fail_record_bytes + bytes <= MAX_FAIL_RECORD_BYTES {
-            self.fail_record_bytes += bytes;
-            message
-        } else {
-            // 累计超上限：本条降级为消息首行摘要，不再累计字节。
-            first_line(&message).chars().take(120).collect::<String>()
-        };
-        self.fail_records.push(FailRecord {
-            index,
-            category_id,
-            subkey,
-            message,
-            scenario: 0,
-        });
-    }
-}
+use stats::RunStats;
 
 /// 从子进程 stdout 中解析形如 `label   : N` 的汇总行。
 fn parse_summary_count(stdout: &str, label: &str) -> Option<usize> {
@@ -194,104 +103,6 @@ fn run_chunked(args: &[String], skip_until: usize, end_index: usize, chunk_size:
     println!("═══════════════════════════════════════");
 
     aggregate_fail == 0
-}
-
-/// 监督模式下子进程写入、父进程轮询的一条心跳记录。
-/// `COMPLETED`：每个测试完成后写，`index` 为刚完成的全局测试下标，计数覆盖
-/// ≤ index 的全部测试；`DONE`：窗口尾，`index` 为窗口结束下标。
-/// `categories` 为子进程失败分类计数快照（首行之后按 `类别\t计数` 逐行写出）；
-/// `hb_write_errors` 为子进程侧心跳/旁路写失败累计，经第 6 字段回传父进程。
-struct Heartbeat {
-    phase: String,
-    index: usize,
-    pass: usize,
-    fail: usize,
-    skip: usize,
-    categories: HashMap<String, usize>,
-    hb_write_errors: usize, // 子进程侧写失败累计（第 6 字段）
-}
-
-/// 用单行心跳头（phase index pass fail skip hb_write_errors）+ 失败类别行覆写心跳文件。
-///
-/// 经 `{path}.tmp` 临时文件再 rename 原子落盘（同目录 POSIX 原子替换；不 fsync，
-/// SIGKILL 下 page cache 幸存，ponytail）。写失败返回 Err 并清理临时文件，由调用方
-/// 自增 hb_write_errors 随下一心跳回传父进程。
-///
-/// # 边界与前提
-/// - 假定单 worker（监督器强制 `OXIDE_TEST262_WORKERS=1`）；多 worker 时运行下标
-///   有歧义且对同一路径的覆写存在竞争。
-///
-/// # 副作用
-/// - 覆写 `path`；失败时可能残留 `path.tmp`（调用方或 supervise 清理兜底）。
-#[expect(clippy::too_many_arguments)]
-fn write_heartbeat(
-    path: &Path, phase: &str, index: usize, pass: usize, fail: usize, skip: usize, categories: &HashMap<String, usize>,
-    hb_write_errors: usize,
-) -> std::io::Result<()> {
-    let mut content = format!("{phase} {index} {pass} {fail} {skip} {hb_write_errors}\n");
-    for (cat, count) in categories {
-        // 类别文本内的制表符/换行会破坏行格式，写盘前压平。
-        let cat = cat.replace(['\t', '\n', '\r'], " ");
-        content.push_str(&format!("{cat}\t{count}\n"));
-    }
-    let tmp = format!("{}.tmp", path.display());
-    if let Err(e) = std::fs::write(&tmp, content) {
-        let _ = std::fs::remove_file(&tmp);
-        return Err(e);
-    }
-    std::fs::rename(&tmp, path)
-}
-
-/// 读取最新心跳（含失败类别行与第 6 字段写失败计数）。任何缺失/残缺/畸形内容
-/// 均返回 `None`，使轮询循环可直接在下一拍重试。
-///
-/// # 边界与前提
-/// - 旧 5 字段 `START` 格式宽容映射为 `COMPLETED(index - 1)`：旧 START(j) 计数
-///   覆盖 < j 的测试，与 COMPLETED(j-1) 语义等价；index=0 时 saturating_sub 防下溢。
-fn read_heartbeat(path: &Path) -> Option<Heartbeat> {
-    let content = std::fs::read_to_string(path).ok()?;
-    let mut lines = content.lines();
-    let line = lines.next()?;
-    let mut parts = line.split_whitespace();
-    let phase = parts.next()?.to_string();
-    let index: usize = parts.next()?.parse().ok()?;
-    let pass = parts.next()?.parse().ok()?;
-    let fail = parts.next()?.parse().ok()?;
-    let skip = parts.next()?.parse().ok()?;
-    let hb_write_errors = parts.next().and_then(|s| s.parse().ok()).unwrap_or(0);
-    let mut categories = HashMap::new();
-    for l in lines {
-        if let Some((cat, count)) = l.split_once('\t') {
-            if let Ok(c) = count.trim().parse() {
-                categories.insert(cat.to_string(), c);
-            }
-        }
-    }
-    let (phase, index) = if phase == "START" {
-        ("COMPLETED".into(), index.saturating_sub(1))
-    } else {
-        (phase, index)
-    };
-    Some(Heartbeat {
-        phase,
-        index,
-        pass,
-        fail,
-        skip,
-        categories,
-        hb_write_errors,
-    })
-}
-
-/// 把心跳快照并入累计统计（含失败类别与子进程侧写失败计数）。
-fn merge_heartbeat(stats: &mut RunStats, hb: &Heartbeat) {
-    stats.pass += hb.pass;
-    stats.fail += hb.fail;
-    stats.skip += hb.skip;
-    stats.hb_write_errors += hb.hb_write_errors;
-    for (cat, count) in &hb.categories {
-        *stats.fail_categories.entry(cat.clone()).or_insert(0) += count;
-    }
 }
 
 /// 把 supervise 旁路失败行文件并入统计：逐行重建 FailRecord（类别经本表 id
@@ -982,141 +793,6 @@ fn run_tests() -> bool {
 mod tests {
     use super::*;
 
-    /// record 把真 subkey 写入 FailRecord（not callable 调用点透传）。
-    #[test]
-    fn record_stores_real_subkey() {
-        let mut stats = RunStats::default();
-        stats.record(
-            0,
-            &TestResult::fail(PathBuf::from("p.js"), 1, "vm error: TypeError: Map.set is not callable"),
-        );
-        assert_eq!(stats.fail_records.len(), 1);
-        assert_eq!(stats.fail_records[0].subkey, "Map.set");
-    }
-
-    /// 心跳写读往返：类别行随心跳头一起持久化并完整还原（含制表符/换行压平），
-    /// 第 6 字段 hb_write_errors 同步往返。
-    #[test]
-    fn heartbeat_round_trips_categories() {
-        let dir = std::env::temp_dir();
-        let path = dir.join(format!("oxide_t262_hb_test_{}.txt", std::process::id()));
-        let mut categories = HashMap::new();
-        categories.insert("vm: not defined".to_string(), 3);
-        categories.insert("compile: unsupported".to_string(), 1);
-        write_heartbeat(&path, "DONE", 42, 30, 4, 8, &categories, 3).expect("心跳写失败");
-        let hb = read_heartbeat(&path).expect("心跳应可读回");
-        assert_eq!(hb.phase, "DONE");
-        assert_eq!(hb.index, 42);
-        assert_eq!(hb.pass, 30);
-        assert_eq!(hb.fail, 4);
-        assert_eq!(hb.skip, 8);
-        assert_eq!(hb.hb_write_errors, 3);
-        assert_eq!(hb.categories.get("vm: not defined"), Some(&3));
-        assert_eq!(hb.categories.get("compile: unsupported"), Some(&1));
-        let _ = std::fs::remove_file(&path);
-    }
-
-    /// 类别文本含制表符/换行时写入压平，读取不破坏行结构。
-    #[test]
-    fn heartbeat_flattens_category_separators() {
-        let dir = std::env::temp_dir();
-        let path = dir.join(format!("oxide_t262_hb_test2_{}.txt", std::process::id()));
-        let mut categories = HashMap::new();
-        categories.insert("vm: other (multi\nline\tmessage)".to_string(), 2);
-        write_heartbeat(&path, "COMPLETED", 7, 1, 2, 3, &categories, 0).expect("心跳写失败");
-        let hb = read_heartbeat(&path).expect("心跳应可读回");
-        assert_eq!(hb.fail, 2);
-        assert_eq!(hb.categories.len(), 1);
-        let key = hb.categories.keys().next().unwrap();
-        assert!(!key.contains('\t') && !key.contains('\n'), "类别键应已压平，实际 {key:?}");
-        assert_eq!(hb.categories.get(key), Some(&2));
-        let _ = std::fs::remove_file(&path);
-    }
-
-    /// record 追加失败记录：index 透传、类别正确、消息完整保留。
-    #[test]
-    fn runstats_record_appends_fail_record() {
-        let mut stats = RunStats::default();
-        let result = TestResult::fail(PathBuf::from("a.js"), 7, "vm error: x is not callable");
-        stats.record(5, &result);
-        assert_eq!(stats.fail, 1);
-        assert_eq!(stats.fail_records.len(), 1);
-        assert_eq!(stats.fail_records[0].index, 5);
-        let cat = &stats.categories[stats.fail_records[0].category_id as usize];
-        assert_eq!(cat, "vm: not callable");
-        assert_eq!(stats.fail_records[0].message, "vm error: x is not callable");
-    }
-
-    /// 超长失败消息按字符截断到单条上限。
-    #[test]
-    fn runstats_record_caps_message_length() {
-        let mut stats = RunStats::default();
-        let result = TestResult::fail(PathBuf::from("b.js"), 1, "x".repeat(5000));
-        stats.record(0, &result);
-        assert!(stats.fail_records[0].message.chars().count() <= MAX_FAIL_MSG_CHARS);
-    }
-
-    /// merge 拼接失败记录并重映射类别 id：同类别共享一个 id，字节计数为各侧之和。
-    #[test]
-    fn runstats_merge_concats_fail_records_with_id_remap() {
-        let mut a = RunStats::default();
-        a.record(0, &TestResult::fail(PathBuf::from("x.js"), 1, "vm error: a is not callable"));
-        a.record(1, &TestResult::fail(PathBuf::from("y.js"), 1, "vm error: b is not callable"));
-        let mut b = RunStats::default();
-        b.record(2, &TestResult::fail(PathBuf::from("z.js"), 1, "vm error: c is not callable"));
-        a.merge(b);
-        assert_eq!(a.fail, 3);
-        assert_eq!(a.fail_records.len(), 3);
-        let id0 = a.fail_records[0].category_id;
-        assert_eq!(a.fail_records[1].category_id, id0);
-        assert_eq!(a.fail_records[2].category_id, id0);
-        assert_eq!(a.categories[id0 as usize], "vm: not callable");
-        assert_eq!(a.fail_record_bytes, a.fail_records.iter().map(|r| r.message.len()).sum::<usize>());
-    }
-
-    /// 心跳第 6 字段（hb_write_errors）写读往返。
-    #[test]
-    fn heartbeat_round_trips_write_errors_field() {
-        let dir = std::env::temp_dir();
-        let path = dir.join(format!("oxide_t262_hb_test_wr_{}.txt", std::process::id()));
-        let categories = HashMap::new();
-        write_heartbeat(&path, "COMPLETED", 9, 5, 1, 2, &categories, 5).expect("心跳写失败");
-        let hb = read_heartbeat(&path).expect("心跳应可读回");
-        assert_eq!(hb.phase, "COMPLETED");
-        assert_eq!(hb.index, 9);
-        assert_eq!(hb.hb_write_errors, 5);
-        let _ = std::fs::remove_file(&path);
-    }
-
-    /// 旧 5 字段 START 心跳宽容映射：START(j) → COMPLETED(j-1)；j=0 不溢出。
-    #[test]
-    fn read_heartbeat_maps_legacy_start_to_completed() {
-        let dir = std::env::temp_dir();
-        let path = dir.join(format!("oxide_t262_hb_test_legacy_{}.txt", std::process::id()));
-        std::fs::write(&path, "START 7 1 2 3\n").expect("写原始心跳行失败");
-        let hb = read_heartbeat(&path).expect("心跳应可读回");
-        assert_eq!(hb.phase, "COMPLETED");
-        assert_eq!(hb.index, 6);
-        std::fs::write(&path, "START 0 0 0 0\n").expect("写原始心跳行失败");
-        let hb = read_heartbeat(&path).expect("心跳应可读回");
-        assert_eq!(hb.index, 0, "saturating_sub 防下溢");
-        let _ = std::fs::remove_file(&path);
-    }
-
-    /// 原子写：写后目标文件内容完整、无 `.tmp` 残留。
-    #[test]
-    fn write_heartbeat_atomic_no_tmp_leftover() {
-        let dir = std::env::temp_dir();
-        let path = dir.join(format!("oxide_t262_hb_test_atomic_{}.txt", std::process::id()));
-        let categories = HashMap::new();
-        write_heartbeat(&path, "DONE", 10, 3, 2, 1, &categories, 0).expect("心跳写失败");
-        let content = std::fs::read_to_string(&path).expect("心跳应可读回");
-        assert!(content.starts_with("DONE 10 3 2 1 0\n"), "内容应为 6 字段头，实际:\n{content}");
-        let tmp = format!("{}.tmp", path.display());
-        assert!(!Path::new(&tmp).exists(), "tmp 文件不应残留");
-        let _ = std::fs::remove_file(&path);
-    }
-
     /// 超时/崩溃记账：计数（no_skip 转 fail）与 timeout_crashes 入列。
     #[test]
     fn record_timeout_or_crash_records_index_elapsed() {
@@ -1128,30 +804,6 @@ mod tests {
         record_timeout_or_crash(&mut stats, false, 4, 0);
         assert_eq!(stats.skip, 1);
         assert_eq!(stats.timeout_crashes, vec![(3, 2500), (4, 0)]);
-    }
-
-    /// merge 合并异常计数器：spawn/wait/hb 求和、timeout_crashes 拼接。
-    #[test]
-    fn runstats_merge_sums_error_counters() {
-        let mut a = RunStats {
-            spawn_errors: 1,
-            wait_errors: 2,
-            hb_write_errors: 3,
-            timeout_crashes: vec![(0, 100)],
-            ..RunStats::default()
-        };
-        let b = RunStats {
-            spawn_errors: 4,
-            wait_errors: 5,
-            hb_write_errors: 6,
-            timeout_crashes: vec![(1, 200)],
-            ..RunStats::default()
-        };
-        a.merge(b);
-        assert_eq!(a.spawn_errors, 5);
-        assert_eq!(a.wait_errors, 7);
-        assert_eq!(a.hb_write_errors, 9);
-        assert_eq!(a.timeout_crashes, vec![(0, 100), (1, 200)]);
     }
 
     /// merge_fail_log 重建 fail_records：类别经 id 表重映射、消息 cap；
