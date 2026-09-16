@@ -157,9 +157,9 @@ impl JsObject {
     pub const OBJ_TYPE_ZONED_DATE_TIME: u8 = 18;
     /// Temporal.PlainDateTime 对象：ISO 年/月/日与午夜后纳秒存于 prop 0-3。
     pub const OBJ_TYPE_PLAIN_DATE_TIME: u8 = 19;
-    /// Arguments 对象：`Object.prototype.toString` 返回 `[object Arguments]`。
     /// 装箱 Symbol 对象类型标签。
     pub const OBJ_TYPE_SYMBOL_OBJ: u8 = 21;
+    /// Arguments 对象：`Object.prototype.toString` 返回 `[object Arguments]`。
     pub const OBJ_TYPE_ARGUMENTS: u8 = 20;
     /// Error 家族对象（Error 及 NativeError 实例）：`Object.prototype.toString` 返回
     /// `[object Error]`，与 [[ErrorData]] 内部槽对应。
@@ -314,6 +314,7 @@ impl JsObject {
         self.type_tag == Self::OBJ_TYPE_PLAIN_YEAR_MONTH
     }
 
+    /// 是否 Arguments 对象（`type_tag` 为 `OBJ_TYPE_ARGUMENTS`）。
     #[inline]
     pub fn is_arguments_obj(&self) -> bool {
         self.type_tag == Self::OBJ_TYPE_ARGUMENTS
