@@ -9,7 +9,7 @@ pub fn number_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         match vm.coerce_number_bounded(vm.reg(args[1])) {
             Ok(n) => n,
             Err(_) => {
-                // ToNumber on an object may throw via toString/valueOf; propagate the original exception.
+                // 对象经 ToNumber 转换时 toString/valueOf 可抛异常，须原样传播原始异常。
                 if let Some(exc) = vm.take_uncaught_value() {
                     return NativeResult::Err(exc);
                 }
@@ -75,7 +75,8 @@ pub fn number_is_finite<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     NativeResult::Ok(JsValue::bool(n.is_finite()))
 }
 
-/// ECMA-262 WhiteSpace / LineTerminator 判定（TrimString 用）。
+/// 判定 parseInt/parseFloat 修剪时要剥掉的空白字符（规范 WhiteSpace 与
+/// LineTerminator 集合的并集）。
 ///
 /// 与 Rust `char::is_whitespace` 的差异：规范集合不含 U+0085（NEL），手工
 /// 按白名单匹配避免误剥。
@@ -95,10 +96,10 @@ fn is_js_ws(c: char) -> bool {
     )
 }
 
-/// ECMA-262 ToInt32（§7.1.6）：f64 → mod 2^32 回绕的有符号 i32。
+/// ToInt32：把 f64 转成 mod 2^32 回绕的有符号 i32。
 ///
-/// NaN/±0/±∞ 归 0；先截断再对 2^32 取余（余数非负），保证超大输入
-/// （如 2^40 → 0）按回绕而非饱和。
+/// 输入值 NaN、±0、±∞ 一律得 0；其余先向零截断，再对 2^32 取欧几里得
+/// 余（余数恒非负），故超大输入（如 2^40）按回绕而非饱和处理。
 fn to_int32(n: f64) -> i32 {
     if n.is_nan() || n.is_infinite() || n == 0.0 {
         return 0;
@@ -106,13 +107,14 @@ fn to_int32(n: f64) -> i32 {
     (n.trunc().rem_euclid(4294967296.0) as u32) as i32
 }
 
-/// `parseInt(string, radix)`：按 ECMA-262 §19.2.5 前缀解析。
+/// `parseInt(string, radix)`：按指定进制解析字符串，取最长有效数字前缀。
 ///
-/// 规范白名单 trim 后读 `+`/`-` 符号；radix 经 ToInt32（mod 2^32 回绕，
-/// NaN/undefined → 0），R≠0 且不在 [2,36] 返回 NaN；仅当原 R 为 0 或 16 时
-/// `0x`/`0X` 前缀按十六进制剥除。随后按进制收集最长连续有效数字前缀并转
-/// f64（十进制正确舍入、其余进制数学累加，均允许超 2^53 舍入），无有效
-/// 数字返回 NaN，结果在 i32 域内用 int 表示，`-0` 保留负零。
+/// 先用规范空白白名单修剪首尾，再读首个 `+`/`-` 符号。radix 先经 ToInt32
+/// 转换（mod 2^32 回绕），NaN 与 undefined 均得 0；转换后 R 非零且越出
+/// [2,36] 时整体返回 NaN。仅当转换后 R 为 0 或 16 时剥除 `0x`/`0X` 前缀
+/// 并改按十六进制解析；随后按确定的进制收集最长连续有效数字前缀并转为
+/// f64（十进制走正确舍入，其余进制数学累加，均允许超 2^53 的舍入），无
+/// 任何有效数字时返回 NaN；结果落在 i32 域内用 int 表示，`-0` 保留负零。
 pub fn number_parse_int<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     if args.len() < 2 {
         return NativeResult::Ok(JsValue::float(f64::NAN));
@@ -212,7 +214,7 @@ pub fn number_parse_int<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     }
 }
 
-/// `parseFloat(string)`：按 ECMA-262 §19.2.4 前缀解析。
+/// `parseFloat(string)`：解析字符串前缀为浮点数。
 ///
 /// 规范白名单 trim 后读 `+`/`-` 符号，特判精确大小写的 `Infinity`；随后按
 /// StrDecimalLiteral 文法扫描最长合法十进制前缀（整数 + 可选小数 + 可选
