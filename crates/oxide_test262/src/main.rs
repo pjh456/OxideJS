@@ -4,7 +4,6 @@ use oxide_compiler::compiler::Compiler;
 use oxide_kernel::kernel::{KernelConfig, KernelCore};
 use oxide_types::value::JsValue;
 use oxide_vm::vm::Vm;
-use serde::Deserialize;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -13,8 +12,12 @@ use std::sync::{Arc, OnceLock, RwLock};
 use std::time::{Duration, Instant};
 use walkdir::WalkDir;
 
+mod config;
+mod meta;
 mod report;
 mod test262_log;
+use config::RunConfig;
+use meta::{parse_meta, strip_meta, Negative, TestMeta};
 use oxide_log::{Level, LogConfig, Output, SUBSYSTEM_COUNT};
 use report::{
     append_fail_log, extract_not_callable_subkey, first_line, format_fail_categories, format_fail_groupings,
@@ -25,38 +28,6 @@ use report::{
 // panic hook 据此定位崩溃所在的测试文件。
 std::thread_local! {
     static CURRENT_TEST_PATH: std::cell::RefCell<String> = const { std::cell::RefCell::new(String::new()) };
-}
-
-/// 测试头部 YAML 元数据中的 `negative` 段：声明期望的失败阶段与错误类型。
-#[derive(Debug, Deserialize)]
-#[allow(dead_code)]
-struct Negative {
-    phase: String,
-    #[serde(rename = "type")]
-    error_type: String,
-}
-
-/// test262 测试文件头部 `/*--- ... ---*/` 段解析出的元数据
-/// （description / flags / includes / features / negative 等）。
-#[derive(Debug, Deserialize)]
-#[allow(dead_code)]
-struct TestMeta {
-    #[serde(default)]
-    description: String,
-    #[serde(default)]
-    flags: Vec<String>,
-    #[serde(default)]
-    includes: Vec<String>,
-    #[serde(default)]
-    features: Vec<String>,
-    #[serde(default)]
-    negative: Option<Negative>,
-    #[serde(default)]
-    es5id: String,
-    #[serde(default)]
-    es6id: String,
-    #[serde(default)]
-    esid: String,
 }
 
 /// 单个测试的判定结果：通过 / 失败 / 跳过（各带说明消息）。
@@ -104,25 +75,6 @@ impl TestResult {
             duration_ms: 0,
         }
     }
-}
-
-/// 从测试源码头部解析 `/*--- YAML ---*/` 元数据；无该头部返回 None。
-fn parse_meta(source: &str) -> Option<TestMeta> {
-    let header_start = source.find("/*---")?;
-    let header = &source[header_start..];
-    let header = header.strip_prefix("/*---")?;
-    let end = header.find("---*/")?;
-    let yaml_body = &header[..end];
-    let yaml_body = yaml_body.trim();
-    serde_yaml::from_str::<TestMeta>(yaml_body).ok()
-}
-
-/// 剥离测试源码头部的 YAML 元数据段，返回纯 JS 代码。
-fn strip_meta(source: &str) -> &str {
-    if let Some(pos) = source.find("---*/") {
-        return source[pos + 5..].trim_start();
-    }
-    source
 }
 
 /// 全部已运行测试的累计统计：通过/失败/跳过计数、总耗时、失败原因分类
@@ -216,23 +168,6 @@ impl RunStats {
             scenario: 0,
         });
     }
-}
-
-/// 运行配置：test262 根目录、路径过滤器及各选项开关。
-#[derive(Debug, Default)]
-struct RunConfig {
-    test262_root: Option<PathBuf>,
-    filter: Option<String>,
-    no_skip: bool,
-    supervise: bool,
-    leak_check: bool,
-    leak_check_interval: usize,
-    /// 关闭 liveness/精确 DCE/RegAlloc 链（on/off 对比基础设施）。
-    no_regalloc: bool,
-    /// 逐测试打印 PASS/FAIL/SKIP（on/off 结果集合对比用）。
-    verbose: bool,
-    /// 汇总尾部不打印 FAIL 清单。
-    no_fail_list: bool,
 }
 
 /// 内嵌的 test262 harness 辅助脚本注册表（编译期 include_str! 打包）。
@@ -373,80 +308,6 @@ fn get_harness_prefix(
     let source = build_harness_source(meta, harness)?;
     cache.write().unwrap().insert(key, source.clone());
     Ok(source)
-}
-
-impl RunConfig {
-    /// 默认运行配置。
-    fn new() -> Self {
-        Self {
-            test262_root: None,
-            filter: None,
-            no_skip: false,
-            supervise: false,
-            leak_check: false,
-            leak_check_interval: 1000,
-            no_regalloc: false,
-            verbose: false,
-            no_fail_list: false,
-        }
-    }
-
-    /// 解析命令行参数为运行配置；未知选项或参数过多返回错误。
-    fn parse(args: &[String]) -> Result<Self, String> {
-        let mut config = Self::new();
-        let mut positional = Vec::new();
-
-        for arg in args.iter().skip(1) {
-            match arg.as_str() {
-                "--no-skip" => config.no_skip = true,
-                "--no-regalloc" => config.no_regalloc = true,
-                "--verbose" => config.verbose = true,
-                "--supervise" => config.supervise = true,
-                "--leak-check" => config.leak_check = true,
-                "--no-fail-list" => config.no_fail_list = true,
-                "--help" | "-h" => return Err(Self::usage()),
-                _ if arg.starts_with("--leak-check-interval=") => {
-                    config.leak_check_interval =
-                        arg.strip_prefix("--leak-check-interval=").unwrap().parse().unwrap_or(1000);
-                }
-                _ if arg.starts_with("--") => return Err(format!("unknown option: {arg}\n\n{}", Self::usage())),
-                _ => positional.push(arg.clone()),
-            }
-        }
-
-        if let Some(root) = positional.first() {
-            config.test262_root = Some(PathBuf::from(root));
-        }
-        if let Some(filter) = positional.get(1) {
-            config.filter = Some(filter.clone());
-        }
-        if positional.len() > 2 {
-            return Err(format!("too many positional arguments\n\n{}", Self::usage()));
-        }
-
-        Ok(config)
-    }
-
-    /// 打印用法说明。
-    fn usage() -> String {
-        "usage: test262-runner [--no-skip] [--no-regalloc] [--verbose] [--supervise] [--leak-check] [--leak-check-interval=N] [test262-root] [path-filter]\n\
-         \n\
-         --no-skip    Run capability-excluded tests and count unsupported compile/runtime results as failures.\n\
-         --no-regalloc  Disable the liveness/precise-DCE/RegAlloc compiler chain (vregs stay as physical numbers).\n\
-         --verbose    Print one PASS/FAIL/SKIP line per test (for on/off result-set comparison).\n\
-         --no-fail-list  Do not print the per-path FAIL list at the end of the run.\n\
-         --supervise  Run the suite as single-worker child-process windows with a hard per-test timeout and\n\
-         \x20            automatic resume past any hanging/crashing test. A hang or crash is reported by path.\n\
-         --leak-check Monitor session_object_ptrs, session_bytes, code_forge.len(), symbol_registry.len() every\n\
-         \x20            --leak-check-interval tests (default 1000). Flags sustained linear growth (R^2>0.9).\n\
-         \n\
-         supervised-mode env tunables:\n\
-         \x20  OXIDE_TEST262_TIMEOUT_SECS        per-test wall-clock timeout (default 10)\n\
-         \x20  OXIDE_TEST262_WINDOW              tests per window (default 5000)\n\
-         \x20  OXIDE_TEST262_SUPERVISORS         concurrent windows (default = available parallelism)\n\
-         \x20  OXIDE_TEST262_STARTUP_GRACE_SECS  grace for a child's first heartbeat (default 60)"
-            .into()
-    }
 }
 
 /// 按测试元数据的 flags/features 判断是否应跳过，返回跳过原因（None 表示不跳过）。
