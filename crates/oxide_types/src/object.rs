@@ -13,8 +13,8 @@
 //! 冻结公共面：外部可见名称为 11 名清单（8 名重导出 + 3 名原生定义
 //! `JsObject` / `ShapeId` / `MAX_DENSE_PROPS`），显式名单防 `pub` 面无声扩大。
 //!
-//! 布局锚点：布局说明块锚在 `JsObject` 定义上方（随结构体，不在头部文档）；
-//! 尺寸守护为 `object_size_bounds` 测试的 256B 上界，与布局块总账口径
+//! 布局说明块位于 `JsObject` 定义上方（随结构体，不在模块头文档）；
+//! 尺寸守护为 `object_size_bounds` 测试的 256B 上界，与布局块字段总字节数
 //! 并存、不统一。
 
 use crate::value::JsValue;
@@ -36,14 +36,14 @@ pub use typed_array::TypedArrayKind;
 /// 形状标识符（对象 header 低位 24 位）。
 pub type ShapeId = u32;
 
-/// dense 属性向量长度的硬上限，防止索引失控导致内存膨胀。
+/// 属性存储索引的硬上限，防止索引失控导致内存膨胀。
 pub const MAX_DENSE_PROPS: usize = 1_000_000;
 
 /// 定长对象头 + 堆外数据指针的 JS 普通/外来对象。
 ///
 /// 内联字段：`header`（shape_id + 一组标志位）、`type_tag`（外来对象种类）、
-/// `proto`、`generation` 等；dense 属性向量、属性元数据、native payload 与
-/// upvalue cell 列表以裸指针挂在堆上，由 VM / GC 维护。对象可分配在
+/// `proto`、`generation` 等；命名属性区（`hash_props`）、属性元数据、
+/// native payload 与 upvalue cell 列表以裸指针挂在堆上，由 VM / GC 维护。对象可分配在
 /// session arena（`Epoch`）或全局堆（`Arc`），通过
 /// `is_session_epoch` 位区分。
 ///
@@ -207,7 +207,8 @@ impl JsObject {
         self.type_tag == Self::OBJ_TYPE_REGEX_STUB
     }
     /// 是否持有编译正则：`native_fn` 槽存 `Box<regress::Regex>` 的两种对象形态
-    /// （RegExp 对象 / matchAll 载体）——其释放、深拷贝、字节核算守卫统一走此谓词。
+    /// （RegExp 对象 / matchAll 载体）——其 `native_fn` 槽的释放、深拷贝与字节
+    /// 核算均由该谓词判定。
     #[inline]
     pub fn holds_compiled_regex(&self) -> bool {
         matches!(self.type_tag, Self::OBJ_TYPE_REGEXP | Self::OBJ_TYPE_REGEX_STUB)
@@ -391,7 +392,6 @@ impl JsObject {
         let vec = Box::new(vec![JsValue::undefined(); n_elements.min(MAX_DENSE_PROPS)]);
         obj.array_elements = Box::into_raw(vec) as *mut u8;
         obj.array_prop_count = n_elements.min(MAX_DENSE_PROPS) as u32;
-        // 逻辑长度单独记录（超过 dense 上限时），供 a.length 读取。
         obj.array_len_override = if n_elements > MAX_DENSE_PROPS { n_elements as u32 } else { 0 };
         obj
     }
@@ -489,7 +489,7 @@ impl JsObject {
         }
     }
 
-    /// dense 属性向量底层指针（未分配时为空指针）。
+    /// 命名属性区底层指针（未分配时为空指针）。
     pub fn hash_props_raw(&self) -> *mut u8 {
         self.hash_props
     }
@@ -509,10 +509,11 @@ impl JsObject {
         self.prop_meta
     }
 
-    /// 释放四处堆外裸指针区（命名属性向量/元数据、数组元素区/元素元数据）并置空。
+    /// 释放四处堆外裸指针区（命名属性区、命名属性元数据区、数组元素区、
+    /// 数组元素元数据区）并置空。
     ///
     /// 供 session 收尾调用：对象本体可能仍被 Arc 引用（此后属性区不再被读取），
-    /// 每区至多释放一次、重复调用为 no-op。upvalue 列表不在本函数口径内
+    /// 每区至多释放一次、重复调用为 no-op。upvalue 列表不在本函数释放范围内
     /// （原件与晋升克隆间别名，须收尾时去重统一释放）。
     pub fn release_raw_heap(&mut self) {
         // SAFETY: 四个区各由 ensure_* 路径经 Box::into_raw 分配一次（或为空指针）；
@@ -577,7 +578,7 @@ impl JsObject {
 
     /// 用 `rewrite` 改写对象内引用的所有对象值。
     ///
-    /// 用于 GC 移动 / 世代晋升：遍历数组元素区、dense 属性、访问器 getter/setter、
+    /// 用于 GC 移动 / 世代晋升：遍历数组元素区、命名属性区、访问器 getter/setter、
     /// `proto`、`captured_this`、`home_object` 与 upvalue cell 中的对象值，
     /// 原地替换为新地址。非对象值保持不变。
     pub fn rewrite_object_values<F>(&mut self, mut rewrite: F)

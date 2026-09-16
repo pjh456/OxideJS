@@ -1,4 +1,4 @@
-//! 属性存储区与属性元数据读写 API：命名属性向量（`hash_props`）、数组元素区与元素
+//! 属性存储区与属性元数据读写 API：命名属性区（`hash_props`）、数组元素区与元素
 //! 元数据区、命名属性元数据区三区，均为懒分配堆外裸指针（生命周期由 `ensure_*` /
 //! `release_raw_heap` / GC 改写维护），dense 封顶 `MAX_DENSE_PROPS`，下标经
 //! `PropIndex` 统一。
@@ -110,7 +110,7 @@ impl JsObject {
 
     /// 确保属性元数据向量已分配并返回可变引用。
     ///
-    /// 初始长度与当前 dense 属性数对齐，全部初始化为 `None`（无元数据）。
+    /// 初始长度与当前命名属性数对齐，全部初始化为 `None`（无元数据）。
     pub fn ensure_prop_meta(&mut self) -> &mut Vec<Option<PropMetaEntry>> {
         if self.prop_meta.is_null() {
             let len = self.prop_vec_len();
