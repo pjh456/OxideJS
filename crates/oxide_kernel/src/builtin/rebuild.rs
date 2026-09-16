@@ -23,7 +23,7 @@ impl BuiltinWorld {
     /// 的新旧 world 持有同一个 `Arc` 对象。本函数在旧 world 被丢弃前做两件事：
     ///
     /// 1. 原型槽改写：保留对象（登记表 wrapper 与新旧 world 共享的 P 字段）
-    ///    的 [[Prototype]] 槽若仍指向已被替换的旧对象，改写为对应的新对象；
+    ///    的 `[[Prototype]]` 槽若仍指向已被替换的旧对象，改写为对应的新对象；
     /// 2. 释放：被替换旧 P 对象的四处堆外属性区（命名属性值 / 命名属性元数据 /
     ///    数组元素 / 数组元素元数据）逐一释放并置空。
     ///
@@ -141,7 +141,7 @@ impl BuiltinWorld {
     ///   `function_constructor` / `object_proto` / `object_constructor` 各用
     ///   `mem::forget` 抬升一次 Arc 计数（本体永久保留）再重建。原因：方法
     ///   wrapper 经 `Box::into_raw` 分配后登记在释放登记表、跨重建存活，其
-    ///   [[Prototype]] 裸指针指向绑定时的旧 function_proto；执行期原型链查找
+    ///   `[[Prototype]]` 裸指针指向绑定时的旧 function_proto；执行期原型链查找
     ///   （如 `push.call` 沿 wrapper 原型链取 `call`）仍走这些对象，session
     ///   重置只清执行态、不切断该路径，旧对 Arc 若在此归零则指针悬空。保留的
     ///   本体同时充当 `retire_replaced` 原型槽改写遗漏的兜底：遗漏时读者仅见
