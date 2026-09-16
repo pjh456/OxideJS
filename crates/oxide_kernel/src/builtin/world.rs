@@ -115,12 +115,15 @@ pub struct BuiltinWorld {
     pub map_iterator_proto: P<JsObject>,
     /// `%SetIteratorPrototype%`：Set 的 values/keys/entries 迭代器共享。
     pub set_iterator_proto: P<JsObject>,
-    /// `%StringIteratorPrototype%`：String.prototype[@@iterator] 返回的迭代器。
+    /// `%StringIteratorPrototype%`：`String.prototype[@@iterator]` 返回的迭代器。
     pub string_iterator_proto: P<JsObject>,
-    /// String.prototype[@@iterator] 默认迭代器函数对象指针（绑定层捕获，原始值指针、
-    /// 所有权归 wrapper 释放表）。String 臂覆盖判定以此做指针比较：默认迭代器即
-    /// @@iterator 槽本身（自别名），集合式锚点槽比较不可复用，须独立存指针。
-    /// `Cell` 供绑定层经 `&Arc<BuiltinWorld>` 共享引用写入。
+    /// `String.prototype[@@iterator]` 默认迭代器函数对象的裸指针，绑定层安装方法时
+    /// 捕获写入。wrapper 本体归 `leaked_objects` 释放登记表所有，session 收尾统一释放。
+    ///
+    /// 字符串迭代器协议判定（判断某函数是否就是该默认迭代器）按指针与
+    /// 本值比较：默认迭代器正是 @@iterator 槽存储的值本身（槽值与迭代器函数
+    /// 同一对象），无法像集合迭代器那样复用"与迭代器原型槽比较"的判法，
+    /// 故独立存一份指针。`Cell` 供绑定层经 `&Arc<BuiltinWorld>` 共享引用写入。
     pub string_default_iterator: std::cell::Cell<*const JsObject>,
     /// `%RegExpStringIteratorPrototype%`：matchAll 返回的迭代器。
     pub regexp_string_iterator_proto: P<JsObject>,
@@ -133,25 +136,25 @@ pub struct BuiltinWorld {
     pub async_disposable_stack_proto: P<JsObject>,
     pub stub_objects: Vec<P<JsObject>>,
     pub console_object: P<JsObject>,
-    /// 绑定层经 `Box::into_raw` 持有的函数/宿主对象登记表（方法 wrapper、
-    /// 访问器、错误构造器、Reflect/Iterator、内建原型构造器、`$262` 宿主等）。
-    /// 这些对象本体在堆上、不属任何 arena，`session` 收尾时按表统一释放
-    /// （属性区 + 本体）；选择性重建换 world 时本表整体并入新 world
+    /// 释放登记表（`Box::into_raw` 对象的清单，session 收尾统一释放，非内存泄漏）：
+    /// 绑定层经 `Box::into_raw` 持有的函数/宿主对象（方法 wrapper、访问器、
+    /// 错误构造器、Reflect/Iterator、内建原型构造器、`$262` 宿主等）。
+    /// 这些对象本体在堆上、不属任何 arena，session 收尾时按表统一释放
+    /// （属性区 + 本体）；选择性重建替换 world 时本表整体并入新 world
     /// （`inherit_leaked_objects`），仍由 session 收尾统一释放，不悬垂、不双放。
     ///
     /// 可复用 native 函数 wrapper 带复用键（[`FnWrapperKey`]）：选择性重建
-    /// 重绑按键命中前轮旧 wrapper，迁移到重建 P 对象槽位，登记表跨轮不增长。
+    /// 重绑按键命中旧 wrapper，迁移到重建 P 对象槽位，登记表跨重建不增长。
     pub(crate) leaked_objects: std::cell::RefCell<Vec<LeakedSlot>>,
 }
 
 /// native 函数 wrapper 的复用键：（目标家族，目标站点标签，属性槽位键，wrapper 名）。
 ///
-/// 家族目标是 [`BuiltinWorld::all_p_fields`] 枚举的稳定下标（重建跨轮不变，
-/// 1..=N），此时标签恒 0；非 P 目标（global 对象、Box 自建构造器、宿主对象、
-/// VM 内建原型）家族为 0，以绑定站点标签（站点名的 perm intern 键）区分
-/// 同名方法槽位——如 Generator/AsyncGenerator 原型同名的 next/return/throw。
-/// 选择性重建重绑按键查找前轮旧 wrapper 并迁移，避免每轮新建导致
-/// 登记表无界累积；同键重复登记意味着复用键设计缺陷（debug 断言守约）。
+/// `family` 字段：目标对象属于本 world 固定 P 字段时取该字段在 `all_p_fields`
+/// 枚举中的下标加 1（字段序跨重建不变），否则为 0；`label` 字段：非 P 目标
+/// 的绑定站点标识（站点名的 intern 键），用于区分 Generator/AsyncGenerator
+/// 原型上同名的 next/return/throw 槽。选择性重建重绑按键命中旧 wrapper 并
+/// 迁移，避免跨重建无界累积登记表；同键重复登记意味着复用键设计缺陷（debug 断言）。
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct FnWrapperKey {
     family: u16,
@@ -161,6 +164,7 @@ pub struct FnWrapperKey {
 }
 
 impl FnWrapperKey {
+    /// 按（family, label, slot, name）四元组构造复用键。
     pub const fn new(family: u16, label: u32, slot: u32, name: u32) -> Self {
         Self { family, label, slot, name }
     }
@@ -173,6 +177,7 @@ pub(crate) struct LeakedSlot {
 }
 
 impl BuiltinWorld {
+    /// 把 Function.prototype 包装为 `JsValue` 返回，供方法 wrapper 取原型。
     pub fn fn_proto_val(&self) -> JsValue {
         JsValue::from_js_object(self.function_proto.as_ptr() as *mut JsObject)
     }
@@ -204,8 +209,8 @@ impl BuiltinWorld {
     /// 重绑的复用入口）。
     ///
     /// # 边界与前提
-    /// 登记表指针 session 存活期内有效（full_reset 安全点无并发读者）；
-    /// native 函数与参数个数一并校验，防绑定表漂移时误换旧实现。
+    /// 登记表指针 session 存活期内有效（full_reset 是无存活 VM 的时刻，
+    /// 无并发读者）；native 函数与参数个数一并校验，防绑定表漂移时误换旧实现。
     pub fn find_fn_wrapper(
         &self, key: FnWrapperKey, native_fn_ptr: NativeFnPtr, arg_count: u8,
     ) -> Option<*mut JsObject> {
@@ -233,7 +238,8 @@ impl BuiltinWorld {
         0
     }
 
-    /// 登记表对象数（泄漏校准的跨轮继承采样锚点）。
+    /// 返回释放登记表的对象数；选择性重建继承登记表时，宿主基准用例以该数
+    /// 为采样点验证登记表无界增长。
     pub fn leaked_object_count(&self) -> usize {
         self.leaked_objects.borrow().len()
     }
@@ -362,7 +368,7 @@ impl BuiltinWorld {
 
     /// 释放本 world 拥有的全部手工堆数据。
     ///
-    /// # 口径
+    /// # 释放范围
     /// 1. `Box::into_raw` 持有的函数/宿主对象（登记表）：先释放其堆外属性区，
     ///    再释放对象本体；
     /// 2. 全部 P 对象字段（`all_p_fields` 枚举 + stub 族）的堆外属性区——
@@ -508,9 +514,9 @@ mod tests {
     use super::*;
     use crate::shape_forge::EMPTY_SHAPE_ID;
 
-    /// 选择性重建的释放 + 重指面动态自测：被替换旧 P 对象属性区恰好释放一次
-    /// （置空可断言，含保活钉住对的属性区、本体钉保留），保留字段指针不变且
-    /// proto 槽重指新指针，登记表并入新 world。
+    /// 选择性重建的释放 + 原型槽改写面动态自测：被替换旧 P 对象属性区恰好释放
+    /// 一次（置空可断言，含经 `mem::forget` 抬升 Arc 计数的 Function 家族属性区、
+    /// 本体永久保留），保留字段指针不变且 proto 槽改写到新指针，登记表并入新 world。
     #[test]
     fn selective_reset_releases_replaced_family_heap() {
         use crate::kernel::{KernelConfig, KernelCore, KernelSession};
@@ -522,8 +528,8 @@ mod tests {
         let object_proto = old_world.object_proto.as_ptr() as *mut JsObject;
         let fn_proto = old_world.function_proto.as_ptr() as *mut JsObject;
 
-        // 旧原型各造一个命名属性区（绑定后的驻留态）；登记表放一个 proto 槽
-        // 指向旧 fn_proto 的泄漏 wrapper（绑定时固化形态）。
+        // 旧原型各造一个命名属性区（绑定安装属性区后的状态）；登记表放一个
+        // proto 槽指向旧 fn_proto 的 wrapper（槽值绑定时写入）。
         let wrapper = Box::into_raw(Box::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())));
         unsafe {
             (*wrapper).set_proto(JsValue::from_js_object(fn_proto)).ok();
@@ -541,20 +547,20 @@ mod tests {
         assert!(dirty.array);
         assert!(dirty.function);
 
-        // 被替换家族（array）：属性区四区已释放置空。
+        // 被替换家族（array）：四处堆外属性区已释放置空。
         let old_array = unsafe { &*array_proto };
         assert!(old_array.hash_props_raw().is_null());
         assert!(old_array.array_elements_raw().is_null());
         assert!(old_array.array_elements_meta_raw().is_null());
         assert!(old_array.prop_meta_raw().is_null());
-        // 保活钉住对（function）：本体钉保留（仍可读），属性区于重指完成后
-        // 同样释放——重指后旧对无读者。
+        // 经 `mem::forget` 抬升 Arc 计数的 Function 家族对象对：本体永久保留（仍可读），
+        // 属性区于原型槽改写完成后同样释放——改写后旧对象无读者。
         assert!(unsafe { &*fn_proto }.hash_props_raw().is_null());
         // 未脏家族（object）：沿用同一对象，字段指针与属性区均不受影响。
         assert!(!unsafe { &*object_proto }.hash_props_raw().is_null());
         assert!(std::ptr::eq(object_proto, session.builtin_world.object_proto.as_ptr() as *mut JsObject));
-        // 重指：保留字段（object_constructor）与保留 wrapper 的 proto 槽均换
-        // 到新 fn_proto，无残留旧指针。
+        // 原型槽改写：保留字段（object_constructor）与保留 wrapper 的 proto 槽
+        // 均改写到新 fn_proto，无残留旧指针。
         let new_fn_proto = session.builtin_world.function_proto.as_ptr() as *mut JsObject;
         let object_ctor = old_world.object_constructor.as_ptr() as *mut JsObject;
         assert!(std::ptr::eq(
