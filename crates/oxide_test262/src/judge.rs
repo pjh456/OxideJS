@@ -3,8 +3,8 @@
 //! 判定/分类函数与判定模型放宽 `pub(crate)`；`classify_vm_error`/`parse_undefined_ident`/`KNOWN_MISSING_GLOBALS` 保持私有。
 
 use crate::meta::{Negative, TestMeta};
-use crate::read_async_output;
 use crate::report::extract_not_callable_subkey;
+use crate::runner::read_async_output;
 use oxide_types::value::JsValue;
 use oxide_vm::vm::Vm;
 use std::path::{Path, PathBuf};
