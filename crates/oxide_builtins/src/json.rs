@@ -32,7 +32,8 @@ pub fn json_parse<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 
     let mut result = value_to_jsvalue(vm, &parsed);
 
-    // 提供 reviver 时以后序遍历逐属性调用，重建解析后的值。
+    // reviver 遍历以 holder 包装对象为根：解析得到的根值存于空串键槽，
+    // 后序遍历自该槽展开，重建完成后以槽内最终值作为返回值。
     if args.len() > 2 {
         let reviver_val = vm.reg(args[2]);
         if reviver_val.is_object() {
