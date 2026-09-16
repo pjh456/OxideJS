@@ -2,8 +2,8 @@
 //!
 //! 普通 double 直接以 IEEE-754 位模式存放；其余类型用静默 NaN 前缀
 //! `0xFFF8_0000_0000_0000` 加上 3 位 tag（bits 50-48）区分 int / bool /
-//! null / undefined / object / string / symbol。对象与字符串存 48 位指针，
-//! 使一个 `JsValue` 可塞进寄存器且类型判断为常数时间。
+//! null / undefined / object / string / symbol / bigint。对象与字符串
+//! 存 48 位指针，使一个 `JsValue` 可塞进寄存器且类型判断为常数时间。
 
 use std::fmt;
 
@@ -29,11 +29,13 @@ const TAG_UNDEFINED: u64 = 3;
 const TAG_OBJECT: u64 = 4;
 const TAG_STRING: u64 = 5;
 const TAG_SYMBOL: u64 = 6;
-/// BigInt 指针（见 `bigint`/`as_bigint_ptr`）。tag 7 原为 NaN 规范化
-/// 编码所在，现 NaN 规范化改用普通 quiet NaN 位模式（见 [`JsValue::float`]）。
+/// BigInt 指针（见 `bigint` / `as_bigint_ptr`）。
+/// tag 0-7 各占一类：0 int、1 bool、2 null、3 undefined、4 object、5 string、
+/// 6 symbol、7 bigint。NaN 规范化编码不占 tag——规范化后的 NaN 是普通
+/// quiet NaN 位模式（见 [`JsValue::float`]），落在非 NaN-box 区间。
 const TAG_BIGINT: u64 = 7;
 
-/// 48-bit pointer mask (x86-64 canonical VA)
+/// 48 位指针掩码（x86-64 规范地址空间上界）
 pub const PTR_MASK: u64 = 0x0000_FFFF_FFFF_FFFF;
 
 /// 32 位整数载荷掩码
@@ -165,7 +167,7 @@ impl JsValue {
             TAG_OBJECT => JsType::Object,
             TAG_STRING => JsType::String,
             TAG_SYMBOL => JsType::Symbol,
-            // tag 7 = BigInt（NaN 规范化编码已改用普通 quiet NaN，见 [`JsValue::float`]）。
+            // tag 7 = BigInt（NaN 规范化编码不占 tag，见 [`JsValue::float`]）。
             TAG_BIGINT => JsType::BigInt,
             // 3 位 tag 全被占用，该分支不可达（仅满足类型系统穷尽性）。
             _ => JsType::Double,
@@ -216,9 +218,8 @@ impl JsValue {
 
     /// 构造对象引用（48 位指针 + object tag）。
     ///
-    /// # Panics (debug)
-    ///
-    /// debug 构建下若指针超出 48 位地址空间会 panic。
+    /// # 边界与前提
+    /// - debug 构建下若指针超出 48 位地址空间会 panic。
     pub fn object(ptr: *const u8) -> Self {
         let addr = ptr as u64;
         debug_assert!(addr <= PTR_MASK, "object pointer must fit in 48 bits");
@@ -376,9 +377,7 @@ impl JsValue {
 
     /// 构造 BigInt 值（payload 为堆分配 `i128` 的 48 位指针）。
     ///
-    /// 与 JsString 同机制：i128 本体存于 VM 管理的堆 box，这里携带指针。
-    /// tag 7 原为 NaN 规范化编码，NaN 已改用普通 quiet NaN 位模式，故 tag 7
-    /// 空出给 BigInt。
+    /// 与 `JsString` 同机制：`i128` 本体存于 VM 管理的堆 box，这里携带指针。
     pub fn bigint(ptr: *const BigInt) -> Self {
         let addr = ptr as u64;
         debug_assert!(addr <= PTR_MASK, "bigint pointer must fit in 48 bits");
