@@ -16,8 +16,7 @@ impl JsObject {
         if self.hash_props.is_null() {
             0
         } else {
-            // SAFETY: hash_props 要么为空，要么在 ensure_hash_props/new_array 中
-            // 由 Box<Vec<JsValue>> 创建并归本对象所有。
+            // SAFETY: 指针归本对象所有，见字段声明。
             let vec = unsafe { &*(self.hash_props as *const Vec<JsValue>) };
             vec.len() as u32
         }
@@ -123,8 +122,7 @@ impl JsObject {
             let vec = Box::new(vec![None::<PropMetaEntry>; len]);
             self.prop_meta = Box::into_raw(vec) as *mut u8;
         }
-        // SAFETY: prop_meta 在 ensure_prop_meta 中由
-        // Box<Vec<Option<PropMetaEntry>>> 创建，本对象持有期间始终有效。
+        // SAFETY: 指针归本对象所有，见字段声明。
         unsafe { &mut *(self.prop_meta as *mut Vec<Option<PropMetaEntry>>) }
     }
 
@@ -133,8 +131,7 @@ impl JsObject {
         if self.prop_meta.is_null() {
             None
         } else {
-            // SAFETY: prop_meta 在 ensure_prop_meta 中由
-            // Box<Vec<Option<PropMetaEntry>>> 创建，本对象持有期间始终有效。
+            // SAFETY: 指针归本对象所有，见字段声明。
             unsafe { Some(&*(self.prop_meta as *const Vec<Option<PropMetaEntry>>)) }
         }
     }
@@ -143,8 +140,7 @@ impl JsObject {
         if self.prop_meta.is_null() {
             None
         } else {
-            // SAFETY: prop_meta 在 ensure_prop_meta 中由
-            // Box<Vec<Option<PropMetaEntry>>> 创建，本对象持有期间始终有效。
+            // SAFETY: 指针归本对象所有，见字段声明。
             unsafe { Some(&mut *(self.prop_meta as *mut Vec<Option<PropMetaEntry>>)) }
         }
     }
@@ -287,22 +283,22 @@ impl JsObject {
     /// `set_prop_count` 按新形状重填。不清除形状 ID，调用方自行处理。
     pub fn clear_props(&mut self) {
         if !self.array_elements.is_null() {
-            // SAFETY: array_elements 在 ensure_array_elements/new_array 中由 Box<Vec<JsValue>> 创建。
+            // SAFETY: 指针归本对象所有，见字段声明。
             let vec = unsafe { &mut *(self.array_elements as *mut Vec<JsValue>) };
             vec.clear();
         }
         if !self.array_elements_meta.is_null() {
-            // SAFETY: array_elements_meta 在 ensure_array_elements_meta 中创建。
+            // SAFETY: 指针归本对象所有，见字段声明。
             let meta = unsafe { &mut *(self.array_elements_meta as *mut Vec<Option<PropMetaEntry>>) };
             meta.clear();
         }
         if !self.hash_props.is_null() {
-            // SAFETY: hash_props 在 ensure_hash_props/new_array 中由 Box<Vec<JsValue>> 创建。
+            // SAFETY: 指针归本对象所有，见字段声明。
             let vec = unsafe { &mut *(self.hash_props as *mut Vec<JsValue>) };
             vec.clear();
         }
         if !self.prop_meta.is_null() {
-            // SAFETY: prop_meta 在 ensure_prop_meta 中由 Box<Vec<Option<PropMetaEntry>>> 创建。
+            // SAFETY: 指针归本对象所有，见字段声明。
             let meta = unsafe { &mut *(self.prop_meta as *mut Vec<Option<PropMetaEntry>>) };
             meta.clear();
         }
@@ -315,7 +311,7 @@ impl JsObject {
             let vec = Box::new(Vec::<JsValue>::new());
             self.hash_props = Box::into_raw(vec) as *mut u8;
         }
-        // SAFETY: hash_props 在本方法或 new_array 中由 Box<Vec<JsValue>> 创建。
+        // SAFETY: 指针归本对象所有，见字段声明。
         unsafe { &mut *(self.hash_props as *mut Vec<JsValue>) }
     }
 
@@ -324,7 +320,7 @@ impl JsObject {
         if self.hash_props.is_null() {
             None
         } else {
-            // SAFETY: hash_props 在 ensure_hash_props/new_array 中由 Box<Vec<JsValue>> 创建。
+            // SAFETY: 指针归本对象所有，见字段声明。
             unsafe { Some(&*(self.hash_props as *const Vec<JsValue>)) }
         }
     }
@@ -333,7 +329,7 @@ impl JsObject {
         if self.hash_props.is_null() {
             None
         } else {
-            // SAFETY: hash_props 在 ensure_hash_props/new_array 中由 Box<Vec<JsValue>> 创建。
+            // SAFETY: 指针归本对象所有，见字段声明。
             unsafe { Some(&mut *(self.hash_props as *mut Vec<JsValue>)) }
         }
     }
@@ -344,7 +340,7 @@ impl JsObject {
             let vec = Box::new(Vec::<JsValue>::new());
             self.array_elements = Box::into_raw(vec) as *mut u8;
         }
-        // SAFETY: array_elements 在本方法或 new_array 中由 Box<Vec<JsValue>> 创建。
+        // SAFETY: 指针归本对象所有，见字段声明。
         let vec = unsafe { &mut *(self.array_elements as *mut Vec<JsValue>) };
         while vec.len() < self.array_prop_count as usize {
             vec.push(JsValue::undefined());
@@ -357,7 +353,7 @@ impl JsObject {
         if self.array_elements.is_null() {
             None
         } else {
-            // SAFETY: array_elements 在 ensure_array_elements/new_array 中由 Box<Vec<JsValue>> 创建。
+            // SAFETY: 指针归本对象所有，见字段声明。
             unsafe { Some(&*(self.array_elements as *const Vec<JsValue>)) }
         }
     }
@@ -366,7 +362,7 @@ impl JsObject {
         if self.array_elements.is_null() {
             None
         } else {
-            // SAFETY: array_elements 在 ensure_array_elements/new_array 中由 Box<Vec<JsValue>> 创建。
+            // SAFETY: 指针归本对象所有，见字段声明。
             unsafe { Some(&mut *(self.array_elements as *mut Vec<JsValue>)) }
         }
     }
@@ -378,7 +374,7 @@ impl JsObject {
             let vec = Box::new(vec![None::<PropMetaEntry>; len]);
             self.array_elements_meta = Box::into_raw(vec) as *mut u8;
         }
-        // SAFETY: array_elements_meta 在本方法中由 Box<Vec<Option<PropMetaEntry>>> 创建。
+        // SAFETY: 指针归本对象所有，见字段声明。
         let vec = unsafe { &mut *(self.array_elements_meta as *mut Vec<Option<PropMetaEntry>>) };
         while vec.len() < self.array_prop_count as usize {
             vec.push(None);
@@ -391,7 +387,7 @@ impl JsObject {
         if self.array_elements_meta.is_null() {
             None
         } else {
-            // SAFETY: array_elements_meta 在 ensure_array_elements_meta 中创建。
+            // SAFETY: 指针归本对象所有，见字段声明。
             unsafe { Some(&*(self.array_elements_meta as *const Vec<Option<PropMetaEntry>>)) }
         }
     }
@@ -400,7 +396,7 @@ impl JsObject {
         if self.array_elements_meta.is_null() {
             None
         } else {
-            // SAFETY: array_elements_meta 在 ensure_array_elements_meta 中创建。
+            // SAFETY: 指针归本对象所有，见字段声明。
             unsafe { Some(&mut *(self.array_elements_meta as *mut Vec<Option<PropMetaEntry>>)) }
         }
     }
@@ -415,21 +411,21 @@ impl JsObject {
                 if self.array_elements.is_null() {
                     return JsValue::undefined();
                 }
-                // SAFETY: array_elements 在 ensure_array_elements/new_array 中由 Box<Vec<JsValue>> 创建。
+                // SAFETY: 指针归本对象所有，见字段声明。
                 let vec = unsafe { &*(self.array_elements as *const Vec<JsValue>) };
                 return vec.get(pos).copied().unwrap_or(JsValue::undefined());
             }
             if self.hash_props.is_null() {
                 return JsValue::undefined();
             }
-            // SAFETY: hash_props 在 ensure_hash_props/new_array 中由 Box<Vec<JsValue>> 创建。
+            // SAFETY: 指针归本对象所有，见字段声明。
             let vec = unsafe { &*(self.hash_props as *const Vec<JsValue>) };
             return vec.get(pos - count).copied().unwrap_or(JsValue::undefined());
         }
         if self.hash_props.is_null() {
             return JsValue::undefined();
         }
-        // SAFETY: hash_props 在 ensure_hash_props/new_array 中由 Box<Vec<JsValue>> 创建。
+        // SAFETY: 指针归本对象所有，见字段声明。
         let vec = unsafe { &*(self.hash_props as *const Vec<JsValue>) };
         vec.get(pos).copied().unwrap_or(JsValue::undefined())
     }
@@ -552,7 +548,7 @@ impl JsObject {
         if self.hash_props.is_null() {
             0
         } else {
-            // SAFETY: hash_props 在 ensure_hash_props/new_array 中由 Box<Vec<JsValue>> 创建。
+            // SAFETY: 指针归本对象所有，见字段声明。
             unsafe { &*(self.hash_props as *const Vec<JsValue>) }.len()
         }
     }

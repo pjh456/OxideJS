@@ -90,10 +90,20 @@ pub struct JsObject {
     is_session_epoch: u8,
     _pad: u8,
     /// 数组元素区（仅数组对象）：`Vec<JsValue>`，`len == array_prop_count`。
+    /// 经 `Box::into_raw` 创建（仅 `new_array` / `ensure_array_elements` 分配），
+    /// 本对象持有期间有效，由 `release_raw_heap` 释放。
     array_elements: *mut u8,
     /// 数组元素元数据区（仅数组对象，懒分配）：`Vec<Option<PropMetaEntry>>`。
+    /// 经 `Box::into_raw` 创建（仅 `ensure_array_elements_meta` 分配），
+    /// 本对象持有期间有效，由 `release_raw_heap` 释放。
     array_elements_meta: *mut u8,
+    /// 命名属性区（懒分配）：`Vec<JsValue>` 值向量。
+    /// 经 `Box::into_raw` 创建（仅 `ensure_hash_props` 分配），
+    /// 本对象持有期间有效，由 `release_raw_heap` 释放。
     hash_props: *mut u8,
+    /// 命名属性元数据区（懒分配）：`Vec<Option<PropMetaEntry>>`。
+    /// 经 `Box::into_raw` 创建（仅 `ensure_prop_meta` 分配），
+    /// 本对象持有期间有效，由 `release_raw_heap` 释放。
     prop_meta: *mut u8,
     native_data: *mut u8,
     proto: JsValue,
@@ -516,8 +526,7 @@ impl JsObject {
     /// 每区至多释放一次、重复调用为 no-op。upvalue 列表不在本函数释放范围内
     /// （原件与晋升克隆间别名，须收尾时去重统一释放）。
     pub fn release_raw_heap(&mut self) {
-        // SAFETY: 四个区各由 ensure_* 路径经 Box::into_raw 分配一次（或为空指针）；
-        // Box::from_raw 回收后即刻置空，杜绝二次释放。
+        // SAFETY: 四个区指针归本对象所有（见字段声明）；回收后即刻置空。
         unsafe {
             if !self.array_elements.is_null() {
                 drop(Box::from_raw(self.array_elements as *mut Vec<JsValue>));
