@@ -158,9 +158,9 @@ fn set_own_data_prop<H: VmHost>(host: &mut H, obj: *mut JsObject, key: &str, val
 
 /// `SuppressedError(error, suppressed, message)` 构造器：三参，length=3。
 ///
-/// 以规范 CreateSuppressedError 语义建对象，三字段属性创建顺序为
-/// message → error → suppressed（order-of-args-evaluation 严格断言），
-/// message 为 undefined 时省略；三者均非枚举数据属性。
+/// 以规范 CreateSuppressedError 语义建对象，三字段属性按 message → error
+/// → suppressed 的顺序创建（该顺序有严格断言，实现不得交换），message 为
+/// undefined 时省略；三者均非枚举数据属性。
 ///
 /// # 边界与前提
 /// - args[0]=this 被忽略：普通调用（无 new）同样新建对象，与既有 Error 子类型一致；
@@ -222,14 +222,14 @@ pub fn create_suppressed_error<H: VmHost>(host: &mut H, error_val: JsValue, supp
 /// 缺少 name/message 时按规范回退到 `"Error"` 或空串。
 ///
 /// # 步骤
-/// 1. 非对象 this 直接抛 TypeError（规范 §20.5.3.4 不做 ToObject 装箱）
+/// 1. 非对象 this 直接抛 TypeError（不做 ToObject 装箱）
 /// 2. Get(name)：访问器 getter 触发，抛出的用户异常原样传播
 /// 3. name 非 undefined 时 ToString（Symbol 抛 TypeError，用户转换异常传播）
 /// 4. Get(message) 同 name；message 非 undefined 时 ToString
 /// 5. name/message 任一为空串时只返回另一者，否则 `name: message`
 ///
 /// # 边界与前提
-/// - name/message 为 Symbol 时按 §7.1.17 抛 TypeError；
+/// - name/message 为 Symbol 时 ToString 转换抛 TypeError；
 /// - getter 或 ToPrimitive 抛出的用户异常经 `take_uncaught_value` 原值恢复。
 pub fn error_to_string<H: VmHost>(host: &mut H, args: &[u8]) -> NativeResult {
     let this_val = host.reg(args[0]);
