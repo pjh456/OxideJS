@@ -6,10 +6,11 @@ use oxide_types::mem::P;
 use oxide_types::object::JsObject;
 use oxide_types::value::JsValue;
 
-use super::{
+use super::construct::{
     builtin_labels, make_error_subtypes, make_named_pair, make_typed_array_family, wire_builtin_world_links,
-    BuiltinWorld, ErrorSubtypeProtos, TypedArrayFamily,
+    ErrorSubtypeProtos, TypedArrayFamily,
 };
+use super::BuiltinWorld;
 use crate::kernel::BuiltinDirtySet;
 use crate::shape_forge::{ShapeForge, EMPTY_SHAPE_ID};
 use crate::string_forge::PermInterner;
