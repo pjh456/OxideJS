@@ -93,3 +93,63 @@ impl RunConfig {
              .into()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 构造解析用参数字列（程序名 + 实参）。
+    fn args(args: &[&str]) -> Vec<String> {
+        let mut v = vec!["test262-runner".to_string()];
+        v.extend(args.iter().map(|s| s.to_string()));
+        v
+    }
+
+    /// 七旗标 + 2 位置参数一次 parse：六裸旗各置位、interval 取字面值、
+    /// 位置参数落 root/filter，Ok 路径全断言。
+    #[test]
+    fn parse_all_flags_with_two_positionals() {
+        let cfg = RunConfig::parse(&args(&[
+            "--no-skip",
+            "--no-regalloc",
+            "--verbose",
+            "--supervise",
+            "--leak-check",
+            "--no-fail-list",
+            "--leak-check-interval=250",
+            "tests/test262",
+            "language",
+        ]))
+        .expect("full-flag parse should succeed");
+        assert!(cfg.no_skip);
+        assert!(cfg.no_regalloc);
+        assert!(cfg.verbose);
+        assert!(cfg.supervise);
+        assert!(cfg.leak_check);
+        assert!(cfg.no_fail_list);
+        assert_eq!(cfg.leak_check_interval, 250);
+        assert_eq!(cfg.test262_root, Some(PathBuf::from("tests/test262")));
+        assert_eq!(cfg.filter.as_deref(), Some("language"));
+    }
+
+    /// 未知选项返回含 "unknown option" 的错误；--help 的错误文案与 usage 逐字相等。
+    #[test]
+    fn parse_unknown_option_and_help_err_text() {
+        let err = RunConfig::parse(&args(&["--bogus"])).expect_err("unknown option must error");
+        assert!(err.contains("unknown option: --bogus"));
+
+        let help = RunConfig::parse(&args(&["--help"])).expect_err("--help must error");
+        assert_eq!(help, RunConfig::usage());
+    }
+
+    /// interval 非数字回落缺省 1000；位置参数超过 2 个返回错误。
+    #[test]
+    fn parse_interval_fallback_and_positional_limit() {
+        let cfg =
+            RunConfig::parse(&args(&["--leak-check-interval=abc"])).expect("fallback interval parse should succeed");
+        assert_eq!(cfg.leak_check_interval, 1000);
+
+        let err = RunConfig::parse(&args(&["a", "b", "c"])).expect_err("three positionals must error");
+        assert!(err.contains("too many positional arguments"));
+    }
+}
