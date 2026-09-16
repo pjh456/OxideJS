@@ -228,6 +228,7 @@ pub fn format_fail_groupings(stats: &RunStats, paths: &[PathBuf]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::judge::TestResult;
 
     #[test]
     fn first_line_trims_at_newline() {
@@ -294,5 +295,61 @@ mod tests {
         assert!(out.lines().any(|l| l.trim_start() == "language/expressions/addition : 1"), "实际:\n{out}");
         assert!(out.lines().any(|l| l.trim_start() == "b/c/d : 1"), "实际:\n{out}");
         assert!(out.lines().any(|l| l.trim_start() == ": 1"), "实际:\n{out}");
+    }
+
+    /// FAIL 清单每类别只列样本条数，其余按折叠行计数。
+    #[test]
+    fn format_fail_list_folds_over_limit() {
+        let mut stats = RunStats::default();
+        let paths: Vec<PathBuf> = (0..7).map(|i| PathBuf::from(format!("p{i}.js"))).collect();
+        for (i, p) in paths.iter().enumerate() {
+            stats.record(i, &TestResult::fail(p.clone(), 1, "vm error: x is not callable"));
+        }
+        let out = format_fail_list(&stats, &paths);
+        let fail_lines = out.lines().filter(|l| l.starts_with("    FAIL ")).count();
+        assert_eq!(fail_lines, 5);
+        assert!(out.contains("(+2 more in vm: not callable)"), "应含折叠行，实际:\n{out}");
+    }
+
+    /// 碎片桶附样本行：路径 + 消息首行，类别带截断尾巴也能前缀匹配。
+    #[test]
+    fn format_fail_categories_attaches_other_bucket_samples() {
+        let mut stats = RunStats::default();
+        let paths = vec![PathBuf::from("p.js")];
+        stats.record(0, &TestResult::fail(paths[0].clone(), 1, "vm error: weird message one two"));
+        let out = format_fail_categories(&stats, &paths);
+        assert!(out.contains("sample:"), "应含样本行，实际:\n{out}");
+        assert!(out.contains("weird message one"), "样本应含消息首行，实际:\n{out}");
+    }
+
+    /// 无失败记录时 FAIL 清单段为空串（调用处静默）。
+    #[test]
+    fn format_fail_list_empty_without_records() {
+        let stats = RunStats::default();
+        let paths: Vec<PathBuf> = Vec::new();
+        assert_eq!(format_fail_list(&stats, &paths), "");
+        assert_eq!(format_fail_categories(&stats, &paths), "");
+    }
+
+    /// 旁路失败行往返：append 后 parse 恢复全部字段；残缺/畸形尾行静默跳过。
+    #[test]
+    fn fail_log_round_trips_and_skips_truncated() {
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!("oxide_t262_fails_test_{}.log", std::process::id()));
+        append_fail_log(&path, 3, "vm: not callable", "", "x is not callable").expect("追加失败");
+        append_fail_log(&path, 4, "compile: unsupported", "foo", "a\tb\nc").expect("追加失败");
+        let mut content = std::fs::read_to_string(&path).expect("读取失败");
+        content.push_str("5\tvm: x\n"); // 残缺：仅 2 字段（SIGKILL 半写形态）
+        content.push_str("x\tb\tc\td\n"); // 畸形：index 非数字
+        std::fs::write(&path, content).expect("写回失败");
+        let content = std::fs::read_to_string(&path).expect("读取失败");
+        let rows = parse_fail_log(&content);
+        assert_eq!(rows.len(), 2, "残缺/畸形行应被跳过，实际 {rows:?}");
+        assert_eq!(
+            rows[0],
+            (3, "vm: not callable".to_string(), "".to_string(), "x is not callable".to_string())
+        );
+        assert_eq!(rows[1], (4, "compile: unsupported".to_string(), "foo".to_string(), "a b c".to_string()));
+        let _ = std::fs::remove_file(&path);
     }
 }
