@@ -11,11 +11,12 @@ use oxide_types::value::JsValue;
 
 use crate::vm::{FrameArgs, FrameContinuation, Vm};
 
-use super::{
-    is_constructor_value, promise_catch, promise_finally, promise_static_all, promise_static_all_settled,
-    promise_static_any, promise_static_race, promise_static_reject, promise_static_resolve,
-    promise_static_with_resolvers, promise_then, PromiseState, PromiseStateKind,
+use super::aggregate::{
+    promise_static_all, promise_static_all_settled, promise_static_any, promise_static_race, promise_static_reject,
+    promise_static_resolve, promise_static_with_resolvers,
 };
+use super::reactions::{promise_catch, promise_finally, promise_then};
+use super::{is_constructor_value, PromiseState, PromiseStateKind};
 
 impl Vm {
     /// 创建空 Promise 对象（proto = `%Promise.prototype%`），状态盒为 Pending。
