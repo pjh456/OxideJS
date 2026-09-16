@@ -1,4 +1,4 @@
-#![doc = "OxideJS - Shared core types (JsValue, JsObject, Shape, P, Epoch)"]
+#![doc = "OxideJS 共享核心类型：ECMAScript 值、对象模型、形状存储、内存抽象与运行时错误类型。"]
 
 /// 运行时错误类型（[`JsError`] / [`JsErrorKind`]）。
 pub mod error;

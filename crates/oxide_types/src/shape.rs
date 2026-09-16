@@ -2,8 +2,11 @@
 //!
 //! 形状表是对象属性布局的可共享描述：每次往对象添加一个命名属性就沿链增长一个
 //! shape。形状按 `(parent_id, prop_name)` 哈希一致化（hash-cons），使结构相同的
-//! 对象共享同一 shape，从而支持属性位置缓存（inline cache）。全局单例
-//! `SHAPE_STORE` 以互斥锁保护，见 `get_shape` 等自由函数。
+//! 对象共享同一 shape，从而支持属性位置缓存（inline cache）。
+//!
+//! 使用范围：本模块仅 `EMPTY_SHAPE_ID` 常量被外部引用（如 `oxide_runtime_api`）；
+//! `SHAPE_STORE` 全局单例与 `get_shape` 等自由函数目前仅本模块测试使用，运行时
+//! 跨 VM 共享的形状存储是 `oxide_kernel::shape_forge::ShapeForge`。
 
 use std::sync::{Arc, Mutex, OnceLock};
 
