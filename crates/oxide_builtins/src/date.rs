@@ -229,7 +229,7 @@ pub fn date_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
             match oxide_runtime_api::to_number_full(val, vm) {
                 Ok(n) => n,
                 Err(_) => {
-                    // ToNumber on an object may throw via toString/valueOf; propagate the original exception.
+                    // 对象经 ToNumber 转换时 toString/valueOf 可抛异常，须原样传播原始异常。
                     if let Some(exc) = vm.take_uncaught_value() {
                         return NativeResult::Err(exc);
                     }
