@@ -1,3 +1,6 @@
+//! 内置对象世界：持有并构造全部内置原型、构造器与全局单例（Math/JSON），
+//! 支持按脏标记重建，并提供绑定层的 native 方法指针表。
+
 use oxide_types::mem::P;
 use oxide_types::object::{JsObject, NativeFnPtr, PropAttributes};
 use oxide_types::private_key::make_well_known_symbol_key;
@@ -7,6 +10,9 @@ use crate::kernel::{BuiltinDirtySet, BuiltinId};
 use crate::kernel_info;
 use crate::shape_forge::{ShapeForge, EMPTY_SHAPE_ID};
 use crate::string_forge::PermInterner;
+
+mod methods;
+pub use methods::{ArrayMethods, ErrorMethods, FunctionMethods, ObjectMethods, RegExpMethods, StringMethods};
 
 #[macro_export]
 macro_rules! bind_method {
@@ -50,146 +56,6 @@ macro_rules! bind_methods_static {
             );
         })*
     };
-}
-
-/// Object 静态方法与原型方法的 native 函数指针集合，由 builtin 绑定层填充后交给
-/// [`BuiltinWorld::bind_object_methods`] 安装到对象/原型上。
-pub struct ObjectMethods {
-    pub keys: *const (),
-    pub create: *const (),
-    pub assign: *const (),
-    pub is: *const (),
-    pub define_property: *const (),
-    pub get_own_property_descriptor: *const (),
-    pub freeze: *const (),
-    pub seal: *const (),
-    pub prevent_extensions: *const (),
-    pub is_frozen: *const (),
-    pub is_sealed: *const (),
-    pub is_extensible: *const (),
-    pub get_own_property_names: *const (),
-    pub get_own_property_symbols: *const (),
-    pub define_properties: *const (),
-    pub from_entries: *const (),
-    pub get_prototype_of: *const (),
-    pub has_own: *const (),
-    pub entries: *const (),
-    pub values: *const (),
-    pub has_own_property: *const (),
-    pub property_is_enumerable: *const (),
-    pub group_by: *const (),
-}
-
-/// Array 静态方法与原型方法的 native 函数指针集合，由 [`BuiltinWorld::bind_array_methods`] 安装。
-pub struct ArrayMethods {
-    pub is_array: *const (),
-    pub from: *const (),
-    pub of: *const (),
-    pub push: *const (),
-    pub pop: *const (),
-    pub slice: *const (),
-    pub splice: *const (),
-    pub concat: *const (),
-    pub join: *const (),
-    pub index_of: *const (),
-    pub includes: *const (),
-    pub reverse: *const (),
-    pub for_each: *const (),
-    pub map: *const (),
-    pub filter: *const (),
-    pub reduce: *const (),
-    pub find: *const (),
-    pub some: *const (),
-    pub every: *const (),
-    pub flat: *const (),
-    pub flat_map: *const (),
-    pub shift: *const (),
-    pub unshift: *const (),
-    pub fill: *const (),
-    pub copy_within: *const (),
-    pub at: *const (),
-    pub last_index_of: *const (),
-    pub find_index: *const (),
-    pub find_last: *const (),
-    pub reduce_right: *const (),
-    pub sort: *const (),
-    pub values: *const (),
-    pub entries: *const (),
-    pub keys: *const (),
-    pub find_last_index: *const (),
-    pub to_sorted: *const (),
-    pub to_reversed: *const (),
-    pub to_spliced: *const (),
-    pub with_method: *const (),
-}
-
-/// Error 家族（含各子类型）构造器与原型方法的 native 函数指针集合，由 [`BuiltinWorld::bind_error_methods`] 安装。
-pub struct ErrorMethods {
-    pub error: *const (),
-    pub type_error: *const (),
-    pub reference_error: *const (),
-    pub range_error: *const (),
-    pub syntax_error: *const (),
-    pub uri_error: *const (),
-    pub eval_error: *const (),
-    pub suppressed_error: *const (),
-    pub to_string: *const (),
-    pub stack: *const (),
-}
-
-/// String 静态方法与原型方法的 native 函数指针集合，由 [`BuiltinWorld::bind_string_methods`] 安装。
-pub struct StringMethods {
-    pub from_char_code: *const (),
-    pub index_of: *const (),
-    pub includes: *const (),
-    pub char_at: *const (),
-    pub char_code_at: *const (),
-    pub concat: *const (),
-    pub slice: *const (),
-    pub substring: *const (),
-    pub to_upper_case: *const (),
-    pub to_lower_case: *const (),
-    pub trim: *const (),
-    pub repeat: *const (),
-    pub pad_start: *const (),
-    pub pad_end: *const (),
-    pub starts_with: *const (),
-    pub ends_with: *const (),
-    pub split: *const (),
-    pub replace: *const (),
-    pub match_fn: *const (),
-    pub search: *const (),
-    pub trim_start: *const (),
-    pub trim_end: *const (),
-    pub code_point_at: *const (),
-    pub normalize: *const (),
-    pub match_all: *const (),
-    pub replace_all: *const (),
-    pub value_of: *const (),
-    pub substr: *const (),
-    pub at: *const (),
-    pub last_index_of: *const (),
-    pub from_code_point: *const (),
-    pub is_well_formed: *const (),
-    pub to_well_formed: *const (),
-    pub from_raw: *const (),
-}
-
-/// RegExp 原型方法的 native 函数指针集合。
-pub struct RegExpMethods {
-    pub exec: *const (),
-    pub test: *const (),
-    pub to_string: *const (),
-}
-
-/// Function 原型方法的 native 函数指针集合，由 [`BuiltinWorld::bind_function_methods`] 安装。
-pub struct FunctionMethods {
-    pub call: *const (),
-    pub apply: *const (),
-    pub bind: *const (),
-    pub to_string: *const (),
-    /// `@@hasInstance`（well-known symbol id 6）：instanceof 运算符的默认判定。
-    pub has_instance: *const (),
 }
 
 /// 全部内置对象（原型、构造器、全局单例 Math/JSON、well-known symbol 与 stub 对象）的持有者。
