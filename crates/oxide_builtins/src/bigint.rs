@@ -2,7 +2,7 @@ use num_bigint::BigInt;
 use oxide_runtime_api::{to_primitive, NativeResult, ToPrimitiveHint, VmHost};
 use oxide_types::value::JsValue;
 
-/// JS `BigInt(value)` 构造逻辑（ES2020 §20.2.1.1）：
+/// JS `BigInt(value)` 构造逻辑：
 /// - `new BigInt()` 抛 TypeError（BigInt 不可 new）
 /// - 无参 → `0n`
 /// - 其余参数先 ToPrimitive(number)，Number 走 NumberToBigInt，其余走 ToBigInt。
@@ -20,7 +20,7 @@ pub fn bigint_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     }
     let val = vm.reg(args[1]);
     // ToPrimitive(value, number)：对象先出盒，用户 @@toPrimitive/valueOf/toString
-    // 抛出的异常要原样传播（只触发一次，见 constructor-coercion 测试）。
+    // 抛出的异常原样传播，且装箱转换的异常只触发一次。
     let prim = match to_primitive(val, ToPrimitiveHint::Number, vm) {
         Ok(p) => p,
         Err(_) => {
@@ -201,7 +201,7 @@ fn coerce_number_or_throw<H: VmHost>(vm: &mut H, value: JsValue) -> Result<f64, 
     Ok(oxide_runtime_api::to_number(prim))
 }
 
-/// ToIndex（§7.1.17）：ToIntegerOrInfinity 后必须为有限且 `[0, 2^53-1]` 内的整数。
+/// ToIndex：ToIntegerOrInfinity 后必须为有限且 `[0, 2^53-1]` 内的整数。
 fn to_index<H: VmHost>(vm: &mut H, args: &[u8]) -> Result<usize, JsValue> {
     // ToIndex 作用在第一个参数（bits）上；缺省为 undefined。
     let value = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
@@ -232,7 +232,7 @@ fn bigint_arg<H: VmHost>(vm: &mut H, args: &[u8]) -> JsValue {
     }
 }
 
-/// ToBigInt 抽象操作（§7.1.14）：BigInt 原样；String → StringToBigInt；
+/// ToBigInt 抽象操作：BigInt 原样；String → StringToBigInt；
 /// Boolean → 0/1；Number/Symbol/undefined/null → TypeError；对象先 ToPrimitive 再递归。
 ///
 /// 语义主体在 `oxide_runtime_api::to_bigint_full`，此处只把 String 错误恢复为
