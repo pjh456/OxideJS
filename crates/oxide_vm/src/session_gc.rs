@@ -42,6 +42,9 @@ impl SessionGc {
 }
 
 impl SessionGc {
+    /// 清空 session 与 epoch 全部对象的 GC mark 位。epoch 臂须与 session 同清：
+    /// 置位不随 session 清位消失，残留位会让下一次 `mark` 的 DFS 在已标对象处
+    /// 短路，漏扫其新增引用边。
     pub(crate) fn clear_all_marks(&mut self, vm: &mut Vm) {
         vm_debug!("[GC] clear_all_marks: {} session objects", vm.gc_state.session_object_ptrs.len());
         for &ptr in &vm.gc_state.session_object_ptrs {
@@ -375,6 +378,12 @@ impl SessionGc {
         }
     }
 
+    /// 从 VM roots 标记存活的 session/epoch 对象、字符串与 BigInt，供 `sweep` 判定。
+    ///
+    /// 对象 DFS 同时跟踪 session 与 epoch 两张表，两族 mark 位同字节，晋升收集按
+    /// “标记 ∩ epoch 表”取活集；字符串边走 rope 闭包传播（Cons 子节点与扁平化产物），
+    /// BigInt 边直接入存活集。roots 由 `Vm::for_each_root` 枚举，字段清单与
+    /// `rewrite_values` 一一对应、须同步。只置位不搬移，调用前须先 `clear_all_marks` 清位。
     pub(crate) fn mark(&mut self, vm: &Vm) {
         vm_debug!("[GC] mark phase: {} roots", vm.gc_state.session_object_ptrs.len());
         let mut seeds = Vec::new();
@@ -444,6 +453,10 @@ impl SessionGc {
         }
     }
 
+    /// 释放对象本体之外的堆外属性数据（元素区、元素 meta、hash 属性区、属性 meta
+    /// 与各族 native 状态盒），按 capacity 经 `Box::from_raw` 各恰好释放一次，返回
+    /// 字节数。`obj_ptr` 为空时返回 0；`require_session` 为 true 时断言对象属
+    /// session epoch，epoch 原件走 false 分支。不含 upvalue 列表与对象本体，由调用方处理。
     pub(crate) fn drop_object_heap_data(obj_ptr: *mut JsObject, require_session: bool) -> u64 {
         if obj_ptr.is_null() {
             return 0;
@@ -546,6 +559,12 @@ impl SessionGc {
         bytes
     }
 
+    /// 移动式清扫 session 对象：存活对象复制进新 arena，死对象原地释放。
+    ///
+    /// 按 GC mark 位分流：存活对象经 `clone_for_session_epoch` 复制（native 盒随族深拷）
+    /// 并登记 forwarding 旧址→新址，死对象释放本体、堆区与独占 upvalue；随后按转发表重写
+    /// 新对象的值边、native 边与 promise 结算链裸指针，转发查找使共享与环去重到同一克隆。
+    /// 最后重写全部根引用、换表并以新 Bump 接管 session epoch，旧 arena 整体归还并清 mark 位。
     pub(crate) fn sweep(&mut self, vm: &mut Vm) -> u64 {
         let old_ptrs = std::mem::take(&mut vm.gc_state.session_object_ptrs);
         let mut forwarding = std::mem::take(&mut vm.gc_state.forwarding);
@@ -749,6 +768,7 @@ impl SessionGc {
         freed
     }
 
+    /// 完整收集的触发判断：对象、字符串或 BigInt 表非空，且字节账目已达阈值。
     pub(crate) fn should_collect(&self, vm: &Vm) -> bool {
         (!vm.gc_state.session_object_ptrs.is_empty()
             || !vm.gc_state.session_string_ptrs.is_empty()
@@ -789,6 +809,10 @@ impl SessionGc {
         }
     }
 
+    /// 完整收集编排：`mark` → `sweep`（对象移动式搬移）→ `sweep_session_strings` →
+    /// `sweep_session_bigints`，累加三类释放字节；字符串与 BigInt 地址稳定、无需
+    /// forwarding。更新各表、字节账目与 mark 位，累计收集次数与最近/最大/最小耗时，
+    /// 释放字节大于 0 或每满 100 次时输出统计摘要。
     pub(crate) fn collect(&mut self, vm: &mut Vm) {
         let start = Instant::now();
 
@@ -891,12 +915,14 @@ impl SessionGc {
         );
     }
 
+    /// 执行期字符串回收触发入口：`should_collect_strings` 命中时执行 strings-only 收集。
     pub(crate) fn maybe_collect_strings_only(&mut self, vm: &mut Vm) {
         if self.should_collect_strings(vm) {
             self.collect_strings_only(vm);
         }
     }
 
+    /// 完整收集触发入口：`should_collect` 命中时执行完整收集。
     pub(crate) fn maybe_collect(&mut self, vm: &mut Vm) {
         if self.should_collect(vm) {
             self.collect(vm);
@@ -1115,6 +1141,7 @@ impl SessionGc {
         freed
     }
 
+    /// 单行 GC 统计摘要：收集次数、扫描/存活/死对象数、释放字节与最近耗时。
     pub(crate) fn stats_summary(&self) -> String {
         format!(
             "[GC] collection #{}: {} scanned, {} live, {} dead, {} freed, {}μs",
@@ -1162,6 +1189,9 @@ fn rewrite_forwarded_value(
         .unwrap_or(value)
 }
 
+/// 按 forwarding 表把全部 VM 根引用重写到搬移后的新地址。与 `for_each_value`
+/// 共用同一字段清单（经 `rewrite_values` 遍历）且须同步：遗漏字段会在搬移后
+/// 保留指向旧 arena 的悬垂指针。
 pub(crate) fn rewrite_vm_roots(vm: &mut Vm, forwarding: &HashMap<*mut JsObject, *mut JsObject, FxBuildHasher>) {
     vm_debug!("[GC] rewrite_vm_roots: {} forwarded objects", forwarding.len());
     // 统一遍历：与 for_each_value 共用同一字段清单。

@@ -122,8 +122,8 @@ fn gc_roots_contains_registers_frames_and_root_roots() {
 #[test]
 fn rewrite_matches_roots_coverage() {
     // 指针重写必须覆盖根收集访问的同一组执行核心字段：session→marker 映射后，
-    // 每个持有 session 的字段都应被改写为 marker（与 Step 1 的 for_each 覆盖测试
-    // 互补，共同构成孪生清单验证）。
+    // 每个持有 session 的字段都应被改写为 marker（与上文基于 for_each 的覆盖
+    // 测试同口径，共同构成孪生清单验证）。
     let mut vm = Vm::new();
     let obj = plain_object(&mut vm);
     let session = vm.promote_object(obj);
@@ -426,7 +426,8 @@ fn map_native_storage_is_not_a_normal_object_edge() {
 
     assert!(map_obj.hash_props_vec().is_none());
     assert!(!map_obj.native_data().is_null());
-    // Verify native storage pointer is not traced as a normal object edge.
+    // Map 的 native 存储指针不得被当作普通对象边扫描：扫到会把 native 堆数据
+    // 误拉进 mark 集合。
     let mut stack = Vec::new();
     let mut live = HashSet::with_hasher(FxBuildHasher);
     let mut live_bigints = HashSet::with_hasher(FxBuildHasher);
@@ -912,9 +913,9 @@ fn global_prop_opt(vm: &Vm, name: &str) -> Option<JsValue> {
     vm.resolve_property(global, si)
 }
 
-/// 闭包捕获变量跨对象 sweep 存活：reset 触发完整收集（session_epoch 替换），
-/// 修复前 cell 分配于旧 arena、随 Bump drop 悬垂；修复后独立堆分配、
-/// 地址稳定，sweep 只重写 cell.value 中的对象引用，值跨搬移保留。
+/// 闭包捕获变量跨对象 sweep 存活：reset 触发完整收集（session_epoch 替换）。
+/// cell 独立堆分配、不入 session arena，arena 整体回收时不连带释放——否则跨
+/// arena 存活的 cell 指针悬垂；sweep 只重写 cell.value 中的对象引用，值跨搬移保留。
 #[test]
 fn closure_cell_survives_object_sweep() {
     let mut vm = vm_with_threshold(1);
@@ -940,8 +941,8 @@ fn closure_cell_survives_object_sweep() {
 }
 
 /// 私有字段类的 brand cell 跨对象 sweep 存活：`@@class_brand` upvalue cell
-/// 存类 brand 对象，sweep 后其值经 forwarding 重写为搬移后的新对象地址，
-/// cell 指针仍稳定（修复前 cell 悬垂、值被复用覆盖）。
+/// 存类 brand 对象，sweep 后其值经 forwarding 重写为搬移后的新对象地址。
+/// cell 独立堆分配，指针在周边 arena 回收后仍稳定，值不被内存复用覆盖。
 #[test]
 fn private_brand_cell_survives_object_sweep() {
     let mut vm = vm_with_threshold(1);
@@ -1108,7 +1109,8 @@ fn strings_only_then_full_collect_keeps_object_strings_live() {
     let obj_session = vm.promote_object(obj);
     vm.regs[0] = JsValue::from_js_object(obj_session);
 
-    // 第一轮 strings-only：对象被 mark 置位，修复前该位残留至完整收集。
+    // 第一轮 strings-only：对象被 mark 置位。收尾清残留，否则该位残留至完整
+    // 收集会使 mark DFS 在对象处短路、漏标其属性中的串；随后校验串跨完整收集存活。
     vm.maybe_collect_session_strings();
     assert!(vm.gc_state.session_string_ptrs.contains(&s_ptr));
 
@@ -1464,7 +1466,8 @@ fn promise_settle_via_original_propagates_to_clone_reaction() {
 /// 指令边界触发执行期收集（阈值 1），原件随 epoch 释放；随后结算入口是
 /// 克隆一（闭包目标槽在晋升时已改写到它），反应在最新克隆上——结算须沿
 /// 链触达全部迁移反应，消费者（同 run 末微任务触发，字节码子模块表仍有效）
-/// 方能落值。修复前克隆反应为空、原件已释放，反应静默永久丢失。
+/// 方能落值。反应迁入克隆并接结算链后，原件与旧克隆的结算沿链传到最新克隆，
+/// 反应不因原件释放而静默丢失。
 #[test]
 fn promise_promote_migrates_pre_promote_reactions_to_clone() {
     let mut vm = vm_with_threshold(1);
