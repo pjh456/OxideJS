@@ -142,7 +142,10 @@ pub struct CompileCtx {
     /// 自导入（import from 自身）的 source 字符串集合：绑定走别名语义，不能链接期快照。
     pub(crate) module_self_import_specs: HashSet<String>,
     /// 自导入别名：导出名 → 本地绑定槽寄存器（export 语句执行时回写绑定值）。
+    /// 仅承载无法静态解析源绑定的退化占位路径（star 转发的自导入名）。
     pub(crate) module_self_aliases: HashMap<String, u32>,
+    /// 自导入别名（本地名，基源绑定名）：供别名捕获后处理合并源/别名 cell。
+    pub(crate) module_alias_pairs: Vec<(String, String)>,
     /// 标签模板 site 计数器：本编译树内全局唯一（子 ctx 继承父值继续递增）。
     /// 运行时与模块 flat_id 组成模板对象缓存键，保证同一编译树同 site 恒返回
     /// 同一对象、不同编译树（eval 每次编译）互不共享。
@@ -226,6 +229,7 @@ impl CompileCtx {
             module_dep_ns_regs: HashMap::new(),
             module_self_import_specs: HashSet::new(),
             module_self_aliases: HashMap::new(),
+            module_alias_pairs: Vec::new(),
             next_template_site: 0,
         }
     }
@@ -377,6 +381,12 @@ impl CompileCtx {
 
     pub(crate) fn init_var(&mut self, name: &str) {
         self.scopes.symbols.init_var(name);
+    }
+
+    /// 声明本地名为源绑定活引用的别名（模块自导入）：槽位复用源寄存器，
+    /// TDZ/提升/活值/不可变全部委托源绑定。
+    pub(crate) fn add_alias(&mut self, local: &str, source: &str) -> Result<(), String> {
+        self.scopes.symbols.add_alias(local, source)
     }
 
     pub(crate) fn next_label_id(&mut self) -> u32 {

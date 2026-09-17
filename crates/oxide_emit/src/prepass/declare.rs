@@ -15,15 +15,20 @@ impl Emitter {
                     Some(Declaration::FunctionDeclaration(f)) => f,
                     _ => continue,
                 },
-                // export default function foo(){}：foo 绑定由 lexical predeclare 以
-                // Const 预声明（emit 侧 emit_bind_target(Const) 消费预登记槽）。
+                // export default function：具名声明名 / 匿名的合成 `*default*` 名
+                // 按函数声明提升并预初始化（模块实例化期即绑定函数对象）。
+                Statement::ExportDefaultDeclaration(exp) => match &exp.declaration {
+                    ExportDefaultDeclarationKind::FunctionDeclaration(f) => f,
+                    _ => continue,
+                },
                 _ => continue,
             };
-            let Some(identifier) = &function.id else {
-                continue;
+            let name = match &function.id {
+                Some(identifier) => identifier.name.to_string(),
+                None => "*default*".to_string(),
             };
             let reg = ctx.alloc_reg();
-            let _ = ctx.declare_initialized(identifier.name.as_str(), reg, VariableDeclarationKind::Var, false);
+            let _ = ctx.declare_initialized(name.as_str(), reg, VariableDeclarationKind::Var, false);
         }
     }
 
@@ -342,23 +347,17 @@ impl Emitter {
                         }
                     }
                 }
-                Statement::ExportDefaultDeclaration(exp) => match &exp.declaration {
-                    ExportDefaultDeclarationKind::ClassDeclaration(cd) => {
+                Statement::ExportDefaultDeclaration(exp) => {
+                    // default 函数声明（具名与匿名）由函数预声明臂按提升 var 承载，
+                    // 此处只为具名 default 类建 lexical Let TDZ 占位。
+                    if let ExportDefaultDeclarationKind::ClassDeclaration(cd) = &exp.declaration {
                         if let Some(id) = &cd.id {
                             check_restricted_global_lexical(id.name.as_str(), global_lexical)?;
                             let reg = ctx.alloc_reg();
                             let _ = ctx.declare_predeclared(id.name.as_str(), reg, VariableDeclarationKind::Let, false);
                         }
                     }
-                    ExportDefaultDeclarationKind::FunctionDeclaration(fd) => {
-                        if let Some(id) = &fd.id {
-                            let reg = ctx.alloc_reg();
-                            let _ =
-                                ctx.declare_predeclared(id.name.as_str(), reg, VariableDeclarationKind::Const, true);
-                        }
-                    }
-                    _ => {}
-                },
+                }
                 _ => {}
             }
         }

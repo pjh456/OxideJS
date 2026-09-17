@@ -75,3 +75,39 @@ fn self_import_module_evaluated_once() {
     let r = probe(&mut vm, "globalThis.__evals");
     assert!(r.is_int() && r.as_int() == 1, "自导入模块应只求值一次，实际 __evals={r:?}");
 }
+
+/// 自导入绑定是源绑定的活引用：闭包经别名读到的必须是源绑定的当前值；
+/// 源在导出声明后重赋时，别名读点同步可见新值（共享 cell）。
+#[test]
+fn self_import_alias_reads_live_source_value() {
+    let cwd = std::env::current_dir().expect("cwd");
+    let dir = cwd.join("__selfimport_live__");
+    let file = dir.join("live.mjs");
+    std::fs::create_dir_all(&dir).expect("mkdir");
+    std::fs::write(
+        &file,
+        "let before;\n \
+         function readAlias() { return y; }\n \
+         try { before = readAlias(); } catch (e) { before = e instanceof ReferenceError; }\n \
+         import { x as y } from './live.mjs';\n \
+         export let x = 1;\n \
+         x = 2;\n \
+         globalThis.__live = [before, readAlias()].join('|');",
+    )
+    .expect("write module");
+    let _cleanup = Cleanup(dir.clone());
+
+    let allocator = oxide_parser::Allocator::default();
+    let source = std::fs::read_to_string(&file).expect("read module");
+    let program = oxide_parser::parse_module(&allocator, &source).expect("parse module");
+    let module = Compiler::new()
+        .compile_module(&program, dir.join("live.mjs").to_string_lossy().as_ref(), &mut AbsLoader)
+        .expect("compile module");
+
+    let mut vm = Vm::new();
+    vm.run(&Arc::new(module)).expect("module run");
+    // 声明前闭包读别名按规范抛 ReferenceError；声明后重赋读到新值 2。
+    let r = probe(&mut vm, "globalThis.__live");
+    let text = vm.lookup_str(r).unwrap_or_default();
+    assert_eq!(text, "true|2", "自导入别名应共享源绑定活值");
+}

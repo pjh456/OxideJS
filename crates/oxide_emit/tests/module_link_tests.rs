@@ -214,3 +214,53 @@ fn export_default_implicit_name_named_unchanged() {
     let (ir, _) = emit_module("export default 42", "./entry.js", &[]).expect("字面量应编译成功");
     assert!(named_module(&ir, "default").is_none(), "非函数值不应注入隐式名");
 }
+
+/// STORE_VAR 指令计数（合成绑定惰性化守卫用）。
+fn store_var_count(ir: &IRFunction) -> usize {
+    ir.insts.iter().filter(|i| i.op == OpCode::STORE_VAR).count()
+}
+
+/// 面 8：无 self-import 的 default 表达式模块零 diff。
+/// `export default 42` 不建合成 `*default*` 绑定，故除 export 注册外无任何
+/// STORE_VAR（字面量经 LOAD_CONST 直接注册）。若合成绑定被无条件建立，会多出
+/// 一条 STORE_VAR，本守卫即失败。
+#[test]
+fn default_expression_module_has_no_synthetic_binding() {
+    let (ir, _) = emit_module("export default 42", "./entry.js", &[]).expect("字面量应编译成功");
+    assert_eq!(store_var_count(&ir), 0, "default 表达式模块不应建合成绑定槽");
+    assert_eq!(native_calls_to(&ir, "__moduleSet"), 1, "default 只注册一次导出");
+}
+
+/// 面 8b：无 self-import 的 `export let x = 1` 不因 default 面多出槽位/指令。
+/// 该模块唯一 STORE_VAR 是 x 自身的声明初始化；零 diff 守卫要求不出现第二个槽。
+#[test]
+fn named_export_without_self_import_keeps_single_store() {
+    let (ir, _) = emit_module("export let x = 1;", "./entry.js", &[]).expect("导出声明应编译成功");
+    assert_eq!(store_var_count(&ir), 1, "x 声明只应有一条 STORE_VAR");
+    assert_eq!(native_calls_to(&ir, "__moduleSet"), 1, "x 只注册一次导出");
+}
+
+/// 面 8c：无 source 再导出 `export { x }` 不引入合成绑定。
+/// 局部 x 由普通声明承载，再导出只读值注册；无 self-import 时零额外 STORE_VAR。
+#[test]
+fn local_reexport_without_self_import_keeps_single_store() {
+    let (ir, _) = emit_module("let x = 1; export { x };", "./entry.js", &[]).expect("本地再导出应编译成功");
+    assert_eq!(store_var_count(&ir), 1, "x 声明只应有一条 STORE_VAR");
+}
+
+/// 面 9：self-import 别名以源绑定槽位承载，导出注册不再回写占位槽。
+/// `export default 42` 有 self-import default 时合成绑定存在，但别名与源共享
+/// 槽位：export 语句只发一次 LOAD_CONST + `__moduleSet`，无额外的回写 STORE_VAR。
+#[test]
+fn self_import_default_alias_has_no_placeholder_writeback() {
+    let (ir, _) = emit_module(
+        "import d from './self.js'; export default 42;",
+        "./self.js",
+        &[("./self.js", ModuleKind::Js, "export default 42;")],
+    )
+    .expect("self-import default 应编译成功");
+    assert_eq!(native_calls_to(&ir, "__moduleSet"), 1, "default 只注册一次导出");
+    // 别名与合成源绑定共享槽位：仅 default 表达式的绑定写入一条 STORE_VAR，
+    // 不出现旧占位路径的额外回写。
+    assert_eq!(store_var_count(&ir), 1, "不应出现占位回写带来的第二条 STORE_VAR");
+}

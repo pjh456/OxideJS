@@ -30,8 +30,14 @@ pub(crate) struct Binding {
 
 /// 作用域符号表：名字 → 寄存器号/初始化状态/const 标志。
 /// 首层为全局函数作用域，后续 push 的为块作用域。
+///
+/// 别名（`aliases`）承载模块自导入：自导入的局部名是源导出的活引用，其绑定
+/// 槽位与源绑定相同，TDZ/提升/活值/不可变四语义全部委托源绑定；表内只负责在
+/// 源绑定初始化时同步解除别名 TDZ。
 pub struct SymbolTable {
     pub(crate) scopes: Vec<Scope>,
+    /// 别名本地名 → 基源绑定名（沿 re-export 链解析到最终源名）。
+    aliases: HashMap<String, String>,
 }
 
 impl Default for SymbolTable {
@@ -48,6 +54,7 @@ impl SymbolTable {
                 bindings: HashMap::new(),
                 kind: ScopeKind::FunctionScope,
             }],
+            aliases: HashMap::new(),
         }
     }
 
@@ -248,7 +255,75 @@ impl SymbolTable {
     }
 
     /// 从内到外将同名绑定标记为已初始化（var 提升后初始化阶段使用）。
+    /// 指向该源的别名绑定同步置为已初始化，使别名读取的 TDZ 状态跟随源声明点。
     pub fn init_var(&mut self, name: &str) {
+        for scope in self.scopes.iter_mut().rev() {
+            if let Some(b) = scope.bindings.get_mut(name) {
+                b.initialized = true;
+                break;
+            }
+        }
+        // 别名侧表与绑定分居两处，直接按基源名命中全部别名槽位，不走作用域查找。
+        let alias_bases: Vec<String> = self
+            .aliases
+            .iter()
+            .filter(|(_, base)| base.as_str() == name)
+            .map(|(local, _)| local.clone())
+            .collect();
+        for local in alias_bases {
+            self.mark_initialized(&local);
+        }
+    }
+
+    /// 声明本地名为 `source` 源绑定的别名：别名槽位复用源寄存器，`is_const`
+    /// 恒为真（import 绑定是不可变的间接引用），初始化状态镜像源绑定当前值。
+    ///
+    /// # 边界与前提
+    /// - `source` 经 `aliases` 表解析到基源名（支持别名链）；基源不存在于符号表
+    ///   时返回 `Err`，调用方回退非别名路径。
+    /// - 别名名在当前最内层作用域已有绑定时返回 `Err`（重复声明）。
+    ///
+    /// # 副作用
+    /// - 在当前最内层作用域插入别名 Binding，并登记 `aliases` 侧表。
+    pub(crate) fn add_alias(&mut self, local: &str, source: &str) -> Result<(), String> {
+        let base = self.resolve_alias_base(source).to_string();
+        let Some((reg, initialized)) = self
+            .scopes
+            .iter()
+            .rev()
+            .find_map(|scope| scope.bindings.get(&base).map(|binding| (binding.reg, binding.initialized)))
+        else {
+            return Err(format!("alias source '{base}' is not declared"));
+        };
+
+        let target = self.scopes.last_mut().expect("symbol table always has a scope");
+        if target.bindings.contains_key(local) {
+            return Err(format!("Identifier '{local}' has already been declared"));
+        }
+        target.bindings.insert(
+            local.to_string(),
+            Binding {
+                reg,
+                initialized,
+                is_const: true,
+                predeclared: false,
+            },
+        );
+        self.aliases.insert(local.to_string(), base);
+        Ok(())
+    }
+
+    /// 沿别名侧表把名字解析到最终基源绑定名；非别名名原样返回。
+    pub(crate) fn resolve_alias_base<'a>(&'a self, name: &'a str) -> &'a str {
+        let mut base = name;
+        while let Some(next) = self.aliases.get(base) {
+            base = next.as_str();
+        }
+        base
+    }
+
+    /// 把名对应绑定置为已初始化（只查绑定、不问状态）。
+    fn mark_initialized(&mut self, name: &str) {
         for scope in self.scopes.iter_mut().rev() {
             if let Some(b) = scope.bindings.get_mut(name) {
                 b.initialized = true;
@@ -379,5 +454,43 @@ mod tests {
         // 同一函数作用域，故应为重复声明
         assert!(st.declare("y", 2, v(), false).is_err());
         st.pop_scope();
+    }
+
+    #[test]
+    fn alias_shares_source_slot_and_const() {
+        let mut st = SymbolTable::new();
+        st.declare("x", 3, l(), false).unwrap();
+        st.add_alias("y", "x").unwrap();
+        // 别名复用源寄存器，且是不可变的间接绑定。
+        assert_eq!(st.lookup_any("y"), Some(3));
+        assert!(st.lookup_any_binding("y").unwrap().0.is_const);
+        // 源未初始化时别名读同样报 TDZ。
+        assert!(st.lookup("y").unwrap_err().contains("before initialization"));
+    }
+
+    #[test]
+    fn alias_tdz_follows_source_init() {
+        let mut st = SymbolTable::new();
+        st.declare("x", 3, l(), false).unwrap();
+        st.add_alias("y", "x").unwrap();
+        st.init_var("x");
+        // 源声明点初始化同步解除别名 TDZ。
+        assert_eq!(st.lookup("y").unwrap(), 3);
+    }
+
+    #[test]
+    fn alias_chain_resolves_to_base() {
+        let mut st = SymbolTable::new();
+        st.declare("x", 3, l(), false).unwrap();
+        st.add_alias("y", "x").unwrap();
+        st.add_alias("z", "y").unwrap();
+        assert_eq!(st.resolve_alias_base("z"), "x");
+        assert_eq!(st.lookup_any("z"), Some(3));
+    }
+
+    #[test]
+    fn alias_of_missing_source_is_error() {
+        let mut st = SymbolTable::new();
+        assert!(st.add_alias("y", "missing").is_err());
     }
 }
