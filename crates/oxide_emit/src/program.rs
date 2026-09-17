@@ -145,10 +145,12 @@ impl Emitter {
         }
     }
 
-    /// 顶层函数声明的 A 侧同步写：eval 脚本沿用 [`emit_global_prop_write`] 的
-    /// 0x98 分支（属性可配置，创建检查面不覆盖 eval 动态臂）；普通脚本经顶层
-    /// This 走 0x9E（CreateGlobalFunctionBinding 三臂，声明检查由 GDI 序言的
-    /// 0x9D 段预先完成）。
+    /// 顶层函数声明的全局对象属性同步写：eval 脚本沿用
+    /// [`emit_global_prop_write`] 的 `DEFINE_GLOBAL_PROP_C` 分支（属性可配置，
+    /// 创建检查不适用于 eval 动态路径）；普通脚本经顶层 This 走
+    /// `DEFINE_GLOBAL_FUNC_BIND`（规范 CreateGlobalFunctionBinding 三臂，声明检查
+    /// 由 GlobalDeclarationInstantiation（脚本顶层声明实例化）序言的
+    /// `CAN_DECLARE_GLOBAL_FUNC` 段预先完成）。
     pub(crate) fn emit_global_func_bind_write(&self, name: &str, val_reg: u32, ctx: &mut CompileCtx) {
         if ctx.is_eval_script {
             self.emit_global_prop_write(name, val_reg, ctx);
@@ -160,12 +162,14 @@ impl Emitter {
         ctx.inst(Inst::define_global_func_bind(Operand::This, Operand::Reg(val_reg), Operand::Reg(key_reg)));
     }
 
-    /// 顶层 var 声明带初始化的 A 侧同步：PutValue 语义——既有不可写数据属性
-    /// strict 抛 TypeError / sloppy 静默 no-op；可写照原描述符仅更值。脚本与
+    /// 顶层 var 声明带初始化的全局对象属性同步：PutValue 语义——既有不可写数据
+    /// 属性 strict 抛 TypeError / sloppy 静默 no-op；可写照原描述符仅更值。脚本与
     /// eval 均经 session 解析全局对象，不依赖顶层 this。
     ///
     /// # 边界与前提
-    /// - 仅顶层模块上下文调用；builtin 名不走本写点（保持 GDI 零动作写点）。
+    /// - 仅顶层模块上下文调用；builtin 名不走本写点（该名由
+    ///   GlobalDeclarationInstantiation（脚本顶层声明实例化）序言写点处理：属性
+    ///   已存在时不改动值，仅缺失时新建）。
     ///
     /// # 副作用
     /// - 更新全局对象数据属性，失败面抛 TypeError（strict 不可写）。
@@ -174,16 +178,19 @@ impl Emitter {
         ctx.inst(Inst::define_global_prop_c(Operand::Reg(val_reg), idx));
     }
 
-    /// 名字是否为顶层已声明 var（A 侧单一真值）：在顶层 var 名集内，且当前解析
-    /// 绑定落在全局作用域（scope 0）——嵌套函数内的局部同名遮蔽命中更高作用域，
-    /// 判定为局部而非顶层，走既有 cell/寄存器路径。
+    /// 判定名字的裸写是否落全局对象属性。
+    ///
+    /// 判定条件：名字在顶层 var/函数声明名集内，且当前作用域解析落在全局作用域
+    /// （scope 0）。嵌套函数内的同名局部绑定遮蔽顶层绑定时，解析命中更高作用域，
+    /// 判定为局部绑定，写走既有 cell/寄存器路径，不触全局对象。
     pub(crate) fn is_global_tier_name(&self, ctx: &CompileCtx, name: &str) -> bool {
         ctx.global_tier_names.contains(name) && matches!(ctx.scopes.symbols.lookup_any_binding(name), Some((_, 0)))
     }
 
-    /// 顶层已声明 var 的裸写落到全局对象属性（A 侧单一真值）：顶层普通脚本经
-    /// This=全局对象走 0x6F；顶层 eval 与嵌套函数 This≠全局对象，经 session 解析
-    /// 走 0x98（c:true，不升级既有 c:false 描述符，只更值）。
+    /// 顶层已声明 var 的裸写落到全局对象属性（顶层 var 的唯一存储）：顶层普通
+    /// 脚本经 This=全局对象走 `DEFINE_GLOBAL_PROP`；顶层 eval 与嵌套函数
+    /// This≠全局对象，经 session 解析走 `DEFINE_GLOBAL_PROP_C`（configurable:true；
+    /// 既有 configurable:false 描述符不升级，仅更新值）。
     pub(crate) fn emit_tier_global_write(&self, name: &str, val_reg: u32, ctx: &mut CompileCtx) {
         let idx = ctx.add_constant(Constant::String(name.to_string()));
         if ctx.is_global_scope && !ctx.is_eval_script {
@@ -195,9 +202,11 @@ impl Emitter {
         }
     }
 
-    /// GDI 序言：顶层 var 全局属性 define-if-absent。既有属性（数据或 accessor）
-    /// 零动作——CreateGlobalVarBinding 对既有数据描述符零修改（不更值）；缺失新建。
-    /// 顶层普通脚本经 This 走 0x99；eval 经 session 走 0x9A。
+    /// GlobalDeclarationInstantiation（脚本顶层声明实例化）序言：顶层 var 全局
+    /// 属性 define-if-absent。既有属性（数据或 accessor）不改动值——
+    /// CreateGlobalVarBinding 对既有数据描述符零修改（不更值）；仅属性缺失时新建。
+    /// 顶层普通脚本经 This 走 `DEFINE_GLOBAL_PROP_IF_ABSENT`；eval 经
+    /// KernelSession 解析全局对象走 `DEFINE_GLOBAL_PROP_C_IF_ABSENT`。
     pub(crate) fn emit_global_prop_write_if_absent(&self, name: &str, val_reg: u32, ctx: &mut CompileCtx) {
         let idx = ctx.add_constant(Constant::String(name.to_string()));
         if ctx.is_eval_script {
@@ -213,14 +222,15 @@ impl Emitter {
         }
     }
 
-    /// GDI step 9 检查阶段：顶层函数声明名按声明逆序逐名去重，每名发一条 0x9D
+    /// 规范 GlobalDeclarationInstantiation step 9（函数臂）的检查阶段：顶层函数
+    /// 声明名按声明逆序逐名去重，每名发一条 `CAN_DECLARE_GLOBAL_FUNC`
     /// （CanDeclareGlobalFunction 运行期判定，撞既有不可配置非可写数据属性或
-    /// 不可扩展上的缺失名抛 TypeError）。发射位必须位于 GDI var 序言之先——
+    /// 不可扩展上的缺失名抛 TypeError）。发射位必须位于 var 序言之先——
     /// 检查失败时任何绑定（含 var 序言新建属性）不得实例化。
     ///
     /// # 边界与前提
-    /// - 仅普通脚本调用（`is_eval_script` 面由调用点门控）；eval 动态臂与
-    ///   eval 三常量编译期门禁零触碰。
+    /// - 仅普通脚本调用（`is_eval_script` 面由调用点按条件判定排除）；eval 动态
+    ///   路径与 eval 三常量编译期条件开关零触碰。
     /// - 仅遍历语句列表直接子级具名函数声明（生成器/异步声明同节点类型，天然
     ///   覆盖）；块内函数声明与 `export default function` 不入全局检查面。
     pub(crate) fn emit_gdi_func_decl_checks(&self, stmts: &[Statement], ctx: &mut CompileCtx) {
@@ -300,10 +310,11 @@ impl Emitter {
         let global_lexical = !ctx.is_eval_script;
         self.predeclare_lexical_declarations(&program.body, &mut ctx, global_lexical)?;
 
-        // 顶层块级函数名 web-compat 外层绑定（sloppy、非 eval）：实例化 var 绑定
-        // （新建 var 槽；顶层只读三常量名不可声明不建）、并入顶层 var 名集（裸
-        // 读/写路由全局对象属性）、GDI 序言建属性（define-if-absent，既有属性
-        // 零动作）。
+        // 顶层块级函数名按 sloppy 模式下与浏览器/web 实现惯例兼容的行为处理
+        // （块级函数声明建外层 var 绑定并求值写回，非 eval）：实例化 var 绑定
+        // （新建 var 槽；顶层只读三常量名不可声明不建）、并入顶层 var 名集
+        // （裸读/写路由全局对象属性）、GlobalDeclarationInstantiation 序言建属性
+        // （define-if-absent，既有属性不改动值）。
         let mut block_fn_names: Vec<String> = Vec::new();
         if !ctx.is_strict && !ctx.is_eval_script {
             ctx.block_fn_suppressed = self.collect_block_fn_suppressed_names(&program.body, &ctx.param_names);
@@ -317,15 +328,18 @@ impl Emitter {
 
         // 闭包捕获分析（AST 级，emit 前确定）
         ctx.own_bindings = collect_own_binding_names(&[], &program.body);
-        // 顶层已声明名（A 侧单一真值）：裸读走全局对象属性、裸写走描述符感知
-        // A 侧写，不落镜像 cell——从捕获集剔除，使嵌套函数经继承 scope-0 直连全局。
+        // 顶层已声明名（全局对象属性为唯一存储）：裸读走全局对象属性、裸写走感知
+        // 全局对象属性描述符的写，不落引擎侧镜像副本——从捕获集剔除，使嵌套函数经
+        // 继承 scope 0 直连全局。
         // 集 = 顶层 var 名 ∪ 顶层函数声明名：函数值是编译闭包，编译期不可得，
-        // 其 A 侧值由首 sub-pass 以真闭包建立，先于任何用户代码。
+        // 其全局对象属性值由首个 sub-pass（`emit_program` 顶层的内部阶段划分：先
+        // 声明实例化、后用户代码发射）以真闭包建立，先于任何用户代码。
         // 仅在此顶层调用点过滤：嵌套函数的局部同名遮蔽是独立绑定，其调用点不过滤。
         let var_names = collect_var_binding_names(&program.body);
         let mut tier_names = var_names.clone();
         tier_names.extend(collect_top_level_function_names(&program.body));
-        // 块级函数泄漏名并入：求值期写回与头写同走全局对象属性（A 侧单一真值）。
+        // 块级函数泄漏名并入：求值期写回与块入口头写同走全局对象属性（全局对象
+        // 属性为唯一存储）。
         for name in &block_fn_names {
             if !ctx.block_fn_suppressed.contains(name) && !CompileCtx::is_non_writable_global_builtin(name) {
                 tier_names.insert(name.clone());
@@ -359,15 +373,15 @@ impl Emitter {
 
         // 全局声明实例化序言：脚本求值前为顶层 var 名创建全局对象属性（值 undefined），
         // 使声明语句执行前的读取（typeof、反射、自引用）可经全局对象见绑定。
-        // 顶层函数声明名不进序言：函数值是编译闭包，编译期不可得，其 A 侧值由
-        // 首 sub-pass 的声明写以真闭包建立，先于任何用户代码（首 sub-pass 仅发
+        // 顶层函数声明名不进序言：函数值是编译闭包，编译期不可得，其全局对象属性值
+        // 由首个 sub-pass 的声明写以真闭包建立，先于任何用户代码（首个 sub-pass 仅发
         // 函数声明），无 undefined 读窗口。
-        // CreateGlobalVarBinding 对既有属性零动作：define-if-absent 只在属性缺失时
-        // 新建，可写/不可写/可配置既有属性（含值）一律保留。builtin 名的全局属性
-        // 运行期预存（session 绑定）：缺失分支写入值取 builtin 镜像槽（run 起点
-        // 预载全局属性值），既有属性零动作，值幂等保留。
-        // 序言名集 = 顶层 var 名 ∪ 顶层块级函数泄漏名（web-compat 外层绑定同样
-        // 在求值前实例化，同走 define-if-absent）。
+        // CreateGlobalVarBinding 对既有属性不改动值：define-if-absent 只在属性缺失时
+        // 新建，可写/不可写/可配置既有属性（含值）一律保留。内置名的全局属性
+        // 运行期预存（session 绑定）：缺失分支写入值取内置名镜像槽（本轮求值开始前
+        // 把全局属性值预载进固定寄存器槽），既有属性不改动值，值幂等保留。
+        // 序言名集 = 顶层 var 名 ∪ 顶层块级函数泄漏名（sloppy 模式浏览器兼容行为的
+        // 外层绑定同样在求值前实例化，同走 define-if-absent）。
         let mut gdi_var_names = collect_var_binding_names(&program.body);
         gdi_var_names.extend(
             block_fn_names
@@ -379,7 +393,8 @@ impl Emitter {
             let undef_reg = self.emit_undefined(&mut ctx);
             for name in &gdi_var_names {
                 let value_reg = if CompileCtx::is_known_builtin(name) {
-                    // 镜像槽未预登记时（解构 pattern 名等）就地登记，run 起点预载。
+                    // 内置名镜像槽未预登记时（解构 pattern 名等）就地登记，本轮求值
+                    // 开始前预载全局属性值。
                     ctx.lookup_or_builtin(name).unwrap_or(undef_reg)
                 } else {
                     undef_reg
@@ -423,8 +438,9 @@ impl Emitter {
 
         let ir = ctx.assemble_ir(
             oxide_ir::ParamLayout {
-                // 顶层模块无父函数：base 恒 0。曾用 builtin_reg_map.len()，harness 前缀
-                // 大时把模块自身低号 vreg 误判为父槽 → 恒等色收缩可分配色集、spill 增多。
+                // 顶层模块无父函数：base 恒 0。base 若误含父函数槽偏移，会把模块自身
+                // 低号虚拟寄存器误判为父槽，寄存器分配的恒等约束（identity 约束）
+                // 随之收缩可分配色集并增加 spill。
                 base: 0,
                 count: 0,
             },

@@ -72,8 +72,8 @@ pub struct CompileCtx {
     /// 形参同名时不建外层绑定、不求值写回（规范 paramNames 守卫面）。子函数
     /// ctx 为新建，不继承。
     pub(crate) param_names: HashSet<String>,
-    /// 块级函数名 web-compat 外层绑定抑制集（形参 ∪ 函数作用域树内词法声明名）：
-    /// 抑制集内名字退化为纯块作用域。预声明期定稿，实例化与声明点写回两侧同查。
+    /// 块级函数名按 sloppy 模式下与浏览器/web 实现惯例兼容的行为建外层绑定的抑制集
+    /// （形参 ∪ 函数作用域树内词法声明名）：抑制集内名字退化为纯块作用域；预声明期定稿，实例化与声明点写回两侧同查。
     pub(crate) block_fn_suppressed: HashSet<String>,
     /// 块入口已物化声明登记表（按块层级压/弹）：块直接子与标签直接子体
     /// 的函数声明在块入口物化闭包后，按 名 → 声明节点 arena 指针 登记。
@@ -86,10 +86,10 @@ pub struct CompileCtx {
     /// 捕获判断（MAKE_CELL / CELL_GET / CELL_SET）与子函数 upvalue cell_idx 统一查此映射，
     /// 消除符号表时序依赖与 cell 索引错位。
     pub(crate) captured_bindings: BTreeMap<String, u8>,
-    /// 顶层已声明 var 名与顶层函数声明名（脚本全局 GDI 提升名）：裸读走全局对象
-    /// 属性（LOAD_GLOBAL）、裸写走描述符感知 A 侧写，单一真值不落镜像 cell。
-    /// 仅脚本顶层 emit_program 计算，逐层继承给嵌套函数（嵌套函数的局部同名
-    /// 遮蔽不属此集，由作用域索引判定）。
+    /// 顶层已声明 var 名与顶层函数声明名（脚本全局声明实例化提升名）：裸读走全局
+    /// 对象属性（LOAD_GLOBAL）、裸写走感知全局对象属性描述符的写；值的唯一存储是
+    /// 全局对象属性（顶层 var 的唯一存储），引擎侧不再保留镜像副本。
+    /// 仅脚本顶层 emit_program 计算，逐层继承给嵌套函数（嵌套函数的局部同名遮蔽不属此集，由作用域索引判定）。
     pub(crate) global_tier_names: HashSet<String>,
     /// 本函数从父函数捕获的 const 绑定名：子 ctx 不继承父函数作用域符号表，
     /// 捕获 const 信息随 upvalue 收集一并快照，供 const 写检查（编译期拦截）使用。
@@ -116,8 +116,8 @@ pub struct CompileCtx {
     /// 弹出）：return 逃出 try 域时据此弹出栈顶连续纯 catch，防 handler 泄漏。
     pub(crate) open_try_handlers: Vec<bool>,
     /// 循环 update 段中应走寄存器（而非 cell）的被捕获绑定名：C 风格 for 的
-    /// let/const 循环变量每迭代 fresh cell，update 写寄存器（不污染本迭代闭包
-    /// 捕获的 cell），下一迭代 fresh 从寄存器拷入新 cell。
+    /// let/const 循环变量每迭代新分配一个 cell，update 写寄存器（不污染本迭代
+    /// 闭包捕获的 cell），下一迭代把这个寄存器值拷入新分配的 cell。
     pub(crate) register_update_names: Vec<String>,
     /// 模块编译上下文：当前模块命名空间对象寄存器（`__moduleObject` 返回值）。
     pub(crate) module_ns_reg: Option<u32>,
