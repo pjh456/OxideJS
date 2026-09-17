@@ -1565,31 +1565,40 @@ pub fn typed_array_from<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
             }
         }
         Ok(false) => {
-            let obj_val = match oxide_runtime_api::to_object(source, vm) {
-                Ok(o) => o,
-                Err(err) => return NativeResult::Err(crate::error::create_type_error(vm, &err)),
-            };
-            let obj = unsafe { &*obj_val.as_js_object_ptr() };
-            let length_si = vm.kernel_core().perm_interner().intern("length").0;
-            let len_val = match vm.ordinary_get(obj, length_si, obj_val) {
-                Ok(v) => v,
-                Err(e) => return NativeResult::Err(crate::iterator::engine_error(vm, &e)),
-            };
-            let n = match oxide_runtime_api::to_number_full(len_val, vm) {
-                Ok(n) => n,
-                Err(e) => return NativeResult::Err(crate::iterator::engine_error(vm, &e)),
-            };
-            let len = to_collect_len(n);
-            let mut values = Vec::with_capacity(len);
-            for i in 0..len {
-                let key = vm.new_string(&i.to_string());
-                let key_si = vm.property_key_si(key);
-                match vm.ordinary_get(obj, key_si, obj_val) {
-                    Ok(v) => values.push(v),
-                    Err(e) => return NativeResult::Err(crate::iterator::engine_error(vm, &e)),
+            // 字符串源（原始串/装箱串）的 length 与索引未物化，直接按 UTF-16 单元取值。
+            if let Some(units) = crate::array::string_arraylike_units(vm, source) {
+                let mut values = Vec::with_capacity(units.len());
+                for &unit in &units {
+                    values.push(crate::array::unit_string_value(vm, unit));
                 }
+                values
+            } else {
+                let obj_val = match oxide_runtime_api::to_object(source, vm) {
+                    Ok(o) => o,
+                    Err(err) => return NativeResult::Err(crate::error::create_type_error(vm, &err)),
+                };
+                let obj = unsafe { &*obj_val.as_js_object_ptr() };
+                let length_si = vm.kernel_core().perm_interner().intern("length").0;
+                let len_val = match vm.ordinary_get(obj, length_si, obj_val) {
+                    Ok(v) => v,
+                    Err(e) => return NativeResult::Err(crate::iterator::engine_error(vm, &e)),
+                };
+                let n = match oxide_runtime_api::to_number_full(len_val, vm) {
+                    Ok(n) => n,
+                    Err(e) => return NativeResult::Err(crate::iterator::engine_error(vm, &e)),
+                };
+                let len = to_collect_len(n);
+                let mut values = Vec::with_capacity(len);
+                for i in 0..len {
+                    let key = vm.new_string(&i.to_string());
+                    let key_si = vm.property_key_si(key);
+                    match vm.ordinary_get(obj, key_si, obj_val) {
+                        Ok(v) => values.push(v),
+                        Err(e) => return NativeResult::Err(crate::iterator::engine_error(vm, &e)),
+                    }
+                }
+                values
             }
-            values
         }
         Err(e) => return NativeResult::Err(e),
     };

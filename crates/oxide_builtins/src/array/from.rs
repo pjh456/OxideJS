@@ -9,7 +9,8 @@ use oxide_runtime_api::{NativeResult, VmHost};
 
 use super::common::{
     array_length_arg, array_type_error, arraylike_get, arraylike_get_or_err, create_new_array, invoke_native_callback,
-    is_constructor_value, js_array_index, require_callback, unexpected_tail_call_error,
+    is_constructor_value, js_array_index, require_callback, string_arraylike_units, unexpected_tail_call_error,
+    unit_string_value,
 };
 
 /// JS `Array()` 构造逻辑：单个数字参数创建指定长度空数组，其余情况把参数作为元素。
@@ -197,23 +198,33 @@ pub fn array_from<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         }
     } else {
         // array-like 路径：ToObject 后读 length，构造结果对象，逐索引取值。
-        let obj_val = match oxide_runtime_api::to_object(items, vm) {
-            Ok(o) => o,
-            Err(err) => return NativeResult::Err(crate::error::create_type_error(vm, &err)),
+        // 字符串源（原始串/装箱串）的 length 与索引未物化，直接按 UTF-16 单元读。
+        let string_units = string_arraylike_units(vm, items);
+        let obj_val = match &string_units {
+            Some(_) => JsValue::undefined(),
+            None => match oxide_runtime_api::to_object(items, vm) {
+                Ok(o) => o,
+                Err(err) => return NativeResult::Err(crate::error::create_type_error(vm, &err)),
+            },
         };
-        let obj_ptr = obj_val.as_js_object_ptr();
-        let obj = unsafe { &*obj_ptr };
-        let length_key = vm.new_string("length");
-        let length_si = vm.property_key_si(length_key);
-        let len_val = match vm.ordinary_get(obj, length_si, obj_val) {
-            Ok(v) => v,
-            Err(err) => return NativeResult::Err(from_engine_error(vm, &err)),
+        let len = match &string_units {
+            Some(units) => units.len().min(MAX_DENSE_PROPS),
+            None => {
+                let obj_ptr = obj_val.as_js_object_ptr();
+                let obj = unsafe { &*obj_ptr };
+                let length_key = vm.new_string("length");
+                let length_si = vm.property_key_si(length_key);
+                let len_val = match vm.ordinary_get(obj, length_si, obj_val) {
+                    Ok(v) => v,
+                    Err(err) => return NativeResult::Err(from_engine_error(vm, &err)),
+                };
+                let len_u64 = oxide_runtime_api::to_length(len_val);
+                if len_u64 > u32::MAX as u64 {
+                    return NativeResult::Err(crate::error::create_range_error(vm, "Invalid array length"));
+                }
+                len_u64.min(MAX_DENSE_PROPS as u64) as usize
+            }
         };
-        let len_u64 = oxide_runtime_api::to_length(len_val);
-        if len_u64 > u32::MAX as u64 {
-            return NativeResult::Err(crate::error::create_range_error(vm, "Invalid array length"));
-        }
-        let len = len_u64.min(MAX_DENSE_PROPS as u64) as usize;
 
         a_ptr = match construct_array_from_result(vm, c, &[JsValue::int(len as i32)]) {
             Ok((ptr, is_arr)) => {
@@ -223,7 +234,10 @@ pub fn array_from<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
             Err(err) => return NativeResult::Err(err),
         };
         for i in 0..len {
-            let elem = arraylike_get_or_err!(vm, obj_ptr, i);
+            let elem = match &string_units {
+                Some(units) => unit_string_value(vm, units[i]),
+                None => arraylike_get_or_err!(vm, obj_val.as_js_object_ptr(), i),
+            };
             let mapped = match mapping {
                 Some(cb) => match invoke_native_callback(vm, cb, this_arg, &[elem, js_array_index(i)]) {
                     NativeResult::Ok(m) => m,

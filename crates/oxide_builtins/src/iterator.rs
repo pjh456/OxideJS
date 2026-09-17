@@ -1376,23 +1376,48 @@ pub fn iterator_wrapper_next<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult
 /// 只读取 value 的 `@@iterator` 方法而不调用，按 GetMethod-可选入口的三态语义
 /// 判定可迭代性（Array.from / TypedArray 构造器 / TypedArray.from 共用）。
 ///
-/// 统一经原型链解析 `@@iterator`（String 臂与 `get_iterator` 同为无条件快速
-/// 路径）：解析到可调用返 true（调用方走迭代臂）；解析为 null/undefined 返
-/// false（调用方落 array-like 索引读臂），此时再按引擎扩展回退到自身可调用的
-/// `next`；解析为非空不可调用值时抛 TypeError（GetMethod 步 4），不落入
-/// array-like 臂。
+/// 统一经原型链解析 `@@iterator`：解析到可调用返 true（调用方走迭代臂）；
+/// 解析为 null/undefined 返 false（调用方落 array-like 索引读臂），此时再按引擎
+/// 扩展回退到自身可调用的 `next`；解析为非空不可调用值时抛 TypeError
+/// （GetMethod 步 4），不落入 array-like 臂。
 ///
 /// # 边界
-/// 非对象原始值（number/boolean 等）不装箱，直接判不可迭代。
-/// `@@iterator` getter 抛错时透传 `Err`（不落入鸭子回退）。
+/// 字符串原始值按自身 wrapper 的原型链读 `@@iterator`（读起点 String.prototype、
+/// receiver = 原始值），不套用 duck-next 回退（原始串无自身 `next`）；非对象原始值
+/// （number/boolean 等）装箱后判定。`@@iterator` getter 抛错时透传 `Err`
+/// （不落入鸭子回退）。
 ///
 /// # 注意事项
 /// 三态是 GetMethod-可选入口的规范语义：非空不可调用（含 [[IsHTMLDDA]]
 /// 宿主值等不可调用对象）必须抛错而非静默 array-like。
 pub(crate) fn peek_iterator_method<H: VmHost>(vm: &mut H, value: JsValue) -> Result<bool, JsValue> {
-    // String 臂无条件可迭代（与 get_iterator 的 String 臂同一近似）。
+    // 字符串原始值：读 String.prototype 上的 @@iterator，receiver = 原始值
+    // （与 get_iterator 的 String 臂同口径）。默认迭代器被删除/置 null 时须落
+    // array-like，而非按"String 恒可迭代"放行迭代路径。
     if value.is_string() {
-        return Ok(true);
+        let proto_ptr = vm.session().builtin_world().string_proto.as_ptr() as *mut JsObject;
+        // SAFETY: string_proto 是 BuiltinWorld 长驻原型对象，进程内有效且不被 GC 搬移。
+        let proto_obj = unsafe { &*proto_ptr };
+        let sym_iter_si = make_well_known_symbol_key(0);
+        let method = match vm.ordinary_get(proto_obj, sym_iter_si, value) {
+            Ok(m) => m,
+            Err(err) => {
+                // GetMethod 取 @@iterator 时 getter 抛出：透传原值，不落入 array-like。
+                let exc = vm
+                    .take_uncaught_value()
+                    .unwrap_or_else(|| crate::error::create_type_error(vm, &err));
+                return Err(exc);
+            }
+        };
+        if is_callable(method) {
+            return Ok(true);
+        }
+        // GetMethod 步 4：非空不可调用方法是 TypeError，不落入 array-like 臂。
+        if !method.is_null() && !method.is_undefined() {
+            return Err(crate::error::create_type_error(vm, "value is not iterable"));
+        }
+        // null/undefined：原始串的临时 wrapper 无自身可调用 next，落 array-like。
+        return Ok(false);
     }
     // 原始值（number/bigint/boolean/symbol）先装箱再按对象读 @@iterator
     // （如 `Array.from(5)` 经 Number.prototype[Symbol.iterator]）；
@@ -1427,10 +1452,14 @@ pub(crate) fn peek_iterator_method<H: VmHost>(vm: &mut H, value: JsValue) -> Res
             return Err(crate::error::create_type_error(vm, "value is not iterable"));
         }
         // 鸭子回退：@@iterator 解析为 null/undefined 且对象自身有可调用 next。
-        let next_si = vm.kernel_core().perm_interner().intern("next").0;
-        if let Ok(next) = vm.ordinary_get(obj, next_si, recv) {
-            if is_callable(next) {
-                return Ok(true);
+        // 装箱串不套用：get_iterator 的 String 臂无 duck-next 回退，规范也只看
+        // @@iterator（Array.from/%TypedArray%.from 应落 array-like）。
+        if !obj.is_string_obj() {
+            let next_si = vm.kernel_core().perm_interner().intern("next").0;
+            if let Ok(next) = vm.ordinary_get(obj, next_si, recv) {
+                if is_callable(next) {
+                    return Ok(true);
+                }
             }
         }
     }
@@ -1555,8 +1584,10 @@ fn get_iterator<H: VmHost>(vm: &mut H, value: JsValue) -> Result<Option<(JsValue
             // GetMethod 步 4：非空不可调用方法 → TypeError。
             return Err(crate::error::create_type_error(vm, "value is not iterable"));
         }
-        // null/undefined：String 恒可迭代 → 码元快速路径。
-        return Ok(Some((inner, None)));
+        // @@iterator 解析为 null/undefined：String 不再恒可迭代。返回不可迭代由
+        // make_iterator_for_value 统一折成 TypeError；Array.from/%TypedArray%.from
+        // 已由 peek 门控提前落 array-like，不会到达本臂。
+        return Ok(None);
     }
     // 内建集合标记：仅当 @@iterator 经原型链读到的仍是内建默认迭代器函数
     // 时才走快速路径；用户覆盖（自身属性或原型链改写/删除）走通用协议

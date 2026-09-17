@@ -137,6 +137,46 @@ pub(crate) fn arraylike_get<H: VmHost>(vm: &mut H, ptr: *mut JsObject, i: usize)
     }
 }
 
+/// 字符串源的 array-like 单元序列；非字符串源返回 `None`。
+///
+/// String exotic 对象的 `length` 与索引属性在引擎内未物化，Array.from /
+/// %TypedArray%.from 的 array-like 回退按 UTF-16 单元直接读：原始串取自身单元，
+/// 装箱串取其 `[[StringData]]`（槽 0）。单元长度即 `length`，第 i 个索引为第 i 个码元。
+///
+/// # 边界
+/// 装箱串槽 0 非字符串（异常形态）按非字符串源处理；指针为空返回 `None`。
+pub(crate) fn string_arraylike_units<H: VmHost>(vm: &H, value: JsValue) -> Option<Vec<u16>> {
+    let raw = if value.is_string() {
+        value
+    } else if value.is_object() {
+        let ptr = value.as_js_object_ptr();
+        if ptr.is_null() {
+            return None;
+        }
+        // SAFETY: ptr 来自对象 JsValue，指向存活的 JsObject。
+        let obj = unsafe { &*ptr };
+        if !obj.is_string_obj() {
+            return None;
+        }
+        let data = obj.get_prop_at(0);
+        if !data.is_string() {
+            return None;
+        }
+        data
+    } else {
+        return None;
+    };
+    Some(vm.string_units(raw).into_owned())
+}
+
+/// 取单个 UTF-16 单元对应的字符串值：ASCII 单元命中共享 perm 串，其余按单元序列创建。
+pub(crate) fn unit_string_value<H: VmHost>(vm: &mut H, unit: u16) -> JsValue {
+    match vm.single_unit(unit) {
+        Some(v) => v,
+        None => vm.new_string_units(&[unit]),
+    }
+}
+
 /// 元素读取失败时直接把异常作为 NativeResult::Err 返回。
 macro_rules! arraylike_get_or_err {
     ($vm:expr, $ptr:expr, $i:expr) => {
