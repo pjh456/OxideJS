@@ -35,15 +35,15 @@ pub fn format_error_message(name: &str, msg: &str) -> String {
 /// [`VmHost::string_units`] / [`to_units_full`]。
 #[inline]
 pub(crate) unsafe fn string_data(val: JsValue) -> std::borrow::Cow<'static, str> {
-    // Borrowed 臂借用期名义绑定解引用临时；与旧 `&'static str` 版本同款契约
-    // （同函数内即时消费），生命周期统一升为 'static。
+    // Borrowed 臂借用期名义绑定解引用临时承载（同函数内即时消费），
+    // 生命周期由该约定统一升为 'static。
     std::mem::transmute((*val.as_string_ptr()).as_lossy_str())
 }
 
 /// 按内容比较两个字符串 `JsValue` 是否相等。
 ///
-/// 先做指针级短路（同一 interned 字符串必等）；双 Flat 比文本（与旧路径逐位
-/// 一致），其余按单元序列比较（对"rope vs 同内容不同指针"也正确）。
+/// 先做指针级短路（同一 interned 字符串必等）；两侧均 Flat 时直接按文本逐位比较，
+/// 结果与走单元序列比较一致；其余按单元序列比较（对"rope vs 同内容不同指针"也正确）。
 #[inline]
 pub fn string_value_eq(a: JsValue, b: JsValue) -> bool {
     if a.as_string_ptr() == b.as_string_ptr() {
@@ -520,7 +520,7 @@ pub fn relational_compare(lhs: JsValue, rhs: JsValue) -> Option<bool> {
         let l = unsafe { &*lhs.as_string_ptr() };
         let r = unsafe { &*rhs.as_string_ptr() };
         if l.is_flat() && r.is_flat() {
-            // 双 Flat：文本比较与旧路径逐位一致。
+            // 双 Flat：直接按文本字典序比较（与 rope 的码元字典序结果一致）。
             return Some(l.as_str() < r.as_str());
         }
         // 单元口径：码元字典序即规范序，Flat 编码与 rope 扁平化统一走单元通道。
@@ -912,8 +912,8 @@ pub fn to_string_for_string_constructor<H: VmHost>(val: JsValue, host: &mut H) -
     Ok(to_string(primitive))
 }
 
-/// Well-known symbols are stored as empty objects in the builtin world; map an object
-/// pointer back to its well-known symbol id (0..WELL_KNOWN_SYMBOL_COUNT) if it is one.
+/// well-known symbol 以空对象存于 builtin world；把一个对象指针反查回它的
+/// well-known symbol id（0..WELL_KNOWN_SYMBOL_COUNT），非 well-known symbol 返回 None。
 pub fn well_known_symbol_id<H: VmHost + ?Sized>(host: &H, ptr: *mut JsObject) -> Option<u32> {
     if ptr.is_null() {
         return None;
@@ -950,7 +950,7 @@ pub fn well_known_symbol_id<H: VmHost + ?Sized>(host: &H, ptr: *mut JsObject) ->
     }
 }
 
-/// Descriptive name of a well-known symbol id, e.g. `Symbol.toStringTag` for id 9.
+/// well-known symbol id 的描述名（如 id 9 对应 `Symbol.toStringTag`）。
 pub fn well_known_symbol_name(id: u32) -> Option<&'static str> {
     Some(match id {
         0 => "Symbol.iterator",

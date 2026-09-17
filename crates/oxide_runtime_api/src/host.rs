@@ -29,7 +29,7 @@ pub trait VmHost {
     /// 当前 native 调用的完整实参个数（寄存器窗口 + spill 溢出区，不含 receiver）。
     ///
     /// 供支持大实参集的 builtin（如 `String.fromCodePoint`）遍历全部实参；
-    /// 未迁移的 builtin 仍按 `args` 索引读寄存器，行为不变。
+    /// 尚未改用本接口的 builtin 仍按 `args` 索引读寄存器。
     fn native_arg_count(&self, args: &[u8]) -> usize {
         args.len().saturating_sub(1) + self.native_overflow_count()
     }
