@@ -56,7 +56,7 @@ impl Emitter {
         }
     }
 
-    /// 私有字段初始化：以私有名 id 做 `init_private` 写实例 own 属性。
+    /// 私有字段初始化：以私有名 id 做 `init_private` 写目标对象的私有槽（实例字段 target = this，静态字段 target = 构造器）。
     pub(crate) fn emit_private_field_init(
         &self, target: Operand, name: &str, value: Option<&Expression>, ctx: &mut CompileCtx,
     ) -> Result<(), String> {

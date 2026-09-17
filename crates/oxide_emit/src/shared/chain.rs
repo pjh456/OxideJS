@@ -303,7 +303,7 @@ impl Emitter {
     }
 
     /// 读取对象属性并产出键信息：非计算键走字符串常量 IC 路径，计算键在字面量可折叠时走 IC，否则动态求值。
-    /// 返回 `(结果寄存器, 常量键名, 动态键寄存器)`，后两者互补为 None。
+    /// 返回 `(结果寄存器, 常量键名, 键寄存器)`，后两者互补为 None（计算键路径无论 IC 折叠还是动态求值均以寄存器返回键）。
     pub(crate) fn emit_object_property_read_key(
         &self, src_reg: u32, key: &PropertyKey, computed: bool, ctx: &mut CompileCtx,
     ) -> Result<(u32, Option<String>, Option<u32>), String> {
