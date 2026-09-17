@@ -8,7 +8,11 @@
 use oxide_kernel::shape_forge::EMPTY_SHAPE_ID;
 use oxide_runtime_api::{NativeResult, VmHost};
 use oxide_types::object::{JsObject, PropAttributes};
+use oxide_types::private_key::make_well_known_symbol_key;
 use oxide_types::value::JsValue;
+
+/// `Symbol.toStringTag` 在 well-known symbol 表中的序号，命名空间标签键按其编码。
+const TO_STRING_TAG_SYMBOL_ID: u32 = 9;
 
 /// 模块命名空间导出属性描述符：不可写、可枚举、不可配置（module namespace exotic）。
 fn ns_attrs() -> PropAttributes {
@@ -19,10 +23,10 @@ fn type_error<H: VmHost>(vm: &mut H, msg: &str) -> NativeResult {
     NativeResult::Err(crate::error::create_type_error(vm, msg))
 }
 
-/// `__moduleObject()`：创建模块命名空间对象（null 原型，带 @@toStringTag）。
+/// `__moduleObject()`：创建模块命名空间对象（null 原型，带 @@toStringTag Symbol 键）。
 pub fn module_object<H: VmHost>(vm: &mut H, _args: &[u8]) -> NativeResult {
     let obj = vm.alloc_object(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()));
-    let tag_si = vm.kernel_core().perm_interner().intern("@@toStringTag").0;
+    let tag_si = make_well_known_symbol_key(TO_STRING_TAG_SYMBOL_ID);
     let tag_val = vm.new_string("Module");
     let obj_ref = unsafe { &mut *obj };
     if let Err(e) = vm.define_data_property(obj_ref, tag_si, tag_val, PropAttributes::new(false, false, false)) {
@@ -49,6 +53,8 @@ pub fn module_set<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     if let Err(e) = vm.define_data_property(obj, name_si, value, ns_attrs()) {
         return NativeResult::Err(crate::error::create_error(vm, &e));
     }
+    // 每次导出写入后重排：自导入在 body 内即可见有序的 [[OwnPropertyKeys]]。
+    crate::object::sort_namespace_exports(vm, obj);
     NativeResult::Ok(JsValue::undefined())
 }
 
@@ -136,10 +142,12 @@ pub fn module_star<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
             return NativeResult::Err(crate::error::create_error(vm, &e));
         }
     }
+    // star 复制后重排：直接导出与 star 导出的合并键序保持规范顺序。
+    crate::object::sort_namespace_exports(vm, dst);
     NativeResult::Ok(JsValue::undefined())
 }
 
-/// `__moduleSeal(ns)`：封冻命名空间（不可扩展；toStringTag 留待后续）。
+/// `__moduleSeal(ns)`：封冻命名空间（不可扩展）。
 pub fn module_seal<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     if args.len() < 2 {
         return type_error(vm, "__moduleSeal: 1 argument required");

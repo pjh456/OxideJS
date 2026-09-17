@@ -3,7 +3,7 @@ use oxide_types::mem::P;
 use oxide_types::object::{JsObject, PropAttributes};
 use oxide_types::value::JsValue;
 
-use crate::object::{delete_own_property, key_si_to_js_value, walk_own_keys};
+use crate::object::{delete_own_property, key_si_to_js_value, own_symbol_key_values, walk_own_keys};
 
 use oxide_runtime_api::{NativeResult, VmHost};
 
@@ -184,15 +184,27 @@ pub fn reflect_is_extensible<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult
     NativeResult::Ok(JsValue::bool(unsafe { &*target_ptr }.is_extensible()))
 }
 
-/// `Reflect.ownKeys(target)`：返回对象全部自身属性名（字符串数组）。
+/// `Reflect.ownKeys(target)`：返回对象全部自身属性键，字符串键在前、Symbol 键在后。
+///
+/// # 步骤
+/// 1. 收集字符串键与整数键（整数升序，其余插入序）。
+/// 2. 追加自身 Symbol 键（保持插入序），符合 OrdinaryOwnPropertyKeys 的排序。
+///
+/// # 副作用
+/// - 结果数组分配在当前 epoch。
 pub fn reflect_own_keys<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let target_val = arg(vm, args, 1);
     let Some(target_ptr) = object_ptr(target_val) else {
         return type_error(vm, "Reflect.ownKeys target is not an object");
     };
     let target = unsafe { &*target_ptr };
+
+    // Symbol 键分流在消费端追加：底层字符串枚举源（Object.keys / JSON / for-in）
+    // 语义不变，不泄漏 Symbol 键。
     let keys = walk_own_keys(vm, target);
-    let n = keys.len();
+    let symbols = own_symbol_key_values(vm, target);
+    let n = keys.len() + symbols.len();
+
     let array_proto = vm.session().builtin_world().array_proto.as_ptr() as *mut JsObject;
     let arr = vm.alloc_object(JsObject::new_array(
         EMPTY_SHAPE_ID,
@@ -204,6 +216,12 @@ pub fn reflect_own_keys<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         let key_val = key_si_to_js_value(vm, *si);
         unsafe {
             (*arr).set_prop_at(i, key_val);
+        }
+    }
+    let base = keys.len();
+    for (j, sym) in symbols.iter().enumerate() {
+        unsafe {
+            (*arr).set_prop_at(base + j, *sym);
         }
     }
     unsafe {

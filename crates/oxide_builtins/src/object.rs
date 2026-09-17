@@ -165,6 +165,80 @@ fn decode_symbol_key<H: VmHost>(vm: &H, key: u32) -> JsValue {
     JsValue::symbol(symbol_index_from_key(key))
 }
 
+/// 收集对象自身全部 Symbol 键并按插入序物化为 Symbol 值。
+///
+/// 供 `Object.getOwnPropertySymbols` 与 `Reflect.ownKeys` 的 Symbol 段共用；
+/// 与 [`walk_own_keys`] 互补，后者只返回字符串键与整数键。
+///
+/// # 边界与前提
+/// - 无自身 Symbol 键时返回空向量；数组元素区不含 Symbol 键。
+///
+/// # 注意事项
+/// - 只读 shape 链，不分配对象；well-known symbol 值指向 session 内建 symbol 对象。
+pub fn own_symbol_key_values<H: VmHost>(vm: &H, obj: &JsObject) -> Vec<JsValue> {
+    walk_own_symbol_keys(vm, obj)
+        .iter()
+        .map(|(key, _)| decode_symbol_key(vm, *key))
+        .collect()
+}
+
+/// 按规范 [[OwnPropertyKeys]] 重排命名空间导出：字符串键按 UTF-16 单元序升序，
+/// Symbol 键（`@@toStringTag`）保持在其后。
+///
+/// 命名空间导出在模块 body 执行期按语句序写入，而规范要求导出键有序。重建 shape
+/// 链使插入序即枚举序，字符串枚举消费端（getOwnPropertyNames / Reflect.ownKeys /
+/// for-in / Object.keys / JSON）无需各自特判。
+///
+/// # 边界与前提
+/// - 仅对模块命名空间对象调用；无自身字符串键时只保留 Symbol 键。
+///
+/// # 副作用
+/// - 重写 obj 的 shape 链与属性表并 bump generation；对象 identity、属性值与
+///   描述符均不变。
+pub fn sort_namespace_exports<H: VmHost>(vm: &mut H, obj: &mut JsObject) {
+    // 收集字符串导出与其值/描述符；Symbol 键不参与字符串排序，收集后原序追加。
+    let mut entries: Vec<(u32, JsValue, Option<PropMetaEntry>)> = walk_own_keys(vm, obj)
+        .into_iter()
+        .map(|(si, pos)| (si, obj.get_prop_at(pos), obj.prop_meta_at(pos)))
+        .collect();
+    let symbols: Vec<(u32, JsValue, Option<PropMetaEntry>)> = walk_own_symbol_keys(vm, obj)
+        .into_iter()
+        .map(|(si, pos)| (si, obj.get_prop_at(pos), obj.prop_meta_at(pos)))
+        .collect();
+
+    // 排序口径 = UTF-16 单元序（BMP 外字符的单元序与码点序不同）。
+    entries.sort_by_cached_key(|(si, _, _)| namespace_key_units(vm, *si));
+
+    // 重建 shape 链与属性表：插入序 = 枚举序。
+    obj.set_shape_id(EMPTY_SHAPE_ID);
+    obj.clear_props();
+    for (si, value, meta) in entries.into_iter().chain(symbols) {
+        let shape = vm.kernel_core().shape_forge().make_shape(obj.shape_id(), si);
+        obj.set_shape_id(shape);
+        let pos = obj.push_prop(value);
+        if let Some(meta) = meta {
+            if meta.is_accessor {
+                obj.set_accessor_meta(pos, meta.get, meta.set, meta.attributes);
+            } else {
+                obj.set_data_meta(pos, meta.attributes);
+            }
+        }
+    }
+    obj.bump_generation();
+}
+
+/// 命名空间导出键的排序单元序列：字符串键取 UTF-16 单元，整数键取十进制文本。
+fn namespace_key_units<H: VmHost>(vm: &H, si: u32) -> Vec<u16> {
+    if is_int_key(si) {
+        return int_key_value(si).to_string().encode_utf16().collect();
+    }
+    vm.kernel_core()
+        .perm_interner()
+        .lookup(si)
+        .map(|key| key.encode_utf16().collect())
+        .unwrap_or_default()
+}
+
 /// `Object.getOwnPropertySymbols(obj)`：返回全部自身 Symbol 键数组。
 pub fn object_get_own_property_symbols<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let obj_ptr = match require_obj_arg(vm, args, "getOwnPropertySymbols") {
@@ -174,10 +248,7 @@ pub fn object_get_own_property_symbols<H: VmHost>(vm: &mut H, args: &[u8]) -> Na
 
     let symbols: Vec<JsValue> = {
         let obj = unsafe { &*obj_ptr };
-        walk_own_symbol_keys(vm, obj)
-            .iter()
-            .map(|(key, _)| decode_symbol_key(vm, *key))
-            .collect()
+        own_symbol_key_values(vm, obj)
     };
 
     let n = symbols.len();
