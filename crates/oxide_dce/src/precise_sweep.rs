@@ -13,7 +13,7 @@ use oxide_liveness::LiveInfo;
 
 /// 单遍死指令标记：就地改写 `keep`（保活/删除标记），f 只读。
 pub(super) fn pass_dead_with_liveness(f: &IRFunction, live: &LiveInfo, keep: &mut [bool]) {
-    // label 目标位图：label_pos 指向的 Inst 下标（照 iter_sweep:36-42，越界防御性忽略）
+    // label 目标位图：label_pos 指向的 Inst 下标；越界槽防御性忽略（label_pos 由 emit 回填，可能未填或失效）。
     let mut label_target = vec![false; f.insts.len()];
     for pos in f.label_pos.iter().flatten() {
         if let Some(t) = label_target.get_mut(*pos) {

@@ -1,7 +1,7 @@
 //! DCE 改写 pass：IRFunction → 死代码消除后 compact 重建。
 //!
 //! 改写 pass：`&mut IRFunction` 就地 compact（以指令下标索引 keep 位图，无借用冲突），
-//! 三 Pass 各居一模块（照 oxide_cfg 四阶段拆文件先例）：
+//! 三 Pass 各居一模块，便于逐模块独立单测：
 //! - `reachability`（Pass A）：块级可达性，消费 `oxide_cfg::build_cfg`，Exception 边保守遍历
 //! - `iter_sweep`（Pass B）：全函数 use 计数迭代删除死指令到不动点（连锁删上游写者）
 //! - `rebuild`（Pass C）：mark-sweep 一次性重建 insts + label_pos 重映射（不用就地逐删平移）
@@ -24,7 +24,7 @@ use oxide_liveness::LiveInfo;
 
 /// 死代码消除：块级不可达删除 + 全函数 use 计数迭代删除到不动点 + mark-sweep 重建。
 pub fn dce(f: &mut IRFunction) {
-    // 空 IRFunction 退化形态：无指令可删（照 oxide_cfg empty_function 先例）。
+    // 空函数无指令可删，直接返回（no-op，f 不变）。
     if f.insts.is_empty() {
         return;
     }
@@ -43,7 +43,7 @@ pub fn dce(f: &mut IRFunction) {
 /// 消费 oxide_liveness::LiveInfo（RegAlloc 管线传入；若 LiveInfo 已过期，重建 liveness
 /// 是调用方 RegAlloc 的职责，本 pass 不重复建分析引擎）。mark-sweep 重建复用既有 Pass C。
 pub fn dce_precise(f: &mut IRFunction, live: &LiveInfo) {
-    // 空函数退化（照 dce 先例）
+    // 空函数无指令可删，直接返回（no-op，f 不变）。
     if f.insts.is_empty() {
         return;
     }
