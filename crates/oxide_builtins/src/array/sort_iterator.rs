@@ -14,10 +14,10 @@ use super::common::{
     invoke_native_callback, require_callback,
 };
 
-/// `Array.prototype.sort(compareFn)`：原地排序。默认按字符串字典序；
-/// 提供比较函数时按其返回值（<0/=0/>0）排序，回调抛错则中止。
-/// 对元素向量执行 Array.prototype.sort 的比较语义（原地）。
-/// 比较回调抛错时中止并把异常返回；默认按字符串字典序。
+/// 对元素向量执行 `Array.prototype.sort` 的比较语义（原地排序）。
+///
+/// 默认按 ToString 结果的字符串字典序比较；提供比较回调时按其返回值
+///（<0/=0/>0）决定次序，回调抛错则中止并把异常原样返回。
 pub(crate) fn sort_values_inner<H: VmHost>(
     vm: &mut H, vals: &mut [JsValue], comparator: Option<JsValue>,
 ) -> Result<(), JsValue> {
@@ -70,6 +70,14 @@ pub(crate) fn parse_sort_comparator<H: VmHost>(vm: &mut H, candidate: JsValue) -
     }
 }
 
+/// 原地排序数组元素并返回原数组（`Array.prototype.sort`）。
+///
+/// 未提供比较回调时按 ToString 结果的字符串字典序排序；底层 `sort_by` 为稳定
+/// 排序，比较结果相等（含 NaN）的元素保持原有相对次序。
+///
+/// # 边界与前提
+/// - 接收者不是数组时抛 TypeError；
+/// - 比较回调抛错时中止排序并把异常原样返回。
 pub fn array_sort<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("Array.prototype.sort called with {} args", args.len());
     let arr_ptr = array_ptr!(vm, args);

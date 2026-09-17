@@ -183,6 +183,15 @@ pub fn drop_typed_array_native(obj: &mut JsObject) -> u64 {
     bytes
 }
 
+/// 取接收者的 TypedArrayData 视图（按值返回，非借出）。
+///
+/// # 边界与前提
+/// - 接收者非对象、对象指针为空或不是 TypedArray 对象时抛 TypeError（接收者不兼容）；
+/// - `native_fn` 槽为空值或存空指针时抛 TypeError（内部状态无效）。
+///
+/// # 注意事项
+/// - 返回的是解引用后的拷贝（`Ok(*data_ptr)`），底层 buffer 仍由对象持有，
+///   调用方不得据此延长其生命周期。
 pub(crate) fn get_typed_array_data<H: VmHost>(vm: &mut H, this_val: JsValue) -> Result<TypedArrayData, JsValue> {
     if !this_val.is_object() {
         return Err(type_error(vm, "TypedArray method called on incompatible receiver"));

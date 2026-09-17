@@ -4,8 +4,9 @@
 //! 记录栈状态，`entries` 按入栈序存待释放资源。同步栈 dispose 只用
 //! Pending/Disposed 两态；Disposing 为异步资源栈 disposeAsync 执行期标记
 //! （当前状态机只置 Disposed，变体语义预留）。两栈共用本模块：方法按
-//! `type_tag`（24 同步 / 25 异步）区分接收者，`hint` 记录条目释放语义
-//! （0=sync-dispose，1=async-dispose），`wrap_sync` 标记 async 栈 use 落回
+//! `type_tag` 为 `JsObject::OBJ_TYPE_DISPOSABLE_STACK`（同步）或
+//! `OBJ_TYPE_ASYNC_DISPOSABLE_STACK`（异步）时区分接收者，`hint` 以 0/1 两值区分
+//! 条目释放语义（定义见 `DisposeEntry.hint`），`wrap_sync` 标记 async 栈 use 落回
 //! `@@dispose` 的条目（返回值丢弃、异常异步化）。GC 四函数
 //! （edges/rewrite/clone/drop）供 session 层跨 epoch 追踪，签名与 Map/Promise
 //! 状态盒同构。
@@ -529,6 +530,11 @@ pub struct DisposeCapability {
     pub entries: Vec<DisposeEntry>,
 }
 
+/// 取对象 `native_data` 中存放的状态盒指针。
+///
+/// # 注意事项
+/// - 仅在对象存活期内调用（GC 边收集与绑定层）；指针由分配入口
+///   `alloc_disposable_stack` 保证有效。
 pub fn get_capability_ptr(obj: &JsObject) -> *mut DisposeCapability {
     obj.native_data() as *mut DisposeCapability
 }

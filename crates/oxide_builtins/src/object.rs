@@ -11,6 +11,7 @@ use oxide_runtime_api::{NativeResult, VmHost};
 
 use crate::builtins_debug;
 
+/// 判断字符串是否为规范整数索引：非空、无前导零、全数字且值 < 2^32-1。
 fn is_integer_index(key: &str) -> bool {
     if key.is_empty() || key.len() > 1 && key.as_bytes()[0] == b'0' {
         return false;
@@ -19,8 +20,9 @@ fn is_integer_index(key: &str) -> bool {
 }
 
 /// 收集对象全部自身属性（数组元素区 + shape 链），按规范顺序排列：整数索引在前
-/// 升序，其余保持插入序。返回 `(属性键 si, 绝对存储索引)`：数组对象元素区索引即
-/// 绝对下标，命名属性 = `array_prop_count + shape 槽位`；普通对象即 shape 槽位。
+/// 升序，其余保持插入序。si 指 interned 字符串键编号（PermInterner 分配的 u32 id）。
+/// 返回 `(属性键 si, 绝对存储索引)`：数组对象元素区索引即绝对下标，命名属性 =
+/// `array_prop_count + shape 槽位`；普通对象即 shape 槽位。
 pub fn walk_own_keys<H: VmHost>(vm: &H, obj: &JsObject) -> Vec<(u32, u32)> {
     let mut keys: Vec<(u32, u32)> = Vec::new();
     // 数组元素区：整数下标是可枚举自身属性（hole 视为不存在），排在命名属性之前。
@@ -78,7 +80,8 @@ pub fn walk_own_keys<H: VmHost>(vm: &H, obj: &JsObject) -> Vec<(u32, u32)> {
     keys
 }
 
-/// 键 si 的数组下标值：整数键直接反解，字符串键查 interner 后判是否规范数字串。
+/// 取键 si（interned 字符串键编号）对应的数组下标值：整数键直接反解，字符串键查
+/// interner 后判是否规范数字串。
 fn int_or_string_index<H: VmHost>(vm: &H, si: u32) -> Option<u32> {
     if is_int_key(si) {
         return Some(int_key_value(si));
@@ -87,9 +90,9 @@ fn int_or_string_index<H: VmHost>(vm: &H, si: u32) -> Option<u32> {
     is_integer_index(key).then(|| key.parse::<u32>().unwrap())
 }
 
-/// 键 si 物化为 JS 可见字符串值（Object.keys / ownKeys / entries 族）：
+/// 键 si 构造为 JS 可见字符串值（Object.keys / ownKeys / entries 族）：
 /// 整数键反解数字串，字符串键经 `decode_key` 还原单元序列（孤立 surrogate
-/// 物化为 FlatU16，良形键与旧行为逐位一致）。
+/// 构造为 FlatU16；良形键的输出为良形 UTF-8 字符串，与直接 `to_string` 结果一致）。
 pub fn key_si_to_js_value<H: VmHost>(vm: &mut H, si: u32) -> JsValue {
     if is_int_key(si) {
         return vm.new_string(&int_key_value(si).to_string());
@@ -792,6 +795,8 @@ fn push_desc_prop(obj: &mut JsObject, shape_forge: &ShapeForge, prop_si: u32, va
     obj.push_prop(val);
 }
 
+/// 校验并取出 Object 类方法的目标对象：`args[0]` 为接收者，`args[1]` 为待转换值，
+/// 缺参或值经 ToObject 失败（null/undefined）时抛 TypeError。
 fn require_obj_arg<H: VmHost>(vm: &mut H, args: &[u8], fn_name: &str) -> Result<*mut JsObject, JsValue> {
     if args.len() < 2 {
         return Err(crate::error::create_type_error(vm, &format!("Object.{fn_name} called on non-object")));

@@ -24,7 +24,8 @@ pub fn array_to_reversed<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     if let Err(err) = check_array_create_len(vm, n) {
         return NativeResult::Err(err);
     }
-    // ????????????????getter ???????????
+    // 按倒序逐个读取原数组元素（规范 Get，访问器 getter 触发），写入新数组对应槽位：
+    // 新数组即原数组元素的逆序。
     for i in (0..n).rev() {
         let elem = arraylike_get_or_err!(vm, arr_ptr, i);
         unsafe {
@@ -68,9 +69,15 @@ pub fn array_with<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     }
     NativeResult::Ok(JsValue::from_js_object(new_arr))
 }
+/// 返回按比较语义排序的新数组，原数组不变（`Array.prototype.toSorted`）。
+///
+/// # 边界与前提
+/// - 先校验 compareFn 可调用（非 undefined 且不可调用则抛 TypeError），再读取
+///   this/length；
+/// - 未提供比较回调时按 ToString 结果的字符串字典序排序；底层 `sort_by` 为稳定
+///   排序，比较结果相等的元素保持原有相对次序。
 pub fn array_to_sorted<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("Array.prototype.toSorted called with {} args", args.len());
-    // 规范先校验 compareFn 可调用，再读取 this/length。
     let comparator = if args.len() > 1 {
         match parse_sort_comparator(vm, vm.reg(args[1])) {
             Ok(c) => c,
@@ -105,6 +112,14 @@ pub fn array_to_sorted<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     }
     NativeResult::Ok(JsValue::from_js_object(new_arr))
 }
+/// 按 start/deleteCount/插入值三元 splice 语义返回新数组，原数组不变
+///（`Array.prototype.toSpliced`）。
+///
+/// # 边界与前提
+/// - 全缺省（无 start 与 deleteCount）按拷贝处理；仅缺 deleteCount 时从 start
+///   删到末尾；
+/// - start 为负时按 len + start 折算并夹到 `[0, len]`；deleteCount 为负或 NaN
+///   视为 0，上限为 len - start。
 pub fn array_to_spliced<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("Array.prototype.toSpliced called with {} args", args.len());
     let this_val = vm.reg(args[0]);
@@ -140,8 +155,8 @@ pub fn array_to_spliced<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         dc.min(n - actual_start)
     };
     let insert_count = if args.len() > 3 { args.len() - 3 } else { 0 };
-    // ???newLen = len + insertCount - actualDeleteCount?> 2**53-1 ? TypeError?
-    // ArrayCreate(newLen) ? 2**32-1 ? RangeError??????/???????
+    // 新长度 newLen = len + insertCount - actualDeleteCount 超过 2^53-1 抛 TypeError；
+    // 再经 check_array_create_len 检查，超过 2^32-1 抛 RangeError。
     let new_len = n.saturating_add(insert_count).saturating_sub(delete_count);
     if new_len > 9_007_199_254_740_991 {
         return NativeResult::Err(crate::error::create_type_error(vm, "Invalid array length"));

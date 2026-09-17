@@ -72,8 +72,13 @@ pub(crate) fn get_this_array_ref<H: VmHost>(vm: &mut H, val: JsValue) -> Result<
     Ok(ptr)
 }
 
-/// 接受 array 或 ArrayLike (object with length property) — for read-only methods.
-/// 返回 (object_ptr, length, is_real_array)
+/// 取 this 为真数组或类数组对象（带 length 属性的普通对象），按规范读取长度，
+/// 返回 (对象指针, 长度, 是否为真数组)，供只读方法族（values/entries/keys/iterator 等）共用。
+///
+/// # 步骤
+/// 1. this 非对象（null/undefined/原始值）→ TypeError。
+/// 2. 按规范 Get 语义读 length（getter 抛错向上传播，不走 prop_count 直读）。
+/// 3. ToLength：ToIntegerOrInfinity 后负数与 NaN 归 0，上限 2^53-1。
 #[inline(always)]
 pub(crate) fn get_this_arraylike<H: VmHost>(vm: &mut H, val: JsValue) -> Result<(*mut JsObject, usize, bool), JsValue> {
     if !val.is_object() {
@@ -101,7 +106,7 @@ pub(crate) fn get_this_arraylike<H: VmHost>(vm: &mut H, val: JsValue) -> Result<
         Ok(v) => v,
         Err(msg) => return Err(from_engine_error(vm, &msg)),
     };
-    // ToLength：min(max(0, ToIntegerOrInfinity(len)), 2**53-1)
+    // ToLength：len 先按 ToIntegerOrInfinity 取整，负数与 NaN 归 0，上限 2^53-1。
     let len = if len_num.is_nan() || len_num <= 0.0 {
         0
     } else {
@@ -113,10 +118,10 @@ pub(crate) fn get_this_arraylike<H: VmHost>(vm: &mut H, val: JsValue) -> Result<
 /// 从 arraylike 读取 index 位置元素（按规范 Get：访问器/原型链/异常完整传播）。
 #[inline(always)]
 pub(crate) fn arraylike_get<H: VmHost>(vm: &mut H, ptr: *mut JsObject, i: usize) -> Result<JsValue, JsValue> {
-    // 真数组密集直读快路径：无元素 meta（无 hole / accessor，O(1) 空指针判定）且
-    // 索引在元素区内时，直接读数据槽，免每元素构造数字串 + 属性键转换。
-    // 语义与 ordinary_get 一致：`array_elements_meta_vec().is_none()` 保证该索引
-    // 恒为数据属性（见 vm_props.rs ordinary_get_inner 数组分支）。
+    // 真数组密集直读快路径：无元素元信息表（记录 hole/accessor 的可选侧表，
+    // 空指针判定为 O(1)）且索引在元素区内时，直接读数据槽，免每元素构造数字串
+    // + 属性键转换。语义与 ordinary_get 的数组分支一致：无元素元信息表保证该
+    // 索引恒为数据属性，直读数据槽与规范 Get 结果相同。
     let obj = unsafe { &*ptr };
     if obj.is_array() && obj.array_elements_meta_vec().is_none() && i < obj.array_prop_count as usize {
         return Ok(obj.get_prop_at(i));
@@ -188,6 +193,7 @@ pub(crate) fn is_constructor_value(c: JsValue) -> bool {
         && !c_obj.is_arrow()
         && !(c_obj.native_fn().is_some() && c_obj.type_tag != JsObject::OBJ_TYPE_CONSTRUCTOR)
 }
+/// 校验回调参数为可调用函数对象（判空与 is_function 均须通过），不是则抛 TypeError。
 pub(crate) fn require_callback<H: VmHost>(vm: &mut H, callback_val: JsValue) -> Result<JsValue, JsValue> {
     if !callback_val.is_object() {
         return Err(array_type_error(vm, "callback is not a function"));
@@ -209,7 +215,8 @@ pub(crate) fn create_new_array<H: VmHost>(vm: &mut H, n: usize) -> *mut JsObject
     ))
 }
 
-/// ArrayCreate ?????length > 2**32 - 1 ? RangeError??????/???????
+/// ArrayCreate 前置检查：创建长度超过 2^32-1 时抛 RangeError
+/// （密集数组长度按 u32 存储，超之不可容纳）。
 pub(crate) fn check_array_create_len<H: VmHost>(vm: &mut H, n: usize) -> Result<(), JsValue> {
     if n > u32::MAX as usize {
         return Err(crate::error::create_range_error(vm, "Invalid array length"));
@@ -225,6 +232,9 @@ pub(crate) fn array_length_arg<H: VmHost>(vm: &mut H, value: JsValue) -> Result<
     Ok(n as usize)
 }
 
+/// native 回调通用调用入口：先校验回调可调用（非对象、空指针、非函数均转
+/// TypeError），再以 this_val 为接收者、cb_args 为实参同步调用用户回调；调用
+/// 失败时优先取回未捕获的原始异常值，无原始值时按错误文本重建异常。
 pub(crate) fn invoke_native_callback<H: VmHost>(
     vm: &mut H, callback_val: JsValue, this_val: JsValue, cb_args: &[JsValue],
 ) -> NativeResult {
