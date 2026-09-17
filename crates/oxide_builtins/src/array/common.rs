@@ -195,6 +195,7 @@ pub(crate) fn is_constructor_value(c: JsValue) -> bool {
         && !c_obj.is_arrow()
         && !(c_obj.native_fn().is_some() && c_obj.type_tag != JsObject::OBJ_TYPE_CONSTRUCTOR)
 }
+
 /// 校验回调参数为可调用函数对象（判空与 is_function 均须通过），不是则抛 TypeError。
 pub(crate) fn require_callback<H: VmHost>(vm: &mut H, callback_val: JsValue) -> Result<JsValue, JsValue> {
     if !callback_val.is_object() {

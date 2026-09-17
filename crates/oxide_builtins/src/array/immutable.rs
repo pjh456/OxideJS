@@ -69,6 +69,7 @@ pub fn array_with<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     }
     NativeResult::Ok(JsValue::from_js_object(new_arr))
 }
+
 /// 返回按比较语义排序的新数组，原数组不变（`Array.prototype.toSorted`）。
 ///
 /// # 边界与前提
@@ -112,6 +113,7 @@ pub fn array_to_sorted<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     }
     NativeResult::Ok(JsValue::from_js_object(new_arr))
 }
+
 /// 按 start/deleteCount/插入值三元 splice 语义返回新数组，原数组不变
 ///（`Array.prototype.toSpliced`）。
 ///
@@ -141,7 +143,6 @@ pub fn array_to_spliced<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     } else {
         relative_start.min(n as f64) as usize
     };
-    // 缺省规则：start 与 deleteCount 都缺省 -> 拷贝；仅缺省 deleteCount -> 删到末尾。
     let delete_count = if args.len() <= 1 {
         0
     } else if args.len() == 2 {
