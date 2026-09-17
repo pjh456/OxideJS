@@ -4,7 +4,7 @@
 //! 两类型经 lib.rs 重导出供各语法域构造实参；编译链为 `Emitter` 方法，
 //! 捕获分析经自由函数调用 capture 族，与所在文件无关。
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 
 use oxide_bytecode::module::{Constant, UpvalueCapture};
 use oxide_bytecode::opcode::OpCode;
@@ -568,10 +568,20 @@ impl Emitter {
             body_context,
             FunctionBodyContext::Ordinary | FunctionBodyContext::Arrow | FunctionBodyContext::ClassElement
         ) {
+            // 只有创建点父作用域链内可解析的父捕获名才可能成为子函数 upvalue：
+            // 捕获集是函数级名字并集，块级 let/const 在块退出后 cell 仍存留但名字
+            // 已不可解析，块外嵌套函数按名命中会错误读取已失效的 cell。父自身
+            // upvalue 代表的祖父绑定在父函数体内恒可见，不参与过滤。
+            let visible_parent_captured: BTreeMap<String, u8> = parent_ctx
+                .captured_bindings
+                .iter()
+                .filter(|(n, _)| parent_ctx.scopes.symbols.lookup_any_binding(n).is_some())
+                .map(|(n, &i)| (n.clone(), i))
+                .collect();
             ctx.current_upvalue_captures = collect_upvalue_names(
                 body_stmts,
                 &capture_exprs,
-                &parent_ctx.captured_bindings,
+                &visible_parent_captured,
                 &parent_ctx.current_upvalue_captures,
                 &ctx.own_bindings,
             );

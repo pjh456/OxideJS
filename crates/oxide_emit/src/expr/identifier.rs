@@ -21,19 +21,20 @@ impl Emitter {
             }
         }
 
+        // 捕获集是函数级名字并集：块级 let/const 的 cell 在块退出后仍存留，但名字
+        // 已不在作用域链内。仅当名字当前可解析时才走 cell，否则落下方全局解析
+        // （未声明读经 LOAD_GLOBAL 抛 ReferenceError），不得按名误读已失效的 cell。
         if let Some(&cell_idx) = ctx.captured_bindings.get(name) {
-            let r = ctx.alloc_reg();
-            if let Some((binding, _)) = ctx.scopes.symbols.lookup_any_binding(name) {
+            if let Some(binding_reg) = ctx.scopes.symbols.lookup_any_binding(name).map(|(binding, _)| binding.reg) {
+                let r = ctx.alloc_reg();
                 ctx.inst(Inst::new(
                     OpCode::CELL_GET,
                     Operand::Reg(r),
-                    Operand::Reg(binding.reg),
+                    Operand::Reg(binding_reg),
                     Operand::Imm(cell_idx as u16),
                 ));
-            } else {
-                ctx.inst(Inst::new(OpCode::CELL_GET, Operand::Reg(r), Operand::None, Operand::Imm(cell_idx as u16)));
+                return Ok(r);
             }
-            return Ok(r);
         }
 
         let var_reg = match ctx.lookup_or_builtin(name) {
@@ -100,6 +101,9 @@ impl Emitter {
                 Operand::None,
             ));
         } else if let Some(&cell_idx) = ctx.captured_bindings.get(name) {
+            // 回退分支的捕获 cell 同样只在名字当前可解析时才有效；否则与静态解析
+            // 一致：顶层 tier 名读全局对象属性，其余读 undefined（with 回退不抛
+            // 未解析引用）。
             if let Some((binding, _)) = ctx.scopes.symbols.lookup_any_binding(name) {
                 ctx.inst(Inst::new(
                     OpCode::CELL_GET,
@@ -107,13 +111,17 @@ impl Emitter {
                     Operand::Reg(binding.reg),
                     Operand::Imm(cell_idx as u16),
                 ));
-            } else {
+            } else if self.is_global_tier_name(ctx, name) {
+                let key_idx = ctx.add_constant(Constant::String(name.to_string()));
                 ctx.inst(Inst::new(
-                    OpCode::CELL_GET,
+                    OpCode::LOAD_GLOBAL,
                     Operand::Reg(result_reg),
+                    Operand::Const(key_idx),
                     Operand::None,
-                    Operand::Imm(cell_idx as u16),
                 ));
+            } else {
+                let undef_idx = ctx.add_constant(Constant::Undefined);
+                ctx.inst(Inst::load_const(Operand::Reg(result_reg), undef_idx));
             }
         } else if self.is_global_tier_name(ctx, name) {
             // 顶层已声明 var：with 对象无该属性时回退读全局对象属性（顶层 var 的唯一
@@ -183,15 +191,19 @@ impl Emitter {
             ));
             return;
         }
-        // 目标若是被捕获 cell，走 CELL_SET
+        // 目标若是被捕获 cell，走 CELL_SET；仅当名字当前可解析时才写 cell——捕获集
+        // 按名保留的块级绑定在块退出后不可解析，须落下方全局写（sloppy 物化隐式
+        // 全局属性，strict 抛 ReferenceError）。
         if let Some(&cell_idx) = ctx.captured_bindings.get(name) {
-            ctx.inst(Inst::new(
-                OpCode::CELL_SET,
-                Operand::None,
-                Operand::Reg(val_reg),
-                Operand::Imm(cell_idx as u16),
-            ));
-            return;
+            if ctx.scopes.symbols.lookup_any_binding(name).is_some() {
+                ctx.inst(Inst::new(
+                    OpCode::CELL_SET,
+                    Operand::None,
+                    Operand::Reg(val_reg),
+                    Operand::Imm(cell_idx as u16),
+                ));
+                return;
+            }
         }
         let var_reg = ctx.lookup_or_global(name);
         if ctx.targets_readonly_builtin(name, var_reg) {

@@ -348,14 +348,17 @@ impl Emitter {
         if let Expression::Identifier(ident) = arg_expr {
             let name = ident.name.as_str();
             let in_with_dynamic = !ctx.with_stack.is_empty() && !ctx.is_with_internal_binding(name);
-            let captured =
-                ctx.current_upvalue_captures.iter().any(|u| u.name == name) || ctx.captured_bindings.contains_key(name);
+            let binding = ctx.scopes.symbols.lookup_any_binding(name);
+            // 捕获集按名保留块级绑定，但块退出后名字已不可解析：此时不再视为
+            // captured（typeof 对未解析引用求值 "undefined"，不得 CELL_GET 误读
+            // 已失效 cell）。
+            let captured = ctx.current_upvalue_captures.iter().any(|u| u.name == name)
+                || (ctx.captured_bindings.contains_key(name) && binding.is_some());
             // 顶层已声明 var：typeof 读全局对象属性（顶层 var 的唯一存储，引擎侧不保留
             // 镜像副本），缺失 → "undefined"（非抛，IsUnresolvableReference 语义）。未声明名
             // 同走此路（lookup 未命中）。隐式全局槽（未声明名读写登记）同走属性路：
             // delete 真删后缺失 → "undefined" 而非经引擎侧镜像副本读旧值或抛
             // ReferenceError（typeof 对 unresolvable 引用不抛）。
-            let binding = ctx.scopes.symbols.lookup_any_binding(name);
             let implicit_global = binding.is_some_and(|(b, _)| ctx.is_implicit_global_reg(b.reg));
             let is_tier = self.is_global_tier_name(ctx, name);
             if !in_with_dynamic && !captured && (is_tier || binding.is_none() || implicit_global) {
