@@ -370,6 +370,29 @@ impl Vm {
         )
     }
 
+    /// 内联同步调用字节码函数：不起新 CallFrame，直接在调用方寄存器窗口内执行被调模块。
+    ///
+    /// 平表按被调对象创建期 `table_gen` 解析（跨 run 调用仍命中定义模块所在原表）；
+    /// 生成器/异步/异步生成器函数不执行函数体，分别返回对应迭代器或 promise 对象。
+    /// 普通函数经 `save_inline_state` 保存窗口后在调用方寄存器文件上执行子模块，结束
+    /// 时 `restore_inline_state` 回拷窗口。
+    ///
+    /// # 步骤
+    /// 1. `sub_module_index == 0` 为 native 哨兵（accessor 不可调用），直接返回 TypeError。
+    /// 2. 按创建期代际取平表并校验下标；调用深度达上限抛 RangeError。
+    /// 3. 生成器/异步/异步生成器分流到对应对象构造，不进入 dispatch。
+    /// 4. 保存窗口与 pc，零填 callee 读区，装载字节码/常量/平表 id，实参写入 spill 栈实参区。
+    /// 5. 绑定 `regs[254]`：箭头函数用创建期捕获的 `this`，sloppy 普通函数在 nullish
+    ///    receiver 上替换全局对象，严格模式与显式 receiver 原样保留；`regs[255]` 置 undefined。
+    /// 6. 执行 dispatch 后恢复调用方状态并返回结果。
+    ///
+    /// # 边界与前提
+    /// - 表代际未注册或 `sub_module_index` 越界返回 `Err`，不 panic。
+    /// - 实参超出 `n_args` 的部分忽略；缺位参数填 undefined。
+    ///
+    /// # 副作用
+    /// - 改写全局寄存器文件、pc、字节码/常量/平表 id、spill 栈与 `cell_stack`；
+    ///   结束前经 `restore_inline_state` 全部还原。
     pub(crate) fn call_bytecode_function_inline(
         &mut self, callee: JsValue, callee_obj: &JsObject, receiver: JsValue, args: &[JsValue],
     ) -> Result<JsValue, String> {
@@ -480,6 +503,18 @@ impl Vm {
         result
     }
 
+    /// 从调用帧恢复调用方执行状态：弹回字节码/平表 id/表代际/常量四组保存栈，
+    /// 回拷调用方寄存器窗口并按 `return_addr` 回写 pc。
+    ///
+    /// 帧恢复只负责执行核心状态；被调函数的返回值传递由调用路径另行处理。
+    ///
+    /// # 边界与前提
+    /// - 保存栈为空时对应字段保持原值（不 panic）；`saved_reg_offset` 与
+    ///   `caller_reg_limit` 由压帧时按调用方活动上界写入，须与其匹配。
+    ///
+    /// # 副作用
+    /// - 改写 pc、字节码、活动平表 id/代际、活动常量、寄存器窗口与 `regs[254]/[255]`、
+    ///   save_stack/spill_stack、`active_reg_limit`，并重载调用方 builtin 镜像槽。
     pub(crate) fn restore_frame(&mut self, frame: CallFrame) {
         vm_trace!(
             "restore_frame: return_addr={} caller_reg_limit={}",
@@ -628,6 +663,28 @@ impl Vm {
         result
     }
 
+    /// 异常展开：沿 `try_stack` 查找最近可接管的 catch/finally，无则逐帧回退并返回未捕获错误。
+    ///
+    /// 与 `TRY_FINALLY_END` 的完成穿越逻辑对应：finally 体在途异常经 `pending_exception`
+    /// 悬挂，`finally_active` 标记其已进入，防止同一 finally 重复执行；处理器作用域内被
+    /// 中断的 for-of 循环先经 `close_for_of_above` 执行 IteratorClose。
+    ///
+    /// # 步骤
+    /// 1. 逐 handler 展开：所属帧已返回（`frame_depth` 超出当前帧数）的残留 handler 跳过。
+    /// 2. 弹帧至 handler 深度，逐帧弹 `cell_stack` 并 `restore_frame` 回写调用方状态。
+    /// 3. 关闭该作用域内被中断的 for-of 迭代器。
+    /// 4. 有 finally：未进入则挂起在途异常并转入 finally 体；已进入（finally 体内新异常）
+    ///    则丢弃在途异常继续向外展开，不重入本 finally。
+    /// 5. 有 catch：在途异常写入 `regs[0]`，pc 转向 catch。
+    /// 6. 无可用处理器：关闭全部迭代器、回退所有帧，记 `last_uncaught_value` 并返回 `Err`。
+    ///
+    /// # 边界与前提
+    /// - `exception_value` 为空时按 undefined 处理；`try_stack` 为空直接走未捕获路径。
+    ///
+    /// # 副作用
+    /// - 弹出 `try_stack`/`frames`/`cell_stack`，改写 pc 与寄存器窗口；未捕获时把逃逸
+    ///   异常值存入 `last_uncaught_value`（for-of 的 next() 抛出经此重抛原值而非展平
+    ///   字符串），并消费 `pending_error_kind`。
     pub(crate) fn unwind(&mut self) -> Result<(), String> {
         vm_debug!("unwind: {} try handlers on stack", self.try_stack.len());
         while let Some(mut handler) = self.try_stack.pop() {

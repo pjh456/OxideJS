@@ -104,6 +104,14 @@ macro_rules! bind_constructor {
     }};
 }
 
+/// 给既有构造器对象安装 native 函数项指针、形参个数与构造器类型标签。
+///
+/// 绑定模块构造器注册的公共步骤：只更新既有对象的函数元数据，不新建对象、不写属性表。
+/// 函数项指针经 `NativeFnPtr::from_raw` 存入。
+///
+/// # 注意事项
+/// - `native_fn` 须为调用方转成 `*const ()` 的合法 `NativeFn` 函数项指针。
+/// - 不设置 `length` 属性：需要 Function.length 的调用方自行补写。
 pub(crate) fn configure_native_constructor(ctor: &mut JsObject, native_fn: *const (), arg_count: u8) {
     // SAFETY: native_fn 始终是调用方转成 *const () 的合法 NativeFn 函数项指针。
     ctor.set_native_fn(Some(unsafe { NativeFnPtr::from_raw(native_fn) }));
@@ -117,6 +125,15 @@ fn configure_existing_ctor(ctor: &P<JsObject>, native_fn: *const (), arg_count: 
     configure_native_constructor(ctor, native_fn, arg_count);
 }
 
+/// 把 `(name, native_fn_ptr, nargs)` 绑定表逐条安装为目标对象的命名方法。
+///
+/// 每条经 `world.bind_method` 在 `target` 上建/复用方法 wrapper 并写命名属性；shape 与
+/// 字符串 interner 由 `core` 借出，循环内共享。
+///
+/// # 注意事项
+/// - 表中所有函数项指针须为合法的 `NativeFn`（转成 `*const ()`），此处经
+///   `NativeFnPtr::from_raw` 转换。
+/// - `bind_method` 的返回值被丢弃：单条绑定失败不中断后续条目。
 pub(crate) fn apply_binding_table(
     world: &BuiltinWorld, target: &mut JsObject, core: &Arc<KernelCore>, bindings: &[(&'static str, *const (), u8)],
 ) {

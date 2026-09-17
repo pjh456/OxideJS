@@ -9,6 +9,15 @@ use oxide_types::object::{Cell, JsObject, PropAttributes};
 use oxide_types::value::JsValue;
 
 impl Vm {
+    /// 把连续实参寄存器段与 this 寄存器打包成 native 调用下标表。
+    ///
+    /// 返回 `([u8; 257], len)`：`buf[0]` 为 this 寄存器下标，其后依次为 `first_arg_reg`
+    /// 起连续递增的实参寄存器下标。数组由调用方在栈上持有，供 native 函数按下标直读
+    /// 共享寄存器窗口。
+    ///
+    /// # 边界与前提
+    /// - `arg_count` 截断为 256，超出部分不进入下标表（`len ≤ 257`）。
+    /// - 实参寄存器下标按 `u8` 回绕，调用方须保证窗口内连续可用。
     #[inline(always)]
     pub(crate) fn build_native_args(first_arg_reg: u8, arg_count: usize, this_reg: u8) -> ([u8; 257], usize) {
         let mut args_buf = [0u8; 257];
@@ -20,6 +29,28 @@ impl Vm {
         (args_buf, n + 1)
     }
 
+    /// native 函数调用收口：校验调用深度、打包实参、快照 callee 槽后执行实现并按三态回写结果。
+    ///
+    /// native 与调用方共享扁平寄存器文件，故实现执行前把当前 callee 放进 `regs[254]`
+    /// 供分发型 builtin（bind/call/apply）读取「当前 callee」，执行后恢复调用方 `this`。
+    ///
+    /// # 步骤
+    /// 1. 调用深度达上限抛 RangeError。
+    /// 2. `build_native_args` 打包实参下标表。
+    /// 3. 经 `native_fn_ptr_to_fn` 取得函数项并执行；执行前后快照/恢复 `regs[254]`。
+    /// 4. 按 `NativeResult` 三态回写：`Ok` 写 `regs[0]`；`Err` 以原始值走 `unwind`；
+    ///    `TailCall` 目标为 native 时同步调用，否则压字节码帧。
+    ///
+    /// # 边界与前提
+    /// - 调用方须保证 `obj` 已是 native 函数：`native_fn()` 为空时此处 unwrap 失败。
+    /// - `Err` 保留异常原值：用户回调 throw 的原始值经 catch 原样收到，不包装成 Error。
+    ///
+    /// # 副作用
+    /// - 修改 `native_call_depth`、`regs[0]`、`regs[254]`，可能压帧或触发异常展开。
+    ///
+    /// # 注意事项
+    /// - `native_fn_ptr_to_fn` 是 NativeFnPtr → NativeFn 的唯一强制转换点，SAFETY 前提
+    ///   为 `native_fn` 由 `set_native_fn` 以合法函数项指针设置。
     #[inline(always)]
     pub(crate) fn dispatch_native_call(
         &mut self, obj: &JsObject, callee: JsValue, this_reg: u8, first_arg_reg: u8, arg_count: usize,
@@ -197,6 +228,23 @@ impl Vm {
         Ok(())
     }
 
+    /// 初始化（或复用）当前帧调用环境的 cell：按 a 槽下标写入 `cell_stack`，b 槽决定初始化标志。
+    ///
+    /// # 步骤
+    /// 1. 取 a 槽为 cell 下标，按需扩容 `cell_stack` 至可容纳该下标。
+    /// 2. b 槽为 0 表示已初始化，非 0 为 TDZ（读写抛 ReferenceError，用于 for-in/for-of
+    ///    词法头环境建模）。
+    /// 3. 槽位为空时新建 cell；已有 `CREATE_CLOSURE` 建的占位 cell 则原位更新值与标志，
+    ///    使闭包 upvalue 指向的同一 cell 跟随初始化。
+    ///
+    /// # 边界与前提
+    /// - `cell_stack` 为空时 `last_mut()` unwrap 失败；调用前须已压入当前帧环境层。
+    ///
+    /// # 副作用
+    /// - 写入/更新堆上 `Cell`（可能触发分配），改动闭包 upvalue 可见值。
+    ///
+    /// # 注意事项
+    /// - 手写 IR 路径保留的指令，常规编译不发射，故标 `#[allow(dead_code)]`。
     #[allow(dead_code)]
     pub(crate) fn dispatch_make_cell(&mut self, rd: usize, instr: u32) -> Result<(), String> {
         // a 槽为 cell 索引；b 槽承载未初始化标志（1 = 绑定永不被初始化，
@@ -240,6 +288,18 @@ impl Vm {
         Ok(())
     }
 
+    /// 读取当前帧 cell：空槽惰性建 cell，未初始化（TDZ）抛 ReferenceError，否则写 `regs[rd]`。
+    ///
+    /// # 步骤
+    /// 1. 取 b 槽为 cell 下标，按需扩容 `cell_stack`。
+    /// 2. 槽位为空时以 `regs[a]` 为初值新建已初始化 cell（`CREATE_CLOSURE` 占位缺失路径）。
+    /// 3. cell 未初始化抛 ReferenceError；否则值写入 `regs[rd]`。
+    ///
+    /// # 边界与前提
+    /// - cell 下标越界按需扩容，不报错。
+    ///
+    /// # 注意事项
+    /// - 手写 IR 保留指令（同 `dispatch_make_cell`）。
     #[allow(dead_code)]
     pub(crate) fn dispatch_cell_get(&mut self, rd: usize, a: usize, b: usize) -> Result<(), String> {
         let cell_idx = b;
@@ -259,6 +319,22 @@ impl Vm {
         Ok(())
     }
 
+    /// 写入当前帧 cell：越界或空槽静默 no-op，TDZ 写检查后写值并置已初始化。
+    ///
+    /// # 步骤
+    /// 1. b 槽为 cell 下标；下标越界直接返回（不建槽）。
+    /// 2. 槽位为空（尚无 `CREATE_CLOSURE`/`MAKE_CELL`）静默返回，不改状态。
+    /// 3. cell 未初始化（声明点前）抛 ReferenceError。
+    /// 4. 写入 `regs[a]` 并置 initialized。
+    ///
+    /// # 边界与前提
+    /// - 空槽/越界均为 no-op，与读路径的惰性建 cell 不对称：写方无可用源值建槽。
+    ///
+    /// # 副作用
+    /// - 修改堆上 `Cell` 值与初始化标志。
+    ///
+    /// # 注意事项
+    /// - 手写 IR 保留指令（同 `dispatch_make_cell`）。
     #[allow(dead_code)]
     pub(crate) fn dispatch_cell_set(&mut self, a: usize, b: usize) -> Result<(), String> {
         let cell_idx = b;
@@ -289,6 +365,19 @@ impl Vm {
         self.frames.last().map(|f| f.callee).or(self.inline_callee)
     }
 
+    /// 读取当前闭包的 upvalue：命中 cell 判初始化后取值，未命中委托惰性建 cell。
+    ///
+    /// # 步骤
+    /// 1. 取 imm16 为 upvalue 下标，从当前 callee 的 `upvalues` 命中 cell。
+    /// 2. 命中且非空：未初始化（TDZ）抛 ReferenceError，否则值写入 `regs[rd]`。
+    /// 3. 未命中/空槽（`CREATE_CLOSURE` 早于 `MAKE_CELL`）：委托
+    ///    `lazy_create_upvalue_cell` 建 cell。
+    ///
+    /// # 边界与前提
+    /// - `uv_idx` 越界或当前无 callee 时同样走惰性路径，最终回退 undefined。
+    ///
+    /// # 注意事项
+    /// - 手写 IR 保留指令（同 `dispatch_make_cell`）。
     #[allow(dead_code)]
     pub(crate) fn dispatch_load_upvalue(&mut self, rd: usize, instr: u32) -> Result<(), String> {
         let uv_idx = opcode::imm16(instr) as usize;
@@ -315,6 +404,11 @@ impl Vm {
         self.lazy_create_upvalue_cell(rd, uv_idx)
     }
 
+    /// 为当前闭包惰性创建 upvalue cell：初值优先取调用方 cell 表（`cell_stack` 倒数
+    /// 第二层）同下标 cell 的值，缺失时取 `regs[rd]`。
+    ///
+    /// 服务于 `CREATE_CLOSURE` 早于 `MAKE_CELL` 的 hoisting 顺序。cell 建好后写回闭包
+    /// `upvalues[uv_idx]` 并把值读回 `regs[rd]`；无 callee 或下标越界时 `regs[rd]` 置 undefined。
     fn lazy_create_upvalue_cell(&mut self, rd: usize, uv_idx: usize) -> Result<(), String> {
         if let Some(callee) = self.current_callee() {
             if callee.is_object() {
@@ -342,6 +436,19 @@ impl Vm {
         Ok(())
     }
 
+    /// 写入当前闭包的 upvalue：空槽惰性建 cell，TDZ/const 检查后写值置已初始化。
+    ///
+    /// # 步骤
+    /// 1. b 槽为 upvalue 下标，源值为 `regs[a]`；`rd` 复用为 const 标志。
+    /// 2. 命中闭包 `upvalues` 且非空：未初始化（TDZ）抛 ReferenceError，const 标志非 0
+    ///    抛 TypeError，否则写值置 initialized。
+    /// 3. 槽位为空（尚未建 cell）以源值新建已初始化 cell；下标越界或无 callee 静默返回。
+    ///
+    /// # 边界与前提
+    /// - const 检查在 TDZ 检查之后，两者均先于写值。
+    ///
+    /// # 注意事项
+    /// - 手写 IR 保留指令（同 `dispatch_make_cell`）。
     #[allow(dead_code)]
     pub(crate) fn dispatch_store_upvalue(&mut self, rd: usize, a: usize, b: usize) -> Result<(), String> {
         let const_flag = rd;

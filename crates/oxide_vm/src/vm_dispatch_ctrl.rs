@@ -123,7 +123,7 @@ impl Vm {
         let obj = unsafe { &*obj_ptr };
         // 目标为普通 JS 函数（如用户覆盖了 builtin 名）：回退到通用调用路径，
         // 复用 dispatch_call 的 JS 函数调用逻辑而非强制走 native。
-        // pc 此刻指向 ext 字（与 CALL 指令一致），dispatch_call 直接读取。
+        // pc 此刻指向指令的扩展操作数字（ext 字，与 CALL 指令一致），dispatch_call 直接读取。
         if obj.is_function() && obj.native_fn().is_none() {
             return self.dispatch_call(rd, a, b).map(|_| ());
         }
