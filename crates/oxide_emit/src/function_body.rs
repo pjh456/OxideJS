@@ -502,6 +502,64 @@ impl Emitter {
         Ok(ir)
     }
 
+    /// 规范 `argumentsObjNeeded` 的引擎判据：函数作用域是否声明 `arguments`
+    /// 从而抑制自动 arguments 对象。
+    ///
+    /// 规范 FunctionDeclarationInstantiation 仅在箭头函数、形参名含
+    /// `arguments`、或（无参数表达式时）函数体**顶层**函数/词法声明含
+    /// `arguments` 时不建对象；嵌套块、循环、`switch`/`try` 内的同名声明属块
+    /// 作用域，不构成抑制。
+    ///
+    /// # 边界与前提
+    /// - `param_names` 须含解构形参叶名（规范 `paramNames`）。
+    /// - `has_param_exprs` 为形参默认值存在性（规范 `ContainsExpression`）：
+    ///   为 true 时顶层函数声明不抑制，对象须在参数求值期已可读。
+    /// - 函数体顶层词法声明同名无条件抑制：引擎同一作用域无法同时承载自动
+    ///   绑定与顶层词法绑定。
+    /// - `var arguments` 不在规范 `funcNames` 内，不抑制。
+    fn arguments_obj_needed(
+        &self, body_stmts: &[Statement], param_names: &HashSet<String>, has_param_exprs: bool,
+    ) -> bool {
+        if param_names.contains("arguments") {
+            return false;
+        }
+        for stmt in body_stmts {
+            match stmt {
+                // 顶层 let/const/class 与自动绑定同作用域冲突，无条件抑制。
+                Statement::VariableDeclaration(vd) if !matches!(vd.kind, VariableDeclarationKind::Var) => {
+                    let mut names = HashSet::new();
+                    for d in &vd.declarations {
+                        collect_binding_pattern_names(&d.id, &mut names);
+                    }
+                    if names.contains("arguments") {
+                        return false;
+                    }
+                }
+                Statement::ClassDeclaration(cd) => {
+                    if cd.id.as_ref().is_some_and(|id| id.name == "arguments") {
+                        return false;
+                    }
+                }
+                // 顶层函数声明仅无参数默认值时抑制。
+                Statement::FunctionDeclaration(fd) => {
+                    if !has_param_exprs && fd.id.as_ref().is_some_and(|id| id.name == "arguments") {
+                        return false;
+                    }
+                }
+                // Annex B.3.2 标签链直接包裹的函数声明与直接子函数声明同面。
+                _ => {
+                    if !has_param_exprs
+                        && Self::labeled_function_decl(stmt)
+                            .is_some_and(|fd| fd.id.as_ref().is_some_and(|id| id.name == "arguments"))
+                    {
+                        return false;
+                    }
+                }
+            }
+        }
+        true
+    }
+
     /// 参数 prologue：函数作用域 + 参数声明/解构 + 闭包捕获与 upvalue 分析。返回 param_base。
     #[allow(clippy::too_many_arguments)]
     fn emit_params_prologue<'a>(
@@ -548,11 +606,13 @@ impl Emitter {
             }
         }
 
-        // 自动声明 arguments 绑定（非箭头函数，且用户未显式声明同名标识符）。
+        // 自动声明 arguments 绑定（非箭头函数，且函数作用域未声明同名标识符）。
         // 先登记符号并纳入 own_bindings，使嵌套箭头引用 arguments 被识别为本函数
         // 绑定（否则被当自由变量 → 子模块 upvalue 解析错位）。
         let mut arguments_reg = None;
-        if !matches!(body_context, FunctionBodyContext::Arrow) && !ctx.own_bindings.contains("arguments") {
+        if !matches!(body_context, FunctionBodyContext::Arrow)
+            && self.arguments_obj_needed(body_stmts, &ctx.param_names, !param_defaults.is_empty())
+        {
             let reg = ctx.alloc_reg();
             ctx.declare_initialized("arguments", reg, VariableDeclarationKind::Var, false)?;
             ctx.own_bindings.insert("arguments".to_string());
