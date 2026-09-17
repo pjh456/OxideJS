@@ -1,3 +1,6 @@
+//! 基于寄存器的 JS 虚拟机：执行状态、寄存器文件、调用栈与 session 内存，
+//! 以及同步调用、指令主循环、异常通道、GC 钩子、属性解析等子模块的装配。
+
 #![allow(clippy::arc_with_non_send_sync)]
 
 use std::collections::{HashMap, VecDeque};
@@ -38,6 +41,7 @@ pub use frames::{CallFrame, Completion, ForInIter, FrameContinuation, TryHandler
 pub(crate) use inline::InlineSyncState;
 pub(crate) use tables::TableGen;
 
+/// 原型链解析深度上限：防超长或成环的原型链把属性查找拖入无界循环。
 pub(crate) const MAX_PROTO_CHAIN_DEPTH: usize = 1024;
 
 /// 判定字符串是否为规范数组下标（无前导零的纯数字串），并反解其值。
@@ -129,6 +133,7 @@ fn js_error_kind_name(kind: JsErrorKind) -> &'static str {
     }
 }
 
+/// 按 name/msg 拼接错误文本：两者皆非空时为 `name: msg`，任一为空则取另一个。
 pub(crate) fn format_error_message(name: &str, msg: &str) -> String {
     if name.is_empty() {
         msg.to_string()
@@ -371,6 +376,7 @@ impl Vm {
         &self.session
     }
 
+    /// 判定裸指针是否指向当前 session 的 `%Object.prototype%`。
     pub(crate) fn is_object_prototype(&self, ptr: *const JsObject) -> bool {
         let proto_ptr = self.session.builtin_world().object_proto.as_ptr();
         std::ptr::eq(ptr, proto_ptr)

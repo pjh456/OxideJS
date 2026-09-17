@@ -27,6 +27,7 @@ impl Vm {
         arg_regs
     }
 
+    /// 判定裸指针是否属于本 session 的 epoch：空指针恒 false。
     pub(crate) fn is_session_ptr(&self, obj_ptr: *mut JsObject) -> bool {
         if obj_ptr.is_null() {
             return false;
@@ -35,12 +36,26 @@ impl Vm {
         unsafe { (*obj_ptr).is_session_epoch() }
     }
 
+    /// 在当前 epoch arena 分配对象并登记 GC 追踪表，返回裸指针。
     pub(crate) fn alloc_object(&mut self, obj: JsObject) -> *mut JsObject {
         let ptr = self.epoch.alloc(obj);
         self.gc_state.track_epoch_object(ptr);
         ptr
     }
 
+    /// native / 字节码函数的统一同步调用入口，返回结果或错误文本。
+    ///
+    /// native 侧超过寄存器窗口（253）的实参转存 spill 溢出区（GC 根），字节码侧
+    /// 交同 epoch 的内联执行以避免跨 epoch 指针悬垂。不可调用 callee 抛
+    /// TypeError，调用深度达 `max_call_depth` 抛 RangeError。
+    ///
+    /// # 步骤
+    /// 1. 保存调用方窗口与溢出区描述，打包实参后调用 native 函数项。
+    /// 2. 回拷窗口、截断溢出区并还原描述；`TailCall` 结果递归续走本入口。
+    ///
+    /// # 副作用
+    /// - 临时改写调用方寄存器窗口与 `spill_stack`，返回前还原。
+    /// - `native_call_depth` 在 native 调用期间 ±1；错误对象写入异常通道。
     pub(crate) fn call_function_sync(
         &mut self, callee: JsValue, receiver: JsValue, args: &[JsValue],
     ) -> Result<JsValue, String> {
@@ -147,6 +162,24 @@ impl Vm {
         self.top_level_strict
     }
 
+    /// 字节码函数调用的统一压帧入口。
+    ///
+    /// 按被调函数的表代际解析平表，实参拷入 spill 实参区后回写形参，保存调用方
+    /// 窗口并切换到被调模块；非可调用、子模块索引越界或表代际缺失返回错误，
+    /// 调用深度达 `max_call_depth` 时抛 RangeError。
+    ///
+    /// # 步骤
+    /// 1. 校验 callee 可调用且带子模块索引，按表代际取表并检查下标。
+    /// 2. 实参写入 spill 实参区（CREATE_ARGUMENTS 源），再从中回写形参。
+    /// 3. 绑定 this/new_target，压帧并切换 bytecode / immutables / 表代际。
+    /// 4. 按窗口恢复内置镜像槽，重置 pc 与活动寄存器上限。
+    ///
+    /// # 边界与前提
+    /// - 形参多于实参补 undefined；实参区与形参写入区重叠时先拷 spill 再回写。
+    ///
+    /// # 副作用
+    /// - 压入调用帧与各类保存栈，改写 pc / bytecode / 活动寄存器上限与镜像槽；
+    ///   `continuation` 决定返回后的续行方式。
     #[expect(clippy::too_many_arguments)]
     pub(crate) fn push_bytecode_frame(
         &mut self, callee: JsValue, this_value: JsValue, args: FrameArgs, construct_result_reg: Option<u8>,

@@ -13,7 +13,7 @@ use super::{canonical_index_of, canonical_index_units, Vm, MAX_PROTO_CHAIN_DEPTH
 use crate::vm_trace;
 
 impl Vm {
-    /// 把 `JsValue` 转为属性键 si（`u32`）。
+    /// 把 `JsValue` 转为属性键 si（字符串 intern id，`u32`）。
     ///
     /// 非负小整数（含整值 double）直接编码到整数键区间，免 to_string + intern；
     /// 字符串中形如数组下标的规范数字串（`"5"`）映射到同一整数键，保证
@@ -97,6 +97,7 @@ impl Vm {
         }
     }
 
+    /// 属性键反解数组下标：整数键直取，字符串键须无前导零且 `u32` 解析成功。
     pub(crate) fn array_index_from_property_key(&self, prop_name_si: u32) -> Option<u32> {
         if is_int_key(prop_name_si) {
             return Some(int_key_value(prop_name_si));
@@ -144,6 +145,11 @@ impl Vm {
         Ok(false)
     }
 
+    /// 属性读值解析：按数组 length 虚拟属性、元素区、shape 槽、原型链的顺序
+    /// 查找，命中即返回，全链 miss 返回 `None`。
+    ///
+    /// 数组元素区的 hole（删除标记）视同不存在；原型链查找止于
+    /// `MAX_PROTO_CHAIN_DEPTH` 深度上限。
     pub(crate) fn resolve_property(&self, obj: &JsObject, prop_name_si: u32) -> Option<JsValue> {
         vm_trace!("resolve_property: shape_id={} prop_name_si={}", obj.shape_id(), prop_name_si);
         let length_si = self.length_si;
@@ -184,6 +190,9 @@ impl Vm {
         None
     }
 
+    /// 查找自身属性槽下标：数组 length 虚拟属性返回 `None`，元素区返回下标，
+    /// shape 槽按数组（元素区之后偏移）与普通对象（槽位即下标）各自定位；
+    /// 未命中的槽返回 `None`。
     pub(crate) fn get_own_property_slot(&self, obj: &JsObject, prop_name_si: u32) -> Option<u32> {
         let length_si = self.length_si;
         if obj.is_array() && prop_name_si == length_si {

@@ -168,11 +168,15 @@ impl Vm {
         }
     }
 
+    /// GC 根统一枚举入口：遍历的字段清单与 `rewrite_values` 一一对应。
     pub(crate) fn for_each_root(&self, f: impl FnMut(JsValue)) {
-        // 统一遍历：根收集与指针重写共用同一字段清单。
         self.for_each_value(f);
     }
 
+    /// 执行一次 session GC（是否真正回收由 `SessionGc` 的水位门控决定）。
+    ///
+    /// `session_gc` 经 `mem::take` 借出后再放回：收集需要 `&mut Vm`，而
+    /// `SessionGc` 是 `Vm` 的内部字段，借出以避开借用冲突。
     pub(crate) fn maybe_collect_session_gc(&mut self) {
         let mut session_gc = std::mem::take(&mut self.gc_state.session_gc);
         session_gc.maybe_collect(self);
