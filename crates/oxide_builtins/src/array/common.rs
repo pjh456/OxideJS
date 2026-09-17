@@ -4,7 +4,7 @@ use oxide_types::value::JsValue;
 
 use oxide_runtime_api::{NativeResult, VmHost};
 
-use super::from_engine_error;
+use super::from::from_engine_error;
 
 macro_rules! array_ptr {
     ($vm:expr, $args:expr) => {{
