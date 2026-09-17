@@ -402,6 +402,7 @@ impl Emitter {
             .map(|i| i as u8);
 
         self.predeclare_function_declarations(body_stmts, &mut ctx);
+        self.predeclare_labeled_function_declarations(body_stmts, &mut ctx);
 
         // 预注册 builtin 引用（先于任何临时寄存器），builtin 槽不与被复用的临时值冲突。
         self.pre_register_builtin_references(body_stmts, &mut ctx);
@@ -720,18 +721,48 @@ impl Emitter {
         }
     }
 
+    /// 标签链直接包裹的函数声明（Annex B.3.2 Labelled Function Declarations）：
+    /// 展开任意层 `LabeledStatement` 后取内层函数声明。至少经过一层标签才返回
+    /// `Some`；直接子函数声明由调用方单独匹配。
+    ///
+    /// # 边界与前提
+    /// - 标签体为块/分支等其它语句时返回 `None`（归块面或普通标签发射处理）。
+    /// - 不递归进函数体：嵌套函数是独立编译单元。
+    pub(crate) fn labeled_function_decl<'a, 'b>(stmt: &'b Statement<'a>) -> Option<&'b oxide_parser::Function<'a>> {
+        let mut cur: &'b Statement<'a> = match stmt {
+            Statement::LabeledStatement(labeled) => &labeled.body,
+            _ => return None,
+        };
+        loop {
+            match cur {
+                Statement::LabeledStatement(labeled) => cur = &labeled.body,
+                Statement::FunctionDeclaration(fd) => return Some(fd),
+                _ => return None,
+            }
+        }
+    }
+
+    /// 函数体内参与入口提升的函数声明语句：直接子函数声明，或标签链直接包裹的
+    /// 函数声明（sloppy 下标签不改变执行流，二者同等在函数入口物化闭包）。
+    fn is_body_hoisted_function_decl(stmt: &Statement) -> bool {
+        matches!(stmt, Statement::FunctionDeclaration(_)) || Self::labeled_function_decl(stmt).is_some()
+    }
+
     /// 双 sub-pass emit body：先函数声明（hoisting），再其余语句。返回最后结果寄存器。
+    ///
+    /// 首 sub-pass 覆盖直接子函数声明与标签链直接包裹的函数声明：二者均在函数
+    /// 入口物化闭包，次 sub-pass 跳过声明语句本身，声明点不重编以保函数对象同一性。
     fn emit_body_stmts(&self, body_stmts: &[Statement], ctx: &mut CompileCtx) -> Result<Option<u32>, String> {
         let mut last_result_reg = None;
         for stmt in body_stmts {
-            if matches!(stmt, Statement::FunctionDeclaration(_)) {
+            if Self::is_body_hoisted_function_decl(stmt) {
                 if let Some(reg) = self.emit_statement(stmt, ctx)? {
                     last_result_reg = Some(reg);
                 }
             }
         }
         for stmt in body_stmts {
-            if matches!(stmt, Statement::FunctionDeclaration(_)) {
+            if Self::is_body_hoisted_function_decl(stmt) {
                 continue;
             }
             if let Some(reg) = self.emit_statement(stmt, ctx)? {

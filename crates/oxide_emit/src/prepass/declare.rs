@@ -27,6 +27,28 @@ impl Emitter {
         }
     }
 
+    /// 预声明函数体直接子级中标签链直接包裹的函数声明名（Annex B.3.2 Labelled
+    /// Function Declarations）：sloppy 下标签不改变执行流，该声明的名与直接子
+    /// 函数声明一样是函数作用域 `var` 绑定，须在入口物化闭包前完成预登记。
+    ///
+    /// # 边界与前提
+    /// - 仅扫描直接子语句（标签链展开后须是函数声明）；标签包块等其它形归块面
+    ///   块级函数预声明路径。
+    /// - 与块级函数名收集路径可能对同名重复建绑定：`declare_initialized` 命中
+    ///   已存在绑定时只补初始化标志，不改变既有寄存器分配，语义幂等。
+    pub(crate) fn predeclare_labeled_function_declarations(&self, statements: &[Statement], ctx: &mut CompileCtx) {
+        for statement in statements {
+            let Some(function) = Self::labeled_function_decl(statement) else {
+                continue;
+            };
+            let Some(identifier) = &function.id else {
+                continue;
+            };
+            let reg = ctx.alloc_reg();
+            let _ = ctx.declare_initialized(identifier.name.as_str(), reg, VariableDeclarationKind::Var, false);
+        }
+    }
+
     /// 预声明单个 `var` 名：仅顶层（全局作用域）的内置名落内置镜像槽（预载全局
     /// 属性值的固定寄存器槽，本轮求值开始时预载），使 GlobalDeclarationInstantiation
     /// （脚本顶层声明实例化）序言与声明点同步都用入口原值，而非程序求值前
