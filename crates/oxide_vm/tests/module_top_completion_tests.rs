@@ -112,3 +112,19 @@ fn exported_class_declaration_binding_is_mutable() {
     let r = probe(&mut vm, "globalThis.__mutable === true");
     assert!(r.is_bool() && r.as_bool(), "模块 class 外层绑定应可重赋，实际 {r:?}");
 }
+
+#[test]
+fn exported_default_function_binding_is_mutable() {
+    // 具名 `export default function` 的声明名是可变函数绑定（Var 提升），
+    // 允许声明后重赋；若误回退为 lexical Const，重赋会抛 TypeError。
+    let allocator = oxide_parser::Allocator::default();
+    let source = "export default function f() { return 1; }\nf = null;\nglobalThis.__fn_mutable = f === null;";
+    let program = oxide_parser::parse_module(&allocator, source).expect("parse module");
+    let module = Compiler::new()
+        .compile_module(&program, "test.mjs", &mut FileLoader)
+        .expect("compile module");
+    let mut vm = Vm::new();
+    vm.run(&Arc::new(module)).expect("module run");
+    let r = probe(&mut vm, "globalThis.__fn_mutable === true");
+    assert!(r.is_bool() && r.as_bool(), "具名 default 函数声明绑定应可重赋，实际 {r:?}");
+}

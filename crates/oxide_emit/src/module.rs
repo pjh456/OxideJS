@@ -649,33 +649,41 @@ impl Emitter {
     ///
     /// # 边界与前提
     /// - `captured_bindings` 是名字级索引；源与别名共用寄存器槽，但捕获分析按
-    ///   名字给出各自（或仅一方）的 entry。两侧都有时以源 cell 为准并把别名指向
-    ///   同一 cell；仅别名有 cell 时把源也指向该 cell（别名会被 MAKE_CELL 建 cell）。
+    ///   名字给出各自（或仅一方）的 entry。同一源的多个别名须并入同一 cell：
+    ///   声明点的 MAKE_CELL 只按源名发射，未被覆盖的别名 cell 会停留未初始化。
+    /// - 权威 cell 优先取源名自身的 entry（源被捕获时声明点的 MAKE_CELL 写它）；
+    ///   源未被捕获而别名被捕获时取组内别名已分配的 entry，再把源名补进映射。
     /// - 两者都未被捕获时读路径直接读源寄存器，天然活值，无需处理。
     ///
     /// # 副作用
-    /// - 修改 `captured_bindings` 映射；使 `cells_needed` 与实际使用的 cell
-    ///   上限一致（多余 entry 无害，缺失 entry 会导致子函数 upvalue 索引错位）。
+    /// - 修改 `captured_bindings` 映射；每个名字仍占一个 entry，容量口径不变
+    ///   （`cells_needed` 按名字集大小取，cell 下标可重复，见 `assemble_ir`）。
     fn reconcile_alias_captures(&self, ctx: &mut CompileCtx) {
         let pairs = std::mem::take(&mut ctx.module_alias_pairs);
+        // 以最终基源名为组键统一组内全部名字。逐个 pair 直接覆盖会让同源的多个
+        // 别名中后处理者把源改指向新 cell，先处理的别名与源分裂成两个 cell。
+        let mut authority: HashMap<String, u8> = HashMap::new();
         for (local, source) in pairs {
-            let local_cell = ctx.captured_bindings.get(&local).copied();
-            let source_cell = ctx.captured_bindings.get(&source).copied();
-            match (local_cell, source_cell) {
-                (Some(idx), _) => {
-                    // 别名被捕获：源须共用同一 cell（源尚未捕获时补映射）。
-                    if source_cell.is_none() {
-                        ctx.captured_bindings.insert(source.clone(), idx);
-                    }
-                }
-                (None, Some(idx)) => {
-                    // 仅源被捕获：别名读经源 cell，补别名映射使子函数引用别名时
-                    // upvalue 解析到同一 cell。
-                    ctx.captured_bindings.insert(local.clone(), idx);
-                }
-                (None, None) => {}
-            }
+            let source = ctx.scopes.symbols.resolve_alias_base(&source).to_string();
+            let cell = authority.get(&source).copied().or_else(|| {
+                ctx.captured_bindings
+                    .get(source.as_str())
+                    .or_else(|| ctx.captured_bindings.get(local.as_str()))
+                    .copied()
+            });
+            let Some(cell) = cell else { continue };
+            authority.insert(source.clone(), cell);
+            ctx.captured_bindings.insert(source, cell);
+            ctx.captured_bindings.insert(local, cell);
         }
+        // cell 下标由名字排序分配，可重复使用；容量按名字集大小取，故每个下标
+        // 必须落在名字集范围内，否则子函数 upvalue 会索引到未分配的 cell。
+        debug_assert!(
+            ctx.captured_bindings
+                .values()
+                .all(|&i| (i as usize) < ctx.captured_bindings.len()),
+            "cell 下标须落在 captured_bindings 名字集范围内"
+        );
     }
 
     fn load_var_reg(&self, name: &str, ctx: &mut CompileCtx) -> Result<u32, String> {

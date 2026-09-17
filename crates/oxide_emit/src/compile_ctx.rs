@@ -683,6 +683,8 @@ impl CompileCtx {
             param_layout,
             builtin_reg_map: std::mem::take(&mut self.scopes.builtin_reg_map),
             upvalue_captures,
+            // 容量按名字集大小取：别名捕获合并会让多个名字共享同一 cell，
+            // 下标可重复但不超过名字数，故 len 恒覆盖实际使用的最大下标。
             cells_needed: self.captured_bindings.len() as u8,
             n_registers: self.max_regs,
             is_arrow: false,

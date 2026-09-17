@@ -111,3 +111,71 @@ fn self_import_alias_reads_live_source_value() {
     let text = vm.lookup_str(r).unwrap_or_default();
     assert_eq!(text, "true|2", "自导入别名应共享源绑定活值");
 }
+
+/// 同一闭包同时引用源与别名时，两者必须落到同一 cell：重赋后两侧读到同一新值。
+/// 捕获分析按名字分配 cell，源与别名是两个名字；若捕获后处理不把二者合并到同一
+/// 单元，别名的 cell 永不初始化，闭包读别名会误抛 TDZ ReferenceError。
+#[test]
+fn self_import_alias_and_source_share_cell() {
+    let cwd = std::env::current_dir().expect("cwd");
+    let dir = cwd.join("__selfimport_both__");
+    let file = dir.join("both.mjs");
+    std::fs::create_dir_all(&dir).expect("mkdir");
+    std::fs::write(
+        &file,
+        "import { x as y } from './both.mjs';\n \
+         function readBoth() { return [x, y]; }\n \
+         export let x = 1;\n \
+         x = 2;\n \
+         globalThis.__both = readBoth().join('|');",
+    )
+    .expect("write module");
+    let _cleanup = Cleanup(dir.clone());
+
+    let allocator = oxide_parser::Allocator::default();
+    let source = std::fs::read_to_string(&file).expect("read module");
+    let program = oxide_parser::parse_module(&allocator, &source).expect("parse module");
+    let module = Compiler::new()
+        .compile_module(&program, dir.join("both.mjs").to_string_lossy().as_ref(), &mut AbsLoader)
+        .expect("compile module");
+
+    let mut vm = Vm::new();
+    vm.run(&Arc::new(module)).expect("module run");
+    let r = probe(&mut vm, "globalThis.__both");
+    let text = vm.lookup_str(r).unwrap_or_default();
+    assert_eq!(text, "2|2", "源与别名须共享同一 cell，重赋后两侧同值");
+}
+
+/// 同一源被多个别名与源一并捕获时，所有名字必须归并到同一 cell：逐个别名对
+/// 处理会让后处理的 pair 把源改指向新 cell，先处理的别名 cell 掉队未初始化。
+#[test]
+fn self_import_multiple_aliases_share_source_cell() {
+    let cwd = std::env::current_dir().expect("cwd");
+    let dir = cwd.join("__selfimport_multi__");
+    let file = dir.join("multi.mjs");
+    std::fs::create_dir_all(&dir).expect("mkdir");
+    std::fs::write(
+        &file,
+        "import { x as y } from './multi.mjs';\n \
+         import { x as z } from './multi.mjs';\n \
+         function readAll() { return [x, y, z]; }\n \
+         export let x = 1;\n \
+         x = 3;\n \
+         globalThis.__multi = readAll().join('|');",
+    )
+    .expect("write module");
+    let _cleanup = Cleanup(dir.clone());
+
+    let allocator = oxide_parser::Allocator::default();
+    let source = std::fs::read_to_string(&file).expect("read module");
+    let program = oxide_parser::parse_module(&allocator, &source).expect("parse module");
+    let module = Compiler::new()
+        .compile_module(&program, dir.join("multi.mjs").to_string_lossy().as_ref(), &mut AbsLoader)
+        .expect("compile module");
+
+    let mut vm = Vm::new();
+    vm.run(&Arc::new(module)).expect("module run");
+    let r = probe(&mut vm, "globalThis.__multi");
+    let text = vm.lookup_str(r).unwrap_or_default();
+    assert_eq!(text, "3|3|3", "同源多别名与源须归并到同一 cell");
+}
