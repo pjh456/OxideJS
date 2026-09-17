@@ -36,7 +36,7 @@ pub fn run_benchmarks(config: BenchConfig, kernel: Arc<KernelCore>, pool: Arc<Vm
     match config.mode.as_str() {
         "js" => js_stress::run_js_stress_bench(&config, &kernel, &pool),
         "rust" => rust_bench::run_rust_bench(config.filter.as_deref()),
-        // leak 模式内按 case 过滤参数分派校准用例；缺省保持原泄漏检测行为。
+        // leak 模式按 case 过滤参数分派校准用例；无匹配 case 时跑默认的固定脚本内存回归（run_leak_detect）。
         "leak" => match config.filter.as_deref() {
             Some("vm_creation") => leak_detect::run_mem_vm_creation_leak(&kernel),
             Some("builtin_world_build") => leak_detect::run_mem_builtin_world_build(&kernel),

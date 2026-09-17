@@ -196,13 +196,13 @@ pub fn run_leak_detect(config: &BenchConfig, kernel: &Arc<KernelCore>, pool: &Ar
     ExitCode::SUCCESS
 }
 
-/// S1 校准用例：共享 kernel 下循环 3000 次「新建 VM → 跑微源 → drop」，
+/// vm_creation 校准用例：共享 kernel 下循环 3000 次「新建 VM → 跑微源 → drop」，
 /// 每 100 次采一次 VmRSS，度量 VM 创建/销毁路径（含 session 收尾统一
 /// 释放）的内存增量，期望走平。
 ///
 /// # 注意事项
-/// 不走 VM 池：池的锁/condvar 噪音与本测面无关；出斜率先查 harness
-/// 污染（allocator 归还 OS 延迟），再疑收尾释放不全。
+/// 不走 VM 池：池的锁/condvar 噪音与本用例观测面无关；出斜率先查 harness 污染
+/// （基准脚手架自身引入的测量噪声，如 allocator 归还 OS 延迟），再疑收尾释放不全。
 pub fn run_mem_vm_creation_leak(kernel: &Arc<KernelCore>) -> ExitCode {
     const ITERATIONS: usize = 3000;
     const SAMPLE_EVERY: usize = 100;
@@ -302,7 +302,7 @@ pub fn run_mem_builtin_world_build(kernel: &Arc<KernelCore>) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-/// S2 校准用例：单 VM 每轮「新键写脏 object/array/string 三家族原型 →
+/// dirty_rebuild 校准用例：单 VM 每轮「新键写脏 object/array/string 三家族原型 →
 /// full_reset」，共 3000 轮，每 10 轮采一次 VmRSS，输出选择性重建释放
 /// 路径的每轮内存增量（斜率 + 窗口总增量）。
 ///
@@ -458,7 +458,7 @@ pub fn run_mem_closure_dead_leak(kernel: &Arc<KernelCore>) -> ExitCode {
 /// # 注意事项
 /// 不走 VM 池：drop clean 路径与池内归还走同一 `full_reset`，池锁/condvar
 /// 噪音与本测面无关。重源瞬时对象全 epoch 分配、不逃逸 global；锚 == 0 为
-/// 确定性主门槛（in-engine，免分配器噪音），RSS 为次锚（进程级，仅判
+/// 确定性主门槛（in-engine，免分配器噪音），RSS 序列为次锚（进程级辅助指标，
 /// 峰后无新增量——归还 chunk 可能滞留分配器自由链不回 OS，不要求回落
 /// 峰前）。
 pub fn run_mem_pool_high_water(kernel: &Arc<KernelCore>) -> ExitCode {
@@ -604,7 +604,7 @@ pub fn run_mem_object_churn_peak(kernel: &Arc<KernelCore>) -> ExitCode {
 /// 生产字面量短串面）→ 11 采样点 [10k,15k,20k,30k,40k,60k,80k,100k,
 /// 131072,160k,200k] 采 VmRSS。增长相斜率只记录不判定（append-only
 /// 增长，正斜率即预期签名，"斜率>0 即 fail" 契约不适用，独立打印逻辑，
-/// 不进 `report_series`）；重建相验"无存活 VM"边界重建：键数超阈值 →
+/// 不进 `report_series`）；重建相（drop 旧 kernel 重建新 kernel）验"无存活 VM"边界重建：键数超阈值 →
 /// `should_rebuild_perm` 返回 `Some(建议上限)`（阈值取 2 的幂后加倍）→
 /// drop 旧 kernel → 新 kernel 严格主锚 `entry_count` 恰 0 + 旋钮 `None`。
 ///

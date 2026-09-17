@@ -395,7 +395,7 @@ fn repl() -> ExitCode {
                 input_buf.clear();
 
                 if result == ExitCode::FAILURE {
-                    // eval_repl already printed error; keep buffer cleared.
+                    // eval_repl 已打印错误，此处仅保持缓冲区已清空，避免重复输出。
                 }
             }
             Err(ReadlineError::Interrupted) => {
