@@ -177,8 +177,8 @@ pub fn plain_month_day_value_of<H: VmHost>(vm: &mut H, _args: &[u8]) -> NativeRe
 
 // ==================== PlainMonthDay.from ====================
 
-/// PlainMonthDay 串注解校验：与 validate_temporal_annotation_suffix 同构，
-/// 但 u-ca 值只接受 iso8601（大小写不敏感），其余内置日历 ID 拒绝。
+/// PlainMonthDay 串的注解后缀校验：后缀语法与 validate_temporal_annotation_suffix
+/// 一致，但 u-ca 注解只接受 iso8601（大小写不敏感），其余内置日历 ID 一律拒绝。
 pub(crate) fn validate_month_day_annotation_suffix(mut suffix: &str) -> Result<(), String> {
     let mut calendar_seen = false;
     let mut saw_critical_calendar = false;

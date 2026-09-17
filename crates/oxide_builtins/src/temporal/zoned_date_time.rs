@@ -385,7 +385,7 @@ pub(crate) fn zoned_date_time_string_parts<H: VmHost>(
 /// 3. plain_date_time_object_parts 读年月日与日历，local_to_epoch_ns 换算并校验 Instant 范围。
 ///
 /// # 边界与前提
-/// - timeZone/offset 在字段读取前取用（读序对齐 order-of-operations 的前置约定）。
+/// - timeZone、offset 的读取与规范化先于年/月/日字段，读取顺序固定不可交换。
 /// - offset 字段语法校验先于 year 等数值字段类型校验；匹配校验在其后。
 fn zoned_date_time_bag_parts<H: VmHost>(
     vm: &mut H, value: JsValue, obj: &JsObject, offset_mode: &str,
@@ -795,7 +795,8 @@ struct ZdtMergedFields {
 ///
 /// # 边界与前提
 /// - 调用方须先完成 RejectObjectWithCalendarOrTimeZone（calendar/timeZone 已拒绝）。
-/// - monthCode 的闰月/超界/与 month 冲突校验延迟到选项解析后（对齐 spec 读序）。
+/// - monthCode 的闰月、超界与同 month 冲突的校验推迟到 options 解析完成之后：
+///   选项本身的取值错误优先于这些算法性校验抛出。
 /// - offset 经 ToOffsetString：非字符串 TypeError、坏格式 RangeError。
 fn zoned_date_time_with_fields<H: VmHost>(
     vm: &mut H, value: JsValue, defaults: (i32, u32, u32, f64),
@@ -840,7 +841,8 @@ fn zoned_date_time_with_fields<H: VmHost>(
         return Err(crate::error::create_type_error(vm, "no properties present"));
     }
 
-    // 数值字段：ToNumber→trunc；NaN/±Inf RangeError；day 额外要求 ≥1。
+    // 数值字段的转换：先 ToNumber 再向零截断；结果为 NaN 或 ±Infinity 时抛
+    // RangeError，day 还要求截断后的值不小于 1。
     let convert_integer = |vm: &mut H, raw: JsValue| -> Result<Option<f64>, JsValue> {
         if raw.is_undefined() {
             Ok(None)
@@ -867,7 +869,8 @@ fn zoned_date_time_with_fields<H: VmHost>(
         }
     }
 
-    // monthCode：ToString 后格式校验（M + 两位数字 + 可选 L），闰月/超界留到解析阶段。
+    // monthCode 先经 ToString，再做格式校验：必须形如 M 加两位数字，可再带一个
+    // L 后缀；闰月与月份越界的判定推迟到随后按日历解析字段时进行。
     let month_code = if month_code_raw.is_undefined() {
         None
     } else {
@@ -884,7 +887,8 @@ fn zoned_date_time_with_fields<H: VmHost>(
         Some((number, code.ends_with('L')))
     };
 
-    // offset：ToString → 字符串语法校验（小数秒 ≤9 位），分钟数供 offset 选项决策。
+    // offset 先经 ToString，再按偏移字符串语法校验（小数秒最多 9 位），解析出的
+    // 分钟数留给 offset 选项决策使用。
     let bag_offset = if offset_raw.is_undefined() {
         None
     } else {
@@ -917,15 +921,18 @@ fn zoned_date_time_with_fields<H: VmHost>(
 /// `Temporal.ZonedDateTime.prototype.with(temporalZonedDateTimeLike, options)`。
 ///
 /// # 步骤
-/// 1. branding + IsPartialTemporalObject（calendar/timeZone/Temporal 实例 → TypeError）。
+/// 1. 校验 receiver 类型标签，并排除 partial 参数携带的日历/时区：参数非对象、为
+///    Temporal 实例或 calendar、timeZone 有定义均抛 TypeError（IsPartialTemporalObject 语义）。
 /// 2. receiver 本地分量与偏移；zoned_date_time_with_fields 读字段合并。
 /// 3. options：disambiguation → offset（默认 prefer）→ overflow（逐项 Get/校验）。
 /// 4. monthCode 闰月/超界/冲突校验 + constrain/reject 钳制 + PlainDateTime 范围校验。
 /// 5. offset 选项决策 → local_to_epoch_ns → Instant 范围校验 → make_zoned_date_time。
 ///
 /// # 边界与前提
-/// - 字段读取先于 options 解析（options-wrong-type 先报字段错误）。
-/// - 选项解析先于 monthCode 算法校验（options-read-before-algorithmic-validation）。
+/// - 字段读取先于 options 解析：即使 options 本身类型不合法，也先读完 partial 字段，
+///   让字段的类型错误先抛出。
+/// - options 解析先于 monthCode 的算法校验：选项取值错误优先于 monthCode 超界这类
+///   算法性错误抛出。
 /// - disambiguation 在固定偏移时区下四取值算法等价，仅做白名单校验。
 pub fn zoned_date_time_with<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let ptr = native_try!(receiver_obj(vm, args));
@@ -943,9 +950,10 @@ pub fn zoned_date_time_with<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult 
     let (offset_mode, _disambiguation) = native_try!(zoned_date_time_options(vm, args, "prefer"));
     let constrain = native_try!(temporal_overflow(vm, args));
 
-    // CalendarResolveFields（ISO）：partial 的 monthCode 闰月 / 超 12 拒绝；month 与
-    // monthCode 冲突仅在两者都来自 partial 时校验（partial 有 monthCode 时 receiver
-    // 的 month 被覆盖，不参与比较）。
+    // 按 ISO 日历解析合并后的月字段（CalendarResolveFields 语义）：partial 的 monthCode
+    // 带闰月后缀或月值超 12 → RangeError；month 与 monthCode 的一致性校验仅在两者
+    // 都来自 partial 时执行（partial 有 monthCode 时 receiver 的 month 被覆盖，
+    // 不参与比较）。
     let receiver_month_f = month as f64;
     let merged_month = match (merged.month, merged.month_code) {
         (_, Some((_, true))) => {
@@ -1361,7 +1369,8 @@ pub fn zoned_date_time_round<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult
     let calendar_id = get_calendar_id(obj, 2);
     let (y, m, d, time_ns) = native_try!(zoned_date_time_plain_parts(vm, obj));
 
-    // roundTo 解析：字符串简写或对象选项，读序对齐 order-of-operations。
+    // roundTo 解析：字符串简写直接取用，对象选项按 roundingIncrement、roundingMode、
+    // smallestUnit 的固定读取顺序取值。
     let round_to = if args.len() < 2 { JsValue::undefined() } else { vm.reg(args[1]) };
     let (increment_value, mode_value, unit_value) = if round_to.is_string() {
         (1.0, "halfExpand".to_string(), Some(to_string(round_to)))
@@ -1610,7 +1619,8 @@ pub fn zoned_date_time_hours_in_day<H: VmHost>(vm: &mut H, args: &[u8]) -> Nativ
     NativeResult::Ok(JsValue::float((tomorrow - today) as f64 / 3_600_000_000_000.0))
 }
 
-/// 当地午夜纪元纳秒（含 Instant 范围校验，spec GetStartOfDay 语义）；越界返回 None。
+/// 求本地日期在给定时区偏移下的当地午夜纪元纳秒（GetStartOfDay 语义），
+/// 结果超出 Instant 范围时返回 None。
 pub(crate) fn start_of_day_epoch_ns(year: i32, month: u32, day: u32, offset_minutes: i32) -> Option<i128> {
     start_of_day_epoch_ns_by_days(days_from_civil(i128::from(year), i128::from(month), i128::from(day)), offset_minutes)
 }

@@ -398,7 +398,8 @@ pub fn plain_time_nanosecond<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult
 /// 5. 合并分量算午夜后纳秒，构造新 PlainTime。
 ///
 /// # 边界与前提
-/// - 字段读取先于选项解析（options-wrong-type 先报字段错误，与 ZDT with 同口径）。
+/// - 字段读取先于选项解析：即使选项本身类型不合法，也先读完 partial 字段并让字段的
+///   类型错误先抛出，与 ZonedDateTime 的 with 一致。
 /// - receiver 分量取自午夜后纳秒槽；partial 中 undefined 的分量保留 receiver 值。
 pub fn plain_time_with<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let ptr = native_try!(receiver_obj(vm, args));
@@ -774,8 +775,8 @@ pub(crate) fn plain_time_round_unit(value: &str) -> Option<(i128, i128)> {
 /// `Temporal.PlainTime.prototype.round(roundTo)`：按最小单位、增量和模式在"当日"域内舍入。
 ///
 /// # 步骤
-/// 1. roundTo 解析：undefined → TypeError；字符串 → {smallestUnit: 串}；对象 → 依次 Get
-///    roundingIncrement → roundingMode → smallestUnit（读序对齐 order-of-operations）。
+/// 1. roundTo 解析：undefined → TypeError；字符串 → {smallestUnit: 串}；对象 → 按
+///    roundingIncrement、roundingMode、smallestUnit 的固定读取顺序依次取值。
 /// 2. branding receiver 取槽 0 ns。
 /// 3. 单位表查 smallestUnit（hour..nanosecond；None → RangeError "invalid smallest unit"）。
 /// 4. roundingIncrement 校验：1..=1e9 且 **真因子**（increment < max_increment 且
