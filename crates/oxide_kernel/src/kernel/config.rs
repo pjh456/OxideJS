@@ -11,11 +11,11 @@ use oxide_log::{Level, SUBSYSTEM_COUNT};
 pub struct KernelConfig {
     pub min_pool_size: usize,
     pub max_pool_size: Option<usize>,
-    /// perm interner advisory 重建阈值：唯一键数 `entry_count` **超过**该值时，
+    /// perm interner 建议重建阈值：唯一键数 `entry_count` **超过**该值时，
     /// 宿主应在安全边界（无存活 VM）整体重建 kernel，并把
-    /// [`KernelCore::should_rebuild_perm`] 返回的建议上限写入新 kernel 配置；
+    /// [`crate::kernel::KernelCore::should_rebuild_perm`] 返回的建议上限写入新 kernel 配置；
     /// None = 无阈值（三个预设默认值，行为与无旋钮一致）。
-    /// 见 [`KernelCore::should_rebuild_perm`]。
+    /// 见 [`crate::kernel::KernelCore::should_rebuild_perm`]。
     pub perm_interner_max_entries: Option<u32>,
     pub max_steps: Option<u64>,
     /// 单次 run 的分配上限（epoch + session arena + session 堆账目字节）：

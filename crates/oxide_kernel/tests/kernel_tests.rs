@@ -52,7 +52,7 @@ fn test_kernel_config_presets() {
 
 #[test]
 fn should_rebuild_perm_default_off() {
-    // 预设默认 None = 无阈值：任意键数下永不触发，钉死零漂移默认面。
+    // 预设默认 None = 无阈值：任意键数下永不触发，默认配置行为与无旋钮时一致。
     let core = KernelCore::new(KernelConfig::minimal());
     for i in 0..10 {
         core.perm_interner().intern(&format!("key{i}"));

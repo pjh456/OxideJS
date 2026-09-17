@@ -12,7 +12,9 @@ use crate::shape_forge::EMPTY_SHAPE_ID;
 
 use super::{BuiltinDirtySet, BuiltinId, BuiltinSnapshot, KernelCore};
 /// 每会话可变状态：内置原型对象与全局对象。
-/// 在 full_reset() 时重建，实现 JS 执行之间的完全隔离。
+/// 两条重建路径：full_reset() 整体重建，实现 JS 执行之间的完全隔离；
+/// selective_reset() 按世代快照的家族位脏集合只重建被污染的家族，保留
+/// 未污染的内置指针与世代。
 pub struct KernelSession {
     pub builtin_world: Arc<BuiltinWorld>,
     pub global_object: P<JsObject>,
@@ -59,7 +61,7 @@ impl KernelSession {
     }
 
     /// 从 KernelCore 构建一个全新 session。所有 string/shape intern 调用在
-    /// 第二次及后续调用时命中缓存——净开销 < 0.5 ms。
+    /// 第二次及后续调用时命中缓存。
     pub fn new(core: &KernelCore) -> Self {
         let builtin_world = Arc::new(BuiltinWorld::new(&core.perm_interner, &core.shape_forge));
         let global_object = Self::new_global_object(core);
@@ -205,12 +207,12 @@ impl KernelSession {
         self.dirty_since_snapshot().any()
     }
 
-    /// 收尾释放 session 拥有的手工堆数据：builtin world（方法 wrapper 登记表 +
+    /// 收尾释放 session 拥有的手工堆数据：builtin world（方法 wrapper 释放登记表 +
     /// 全部 P 对象属性区）与 global 对象属性区。对象本体随 Arc 引用归零释放。
     ///
     /// # 注意事项
-    /// 幂等（登记表按值取走、属性区释放后置空），session 生命周期内可安全重入；
-    /// 仅应在 session 真正终止时调用——选择性重置换出的旧 world/global 不走本路径。
+    /// 幂等（释放登记表按值取走、属性区释放后置空），session 生命周期内可安全重入；
+    /// 仅应在 session 真正终止时调用——选择性重置替换的旧 world/global 不走本路径。
     pub fn teardown_builtins(&mut self) {
         self.builtin_world.teardown_heap_data();
         // SAFETY: global 归本 session 所有，收尾时恰好释放其属性区一次。
@@ -237,12 +239,14 @@ impl KernelSession {
                 core.shape_forge.as_ref(),
                 &dirty,
             );
-            // 旧 world 的登记表并入新 world：存活 wrapper（未污染家族别名）仍须在
-            // session 收尾统一释放；已弃 wrapper 随之恰好释放一次，不二次持有。
+            // 旧 world 的释放登记表并入新 world：存活 wrapper（未污染家族别名）
+            // 仍须在 session 收尾统一释放；已弃 wrapper 随之恰好释放一次，
+            // 不二次持有。
             new_world.inherit_leaked_objects(&old_world);
-            // 重建收尾：保留对象（登记表 wrapper + 共用保留 P 字段）proto 槽
-            // 重指新指针，随后被替换旧对象属性区恰好释放一次（含保活钉住
-            // 对的属性区，本体钉保留）；重指须先于释放、先于换出完成。
+            // 选择性重建收尾：保留对象（释放登记表 wrapper + 共用保留 P 字段）
+            // 原型槽改写到新指针，随后被替换旧 P 对象属性区恰好释放一次
+            // （Function/Object 4 个对象本体永久保留、属性区同批释放）；原型
+            // 槽改写须先于释放、先于旧 world 被替换完成。
             new_world.retire_replaced(&old_world);
             self.builtin_world = Arc::new(new_world);
         }

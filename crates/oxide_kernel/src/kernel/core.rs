@@ -1,5 +1,5 @@
 //! 跨所有 VM 实例永久共享的不可变核心：持有 perm/shape/code/prop 四张 forge
-//! Arc、VM 边界守卫计数（active_vms）、批边界 sweep 与 perm interner advisory
+//! Arc、VM 边界守卫计数（active_vms）、批边界 sweep 与 perm interner 建议
 //! 重建信号。
 
 use std::num::NonZeroUsize;
@@ -136,27 +136,30 @@ impl KernelCore {
         }
     }
 
-    /// 宿主是否应整体重建本 kernel，并返回重建后的建议上限（advisory 信号）。
+    /// 判断宿主是否应整体重建本 kernel，并返回重建后建议写入新配置的阈值。
     ///
     /// perm interner 唯一键数 `entry_count` **超过**配置的
     /// [`KernelConfig::perm_interner_max_entries`] 阈值时返回
     /// `Some(建议上限)`——建议上限 = 阈值取 2 的幂后加倍，宿主应在整体重建
     /// 后把它写入新 kernel 的 `perm_interner_max_entries`（增长不立即再次
-    /// 触顶）；阈值未设或键数未超阈值时返回 `None`。纯 advisory 契约：引擎
-    /// 不自动重建——重建须由宿主在"无存活 VM"边界驱动：归还全部 `VmGuard`
-    /// （池排空）→ 旧 `Arc<KernelCore>` 归零整体释放（PermInterner/ShapeForge/
-    /// CodeForge/PropForge，含全部泄漏键文本与物化串）→ 新建 kernel + 新池/
-    /// VM。存活 VM 的代际表注册表（`immutables`）与 P 对象持有旧 kernel 的物化串裸
-    /// 指针与 shape id，VM 存活期间重建会使其悬垂。三个预设默认 None = 永不
-    /// 触发（有意裁定：CLI eval/run/REPL/bench/test262 宿主均未接重建边界，
-    /// None 保证零行为漂移）。
+    /// 触顶）；阈值未设或键数未超阈值时返回 `None`。
     ///
     /// # 边界与前提
     /// - 仅在宿主边界（run 间 / 测试间 / 迭代间）调用，勿入 dispatch 热路径：
-    ///   `entry_count` 为 O(1) 读锁，intern 路径零加码；
+    ///   `entry_count` 为一次读锁的 O(1) 查询，intern 路径零加码；
     /// - 仅具备安全重建边界的宿主（test262 runner 批边界、嵌入宿主迭代
     ///   之间）应启用旋钮；REPL 类宿主（单持久 VM，重建 = 丢失顶层状态）
     ///   不应启用。
+    ///
+    /// # 注意事项
+    /// - 纯建议、只读查询：引擎不自动重建。重建须由宿主在"无存活 VM"边界
+    ///   驱动：归还全部 `VmGuard`（池排空）→ 旧 `Arc<KernelCore>` 归零整体
+    ///   释放（PermInterner / ShapeForge / CodeForge / PropForge，含全部键
+    ///   文本与物化串）→ 新建 kernel 与新池 / VM。存活 VM 持有的模块代际表
+    ///   注册表与 P 对象引用旧 kernel 的物化串裸指针与 shape id，VM 存活
+    ///   期间重建会使它们悬垂。
+    /// - 三个预设默认 `None`（永不触发）：现有 CLI eval/run/REPL/bench/test262
+    ///   宿主均未接重建边界，`None` 保证零行为漂移。
     ///
     /// # 副作用
     /// 无：只读查询。
