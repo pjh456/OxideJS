@@ -27,10 +27,11 @@ impl Emitter {
         }
     }
 
-    /// 预声明单个 `var` 名：仅顶层（全局作用域）的 builtin 名落 builtin 镜像槽
-    /// （run 起点预载全局属性值），使 GDI 序言与声明点同步都用入口原值而非
-    /// fresh undefined 槽，现存值（NaN 等）不被抹；函数体内 builtin 名仍是局部
-    /// var 遮蔽（fresh 槽，不命中只读内置拦截）；其余名 fresh var 槽。
+    /// 预声明单个 `var` 名：仅顶层（全局作用域）的内置名落内置镜像槽（预载全局
+    /// 属性值的固定寄存器槽，本轮求值开始时预载），使 GlobalDeclarationInstantiation
+    /// （脚本顶层声明实例化）序言与声明点同步都用入口原值，而非程序求值前
+    /// define-if-absent 序列新建的 undefined 槽，现存值（NaN 等）不被抹；函数体内
+    /// 内置名仍是局部 var 遮蔽（新建槽，不命中只读内置拦截）；其余名新建 var 槽。
     pub(crate) fn predeclare_var_name(&self, name: &str, ctx: &mut CompileCtx) {
         if ctx.is_global_scope && CompileCtx::is_known_builtin(name) {
             let _ = ctx.lookup_or_builtin(name);

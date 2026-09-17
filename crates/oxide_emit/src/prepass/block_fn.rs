@@ -9,8 +9,8 @@ use crate::Emitter;
 use oxide_parser::{Declaration, Statement, VariableDeclarationKind};
 
 impl Emitter {
-    /// 递归收集语句树内块级函数声明名（源序去重），供 web-compat 外层 var 绑定
-    /// 实例化。
+    /// 递归收集语句树内块级函数声明名（源序去重），供 sloppy 模式浏览器兼容行为
+    /// （块级函数声明建外层 var 绑定）下的外层 var 绑定实例化。
     ///
     /// # 边界与前提
     /// - 调用点直接子级（函数体/程序顶层直接子句）是提升 var 声明，非块级
@@ -189,8 +189,9 @@ impl Emitter {
         }
     }
 
-    /// 块级函数名 web-compat 外层绑定抑制集：形参名（含解构叶/rest）∪ 语句树内
-    /// 词法声明名。命中抑制的名字不建外层 var 绑定、不求值写回。
+    /// 块级函数名的外层 var 绑定抑制集（sloppy 模式浏览器兼容行为）：形参名
+    /// （含解构叶/rest）∪ 语句树内词法声明名。命中抑制的名字不建外层 var 绑定、
+    /// 不求值写回。
     pub(crate) fn collect_block_fn_suppressed_names(
         &self, statements: &[Statement], param_names: &HashSet<String>,
     ) -> HashSet<String> {

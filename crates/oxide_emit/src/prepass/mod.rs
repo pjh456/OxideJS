@@ -8,12 +8,15 @@ mod block_fn;
 mod builtin_scan;
 mod declare;
 
-/// 脚本顶层 lexical 声明（let/const/class）禁止使用的受限全局名：3 名静态集。
-/// 受限判定走规范自有属性臂：全局对象上 {configurable:false} 自有属性名（声明
-/// 实例化无法建立遮蔽绑定）——现行规范下恰为三常量；eval 与各 builtin 属性皆
-/// 可配置（合法遮蔽），不在此列。名基静态集（编译期不可查运行时描述符）。与
-/// BUILTIN_GLOBALS 语义不同（后者是 put 写拦截/双写名单），不互相派生，交叠
-/// 名由漂移守卫单测断言恒同步。
+/// 脚本顶层词法声明（`let`/`const`/`class`）禁止使用的受限全局名：`undefined`、
+/// `NaN`、`Infinity` 三名静态集。
+///
+/// 判定标准是全局对象上 `configurable:false` 的自有属性名：此类属性无法由声明
+/// 实例化建立遮蔽绑定，现行规范下恰为三常量；`eval` 与其余内置属性皆可配置，
+/// 可合法遮蔽。运行时无法查询全局对象描述符，名单必须编译期确定。
+///
+/// 与 `BUILTIN_GLOBALS` 语义不同：后者是写入拦截与双写名单，两份名单互不派生，
+/// 交叠名由 `restricted_lexical_names_within_builtin_globals` 单测断言恒同步。
 pub(crate) const RESTRICTED_GLOBAL_LEXICAL_NAMES: &[&str] = &["undefined", "NaN", "Infinity"];
 
 /// 脚本顶层 lexical 声明撞受限全局名 → SyntaxError（声明实例化期拒绝，整程序

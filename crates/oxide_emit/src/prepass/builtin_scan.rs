@@ -6,13 +6,16 @@ use crate::{CompileCtx, Emitter};
 use oxide_parser::{BindingPattern, Declaration, Expression, Statement};
 
 impl Emitter {
-    /// 在临时寄存器池之前分配 builtin 槽位。
+    /// 递归遍历程序 AST，把内置全局标识符引用预登记到固定寄存器槽（内置槽在临时
+    /// 寄存器池之前分配，两者隔离，槽位分配序稳定）。
     pub(crate) fn pre_register_builtin_references(&self, stmts: &[Statement], ctx: &mut CompileCtx) {
         for stmt in stmts {
             self.pre_scan_builtin_stmt(stmt, ctx);
         }
     }
 
+    /// 递归遍历语句树，登记其中的内置标识符引用：表达式语句、变量/函数/类声明、
+    /// 控制流各分支与模块导出声明。
     fn pre_scan_builtin_stmt(&self, stmt: &Statement, ctx: &mut CompileCtx) {
         match stmt {
             Statement::ExpressionStatement(es) => self.pre_scan_builtin_expr(&es.expression, ctx),
@@ -150,6 +153,8 @@ impl Emitter {
         }
     }
 
+    /// 递归遍历表达式树，登记其中的内置标识符引用：标识符、调用/构造、成员、可选链、
+    /// 对象/数组字面量与各类运算表达式。
     fn pre_scan_builtin_expr(&self, expr: &Expression, ctx: &mut CompileCtx) {
         match expr {
             Expression::Identifier(ident) => {
@@ -262,6 +267,8 @@ impl Emitter {
         }
     }
 
+    /// 遍历赋值目标，登记其中的内置标识符引用：标识符目标直接登记，成员目标只扫描
+    /// 对象与计算键（属性名不是标识符引用）。
     fn pre_scan_builtin_target(&self, target: &oxide_parser::SimpleAssignmentTarget, ctx: &mut CompileCtx) {
         match target {
             oxide_parser::SimpleAssignmentTarget::AssignmentTargetIdentifier(id) => {
@@ -286,6 +293,7 @@ impl Emitter {
         }
     }
 
+    /// 遍历可选链元素，登记链上成员访问、调用与实参中的内置标识符引用。
     fn pre_scan_builtin_chain(&self, element: &oxide_parser::ChainElement, ctx: &mut CompileCtx) {
         match element {
             oxide_parser::ChainElement::StaticMemberExpression(member) => {

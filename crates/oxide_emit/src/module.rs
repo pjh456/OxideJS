@@ -2,7 +2,8 @@
 //!
 //! 快照式链接：依赖模块先整体求值（`__moduleEval`）并返回命名空间对象，
 //! 导入绑定在 prelude 一次性初始化；`export` 语句就地注册导出值。
-//! live binding / defer / source-phase 语义留待后续轮次（循环导入在编译期跳过）。
+//! 未支持：live binding（导入绑定活态跟随源模块值变化）、defer（延迟求值）、
+//! source-phase——导入绑定为链接期快照，不跟随源模块值变化；循环导入在编译期跳过。
 
 use std::collections::HashSet;
 use std::path::Path;
@@ -42,11 +43,14 @@ pub struct ResolvedModule {
 
 /// 模块加载器：由调用方（test262 runner / CLI）提供文件解析。
 pub trait ModuleSourceLoader {
+    /// 解析依赖模块：按 `base_dir` 与 `specifier` 定位模块源码，`attributes` 为
+    /// with 子句的导入属性键值对。
     fn resolve(
         &mut self, base_dir: &str, specifier: &str, attributes: &[(&str, &str)],
     ) -> Result<ResolvedModule, String>;
 }
 
+/// 把 `ModuleExportName`（标识符名 / 标识符引用 / 字符串字面量）统一转为字符串导出名。
 fn module_export_name_str(m: &ModuleExportName) -> String {
     match m {
         ModuleExportName::IdentifierName(i) => i.name.to_string(),
@@ -55,6 +59,7 @@ fn module_export_name_str(m: &ModuleExportName) -> String {
     }
 }
 
+/// 从 with 子句提取导入属性键值对（键取标识符或字符串字面量，值取字符串字面量）。
 fn module_attributes(with_clause: &Option<Box<'_, WithClause<'_>>>) -> Vec<(String, String)> {
     let mut out = Vec::new();
     if let Some(wc) = with_clause {
@@ -117,6 +122,7 @@ fn module_own_export_names(body: &[Statement]) -> HashSet<String> {
     names
 }
 
+/// 判断语句是否为提升的函数声明（含 export 包装的函数声明）。
 fn is_hoisted_function_decl(stmt: &Statement) -> bool {
     match stmt {
         Statement::FunctionDeclaration(_) => true,
@@ -241,8 +247,8 @@ impl Emitter {
 
         // —— 导入绑定初始化（const 语义；命名空间绑定直接引用 ns 对象）——
         let own_export_names = module_own_export_names(body);
-        // export * from 'x'（无命名再导出）会把依赖的全部导出转发给自身：
-        // self-import 的名称可能来自 star，编译期无法静态判定，校验放宽。
+        // 无命名 `export * from 'x'` 会把依赖的全部导出转发给自身；自导入名可能来自
+        // star 再导出，编译期无法静态判定该名是否存在于自身导出，故链接校验放宽。
         let has_unnamed_star = body
             .iter()
             .any(|s| matches!(s, Statement::ExportAllDeclaration(e) if e.exported.is_none()));
@@ -346,7 +352,8 @@ impl Emitter {
         }
 
         // —— re-export（export { x } from 'mod'）链接检查：实例化期解析，须先于
-        // body 求值（$DONOTEVALUATE 等断言依赖链接错误先抛）——
+        // body 求值。$DONOTEVALUATE 是 test262 测试框架的断言工具，断言链接错误先于
+        // body 求值抛出，故链接检查必须先于 body 发射。——
         for stmt in body {
             if let Statement::ExportNamedDeclaration(exp) = stmt {
                 if exp.declaration.is_some() {
@@ -392,8 +399,9 @@ impl Emitter {
         // —— 收尾：封冻命名空间并返回（顶层 RETURN 亦终止 run）——
         self.emit_module_call(ctx, "__moduleSeal", &[ns_reg])?;
         if top_level {
-            // 顶层模块求值完成值为空记录：对外表现 undefined（依赖面不得
-            // 同口径——__moduleEval 以依赖返回值作命名空间，contract 不可破）。
+            // 顶层模块求值完成值为空记录（对外表现 undefined）；依赖模块求值必须返回
+            // 命名空间对象（`__moduleEval` 以依赖返回值作命名空间）——两条路径的返回
+            // 值契约不同，顶层路径不得复用依赖路径的返回值。
             let undef_idx = ctx.add_constant(Constant::Undefined);
             let r = ctx.alloc_reg();
             ctx.inst(Inst::load_const(Operand::Reg(r), undef_idx));
@@ -439,7 +447,8 @@ impl Emitter {
         let this_reg = ctx.alloc_reg();
         let undef_idx = ctx.add_constant(Constant::Undefined);
         ctx.inst(Inst::load_const(Operand::Reg(this_reg), undef_idx));
-        // CALL_NATIVE 按 regs[first_arg + i] 连续读参数：把非连续 vreg 打包为连续块。
+        // CALL_NATIVE 按 regs[first_arg + i] 连续读参数：把非连续虚拟寄存器（vreg，经寄存器
+        // 分配后映射为物理号）打包为连续寄存器块。
         let mut packed = arg_regs.to_vec();
         let first_arg_reg = if packed.is_empty() { this_reg } else { pack_arg_regs(&mut packed, ctx) };
         ctx.inst(Inst::call_native(
