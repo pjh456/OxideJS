@@ -1,5 +1,6 @@
 //! 闭包捕获分析，父层捕获分析：本函数哪些绑定被任意深度嵌套函数捕获
-//! → BTreeMap<String, u8>（cell_idx 按名字序，稳定跨 run）。
+//! → BTreeMap<String, u8>（cell_idx 按名字排序分配，同一程序重编译得到相同索引，
+//! 父 MAKE_CELL 与子函数 upvalue 引用同一 cell）。
 
 use std::collections::{BTreeMap, HashSet};
 
@@ -10,6 +11,9 @@ use super::names::collect_own_binding_names;
 use super::scanner::{collect_capture_names_expr, collect_capture_names_shadowed, collect_class_capture_names};
 
 /// 分析本函数：哪些绑定被任意深度嵌套函数捕获 → captured_bindings。
+///
+/// 本族以本函数 own 绑定集为过滤条件做捕获集的最终判定；`scanner.rs` 的
+/// `collect_capture_names_*` 族带显式 `ref_set`/`shadow`，按过滤条件收集引用名。
 pub(crate) fn collect_captured_bindings(
     stmts: &[Statement], extra_exprs: &[&oxide_parser::Expression], own: &HashSet<String>,
 ) -> BTreeMap<String, u8> {
@@ -17,8 +21,9 @@ pub(crate) fn collect_captured_bindings(
     for stmt in stmts {
         collect_captured_stmt(stmt, own, &mut names);
     }
-    // 参数默认值表达式（不在 body_stmts 内）里的嵌套函数引用也要纳入捕获，
-    // 否则默认值内 IIFE 引用全局/外层变量走 LOAD_VAR 读寄存器残留（B022 扩展）。
+    // 参数默认值表达式里的引用同样纳入捕获分析：默认值位于函数体之外，其中的
+    // 嵌套函数引用全局或外层变量时，若未登记进捕获集，发射期会走 LOAD_VAR 读到
+    // 寄存器残留值。
     for expr in extra_exprs {
         collect_captured_expr(expr, own, &mut names);
     }
@@ -279,6 +284,9 @@ pub(crate) fn collect_captured_binding_keys(
     }
 }
 
+/// 以本函数 own 绑定集为过滤条件，判定表达式内嵌套函数捕获了哪些父绑定。与
+/// `scanner.rs` 的 `collect_capture_names_expr` 相比，本函数以 own 为过滤条件做
+/// 捕获最终判定，不接收显式 `ref_set`/`shadow`。
 pub(crate) fn collect_captured_expr(expr: &Expression, own: &HashSet<String>, out: &mut HashSet<String>) {
     match expr {
         Expression::FunctionExpression(fe) => {
@@ -390,6 +398,7 @@ pub(crate) fn collect_captured_expr(expr: &Expression, own: &HashSet<String>, ou
     }
 }
 
+/// 遍历可选链元素，判定链上表达式对父绑定的捕获。
 pub(crate) fn collect_captured_chain(
     element: &oxide_parser::ChainElement, own: &HashSet<String>, out: &mut HashSet<String>,
 ) {

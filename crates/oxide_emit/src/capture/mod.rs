@@ -1,7 +1,8 @@
 //! 闭包捕获分析（AST 级，emit 前完成，时序无关）。
 //!
 //! 收集本函数绑定的名字（own_bindings）与被嵌套函数捕获的名字
-//! （captured_bindings → cell_idx，按名排序稳定跨 run），为 MAKE_CELL /
+//! （captured_bindings → cell_idx；cell_idx 按名字排序分配，同一程序重编译得到
+//! 相同索引，保证父 MAKE_CELL 与子函数 upvalue 引用同一 cell），为 MAKE_CELL /
 //! CELL_GET / CELL_SET 与子函数 upvalue cell_idx 提供统一依据。
 //!
 //! 五区严格单向分层（本文件 ← names ← scanner ← captured ← upvalues）：
@@ -21,6 +22,7 @@ pub(crate) use names::collect_top_level_function_names_ordered;
 pub(crate) use names::collect_var_binding_names;
 pub(crate) use upvalues::collect_upvalue_names;
 
+/// 收集形参（含 rest）绑定的名字集，作为本函数作用域的遮蔽集。
 pub(crate) fn collect_fn_param_names(params: &oxide_parser::FormalParameters) -> HashSet<String> {
     let mut names = HashSet::new();
     for p in &params.items {

@@ -9,6 +9,10 @@ use oxide_parser::{ClassBody, ClassElement, Expression, Statement};
 use super::names::collect_own_binding_names;
 use super::{collect_fn_param_names, collect_for_left_decl_names};
 
+/// 以 `ref_set`（关注名集）× `shadow`（遮蔽名集）双集驱动，收集被任意深度嵌套
+/// 函数引用、且未被遮蔽的名字写入 `out`。本族带显式 `ref_set`/`shadow` 参数，按
+/// 过滤条件收集引用名；`captured.rs` 的 `collect_captured_*` 族则以本函数 own 绑定集
+/// 为过滤条件做捕获最终判定。
 pub(crate) fn collect_capture_names_shadowed(
     stmts: &[Statement], ref_set: &HashSet<String>, shadow: &HashSet<String>, out: &mut HashSet<String>,
 ) {
@@ -17,6 +21,7 @@ pub(crate) fn collect_capture_names_shadowed(
     }
 }
 
+/// 按语句类型递归扫描引用；进入嵌套函数/类/for 头/catch 时逐层扩充遮蔽集。
 pub(crate) fn collect_capture_names_stmt(
     stmt: &Statement, ref_set: &HashSet<String>, shadow: &HashSet<String>, out: &mut HashSet<String>,
 ) {
@@ -448,6 +453,9 @@ pub(crate) fn collect_fn_default_names(
     }
 }
 
+/// 按表达式类型递归扫描引用；进入嵌套函数体时以形参 + 体内声明扩充遮蔽集。与
+/// `captured.rs` 的 `collect_captured_expr` 相比，本函数带显式 `ref_set`/`shadow`
+/// 收集引用名，不做捕获最终判定。
 pub(crate) fn collect_capture_names_expr(
     expr: &Expression, ref_set: &HashSet<String>, shadow: &HashSet<String>, out: &mut HashSet<String>,
 ) {
@@ -577,6 +585,7 @@ pub(crate) fn collect_capture_names_expr(
     }
 }
 
+/// 遍历可选链元素，扫描链上成员访问、调用与实参中的引用。
 pub(crate) fn collect_capture_names_chain(
     element: &oxide_parser::ChainElement, ref_set: &HashSet<String>, shadow: &HashSet<String>,
     out: &mut HashSet<String>,

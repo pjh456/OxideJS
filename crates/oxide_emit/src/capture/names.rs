@@ -16,6 +16,7 @@ pub(crate) fn collect_var_binding_names(stmts: &[Statement]) -> HashSet<String> 
     names
 }
 
+/// 递归遍历语句树收集 `var` 声明名（函数/程序级提升目标），含嵌套块与控制流各分支。
 pub(crate) fn collect_var_names_stmt(stmts: &[Statement], out: &mut HashSet<String>) {
     for stmt in stmts {
         match stmt {
@@ -109,7 +110,8 @@ pub(crate) fn collect_top_level_function_names(stmts: &[Statement]) -> HashSet<S
 }
 
 /// 同 [`collect_top_level_function_names`] 的收集面，但按**声明序**返回 Vec
-/// （供 GDI 检查阶段逆序遍历逐名去重，规范"逆序首见 = 源序最后声明"）。
+/// （供 GlobalDeclarationInstantiation（脚本顶层声明实例化）检查阶段逆序遍历逐名
+/// 去重，规范"逆序首见 = 源序最后声明"；重名只查一次，取源序最后一次声明）。
 pub(crate) fn collect_top_level_function_names_ordered(stmts: &[Statement]) -> Vec<String> {
     let mut names = Vec::new();
     for stmt in stmts {
@@ -132,6 +134,8 @@ pub(crate) fn collect_own_binding_names(param_names: &[&str], stmts: &[Statement
     names
 }
 
+/// 递归遍历语句树收集当前函数作用域声明的绑定名（变量/函数/类/import/export，
+/// 含嵌套块，不进嵌套函数体）。
 pub(crate) fn collect_decl_names_stmt(stmts: &[Statement], out: &mut HashSet<String>) {
     for stmt in stmts {
         match stmt {
