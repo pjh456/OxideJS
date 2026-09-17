@@ -238,7 +238,41 @@ fn strict_flag_inherited() {
     assert!(top.is_strict, "脚本顶层 use strict 应置位");
 }
 
-/// 面 9：source_encoded 口径下正则源池键为 marker 形态（与静态口径的明文键不同形）。
+/// 面 9：未捕获 `var` 名在函数入口补发 undefined 定义（预声明只登记槽位，
+/// 声明点对已绑定名跳过 undefined 写，入口缺定义会使首次写入前读取取到残留）。
+#[test]
+fn var_entry_init_emits_undefined_store() {
+    let ir = emit_ir("function f() { var x; return typeof x; }");
+    let f = &ir.nested[0];
+    assert_eq!(count_op(&f.insts, OpCode::STORE_VAR), 1, "未捕获 var 应在函数入口恰写一次 undefined");
+}
+
+/// 面 10：入口补写的过滤面——形参、`arguments`、捕获名不触发补写，
+/// 多个未捕获 var 名各自补一条。
+#[test]
+fn var_entry_init_filters_params_arguments_captured() {
+    let param = emit_ir("function f(a) { var x; return typeof a + typeof x; }");
+    assert_eq!(count_op(&param.nested[0].insts, OpCode::STORE_VAR), 1, "形参名不补写，仅未捕获 var 补写");
+
+    let arguments = emit_ir("function f() { var x; return arguments.length + typeof x; }");
+    assert_eq!(
+        count_op(&arguments.nested[0].insts, OpCode::STORE_VAR),
+        1,
+        "arguments 名不补写，未捕获 var 补写"
+    );
+
+    let captured = emit_ir("function f() { var x; return function g() { return typeof x; }; }");
+    assert_eq!(
+        count_op(&captured.nested[0].insts, OpCode::STORE_VAR),
+        0,
+        "捕获名由入口 MAKE_CELL(undefined) 实例化，不再补 STORE_VAR"
+    );
+
+    let multi = emit_ir("function f() { var a, b; return typeof a + typeof b; }");
+    assert_eq!(count_op(&multi.nested[0].insts, OpCode::STORE_VAR), 2, "多 var 名各自补一条入口定义");
+}
+
+/// 面 11：source_encoded 口径下正则源池键为 marker 形态（与静态口径的明文键不同形）。
 #[test]
 fn source_encoded_regex_pool_key() {
     let src = "var r = /\\ud800/g;";

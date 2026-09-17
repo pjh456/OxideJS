@@ -427,6 +427,12 @@ impl Emitter {
             }
         }
 
+        // `var` 绑定入口实例化（非捕获名）：预声明只登记槽位、不发射定义指令，
+        // 声明点对已绑定名又跳过 undefined 写，缺失入口写会让首次写入前的读取
+        // 取到调用方遗留的寄存器值。捕获名已由参数 prologue 的
+        // MAKE_CELL(undefined) 实例化，此处只补未捕获名。
+        self.instantiate_var_bindings(body_stmts, &mut ctx);
+
         // 生成器：body 起点标记——调用时参数初始化（emit_params_prologue）结束后挂起于此，
         // 参数副作用/异常在 `g()` 调用时刻生效，首次 next() 从这继续执行 body。
         if is_generator {
@@ -683,6 +689,35 @@ impl Emitter {
         }
 
         Ok(param_base)
+    }
+
+    /// 非捕获 `var` 名的函数入口实例化：把每个未捕获 var 槽在入口写为 undefined。
+    ///
+    /// # 边界与前提
+    /// - 须在 `var` 预声明之后、body 语句发射之前调用：预声明只登记槽位不发定义
+    ///   指令，声明语句对已绑定名又跳过 undefined 写，缺失入口写会让首次写入前的
+    ///   读取取到调用方遗留的寄存器值。
+    /// - 形参与 `arguments` 由参数 prologue 写入实参，跳过以免覆盖。
+    /// - 捕获名由参数 prologue 的 MAKE_CELL(undefined) 实例化；STORE_VAR 不更新
+    ///   cell，跳过以免冗余。
+    /// - 符号表查不到的名字（如解构 pattern 叶名未被预声明）跳过，不报错。
+    fn instantiate_var_bindings(&self, body_stmts: &[Statement], ctx: &mut CompileCtx) {
+        let mut names: Vec<String> = collect_var_binding_names(body_stmts)
+            .into_iter()
+            .filter(|n| !ctx.param_names.contains(n) && n != "arguments")
+            .filter(|n| !ctx.captured_bindings.contains_key(n))
+            .collect();
+        if names.is_empty() {
+            return;
+        }
+        // 按名排序发射：哈希集迭代序随进程变化，排序使字节码确定。
+        names.sort();
+        let undef_reg = self.emit_undefined(ctx);
+        for name in names {
+            if let Some(reg) = ctx.scopes.symbols.lookup_any(&name) {
+                ctx.inst(Inst::new(OpCode::STORE_VAR, Operand::Reg(reg), Operand::Reg(undef_reg), Operand::Imm(0)));
+            }
+        }
     }
 
     /// 双 sub-pass emit body：先函数声明（hoisting），再其余语句。返回最后结果寄存器。
