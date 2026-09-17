@@ -373,8 +373,8 @@ unsafe impl Send for StringPtr {}
 unsafe impl Sync for StringPtr {}
 
 /// ASCII 单字符永久 `JsString` 指针表：以字节值（0..=127）为下标，
-/// 首用惰性物化 `Box::into_raw` 永久泄漏，之后恒复用同一地址。
-/// 泄漏面严格有界：≤128 条目 × 单字符内容（≈8KB），进程生命周期内不释放。
+/// 首用惰性物化 `Box::into_raw` 有意保留，之后恒复用同一地址。
+/// 物化面严格有界：≤128 条目 × 单字符内容（≈8KB），进程生命周期内不释放。
 static SINGLE_CHAR_TABLE: [OnceLock<StringPtr>; 128] = [const { OnceLock::new() }; 128];
 
 /// 取 ASCII 单字符的永久 `JsString` 指针，惰性物化一次后恒返回同一地址。

@@ -1,5 +1,5 @@
-//! 每会话可变状态：内置原型对象（BuiltinWorld）与全局对象，full_reset 时
-//! 重建；世代快照 + 家族位脏集合计算，selective_reset 只重建脏家族。
+//! 每会话可变状态：内置原型对象（BuiltinWorld）与全局对象；世代快照 +
+//! 家族位脏集合计算，两条重置路径同走选择性重建，只重建脏家族。
 
 use std::sync::Arc;
 
@@ -12,9 +12,10 @@ use crate::shape_forge::EMPTY_SHAPE_ID;
 
 use super::{BuiltinDirtySet, BuiltinId, BuiltinSnapshot, KernelCore};
 /// 每会话可变状态：内置原型对象与全局对象。
-/// 两条重建路径：full_reset() 整体重建，实现 JS 执行之间的完全隔离；
-/// selective_reset() 按世代快照的家族位脏集合只重建被污染的家族，保留
-/// 未污染的内置指针与世代。
+/// full_reset() 为宿主全隔离重置入口：清空全部执行状态与内存，内置对象
+/// 经下述选择性重建（未污染者保留原指针），并重新绑定被污染的内置对象
+/// 与重采世代快照；selective_reset() 为选择性重建本体，按家族位脏集合
+/// 只重建脏家族，保留未污染的内置指针与世代。
 pub struct KernelSession {
     pub builtin_world: Arc<BuiltinWorld>,
     pub global_object: P<JsObject>,
@@ -226,7 +227,7 @@ impl KernelSession {
     pub fn selective_reset(&mut self, core: &Arc<KernelCore>) -> BuiltinDirtySet {
         let dirty = self.dirty_since_snapshot();
         if dirty.global {
-            // 旧 global 的属性区在替换前释放，避免随旧引用永久泄漏。
+            // 旧 global 的属性区在替换前释放，避免旧引用长期持有该内存。
             let old_global = unsafe { &mut *(self.global_object.as_ptr() as *mut JsObject) };
             old_global.release_raw_heap();
             self.global_object = Self::new_global_object(core);

@@ -228,7 +228,7 @@ impl BuiltinWorld {
     }
 
     /// wrapper 复用键的目标家族标签：目标对象是本 world 固定 P 字段时返回
-    /// 其枚举下标 + 1（`all_p_fields` 顺序跨重建轮不变），非 P 目标返回 0。
+    /// 其枚举下标 + 1（`all_p_fields` 顺序跨重建不变），非 P 目标返回 0。
     pub fn wrapper_family_of(&self, obj: *const JsObject) -> u16 {
         for (i, p) in self.all_p_fields().iter().enumerate() {
             if std::ptr::eq(p.as_ptr(), obj) {
@@ -256,7 +256,7 @@ impl BuiltinWorld {
     /// # 注意事项
     /// session 收尾（`teardown_heap_data`）与选择性重建收尾（`retire_replaced`）
     /// 的 P 字段枚举唯一入口：`BuiltinWorld` 新增 P 字段须在此同步补一行，否则
-    /// 收尾时该字段属性区永久泄漏、重建原型槽改写/释放漏掉该字段。
+    /// 收尾时该字段属性区无法释放、重建原型槽改写/释放漏掉该字段。
     pub(crate) fn all_p_fields(&self) -> [&P<JsObject>; 104] {
         [
             &self.object_proto,
