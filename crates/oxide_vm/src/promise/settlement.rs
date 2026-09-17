@@ -24,6 +24,7 @@ impl Vm {
         let resolve = self.make_resolve_reject_fn(promise, false, false);
         let reject = self.make_resolve_reject_fn(promise, true, false);
         let state = self.promise_state_ptr(promise);
+        // SAFETY: `state` 来自 create_promise_object 写入的状态盒，非空且随对象存活；此处块内唯一可变借用，无别名。
         let state = unsafe { &mut *state };
         state.resolve_fn = resolve;
         state.reject_fn = reject;
@@ -50,6 +51,8 @@ impl Vm {
             ));
         }
         let (resolve, reject) = {
+            // SAFETY: `executor` 由 make_capability_executor 新建，为存活的 arena 函数
+            // 对象、指针非空；此处只读 CAP_* 属性，不跨 GC/reset 点。
             let exec_obj = unsafe { &*executor.as_js_object_ptr() };
             let res_si = self.kernel_core.perm_interner().intern(CAP_RESOLVE_PROP).0;
             let rej_si = self.kernel_core.perm_interner().intern(CAP_REJECT_PROP).0;
@@ -75,6 +78,7 @@ impl Vm {
         func.set_native_fn(Some(unsafe { NativeFnPtr::from_raw(capability_executor as *const ()) }));
         func.set_native_arg_count(2);
         let ptr = self.alloc_object(func);
+        // SAFETY: `alloc_object` 返回非空 arena 指针，本次 native 调用内不搬移；借出期间无别名。
         let obj = unsafe { &mut *ptr };
         self.add_fn_name_length(obj, "", 2);
         JsValue::from_js_object(ptr)
@@ -93,6 +97,7 @@ impl Vm {
         func.set_native_fn(Some(unsafe { NativeFnPtr::from_raw(native_fn as *const ()) }));
         func.set_native_arg_count(1);
         let ptr = self.alloc_object(func);
+        // SAFETY: `alloc_object` 返回非空 arena 指针；后续属性/shape 分配不改对象地址，无别名。
         let obj = unsafe { &mut *ptr };
         let si = self.kernel_core.perm_interner().intern(PROMISE_PROP).0;
         self.set_or_create_prop_value(obj, si, promise);
@@ -108,6 +113,7 @@ impl Vm {
         if !callee.is_object() {
             return None;
         }
+        // SAFETY: `is_object` 已保证指针非空且指向存活对象；只读 PROMISE_PROP，不跨 GC/reset。
         let obj = unsafe { &*callee.as_js_object_ptr() };
         let si = self.kernel_core.perm_interner().intern(PROMISE_PROP).0;
         match self.resolve_property(obj, si) {
@@ -122,6 +128,7 @@ impl Vm {
         if !callee.is_object() {
             return false;
         }
+        // SAFETY: `is_object` 已保证指针非空且指向存活对象；只读 DELEGATED_PROP，不跨 GC/reset。
         let obj = unsafe { &*callee.as_js_object_ptr() };
         let si = self.kernel_core.perm_interner().intern(DELEGATED_PROP).0;
         self.resolve_property(obj, si)
@@ -131,6 +138,8 @@ impl Vm {
 
     /// 取出 Promise 状态盒指针（调用方须先校验 `is_promise_value`）。
     pub(super) fn promise_state_ptr(&self, promise: JsValue) -> *mut PromiseState {
+        // SAFETY: 调用方已按文档前提校验 `is_promise_value`，对象指针非空且 native_data
+        // 为 create_promise_object 写入的 Box<PromiseState>；裸指针由调用方即时解引用。
         unsafe { (*promise.as_js_object_ptr()).native_data() as *mut PromiseState }
     }
 
@@ -138,6 +147,7 @@ impl Vm {
     pub(crate) fn is_promise_value(&self, v: JsValue) -> bool {
         v.is_object() && {
             let ptr = v.as_js_object_ptr();
+            // SAFETY: `is_object` 与 `ptr` 非空双守卫保证可解引用；只读 type_tag 判定，立即消费。
             !ptr.is_null() && unsafe { &*ptr }.is_promise_obj()
         }
     }
@@ -160,6 +170,7 @@ impl Vm {
             if std::ptr::eq(ptr, target) {
                 return true;
             }
+            // SAFETY: 循环内 `is_object` 与 `ptr` 非空守卫保证可解引用；只读 proto()，链深受深度上限约束。
             cursor = unsafe { &*ptr }.proto();
         }
         false
@@ -185,6 +196,7 @@ impl Vm {
             return self.reject_promise(promise, err);
         }
         if x.is_object() {
+            // SAFETY: `is_object` 保证指针非空且指向存活对象；只读 `then` 属性，本次读取内即时消费。
             let x_obj = unsafe { &*x.as_js_object_ptr() };
             let then_si = self.kernel_core.perm_interner().intern("then").0;
             let then = match self.ordinary_get(x_obj, then_si, x) {
@@ -202,6 +214,7 @@ impl Vm {
                 // 后续 executor 的 resolve/reject 均 no-op。委托用独立结算代理闭包
                 // （绕过 alreadyResolved——委托才是真正结算路径），仍受 state != Pending 守卫。
                 let state = self.promise_state_ptr(promise);
+                // SAFETY: 状态盒随已建 Promise 存活、指针非空；本块唯一可变借用，写 already_resolved 后结束。
                 let state = unsafe { &mut *state };
                 state.already_resolved = true;
                 let resolve = self.make_resolve_reject_fn(promise, false, true);
@@ -222,6 +235,7 @@ impl Vm {
     pub(crate) fn fulfill_promise(&mut self, promise: JsValue, value: JsValue) -> Result<(), String> {
         let state_ptr = self.promise_state_ptr(promise);
         let settled = {
+            // SAFETY: `state_ptr` 取自 promise_state_ptr，盒非空且随 promise 存活；本块唯一可变借用，块末释放。
             let state = unsafe { &mut *state_ptr };
             if state.state != PromiseStateKind::Pending {
                 return Ok(());
@@ -242,6 +256,8 @@ impl Vm {
         }
         // 原件若已晋升出克隆，把结算传导到克隆：克隆上晋升后新挂的反应方随此触发
         // （顶层 var 读克隆，原件反应已在本处直接触发，不重复传导）。
+        // SAFETY: 同一 `state_ptr`，前块可变借用已结束；盒仍存活，promoted_clone
+        // 由 promise_native_edges 的 mark 边保证同轮存活（mod.rs 模块头不变量）。
         let clone_ptr = unsafe { (*state_ptr).promoted_clone };
         if !clone_ptr.is_null() {
             let clone = JsValue::from_js_object(clone_ptr);
@@ -254,6 +270,7 @@ impl Vm {
     pub(crate) fn reject_promise(&mut self, promise: JsValue, reason: JsValue) -> Result<(), String> {
         let state_ptr = self.promise_state_ptr(promise);
         let settled = {
+            // SAFETY: `state_ptr` 取自 promise_state_ptr，盒非空且随 promise 存活；本块唯一可变借用，块末释放。
             let state = unsafe { &mut *state_ptr };
             if state.state != PromiseStateKind::Pending {
                 return Ok(());
@@ -273,6 +290,8 @@ impl Vm {
             });
         }
         // 原件若已晋升出克隆，把拒绝传导到克隆（同 fulfill：顶层 var 读克隆）。
+        // SAFETY: 同一 `state_ptr`，前块可变借用已结束；盒仍存活，promoted_clone
+        // 由 promise_native_edges 的 mark 边保证同轮存活（mod.rs 模块头不变量）。
         let clone_ptr = unsafe { (*state_ptr).promoted_clone };
         if !clone_ptr.is_null() {
             let clone = JsValue::from_js_object(clone_ptr);
@@ -286,6 +305,7 @@ impl Vm {
     /// 结算（thenable 委托）。constructor getter / 结算抛错时透传原异常值。
     pub(crate) fn promise_resolve(&mut self, value: JsValue) -> Result<JsValue, JsValue> {
         if self.is_promise_value(value) {
+            // SAFETY: `is_promise_value` 保证指针非空且 type_tag 为 Promise；只读 `constructor`，即时消费。
             let obj = unsafe { &*value.as_js_object_ptr() };
             let ctor_si = self.kernel_core.perm_interner().intern("constructor").0;
             let ctor = match self.ordinary_get(obj, ctor_si, value) {
@@ -327,6 +347,7 @@ fn promise_resolve_closure(vm: &mut Vm, args: &[u8]) -> NativeResult {
     if !delegated {
         // 非委托：alreadyResolved 守卫——首次调用置位，含 thenable 委托期间。
         let state = vm.promise_state_ptr(promise);
+        // SAFETY: 非委托分支的唯一可变借用；状态盒随 promise 存活，写 already_resolved 后结束。
         let state = unsafe { &mut *state };
         if state.already_resolved {
             return NativeResult::Ok(JsValue::undefined());
@@ -352,6 +373,7 @@ fn promise_reject_closure(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let reason = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
     if !delegated {
         let state = vm.promise_state_ptr(promise);
+        // SAFETY: 非委托分支的唯一可变借用；状态盒随 promise 存活，写 already_resolved 后结束。
         let state = unsafe { &mut *state };
         if state.already_resolved {
             return NativeResult::Ok(JsValue::undefined());
@@ -369,6 +391,7 @@ fn capability_executor(vm: &mut Vm, args: &[u8]) -> NativeResult {
     if !callee.is_object() {
         return NativeResult::Err(oxide_builtins::error::create_type_error(vm, "executor is invalid"));
     }
+    // SAFETY: `callee` 来自 reg(254) 且 `is_object` 守卫保证指针非空存活；只读 CAP_* 判定，不跨 GC/reset。
     let obj = unsafe { &*callee.as_js_object_ptr() };
     let res_si = vm.kernel_core.perm_interner().intern(CAP_RESOLVE_PROP).0;
     let rej_si = vm.kernel_core.perm_interner().intern(CAP_REJECT_PROP).0;
@@ -382,6 +405,7 @@ fn capability_executor(vm: &mut Vm, args: &[u8]) -> NativeResult {
     }
     let resolve = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
     let reject = if args.len() > 2 { vm.reg(args[2]) } else { JsValue::undefined() };
+    // SAFETY: 同一 `callee`，前一读借用已结束；对象存活且本块唯一可变借用，写 CAP_* 无别名。
     let obj = unsafe { &mut *callee.as_js_object_ptr() };
     vm.set_or_create_prop_value(obj, res_si, resolve);
     vm.set_or_create_prop_value(obj, rej_si, reject);

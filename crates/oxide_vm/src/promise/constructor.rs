@@ -23,6 +23,8 @@ impl Vm {
     pub(super) fn create_promise_object(&mut self) -> JsValue {
         let proto_val = JsValue::from_js_object(self.promise_proto.as_ptr() as *mut JsObject);
         let ptr = self.alloc_object(JsObject::new_empty(EMPTY_SHAPE_ID, proto_val));
+        // SAFETY: `alloc_object` 返回非空 arena 指针；此处写 type_tag 与 native_data
+        // （Box<PromiseState> 由 Box::into_raw 分配，随对象释放），无别名。
         let obj = unsafe { &mut *ptr };
         obj.type_tag = JsObject::OBJ_TYPE_PROMISE;
         let state = Box::new(PromiseState {
@@ -45,6 +47,8 @@ impl Vm {
         if !is_constructor_value(ctor) {
             return Err(oxide_builtins::error::create_type_error(self, "constructor is not a constructor"));
         }
+        // SAFETY: `is_constructor_value` 已含对象校验，指针非空且指向存活对象；
+        // 此处只读 native_fn() 判定分支，不跨 GC/reset。
         let ctor_obj = unsafe { &*ctor.as_js_object_ptr() };
         // native 构造器：receiver 为新对象，值传递调用（%Promise% 主路径）。
         if ctor_obj.native_fn().is_some() {
@@ -206,14 +210,20 @@ impl Vm {
         // 固定地址后互相接线：proto.constructor ↔ ctor.prototype。
         Self::swap_intrinsic_proto(&mut self.promise_proto, *proto);
         Self::swap_intrinsic_proto(&mut self.promise_constructor, *ctor);
+        // SAFETY: `promise_proto` 为 Box<JsObject>，固定堆址且本行前刚经
+        // swap_intrinsic_proto 落地；与下一处 ctor_mut 指向不同对象，无别名。
         let proto_mut = unsafe { &mut *self.promise_proto.as_mut_ptr() };
         proto_mut.set_prop_at(0u32, JsValue::from_js_object(self.promise_constructor.as_ptr() as *mut JsObject));
+        // SAFETY: `promise_constructor` 同为固定堆址的存活 Box；此处写 prototype
+        // 槽位（下标 2），与 proto_mut 分属不同对象，无别名。
         let ctor_mut = unsafe { &mut *self.promise_constructor.as_mut_ptr() };
         // prototype 槽位在 length/name 之后（下标 2）。
         ctor_mut.set_prop_at(2u32, JsValue::from_js_object(self.promise_proto.as_ptr() as *mut JsObject));
 
         // 绑定 global：槽已存在则更新（full_reset 未重建 global 时旧槽指向已弃 ctor）。
         let global_ptr = self.session.global_object().as_ptr() as *mut JsObject;
+        // SAFETY: global 对象由 session 持有，存活整个 session；本函数内只改其
+        // shape/属性区，期间无 reset 或对象搬移。
         let global = unsafe { &mut *global_ptr };
         let si = self.kernel_core.perm_interner().intern("Promise").0;
         let ctor_val = JsValue::from_js_object(self.promise_constructor.as_ptr() as *mut JsObject);
@@ -240,6 +250,8 @@ fn promise_constructor(vm: &mut Vm, args: &[u8]) -> NativeResult {
     if !vm.has_promise_proto(this_val) {
         return NativeResult::Err(oxide_builtins::error::create_type_error(vm, "Promise must be called with new"));
     }
+    // SAFETY: `has_promise_proto` 已校验 this 为存活对象且原型链含 %Promise.prototype%；
+    // 此处写 type_tag 后即新建状态盒，无别名。
     let obj = unsafe { &mut *this_val.as_js_object_ptr() };
     obj.type_tag = JsObject::OBJ_TYPE_PROMISE;
     let resolve = vm.make_resolve_reject_fn(this_val, false, false);
