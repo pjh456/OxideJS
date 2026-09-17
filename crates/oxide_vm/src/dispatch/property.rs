@@ -649,10 +649,10 @@ impl Vm {
             return Ok(false);
         };
         let obj = unsafe { &mut *obj_ptr };
-        // 统一走共享删除逻辑（与 Reflect.deleteProperty 一致）；不可配置返回 false。
-        let deleted = oxide_builtins::object::delete_own_property(self, obj, prop_name_si);
-        self.regs[rd] = JsValue::bool(deleted);
-        Ok(false)
+        // 统一走共享删除逻辑（与 Reflect.deleteProperty 同源）；严格模式分派见
+        // finish_member_delete。
+        let outcome = oxide_builtins::object::delete_own_property_outcome(self, obj, prop_name_si);
+        self.finish_member_delete(rd, outcome)
     }
 
     pub(crate) fn dispatch_delete_prop_dynamic(&mut self, rd: usize, b: usize) -> Result<bool, String> {
@@ -667,9 +667,33 @@ impl Vm {
             return Ok(false);
         };
         let obj = unsafe { &mut *obj_ptr };
-        // 统一走共享删除逻辑（与 Reflect.deleteProperty 一致）；不可配置返回 false。
-        let deleted = oxide_builtins::object::delete_own_property(self, obj, prop_name_si);
-        self.regs[rd] = JsValue::bool(deleted);
+        // 统一走共享删除逻辑（与 Reflect.deleteProperty 同源）；严格模式分派见
+        // finish_member_delete。
+        let outcome = oxide_builtins::object::delete_own_property_outcome(self, obj, prop_name_si);
+        self.finish_member_delete(rd, outcome)
+    }
+
+    /// 成员形 delete 的结果分派：不可配置属性在严格模式抛 TypeError（规范要求
+    /// delete 运算符对 [[Delete]] 返回 false 的引用抛错），其余情形把「是否删除
+    /// 成功」写入 `rd`。
+    ///
+    /// # 步骤
+    /// 1. 不可配置且当前上下文严格：抛 TypeError，返回 `Ok(true)` 令调用方重取 pc
+    /// 2. 否则按三态投影布尔结果写 `rd`（`Missing`/`Deleted` 为 true）
+    ///
+    /// # 边界与前提
+    /// - 严格性取 `current_strict()`（覆盖帧栈顶 / inline 基线 / 顶层脚本三形态）
+    ///
+    /// # 副作用
+    /// - 抛错路径经 `unwind` 改写 pc / 异常通道；成功路径写 `regs[rd]`
+    fn finish_member_delete(
+        &mut self, rd: usize, outcome: oxide_builtins::object::DeleteOutcome,
+    ) -> Result<bool, String> {
+        if outcome == oxide_builtins::object::DeleteOutcome::NonConfigurable && self.current_strict() {
+            self.raise_type_error("Cannot delete property")?;
+            return Ok(true);
+        }
+        self.regs[rd] = JsValue::bool(outcome != oxide_builtins::object::DeleteOutcome::NonConfigurable);
         Ok(false)
     }
 

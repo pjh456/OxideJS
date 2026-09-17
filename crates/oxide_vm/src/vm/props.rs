@@ -117,19 +117,24 @@ impl Vm {
     /// true。
     ///
     /// # 步骤
-    /// 1. null/undefined 基抛 TypeError（调用方经 `?` 传播异常）
+    /// 1. null/undefined 基抛 TypeError 并早返回（异常已展开，不再写结果槽）
     /// 2. 字符串基按下标键区间判自身属性；非字符串基恒真
-    /// 3. 布尔结果写 `rd` 槽（与对象基臂同槽位）
+    /// 3. 严格模式下删除失败（字符串下标/length 不可配置）抛 TypeError
+    /// 4. 布尔结果写 `rd` 槽（与对象基臂同槽位）
     ///
     /// # 边界与前提
     /// - 调用点已证基非对象；对象基走既有对象臂，不进本函数
     /// - 字符串长度口径按 UTF-16 码元（与字符串自身属性面一致）；非规范数字串
     ///   键（前导零等）与 symbol 键走"无自身属性"面
+    ///
+    /// # 副作用
+    /// - 抛错路径经 `unwind` 改写 pc / 异常通道；成功路径写 `regs[rd]`
     pub(crate) fn delete_prop_non_object_base(
         &mut self, base: JsValue, rd: usize, key_si: u32,
     ) -> Result<bool, String> {
         if base.is_null() || base.is_undefined() {
-            self.raise_error_kind("TypeError", "delete on non-object")?;
+            self.raise_type_error("delete on non-object")?;
+            return Ok(true);
         }
         let deleted = if base.is_string() {
             let len = unsafe { (*base.as_string_ptr()).units().len() };
@@ -141,6 +146,11 @@ impl Vm {
         } else {
             true
         };
+        // 删除失败即命中不可配置自身属性，严格模式下 delete 运算符须抛 TypeError。
+        if !deleted && self.current_strict() {
+            self.raise_type_error("Cannot delete property")?;
+            return Ok(true);
+        }
         self.regs[rd] = JsValue::bool(deleted);
         Ok(false)
     }

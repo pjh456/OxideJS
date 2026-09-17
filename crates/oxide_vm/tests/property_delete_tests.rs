@@ -17,6 +17,11 @@ fn eval_many(lines: &[&str]) -> Result<JsValue, String> {
     eval(&source)
 }
 
+fn truthy(source: &str) {
+    let result = eval(source).unwrap_or_else(|e| panic!("{source} -> {e}"));
+    assert!(result.is_bool() && result.as_bool(), "{source} -> 期望 true，得 {:?}", result);
+}
+
 // ── 删除可配置属性成功 ──
 #[test]
 fn delete_configurable_property_succeeds_and_returns_true() {
@@ -91,5 +96,100 @@ fn delete_configurable_proto_property_on_child_returns_true() {
         r.is_bool() && r.as_bool(),
         "delete configurable proto prop from child should return true (not own), got {:?}",
         r
+    );
+}
+
+// ── 严格模式：不可配置数据属性抛 TypeError 且属性保留 ──
+#[test]
+fn strict_delete_non_configurable_data_throws_type_error() {
+    truthy(
+        "\"use strict\"; var o = {}; \
+         Object.defineProperty(o, 'x', {value: 1, configurable: false}); \
+         var threw = false; try { delete o.x; } catch (e) { threw = e instanceof TypeError; } \
+         threw && o.x === 1",
+    );
+}
+
+// ── 严格模式：不可配置访问器属性同样抛 TypeError 且 getter 保留 ──
+#[test]
+fn strict_delete_non_configurable_accessor_throws_type_error() {
+    truthy(
+        "\"use strict\"; var o = {}; \
+         Object.defineProperty(o, 'x', {get: function () { return 1; }, configurable: false}); \
+         var threw = false; try { delete o.x; } catch (e) { threw = e instanceof TypeError; } \
+         threw && o.x === 1",
+    );
+}
+
+// ── 严格模式：删除全局不可配置内置属性（NaN）抛 TypeError ──
+#[test]
+fn strict_delete_global_nan_throws_type_error() {
+    truthy(
+        "\"use strict\"; var g = this; \
+         var threw = false; try { delete g.NaN; } catch (e) { threw = e instanceof TypeError; } \
+         threw && g.NaN !== undefined",
+    );
+}
+
+// ── 严格模式：删除 Math.LN2 抛 TypeError ──
+#[test]
+fn strict_delete_math_ln2_throws_type_error() {
+    truthy(
+        "\"use strict\"; \
+         var threw = false; try { delete Math.LN2; } catch (e) { threw = e instanceof TypeError; } \
+         threw && Math.LN2 !== undefined",
+    );
+}
+
+// ── 严格模式：可配置属性仍可删除 ──
+#[test]
+fn strict_delete_configurable_property_succeeds() {
+    truthy(
+        "\"use strict\"; var o = {}; \
+         Object.defineProperty(o, 'x', {value: 1, configurable: true}); \
+         delete o.x === true && o.x === undefined",
+    );
+}
+
+// ── 严格模式：删除不存在的属性返回 true（不得过抛） ──
+#[test]
+fn strict_delete_missing_property_returns_true() {
+    truthy("\"use strict\"; var o = {}; delete o.missing === true");
+}
+
+// ── 数组 length 虚拟属性：sloppy 删除返回 false 且 length 不变 ──
+#[test]
+fn sloppy_delete_array_length_returns_false() {
+    truthy("var a = [1, 2, 3]; a.x = 10; delete a.length === false && a.length === 3");
+}
+
+// ── 数组 length 虚拟属性：严格模式删除抛 TypeError 且 length 不变 ──
+#[test]
+fn strict_delete_array_length_throws_type_error() {
+    truthy(
+        "\"use strict\"; var a = [1, 2, 3]; \
+         var threw = false; try { delete a.length; } catch (e) { threw = e instanceof TypeError; } \
+         threw && a.length === 3",
+    );
+}
+
+// ── 冻结数组元素不可配置：严格模式删除抛 TypeError 且元素保留 ──
+#[test]
+fn strict_delete_frozen_array_element_throws_type_error() {
+    truthy(
+        "\"use strict\"; var a = [1, 2, 3]; Object.freeze(a); \
+         var threw = false; try { delete a[0]; } catch (e) { threw = e instanceof TypeError; } \
+         threw && a[0] === 1",
+    );
+}
+
+// ── Reflect.deleteProperty 恒不抛：不可配置与数组 length 均返回 false ──
+#[test]
+fn reflect_delete_non_configurable_and_array_length_return_false() {
+    truthy(
+        "var o = {}; Object.defineProperty(o, 'x', {value: 1, configurable: false}); \
+         var a = [1, 2, 3]; \
+         Reflect.deleteProperty(o, 'x') === false && o.x === 1 \
+         && Reflect.deleteProperty(a, 'length') === false && a.length === 3",
     );
 }

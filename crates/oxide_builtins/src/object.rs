@@ -211,19 +211,34 @@ fn array_index_of<H: VmHost>(vm: &H, key_si: u32) -> Option<u32> {
     key.parse::<u32>().ok()
 }
 
-/// 删除对象自身属性（字节码 delete 与 Reflect.deleteProperty 共用）。
+/// 自身属性删除结果三态：区分「属性缺失 / 已删除 / 不可配置」，让共享实现同时
+/// 服务 delete 运算符（不可配置在严格模式须抛 TypeError）与
+/// `Reflect.deleteProperty`（恒投影为布尔、不抛错）两个消费者。
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum DeleteOutcome {
+    /// 属性不在对象自身（含原型链属性）：删除按规范成功。
+    Missing,
+    /// 属性存在且已删除。
+    Deleted,
+    /// 属性存在但不可配置：删除失败。
+    NonConfigurable,
+}
+
+/// 删除对象自身属性并返回三态结果（字节码 delete 与 Reflect.deleteProperty 共用）。
 ///
 /// 数组下标键在元素区（shape 链外），标记为 hole（值 undefined + hole meta），
-/// length 不变；命名属性经 shape 链重建移除。属性不可配置时返回 false。
+/// length 不变；数组 length 虚拟属性与命名属性经 shape 链处理。仅对象自身属性
+/// 参与删除判定，原型链属性不影响结果。
 ///
 /// # 步骤
-/// 1. 数组下标元素：检查 configurable，`mark_hole_at` 标记为 hole
-/// 2. 命名属性：walk_own_keys 定位槽位，不可配置返回 false
-/// 3. 数组先保存元素区（值 + meta），重建命名属性后恢复元素区
+/// 1. 数组 length 虚拟属性：不可配置，返回 `NonConfigurable`
+/// 2. 数组下标元素：检查 configurable，`mark_hole_at` 标记为 hole
+/// 3. 命名属性：walk_own_keys 定位槽位，不可配置返回 `NonConfigurable`
+/// 4. 数组先保存元素区（值 + meta），重建命名属性后恢复元素区
 ///
 /// # 边界与前提
-/// - 键不在对象自身（含原型链属性）返回 true
-/// - 非 configurable 属性返回 false
+/// - 键不在对象自身（含原型链属性）返回 `Missing`
+/// - 非 configurable 属性返回 `NonConfigurable`
 /// - `key_si` 须已 intern
 ///
 /// # 副作用
@@ -232,7 +247,7 @@ fn array_index_of<H: VmHost>(vm: &H, key_si: u32) -> Option<u32> {
 /// # 注意事项
 /// - 数组元素存在性以 `prop_meta_at` 的 hole 标记判定，删除后重新写入元素
 ///   会自动清除 hole 标记恢复存在
-pub fn delete_own_property<H: VmHost>(vm: &mut H, obj: &mut JsObject, key_si: u32) -> bool {
+pub fn delete_own_property_outcome<H: VmHost>(vm: &mut H, obj: &mut JsObject, key_si: u32) -> DeleteOutcome {
     // 数组下标元素在元素区，不参与 shape 链，单独删除（保持 length 不变）。
     if obj.is_array() {
         if let Some(index) = array_index_of(vm, key_si) {
@@ -240,16 +255,21 @@ pub fn delete_own_property<H: VmHost>(vm: &mut H, obj: &mut JsObject, key_si: u3
                 let meta = obj.prop_meta_at(index);
                 // 已是 hole 视为不存在；非 configurable 不可删。
                 if meta.is_some_and(|m| m.is_hole()) {
-                    return true;
+                    return DeleteOutcome::Missing;
                 }
                 if meta.is_some_and(|m| !m.attributes.configurable()) {
-                    return false;
+                    return DeleteOutcome::NonConfigurable;
                 }
                 obj.mark_hole_at(index);
                 obj.bump_generation();
-                return true;
+                return DeleteOutcome::Deleted;
             }
-            return true;
+            return DeleteOutcome::Missing;
+        }
+        // 非下标键：length 是虚拟属性（无 shape 槽、不在元素区），但描述符声明
+        // configurable:false，删除恒失败。
+        if key_si == vm.kernel_core().perm_interner().intern("length").0 {
+            return DeleteOutcome::NonConfigurable;
         }
     }
 
@@ -263,7 +283,7 @@ pub fn delete_own_property<H: VmHost>(vm: &mut H, obj: &mut JsObject, key_si: u3
         // 属性缺失：delete 按规范返 true，镜像槽同步 undefined 保持
         // "槽 = A 侧原始存储"不变式（与入口预载缺位语义幂等）。
         vm.sync_global_builtin_mirror(obj, key_si, JsValue::undefined());
-        return true;
+        return DeleteOutcome::Missing;
     };
     // walk_own_keys 已返回绝对存储索引（数组含元素区偏移），直接使用。
     if obj
@@ -271,7 +291,7 @@ pub fn delete_own_property<H: VmHost>(vm: &mut H, obj: &mut JsObject, key_si: u3
         .map(|meta| !meta.attributes.configurable())
         .unwrap_or(false)
     {
-        return false;
+        return DeleteOutcome::NonConfigurable;
     }
 
     // 数组重建前保存元素区（值 + meta），重建后恢复到命名属性之前。
@@ -330,7 +350,13 @@ pub fn delete_own_property<H: VmHost>(vm: &mut H, obj: &mut JsObject, key_si: u3
     // 删除成功：镜像槽同步 undefined（成员形删除 / Reflect.deleteProperty /
     // 0x9C 清槽同源收口，后两者对此幂等）。
     vm.sync_global_builtin_mirror(obj, key_si, JsValue::undefined());
-    true
+    DeleteOutcome::Deleted
+}
+
+/// 删除对象自身属性并投影为布尔（`Reflect.deleteProperty` 语义）：成功返回 true，
+/// 属性不可配置返回 false，恒不抛错。
+pub fn delete_own_property<H: VmHost>(vm: &mut H, obj: &mut JsObject, key_si: u32) -> bool {
+    delete_own_property_outcome(vm, obj, key_si) != DeleteOutcome::NonConfigurable
 }
 
 /// JS `Object()` 构造逻辑：创建空对象（prototype 为 null，由 VM 补装内置原型）。

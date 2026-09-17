@@ -91,3 +91,23 @@ fn delete_undefined_base_throws_type_error() {
 fn delete_nan_base_keys_are_true() {
     truthy("delete NaN.x");
 }
+
+// ── 严格模式：删除字符串不可配置下标属性抛 TypeError ──
+#[test]
+fn strict_delete_string_index_throws_type_error() {
+    truthy(
+        "\"use strict\"; \
+         var threw = false; try { delete 'ab'[0]; } catch (e) { threw = e instanceof TypeError; } \
+         threw",
+    );
+}
+
+// ── 严格模式：删除字符串 length 抛 TypeError ──
+#[test]
+fn strict_delete_string_length_throws_type_error() {
+    truthy(
+        "\"use strict\"; \
+         var threw = false; try { delete 'abc'.length; } catch (e) { threw = e instanceof TypeError; } \
+         threw",
+    );
+}
