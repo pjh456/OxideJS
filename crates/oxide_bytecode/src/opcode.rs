@@ -892,7 +892,7 @@ mod tests {
         const _: () = assert!(IC_EXT_WORDS == IC_SLOTS * 2 && IC_SLOTS >= 2);
     }
 
-    /// 表驱动 ic_ext 与逐消费方硬编码 16 集合逐项相等（一致性回归，防表驱动改漏）。
+    /// 表驱动 ic_ext 与本地冻结的硬编码 16 集合逐项相等（一致性回归，防表驱动改漏）。
     #[test]
     fn semantics_ic_ext_matches_legacy_list() {
         let legacy = [
