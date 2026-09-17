@@ -20,7 +20,7 @@ fn make_pair(
     si_name: u32,
 ) -> (P<JsObject>, P<JsObject>) {
     intern_label(string_forge, name);
-    let name_si = string_forge.intern(name).0; // 同时 intern 构造器名作为属性值
+    let name_si = string_forge.intern(name).0;
 
     let mut proto = JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null());
     let mut ctor = JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null());
@@ -34,9 +34,9 @@ fn make_pair(
     ctor.set_function(true);
 
     // 预分配槽位：proto[0]="constructor"、ctor[0]="prototype"、ctor[1]="name"。
-    proto.ensure_hash_props().push(JsValue::undefined()); // 占位
-    ctor.ensure_hash_props().push(JsValue::undefined()); // "prototype" 占位
-                                                         // 立即写入实际 name 值（ctor vec[1]）。
+    proto.ensure_hash_props().push(JsValue::undefined());
+    ctor.ensure_hash_props().push(JsValue::undefined());
+    // 立即写入实际 name 值（ctor vec[1]）。
     ctor.ensure_hash_props()
         .push(JsValue::perm_string(string_forge.string_ptr(name_si)));
     // 属性元数据：.prototype（ctor[0]）= writable:false, enumerable:false, configurable:false。
@@ -232,6 +232,30 @@ fn set_proto_if_changed(obj: &P<JsObject>, proto: JsValue) {
     }
 }
 
+/// 建立全部内置对象的原型链连线：构造器/原型对互指与各原型的
+/// `[[Prototype]]` 赋值。
+///
+/// # 步骤
+/// 1. 35 组构造器/原型对互指（`.prototype` / `.constructor` 槽，含
+///    TypedArray 家族共享对），经 `wire_ctor_proto` 覆盖占位槽；
+/// 2. 23 个非 TypedArray 构造器的 `[[Prototype]]` → Function.prototype
+///    （标准内置函数对象均继承 Function.prototype）；
+/// 3. 25 个非 Object 原型的 `[[Prototype]]` → Object.prototype，另含
+///    Temporal 命名空间对象、Temporal.now 与 Console 单例；
+/// 4. %IteratorPrototype% → Object.prototype，6 个集合迭代器原型
+///    → %IteratorPrototype%；
+/// 5. TypedArray 家族：11 个具体原型 → %TypedArray% 共享原型，11 个具体
+///    构造器 → %TypedArray% 抽象构造器，抽象构造器 `[[Prototype]]`
+///    → Function.prototype。
+///
+/// # 边界与前提
+/// - 在 `BuiltinWorld::new` 全量构造末尾与选择性重建（`rebuild_with_dirty`）
+///   构造出新 world 后调用，各对对象均已构造完毕，本函数只填槽不改形状；
+/// - `set_proto_if_changed` 仅当槽值不同才改写，重复调用幂等。
+///
+/// # 副作用
+/// - 改写上述对象的 `.prototype` / `.constructor` 槽值与 `[[Prototype]]`
+///   槽，每次 `[[Prototype]]` 改写递增该对象 generation。
 pub(crate) fn wire_builtin_world_links(world: &BuiltinWorld) {
     wire_ctor_proto(&world.object_constructor, &world.object_proto);
     wire_ctor_proto(&world.array_constructor, &world.array_proto);
@@ -268,8 +292,8 @@ pub(crate) fn wire_builtin_world_links(world: &BuiltinWorld) {
     wire_ctor_proto(&world.plain_year_month_constructor, &world.plain_year_month_proto);
     wire_ctor_proto(&world.bigint_constructor, &world.bigint_proto);
 
-    // 所有内置构造器的 [[Prototype]] 指向 %FunctionPrototype%（ECMA-262 §17：
-    // 标准内置函数对象均继承 Function.prototype；此前仅 TypedArray 构造器设置过）。
+    // 非 TypedArray 构造器的 [[Prototype]] 指向 Function.prototype：
+    // 标准内置函数对象均继承 Function.prototype。
     let fn_proto_val = world.fn_proto_val();
     for ctor in [
         &world.object_constructor,
@@ -339,7 +363,8 @@ pub(crate) fn wire_builtin_world_links(world: &BuiltinWorld) {
     set_proto_if_changed(&world.console_object, obj_proto_val);
 
     // 迭代器原型链：%IteratorPrototype% → Object.prototype；各集合迭代器原型
-    // → %IteratorPrototype%（next/@@iterator 方法由绑定层安装到对应原型）。
+    // → %IteratorPrototype%（next/@@iterator 方法由绑定层——oxide_builtins
+    // 中安装方法 wrapper 的代码——安装到对应原型）。
     set_proto_if_changed(&world.iterator_proto, obj_proto_val);
     let iterator_proto_val = JsValue::from_js_object(world.iterator_proto.as_ptr() as *mut JsObject);
     let iterator_protos: [&P<JsObject>; 6] = [
@@ -460,7 +485,8 @@ impl BuiltinWorld {
         let stub_objects = Vec::new();
 
         // 迭代器原型家族：链关系（→ %IteratorPrototype% → Object.prototype）在
-        // wire_builtin_world_links 中建立，next/@@iterator 方法由绑定层安装。
+        // wire_builtin_world_links 中建立，next/@@iterator 方法由绑定层
+        // （oxide_builtins 中安装方法 wrapper 的代码）安装。
         let iterator_proto = P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()));
         let array_iterator_proto = P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()));
         let map_iterator_proto = P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()));

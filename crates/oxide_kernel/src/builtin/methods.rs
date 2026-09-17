@@ -1,6 +1,6 @@
 //! 内置对象方法的 native 函数指针表：由绑定层填充后交给 BuiltinWorld 的 bind 方法安装到构造器/原型上。
 /// Object 静态方法与原型方法的 native 函数指针集合，由 builtin 绑定层填充后交给
-/// [`BuiltinWorld::bind_object_methods`] 安装到对象/原型上。
+/// [crate::builtin::BuiltinWorld::bind_object_methods] 安装到对象/原型上。
 pub struct ObjectMethods {
     pub keys: *const (),
     pub create: *const (),
@@ -27,7 +27,7 @@ pub struct ObjectMethods {
     pub group_by: *const (),
 }
 
-/// Array 静态方法与原型方法的 native 函数指针集合，由 [`BuiltinWorld::bind_array_methods`] 安装。
+/// Array 静态方法与原型方法的 native 函数指针集合，由 [crate::builtin::BuiltinWorld::bind_array_methods] 安装。
 pub struct ArrayMethods {
     pub is_array: *const (),
     pub from: *const (),
@@ -70,7 +70,7 @@ pub struct ArrayMethods {
     pub with_method: *const (),
 }
 
-/// Error 家族（含各子类型）构造器与原型方法的 native 函数指针集合，由 [`BuiltinWorld::bind_error_methods`] 安装。
+/// Error 家族（含各子类型）构造器与原型方法的 native 函数指针集合，由 [crate::builtin::BuiltinWorld::bind_error_methods] 安装。
 pub struct ErrorMethods {
     pub error: *const (),
     pub type_error: *const (),
@@ -84,7 +84,7 @@ pub struct ErrorMethods {
     pub stack: *const (),
 }
 
-/// String 静态方法与原型方法的 native 函数指针集合，由 [`BuiltinWorld::bind_string_methods`] 安装。
+/// String 静态方法与原型方法的 native 函数指针集合，由 [crate::builtin::BuiltinWorld::bind_string_methods] 安装。
 pub struct StringMethods {
     pub from_char_code: *const (),
     pub index_of: *const (),
@@ -129,7 +129,7 @@ pub struct RegExpMethods {
     pub to_string: *const (),
 }
 
-/// Function 原型方法的 native 函数指针集合，由 [`BuiltinWorld::bind_function_methods`] 安装。
+/// Function 原型方法的 native 函数指针集合，由 [crate::builtin::BuiltinWorld::bind_function_methods] 安装。
 pub struct FunctionMethods {
     pub call: *const (),
     pub apply: *const (),

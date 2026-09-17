@@ -1,5 +1,5 @@
 //! 方法安装职责：绑定层经公开入口调用的 native 方法 wrapper 工厂与五个家族的
-//! bind_*_methods；选择性重建复用键（FnWrapperKey）命中前轮旧 wrapper 时只迁移槽位。
+//! bind_*_methods；选择性重建复用键（FnWrapperKey）命中旧 wrapper 时只迁移槽位。
 
 use oxide_types::mem::P;
 use oxide_types::object::{JsObject, NativeFnPtr, PropAttributes};
@@ -375,9 +375,9 @@ impl BuiltinWorld {
         native_fn_ptr: NativeFnPtr, arg_count: u8, world: &BuiltinWorld, label: u32,
     ) -> Result<(), String> {
         let si = string_forge.intern(method_name).0;
-        // 选择性重建复用：同键前轮旧 wrapper 迁移到新 proto 槽位——其 proto 槽
-        // 已由重建收尾重指（或 Function 家族保留而不变），length/name 属性区
-        // 随对象保留，不再新建对象、登记表跨轮不增长。
+        // 选择性重建复用：同键旧 wrapper 迁移到新 proto 槽位——其 proto 槽
+        // 已由重建收尾改写到新指针（或 Function 家族保留而不变），length/name
+        // 属性区随对象保留，不再新建对象、登记表跨重建不增长。
         let reuse_key = FnWrapperKey::new(world.wrapper_family_of(proto as *const JsObject), label, key, si);
         let wrapper_ptr = match world.find_fn_wrapper(reuse_key, native_fn_ptr, arg_count) {
             Some(ptr) => ptr,
@@ -397,15 +397,15 @@ impl BuiltinWorld {
                 // 的调用方，均使用函数项表达式）。
                 wrapper.set_native_fn(Some(native_fn_ptr));
                 wrapper.set_native_arg_count(arg_count);
-                // 设置 .length (ES spec: Function.length = formal parameter count,
-                // {[[Writable]]: false, [[Enumerable]]: false, [[Configurable]]: true})
+                // 设置 .length（JS 规范：值为形式参数个数，
+                // writable:false, enumerable:false, configurable:true）。
                 let si_length = string_forge.intern("length").0;
                 let length_shape = shape_forge.make_shape(wrapper.shape_id(), si_length);
                 wrapper.set_shape_id(length_shape);
                 wrapper.ensure_hash_props().push(JsValue::int(arg_count as i32));
                 let length_pos = wrapper.hash_props_vec().map_or(0, |v| v.len() as u32).saturating_sub(1);
                 wrapper.set_data_meta(length_pos, oxide_types::object::PropAttributes::new(false, false, true));
-                // 设置 .name ({[[Writable]]: false, [[Enumerable]]: false, [[Configurable]]: true})
+                // 设置 .name（writable:false, enumerable:false, configurable:true）。
                 let si_name = string_forge.intern("name").0;
                 let name_shape = shape_forge.make_shape(wrapper.shape_id(), si_name);
                 wrapper.set_shape_id(name_shape);
