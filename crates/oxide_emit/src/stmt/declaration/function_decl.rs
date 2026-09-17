@@ -49,17 +49,20 @@ impl Emitter {
         } else {
             self.materialize_function_declaration(fd, &name, ctx)?
         };
-        // 块内函数声明求值后按三种情形处理：
-        //
-        // sloppy 模式下按浏览器/web 实现惯例为块级函数声明建外层 var 绑定并写回：
+        // sloppy 模式下按 Annex B.3.3 为块级普通函数声明建外层 var 绑定并写回：
         // 预声明期为该名实例化的函数作用域 var 绑定在此写入块槽位里的函数对象，
         // 求值一次写回一次（循环体内每迭代覆写头绑定）。
+        //
+        // async 函数、生成器与 async 生成器是块级词法绑定，不在 Annex B.3.3 改写
+        // 范围，块外不可见，不写回外层 var。
         //
         // 形参或函数作用域树内同名词法声明（抑制集）不写回：该名被同名声明遮蔽。
         //
         // 顶层不可写内置名不写回：sloppy 下对其赋值（put）永不成功，跳过与执行等价；
         // 顶层情形另补全局对象属性写（与 for-in 循环头的顶层写同形）。
         if !ctx.is_strict
+            && !fd.generator
+            && !fd.r#async
             && ctx.scopes.symbols.scopes.len() > 1
             && !ctx.block_fn_suppressed.contains(&name)
             && !(ctx.is_global_scope && CompileCtx::is_non_writable_global_builtin(&name))

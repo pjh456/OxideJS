@@ -1,5 +1,5 @@
 //! emit 前置 pass，块级函数名收集：web-compat 外层 var 绑定实例化支撑——
-//! 语句树内块级函数声明名源序去重收集、词法声明名抑制集（块函数名与词法名
+//! 语句树内块级普通函数声明名源序去重收集、词法声明名抑制集（块函数名与词法名
 //! 同名时退化为纯块作用域）、形参名 ∪ 词法名抑制集构建。
 
 use std::collections::HashSet;
@@ -9,10 +9,13 @@ use crate::Emitter;
 use oxide_parser::{Declaration, Statement, VariableDeclarationKind};
 
 impl Emitter {
-    /// 递归收集语句树内块级函数声明名（源序去重），供 sloppy 模式浏览器兼容行为
-    /// （块级函数声明建外层 var 绑定）下的外层 var 绑定实例化。
+    /// 递归收集语句树内块级普通函数声明名（源序去重），供 sloppy 模式浏览器兼容
+    /// 行为（Annex B.3.3 为块级普通函数声明建外层 var 绑定）下的外层 var 绑定实例化。
     ///
     /// # 边界与前提
+    /// - 只收普通 `FunctionDeclaration`：Annex B.3.3 的 web-compat 仅改写普通函数
+    ///   声明，async 函数、生成器与 async 生成器是各自独立的块级词法绑定，块外
+    ///   不可见，不入名集。
     /// - 调用点直接子级（函数体/程序顶层直接子句）是提升 var 声明，非块级
     ///   函数，不收集；进入嵌套语句（块/if/循环/switch case/try 各区）后的
     ///   函数声明才是块级。
@@ -29,7 +32,7 @@ impl Emitter {
         for statement in statements {
             match statement {
                 Statement::FunctionDeclaration(f) => {
-                    if block_level {
+                    if block_level && !f.generator && !f.r#async {
                         if let Some(id) = &f.id {
                             let name = id.name.to_string();
                             if !names.contains(&name) {
