@@ -853,3 +853,12 @@ fn class_declaration_captured_name_cell_still_initialized() {
     .unwrap();
     assert_num(result, 51.0);
 }
+
+// 类声明的外层绑定是可变的（let 类）：顶层重赋类名合法并生效。
+// 类体内对类名的引用另由独立不可变绑定承载，见 name-binding/const.js 语料。
+#[test]
+fn class_declaration_outer_binding_is_mutable() {
+    let mut vm = Vm::new();
+    let result = eval(&mut vm, "class A { m(){ return 1; } } A = 1; A").unwrap();
+    assert_num(result, 1.0);
+}

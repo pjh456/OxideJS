@@ -96,3 +96,19 @@ fn dependent_module_namespace_contract_intact() {
     let r = probe(&mut vm, "globalThis.__dep === true");
     assert!(r.is_bool() && r.as_bool(), "依赖命名空间值应正确流入，实际 {r:?}");
 }
+
+#[test]
+fn exported_class_declaration_binding_is_mutable() {
+    // 模块顶层 class 外层绑定是可变 let 类：`export class` 与具名
+    // `export default class` 均允许声明后重赋（CreateMutableBinding）。
+    let allocator = oxide_parser::Allocator::default();
+    let source = "export class C {}\nC = null;\nexport default class D {}\nD = null;\nglobalThis.__mutable = C === null && D === null;";
+    let program = oxide_parser::parse_module(&allocator, source).expect("parse module");
+    let module = Compiler::new()
+        .compile_module(&program, "test.mjs", &mut FileLoader)
+        .expect("compile module");
+    let mut vm = Vm::new();
+    vm.run(&Arc::new(module)).expect("module run");
+    let r = probe(&mut vm, "globalThis.__mutable === true");
+    assert!(r.is_bool() && r.as_bool(), "模块 class 外层绑定应可重赋，实际 {r:?}");
+}

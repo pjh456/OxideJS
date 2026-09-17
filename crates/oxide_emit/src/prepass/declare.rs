@@ -279,6 +279,10 @@ impl Emitter {
     /// 建立 TDZ 占位）。使声明点之前的读取在编译期可分辨为 TDZ 而非隐式全局，
     /// 声明点复用预登记槽位。
     ///
+    /// class 声明绑定外层形态是可变的（`let` 类），`C = null` 合法；类定义期
+    /// 类体（方法/构造器/访问器）对类名的引用由类自身注入的独立不可变绑定承载，
+    /// 不依赖此预声明标志。
+    ///
     /// # 边界与前提
     /// - 只扫描直接子语句；不递归块/if/for/while/switch case/try 区（嵌套块与
     ///   switch CaseBlock 各自预声明；单语句 body 不接受 lexical 声明——lexical
@@ -307,7 +311,7 @@ impl Emitter {
                     if let Some(id) = &cd.id {
                         check_restricted_global_lexical(id.name.as_str(), global_lexical)?;
                         let reg = ctx.alloc_reg();
-                        let _ = ctx.declare_predeclared(id.name.as_str(), reg, VariableDeclarationKind::Const, true);
+                        let _ = ctx.declare_predeclared(id.name.as_str(), reg, VariableDeclarationKind::Let, false);
                     }
                 }
                 Statement::ExportNamedDeclaration(exp) => {
@@ -329,8 +333,8 @@ impl Emitter {
                                     let _ = ctx.declare_predeclared(
                                         id.name.as_str(),
                                         reg,
-                                        VariableDeclarationKind::Const,
-                                        true,
+                                        VariableDeclarationKind::Let,
+                                        false,
                                     );
                                 }
                             }
@@ -343,8 +347,7 @@ impl Emitter {
                         if let Some(id) = &cd.id {
                             check_restricted_global_lexical(id.name.as_str(), global_lexical)?;
                             let reg = ctx.alloc_reg();
-                            let _ =
-                                ctx.declare_predeclared(id.name.as_str(), reg, VariableDeclarationKind::Const, true);
+                            let _ = ctx.declare_predeclared(id.name.as_str(), reg, VariableDeclarationKind::Let, false);
                         }
                     }
                     ExportDefaultDeclarationKind::FunctionDeclaration(fd) => {
