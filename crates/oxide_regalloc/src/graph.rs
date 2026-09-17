@@ -187,7 +187,7 @@ pub(super) fn build(
     // builtin use 前执行写入 → 覆写全局值。
     // 恒等号 v 在 ≤253 且不落入参数 MOV 窗口时保持恒等；大函数晚引用 builtin 的槽号
     // >253（或 ≥arg_window_base 与 MOV 桥冲突）时恒等号不可编码 → 改分配确定性自由色
-    // R（与 spilled_builtin_bindings 取同一 AllocMap 分配结果：1..arg_window_base 中最小未占用）。
+    // R（取色规则与 spilled_builtin_bindings 相同：1..arg_window_base 中最小未占用）。
     let mut builtin_entries: Vec<(String, u32)> = f
         .builtin_reg_map
         .iter()
