@@ -506,7 +506,14 @@ fn instant_round_unit(value: &str) -> Option<(i128, i128)> {
     }
 }
 
-/// 按 Temporal 的 `RoundNumberToIncrementAsIfPositive` 语义舍入纳秒。
+/// 把纳秒值舍入到 increment 的整数倍。
+///
+/// 余数恒按非负处理，负值也按正向增长选取取整边界（RoundNumberToIncrementAsIfPositive
+/// 语义）；半值模式按余数与半增量的大小关系决定方向，halfEven 例外地看商的奇偶。
+///
+/// # 边界与前提
+/// - increment 必须为正，否则除零。
+/// - 舍入结果超出 i128 表示范围时返回 None。
 pub(crate) fn round_instant_ns(value: i128, increment: i128, mode: InstantRoundingMode) -> Option<i128> {
     let quotient = value.div_euclid(increment);
     let remainder = value.rem_euclid(increment);

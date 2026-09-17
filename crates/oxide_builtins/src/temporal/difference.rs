@@ -345,7 +345,8 @@ pub(crate) fn nudge_window(
     (r1, r2, start, end)
 }
 
-/// NudgeToCalendarUnit：日历单位用纪元纳秒边界取整。
+/// 对年/月/周单位的差值取整：把候选窗口端点换算成纪元纳秒，按目标时刻在窗口
+/// 中的相对位置决定取整方向（NudgeToCalendarUnit 语义）。
 #[allow(clippy::too_many_arguments)]
 fn nudge_to_calendar_unit(
     sign: i128, values: &[f64; 10], origin_epoch: i128, dest_epoch: i128, date1: (i128, i128, i128), time1_ns: i128,
@@ -402,7 +403,8 @@ fn nudge_to_calendar_unit(
     Ok((duration, nudged, did_expand))
 }
 
-/// BubbleRelativeDuration：舍入越过小单位边界时向更大单位进位（到 largest 为止）。
+/// 舍入结果越过小单位边界时向更大的单位逐级进位，并把被进位单位的低位分量
+/// 清零，最多进位到 largest 指定的单位（BubbleRelativeDuration 语义）。
 fn bubble_relative_duration(
     sign: i128, mut values: [f64; 10], nudged_epoch: i128, date1: (i128, i128, i128), time1_ns: i128, largest: usize,
     start_unit: usize,
@@ -442,7 +444,8 @@ fn bubble_relative_duration(
             }
             end_dur[4..10].fill(0.0);
             let end_date = add_date_duration(date1, &end_dur);
-            // Bubble 边界只用于比较，不做 ISO 范围校验（对齐 bugzilla 2036259）。
+            // 进位候选边界只参与"是否进位"的比较，其对应的日期不会被写入结果，
+            // 因此这里不调用 ISO 日期范围校验（范围校验只在结果日期上执行）。
             let end_epoch = days_from_civil(end_date.0, end_date.1, end_date.2) * DAY_NS + time1_ns;
             let reached_end = if sign > 0 { nudged_epoch >= end_epoch } else { nudged_epoch <= end_epoch };
             if reached_end {
@@ -498,11 +501,21 @@ fn plain_year_month_unit_index(value: &str) -> Option<usize> {
     }
 }
 
-/// 解析差值选项（对齐 GetDifferenceSettings）：读取顺序 largestUnit →
-/// roundingIncrement → roundingMode → smallestUnit。date_only 时单位限定
-/// year/month/week/day，smallestUnit 缺省 "day"（含时间时缺省 "nanosecond"）。
-/// default_largest 为 largestUnit 缺省/auto 时相对 smallestUnit 的取小上限
-/// （PDT/PD 传 3=day，ZDT 传 4=hour）。
+/// 解析 `until` / `since` 的差值选项，产出舍入所需的单位层级、增量与模式
+/// （GetDifferenceSettings 语义）。
+///
+/// # 步骤
+/// 1. 依次读取 largestUnit、roundingIncrement、roundingMode、smallestUnit；
+///    读取顺序固定，靠前的取值错误先于靠后的抛出。
+/// 2. date_only 时单位限定 year/month/week/day，否则允许到时/分/秒等时间单位。
+/// 3. smallestUnit 缺省 "day"（含时间单位时缺省 "nanosecond"）。
+/// 4. largestUnit 缺省或 "auto" 时取 min(default_largest, smallestUnit)。
+///
+/// # 边界与前提
+/// - default_largest 是 largestUnit 缺省/auto 时相对 smallestUnit 的取小上限：
+///   PlainDateTime/PlainDate 传 3（day），ZonedDateTime 传 4（hour）。
+/// - options 非对象抛 TypeError；单位名非法、roundingIncrement 超出
+///   1..=10^9，或 smallestUnit 大于 largestUnit 时抛 RangeError。
 pub(crate) fn parse_difference_settings<H: VmHost>(
     vm: &mut H, options_value: JsValue, date_only: bool, default_largest: usize,
 ) -> Result<DifferenceSettings, JsValue> {
@@ -591,10 +604,12 @@ pub(crate) fn parse_difference_settings<H: VmHost>(
     })
 }
 
-/// 解析 PlainYearMonth 差值选项（对齐 GetDifferenceSettings，unitGroup=date）：
-/// 单位表仅 year/month（week/day/时间单位不合法）；smallestUnit 缺省 "month"，
-/// largestUnit 缺省/auto 为 LargerOfTwo(year, smallest) = year。
-/// 读取顺序 largestUnit → roundingIncrement → roundingMode → smallestUnit（字典序）。
+/// 解析 PlainYearMonth 的 `until` / `since` 差值选项，沿用 GetDifferenceSettings
+/// 的 unitGroup=date 规则。
+///
+/// 单位表仅含 year/month（week/day 与时间单位均不合法）；smallestUnit 缺省
+/// "month"，largestUnit 缺省或 "auto" 时取 year。读取顺序为 largestUnit、
+/// roundingIncrement、roundingMode、smallestUnit。
 pub(crate) fn parse_year_month_difference_settings<H: VmHost>(
     vm: &mut H, options_value: JsValue,
 ) -> Result<DifferenceSettings, JsValue> {
@@ -689,7 +704,8 @@ pub(crate) fn difference_core<H: VmHost>(
 /// # 步骤
 /// 1. 日期差按 largestUnit 分解（时间单位时 days 并入时间）。
 /// 2. 不要求舍入（smallest=nanosecond 且 increment=1）时直接按最大单位拆回。
-/// 3. smallest 为 day/时间单位走 NudgeToDayOrTime；为 year/month/week 走 NudgeToCalendarUnit。
+/// 3. smallestUnit 为 day 或时间单位时按均匀纳秒取整（NudgeToDayOrTime），
+///    为 year/month/week 时按纪元纳秒窗口取整（NudgeToCalendarUnit）。
 /// 4. since 用 NegateRoundingMode 舍入并在最后整体取反。
 ///
 /// # 边界与前提
@@ -784,7 +800,8 @@ pub(crate) fn nudge_iso_difference<H: VmHost>(
         }
         values
     } else if smallest_index >= 3 {
-        // NudgeToDayOrTime：合并天与时间为总纳秒后按单位取整（day 为均匀单位，同样走此路径）。
+        // 把天与时间合并成总纳秒后按单位取整；day 可折算为固定的 24 小时纳秒，
+        // 因此与时间单位走同一条路径（NudgeToDayOrTime 语义）。
         let total_ns = time_ns + date_days * DAY_NS;
         let quantum = if smallest_index == 3 {
             DAY_NS * increment
@@ -820,7 +837,8 @@ pub(crate) fn nudge_iso_difference<H: VmHost>(
         }
         values
     } else {
-        // NudgeToCalendarUnit：year/month/week 用纪元纳秒窗口取整。
+        // year/month/week 长度随日历变化，无法折算成固定纳秒：改用纪元纳秒窗口
+        // 取整，按目标时刻落在候选窗口内的相对位置决定取整方向（NudgeToCalendarUnit 语义）。
         let (mut values, nudged_epoch, did_expand) = match nudge_to_calendar_unit(
             sign,
             &date_values,

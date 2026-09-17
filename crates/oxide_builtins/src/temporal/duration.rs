@@ -822,7 +822,7 @@ fn duration_apply_to_relative<H: VmHost>(
 /// 1. one/two 各自 duration_like_values 归一（读序 one → two → options）。
 /// 2. options.relativeTo 经 duration_relative_to_date 归一（含 ZDT/Instant/bag 分支）。
 /// 3. 无 relativeTo 且无日历单位：按 duration_time_nanoseconds 直接比大小（fast path）。
-/// 4. 无 relativeTo 但含日历单位：RangeError（calendar-possibly-required 语义）。
+/// 4. 无 relativeTo 但含日历单位：抛 RangeError，日历单位无法脱离具体相对点折算。
 /// 5. 有 relativeTo：每个 duration 应用相对点得 (date, time)，先比日期再比时间（字典序）。
 ///
 /// # 边界与前提
@@ -833,7 +833,8 @@ pub fn duration_compare<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let two_val = if args.len() > 2 { vm.reg(args[2]) } else { JsValue::undefined() };
     let one = native_try!(duration_like_values(vm, one_val));
     let two = native_try!(duration_like_values(vm, two_val));
-    // 全分量相等直接返回 0（含日历单位时也无需 relativeTo，对齐 instances-identical）。
+    // 十个分量逐一相等时直接返回 0：相等时长无论是否含日历单位，应用任意相对点结果都相同，
+    // 无需读取 options.relativeTo。
     if one == two {
         return NativeResult::Ok(JsValue::int(0));
     }

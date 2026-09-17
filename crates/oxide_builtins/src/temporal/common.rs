@@ -1,12 +1,17 @@
-//! Temporal 命名空间的最小实现子集：Temporal.Now / Temporal.Instant /
-//! Temporal.PlainDate / Temporal.PlainTime / Temporal.PlainDateTime /
-//! Temporal.PlainMonthDay / Temporal.PlainYearMonth / Temporal.ZonedDateTime。
-//! 内部数据按对象类型存入 prop 槽：
-//! Instant 存纪元纳秒（BigInt，prop 0）、PlainDate 存年/月/日/日历 ID（prop 0-3）、
-//! PlainTime 存午夜后纳秒（f64，prop 0）、PlainDateTime 存年/月/日/午夜后纳秒/日历 ID（prop 0-4）、
-//! PlainMonthDay 存月/日/参考年/日历 ID（prop 0-3）、
-//! PlainYearMonth 存年/月/参考日/日历 ID（prop 0-3）、
-//! ZonedDateTime 存纪元纳秒、时区 ID、日历 ID（prop 0-2）。
+//! Temporal 命名空间对象的存储约定：各类型实例的载荷按固定 prop 槽（对象
+//! 内置属性表的下标位置）写入，槽外不设隐藏字段。
+//!
+//! 槽位布局：
+//! - Temporal.Instant：prop 0 存纪元纳秒（BigInt）。
+//! - Temporal.Duration：prop 0-9 依次存年、月、周、日、时、分、秒、毫秒、
+//!   微秒、纳秒（均为 f64）。
+//! - Temporal.PlainDate：prop 0-3 存年、月、日、日历 ID。
+//! - Temporal.PlainTime：prop 0 存午夜后纳秒（f64）。
+//! - Temporal.PlainDateTime：prop 0-4 存年、月、日、午夜后纳秒、日历 ID。
+//! - Temporal.PlainMonthDay：prop 0-3 存月、日、参考年、日历 ID。
+//! - Temporal.PlainYearMonth：prop 0-3 存年、月、参考日、日历 ID。
+//! - Temporal.ZonedDateTime：prop 0-2 存纪元纳秒、时区 ID、日历 ID。
+//!
 //! 日历 ID 未显式给定时统一取 "iso8601"。
 
 use num_traits::ToPrimitive;
@@ -220,12 +225,14 @@ pub(crate) fn temporal_string_strict<H: VmHost>(vm: &mut H, value: JsValue) -> R
     Ok(to_string(primitive))
 }
 
-/// RejectObjectWithCalendarOrTimeZone：非对象 / Temporal 实例 / calendar、timeZone 非 undefined
-/// 均返回 TypeError（with 的 partial 参数校验）。
+/// 校验 `with` 族方法的 partial 参数并排除日历/时区载体。
+///
+/// 非对象、已初始化的 Temporal 日期时间类实例，或 calendar、timeZone 任一
+/// 非 undefined 的对象都抛 TypeError（RejectObjectWithCalendarOrTimeZone 语义）。
 ///
 /// # 边界与前提
-/// - Temporal 内部槽检查先于 calendar/timeZone 的 Get（IsPartialTemporalObject 步骤序）。
-/// - 参数校验通过后调用方才能读字段。
+/// - 内部类型标签检查先于 calendar、timeZone 属性的读取，两步的先后不可交换。
+/// - 只有本函数返回成功，调用方才能继续读取 partial 的字段。
 pub(crate) fn reject_partial_object_with_calendar_or_time_zone<H: VmHost>(
     vm: &mut H, value: JsValue,
 ) -> Result<(), JsValue> {
