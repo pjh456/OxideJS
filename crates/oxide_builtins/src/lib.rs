@@ -54,7 +54,7 @@ pub mod reflect;
 pub mod regexp;
 /// Set 内置对象实现（值集合与 entries/values/keys 迭代）。
 pub mod set;
-/// String 内置对象实现（constructor 与全部 String.prototype 方法）。
+/// String 内置对象实现（目录模块：common 共享工具、basic 基础方法、regex 正则与匹配）。
 pub mod string;
 /// 未实现特性的占位 native 实现（统一抛 TypeError）。
 pub mod stubs;
