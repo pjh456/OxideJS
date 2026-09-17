@@ -367,7 +367,7 @@ fn load_var_this_derived_constructor_special_case() {
     assert!(reg_load.is_pure(&derived));
 }
 
-// ── 表驱动解析 vs 老 match 的一致性（Phase B1 迁移校验）──
+// ── 表驱动解析与逐 opcode 手写 match 分支的一致性回归 ──
 
 /// 每个 opcode 构造一条规范指令：rd/a/b 置 Reg(1/2/3)，ext 按族填真实布局。
 fn canonical_inst(op: OpCode) -> Inst {

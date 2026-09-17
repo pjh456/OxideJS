@@ -13,16 +13,16 @@ use crate::inst::Inst;
 use crate::operand::Operand;
 use crate::IRFunction;
 
-/// IRFunction → CompiledModule 等价转换。溢出/标签错误消息为既有格式，逐字保持一致。
+/// IRFunction → CompiledModule 等价转换。溢出/标签错误消息串是下游解析的契约键，改动须同步更新下游匹配。
 pub fn lower(f: &IRFunction) -> Result<CompiledModule, String> {
     crate::ir_debug!("lower: {} insts", f.insts.len());
-    // 溢出检查 1：常量池（先于寄存器——超大常量池伴生的海量 vreg 会使后续检查的
+    // 常量池检查（先于寄存器——超大常量池伴生的海量 vreg 会使后续检查的
     // 稠密 bitset 表示爆内存；常量池超限是更基础的失效，先报它）
     if f.const_overflow || f.constants.len() > u16::MAX as usize {
         return Err("RangeError: too many constants".into());
     }
 
-    // 溢出检查 2：寄存器（仅 Operand::Reg 变体；This/NewTarget 是语义操作数，映射 254/255 合法）
+    // 寄存器检查（仅 Operand::Reg 变体；This/NewTarget 是语义操作数，映射 254/255 合法）
     for inst in &f.insts {
         for o in [&inst.rd, &inst.a, &inst.b] {
             if let Operand::Reg(r) = o {
@@ -33,7 +33,7 @@ pub fn lower(f: &IRFunction) -> Result<CompiledModule, String> {
         }
     }
 
-    // 溢出检查 2b：n_registers（u32 → CompiledModule u8 前的显式截断检查）。
+    // n_registers 计数检查（u32 → CompiledModule u8 前的显式截断检查）。
     // n_registers = max_regs = 最高分配号 + 1，合法上限 254（reg 0..253）。
     // 纯参数/空体函数可能无指令引用最高号寄存器，逐指令检查漏掉，计数检查兜底防 u8 静默截断。
     if f.n_registers > 254 {
