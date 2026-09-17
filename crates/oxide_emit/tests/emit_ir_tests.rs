@@ -1,8 +1,9 @@
 //! 脚本顶层形态的 IR 级结构断言：parse → `emit_program` 为止，钉死现状 emit 行为。
 //!
-//! 断言顺序无关：只表达 存在 / 计数 / 名字集 / 键名集。GDI 序言对组与 var 入口
-//! MAKE_CELL 组的指令序逐进程轮换，这两组只断言键名集；断言不依赖寄存器号
-//! 与 `n_registers` 绝对值。
+//! 结构断言顺序无关：只表达 存在 / 计数 / 名字集 / 键名集。GDI 序言对组与 var 入口
+//! MAKE_CELL 组的发射序已按名排序固定，但断言仍只取键名集，不依赖寄存器号
+//! 与 `n_registers` 绝对值；发射序确定性由 `emission_order_stable_across_compiles`
+//! 单独锁定。
 
 use std::collections::HashMap;
 use std::collections::HashSet;
@@ -20,6 +21,59 @@ fn emit_ir(src: &str) -> IRFunction {
     Emitter::new()
         .emit_program(&program, false, false)
         .unwrap_or_else(|e| panic!("emit 失败 {src:?}: {e}"))
+}
+
+/// 字节码指纹：`CompiledModule` 未派生 `Debug`，逐字段展开为确定串（子模块递归）。
+///
+/// 覆盖字节码位模式、常量池、寄存器布局、内置槽映射与闭包捕获描述。
+fn bytecode_fingerprint(m: &oxide_bytecode::module::CompiledModule) -> String {
+    let mut out = format!(
+        "bc={:?};k={:?};nr={};na={};pb={};bim={:?};uv={:?};cn={};",
+        m.bytecode,
+        m.constants,
+        m.n_registers,
+        m.n_args,
+        m.param_base,
+        m.builtin_reg_map,
+        m.upvalue_captures,
+        m.cells_needed
+    );
+    for sub in &m.sub_modules {
+        out.push_str(&bytecode_fingerprint(sub));
+    }
+    out
+}
+
+/// 同进程连续编译 src 八次，逐次比对 IR 与字节码指纹，断言全等。
+fn assert_emission_stable(src: &str, is_eval_script: bool) {
+    let mut fingerprints: Vec<(String, String)> = Vec::new();
+    for _ in 0..8 {
+        let alloc = oxide_parser::Allocator::default();
+        let program = oxide_parser::parse(&alloc, src).unwrap_or_else(|e| panic!("parse 失败 {src:?}: {e:?}"));
+        let ir = Emitter::new()
+            .emit_program(&program, false, is_eval_script)
+            .unwrap_or_else(|e| panic!("emit 失败 {src:?}: {e}"));
+        let bytecode = oxide_ir::lower::lower(&ir).unwrap_or_else(|e| panic!("lower 失败 {src:?}: {e}"));
+        fingerprints.push((format!("{ir:?}"), bytecode_fingerprint(&bytecode)));
+    }
+    let first = &fingerprints[0];
+    for (i, fp) in fingerprints.iter().enumerate().skip(1) {
+        assert_eq!(fp.0, first.0, "第 {i} 次编译 IR 指纹漂移：{src:?}");
+        assert_eq!(fp.1, first.1, "第 {i} 次编译字节码指纹漂移：{src:?}");
+    }
+}
+
+/// 发射序确定性：同进程多次编译，GDI 序言、函数入口 MAKE_CELL 的指令序及
+/// 常量池/内置槽映射/字节码逐位不随 HashSet 随机迭代序漂移。
+#[test]
+fn emission_order_stable_across_compiles() {
+    // 多个顶层 var 驱动 GDI 序言；函数内多个被捕获 var 驱动函数入口 MAKE_CELL。
+    assert_emission_stable(
+        "var b=1,a=2,d=3,c=4; function f(){ var z=1,y=2; return function(){ return z+y+a; }; } f();",
+        false,
+    );
+    // eval 顶层函数声明撞多个不可写全局内置名时，抛错消息名选择按源序稳定。
+    assert_emission_stable("function Infinity(){} function NaN(){}", true);
 }
 
 fn count_op(insts: &[Inst], op: OpCode) -> usize {

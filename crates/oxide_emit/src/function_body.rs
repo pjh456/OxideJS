@@ -673,11 +673,13 @@ impl Emitter {
         // 只是赋值；否则声明语句前创建的闭包读取占位 cell → TDZ 误报。参数与
         // arguments 已在上方初始化（跳过以免覆盖参数值）；let/const/class 保持
         // TDZ 语义不动。声明语句的 MAKE_CELL 按占位更新语义覆盖此初值。
-        let var_names: Vec<String> = collect_var_binding_names(body_stmts)
+        let mut var_names: Vec<String> = collect_var_binding_names(body_stmts)
             .into_iter()
             .filter(|n| !param_names.contains(&n.as_str()) && n != "arguments")
             .filter(|n| ctx.captured_bindings.contains_key(n))
             .collect();
+        // HashSet 迭代序带随机种子，排序后入口 MAKE_CELL 发射序跨进程稳定。
+        var_names.sort();
         if !var_names.is_empty() {
             let undef_reg = self.emit_undefined(ctx);
             for name in var_names {

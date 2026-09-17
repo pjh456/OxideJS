@@ -279,7 +279,7 @@ impl Emitter {
         // 严格 eval 代码函数声明绑定 eval 自身 lexical 环境、不触全局、不抛，门禁
         // 随 !is_strict 关闭，其写点抑制在声明发射处。
         if ctx.is_eval_script && !ctx.is_strict {
-            for name in collect_top_level_function_names(&program.body) {
+            for name in collect_top_level_function_names_ordered(&program.body) {
                 if NON_WRITABLE_GLOBAL_BUILTINS.contains(&name.as_str()) {
                     let _ = self.emit_throw_error(
                         "TypeError",
@@ -356,10 +356,12 @@ impl Emitter {
         // 声明语句执行前创建的闭包读取到 undefined（脚本 GlobalDeclarationInstantiation
         // 语义），而非占位 cell 的 TDZ 误报。声明语句的 MAKE_CELL 覆盖此初值。
         // 名集保持 var-only：函数声明名从不入捕获集（tier 剔除），无需入口 cell。
-        let var_names: Vec<String> = var_names
+        let mut var_names: Vec<String> = var_names
             .into_iter()
             .filter(|n| ctx.captured_bindings.contains_key(n))
             .collect();
+        // HashSet 迭代序带随机种子，排序后入口 MAKE_CELL 发射序跨进程稳定。
+        var_names.sort();
         if !var_names.is_empty() {
             let undef_reg = self.emit_undefined(&mut ctx);
             for name in var_names {
@@ -385,13 +387,15 @@ impl Emitter {
         // 把全局属性值预载进固定寄存器槽），既有属性不改动值，值幂等保留。
         // 序言名集 = 顶层 var 名 ∪ 顶层块级函数泄漏名（sloppy 模式浏览器兼容行为的
         // 外层绑定同样在求值前实例化，同走 define-if-absent）。
-        let mut gdi_var_names = collect_var_binding_names(&program.body);
+        let mut gdi_var_names: Vec<String> = collect_var_binding_names(&program.body).into_iter().collect();
         gdi_var_names.extend(
             block_fn_names
                 .iter()
                 .filter(|n| !ctx.block_fn_suppressed.contains(*n) && !CompileCtx::is_non_writable_global_builtin(n))
                 .cloned(),
         );
+        // HashSet 迭代序带随机种子，排序后 GDI 序言与内置镜像槽分配序跨进程稳定。
+        gdi_var_names.sort();
         if !gdi_var_names.is_empty() {
             let undef_reg = self.emit_undefined(&mut ctx);
             for name in &gdi_var_names {
