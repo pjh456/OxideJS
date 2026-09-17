@@ -6,7 +6,7 @@ use oxide_types::value::JsValue;
 use rustc_hash::FxBuildHasher;
 
 use crate::vm::Vm;
-use oxide_builtins::{array_buffer, data_view, disposable_stack, map, regexp, set, typed_array};
+use oxide_builtins::{array_buffer, data_view, disposable_stack, map, module, regexp, set, typed_array};
 
 impl Vm {
     pub(crate) fn is_session_escape_root_ptr(&self, target_ptr: *mut JsObject) -> bool {
@@ -99,6 +99,12 @@ impl Vm {
         } else if src_ref.holds_compiled_regex() {
             // 已编译正则是 Box 深拷贝到新对象：源盒随 epoch 释放，互不共享。
             regexp::clone_regexp_native(src_ref, dst_ref);
+        } else if src_ref.is_module_namespace() {
+            // 条目表深拷贝到新对象并改写值边：`clone_for_session_epoch` 只浅拷贝
+            // native_data 指针，共享同一表会在释放时双放。
+            module::clone_module_ns_native_with_rewrite(src_ref, dst_ref, |value| {
+                self.promote_value_if_epoch_object(value, forwarding)
+            });
         }
         // 账目计入：对象头 + 堆数据（属性/元素/meta Vec + native 状态盒），用 clone 后的 dst 核算。
         self.gc_state.session_bytes_allocated +=
@@ -203,6 +209,10 @@ impl Vm {
                     });
                 } else if obj.is_async_generator_obj() {
                     crate::async_generator::rewrite_async_generator_native(obj, |value| {
+                        self.promote_value_if_epoch_object(value, forwarding)
+                    });
+                } else if obj.is_module_namespace() {
+                    module::rewrite_module_ns_native(obj, |value| {
                         self.promote_value_if_epoch_object(value, forwarding)
                     });
                 }

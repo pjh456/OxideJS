@@ -28,6 +28,11 @@ pub fn bind_global(core: &Arc<KernelCore>, session: &KernelSession, global: &mut
             ),
             // 模块求值 / 命名空间内部辅助（import 实现；非 JS 标准全局，以下划线开头避免撞名）。
             ("__moduleObject", oxide_builtins::module::module_object::<crate::vm::Vm> as *const (), 0),
+            (
+                "__modulePreRegister",
+                oxide_builtins::module::module_pre_register::<crate::vm::Vm> as *const (),
+                2,
+            ),
             ("__moduleSet", oxide_builtins::module::module_set::<crate::vm::Vm> as *const (), 3),
             ("__moduleGet", oxide_builtins::module::module_get::<crate::vm::Vm> as *const (), 2),
             (

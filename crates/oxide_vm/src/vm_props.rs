@@ -49,6 +49,24 @@ impl Vm {
         let mut current = Some(obj);
         let mut depth = 0usize;
         while let Some(obj) = current {
+            // 模块命名空间 exotic [[Get]]：条目表是权威状态，预注册但未初始化的
+            // 导出读抛 ReferenceError；非 live ns（无表）落普通属性路径零行为变化。
+            if obj.is_module_namespace() {
+                if let Some(state) = oxide_builtins::module::module_ns_export(obj, prop_name_si) {
+                    return match state {
+                        oxide_builtins::module::ModuleNsQuery::Initialized(v) => Ok(v),
+                        oxide_builtins::module::ModuleNsQuery::Uninitialized => {
+                            let msg = "Cannot access module export before initialization";
+                            if self.native_call_depth == 0 {
+                                self.raise_error_kind("ReferenceError", msg)?;
+                            } else {
+                                return Err(self.error_message_text("ReferenceError", msg));
+                            }
+                            Ok(JsValue::undefined())
+                        }
+                    };
+                }
+            }
             if obj.is_array() && prop_name_si == length_si {
                 return Ok(obj.logical_len_value());
             }

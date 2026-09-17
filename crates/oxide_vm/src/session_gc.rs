@@ -8,7 +8,7 @@ use oxide_types::value::JsValue;
 use rustc_hash::FxBuildHasher;
 
 use crate::vm::Vm;
-use oxide_builtins::{array_buffer, data_view, disposable_stack, map, regexp, set, typed_array};
+use oxide_builtins::{array_buffer, data_view, disposable_stack, map, module, regexp, set, typed_array};
 
 /// session 级 mark-sweep GC 的状态与统计。
 ///
@@ -113,6 +113,7 @@ impl SessionGc {
 
         bytes += map::map_native_size(obj);
         bytes += set::set_native_size(obj);
+        bytes += module::module_ns_native_size(obj);
         bytes += disposable_stack::disposable_stack_native_size(obj);
         bytes += array_buffer::array_buffer_native_size(obj);
         bytes += regexp::regexp_native_size(obj);
@@ -183,6 +184,11 @@ impl SessionGc {
         }
         if obj.is_data_view_obj() {
             for value in data_view::data_view_native_edges(obj) {
+                Self::process_edge(value, vm, stack, live_strings, live_bigints);
+            }
+        }
+        if obj.is_module_namespace() {
+            for value in module::module_ns_native_edges(obj) {
                 Self::process_edge(value, vm, stack, live_strings, live_bigints);
             }
         }
@@ -347,6 +353,13 @@ impl SessionGc {
                 }
             }
         }
+        if obj.is_module_namespace() {
+            for value in module::module_ns_native_edges(obj) {
+                if value.is_string() {
+                    Self::mark_string_live(live, value.as_string_ptr_mut());
+                }
+            }
+        }
         if obj.is_disposable_stack_obj() || obj.is_async_disposable_stack_obj() {
             for value in disposable_stack::dispose_edges(obj) {
                 if value.is_string() {
@@ -503,6 +516,7 @@ impl SessionGc {
 
             freed_bytes += map::drop_map_native(obj);
             freed_bytes += set::drop_set_native(obj);
+            freed_bytes += module::drop_module_ns_native(obj);
             freed_bytes += disposable_stack::drop_dispose_native(obj);
             freed_bytes += array_buffer::drop_array_buffer_native(obj);
             freed_bytes += regexp::drop_regexp_native(obj);
@@ -608,6 +622,9 @@ impl SessionGc {
                 } else if old_ref.holds_compiled_regex() {
                     // 已编译正则是 Box 深拷贝到新对象：源 Box 由 drop 释放，互不共享。
                     regexp::clone_regexp_native(old_ref, new_ref);
+                } else if old_ref.is_module_namespace() {
+                    // 条目表深拷贝：`clone_for_session_epoch` 只浅拷贝 native_data 指针。
+                    module::clone_module_ns_native_with_rewrite(old_ref, new_ref, |value| value);
                 }
                 forwarding.insert(old_ptr, new_ptr);
                 freed_bytes += Self::drop_session_object_heap_data(old_ptr);
@@ -654,6 +671,8 @@ impl SessionGc {
                 crate::async_generator::rewrite_async_generator_native(obj, |value| {
                     rewrite_forwarded_value(value, &forwarding)
                 });
+            } else if obj.is_module_namespace() {
+                module::rewrite_module_ns_native(obj, |value| rewrite_forwarded_value(value, &forwarding));
             }
         }
 

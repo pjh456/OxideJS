@@ -143,3 +143,46 @@ fn namespace_exotic_semantics() {
         "命名空间 exotic 语义不符"
     );
 }
+
+/// live 自导入 ns 的条目语义：预注册后初始化前读抛 ReferenceError，`in` /
+/// `Reflect.has` 已为 true；初始化后读到活值；枚举未初始化名不抛错且键数正确。
+/// 循环读 `ns.y` 同时钉住 IC 慢路径与普通路径读结果一致。
+#[test]
+fn namespace_self_import_live_entries() {
+    let cwd = std::env::current_dir().expect("cwd");
+    let dir = cwd.join("__module_namespace_live__");
+    std::fs::create_dir_all(&dir).expect("mkdir");
+    std::fs::write(
+        dir.join("main.mjs"),
+        "import * as ns from './main.mjs';\n \
+         const init = [];\n \
+         for (const k of ['x', 'y', 'default']) {\n \
+           try { ns[k]; init.push('value'); } catch (e) { init.push(e instanceof ReferenceError); }\n \
+         }\n \
+         const hasBefore = ['x', 'y', 'default'].map(k => k in ns).join(',');\n \
+         const namesBefore = Object.getOwnPropertyNames(ns).join(',');\n \
+         const ownKeysCount = Reflect.ownKeys(ns).length;\n \
+         export let x = 'sx';\n \
+         export var y = 2;\n \
+         export default 3;\n \
+         let sum = 0;\n \
+         for (let i = 0; i < 128; i++) { sum += ns.y; }\n \
+         globalThis.__ns = [\n \
+           init.join('|'),\n \
+           hasBefore,\n \
+           namesBefore,\n \
+           ownKeysCount,\n \
+           ns.x,\n \
+           sum,\n \
+           ns.default,\n \
+         ].join(';');",
+    )
+    .expect("write main");
+    let _cleanup = Cleanup(dir.clone());
+
+    let result = run_namespace_module(&dir);
+    assert_eq!(
+        result, "true|true|true;true,true,true;default,x,y;4;sx;256;3",
+        "live 自导入 ns 的未初始化读 / 键存在性 / 活值读不符"
+    );
+}

@@ -264,3 +264,46 @@ fn self_import_default_alias_has_no_placeholder_writeback() {
     // 不出现旧占位路径的额外回写。
     assert_eq!(store_var_count(&ir), 1, "不应出现占位回写带来的第二条 STORE_VAR");
 }
+
+/// 面 10：零 diff 守卫 G1——非 live 模块不发射 `__modulePreRegister`。
+/// live 门控为自导入 `import * as ns from './self'`；纯导出、default 表达式与
+/// 普通外部命名空间导入均不得出现预注册调用。
+#[test]
+fn no_pre_register_for_non_live_modules() {
+    let (ir, _) = emit_module("export let x = 1;", "./entry.js", &[]).expect("导出声明应编译成功");
+    assert_eq!(native_calls_to(&ir, "__modulePreRegister"), 0, "纯导出模块不得预注册");
+
+    let (ir, _) = emit_module("export default 42;", "./entry.js", &[]).expect("default 应编译成功");
+    assert_eq!(native_calls_to(&ir, "__modulePreRegister"), 0, "default 表达式模块不得预注册");
+
+    let (ir, _) = emit_module(
+        "import * as ns from './dep.js'; ns;",
+        "./entry.js",
+        &[("./dep.js", ModuleKind::Js, "export var z = 1;")],
+    )
+    .expect("外部命名空间导入应编译成功");
+    assert_eq!(native_calls_to(&ir, "__modulePreRegister"), 0, "外部 ns 导入不得预注册");
+}
+
+/// 面 10b：live 模块按静态导出名逐个预注册，`__moduleObject` 仍为零参调用。
+#[test]
+fn pre_register_for_self_namespace_import() {
+    let (ir, _) = emit_module(
+        "import * as ns from './self.js'; export const a = 1; export default 2;",
+        "./self.js",
+        &[("./self.js", ModuleKind::Js, "export const a = 1;")],
+    )
+    .expect("self-ns 模块应编译成功");
+    assert_eq!(native_calls_to(&ir, "__modulePreRegister"), 2, "a 与 default 各预注册一次");
+    assert!(pool_strings(&ir).contains("a") && pool_strings(&ir).contains("default"), "导出名应入池");
+
+    // __moduleObject 保持零实参签名：仅一次调用且压缩实参计数为 0。
+    let reg = builtin_reg(&ir, "__moduleObject").expect("应链接 __moduleObject");
+    let object_calls: Vec<_> = ir
+        .insts
+        .iter()
+        .filter(|i| i.op == OpCode::CALL_NATIVE && matches!(i.rd, oxide_ir::operand::Operand::Reg(r) if r == reg))
+        .collect();
+    assert_eq!(object_calls.len(), 1, "__moduleObject 只应调用一次");
+    assert_eq!(object_calls[0].ext.first().copied(), Some(0), "__moduleObject 应保持零实参");
+}

@@ -371,6 +371,9 @@ impl Emitter {
         // 导出名 → 本模块源绑定名：self-import 的局部名别名到该源绑定。star 转发的
         // 自导入名不在表内（退化为下方非别名占位路径）。
         let export_name_map = module_export_name_map(body, &ctx.module_self_import_specs);
+        // live 命名空间门控：仅自导入 `import * as ns from './self'` 的模块需要预注册
+        // 真实导出槽，其余模块（含普通外部命名空间导入）编译产物逐字节不变。
+        let mut has_self_ns_import = false;
         for stmt in body {
             if let Statement::ImportDeclaration(imp) = stmt {
                 let dep_spec = imp.source.value.to_string();
@@ -456,6 +459,9 @@ impl Emitter {
                             ImportDeclarationSpecifier::ImportNamespaceSpecifier(s) => {
                                 // 命名空间绑定引用 ns 对象本身：自导入时同一对象，
                                 // body 执行后导出自然可见。
+                                if is_self {
+                                    has_self_ns_import = true;
+                                }
                                 self.emit_bind_target(
                                     s.local.name.as_str(),
                                     dep_ns_reg,
@@ -468,6 +474,17 @@ impl Emitter {
                         }
                     }
                 }
+            }
+        }
+
+        // —— live 命名空间预注册：早于 hoisted 函数声明的 __moduleSet 与 body 求值，
+        // 按名序预注册全部本地导出名，使自导入 ns 在读点先观察到未初始化状态。 ——
+        if has_self_ns_import {
+            let mut export_names: Vec<String> = own_export_names.into_iter().collect();
+            export_names.sort();
+            for name in export_names {
+                let name_reg = self.load_string_const(&name, ctx);
+                self.emit_module_call(ctx, "__modulePreRegister", &[ns_reg, name_reg])?;
             }
         }
 
