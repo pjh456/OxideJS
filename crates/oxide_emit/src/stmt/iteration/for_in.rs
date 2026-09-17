@@ -11,7 +11,7 @@ use crate::{CompileCtx, Emitter};
 use oxide_bytecode::opcode::OpCode;
 use oxide_ir::inst::Inst;
 use oxide_ir::operand::Operand;
-use oxide_parser::{ForStatementLeft, Statement, VariableDeclarationKind};
+use oxide_parser::{ForStatementInit, ForStatementLeft, Statement, VariableDeclarationKind};
 
 /// for-in/for-of 词法头的捕获映射覆盖：每头名一条记录，依次为名字、旧条目
 /// （无旧条目为 None）、右值区 TDZ cell、体区 fresh cell（切换后填入）。
@@ -22,8 +22,31 @@ pub(crate) struct ForHeadEnv {
 impl Emitter {
     /// 收集 for-in/for-of 词法声明头（let/const/using，含解构 pattern 叶）的
     /// 头名（排序保证稳定）；var 头与赋值头无 TDZ 环境，返回 None。
+    /// C 风格 for 的 init 布尔头同用 `ForHeadEnv`，其头名收集见
+    /// [`Emitter::collect_for_init_lexical_names`]。
     pub(crate) fn collect_for_head_lexical_names(&self, left: &ForStatementLeft) -> Option<Vec<String>> {
         let ForStatementLeft::VariableDeclaration(decl) = left else {
+            return None;
+        };
+        if matches!(decl.kind, VariableDeclarationKind::Var) {
+            return None;
+        }
+        let mut names = HashSet::new();
+        for d in &decl.declarations {
+            collect_binding_pattern_names(&d.id, &mut names);
+        }
+        let mut v: Vec<String> = names.into_iter().collect();
+        v.sort();
+        Some(v)
+    }
+
+    /// 收集 C 风格 for 头词法声明（let/const，含解构 pattern 叶）的头名（排序
+    /// 保证稳定）；var 头与表达式头无 TDZ 环境，返回 None。
+    ///
+    /// # 副作用
+    /// - 无；纯 AST 收集。
+    pub(crate) fn collect_for_init_lexical_names(&self, init: &ForStatementInit) -> Option<Vec<String>> {
+        let ForStatementInit::VariableDeclaration(decl) = init else {
             return None;
         };
         if matches!(decl.kind, VariableDeclarationKind::Var) {

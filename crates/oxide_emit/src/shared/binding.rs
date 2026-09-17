@@ -89,6 +89,16 @@ impl Emitter {
         if let Some(&cell_idx) = ctx.captured_bindings.get(name) {
             let op = if fresh_cell { OpCode::MAKE_CELL_FRESH } else { OpCode::MAKE_CELL };
             ctx.inst(Inst::new(op, Operand::Reg(src_reg), Operand::Imm(cell_idx as u16), Operand::None));
+            // C 风格 for 头绑定：cell 之外补写绑定寄存器——循环体/test/update 读寄存器，
+            // 每迭代 fresh 拷贝的源也是寄存器（见 `CompileCtx::for_head_store_registers`）。
+            if ctx.for_head_store_registers.contains(name) {
+                ctx.inst(Inst::new(
+                    OpCode::STORE_VAR,
+                    Operand::Reg(target_reg),
+                    Operand::Reg(src_reg),
+                    Operand::Imm(0),
+                ));
+            }
         } else if !ctx.with_stack.is_empty() && !ctx.is_with_internal_binding(name) {
             // with 内 var 初始化：对象有该属性则写对象，否则写提升槽（动态解析）。
             // ponytail: with 内顶层 var 不写全局对象属性，with 语句本身已是稀见用例。

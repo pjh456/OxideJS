@@ -1,5 +1,12 @@
 //! for 语句 emit：`emit_for_statement` 含 init/test/update 三段与循环跳转。
+//!
+//! C 风格 for 的词法头按规范建模为独立环境：init 求值前头名绑定未初始化 cell
+//! （直读与捕获均抛 ReferenceError），被闭包引用或与顶层 var/函数同名的头名保留
+//! 独立 cell 贯穿循环，其余 init 后撤出覆盖回退寄存器循环。
 
+use std::collections::HashSet;
+
+use super::for_in::ForHeadEnv;
 use crate::{CompileCtx, Emitter};
 use oxide_bytecode::module::Constant;
 use oxide_bytecode::opcode::OpCode;
@@ -42,13 +49,32 @@ impl Emitter {
         let end_label = ctx.next_label_id();
         ctx.push_loop(end_label, update_label, crate::emit_ctx::LoopKind::Plain);
         let n_labeled = ctx.take_pending_loop_labels(end_label, update_label);
-        // 循环头声明中被嵌套函数捕获的 let/const 绑定：每迭代 fresh cell。
-        let mut fresh_bindings: Vec<(String, u8)> = Vec::new();
         // 循环头 let/const 声明名：update 段是 per-iteration 可变绑定（规范
         // §14.7.4.4 CreatePerIterationEnvironment 用 CreateMutableBinding）——
         // 规范允许 update 段写 let/const 循环变量，每迭代新建一个可变绑定；
         // 编译期 const 写检查对 update 段豁免，故记录全部声明名（含未被捕获者）。
         let mut update_names: Vec<String> = Vec::new();
+        // 词法头独立环境：init 求值前把头名全部覆盖为未初始化 cell，使 init 内的
+        // 直读与该区创建闭包的捕获命中 TDZ cell（不穿透外层同名已初始化绑定）。
+        // init 后仅「被闭包引用」或「与顶层 var/函数同名」的头名保留覆盖贯穿循环
+        // （体/测试/update 走 cell），其余撤出覆盖回退寄存器循环——普通 for-let
+        // 不付每迭代 cell 代价。循环收尾恢复捕获映射，兄弟语句仍见外层同名绑定的
+        // 原 cell。
+        let mut head_keep: HashSet<String> = HashSet::new();
+        let mut head_names: Option<Vec<String>> = None;
+        let mut head_env: Option<ForHeadEnv> = None;
+        if let Some(init) = &fr.init {
+            if let Some(names) = self.collect_for_init_lexical_names(init) {
+                for name in &names {
+                    if ctx.captured_bindings.contains_key(name) || self.is_global_tier_name(ctx, name) {
+                        head_keep.insert(name.clone());
+                    }
+                }
+                head_env = Some(self.begin_for_head_env(names.clone(), ctx)?);
+                ctx.for_head_store_registers = names.iter().cloned().collect();
+                head_names = Some(names);
+            }
+        }
         if let Some(init) = &fr.init {
             if let Some(expr) = init.as_expression() {
                 self.emit_expression(expr, ctx)?;
@@ -68,26 +94,9 @@ impl Emitter {
                     let is_const = matches!(decl.kind, VariableDeclarationKind::Const);
                     if let Some(init_expr) = &d.init {
                         let val_reg = self.emit_expression(init_expr, ctx)?;
+                        // 捕获头名的寄存器补写在 `emit_bind_target` 经
+                        // `for_head_store_registers` 完成（解构叶用各自的叶值，不用整头 RHS）。
                         self.emit_binding_pattern(&d.id, val_reg, decl.kind, is_const, false, ctx)?;
-                        // 被捕获绑定：fresh 从寄存器读当前值，须把 init 值写入寄存器槽。
-                        // emit_binding_pattern 对捕获绑定只建 cell，不写寄存器。
-                        let mut names = Vec::new();
-                        self.collect_pattern_binding_names(&d.id, &mut names);
-                        for name in &names {
-                            if ctx.captured_bindings.contains_key(name) {
-                                if let Some(reg) = ctx.scopes.symbols.lookup_any(name) {
-                                    // 全局不可写内置的捕获写被声明路径拦截，同步写一并跳过。
-                                    if !ctx.targets_readonly_builtin(name, reg) {
-                                        ctx.inst(Inst::new(
-                                            OpCode::STORE_VAR,
-                                            Operand::Reg(reg),
-                                            Operand::Reg(val_reg),
-                                            Operand::None,
-                                        ));
-                                    }
-                                }
-                            }
-                        }
                     } else if let BindingPattern::BindingIdentifier(bi) = &d.id {
                         let idx = ctx.add_constant(Constant::Undefined);
                         let tmp = ctx.alloc_reg();
@@ -112,22 +121,47 @@ impl Emitter {
                                 Operand::None,
                             ));
                         }
+                        // 词法头无初始化声明：覆盖 cell 须置为已初始化（undefined），
+                        // 否则后续 init 表达式内创建、捕获该头名的闭包读时误报 TDZ。
+                        if !matches!(decl.kind, VariableDeclarationKind::Var) {
+                            if let Some(&cell_idx) = ctx.captured_bindings.get(bi.name.as_str()) {
+                                ctx.inst(Inst::new(
+                                    OpCode::MAKE_CELL,
+                                    Operand::Reg(tmp),
+                                    Operand::Imm(cell_idx as u16),
+                                    Operand::None,
+                                ));
+                            }
+                        }
                         ctx.init_var(bi.name.as_str());
                     }
-                    // 记录 let/const 循环头声明名（update 段写豁免所需）与被捕获的绑定
-                    // （解构 pattern 递归收集绑定名，被捕获者每迭代 fresh cell）。
+                    // 记录 let/const 循环头声明名（update 段写豁免所需）；fresh cell 判定
+                    // 在 init 后按保留集统一重算（见下方）。
                     if !matches!(decl.kind, VariableDeclarationKind::Var) {
                         let mut names = Vec::new();
                         self.collect_pattern_binding_names(&d.id, &mut names);
                         for name in &names {
                             update_names.push(name.clone());
-                            if let Some(&cell_idx) = ctx.captured_bindings.get(name) {
-                                fresh_bindings.push((name.clone(), cell_idx));
-                            }
                         }
                     }
                 }
                 ctx.pending_for_head_names = saved_pending;
+            }
+        }
+        ctx.for_head_store_registers.clear();
+        // 撤出非保留头名的覆盖：普通 for-let 回退寄存器循环，只有被闭包引用或与顶层
+        // var/函数同名的头名保留独立 cell 贯穿循环。
+        for name in head_names.iter().flatten() {
+            if !head_keep.contains(name) {
+                ctx.captured_bindings.remove(name);
+            }
+        }
+        // 每迭代 fresh cell 的绑定：保留覆盖者（仍含 cell 下标）；已撤出覆盖的头名
+        // 走寄存器，不含在内。
+        let mut fresh_bindings: Vec<(String, u8)> = Vec::new();
+        for name in &update_names {
+            if let Some(&cell_idx) = ctx.captured_bindings.get(name) {
+                fresh_bindings.push((name.clone(), cell_idx));
             }
         }
         ctx.labels.set_label_pos(start_label, ctx.insts.len());
@@ -158,6 +192,11 @@ impl Emitter {
             ctx.register_update_names = update_names;
             self.emit_expression(update, ctx)?;
             ctx.register_update_names = prev;
+        }
+        // 恢复捕获映射：循环后的兄弟语句仍见外层同名绑定的原 cell（词法头环境
+        // 作用是语句局部的）。
+        if let Some(env) = head_env {
+            self.restore_for_head_env(env, ctx);
         }
         ctx.inst(Inst::jmp(start_label));
         ctx.labels.set_label_pos(end_label, ctx.insts.len());

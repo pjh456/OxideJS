@@ -130,6 +130,11 @@ pub struct CompileCtx {
     /// let/const 循环变量每迭代新分配一个 cell，update 写寄存器（不污染本迭代
     /// 闭包捕获的 cell），下一迭代把这个寄存器值拷入新分配的 cell。
     pub(crate) register_update_names: Vec<String>,
+    /// 正在发射的 C 风格 for 头词法绑定名（含解构叶）：这些头名在 init 中经覆盖
+    /// cell 建 `MAKE_CELL`，但循环体/test/update 读的是绑定寄存器、每迭代 fresh
+    /// 拷贝的源也是寄存器，故 `emit_bind_target` 对集合内名字在 cell 写之外补写
+    /// 绑定寄存器。init 发射完毕后清空。
+    pub(crate) for_head_store_registers: HashSet<String>,
     /// 模块编译上下文：当前模块命名空间对象寄存器（`__moduleObject` 返回值）。
     pub(crate) module_ns_reg: Option<u32>,
     /// 已求值依赖模块的命名空间对象寄存器（按 import/export source 字符串索引）。
@@ -216,6 +221,7 @@ impl CompileCtx {
             with_stack: Vec::new(),
             open_try_handlers: Vec::new(),
             register_update_names: Vec::new(),
+            for_head_store_registers: HashSet::new(),
             module_ns_reg: None,
             module_dep_ns_regs: HashMap::new(),
             module_self_import_specs: HashSet::new(),
