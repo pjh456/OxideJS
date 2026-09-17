@@ -400,8 +400,8 @@ pub fn single_char_ptr(ch: u8) -> *const JsString {
 }
 
 /// 小整数（0..=99）永久 `JsString` 指针表：`s += j` 等数字叶子拼接的高频命中路径，
-/// 免每次 `to_string` + 登记 2 次分配。泄漏面严格有界：100 条目 ≈ 4KB，进程生命
-/// 期内不释放（同 `SINGLE_CHAR_TABLE` 论证）。
+/// 免每次 `to_string` + 登记 2 次分配。物化面严格有界：100 条目 ≈ 4KB，
+/// 随进程生命周期有意保留（同 `SINGLE_CHAR_TABLE` 论证）。
 static SMALL_INT_TABLE: [OnceLock<StringPtr>; 100] = [const { OnceLock::new() }; 100];
 
 /// 取 0..=99 小整数的永久 `JsString` 指针，惰性物化一次后恒返回同一地址。
@@ -431,7 +431,8 @@ pub fn small_int_ptr(n: u32) -> Option<*const JsString> {
 const TYPEOF_TEXTS: [&str; 8] = ["undefined", "object", "boolean", "number", "string", "symbol", "bigint", "function"];
 
 /// typeof 结果永久 `JsString` 指针表：typeof 运算符是高频产出路径，
-/// 复用静态表免每次 session 分配与 interner 锁查。泄漏面严格有界：8 条目 ≈ 数百字节。
+/// 复用静态表免每次 session 分配与 interner 锁查。物化面严格有界：8 条目 ≈ 数百字节，
+/// 随进程生命周期有意保留。
 static TYPEOF_TABLE: [OnceLock<StringPtr>; 8] = [const { OnceLock::new() }; 8];
 
 /// 取 typeof 结果串的永久 `JsString` 指针，惰性物化一次后恒返回同一地址。
