@@ -76,13 +76,34 @@ impl Emitter {
     /// 右值区求值完毕后把覆盖从 TDZ cell 切到体区 fresh cell：每头名分配新
     /// cell 并改写映射，头发射捕获臂与体区读/捕获自然命中。每迭代新分配一个
     /// cell；机制见 `compile_ctx.rs` 的 `register_update_names` 字段文档。
+    ///
+    /// 切换时为每头名预发未初始化 `MAKE_CELL`：体区绑定点（`MAKE_CELL_FRESH`）
+    /// 在解构默认值表达式求值之后，此窗口内读头名须命中未初始化 cell 抛
+    /// ReferenceError；绑定点的 fresh cell 随后覆盖该占位 cell。
+    ///
+    /// # 边界与前提
+    /// - 无头名（空 pattern）时不发射指令。
+    ///
+    /// # 副作用
+    /// - 改动捕获映射并发射指令；cell 进 GC 根，每循环入口固定条数。
     pub(crate) fn switch_for_head_env_to_body(&self, env: &mut ForHeadEnv, ctx: &mut CompileCtx) {
+        if env.entries.is_empty() {
+            return;
+        }
         let mut next = ctx.captured_bindings.values().copied().max().map_or(0, |m| m.saturating_add(1));
+        // 默认值窗口的 TDZ 占位：未初始化标志折入 MAKE_CELL 立即数高字节。
+        let undef_reg = self.emit_undefined(ctx);
         for (name, _, _, body_idx) in &mut env.entries {
             let idx = next;
             next = next.saturating_add(1);
             *body_idx = idx;
             ctx.captured_bindings.insert(name.clone(), idx);
+            ctx.inst(Inst::new(
+                OpCode::MAKE_CELL,
+                Operand::Reg(undef_reg),
+                Operand::Imm(idx as u16 | 0x0100),
+                Operand::None,
+            ));
         }
     }
 
@@ -135,10 +156,10 @@ impl Emitter {
             ForStatementLeft::VariableDeclaration(decl) => {
                 // let/const 声明对被捕获绑定用 fresh cell（每迭代新 cell）；var 单绑定。
                 let fresh_cell = !matches!(decl.kind, VariableDeclarationKind::Var);
+                let is_const = matches!(decl.kind, VariableDeclarationKind::Const);
                 for d in &decl.declarations {
                     match &d.id {
                         oxide_parser::BindingPattern::BindingIdentifier(bi) => {
-                            let is_const = matches!(decl.kind, VariableDeclarationKind::Const);
                             let name = bi.name.as_str();
                             let var_reg = ctx.alloc_reg();
                             // var 声明：绑定已存在（顶层 var 预声明、
@@ -183,7 +204,10 @@ impl Emitter {
                             }
                             ctx.init_var(name);
                         }
-                        _ => return Err("destructuring not supported".into()),
+                        // 解构头：数组 pattern 对迭代键字符串解构、对象 pattern 先
+                        // ToObject 再按属性读；叶名绑定复用通用路径（含 let/const
+                        // 声明、fresh cell 与顶层 var 全局属性反射）。
+                        _ => self.emit_binding_pattern(&d.id, key_reg, decl.kind, is_const, fresh_cell, ctx)?,
                     }
                 }
             }
