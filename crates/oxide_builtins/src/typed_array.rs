@@ -457,6 +457,16 @@ fn collect_array_like<H: VmHost>(vm: &mut H, value: JsValue, consult_iterator: b
         return Ok(values);
     }
 
+    // 字符串源（装箱串）的 length 与索引未物化，直接按 UTF-16 单元取值：
+    // 与 %TypedArray%.from 的 array-like 臂同读法，避免落通用 length 读空。
+    if let Some(units) = crate::array::string_arraylike_units(vm, value) {
+        let mut values = Vec::with_capacity(units.len());
+        for &unit in &units {
+            values.push(crate::array::unit_string_value(vm, unit));
+        }
+        return Ok(values);
+    }
+
     let length_si = vm.kernel_core().perm_interner().intern("length").0;
     let len_val = vm
         .ordinary_get(obj, length_si, value)

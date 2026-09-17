@@ -1190,18 +1190,6 @@ pub fn make_iterator_for_value_without_return<H: VmHost>(vm: &mut H, value: JsVa
     }
 }
 
-/// 同 [`make_iterator_for_value`]，但包装器原型指向调用方指定的原型
-/// （`String.prototype[@@iterator]` 用 %StringIteratorPrototype%）。
-pub(crate) fn make_iterator_for_value_with_proto<H: VmHost>(
-    vm: &mut H, value: JsValue, wrapper_proto: *mut JsObject,
-) -> Result<JsValue, JsValue> {
-    match try_make_iterator_inner_proto(vm, value, true, Some(wrapper_proto)) {
-        Ok(Some(iterator)) => Ok(iterator),
-        Ok(None) => Err(crate::error::create_type_error(vm, "value is not iterable")),
-        Err(err) => Err(err),
-    }
-}
-
 /// 尝试创建迭代器包装对象，把"不可迭代"与"真异常"区分返回。
 ///
 /// # 步骤
@@ -1232,8 +1220,27 @@ pub(crate) fn try_make_iterator_inner_proto<H: VmHost>(
         Ok(None) => return Ok(None),
         Err(err) => return Err(err),
     };
-    // 通用包装器默认挂 %IteratorPrototype%（经原型链获得 @@iterator 返回自身）；
-    // 调用方指定原型时优先（如 String 迭代器的 %StringIteratorPrototype%）。
+    Ok(Some(build_iterator_wrapper(vm, inner, cached_next, bind_return, wrapper_proto)))
+}
+
+/// 以给定内层迭代器构造统一迭代器包装对象。
+///
+/// # 步骤
+/// 1. 选定包装器原型：调用方指定时优先（如 String 迭代器的
+///    %StringIteratorPrototype%），否则默认 %IteratorPrototype%（经原型链获得
+///    `@@iterator` 返回自身）。
+/// 2. 写入 `__inner__`/`__index__` 槽；鸭子回退路径把创建时读到的 `next` 闭包
+///    缓存进 `__next__` 槽，消费期直读槽不重触发 getter。
+/// 3. 挂 `next` 方法；`bind_return` 且内层有可调用 `return` 时条件暴露 `return`。
+///
+/// # 边界
+/// - `bind_return` 控制是否暴露 `return` 方法（for-of/解构的 IteratorClose 需要，
+///   `yield*` 委托不需要且须避免创建时访问内层 return getter）。
+/// - 本函数不解析 `@@iterator`：`get_iterator` 派生内层，或默认迭代器函数直接以
+///   已 ToString 的串为内层构造（其语义只由 `this` 决定，与属性表状态解耦）。
+pub(crate) fn build_iterator_wrapper<H: VmHost>(
+    vm: &mut H, inner: JsValue, cached_next: Option<JsValue>, bind_return: bool, wrapper_proto: Option<*mut JsObject>,
+) -> JsValue {
     let iterator_proto = match wrapper_proto {
         Some(proto) => proto,
         None => vm.session().builtin_world().iterator_proto.as_ptr() as *mut JsObject,
@@ -1271,7 +1278,7 @@ pub(crate) fn try_make_iterator_inner_proto<H: VmHost>(
         }
     }
 
-    Ok(Some(JsValue::from_js_object(wrapper)))
+    JsValue::from_js_object(wrapper)
 }
 
 fn iterator_wrapper_return<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {

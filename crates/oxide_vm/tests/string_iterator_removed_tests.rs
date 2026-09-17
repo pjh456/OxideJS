@@ -296,3 +296,95 @@ fn default_string_iterator_regression() {
         })()"#,
     );
 }
+
+#[test]
+fn saved_default_iterator_still_works_after_delete_or_null() {
+    // 已保存的默认迭代器引用直调：语义只由 this 决定，属性表删除/置 null/置
+    // undefined 不影响，仍按码元产出（不重新回读 @@iterator）。
+    assert_truthy(
+        "saved iterator delete",
+        r#"(function(){
+            var f = String.prototype[Symbol.iterator];
+            delete String.prototype[Symbol.iterator];
+            var it = f.call("ab");
+            return it.next().value === "a" && it.next().value === "b";
+        })()"#,
+    );
+    assert_truthy(
+        "saved iterator null",
+        r#"(function(){
+            var f = String.prototype[Symbol.iterator];
+            String.prototype[Symbol.iterator] = null;
+            var it = f.call("ab");
+            return it.next().value === "a" && it.next().value === "b";
+        })()"#,
+    );
+    assert_truthy(
+        "saved iterator undefined",
+        r#"(function(){
+            var f = String.prototype[Symbol.iterator];
+            String.prototype[Symbol.iterator] = undefined;
+            var it = f.call("ab");
+            return it.next().value === "a" && it.next().value === "b";
+        })()"#,
+    );
+}
+
+#[test]
+fn saved_default_iterator_ignores_user_override() {
+    // 用户把 @@iterator 覆盖成函数后，已保存的默认迭代器引用直调仍构造 String
+    // 迭代器（规范忽略覆盖），不转发到覆盖函数。
+    assert_truthy(
+        "saved iterator override",
+        r#"(function(){
+            var f = String.prototype[Symbol.iterator];
+            var called = false;
+            String.prototype[Symbol.iterator] = function(){ called = true; return null; };
+            var it = f.call("ab");
+            return !called && it.next().value === "a" && it.next().value === "b";
+        })()"#,
+    );
+}
+
+#[test]
+fn saved_default_iterator_handles_surrogate_pair_codepoint() {
+    // 直构仍走码点口径：合法代理对整体产出单个元素。
+    assert_truthy(
+        "saved iterator gclef",
+        r#"(function(){
+            var f = String.prototype[Symbol.iterator];
+            delete String.prototype[Symbol.iterator];
+            var it = f.call("\uD834\uDD1E");
+            var first = it.next().value;
+            return first === "\uD834\uDD1E" && it.next().done === true;
+        })()"#,
+    );
+}
+
+#[test]
+fn typed_array_constructor_boxed_string_uses_units_after_delete() {
+    // 构造器 array-like 臂与 %TypedArray%.from 对称：装箱串按 UTF-16 单元取值，
+    // 不读自身可调用 next，也不因 length 未物化读空。
+    assert_truthy(
+        "new Uint8Array boxed duck-next delete",
+        r#"(function(){
+            var s = new String("ab");
+            var duckCalled = false;
+            s.next = function(){ duckCalled = true; return { value: 99, done: false }; };
+            delete String.prototype[Symbol.iterator];
+            var u = new Uint8Array(s);
+            return u.length === 2 && u[0] === 0 && u[1] === 0 && !duckCalled;
+        })()"#,
+    );
+    assert_truthy(
+        "Uint8Array.from boxed duck-next delete symmetric",
+        r#"(function(){
+            var s = new String("ab");
+            var duckCalled = false;
+            s.next = function(){ duckCalled = true; return { value: 99, done: false }; };
+            delete String.prototype[Symbol.iterator];
+            var u = Uint8Array.from(s);
+            return u.length === 2 && u[0] === 0 && u[1] === 0 && !duckCalled;
+        })()"#,
+    );
+}

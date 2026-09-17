@@ -849,13 +849,11 @@ pub fn string_symbol_iterator<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResul
             return NativeResult::Err(crate::error::create_type_error(vm, "Cannot convert value to a string"));
         }
     };
-    // String 迭代器挂 %StringIteratorPrototype%（链到 %IteratorPrototype%）：
-    // 包装机制复用通用路径，仅替换原型为中继层。
+    // 直构 String 迭代器：内层即 ToString 结果，不再回读 @@iterator。本函数语义
+    // 只由 this 决定，属性表被删除/置 null/被覆盖均不影响已保存引用的直调。
+    // 迭代器挂 %StringIteratorPrototype%（链到 %IteratorPrototype%）；串内层不暴露 return。
     let string_iter_proto = vm.session().builtin_world().string_iterator_proto.as_ptr() as *mut JsObject;
-    match crate::iterator::make_iterator_for_value_with_proto(vm, s_val, string_iter_proto) {
-        Ok(iterator) => NativeResult::Ok(iterator),
-        Err(err) => NativeResult::Err(err),
-    }
+    NativeResult::Ok(crate::iterator::build_iterator_wrapper(vm, s_val, None, true, Some(string_iter_proto)))
 }
 
 /// `matchAll` 迭代器的 `next`：返回 `{value: 匹配数组, done}`，耗尽后 done 为 true。
