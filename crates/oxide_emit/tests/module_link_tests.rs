@@ -80,6 +80,11 @@ fn pool_strings(ir: &IRFunction) -> HashSet<String> {
         .collect()
 }
 
+/// 在顶层 nested 中按 `function_name` 查找模块。
+fn named_module<'a>(ir: &'a IRFunction, name: &str) -> Option<&'a IRFunction> {
+    ir.nested.iter().find(|m| m.function_name.as_deref() == Some(name))
+}
+
 /// 面 1：import 绑定 prelude 经 `__moduleLinkGet` 链接，依赖模块编入子模块树。
 #[test]
 fn import_binding_prelude() {
@@ -162,4 +167,50 @@ fn json_data_module() {
     assert!(builtin_names(data).contains("__moduleData"), "数据模块应链接 __moduleData");
     let pool = pool_strings(data);
     assert!(pool.contains("json") && pool.contains(json), "json 源文本应入池: {pool:?}");
+}
+
+/// 面 6：`export default` 匿名函数/生成器/箭头/类经 SetFunctionName 落隐式名 "default"。
+/// 带方法的类必须命中构造器，而不是构造器之后 push 的方法子模块。
+#[test]
+fn export_default_anonymous_implicit_name() {
+    let (ir, _) = emit_module("export default function() {}", "./entry.js", &[]).expect("匿名函数声明应编译成功");
+    assert!(named_module(&ir, "default").is_some(), "匿名函数声明应落隐式名");
+
+    let (ir, _) = emit_module("export default function* () {}", "./entry.js", &[]).expect("匿名生成器声明应编译成功");
+    assert!(named_module(&ir, "default").is_some_and(|m| m.is_generator), "匿名生成器应落隐式名");
+
+    let (ir, _) = emit_module("export default (function() {})", "./entry.js", &[]).expect("括号函数表达式应编译成功");
+    assert!(named_module(&ir, "default").is_some(), "匿名函数表达式应落隐式名");
+
+    let (ir, _) = emit_module("export default (() => {})", "./entry.js", &[]).expect("箭头表达式应编译成功");
+    assert!(named_module(&ir, "default").is_some_and(|m| m.is_arrow), "匿名箭头应落隐式名");
+
+    let (ir, _) = emit_module("export default class { m() {} }", "./entry.js", &[]).expect("匿名类声明应编译成功");
+    let ctor = ir.nested.iter().find(|m| m.is_class_constructor).expect("类构造器应在 nested");
+    assert_eq!(ctor.function_name.as_deref(), Some("default"), "匿名类构造器应落隐式名");
+    assert!(named_module(&ir, "m").is_some(), "方法模块应保留自身名");
+
+    let (ir, _) = emit_module("export default (class { m() {} })", "./entry.js", &[]).expect("括号类表达式应编译成功");
+    let ctor = ir.nested.iter().find(|m| m.is_class_constructor).expect("类构造器应在 nested");
+    assert_eq!(ctor.function_name.as_deref(), Some("default"), "匿名类表达式构造器应落隐式名");
+    assert!(named_module(&ir, "m").is_some(), "方法模块应保留自身名");
+}
+
+/// 面 7：`export default` 具名变体与非常量表达式不被隐式名覆盖。
+#[test]
+fn export_default_implicit_name_named_unchanged() {
+    let (ir, _) = emit_module("export default class Foo { m() {} }", "./entry.js", &[]).expect("具名类声明应编译成功");
+    let ctor = ir.nested.iter().find(|m| m.is_class_constructor).expect("类构造器应在 nested");
+    assert_eq!(ctor.function_name.as_deref(), Some("Foo"));
+
+    let (ir, _) =
+        emit_module("export default (class Bar { m() {} })", "./entry.js", &[]).expect("具名类表达式应编译成功");
+    let ctor = ir.nested.iter().find(|m| m.is_class_constructor).expect("类构造器应在 nested");
+    assert_eq!(ctor.function_name.as_deref(), Some("Bar"));
+
+    let (ir, _) = emit_module("export default (function f() {})", "./entry.js", &[]).expect("具名函数表达式应编译成功");
+    assert!(named_module(&ir, "f").is_some(), "具名函数表达式应保留自身名");
+
+    let (ir, _) = emit_module("export default 42", "./entry.js", &[]).expect("字面量应编译成功");
+    assert!(named_module(&ir, "default").is_none(), "非函数值不应注入隐式名");
 }

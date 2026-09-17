@@ -14,7 +14,7 @@ impl Emitter {
         // 类表达式：类名在类体内为 const 绑定；不向调用方复用寄存器时，
         // 由 emit_class_with_binding 新建块作用域声明（TDZ），类构建完成后
         // STORE_VAR 初始化再弹出作用域，类名不泄漏到外层。
-        self.emit_class_with_binding(class, ctx, None)
+        self.emit_class_with_binding(class, ctx, None, None)
     }
 
     /// 类名绑定可复用调用方寄存器的类整体 emit。
@@ -23,8 +23,11 @@ impl Emitter {
     /// 类表达式无外部槽时，在独立块作用域声明 const 绑定（未初始化）。
     /// 无论哪种形态，绑定都在 `extends` 求值前建立：extends 引用类名按规范
     /// 抛 TDZ ReferenceError；类构建完成后 `init_var` + `STORE_VAR` 初始化。
+    ///
+    /// `implicit_name` 供 `export default` 的匿名类做 SetFunctionName：类名缺省时
+    /// 以它为构造器 `name`；具名类由 `ctor_name` 优先，不受影响。
     pub(crate) fn emit_class_with_binding(
-        &self, class: &Class, ctx: &mut CompileCtx, binding_reg: Option<u32>,
+        &self, class: &Class, ctx: &mut CompileCtx, binding_reg: Option<u32>, implicit_name: Option<&str>,
     ) -> Result<u32, String> {
         // 类定义体是严格模式代码：字段初始化/静态块/extends 表达式内嵌套函数以
         // 本 ctx 为父 ctx，类编译期间强制 strict（函数末尾恢复外层标志）。
@@ -314,7 +317,7 @@ impl Emitter {
         ctx.in_derived_constructor = saved_derived;
         ctor_module.is_class_constructor = true;
         ctor_module.is_derived_constructor = is_derived;
-        ctor_module.function_name = ctor_name.clone();
+        ctor_module.function_name = ctor_name.clone().or_else(|| implicit_name.map(str::to_string));
         ctx.nested.push(ctor_module);
         // 键数组构建会在 keys 表达式中压入嵌套模块（箭头/函数/类键），
         // 必须在压入后用固定下标引用构造器模块，避免嵌套长度偏移。

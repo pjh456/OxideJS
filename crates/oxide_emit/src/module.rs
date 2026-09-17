@@ -18,8 +18,8 @@ use oxide_ir::inst::Inst;
 use oxide_ir::operand::Operand;
 use oxide_ir::{IRFunction, ParamLayout};
 use oxide_parser::{
-    BindingPattern, Declaration, ExportDefaultDeclarationKind, ImportAttributeKey, ImportDeclarationSpecifier,
-    ModuleExportName, Statement, VariableDeclarationKind, WithClause,
+    BindingPattern, Declaration, ExportDefaultDeclarationKind, Expression, ImportAttributeKey,
+    ImportDeclarationSpecifier, ModuleExportName, Statement, VariableDeclarationKind, WithClause,
 };
 
 /// 数据模块种类（非 JS 源码模块）。
@@ -48,6 +48,35 @@ pub trait ModuleSourceLoader {
     fn resolve(
         &mut self, base_dir: &str, specifier: &str, attributes: &[(&str, &str)],
     ) -> Result<ResolvedModule, String>;
+}
+
+/// `export default` 的默认导出名，也是匿名默认导出函数/类的隐式 `name`。
+const DEFAULT_EXPORT_NAME: &str = "default";
+
+/// 剥离可能的多层括号表达式，供隐式名分派判定内层函数/类形态。
+fn strip_parens<'a, 'b>(expr: &'b Expression<'a>) -> &'b Expression<'a> {
+    let mut cur = expr;
+    while let Expression::ParenthesizedExpression(p) = cur {
+        cur = &p.expression;
+    }
+    cur
+}
+
+/// 把隐式名写到刚发射的匿名函数子模块。
+///
+/// # 副作用
+/// - 修改 `ctx.nested` 末项的 `function_name`；已有名（具名函数）不覆盖。
+///
+/// # 注意事项
+/// - 仅用于函数/箭头/生成器：它们在发射期只 push 一个子模块，末项即目标。
+///   类在构造器之后还会 push 方法子模块，末项不是构造器，类名必须经
+///   `emit_class_with_binding` 的 `implicit_name` 参数落名。
+fn set_implicit_name_of_last_nested(ctx: &mut CompileCtx, name: &str) {
+    if let Some(m) = ctx.nested.last_mut() {
+        if m.function_name.is_none() {
+            m.function_name = Some(name.to_string());
+        }
+    }
 }
 
 /// 把 `ModuleExportName`（标识符名 / 标识符引用 / 字符串字面量）统一转为字符串导出名。
@@ -109,7 +138,7 @@ fn module_own_export_names(body: &[Statement]) -> HashSet<String> {
                 }
             }
             Statement::ExportDefaultDeclaration(_) => {
-                names.insert("default".to_string());
+                names.insert(DEFAULT_EXPORT_NAME.to_string());
             }
             Statement::ExportAllDeclaration(exp) => {
                 if let Some(exported) = &exp.exported {
@@ -302,7 +331,7 @@ impl Emitter {
                             }
                             ImportDeclarationSpecifier::ImportDefaultSpecifier(s) => {
                                 if is_self {
-                                    if !own_export_names.contains("default") {
+                                    if !own_export_names.contains(DEFAULT_EXPORT_NAME) {
                                         return Err("requested module export is not exported: default".into());
                                     }
                                     let undef_idx = ctx.add_constant(Constant::Undefined);
@@ -317,10 +346,10 @@ impl Emitter {
                                         ctx,
                                     )?;
                                     if let Ok(reg) = ctx.lookup(s.local.name.as_str()) {
-                                        ctx.module_self_aliases.insert("default".to_string(), reg);
+                                        ctx.module_self_aliases.insert(DEFAULT_EXPORT_NAME.to_string(), reg);
                                     }
                                 } else {
-                                    let name_reg = self.load_string_const("default", ctx);
+                                    let name_reg = self.load_string_const(DEFAULT_EXPORT_NAME, ctx);
                                     let val_reg =
                                         self.emit_module_call(ctx, "__moduleLinkGet", &[dep_ns_reg, name_reg])?;
                                     self.emit_bind_target(
@@ -573,11 +602,18 @@ impl Emitter {
                                 false,
                                 ctx,
                             )?;
+                        } else {
+                            set_implicit_name_of_last_nested(ctx, DEFAULT_EXPORT_NAME);
                         }
                         reg
                     }
                     ExportDefaultDeclarationKind::ClassDeclaration(cl) => {
-                        let reg = self.emit_class_expression(cl, ctx)?;
+                        let reg = self.emit_class_with_binding(
+                            cl,
+                            ctx,
+                            None,
+                            cl.id.is_none().then_some(DEFAULT_EXPORT_NAME),
+                        )?;
                         if let Some(id) = &cl.id {
                             self.emit_bind_target(
                                 id.name.as_str(),
@@ -594,11 +630,28 @@ impl Emitter {
                         let expr = other
                             .as_expression()
                             .ok_or_else(|| "unsupported export default declaration".to_string())?;
-                        self.emit_expression(expr, ctx)?
+                        if crate::is_anonymous_function_definition(expr) {
+                            match strip_parens(expr) {
+                                // 匿名类：构造器落名后还会 push 方法子模块，必须经
+                                // implicit_name 写构造器；具名类由 ctor_name 优先。
+                                Expression::ClassExpression(cl) => {
+                                    self.emit_class_with_binding(cl, ctx, None, Some(DEFAULT_EXPORT_NAME))?
+                                }
+                                // 函数/生成器/箭头：发射期只 push 一个子模块，末项即目标；
+                                // 具名函数表达式已有名，守卫不覆盖。
+                                _ => {
+                                    let reg = self.emit_expression(expr, ctx)?;
+                                    set_implicit_name_of_last_nested(ctx, DEFAULT_EXPORT_NAME);
+                                    reg
+                                }
+                            }
+                        } else {
+                            self.emit_expression(expr, ctx)?
+                        }
                     }
                 };
-                self.emit_module_set(ctx, ns_reg, "default", val_reg)?;
-                self.emit_self_alias_write(ctx, "default", val_reg);
+                self.emit_module_set(ctx, ns_reg, DEFAULT_EXPORT_NAME, val_reg)?;
+                self.emit_self_alias_write(ctx, DEFAULT_EXPORT_NAME, val_reg);
             }
             Statement::ExportAllDeclaration(exp) => {
                 let source = exp.source.value.as_str();
