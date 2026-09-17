@@ -49,7 +49,7 @@ pub enum SlotSpec {
 
 /// 单张语义表行：一个 opcode 的 def/uses/pure/跳转/终结/IC 扩展字声明。
 ///
-/// 字段语义与各消费方历史硬编码集合一致：`is_jump` = lower.rs 跳转族（label
+/// 字段语义与各消费方判定集合一致：`is_jump` = lower.rs 跳转族（label
 /// 回填），`is_terminator` = CFG 块尾终结，`ic_ext` = VM 的 IC 扩展字。`pure`
 /// 是静态可删判定，LOAD_VAR 的上下文例外留在 `oxide_ir::contract::is_pure`。
 pub struct OpSemantics {
@@ -892,7 +892,7 @@ mod tests {
         const _: () = assert!(IC_EXT_WORDS == IC_SLOTS * 2 && IC_SLOTS >= 2);
     }
 
-    /// 表驱动 ic_ext 与迁移前硬编码 16 集合逐项相等（旧表并存期的迁移校验）。
+    /// 表驱动 ic_ext 与逐消费方硬编码 16 集合逐项相等（一致性回归，防表驱动改漏）。
     #[test]
     fn semantics_ic_ext_matches_legacy_list() {
         let legacy = [
