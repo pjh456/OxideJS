@@ -73,7 +73,9 @@ pub(crate) fn get_this_array_ref<H: VmHost>(vm: &mut H, val: JsValue) -> Result<
 }
 
 /// 取 this 为真数组或类数组对象（带 length 属性的普通对象），按规范读取长度，
-/// 返回 (对象指针, 长度, 是否为真数组)，供只读方法族（values/entries/keys/iterator 等）共用。
+/// 返回 (对象指针, 长度, 是否为真数组)，供遍历查找族（forEach/map/filter/reduce/
+/// some/every/find 族/flatMap）、切片拼接族（slice/concat/join/indexOf/includes/
+/// lastIndexOf）与不可变复制族（toReversed/with/toSorted/toSpliced）共用。
 ///
 /// # 步骤
 /// 1. this 非对象（null/undefined/原始值）→ TypeError。
