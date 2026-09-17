@@ -277,7 +277,7 @@ fn rewrite_inst(
     }
     let _ = f;
     // 防御：imm16 编码位的操作数必须是 Imm/None，不得是 Reg——
-    // 否则会被上面的 Reg 重写改号，VM 侧 imm16 读到错值（历史 B020 根因）。
+    // 上面的 Reg 重写会改号，若该槽被改写，VM 侧按 imm16 读取会拿到错误值。
     match inst.op {
         OpCode::LOAD_UPVALUE | OpCode::CREATE_CLOSURE => {
             debug_assert!(

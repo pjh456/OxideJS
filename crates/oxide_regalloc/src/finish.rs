@@ -3,7 +3,7 @@
 //! - n_registers = map.phys_peak（≤254；最高合法物理槽 253 对应窗口大小 254；
 //!   不含参数窗口——窗口是调用点暂存槽，
 //!   CALL handler 在 push 前收集 args 进 Vec，n_registers 只控 save_stack 窗口）
-//! - builtin_reg_map：Phys → 新号；Spill → spilled_builtin_bindings 的自由色 R（与 rewrite 同源）
+//! - builtin_reg_map：Phys → 新号；Spill → spilled_builtin_bindings 的自由色 R（与 rewrite 取同一 AllocMap 分配结果）
 //! - param_layout 按参数首槽物理色回写；upvalue_captures 不动（escaped 预着色恒等）
 
 use crate::alloc_map::{Alloc, AllocMap};
@@ -12,11 +12,12 @@ use oxide_ir::IRFunction;
 
 /// 回写 IRFunction 元数据（不动 insts——rewrite 已完成改写）。
 pub(super) fn run(f: &mut IRFunction, map: &AllocMap) {
-    // (a) n_registers = phys_peak
+    // 先写 n_registers = phys_peak（最高物理槽数，恒 ≤ 254）。
     debug_assert!(map.phys_peak <= 254, "phys_peak 超 254");
     f.n_registers = map.phys_peak;
 
-    // (b) builtin_reg_map 回写
+    // 再回写 builtin_reg_map：Phys 直接换新号；Spill 取入口
+    // spilled_builtin_bindings 的自由色 R（与 rewrite 取同一 AllocMap 分配结果）。
     let spilled = spilled_builtin_bindings(f, map);
     let mut rewritten_builtins = Vec::with_capacity(f.builtin_reg_map.len());
     for (name, vreg) in &f.builtin_reg_map {
@@ -38,7 +39,7 @@ pub(super) fn run(f: &mut IRFunction, map: &AllocMap) {
     }
     f.builtin_reg_map = rewritten_builtins;
 
-    // (c) 参数段保持连续，但继承父上下文产生的高虚拟段会整体移动到低位物理段。
+    // 参数段保持连续，但继承父上下文产生的高虚拟段会整体移动到低位物理段。
     let pl = f.param_layout;
     if pl.count > 0 {
         if let Some(Alloc::Phys(base)) = map.map.get(&pl.base) {
@@ -52,7 +53,7 @@ pub(super) fn run(f: &mut IRFunction, map: &AllocMap) {
         f.param_layout.base = 0;
     }
 
-    // (d) upvalue_captures 不动。enclosing_reg 是编译期产物（MAKE_CELL 定位用），VM 运行时
+    // upvalue_captures 不动。enclosing_reg 是编译期产物（MAKE_CELL 定位用），VM 运行时
     // 不读（CREATE_CLOSURE 走 cell_idx，cell 捕获后值在 cell 中）——无需跨函数同步。
     // 直接槽引用（class field 计算键等）的 escaped vreg 已由预着色恒等保留。
     // 注：cell 捕获变量的父 vreg 可被 RegAlloc 移动（MAKE_CELL 后值入 cell，与寄存器无关），
@@ -107,7 +108,7 @@ mod tests {
         let binds = spilled_builtin_bindings(&f, &map);
         run(&mut f, &map);
         assert_eq!(f.builtin_reg_map[0].0, "Math");
-        assert_eq!(f.builtin_reg_map[0].1, binds[0].1, "回写 R 与入口 SPILL 同源");
+        assert_eq!(f.builtin_reg_map[0].1, binds[0].1, "回写 R 与入口 SPILL 取同一 AllocMap 分配结果");
     }
 
     #[test]
