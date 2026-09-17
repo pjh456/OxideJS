@@ -1,3 +1,5 @@
+//! Array 排序方法与迭代协议（sort/values/entries/keys/iterator_next 及迭代器构造）。
+
 use oxide_kernel::shape_forge::EMPTY_SHAPE_ID;
 use oxide_types::object::JsObject;
 use oxide_types::value::JsValue;

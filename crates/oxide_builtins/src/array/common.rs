@@ -1,3 +1,5 @@
+//! Array 族共享助手：`this`/类数组解析、长度与回调校验，以及 `array_ptr` 族宏。
+
 use oxide_kernel::shape_forge::EMPTY_SHAPE_ID;
 use oxide_types::object::{JsObject, MAX_DENSE_PROPS};
 use oxide_types::value::JsValue;

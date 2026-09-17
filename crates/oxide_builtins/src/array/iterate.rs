@@ -1,3 +1,5 @@
+//! Array 高阶迭代方法（for_each/map/filter/reduce/find/some/every/flatMap 等）。
+
 use oxide_types::value::JsValue;
 
 use oxide_runtime_api::{NativeResult, VmHost};

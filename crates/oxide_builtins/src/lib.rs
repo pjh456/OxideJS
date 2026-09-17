@@ -8,7 +8,7 @@
 //! 架构性延后的特性（Proxy、WeakMap、WeakSet、WeakRef、FinalizationRegistry、
 //! SharedArrayBuffer、Atomics）在 `stubs` 中仅提供占位实现，调用时抛 TypeError。
 
-/// Array 内置对象实现（constructor 与全部 Array.prototype 方法）。
+/// Array 内置对象实现（目录模块：common 共享助手、from 构造器与静态方法、element 元素变更、iterate 高阶迭代、sort_iterator 排序与迭代协议、immutable ES2023 不可变方法族）。
 pub mod array;
 /// ArrayBuffer 内置对象实现（字节缓冲区与 byteLength/slice/isView）。
 pub mod array_buffer;

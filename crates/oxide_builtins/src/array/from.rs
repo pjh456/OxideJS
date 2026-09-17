@@ -1,3 +1,5 @@
+//! Array 构造器与静态方法（constructor / isArray / of / from）及 species 构造辅助。
+
 use oxide_kernel::shape_forge::EMPTY_SHAPE_ID;
 use oxide_types::object::{JsObject, PropAttributes, MAX_DENSE_PROPS};
 use oxide_types::private_key::make_well_known_symbol_key;
