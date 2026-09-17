@@ -11,6 +11,7 @@ use oxide_ir::operand::{LabelId, Operand};
 use oxide_parser::{ChainElement, Expression, LogicalOperator, PropertyKey};
 
 impl Emitter {
+    /// 可选链短路守卫：`reg` 为 null 或 undefined 时跳转到短路标签 `short_label`。
     fn emit_optional_guard(&self, reg: u32, short_label: LabelId, ctx: &mut CompileCtx) -> Result<(), String> {
         let dup_reg = ctx.alloc_reg();
         ctx.inst(Inst::new(OpCode::LOAD_VAR, Operand::Reg(dup_reg), Operand::Reg(reg), Operand::None));
@@ -18,6 +19,7 @@ impl Emitter {
         Ok(())
     }
 
+    /// 静态成员读取并保留 base 寄存器，返回 `(值寄存器, base 寄存器)` 供链上后续调用取 this。
     fn emit_static_member_get_preserve_base(
         &self, member: &oxide_parser::StaticMemberExpression, short_label: Option<LabelId>, ctx: &mut CompileCtx,
     ) -> Result<(u32, u32), String> {
@@ -36,6 +38,7 @@ impl Emitter {
         Ok((value_reg, obj_reg))
     }
 
+    /// 计算成员读取并保留 base 寄存器；常量字符串键折叠为 IC 静态路径，其余走动态属性读，返回 `(值寄存器, base 寄存器)`。
     fn emit_computed_member_get_preserve_base(
         &self, member: &oxide_parser::ComputedMemberExpression, short_label: Option<LabelId>, ctx: &mut CompileCtx,
     ) -> Result<(u32, u32), String> {
@@ -66,6 +69,7 @@ impl Emitter {
         Ok((value_reg, obj_reg))
     }
 
+    /// 链上调用：成员 / 私有字段调用的 this 取链 base，其余调用为 undefined；实参打包与内置调用分派在此完成。
     fn emit_chain_call(
         &self, call: &oxide_parser::CallExpression, short_label: Option<LabelId>, ctx: &mut CompileCtx,
     ) -> Result<u32, String> {
@@ -160,6 +164,7 @@ impl Emitter {
         Ok(result_reg)
     }
 
+    /// 递归发射链元素并返回结果寄存器；可短路点由 `short_label` 标记。
     fn emit_chainable_expression(
         &self, expr: &Expression, short_label: Option<LabelId>, ctx: &mut CompileCtx,
     ) -> Result<u32, String> {
@@ -198,6 +203,7 @@ impl Emitter {
         }
     }
 
+    /// 发射单个 `ChainElement`，按变体分派成员读取 / 私有字段 / 调用；TS 非空断言不支持，直接报错。
     pub(crate) fn emit_chain_element(
         &self, element: &ChainElement, short_label: Option<LabelId>, ctx: &mut CompileCtx,
     ) -> Result<u32, String> {
@@ -235,6 +241,7 @@ impl Emitter {
         }
     }
 
+    /// 逻辑赋值短路测试：按 And / Or / Coalesce 选择跳转条件，未短路则落入赋值路径。
     pub(crate) fn emit_logical_assign_test(
         &self, op: LogicalOperator, test_reg: u32, store_label: LabelId, end_label: LabelId, ctx: &mut CompileCtx,
     ) -> Result<(), String> {
@@ -249,6 +256,7 @@ impl Emitter {
         Ok(())
     }
 
+    /// 对象属性静态读：键已由调用方取为字符串，本函数按常量键走 IC 读并返回属性寄存器。
     pub(crate) fn emit_object_property_read(&self, src_reg: u32, key: &str, ctx: &mut CompileCtx) -> u32 {
         let prop_reg = ctx.alloc_reg();
         ctx.inst(Inst::new(OpCode::LOAD_VAR, Operand::Reg(prop_reg), Operand::Reg(src_reg), Operand::None));
@@ -259,6 +267,7 @@ impl Emitter {
         prop_reg
     }
 
+    /// 将属性键求值为寄存器：字面量键直接取常量，其余形态走通用表达式分发。
     fn emit_property_key_expression(&self, key: &PropertyKey, ctx: &mut CompileCtx) -> Result<u32, String> {
         match key {
             // 标识符计算键（`{[k]: a}`）走通用表达式分发：经 emit_static_identifier_read
@@ -293,6 +302,8 @@ impl Emitter {
         }
     }
 
+    /// 读取对象属性并产出键信息：非计算键走字符串常量 IC 路径，计算键在字面量可折叠时走 IC，否则动态求值。
+    /// 返回 `(结果寄存器, 常量键名, 动态键寄存器)`，后两者互补为 None。
     pub(crate) fn emit_object_property_read_key(
         &self, src_reg: u32, key: &PropertyKey, computed: bool, ctx: &mut CompileCtx,
     ) -> Result<(u32, Option<String>, Option<u32>), String> {

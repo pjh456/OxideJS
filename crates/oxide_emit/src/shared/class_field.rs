@@ -56,6 +56,7 @@ impl Emitter {
         }
     }
 
+    /// 私有字段初始化：以私有名 id 做 `init_private` 写实例 own 属性。
     pub(crate) fn emit_private_field_init(
         &self, target: Operand, name: &str, value: Option<&Expression>, ctx: &mut CompileCtx,
     ) -> Result<(), String> {
@@ -65,6 +66,7 @@ impl Emitter {
         Ok(())
     }
 
+    /// 私有方法初始化：方法经 `init_private` 写入，getter / setter 对经 `define_accessor` 共享同一私有名 id。
     pub(crate) fn emit_private_method_init(
         &self, target: Operand, method: &oxide_parser::MethodDefinition, home_reg: Operand,
         self_binding: &[(&str, u32)], class_self_cell: Option<u8>, ctx: &mut CompileCtx,

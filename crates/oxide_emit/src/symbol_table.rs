@@ -59,6 +59,7 @@ impl SymbolTable {
         });
     }
 
+    /// 按给定类型压入新作用域（函数或块）。
     pub(crate) fn push_scope_with_kind(&mut self, kind: ScopeKind) {
         self.scopes.push(Scope { bindings: HashMap::new(), kind });
     }
@@ -70,6 +71,7 @@ impl SymbolTable {
         }
     }
 
+    /// 从内向外查找最近的函数作用域下标，作为 `var` 的提升目标；全局作用域即函数作用域，故恒能命中，兜底返回 0。
     pub(crate) fn find_var_target_scope(&self) -> usize {
         for (i, scope) in self.scopes.iter().enumerate().rev() {
             if scope.kind == ScopeKind::FunctionScope {
@@ -119,6 +121,7 @@ impl SymbolTable {
         Err(format!("Identifier '{name}' is not defined"))
     }
 
+    /// 从内向外查绑定并仅返回寄存器号；不检查初始化态，供无需 TDZ 判定的写路径使用。
     pub(crate) fn lookup_any(&self, name: &str) -> Option<u32> {
         self.scopes
             .iter()
@@ -126,6 +129,7 @@ impl SymbolTable {
             .find_map(|scope| scope.bindings.get(name).map(|binding| binding.reg))
     }
 
+    /// 从内向外查绑定，返回绑定引用及其作用域下标（0 = 全局作用域，供顶层判定）。
     pub(crate) fn lookup_any_binding(&self, name: &str) -> Option<(&Binding, usize)> {
         for (i, scope) in self.scopes.iter().enumerate().rev() {
             if let Some(b) = scope.bindings.get(name) {

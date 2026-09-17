@@ -11,8 +11,9 @@ impl Emitter {
         &self, ctor_reg: u32, proto_reg: u32, super_reg: Option<u32>, sub_idx: u16, ctx: &mut CompileCtx,
     ) -> Result<(), String> {
         ctx.inst(Inst::create_closure(Operand::Reg(ctor_reg), sub_idx));
-        // 类原型 session 直分：实例 [[Prototype]] 与 Class.prototype 两侧须同一
-        // 对象，epoch 分配在逃逸写晋升时克隆出第二份分裂 identity。
+        // 类原型对象直接分配在 session 层：实例 [[Prototype]] 与 Class.prototype 属性
+        // 两个引用须指向同一对象。若分配在 epoch 层，首次逃逸写会将其晋升克隆为
+        // session 层的第二个对象，两个引用不再 identity 相同。
         ctx.inst(Inst::new(
             OpCode::NEW_SESSION_OBJECT,
             Operand::Reg(proto_reg),

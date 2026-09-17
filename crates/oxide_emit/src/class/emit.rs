@@ -130,12 +130,10 @@ impl Emitter {
 
         let (ctor_reg, proto_reg, super_reg) = self.emit_class_header(class, ctx)?;
         let self_binding = ctor_name.as_deref().map(|name| vec![(name, binding_reg)]).unwrap_or_default();
-        // Class-name binding cell: class elements (ctor/method/field) that reference the
-        // class name capture it through this dedicated cell. Reads inside the class then
-        // resolve via LOAD_UPVALUE (same cell as the binding), so identity with other
-        // references survives epoch promotion (which rewrites cell values) and inline
-        // accessor calls (which clear the register file). The synthetic key keeps user
-        // bindings with the same name (outer scopes) untouched.
+        // 类名绑定 cell：引用类名的类元素（构造器/方法/字段）经此专用 cell 捕获。
+        // 类体内的读取经 LOAD_UPVALUE 命中同一 cell，使类名与其它引用在 epoch 晋升
+        // （会改写 cell 值）与内联 accessor 调用（会清空寄存器文件）之后仍保持 identity
+        // 一致；合成键 @@class_self_N 不影响外层作用域的同名用户绑定。
         let class_self_cell: Option<u8> = ctor_name.as_deref().map(|_| {
             let cell_idx = ctx.captured_bindings.values().copied().max().map_or(0, |m| m.saturating_add(1));
             ctx.captured_bindings.insert(format!("@@class_self_{cell_idx}"), cell_idx);
@@ -403,8 +401,7 @@ impl Emitter {
                 Operand::None,
             ));
             if let Some(cell_idx) = class_self_cell {
-                // Initialize the class-name cell with the constructor and release TDZ
-                // (the placeholder cell was created by the element closures at hoist time).
+                // 以构造器初始化类名 cell 并解除 TDZ（占位 cell 已由类元素闭包在 hoist 期创建）。
                 ctx.inst(Inst::new(
                     OpCode::MAKE_CELL,
                     Operand::Reg(binding_reg),
