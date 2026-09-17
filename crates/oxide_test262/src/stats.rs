@@ -17,9 +17,8 @@ pub(crate) struct RunStats {
     pub(crate) fail: usize,
     pub(crate) skip: usize,
     pub(crate) total_ms: u64,
-    pub(crate) fail_categories: HashMap<String, usize>, // 计数口径不变（兼容心跳序列化与既有基线对比）
-    // ↓ 新增 ↓
-    pub(crate) categories: Vec<String>, // 类别 id 表（FailRecord.category_id 索引）
+    pub(crate) fail_categories: HashMap<String, usize>, // 类别名是心跳序列化格式与基线报告的契约键，改动会使旧心跳行对不上
+    pub(crate) categories: Vec<String>,                 // 类别 id 表（FailRecord.category_id 索引）
     pub(crate) fail_records: Vec<FailRecord>,
     pub(crate) fail_record_bytes: usize, // 累计 message 字节（OOM cap）
     // supervise 模式异常计数：spawn 失败 / try_wait 错误 / 心跳写失败（子进程侧

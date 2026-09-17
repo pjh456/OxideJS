@@ -49,7 +49,7 @@ pub(crate) fn is_skipped(meta: &TestMeta) -> Option<String> {
     None
 }
 
-/// eval 相关子族精确排除（档 1+2 后）：
+/// eval 相关子族精确排除：
 /// built-ins/eval 与 eval-code 的完成值/解析失败/非字符串/this-value-global/间接环境族放行；
 /// 仅排除确定失败的 arguments/super/strict/块声明 等子族。
 pub(crate) fn eval_family_excluded(path: &str) -> Option<&'static str> {
@@ -58,28 +58,28 @@ pub(crate) fn eval_family_excluded(path: &str) -> Option<&'static str> {
     }
     let is_direct = path.contains("eval-code/direct/");
     let common = [
-        "declare-arguments", // 直接 eval 的 arguments 语义族（档 3）
-        "this-value-func",   // 调用者 this 传递（档 3）
-        "new.target",        // new.target 语义（档 3）
-        "strict-caller",     // 严格调用者传播（档 3）
+        "declare-arguments", // 直接 eval 的 arguments 语义族
+        "this-value-func",   // 调用者 this 传递
+        "new.target",        // new.target 语义
+        "strict-caller",     // 严格调用者传播
         "strict-source",
         "strictness-override", // 直接 eval 严格性覆盖
         "onlystrict",          // onlyStrict 块声明族
-        "always-non-strict",   // 依赖隐式全局写同步（既有债务）
+        "always-non-strict",   // 依赖隐式全局写同步，引擎尚未实现
         "block-decl",          // 块级函数声明（Annex B 严格变体）
         "switch-case-decl",
         "switch-dflt-decl",
     ];
     if common.iter().any(|s| path.contains(s)) {
-        return Some("eval 子族未实现（档 1-2 边界）");
+        return Some("eval 子族未实现");
     }
     if is_direct {
-        // 直接 eval：调用者作用域交互族（函数上下文 var/let + super 方法上下文），档 3 前失败
+        // 直接 eval：调用者作用域交互族（函数上下文 var/let + super 方法上下文）
         if ["var-env-", "lex-env-", "super-prop", "super-call-arrow", "super-call-method"]
             .iter()
             .any(|s| path.contains(s))
         {
-            return Some("直接 eval 作用域族未实现（档 3）");
+            return Some("直接 eval 作用域族未实现");
         }
     } else if [
         "super-",
@@ -96,7 +96,7 @@ pub(crate) fn eval_family_excluded(path: &str) -> Option<&'static str> {
     None
 }
 
-/// 确定性 pre-existing 失败白名单：引擎既有语义债务（非近期改动引入），
+/// 确定性失败白名单：引擎尚未实现该语义的测试集，
 /// 修复前归入 skip 以免噪音掩盖真实回归；对应缺口修好后移出本列表。
 pub(crate) fn pre_existing_excluded(path: &str) -> Option<&'static str> {
     const LIST: &[(&str, &str)] = &[

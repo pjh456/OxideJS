@@ -12,9 +12,9 @@ pub(crate) struct RunConfig {
     pub(crate) supervise: bool,
     pub(crate) leak_check: bool,
     pub(crate) leak_check_interval: usize,
-    /// 关闭 liveness/精确 DCE/RegAlloc 链（on/off 对比基础设施）。
+    /// 关闭 liveness/精确 DCE/RegAlloc 链（开关对比：关优化链 vs 开优化链各跑一遍）。
     pub(crate) no_regalloc: bool,
-    /// 逐测试打印 PASS/FAIL/SKIP（on/off 结果集合对比用）。
+    /// 逐测试打印 PASS/FAIL/SKIP（开关对比时对比两轮结果集合用）。
     pub(crate) verbose: bool,
     /// 汇总尾部不打印 FAIL 清单。
     pub(crate) no_fail_list: bool,

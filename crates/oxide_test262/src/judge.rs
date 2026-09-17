@@ -233,7 +233,7 @@ fn classify_vm_error(e: &str, neg: Option<&Negative>, no_skip: bool) -> TestOutc
 /// 把失败消息归类为可聚合的失败类别与 subkey，返回 `(category, subkey)`。
 ///
 /// # 边界与前提
-/// - 类别大类名口径不变（心跳序列化 / 既有基线对比兼容）；碎片桶
+/// - 类别大类名是心跳序列化格式与基线报告的契约键（改动会使旧心跳行对不上）；碎片桶
 ///   （`compile: other` / `vm: other` / `other`）不再携带消息尾巴
 ///   （全文已在 FailRecord.message）。
 /// - subkey 仅 `not callable`（调用点，提取失败归 `(none)`）与
@@ -447,7 +447,7 @@ mod tests {
         }
     }
 
-    /// categorize_fail 双返回：类别大类名口径不变（碎片桶去消息尾巴），
+    /// categorize_fail 双返回：类别大类名按心跳契约键命名（碎片桶去消息尾巴），
     /// subkey 仅 not callable / not defined 三类非空，IC_GET_PROP 独立成桶。
     /// not defined 覆盖 `vm error: ` 生产形态（subkey 非空）与无前缀裸形态
     /// （形态门：parse 出标识符才入桶）；negative mismatch 形态归 other。

@@ -34,8 +34,8 @@ pub fn escape_log_field(s: &str) -> String {
     s.replace(['\t', '\n', '\r'], " ")
 }
 
-/// 原 print_fail_categories 的 String 版：类别计数降序；`vm: other`/`compile: other`
-/// /`other` 碎片桶附带 ≤5 条样本（`路径  消息首行`）。空类别返回空串。
+/// 类别计数降序的打印版（返回 String，可单测）；`vm: other`/`compile: other`/`other`
+/// 碎片桶附带 ≤5 条样本（`路径  消息首行`）。空类别返回空串。
 pub fn format_fail_categories(stats: &RunStats, paths: &[PathBuf]) -> String {
     if stats.fail_categories.is_empty() {
         return String::new();
