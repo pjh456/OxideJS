@@ -572,10 +572,15 @@ impl Emitter {
             // 捕获集是函数级名字并集，块级 let/const 在块退出后 cell 仍存留但名字
             // 已不可解析，块外嵌套函数按名命中会错误读取已失效的 cell。父自身
             // upvalue 代表的祖父绑定在父函数体内恒可见，不参与过滤。
+            // C 风格 for 头 let/const 名在 init 内尚未 declare，但同头声明会为其
+            // 建 cell，前向捕获须按父捕获集保留（见 `pending_for_head_names`）。
             let visible_parent_captured: BTreeMap<String, u8> = parent_ctx
                 .captured_bindings
                 .iter()
-                .filter(|(n, _)| parent_ctx.scopes.symbols.lookup_any_binding(n).is_some())
+                .filter(|(n, _)| {
+                    parent_ctx.visible_binding_reg(n.as_str()).is_some()
+                        || parent_ctx.pending_for_head_names.contains(n.as_str())
+                })
                 .map(|(n, &i)| (n.clone(), i))
                 .collect();
             ctx.current_upvalue_captures = collect_upvalue_names(

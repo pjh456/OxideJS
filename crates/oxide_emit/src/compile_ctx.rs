@@ -92,6 +92,11 @@ pub struct CompileCtx {
     /// 捕获判断（MAKE_CELL / CELL_GET / CELL_SET）与子函数 upvalue cell_idx 统一查此映射，
     /// 消除符号表时序依赖与 cell 索引错位。
     pub(crate) captured_bindings: BTreeMap<String, u8>,
+    /// 正在发射的 C 风格 for 头 let/const 声明名（含解构叶）。头名不像块级
+    /// let/const 那样在块入口预声明，init 表达式内创建的嵌套函数引用同头尚未
+    /// declare 的前向名时，父捕获可见性过滤据此放行；init 发射完毕后移除，
+    /// 嵌套 for 头取并集。
+    pub(crate) pending_for_head_names: HashSet<String>,
     /// 顶层已声明 var 名与顶层函数声明名（脚本全局声明实例化提升名）：裸读走全局
     /// 对象属性（LOAD_GLOBAL）、裸写走感知全局对象属性描述符的写；值的唯一存储是
     /// 全局对象属性（顶层 var 的唯一存储），引擎侧不再保留镜像副本。
@@ -201,6 +206,7 @@ impl CompileCtx {
             block_fn_suppressed: HashSet::new(),
             block_fn_entry_mats: Vec::new(),
             captured_bindings: BTreeMap::new(),
+            pending_for_head_names: HashSet::new(),
             global_tier_names: HashSet::new(),
             upvalue_const_flags: HashSet::new(),
             implicit_global_reads: HashSet::new(),
@@ -345,6 +351,17 @@ impl CompileCtx {
     /// （LOAD_GLOBAL 槽）与写侧登记同属一个全局槽，写都必须穿透到全局对象。
     pub(crate) fn is_implicit_global_reg(&self, reg: u32) -> bool {
         self.implicit_global_writes.contains(&reg) || self.implicit_global_reads.contains(&reg)
+    }
+
+    /// 名字在当前作用域链内是否存在真实词法绑定（排除隐式全局登记），命中时返回其寄存器。
+    ///
+    /// 未声明名的隐式全局登记（写侧 `lookup_or_global`、读侧 `lookup_or_builtin` 经
+    /// `pre_register_global`）会在全局作用域插入占位绑定，使 `lookup_any_binding` 按名
+    /// 命中；但它不是词法声明。捕获名退出作用域后若曾被登记为隐式全局，按名命中会
+    /// 误读残留 cell——捕获 cell 的可见性判定统一经本入口。
+    pub(crate) fn visible_binding_reg(&self, name: &str) -> Option<u32> {
+        let (binding, _) = self.scopes.symbols.lookup_any_binding(name)?;
+        (!self.is_implicit_global_reg(binding.reg)).then_some(binding.reg)
     }
 
     pub(crate) fn lookup_const_flag(&self, name: &str) -> bool {

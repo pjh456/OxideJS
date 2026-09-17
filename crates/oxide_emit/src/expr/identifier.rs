@@ -22,10 +22,11 @@ impl Emitter {
         }
 
         // 捕获集是函数级名字并集：块级 let/const 的 cell 在块退出后仍存留，但名字
-        // 已不在作用域链内。仅当名字当前可解析时才走 cell，否则落下方全局解析
-        // （未声明读经 LOAD_GLOBAL 抛 ReferenceError），不得按名误读已失效的 cell。
+        // 已不在作用域链内。仅当名字当前可解析为真实词法绑定时才走 cell（隐式全局
+        // 登记不算），否则落下方全局解析（未声明读经 LOAD_GLOBAL 抛 ReferenceError），
+        // 不得按名误读已失效的 cell。
         if let Some(&cell_idx) = ctx.captured_bindings.get(name) {
-            if let Some(binding_reg) = ctx.scopes.symbols.lookup_any_binding(name).map(|(binding, _)| binding.reg) {
+            if let Some(binding_reg) = ctx.visible_binding_reg(name) {
                 let r = ctx.alloc_reg();
                 ctx.inst(Inst::new(
                     OpCode::CELL_GET,
@@ -101,14 +102,14 @@ impl Emitter {
                 Operand::None,
             ));
         } else if let Some(&cell_idx) = ctx.captured_bindings.get(name) {
-            // 回退分支的捕获 cell 同样只在名字当前可解析时才有效；否则与静态解析
-            // 一致：顶层 tier 名读全局对象属性，其余读 undefined（with 回退不抛
-            // 未解析引用）。
-            if let Some((binding, _)) = ctx.scopes.symbols.lookup_any_binding(name) {
+            // 回退分支的捕获 cell 同样只在名字当前可解析为真实词法绑定时才有效；
+            // 否则与静态解析一致：顶层 tier 名读全局对象属性，其余读 undefined
+            // （with 回退不抛未解析引用）。
+            if let Some(binding_reg) = ctx.visible_binding_reg(name) {
                 ctx.inst(Inst::new(
                     OpCode::CELL_GET,
                     Operand::Reg(result_reg),
-                    Operand::Reg(binding.reg),
+                    Operand::Reg(binding_reg),
                     Operand::Imm(cell_idx as u16),
                 ));
             } else if self.is_global_tier_name(ctx, name) {
@@ -191,11 +192,11 @@ impl Emitter {
             ));
             return;
         }
-        // 目标若是被捕获 cell，走 CELL_SET；仅当名字当前可解析时才写 cell——捕获集
-        // 按名保留的块级绑定在块退出后不可解析，须落下方全局写（sloppy 物化隐式
-        // 全局属性，strict 抛 ReferenceError）。
+        // 目标若是被捕获 cell，走 CELL_SET；仅当名字当前可解析为真实词法绑定时才写
+        // cell——捕获集按名保留的块级绑定在块退出后不可解析（隐式全局登记不算），
+        // 须落下方全局写（sloppy 物化隐式全局属性，strict 抛 ReferenceError）。
         if let Some(&cell_idx) = ctx.captured_bindings.get(name) {
-            if ctx.scopes.symbols.lookup_any_binding(name).is_some() {
+            if ctx.visible_binding_reg(name).is_some() {
                 ctx.inst(Inst::new(
                     OpCode::CELL_SET,
                     Operand::None,

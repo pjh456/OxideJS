@@ -351,9 +351,9 @@ impl Emitter {
             let binding = ctx.scopes.symbols.lookup_any_binding(name);
             // 捕获集按名保留块级绑定，但块退出后名字已不可解析：此时不再视为
             // captured（typeof 对未解析引用求值 "undefined"，不得 CELL_GET 误读
-            // 已失效 cell）。
+            // 已失效 cell）。隐式全局登记同样不算真实绑定。
             let captured = ctx.current_upvalue_captures.iter().any(|u| u.name == name)
-                || (ctx.captured_bindings.contains_key(name) && binding.is_some());
+                || (ctx.captured_bindings.contains_key(name) && ctx.visible_binding_reg(name).is_some());
             // 顶层已声明 var：typeof 读全局对象属性（顶层 var 的唯一存储，引擎侧不保留
             // 镜像副本），缺失 → "undefined"（非抛，IsUnresolvableReference 语义）。未声明名
             // 同走此路（lookup 未命中）。隐式全局槽（未声明名读写登记）同走属性路：

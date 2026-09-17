@@ -131,3 +131,39 @@ fn read_of_uncaptured_popped_block_let_throws_reference_error() {
         "true"
     );
 }
+
+#[test]
+fn for_head_forward_capture_of_self_is_visible() {
+    // C 风格 for 头 init 内闭包对同头头名的前向引用须命中父捕获 cell：头名不像
+    // 块级 let 那样预声明，可见性过滤不得将其误删。
+    assert_eq!(eval("var r; for (let i = (() => i); !r; ) { r = i; } r() === r"), "true");
+}
+
+#[test]
+fn for_head_forward_capture_of_later_declarator_is_visible() {
+    // 多声明符头：首声明符 init 内闭包引用后一声明符头名，须读到其初始化值。
+    assert_eq!(eval("var g; for (let f = () => j, j = 1; ; ) { g = f; break; } g() === 1"), "true");
+}
+
+#[test]
+fn sloppy_write_then_read_of_popped_block_capture_name_keeps_global_value() {
+    // 块外 sloppy 简单写物化隐式全局属性后，同名裸读须读回该属性（99），
+    // 不得因隐式全局登记被误判为可见而命中残留捕获 cell（1）。
+    assert_eq!(eval("{ let aa = 1; f = () => aa; } aa = 99; aa"), "99");
+}
+
+#[test]
+fn repeated_bare_read_of_invisible_capture_name_throws_each_time() {
+    // 不可见捕获名二次裸读：读侧隐式全局登记不构成真实词法绑定，两次均须抛
+    // ReferenceError，不得第二次命中残留 cell 返回旧值。
+    assert_eq!(
+        eval(
+            "var r; { let bb = 7; r = () => bb; } \
+             var first = false, second = false; \
+             try { bb; } catch (e) { first = e instanceof ReferenceError; } \
+             try { bb; } catch (e) { second = e instanceof ReferenceError; } \
+             first && second"
+        ),
+        "true"
+    );
+}

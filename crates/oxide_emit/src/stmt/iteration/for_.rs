@@ -53,6 +53,17 @@ impl Emitter {
             if let Some(expr) = init.as_expression() {
                 self.emit_expression(expr, ctx)?;
             } else if let ForStatementInit::VariableDeclaration(decl) = init {
+                // C 风格 for 头 let/const 名在 init 表达式发射期间视为可见：头名不像
+                // 块级 let/const 那样在块入口预声明，init 内闭包创建点头名尚不在符号表，
+                // 可见性过滤会误删其前向捕获（见 `CompileCtx::pending_for_head_names`）。
+                let saved_pending = ctx.pending_for_head_names.clone();
+                if !matches!(decl.kind, VariableDeclarationKind::Var) {
+                    for d in &decl.declarations {
+                        let mut head_names = Vec::new();
+                        self.collect_pattern_binding_names(&d.id, &mut head_names);
+                        ctx.pending_for_head_names.extend(head_names);
+                    }
+                }
                 for d in &decl.declarations {
                     let is_const = matches!(decl.kind, VariableDeclarationKind::Const);
                     if let Some(init_expr) = &d.init {
@@ -116,6 +127,7 @@ impl Emitter {
                         }
                     }
                 }
+                ctx.pending_for_head_names = saved_pending;
             }
         }
         ctx.labels.set_label_pos(start_label, ctx.insts.len());
