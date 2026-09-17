@@ -4,7 +4,8 @@
 //!
 //! 覆盖：块内前读/typeof 前读/后读、`if(false)` 未求值支、标签包裹支臂、支臂
 //! 前 `var` 重赋值、块外后读、外层词法/形参同名不覆写、嵌套 `if`/`else if` 支臂
-//! （eval 顶层与形参抑制面）、只读三常量名支臂、strict 早期错误。
+//! （eval 顶层与形参抑制面）、容器（循环/`with`/标签）内嵌套 `if` 支臂、只读三
+//! 常量名支臂、strict 早期错误。
 
 use std::sync::Arc;
 
@@ -132,6 +133,29 @@ fn if_arm_fn_named_nan_at_script_top_keeps_block_binding() {
     // 同只读三常量面：`NaN` 名为只读全局内置，块内支臂须建块级绑定。
     let source = "{ if(true) function NaN(){} }";
     assert!(eval(source).unwrap().is_undefined());
+}
+
+#[test]
+fn container_do_if_arm_fn_eval_top_level_keeps_block_binding() {
+    // 支臂为 `do` 容器、容器体内嵌套 `if` 子句函数：eval 顶层无外层 var 面承载，
+    // 须下钻容器到叶子并建块级绑定，否则声明点无绑定可物化而报未定义。
+    let source = "eval(\"{ if(true) do if(true) function g(){} while(false); typeof g }\")";
+    assert_eq!(eval_str(source).unwrap(), "function");
+}
+
+#[test]
+fn container_while_if_arm_fn_keeps_outer_param_binding() {
+    // 支臂为 `while` 容器、容器体内嵌套 `if` 子句函数同名形参：门控须下钻容器
+    // 到达叶子并为抑制名建块槽，支臂不覆写形参值。
+    let source = "function f(g){ { if(true) while(false) if(true) function g(){} } return g } f(42)";
+    assert_eq!(eval(source).unwrap().as_int(), 42);
+}
+
+#[test]
+fn container_do_if_arm_fn_keeps_outer_param_binding() {
+    // 同形但容器体求值一次：门控失效时闭包会写进形参槽，`return g` 变函数对象。
+    let source = "function f(g){ { if(true) do if(true) function g(){} while(false) } return g } f(42)";
+    assert_eq!(eval(source).unwrap().as_int(), 42);
 }
 
 #[test]
