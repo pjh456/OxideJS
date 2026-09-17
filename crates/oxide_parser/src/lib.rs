@@ -26,8 +26,8 @@ fn parse_with_source_type<'a>(
     let ret = Parser::new(allocator, source, source_type).parse();
 
     if ret.panicked {
-        // 不可恢复语法错误：oxc 已为出错 token 累积诊断时按既有路径透传
-        // （消息 + 位置），直指真实触发点；无诊断时兜底通用文本。
+        // 不可恢复语法错误：oxc 已为出错 token 累积诊断时，把诊断（消息 + 位置）
+        // 透传为 `Err`，直指真实触发点；无诊断时兜底通用文本。
         if !ret.errors.is_empty() {
             return Err(ret.errors.into_iter().map(OxideError::from).collect());
         }
