@@ -210,12 +210,12 @@ impl Vm {
         // 固定地址后互相接线：proto.constructor ↔ ctor.prototype。
         Self::swap_intrinsic_proto(&mut self.promise_proto, *proto);
         Self::swap_intrinsic_proto(&mut self.promise_constructor, *ctor);
-        // SAFETY: `promise_proto` 为 Box<JsObject>，固定堆址且本行前刚经
+        // SAFETY: `promise_proto` 为 `P<JsObject>`（Arc 透明包装），堆址固定且本行前刚经
         // swap_intrinsic_proto 落地；与下一处 ctor_mut 指向不同对象，无别名。
         let proto_mut = unsafe { &mut *self.promise_proto.as_mut_ptr() };
         proto_mut.set_prop_at(0u32, JsValue::from_js_object(self.promise_constructor.as_ptr() as *mut JsObject));
-        // SAFETY: `promise_constructor` 同为固定堆址的存活 Box；此处写 prototype
-        // 槽位（下标 2），与 proto_mut 分属不同对象，无别名。
+        // SAFETY: `promise_constructor` 同为堆址固定的存活 `P<JsObject>`（Arc 透明包装）；
+        // 此处写 prototype 槽位（下标 2），与 proto_mut 分属不同对象，无别名。
         let ctor_mut = unsafe { &mut *self.promise_constructor.as_mut_ptr() };
         // prototype 槽位在 length/name 之后（下标 2）。
         ctor_mut.set_prop_at(2u32, JsValue::from_js_object(self.promise_proto.as_ptr() as *mut JsObject));

@@ -139,7 +139,7 @@ impl Vm {
     /// 取出 Promise 状态盒指针（调用方须先校验 `is_promise_value`）。
     pub(super) fn promise_state_ptr(&self, promise: JsValue) -> *mut PromiseState {
         // SAFETY: 调用方已按文档前提校验 `is_promise_value`，对象指针非空且 native_data
-        // 为 create_promise_object 写入的 Box<PromiseState>；裸指针由调用方即时解引用。
+        // 为 create_promise_object 或 promise_constructor 写入的 Box<PromiseState>；裸指针由调用方即时解引用。
         unsafe { (*promise.as_js_object_ptr()).native_data() as *mut PromiseState }
     }
 
