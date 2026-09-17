@@ -49,12 +49,16 @@ impl Emitter {
         } else {
             self.materialize_function_declaration(fd, &name, ctx)?
         };
-        // 块内函数声明求值写回外层 var 绑定（sloppy web-compat）：预声明期为该
-        // 名实例化的外层 var 绑定（函数作用域）在此写入块槽位里的函数对象，
-        // 求值一次写回一次（循环体内每迭代覆写头绑定）。形参/词法声明同名
-        // （抑制集）与顶层只读三常量名不写回（对不可写属性 put 在 sloppy 下
-        // 永不成功，跳过与执行等价）；顶层 A 侧补全局对象属性写（与 for 头写
-        // 同形）。
+        // 块内函数声明求值后按三种情形处理：
+        //
+        // sloppy 模式下按浏览器/web 实现惯例为块级函数声明建外层 var 绑定并写回：
+        // 预声明期为该名实例化的函数作用域 var 绑定在此写入块槽位里的函数对象，
+        // 求值一次写回一次（循环体内每迭代覆写头绑定）。
+        //
+        // 形参或函数作用域树内同名词法声明（抑制集）不写回：该名被同名声明遮蔽。
+        //
+        // 顶层不可写内置名不写回：sloppy 下对其赋值（put）永不成功，跳过与执行等价；
+        // 顶层情形另补全局对象属性写（与 for-in 循环头的顶层写同形）。
         if !ctx.is_strict
             && ctx.scopes.symbols.scopes.len() > 1
             && !ctx.block_fn_suppressed.contains(&name)
@@ -68,10 +72,10 @@ impl Emitter {
                     Operand::Reg(var_reg),
                     Operand::None,
                 ));
-                // 顶层 A 侧同步写以外层绑定是否落全局作用域为准：此处块内
-                // Let 绑定已占内层作用域，按名解析（is_global_tier_name）会
-                // 命中块绑定误判为非顶层；嵌套函数作用域同名局部 var 不在
-                // 全局 ctx 上，经 is_global_scope 门禁不走全局对象写。
+                // 全局对象属性写以「外层绑定的作用域层级是否为 0（全局作用域）」判定，
+                // 不按名字解析：此处块内 Let 绑定已占内层作用域，按名解析
+                // （`is_global_tier_name`）会命中块绑定误判为非顶层；嵌套函数作用域
+                // 的同名局部 var 不在全局 ctx 上，经 `is_global_scope` 门禁不走全局对象写。
                 if ctx.is_global_scope && var_target == 0 && ctx.global_tier_names.contains(&name) {
                     self.emit_tier_global_write(&name, var_reg, ctx);
                 }
@@ -79,8 +83,9 @@ impl Emitter {
         }
         // 脚本顶层（非块内）函数声明：同步写全局对象，使 globalThis 可反射函数名。
         // 块内声明不走本臂（其全局可见性只经上方外层 var 写回面建立）。
-        // 严格 eval 代码函数声明绑定 eval 自身 lexical 环境、不落全局对象：抑制 A
-        // 侧写（局部绑定读面未暴露），同时避免不可写全局内置在 0x98 上误抛 strict。
+        // 严格 eval 代码的函数声明绑定 eval 自身词法环境、不落全局对象：抑制全局对象属性写
+        // （局部绑定读面未暴露），同时避免不可写全局内置名在 `DEFINE_GLOBAL_PROP_C`（`0x98`，
+        // 严格 eval 路径经此指令）上误抛 strict `TypeError`。
         if ctx.is_global_scope && ctx.scopes.symbols.scopes.len() == 1 && !(ctx.is_eval_script && ctx.is_strict) {
             self.emit_global_func_bind_write(&name, var_reg, ctx);
         }

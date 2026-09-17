@@ -109,10 +109,13 @@ impl Emitter {
         // 脚本顶层 var：同步写全局对象，使 globalThis.x 反射声明值。
         if ctx.is_global_scope && matches!(kind, VariableDeclarationKind::Var) {
             if CompileCtx::is_known_builtin(name) {
-                // builtin 名保持 GDI 零动作写点（序言镜像值语义），不扩 strict 面。
+                // 内置名保持 GlobalDeclarationInstantiation（脚本顶层声明实例化）
+                // 序言的零动作写点——属性已存在时不改动值、仅缺失时新建；槽内保留
+                // 求值开始前预载的全局属性值（镜像值），本路径不扩大 strict 抛错面。
                 self.emit_global_prop_write(name, src_reg, ctx);
             } else {
-                // 用户名既有属性面：声明带初始化是 PutValue，0x98 带 strict 分派。
+                // 用户名的既有属性面：声明带初始化是 PutValue 语义，经
+                // `DEFINE_GLOBAL_PROP_C`（`0x98`）并带 strict 分派。
                 self.emit_global_put_write(name, src_reg, ctx);
             }
         }
@@ -149,7 +152,7 @@ impl Emitter {
                     return Ok(());
                 }
                 if is_tier {
-                    // 顶层已声明 var 解构赋值目标：值落全局对象属性（A 侧单一真值）。
+                    // 顶层已声明 var 解构赋值目标：值写入全局对象属性——顶层 var 值的唯一存储是全局对象属性，引擎侧不另存副本。
                     self.emit_tier_global_write(name, src_reg, ctx);
                     return Ok(());
                 }
@@ -360,7 +363,7 @@ impl Emitter {
                     return Ok(());
                 }
                 if is_tier {
-                    // 顶层已声明 var 解构赋值目标：值落全局对象属性（A 侧单一真值）。
+                    // 顶层已声明 var 解构赋值目标：值写入全局对象属性——顶层 var 值的唯一存储是全局对象属性，引擎侧不另存副本。
                     self.emit_tier_global_write(name, src_reg, ctx);
                     return Ok(());
                 }
@@ -453,7 +456,7 @@ impl Emitter {
                         return Ok(());
                     }
                     if is_tier {
-                        // 顶层已声明 var 对象解构赋值：值落全局对象属性（A 侧单一真值）。
+                        // 顶层已声明 var 解构赋值目标：值写入全局对象属性——顶层 var 值的唯一存储是全局对象属性，引擎侧不另存副本。
                         self.emit_tier_global_write(name, prop_reg, ctx);
                         continue;
                     }

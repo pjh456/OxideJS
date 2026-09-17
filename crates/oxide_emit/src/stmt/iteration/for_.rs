@@ -44,8 +44,9 @@ impl Emitter {
         let n_labeled = ctx.take_pending_loop_labels(end_label, update_label);
         // 循环头声明中被嵌套函数捕获的 let/const 绑定：每迭代 fresh cell。
         let mut fresh_bindings: Vec<(String, u8)> = Vec::new();
-        // 循环头 let/const 声明名：update 段是 per-iteration 可变绑定
-        // （规范 §14.7.4.4 CreatePerIterationEnvironment 用 CreateMutableBinding），
+        // 循环头 let/const 声明名：update 段是 per-iteration 可变绑定（规范
+        // §14.7.4.4 CreatePerIterationEnvironment 用 CreateMutableBinding）——
+        // 规范允许 update 段写 let/const 循环变量，每迭代新建一个可变绑定；
         // 编译期 const 写检查对 update 段豁免，故记录全部声明名（含未被捕获者）。
         let mut update_names: Vec<String> = Vec::new();
         if let Some(init) = &fr.init {
@@ -137,9 +138,10 @@ impl Emitter {
         let body_result = self.emit_statement(&fr.body, ctx)?;
         ctx.labels.set_label_pos(update_label, ctx.insts.len());
         if let Some(update) = &fr.update {
-            // update 段写寄存器（而非 cell）：被捕获的 let/const 循环变量每迭代 fresh，
-            // update 写寄存器供下一迭代 fresh 拷贝——否则 CELL_SET 会污染本迭代闭包
-            // 捕获的 cell。未捕获者本就走寄存器，一并登记以豁免 update 段的 const 检查。
+            // update 段写循环变量寄存器、不写 cell：被捕获的 let/const 循环变量每迭代
+            // 新分配 cell，寄存器值供其拷入（否则 CELL_SET 会污染本迭代闭包捕获的
+            // cell）；未捕获者本就走寄存器，一并登记以豁免 update 段的 const 检查。
+            // 机制见 `compile_ctx.rs` 的 `register_update_names` 字段文档。
             let prev = std::mem::take(&mut ctx.register_update_names);
             ctx.register_update_names = update_names;
             self.emit_expression(update, ctx)?;

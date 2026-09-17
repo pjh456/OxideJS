@@ -58,8 +58,9 @@ impl Emitter {
             let tdz_idx = next;
             next = next.saturating_add(1);
             ctx.captured_bindings.insert(name.clone(), tdz_idx);
-            // 未初始化标志走 b 槽：a 槽 Imm 的高字节会覆写 b 槽，故标志并入
-            // 立即数高字节，dispatch 侧按 a/b 分槽取回。
+            // MAKE_CELL 的 16 位立即数：低字节是 cell 索引，高字节 bit 0 是
+            // 未初始化标记。标志折入立即数高字节（0x0100），dispatch 侧按字节
+            // 拆回两字段。
             let undef_reg = self.emit_undefined(ctx);
             ctx.inst(Inst::new(
                 OpCode::MAKE_CELL,
@@ -73,8 +74,8 @@ impl Emitter {
     }
 
     /// 右值区求值完毕后把覆盖从 TDZ cell 切到体区 fresh cell：每头名分配新
-    /// cell 并改写映射，头发射捕获臂与体区读/捕获自然命中（每迭代
-    /// MAKE_CELL_FRESH 建新 cell，本迭代闭包捕获新 cell）。
+    /// cell 并改写映射，头发射捕获臂与体区读/捕获自然命中。每迭代新分配一个
+    /// cell；机制见 `compile_ctx.rs` 的 `register_update_names` 字段文档。
     pub(crate) fn switch_for_head_env_to_body(&self, env: &mut ForHeadEnv, ctx: &mut CompileCtx) {
         let mut next = ctx.captured_bindings.values().copied().max().map_or(0, |m| m.saturating_add(1));
         for (name, _, _, body_idx) in &mut env.entries {
@@ -140,9 +141,9 @@ impl Emitter {
                             let is_const = matches!(decl.kind, VariableDeclarationKind::Const);
                             let name = bi.name.as_str();
                             let var_reg = ctx.alloc_reg();
-                            // var 声明：绑定已存在（顶层 var 预声明、GDI 序言预登记
-                            // builtin 名、同 scope 先前声明）时复用既有槽位，不重复
-                            // 声明；let/const 同 scope 重复声明仍报错。
+                            // var 声明：绑定已存在（顶层 var 预声明、
+                            // GlobalDeclarationInstantiation（脚本顶层声明实例化）序言预登记的内置名、
+                            // 同 scope 先前声明）时复用既有槽位，不重复声明；let/const 同 scope 重复声明仍报错。
                             let target_reg = if matches!(decl.kind, VariableDeclarationKind::Var) {
                                 match ctx.declare(name, var_reg, decl.kind, is_const) {
                                     Ok(()) => var_reg,
@@ -173,9 +174,9 @@ impl Emitter {
                                     Operand::Reg(key_reg),
                                     Operand::None,
                                 ));
-                                // 顶层 for-in var 头：迭代值落全局对象属性（A 侧单一真值）。
-                                // 只读三常量已在上方拦截臂跳过；其余 builtin 名属性可写，
-                                // 迭代键照规范覆写既有全局属性。
+                                // 顶层 for-in var 头：迭代值写入全局对象属性——顶层 var 值的唯一存储是全局对象属性，引擎侧不另存副本。
+                                // 只读三常量（不可写全局内置）已在上方拦截臂跳过；其余内置名属性
+                                // 可写，迭代键照规范覆写既有全局属性。
                                 if self.is_global_tier_name(ctx, name) {
                                     self.emit_tier_global_write(name, key_reg, ctx);
                                 }
@@ -203,9 +204,8 @@ impl Emitter {
                         // 严格模式未声明写：抛 ReferenceError，跳过寄存器写（值无关）。
                         self.emit_strict_undeclared_write(name, ctx)?;
                     } else if is_tier {
-                        // 顶层 for-in 赋值头：迭代值落全局对象属性（A 侧单一真值）。
-                        // 只读三常量已在上方拦截臂跳过；其余 builtin 名属性可写，
-                        // 迭代键照规范覆写既有全局属性。
+                        // 顶层 for-in 赋值头：迭代值写入全局对象属性——顶层 var 值的唯一存储是全局对象属性，引擎侧不另存副本。
+                        // 同上：只读三常量已在拦截臂跳过，其余内置名属性可写。
                         self.emit_tier_global_write(name, key_reg, ctx);
                     } else {
                         ctx.inst(Inst::new(
