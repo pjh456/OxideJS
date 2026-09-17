@@ -314,12 +314,13 @@ impl Emitter {
         self.predeclare_lexical_declarations(&program.body, &mut ctx, global_lexical)?;
 
         // 顶层块级函数名按 sloppy 模式下与浏览器/web 实现惯例兼容的行为处理
-        // （块级函数声明建外层 var 绑定并求值写回，非 eval）：实例化 var 绑定
+        // （块级函数声明建外层 var 绑定并求值写回；sloppy eval 代码同走
+        // Annex B.3.3.3，其名并入 eval 的 var 环境）：实例化 var 绑定
         // （新建 var 槽；顶层只读三常量名不可声明不建）、并入顶层 var 名集
         // （裸读/写路由全局对象属性）、GlobalDeclarationInstantiation 序言建属性
-        // （define-if-absent，既有属性不改动值）。
+        // （define-if-absent，既有属性不改动值）。strict 代码不建。
         let mut block_fn_names: Vec<String> = Vec::new();
-        if !ctx.is_strict && !ctx.is_eval_script {
+        if !ctx.is_strict {
             ctx.block_fn_suppressed = self.collect_block_fn_suppressed_names(&program.body, &ctx.param_names);
             block_fn_names = self.collect_block_function_names(&program.body);
             for name in &block_fn_names {

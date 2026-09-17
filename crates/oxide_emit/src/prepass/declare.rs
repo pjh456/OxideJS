@@ -175,11 +175,12 @@ impl Emitter {
     /// - 只处理块内函数声明；switch 不推 scope（其 case 内函数声明随 switch
     ///   作用域修复一并处理）；export 声明不可能出现在块内。
     /// - `if_arm` 标记当前递归是否位于 `if` 支臂隐式块内。Annex B 下该隐式块的
-    ///   函数声明名已有外层 var 绑定承载（非 eval 脚本顶层、未被形参/词法同名
-    ///   抑制、且非全局只读三常量）时不建当前块绑定，声明点物化进该 var 槽
-    ///   （建当前块 Let 会遮蔽同名 var）；名无外层 var 绑定（形参/词法抑制、eval
-    ///   脚本顶层或全局只读三常量）时保留块级绑定承载支臂闭包，避免声明点覆写
-    ///   外层绑定。门控只作用于 `if` 支臂下的叶子，块直接子不受影响。
+    ///   函数声明名已有外层 var 绑定承载（非 eval 脚本顶层、或 sloppy eval 顶层；
+    ///   未被形参/词法同名抑制，且非全局只读三常量）时不建当前块绑定，声明点
+    ///   物化进该 var 槽（建当前块 Let 会遮蔽同名 var）；名无外层 var 绑定
+    ///   （形参/词法抑制、strict eval 顶层或全局只读三常量）时保留块级绑定承载
+    ///   支臂闭包，避免声明点覆写外层绑定。门控只作用于 `if` 支臂下的叶子，
+    ///   块直接子不受影响。
     /// - 支臂为容器（循环/`try`/`with`/标签/显式块）时按各自作用域规则继续下钻，
     ///   使嵌套 `if` 支臂的函数声明同样到达门控。
     /// - 与 lexical 预声明的顺序：本函数在前，`{ let g; function g(){} }` 时
@@ -263,11 +264,13 @@ impl Emitter {
         }
     }
 
-    /// `if` 支臂裸函数声明的名是否已有外层 var/函数绑定承载：非 eval 脚本顶层的
-    /// 非抑制名由实例化阶段建外层 var 绑定，唯一例外是脚本顶层的只读三常量
-    /// （全局属性不可配置，声明实例化刻意不建外层绑定），其名须退回块级绑定。
+    /// `if` 支臂裸函数声明的名是否已有外层 var/函数绑定承载：非 eval 脚本顶层
+    /// 与 sloppy eval 顶层的非抑制名由实例化阶段建外层 var 绑定（eval 面依
+    /// Annex B.3.3.3），唯一例外是脚本顶层的只读三常量（全局属性不可配置，
+    /// 声明实例化刻意不建外层绑定），其名须退回块级绑定。strict eval 不建外层
+    /// 承载（其块函数绑定 eval 自身词法环境），与 eval 非顶层同判。
     fn if_arm_has_outer_var_carrier(ctx: &CompileCtx, name: &str) -> bool {
-        !ctx.is_eval_script
+        (!ctx.is_eval_script || !ctx.is_strict)
             && !ctx.block_fn_suppressed.contains(name)
             && !(ctx.is_global_scope && CompileCtx::is_non_writable_global_builtin(name))
     }
