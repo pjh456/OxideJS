@@ -3,7 +3,8 @@
 //! 遮蔽该 `var`；块内前读须见 `var` 值、外层读须见支臂求值写回。
 //!
 //! 覆盖：块内前读/typeof 前读/后读、`if(false)` 未求值支、标签包裹支臂、支臂
-//! 前 `var` 重赋值、块外后读、外层词法/形参同名不覆写、strict 早期错误。
+//! 前 `var` 重赋值、块外后读、外层词法/形参同名不覆写、嵌套 `if`/`else if` 支臂
+//! （eval 顶层与形参抑制面）、只读三常量名支臂、strict 早期错误。
 
 use std::sync::Arc;
 
@@ -94,6 +95,43 @@ fn if_arm_fn_keeps_outer_param_binding() {
     // 守卫：形参与嵌套块内支臂函数同名时，支臂不覆写形参值。
     let source = "function f(g){ { if(true) function g(){} } return g } f(42)";
     assert_eq!(eval(source).unwrap().as_int(), 42);
+}
+
+#[test]
+fn nested_else_if_arm_fn_eval_top_level_keeps_block_binding() {
+    // 嵌套 `else if` 支臂在 eval 顶层无外层 var 面承载：须下钻到叶子并建块级
+    // 绑定，否则声明点无绑定可物化而报 `Identifier is not defined`。
+    let source = "eval(\"{ if(false) {} else if(true) function g(){}; typeof g }\")";
+    assert_eq!(eval_str(source).unwrap(), "function");
+}
+
+#[test]
+fn nested_if_if_arm_fn_eval_top_level_keeps_block_binding() {
+    // 嵌套 `if` 支臂（不带 `else`）同形：逐层下钻后叶子建块级绑定。
+    let source = "eval(\"{ if(true) if(true) function g(){}; typeof g }\")";
+    assert_eq!(eval_str(source).unwrap(), "function");
+}
+
+#[test]
+fn nested_else_if_arm_fn_keeps_outer_param_binding() {
+    // 形参抑制面嵌套 `else if`：支臂闭包写块槽，块外读仍见形参 42。
+    let source = "function f(g){ { if(false){} else if(true) function g(){} } return g } f(42)";
+    assert_eq!(eval(source).unwrap().as_int(), 42);
+}
+
+#[test]
+fn if_arm_fn_named_undefined_at_script_top_keeps_block_binding() {
+    // 脚本顶层只读三常量无外层 var 绑定承载：块内支臂须建块级绑定，
+    // 否则声明点无绑定可物化而编译错。
+    let source = "{ if(true) function undefined(){} }";
+    assert!(eval(source).unwrap().is_undefined());
+}
+
+#[test]
+fn if_arm_fn_named_nan_at_script_top_keeps_block_binding() {
+    // 同只读三常量面：`NaN` 名为只读全局内置，块内支臂须建块级绑定。
+    let source = "{ if(true) function NaN(){} }";
+    assert!(eval(source).unwrap().is_undefined());
 }
 
 #[test]
