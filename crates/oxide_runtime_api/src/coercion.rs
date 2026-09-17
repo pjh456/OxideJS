@@ -520,7 +520,7 @@ pub fn relational_compare(lhs: JsValue, rhs: JsValue) -> Option<bool> {
         let l = unsafe { &*lhs.as_string_ptr() };
         let r = unsafe { &*rhs.as_string_ptr() };
         if l.is_flat() && r.is_flat() {
-            // 双 Flat：直接按文本字典序比较（与 rope 的码元字典序结果一致）。
+            // 双 Flat：直接按文本（UTF-8 码点序）字典序比较；任一侧非 Flat 时整体走单元序列比较。
             return Some(l.as_str() < r.as_str());
         }
         // 单元口径：码元字典序即规范序，Flat 编码与 rope 扁平化统一走单元通道。
