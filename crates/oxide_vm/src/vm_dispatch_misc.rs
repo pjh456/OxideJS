@@ -2,8 +2,13 @@ use crate::vm::{ForInIter, FrameArgs, FrameContinuation, Vm, MAX_PROTO_CHAIN_DEP
 use crate::vm_trace;
 use oxide_runtime_api::{push_units_to, to_boolean, to_units_full};
 use oxide_types::object::{JsObject, PropAttributes};
-use oxide_types::private_key::{int_key_value, is_int_key, is_private_name_key, is_symbol_key, make_int_key};
+use oxide_types::private_key::{
+    int_key_value, is_int_key, is_private_name_key, is_symbol_key, make_int_key, make_well_known_symbol_key,
+};
 use oxide_types::value::JsValue;
+
+/// `Symbol.hasInstance` 的 well-known symbol 下标。
+const HAS_INSTANCE_SYMBOL_ID: u32 = 6;
 
 impl Vm {
     pub(crate) fn dispatch_new_expression(&mut self, rd: usize, a: usize, b: usize) -> Result<bool, String> {
@@ -314,9 +319,7 @@ impl Vm {
             return self.raise_type_error("INSTANCEOF right-hand side is not callable");
         }
 
-        let has_instance_ptr = self.session.builtin_world().sym_has_instance.as_ptr() as *mut JsObject;
-        let has_instance_key = JsValue::from_js_object(has_instance_ptr);
-        let has_instance_si = self.property_key_si(has_instance_key)?;
+        let has_instance_si = make_well_known_symbol_key(HAS_INSTANCE_SYMBOL_ID);
 
         let ctor_obj = unsafe { &*rhs_val.as_js_object_ptr() };
         let has_instance_val = self.ordinary_get(ctor_obj, has_instance_si, rhs_val)?;

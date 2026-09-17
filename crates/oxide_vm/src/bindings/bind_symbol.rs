@@ -45,61 +45,24 @@ pub fn bind_symbol(core: &Arc<KernelCore>, session: &KernelSession, global: &mut
         oxide_builtins::symbol::symbol_description_getter::<crate::vm::Vm> as *const (),
     );
 
-    for (name, val) in [
-        (
-            "match",
-            JsValue::from_js_object(session.builtin_world().sym_match.as_ptr() as *mut JsObject),
-        ),
-        (
-            "replace",
-            JsValue::from_js_object(session.builtin_world().sym_replace.as_ptr() as *mut JsObject),
-        ),
-        (
-            "search",
-            JsValue::from_js_object(session.builtin_world().sym_search.as_ptr() as *mut JsObject),
-        ),
-        (
-            "split",
-            JsValue::from_js_object(session.builtin_world().sym_split.as_ptr() as *mut JsObject),
-        ),
-        (
-            "iterator",
-            JsValue::from_js_object(session.builtin_world().sym_iterator.as_ptr() as *mut JsObject),
-        ),
-        (
-            "toPrimitive",
-            JsValue::from_js_object(session.builtin_world().sym_to_primitive.as_ptr() as *mut JsObject),
-        ),
-        (
-            "hasInstance",
-            JsValue::from_js_object(session.builtin_world().sym_has_instance.as_ptr() as *mut JsObject),
-        ),
-        (
-            "matchAll",
-            JsValue::from_js_object(session.builtin_world().sym_match_all.as_ptr() as *mut JsObject),
-        ),
-        (
-            "asyncIterator",
-            JsValue::from_js_object(session.builtin_world().sym_async_iterator.as_ptr() as *mut JsObject),
-        ),
-        (
-            "toStringTag",
-            JsValue::from_js_object(session.builtin_world().sym_to_string_tag.as_ptr() as *mut JsObject),
-        ),
-        (
-            "species",
-            JsValue::from_js_object(session.builtin_world().sym_species.as_ptr() as *mut JsObject),
-        ),
-        (
-            "asyncDispose",
-            JsValue::from_js_object(session.builtin_world().sym_async_dispose.as_ptr() as *mut JsObject),
-        ),
-        (
-            "dispose",
-            JsValue::from_js_object(session.builtin_world().sym_dispose.as_ptr() as *mut JsObject),
-        ),
+    // well-known symbol 以符号原语绑定，下标与内建符号表（0..WELL_KNOWN_SYMBOL_COUNT）
+    // 一一对应；键编码由该下标直接推出。
+    for (name, id) in [
+        ("match", 1u32),
+        ("replace", 2),
+        ("search", 3),
+        ("split", 4),
+        ("iterator", 0),
+        ("toPrimitive", 5),
+        ("hasInstance", 6),
+        ("matchAll", 7),
+        ("asyncIterator", 8),
+        ("toStringTag", 9),
+        ("species", 10),
+        ("asyncDispose", 11),
+        ("dispose", 12),
     ] {
-        bind_well_known_symbol(core, ctor, name, val);
+        bind_well_known_symbol(core, ctor, name, JsValue::symbol(id));
     }
 
     bind_constructor!(core, global, "Symbol", ctor_ptr, oxide_builtins::symbol::symbol_constructor::<crate::vm::Vm>, 1, hash: true);

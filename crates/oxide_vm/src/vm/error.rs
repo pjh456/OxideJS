@@ -5,10 +5,14 @@ use oxide_runtime_api as coercion;
 
 use oxide_types::error::JsError;
 use oxide_types::object::JsObject;
+use oxide_types::private_key::make_well_known_symbol_key;
 use oxide_types::value::{JsValue, PTR_MASK};
 
 use super::{format_error_message, js_error_kind, js_error_kind_name, Vm};
 use crate::vm_debug;
+
+/// `Symbol.toPrimitive` 的 well-known symbol 下标。
+const TO_PRIMITIVE_SYMBOL_ID: u32 = 5;
 
 impl Vm {
     /// ToPrimitive 有界版：按规范序把对象转为原始值，失败统一抛 `TypeError`。
@@ -46,13 +50,8 @@ impl Vm {
         }
 
         // ECMA-262 §7.1.1 step 1：exotic 对象上（沿原型链读取）的 Symbol.toPrimitive 优先于
-        // OrdinaryToPrimitive。well-known symbol 键经 property_key_si 映射为固定
-        // Symbol 键，读键路径与写键路径一致。
-        let sym_key = {
-            let sym_ptr = self.session.builtin_world().sym_to_primitive.as_ptr() as *mut JsObject;
-            JsValue::from_js_object(sym_ptr)
-        };
-        let sym_si = self.property_key_si(sym_key)?;
+        // OrdinaryToPrimitive；well-known symbol 键恒定，直接取保留槽。
+        let sym_si = make_well_known_symbol_key(TO_PRIMITIVE_SYMBOL_ID);
         let exotic = {
             let obj = unsafe { &*obj_ptr };
             self.ordinary_get(obj, sym_si, value)?

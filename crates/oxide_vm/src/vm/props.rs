@@ -6,11 +6,22 @@ use oxide_runtime_api as coercion;
 use oxide_types::object::JsObject;
 use oxide_types::private_key::{
     int_key_value, is_int_key, make_int_key, make_symbol_key, make_well_known_symbol_key, INT_KEY_COUNT,
+    WELL_KNOWN_SYMBOL_COUNT,
 };
 use oxide_types::value::JsValue;
 
 use super::{canonical_index_of, canonical_index_units, Vm, MAX_PROTO_CHAIN_DEPTH};
 use crate::vm_trace;
+
+/// 把符号原语的下标编码为属性键：well-known 下标走保留键槽，用户下标加偏移，
+/// 两段键区间不重叠。
+fn symbol_value_key(idx: u32) -> u32 {
+    if idx < WELL_KNOWN_SYMBOL_COUNT {
+        make_well_known_symbol_key(idx)
+    } else {
+        make_symbol_key(idx)
+    }
+}
 
 impl Vm {
     /// 把 `JsValue` 转为属性键 si（字符串 intern id，`u32`）。
@@ -43,11 +54,12 @@ impl Vm {
             // 单元载荷：键推导同规范（见 string_key_units）。
             return Ok(self.string_key_units(&s.units()));
         }
-        // Symbol 值直接编码为 Symbol 键（不进字符串 interner，键相互独立）。
+        // Symbol 值直接编码为 Symbol 键（不进字符串 interner，键相互独立）；
+        // well-known 下标占保留槽，用户符号下标须加偏移，两段键区间不重叠。
         if val.is_symbol() {
-            return Ok(make_symbol_key(val.as_symbol_index()));
+            return Ok(symbol_value_key(val.as_symbol_index()));
         }
-        // well-known symbol 是空对象：按指针比对映射到各自的 well-known Symbol 键，
+        // 遗留的 well-known symbol 空对象：按指针比对映射到各自的 well-known Symbol 键，
         // 避免全部塌缩成同一个键。
         if val.is_object() {
             if let Some(id) = oxide_runtime_api::well_known_symbol_id(self, val.as_js_object_ptr()) {
@@ -57,7 +69,7 @@ impl Vm {
             // 其余字符串按单元序列推导键（避免 lossy 文本桥接破坏孤立 surrogate 键）。
             let prim = coercion::to_primitive(val, coercion::ToPrimitiveHint::String, self)?;
             if prim.is_symbol() {
-                return Ok(make_symbol_key(prim.as_symbol_index()));
+                return Ok(symbol_value_key(prim.as_symbol_index()));
             }
             let units = oxide_runtime_api::to_units_full(prim, self)?;
             return Ok(self.string_key_units(&units));

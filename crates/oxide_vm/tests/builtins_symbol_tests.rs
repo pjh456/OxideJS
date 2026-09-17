@@ -67,28 +67,28 @@ fn typeof_symbol_variable() {
 fn symbol_match_exists() {
     let mut vm = Vm::new();
     let result = eval(&mut vm, "typeof Symbol.match").unwrap();
-    assert_eq!(to_str(&vm, result), "object");
+    assert_eq!(to_str(&vm, result), "symbol");
 }
 
 #[test]
 fn symbol_replace_exists() {
     let mut vm = Vm::new();
     let result = eval(&mut vm, "typeof Symbol.replace").unwrap();
-    assert_eq!(to_str(&vm, result), "object");
+    assert_eq!(to_str(&vm, result), "symbol");
 }
 
 #[test]
 fn symbol_search_exists() {
     let mut vm = Vm::new();
     let result = eval(&mut vm, "typeof Symbol.search").unwrap();
-    assert_eq!(to_str(&vm, result), "object");
+    assert_eq!(to_str(&vm, result), "symbol");
 }
 
 #[test]
 fn symbol_split_exists() {
     let mut vm = Vm::new();
     let result = eval(&mut vm, "typeof Symbol.split").unwrap();
-    assert_eq!(to_str(&vm, result), "object");
+    assert_eq!(to_str(&vm, result), "symbol");
 }
 
 // --- Symbol coercion ---
@@ -120,7 +120,7 @@ fn symbol_not_equals_string() {
 fn symbol_iterator_exists() {
     let mut vm = Vm::new();
     let result = eval(&mut vm, "typeof Symbol.iterator").unwrap();
-    assert_eq!(to_str(&vm, result), "object");
+    assert_eq!(to_str(&vm, result), "symbol");
 }
 
 #[test]
@@ -164,7 +164,7 @@ fn symbol_key_for_non_symbol_throws_type_error() {
 fn symbol_has_instance_exists() {
     let mut vm = Vm::new();
     let result = eval(&mut vm, "typeof Symbol.hasInstance").unwrap();
-    assert_eq!(to_str(&vm, result), "object");
+    assert_eq!(to_str(&vm, result), "symbol");
 }
 
 #[test]

@@ -140,27 +140,11 @@ fn walk_own_symbol_keys<H: VmHost>(vm: &H, obj: &JsObject) -> Vec<(u32, u32)> {
     keys
 }
 
-/// 把 Symbol 键反解为对应的 Symbol 值：well-known 键还原为内置 symbol 对象，
-/// 用户 symbol 键还原为 `JsValue::symbol` 值。
-fn decode_symbol_key<H: VmHost>(vm: &H, key: u32) -> JsValue {
+/// 把 Symbol 键反解为对应的 Symbol 值：well-known 键还原为对应下标的符号原语，
+/// 用户 symbol 键按偏移还原为 `JsValue::symbol` 值。
+fn decode_symbol_key(key: u32) -> JsValue {
     if let Some(id) = well_known_symbol_id_from_key(key) {
-        let world = vm.session().builtin_world();
-        let ptr = match id {
-            0 => world.sym_iterator.as_ptr(),
-            1 => world.sym_match.as_ptr(),
-            2 => world.sym_replace.as_ptr(),
-            3 => world.sym_search.as_ptr(),
-            4 => world.sym_split.as_ptr(),
-            5 => world.sym_to_primitive.as_ptr(),
-            6 => world.sym_has_instance.as_ptr(),
-            7 => world.sym_match_all.as_ptr(),
-            8 => world.sym_async_iterator.as_ptr(),
-            10 => world.sym_species.as_ptr(),
-            11 => world.sym_async_dispose.as_ptr(),
-            12 => world.sym_dispose.as_ptr(),
-            _ => world.sym_to_string_tag.as_ptr(),
-        };
-        return JsValue::from_js_object(ptr as *mut JsObject);
+        return JsValue::symbol(id);
     }
     JsValue::symbol(symbol_index_from_key(key))
 }
@@ -174,11 +158,11 @@ fn decode_symbol_key<H: VmHost>(vm: &H, key: u32) -> JsValue {
 /// - 无自身 Symbol 键时返回空向量；数组元素区不含 Symbol 键。
 ///
 /// # 注意事项
-/// - 只读 shape 链，不分配对象；well-known symbol 值指向 session 内建 symbol 对象。
+/// - 只读 shape 链，不分配对象；well-known symbol 物化为符号原语。
 pub fn own_symbol_key_values<H: VmHost>(vm: &H, obj: &JsObject) -> Vec<JsValue> {
     walk_own_symbol_keys(vm, obj)
         .iter()
-        .map(|(key, _)| decode_symbol_key(vm, *key))
+        .map(|(key, _)| decode_symbol_key(*key))
         .collect()
 }
 

@@ -513,15 +513,15 @@ fn iterator_prototype_to_string_tag_accessor() {
 #[test]
 fn symbol_dispose_and_async_dispose_registered() {
     let mut vm = Vm::new();
-    // well-known symbol 以空对象表示，typeof 为 object；两符号互不相同。
+    // well-known symbol 以符号原语表示，typeof 为 symbol；两符号互不相同。
     let bool_cases = [
-        ("typeof Symbol.dispose === 'object'", true),
-        ("typeof Symbol.asyncDispose === 'object'", true),
+        ("typeof Symbol.dispose === 'symbol'", true),
+        ("typeof Symbol.asyncDispose === 'symbol'", true),
         ("Symbol.dispose !== Symbol.asyncDispose", true),
         ("Symbol.dispose !== Symbol.iterator", true),
         // 键可作属性名使用（well-known 键映射一致）。
         ("({ [Symbol.dispose]: 1 })[Symbol.dispose] === 1", true),
-        // getOwnPropertySymbols 能反解出同一符号对象。
+        // getOwnPropertySymbols 能反解出同一符号原语。
         ("Object.getOwnPropertySymbols({ [Symbol.dispose]: 1 })[0] === Symbol.dispose", true),
     ];
     for (src, expected) in bool_cases {
@@ -529,7 +529,7 @@ fn symbol_dispose_and_async_dispose_registered() {
         assert_eq!(result.as_bool(), expected, "for {}", src);
     }
     // String(Symbol) 走 SymbolDescriptiveString（规范 String 构造器步骤），
-    // 不经 ToString——well-known 符号对象按描述名产出。
+    // 不经 ToString——well-known 符号按描述名产出。
     let s = eval(&mut vm, "String(Symbol.dispose)").unwrap();
     assert_eq!(to_str(&vm, s), "Symbol(Symbol.dispose)");
 }
@@ -684,8 +684,8 @@ fn iterator_prototype_rebound_after_full_reset() {
         ("typeof Iterator.prototype[Symbol.dispose] === 'function'", true),
         ("Iterator.name === 'Iterator'", true),
         ("Iterator.length === 0", true),
-        ("typeof Symbol.dispose === 'object'", true),
-        ("typeof Symbol.asyncDispose === 'object'", true),
+        ("typeof Symbol.dispose === 'symbol'", true),
+        ("typeof Symbol.asyncDispose === 'symbol'", true),
     ];
     for (src, expected) in cases {
         let result = eval(&mut vm, src).unwrap();

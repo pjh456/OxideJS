@@ -16,6 +16,7 @@ use rustc_hash::FxBuildHasher;
 use crate::session_gc::SessionGc;
 use crate::vm::ForInIter;
 use oxide_types::object::{Cell as UpvalueCell, JsObject, JsString};
+use oxide_types::private_key::WELL_KNOWN_SYMBOL_COUNT;
 use oxide_types::value::JsValue;
 
 /// session arena 与 GC 簿记。
@@ -92,6 +93,10 @@ impl GcState {
 }
 
 /// Symbol 的 intern 状态。
+///
+/// 符号下标 `0..WELL_KNOWN_SYMBOL_COUNT` 保留给 well-known symbol（描述取内建
+/// 名表），用户 `Symbol()`/`Symbol.for()` 的下标自此区间之后递增，
+/// `symbol_descriptions` 只存用户符号描述。
 pub(crate) struct SymbolState {
     pub(crate) symbol_counter: u32,
     pub(crate) symbol_descriptions: Vec<Option<String>>,
@@ -107,7 +112,8 @@ impl SymbolState {
 
     pub(crate) fn intern(&mut self, description: Option<String>) -> u32 {
         self.symbol_counter = self.symbol_counter.wrapping_add(1);
-        let idx = self.symbol_descriptions.len() as u32;
+        // 用户符号下标顺延到 well-known 保留区间之后，与 well-known 下标空间不重叠。
+        let idx = WELL_KNOWN_SYMBOL_COUNT + self.symbol_descriptions.len() as u32;
         self.symbol_descriptions.push(description);
         idx
     }
@@ -121,7 +127,13 @@ impl SymbolState {
     }
 
     pub(crate) fn description(&self, id: u32) -> Option<&str> {
-        self.symbol_descriptions.get(id as usize).and_then(|s| s.as_deref())
+        // well-known 下标区间取内建名表，用户区间按偏移查描述槽。
+        if id < WELL_KNOWN_SYMBOL_COUNT {
+            return oxide_runtime_api::well_known_symbol_name(id);
+        }
+        self.symbol_descriptions
+            .get((id - WELL_KNOWN_SYMBOL_COUNT) as usize)
+            .and_then(|s| s.as_deref())
     }
 
     pub(crate) fn key_for_id(&self, id: u32) -> Option<String> {
