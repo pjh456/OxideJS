@@ -31,7 +31,7 @@ pub struct Shape {
 /// 共享隐藏类存储。
 ///
 /// 并发模型：
-/// - `shapes` 为 append-mostly，受 `RwLock` 保护。
+/// - `shapes` 以追加为主，受 `RwLock` 保护。
 /// - `transitions` 是以 `(parent_shape, property_name)` 为键的分片 `DashMap`。
 /// - `positions` 缓存 `(shape_id, prop_name) → slot`，供 O(1) 重复查询。
 /// - 分片数固定，保证跨机器的争用行为可复现，不依赖 DashMap 的 CPU 相关默认值。
@@ -245,8 +245,8 @@ mod tests {
     use super::*;
     use std::sync::Barrier;
 
-    /// overflow 态复位钉：曾触发 overflow 后清空，overflow 标志与映射须一并清空，
-    /// 后续 make_shape 从新空间取小 id（而非旧 overflow 映射 id）。
+    /// overflow 态复位：曾触发 overflow 后 `clear_transient` 须一并清空 overflow
+    /// 标志与 overflow 映射，后续 `make_shape` 从新空间取小 id 而非旧映射 id。
     #[test]
     fn clear_transient_resets_overflow_state() {
         let forge = ShapeForge::new();

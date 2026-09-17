@@ -1,3 +1,6 @@
+//! kernel 子系统日志宏：`kernel_error!`/`kernel_warn!`/`kernel_info!`/`kernel_debug!`/
+//! `kernel_trace!`，target 为 `oxide::kernel`。
+
 #[macro_export]
 macro_rules! kernel_error {
     ($($arg:tt)*) => {

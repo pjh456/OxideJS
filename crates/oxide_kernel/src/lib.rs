@@ -1,4 +1,4 @@
-#![doc = "OxideJS - Shared kernel (CodeForge, ShapeForge, PropForge, StringForge, BuiltinWorld)"]
+#![doc = "OxideJS 共享内核：所有 VM 实例共享的只读缓存（CodeForge/ShapeForge/PropForge/StringForge）与内置对象 world（BuiltinWorld）的构造和重建。"]
 //!
 //! 运行时共享内核层：所有 VM 实例共享的只读缓存（code cache、hidden class /
 //! shape store、属性模板、字符串 intern 表）以及内置对象（builtin world）的
@@ -7,7 +7,7 @@
 
 /// 内置运行时对象（Object/Array/... 及各自原型）的构造与重建。
 pub mod builtin;
-/// compiled bytecode cache 的再导出（来自 `oxide_code_cache`）。
+/// 字节码缓存的再导出（来自 `oxide_code_cache`）。
 pub mod code_forge;
 /// kernel 核心：配置、共享缓存入口（[`KernelCore`]）与 per-session 状态。
 pub mod kernel;

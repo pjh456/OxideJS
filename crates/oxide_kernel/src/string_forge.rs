@@ -7,8 +7,7 @@ use rustc_hash::FxHasher;
 
 use crate::{kernel_debug, kernel_trace};
 
-/// 完整 64 位内容哈希。替代旧的 16 位 `hash16`，使 interner 的
-/// hash→候选表碰撞风险可忽略。
+/// 完整 64 位内容哈希。interner 的 hash→候选表碰撞风险可忽略。
 fn hash64(s: &str) -> u64 {
     let mut h = FxHasher::default();
     s.hash(&mut h);
@@ -239,15 +238,15 @@ pub fn source_escape_to_key(text: &str) -> String {
 /// 一条 intern 过的键。`data` 是泄漏的 `&'static str`——永久键从不释放
 /// （按设计 append-only），所以泄漏即存储模型，而非 bug。键 id 与 64 位
 /// 哈希经 `DashMap` 的哈希键→候选 id 表寻址，条目自身不存哈希。
-/// `#[repr(C)]` 把布局钉为连续（指针, 长度）：字段序与对齐由 repr(C)
-/// 保证（非 pack 保证），16B 由下方尺寸断言钉死。
+/// 布局以 `repr(C)` 固定为连续 16 字节（指针, 长度）；下方 `size_of`
+/// 断言使布局变更编译失败。
 #[repr(C)]
 #[derive(Clone, Copy)]
 struct PermEntry {
     data: &'static str,
 }
 
-// 布局钉：repr(C) 保证连续 16B；布局漂移即编译失败。
+// `repr(C)` 布局固定为连续 16B；布局变更时此断言编译失败。
 const _: () = assert!(std::mem::size_of::<PermEntry>() == 16);
 
 /// 所有 VM 共享的 append-only、永不移动、读无锁的键 interner。
@@ -318,8 +317,8 @@ impl PermInterner {
         (id, hash)
     }
 
-    /// 以零克隆解析键 id 的文本。返回的 `&'static str`
-    /// 在整个程序生命周期内有效（键从不释放）。
+    /// 以 `&'static str` 返回键 id 的文本，不分配；返回引用在整个程序
+    /// 生命周期内有效（键从不释放）。
     pub fn lookup(&self, id: u32) -> Option<&'static str> {
         let entries = self.entries.read().unwrap();
         entries.get(id as usize).map(|e| e.data)
@@ -431,7 +430,7 @@ pub fn small_int_ptr(n: u32) -> Option<*const JsString> {
 /// typeof 结果文本表（下标见 [`typeof_string_ptr`]），进程生命周期内不释放。
 const TYPEOF_TEXTS: [&str; 8] = ["undefined", "object", "boolean", "number", "string", "symbol", "bigint", "function"];
 
-/// typeof 结果永久 `JsString` 指针表：typeof 是高频分支产出（typeof_ops 每迭代 4 次），
+/// typeof 结果永久 `JsString` 指针表：typeof 运算符是高频产出路径，
 /// 复用静态表免每次 session 分配与 interner 锁查。泄漏面严格有界：8 条目 ≈ 数百字节。
 static TYPEOF_TABLE: [OnceLock<StringPtr>; 8] = [const { OnceLock::new() }; 8];
 

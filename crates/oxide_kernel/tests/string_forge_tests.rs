@@ -191,7 +191,7 @@ fn source_escape_roundtrip_via_key() {
 #[test]
 fn string_ptr_materializes_units() {
     let interner = PermInterner::new();
-    // 良形键：物化内容与旧行为逐位一致，且二次调用返回同一稳定指针。
+    // 良形键：物化内容与键文本逐字一致，且二次调用返回同一稳定指针。
     let (id, _) = interner.intern("perm");
     let ptr = interner.string_ptr(id);
     assert_eq!(unsafe { (*ptr).as_str() }, "perm");
