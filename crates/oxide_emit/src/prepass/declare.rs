@@ -174,6 +174,11 @@ impl Emitter {
     /// # 边界与前提
     /// - 只处理块内函数声明；switch 不推 scope（其 case 内函数声明随 switch
     ///   作用域修复一并处理）；export 声明不可能出现在块内。
+    /// - `if` 支臂的裸函数声明属 Annex B 隐式支臂块：名已有外层 var 绑定承载
+    ///   （非 eval 且未被形参/词法同名抑制）时不建外层块绑定，声明点物化进该
+    ///   var 槽（建外层块 Let 会遮蔽同名 var）；名无外层 var 绑定（形参/词法抑制
+    ///   或 eval 脚本顶层）时保留块级绑定承载支臂闭包，避免声明点覆写外层绑定。
+    ///   支臂为块时由该块自身的块入口流程处理。
     /// - 与 lexical 预声明的顺序：本函数在前，`{ let g; function g(){} }` 时
     ///   lexical 的 `declare_predeclared` 命中已存在的函数绑定自然报重复声明错，
     ///   避免函数预声明被 lexical 占位静默覆盖而破坏 let 的 TDZ。
@@ -195,9 +200,9 @@ impl Emitter {
                     ctx.pop_scope();
                 }
                 Statement::IfStatement(is) => {
-                    self.predeclare_block_function_declarations(std::slice::from_ref(&is.consequent), ctx);
+                    self.predeclare_if_arm_block_function(&is.consequent, ctx);
                     if let Some(alt) = &is.alternate {
-                        self.predeclare_block_function_declarations(std::slice::from_ref(alt), ctx);
+                        self.predeclare_if_arm_block_function(alt, ctx);
                     }
                 }
                 Statement::WhileStatement(wh) => {
@@ -246,6 +251,36 @@ impl Emitter {
                 _ => {}
             }
         }
+    }
+
+    /// 预声明 `if` 支臂裸函数声明的块级绑定（展开标签链后取函数声明）：仅当该
+    /// 名没有外层 var 绑定承载时才在当前块建块 Let，承载支臂闭包，避免声明点
+    /// 覆写外层形参/词法绑定；名已有外层 var 绑定（非 eval 且未被形参/词法同名
+    /// 抑制）时不建块级绑定，声明点物化进该 var 槽。
+    ///
+    /// # 边界与前提
+    /// - 支臂为块时返回：该块自身的块入口流程预声明其函数声明。
+    /// - 支臂为其它语句（含嵌套 `if`）时返回：嵌套 `if` 由 emit 到达时经本函数
+    ///   的 `IfStatement` 臂处理。
+    /// - 须在 `block_fn_suppressed` 已构建之后调用（函数体/程序声明实例化阶段
+    ///   先于任何块 emit）；`is_eval_script` 仅标记 eval 脚本顶层程序，其顶层
+    ///   不建块级函数外层 var 绑定。
+    fn predeclare_if_arm_block_function(&self, stmt: &Statement, ctx: &mut CompileCtx) {
+        let mut cur = stmt;
+        while let Statement::LabeledStatement(ls) = cur {
+            cur = &ls.body;
+        }
+        let Statement::FunctionDeclaration(f) = cur else {
+            return;
+        };
+        let Some(identifier) = &f.id else {
+            return;
+        };
+        if !ctx.is_eval_script && !ctx.block_fn_suppressed.contains(identifier.name.as_str()) {
+            return;
+        }
+        let reg = ctx.alloc_reg();
+        let _ = ctx.declare_initialized(identifier.name.as_str(), reg, VariableDeclarationKind::Let, false);
     }
 
     /// 预声明当前作用域直接子语句中的 `let`/`const`/`class` 绑定（未初始化，
