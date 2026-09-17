@@ -1,4 +1,4 @@
-//! 未声明标识符读的 ReferenceError 语义（B031 Step B 落地）。
+//! 未声明标识符读的 ReferenceError 语义。
 //!
 //! 覆盖：读未声明抛 ReferenceError；typeof 未声明返回 "undefined"；
 //! sloppy 写后读正常；harness 全局 var 声明安全；内置标识符不误判。

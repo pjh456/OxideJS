@@ -115,7 +115,7 @@ fn natural_done_skips_return_no_slot_residue() {
     );
 }
 
-/// 复现 B067 RG1 裸值传递：promise 链中抛出的裸值 1 必须原样传递，
+/// 裸值拒绝原因原样传递：promise 链中抛出的裸值 1 必须原样传递，
 /// 拒绝原因不得被前置路径残留值替换。
 #[test]
 fn promise_chain_bare_reason_preserved() {
