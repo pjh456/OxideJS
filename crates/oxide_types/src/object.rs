@@ -61,7 +61,10 @@ pub const MAX_DENSE_PROPS: usize = 1_000_000;
 ///   native_arg_count: u8 (1 字节)
 ///   type_tag: u8 — 标识包装/外来对象种类的 OBJ_TYPE_* 常量 (1 字节)
 ///   is_session_epoch: u8 (1 字节)
-///   _pad: u8
+///   _pad: u8 位
+///     \[0\]     is_frozen
+///     \[1\]     is_sealed
+///     \[2\]     is_module_namespace
 ///   array_elements: *mut u8 (8 字节，数组对象元素区 Box\<Vec\<JsValue\>\>)
 ///   array_elements_meta: *mut u8 (8 字节，数组元素元数据 Box\<Vec\<Option\<PropMetaEntry\>\>\>)
 ///   hash_props: *mut u8 (8 字节，命名属性 Box\<Vec\<JsValue\>\>)
@@ -702,6 +705,20 @@ impl JsObject {
             self._pad |= 1 << 1;
         } else {
             self._pad &= !(1 << 1);
+        }
+    }
+
+    /// 是否模块命名空间 exotic 对象（`[[Set]]`/`[[DefineOwnProperty]]` 有专属语义）。
+    pub fn is_module_namespace(&self) -> bool {
+        (self._pad >> 2) & 1 != 0
+    }
+
+    /// 设置模块命名空间 exotic 标志。
+    pub fn set_module_namespace(&mut self, value: bool) {
+        if value {
+            self._pad |= 1 << 2;
+        } else {
+            self._pad &= !(1 << 2);
         }
     }
 

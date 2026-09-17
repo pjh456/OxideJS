@@ -1,6 +1,6 @@
 use oxide_kernel::shape_forge::EMPTY_SHAPE_ID;
 use oxide_types::mem::P;
-use oxide_types::object::{JsObject, PropAttributes};
+use oxide_types::object::JsObject;
 use oxide_types::value::JsValue;
 
 use crate::object::{delete_own_property, key_si_to_js_value, own_symbol_key_values, walk_own_keys};
@@ -70,6 +70,10 @@ pub fn reflect_construct<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 
 /// `Reflect.defineProperty(target, key, descriptor)`：按 descriptor 定义属性，
 /// 数据/访问器属性混用或非法 getter/setter 返回 false。
+///
+/// # 注意事项
+/// - 与 `Object.defineProperty` 共用 `define_from_descriptor`：缺失字段回填现有
+///   属性、模块命名空间 exotic 收窄语义一处生效；错误投影为布尔 false。
 pub fn reflect_define_property<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let target_val = arg(vm, args, 1);
     let Some(target_ptr) = object_ptr(target_val) else {
@@ -81,43 +85,7 @@ pub fn reflect_define_property<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResu
     };
 
     let key_si = vm.property_key_si(arg(vm, args, 2));
-    let value_si = vm.kernel_core().perm_interner().intern("value").0;
-    let get_si = vm.kernel_core().perm_interner().intern("get").0;
-    let set_si = vm.kernel_core().perm_interner().intern("set").0;
-    let writable_si = vm.kernel_core().perm_interner().intern("writable").0;
-    let enumerable_si = vm.kernel_core().perm_interner().intern("enumerable").0;
-    let configurable_si = vm.kernel_core().perm_interner().intern("configurable").0;
-
-    let value_field = own_field(vm, desc_val, value_si);
-    let get_field = own_field(vm, desc_val, get_si);
-    let set_field = own_field(vm, desc_val, set_si);
-    let writable_field = own_field(vm, desc_val, writable_si);
-    let enumerable = own_field(vm, desc_val, enumerable_si)
-        .map(oxide_runtime_api::to_boolean)
-        .unwrap_or(false);
-    let configurable = own_field(vm, desc_val, configurable_si)
-        .map(oxide_runtime_api::to_boolean)
-        .unwrap_or(false);
-
-    let has_data = value_field.is_some() || writable_field.is_some();
-    let has_accessor = get_field.is_some() || set_field.is_some();
-    if has_data && has_accessor {
-        return NativeResult::Ok(JsValue::bool(false));
-    }
-
-    let target = unsafe { &mut *target_ptr };
-    let result = if has_accessor {
-        let get = get_field.unwrap_or(JsValue::undefined());
-        let set = set_field.unwrap_or(JsValue::undefined());
-        if (!get.is_undefined() && !is_callable(get)) || (!set.is_undefined() && !is_callable(set)) {
-            return NativeResult::Ok(JsValue::bool(false));
-        }
-        vm.define_accessor_property(target, key_si, get, set, PropAttributes::new(false, enumerable, configurable))
-    } else {
-        let value = value_field.unwrap_or(JsValue::undefined());
-        let writable = writable_field.map(oxide_runtime_api::to_boolean).unwrap_or(false);
-        vm.define_data_property(target, key_si, value, PropAttributes::new(writable, enumerable, configurable))
-    };
+    let result = crate::object::define_from_descriptor(vm, target_ptr, key_si, desc_val);
     NativeResult::Ok(JsValue::bool(result.is_ok()))
 }
 
@@ -294,14 +262,4 @@ fn array_like_elements(value: JsValue) -> Option<Vec<JsValue>> {
     let ptr = object_ptr(value)?;
     let obj = unsafe { &*ptr };
     Some((0..obj.prop_count() as usize).map(|idx| obj.get_prop_at(idx)).collect())
-}
-
-/// 按 ToPropertyDescriptor 语义取描述符字段：沿原型链判存在性，存在时经
-/// ordinary_get 取值（触发 accessor getter，receiver 为描述符对象本身）。
-fn own_field<H: VmHost>(vm: &mut H, desc: JsValue, prop_si: u32) -> Option<JsValue> {
-    // ordinary_get 对缺失属性返回 undefined，无法区分"不存在"与"值为
-    // undefined"，故先用 resolve_property 沿原型链判 HasProperty。
-    let obj = unsafe { &*desc.as_js_object_ptr() };
-    vm.resolve_property(obj, prop_si)?;
-    vm.ordinary_get(obj, prop_si, desc).ok()
 }

@@ -14,9 +14,12 @@ use oxide_types::value::JsValue;
 /// `Symbol.toStringTag` 在 well-known symbol 表中的序号，命名空间标签键按其编码。
 const TO_STRING_TAG_SYMBOL_ID: u32 = 9;
 
-/// 模块命名空间导出属性描述符：不可写、可枚举、不可配置（module namespace exotic）。
+/// 模块命名空间导出属性描述符：可写、可枚举、不可配置（module namespace exotic）。
+///
+/// 规范 10.4.6.5 返回 `{writable: true, enumerable: true, configurable: false}`；
+/// 写保护由命名空间的 `[[Set]]`/`[[DefineOwnProperty]]` 专属语义承担，不靠描述符位。
 fn ns_attrs() -> PropAttributes {
-    PropAttributes::new(false, true, false)
+    PropAttributes::new(true, true, false)
 }
 
 fn type_error<H: VmHost>(vm: &mut H, msg: &str) -> NativeResult {
@@ -24,6 +27,10 @@ fn type_error<H: VmHost>(vm: &mut H, msg: &str) -> NativeResult {
 }
 
 /// `__moduleObject()`：创建模块命名空间对象（null 原型，带 @@toStringTag Symbol 键）。
+///
+/// # 副作用
+/// - 对象创建起即标记 module namespace exotic 并置 non-extensible：导出定义由
+///   `module_set`/`module_star` 的瞬态可扩展窗口旁路，其余写/定义一律拒绝。
 pub fn module_object<H: VmHost>(vm: &mut H, _args: &[u8]) -> NativeResult {
     let obj = vm.alloc_object(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()));
     let tag_si = make_well_known_symbol_key(TO_STRING_TAG_SYMBOL_ID);
@@ -32,6 +39,8 @@ pub fn module_object<H: VmHost>(vm: &mut H, _args: &[u8]) -> NativeResult {
     if let Err(e) = vm.define_data_property(obj_ref, tag_si, tag_val, PropAttributes::new(false, false, false)) {
         return NativeResult::Err(crate::error::create_error(vm, &e));
     }
+    obj_ref.set_module_namespace(true);
+    obj_ref.set_extensible(false);
     NativeResult::Ok(JsValue::from_js_object(obj))
 }
 
@@ -50,7 +59,12 @@ pub fn module_set<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let value = vm.reg(args[3]);
     let name_si = vm.property_key_si(name_val);
     let obj = unsafe { &mut *ns_ptr };
-    if let Err(e) = vm.define_data_property(obj, name_si, value, ns_attrs()) {
+    // 导出定义窗口：命名空间创建起不可扩展，定义新导出须瞬态放开扩展性。窗口内
+    // 不运行 JS，无可观察副作用；错误路径先复位以维持 non-extensible 不变式。
+    obj.set_extensible(true);
+    let result = vm.define_data_property(obj, name_si, value, ns_attrs());
+    obj.set_extensible(false);
+    if let Err(e) = result {
         return NativeResult::Err(crate::error::create_error(vm, &e));
     }
     // 每次导出写入后重排：自导入在 body 内即可见有序的 [[OwnPropertyKeys]]。
@@ -138,7 +152,11 @@ pub fn module_star<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
             continue;
         }
         let value = src.get_prop_at(pos);
-        if let Err(e) = vm.define_data_property(dst, name_si, value, ns_attrs()) {
+        // star 导出同 module_set：定义新导出走瞬态可扩展窗口，错误路径先复位。
+        dst.set_extensible(true);
+        let result = vm.define_data_property(dst, name_si, value, ns_attrs());
+        dst.set_extensible(false);
+        if let Err(e) = result {
             return NativeResult::Err(crate::error::create_error(vm, &e));
         }
     }
@@ -183,6 +201,9 @@ pub fn module_eval<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 }
 
 /// `__moduleData(kind, content)`：构造数据模块命名空间（json/text；bytes 未支持）。
+///
+/// # 副作用
+/// - 同 `__moduleObject`：标记 module namespace exotic 并置 non-extensible。
 pub fn module_data<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     if args.len() < 3 {
         return type_error(vm, "__moduleData: 2 arguments required");
@@ -216,6 +237,7 @@ pub fn module_data<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     if let Err(e) = vm.define_data_property(obj_ref, default_si, default_val, ns_attrs()) {
         return NativeResult::Err(crate::error::create_error(vm, &e));
     }
+    obj_ref.set_module_namespace(true);
     obj_ref.set_extensible(false);
     NativeResult::Ok(JsValue::from_js_object(obj))
 }

@@ -310,6 +310,14 @@ impl Vm {
             prop_name_si,
             use_frame_push
         );
+        // 模块命名空间 exotic [[Set]] 恒 false（规范 10.4.6.8）：严格抛 TypeError，
+        // sloppy 静默 no-op；Reflect.set 以 strict=true 调用并投影为 false。
+        if obj.is_module_namespace() {
+            if strict {
+                return self.raise_type_error("Cannot assign to a module namespace export");
+            }
+            return Ok(());
+        }
         // TypedArray 整数索引：receiver 为 TA 本体时写底层 buffer（越界静默忽略）；
         // receiver 非 TA 时按规范把写入落到 receiver 对象，不碰 TA buffer。
         if obj.is_typed_array_obj() {

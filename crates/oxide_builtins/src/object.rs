@@ -640,7 +640,7 @@ pub fn object_is<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 ///
 /// # 副作用
 /// - 修改 obj 的 shape 链、属性表与 generation
-fn define_from_descriptor<H: VmHost>(
+pub(crate) fn define_from_descriptor<H: VmHost>(
     vm: &mut H, obj_ptr: *mut JsObject, key_si: u32, desc_val: JsValue,
 ) -> Result<(), String> {
     if !desc_val.is_object() {
@@ -671,6 +671,25 @@ fn define_from_descriptor<H: VmHost>(
         obj.prop_meta_at(pos)
             .unwrap_or_else(|| oxide_types::object::PropMetaEntry::data(PropAttributes::DEFAULT_DATA))
     });
+
+    // 模块命名空间 exotic [[DefineOwnProperty]]（规范 10.4.6.5）：Symbol 键委托
+    // 普通语义；导出键仅接受无变更、值不变或 writable:true，值变与 writable:false
+    // 拒绝；非导出键由对象不可扩展在后续 define 处拒绝。enumerable/configurable
+    // 与 accessor 的收窄由 define_* 的不可配置守卫承担。
+    if unsafe { &*obj_ptr }.is_module_namespace() && !is_symbol_key(key_si) {
+        let Some(pos) = existing_pos else {
+            return Err("Cannot define property on module namespace: not an export".to_string());
+        };
+        if writable_field.is_some_and(|w| !oxide_runtime_api::to_boolean(w)) {
+            return Err("Cannot redefine module namespace export".to_string());
+        }
+        if let Some(v) = value_field {
+            let obj = unsafe { &*obj_ptr };
+            if !oxide_runtime_api::same_value(v, obj.get_prop_at(pos)) {
+                return Err("Cannot redefine module namespace export".to_string());
+            }
+        }
+    }
 
     // 修改已有属性时缺省字段回填现有值，仅定义新属性时缺省才为 false。
     let enumerable = own_field(vm, desc_val, enumerable_si)
@@ -959,6 +978,14 @@ pub fn object_freeze<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         return NativeResult::Ok(val);
     }
     let obj_ptr = val.as_js_object_ptr();
+    {
+        let obj = unsafe { &*obj_ptr };
+        // 模块命名空间导出保持 writable:true，冻结须失败（规范 SetIntegrityLevel）。
+        // 无字符串导出的空命名空间没有可写属性，允许冻结成功。
+        if obj.is_module_namespace() && !walk_own_keys(vm, obj).is_empty() {
+            return NativeResult::Err(crate::error::create_type_error(vm, "Cannot freeze module namespace"));
+        }
+    }
     {
         let obj = unsafe { &mut *obj_ptr };
         // 命名属性：walk_own_keys 返回绝对存储索引（数组含元素区偏移）。

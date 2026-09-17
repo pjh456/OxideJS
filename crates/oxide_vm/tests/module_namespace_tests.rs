@@ -15,7 +15,10 @@ impl ModuleSourceLoader for FileLoader {
     fn resolve(
         &mut self, base_dir: &str, specifier: &str, _attributes: &[(&str, &str)],
     ) -> Result<ResolvedModule, String> {
-        let full = std::path::Path::new(base_dir).join(specifier);
+        let joined = std::path::Path::new(base_dir).join(specifier);
+        // 解析为规范绝对路径：自导入身份比较要求 loader 的 path 与入口模块的
+        // 规范路径逐字对齐（emit 侧入口路径已 canonicalize）。
+        let full = std::fs::canonicalize(&joined).map_err(|e| format!("cannot read {specifier}: {e}"))?;
         let source = std::fs::read_to_string(&full).map_err(|e| format!("cannot read {specifier}: {e}"))?;
         Ok(ResolvedModule {
             source,
@@ -96,5 +99,47 @@ fn namespace_to_string_tag_symbol_key_and_own_keys() {
     assert_eq!(
         result, "Module|string|[object Module]|1|true|3|a,b,default|4|3|true|true|true|false|false|false|-1|3",
         "命名空间标签 Symbol 键与自身键枚举面不符"
+    );
+}
+
+#[test]
+fn namespace_exotic_semantics() {
+    // 模块命名空间 exotic 四语义：创建起不可扩展、导出 writable:true、
+    // [[Set]] 恒 false、[[DefineOwnProperty]] 收窄、Object.freeze 恒抛。
+    // 用自导入在 body 内观测扩展性（此时 body 尚未执行到 seal）。
+    let cwd = std::env::current_dir().expect("cwd");
+    let dir = cwd.join("__module_namespace_exotic__");
+    std::fs::create_dir_all(&dir).expect("mkdir");
+    std::fs::write(
+        dir.join("main.mjs"),
+        "import * as ns from './main.mjs';\n \
+         export const x = 1;\n \
+         export default 2;\n \
+         const d = Object.getOwnPropertyDescriptor(ns, 'x');\n \
+         function threw(fn) { try { fn(); return false; } catch (e) { return e instanceof TypeError; } }\n \
+         globalThis.__ns = [\n \
+           Object.isExtensible(ns),\n \
+           d.writable === true && d.enumerable === true && d.configurable === false,\n \
+           Reflect.set(ns, 'x', 9),\n \
+           threw(function () { ns.x = 9; }),\n \
+           Reflect.set(ns, Symbol('s'), 1),\n \
+           Reflect.defineProperty(ns, 'x', {}),\n \
+           Reflect.defineProperty(ns, 'x', { value: 9 }),\n \
+           threw(function () { Object.defineProperty(ns, 'x', { value: 9 }); }),\n \
+           Reflect.defineProperty(ns, 'x', { writable: false }),\n \
+           Reflect.defineProperty(ns, 'newKey', {}),\n \
+           threw(function () { Object.freeze(ns); }),\n \
+           Object.isFrozen(ns),\n \
+           Object.seal(ns) === ns,\n \
+           ns.default,\n \
+         ].join('|');",
+    )
+    .expect("write main");
+    let _cleanup = Cleanup(dir.clone());
+
+    let result = run_namespace_module(&dir);
+    assert_eq!(
+        result, "false|true|false|true|false|true|false|true|false|false|true|false|true|2",
+        "命名空间 exotic 语义不符"
     );
 }
