@@ -215,9 +215,10 @@ impl Emitter {
                                 // var 名集 ∪ 顶层函数声明名，物化 c:true 全局属性）
                                 // 可删；eval 顶层 let/const 不在名集内（自身 lexical
                                 // 环境不可删），与非 eval 脚本自身顶层 var/函数名
-                                // （c:false）同保留 false。
+                                // （c:false）同保留 false。eval 起源随嵌套函数继承，
+                                // 子 ctx 内 delete 同一名同样判可删。
                                 ctx.is_implicit_global_reg(binding.reg)
-                                    || (ctx.is_eval_script && ctx.global_tier_names.contains(name))
+                                    || (ctx.is_eval_origin && ctx.global_tier_names.contains(name))
                             } else {
                                 // 函数/块作用域局部绑定：非属性引用，恒 false。
                                 false

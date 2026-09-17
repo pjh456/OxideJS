@@ -6,8 +6,11 @@
 //! 环境，declarative 环境不可删）保留 false 常数。覆盖：direct eval 对调用方
 //! 脚本 var、eval 自身 var 真删、跨 eval 真删、函数内隐式全局真删、读侧真删
 //! 可见（删后裸读抛 ReferenceError）、typeof 对删后缺失名不抛、删后重写同步、
-//! 绿基线（脚本 var/顶层函数名/未声明缺失/builtin 槽优先级/strict 调用方
-//! indirect eval）、eval 自身顶层 let/const false 且无全局属性副作用。
+//! 跨嵌套函数 delete 后外层裸读抛 ReferenceError、catch 参数错误类型、eval
+//! 起源随嵌套函数继承（顶层 var 可删/顶层 let 保留）、strict 未声明写抛错、
+//! 嵌套局部变量遮蔽隐式全局名、绿基线（脚本 var/顶层函数名/未声明缺失/builtin
+//! 槽优先级/strict 调用方 indirect eval）、eval 自身顶层 let/const false 且无
+//! 全局属性副作用。
 
 use std::sync::Arc;
 
@@ -125,4 +128,66 @@ fn eval_delete_own_const_returns_false_without_global_property() {
 #[test]
 fn eval_delete_own_let_shadowing_caller_var_returns_false_and_kept() {
     eval_truthy("var l = 5; eval('let l = 1; delete l') === false && l === 5 && globalThis.l === 5");
+}
+
+// ── 跨嵌套函数 delete：外层函数随后裸读该隐式全局名抛 ReferenceError ──
+// 写与读同在外层函数，delete 在嵌套函数；删除登记须对外层读可见。
+#[test]
+fn nested_delete_then_outer_read_throws_reference_error() {
+    eval_truthy(
+        "(function() { q194a = 2; var d = (function() { return delete q194a; })(); \
+         try { void q194a; return false; } catch (e) { return d === true && e instanceof ReferenceError; } })()",
+    );
+}
+
+// ── 跨嵌套 delete 后 catch 参数：错误类型为 ReferenceError 且 name 正确 ──
+#[test]
+fn nested_delete_catch_param_is_reference_error_with_name() {
+    eval_truthy(
+        "(function() { q194b = 1; var d = (function() { return delete q194b; })(); \
+         try { void q194b; return false; } catch (e) { \
+         return d === true && e.name === 'ReferenceError' && e instanceof ReferenceError; } })()",
+    );
+}
+
+// ── 嵌套函数内 delete 未存在名：探针缺失臂 true ──
+#[test]
+fn nested_delete_missing_name_returns_true() {
+    eval_truthy("(function() { return (function() { return delete noexist194; })() === true; })()");
+}
+
+// ── eval 起源随嵌套函数继承：eval 顶层 var 在嵌套函数内删可删（c:true） ──
+#[test]
+fn eval_origin_delete_own_top_var_from_nested_function_returns_true() {
+    eval_truthy("eval('var v194 = 1; function f194() { return delete v194; }') === undefined && f194() === true");
+}
+
+// ── eval 起源守卫：eval 顶层 let 是 lexical 绑定，嵌套函数内 delete 仍 false ──
+#[test]
+fn eval_origin_delete_own_top_let_from_nested_function_returns_false() {
+    eval_truthy("eval('let l194 = 1; function g194() { return delete l194; }') === undefined && g194() === false");
+}
+
+// ── strict 守卫：未声明写仍抛 ReferenceError，不受读路由改动影响 ──
+#[test]
+fn strict_undeclared_write_still_throws_reference_error() {
+    eval_truthy(
+        "(function() { \"use strict\"; try { undeclared194 = 1; return false; } \
+         catch (e) { return e instanceof ReferenceError; } })()",
+    );
+}
+
+// ── 跨嵌套 delete 后重写：镜像槽与全局对象属性重新同步 ──
+#[test]
+fn reassign_after_nested_delete_resyncs_both_sides() {
+    eval_truthy(
+        "(function() { q194c = 1; (function() { return delete q194c; })(); q194c = 9; \
+         return q194c === 9 && globalThis.q194c === 9; })()",
+    );
+}
+
+// ── 嵌套函数内局部同名 var 遮蔽隐式全局名：局部绑定不受全局读路由影响 ──
+#[test]
+fn nested_local_var_shadowing_implicit_global_name_unaffected() {
+    eval_truthy("(function() { q194d = 1; return (function() { var q194d = 2; return q194d === 2; })(); })()");
 }

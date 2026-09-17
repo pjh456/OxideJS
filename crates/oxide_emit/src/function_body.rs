@@ -368,6 +368,9 @@ impl Emitter {
         // 顶层已声明 var 名集随作用域继承：嵌套函数裸读/写顶层 var 直连全局对象
         // （经继承的 scope-0 绑定 + 作用域索引判定，不被局部同名遮蔽误判）。
         ctx.global_tier_names = parent_ctx.global_tier_names.clone();
+        // eval 起源随作用域继承：eval 顶层 var/函数名在嵌套函数内同样可删（物化
+        // c:true 全局属性），delete 分类判定读此标志。
+        ctx.is_eval_origin = parent_ctx.is_eval_origin;
         for (name, reg) in extra_bindings {
             ctx.scopes.symbols.scopes[0].bindings.insert(
                 (*name).to_string(),

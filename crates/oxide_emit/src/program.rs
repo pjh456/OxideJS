@@ -265,6 +265,9 @@ impl Emitter {
         ctx.is_global_scope = true;
         ctx.repl_persist = repl_persist;
         ctx.is_eval_script = is_eval_script;
+        // eval 起源随嵌套函数继承，供 delete 分类判定 eval 顶层可删名；与
+        // `is_eval_script` 区分——后者只标识当前顶层程序，传播会误改全局写点。
+        ctx.is_eval_origin = is_eval_script;
         ctx.source_encoded = self.source_encoded;
         // 脚本顶层严格模式由源码 "use strict" directive 决定（嵌套函数经父 ctx 继承）。
         ctx.is_strict = program.has_use_strict_directive();

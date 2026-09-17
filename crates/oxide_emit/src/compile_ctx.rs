@@ -55,6 +55,11 @@ pub struct CompileCtx {
     /// 是否为 eval 脚本：脚本顶层 var/function 声明落全局对象时属性
     /// configurable:true（普通脚本顶层为 false）。仅动态脚本入口设置。
     pub(crate) is_eval_script: bool,
+    /// 编译树是否源自 eval 脚本：eval 代码自身顶层 var/function 名物化 c:true
+    /// 全局属性、可删，本标志随嵌套函数继承，供 delete 分类判定。不直接继承
+    /// `is_eval_script`——该标志只标识当前顶层程序，且还控制顶层全局写点与块级
+    /// 函数门控，整体传播语义过宽。
+    pub(crate) is_eval_origin: bool,
     /// 源码是否为 `source_escape` 产物（动态编译入口）：正则字面量源文本切片
     /// 的池键形态据此选择（见 [`Emitter::source_encoded`]）。
     pub(crate) source_encoded: bool,
@@ -183,6 +188,7 @@ impl CompileCtx {
             is_global_scope: false,
             repl_persist: false,
             is_eval_script: false,
+            is_eval_origin: false,
             source_encoded: false,
             static_block_this_reg: None,
             field_buffer: None,

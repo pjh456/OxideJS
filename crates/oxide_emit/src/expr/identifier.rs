@@ -50,7 +50,10 @@ impl Emitter {
         // 文档），缺失抛 ReferenceError（unresolvable）。tier 名属性由
         // GlobalDeclarationInstantiation（脚本顶层声明实例化）序言创建（仅删除后缺失）；
         // 未声明名属性缺失即 unresolvable。已声明 var 不再落引擎侧镜像副本。
-        if self.is_global_tier_name(ctx, name) || ctx.implicit_global_reads.contains(&var_reg) {
+        // 隐式全局槽（读侧登记与写侧登记同属一个槽）同样读全局对象属性：属性是
+        // 隐式全局值的唯一真源，嵌套函数内 delete 真删后外层裸读据此可见，引擎侧
+        // 镜像槽不反映删除。
+        if self.is_global_tier_name(ctx, name) || ctx.is_implicit_global_reg(var_reg) {
             let key_idx = ctx.add_constant(Constant::String(name.to_string()));
             ctx.inst(Inst::new(OpCode::LOAD_GLOBAL, Operand::Reg(r), Operand::Const(key_idx), Operand::None));
         } else {
