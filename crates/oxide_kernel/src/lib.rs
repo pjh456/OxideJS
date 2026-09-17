@@ -1,7 +1,7 @@
-#![doc = "OxideJS 共享内核：所有 VM 实例共享的只读缓存（CodeForge/ShapeForge/PropForge/StringForge）与内置对象 world（BuiltinWorld）的构造和重建。"]
+#![doc = "OxideJS 共享内核：所有 VM 实例共享的只读缓存（CodeForge/ShapeForge/PropForge/StringForge）以及内置对象 world（BuiltinWorld）的构造与重建。"]
 //!
 //! 运行时共享内核层：所有 VM 实例共享的只读缓存（code cache、hidden class /
-//! shape store、属性模板、字符串 intern 表）以及内置对象（builtin world）的
+//! shape store、属性模板、append-only 字符串 intern 表）以及内置对象（builtin world）的
 //! 构造与重建逻辑。位于依赖链 `oxide_types ← oxide_kernel ← ...` 中，被
 //! `oxide_vm` 与 `oxide_runtime_api` 共同依赖。
 
