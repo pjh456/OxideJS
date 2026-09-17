@@ -45,9 +45,11 @@ impl Emitter {
             Err(err) => return Err(err),
         };
         let r = ctx.alloc_reg();
-        // 顶层已声明 var 裸读与未声明标识符读同形：读全局对象属性（A 侧单一真值），
-        // 缺失抛 ReferenceError（unresolvable）。tier 名属性由 GDI 序言创建（仅删除后
-        // 缺失）；未声明名属性缺失即 unresolvable。已声明 var 不再落镜像 cell/槽。
+        // 顶层已声明 var 裸读与未声明标识符读同形：读全局对象属性（顶层 var 的唯一
+        // 存储，引擎侧不保留镜像副本，见 `compile_ctx.rs` 的 `global_tier_names` 字段
+        // 文档），缺失抛 ReferenceError（unresolvable）。tier 名属性由
+        // GlobalDeclarationInstantiation（脚本顶层声明实例化）序言创建（仅删除后缺失）；
+        // 未声明名属性缺失即 unresolvable。已声明 var 不再落引擎侧镜像副本。
         if self.is_global_tier_name(ctx, name) || ctx.implicit_global_reads.contains(&var_reg) {
             let key_idx = ctx.add_constant(Constant::String(name.to_string()));
             ctx.inst(Inst::new(OpCode::LOAD_GLOBAL, Operand::Reg(r), Operand::Const(key_idx), Operand::None));
@@ -111,7 +113,8 @@ impl Emitter {
                 ));
             }
         } else if self.is_global_tier_name(ctx, name) {
-            // 顶层已声明 var：with 对象无该属性时回退读全局对象属性（A 侧单一真值）。
+            // 顶层已声明 var：with 对象无该属性时回退读全局对象属性（顶层 var 的唯一
+            // 存储，引擎侧不保留镜像副本）。
             let key_idx = ctx.add_constant(Constant::String(name.to_string()));
             ctx.inst(Inst::new(
                 OpCode::LOAD_GLOBAL,
@@ -147,8 +150,9 @@ impl Emitter {
             let _ = self.emit_throw_error("TypeError", "Assignment to constant variable", ctx);
             return;
         }
-        // 循环 update 段：被捕获绑定走寄存器而非 cell（C 风格 for 每迭代 fresh，
-        // update 写寄存器供下一迭代 fresh 拷贝，不污染本迭代闭包捕获的 cell）。
+        // 循环 update 段：被捕获绑定走寄存器而非 cell——C 风格 for 的 let/const
+        // 循环变量每迭代新分配一个 cell，update 写寄存器供其拷入，不污染本迭代
+        // 闭包捕获的 cell（机制见 `compile_ctx.rs` 的 `register_update_names` 字段文档）。
         if in_loop_update {
             if let Some(reg) = ctx.scopes.symbols.lookup_any(name) {
                 if ctx.targets_readonly_builtin(name, reg) {
@@ -203,7 +207,8 @@ impl Emitter {
             return;
         }
         if is_tier {
-            // 顶层已声明 var 裸写：落全局对象属性（A 侧单一真值），不写镜像槽。
+            // 顶层已声明 var 裸写：写入全局对象属性（顶层 var 的唯一存储，引擎侧不保留
+            // 镜像副本）。
             self.emit_tier_global_write(name, val_reg, ctx);
             return;
         }
@@ -216,8 +221,9 @@ impl Emitter {
         if is_implicit {
             self.emit_implicit_global_write(name, var_reg, ctx);
         } else if ctx.targets_writable_builtin(name, var_reg) {
-            // 可写内置名：值同步落全局对象属性（0x98 对既有可写属性仅更值、
-            // 保 e/c 位），否则镜像槽与 globalThis 反射失步。
+            // 可写内置名：值同步写入全局对象属性——`DEFINE_GLOBAL_PROP_C`（`0x98`，
+            // 见 `crates/oxide_bytecode/src/opcode.rs`）对既有可写属性仅更新值、不改变
+            // enumerable/configurable 位；否则内置名镜像槽与 globalThis 反射读到不同值。
             self.emit_global_put_write(name, var_reg, ctx);
         }
     }

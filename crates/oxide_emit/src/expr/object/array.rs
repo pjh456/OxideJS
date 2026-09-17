@@ -22,8 +22,8 @@ impl Emitter {
             ctx.inst(Inst::new(OpCode::NEW_ARRAY, Operand::Reg(arr_reg), Operand::Imm(n), Operand::None));
             for (i, elem) in arr.elements.iter().enumerate() {
                 let Some(e) = elem.as_expression() else {
-                    // hole?????????????????????????
-                    // ??? delete ?????? hole meta?length ????
+                    // hole 元素：NEW_ARRAY 已按 n 预填本下标的自有属性（初值 undefined），
+                    // 显式删除使 hole 不是自有属性；length 不受 delete 影响，仍为 n。
                     let scratch = ctx.alloc_reg();
                     ctx.inst(Inst::inst_mov(Operand::Reg(scratch), Operand::Reg(arr_reg)));
                     let idx = ctx.add_constant(Constant::Int(i as i32));

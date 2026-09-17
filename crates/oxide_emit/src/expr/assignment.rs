@@ -25,8 +25,9 @@ impl Emitter {
         if !ctx.register_update_names.iter().any(|n| n == name) {
             self.emit_const_write_guard(name, ctx)?;
         }
-        // 循环 update 段：被捕获绑定走寄存器 RMW（C 风格 for 每迭代 fresh，
-        // update 写寄存器供下一迭代 fresh 拷贝，不污染本迭代闭包捕获的 cell）。
+        // 循环 update 段：被捕获绑定走寄存器 RMW——C 风格 for 的 let/const
+        // 循环变量每迭代新分配一个 cell，update 写寄存器供其拷入，不污染本迭代
+        // 闭包捕获的 cell（机制见 `compile_ctx.rs` 的 `register_update_names` 字段文档）。
         if ctx.register_update_names.iter().any(|n| n == name) {
             if let Some(reg) = ctx.scopes.symbols.lookup_any(name) {
                 if ctx.targets_readonly_builtin(name, reg) {
@@ -118,7 +119,8 @@ impl Emitter {
             }
             ctx.inst(Inst::new(op, Operand::Reg(var_reg), Operand::Reg(rhs), Operand::None));
             if is_tier {
-                // 顶层已声明 var 复合赋值：新值落全局对象属性（A 侧单一真值）。
+                // 顶层已声明 var 复合赋值：新值写入全局对象属性（顶层 var 的唯一存储，
+                // 引擎侧不保留镜像副本）。
                 self.emit_tier_global_write(name, var_reg, ctx);
             } else if is_implicit {
                 self.emit_implicit_global_write(name, var_reg, ctx);
@@ -251,7 +253,8 @@ impl Emitter {
                         _ => return Err(format!("compound assignment operator {:?} not supported", assign.operator)),
                     };
                     if assign.operator == AssignmentOperator::Exponential {
-                        // 指数无独立二元指令，COMPOUND_EXP 语义 rd=rd^a：rhs 放 a 槽。
+                        // 指数无独立二元指令，COMPOUND_EXP 语义 rd=rd^a：rhs 放 a 操作数槽
+                        // （指令的三个操作数槽依次为 rd、a、b，a 槽紧随 rd）。
                         ctx.inst(Inst::new(op, Operand::Reg(val_reg), Operand::Reg(rhs), Operand::None));
                     } else {
                         ctx.inst(Inst::new(op, Operand::Reg(val_reg), Operand::Reg(val_reg), Operand::Reg(rhs)));
@@ -334,7 +337,8 @@ impl Emitter {
                     _ => return Err(format!("compound assignment operator {:?} not supported", assign.operator)),
                 };
                 if assign.operator == AssignmentOperator::Exponential {
-                    // 指数无独立二元指令，COMPOUND_EXP 语义 rd=rd^a：rhs 放 a 槽。
+                    // 指数无独立二元指令，COMPOUND_EXP 语义 rd=rd^a：rhs 放 a 操作数槽
+                    // （指令的三个操作数槽依次为 rd、a、b，a 槽紧随 rd）。
                     ctx.inst(Inst::new(op, Operand::Reg(val_reg), Operand::Reg(rhs), Operand::None));
                 } else {
                     ctx.inst(Inst::new(op, Operand::Reg(val_reg), Operand::Reg(val_reg), Operand::Reg(rhs)));
@@ -447,7 +451,8 @@ impl Emitter {
                                 // 严格模式未声明写：抛 ReferenceError，后续 LOAD_VAR 不可达。
                                 let _ = self.emit_strict_undeclared_write(name, ctx)?;
                             } else if is_tier {
-                                // 顶层已声明 var 逻辑赋值：新值落全局对象属性（A 侧单一真值）。
+                                // 顶层已声明 var 逻辑赋值：新值写入全局对象属性（顶层 var 的唯一存储，
+                                // 引擎侧不保留镜像副本）。
                                 self.emit_tier_global_write(name, val_reg, ctx);
                             } else {
                                 ctx.inst(Inst::new(
@@ -667,7 +672,8 @@ impl Emitter {
                 AssignmentOperator::Division => OpCode::DIV,
                 AssignmentOperator::Remainder => OpCode::MOD,
                 // 指数无 COMPOUND_* 对应（COMPOUND_EXP 只读 [Rd,A] 会忽略 rhs）：
-                // 走三寄存器 EXP，旧值在 a 槽（val_reg 兼 rd/a）、rhs 在 b 槽。
+                // 走三寄存器 EXP，旧值放 a 操作数槽（结果槽与 a 槽同寄存器）、
+                // rhs 放 b 操作数槽。
                 AssignmentOperator::Exponential => OpCode::EXP,
                 AssignmentOperator::BitwiseAnd => OpCode::BIT_AND,
                 AssignmentOperator::BitwiseOR => OpCode::BIT_OR,

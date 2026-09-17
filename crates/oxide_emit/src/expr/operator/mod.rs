@@ -229,9 +229,9 @@ impl Emitter {
                     let key_idx = ctx.add_constant(Constant::String(name.to_string()));
                     let reg = ctx.alloc_reg();
                     ctx.inst(Inst::delete_global_prop_c(Operand::Reg(reg), Operand::None, key_idx));
-                    // 隐式全局槽被真删后，同程序后续裸读该名须走全局对象属性
-                    // （A 侧单一真值）：缺失属性读抛 ReferenceError，delete 的
-                    // 真删效应在读侧可见。
+                    // 隐式全局槽被真删后，同程序后续裸读该名须走全局对象属性（顶层 var
+                    // 的唯一存储，引擎侧不保留镜像副本）：缺失属性读抛 ReferenceError，
+                    // delete 的真删效应在读侧可见。
                     if let Some((binding, _)) = ctx.scopes.symbols.lookup_any_binding(name) {
                         if ctx.is_implicit_global_reg(binding.reg) {
                             ctx.implicit_global_reads.insert(binding.reg);
@@ -349,10 +349,11 @@ impl Emitter {
             let in_with_dynamic = !ctx.with_stack.is_empty() && !ctx.is_with_internal_binding(name);
             let captured =
                 ctx.current_upvalue_captures.iter().any(|u| u.name == name) || ctx.captured_bindings.contains_key(name);
-            // 顶层已声明 var：typeof 读全局对象属性（A 侧单一真值），缺失 → "undefined"
-            // （非抛，IsUnresolvableReference 语义）。未声明名同走此路（lookup 未命中）。
-            // 隐式全局槽（未声明名读写登记）同走属性路：delete 真删后缺失 → "undefined"
-            // 而非经镜像槽读旧值或抛 ReferenceError（typeof 对 unresolvable 引用不抛）。
+            // 顶层已声明 var：typeof 读全局对象属性（顶层 var 的唯一存储，引擎侧不保留
+            // 镜像副本），缺失 → "undefined"（非抛，IsUnresolvableReference 语义）。未声明名
+            // 同走此路（lookup 未命中）。隐式全局槽（未声明名读写登记）同走属性路：
+            // delete 真删后缺失 → "undefined" 而非经引擎侧镜像副本读旧值或抛
+            // ReferenceError（typeof 对 unresolvable 引用不抛）。
             let binding = ctx.scopes.symbols.lookup_any_binding(name);
             let implicit_global = binding.is_some_and(|(b, _)| ctx.is_implicit_global_reg(b.reg));
             let is_tier = self.is_global_tier_name(ctx, name);
@@ -611,8 +612,9 @@ impl Emitter {
         }
         let uv_idx = ctx.current_upvalue_captures.iter().position(|u| u.name == name);
         let captured_cell = ctx.captured_bindings.get(name).copied();
-        // 循环 update 段：被捕获绑定走寄存器 INC/DEC（C 风格 for 每迭代 fresh，
-        // update 写寄存器供下一迭代 fresh 拷贝，不污染本迭代闭包捕获的 cell）。
+        // 循环 update 段：被捕获绑定走寄存器 INC/DEC——C 风格 for 的 let/const
+        // 循环变量每迭代新分配一个 cell，update 写寄存器供其拷入，不污染本迭代
+        // 闭包捕获的 cell（机制见 `compile_ctx.rs` 的 `register_update_names` 字段文档）。
         if ctx.register_update_names.iter().any(|n| n == name) {
             if let Some(reg) = ctx.scopes.symbols.lookup_any(name) {
                 let op = match (update.operator, update.prefix) {
@@ -751,7 +753,8 @@ impl Emitter {
             };
             ctx.inst(Inst::new(op, Operand::Reg(var_reg), Operand::Reg(result_reg), Operand::Reg(result_reg)));
             if is_tier {
-                // 顶层已声明 var 自增/自减：新值落全局对象属性（A 侧单一真值）。
+                // 顶层已声明 var 自增/自减：新值写入全局对象属性（顶层 var 的唯一存储，
+                // 引擎侧不保留镜像副本）。
                 self.emit_tier_global_write(name, var_reg, ctx);
             } else if is_implicit {
                 self.emit_implicit_global_write(name, var_reg, ctx);
