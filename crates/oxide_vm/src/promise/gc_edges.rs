@@ -175,6 +175,7 @@ pub(crate) fn promise_native_size(obj: &JsObject) -> u64 {
     if ptr.is_null() {
         return 0;
     }
+    // SAFETY: !is_promise_obj 与 ptr.is_null 已早退，ptr 非空且指向存活 Box<PromiseState>，此处只读容量不释放。
     unsafe {
         std::mem::size_of::<PromiseState>() as u64
             + (*ptr).reactions.capacity() as u64 * std::mem::size_of::<PromiseReaction>() as u64

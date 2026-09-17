@@ -126,6 +126,7 @@ fn is_constructor_value(c: JsValue) -> bool {
     if !c.is_object() {
         return false;
     }
+    // SAFETY: is_object 保证指针非空且指向存活 arena 对象，此处只读函数标志并立即消费。
     let c_obj = unsafe { &*c.as_js_object_ptr() };
     c_obj.is_function()
         && !c_obj.is_arrow()
