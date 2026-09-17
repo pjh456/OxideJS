@@ -48,7 +48,13 @@ impl Emitter {
     /// # 副作用
     /// - 当前指令流在块入口发 CREATE_CLOSURE（及 MAKE_CELL / STORE_VAR）；
     ///   物化登记写入 `block_fn_entry_mats` 栈顶帧。
-    fn emit_block_fn_entry_init_stmt(&self, stmt: &Statement, ctx: &mut CompileCtx) -> Result<(), String> {
+    ///
+    /// # 注意事项
+    /// - 同名重复的直接子声明只登记首个节点：该名任一直接子声明点都复用块槽
+    ///   （取其当前值），而非重编本节点闭包——块绑定入口值按源序末次物化，
+    ///   复用槽才与外层 var 写回后的块槽值一致（仅登记末次会让较早声明点把
+    ///   本节点闭包写回外层 var，与规范的块绑定写回口径不符）。
+    pub(crate) fn emit_block_fn_entry_init_stmt(&self, stmt: &Statement, ctx: &mut CompileCtx) -> Result<(), String> {
         match stmt {
             Statement::FunctionDeclaration(fd) => {
                 let Some(id) = &fd.id else {
@@ -61,7 +67,8 @@ impl Emitter {
                 ctx.block_fn_entry_mats
                     .last_mut()
                     .unwrap()
-                    .insert(name, &**fd as *const _ as *const ());
+                    .entry(name)
+                    .or_insert_with(|| &**fd as *const _ as *const ());
                 Ok(())
             }
             Statement::LabeledStatement(ls) => self.emit_block_fn_entry_init_stmt(&ls.body, ctx),

@@ -86,9 +86,10 @@ fn top_level_let_destructured_nan_rejected() {
 }
 
 #[test]
-fn top_level_switch_case_let_nan_rejected() {
-    // switch 不推作用域：case 内 lexical 声明属全局 lexical，仍受检。
-    assert_compile_err("switch (0) { case 0: let NaN; }");
+fn top_level_switch_case_let_nan_allowed() {
+    // switch case 有独立 CaseBlock 作用域：case 内 lexical 是块局部绑定，不受限检查。
+    let r = assert_ok("switch (0) { case 0: let NaN; } 1");
+    assert_eq!(r.as_int(), 1);
 }
 
 // ── eval 门控：eval 代码声明实例化无受限检查 ──

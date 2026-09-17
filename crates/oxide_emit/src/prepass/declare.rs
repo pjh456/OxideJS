@@ -172,8 +172,8 @@ impl Emitter {
     /// 与 emit 阶段嵌套块 push_scope 的时机对齐。
     ///
     /// # 边界与前提
-    /// - 只处理块内函数声明；switch 不推 scope（其 case 内函数声明随 switch
-    ///   作用域修复一并处理）；export 声明不可能出现在块内。
+    /// - 只处理块内函数声明；switch case 的 CaseBlock 环境由 `emit_switch_statement`
+    ///   自行建立并预声明，不在此递归；export 声明不可能出现在块内。
     /// - `if_arm` 标记当前递归是否位于 `if` 支臂隐式块内。Annex B 下该隐式块的
     ///   函数声明名已有外层 var 绑定承载（非 eval 脚本顶层、或 sloppy eval 顶层；
     ///   未被形参/词法同名抑制，且非全局只读三常量）时不建当前块绑定，声明点
@@ -280,15 +280,15 @@ impl Emitter {
     /// 声明点复用预登记槽位。
     ///
     /// # 边界与前提
-    /// - 只扫描直接子语句 + 递归 switch case（switch 不推 scope，case 内 lexical
-    ///   声明属于外层作用域）；不递归块/if/for/while body（嵌套块自预声明；
-    ///   单语句 body 不接受 lexical 声明——lexical 属 Declaration、非 Statement
-    ///   子产生式，parser 按语法错误直接拒绝，这些形状不会进入 emit）。
+    /// - 只扫描直接子语句；不递归块/if/for/while/switch case/try 区（嵌套块与
+    ///   switch CaseBlock 各自预声明；单语句 body 不接受 lexical 声明——lexical
+    ///   属 Declaration、非 Statement 子产生式，parser 按语法错误直接拒绝，这些
+    ///   形状不会进入 emit）。
     /// - 跳过 for 头声明（循环作用域由 for 分支内联 declare）。
     /// - `global_lexical` 为 true 时（仅脚本顶层调用点传 `!is_eval_script`）：
     ///   lexical 声明撞受限全局名报 SyntaxError（脚本声明实例化对全局对象受限
-    ///   自有属性名做检查，eval 代码声明实例化无此检查）；函数体/块/try/模块
-    ///   调用点传 false，lexical 声明是局部绑定不查。
+    ///   自有属性名做检查，eval 代码声明实例化无此检查）；函数体/块/switch case/
+    ///   try/模块调用点传 false，lexical 声明是局部绑定不查。
     pub(crate) fn predeclare_lexical_declarations(
         &self, statements: &[Statement], ctx: &mut CompileCtx, global_lexical: bool,
     ) -> Result<(), String> {
@@ -308,13 +308,6 @@ impl Emitter {
                         check_restricted_global_lexical(id.name.as_str(), global_lexical)?;
                         let reg = ctx.alloc_reg();
                         let _ = ctx.declare_predeclared(id.name.as_str(), reg, VariableDeclarationKind::Const, true);
-                    }
-                }
-                Statement::SwitchStatement(sw) => {
-                    for case in &sw.cases {
-                        for s in &case.consequent {
-                            self.predeclare_lexical_stmt(s, ctx, global_lexical)?;
-                        }
                     }
                 }
                 Statement::ExportNamedDeclaration(exp) => {
@@ -365,32 +358,6 @@ impl Emitter {
                 },
                 _ => {}
             }
-        }
-        Ok(())
-    }
-
-    /// 预声明单个语句中的 lexical 声明（供 switch case 递归；`let`/`const`/`class` 分支）。
-    fn predeclare_lexical_stmt(
-        &self, stmt: &Statement, ctx: &mut CompileCtx, global_lexical: bool,
-    ) -> Result<(), String> {
-        match stmt {
-            Statement::VariableDeclaration(decl) => {
-                if matches!(decl.kind, VariableDeclarationKind::Var) {
-                    return Ok(());
-                }
-                let is_const = matches!(decl.kind, VariableDeclarationKind::Const);
-                for d in &decl.declarations {
-                    self.predeclare_lexical_pattern(&d.id, is_const, ctx, global_lexical)?;
-                }
-            }
-            Statement::ClassDeclaration(cd) => {
-                if let Some(id) = &cd.id {
-                    check_restricted_global_lexical(id.name.as_str(), global_lexical)?;
-                    let reg = ctx.alloc_reg();
-                    let _ = ctx.declare_predeclared(id.name.as_str(), reg, VariableDeclarationKind::Const, true);
-                }
-            }
-            _ => {}
         }
         Ok(())
     }

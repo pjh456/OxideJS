@@ -1,4 +1,8 @@
 //! switch 语句 emit：case 匹配链 + 穿落（fallthrough）与 default，见 `emit_switch_statement`。
+//! CaseBlock 有独立块作用域：case 选择表达式与全部 case 体共享同一环境，case 内
+//! 函数/词法声明不泄漏到 switch 外。
+
+use std::collections::HashMap;
 
 use crate::{CompileCtx, Emitter};
 use oxide_bytecode::opcode::OpCode;
@@ -13,8 +17,25 @@ impl Emitter {
         };
         let end_label = ctx.next_label_id();
         ctx.push_switch(end_label);
+        // 判别式在 switch 外层词法环境求值，CaseBlock 环境尚未建立。
         let disc_reg = self.emit_expression(&sw.discriminant, ctx)?;
         let cases = &sw.cases;
+        // CaseBlock 环境：case 选择表达式与全部 case 体同处一个块作用域。
+        // 块函数预声明先于 lexical，使 `case 0: let g; function g(){}` 的 lexical
+        // 占位命中已存在的函数绑定，报重复声明错。
+        ctx.push_scope();
+        for case in cases.iter() {
+            self.predeclare_block_function_declarations(&case.consequent, ctx, false);
+            self.predeclare_lexical_declarations(&case.consequent, ctx, false)?;
+        }
+        // case 内函数声明的块入口初始化：同名重复声明按源序物化，末次声明成为
+        // 入口值；声明点复用块槽写回外层 var（见 emit_function_declaration）。
+        ctx.block_fn_entry_mats.push(HashMap::new());
+        for case in cases.iter() {
+            for s in &case.consequent {
+                self.emit_block_fn_entry_init_stmt(s, ctx)?;
+            }
+        }
         let mut case_labels = Vec::with_capacity(cases.len());
         for case in cases.iter() {
             let case_label = ctx.next_label_id();
@@ -45,7 +66,9 @@ impl Emitter {
                 }
             }
         }
+        ctx.block_fn_entry_mats.pop();
         ctx.labels.set_label_pos(end_label, ctx.insts.len());
+        ctx.pop_scope();
         ctx.pop_switch();
         // switch 完成值 = 已执行 case 链最后一次非空完成值（源序最后非空语句的
         // 收敛寄存器：命中后穿落到 break/尾即为其值，无命中则该寄存器不被写入而
