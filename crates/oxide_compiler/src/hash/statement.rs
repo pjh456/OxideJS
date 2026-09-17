@@ -196,6 +196,8 @@ fn hash_for_statement(fr: &oxide_parser::ForStatement<'_>, h: &mut rustc_hash::F
 fn hash_function_declaration(fd: &Function<'_>, h: &mut rustc_hash::FxHasher, include_binding_names: bool) {
     fd.r#async.hash(h);
     fd.generator.hash(h);
+    // 函数声明名是编译产物的一部分（提升与声明语义依赖它），两种哈希粒度下
+    // 均计入，不受 `include_binding_names` 控制；两个分支因此同形。
     if include_binding_names {
         if let Some(id) = &fd.id {
             id.name.as_str().hash(h);
@@ -215,6 +217,7 @@ fn hash_function_declaration(fd: &Function<'_>, h: &mut rustc_hash::FxHasher, in
 }
 
 fn hash_class(class: &Class<'_>, h: &mut rustc_hash::FxHasher, include_binding_names: bool) {
+    // 类名与函数声明名同理，是编译产物物化名，两种哈希粒度下恒计入。
     if let Some(id) = &class.id {
         id.name.as_str().hash(h);
     }
@@ -258,6 +261,8 @@ fn hash_try_statement(ts: &oxide_parser::TryStatement<'_>, h: &mut rustc_hash::F
         hash_statement(s, h, include_binding_names);
     }
     if let Some(catch) = &ts.handler {
+        // catch 参数标识名与函数/类名同理，两种哈希粒度下恒计入；解构形态
+        // 不贡献哈希，故两个分支各模式走到同一结论。
         if let Some(param) = &catch.param {
             if include_binding_names {
                 hash_binding_pattern(&param.pattern, h);

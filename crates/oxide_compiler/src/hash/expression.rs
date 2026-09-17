@@ -108,6 +108,7 @@ pub(super) fn hash_expression(expr: &Expression, h: &mut rustc_hash::FxHasher, i
             }
         }
         Expression::ClassExpression(class) => {
+            // 类表达式名与类声明名同口径：两种哈希粒度下恒计入（编译产物物化名）。
             if let Some(id) = &class.id {
                 id.name.as_str().hash(h);
             }

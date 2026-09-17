@@ -12,7 +12,8 @@ pub struct Compiler {
     /// 是否在 emit 与 lower 之间运行死代码消除（默认开启）。
     enable_dce: bool,
     /// 是否在保守 DCE 后运行 liveness→精确 DCE→RegAlloc 链（默认开启）。
-    /// 关闭时 vreg 原样当物理号走 lower 降级路径（>253 → RangeError）。
+    /// 关闭时虚拟寄存器不分配物理号，直接当作物理号进入 lower 的低层降级路径；
+    /// 数量超过 253 时由 lower 报 RangeError。
     enable_regalloc: bool,
     /// 是否为 REPL 持久模式：脚本顶层 let/const 也写全局对象属性。
     repl_persist: bool,
@@ -99,17 +100,21 @@ impl Compiler {
             crate::compiler_debug!("compile: after DCE {} insts", ir.insts.len());
         }
         if self.enable_regalloc && !ir.const_overflow {
-            // 优化管线：liveness → 精确 DCE → 重算 liveness → RegAlloc
+            // 优化管线：liveness → 精确 DCE → 重算 liveness → RegAlloc → 调用窗口编码
             // const_overflow 时跳过：程序已知无效（lower 报 "too many constants"），
-            // 且超大常量池伴生的海量 vreg 会使 liveness 稠密 bitset 爆内存。
+            // 且超大常量池伴生的海量虚拟寄存器会使 liveness 稠密 bitset 爆内存。
             let cfg = oxide_cfg::build_cfg(&ir);
             let live = oxide_liveness::liveness(&ir, &cfg);
-            oxide_dce::dce_precise(&mut ir, &live); // 精确二轮消费第一轮 LiveInfo
-            let cfg2 = oxide_cfg::build_cfg(&ir); // 精确 DCE 删指令后 inst 下标位移，CFG 重建
-            let live2 = oxide_liveness::liveness(&ir, &cfg2); // 重算，绝不用过期 live
-            oxide_regalloc::alloc(&mut ir, &live2)?; // 无可行染色 → RangeError 上抛
-                                                     // RegAlloc 改写（vreg→phys + spill 插入）后补第三次 liveness：为调用点
-                                                     // 存活上界提供物理级活集（改写过后的 LiveInfo 已过期，必须重算）。
+            // 精确 DCE 以第一轮 liveness 的指令级活集为输入，删除死指令
+            oxide_dce::dce_precise(&mut ir, &live);
+            // 删指令后 inst 下标位移，旧 CFG 失效，按新程序重建
+            let cfg2 = oxide_cfg::build_cfg(&ir);
+            // 指令集已变，旧活集失效，须重算
+            let live2 = oxide_liveness::liveness(&ir, &cfg2);
+            // 无可行染色 → RangeError 上抛
+            oxide_regalloc::alloc(&mut ir, &live2)?;
+            // RegAlloc 改写指令（虚拟寄存器→物理号并插入 spill）后旧活集失效，
+            // 须重算第三轮，为调用点存活上界提供物理级活集
             let cfg3 = oxide_cfg::build_cfg(&ir);
             let live3 = oxide_liveness::liveness(&ir, &cfg3);
             oxide_regalloc::encode_call_window(&mut ir, &live3);
