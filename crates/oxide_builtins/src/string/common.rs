@@ -18,10 +18,12 @@ pub(crate) use try_string;
 
 // ── 文本通道 ─────────────────────────────────────────────────────────────
 //
-// 字符串值的载荷分形态：Flat（良形 UTF-8）、FlatU16（单元载荷，可含孤立
-// surrogate）、Cons（rope）。正则家族按文本通道分臂——Str 臂走良形文本
-// （字节口径，与旧代码路径一致），Units 臂走单元序列（regress utf16 接口，
-// 匹配范围即码元）；其余方法统一按单元序列处理（规格口径）。
+// 字符串值有三种载荷形态：Flat（良形 UTF-8 字节串）、FlatU16（UTF-16 单元
+// 数组，可含孤立 surrogate）、Cons（分段拼接的 rope）。正则匹配按载荷形态
+// 分两条入口：Str 入口以字节串调用匹配器，返回的匹配范围以字节为单位；
+// Units 入口以单元数组调用匹配器，匹配范围以 UTF-16 码元为单位。两条入口
+// 的范围单位不可互换，匹配片段端点必须换算到与所在入口相同的单位；
+// 正则之外的 String 方法统一取单元序列处理。
 
 /// 正则家族的匹配文本通道。
 pub(crate) enum MatchText<'a> {
@@ -142,7 +144,7 @@ impl OwnedText {
         }
     }
 
-    /// 物化为字符串值（Str 臂文本 / Units 臂单元，载荷形态各自最小）。
+    /// 构造字符串值：Str 变体按字节串、Units 变体按单元数组，载荷形态各自最小。
     pub(crate) fn to_value<H: VmHost>(&self, vm: &mut H) -> JsValue {
         match self {
             OwnedText::Str(s) => vm.new_string(s),

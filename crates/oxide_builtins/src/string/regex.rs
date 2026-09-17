@@ -238,6 +238,8 @@ fn string_replace_fn<H: VmHost>(
     NativeResult::Ok(vm.new_string_units_owned(out))
 }
 
+/// 判断值是否为 RegExp 对象：非对象、空指针、原型非对象均返回 false，
+/// 原型指针与 `%RegExpPrototype%` 恒等比较。
 fn is_regexp_obj<H: VmHost>(val: JsValue, vm: &H) -> bool {
     if !val.is_object() {
         return false;
@@ -799,6 +801,8 @@ pub fn string_match_all<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builder_wrapper(vm, input_val, re_obj)
 }
 
+/// 构造 matchAll 包装对象：原型挂 `%RegExpStringIteratorPrototype%`，
+/// own 属性为 input/index(0)/re 三槽，next 由原型提供。
 fn builder_wrapper<H: VmHost>(vm: &mut H, input_val: JsValue, re_obj: JsValue) -> NativeResult {
     // matchAll 迭代器挂 %RegExpStringIteratorPrototype%（链到 %IteratorPrototype%），
     // next 由原型提供（不挂实例 own）。
@@ -945,6 +949,7 @@ pub fn string_match_all_next<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult
     make_match_done_result(vm, value)
 }
 
+/// 构造迭代器结果对象 `{value, done}`（done 仅在 value 为 undefined 时为 true）。
 fn make_match_done_result<H: VmHost>(vm: &mut H, value: JsValue) -> NativeResult {
     let done = value.is_undefined();
     let object_proto = vm.session().builtin_world().object_proto.as_ptr() as *mut JsObject;
@@ -1061,7 +1066,7 @@ pub fn string_raw<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         result.extend(raw_units);
 
         // 段间（i + 1 < length）才追加 substitutions[i]；substitutions 缺失时
-        // 追加空串（spec 24.b.i），末段后不再追加任何内容。
+        // 追加空串，末段后不再追加任何内容。
         if i + 1 < raw_len {
             let sub_idx = i + 2;
             if sub_idx < args.len() {
