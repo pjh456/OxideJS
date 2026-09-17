@@ -19,7 +19,7 @@ pub(super) fn finalize(mut blocks: Vec<BasicBlock>, exit_id: usize) -> Cfg {
             preds_total += 1;
         }
     }
-    debug_assert_eq!(succs_total, preds_total, "succs/preds 不对称（Pitfall 4）");
+    debug_assert_eq!(succs_total, preds_total, "succs/preds 不对称：succ 边总数须等于 pred 边总数");
 
     Cfg {
         blocks,
