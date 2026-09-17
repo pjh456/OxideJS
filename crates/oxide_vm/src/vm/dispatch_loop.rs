@@ -55,6 +55,34 @@ macro_rules! binary_arith {
 }
 
 impl Vm {
+    /// 主 dispatch 循环：逐指令解码并分派到各 `dispatch_*` 处理器，直到返回、
+    /// 异常逃出或触发步数/分配上限。
+    ///
+    /// # 约定
+    /// - 完成值：HALT 与 RETURN 类指令把结果写回寄存器（顶层承载于 `regs[0]`），
+    ///   循环以 `Ok(value)` 返回。
+    /// - 异常：可捕获异常经 `unwind` 改写 pc/寄存器后就地继续；无 handler 时
+    ///   返回 `Err`，异常值由 `last_uncaught_value` 上交调用方。
+    /// - 寄存器镜像槽允许裸读：热点路径直接索引 `self.regs` 取模块 builtin 名集
+    ///   槽，槽值仅在 run/帧入口重载，进入循环前须保证已重载。
+    ///
+    /// # 步骤
+    /// 1. 循环前缓存 `max_steps`/`max_alloc_bytes`，嵌套重入按 hop 计数兜底采样。
+    /// 2. 指令边界采执行期 GC 安全点（仅顶层 `native_call_depth == 0`）。
+    /// 3. 检查步数上限、单 run 分配上限与 pc 越界，超限按错误返回。
+    /// 4. 解码当前指令、递增 pc，按 OpCode 分派到处理器。
+    ///
+    /// # 边界与前提
+    /// - 嵌套 dispatch（原生 builtin 重入执行 JS）不推进顶层 `steps`，靠重入
+    ///   hop 计数每 64 跳强制一次轻采样兜底分配上限。
+    /// - `pc` 越过 `bytecode.len()` 视为内部错误，返回 `Err`（不抛 JS 异常）。
+    ///
+    /// # 副作用
+    /// - 改写 `pc`、寄存器、帧栈与 GC 状态；可能触发字符串/两档 session 收集。
+    ///
+    /// # 注意事项
+    /// - GC 安全点不得下移到嵌套 dispatch：调用方寄存器窗口副本存于 inline
+    ///   状态、非 GC 根，此时回收会把调用方 regs 中的活值当死值释放。
     pub(crate) fn dispatch(&mut self) -> Result<JsValue, String> {
         // config.max_steps / max_alloc_bytes 逐指令只读且循环内不变：提到循环外，
         // 免每次经 kernel_core Arc 指针追寻读取（热点内仅有的 config 访问）。

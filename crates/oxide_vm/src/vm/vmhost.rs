@@ -53,9 +53,9 @@ impl oxide_runtime_api::VmHost for Vm {
         self.last_uncaught_value = value;
     }
     fn property_key_si(&mut self, val: JsValue) -> u32 {
-        // Object-key conversion (to_string_full) failures degrade to the empty key here:
-        // this trait path is used by Reflect/Object builtins; computed property access
-        // uses the inherent Result-returning version to preserve the full exception.
+        // 对象键转换（to_string_full）失败时降级为空键：本 trait 路径供
+        // Reflect/Object 内置使用，这些内置按规范不传播键转换异常；计算属性
+        // 访问走返回 Result 的 inherent 版本，转换异常原样保留。
         self.property_key_si(val)
             .unwrap_or_else(|_| self.kernel_core.perm_interner().intern("").0)
     }

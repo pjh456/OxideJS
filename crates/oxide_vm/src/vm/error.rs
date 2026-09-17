@@ -11,6 +11,30 @@ use super::{format_error_message, js_error_kind, js_error_kind_name, Vm};
 use crate::vm_debug;
 
 impl Vm {
+    /// ToPrimitive 有界版：按规范序把对象转为原始值，失败统一抛 `TypeError`。
+    ///
+    /// 对象自身的 `Symbol.toPrimitive` 优先；不存在时按 `prefer_string` 定序尝试
+    /// `toString`/`valueOf`，等价于 OrdinaryToPrimitive。
+    ///
+    /// # 步骤
+    /// 1. 非对象或空指针原样返回。
+    /// 2. 读 `@@toPrimitive`：存在则必须可调用（否则抛 `TypeError`），以
+    ///    `"string"`/`"number"` hint 调用；返回对象再抛 `TypeError`。
+    /// 3. 回退方法族：按 hint 顺序试 `toString`/`valueOf`，不可调用者跳过，
+    ///    首个返回非对象的结果即采用。
+    /// 4. 两条路径都不产出原始值时抛 `TypeError`。
+    ///
+    /// # 边界与前提
+    /// - `prefer_string` 为 `true` 时先试 `toString`，否则先试 `valueOf`。
+    /// - 方法调用经 `call_function_sync`；调用错误转 `raise_call_error` 恢复
+    ///   原始异常。
+    ///
+    /// # 副作用
+    /// - 执行用户代码（getter / 方法调用），可能抛异常并触发 GC 安全点。
+    ///
+    /// # 注意事项
+    /// - 主 dispatch 下就地展开异常；原生 builtin 内部只返回格式化 `Err`，
+    ///   由其调用边界恢复（见 `conversion_error`）。
     pub(crate) fn coerce_primitive_bounded(&mut self, value: JsValue, prefer_string: bool) -> Result<JsValue, String> {
         if !value.is_object() {
             return Ok(value);
@@ -21,9 +45,9 @@ impl Vm {
             return Ok(value);
         }
 
-        // ECMA-262 §7.1.1 step 1: an exotic obj[Symbol.toPrimitive] takes precedence
-        // over OrdinaryToPrimitive. well-known symbol 键经 property_key_si 映射为
-        // 固定 Symbol 键，读键路径与写键路径一致。
+        // ECMA-262 §7.1.1 step 1：exotic 对象自身的 Symbol.toPrimitive 优先于
+        // OrdinaryToPrimitive。well-known symbol 键经 property_key_si 映射为固定
+        // Symbol 键，读键路径与写键路径一致。
         let sym_key = {
             let sym_ptr = self.session.builtin_world().sym_to_primitive.as_ptr() as *mut JsObject;
             JsValue::from_js_object(sym_ptr)
@@ -124,11 +148,13 @@ impl Vm {
         Err(err.to_string())
     }
 
+    /// ToNumber 有界版：先按 number hint 做 ToPrimitive，再转 `f64`。
     pub(crate) fn coerce_number_bounded(&mut self, value: JsValue) -> Result<f64, String> {
         let primitive = self.coerce_primitive_bounded(value, false)?;
         Ok(coercion::to_number(primitive))
     }
 
+    /// ToInt32 有界版：整数直通；其余先 ToNumber，再取模 2^32 后按符号回卷。
     pub(crate) fn coerce_int32_bounded(&mut self, value: JsValue) -> Result<i32, String> {
         if value.is_int() {
             return Ok(value.as_int());
@@ -145,6 +171,7 @@ impl Vm {
         }
     }
 
+    /// ToUint32 有界版：整数直通；其余先 ToNumber，再取模 2^32。
     pub(crate) fn coerce_uint32_bounded(&mut self, value: JsValue) -> Result<u32, String> {
         if value.is_int() {
             return Ok(value.as_int() as u32);
@@ -156,6 +183,13 @@ impl Vm {
         Ok(n.trunc().rem_euclid(4_294_967_296.0) as u32)
     }
 
+    /// 校验 `JsValue` 为合法非空对象指针，成功时返回对象裸指针。
+    ///
+    /// # 边界与前提
+    /// - 非对象、空指针、地址低于 `0x10000` 或未按 `JsObject` 对齐：抛
+    ///   `TypeError`（消息由调用方给出）并返回 `Ok(None)`，调用方据此短路
+    ///   （错误已进异常通道，后续由 dispatch 继续展开）。
+    /// - 本函数不做语义检查（可调用/可构造等能力由调用方判定）。
     pub(crate) fn checked_object_ptr(
         &mut self, val: JsValue, error_msg: &str,
     ) -> Result<Option<*mut JsObject>, String> {
@@ -172,10 +206,17 @@ impl Vm {
         Ok(Some(ptr))
     }
 
+    /// 按 kind 名构造 `JsError` 并转 `raise_js_error` 抛出。
     pub(crate) fn raise_error_kind(&mut self, kind: &'static str, msg: &str) -> Result<(), String> {
         self.raise_js_error(JsError::new(js_error_kind(kind), msg))
     }
 
+    /// 构造错误对象、写入异常通道并展开到最近的 try 处理器。
+    ///
+    /// - `exception_value` 存错误对象、`pending_error_kind` 存 kind 名，供外围
+    ///   try/catch 与错误通道查询。
+    /// - 展开失败（无 handler）时 `unwind` 返回 `Err`，异常逃出 run 边界经
+    ///   `last_uncaught_value` 上交调用方。
     pub(crate) fn raise_js_error(&mut self, err: JsError) -> Result<(), String> {
         let kind = js_error_kind_name(err.kind);
         vm_debug!("raise_js_error: {} \"{}\"", kind, err.message);
@@ -185,14 +226,20 @@ impl Vm {
         self.unwind()
     }
 
+    /// 抛 `TypeError` 的便捷入口，等价于以 kind 名 `"TypeError"` 调
+    /// `raise_error_kind`。
     pub(crate) fn raise_type_error(&mut self, msg: &str) -> Result<(), String> {
         self.raise_error_kind("TypeError", msg)
     }
 
+    /// 格式化错误文本，供原生 builtin 调用边界恢复异常时使用。
     pub(crate) fn error_message_text(&self, kind: &str, msg: &str) -> String {
         format_error_message(kind, msg)
     }
 
+    /// 从异常对象读 `name` 属性并映射为错误 kind 名。
+    ///
+    /// 非对象、无 `name`、name 非字符串或未知名称一律回退 `"Error"`。
     pub(crate) fn thrown_error_kind(&self, val: JsValue) -> &'static str {
         if !val.is_object() {
             return "Error";
