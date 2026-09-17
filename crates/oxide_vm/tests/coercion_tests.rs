@@ -138,8 +138,6 @@ fn to_primitive_symbol_hint_invoked() {
 }
 
 // ToNumber：to_number_full 对 Symbol 抛 TypeError。
-// 注意：一元加号路径用 coerce_number_bounded（对 Symbol 不抛），因此运算符层的
-// +Symbol() 得到 NaN；见下个测试。
 #[test]
 fn to_number_full_symbol_throws() {
     let mut vm = Vm::new();
@@ -149,10 +147,65 @@ fn to_number_full_symbol_throws() {
     assert!(result.unwrap_err().contains("Symbol"), "expected a Symbol TypeError message");
 }
 
-// 运算符层实况：+Symbol 为 NaN（Symbol 抛出未接入算术路径）。
+// 运算符层：一元加号对 Symbol 抛 TypeError（ToNumber(Symbol)，§7.1.4）。
 #[test]
-fn unary_plus_symbol_is_nan() {
-    assert_eq!(eval("+Symbol('x')"), "NaN");
+fn unary_plus_symbol_throws() {
+    let err = eval("+Symbol('x')");
+    assert!(err.contains("TypeError"), "expected TypeError for unary +symbol, got {err}");
+}
+
+// 运算符层：二元 `+` 的数值与字符串两条分支对 Symbol 均抛 TypeError。
+#[test]
+fn add_symbol_throws_both_branches() {
+    for source in [
+        "Symbol('x') + ''",
+        "'' + Symbol('x')",
+        "Symbol('x') + 0",
+        "0 + Symbol('x')",
+        "Symbol('x') + Symbol('y')",
+        "Symbol.iterator + {}",
+    ] {
+        let err = eval(source);
+        assert!(err.contains("TypeError"), "expected TypeError for {source}, got {err}");
+    }
+}
+
+// 运算符层：其余数值算术（减/乘/除/模/幂/位运算/复合赋值）对 Symbol 抛 TypeError。
+#[test]
+fn numeric_operators_symbol_throw() {
+    for source in [
+        "Symbol('x') - 1",
+        "Symbol('x') * 2",
+        "Symbol('x') / 2",
+        "Symbol('x') % 2",
+        "Symbol('x') ** 2",
+        "Symbol('x') | 0",
+        "(-Symbol('x'))",
+        "var v = Symbol('x'); v += ''",
+        "var v = Symbol('x'); v -= 1",
+    ] {
+        let err = eval(source);
+        assert!(err.contains("TypeError"), "expected TypeError for {source}, got {err}");
+    }
+}
+
+// Number 构造器对 Symbol 抛 TypeError（ToNumber 语义），不走 NaN 兜底。
+#[test]
+fn number_constructor_symbol_throws() {
+    let err = eval("Number(Symbol('x'))");
+    assert!(err.contains("TypeError"), "expected TypeError for Number(symbol), got {err}");
+}
+
+// String 构造器的 Symbol 专属分支保留：返回 `Symbol(desc)`，不经 ToString。
+// 模板字面量则走 ToString，Symbol 仍抛 TypeError。
+#[test]
+fn string_constructor_and_template_symbol() {
+    let (vm, result) = eval_ty("String(Symbol('x'))").expect("String(Symbol) 求值失败");
+    assert_eq!(vm.lookup_str(result).as_deref(), Some("Symbol(x)"));
+    let (vm, result) = eval_ty("Symbol('x').description").expect("description 求值失败");
+    assert_eq!(vm.lookup_str(result).as_deref(), Some("x"));
+    let err = eval("`v=${Symbol('x')}`");
+    assert!(err.contains("TypeError"), "expected TypeError for template symbol, got {err}");
 }
 
 // 抽象相等：字符串与数字互相强转。

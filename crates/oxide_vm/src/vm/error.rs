@@ -5,14 +5,11 @@ use oxide_runtime_api as coercion;
 
 use oxide_types::error::JsError;
 use oxide_types::object::JsObject;
-use oxide_types::private_key::make_well_known_symbol_key;
+use oxide_types::private_key::{make_well_known_symbol_key, WELL_KNOWN_SYMBOL_TO_PRIMITIVE};
 use oxide_types::value::{JsValue, PTR_MASK};
 
 use super::{format_error_message, js_error_kind, js_error_kind_name, Vm};
 use crate::vm_debug;
-
-/// `Symbol.toPrimitive` 的 well-known symbol 下标。
-const TO_PRIMITIVE_SYMBOL_ID: u32 = 5;
 
 impl Vm {
     /// ToPrimitive 有界版：按规范序把对象转为原始值，失败统一抛 `TypeError`。
@@ -51,7 +48,7 @@ impl Vm {
 
         // ECMA-262 §7.1.1 step 1：exotic 对象上（沿原型链读取）的 Symbol.toPrimitive 优先于
         // OrdinaryToPrimitive；well-known symbol 键恒定，直接取保留槽。
-        let sym_si = make_well_known_symbol_key(TO_PRIMITIVE_SYMBOL_ID);
+        let sym_si = make_well_known_symbol_key(WELL_KNOWN_SYMBOL_TO_PRIMITIVE);
         let exotic = {
             let obj = unsafe { &*obj_ptr };
             self.ordinary_get(obj, sym_si, value)?
@@ -148,8 +145,16 @@ impl Vm {
     }
 
     /// ToNumber 有界版：先按 number hint 做 ToPrimitive，再转 `f64`。
+    ///
+    /// # 边界与前提
+    /// 原始值为 Symbol 时按规范（ECMA-262 §7.1.4）抛 `TypeError`，不落入
+    /// [`coercion::to_number`] 的宽松快路径（后者对该输入返回 `NaN`）。
     pub(crate) fn coerce_number_bounded(&mut self, value: JsValue) -> Result<f64, String> {
         let primitive = self.coerce_primitive_bounded(value, false)?;
+        if primitive.is_symbol() {
+            self.conversion_error("Cannot convert a Symbol value to a number")?;
+            return Ok(f64::NAN);
+        }
         Ok(coercion::to_number(primitive))
     }
 

@@ -96,12 +96,12 @@ fn concat_n_call_side_effect_order() {
 
 #[test]
 fn concat_n_symbol_matches_binary_add_behavior() {
-    // Symbol 在字符串模式下被静默忽略（既有 concat_strings 行为），CONCAT_N 与二元
-    // ADD 结果逐字节一致，不放大不修复。
-    let flat = eval_str("var s = Symbol(); 'a' + s + 'b'");
-    let binary = eval_str("var s = Symbol(); ('a' + s) + 'b'");
-    assert_eq!(flat, binary);
-    assert_eq!(flat, "ab");
+    // Symbol 在字符串模式下按 §7.1.17 抛 TypeError；CONCAT_N 与二元 ADD 行为一致，
+    // 不放大不遗漏。
+    let flat = eval(&mut Vm::new(), "var s = Symbol(); 'a' + s + 'b'").unwrap_err();
+    let binary = eval(&mut Vm::new(), "var s = Symbol(); ('a' + s) + 'b'").unwrap_err();
+    assert!(flat.contains("TypeError"), "expected TypeError, got {flat}");
+    assert!(binary.contains("TypeError"), "expected TypeError, got {binary}");
 }
 
 #[test]

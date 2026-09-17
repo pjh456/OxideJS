@@ -87,6 +87,10 @@ pub fn bigint_to_string(v: &num_bigint::BigInt) -> String {
 ///
 /// Number/String/Boolean/null 按规范转换；undefined 与不可解析字符串为 `NaN`；
 /// Object 与 Symbol 不在此处理，返回 `NaN`（对象需走 [`to_number_full`]）。
+///
+/// # 边界与前提
+/// 本函数无异常通道，Symbol 的 `TypeError`（ECMA-262 §7.1.4）由调用方的
+/// ToNumber 入口先行拦截，不得把 Symbol 传入后取 `NaN` 当结果。
 pub fn to_number(val: JsValue) -> f64 {
     match val.js_type() {
         JsType::Int => val.as_int() as f64,
@@ -350,6 +354,10 @@ pub fn push_to_string(val: JsValue, buf: &mut String) {
 ///
 /// 数值走 ECMA-262 Number::toString 格式化；Object 在此返回占位符 `[object]`，
 /// 完整路径见 [`to_string_full`]。
+///
+/// # 边界与前提
+/// 本函数无异常通道，Symbol 的 `TypeError`（ECMA-262 §7.1.17）由调用方的
+/// ToString 入口先行拦截，不得把 Symbol 传入后取结果。
 pub fn to_string(val: JsValue) -> String {
     if val.is_int() {
         return val.as_int().to_string();
@@ -381,6 +389,9 @@ pub fn to_string(val: JsValue) -> String {
 /// 把任意值转为 UTF-16 单元序列（`ToPrimitive(string hint)` 的单元口径）：
 /// 字符串值直接借出单元（Flat 惰性编码、rope 扁平化）；Symbol 返回 TypeError
 /// 错误；其余值经 ToString 原始值路径后 UTF-16 编码。
+///
+/// # 边界与前提
+/// 非字符串原始值经 [`to_string`] 编码，故调用方须已排除 Symbol（§7.1.17）。
 pub fn to_units_full<H: VmHost>(val: JsValue, host: &mut H) -> Result<Vec<u16>, String> {
     if val.is_string() {
         return Ok(host.string_units(val).into_owned());
@@ -399,6 +410,10 @@ pub fn to_units_full<H: VmHost>(val: JsValue, host: &mut H) -> Result<Vec<u16>, 
 
 /// 把值追加其 UTF-16 单元到 `buf`：字符串值直接扩单元序列，非字符串值经
 /// ToString 后 UTF-16 编码。字符串拼接的单元通道路径（不可 lossy）。
+///
+/// # 边界与前提
+/// 本函数无异常通道，Symbol 的 `TypeError`（ECMA-262 §7.1.17）由调用方的
+/// 字符串拼接入口先行拦截，不得把 Symbol 传入（否则被静默丢弃为空单元）。
 pub fn push_units_to(val: JsValue, buf: &mut Vec<u16>) {
     if val.is_string() {
         // SAFETY: val 为字符串值，借用即时消费。
@@ -954,22 +969,7 @@ pub fn well_known_symbol_id<H: VmHost + ?Sized>(host: &H, ptr: *mut JsObject) ->
 
 /// well-known symbol id 的描述名（如 id 9 对应 `Symbol.toStringTag`）。
 pub fn well_known_symbol_name(id: u32) -> Option<&'static str> {
-    Some(match id {
-        0 => "Symbol.iterator",
-        1 => "Symbol.match",
-        2 => "Symbol.replace",
-        3 => "Symbol.search",
-        4 => "Symbol.split",
-        5 => "Symbol.toPrimitive",
-        6 => "Symbol.hasInstance",
-        7 => "Symbol.matchAll",
-        8 => "Symbol.asyncIterator",
-        9 => "Symbol.toStringTag",
-        10 => "Symbol.species",
-        11 => "Symbol.asyncDispose",
-        12 => "Symbol.dispose",
-        _ => return None,
-    })
+    oxide_types::private_key::WELL_KNOWN_SYMBOL_NAMES.get(id as usize).copied()
 }
 
 #[cfg(test)]

@@ -56,6 +56,54 @@ pub const SYMBOL_KEY_BASE: u32 = 0xA000_0000;
 /// `Symbol.asyncDispose` 与 `Symbol.dispose`（显式资源管理提案）。
 pub const WELL_KNOWN_SYMBOL_COUNT: u32 = 13;
 
+/// well-known symbol 的名称表，索引即 well-known symbol id。
+///
+/// 表序与 `id` 严格一致，供 Symbol 构造器属性绑定与符号描述查询共用；新增
+/// well-known symbol 时只改此处（连同 [`WELL_KNOWN_SYMBOL_COUNT`] 与具名 id 常量），
+/// 避免 id/名映射在多处各自维护造成错位。
+pub const WELL_KNOWN_SYMBOL_NAMES: [&str; WELL_KNOWN_SYMBOL_COUNT as usize] = [
+    "Symbol.iterator",
+    "Symbol.match",
+    "Symbol.replace",
+    "Symbol.search",
+    "Symbol.split",
+    "Symbol.toPrimitive",
+    "Symbol.hasInstance",
+    "Symbol.matchAll",
+    "Symbol.asyncIterator",
+    "Symbol.toStringTag",
+    "Symbol.species",
+    "Symbol.asyncDispose",
+    "Symbol.dispose",
+];
+
+/// well-known symbol 具名 id：`0`（键值 = `SYMBOL_KEY_BASE + id`）。
+pub const WELL_KNOWN_SYMBOL_ITERATOR: u32 = 0;
+/// well-known symbol 具名 id：`Symbol.match`。
+pub const WELL_KNOWN_SYMBOL_MATCH: u32 = 1;
+/// well-known symbol 具名 id：`Symbol.replace`。
+pub const WELL_KNOWN_SYMBOL_REPLACE: u32 = 2;
+/// well-known symbol 具名 id：`Symbol.search`。
+pub const WELL_KNOWN_SYMBOL_SEARCH: u32 = 3;
+/// well-known symbol 具名 id：`Symbol.split`。
+pub const WELL_KNOWN_SYMBOL_SPLIT: u32 = 4;
+/// well-known symbol 具名 id：`Symbol.toPrimitive`。
+pub const WELL_KNOWN_SYMBOL_TO_PRIMITIVE: u32 = 5;
+/// well-known symbol 具名 id：`Symbol.hasInstance`。
+pub const WELL_KNOWN_SYMBOL_HAS_INSTANCE: u32 = 6;
+/// well-known symbol 具名 id：`Symbol.matchAll`。
+pub const WELL_KNOWN_SYMBOL_MATCH_ALL: u32 = 7;
+/// well-known symbol 具名 id：`Symbol.asyncIterator`。
+pub const WELL_KNOWN_SYMBOL_ASYNC_ITERATOR: u32 = 8;
+/// well-known symbol 具名 id：`Symbol.toStringTag`。
+pub const WELL_KNOWN_SYMBOL_TO_STRING_TAG: u32 = 9;
+/// well-known symbol 具名 id：`Symbol.species`。
+pub const WELL_KNOWN_SYMBOL_SPECIES: u32 = 10;
+/// well-known symbol 具名 id：`Symbol.asyncDispose`。
+pub const WELL_KNOWN_SYMBOL_ASYNC_DISPOSE: u32 = 11;
+/// well-known symbol 具名 id：`Symbol.dispose`。
+pub const WELL_KNOWN_SYMBOL_DISPOSE: u32 = 12;
+
 /// 用户 symbol 下标的保留位掩码（低 28 位）。
 const SYMBOL_INDEX_MASK: u32 = 0x0FFF_FFFF;
 
@@ -83,15 +131,19 @@ pub const fn is_symbol_key(key: u32) -> bool {
     key >= SYMBOL_KEY_BASE
 }
 
-/// 把用户 symbol 的表下标编码为属性键。
+/// 把用户 symbol 的全局下标编码为属性键。
 ///
-/// 键 = Symbol 区间起点 + well-known 预留槽 + 下标（截断到 28 位防加法回绕）。
+/// 传入的是 interner 分配的**全局**下标（用户符号从 [`WELL_KNOWN_SYMBOL_COUNT`]
+/// 起，见 VM 的 `SymbolState::intern`），编码时再叠加一次 well-known 预留槽偏移。
+/// 两段偏移使 `[SYMBOL_KEY_BASE + WELL_KNOWN_SYMBOL_COUNT, SYMBOL_KEY_BASE + 2 *
+/// WELL_KNOWN_SYMBOL_COUNT)` 成为空档；与 [`symbol_index_from_key`] 减去同一常量，
+/// 往返自洽，空档不落任何产键路径。
 #[inline]
 pub const fn make_symbol_key(idx: u32) -> u32 {
     SYMBOL_KEY_BASE + WELL_KNOWN_SYMBOL_COUNT + (idx & SYMBOL_INDEX_MASK)
 }
 
-/// 从用户 symbol 键反解表下标（与 [`make_symbol_key`] 互逆）。
+/// 从用户 symbol 键反解全局下标（与 [`make_symbol_key`] 互逆）。
 #[inline]
 pub const fn symbol_index_from_key(key: u32) -> u32 {
     (key - SYMBOL_KEY_BASE - WELL_KNOWN_SYMBOL_COUNT) & SYMBOL_INDEX_MASK

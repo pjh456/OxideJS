@@ -56,6 +56,37 @@ fn int_mul(a: i32, b: i32) -> JsValue {
     }
 }
 
+/// `+` 系运算在数值/字符串分流前的 Symbol 守卫。
+///
+/// 任一操作数为 Symbol 时规范都要求抛 `TypeError`：字符串分支走 ToString、数值
+/// 分支走 ToNumber（ECMA-262 §7.1.4 / §7.1.17）。消息按分流走向取对应文本；
+/// 两侧须已过 ToPrimitive。
+///
+/// `return` 直接返回抛出结果，避免已展开到 try 处理器后继续执行后续分支造成二次抛错。
+macro_rules! reject_symbol_add {
+    ($self:ident, $lhs:expr, $rhs:expr) => {{
+        let (lhs, rhs) = ($lhs, $rhs);
+        if lhs.is_symbol() || rhs.is_symbol() {
+            let msg = if lhs.is_string() || rhs.is_string() {
+                "Cannot convert a Symbol value to a string"
+            } else {
+                "Cannot convert a Symbol value to a number"
+            };
+            return $self.raise_type_error(msg);
+        }
+    }};
+}
+
+/// 纯数值算术（减/乘/除/模/幂等）的 Symbol 守卫：ToNumber(Symbol) 抛 `TypeError`
+/// （ECMA-262 §7.1.4）。仅检查最终原始值，对象操作数须先经 ToPrimitive。
+macro_rules! reject_symbol_number {
+    ($self:ident, $l:expr, $r:expr) => {{
+        if $l.is_symbol() || $r.is_symbol() {
+            return $self.raise_type_error("Cannot convert a Symbol value to a number");
+        }
+    }};
+}
+
 impl Vm {
     #[inline(always)]
     pub(crate) fn dispatch_add(&mut self, rd: usize, a: usize, b: usize) -> Result<(), String> {
@@ -79,6 +110,7 @@ impl Vm {
         // 必须放在 coerce 之后。
         let lhs = self.coerce_primitive_bounded(lv, false)?;
         let rhs = self.coerce_primitive_bounded(rv, false)?;
+        reject_symbol_add!(self, lhs, rhs);
         if lhs.is_string() || rhs.is_string() {
             self.regs[rd] = self.concat_strings(lhs, rhs);
             return Ok(());
@@ -208,6 +240,7 @@ impl Vm {
             // 顺序与左结合 ADD 一致。
             let lhs = self.coerce_primitive_bounded(acc, false)?;
             let rhs = self.coerce_primitive_bounded(next, false)?;
+            reject_symbol_add!(self, lhs, rhs);
             if lhs.is_string() || rhs.is_string() {
                 // ── 阶段 2：字符串模式单趟预分配 ──
                 self.regs[rd] = self.concat_n_strings(lhs, rhs, &ops[idx + 1..])?;
@@ -248,6 +281,11 @@ impl Vm {
         for &reg in rest {
             let v = self.regs[reg];
             let prim = if v.is_object() { self.coerce_primitive_bounded(v, false)? } else { v };
+            // 字符串模式对全部操作数做 ToString，Symbol 按 §7.1.17 抛 TypeError。
+            if prim.is_symbol() {
+                self.raise_type_error("Cannot convert a Symbol value to a string")?;
+                return Ok(JsValue::undefined());
+            }
             parts.push(prim);
         }
         let cap = parts.iter().fold(0usize, |acc, p| {
@@ -288,6 +326,7 @@ impl Vm {
         if prim.is_bigint() {
             return self.raise_type_error("Cannot convert a BigInt value to a number");
         }
+        reject_symbol_number!(self, prim, prim);
         let n = coercion::to_number(prim);
         self.regs[rd] = JsValue::float(n);
         Ok(())
@@ -311,6 +350,7 @@ impl Vm {
         }
         let lhs = self.coerce_primitive_bounded(lv, false)?;
         let rhs = self.coerce_primitive_bounded(rv, false)?;
+        reject_symbol_add!(self, lhs, rhs);
         if lhs.is_string() || rhs.is_string() {
             self.regs[rd] = self.concat_strings(lhs, rhs);
             return Ok(());
@@ -349,6 +389,7 @@ impl Vm {
         }
         let l = self.coerce_primitive_bounded(lv, false)?;
         let r = self.coerce_primitive_bounded(rv, false)?;
+        reject_symbol_number!(self, l, r);
         if l.is_bigint() && r.is_bigint() {
             self.regs[rd] = self.new_bigint(self.bigint_value(l) - self.bigint_value(r));
             return Ok(());
@@ -381,6 +422,7 @@ impl Vm {
         }
         let l = self.coerce_primitive_bounded(lv, false)?;
         let r = self.coerce_primitive_bounded(rv, false)?;
+        reject_symbol_number!(self, l, r);
         if l.is_bigint() && r.is_bigint() {
             self.regs[rd] = self.new_bigint(self.bigint_value(l) * self.bigint_value(r));
             return Ok(());
@@ -417,6 +459,7 @@ impl Vm {
         }
         let l = self.coerce_primitive_bounded(lv, false)?;
         let r = self.coerce_primitive_bounded(rv, false)?;
+        reject_symbol_number!(self, l, r);
         if l.is_bigint() && r.is_bigint() {
             let rv = self.bigint_value(r);
             if bigint_is_zero(rv) {
@@ -465,6 +508,7 @@ impl Vm {
         }
         let l = self.coerce_primitive_bounded(lv, false)?;
         let r = self.coerce_primitive_bounded(rv, false)?;
+        reject_symbol_number!(self, l, r);
         if l.is_bigint() && r.is_bigint() {
             let rv = self.bigint_value(r);
             if bigint_is_zero(rv) {
@@ -509,6 +553,10 @@ impl Vm {
         }
         let l = self.coerce_primitive_bounded(lv, false)?;
         let r = self.coerce_primitive_bounded(rv, false)?;
+        if l.is_symbol() || r.is_symbol() {
+            self.raise_type_error("Cannot convert a Symbol value to a number")?;
+            return Ok(JsValue::undefined());
+        }
         if l.is_bigint() && r.is_bigint() {
             let base = self.bigint_value(l).clone();
             let exp = self.bigint_value(r).clone();

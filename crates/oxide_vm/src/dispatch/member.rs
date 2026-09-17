@@ -193,6 +193,16 @@ impl Vm {
         };
         let prop_val = self.coerce_primitive_bounded(prop_raw, false)?;
         let rhs = self.coerce_primitive_bounded(self.regs[a], false)?;
+        if prop_val.is_symbol() || rhs.is_symbol() {
+            // 复合成员加法分流同 `+`：字符串分支走 ToString、数值分支走 ToNumber，
+            // 两者对 Symbol 均抛 TypeError（ECMA-262 §7.1.4 / §7.1.17）。
+            let msg = if prop_val.is_string() || rhs.is_string() {
+                "Cannot convert a Symbol value to a string"
+            } else {
+                "Cannot convert a Symbol value to a number"
+            };
+            return self.raise_type_error(msg);
+        }
         let new_val = if prop_val.is_string() || rhs.is_string() {
             let ls = coercion::to_string(prop_val);
             let rs = coercion::to_string(rhs);

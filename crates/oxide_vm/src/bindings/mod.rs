@@ -468,7 +468,8 @@ fn bind_iterator_protos(core: &Arc<KernelCore>, session: &KernelSession) {
             oxide_builtins::iterator::iterator_constructor_setter::<crate::vm::Vm> as *const (),
         );
     }
-    let sym_to_string_tag = oxide_types::private_key::make_well_known_symbol_key(9);
+    let sym_to_string_tag =
+        oxide_types::private_key::make_well_known_symbol_key(oxide_types::private_key::WELL_KNOWN_SYMBOL_TO_STRING_TAG);
     if core
         .shape_forge()
         .lookup_position(iter_proto.shape_id(), sym_to_string_tag)
@@ -487,13 +488,14 @@ fn bind_iterator_protos(core: &Arc<KernelCore>, session: &KernelSession) {
     }
 
     // %IteratorPrototype% 的 @@dispose：显式资源管理下用 return 关闭迭代器。
-    let sym_dispose = oxide_types::private_key::make_well_known_symbol_key(12);
+    let dispose_id = oxide_types::private_key::WELL_KNOWN_SYMBOL_DISPOSE;
+    let sym_dispose = oxide_types::private_key::make_well_known_symbol_key(dispose_id);
     if core.shape_forge().lookup_position(iter_proto.shape_id(), sym_dispose).is_none() {
         bind_well_known_method(
             world,
             core,
             iter_proto,
-            12,
+            dispose_id,
             "[Symbol.dispose]",
             oxide_builtins::iterator::iterator_dispose::<crate::vm::Vm> as *const (),
             0,
