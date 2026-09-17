@@ -22,7 +22,8 @@ impl Vm {
     /// 才值得。
     pub(crate) const CONS_FLATTEN_UNITS: usize = 128;
 
-    /// 替换本 VM 独占的内建 P 对象：先恰好释放旧副本的属性区一次，
+    /// 替换本 VM 独占的内建原型对象（生成器 / Promise / 异步族与 Object 的
+    /// 原型，下文简称 P 原型）：先恰好释放旧副本的属性区一次，
     /// 再让旧 Arc 归零（旧副本无 Drop 口径兜底，full_reset 重初始化
     /// 路径必须显式释放，否则逐测试累积）。
     pub(crate) fn swap_intrinsic_proto(slot: &mut P<JsObject>, new_obj: JsObject) {
@@ -347,7 +348,7 @@ impl Vm {
         vm_info!("full_reset completed");
     }
 
-    /// 旧版全量重置：总是丢弃并重建整个 session 与内置对象（benchmark 专用）。
+    /// benchmark 专用重置路径：总是丢弃并重建整个 session 与内置对象。
     #[doc(hidden)]
     pub fn full_reset_legacy_for_bench(&mut self) {
         self.session = KernelSession::new(&self.kernel_core);

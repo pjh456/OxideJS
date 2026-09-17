@@ -6,12 +6,35 @@ use oxide_types::object::{JsObject, PropAttributes, PropMetaEntry};
 use oxide_types::value::JsValue;
 
 impl Vm {
+    /// 属性读入口：解析 `obj[prop_name_si]`，依次尝试数组 length 虚拟属性、
+    /// 数组元素区、TypedArray 整数索引、命名属性槽，最后沿原型链查找。
+    ///
+    /// # 步骤
+    /// 1. 数组 length 键返回逻辑长度值，不落属性存储。
+    /// 2. 数组整数索引在元素区命中且非 hole 时返回元素值；访问器元素触发 getter。
+    /// 3. TypedArray 整数索引读底层 buffer。
+    /// 4. 命名属性槽命中返回槽值；accessor 触发 getter。
+    /// 5. 全部 miss 时沿原型链逐层查找，深度以 `MAX_PROTO_CHAIN_DEPTH` 为界。
+    ///
+    /// # 边界与前提
+    /// - 元素区 hole（删除标记）与越界索引视同不存在，继续落原型链；
+    /// - getter 未定义时返回 undefined；整条原型链 miss 返回 undefined。
+    ///
+    /// # 副作用
+    /// - getter 经 `call_function_sync` 同步调用执行：native 直接调用，字节码
+    ///   函数同 epoch 内联。
+    ///
+    /// # 注意事项
+    /// - 本入口不带目标寄存器，字节码 getter 的帧化变体见
+    ///   `ordinary_get_with_target`。
     pub(crate) fn ordinary_get(
         &mut self, obj: &JsObject, prop_name_si: u32, receiver: JsValue,
     ) -> Result<JsValue, String> {
         self.ordinary_get_inner(obj, prop_name_si, receiver, None)
     }
 
+    /// 带目标寄存器的读入口：访问器 getter 为字节码函数时帧化执行，结果由
+    /// `target_reg` 承接；其余解析逻辑同 `ordinary_get`。
     pub(crate) fn ordinary_get_with_target(
         &mut self, obj: &JsObject, prop_name_si: u32, receiver: JsValue, target_reg: u8,
     ) -> Result<JsValue, String> {
@@ -98,6 +121,26 @@ impl Vm {
         Ok(JsValue::undefined())
     }
 
+    /// 将访问器 getter 帧化执行：native getter 同步调用并写回 `target_reg`，
+    /// 字节码 getter 压入 `AccessorGet` 帧由主循环执行。
+    ///
+    /// # 步骤
+    /// 1. 校验 getter 为可调用函数对象，否则抛 TypeError。
+    /// 2. native getter：同步调用 `call_function_sync`，结果写入 `target_reg`，
+    ///    返回 `false`（调用方在当前帧继续）。
+    /// 3. 字节码 getter：压入 `AccessorGet` 帧并记录目标寄存器，返回 `true`。
+    ///
+    /// # 边界与前提
+    /// - `target_reg` 须在寄存器文件范围内；调用方按返回值区分「结果已写回」
+    ///   与「帧化待执行」两种状态。
+    ///
+    /// # 副作用
+    /// - native 路径写 `target_reg`；字节码路径改写帧栈与 pc，并设置
+    ///   `accessor_frame_target_reg`。
+    ///
+    /// # 注意事项
+    /// - native getter 抛错经 `raise_call_error` 恢复为可捕获的 JS 异常；
+    ///   返回 `true` 时结果寄存器尚无值，调用方不得读取。
     pub(crate) fn push_bytecode_getter_frame(
         &mut self, getter: JsValue, receiver: JsValue, target_reg: u8,
     ) -> Result<bool, String> {
@@ -152,8 +195,8 @@ impl Vm {
         None
     }
 
-    /// 全局 builtin 属性 A 侧写成功后反向同步当前帧镜像槽（成员写 / define /
-    /// delete 成功后调用）。
+    /// 全局 builtin 属性在原始存储侧（全局对象自身属性槽，下文简称 A 侧）写成功后
+    /// 反向同步当前帧镜像槽（成员写 / define / delete 成功后调用）。
     ///
     /// # 边界与前提
     /// - 仅当接收者为会话全局对象时生效：非全局写经指针判等短路（热路径成本
@@ -286,8 +329,8 @@ impl Vm {
             }
         }
         // 数组 length 赋值：ArraySetLength 语义（ToUint32 + 调整元素区）。
-        // 旧行为会把 length 存成影子命名属性，导致 `arr.length = N` 后
-        // prop_count/迭代/内置方法看到的长度不一致。
+        // length 不得落影子命名属性：否则 `arr.length = N` 后 prop_count /
+        // 迭代 / 内置方法看到的长度与元素区不一致。
         let length_si = self.length_si;
         if obj.is_array() && prop_name_si == length_si {
             // 冻结数组的 length 属性不可写（writable=false），赋值直接失败；
@@ -308,7 +351,8 @@ impl Vm {
             } else {
                 number_len.trunc().rem_euclid(4_294_967_296.0) as u32 as usize
             };
-            // ToUint32 != ToNumber (e.g. 1.5 / NaN / Infinity / negative / 2**32) -> RangeError.
+            // ToUint32 截断结果与 ToNumber 不等价（1.5 / NaN / Infinity / 负数 /
+            // 2**32 等输入）时抛 RangeError：赋值后 length 读不回原值。
             if raw_new_len as f64 != number_len {
                 return self.raise_error_kind("RangeError", "Invalid array length");
             }
@@ -330,22 +374,23 @@ impl Vm {
                     }
                 }
             }
-            // Dense storage caps at MAX_DENSE_PROPS; larger lengths stay at the cap.
+            // 元素区物理槽数以 `MAX_DENSE_PROPS` 为上限，超限长度不扩槽。
             let new_len_u = raw_new_len.min(oxide_types::object::MAX_DENSE_PROPS);
             obj.set_prop_count(new_len_u);
-            // Grown slots are sparse holes: HasProperty / prototype reads must treat
-            // them as absent.
+            // 扩出的槽是稀疏 hole：存在性检查与原型链读取须视同不存在，
+            // 故逐个打 hole 标记。
             for idx in old_count..new_len_u {
                 obj.mark_hole_at(idx);
             }
-            // Logical length override: lengths beyond the dense cap are recorded
-            // separately so `a.length` reads return the real value.
+            // 超过稠密上限的长度另记逻辑长度槽：`a.length` 读回真实赋值
+            // 而非封顶后的物理槽数。
             if raw_new_len > oxide_types::object::MAX_DENSE_PROPS {
                 obj.set_array_len_override(raw_new_len as u32);
             } else {
                 obj.clear_array_len_override();
             }
-            // 同步旧版可能残留的影子 length 属性（shape 槽），保证 IC 快路径读到新值。
+            // 对象自身属性区可能存在影子 length 命名属性（shape 槽），同步写入
+            // 新逻辑长度，保证 IC 快路径读到新值。
             if let Some(pos) = self.kernel_core.shape_forge().lookup_position(obj.shape_id(), length_si) {
                 let store_idx = obj.array_prop_count as usize + pos as usize;
                 obj.set_prop_storage(store_idx, obj.logical_len_value());
@@ -434,6 +479,24 @@ impl Vm {
         self.ordinary_set_inner(receiver_obj, prop_name_si, promoted, receiver, use_frame_push, strict)
     }
 
+    /// 调用或帧化访问器 setter：native（或禁止帧化的调用方）同步执行，
+    /// 字节码 setter 压入 `AccessorSet` 帧。
+    ///
+    /// # 步骤
+    /// 1. `use_frame_push=false`：直接同步调用 setter 并返回。
+    /// 2. 校验 setter 为可调用函数对象，否则抛 TypeError。
+    /// 3. native setter 同步调用；字节码 setter 压入 `AccessorSet` 帧并携带实参。
+    ///
+    /// # 边界与前提
+    /// - 帧化路径要求 setter 为可调用对象；`use_frame_push` 由写入口按场景给出
+    ///   （member 写传 false / IC 分发传 true）。
+    ///
+    /// # 副作用
+    /// - 同步路径执行 setter 体；帧化路径改写帧栈与 pc。
+    ///
+    /// # 注意事项
+    /// - native setter 抛错经 `call_function_sync` 以 `Err(String)` 返回，
+    ///   此处经 `raise_call_error` 恢复为可捕获的 JS 异常（与 getter 路径对称）。
     pub(crate) fn call_or_push_setter(
         &mut self, setter: JsValue, receiver: JsValue, val: JsValue, use_frame_push: bool,
     ) -> Result<(), String> {
@@ -650,6 +713,26 @@ impl Vm {
                 && self.array_index_from_property_key(prop_name_si).is_some()
     }
 
+    /// 值写入直调路径：REST / SPREAD / builtin 内部等已确定目标对象的场景，
+    /// 跳过 `ordinary_set` 的严格模式、原型链 setter 与只读检查直接落值。
+    ///
+    /// # 步骤
+    /// 1. TypedArray 整数索引写底层 buffer（越界静默忽略）。
+    /// 2. 数组整数索引写元素区并维护 `array_prop_count`；新元素要求对象可扩展。
+    /// 3. 命名属性槽命中直写槽值。
+    /// 4. 命名属性 miss 且对象可扩展时 `make_shape` 追加新槽。
+    ///
+    /// # 边界与前提
+    /// - 调用方须已确认接收者即目标对象（无原型链 setter / 只读遮蔽）。
+    /// - 不可扩展对象的新属性写入静默忽略（常规入口已预先拦截，此处为兜底）。
+    ///
+    /// # 副作用
+    /// - 写属性存储 / 元素区 / buffer；新增属性时修改 shape 与世代计数，
+    ///   并同步全局 builtin 镜像槽。
+    ///
+    /// # 注意事项
+    /// - 与 `ordinary_set` 的差异在于不做 writable / setter / 严格模式判定，
+    ///   仅供语义已确定的内部调用方使用。
     pub(crate) fn set_or_create_prop_value(&mut self, obj: &mut JsObject, prop_name_si: u32, val: JsValue) {
         vm_trace!("set_or_create_prop_value: shape_id={} prop_name_si={}", obj.shape_id(), prop_name_si);
         // TypedArray 整数索引写 buffer（越界忽略），不进入 shape/prop 槽。
@@ -690,6 +773,26 @@ impl Vm {
         }
     }
 
+    /// `defineProperty` 数据属性共享路径：写入或重定义数据属性并施加给定
+    /// attributes。
+    ///
+    /// # 步骤
+    /// 1. TypedArray 整数索引分流到元素定义；数组整数索引分流到元素区定义。
+    /// 2. 新命名属性（shape 链 miss）且对象不可扩展时拒绝定义。
+    /// 3. 命中现有槽且属性不可配置时做重定义校验。
+    /// 4. 写槽值、数据属性 meta 与世代计数，并同步全局 builtin 镜像槽。
+    ///
+    /// # 边界与前提
+    /// - `attributes` 为最终属性描述符，调用方已按 `defineProperty` 规则填充缺省值。
+    /// - 不可配置属性的校验：不可把 accessor 改为数据属性；枚举性、可配置性不得
+    ///   放宽；只读属性不可改为可写，改值须满足 `same_value`。
+    ///
+    /// # 副作用
+    /// - 写属性存储与 meta；可能新增 shape 槽并 bump 世代；同步镜像槽。
+    ///
+    /// # 注意事项
+    /// - 错误以 `Err(String)` 返回，由 `Object.defineProperty` 转 TypeError、
+    ///   `Reflect.defineProperty` 转 `false`。
     pub(crate) fn define_data_property(
         &mut self, obj: &mut JsObject, prop_name_si: u32, val: JsValue, attributes: PropAttributes,
     ) -> Result<(), String> {
@@ -763,6 +866,26 @@ impl Vm {
         Ok(())
     }
 
+    /// `defineProperty` 访问器属性共享路径：写入或重定义 getter/setter 并施加
+    /// 给定 attributes。
+    ///
+    /// # 步骤
+    /// 1. 数组整数索引分流到元素区访问器定义。
+    /// 2. 新命名属性（shape 链 miss）且对象不可扩展时拒绝定义。
+    /// 3. 命中现有槽且属性不可配置时做重定义校验。
+    /// 4. 写空值槽、accessor meta 与世代计数，并同步全局 builtin 镜像槽。
+    ///
+    /// # 边界与前提
+    /// - 不可配置 accessor 仅在 get/set 不变、枚举性与可配置性均不变时才允许
+    ///   重定义；不可配置数据属性不可改为 accessor。
+    ///
+    /// # 副作用
+    /// - 属性存储写 `undefined`，accessor meta 记录 get/set；可能新增 shape 槽
+    ///   并 bump 世代；同步镜像槽。
+    ///
+    /// # 注意事项
+    /// - 错误以 `Err(String)` 返回，由 `Object.defineProperty` 转 TypeError、
+    ///   `Reflect.defineProperty` 转 `false`。
     pub(crate) fn define_accessor_property(
         &mut self, obj: &mut JsObject, prop_name_si: u32, get: JsValue, set: JsValue, attributes: PropAttributes,
     ) -> Result<(), String> {
