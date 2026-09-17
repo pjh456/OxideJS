@@ -13,7 +13,7 @@ use crate::vm_debug;
 impl Vm {
     /// ToPrimitive 有界版：按规范序把对象转为原始值，失败统一抛 `TypeError`。
     ///
-    /// 对象自身的 `Symbol.toPrimitive` 优先；不存在时按 `prefer_string` 定序尝试
+    /// 对象上（沿原型链读取）的 `Symbol.toPrimitive` 优先；不存在时按 `prefer_string` 定序尝试
     /// `toString`/`valueOf`，等价于 OrdinaryToPrimitive。
     ///
     /// # 步骤
@@ -45,7 +45,7 @@ impl Vm {
             return Ok(value);
         }
 
-        // ECMA-262 §7.1.1 step 1：exotic 对象自身的 Symbol.toPrimitive 优先于
+        // ECMA-262 §7.1.1 step 1：exotic 对象上（沿原型链读取）的 Symbol.toPrimitive 优先于
         // OrdinaryToPrimitive。well-known symbol 键经 property_key_si 映射为固定
         // Symbol 键，读键路径与写键路径一致。
         let sym_key = {
