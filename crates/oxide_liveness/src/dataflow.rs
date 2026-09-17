@@ -3,7 +3,7 @@
 //! gen/kill 直接消费 `oxide_ir::contract` 的 `def_reg`/`use_regs`，
 //! None→0 / This→254 / NewTarget→255 / CALL 隐式 reg0 全内置，不重复建。
 //! Exception 边当普通边参与迭代；Exception 目标块入口 reg 0 隐式 def
-//! （异常展开写 regs[0]，vm_runtime.rs:204-205）在此建模：gen.remove(0)+kill.insert(0)。
+//! （异常展开由 VM 派发循环写入 regs[0]）在此建模：gen.remove(0)+kill.insert(0)。
 //!
 //! 位集为 `u64` 压缩（1 字 64 位，密度为 `Vec<bool>` 的 8 倍）；不动点迭代
 //! 复用 out/input 两块缓冲（clear + 覆盖），不逐块逐迭代分配。
@@ -16,7 +16,7 @@ use crate::live_info::{bitset_clear, bitset_set};
 /// 块级 liveness：返回 (block_live_in, block_live_out, reg_count)。
 /// reg_count = 全部 def/use 最大 reg 号（bitset 容量 = reg_count+1）。
 pub(super) fn block_liveness(f: &IRFunction, cfg: &Cfg) -> (Vec<Vec<u64>>, Vec<Vec<u64>>, usize) {
-    // 1. reg_count 上界扫描（不信任 f.n_registers，动态求上界，照 iter_sweep 先例）
+    // 上界扫描：f.n_registers 在 emit 阶段未必填准，故不信任它，逐 inst 取 def/use 最大 reg 号作 bitset 容量上界。
     let mut reg_count = 255usize; // 兜底 This/NewTarget 254/255
     for inst in &f.insts {
         if let Some(d) = inst.def_reg() {
@@ -30,12 +30,12 @@ pub(super) fn block_liveness(f: &IRFunction, cfg: &Cfg) -> (Vec<Vec<u64>>, Vec<V
     let words = (reg_count + 1).div_ceil(64);
     let n = cfg.blocks.len();
 
-    // 2. 每块 gen/kill
+    // 每块 gen/kill：先算块内反向扫描的 gen，再算正向扫描的 kill。
     let mut gen: Vec<Vec<u64>> = vec![vec![0u64; words]; n];
     let mut kill: Vec<Vec<u64>> = vec![vec![0u64; words]; n];
     for (b, block) in cfg.blocks.iter().enumerate() {
         // gen：块内反向扫描，kill 先于 gen（`live = (live − def) ∪ use`）。
-        // 顺序理由：COMPOUND_ADD 等读-写同寄存器指令 use 含 rd（contract.rs:137），
+        // 顺序理由：COMPOUND_ADD 等读-写同寄存器指令的 uses 含 Rd（见 oxide_ir::contract 的 def/use 约定），
         // gen 先于 kill 会把 rd 旧值从 live_before 错误剔除。
         let mut live = vec![0u64; words];
         for i in block.inst_range.clone().rev() {
@@ -68,10 +68,10 @@ pub(super) fn block_liveness(f: &IRFunction, cfg: &Cfg) -> (Vec<Vec<u64>>, Vec<V
         }
     }
 
-    // 3. reverse_postorder（确定性，禁 HashMap 迭代序）
+    // reverse_postorder：从 entry 沿 succs 存储序 DFS，保证确定性（禁 HashMap 迭代序）。
     let rpo = reverse_postorder(cfg);
 
-    // 4. 不动点迭代：out/input 缓冲循环外分配复用，clear + 覆盖免逐迭代分配
+    // 不动点迭代：out/input 缓冲在循环外分配复用，clear + 覆盖，免逐迭代分配。
     let mut live_in = vec![vec![0u64; words]; n];
     let mut live_out = vec![vec![0u64; words]; n];
     let mut out = vec![0u64; words];
@@ -265,7 +265,7 @@ mod tests {
     #[test]
     fn none_operand_maps_to_reg0() {
         // 0: LOAD_VAR(Reg(5), None, None)   def 5 use {0}
-        // 1: HALT(None, None, None)          contract.rs HALT 读 regs[0]
+        // 1: HALT(None, None, None)          HALT 读 regs[0]（contract 约定）
         let mut f = empty_function();
         f.insts
             .push(Inst::new(OpCode::LOAD_VAR, Operand::Reg(5), Operand::None, Operand::None));

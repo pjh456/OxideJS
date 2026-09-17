@@ -2,7 +2,7 @@
 //!
 //! 起点是 **block_live_out**（非 liveIn——从 liveIn 出发会得到错误放大的逐指令集）。
 //! 反向扫描 **kill 先于 gen**（`live = (live − def) ∪ use`）：COMPOUND_ADD 等读-写
-//! 同寄存器指令 use 含 rd（contract.rs:137），gen 先于 kill 会把 rd 旧值从
+//! 同寄存器指令的 uses 含 Rd（见 oxide_ir::contract 的 def/use 约定），gen 先于 kill 会把 rd 旧值从
 //! live_before 错误剔除。Exception 目标块入口 reg 0 隐式 def 在此截断，并以
 //! `debug_assert_eq!(live, block_live_in[b])` 校验与 dataflow 一致性。
 //!
@@ -24,7 +24,8 @@ pub(super) fn inst_liveness(
         let mut live = block_live_out[b].clone(); // 从块级 liveOut 出发（非 liveIn）
         for i in block.inst_range.clone().rev() {
             after[i].copy_from_slice(&live);
-            // kill 先于 gen：本指令先写后读（COMPOUND_ADD 等读-写同寄存器，contract.rs:137）
+            // kill 先于 gen：本指令先写后读。COMPOUND_ADD 等读-写同寄存器指令的
+            // uses 含 Rd，见 oxide_ir::contract 的 def/use 约定。
             if let Some(d) = f.insts[i].def_reg() {
                 bitset_clear(&mut live, d as usize);
             }
