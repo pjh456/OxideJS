@@ -2,9 +2,10 @@
 //! `Program` 的稳定哈希，用作编译缓存键（code cache）。
 //!
 //! `structural_hash` 为粗粒度键，忽略变量声明名、标识符读、import 本地名与
-//! 函数参数等大部分绑定名；`compiled_module_hash` 为精确键，额外纳入全部绑定名。
+//! 函数参数等大部分绑定名；`compiled_module_hash` 为精确键，额外纳入标识符形态的绑定名
+//! （变量声明、参数与 catch 的解构形态均不贡献哈希）。
 //! 函数声明名、类名与 catch 参数标识名是编译产物物化名，两种粒度下恒计入哈希；
-//! catch 参数为解构形态时不贡献哈希。
+//! 变量声明、函数/箭头/方法参数与 catch 参数为解构形态时均不贡献哈希。
 
 use oxide_parser::{
     ArrayExpressionElement, BindingPattern, ChainElement, Class, ClassElement, Declaration,
@@ -50,7 +51,7 @@ pub fn structural_hash(program: &oxide_parser::Program) -> u64 {
     hash_program(program, false)
 }
 
-/// 精确编译模块哈希：在粗粒度键基础上额外纳入全部绑定名，
+/// 精确编译模块哈希：在粗粒度键基础上额外纳入标识符形态的绑定名，
 /// 避免绑定名不同但结构相同的程序错误复用缓存。
 pub fn compiled_module_hash(program: &oxide_parser::Program) -> u64 {
     hash_program(program, true)
