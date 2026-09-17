@@ -444,8 +444,8 @@ fn bubble_relative_duration(
             }
             end_dur[4..10].fill(0.0);
             let end_date = add_date_duration(date1, &end_dur);
-            // 进位候选边界只参与"是否进位"的比较，其对应的日期不会被写入结果，
-            // 因此这里不调用 ISO 日期范围校验（范围校验只在结果日期上执行）。
+            // 进位候选边界可能越出 ISO 日期范围，仅用于换算比较用的纪元纳秒并判断
+            // 是否进位，因此这里不做范围校验。
             let end_epoch = days_from_civil(end_date.0, end_date.1, end_date.2) * DAY_NS + time1_ns;
             let reached_end = if sign > 0 { nudged_epoch >= end_epoch } else { nudged_epoch <= end_epoch };
             if reached_end {
