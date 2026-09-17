@@ -24,6 +24,7 @@ impl Vm {
     fn make_agg_record(&mut self, values: JsValue, resolve: JsValue, reject: JsValue) -> JsValue {
         let proto_val = JsValue::from_js_object(self.session.builtin_world().object_proto.as_ptr() as *mut JsObject);
         let ptr = self.alloc_object(JsObject::new_empty(EMPTY_SHAPE_ID, proto_val));
+        // SAFETY: ptr 由 alloc_object 新建，返回非空 arena 指针；本次 native 调用内不搬移，借出期间无别名。
         let obj = unsafe { &mut *ptr };
         let rem_si = self.kernel_core.perm_interner().intern(AGG_REMAINING_PROP).0;
         self.set_or_create_prop_value(obj, rem_si, JsValue::int(1));
@@ -47,6 +48,7 @@ impl Vm {
         func.set_native_fn(Some(unsafe { NativeFnPtr::from_raw(native_fn as *const ()) }));
         func.set_native_arg_count(1);
         let ptr = self.alloc_object(func);
+        // SAFETY: ptr 由 alloc_object 新建，返回非空 arena 指针；后续 add_fn_name_length 的 shape/属性分配不改对象地址，借出期间无别名。
         let obj = unsafe { &mut *ptr };
         self.add_fn_name_length(obj, "", 1);
         let sh = self.kernel_core.shape_forge().as_ref();
@@ -73,6 +75,7 @@ impl Vm {
     fn make_settled_record(&mut self, status: &str, value_field: &str, value: JsValue) -> JsValue {
         let proto_val = JsValue::from_js_object(self.session.builtin_world().object_proto.as_ptr() as *mut JsObject);
         let ptr = self.alloc_object(JsObject::new_empty(EMPTY_SHAPE_ID, proto_val));
+        // SAFETY: ptr 由 alloc_object 新建，返回非空 arena 指针；写 status/value 属性（含 new_string 分配）期间不搬移，借出期间无别名。
         let obj = unsafe { &mut *ptr };
         let status_si = self.kernel_core.perm_interner().intern("status").0;
         let status_val = self.new_string(status);
@@ -87,6 +90,7 @@ impl Vm {
     fn make_aggregate_error(&mut self, errors: JsValue, message: JsValue) -> JsValue {
         let proto_val = JsValue::from_js_object(self.aggregate_error_proto.as_ptr() as *mut JsObject);
         let ptr = self.alloc_object(JsObject::new_empty(EMPTY_SHAPE_ID, proto_val));
+        // SAFETY: ptr 由 alloc_object 新建，返回非空 arena 指针；写 message/errors 数据属性期间不搬移，借出期间无别名。
         let obj = unsafe { &mut *ptr };
         // message/errors 为数据属性：writable、非枚举、configurable（CreateMethodProperty）。
         let attrs = PropAttributes::new(true, false, true);
@@ -173,14 +177,17 @@ impl Vm {
         // 固定地址后互相接线：proto.constructor ↔ ctor.prototype。
         Self::swap_intrinsic_proto(&mut self.aggregate_error_proto, *proto);
         Self::swap_intrinsic_proto(&mut self.aggregate_error_constructor, *ctor);
+        // SAFETY: aggregate_error_proto 为堆址固定的 P<JsObject>（Arc 透明包装），本行前刚经 swap_intrinsic_proto 落地；与 ctor_mut 分属不同对象，无别名。
         let proto_mut = unsafe { &mut *self.aggregate_error_proto.as_mut_ptr() };
         proto_mut
             .set_prop_at(0u32, JsValue::from_js_object(self.aggregate_error_constructor.as_ptr() as *mut JsObject));
+        // SAFETY: aggregate_error_constructor 同为堆址固定的 P<JsObject>（Arc 透明包装）；此处写 prototype 槽位（下标 2），与 proto_mut 分属不同对象，无别名。
         let ctor_mut = unsafe { &mut *self.aggregate_error_constructor.as_mut_ptr() };
         ctor_mut.set_prop_at(2u32, JsValue::from_js_object(self.aggregate_error_proto.as_ptr() as *mut JsObject));
 
         // 绑定 global（槽已存在则更新）。
         let global_ptr = self.session.global_object().as_ptr() as *mut JsObject;
+        // SAFETY: global 对象由 session 持有，存活整个 session；本函数内只改其 shape/属性区，期间无 reset 或对象搬移。
         let global = unsafe { &mut *global_ptr };
         let si = self.kernel_core.perm_interner().intern("AggregateError").0;
         let ctor_val = JsValue::from_js_object(self.aggregate_error_constructor.as_ptr() as *mut JsObject);
@@ -202,6 +209,7 @@ pub(super) fn promise_static_resolve(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let ctor = vm.reg(if args.is_empty() { 0 } else { args[0] });
     let x = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
     if vm.is_promise_value(x) {
+        // SAFETY: is_promise_value 已验证 x 为原生 Promise 对象，指针非空且存活；此处只读 constructor，即时消费。
         let x_obj = unsafe { &*x.as_js_object_ptr() };
         let ctor_si = vm.kernel_core.perm_interner().intern("constructor").0;
         let x_ctor = match vm.ordinary_get(x_obj, ctor_si, x) {
@@ -273,6 +281,7 @@ pub(super) fn promise_static_with_resolvers(vm: &mut Vm, args: &[u8]) -> NativeR
     };
     let object_proto = JsValue::from_js_object(vm.session.builtin_world().object_proto.as_ptr() as *mut JsObject);
     let ptr = vm.alloc_object(JsObject::new_empty(EMPTY_SHAPE_ID, object_proto));
+    // SAFETY: ptr 由 alloc_object 新建，返回非空 arena 指针；写 promise/resolve/reject 属性期间不搬移，借出期间无别名。
     let obj = unsafe { &mut *ptr };
     let sf = vm.kernel_core.perm_interner().as_ref();
     let sh = vm.kernel_core.shape_forge().as_ref();
@@ -707,6 +716,7 @@ fn aggregate_error_constructor(vm: &mut Vm, args: &[u8]) -> NativeResult {
         Err(err) => return NativeResult::Err(err),
     };
     let err_si = vm.kernel_core.perm_interner().intern("errors").0;
+    // SAFETY: this 为本次构造得到的既有或新建存活对象；此处写 errors 数据属性，与上方 message 写入顺序独占同一对象，无别名。
     let _ = vm.define_data_property(unsafe { &mut *this }, err_si, errors_list, PropAttributes::new(true, false, true));
     NativeResult::Ok(JsValue::from_js_object(this))
 }

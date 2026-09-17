@@ -54,11 +54,13 @@ impl Vm {
         let (new_promise, resolve, reject) = capability;
         let state_ptr = self.promise_state_ptr(this_val);
         let (kind, result) = {
+            // SAFETY: this_val 已过 is_promise_value 校验，state_ptr 取自 promise_state_ptr；状态盒非空且随对象存活，本块唯一可变借用，读完 state/result 即结束。
             let state = unsafe { &mut *state_ptr };
             (state.state, state.result)
         };
         match kind {
             PromiseStateKind::Pending => {
+                // SAFETY: 同一 state_ptr，前一可变借用已结束；状态盒非空且随 this_val 存活，此处仅向 reactions 追加两条反应，无别名。
                 let state = unsafe { &mut *state_ptr };
                 state.reactions.push(PromiseReaction {
                     promise: new_promise,
@@ -126,6 +128,7 @@ impl Vm {
     ///   undefined 会错误退回内置；`@@species` 改写支持待补
     ///   `Promise[Symbol.species]` getter 时一并落地。
     fn species_constructor(&mut self, promise: JsValue) -> Result<JsValue, JsValue> {
+        // SAFETY: 调用方已按函数文档前提做 is_promise_value 校验，指针非空且指向存活 Promise 对象；此处只读 constructor。
         let obj = unsafe { &*promise.as_js_object_ptr() };
         let ctor_si = self.kernel_core.perm_interner().intern("constructor").0;
         let ctor = match self.ordinary_get(obj, ctor_si, promise) {
@@ -211,6 +214,7 @@ impl Vm {
                 Err(e) => return Err(oxide_builtins::error::create_type_error(self, &e)),
             }
         };
+        // SAFETY: get_receiver 两分支均为对象（is_object 原值或 to_object 返回对象），指针非空且存活；此处只读 then 属性。
         let receiver_obj = unsafe { &*get_receiver.as_js_object_ptr() };
         let then = match self.ordinary_get(receiver_obj, then_si, this_val) {
             Ok(v) => v,
@@ -244,6 +248,7 @@ impl Vm {
         func.set_native_fn(Some(unsafe { NativeFnPtr::from_raw(promise_finally_handler as *const ()) }));
         func.set_native_arg_count(0);
         let ptr = self.alloc_object(func);
+        // SAFETY: ptr 由 alloc_object 新建，返回非空 arena 指针；本次 native 调用内不搬移，借出期间无别名。
         let obj = unsafe { &mut *ptr };
         let of_si = self.kernel_core.perm_interner().intern(ON_FINALLY_PROP).0;
         self.set_or_create_prop_value(obj, of_si, on_finally);
@@ -278,6 +283,7 @@ fn promise_finally_handler(vm: &mut Vm, args: &[u8]) -> NativeResult {
     if !callee.is_object() {
         return NativeResult::Err(oxide_builtins::error::create_type_error(vm, "finally handler is invalid"));
     }
+    // SAFETY: callee 来自 reg(254) 且 is_object 守卫保证指针非空存活；此处只读 ON_FINALLY/FINALLY_REJECT 属性。
     let callee_obj = unsafe { &*callee.as_js_object_ptr() };
     let of_si = vm.kernel_core.perm_interner().intern(ON_FINALLY_PROP).0;
     let on_finally = vm.resolve_property(callee_obj, of_si).unwrap_or(JsValue::undefined());
