@@ -124,3 +124,36 @@ fn eval_unary_plus_nan() {
 fn eval_unary_plus_false() {
     assert_eq!(eval("+false"), "0");
 }
+
+#[test]
+fn eval_string_relational_utf16_code_unit_order() {
+    // 字符串关系比较按 UTF-16 码元序：补充平面字符（首码元 D800..DBFF）小于
+    // U+E000..U+FFFF 的 BMP 字符。覆盖双 Flat、单侧 rope、ASCII 与等值边界。
+    let cases = [
+        // 超平面 vs BMP 高区，四运算符双向。
+        (r#""\u{10000}" < "\uFFFF""#, "true"),
+        (r#""\u{10000}" > "\uFFFF""#, "false"),
+        (r#""\u{10000}" <= "\uFFFF""#, "true"),
+        (r#""\u{10000}" >= "\uFFFF""#, "false"),
+        (r#""\uFFFF" < "\u{10000}""#, "false"),
+        (r#""\u{10000}" < "\uE000""#, "true"),
+        (r#""\uE000" < "\u{10000}""#, "false"),
+        // 等值边界：代理对写法与转义写法内容相同。
+        (r#""\u{10000}" < "\u{10000}""#, "false"),
+        (r#""\u{10000}" <= "\u{10000}""#, "true"),
+        (r#""\u{10000}" >= "\uD800\uDC00""#, "true"),
+        // 单侧非 Flat：左侧 rope 首码元为 D800，兜底单元通道结果与双 Flat 一致。
+        (r#""\u{10000}" + "a".repeat(200) < "\uFFFF""#, "true"),
+        (r#""\uFFFF" < "\u{10000}" + "a".repeat(200)"#, "false"),
+        // ASCII 与公共前缀：字节序与码元序一致。
+        (r#""a" < "b""#, "true"),
+        (r#""abc" < "abd""#, "true"),
+        (r#""abc" < "abc""#, "false"),
+        (r#""abc" <= "abc""#, "true"),
+        (r#""b" > "a""#, "true"),
+        ("\"\" < \"a\"", "true"),
+    ];
+    for (source, expected) in cases {
+        assert_eq!(eval(source), expected, "source: {source}");
+    }
+}

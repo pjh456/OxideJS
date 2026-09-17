@@ -513,17 +513,19 @@ fn strict_double_eq(a: f64, b: f64) -> bool {
 
 /// Relational Comparison（`<`，ECMA-262 §7.2.13）的原始值版本。
 ///
-/// 双字符串按字典序；否则转数值比较，任一侧为 NaN 时返回 `None`（表示比较未定义，调用方据此处理 `<`/`>`）。
+/// 双字符串按 UTF-16 码元字典序比较，两条形态路径口径统一；否则转数值比较，
+/// 任一侧为 NaN 时返回 `None`（表示比较未定义，调用方据此处理 `<`/`>`）。
 pub fn relational_compare(lhs: JsValue, rhs: JsValue) -> Option<bool> {
     if lhs.is_string() && rhs.is_string() {
         // SAFETY: 两侧均为字符串值，借用即时消费。
         let l = unsafe { &*lhs.as_string_ptr() };
         let r = unsafe { &*rhs.as_string_ptr() };
         if l.is_flat() && r.is_flat() {
-            // 双 Flat：直接按文本（UTF-8 码点序）字典序比较；任一侧非 Flat 时整体走单元序列比较。
-            return Some(l.as_str() < r.as_str());
+            // 双 Flat：流式按 UTF-16 码元字典序比较，补充平面字符拆为高低代理参与排序，
+            // 与下方单元通道相对 U+E000..U+FFFF 的 BMP 字符结果一致，免物化分配。
+            return Some(l.as_str().encode_utf16().cmp(r.as_str().encode_utf16()) == Ordering::Less);
         }
-        // 单元口径：码元字典序即规范序，Flat 编码与 rope 扁平化统一走单元通道。
+        // 任一侧非 Flat：走单元序列，同为 UTF-16 码元字典序（规范 §7.2.13 的 code unit 序）。
         return Some(l.units() < r.units());
     }
     if lhs.is_bigint() && rhs.is_bigint() {
