@@ -26,14 +26,15 @@ const INNER_NEXT_PROP: &str = "__inner_next__";
 /// 1. `this` 非对象 → TypeError（普通调用 `Iterator()`：emit 以 undefined 作 this）。
 /// 2. `this.proto === %IteratorPrototype%` → TypeError（`new Iterator()`：调用方以
 ///    ctor.prototype 为原型建新对象传入）。
-/// 3. newTarget 槽（regs[255]）非对象 → TypeError（`Iterator.call(x)` 顶层调用，
-///    顶层 newTarget 初始化为 undefined）。
+/// 3. newTarget 槽非对象 → TypeError（`Iterator.call(x)` 顶层调用，顶层 newTarget
+///    初始化为 undefined）。newTarget 由 255 号寄存器承载：254/255 是 VM 为
+///    `this` / new.target 保留的两个槽，调用方负责保存与恢复。
 /// 4. 否则返回 undefined（subclass `super()`：调用方随后按 new.target.prototype
 ///    设置实例原型）。
 ///
 /// # 注意事项
-/// 类构造器内调用 `Iterator.call(x)` 时 regs[255] 为类对象会被放行（规范外罕见
-/// 场景，与 `Symbol` 构造器同款已知边界）。
+/// 类构造器内调用 `Iterator.call(x)` 时 newTarget 槽为类对象会被放行（规范外
+/// 罕见场景，与 `Symbol` 构造器同款已知边界）。
 pub fn iterator_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
     if !this_val.is_object() {
@@ -62,9 +63,9 @@ pub fn iterator_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult 
 /// `%IteratorPrototype%` 上 `constructor` 访问器的 getter：返回当前 global 上的
 /// `Iterator` 构造器。
 ///
-/// 动态查 global（shape 槽查找）而非缓存指针：dirty reset 重建 global 时会换新的
-/// `Iterator` 函数对象，缓存旧指针会指向已释放对象。lookup 失败（极端：global 无
-/// `Iterator`）返回 undefined，不 panic。
+/// 动态查 global（shape 槽查找）而非缓存指针：global 整体重建（dirty reset）会
+/// 重建内置对象族，换新的 `Iterator` 函数对象；缓存旧指针会指向已释放对象。
+/// lookup 失败（极端：global 无 `Iterator`）返回 undefined，不 panic。
 pub fn iterator_constructor_getter<H: VmHost>(vm: &mut H, _args: &[u8]) -> NativeResult {
     let global = vm.session().global_object();
     let si = vm.kernel_core().perm_interner().intern("Iterator").0;
@@ -80,13 +81,14 @@ pub fn iterator_to_string_tag_getter<H: VmHost>(vm: &mut H, _args: &[u8]) -> Nat
     NativeResult::Ok(JsValue::perm_string(sf.string_ptr(sf.intern("Iterator").0)))
 }
 
-/// SetterThatIgnoresPrototypeProperties 的共享实现：`%IteratorPrototype%` 的
-/// `constructor` 与 `Symbol.toStringTag` 访问器共用同一语义，仅属性键不同。
+/// 忽略原型属性的 setter 的共享实现（对应规范 SetterThatIgnoresPrototypeProperties）：
+/// `%IteratorPrototype%` 的 `constructor` 与 `Symbol.toStringTag` 访问器共用同一
+/// 语义，仅属性键不同。
 ///
 /// # 步骤
 /// 1. `this` 非对象 → TypeError（原始值直接抛，不建 own 属性）。
-/// 2. `this` 为 `%IteratorPrototype%`（home 对象）→ TypeError（模拟对 home 不可写
-///    数据属性的严格模式赋值）。
+/// 2. `this` 为 `%IteratorPrototype%` 本体 → TypeError（模拟对原型上不可写数据
+///    属性的严格模式赋值）。
 /// 3. `this` 无 own 指定键属性 → CreateDataPropertyOrThrow（写全可写可枚举）。
 /// 4. 有 own 属性 → 普通 Set（继承访问器时在此被调用的场景）。
 fn iterator_setter_ignore_proto_props<H: VmHost>(vm: &mut H, args: &[u8], key: u32) -> NativeResult {
@@ -127,7 +129,7 @@ pub fn iterator_constructor_setter<H: VmHost>(vm: &mut H, args: &[u8]) -> Native
     iterator_setter_ignore_proto_props(vm, args, key)
 }
 
-/// `Symbol.toStringTag` 访问器的 setter（键 = well-known symbol 9）。
+/// `Symbol.toStringTag` 访问器的 setter（键为 `@@toStringTag`）。
 pub fn iterator_to_string_tag_setter<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     iterator_setter_ignore_proto_props(vm, args, make_well_known_symbol_key(9))
 }
@@ -164,8 +166,8 @@ pub fn iterator_dispose<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 
 // ── 终端方法共享工具（forEach/every/some/find/reduce/toArray 共用）──
 
-/// 终端方法的统一前置校验：`this` 非对象 → TypeError；回调不可调用 → 关底层后抛
-/// TypeError（2024 规范更新：参数校验失败也执行 IteratorClose，且此时不读 next）。
+/// 终端方法的统一前置校验：`this` 非对象 → TypeError；回调不可调用 → 先关闭底层
+/// 迭代器（此路径不读取 next）后抛 TypeError。
 ///
 /// # 步骤
 /// 1. `this` 非对象 → TypeError（原始值直接抛，不读 next）。
@@ -190,7 +192,7 @@ pub(crate) fn validate_terminal_and_get_direct<H: VmHost>(
     get_iterator_direct(vm, this_val)
 }
 
-/// GetIteratorDirect：读 `next` 一次并缓存，返回 `(iterated, next)` 对。
+/// 读 `next` 一次并缓存，返回 `(iterated, next)` 对（对应规范 GetIteratorDirect）。
 ///
 /// # 边界与前提
 /// - `this_val` 必须是对象（调用方已校验）。
@@ -202,7 +204,7 @@ pub(crate) fn get_iterator_direct<H: VmHost>(vm: &mut H, this_val: JsValue) -> R
     Ok((this_val, next))
 }
 
-/// IteratorStepValue：调缓存 next 取一步，读结果对象 `done`/`value`。
+/// 调用缓存的 next 取一步，读结果对象的 `done`/`value`（对应规范 IteratorStepValue）。
 ///
 /// # 返回值
 /// - `Ok(Some(value))`：有元素产出；
@@ -346,16 +348,16 @@ fn read_counter<H: VmHost>(vm: &mut H, obj: &JsObject, si: u32) -> i64 {
     }
 }
 
-/// ToIntegerOrInfinity 近似：ToNumber 后向零截断，保留 ±∞；NaN 判定由调用方
-/// 在截断前语义等价地做（`trunc(NaN)` 仍为 NaN）。ToNumber 抛错透传原异常值。
+/// ToIntegerOrInfinity 近似：输入值经 ToNumber 后向零截断，保留 ±∞；NaN 判定由
+/// 调用方在截断前语义等价地做（`trunc(NaN)` 仍为 NaN）。ToNumber 抛错透传原异常值。
 fn to_integer_or_infinity<H: VmHost>(vm: &mut H, value: JsValue) -> Result<f64, JsValue> {
     let num = vm.coerce_number_bounded(value).map_err(|e| engine_error(vm, &e))?;
     Ok(num.trunc())
 }
 
 /// take/drop 的共享前置：`this` 非对象 → TypeError；limit 经 ToIntegerOrInfinity
-/// 校验（NaN/负值 → RangeError，ToNumber 抛错透传），校验失败均先关底层
-/// （2024 规范更新：参数校验失败也执行 IteratorClose，且不读 next）。
+/// 校验（NaN/负值 → RangeError，ToNumber 抛错透传），校验失败均先关闭底层迭代器
+/// （此路径不读取 next）再抛错。
 ///
 /// # 返回
 /// - `Ok((iterated, next, int_limit))`：GetIteratorDirect 结果 + 截断后的 limit
@@ -381,8 +383,8 @@ fn validate_limit_and_get_direct<H: VmHost>(
     get_iterator_direct(vm, this_val).map(|(iterated, next)| (iterated, next, int_limit))
 }
 
-/// GetIteratorFlattenable（reject-primitives）：把 flatMap 的 mapper 返回值解析为
-/// 内层迭代器记录（对象 + 缓存 next）。
+/// 把 flatMap 的 mapper 返回值解析为内层迭代器记录（对象 + 缓存 next）；原始值
+/// 一律拒绝（对应规范 GetIteratorFlattenable）。
 ///
 /// 不能复用 [`get_iterator`]：后者对 Array 等内建集合直接返回原值、不走
 /// `@@iterator`，而 flattenable 要求数组经 `@@iterator` 产出内层迭代器。
@@ -701,7 +703,7 @@ pub fn iterator_to_array<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     }
 }
 
-/// CreateArrayFromList：按元素列表构造普通数组（Array.prototype 为原型）。
+/// 按元素列表构造普通数组，以 Array.prototype 为原型（对应规范 CreateArrayFromList）。
 fn make_array_from_list<H: VmHost>(vm: &mut H, items: &[JsValue]) -> JsValue {
     let array_proto = vm.session().builtin_world().array_proto.as_ptr() as *mut JsObject;
     let arr = vm.alloc_object(JsObject::new_array(
@@ -1774,6 +1776,8 @@ pub fn make_iter_result<H: VmHost>(vm: &mut H, value: JsValue, done: bool) -> Js
     JsValue::from_js_object(obj)
 }
 
+/// 构造 native 函数对象并返回：设置函数标记、native 函数项、参数个数与 `name`
+/// 属性。供迭代器包装器把自己的 next/return 方法装到包装对象上，不经绑定层注册。
 pub(crate) fn make_native_function<H: VmHost>(vm: &mut H, name: &str, native_fn: *const (), arg_count: u8) -> JsValue {
     let function_proto = vm.session().builtin_world().function_proto.as_ptr() as *mut JsObject;
     let mut func = JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(function_proto));
