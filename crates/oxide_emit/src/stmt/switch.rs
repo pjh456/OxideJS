@@ -43,8 +43,9 @@ impl Emitter {
             if let Some(test) = &case.test {
                 let test_reg = self.emit_expression(test, ctx)?;
                 let eq_reg = ctx.alloc_reg();
+                // case 选择式与判别式按严格相等比较（不做类型转换）。
                 ctx.inst(Inst::new(
-                    OpCode::EQ,
+                    OpCode::STRICT_EQ,
                     Operand::Reg(eq_reg),
                     Operand::Reg(disc_reg),
                     Operand::Reg(test_reg),
@@ -52,9 +53,12 @@ impl Emitter {
                 ctx.inst(Inst::jmp_if_true(eq_reg, case_label));
             }
         }
-        let has_default = cases.iter().any(|c| c.test.is_none());
-        if !has_default {
-            ctx.inst(Inst::jmp(end_label));
+        // 无 case 命中时跳向 default 体，无 default 则跳到 switch 末尾。default 不在
+        // 源序首位时不能依赖穿落，否则会错误进入首个 case 体。
+        let default_label = cases.iter().position(|c| c.test.is_none()).map(|idx| case_labels[idx]);
+        match default_label {
+            Some(label) => ctx.inst(Inst::jmp(label)),
+            None => ctx.inst(Inst::jmp(end_label)),
         }
         let mut last: Option<u32> = None;
         for (case_idx, case) in cases.iter().enumerate() {
