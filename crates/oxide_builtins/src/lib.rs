@@ -60,7 +60,7 @@ pub mod string;
 pub mod stubs;
 /// Symbol 内置对象实现（constructor/for/keyFor/toString）。
 pub mod symbol;
-/// Temporal 内置对象实现（Now/Instant/PlainDate/PlainTime 最小子集）。
+/// Temporal 内置对象实现（目录模块树：Now / Instant / PlainDate / PlainTime / PlainDateTime / PlainMonthDay / PlainYearMonth / ZonedDateTime / Duration）。
 pub mod temporal;
 /// TypedArray 内置对象实现（元素访问、fill/slice/subarray/set 等）。
 pub mod typed_array;

@@ -1156,3 +1156,93 @@ pub(crate) fn local_to_epoch_ns(year: i32, month: u32, day: u32, time_ns: f64, o
         .checked_add(time_ns as i128)?
         .checked_sub(i128::from(offset_minutes) * 60_000_000_000)
 }
+
+pub(crate) fn make_plain_date<H: VmHost>(vm: &mut H, year: i32, month: u32, day: u32, calendar: &str) -> NativeResult {
+    let proto = JsValue::from_js_object(vm.session().builtin_world().plain_date_proto.as_ptr() as *mut JsObject);
+    let mut obj = JsObject::new_empty(EMPTY_SHAPE_ID, proto);
+    obj.type_tag = JsObject::OBJ_TYPE_PLAIN_DATE;
+    obj.set_prop_at(0, JsValue::float(year as f64));
+    obj.set_prop_at(1, JsValue::float(month as f64));
+    obj.set_prop_at(2, JsValue::float(day as f64));
+    obj.set_prop_at(3, vm.new_string(calendar));
+    NativeResult::Ok(JsValue::from_js_object(vm.alloc_object(obj)))
+}
+
+pub(crate) fn make_plain_time<H: VmHost>(vm: &mut H, total_ns: f64) -> NativeResult {
+    let proto = JsValue::from_js_object(vm.session().builtin_world().plain_time_proto.as_ptr() as *mut JsObject);
+    let mut obj = JsObject::new_empty(EMPTY_SHAPE_ID, proto);
+    obj.type_tag = JsObject::OBJ_TYPE_PLAIN_TIME;
+    obj.set_prop_at(0, JsValue::float(total_ns));
+    NativeResult::Ok(JsValue::from_js_object(vm.alloc_object(obj)))
+}
+
+pub(crate) fn make_plain_date_time<H: VmHost>(
+    vm: &mut H, year: i32, month: u32, day: u32, total_ns: f64, calendar: &str,
+) -> NativeResult {
+    let proto = JsValue::from_js_object(vm.session().builtin_world().plain_date_time_proto.as_ptr() as *mut JsObject);
+    let mut obj = JsObject::new_empty(EMPTY_SHAPE_ID, proto);
+    obj.type_tag = JsObject::OBJ_TYPE_PLAIN_DATE_TIME;
+    obj.set_prop_at(0, JsValue::float(year as f64));
+    obj.set_prop_at(1, JsValue::float(month as f64));
+    obj.set_prop_at(2, JsValue::float(day as f64));
+    obj.set_prop_at(3, JsValue::float(total_ns));
+    obj.set_prop_at(4, vm.new_string(calendar));
+    NativeResult::Ok(JsValue::from_js_object(vm.alloc_object(obj)))
+}
+
+pub(crate) fn make_duration<H: VmHost>(vm: &mut H, values: [f64; 10]) -> NativeResult {
+    let proto = JsValue::from_js_object(vm.session().builtin_world().duration_proto.as_ptr() as *mut JsObject);
+    let mut obj = JsObject::new_empty(EMPTY_SHAPE_ID, proto);
+    obj.type_tag = JsObject::OBJ_TYPE_DURATION;
+    for (index, value) in values.into_iter().enumerate() {
+        obj.set_prop_at(index, JsValue::float(value));
+    }
+    NativeResult::Ok(JsValue::from_js_object(vm.alloc_object(obj)))
+}
+
+// Temporal.PlainMonthDay / Temporal.PlainYearMonth 对象地基：
+// 数字分量转换、槽对象构造、构造器与 getter/toString/toJSON。
+
+/// 构造 PlainMonthDay 实例对象（槽 0-3 = 月/日/参考年/日历 ID）。
+/// from/toPlainDate 等返回新对象的成员使用；构造器走 receiver 初始化路径。
+pub(crate) fn make_plain_month_day<H: VmHost>(
+    vm: &mut H, month: u32, day: u32, ref_year: i32, calendar: &str,
+) -> NativeResult {
+    let proto = JsValue::from_js_object(vm.session().builtin_world().plain_month_day_proto.as_ptr() as *mut JsObject);
+    let mut obj = JsObject::new_empty(EMPTY_SHAPE_ID, proto);
+    obj.type_tag = JsObject::OBJ_TYPE_PLAIN_MONTH_DAY;
+    obj.set_prop_at(0, JsValue::float(month as f64));
+    obj.set_prop_at(1, JsValue::float(day as f64));
+    obj.set_prop_at(2, JsValue::float(ref_year as f64));
+    obj.set_prop_at(3, vm.new_string(calendar));
+    NativeResult::Ok(JsValue::from_js_object(vm.alloc_object(obj)))
+}
+
+/// 构造 PlainYearMonth 实例对象（槽 0-3 = 年/月/参考日/日历 ID）。
+/// from 等返回新对象的成员使用；构造器走 receiver 初始化路径。
+pub(crate) fn make_plain_year_month<H: VmHost>(
+    vm: &mut H, year: i32, month: u32, ref_day: u32, calendar: &str,
+) -> NativeResult {
+    let proto = JsValue::from_js_object(vm.session().builtin_world().plain_year_month_proto.as_ptr() as *mut JsObject);
+    let mut obj = JsObject::new_empty(EMPTY_SHAPE_ID, proto);
+    obj.type_tag = JsObject::OBJ_TYPE_PLAIN_YEAR_MONTH;
+    obj.set_prop_at(0, JsValue::float(year as f64));
+    obj.set_prop_at(1, JsValue::float(month as f64));
+    obj.set_prop_at(2, JsValue::float(ref_day as f64));
+    obj.set_prop_at(3, vm.new_string(calendar));
+    NativeResult::Ok(JsValue::from_js_object(vm.alloc_object(obj)))
+}
+
+pub(crate) fn ensure_plain_month_day<H: VmHost>(vm: &mut H, obj: &JsObject) -> Result<(), JsValue> {
+    if !obj.is_plain_month_day_obj() {
+        return Err(crate::error::create_type_error(vm, "called on incompatible receiver"));
+    }
+    Ok(())
+}
+
+pub(crate) fn ensure_plain_year_month<H: VmHost>(vm: &mut H, obj: &JsObject) -> Result<(), JsValue> {
+    if !obj.is_plain_year_month_obj() {
+        return Err(crate::error::create_type_error(vm, "called on incompatible receiver"));
+    }
+    Ok(())
+}
