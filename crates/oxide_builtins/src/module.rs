@@ -113,6 +113,23 @@ fn push_uninitialized_entry(table: *mut ModuleNsTable, name_si: u32) {
     );
 }
 
+/// 追加一条已初始化为 undefined 的 `Value` 条目（来源为本地导出）。
+///
+/// # 边界与前提
+/// - 供 var 作用域导出（`VarScopedDeclarations`）在实例化期预初始化：读时为
+///   undefined 而非 TDZ，写点由 `__moduleSet` 就地覆盖。
+fn push_var_initialized_entry(table: *mut ModuleNsTable, name_si: u32) {
+    push_entry(
+        table,
+        name_si,
+        ModuleNsOrigin::Local,
+        ModuleNsState::Value {
+            value: JsValue::undefined(),
+            initialized: true,
+        },
+    );
+}
+
 /// 向条目表追加一条带来源身份的条目。
 ///
 /// # 注意事项
@@ -300,19 +317,21 @@ pub fn drop_module_ns_native(obj: &mut JsObject) -> u64 {
     bytes
 }
 
-/// `__modulePreRegister(ns, name)`：live 模块在 body 求值前预注册静态导出名。
+/// `__modulePreRegister(ns, name, var_like)`：live 模块在 body 求值前预注册静态导出名。
 ///
 /// # 步骤
 /// 1. 校验 ns 为 module namespace 对象，取导出名的 interned 键。
 /// 2. 无表时分配；键已有条目时 no-op（幂等）。
 /// 3. 经瞬态可扩展窗口在 ns 上定义真实数据属性 `undefined`（可写可枚举不可配置）。
-/// 4. 追加未初始化 `Value` 条目并按规范顺序重排导出键。
+/// 4. 追加条目：`var_like` 为真（var/函数类导出，属 `VarScopedDeclarations`）时
+///    初始化为 undefined；否则保持未初始化（lexical/class 的 TDZ）。随后按规范顺序
+///    重排导出键。
 ///
 /// # 副作用
 /// - 在 ns 上定义真实属性槽、挂载/扩展条目表，并重排 `[[OwnPropertyKeys]]` 顺序。
 pub fn module_pre_register<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
-    if args.len() < 3 {
-        return type_error(vm, "__modulePreRegister: 2 arguments required");
+    if args.len() < 4 {
+        return type_error(vm, "__modulePreRegister: 3 arguments required");
     }
     let ns_val = vm.reg(args[1]);
     let ns_ptr = match vm.checked_object_ptr(ns_val, "__modulePreRegister: target is not an object") {
@@ -322,6 +341,7 @@ pub fn module_pre_register<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     };
     let name_val = vm.reg(args[2]);
     let name_si = vm.property_key_si(name_val);
+    let var_like = oxide_runtime_api::to_boolean(vm.reg(args[3]));
     let obj = unsafe { &mut *ns_ptr };
     if !obj.is_module_namespace() {
         return type_error(vm, "__modulePreRegister: target is not a module namespace");
@@ -342,7 +362,11 @@ pub fn module_pre_register<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     }
 
     let table = if existing.is_null() { install_ns_table(obj) } else { existing };
-    push_uninitialized_entry(table, name_si);
+    if var_like {
+        push_var_initialized_entry(table, name_si);
+    } else {
+        push_uninitialized_entry(table, name_si);
+    }
     crate::object::sort_namespace_exports(vm, obj);
     NativeResult::Ok(JsValue::undefined())
 }

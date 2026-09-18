@@ -31,7 +31,7 @@ pub fn bind_global(core: &Arc<KernelCore>, session: &KernelSession, global: &mut
             (
                 "__modulePreRegister",
                 oxide_builtins::module::module_pre_register::<crate::vm::Vm> as *const (),
-                2,
+                3,
             ),
             ("__moduleSet", oxide_builtins::module::module_set::<crate::vm::Vm> as *const (), 3),
             (

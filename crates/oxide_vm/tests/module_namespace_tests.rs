@@ -144,7 +144,8 @@ fn namespace_exotic_semantics() {
     );
 }
 
-/// live 自导入 ns 的条目语义：预注册后初始化前读抛 ReferenceError，`in` /
+/// live 自导入 ns 的条目语义：lexical/class 导出预注册后初始化前读抛 ReferenceError，
+/// `export var` 在实例化期即初始化为 undefined（读得 undefined 不抛）；`in` /
 /// `Reflect.has` 已为 true；初始化后读到活值；枚举未初始化名不抛错且键数正确。
 /// 循环读 `ns.y` 同时钉住 IC 慢路径与普通路径读结果一致。
 #[test]
@@ -182,8 +183,8 @@ fn namespace_self_import_live_entries() {
 
     let result = run_namespace_module(&dir);
     assert_eq!(
-        result, "true|true|true;true,true,true;default,x,y;4;sx;256;3",
-        "live 自导入 ns 的未初始化读 / 键存在性 / 活值读不符"
+        result, "true|value|true;true,true,true;default,x,y;4;sx;256;3",
+        "live 自导入 ns 的未初始化读 / var 预初始化 / 键存在性 / 活值读不符"
     );
 }
 
@@ -293,6 +294,28 @@ fn namespace_write_through_covers_update_logical_destructuring() {
 
     let result = run_namespace_module(&dir);
     assert_eq!(result, "2|7|9", "Update/逻辑/解构赋值的写穿缺失");
+}
+
+/// `export var` 属 VarScopedDeclarations，模块实例化期即初始化为 undefined：
+/// body 语句执行前经命名空间读应得 undefined，而非 ReferenceError；`in` 已为 true。
+#[test]
+fn namespace_export_var_preinitialized() {
+    let cwd = std::env::current_dir().expect("cwd");
+    let dir = cwd.join("__module_namespace_var_preinit__");
+    std::fs::create_dir_all(&dir).expect("mkdir");
+    std::fs::write(
+        dir.join("main.mjs"),
+        "import * as ns from './main.mjs';\n \
+         let before;\n \
+         try { before = ns.y; } catch (e) { before = 'threw'; }\n \
+         globalThis.__ns = [String(before), 'y' in ns].join('|');\n \
+         export var y = 2;",
+    )
+    .expect("write main");
+    let _cleanup = Cleanup(dir.clone());
+
+    let result = run_namespace_module(&dir);
+    assert_eq!(result, "undefined|true", "export var 应在实例化期预初始化为 undefined");
 }
 
 /// G2 反向守卫：外部导入的命名空间无条目表（非 live），枚举与 for-in 行为不变。

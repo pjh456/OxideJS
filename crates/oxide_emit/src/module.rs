@@ -153,6 +153,101 @@ fn module_own_export_names(body: &[Statement]) -> HashSet<String> {
     names
 }
 
+/// 收集模块实例化期即初始化为 undefined 的导出名（VarScopedDeclarations）：
+/// `export var`、`export function`、`export default function`（具名与匿名）以及
+/// 经 `export { x }` 本地再导出、底层绑定为 var/function 的导出名。
+///
+/// # 边界与前提
+/// - lexical（let/const/class）与跨模块再导出（`export { x } from`）不在集合内，
+///   其命名空间条目保持未初始化（TDZ）。
+/// - `export { x as y }` 只认本模块顶层直接声明的 var/function；自导入别名等
+///   间接名不判真（按 TDZ 处理）。
+/// - 匿名 `export default function` 的导出名是 `default`，按 HoistableDeclaration
+///   预初始化。
+fn module_var_scoped_export_names(body: &[Statement]) -> HashSet<String> {
+    let mut var_locals: HashSet<String> = HashSet::new();
+    for stmt in body {
+        match stmt {
+            Statement::VariableDeclaration(vd) => {
+                if matches!(vd.kind, VariableDeclarationKind::Var) {
+                    for d in &vd.declarations {
+                        if let BindingPattern::BindingIdentifier(bi) = &d.id {
+                            var_locals.insert(bi.name.to_string());
+                        }
+                    }
+                }
+            }
+            Statement::FunctionDeclaration(fd) => {
+                if let Some(id) = &fd.id {
+                    var_locals.insert(id.name.to_string());
+                }
+            }
+            Statement::ExportNamedDeclaration(exp) => {
+                if let Some(decl) = &exp.declaration {
+                    match decl {
+                        Declaration::VariableDeclaration(vd) => {
+                            if matches!(vd.kind, VariableDeclarationKind::Var) {
+                                for d in &vd.declarations {
+                                    if let BindingPattern::BindingIdentifier(bi) = &d.id {
+                                        var_locals.insert(bi.name.to_string());
+                                    }
+                                }
+                            }
+                        }
+                        Declaration::FunctionDeclaration(fd) => {
+                            if let Some(id) = &fd.id {
+                                var_locals.insert(id.name.to_string());
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let mut names = HashSet::new();
+    for stmt in body {
+        match stmt {
+            Statement::ExportNamedDeclaration(exp) => {
+                if let Some(decl) = &exp.declaration {
+                    match decl {
+                        Declaration::VariableDeclaration(vd) => {
+                            if matches!(vd.kind, VariableDeclarationKind::Var) {
+                                for d in &vd.declarations {
+                                    if let BindingPattern::BindingIdentifier(bi) = &d.id {
+                                        names.insert(bi.name.to_string());
+                                    }
+                                }
+                            }
+                        }
+                        Declaration::FunctionDeclaration(fd) => {
+                            if let Some(id) = &fd.id {
+                                names.insert(id.name.to_string());
+                            }
+                        }
+                        _ => {}
+                    }
+                } else if exp.source.is_none() {
+                    for spec in &exp.specifiers {
+                        if var_locals.contains(module_export_name_str(&spec.local).as_str()) {
+                            names.insert(module_export_name_str(&spec.exported));
+                        }
+                    }
+                }
+            }
+            Statement::ExportDefaultDeclaration(exp) => {
+                if matches!(&exp.declaration, ExportDefaultDeclarationKind::FunctionDeclaration(_)) {
+                    names.insert(DEFAULT_EXPORT_NAME.to_string());
+                }
+            }
+            _ => {}
+        }
+    }
+    names
+}
+
 /// 判断语句是否为提升的函数声明（含 export 包装的函数声明）。
 fn is_hoisted_function_decl(stmt: &Statement) -> bool {
     match stmt {
@@ -513,13 +608,17 @@ impl Emitter {
         }
 
         // —— live 命名空间预注册：早于 hoisted 函数声明的 __moduleSet 与 body 求值，
-        // 按名序预注册全部本地导出名，使自导入 ns 在读点先观察到未初始化状态。 ——
+        // 按名序预注册全部本地导出名，使自导入 ns 在读点先观察到未初始化状态。
+        // var/函数类导出（VarScopedDeclarations）在实例化期即初始化为 undefined，
+        // lexical/class 保持未初始化（TDZ）。 ——
         if has_self_ns_import {
+            let var_scoped = module_var_scoped_export_names(body);
             let mut export_names: Vec<String> = own_export_names.into_iter().collect();
             export_names.sort();
             for name in export_names {
                 let name_reg = self.load_string_const(&name, ctx);
-                self.emit_module_call(ctx, "__modulePreRegister", &[ns_reg, name_reg])?;
+                let var_like_reg = self.load_bool_const(var_scoped.contains(&name), ctx);
+                self.emit_module_call(ctx, "__modulePreRegister", &[ns_reg, name_reg, var_like_reg])?;
             }
         }
 
@@ -662,6 +761,13 @@ impl Emitter {
 
     fn load_string_const(&self, s: &str, ctx: &mut CompileCtx) -> u32 {
         let idx = ctx.add_constant(Constant::String(s.to_string()));
+        let reg = ctx.alloc_reg();
+        ctx.inst(Inst::load_const(Operand::Reg(reg), idx));
+        reg
+    }
+
+    fn load_bool_const(&self, b: bool, ctx: &mut CompileCtx) -> u32 {
+        let idx = ctx.add_constant(Constant::Boolean(b));
         let reg = ctx.alloc_reg();
         ctx.inst(Inst::load_const(Operand::Reg(reg), idx));
         reg
