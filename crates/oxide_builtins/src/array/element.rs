@@ -9,37 +9,81 @@ use crate::builtins_debug;
 use crate::builtins_error;
 
 use super::common::{
-    array_ptr, arraylike_get, arraylike_get_or_err, check_array_create_len, clamp_relative, create_new_array,
-    get_this_array_ref, get_this_arraylike, js_array_index, to_integer_or_infinity_bounded,
+    array_ptr, array_type_error, arraylike_get, arraylike_get_or_err, check_array_create_len, clamp_relative,
+    create_new_array, get_this_array_ref, get_this_arraylike, js_array_index, to_integer_or_infinity_bounded,
 };
 use super::from::{array_species_create, create_data_property_or_throw, from_engine_error};
 
 /// `Array.prototype.push(...items)`：追加元素到尾部，返回新长度。
+///
+/// # 步骤
+/// 1. 读 `LengthOfArrayLike(this)` 作起始索引。
+/// 2. 每个实参按当前索引生成属性键，以严格模式 `[[Set]]` 写入（继承 setter /
+///    不可写元素按规范抛 TypeError），写入成功后才递增索引。
+/// 3. 以 `Set(this, "length", len, true)` 收尾，length 不可写时抛 TypeError。
+///
+/// # 副作用
+/// - 修改元素区与 length；元素写入可经原型链触发用户 setter。
 pub fn array_push<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("Array.prototype.push called with {} args", args.len());
     let arr_ptr = array_ptr!(vm, args);
+    let recv = JsValue::from_js_object(arr_ptr);
+    let mut len = unsafe { &*arr_ptr }.logical_len() as usize;
+
     for &arg_reg in args.iter().skip(1) {
-        let val = vm.promote_if_needed_for_write_ptr(arr_ptr, vm.reg(arg_reg));
-        // 元素写入须维护 array_prop_count（set_prop_at 对数组自动更新）。
-        let arr = unsafe { &mut *arr_ptr };
-        let idx = arr.prop_count();
-        arr.set_prop_at(idx, val);
+        let key = vm.string_key_si(&len.to_string());
+        if let Err(err) = vm.ordinary_set(unsafe { &mut *arr_ptr }, key, vm.reg(arg_reg), recv, true) {
+            return NativeResult::Err(from_engine_error(vm, &err));
+        }
+        len += 1;
     }
-    let len = unsafe { &*arr_ptr }.prop_count();
-    NativeResult::Ok(JsValue::int(len as i32))
+
+    // length 收尾同样走 Set：不可写 length 在此抛 TypeError。
+    let length_si = vm.string_key_si("length");
+    if let Err(err) = vm.ordinary_set(unsafe { &mut *arr_ptr }, length_si, js_array_index(len), recv, true) {
+        return NativeResult::Err(from_engine_error(vm, &err));
+    }
+    NativeResult::Ok(js_array_index(len))
 }
 
 /// `Array.prototype.pop()`：移除并返回末位元素；空数组返回 undefined。
+///
+/// # 步骤
+/// 1. 读 `LengthOfArrayLike(this)`；为 0 时以 `Set(this, "length", +0, true)` 收尾。
+/// 2. 否则按 Get / DeletePropertyOrThrow / Set length 的顺序处理末位元素。
+///
+/// # 副作用
+/// - 删除末位元素并收缩 length；Get 可触发原型链 getter，length 不可写时抛 TypeError。
 pub fn array_pop<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("Array.prototype.pop called with {} args", args.len());
     let arr_ptr = array_ptr!(vm, args);
-    let arr = unsafe { &mut *arr_ptr };
-    let len = arr.prop_count();
+    let recv = JsValue::from_js_object(arr_ptr);
+    let len = unsafe { &*arr_ptr }.logical_len() as usize;
+    let length_si = vm.string_key_si("length");
     if len == 0 {
+        if let Err(err) = vm.ordinary_set(unsafe { &mut *arr_ptr }, length_si, JsValue::int(0), recv, true) {
+            return NativeResult::Err(from_engine_error(vm, &err));
+        }
         return NativeResult::Ok(JsValue::undefined());
     }
-    let last = arr.get_prop_at(len - 1);
-    arr.set_prop_count_fast(len - 1);
+    let index = len - 1;
+    let key = vm.string_key_si(&index.to_string());
+    let last = match vm.ordinary_get(unsafe { &*arr_ptr }, key, recv) {
+        Ok(v) => v,
+        Err(msg) => return NativeResult::Err(from_engine_error(vm, &msg)),
+    };
+
+    // DeletePropertyOrThrow：不可配置元素删除失败抛 TypeError，否则标记为 hole。
+    match unsafe { &*arr_ptr }.prop_meta_at(index) {
+        Some(meta) if !meta.attributes.configurable() => {
+            return NativeResult::Err(array_type_error(vm, "Cannot delete property"));
+        }
+        _ => unsafe { (*arr_ptr).mark_hole_at(index) },
+    }
+
+    if let Err(err) = vm.ordinary_set(unsafe { &mut *arr_ptr }, length_si, js_array_index(index), recv, true) {
+        return NativeResult::Err(from_engine_error(vm, &err));
+    }
     NativeResult::Ok(last)
 }
 
@@ -410,40 +454,118 @@ pub fn array_flat<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 }
 
 /// `Array.prototype.shift()`：移除并返回首元素，其余元素前移；空数组返回 undefined。
+///
+/// # 步骤
+/// 1. 读 `LengthOfArrayLike(this)`；为 0 时以 `Set(this, "length", +0, true)` 收尾。
+/// 2. Get 首元素后，把 `1..len` 逐位前移：源存在则 Get + 严格 Set 到前一格，
+///    源缺失（hole）则 DeletePropertyOrThrow 目标格。
+/// 3. 以 `Set(this, "length", len-1, true)` 收尾。
+///
+/// # 副作用
+/// - 元素整体前移并收缩 length；Get/Set 可经原型链触发用户代码。
 pub fn array_shift<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("Array.prototype.shift called with {} args", args.len());
     let arr_ptr = array_ptr!(vm, args);
-    let arr = unsafe { &mut *arr_ptr };
-    let len = arr.prop_count();
+    let recv = JsValue::from_js_object(arr_ptr);
+    let len = unsafe { &*arr_ptr }.logical_len() as usize;
+    let length_si = vm.string_key_si("length");
     if len == 0 {
+        if let Err(err) = vm.ordinary_set(unsafe { &mut *arr_ptr }, length_si, JsValue::int(0), recv, true) {
+            return NativeResult::Err(from_engine_error(vm, &err));
+        }
         return NativeResult::Ok(JsValue::undefined());
     }
-    let first = arr.get_prop_at(0);
-    for i in 1..len {
-        let v = arr.get_prop_at(i);
-        arr.set_prop_at(i - 1, v);
+    let first_key = vm.string_key_si("0");
+    let first = match vm.ordinary_get(unsafe { &*arr_ptr }, first_key, recv) {
+        Ok(v) => v,
+        Err(msg) => return NativeResult::Err(from_engine_error(vm, &msg)),
+    };
+
+    for k in 1..len {
+        let from = vm.string_key_si(&k.to_string());
+        let to = vm.string_key_si(&(k - 1).to_string());
+        // HasProperty 走原型链存在性判定（hole 视同缺失），命中才 Get + Set。
+        if vm.resolve_property(unsafe { &*arr_ptr }, from).is_some() {
+            let val = match vm.ordinary_get(unsafe { &*arr_ptr }, from, recv) {
+                Ok(v) => v,
+                Err(msg) => return NativeResult::Err(from_engine_error(vm, &msg)),
+            };
+            if let Err(err) = vm.ordinary_set(unsafe { &mut *arr_ptr }, to, val, recv, true) {
+                return NativeResult::Err(from_engine_error(vm, &err));
+            }
+        } else {
+            // DeletePropertyOrThrow(O, to)：不可配置元素删除失败抛 TypeError。
+            match unsafe { &*arr_ptr }.prop_meta_at(k - 1) {
+                Some(meta) if !meta.attributes.configurable() => {
+                    return NativeResult::Err(array_type_error(vm, "Cannot delete property"));
+                }
+                _ => unsafe { (*arr_ptr).mark_hole_at(k - 1) },
+            }
+        }
     }
-    arr.set_prop_count_fast(len - 1);
+
+    if let Err(err) = vm.ordinary_set(unsafe { &mut *arr_ptr }, length_si, js_array_index(len - 1), recv, true) {
+        return NativeResult::Err(from_engine_error(vm, &err));
+    }
     NativeResult::Ok(first)
 }
 
 /// `Array.prototype.unshift(...items)`：插入元素到头部，返回新长度。
+///
+/// # 步骤
+/// 1. 读 `LengthOfArrayLike(this)`；`len + 参数数` 超出 2^53-1 时抛 TypeError。
+/// 2. 参数数大于 0 时自高到低搬移已有元素（源存在则 Get + 严格 Set，缺失则
+///    DeletePropertyOrThrow），再把实参逐个严格 Set 到头部。
+/// 3. 以 `Set(this, "length", len+参数数, true)` 收尾。
+///
+/// # 副作用
+/// - 元素整体后移并扩容 length；Get/Set 可经原型链触发用户代码。
 pub fn array_unshift<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("Array.prototype.unshift called with {} args", args.len());
     let arr_ptr = array_ptr!(vm, args);
-    let arr = unsafe { &mut *arr_ptr };
-    let len = arr.prop_count();
+    let recv = JsValue::from_js_object(arr_ptr);
+    let len = unsafe { &*arr_ptr }.logical_len() as usize;
     let n_items = args.len().saturating_sub(1);
-    for i in (0..len as usize).rev() {
-        let v = arr.get_prop_at(i);
-        arr.set_prop_at(i + n_items, v);
+    let length_si = vm.string_key_si("length");
+    if n_items > 0 {
+        if len as f64 + n_items as f64 > 9_007_199_254_740_991.0 {
+            return NativeResult::Err(array_type_error(vm, "Invalid array length"));
+        }
+        for k in (1..=len).rev() {
+            let from = vm.string_key_si(&(k - 1).to_string());
+            let to_idx = k - 1 + n_items;
+            let to = vm.string_key_si(&to_idx.to_string());
+            if vm.resolve_property(unsafe { &*arr_ptr }, from).is_some() {
+                let val = match vm.ordinary_get(unsafe { &*arr_ptr }, from, recv) {
+                    Ok(v) => v,
+                    Err(msg) => return NativeResult::Err(from_engine_error(vm, &msg)),
+                };
+                if let Err(err) = vm.ordinary_set(unsafe { &mut *arr_ptr }, to, val, recv, true) {
+                    return NativeResult::Err(from_engine_error(vm, &err));
+                }
+            } else {
+                // DeletePropertyOrThrow(O, to)：不可配置元素删除失败抛 TypeError。
+                match unsafe { &*arr_ptr }.prop_meta_at(to_idx) {
+                    Some(meta) if !meta.attributes.configurable() => {
+                        return NativeResult::Err(array_type_error(vm, "Cannot delete property"));
+                    }
+                    _ => unsafe { (*arr_ptr).mark_hole_at(to_idx) },
+                }
+            }
+        }
+        for (j, &arg_reg) in args.iter().skip(1).enumerate() {
+            let key = vm.string_key_si(&j.to_string());
+            if let Err(err) = vm.ordinary_set(unsafe { &mut *arr_ptr }, key, vm.reg(arg_reg), recv, true) {
+                return NativeResult::Err(from_engine_error(vm, &err));
+            }
+        }
     }
-    for (j, &arg_reg) in args.iter().skip(1).enumerate() {
-        arr.set_prop_at(j, vm.reg(arg_reg));
+
+    let new_len = len + n_items;
+    if let Err(err) = vm.ordinary_set(unsafe { &mut *arr_ptr }, length_si, js_array_index(new_len), recv, true) {
+        return NativeResult::Err(from_engine_error(vm, &err));
     }
-    let new_len = len as usize + n_items;
-    arr.set_prop_count_fast(new_len);
-    NativeResult::Ok(JsValue::int(new_len as i32))
+    NativeResult::Ok(js_array_index(new_len))
 }
 
 /// `Array.prototype.fill(value, start, end)`：用给定值填充区间，返回 this。

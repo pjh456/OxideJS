@@ -235,7 +235,7 @@ fn frozen_array_write_and_length_throws_in_strict() {
     );
 }
 
-// ── sloppy Object.freeze 数组：元素写静默失败（length 冻结检查仍抛错） ──
+// ── sloppy Object.freeze 数组：元素写与 length 写均静默失败（严格模式才抛） ──
 #[test]
 fn frozen_array_element_write_silently_fails_in_sloppy() {
     let (_vm, r) = eval_keep_vm(

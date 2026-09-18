@@ -308,19 +308,33 @@ impl Vm {
         &mut self, obj: &mut JsObject, prop_name_si: u32, val: JsValue, receiver: JsValue, strict: bool,
     ) -> Result<(), String> {
         let val = self.promote_if_needed_for_write_ptr(obj as *mut JsObject, val);
-        self.ordinary_set_inner(obj, prop_name_si, val, receiver, false, strict)
+        self.ordinary_set_inner(obj, prop_name_si, val, receiver, false, strict, false)
+    }
+
+    /// builtin 内部写入口：失败一律返回格式化 `Err` 由调用边界恢复为异常对象，
+    /// 不就地 `unwind`——builtin 执行在重入的字节码上下文中，就地展开会跳入
+    /// 调用方 catch 并让 builtin 继续，随后覆盖异常寄存器。
+    pub(crate) fn ordinary_set_builtin(
+        &mut self, obj: &mut JsObject, prop_name_si: u32, val: JsValue, receiver: JsValue, strict: bool,
+    ) -> Result<(), String> {
+        let val = self.promote_if_needed_for_write_ptr(obj as *mut JsObject, val);
+        self.ordinary_set_inner(obj, prop_name_si, val, receiver, false, strict, true)
     }
 
     /// 分发期入口：调用方（dispatch_set_prop 等）已对值做过 promote。
     pub(crate) fn ordinary_set_dispatch(
         &mut self, obj: &mut JsObject, prop_name_si: u32, val: JsValue, receiver: JsValue, strict: bool,
     ) -> Result<(), String> {
-        self.ordinary_set_inner(obj, prop_name_si, val, receiver, true, strict)
+        self.ordinary_set_inner(obj, prop_name_si, val, receiver, true, strict, false)
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "写路径须透传 receiver、帧化与 builtin 三组调用契约标志"
+    )]
     fn ordinary_set_inner(
         &mut self, obj: &mut JsObject, prop_name_si: u32, val: JsValue, receiver: JsValue, use_frame_push: bool,
-        strict: bool,
+        strict: bool, builtin: bool,
     ) -> Result<(), String> {
         vm_trace!(
             "ordinary_set_inner: shape={} prop_si={} frame_push={}",
@@ -332,7 +346,7 @@ impl Vm {
         // sloppy 静默 no-op；Reflect.set 以 strict=true 调用并投影为 false。
         if obj.is_module_namespace() {
             if strict {
-                return self.raise_type_error("Cannot assign to a module namespace export");
+                return self.write_protection_failure(builtin, "Cannot assign to a module namespace export");
             }
             return Ok(());
         }
@@ -349,86 +363,18 @@ impl Vm {
                         index as usize,
                         use_frame_push,
                         strict,
+                        builtin,
                     );
                 }
                 return oxide_builtins::typed_array::typed_array_element_set(self, obj, index, val);
             }
         }
-        // 数组 length 赋值：ArraySetLength 语义（ToUint32 + 调整元素区）。
-        // length 不得落影子命名属性：否则 `arr.length = N` 后 prop_count /
-        // 迭代 / 内置方法看到的长度与元素区不一致。
+        // 数组 length 赋值：走 ArraySetLength 语义（两次数值强转、可写性判定与
+        // 元素区调整），不得落影子命名属性——否则 prop_count / 迭代 / 内置方法
+        // 看到的长度与元素区不一致。
         let length_si = self.length_si;
         if obj.is_array() && prop_name_si == length_si {
-            // 冻结数组的 length 属性不可写（writable=false），赋值直接失败；
-            // 两模式统一抛 TypeError（length 冻结检查的 strict/sloppy 差异不在本路径范围）。
-            if obj.is_frozen() {
-                return self.raise_type_error("Cannot assign to read only property 'length'");
-            }
-            // defineProperty 显式收窄的不可写 length：严格模式抛 TypeError，sloppy 静默。
-            if !obj.is_length_writable() {
-                if strict {
-                    return self.raise_type_error("Cannot assign to read only property 'length'");
-                }
-                return Ok(());
-            }
-            let pc_before = self.pc;
-            let number_len = self.coerce_number_bounded(val)?;
-            // ToPrimitive 抛错（valueOf/toString throw）已被 unwind 定向到外围 catch 时
-            // pc 指向 catch 入口：主 dispatch 约定异常后 opcode 不得继续 raise，直接
-            // 返回由 dispatch 继续执行 catch，避免二次抛错覆盖原异常。
-            if self.pc != pc_before {
-                return Ok(());
-            }
-            let raw_new_len = if number_len == 0.0 || !number_len.is_finite() {
-                0
-            } else {
-                number_len.trunc().rem_euclid(4_294_967_296.0) as u32 as usize
-            };
-            // ToUint32 截断结果与 ToNumber 不等价（1.5 / NaN / Infinity / 负数 /
-            // 2**32 等输入）时抛 RangeError：赋值后 length 读不回原值。
-            if raw_new_len as f64 != number_len {
-                return self.raise_error_kind("RangeError", "Invalid array length");
-            }
-            let old_logical = obj.logical_len() as usize;
-            let old_count = obj.array_prop_count as usize;
-            // ArraySetLength：增长（newLen > oldLen）要求对象可扩展，不可扩展时
-            // 整个赋值失败且不修改（length 失败两模式均静默 no-op，不抛）。
-            if raw_new_len > old_logical && !obj.is_extensible() {
-                return Ok(());
-            }
-            // ArraySetLength：收缩时若 [newLen, oldLen) 内存在不可配置元素，整个收缩
-            // 失败且不做任何修改（length 失败两模式均静默 no-op，不抛）。
-            if raw_new_len < old_logical {
-                for idx in raw_new_len..old_count {
-                    if let Some(meta) = obj.prop_meta_at(idx) {
-                        if !meta.attributes.configurable() {
-                            return Ok(());
-                        }
-                    }
-                }
-            }
-            // 元素区物理槽数以 `MAX_DENSE_PROPS` 为上限，超限长度不扩槽。
-            let new_len_u = raw_new_len.min(oxide_types::object::MAX_DENSE_PROPS);
-            obj.set_prop_count(new_len_u);
-            // 扩出的槽是稀疏 hole：存在性检查与原型链读取须视同不存在，
-            // 故逐个打 hole 标记。
-            for idx in old_count..new_len_u {
-                obj.mark_hole_at(idx);
-            }
-            // 超过稠密上限的长度另记逻辑长度槽：`a.length` 读回真实赋值
-            // 而非封顶后的物理槽数。
-            if raw_new_len > oxide_types::object::MAX_DENSE_PROPS {
-                obj.set_array_len_override(raw_new_len as u32);
-            } else {
-                obj.clear_array_len_override();
-            }
-            // 对象自身属性区可能存在影子 length 命名属性（shape 槽），同步写入
-            // 新逻辑长度，保证 IC 快路径读到新值。
-            if let Some(pos) = self.kernel_core.shape_forge().lookup_position(obj.shape_id(), length_si) {
-                let store_idx = obj.array_prop_count as usize + pos as usize;
-                obj.set_prop_storage(store_idx, obj.logical_len_value());
-            }
-            return Ok(());
+            return self.set_array_length_value(obj, val, strict, builtin);
         }
         if let Some(pos) = self.get_own_property_slot(obj, prop_name_si) {
             if let Some(meta) = obj.prop_meta_at(pos) {
@@ -436,7 +382,7 @@ impl Vm {
                     if meta.set.is_undefined() {
                         // 无 setter：严格抛错，sloppy 静默 no-op。
                         if strict {
-                            return self.raise_type_error("property has no setter");
+                            return self.write_protection_failure(builtin, "property has no setter");
                         }
                         return Ok(());
                     }
@@ -445,7 +391,7 @@ impl Vm {
                 if !meta.attributes.writable() {
                     // 只读数据属性：严格抛错，sloppy 静默 no-op。
                     if strict {
-                        return self.raise_type_error("cannot assign to read-only property");
+                        return self.write_protection_failure(builtin, "cannot assign to read-only property");
                     }
                     return Ok(());
                 }
@@ -461,7 +407,7 @@ impl Vm {
                 if meta.set.is_undefined() {
                     // 继承无 setter：严格抛错，sloppy 静默 no-op。
                     if strict {
-                        return self.raise_type_error("property has no setter");
+                        return self.write_protection_failure(builtin, "property has no setter");
                     }
                     return Ok(());
                 }
@@ -470,9 +416,22 @@ impl Vm {
             if !meta.attributes.writable() {
                 // 继承只读数据属性：严格抛错，sloppy 静默 no-op（不遮蔽）。
                 if strict {
-                    return self.raise_type_error("cannot assign to read-only property");
+                    return self.write_protection_failure(builtin, "cannot assign to read-only property");
                 }
                 return Ok(());
+            }
+        }
+
+        // 数组索引增长（index >= 当前 length）先过 length 可写性检查：与 define 侧
+        // `define_array_index_element` 同序，早于对象可扩展性检查；length 不可写时
+        // 严格抛 TypeError、sloppy 静默。索引小于 length 的已有元素写入不受此限。
+        if let Some(index) = self.array_index_from_property_key(prop_name_si) {
+            if obj.is_array() && index >= obj.logical_len() && !obj.is_length_writable() {
+                return self.array_length_write_failure(
+                    strict,
+                    builtin,
+                    "Cannot add property, array length is not writable",
+                );
             }
         }
 
@@ -480,12 +439,91 @@ impl Vm {
         // 检查），不可扩展时赋值失败（严格抛错，sloppy 静默 no-op）。
         if !obj.is_extensible() {
             if strict {
-                return self.raise_type_error("object is not extensible");
+                return self.write_protection_failure(builtin, "object is not extensible");
             }
             return Ok(());
         }
         self.set_or_create_prop_value(obj, prop_name_si, val);
         Ok(())
+    }
+
+    /// 数组 length 赋值路径：`a.length = v` 的 `[[Set]]`，按 ArraySetLength 语义
+    /// 调整元素区（与 define 侧 [`Self::define_array_length`] 共用截断/扩洞逻辑）。
+    ///
+    /// # 步骤
+    /// 1. `ToUint32` 与 `ToNumber` 两次强转各自执行一次（均可触发用户代码）。
+    /// 2. 两次结果不等（非整数、负数、NaN/Infinity、2^32 等）抛 RangeError。
+    /// 3. 强转完成后按当前可写位判定：不可写时严格抛 TypeError、sloppy 静默，且
+    ///    不做任何截断（写不可写数据描述符先于 ArraySetLength 失败）。
+    /// 4. 收缩求最高不可配置阻挡索引：有则以「阻挡索引 + 1」部分截断后按模式返回
+    ///    失败；无则完整截断/扩 hole 到目标长度。
+    ///
+    /// # 边界与前提
+    /// - 仅由 `ordinary_set_inner` 对 `is_array()` 对象且键为 length 时调用。
+    /// - 可写位判定必须放在两次强转之后：用户代码可能在强转期收窄 length 可写位。
+    ///
+    /// # 副作用
+    /// - 修改元素区与元素元数据、可能置/清 `array_len_override`、bump 世代。
+    fn set_array_length_value(
+        &mut self, obj: &mut JsObject, val: JsValue, strict: bool, builtin: bool,
+    ) -> Result<(), String> {
+        // ToNumber(BigInt) 抛 TypeError：在通用强转近似接受 BigInt 之前拦截。
+        if val.is_bigint() {
+            return self.write_protection_failure(builtin, "Cannot convert a BigInt value to a number");
+        }
+
+        let pc_before = self.pc;
+        let new_len = self.coerce_uint32_bounded(val)?;
+        // 强转抛错在主 dispatch 下已 unwind 到外围 catch，此时 opcode 不得继续，
+        // 直接返回由 dispatch 执行 catch，避免二次抛错覆盖原异常。
+        if self.pc != pc_before {
+            return Ok(());
+        }
+        let number_len = self.coerce_number_bounded(val)?;
+        if self.pc != pc_before {
+            return Ok(());
+        }
+        if new_len as f64 != number_len {
+            if builtin {
+                return Err(self.error_message_text("RangeError", "Invalid array length"));
+            }
+            return self.raise_error_kind("RangeError", "Invalid array length");
+        }
+
+        // 两次强转后重新判定：强转期间用户代码可能已把 length 收窄为不可写。
+        if !obj.is_length_writable() {
+            return self.array_length_write_failure(strict, builtin, "Cannot assign to read only property 'length'");
+        }
+
+        let old_logical = obj.logical_len();
+        let target_len = Self::array_length_shrink_target(obj, new_len, old_logical);
+        Self::apply_array_length(obj, target_len);
+        obj.bump_generation();
+
+        if target_len != new_len {
+            return self.array_length_write_failure(strict, builtin, "Cannot assign to read only property 'length'");
+        }
+        Ok(())
+    }
+
+    /// 属性写保护失败的 strict/sloppy 分派：严格模式抛 TypeError（非 builtin 就地
+    /// 展开到最近 catch），sloppy 静默 no-op。
+    fn array_length_write_failure(&mut self, strict: bool, builtin: bool, msg: &str) -> Result<(), String> {
+        if !strict {
+            return Ok(());
+        }
+        self.write_protection_failure(builtin, msg)
+    }
+
+    /// TypeError 的两态出口：非 builtin 就地抛可捕获异常并展开，builtin 内部返回
+    /// 格式化 `Err` 由调用边界恢复为异常对象（builtin 在重入字节码上下文中，就地
+    /// 展开会跳入调用方 catch 并让 builtin 继续，随后覆盖异常寄存器）。
+    fn write_protection_failure(&mut self, builtin: bool, msg: &str) -> Result<(), String> {
+        if builtin {
+            Err(self.error_message_text("TypeError", msg))
+        } else {
+            self.raise_type_error(msg)
+        }
     }
 
     /// TypedArray 整数索引在 `receiver` ≠ TA 时的 [[Set]] 语义：越界或非对象
@@ -494,7 +532,7 @@ impl Vm {
     #[allow(clippy::too_many_arguments)]
     fn set_to_receiver(
         &mut self, ta_obj: &mut JsObject, prop_name_si: u32, val: JsValue, receiver: JsValue, index: usize,
-        use_frame_push: bool, strict: bool,
+        use_frame_push: bool, strict: bool, builtin: bool,
     ) -> Result<(), String> {
         let Some((_, length)) = oxide_builtins::typed_array::typed_array_integer_index(self, ta_obj, prop_name_si)
         else {
@@ -509,7 +547,7 @@ impl Vm {
         }
         let promoted = self.promote_if_needed_for_write_ptr(receiver_ptr, val);
         let receiver_obj = unsafe { &mut *receiver_ptr };
-        self.ordinary_set_inner(receiver_obj, prop_name_si, promoted, receiver, use_frame_push, strict)
+        self.ordinary_set_inner(receiver_obj, prop_name_si, promoted, receiver, use_frame_push, strict, builtin)
     }
 
     /// 调用或帧化访问器 setter：native（或禁止帧化的调用方）同步执行，
@@ -1104,17 +1142,8 @@ impl Vm {
             return Err("cannot redefine non-configurable property".to_string());
         }
 
-        // 收缩按 ArraySetLength 删除循环语义：自最高索引向下删除可配置元素，遇最高
-        // 不可配置索引 P 时停止并把 length 收敛到 P+1（其上元素已在循环中删除）。
-        // 仅当 [newLen, oldLen) 全可配置时才完整截断到 newLen。
-        let target_len = if new_len < old_logical {
-            match Self::highest_non_configurable_index(obj, new_len, old_logical) {
-                Some(blocker) => blocker + 1,
-                None => new_len,
-            }
-        } else {
-            new_len
-        };
+        // 收缩按 ArraySetLength 删除循环语义求目标长度（部分截断 / 完整截断）。
+        let target_len = Self::array_length_shrink_target(obj, new_len, old_logical);
 
         Self::apply_array_length(obj, target_len);
         obj.set_length_non_writable(!attributes.writable());
@@ -1124,6 +1153,22 @@ impl Vm {
             return Err("cannot redefine non-configurable property".to_string());
         }
         Ok(())
+    }
+
+    /// 数组 length 收缩的目标长度：`[new_len, old_len)` 内存在不可配置元素时取
+    /// 最高阻挡索引 + 1（部分截断，其上可配置元素已删除），否则完整截断到 `new_len`。
+    ///
+    /// # 边界与前提
+    /// - `new_len >= old_logical` 时直接返回 `new_len`（非收缩路径）。
+    fn array_length_shrink_target(obj: &JsObject, new_len: u32, old_logical: u32) -> u32 {
+        if new_len < old_logical {
+            match Self::highest_non_configurable_index(obj, new_len, old_logical) {
+                Some(blocker) => blocker + 1,
+                None => new_len,
+            }
+        } else {
+            new_len
+        }
     }
 
     /// 返回 `[from, old_len)` 内最高的不可配置自身元素索引；无则 `None`。

@@ -96,7 +96,8 @@ impl oxide_runtime_api::VmHost for Vm {
     fn ordinary_set(
         &mut self, obj: &mut JsObject, prop_name_si: u32, val: JsValue, receiver: JsValue, strict: bool,
     ) -> Result<(), String> {
-        self.ordinary_set(obj, prop_name_si, val, receiver, strict)
+        // builtin 调用边界：写失败返回格式化 Err，不就地展开（见 ordinary_set_builtin）。
+        self.ordinary_set_builtin(obj, prop_name_si, val, receiver, strict)
     }
     fn define_data_property(
         &mut self, obj: &mut JsObject, prop_name_si: u32, val: JsValue, attributes: PropAttributes,
