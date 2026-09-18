@@ -110,6 +110,43 @@ fn define_length_shrink_blocked_by_non_configurable_element() {
 }
 
 #[test]
+fn define_length_shrink_partial_truncation_at_blocker() {
+    // 阻挡索引 = newLen（index 1）：length 收敛到 2，其上元素被删除。
+    assert_eq!(
+        eval_str("var a=[0,1,2,3,4]; Object.defineProperty(a,'1',{configurable:false}); var r; try{Object.defineProperty(a,'length',{value:1});r='no-throw';}catch(e){r=e.name;} r+':'+a.length+':'+a.hasOwnProperty('1')+':'+a.hasOwnProperty('2')+':'+a.hasOwnProperty('4')"),
+        "TypeError:2:true:false:false"
+    );
+    // 阻挡索引 = newLen+1（index 2）：length 收敛到 3，index 1/2 保留、index 3/4 删除。
+    assert_eq!(
+        eval_str("var a=[0,1,2,3,4]; Object.defineProperty(a,'2',{configurable:false}); var r; try{Object.defineProperty(a,'length',{value:1});r='no-throw';}catch(e){r=e.name;} r+':'+a.length+':'+a.hasOwnProperty('1')+':'+a.hasOwnProperty('3')"),
+        "TypeError:3:true:false"
+    );
+    // 阻挡索引 = oldLen-2（index 3）：length 收敛到 4，仅 index 4 删除。
+    assert_eq!(
+        eval_str("var a=[0,1,2,3,4]; Object.defineProperty(a,'3',{configurable:false}); var r; try{Object.defineProperty(a,'length',{value:1});r='no-throw';}catch(e){r=e.name;} r+':'+a.length+':'+a.hasOwnProperty('3')+':'+a.hasOwnProperty('4')"),
+        "TypeError:4:true:false"
+    );
+}
+
+#[test]
+fn define_length_shrink_blocker_is_highest_non_configurable() {
+    // 规范删除循环自高向低：多个不可配置索引时以最高者确定最终长度。
+    assert_eq!(
+        eval_str("var a=[0,1,2,3,4]; Object.defineProperty(a,'1',{configurable:false}); Object.defineProperty(a,'3',{configurable:false}); var r; try{Object.defineProperty(a,'length',{value:1});r='no-throw';}catch(e){r=e.name;} r+':'+a.length+':'+a.hasOwnProperty('1')+':'+a.hasOwnProperty('2')+':'+a.hasOwnProperty('3')+':'+a.hasOwnProperty('4')"),
+        "TypeError:4:true:true:true:false"
+    );
+}
+
+#[test]
+fn define_length_shrink_partial_truncation_sets_writable() {
+    // 部分截断失败时 writable 收窄仍生效：length 收敛到阻挡索引 + 1 且不可写。
+    assert_eq!(
+        eval_str("var a=[0,1,2,3]; Object.defineProperty(a,'1',{configurable:false}); var r; try{Object.defineProperty(a,'length',{value:0,writable:false});r='no-throw';}catch(e){r=e.name;} var d=Object.getOwnPropertyDescriptor(a,'length'); r+':'+a.length+':'+d.writable+':'+a.hasOwnProperty('2')"),
+        "TypeError:2:false:false"
+    );
+}
+
+#[test]
 fn define_length_configurable_true_error_leaves_elements() {
     // TypeError 后元素区不截断。
     assert_eq!(

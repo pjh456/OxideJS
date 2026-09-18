@@ -1041,12 +1041,13 @@ impl Vm {
     /// 强转、校验并应用到元素区与逻辑长度。
     ///
     /// # 步骤
-    /// 1. `ToUint32` 与 `ToNumber` 两次强转（均可触发用户代码），结果不等抛
-    ///    RangeError；强转严格早于任何描述符校验。
+    /// 1. BigInt 值在强转前拦截为 TypeError；随后 `ToUint32` 与 `ToNumber` 两次
+    ///    强转（均可触发用户代码），结果不等抛 RangeError，强转严格早于描述符校验。
     /// 2. 校验当前非可配置数据属性的收窄：configurable/enumerable 不得置真；
     ///    当前不可写时不得再请求 writable 或改动值。
-    /// 3. 收缩时先检查 `[newLen, oldLen)` 内是否存在不可配置元素，存在则整体失败
-    ///    且不改动元素区。
+    /// 3. 收缩时按规范删除循环语义求最高不可配置索引：存在则以「阻挡索引 + 1」
+    ///    为最终长度部分截断（删除其上全部可配置元素），再返回失败；全部可配置
+    ///    时完整截断到新长度。
     /// 4. 应用新逻辑长度（截断/扩 hole、dense 上限覆盖）并按描述符写可写位。
     ///
     /// # 边界与前提
@@ -1080,30 +1081,64 @@ impl Vm {
         if !obj.is_length_writable() && (attributes.writable() || new_len != old_logical) {
             return Err("cannot redefine non-configurable property".to_string());
         }
-        // 收缩先验证不可配置元素：存在则整体失败，元素区保持原状（错误先于变更）。
-        if new_len < old_logical {
-            let old_count = obj.array_prop_count as usize;
-            for idx in new_len as usize..old_count {
-                if obj.prop_meta_at(idx).is_some_and(|m| !m.attributes.configurable()) {
-                    return Err("cannot redefine non-configurable property".to_string());
-                }
+
+        // 收缩按 ArraySetLength 删除循环语义：自最高索引向下删除可配置元素，遇最高
+        // 不可配置索引 P 时停止并把 length 收敛到 P+1（其上元素已在循环中删除）。
+        // 仅当 [newLen, oldLen) 全可配置时才完整截断到 newLen。
+        let target_len = if new_len < old_logical {
+            match Self::highest_non_configurable_index(obj, new_len, old_logical) {
+                Some(blocker) => blocker + 1,
+                None => new_len,
             }
+        } else {
+            new_len
+        };
+
+        Self::apply_array_length(obj, target_len);
+        obj.set_length_non_writable(!attributes.writable());
+        obj.bump_generation();
+
+        if target_len != new_len {
+            return Err("cannot redefine non-configurable property".to_string());
         }
-        // dense 物理槽以 MAX_DENSE_PROPS 封顶，超限长度另记逻辑长度覆盖。
+        Ok(())
+    }
+
+    /// 返回 `[from, old_len)` 内最高的不可配置自身元素索引；无则 `None`。
+    ///
+    /// # 边界与前提
+    /// - 扫描上界取逻辑长度与稠密元素数的较小者：逻辑长度超过
+    ///   `MAX_DENSE_PROPS` 时，其上的索引不存于稠密元素区，无自身属性可阻挡。
+    /// - hole 标记为可配置（删除成功），不计入阻挡。
+    fn highest_non_configurable_index(obj: &JsObject, from: u32, old_len: u32) -> Option<u32> {
+        let scan_hi = (old_len as usize).min(obj.array_prop_count as usize);
+        (from as usize..scan_hi)
+            .rev()
+            .find(|&idx| obj.prop_meta_at(idx).is_some_and(|m| !m.attributes.configurable()))
+            .map(|idx| idx as u32)
+    }
+
+    /// 把数组逻辑长度与物理元素区收敛到 `final_len`：截断/补齐稠密元素并维护
+    /// `array_len_override`。
+    ///
+    /// # 边界与前提
+    /// - 稠密物理槽以 `MAX_DENSE_PROPS` 封顶，超出部分仅记逻辑长度覆盖。
+    /// - 不写 length 可写位、不 bump 世代，由调用方统一处理。
+    fn apply_array_length(obj: &mut JsObject, final_len: u32) {
         let old_count = obj.array_prop_count as usize;
-        let new_phys = (new_len as usize).min(oxide_types::object::MAX_DENSE_PROPS);
+        let new_phys = (final_len as usize).min(oxide_types::object::MAX_DENSE_PROPS);
         obj.set_prop_count(new_phys);
+
+        // 扩出的槽是稀疏 hole：存在性检查与原型链读取须视同不存在。
         for idx in old_count..new_phys {
             obj.mark_hole_at(idx);
         }
-        if new_len as usize > oxide_types::object::MAX_DENSE_PROPS {
-            obj.set_array_len_override(new_len);
+
+        if final_len as usize > oxide_types::object::MAX_DENSE_PROPS {
+            obj.set_array_len_override(final_len);
         } else {
             obj.clear_array_len_override();
         }
-        obj.set_length_non_writable(!attributes.writable());
-        obj.bump_generation();
-        Ok(())
     }
 }
 
