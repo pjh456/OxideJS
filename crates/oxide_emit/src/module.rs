@@ -18,6 +18,7 @@ use oxide_bytecode::opcode::OpCode;
 use oxide_ir::inst::Inst;
 use oxide_ir::operand::Operand;
 use oxide_ir::{IRFunction, ParamLayout};
+use oxide_kernel::MODULE_NAMESPACE_BINDING;
 use oxide_parser::{
     BindingPattern, Declaration, ExportDefaultDeclarationKind, Expression, ImportAttributeKey,
     ImportDeclarationSpecifier, ModuleExportName, Statement, VariableDeclarationKind, WithClause,
@@ -353,6 +354,7 @@ impl Emitter {
                 self.emit_module_call(ctx, "__moduleEval", &[fn_reg])?
             };
             ctx.module_dep_ns_regs.insert(spec.clone(), dep_ns_reg);
+            ctx.module_dep_paths.insert(spec.clone(), resolved.path.clone());
             if resolved.path == module_path {
                 // 自导入：绑定走别名语义（源导出在 body 执行中才就绪），
                 // 不能像普通依赖那样链接期快照。
@@ -382,11 +384,17 @@ impl Emitter {
                     .get(&dep_spec)
                     .ok_or_else(|| format!("module dependency missing: {dep_spec}"))?;
                 let is_self = ctx.module_self_import_specs.contains(&dep_spec);
+                // 再导出重分类依据：非自导入局部名 → (依赖路径, 导入名)。
+                let dep_path = ctx.module_dep_paths.get(&dep_spec).cloned().unwrap_or_default();
                 if let Some(specifiers) = &imp.specifiers {
                     for sp in specifiers {
                         match sp {
                             ImportDeclarationSpecifier::ImportSpecifier(s) => {
                                 let imported = module_export_name_str(&s.imported);
+                                if !is_self {
+                                    ctx.module_import_origins
+                                        .insert(s.local.name.to_string(), (dep_path.clone(), imported.clone()));
+                                }
                                 let alias_source = is_self.then(|| export_name_map.get(&imported)).flatten();
                                 if is_self && !own_export_names.contains(&imported) && !has_unnamed_star {
                                     return Err(format!("requested module export is not exported: {imported}"));
@@ -417,6 +425,12 @@ impl Emitter {
                                 }
                             }
                             ImportDeclarationSpecifier::ImportDefaultSpecifier(s) => {
+                                if !is_self {
+                                    ctx.module_import_origins.insert(
+                                        s.local.name.to_string(),
+                                        (dep_path.clone(), DEFAULT_EXPORT_NAME.to_string()),
+                                    );
+                                }
                                 let alias_source =
                                     is_self.then(|| export_name_map.get(DEFAULT_EXPORT_NAME)).flatten().cloned();
                                 if is_self && !own_export_names.contains(DEFAULT_EXPORT_NAME) {
@@ -461,6 +475,11 @@ impl Emitter {
                                 // body 执行后导出自然可见。
                                 if is_self {
                                     has_self_ns_import = true;
+                                } else {
+                                    ctx.module_import_origins.insert(
+                                        s.local.name.to_string(),
+                                        (dep_path.clone(), MODULE_NAMESPACE_BINDING.to_string()),
+                                    );
                                 }
                                 self.emit_bind_target(
                                     s.local.name.as_str(),
@@ -677,6 +696,17 @@ impl Emitter {
         Ok(())
     }
 
+    /// 发 `__moduleSetReexport`：注册带 `(dep_path, imported)` 来源身份的再导出。
+    fn emit_module_set_reexport(
+        &self, ctx: &mut CompileCtx, ns_reg: u32, export_name: &str, value_reg: u32, dep_path: &str, imported: &str,
+    ) -> Result<(), String> {
+        let name_reg = self.load_string_const(export_name, ctx);
+        let path_reg = self.load_string_const(dep_path, ctx);
+        let imported_reg = self.load_string_const(imported, ctx);
+        self.emit_module_call(ctx, "__moduleSetReexport", &[ns_reg, name_reg, value_reg, path_reg, imported_reg])?;
+        Ok(())
+    }
+
     /// 顶层对导出源绑定的写入同步到命名空间：按反演表把新值写入每个导出名。
     ///
     /// # 边界与前提
@@ -803,26 +833,43 @@ impl Emitter {
                         _ => return Err("unsupported export declaration".into()),
                     }
                 } else {
-                    let dep_ns_opt = exp
-                        .source
-                        .as_ref()
-                        .map(|src| ctx.module_dep_ns_regs.get(src.value.as_str()).copied());
+                    let dep_source = exp.source.as_ref().map(|src| src.value.to_string());
                     for spec in &exp.specifiers {
                         let local_name = module_export_name_str(&spec.local);
                         let exported_name = module_export_name_str(&spec.exported);
-                        let val_reg = match dep_ns_opt {
-                            Some(Some(dep_ns_reg)) => {
-                                let name_reg = self.load_string_const(&local_name, ctx);
-                                self.emit_module_call(ctx, "__moduleLinkGet", &[dep_ns_reg, name_reg])?
-                            }
-                            Some(None) => {
-                                return Err(format!(
-                                    "export from unknown module: {}",
-                                    exp.source.as_ref().unwrap().value
-                                ))
-                            }
-                            None => self.load_var_reg(&local_name, ctx)?,
-                        };
+                        // 有 source：来源身份为 (依赖模块路径, 导入名)。
+                        if let Some(source) = &dep_source {
+                            let dep_ns_reg = ctx
+                                .module_dep_ns_regs
+                                .get(source.as_str())
+                                .copied()
+                                .ok_or_else(|| format!("export from unknown module: {source}"))?;
+                            let dep_path = ctx
+                                .module_dep_paths
+                                .get(source.as_str())
+                                .cloned()
+                                .ok_or_else(|| format!("export from unknown module: {source}"))?;
+                            let name_reg = self.load_string_const(&local_name, ctx);
+                            let val_reg = self.emit_module_call(ctx, "__moduleLinkGet", &[dep_ns_reg, name_reg])?;
+                            self.emit_module_set_reexport(
+                                ctx,
+                                ns_reg,
+                                &exported_name,
+                                val_reg,
+                                &dep_path,
+                                &local_name,
+                            )?;
+                            continue;
+                        }
+                        // 无 source 但局部名是导入绑定：按规范重分类为间接导出，来源为
+                        // (依赖模块路径, 导入名)；命名空间导入的导入名为共享哨兵。
+                        if let Some((dep_path, imported)) = ctx.module_import_origins.get(&local_name).cloned() {
+                            let val_reg = self.load_var_reg(&local_name, ctx)?;
+                            self.emit_module_set_reexport(ctx, ns_reg, &exported_name, val_reg, &dep_path, &imported)?;
+                            continue;
+                        }
+                        // 本地导出：来源恒为 Local。
+                        let val_reg = self.load_var_reg(&local_name, ctx)?;
                         self.emit_module_set(ctx, ns_reg, &exported_name, val_reg)?;
                     }
                 }
@@ -925,12 +972,26 @@ impl Emitter {
                     .module_dep_ns_regs
                     .get(source)
                     .ok_or_else(|| format!("export * from unknown module: {source}"))?;
+                let dep_path = ctx
+                    .module_dep_paths
+                    .get(source)
+                    .cloned()
+                    .ok_or_else(|| format!("export * from unknown module: {source}"))?;
                 if let Some(exported) = &exp.exported {
-                    // export * as ns from '...'：命名空间再导出。
+                    // export * as ns from '...'：命名空间再导出，绑定身份用共享哨兵。
                     let exported_name = module_export_name_str(exported);
-                    self.emit_module_set(ctx, ns_reg, &exported_name, dep_ns_reg)?;
+                    self.emit_module_set_reexport(
+                        ctx,
+                        ns_reg,
+                        &exported_name,
+                        dep_ns_reg,
+                        &dep_path,
+                        MODULE_NAMESPACE_BINDING,
+                    )?;
                 } else {
-                    self.emit_module_call(ctx, "__moduleStar", &[ns_reg, dep_ns_reg])?;
+                    // 来源传播：star 复制按 (dep_path, 绑定) 判同名冲突。
+                    let path_reg = self.load_string_const(&dep_path, ctx);
+                    self.emit_module_call(ctx, "__moduleStar", &[ns_reg, dep_ns_reg, path_reg])?;
                 }
             }
             _ => return Err("unsupported module export statement".into()),

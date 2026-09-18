@@ -110,7 +110,7 @@ pub fn key_si_to_js_value<H: VmHost>(vm: &mut H, si: u32) -> JsValue {
 /// 与 [`walk_own_keys`] 互补：只返回 Symbol 键。返回 `(属性键 si, 绝对存储索引)`：
 /// 槽位计数须含全部非空节点（含字符串键）并对数组加元素区偏移，与物理存储及
 /// [`walk_own_keys`] 的口径一致，消费方（delete 重建）才能按槽位取回正确值。
-fn walk_own_symbol_keys<H: VmHost>(vm: &H, obj: &JsObject) -> Vec<(u32, u32)> {
+pub(crate) fn walk_own_symbol_keys<H: VmHost>(vm: &H, obj: &JsObject) -> Vec<(u32, u32)> {
     let mut keys: Vec<(u32, u32)> = Vec::new();
     let shape_id = obj.shape_id();
     let mut shape_ids = Vec::new();

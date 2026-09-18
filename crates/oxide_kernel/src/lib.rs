@@ -22,3 +22,10 @@ pub mod string_forge;
 
 /// kernel 对外的三个核心类型：配置、共享核心、会话。
 pub use kernel::{KernelConfig, KernelCore, KernelSession};
+
+/// 模块命名空间再导出的绑定身份哨兵。
+///
+/// `export * as ns from mod` 与 `import * as ns from mod; export { ns }` 两路
+/// 转发的是同一个命名空间对象，来源身份须用同一绑定名才能判为同一绑定；该字面量
+/// 含 NUL，不可能与任何静态导出名相同。编译器与运行时共享此常量，禁止另写字面量。
+pub const MODULE_NAMESPACE_BINDING: &str = "\u{0}namespace";

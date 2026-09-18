@@ -143,6 +143,11 @@ pub struct CompileCtx {
     pub(crate) module_local_exports: HashMap<String, Vec<String>>,
     /// 已求值依赖模块的命名空间对象寄存器（按 import/export source 字符串索引）。
     pub(crate) module_dep_ns_regs: HashMap<String, u32>,
+    /// 依赖模块规范路径（按 import/export source 字符串索引）：再导出来源身份用。
+    pub(crate) module_dep_paths: HashMap<String, String>,
+    /// 非自导入的导入局部名 → (依赖模块规范路径, 导入名)。命名空间导入的导入名为
+    /// `oxide_kernel::MODULE_NAMESPACE_BINDING`；再导出据此重分类为间接导出。
+    pub(crate) module_import_origins: HashMap<String, (String, String)>,
     /// 自导入（import from 自身）的 source 字符串集合：绑定走别名语义，不能链接期快照。
     pub(crate) module_self_import_specs: HashSet<String>,
     /// 自导入别名：导出名 → 本地绑定槽寄存器（export 语句执行时回写绑定值）。
@@ -232,6 +237,8 @@ impl CompileCtx {
             module_ns_reg: None,
             module_local_exports: HashMap::new(),
             module_dep_ns_regs: HashMap::new(),
+            module_dep_paths: HashMap::new(),
+            module_import_origins: HashMap::new(),
             module_self_import_specs: HashSet::new(),
             module_self_aliases: HashMap::new(),
             module_alias_pairs: Vec::new(),
