@@ -1391,8 +1391,8 @@ pub fn iterator_wrapper_next<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult
 /// # 边界
 /// 字符串原始值按自身 wrapper 的原型链读 `@@iterator`（读起点 String.prototype、
 /// receiver = 原始值），不套用 duck-next 回退（原始串无自身 `next`）；非对象原始值
-/// （number/boolean 等）装箱后判定。`@@iterator` getter 抛错时透传 `Err`
-/// （不落入鸭子回退）。
+/// （number/boolean 等）经 ToObject 得查找起点，receiver 保持原始值（GetV 语义）。
+/// `@@iterator` getter 抛错时透传 `Err`（不落入鸭子回退）。
 ///
 /// # 注意事项
 /// 三态是 GetMethod-可选入口的规范语义：非空不可调用（含 [[IsHTMLDDA]]
@@ -1426,9 +1426,9 @@ pub(crate) fn peek_iterator_method<H: VmHost>(vm: &mut H, value: JsValue) -> Res
         // null/undefined：原始串的临时 wrapper 无自身可调用 next，落 array-like。
         return Ok(false);
     }
-    // 原始值（number/bigint/boolean/symbol）先装箱再按对象读 @@iterator
-    // （如 `Array.from(5)` 经 Number.prototype[Symbol.iterator]）；
-    // null/undefined 装箱失败按不可迭代处理。
+    // 原始值（number/bigint/boolean/symbol）经 ToObject 得 @@iterator 查找起点，
+    // receiver 保持原始值本身（getter 观测原始类型，如 `Array.from(5)` 经
+    // Number.prototype[Symbol.iterator]）；null/undefined 装箱失败按不可迭代处理。
     let recv = if value.is_object() {
         value
     } else {
@@ -1440,7 +1440,7 @@ pub(crate) fn peek_iterator_method<H: VmHost>(vm: &mut H, value: JsValue) -> Res
     if recv.is_object() {
         let obj = unsafe { &*recv.as_js_object_ptr() };
         let sym_iter_si = make_well_known_symbol_key(0);
-        let method = match vm.ordinary_get(obj, sym_iter_si, recv) {
+        let method = match vm.ordinary_get(obj, sym_iter_si, value) {
             Ok(m) => m,
             Err(err) => {
                 // GetMethod 取 @@iterator 时 getter 抛出：透传原值，不落入鸭子回退。
@@ -1463,7 +1463,7 @@ pub(crate) fn peek_iterator_method<H: VmHost>(vm: &mut H, value: JsValue) -> Res
         // @@iterator（Array.from/%TypedArray%.from 应落 array-like）。
         if !obj.is_string_obj() {
             let next_si = vm.kernel_core().perm_interner().intern("next").0;
-            if let Ok(next) = vm.ordinary_get(obj, next_si, recv) {
+            if let Ok(next) = vm.ordinary_get(obj, next_si, value) {
                 if is_callable(next) {
                     return Ok(true);
                 }
@@ -1602,8 +1602,9 @@ fn get_iterator<H: VmHost>(vm: &mut H, value: JsValue) -> Result<Option<(JsValue
     let builtin_value =
         is_array_value(value) || is_typed_array_value(value) || is_map_value(value) || is_set_value(value);
 
-    // 非字符串 primitive（boolean/number/symbol/bigint）：GetIterator 先 ToObject，
-    // 再走迭代协议（如 `yield* true` 委托 Boolean.prototype[Symbol.iterator]）。
+    // 非字符串 primitive（boolean/number/symbol/bigint）：GetIterator 以 ToObject
+    // 得 @@iterator 查找起点，receiver 与被调方法的 this 保持原始值（GetV /
+    // GetIteratorFromMethod 语义，如 `yield* true` 委托 Boolean.prototype[Symbol.iterator]）。
     // null/undefined 的 ToObject 失败按不可迭代处理。
     let obj_value = if value.is_object() {
         value
@@ -1614,9 +1615,10 @@ fn get_iterator<H: VmHost>(vm: &mut H, value: JsValue) -> Result<Option<(JsValue
         }
     };
     let obj = unsafe { &*obj_value.as_js_object_ptr() };
-    // 迭代协议：GetIterator 先取 value[Symbol.iterator] 并调用。
+    // 迭代协议：GetIterator 先取 value[Symbol.iterator] 并调用；装箱对象仅作查找
+    // 起点与鸭子回退 inner，receiver/this 用原始 value（GetV / GetIteratorFromMethod）。
     let sym_iter_si = make_well_known_symbol_key(0);
-    let method = match vm.ordinary_get(obj, sym_iter_si, obj_value) {
+    let method = match vm.ordinary_get(obj, sym_iter_si, value) {
         Ok(m) => m,
         Err(err) => {
             // GetMethod 取 @@iterator 时 getter 抛出：透传原值，不落入鸭子回退。
@@ -1630,7 +1632,7 @@ fn get_iterator<H: VmHost>(vm: &mut H, value: JsValue) -> Result<Option<(JsValue
         return Ok(Some((value, None)));
     }
     if is_callable(method) {
-        let iterator = match vm.call_function_sync(method, obj_value, &[]) {
+        let iterator = match vm.call_function_sync(method, value, &[]) {
             Ok(it) => it,
             Err(err) => {
                 let exc = vm
@@ -1650,7 +1652,7 @@ fn get_iterator<H: VmHost>(vm: &mut H, value: JsValue) -> Result<Option<(JsValue
     // 鸭子回退：对象自身有可调用 next（Map/Set 迭代器包装等既有用法）。
     // getter 抛错透传原值（不落入"不可迭代"），读到的闭包随 inner 回传供缓存。
     let next_si = vm.kernel_core().perm_interner().intern("next").0;
-    let next = match vm.ordinary_get(obj, next_si, obj_value) {
+    let next = match vm.ordinary_get(obj, next_si, value) {
         Ok(n) => n,
         Err(err) => {
             // GetMethod 取 next 时 getter 抛出：透传原值，不降级为 "not iterable"。

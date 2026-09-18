@@ -1,7 +1,11 @@
 //! `Iterator.from` / `Array.from` 的原始值迭代器面钉：String 臂经 GetMethod
 //! 以原始值 receiver 读 `@@iterator`（用户覆盖 getter 观测 `typeof this`），
-//! peek 对非字符串原始值装箱读 `@@iterator`，`Iterator.from` 对非字符串原始值
+//! peek 与 get_iterator 对非字符串原始值经 ToObject 得查找起点、receiver 保持
+//! 原始值（GetV / GetIteratorFromMethod 语义），`Iterator.from` 对非字符串原始值
 //! 非对象按 GetIteratorFlattenable 抛 TypeError（区别于 `Array.from` 的装箱路径）。
+//!
+//! 观察者一律用 `'use strict'`：引擎对 sloppy 函数的原始 this 不做 ToObject
+//! （既有债），sloppy 观察者不反映本组 GetV receiver 语义。
 
 use std::sync::Arc;
 
@@ -47,7 +51,8 @@ fn iterator_from_string_getter_sees_raw_string() {
 
 #[test]
 fn array_from_number_boxes_to_read_number_iterator() {
-    // Array.from(5) 经 GetIterator 装箱后读 Number.prototype[Symbol.iterator]。
+    // Array.from(5) 经 GetIterator 以原始值 receiver 调用
+    // Number.prototype[Symbol.iterator]（装箱对象只作查找起点）。
     assert_truthy(
         "Array.from(5)",
         "(function(){
@@ -124,6 +129,148 @@ fn for_of_string_default_no_override() {
            var n = 0;
            for (var c of 'hix') { n++; }
            return n === 3;
+         })()",
+    );
+}
+
+#[test]
+fn array_from_number_strict_observer_sees_raw_receiver() {
+    // Array.from(5) 同经 peek 与 get_iterator：strict getter 与 strict 方法的
+    // this 均观测原始 number（装箱对象只作查找起点，receiver 保持原始值）。
+    assert_truthy(
+        "Array.from(5) raw receiver",
+        "(function(){
+           var getThis, callThis;
+           function iter(){ 'use strict'; callThis = typeof this; return [1][Symbol.iterator](); }
+           Object.defineProperty(Number.prototype, Symbol.iterator, {
+             configurable: true,
+             get(){ 'use strict'; getThis = typeof this; return iter; }
+           });
+           Array.from(5);
+           return getThis === 'number' && callThis === 'number';
+         })()",
+    );
+}
+
+#[test]
+fn for_of_number_strict_observer_sees_raw_receiver() {
+    // for-of 只经 get_iterator：strict getter 与被调方法的 this 均为原始 number。
+    assert_truthy(
+        "for-of 5 raw receiver",
+        "(function(){
+           var getThis, callThis;
+           function iter(){ 'use strict'; callThis = typeof this; return [1][Symbol.iterator](); }
+           Object.defineProperty(Number.prototype, Symbol.iterator, {
+             configurable: true,
+             get(){ 'use strict'; getThis = typeof this; return iter; }
+           });
+           var n = 0;
+           for (var x of 5) { n++; }
+           return getThis === 'number' && callThis === 'number' && n === 1;
+         })()",
+    );
+}
+
+#[test]
+fn spread_number_strict_observer_sees_raw_receiver() {
+    // 数组展开 `[...5]` 只经 get_iterator：strict getter 与方法的 this 均为原始 number。
+    assert_truthy(
+        "[...5] raw receiver",
+        "(function(){
+           var getThis, callThis;
+           function iter(){ 'use strict'; callThis = typeof this; return [1][Symbol.iterator](); }
+           Object.defineProperty(Number.prototype, Symbol.iterator, {
+             configurable: true,
+             get(){ 'use strict'; getThis = typeof this; return iter; }
+           });
+           var r = [...5];
+           return getThis === 'number' && callThis === 'number' && r.length === 1 && r[0] === 1;
+         })()",
+    );
+}
+
+#[test]
+fn array_from_primitive_types_strict_observer_sees_raw_receiver() {
+    // boolean/bigint/symbol 原始值：getter 与被调方法的 this 观测各自原始类型。
+    assert_truthy(
+        "Array.from(true/5n/Symbol()) raw receivers",
+        "(function(){
+           function observe(proto, value){
+             var getThis, callThis;
+             function iter(){ 'use strict'; callThis = typeof this; return [1][Symbol.iterator](); }
+             Object.defineProperty(proto, Symbol.iterator, {
+               configurable: true,
+               get(){ 'use strict'; getThis = typeof this; return iter; }
+             });
+             Array.from(value);
+             return getThis + '|' + callThis;
+           }
+           return observe(Boolean.prototype, true) === 'boolean|boolean'
+               && observe(BigInt.prototype, 5n) === 'bigint|bigint'
+               && observe(Symbol.prototype, Symbol()) === 'symbol|symbol';
+         })()",
+    );
+}
+
+#[test]
+fn typed_array_from_number_strict_observer_sees_raw_receiver() {
+    // %TypedArray%.from 亦经 peek + get_iterator：strict this 观测原始 number。
+    assert_truthy(
+        "Int8Array.from(5) raw receiver",
+        "(function(){
+           var getThis, callThis;
+           function iter(){ 'use strict'; callThis = typeof this; return [1][Symbol.iterator](); }
+           Object.defineProperty(Number.prototype, Symbol.iterator, {
+             configurable: true,
+             get(){ 'use strict'; getThis = typeof this; return iter; }
+           });
+           var r = Int8Array.from(5);
+           return getThis === 'number' && callThis === 'number' && r.length === 1 && r[0] === 1;
+         })()",
+    );
+}
+
+#[test]
+fn array_from_boxed_objects_strict_observer_sees_object_receiver() {
+    // 装箱对象（new Number / new String）的 receiver 仍为对象：装箱面不回归。
+    assert_truthy(
+        "Array.from(new Number(5))/new String('ab') object receivers",
+        "(function(){
+           function observe(proto, value){
+             var getThis, callThis;
+             function iter(){ 'use strict'; callThis = typeof this; return [1][Symbol.iterator](); }
+             Object.defineProperty(proto, Symbol.iterator, {
+               configurable: true,
+               get(){ 'use strict'; getThis = typeof this; return iter; }
+             });
+             Array.from(value);
+             return getThis + '|' + callThis;
+           }
+           return observe(Number.prototype, new Number(5)) === 'object|object'
+               && observe(String.prototype, new String('ab')) === 'object|object';
+         })()",
+    );
+}
+
+#[test]
+fn primitive_iterator_default_paths_regression() {
+    // 无覆盖时非字符串原始值不可迭代：for-of 抛 TypeError、Array.from 走
+    // array-like 空结果；数组与字符串的默认路径保持不变。
+    assert_truthy(
+        "primitive default paths",
+        "(function(){
+           var threw = false;
+           try { for (var x of 5) { } } catch (e) { threw = e instanceof TypeError; }
+           if (!threw) return false;
+           if (Array.from(5).length !== 0) return false;
+           var a = Array.from([1,2]);
+           if (a.length !== 2 || a[0] !== 1 || a[1] !== 2) return false;
+           var n = 0;
+           for (var c of 'ab') { n++; }
+           if (n !== 2) return false;
+           var s = Array.from('ab');
+           if (s.length !== 2 || s[0] !== 'a' || s[1] !== 'b') return false;
+           return true;
          })()",
     );
 }
