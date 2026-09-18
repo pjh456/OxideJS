@@ -848,6 +848,11 @@ pub fn object_define_property<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResul
     let si = vm.property_key_si(vm.reg(args[2]));
 
     if let Err(msg) = define_from_descriptor(vm, obj_ptr, si, vm.reg(args[3])) {
+        // 强转期用户代码（valueOf / Symbol.toPrimitive）抛出的异常值转存专用槽，
+        // 须原值重抛而非改写成引擎 TypeError。
+        if let Some(exc) = vm.take_pending_length_exception() {
+            return NativeResult::Err(exc);
+        }
         return NativeResult::Err(crate::error::create_define_failure(vm, &msg));
     }
     NativeResult::Ok(obj_val)
@@ -1217,7 +1222,12 @@ pub fn object_define_properties<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeRes
         Err(err) => return NativeResult::Err(err),
     };
     if let Err(msg) = define_all_from_properties(vm, target_ptr, vm.reg(args[2])) {
-        return NativeResult::Err(crate::error::create_type_error(vm, &msg));
+        // 与单属性入口一致：强转期用户异常原值重抛，非法 length 以 RangeError
+        // kind 穿透，其余 define 失败投影为 TypeError。
+        if let Some(exc) = vm.take_pending_length_exception() {
+            return NativeResult::Err(exc);
+        }
+        return NativeResult::Err(crate::error::create_define_failure(vm, &msg));
     }
     NativeResult::Ok(target_val)
 }

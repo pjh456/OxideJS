@@ -87,6 +87,7 @@ impl Vm {
             try_stack: Vec::new(),
             exception_value: None,
             last_uncaught_value: None,
+            pending_length_exception: None,
             pending_exception: None,
             pending_error_kind: None,
             pending_completion: None,
@@ -216,6 +217,7 @@ impl Vm {
             try_stack: Vec::new(),
             exception_value: None,
             last_uncaught_value: None,
+            pending_length_exception: None,
             pending_exception: None,
             pending_error_kind: None,
             pending_completion: None,
@@ -513,6 +515,7 @@ impl Vm {
         // 未捕获异常侧通道持原始 epoch 对象指针：执行期状态，跨 run/reset 不保留，
         // 池回收后残留将悬垂。
         self.last_uncaught_value = None;
+        self.pending_length_exception = None;
         self.pending_exception = None;
         self.pending_error_kind = None;
         self.pending_completion = None;

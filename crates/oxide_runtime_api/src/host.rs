@@ -147,6 +147,13 @@ pub trait VmHost {
     /// 忽略调用（如 IteratorClose 的 `return()`）抛错时不得让自身值覆盖槽——
     /// 调用前暂存、调用后恢复，保证在途异常值跨忽略调用存活。
     fn restore_uncaught_value(&mut self, value: Option<JsValue>);
+    /// 取回数组 length define 强转期用户代码抛出的原始异常。
+    ///
+    /// # 注意事项
+    /// - 与 [`Self::take_uncaught_value`] 分离：后者可能残留其它操作忽略调用时
+    ///   写入的值，本槽仅由 length 强转失败写入，入口据此区分「强转异常」与
+    ///   「描述符收敛失败」。
+    fn take_pending_length_exception(&mut self) -> Option<JsValue>;
 
     // 错误处理
     fn checked_object_ptr(&mut self, val: JsValue, error_msg: &str) -> Result<Option<*mut JsObject>, String>;

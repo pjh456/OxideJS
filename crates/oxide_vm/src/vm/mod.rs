@@ -222,6 +222,10 @@ pub struct Vm {
     /// String 后，for-of 需要重新抛出原值。放在 VM 顶层字段（不在 InlineSyncState 中）
     /// 以便跨内联调用的恢复过程存活。
     pub(crate) last_uncaught_value: Option<JsValue>,
+    /// 数组 length define 强转期用户代码抛出的原始异常：与 `last_uncaught_value`
+    /// 分离，避免入口误取其它操作忽略调用残留的值。仅 `define_array_length` 写入，
+    /// 由 Object/Reflect define 入口消费。
+    pub(crate) pending_length_exception: Option<JsValue>,
     pub(crate) pending_exception: Option<JsValue>,
     pub(crate) pending_error_kind: Option<&'static str>,
     /// 控制流完成（break/continue/return）暂存，finally 执行后由 TRY_FINALLY_END 恢复。

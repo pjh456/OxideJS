@@ -147,6 +147,47 @@ fn define_length_shrink_partial_truncation_sets_writable() {
 }
 
 #[test]
+fn define_length_coercion_exception_propagates_original_value() {
+    // 强转期 valueOf 抛出的自定义 Error 在两个入口都须原值重抛（identity 不改写）。
+    let obj_src = "var err=new Error('boom'); var v={valueOf:function(){throw err;}}; var c=null; try{Object.defineProperty([],'length',{value:v});}catch(e){c=e;} (c===err)+':'+c.name";
+    let ref_src = "var err=new TypeError('boom'); var v={valueOf:function(){throw err;}}; var c=null; try{Reflect.defineProperty([],'length',{value:v});}catch(e){c=e;} (c===err)+':'+c.name";
+    assert_eq!(eval_str(obj_src), "true:Error");
+    assert_eq!(eval_str(ref_src), "true:TypeError");
+    // Symbol.toPrimitive 抛出的异常同样原值重抛。
+    assert_eq!(
+        eval_str("var err=new RangeError('sym'); var v={}; v[Symbol.toPrimitive]=function(h){throw err;}; var c=null; try{Reflect.defineProperty([],'length',{value:v});}catch(e){c=e;} (c===err)+':'+c.name"),
+        "true:RangeError"
+    );
+}
+
+#[test]
+fn define_length_symbol_value_throws_type_error() {
+    // value=Symbol() 无 ToNumber 语义：两入口均抛 TypeError（Reflect 不得吞成 false）。
+    assert_eq!(
+        eval_str("var r=[]; try{Object.defineProperty([],'length',{value:Symbol()});r.push('no-throw');}catch(e){r.push(e.name);} try{Reflect.defineProperty([],'length',{value:Symbol()});r.push('no-throw');}catch(e){r.push(e.name);} r.join(',')"),
+        "TypeError,TypeError"
+    );
+}
+
+#[test]
+fn define_length_bigint_value_throws_type_error() {
+    // ToNumber(BigInt) 抛 TypeError：define 路径不得把 1n 近似为 1.0 接受。
+    assert_eq!(
+        eval_str("var r=[]; try{Object.defineProperty([],'length',{value:1n});r.push('no-throw');}catch(e){r.push(e.name);} try{Reflect.defineProperty([],'length',{value:1n});r.push('no-throw');}catch(e){r.push(e.name);} r.join(',')"),
+        "TypeError,TypeError"
+    );
+}
+
+#[test]
+fn define_properties_length_range_error_kind() {
+    // Object.defineProperties 须与单属性入口一致地保留 RangeError kind。
+    assert_eq!(
+        eval_str("var r=[]; try{Object.defineProperties([],{length:{value:-1}});r.push('no-throw');}catch(e){r.push(e.name);} try{Object.defineProperties([],{length:{value:1.5}});r.push('no-throw');}catch(e){r.push(e.name);} r.join(',')"),
+        "RangeError,RangeError"
+    );
+}
+
+#[test]
 fn define_length_configurable_true_error_leaves_elements() {
     // TypeError 后元素区不截断。
     assert_eq!(

@@ -74,8 +74,9 @@ pub fn reflect_construct<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 /// # 注意事项
 /// - 与 `Object.defineProperty` 共用 `define_from_descriptor`：缺失字段回填现有
 ///   属性、模块命名空间 exotic 收窄语义一处生效；普通失败投影为布尔 false。
-/// - 数组 length 的非法值（`"RangeError: "` 前缀）按规范抛 RangeError，不投影为
-///   false。
+/// - 数组 length 的非法值（`"RangeError: "` 前缀）与强转失败（`"TypeError: "`
+///   前缀）按规范抛对应错误，不投影为 false。
+/// - 强转期用户代码抛出的原始异常经 VM 专用槽原值重抛。
 pub fn reflect_define_property<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let target_val = arg(vm, args, 1);
     let Some(target_ptr) = object_ptr(target_val) else {
@@ -89,10 +90,17 @@ pub fn reflect_define_property<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResu
     let key_si = vm.property_key_si(arg(vm, args, 2));
     match crate::object::define_from_descriptor(vm, target_ptr, key_si, desc_val) {
         Ok(()) => NativeResult::Ok(JsValue::bool(true)),
-        Err(msg) => match msg.strip_prefix("RangeError: ") {
-            Some(rest) => NativeResult::Err(crate::error::create_range_error(vm, rest)),
-            None => NativeResult::Ok(JsValue::bool(false)),
-        },
+        Err(msg) => {
+            // 强转期用户代码（valueOf / Symbol.toPrimitive）抛出的异常值转存专用槽，
+            // 须原值重抛，不得投影为 false 或改写成引擎错误。
+            if let Some(exc) = vm.take_pending_length_exception() {
+                return NativeResult::Err(exc);
+            }
+            match crate::error::split_kinded(&msg) {
+                Some((kind, rest)) => NativeResult::Err(crate::error::create_kind_error(vm, kind, rest)),
+                None => NativeResult::Ok(JsValue::bool(false)),
+            }
+        }
     }
 }
 

@@ -71,6 +71,31 @@ pub fn create_error<H: VmHost>(host: &mut H, msg: &str) -> JsValue {
     create_kind_error(host, "Error", msg)
 }
 
+/// 错误文本的 kind 前缀表：`(kind 名, 前缀)`，供文本恢复与 `define` 通道共用。
+/// `Error` 排在末位，避免在匹配更具体的子类前缀之前抢先命中。
+const KIND_PREFIXES: [(&str, &str); 7] = [
+    ("TypeError", "TypeError: "),
+    ("ReferenceError", "ReferenceError: "),
+    ("RangeError", "RangeError: "),
+    ("SyntaxError", "SyntaxError: "),
+    ("URIError", "URIError: "),
+    ("EvalError", "EvalError: "),
+    ("Error", "Error: "),
+];
+
+/// 拆分错误文本的 kind 前缀：`"RangeError: msg"` 返回 `Some(("RangeError", "msg"))`，
+/// 无已知前缀返回 `None`。文本可带 `"uncaught "` 包装。
+///
+/// # 注意事项
+/// - 仅在错误文本通道（kind 前缀约定）内使用；kind 名与创建入口的映射保持
+///   单向，调用方不得据此改写原始异常值。
+pub fn split_kinded(text: &str) -> Option<(&'static str, &str)> {
+    let text = text.strip_prefix("uncaught ").unwrap_or(text);
+    KIND_PREFIXES
+        .iter()
+        .find_map(|(kind, prefix)| text.strip_prefix(prefix).map(|rest| (*kind, rest)))
+}
+
 /// 从错误文本（形如 `TypeError: msg` / `ReferenceError: msg`）解析类型前缀并创建
 /// 对应 kind 的错误对象；无前缀时创建普通 Error。
 ///
@@ -78,23 +103,10 @@ pub fn create_error<H: VmHost>(host: &mut H, msg: &str) -> JsValue {
 /// 异常传播链中错误对象被降级为文本（error_text 输出、`last_uncaught_value` 被
 /// 嵌套覆盖后的兜底路径）时，据此恢复错误类型，避免全部塌缩成普通 Error。
 pub fn create_from_text<H: VmHost>(host: &mut H, text: &str) -> JsValue {
-    let text = text.strip_prefix("uncaught ").unwrap_or(text);
-    for (kind, prefix) in [
-        ("TypeError", "TypeError: "),
-        ("ReferenceError", "ReferenceError: "),
-        ("RangeError", "RangeError: "),
-        ("SyntaxError", "SyntaxError: "),
-        ("URIError", "URIError: "),
-        ("EvalError", "EvalError: "),
-    ] {
-        if let Some(msg) = text.strip_prefix(prefix) {
-            return create_kind_error(host, kind, msg);
-        }
+    match split_kinded(text) {
+        Some((kind, msg)) => create_kind_error(host, kind, msg),
+        None => create_error(host, text.strip_prefix("uncaught ").unwrap_or(text)),
     }
-    if let Some(msg) = text.strip_prefix("Error: ") {
-        return create_kind_error(host, "Error", msg);
-    }
-    create_error(host, text)
 }
 
 /// 创建一个带指定 message 的 ReferenceError 对象。
@@ -110,11 +122,12 @@ pub fn create_range_error<H: VmHost>(host: &mut H, msg: &str) -> JsValue {
 /// 从 `defineProperty` 通道的错误文本恢复异常对象。
 ///
 /// 数组 length 的 `ArraySetLength` 非法值以 `"RangeError: "` 前缀标记 kind，
-/// 须保留为 RangeError；其余 define 失败（非可配置收窄、不可扩展、accessor
-/// 冲突等）统一投影为 TypeError。
+/// 强转期 `ToPrimitive`/`ToNumber` 失败以 `"TypeError: "` 前缀标记，两者均须保留
+/// kind；其余 define 失败（非可配置收窄、不可扩展、accessor 冲突等）为无前缀
+/// 文本，统一投影为 TypeError。
 pub fn create_define_failure<H: VmHost>(host: &mut H, msg: &str) -> JsValue {
-    match msg.strip_prefix("RangeError: ") {
-        Some(rest) => create_range_error(host, rest),
+    match split_kinded(msg) {
+        Some((kind, rest)) => create_kind_error(host, kind, rest),
         None => create_type_error(host, msg),
     }
 }

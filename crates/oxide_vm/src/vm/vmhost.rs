@@ -52,6 +52,9 @@ impl oxide_runtime_api::VmHost for Vm {
     fn restore_uncaught_value(&mut self, value: Option<JsValue>) {
         self.last_uncaught_value = value;
     }
+    fn take_pending_length_exception(&mut self) -> Option<JsValue> {
+        self.pending_length_exception.take()
+    }
     fn property_key_si(&mut self, val: JsValue) -> u32 {
         // 对象键转换（to_string_full）失败时降级为空键：本 trait 路径供
         // Reflect/Object 内置使用，这些内置按规范不传播键转换异常；计算属性

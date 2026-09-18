@@ -1060,17 +1060,39 @@ impl Vm {
     ///   可写位、bump 世代。
     ///
     /// # 注意事项
-    /// - 非法长度以 `"RangeError: "` 前缀标记 kind，由 Object/Reflect 入口各自投影；
-    ///   其余失败投影为 TypeError。
+    /// - 非法长度以 `"RangeError: "` 前缀标记 kind，强转失败以 `"TypeError: "`
+    ///   前缀标记；用户代码抛出的原始异常值转存 VM 专用槽，由 Object/Reflect
+    ///   入口取出并原值重抛。
     fn define_array_length(
         &mut self, obj: &mut JsObject, val: JsValue, attributes: PropAttributes,
     ) -> Result<(), String> {
+        // BigInt 无 ToNumber 语义（ToNumber(BigInt) 抛 TypeError）：在强转前拦截，
+        // 避免通用 to_number 的近似分支把 1n 当作 1.0 接受。
+        if val.is_bigint() {
+            return Err(self.error_message_text("TypeError", "Cannot convert a BigInt value to a number"));
+        }
+
         // [[Value]] 两次强转都要实际执行（可触发用户代码），且须早于描述符校验；
-        // 两次强转之间用户代码可能把 length 收窄为不可写。
-        let new_len = self.coerce_uint32_bounded(val)?;
-        let number_len = self.coerce_number_bounded(val)?;
+        // 两次强转之间用户代码可能把 length 收窄为不可写。清空未捕获槽后执行，
+        // 槽内值必为本次强转产生；用户抛出时原值转存专用槽供入口原值重抛，
+        // 引擎转换失败（如 Symbol）留空由消息前缀重建 TypeError。
+        self.last_uncaught_value = None;
+        let new_len = match self.coerce_uint32_bounded(val) {
+            Ok(v) => v,
+            Err(msg) => {
+                self.pending_length_exception = self.last_uncaught_value.take();
+                return Err(msg);
+            }
+        };
+        let number_len = match self.coerce_number_bounded(val) {
+            Ok(v) => v,
+            Err(msg) => {
+                self.pending_length_exception = self.last_uncaught_value.take();
+                return Err(msg);
+            }
+        };
         if new_len as f64 != number_len {
-            return Err("RangeError: Invalid array length".to_string());
+            return Err(self.error_message_text("RangeError", "Invalid array length"));
         }
 
         let old_logical = obj.logical_len();
