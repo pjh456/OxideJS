@@ -805,12 +805,13 @@ impl JsObject {
         Ok(())
     }
 
-    /// 当前 generation（对象结构变更计数器，IC 失效依据之一）。
+    /// 当前 generation（对象结构/值变更计数器，脏检测与并发模板裁决依据）。
     pub fn generation(&self) -> u32 {
         self.generation
     }
 
-    /// 递增 generation（`wrapping_add`）。
+    /// 递增 generation（`wrapping_add`）。新增属性、改写既有属性值与原型接线均调用，
+    /// 快照仅做等值比较，数值大小无语义。
     pub fn bump_generation(&mut self) {
         self.generation = self.generation.wrapping_add(1);
     }

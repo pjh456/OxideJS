@@ -884,6 +884,113 @@ fn reset_clears_runtime_state_like_rerun() {
     assert!(vm.immutables().is_empty());
 }
 
+/// 既有 own 属性值覆盖须推进世代：`Array.prototype.push = 9`（P 对象既有槽、
+/// prop_meta 路径）后 full_reset 必须重建 array 家族，函数值恢复。
+#[test]
+fn full_reset_value_overwrite_on_builtin_proto_rebuilds_family() {
+    let mut vm = Vm::new();
+    let _ = run_source(&mut vm, "0");
+    let old_array_proto = vm.session.builtin_world().array_proto.as_ptr();
+
+    assert_eq!(run_source(&mut vm, "Array.prototype.push = 9"), JsValue::int(9));
+    assert_eq!(run_source(&mut vm, "Array.prototype.push"), JsValue::int(9));
+    assert!(vm.session.is_dirty_since_snapshot(), "值覆盖应推进世代被脏检测捕获");
+
+    vm.full_reset();
+
+    assert!(!std::ptr::eq(old_array_proto, vm.session.builtin_world().array_proto.as_ptr()));
+    let t = run_source(&mut vm, "typeof Array.prototype.push");
+    assert_eq!(vm.lookup_str(t).as_deref(), Some("function"));
+    assert_eq!(run_source(&mut vm, "[1, 2].push(3)"), JsValue::int(3));
+    assert!(!vm.session.is_dirty_since_snapshot());
+}
+
+/// 对象值形态的既有槽覆盖同样须被发现：epoch 对象写入 builtin P 对象不被晋升，
+/// 若漏 bump 则 full_reset 保留旧槽持悬垂指针（UAF）；修复后家族重建、槽被丢弃。
+#[test]
+fn full_reset_value_overwrite_with_object_value_drops_stale_pointer() {
+    let mut vm = Vm::new();
+    let _ = run_source(&mut vm, "0");
+    let old_array_proto = vm.session.builtin_world().array_proto.as_ptr();
+
+    let _ = run_source(&mut vm, "Array.prototype.push = {}; 0");
+    assert!(vm.session.is_dirty_since_snapshot(), "对象值覆盖应被脏检测捕获");
+
+    vm.full_reset();
+
+    assert!(!std::ptr::eq(old_array_proto, vm.session.builtin_world().array_proto.as_ptr()));
+    let t = run_source(&mut vm, "typeof Array.prototype.push");
+    assert_eq!(vm.lookup_str(t).as_deref(), Some("function"));
+    assert!(!vm.session.is_dirty_since_snapshot());
+}
+
+/// 零 session 对象的全局内置值覆盖：`globalThis.Array = 9` 不触发 promote，
+/// 旧 full_reset 兜底（仅在存在 session 对象时强制 bump global）不生效；
+/// 值写原语 bump 后 global 脏，full_reset 重绑回内置构造器。
+#[test]
+fn full_reset_global_builtin_value_overwrite_restores_constructor() {
+    let mut vm = Vm::new();
+    let _ = run_source(&mut vm, "0");
+
+    let _ = run_source(&mut vm, "globalThis.Array = 9; 0");
+    assert!(vm.gc_state.session_object_ptrs.is_empty(), "原始值覆盖不产生 session 对象");
+    assert!(vm.session.is_dirty_since_snapshot(), "全局值覆盖应推进世代");
+
+    vm.full_reset();
+
+    assert!(std::ptr::eq(
+        global_prop(&vm, "Array").as_js_object_ptr(),
+        vm.session.builtin_world().array_constructor.as_ptr() as *mut JsObject
+    ));
+    assert_eq!(run_source(&mut vm, "[1].push(2)"), JsValue::int(2));
+    assert!(!vm.session.is_dirty_since_snapshot());
+}
+
+/// IC 二次写（miss 落既有槽 + 命中直写）与复合赋值（set_member_prop 既有槽）
+/// 两条写路径同样须推进世代，full_reset 后值恢复。
+#[test]
+fn full_reset_value_overwrite_via_ic_and_compound_marks_dirty() {
+    let mut vm = Vm::new();
+    let _ = run_source(&mut vm, "0");
+
+    // IC 首写 miss 落既有槽、二次写经缓存命中，两次都须 bump。
+    let _ = run_source(&mut vm, "Array.prototype.push = 9; Array.prototype.push = 8; 0");
+    assert!(vm.session.is_dirty_since_snapshot(), "IC 二次写应被脏检测捕获");
+    vm.full_reset();
+    let t = run_source(&mut vm, "typeof Array.prototype.push");
+    assert_eq!(vm.lookup_str(t).as_deref(), Some("function"));
+
+    // 复合赋值读改写走 set_member_prop 既有槽路径，同样须 bump。
+    let _ = run_source(&mut vm, "Array.prototype.push = 9; Array.prototype.push += 1; 0");
+    assert!(vm.session.is_dirty_since_snapshot(), "复合赋值应被脏检测捕获");
+    vm.full_reset();
+    let t = run_source(&mut vm, "typeof Array.prototype.push");
+    assert_eq!(vm.lookup_str(t).as_deref(), Some("function"));
+    assert_eq!(run_source(&mut vm, "[1, 2, 3].push(4)"), JsValue::int(4));
+    assert!(!vm.session.is_dirty_since_snapshot());
+}
+
+/// 假阳性护栏：只写用户对象的良性运行不得误判 builtin/global 脏。
+/// 用对象/数组字面量表达式（对象分配在 epoch、非 session 直分）隔离掉
+/// full_reset 对 session 对象的既有兜底，从而验证选择性重建未因值写 bump 误触发。
+#[test]
+fn benign_run_does_not_falsely_dirty_builtins() {
+    let mut vm = Vm::new();
+    let _ = run_source(&mut vm, "0");
+    let world_ptr = Arc::as_ptr(&vm.session.builtin_world);
+    let global_ptr = vm.session.global_object.as_ptr();
+
+    run_source(&mut vm, "({ x: 1 }).x + [1, 2].length");
+    assert!(vm.gc_state.session_object_ptrs.is_empty(), "良性表达式不应产生 session 直分对象");
+    assert!(!vm.session.is_dirty_since_snapshot(), "良性运行不应误判 builtin 脏");
+
+    vm.full_reset();
+
+    assert!(std::ptr::eq(world_ptr, Arc::as_ptr(&vm.session.builtin_world)), "builtin world 不应重建");
+    assert!(std::ptr::eq(global_ptr, vm.session.global_object.as_ptr()), "global 不应重建");
+    assert!(!vm.session.is_dirty_since_snapshot());
+}
+
 #[test]
 fn full_reset_clears_symbol_state() {
     let mut vm = Vm::new();

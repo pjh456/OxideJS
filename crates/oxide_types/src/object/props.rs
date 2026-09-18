@@ -432,6 +432,9 @@ impl JsObject {
 
     /// 设置数组元素 position 处的值（数组对象）；普通对象按绝对下标写入并自动扩容。
     /// 数组元素写入会更新 `array_prop_count`（元素数随最高索引增长）。
+    ///
+    /// # 副作用
+    /// - 递增本对象 generation：值覆盖属可观察变更，脏检测依赖世代对比。
     pub fn set_prop_at(&mut self, position: impl PropIndex, val: JsValue) {
         let pos = position.to_u32() as usize;
         if pos > MAX_DENSE_PROPS {
@@ -445,6 +448,7 @@ impl JsObject {
             let vec = self.ensure_array_elements();
             vec[pos] = val;
             self.clear_hole_marker(pos);
+            self.bump_generation();
             return;
         }
         {
@@ -463,6 +467,7 @@ impl JsObject {
                 meta.push(None);
             }
         }
+        self.bump_generation();
     }
 
     /// 数组对象（shape 槽位 → 命名属性区存储索引）的属性写入；普通对象等价
@@ -478,6 +483,9 @@ impl JsObject {
 
     /// 按绝对存储索引写入值，数组对象把元素区与命名属性区分派到各自存储。
     /// 用于调用方已知属性存储位置（如 `get_own_property_slot` 返回的索引）的场景。
+    ///
+    /// # 副作用
+    /// - 递增本对象 generation：值覆盖属可观察变更，脏检测依赖世代对比。
     pub fn set_prop_storage(&mut self, idx: usize, val: JsValue) {
         if self.is_array() {
             let count = self.array_prop_count as usize;
@@ -488,6 +496,7 @@ impl JsObject {
                 }
                 vec[idx] = val;
                 self.clear_hole_marker(idx);
+                self.bump_generation();
                 return;
             }
             let np = idx - count;
@@ -502,6 +511,7 @@ impl JsObject {
                     meta.push(None);
                 }
             }
+            self.bump_generation();
             return;
         }
         let vec = self.ensure_hash_props();
@@ -515,6 +525,7 @@ impl JsObject {
                 meta.push(None);
             }
         }
+        self.bump_generation();
     }
 
     /// 数组对象属性读取（shape 槽位 → 命名属性区存储索引）；普通对象等价

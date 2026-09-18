@@ -321,9 +321,9 @@ impl Vm {
     ///
     /// 用于在多次 JS 执行之间达到完全隔离：session 内未被污染的 builtin 保留原指针。
     pub fn full_reset(&mut self) {
-        // session 对象只能来自用户写 + promote，跨 full_reset 若保留 global 会悬垂：
-        // 覆盖既有 global 槽的写入不递增 generation（脏检测依赖 generation 对比），
-        // 此处强制 bump 使带 session 对象时 global 必然重建。
+        // 防御兜底：属性值写原语已推进 generation，常规覆盖写由快照对比发现；
+        // 若未来出现绕过属性写原语的裸属性区改写，session 对象会随 epoch 释放，
+        // 保留 global 将持悬垂指针，故带 session 对象时强制 bump 保证 global 重建。
         if !self.gc_state.session_object_ptrs.is_empty() {
             let global_ptr = self.session.global_object().as_ptr() as *mut JsObject;
             unsafe { &mut *global_ptr }.bump_generation();
