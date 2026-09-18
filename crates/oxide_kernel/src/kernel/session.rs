@@ -87,6 +87,9 @@ impl KernelSession {
 
     /// 重新采集内置对象世代快照，作为下一次脏检查的基准。
     pub fn record_snapshot(&mut self) {
+        // 重建收尾的原型槽重指与重绑内部写会推进 wrapper 世代：先以当前世代
+        // 重刷释放登记表洁净基线，避免下一次判脏误报 wrapper 本体被写。
+        self.builtin_world.refresh_leaked_object_baselines();
         self.builtin_snapshot = BuiltinSnapshot::new(&self.builtin_world, &self.global_object);
     }
 
@@ -102,7 +105,7 @@ impl KernelSession {
         let gen = |id: BuiltinId| BuiltinSnapshot::gen(world.get_by_id(id));
         let snap = |id: BuiltinId| snapshot.generations[id as usize];
 
-        BuiltinDirtySet {
+        let mut dirty = BuiltinDirtySet {
             object: gen(BuiltinId::ObjectProto) != snap(BuiltinId::ObjectProto)
                 || gen(BuiltinId::ObjectConstructor) != snap(BuiltinId::ObjectConstructor),
             array: gen(BuiltinId::ArrayProto) != snap(BuiltinId::ArrayProto)
@@ -200,7 +203,14 @@ impl KernelSession {
                 || gen(BuiltinId::BigIntProto) != snap(BuiltinId::BigIntProto),
             global: BuiltinSnapshot::gen(&self.global_object) != snapshot.global_object_generation,
             console: gen(BuiltinId::Console) != snap(BuiltinId::Console),
+        };
+        // wrapper 本体被写不落在任何家族位上（写的是 wrapper 自身而非所属 P
+        // 对象）：收缩为全脏，强制重建全部家族与 global，使被写的可复用
+        // wrapper 经失效流程清键、不被复用回新原型。
+        if world.has_dirty_leaked_objects() {
+            dirty = BuiltinDirtySet::all_dirty();
         }
+        dirty
     }
 
     /// 是否自上次快照以来存在任何污染。
@@ -226,6 +236,10 @@ impl KernelSession {
     /// 相比全量重建，可保留未污染的内置对象指针与世代，减少隔离成本。
     pub fn selective_reset(&mut self, core: &Arc<KernelCore>) -> BuiltinDirtySet {
         let dirty = self.dirty_since_snapshot();
+        // 被写的可复用 wrapper 复用键先失效：随后重建的 rebind 走 miss 分支
+        // 新建 wrapper，旧 wrapper（含用户新增属性与悬垂对象槽）不被复用回新
+        // 原型，本体滞留至 session 收尾统一释放。
+        self.builtin_world.invalidate_dirty_leaked_objects();
         if dirty.global {
             // 旧 global 的属性区在替换前释放，避免旧引用长期持有该内存。
             let old_global = unsafe { &mut *(self.global_object.as_ptr() as *mut JsObject) };

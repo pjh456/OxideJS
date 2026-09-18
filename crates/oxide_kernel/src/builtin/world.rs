@@ -145,6 +145,10 @@ pub struct BuiltinWorld {
     ///
     /// 可复用 native 函数 wrapper 带复用键（[`FnWrapperKey`]）：选择性重建
     /// 重绑按键命中旧 wrapper，迁移到重建 P 对象槽位，登记表跨重建不增长。
+    ///
+    /// 每条目另记洁净世代基线：wrapper 本体被用户写会递增其世代（写的是
+    /// wrapper 自身而非所属 P 对象），基线偏离即视为污染，选择性重建据此
+    /// 失效复用键、强制新建 wrapper。
     pub(crate) leaked_objects: std::cell::RefCell<Vec<LeakedSlot>>,
 }
 
@@ -168,12 +172,31 @@ impl FnWrapperKey {
     pub const fn new(family: u16, label: u32, slot: u32, name: u32) -> Self {
         Self { family, label, slot, name }
     }
+
+    /// 是否属于 VM 内建原型（generator/async）的站点标签键。
+    ///
+    /// 这些站点绑定在 VM 自有的原型 Box 对象上（非本 world 固定 P 字段），
+    /// 故家族为 0 而站点标签非零。其 wrapper 由 VM 内建原型持有，选择性重建
+    /// 不可清键失效：清键会让原型仍引用旧 wrapper 而另建新 wrapper，留下
+    /// 悬垂引用。普通方法 wrapper（P 目标家族非零，或 global/构造器等无标签
+    /// 站点）不在此列，正常参与失效。
+    const fn is_vm_intrinsic_site(&self) -> bool {
+        self.family == 0 && self.label != 0
+    }
 }
 
 /// 登记表条目：对象指针 + 可选复用键（`None` = 不可复用对象）。
+///
+/// `clean_generation` 是登记（或重建收尾经
+/// [`BuiltinWorld::refresh_leaked_object_baselines`] 刷新）时的对象世代；
+/// 属性写使其偏离即视为 wrapper 本体污染。`key = None` 除不可复用对象外，
+/// 还可能是被失效的旧可复用 wrapper——复用键已清空、不再参与重建复用，但
+/// 本体仍可能被旧引用持有，须滞留至 session 收尾（`teardown_heap_data`）
+/// 统一释放，不得提前释放。
 pub(crate) struct LeakedSlot {
     pub(crate) ptr: *mut JsObject,
     key: Option<FnWrapperKey>,
+    clean_generation: u32,
 }
 
 impl BuiltinWorld {
@@ -185,8 +208,17 @@ impl BuiltinWorld {
     /// 登记一个绑定层经 `Box::into_raw` 持有的函数/宿主对象（不可复用对象），
     /// 供 [`Self::teardown_heap_data`] 在 session 收尾时统一释放；可复用
     /// native 函数 wrapper 走 [`Self::track_fn_wrapper`]。
+    ///
+    /// 登记点同时读取对象世代作洁净基线（属性写使其偏离即视为本体污染）。
+    #[expect(clippy::not_unsafe_ptr_arg_deref)] // 指针由绑定层保证存活，此函数仅读世代、不转移所有权
     pub fn track_leaked_object(&self, obj_ptr: *mut JsObject) {
-        self.leaked_objects.borrow_mut().push(LeakedSlot { ptr: obj_ptr, key: None });
+        // SAFETY: obj_ptr 是刚 Box::into_raw 的存活对象，登记点读取其世代作洁净基线。
+        let clean_generation = unsafe { (*obj_ptr).generation() };
+        self.leaked_objects.borrow_mut().push(LeakedSlot {
+            ptr: obj_ptr,
+            key: None,
+            clean_generation,
+        });
     }
 
     /// 登记一个可复用 native 函数 wrapper（带复用键），随登记表在 session
@@ -195,14 +227,19 @@ impl BuiltinWorld {
     /// # 注意事项
     /// 同键重复登记意味着复用键设计缺陷（同家族槽位对应两个不同 wrapper
     /// 对象）——debug 断言立即失败。
+    #[expect(clippy::not_unsafe_ptr_arg_deref)] // 指针由绑定层保证存活，此函数仅读世代、不转移所有权
     pub fn track_fn_wrapper(&self, obj_ptr: *mut JsObject, key: FnWrapperKey) {
         debug_assert!(
             !self.leaked_objects.borrow().iter().any(|s| s.key == Some(key)),
             "同键 native 函数 wrapper 重复登记"
         );
-        self.leaked_objects
-            .borrow_mut()
-            .push(LeakedSlot { ptr: obj_ptr, key: Some(key) });
+        // SAFETY: obj_ptr 是刚装好 length/name 的存活 wrapper，此时世代即洁净基线。
+        let clean_generation = unsafe { (*obj_ptr).generation() };
+        self.leaked_objects.borrow_mut().push(LeakedSlot {
+            ptr: obj_ptr,
+            key: Some(key),
+            clean_generation,
+        });
     }
 
     /// 查找复用键相同且 native 函数/参数个数匹配的既有 wrapper（选择性重建
@@ -225,6 +262,55 @@ impl BuiltinWorld {
                 }
             })
             .map(|s| s.ptr)
+    }
+
+    /// 释放登记表中是否存在世代偏离洁净基线的条目（wrapper 本体被写）。
+    ///
+    /// # 边界与前提
+    /// 登记表指针 session 存活期内有效。不可复用宿主对象（`Reflect`/`Iterator`
+    /// /`$262`）与其上方法 wrapper 一并纳入检测——它们同样可被用户写，且其
+    /// 所属 global 需要随重建整批换新。
+    pub fn has_dirty_leaked_objects(&self) -> bool {
+        self.leaked_objects.borrow().iter().any(|slot| {
+            // SAFETY: 登记表指针 session 存活期内有效。
+            unsafe { (*slot.ptr).generation() != slot.clean_generation }
+        })
+    }
+
+    /// 使偏离洁净基线的可复用 wrapper 复用键失效（清为 `None`）：重建时
+    /// [`Self::find_fn_wrapper`] 落空、改走新建分支，旧 wrapper 不再被复用回
+    /// 新原型槽。
+    ///
+    /// # 注意事项
+    /// - 只清键不释放本体：旧 P 对象在重建收尾前仍可能引用它，本体随 session
+    ///   收尾统一释放；提前释放会双放。
+    /// - keyless 单例本就不可复用，无需清键；VM 内建 generator/async 原型
+    ///   wrapper（[`FnWrapperKey::is_vm_intrinsic_site`]）由 VM 内建原型持有，
+    ///   清键会遗留悬垂引用，同样跳过。
+    pub fn invalidate_dirty_leaked_objects(&self) {
+        for slot in self.leaked_objects.borrow_mut().iter_mut() {
+            let Some(key) = slot.key else { continue };
+            if key.is_vm_intrinsic_site() {
+                continue;
+            }
+            // SAFETY: 登记表指针 session 存活期内有效。
+            if unsafe { (*slot.ptr).generation() != slot.clean_generation } {
+                slot.key = None;
+            }
+        }
+    }
+
+    /// 以各条目当前世代重刷洁净基线。
+    ///
+    /// # 副作用
+    /// 覆盖全部条目的 `clean_generation`；由 [`crate::kernel::KernelSession::record_snapshot`]
+    /// 在重建收尾（原型槽重指与重绑内部写完成）后调用，避免这些内部写在下一次
+    /// 判脏时被误报为 wrapper 本体污染。
+    pub fn refresh_leaked_object_baselines(&self) {
+        for slot in self.leaked_objects.borrow_mut().iter_mut() {
+            // SAFETY: 登记表指针 session 存活期内有效。
+            slot.clean_generation = unsafe { (*slot.ptr).generation() };
+        }
     }
 
     /// wrapper 复用键的目标家族标签：目标对象是本 world 固定 P 字段时返回

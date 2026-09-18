@@ -292,6 +292,37 @@ pub struct BuiltinDirtySet {
 }
 
 impl BuiltinDirtySet {
+    /// 全部家族位与 global 均置脏的集合。
+    ///
+    /// wrapper 本体被写无法按世代定位到具体家族（写的是 wrapper 自身而非所属
+    /// P 对象），脏检测收缩为全量重建，保证全部复用键都经过失效流程、无旧
+    /// wrapper 被复用回新原型。
+    pub fn all_dirty() -> Self {
+        Self {
+            object: true,
+            array: true,
+            function: true,
+            string: true,
+            number: true,
+            boolean: true,
+            error_family: true,
+            symbol_family: true,
+            math: true,
+            json: true,
+            date: true,
+            set: true,
+            map: true,
+            regexp: true,
+            array_buffer: true,
+            data_view: true,
+            typed_array_family: true,
+            temporal: true,
+            stubs: true,
+            global: true,
+            console: true,
+        }
+    }
+
     /// 是否存在任何 builtin world 内部对象被污染（不含 global object）。
     pub fn any_builtin_dirty(&self) -> bool {
         self.object

@@ -970,6 +970,146 @@ fn full_reset_value_overwrite_via_ic_and_compound_marks_dirty() {
     assert!(!vm.session.is_dirty_since_snapshot());
 }
 
+/// wrapper 本体新增 own 属性：写入的是方法 wrapper 自身而非所属 P 对象，
+/// 只采 P 字段的世代快照无法察觉。修复后释放登记表的洁净基线捕获该写，
+/// full_reset 失效其复用键并重建家族，属性不跨轮存活、无悬垂对象槽。
+#[test]
+fn full_reset_wrapper_own_property_does_not_survive() {
+    let mut vm = Vm::new();
+    let _ = run_source(&mut vm, "0");
+    let push_before = method_wrapper_ptr(&vm, vm.session.builtin_world().array_proto.as_ptr(), "push");
+
+    let _ = run_source(&mut vm, "Array.prototype.push.custom = 1; 0");
+    assert!(vm.session.is_dirty_since_snapshot(), "wrapper 本体写应被脏检测捕获");
+
+    vm.full_reset();
+
+    assert_eq!(run_source(&mut vm, "Array.prototype.push.custom"), JsValue::undefined());
+    assert_eq!(run_source(&mut vm, "'custom' in Array.prototype.push"), JsValue::bool(false));
+    assert_eq!(run_source(&mut vm, "typeof Array.prototype.push === 'function'"), JsValue::bool(true));
+    let push_after = method_wrapper_ptr(&vm, vm.session.builtin_world().array_proto.as_ptr(), "push");
+    assert!(!std::ptr::eq(push_before, push_after), "被写的 wrapper 不应被复用");
+    assert_eq!(run_source(&mut vm, "[1, 2].push(3)"), JsValue::int(3));
+    assert!(!vm.session.is_dirty_since_snapshot());
+}
+
+/// wrapper 本体写 epoch 对象值：epoch 对象不晋升、不登记，若 wrapper 跨轮
+/// 存活则槽内指针悬垂。修复后家族重建、旧 wrapper 与槽一并被丢弃。
+#[test]
+fn full_reset_wrapper_object_property_does_not_dangle() {
+    let mut vm = Vm::new();
+    let _ = run_source(&mut vm, "0");
+
+    let _ = run_source(&mut vm, "Array.prototype.push.custom = {}; 0");
+    assert!(vm.session.is_dirty_since_snapshot(), "wrapper 对象值写应被脏检测捕获");
+
+    vm.full_reset();
+
+    assert_eq!(run_source(&mut vm, "Array.prototype.push.custom"), JsValue::undefined());
+    assert_eq!(run_source(&mut vm, "[1, 2].push(3)"), JsValue::int(3));
+    assert!(!vm.session.is_dirty_since_snapshot());
+}
+
+/// wrapper 既有 own 槽的值覆盖：首次写已建槽后重录快照，第二次写走
+/// `set_prop_storage` 既有槽路径，同样须推进 wrapper 世代被脏检测捕获。
+#[test]
+fn full_reset_wrapper_existing_slot_overwrite_marks_dirty() {
+    let mut vm = Vm::new();
+    let _ = run_source(&mut vm, "0");
+    let _ = run_source(&mut vm, "Array.prototype.push.custom = 1; 0");
+    vm.session.record_snapshot();
+
+    let _ = run_source(&mut vm, "Array.prototype.push.custom = 2; 0");
+    assert!(vm.session.is_dirty_since_snapshot(), "wrapper 既有槽覆盖应被脏检测捕获");
+
+    vm.full_reset();
+
+    assert_eq!(run_source(&mut vm, "Array.prototype.push.custom"), JsValue::undefined());
+    assert_eq!(run_source(&mut vm, "typeof Array.prototype.push === 'function'"), JsValue::bool(true));
+    assert!(!vm.session.is_dirty_since_snapshot());
+}
+
+/// 不可复用宿主对象（`Reflect`）的属性写：登记面无复用键，脏时靠 global
+/// 重建整批换新宿主 Box，旧宿主连同新增属性一并被丢弃。
+#[test]
+fn full_reset_keyless_leaked_object_property_does_not_survive() {
+    let mut vm = Vm::new();
+    let _ = run_source(&mut vm, "0");
+
+    let _ = run_source(&mut vm, "Reflect.custom = 1; 0");
+    assert!(vm.session.is_dirty_since_snapshot(), "keyless 宿主对象写应被脏检测捕获");
+
+    vm.full_reset();
+
+    assert_eq!(run_source(&mut vm, "'custom' in Reflect"), JsValue::bool(false));
+    assert_eq!(run_source(&mut vm, "typeof Reflect.apply === 'function'"), JsValue::bool(true));
+    assert!(!vm.session.is_dirty_since_snapshot());
+}
+
+/// global 函数 wrapper（`parseInt`）的属性写：global 函数 wrapper 无 P 家族
+/// 归属，脏时必须连带 global 重建并失效其复用键，否则新增属性跨轮存活。
+#[test]
+fn full_reset_global_function_wrapper_property_does_not_survive() {
+    let mut vm = Vm::new();
+    let _ = run_source(&mut vm, "0");
+
+    let _ = run_source(&mut vm, "parseInt.custom = 1; 0");
+    assert!(vm.session.is_dirty_since_snapshot(), "global 函数 wrapper 写应被脏检测捕获");
+
+    vm.full_reset();
+
+    assert_eq!(run_source(&mut vm, "'custom' in parseInt"), JsValue::bool(false));
+    assert_eq!(run_source(&mut vm, "parseInt('42')"), JsValue::int(42));
+    assert!(!vm.session.is_dirty_since_snapshot());
+}
+
+/// wrapper 写重建后基线已刷新：后续仅 P 对象脏写的轮次复用新 wrapper、
+/// 登记表不增长，不因上一轮 wrapper 写残留基线下沉而每轮全量失效。
+#[test]
+fn wrapper_write_rebuild_then_p_writes_reuse_fresh_wrapper() {
+    let mut vm = Vm::new();
+    let _ = run_source(&mut vm, "0");
+    let _ = run_source(&mut vm, "Array.prototype.push.custom = 1; 0");
+    vm.full_reset();
+
+    let push_after = method_wrapper_ptr(&vm, vm.session.builtin_world().array_proto.as_ptr(), "push");
+    let registry_after = vm.session.builtin_world().leaked_object_count();
+
+    for i in 0..3u32 {
+        let source = format!("Array.prototype['w{i}'] = 1; Object.prototype['w{i}'] = 2; 0");
+        let _ = run_source(&mut vm, &source);
+        vm.full_reset();
+    }
+
+    let push_final = method_wrapper_ptr(&vm, vm.session.builtin_world().array_proto.as_ptr(), "push");
+    assert!(std::ptr::eq(push_after, push_final), "P 写轮应复用 wrapper，不应每轮失效重建");
+    assert_eq!(
+        vm.session.builtin_world().leaked_object_count(),
+        registry_after,
+        "P 写轮释放登记表不应增长"
+    );
+    assert_eq!(run_source(&mut vm, "[1, 2].push(3)"), JsValue::int(3));
+    assert!(!vm.session.is_dirty_since_snapshot());
+}
+
+/// 假阳性护栏：只写用户对象的良性运行不得误判 wrapper 脏——wrapper 世代
+/// 仅在自身被写时偏离基线，重建收尾的内部写由快照重刷基线吸收。
+#[test]
+fn benign_user_object_writes_do_not_dirty_leaked_objects() {
+    let mut vm = Vm::new();
+    let _ = run_source(&mut vm, "0");
+    let world_ptr = Arc::as_ptr(&vm.session.builtin_world);
+
+    let result = run_source(&mut vm, "(function () { var a = {}; a.x = 1; a.x = 2; return a.x; })()");
+    assert_eq!(result, JsValue::int(2));
+    assert!(!vm.session.is_dirty_since_snapshot(), "只写用户对象不应误判 wrapper 脏");
+
+    vm.full_reset();
+
+    assert!(std::ptr::eq(world_ptr, Arc::as_ptr(&vm.session.builtin_world)), "无污染不应重建 world");
+    assert!(!vm.session.is_dirty_since_snapshot());
+}
+
 /// 假阳性护栏：只写用户对象的良性运行不得误判 builtin/global 脏。
 /// 用对象/数组字面量表达式（对象分配在 epoch、非 session 直分）隔离掉
 /// full_reset 对 session 对象的既有兜底，从而验证选择性重建未因值写 bump 误触发。
