@@ -431,9 +431,9 @@ impl Emitter {
             }
         }
 
-        // `var` 绑定入口实例化（非捕获名）：预声明只登记槽位、不发射定义指令，
-        // 声明点对已绑定名又跳过 undefined 写，缺失入口写会让首次写入前的读取
-        // 取到调用方遗留的寄存器值。捕获名已由参数 prologue 的
+        // `var` 与块级函数外层 var 绑定入口实例化（非捕获名）：预声明只登记槽位、
+        // 不发射定义指令，声明点对已绑定名又跳过 undefined 写，缺失入口写会让首次
+        // 写入前的读取取到调用方遗留的寄存器值。捕获名已由参数 prologue 的
         // MAKE_CELL(undefined) 实例化，此处只补未捕获名。
         self.instantiate_var_bindings(body_stmts, &mut ctx);
 
@@ -772,18 +772,40 @@ impl Emitter {
         Ok(param_base)
     }
 
-    /// 非捕获 `var` 名的函数入口实例化：把每个未捕获 var 槽在入口写为 undefined。
+    /// 非捕获 `var` 名与块级函数外层 var 名的函数入口实例化：把每个未捕获槽在入口
+    /// 写为 undefined。
     ///
     /// # 边界与前提
-    /// - 须在 `var` 预声明之后、body 语句发射之前调用：预声明只登记槽位不发定义
-    ///   指令，声明语句对已绑定名又跳过 undefined 写，缺失入口写会让首次写入前的
-    ///   读取取到调用方遗留的寄存器值。
+    /// - 须在 `var` 预声明与块级函数外层 var 预声明之后、body 语句发射之前调用：
+    ///   预声明只登记槽位不发定义指令，声明语句对已绑定名又跳过 undefined 写，缺失
+    ///   入口写会让首次写入前的读取取到调用方遗留的寄存器值。
     /// - 形参与 `arguments` 由参数 prologue 写入实参，跳过以免覆盖。
     /// - 捕获名由参数 prologue 的 MAKE_CELL(undefined) 实例化；STORE_VAR 不更新
     ///   cell，跳过以免冗余。
+    /// - 块级函数名仅在 sloppy 模式并入：strict 下块函数是块级词法绑定，不建外层
+    ///   var；被形参/词法同名抑制的名字无外层绑定，不并入。直接子标签函数声明由
+    ///   函数入口单独物化闭包，不并入。
     /// - 符号表查不到的名字（如解构 pattern 叶名未被预声明）跳过，不报错。
     fn instantiate_var_bindings(&self, body_stmts: &[Statement], ctx: &mut CompileCtx) {
-        let mut names: Vec<String> = collect_var_binding_names(body_stmts)
+        let mut name_set = collect_var_binding_names(body_stmts);
+
+        // 块级函数外层 var 绑定同样只预声明不发射定义指令，缺失入口写会让块前读取
+        // 取到调用方残留；入口写须并入（strict 与抑制名除外）。
+        if !ctx.is_strict {
+            let labeled_hoisted: HashSet<&str> = body_stmts
+                .iter()
+                .filter_map(|stmt| Self::labeled_function_decl(stmt))
+                .filter_map(|fd| fd.id.as_ref())
+                .map(|id| id.name.as_str())
+                .collect();
+            for name in self.collect_block_function_names(body_stmts) {
+                if !ctx.block_fn_suppressed.contains(&name) && !labeled_hoisted.contains(name.as_str()) {
+                    name_set.insert(name);
+                }
+            }
+        }
+
+        let mut names: Vec<String> = name_set
             .into_iter()
             .filter(|n| !ctx.param_names.contains(n) && n != "arguments")
             .filter(|n| !ctx.captured_bindings.contains_key(n))

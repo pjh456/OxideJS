@@ -55,6 +55,18 @@ fn var_in_for_head_zero_iterations_read_is_undefined() {
 }
 
 #[test]
+fn var_in_for_in_head_zero_iterations_read_is_undefined() {
+    // for-in 头 var 零迭代（空可迭代）：入口实例化是唯一到达定义，读见 undefined。
+    truthy("function f(){ for (var x in {}) {} return typeof x } f() === 'undefined'");
+}
+
+#[test]
+fn var_in_for_of_head_zero_iterations_read_is_undefined() {
+    // for-of 头 var 零迭代（空可迭代）：入口实例化是唯一到达定义，读见 undefined。
+    truthy("function f(){ for (var x of []) {} return typeof x } f() === 'undefined'");
+}
+
+#[test]
 fn multi_var_all_undefined() {
     // 多 var 名每个槽都实例化（曾一名残留、一名 undefined）。
     truthy("function f(){ var a,b; return typeof a + typeof b } f() === 'undefinedundefined'");
