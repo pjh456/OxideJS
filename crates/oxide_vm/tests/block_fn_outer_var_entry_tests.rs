@@ -3,7 +3,7 @@
 //!
 //! 覆盖：显式块主形（块前读/块后读/调用）、if 支臂形、显式块内 if 支臂形、
 //! 嵌套块形、strict 不泄漏守卫、裸读形、形参同名抑制守卫、直接子标签函数
-//! 声明守卫。
+//! 声明守卫、被嵌套函数捕获形。
 
 use std::sync::Arc;
 
@@ -72,4 +72,11 @@ fn block_fn_param_suppression_keeps_param_value() {
 fn block_fn_direct_labeled_decl_before_read_stays_function() {
     // 直接子标签函数声明守卫：入口物化闭包，声明点前读仍是函数对象。
     truthy("function t(){ var r = typeof g; l: function g(){return 1}; return r === 'function' && typeof g === 'function' } t()");
+}
+
+#[test]
+fn block_fn_captured_before_read_is_undefined() {
+    // 捕获形：块函数名被嵌套函数引用时同样在入口实例化为 undefined，块前读不得
+    // 取调用方寄存器残留；块求值后闭包读到写回的函数对象。
+    truthy("function t(){ var r = typeof g; var f = function(){ return g }; { function g(){} } return r === 'undefined' && typeof f() === 'function' } t()");
 }

@@ -743,12 +743,26 @@ impl Emitter {
             ));
         }
 
-        // var 绑定函数入口实例化：被捕获的 var 名统一 MAKE_CELL(undefined)。
-        // 规范上 var 在函数入口即初始化为 undefined（HoistDeclaration），声明语句
-        // 只是赋值；否则声明语句前创建的闭包读取占位 cell → TDZ 误报。参数与
-        // arguments 已在上方初始化（跳过以免覆盖参数值）；let/const/class 保持
-        // TDZ 语义不动。声明语句的 MAKE_CELL 按占位更新语义覆盖此初值。
-        let mut var_names: Vec<String> = collect_var_binding_names(body_stmts)
+        // var 与块级函数外层 var 绑定函数入口实例化：被捕获名统一
+        // MAKE_CELL(undefined)。规范上 var 在函数入口即初始化为 undefined
+        // （HoistDeclaration），sloppy 下块级函数名同建外层 var 绑定；声明语句只是
+        // 赋值。缺此实例化时，声明点前创建的闭包读取占位 cell → TDZ 误报，非捕获面
+        // 则取调用方寄存器残留。参数与 arguments 已在上方初始化（跳过以免覆盖参数
+        // 值）；let/const/class 保持 TDZ 语义不动。声明语句的 MAKE_CELL 按占位更新
+        // 语义覆盖此初值。
+        let mut captured_entry_names = collect_var_binding_names(body_stmts);
+        // 块级函数外层 var 名与 instantiate_var_bindings 同源并入；抑制名（形参/
+        // 词法声明同名）无外层绑定，不并入。抑制集在此独立计算：本循环早于函数体
+        // 的 block_fn_suppressed 构建。
+        if !ctx.is_strict {
+            let suppressed = self.collect_block_fn_suppressed_names(body_stmts, &ctx.param_names);
+            for name in self.collect_block_function_names(body_stmts) {
+                if !suppressed.contains(&name) {
+                    captured_entry_names.insert(name);
+                }
+            }
+        }
+        let mut var_names: Vec<String> = captured_entry_names
             .into_iter()
             .filter(|n| !param_names.contains(&n.as_str()) && n != "arguments")
             .filter(|n| ctx.captured_bindings.contains_key(n))
@@ -792,6 +806,8 @@ impl Emitter {
         // 块级函数外层 var 绑定同样只预声明不发射定义指令，缺失入口写会让块前读取
         // 取到调用方残留；入口写须并入（strict 与抑制名除外）。
         if !ctx.is_strict {
+            // 直接子标签函数声明在函数入口首 sub-pass 物化闭包，声明点前读即为函数；
+            // 此处按名排除只省一次冗余的非捕获 undefined 写，非正确性必需。
             let labeled_hoisted: HashSet<&str> = body_stmts
                 .iter()
                 .filter_map(|stmt| Self::labeled_function_decl(stmt))
