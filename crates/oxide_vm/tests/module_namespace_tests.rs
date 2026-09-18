@@ -338,3 +338,75 @@ fn external_namespace_enumeration_stays_unaffected() {
     let result = run_namespace_module(&dir);
     assert_eq!(result, "z|1|1", "非 live 外部命名空间枚举行为不应变化");
 }
+
+/// 跨模块可重赋导出活读：依赖模块经闭包重赋源绑定后，导入方命名绑定读到新值。
+#[test]
+fn cross_module_named_import_reads_live_value() {
+    let cwd = std::env::current_dir().expect("cwd");
+    let dir = cwd.join("__module_cross_live__");
+    std::fs::create_dir_all(&dir).expect("mkdir");
+    std::fs::write(
+        dir.join("dep.mjs"),
+        "var x = 1;\nexport { x };\nglobalThis.__bump = function () { x = 2; };",
+    )
+    .expect("write dep");
+    std::fs::write(
+        dir.join("main.mjs"),
+        "import { x } from './dep.mjs';\n \
+         const before = x;\n \
+         globalThis.__bump();\n \
+         const after = x;\n \
+         globalThis.__ns = [before, after].join('|');",
+    )
+    .expect("write main");
+    let _cleanup = Cleanup(dir.clone());
+
+    let result = run_namespace_module(&dir);
+    assert_eq!(result, "1|2", "命名导入未跟随依赖源绑定重赋");
+}
+
+/// 一源两别名：同一导出的两个导入局部名经活读同步更新，且互不分裂。
+#[test]
+fn cross_module_aliased_imports_read_live_value() {
+    let cwd = std::env::current_dir().expect("cwd");
+    let dir = cwd.join("__module_cross_live_alias__");
+    std::fs::create_dir_all(&dir).expect("mkdir");
+    std::fs::write(
+        dir.join("dep.mjs"),
+        "var x = 1;\nexport { x };\nglobalThis.__bump = function () { x = 2; };",
+    )
+    .expect("write dep");
+    std::fs::write(
+        dir.join("main.mjs"),
+        "import { x as y, x as z } from './dep.mjs';\n \
+         const before = [y, z];\n \
+         globalThis.__bump();\n \
+         globalThis.__ns = [before[0], before[1], y, z].join('|');",
+    )
+    .expect("write main");
+    let _cleanup = Cleanup(dir.clone());
+
+    let result = run_namespace_module(&dir);
+    assert_eq!(result, "1|1|2|2", "一源两别名未同步读到重赋后的活值");
+}
+
+/// 默认导出具名函数体的自引用重赋：函数体内 `fn = 2` 写模块级绑定，
+/// 导入方再次读 default 得新值（含捕获分析下探 export 声明与共享 cell）。
+#[test]
+fn cross_module_default_export_reads_live_value() {
+    let cwd = std::env::current_dir().expect("cwd");
+    let dir = cwd.join("__module_cross_live_default__");
+    std::fs::create_dir_all(&dir).expect("mkdir");
+    std::fs::write(dir.join("dep.mjs"), "export default function fn() { fn = 2; return 1; }").expect("write dep");
+    std::fs::write(
+        dir.join("main.mjs"),
+        "import val from './dep.mjs';\n \
+         const ret = val();\n \
+         globalThis.__ns = [ret, val].join('|');",
+    )
+    .expect("write main");
+    let _cleanup = Cleanup(dir.clone());
+
+    let result = run_namespace_module(&dir);
+    assert_eq!(result, "1|2", "default 导出的具名函数自引用重赋未活读");
+}

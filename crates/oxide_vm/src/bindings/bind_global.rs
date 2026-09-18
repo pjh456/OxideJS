@@ -35,6 +35,11 @@ pub fn bind_global(core: &Arc<KernelCore>, session: &KernelSession, global: &mut
             ),
             ("__moduleSet", oxide_builtins::module::module_set::<crate::vm::Vm> as *const (), 3),
             (
+                "__moduleSetCell",
+                oxide_builtins::module::module_set_cell::<crate::vm::Vm> as *const (),
+                3,
+            ),
+            (
                 "__moduleSetReexport",
                 oxide_builtins::module::module_set_reexport::<crate::vm::Vm> as *const (),
                 5,

@@ -326,3 +326,43 @@ fn write_through_only_for_live_modules() {
     let (ir, _) = emit_module("export let a = 1; a = 2;", "./entry.js", &[]).expect("非 live 模块应编译成功");
     assert_eq!(native_calls_to(&ir, "__moduleSet"), 1, "非 live 模块重赋不得写穿");
 }
+
+/// 面 12：可重赋依赖激活活读与 Cell——依赖预注册并挂共享 cell，导入方顶层读走
+/// `__moduleGet`；const-only 依赖零变化，导入方仍走链接期快照、依赖不预注册。
+#[test]
+fn reassignable_dep_activates_live_read_and_cell() {
+    let (ir, _) = emit_module(
+        "import { x } from './dep.js'; x;",
+        "./entry.js",
+        &[("./dep.js", ModuleKind::Js, "export const x = 1;")],
+    )
+    .expect("const-only 依赖应编译成功");
+    assert_eq!(native_calls_to(&ir, "__moduleGet"), 0, "const-only 依赖导入方不得活读");
+    assert!(native_calls_to(&ir, "__moduleLinkGet") >= 1, "导入绑定仍走链接期快照");
+    let dep = &ir.nested[0];
+    assert_eq!(native_calls_to(dep, "__modulePreRegister"), 0, "const-only 依赖不得预注册");
+    assert_eq!(native_calls_to(dep, "__moduleSetCell"), 0, "const-only 依赖不得挂 cell");
+
+    let (ir, _) = emit_module(
+        "import { x } from './dep.js'; x;",
+        "./entry.js",
+        &[(
+            "./dep.js",
+            ModuleKind::Js,
+            "var x = 1; export { x }; globalThis.f = function(){ x = 2; };",
+        )],
+    )
+    .expect("可重赋依赖应编译成功");
+    let dep = &ir.nested[0];
+    assert!(native_calls_to(dep, "__modulePreRegister") >= 1, "可重赋依赖应预注册导出");
+    assert!(native_calls_to(dep, "__moduleSetCell") >= 1, "被捕获导出应挂共享 cell");
+    assert!(native_calls_to(&ir, "__moduleGet") >= 1, "导入方顶层读应活读");
+}
+
+/// 面 13：入口模块的可重赋导出不激活预注册（`module_live_dep` 仅依赖模块成立）。
+#[test]
+fn entry_module_reassignable_export_not_pre_registered() {
+    let (ir, _) = emit_module("export let x = 1; x = 2;", "./entry.js", &[]).expect("入口模块应编译成功");
+    assert_eq!(native_calls_to(&ir, "__modulePreRegister"), 0, "入口模块不得预注册");
+    assert_eq!(native_calls_to(&ir, "__moduleSetCell"), 0, "入口模块不得挂 cell");
+}

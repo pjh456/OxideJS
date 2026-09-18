@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use oxide_kernel::kernel::{KernelCore, KernelSession};
 use oxide_types::mem::Epoch;
-use oxide_types::object::{JsObject, PropAttributes};
+use oxide_types::object::{Cell, JsObject, PropAttributes};
 use oxide_types::value::JsValue;
 
 use super::Vm;
@@ -160,6 +160,12 @@ impl oxide_runtime_api::VmHost for Vm {
             .and_then(|t| t.modules.get(sub_idx as usize))
             .and_then(|m| m.function_name.clone())
             .unwrap_or_default()
+    }
+    fn module_frame_cell(&self, cell_idx: u32) -> Option<*mut Cell> {
+        self.cell_stack
+            .last()
+            .and_then(|cells| cells.get(cell_idx as usize).copied())
+            .filter(|p| !p.is_null())
     }
     fn create_dynamic_function(&mut self, params: &[String], body: &str) -> Result<JsValue, String> {
         self.create_dynamic_function(params, body)

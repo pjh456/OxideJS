@@ -149,6 +149,19 @@ pub struct CompileCtx {
     /// 非自导入的导入局部名 → (依赖模块规范路径, 导入名)。命名空间导入的导入名为
     /// `oxide_kernel::MODULE_NAMESPACE_BINDING`；再导出据此重分类为间接导出。
     pub(crate) module_import_origins: HashMap<String, (String, String)>,
+    /// 依赖 source 字符串 → 依赖模块是否含可重赋导出（`compile_js_dep` 回传；
+    /// Json/Text 数据模块恒 false）。导入方据此把命名/默认导入登记为活读。
+    pub(crate) module_dep_reassignable: HashMap<String, bool>,
+    /// 导入本地名 → (依赖命名空间对象寄存器, 导出名)：可重赋依赖的命名/默认导入
+    /// 活读映射。顶层读点据此改发 `__moduleGet` 活读；仅模块顶层 ctx 填充，嵌套
+    /// 函数 ctx 不继承，闭包内读退化为链接期快照。
+    pub(crate) module_live_imports: HashMap<String, (u32, String)>,
+    /// 本模块是否含可重赋导出。仅在依赖模块（`top_level == false`）且捕获/写穿
+    /// 消费者需要时置真；入口模块恒假，保证纯导出入口 IR 零变化。
+    pub(crate) module_live_dep: bool,
+    /// live 命名空间激活：自导入 ns 或本模块含可重赋导出时为真。写穿反演与
+    /// 导出预注册据此发射；非 live 模块编译产物逐字节不变。
+    pub(crate) module_live_ns_active: bool,
     /// 自导入（import from 自身）的 source 字符串集合：绑定走别名语义，不能链接期快照。
     pub(crate) module_self_import_specs: HashSet<String>,
     /// 自导入别名：导出名 → 本地绑定槽寄存器（export 语句执行时回写绑定值）。
@@ -240,6 +253,10 @@ impl CompileCtx {
             module_dep_ns_regs: HashMap::new(),
             module_dep_paths: HashMap::new(),
             module_import_origins: HashMap::new(),
+            module_dep_reassignable: HashMap::new(),
+            module_live_imports: HashMap::new(),
+            module_live_dep: false,
+            module_live_ns_active: false,
             module_self_import_specs: HashSet::new(),
             module_self_aliases: HashMap::new(),
             module_alias_pairs: Vec::new(),

@@ -1,10 +1,11 @@
 //! 模块编译：import/export 解析、依赖加载（递归）、快照式链接与命名空间。
 //!
-//! 普通依赖的导入绑定在 prelude 一次性链接为快照；自导入（`import ... from
-//! 自身`）的局部名解析为本模块源绑定的活别名，TDZ/提升/活值/不可变四语义全部
-//! 委托源绑定。`export` 语句就地注册导出值。
-//! 未支持：跨模块 live binding（导入绑定不跟随依赖模块值变化）、defer（延迟
-//! 求值）、source-phase；star 转发的自导入名退化为链接期快照；循环导入在编译期跳过。
+//! 普通依赖的导入绑定在 prelude 链接：依赖含可重赋导出时顶层读点经
+//! `__moduleGet` 活读，其余退化为快照；被闭包捕获的导出挂共享 cell，闭包内写
+//! 随活读可见。自导入（`import ... from 自身`）的局部名解析为本模块源绑定的活
+//! 别名，TDZ/提升/活值/不可变四语义全部委托源绑定。`export` 语句就地注册导出值。
+//! 未支持：嵌套闭包内读 import 名（仍为链接期快照）、defer（延迟求值）、
+//! source-phase；star 转发与经再导出链的活值仍为快照；循环导入在编译期跳过。
 
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -248,6 +249,62 @@ fn module_var_scoped_export_names(body: &[Statement]) -> HashSet<String> {
     names
 }
 
+/// 判断模块是否含可重赋导出：导出源绑定既非顶层 const 也非导入本地名时为真。
+///
+/// # 边界与前提
+/// - 依据 `module_export_name_map`（导出名 → 源绑定名）与顶层 const 绑定名集合：
+///   var/let/function/class 与 default（含合成 `*default*`）均判真，const-only 判假。
+/// - 经导入本地名再导出（`export { x }` 底层为 import 绑定）不判真：源绑定不可重赋，
+///   其可变性归来源模块。star 转发名不在映射表内，天然不参与判定。
+///
+/// # 注意事项
+/// - 保守超集：`export default 42` 之类不可重赋值也判真，仅使该依赖多一次预注册，
+///   导入方读值等价。
+fn module_has_reassignable_export(body: &[Statement], export_name_map: &HashMap<String, String>) -> bool {
+    let mut const_names = HashSet::new();
+    let mut import_names = HashSet::new();
+    for stmt in body {
+        match stmt {
+            Statement::VariableDeclaration(vd) => {
+                if matches!(vd.kind, VariableDeclarationKind::Const) {
+                    for d in &vd.declarations {
+                        if let BindingPattern::BindingIdentifier(bi) = &d.id {
+                            const_names.insert(bi.name.to_string());
+                        }
+                    }
+                }
+            }
+            Statement::ExportNamedDeclaration(exp) => {
+                if let Some(Declaration::VariableDeclaration(vd)) = &exp.declaration {
+                    if matches!(vd.kind, VariableDeclarationKind::Const) {
+                        for d in &vd.declarations {
+                            if let BindingPattern::BindingIdentifier(bi) = &d.id {
+                                const_names.insert(bi.name.to_string());
+                            }
+                        }
+                    }
+                }
+            }
+            Statement::ImportDeclaration(imp) => {
+                if let Some(specifiers) = &imp.specifiers {
+                    for sp in specifiers {
+                        let local = match sp {
+                            ImportDeclarationSpecifier::ImportSpecifier(s) => &s.local.name,
+                            ImportDeclarationSpecifier::ImportDefaultSpecifier(s) => &s.local.name,
+                            ImportDeclarationSpecifier::ImportNamespaceSpecifier(s) => &s.local.name,
+                        };
+                        import_names.insert(local.to_string());
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    export_name_map
+        .values()
+        .any(|source| !const_names.contains(source) && !import_names.contains(source))
+}
+
 /// 判断语句是否为提升的函数声明（含 export 包装的函数声明）。
 fn is_hoisted_function_decl(stmt: &Statement) -> bool {
     match stmt {
@@ -436,14 +493,15 @@ impl Emitter {
                     return Err(format!("circular module import not supported: {}", resolved.path));
                 }
                 path_stack.push(resolved.path.clone());
-                let dep_ir = match resolved.kind {
+                let (dep_ir, dep_reassignable) = match resolved.kind {
                     ModuleKind::Js => self.compile_js_dep(&resolved, loader, path_stack)?,
-                    ModuleKind::Json => self.compile_data_dep("json", &resolved.source)?,
-                    ModuleKind::Text => self.compile_data_dep("text", &resolved.source)?,
+                    ModuleKind::Json => (self.compile_data_dep("json", &resolved.source)?, false),
+                    ModuleKind::Text => (self.compile_data_dep("text", &resolved.source)?, false),
                     ModuleKind::Bytes => return Err("bytes module not supported".into()),
                 };
                 path_stack.pop();
                 ctx.nested.push(dep_ir);
+                ctx.module_dep_reassignable.insert(spec.clone(), dep_reassignable);
                 let fn_reg = ctx.alloc_reg();
                 ctx.inst(Inst::create_closure(Operand::Reg(fn_reg), ctx.nested.len() as u16));
                 self.emit_module_call(ctx, "__moduleEval", &[fn_reg])?
@@ -468,6 +526,9 @@ impl Emitter {
         // 导出名 → 本模块源绑定名：self-import 的局部名别名到该源绑定。star 转发的
         // 自导入名不在表内（退化为下方非别名占位路径）。
         let export_name_map = module_export_name_map(body, &ctx.module_self_import_specs);
+        // 依赖模块的可重赋导出标志：仅依赖模块（非入口）参与判定，入口模块恒假，
+        // 使纯导出入口（含 `export let x`）的 IR 逐字节不变。
+        ctx.module_live_dep = !top_level && module_has_reassignable_export(body, &export_name_map);
         // live 命名空间门控：仅自导入 `import * as ns from './self'` 的模块需要预注册
         // 真实导出槽，其余模块（含普通外部命名空间导入）编译产物逐字节不变。
         let mut has_self_ns_import = false;
@@ -517,6 +578,12 @@ impl Emitter {
                                         false,
                                         ctx,
                                     )?;
+                                    // 依赖含可重赋导出：登记活读映射，顶层读点改走
+                                    // `__moduleGet`，快照绑定仅服务嵌套闭包读。
+                                    if ctx.module_dep_reassignable.get(&dep_spec).copied().unwrap_or(false) {
+                                        ctx.module_live_imports
+                                            .insert(s.local.name.to_string(), (dep_ns_reg, imported.clone()));
+                                    }
                                 }
                             }
                             ImportDeclarationSpecifier::ImportDefaultSpecifier(s) => {
@@ -563,6 +630,13 @@ impl Emitter {
                                         false,
                                         ctx,
                                     )?;
+                                    // 默认导入同命名导入：可重赋依赖的 default 导出活读。
+                                    if ctx.module_dep_reassignable.get(&dep_spec).copied().unwrap_or(false) {
+                                        ctx.module_live_imports.insert(
+                                            s.local.name.to_string(),
+                                            (dep_ns_reg, DEFAULT_EXPORT_NAME.to_string()),
+                                        );
+                                    }
                                 }
                             }
                             ImportDeclarationSpecifier::ImportNamespaceSpecifier(s) => {
@@ -591,11 +665,16 @@ impl Emitter {
             }
         }
 
-        // —— 写穿反演：源绑定槽寄存器 → 导出名集合。仅 live 模块（自导入 ns）填充：
+        // live 命名空间激活：自导入 ns（本模块自身观测 ns）或本模块含可重赋导出
+        // （外部导入方需活读）。非 live 模块写穿与预注册均不发射，IR 逐字节不变。
+        let live_active = has_self_ns_import || ctx.module_live_dep;
+        ctx.module_live_ns_active = live_active;
+
+        // —— 写穿反演：源绑定槽寄存器 → 导出名集合。仅 live 模块填充：
         // 非 live 模块不激活写穿，编译产物逐字节零 IR 变化。以槽位为键使块级/catch
         // 同名遮蔽解析到内层槽时不命中；按名排序保证多导出名映射到同一源绑定的
         // 发射顺序确定。——
-        if has_self_ns_import {
+        if live_active {
             let mut pairs: Vec<(&String, &String)> =
                 export_name_map.iter().map(|(exported, source)| (source, exported)).collect();
             pairs.sort();
@@ -611,7 +690,7 @@ impl Emitter {
         // 按名序预注册全部本地导出名，使自导入 ns 在读点先观察到未初始化状态。
         // var/函数类导出（VarScopedDeclarations）在实例化期即初始化为 undefined，
         // lexical/class 保持未初始化（TDZ）。 ——
-        if has_self_ns_import {
+        if live_active {
             let var_scoped = module_var_scoped_export_names(body);
             let mut export_names: Vec<String> = own_export_names.into_iter().collect();
             export_names.sort();
@@ -709,10 +788,17 @@ impl Emitter {
         Ok(())
     }
 
-    /// 编译 JS 依赖模块（递归）。
+    /// 编译 JS 依赖模块（递归），回传 IR 与「是否含可重赋导出」标志。
+    ///
+    /// # 边界与前提
+    /// - 标志取自依赖 ctx 的 `module_live_dep`；入口模块不参与，依赖模块恒按
+    ///   `!top_level` 判定，故 const-only 依赖回传 false。
+    ///
+    /// # 注意事项
+    /// - 导入方据标志决定是否登记活读映射；标志不改变本模块 IR。
     fn compile_js_dep(
         &self, resolved: &ResolvedModule, loader: &mut dyn ModuleSourceLoader, path_stack: &mut Vec<String>,
-    ) -> Result<IRFunction, String> {
+    ) -> Result<(IRFunction, bool), String> {
         let alloc = oxide_parser::Allocator::default();
         let program = oxide_parser::parse_module(&alloc, &resolved.source).map_err(|errs| {
             format!(
@@ -725,7 +811,8 @@ impl Emitter {
         // 依赖模块经 parse_module 解析，顶层恒严格模式。
         ctx.is_strict = true;
         self.emit_module_into_ctx(&program, &resolved.path, loader, path_stack, &mut ctx, false)?;
-        Ok(ctx.assemble_ir(ParamLayout { base: 0, count: 0 }, None))
+        let reassignable = ctx.module_live_dep;
+        Ok((ctx.assemble_ir(ParamLayout { base: 0, count: 0 }, None), reassignable))
     }
 
     /// 编译数据模块（json/text）：body 仅为 __moduleData 调用 + RETURN。
@@ -759,7 +846,7 @@ impl Emitter {
         Ok(result_reg)
     }
 
-    fn load_string_const(&self, s: &str, ctx: &mut CompileCtx) -> u32 {
+    pub(crate) fn load_string_const(&self, s: &str, ctx: &mut CompileCtx) -> u32 {
         let idx = ctx.add_constant(Constant::String(s.to_string()));
         let reg = ctx.alloc_reg();
         ctx.inst(Inst::load_const(Operand::Reg(reg), idx));
@@ -801,6 +888,53 @@ impl Emitter {
         let name_reg = self.load_string_const(name, ctx);
         self.emit_module_call(ctx, "__moduleSet", &[ns_reg, name_reg, value_reg])?;
         Ok(())
+    }
+
+    /// 发 `__moduleSetCell`：把导出条目挂到源绑定的共享 cell（cell_idx 常量传参）。
+    ///
+    /// # 边界与前提
+    /// - `cell_idx` 来自 `ctx.captured_bindings`，在同一模块顶层帧的 `cell_stack`
+    ///   内由声明点的 MAKE_CELL 建好；导出注册点晚于声明点，故 cell 必已存在。
+    ///
+    /// # 副作用
+    /// - 依赖运行期 `module_frame_cell(cell_idx)` 取当前字节码帧 cell，改命名空间
+    ///   条目状态为共享 cell。
+    fn emit_module_set_cell(
+        &self, ctx: &mut CompileCtx, ns_reg: u32, export_name: &str, cell_idx: u8,
+    ) -> Result<(), String> {
+        let name_reg = self.load_string_const(export_name, ctx);
+        let idx = ctx.add_constant(Constant::Int(cell_idx as i32));
+        let cell_reg = ctx.alloc_reg();
+        ctx.inst(Inst::load_const(Operand::Reg(cell_reg), idx));
+        self.emit_module_call(ctx, "__moduleSetCell", &[ns_reg, name_reg, cell_reg])?;
+        Ok(())
+    }
+
+    /// 导出注册：被捕获的源绑定在 live 模块挂共享 cell（闭包写随活读可见），
+    /// 其余回退 `__moduleSet` 快照/写穿路径。
+    ///
+    /// # 边界与前提
+    /// - 仅 `module_live_ns_active` 模块激活；非 live 模块恒回退 `__moduleSet`，
+    ///   编译产物与引入 Cell 前逐字节一致。
+    /// - `source_name` 命中 `module_live_imports`（导入快照）时回退：不得把导入
+    ///   本地槽误注册为活条目。
+    /// - 源绑定须在 `captured_bindings` 内且当前作用域可解析（`visible_binding_reg`
+    ///   有值）——块退出后残留的同名 cell 不可见，此时回退快照注册。
+    ///
+    /// # 副作用
+    /// - 命中时发 `__moduleSetCell`（条目状态改 Cell）；否则发 `__moduleSet`。
+    fn emit_export_registration(
+        &self, ctx: &mut CompileCtx, ns_reg: u32, exported_name: &str, source_name: &str, value_reg: u32,
+    ) -> Result<(), String> {
+        if ctx.module_live_ns_active
+            && !ctx.module_live_imports.contains_key(source_name)
+            && ctx.visible_binding_reg(source_name).is_some()
+        {
+            if let Some(&cell_idx) = ctx.captured_bindings.get(source_name) {
+                return self.emit_module_set_cell(ctx, ns_reg, exported_name, cell_idx);
+            }
+        }
+        self.emit_module_set(ctx, ns_reg, exported_name, value_reg)
     }
 
     /// 发 `__moduleSetReexport`：注册带 `(dep_path, imported)` 来源身份的再导出。
@@ -919,7 +1053,7 @@ impl Emitter {
                                 if let BindingPattern::BindingIdentifier(bi) = &d.id {
                                     let name = bi.name.as_str();
                                     let val_reg = self.load_var_reg(name, ctx)?;
-                                    self.emit_module_set(ctx, ns_reg, name, val_reg)?;
+                                    self.emit_export_registration(ctx, ns_reg, name, name, val_reg)?;
                                     self.emit_self_alias_write(ctx, name, val_reg);
                                 }
                             }
@@ -929,7 +1063,7 @@ impl Emitter {
                             if let Some(id) = &fd.id {
                                 let name = id.name.as_str();
                                 let val_reg = self.load_var_reg(name, ctx)?;
-                                self.emit_module_set(ctx, ns_reg, name, val_reg)?;
+                                self.emit_export_registration(ctx, ns_reg, name, name, val_reg)?;
                                 self.emit_self_alias_write(ctx, name, val_reg);
                             }
                         }
@@ -938,7 +1072,7 @@ impl Emitter {
                             if let Some(id) = &cl.id {
                                 let name = id.name.as_str();
                                 let val_reg = self.load_var_reg(name, ctx)?;
-                                self.emit_module_set(ctx, ns_reg, name, val_reg)?;
+                                self.emit_export_registration(ctx, ns_reg, name, name, val_reg)?;
                                 self.emit_self_alias_write(ctx, name, val_reg);
                             }
                         }
@@ -982,12 +1116,12 @@ impl Emitter {
                         }
                         // 本地导出：来源恒为 Local。
                         let val_reg = self.load_var_reg(&local_name, ctx)?;
-                        self.emit_module_set(ctx, ns_reg, &exported_name, val_reg)?;
+                        self.emit_export_registration(ctx, ns_reg, &exported_name, &local_name, val_reg)?;
                     }
                 }
             }
             Statement::ExportDefaultDeclaration(exp) => {
-                let val_reg = match &exp.declaration {
+                let (val_reg, source_name) = match &exp.declaration {
                     ExportDefaultDeclarationKind::FunctionDeclaration(fd) => {
                         let reg = self.emit_function_expression(fd, ctx)?;
                         // 具名 default 函数绑定自身 id 名；匿名 default 函数绑定合成
@@ -1000,13 +1134,14 @@ impl Emitter {
                                 .lookup_any(SYNTHETIC_DEFAULT_BINDING)
                                 .map(|_| SYNTHETIC_DEFAULT_BINDING.to_string())
                         });
-                        if let Some(name) = binding {
-                            self.emit_bind_target(&name, reg, VariableDeclarationKind::Var, false, false, ctx)?;
+                        if let Some(name) = &binding {
+                            self.emit_bind_target(name, reg, VariableDeclarationKind::Var, false, false, ctx)?;
                         }
                         if fd.id.is_none() {
                             set_implicit_name_of_last_nested(ctx, DEFAULT_EXPORT_NAME);
                         }
-                        reg
+                        // 具名 default 的注册源是该 id 绑定（可重赋），匿名退化为合成名。
+                        (reg, binding.unwrap_or_else(|| SYNTHETIC_DEFAULT_BINDING.to_string()))
                     }
                     ExportDefaultDeclarationKind::ClassDeclaration(cl) => {
                         let reg = self.emit_class_with_binding(
@@ -1024,19 +1159,22 @@ impl Emitter {
                                 false,
                                 ctx,
                             )?;
-                        } else if ctx.scopes.symbols.lookup_any(SYNTHETIC_DEFAULT_BINDING).is_some() {
-                            // 匿名 default 类按规范在求值点初始化合成 `*default*`
-                            // 绑定（仅在存在 self-import default 时惰性建立）。
-                            self.emit_bind_target(
-                                SYNTHETIC_DEFAULT_BINDING,
-                                reg,
-                                VariableDeclarationKind::Let,
-                                false,
-                                false,
-                                ctx,
-                            )?;
+                            (reg, id.name.to_string())
+                        } else {
+                            if ctx.scopes.symbols.lookup_any(SYNTHETIC_DEFAULT_BINDING).is_some() {
+                                // 匿名 default 类按规范在求值点初始化合成 `*default*`
+                                // 绑定（仅在存在 self-import default 时惰性建立）。
+                                self.emit_bind_target(
+                                    SYNTHETIC_DEFAULT_BINDING,
+                                    reg,
+                                    VariableDeclarationKind::Let,
+                                    false,
+                                    false,
+                                    ctx,
+                                )?;
+                            }
+                            (reg, SYNTHETIC_DEFAULT_BINDING.to_string())
                         }
-                        reg
                     }
                     other => {
                         let expr = other
@@ -1072,10 +1210,10 @@ impl Emitter {
                                 ctx,
                             )?;
                         }
-                        reg
+                        (reg, SYNTHETIC_DEFAULT_BINDING.to_string())
                     }
                 };
-                self.emit_module_set(ctx, ns_reg, DEFAULT_EXPORT_NAME, val_reg)?;
+                self.emit_export_registration(ctx, ns_reg, DEFAULT_EXPORT_NAME, &source_name, val_reg)?;
                 self.emit_self_alias_write(ctx, DEFAULT_EXPORT_NAME, val_reg);
             }
             Statement::ExportAllDeclaration(exp) => {

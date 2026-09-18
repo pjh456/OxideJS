@@ -1,9 +1,10 @@
 //! 模块命名空间与求值辅助（import 实现内部用，非 JS 可见标准 API）。
 //!
 //! 命名约定 `__module*`：由编译器模块 prelude 发出（`lookup_or_builtin` 解析为全局槽，
-//! VM 在 frame push 时从 global 对象取回 native 函数）。当前为快照式链接：
-//! 依赖模块先整体求值并返回命名空间对象，导入方从中读取导出值；
-//! live binding / source-phase / defer 语义留待后续轮次。
+//! VM 在 frame push 时从 global 对象取回 native 函数）。依赖模块先整体求值并返回
+//! 命名空间对象，导入方从中读取导出值；依赖含可重赋导出时命名/默认导入经
+//! `__moduleGet` 活读，被捕获导出由 `__moduleSetCell` 挂共享 cell。
+//! source-phase / defer 语义留待后续轮次。
 
 use oxide_kernel::shape_forge::EMPTY_SHAPE_ID;
 use oxide_runtime_api::{NativeResult, VmHost};
@@ -508,6 +509,60 @@ pub fn module_set<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let obj = unsafe { &mut *ns_ptr };
     if let Err(e) = set_export(vm, obj, name_si, value, ModuleNsOrigin::Local) {
         return NativeResult::Err(crate::error::create_error(vm, &e));
+    }
+    NativeResult::Ok(JsValue::undefined())
+}
+
+/// `__moduleSetCell(ns, name, cell_idx)`：把导出条目挂到模块顶层帧的共享 cell。
+///
+/// # 步骤
+/// 1. 校验 ns 为 module namespace 且已有条目表与同名条目（预注册保证存在）。
+/// 2. 取当前字节码帧第 `cell_idx` 个 cell（`VmHost::module_frame_cell`）。
+/// 3. 条目状态置 `Cell`，并把真实槽值同步为 cell 当前值一次。
+///
+/// # 边界与前提
+/// - 条目必须已预注册；无表、条目未命中或 cell 缺失均抛 TypeError，不静默退化。
+/// - `cell_idx` 来自 emit 期捕获索引，同一模块顶层帧内稳定。
+///
+/// # 副作用
+/// - 修改条目表状态与 ns 真实槽值；后续活值由共享 cell 承载。
+pub fn module_set_cell<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    if args.len() < 4 {
+        return type_error(vm, "__moduleSetCell: 3 arguments required");
+    }
+    let ns_val = vm.reg(args[1]);
+    let ns_ptr = match vm.checked_object_ptr(ns_val, "__moduleSetCell: target is not an object") {
+        Ok(Some(p)) => p,
+        Ok(None) => return type_error(vm, "__moduleSetCell: target is not an object"),
+        Err(e) => return NativeResult::Err(crate::error::create_error(vm, &e)),
+    };
+    let name_val = vm.reg(args[2]);
+    let name_si = vm.property_key_si(name_val);
+    let cell_idx = oxide_runtime_api::to_int32(vm.reg(args[3])) as u32;
+    let obj = unsafe { &mut *ns_ptr };
+    if !obj.is_module_namespace() {
+        return type_error(vm, "__moduleSetCell: target is not a module namespace");
+    }
+    let table = ns_table_ptr(obj);
+    if table.is_null() {
+        return type_error(vm, "__moduleSetCell: export is not registered");
+    }
+    // SAFETY: table 归本 ns 对象持有，生命周期见 `module_ns_export`。
+    let Some(idx) = (unsafe { entry_index(&*table, name_si) }) else {
+        return type_error(vm, "__moduleSetCell: export is not registered");
+    };
+    let Some(cell) = vm.module_frame_cell(cell_idx) else {
+        return type_error(vm, "__moduleSetCell: cell is not available");
+    };
+    // SAFETY: cell 由 alloc_cell 分配并登记，至 full_reset 才释放。
+    let value = unsafe { (*cell).value };
+    // SAFETY: idx 来自刚完成的表内查找，仍在界内。
+    unsafe {
+        (&mut (*table).entries)[idx].state = ModuleNsState::Cell(cell);
+    }
+    // 真实槽同步一次 cell 当前值：条目表是活值权威，槽仅保留存在性与占位。
+    if let Some(pos) = vm.get_own_property_slot(obj, name_si) {
+        obj.set_prop_at(pos, value);
     }
     NativeResult::Ok(JsValue::undefined())
 }

@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use oxide_kernel::kernel::{KernelCore, KernelSession};
 use oxide_types::mem::Epoch;
-use oxide_types::object::{JsObject, PropAttributes};
+use oxide_types::object::{Cell, JsObject, PropAttributes};
 use oxide_types::value::JsValue;
 
 /// builtins 依赖的 `Vm` 能力集合。
@@ -157,6 +157,12 @@ pub trait VmHost {
     fn step_rng(&mut self);
     fn math_rng_value(&self) -> f64;
     fn sub_module_function_name(&self, gen: u32, sub_idx: u16) -> String;
+    /// 取当前字节码帧 `cell_stack.last()[cell_idx]` 的共享 cell 指针。
+    ///
+    /// # 边界与前提
+    /// - 仅在同一 VM 世代的字节码帧执行期读取：native 调用不压 `cell_stack`，故
+    ///   builtin 内读到的是调用方模块帧；`cell_idx` 越界或槽为空返回 `None`。
+    fn module_frame_cell(&self, cell_idx: u32) -> Option<*mut Cell>;
     /// 动态编译一个函数体（`Function` 构造器用）：把参数列表与函数体编译为可调用
     /// 函数对象。编译或解析失败返回 `Err`，由调用方转为 `SyntaxError`。
     fn create_dynamic_function(&mut self, params: &[String], body: &str) -> Result<JsValue, String>;

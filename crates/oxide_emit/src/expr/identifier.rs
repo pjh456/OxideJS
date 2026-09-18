@@ -10,8 +10,18 @@ use oxide_ir::inst::Inst;
 use oxide_ir::operand::Operand;
 
 impl Emitter {
-    /// 静态标识符读取：upvalue / 被捕获 cell / 全局槽。
+    /// 静态标识符读取：可重赋依赖导入活读 / upvalue / 被捕获 cell / 全局槽。
+    ///
+    /// # 注意事项
+    /// - 活读映射仅模块顶层 ctx 填充：嵌套函数内读 import 名仍走链接期快照
+    ///   （`current_upvalue_captures` 不在此列，闭包内不继承映射）。
     fn emit_static_identifier_read(&self, name: &str, ctx: &mut CompileCtx) -> Result<u32, String> {
+        // 可重赋依赖的命名/默认导入：读点直接查依赖命名空间当前值，跟随源模块重赋。
+        if let Some((dep_ns, exported)) = ctx.module_live_imports.get(name).cloned() {
+            let name_reg = self.load_string_const(&exported, ctx);
+            return self.emit_module_call(ctx, "__moduleGet", &[dep_ns, name_reg]);
+        }
+
         for (uv_idx, up) in ctx.current_upvalue_captures.iter().enumerate() {
             if up.name == name {
                 let r = ctx.alloc_reg();

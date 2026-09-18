@@ -4,7 +4,7 @@
 
 use std::collections::{BTreeMap, HashSet};
 
-use oxide_parser::{Expression, Statement};
+use oxide_parser::{Declaration, ExportDefaultDeclarationKind, Expression, Statement};
 
 use super::collect_fn_param_names;
 use super::names::collect_own_binding_names;
@@ -103,6 +103,60 @@ pub(crate) fn collect_captured_stmt(stmt: &Statement, own: &HashSet<String>, out
             }
             collect_class_capture_names(&cd.body, own, &class_shadow, out);
         }
+        // export 包裹的变量/函数/类声明：捕获分析须下探声明体，否则被导出函数体内
+        // 引用模块绑定（含自引用）不会被识别为捕获，闭包内读写退化为隐式全局。
+        Statement::ExportNamedDeclaration(exp) => {
+            if let Some(decl) = &exp.declaration {
+                match decl {
+                    Declaration::VariableDeclaration(vd) => {
+                        for d in &vd.declarations {
+                            collect_captured_binding_keys(&d.id, own, out);
+                            if let Some(init) = &d.init {
+                                collect_captured_expr(init, own, out);
+                            }
+                        }
+                    }
+                    Declaration::FunctionDeclaration(fd) => {
+                        let body: &[Statement] = fd.body.as_ref().map(|b| &b.statements[..]).unwrap_or(&[]);
+                        collect_fn_default_captured(&fd.params, own, out);
+                        let mut fn_shadow = HashSet::new();
+                        fn_shadow.extend(collect_fn_param_names(&fd.params));
+                        fn_shadow.extend(collect_own_binding_names(&[], body));
+                        collect_capture_names_shadowed(body, own, &fn_shadow, out);
+                    }
+                    Declaration::ClassDeclaration(cd) => {
+                        let mut class_shadow = HashSet::new();
+                        if let Some(id) = &cd.id {
+                            class_shadow.insert(id.name.as_str().to_string());
+                        }
+                        collect_class_capture_names(&cd.body, own, &class_shadow, out);
+                    }
+                    _ => {}
+                }
+            }
+        }
+        Statement::ExportDefaultDeclaration(exp) => match &exp.declaration {
+            ExportDefaultDeclarationKind::FunctionDeclaration(fd) => {
+                let body: &[Statement] = fd.body.as_ref().map(|b| &b.statements[..]).unwrap_or(&[]);
+                collect_fn_default_captured(&fd.params, own, out);
+                let mut fn_shadow = HashSet::new();
+                fn_shadow.extend(collect_fn_param_names(&fd.params));
+                fn_shadow.extend(collect_own_binding_names(&[], body));
+                collect_capture_names_shadowed(body, own, &fn_shadow, out);
+            }
+            ExportDefaultDeclarationKind::ClassDeclaration(cd) => {
+                let mut class_shadow = HashSet::new();
+                if let Some(id) = &cd.id {
+                    class_shadow.insert(id.name.as_str().to_string());
+                }
+                collect_class_capture_names(&cd.body, own, &class_shadow, out);
+            }
+            other => {
+                if let Some(e) = other.as_expression() {
+                    collect_captured_expr(e, own, out);
+                }
+            }
+        },
         Statement::ExpressionStatement(es) => collect_captured_expr(&es.expression, own, out),
         Statement::ReturnStatement(rs) => {
             if let Some(a) = &rs.argument {
