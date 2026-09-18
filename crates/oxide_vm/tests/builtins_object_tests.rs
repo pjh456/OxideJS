@@ -330,6 +330,39 @@ fn object_set_prototype_of_sets_prototype_and_validates() {
     assert!(err.contains("TypeError"), "unexpected error: {err}");
 }
 
+// Object.setPrototypeOf 负向分路：不可扩展目标、原型环、原始值目标。
+#[test]
+fn object_set_prototype_of_negative_paths() {
+    // 不可扩展且新旧原型不同抛 TypeError。
+    let err = match eval("var o = {}; Object.preventExtensions(o); Object.setPrototypeOf(o, null);") {
+        Ok(_) => panic!("non-extensible target with a different prototype should fail"),
+        Err(err) => err,
+    };
+    assert!(err.contains("TypeError"), "unexpected error: {err}");
+
+    // 不可扩展但新旧原型相同仍成功，符合规范「SameValue 先于可扩展判定」。
+    let (_vm, result) = eval(
+        "var o = {}; var p = Object.getPrototypeOf(o); Object.preventExtensions(o); \
+         Object.setPrototypeOf(o, p) === o",
+    )
+    .unwrap();
+    assert!(
+        result.is_bool() && result.as_bool(),
+        "same prototype on non-extensible target should succeed"
+    );
+
+    // 原型环抛 TypeError。
+    let err = match eval("var a = {}; var b = {}; Object.setPrototypeOf(a, b); Object.setPrototypeOf(b, a);") {
+        Ok(_) => panic!("cyclic prototype should fail"),
+        Err(err) => err,
+    };
+    assert!(err.contains("TypeError"), "unexpected error: {err}");
+
+    // 原始值目标原样返回，不抛错。
+    let (_vm, result) = eval("Object.setPrototypeOf(1, null)").unwrap();
+    assert!(result.is_int() && result.as_int() == 1, "primitive target should be returned unchanged");
+}
+
 #[test]
 fn entries_values_with_interleaved_symbol_key() {
     let (_vm, result) = eval(

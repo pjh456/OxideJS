@@ -773,6 +773,12 @@ impl JsObject {
     ///
     /// 仅接受 `null` 或对象；沿新原型链检查是否构成环，成环返回
     /// `Err("cyclic __proto__ value")`。
+    ///
+    /// # 注意事项
+    /// 本方法是裸写槽操作：既不检查 `[[Extensible]]`，也不比较新旧原型是否
+    /// SameValue。实现 `[[SetPrototypeOf]]` 的调用方须先自行判定「新旧相同直接
+    /// 成功」「不可扩展且新旧不同则失败」，再调用本方法；原型接线、世界重建等
+    /// 内部路径不受可扩展标志约束，直接调用即可。
     pub fn set_proto(&mut self, proto: JsValue) -> Result<(), &'static str> {
         if proto.is_null() {
             self.proto = proto;

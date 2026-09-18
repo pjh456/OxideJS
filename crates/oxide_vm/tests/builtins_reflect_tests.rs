@@ -82,6 +82,22 @@ fn reflect_prototype_and_extensible_methods() {
     assert!(result.as_bool());
 }
 
+// 不可扩展目标：新旧不同返回 false，新旧相同返回 true，且原值不被改写。
+#[test]
+fn reflect_set_prototype_of_non_extensible_returns_false() {
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "var a = {}; Object.preventExtensions(a); \
+         var diff = Reflect.setPrototypeOf(a, null); \
+         var kept = Object.getPrototypeOf(a) === Object.prototype; \
+         var same = Reflect.setPrototypeOf(a, Object.prototype); \
+         diff === false && kept && same === true",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
 #[test]
 fn reflect_apply_calls_function() {
     let mut vm = Vm::new();

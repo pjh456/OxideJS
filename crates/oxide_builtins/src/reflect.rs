@@ -226,6 +226,7 @@ pub fn reflect_set<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 }
 
 /// `Reflect.setPrototypeOf(target, proto)`：设置 prototype（对象或 null）。
+/// 不可扩展且新旧原型不同时返回 false；新旧相同返回 true。
 pub fn reflect_set_prototype_of<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let target_val = arg(vm, args, 1);
     let Some(target_ptr) = object_ptr(target_val) else {
@@ -235,7 +236,12 @@ pub fn reflect_set_prototype_of<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeRes
     if !proto.is_object() && !proto.is_null() {
         return type_error(vm, "Reflect.setPrototypeOf prototype must be an object or null");
     }
-    NativeResult::Ok(JsValue::bool(unsafe { &mut *target_ptr }.set_proto(proto).is_ok()))
+    let target = unsafe { &mut *target_ptr };
+    // OrdinarySetPrototypeOf 步 2-4：新旧相同先于可扩展判定，直接成功。
+    if !target.is_extensible() && target.proto() != proto {
+        return NativeResult::Ok(JsValue::bool(false));
+    }
+    NativeResult::Ok(JsValue::bool(target.set_proto(proto).is_ok()))
 }
 
 fn arg<H: VmHost>(vm: &H, args: &[u8], idx: usize) -> JsValue {

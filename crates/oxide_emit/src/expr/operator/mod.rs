@@ -250,7 +250,10 @@ impl Emitter {
                 self.emit_throw_error("ReferenceError", "Cannot delete a super reference", ctx)
             }
             Expression::ComputedMemberExpression(member) if matches!(&member.object, Expression::Super(_)) => {
-                // super 属性引用不可删除：键表达式与基均不得先行求值。
+                // super 属性引用不可删除：立即抛 ReferenceError，不执行 ToPropertyKey，
+                // 也不求值基与 this。代价：this 已初始化时键表达式副作用被跳过——
+                // 未初始化须先抛与副作用须先执行在缺少 GetThisBinding 运行期检查前
+                // 无法兼得。
                 self.emit_throw_error("ReferenceError", "Cannot delete a super reference", ctx)
             }
             Expression::StaticMemberExpression(member) => {
