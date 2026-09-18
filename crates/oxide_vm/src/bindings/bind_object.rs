@@ -28,6 +28,7 @@ pub fn bind_object(core: &Arc<KernelCore>, session: &KernelSession, global: &mut
         define_properties: oxide_builtins::object::object_define_properties::<crate::vm::Vm> as *const (),
         from_entries: oxide_builtins::object::object_from_entries::<crate::vm::Vm> as *const (),
         get_prototype_of: oxide_builtins::object::object_get_prototype_of::<crate::vm::Vm> as *const (),
+        set_prototype_of: oxide_builtins::object::object_set_prototype_of::<crate::vm::Vm> as *const (),
         has_own: oxide_builtins::object::object_has_own::<crate::vm::Vm> as *const (),
         entries: oxide_builtins::object::object_entries::<crate::vm::Vm> as *const (),
         values: oxide_builtins::object::object_values::<crate::vm::Vm> as *const (),

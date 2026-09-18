@@ -1250,6 +1250,42 @@ pub fn object_get_prototype_of<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResu
     NativeResult::Ok(unsafe { (*obj_ptr).proto() })
 }
 
+/// `Object.setPrototypeOf(obj, proto)`：设置对象的 prototype，返回原值。
+///
+/// # 边界与前提
+/// - `obj` 为 null/undefined 抛 TypeError（RequireObjectCoercible）；原始值原样返回，
+///   不装箱。
+/// - `proto` 既非对象也非 null 时抛 TypeError。
+/// - 目标不可设置（原型环）时抛 TypeError；普通对象恒可设置，与 Reflect 版
+///   按布尔返回的语义不同。
+///
+/// # 副作用
+/// - 目标为对象时改写其 proto 槽并递增 generation。
+pub fn object_set_prototype_of<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let target_val = args.get(1).map(|reg| vm.reg(*reg)).unwrap_or_else(JsValue::undefined);
+    if target_val.is_null() || target_val.is_undefined() {
+        return NativeResult::Err(crate::error::create_type_error(
+            vm,
+            "Object.setPrototypeOf called on null or undefined",
+        ));
+    }
+    let proto = args.get(2).map(|reg| vm.reg(*reg)).unwrap_or_else(JsValue::undefined);
+    if !proto.is_object() && !proto.is_null() {
+        return NativeResult::Err(crate::error::create_type_error(
+            vm,
+            "Object.setPrototypeOf: prototype must be an object or null",
+        ));
+    }
+    if !target_val.is_object() {
+        return NativeResult::Ok(target_val);
+    }
+    let target_ptr = target_val.as_js_object_ptr();
+    if unsafe { &mut *target_ptr }.set_proto(proto).is_err() {
+        return NativeResult::Err(crate::error::create_type_error(vm, "Object.setPrototypeOf: cannot set prototype"));
+    }
+    NativeResult::Ok(target_val)
+}
+
 /// `Object.hasOwn(obj, key)`：对象是否有指定自身属性。
 pub fn object_has_own<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     if args.len() < 3 {

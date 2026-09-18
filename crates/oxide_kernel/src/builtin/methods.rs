@@ -19,6 +19,7 @@ pub struct ObjectMethods {
     pub define_properties: *const (),
     pub from_entries: *const (),
     pub get_prototype_of: *const (),
+    pub set_prototype_of: *const (),
     pub has_own: *const (),
     pub entries: *const (),
     pub values: *const (),

@@ -862,3 +862,74 @@ fn class_declaration_outer_binding_is_mutable() {
     let result = eval(&mut vm, "class A { m(){ return 1; } } A = 1; A").unwrap();
     assert_num(result, 1.0);
 }
+
+// ── delete super 属性引用 ──
+
+// 派生构造器内 delete super.x：运行期抛 ReferenceError，不落入成员删除。
+#[test]
+fn delete_super_property_in_derived_constructor_throws() {
+    let mut vm = Vm::new();
+    let err =
+        eval(&mut vm, "class C extends Object { constructor() { super(); delete super.x; } } new C()").unwrap_err();
+    assert!(err.contains("ReferenceError"), "expected ReferenceError, got: {err}");
+}
+
+// 实例方法/getter/setter 三种方法体内 delete super.x 均抛 ReferenceError。
+#[test]
+fn delete_super_property_in_method_getter_and_setter_throws() {
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "class C extends Object { \
+           method() { delete super.x; } \
+           get g() { delete super.x; } \
+           set s(v) { delete super.x; } \
+         } \
+         var names = []; var c = new C(); \
+         try { c.method(); } catch (e) { names.push(e.name); } \
+         try { c.g; } catch (e) { names.push(e.name); } \
+         try { c.s = 1; } catch (e) { names.push(e.name); } \
+         names.join(',')",
+    )
+    .unwrap();
+    assert_eq!(vm.lookup_str(result).unwrap(), "ReferenceError,ReferenceError,ReferenceError");
+}
+
+// 静态方法 + null 原型链基：基限制不得先于删除判定抛出 TypeError。
+#[test]
+fn delete_super_property_in_static_method_with_null_base_throws() {
+    let mut vm = Vm::new();
+    let err = eval(
+        &mut vm,
+        "class C { static m() { delete super.x; } } Object.setPrototypeOf(C, null); C.m()",
+    )
+    .unwrap_err();
+    assert!(err.contains("ReferenceError"), "expected ReferenceError, got: {err}");
+}
+
+// 计算键 delete super[key]：键表达式不得求值（toString 不执行即抛 ReferenceError）。
+#[test]
+fn delete_super_property_computed_key_not_evaluated_throws() {
+    let mut vm = Vm::new();
+    let err = eval(
+        &mut vm,
+        "var key = { toString() { throw new Error('ToPropertyKey performed'); } }; \
+         var obj = { m() { delete super[key]; } }; obj.m()",
+    )
+    .unwrap_err();
+    assert!(err.contains("ReferenceError"), "expected ReferenceError, got: {err}");
+}
+
+// this 未初始化时 delete super[键]：键表达式不得求值，基构造器也不得执行。
+#[test]
+fn delete_super_property_uninitialized_this_key_not_evaluated_throws() {
+    let mut vm = Vm::new();
+    let err = eval(
+        &mut vm,
+        "class Base { constructor() { throw new Error('base constructor called'); } } \
+         class Derived extends Base { constructor() { delete super[(super(), 0)]; } } new Derived()",
+    )
+    .unwrap_err();
+    assert!(err.contains("ReferenceError"), "expected ReferenceError, got: {err}");
+    assert!(!err.contains("base constructor called"), "base constructor must not run: {err}");
+}

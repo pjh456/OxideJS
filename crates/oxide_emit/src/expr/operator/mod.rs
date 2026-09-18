@@ -245,6 +245,14 @@ impl Emitter {
                 ctx.inst(Inst::load_const(Operand::Reg(reg), idx));
                 Ok(reg)
             }
+            Expression::StaticMemberExpression(member) if matches!(&member.object, Expression::Super(_)) => {
+                // super 属性引用不可删除：在求值引用之前直接抛 ReferenceError。
+                self.emit_throw_error("ReferenceError", "Cannot delete a super reference", ctx)
+            }
+            Expression::ComputedMemberExpression(member) if matches!(&member.object, Expression::Super(_)) => {
+                // super 属性引用不可删除：键表达式与基均不得先行求值。
+                self.emit_throw_error("ReferenceError", "Cannot delete a super reference", ctx)
+            }
             Expression::StaticMemberExpression(member) => {
                 let obj_reg = self.emit_expression(&member.object, ctx)?;
                 let prop_name = member.property.name.as_str();

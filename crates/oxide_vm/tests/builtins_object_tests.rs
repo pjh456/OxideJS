@@ -316,6 +316,20 @@ fn assign_to_frozen_target_throws() {
 
 // -- Symbol 键错位回归（shape 槽位计数含 symbol 键） --
 
+// Object.setPrototypeOf：对象目标设置原型并返回原对象；proto 非对象/null 抛 TypeError。
+#[test]
+fn object_set_prototype_of_sets_prototype_and_validates() {
+    let (_vm, result) =
+        eval("var o = {}; (Object.setPrototypeOf(o, null) === o) && (Object.getPrototypeOf(o) === null)").unwrap();
+    assert!(result.is_bool() && result.as_bool());
+
+    let err = match eval("Object.setPrototypeOf({}, 1)") {
+        Ok(_) => panic!("non-object prototype should fail"),
+        Err(err) => err,
+    };
+    assert!(err.contains("TypeError"), "unexpected error: {err}");
+}
+
 #[test]
 fn entries_values_with_interleaved_symbol_key() {
     let (_vm, result) = eval(

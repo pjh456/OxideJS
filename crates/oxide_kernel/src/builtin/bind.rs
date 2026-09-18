@@ -39,6 +39,7 @@ impl BuiltinWorld {
             ("defineProperties", methods.define_properties, 2),
             ("fromEntries", methods.from_entries, 1),
             ("getPrototypeOf", methods.get_prototype_of, 1),
+            ("setPrototypeOf", methods.set_prototype_of, 2),
             ("hasOwn", methods.has_own, 2),
             ("entries", methods.entries, 1),
             ("values", methods.values, 1),
