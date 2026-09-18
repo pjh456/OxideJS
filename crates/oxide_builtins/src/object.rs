@@ -669,18 +669,32 @@ pub(crate) fn define_from_descriptor<H: VmHost>(
     let set_field = own_field(vm, desc_val, set_si);
     let writable_field = own_field(vm, desc_val, writable_si);
 
-    let existing_pos = {
+    // 数组 length 是无 shape 槽的虚拟数据属性：需与普通已有属性一样参与描述符
+    // 缺省回填（writable 保持当前值、value 保持当前长度），其当前描述符由元素
+    // 计数与独立可写位虚拟构造；enumerable/configurable 恒为 false。
+    let length_si = vm.kernel_core().perm_interner().intern("length").0;
+    let is_array_length = unsafe { &*obj_ptr }.is_array() && key_si == length_si;
+
+    let existing_pos = if is_array_length {
+        None
+    } else {
         let obj = unsafe { &*obj_ptr };
         vm.get_own_property_slot(obj, key_si)
     };
-    let existing_meta = existing_pos.map(|pos| {
-        let obj = unsafe { &*obj_ptr };
-        // 已有属性无显式 meta（普通数据属性/数组元素）时按默认属性回填：
-        // 描述符缺省字段保持现有值（writable/enumerable/configurable 均 true），
-        // 而非按新属性处理为 false（Object.defineProperty 省略字段不改已有属性）。
-        obj.prop_meta_at(pos)
-            .unwrap_or_else(|| oxide_types::object::PropMetaEntry::data(PropAttributes::DEFAULT_DATA))
-    });
+    let existing_meta = if is_array_length {
+        let writable = unsafe { &*obj_ptr }.is_length_writable();
+        Some(oxide_types::object::PropMetaEntry::data(PropAttributes::new(writable, false, false)))
+    } else {
+        existing_pos.map(|pos| {
+            let obj = unsafe { &*obj_ptr };
+            // 已有属性无显式 meta（普通数据属性/数组元素）时按默认属性回填：
+            // 描述符缺省字段保持现有值（writable/enumerable/configurable 均 true），
+            // 而非按新属性处理为 false（Object.defineProperty 省略字段不改已有属性）。
+            obj.prop_meta_at(pos)
+                .unwrap_or_else(|| oxide_types::object::PropMetaEntry::data(PropAttributes::DEFAULT_DATA))
+        })
+    };
+    let has_existing = existing_pos.is_some() || is_array_length;
 
     // 模块命名空间 exotic [[DefineOwnProperty]]（规范 10.4.6.5）：Symbol 键委托
     // 普通语义；导出键仅接受无变更、值不变或 writable:true，值变与 writable:false
@@ -715,10 +729,14 @@ pub(crate) fn define_from_descriptor<H: VmHost>(
         return Err("Invalid property descriptor: cannot mix data and accessor fields".to_string());
     }
 
-    let existing_value = existing_pos.map_or(JsValue::undefined(), |pos| {
-        let obj = unsafe { &*obj_ptr };
-        obj.get_prop_at(pos)
-    });
+    let existing_value = if is_array_length {
+        unsafe { &*obj_ptr }.logical_len_value()
+    } else {
+        existing_pos.map_or(JsValue::undefined(), |pos| {
+            let obj = unsafe { &*obj_ptr };
+            obj.get_prop_at(pos)
+        })
+    };
 
     let obj = unsafe { &mut *obj_ptr };
     if has_accessor {
@@ -739,12 +757,12 @@ pub(crate) fn define_from_descriptor<H: VmHost>(
         }
         vm.define_accessor_property(obj, key_si, get, set, PropAttributes::new(false, enumerable, configurable))?;
     } else if has_data {
-        let value = if existing_pos.is_some() {
+        let value = if has_existing {
             value_field.unwrap_or(existing_value)
         } else {
             value_field.unwrap_or(JsValue::undefined())
         };
-        let writable = if existing_pos.is_some() {
+        let writable = if has_existing {
             writable_field
                 .map(oxide_runtime_api::to_boolean)
                 .unwrap_or_else(|| existing_meta.map(|m| m.attributes.writable()).unwrap_or(false))
@@ -753,7 +771,7 @@ pub(crate) fn define_from_descriptor<H: VmHost>(
         };
         vm.define_data_property(obj, key_si, value, PropAttributes::new(writable, enumerable, configurable))?;
     } else {
-        if existing_pos.is_none() {
+        if !has_existing {
             vm.define_data_property(
                 obj,
                 key_si,
@@ -830,7 +848,7 @@ pub fn object_define_property<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResul
     let si = vm.property_key_si(vm.reg(args[2]));
 
     if let Err(msg) = define_from_descriptor(vm, obj_ptr, si, vm.reg(args[3])) {
-        return NativeResult::Err(crate::error::create_type_error(vm, &msg));
+        return NativeResult::Err(crate::error::create_define_failure(vm, &msg));
     }
     NativeResult::Ok(obj_val)
 }
@@ -853,8 +871,8 @@ pub fn object_get_own_property_descriptor<H: VmHost>(vm: &mut H, args: &[u8]) ->
     let obj = unsafe { &*obj_ptr };
 
     // 数组 length 是虚拟属性（无 shape 槽，ordinary_get 直接返回逻辑长度）：
-    // 描述符 {value: len, writable: !frozen, enumerable: false, configurable: false}。
-    // 冻结数组（含模板对象）writable=false；普通数组 writable=true。
+    // 描述符 {value: len, writable: !frozen && 非显式收窄, enumerable: false,
+    // configurable: false}。冻结数组与经 defineProperty 收窄的数组 writable=false。
     let length_si = vm.kernel_core().perm_interner().intern("length").0;
     if obj.is_array() && key == length_si {
         let desc_proto = vm.session().builtin_world().object_proto.as_ptr() as *mut JsObject;
@@ -865,7 +883,7 @@ pub fn object_get_own_property_descriptor<H: VmHost>(vm: &mut H, args: &[u8]) ->
         let sh = unsafe { &*sh };
         let sf = unsafe { &*sf };
         push_desc_prop(d, sh, sf.intern("value").0, obj.logical_len_value());
-        push_desc_prop(d, sh, sf.intern("writable").0, JsValue::bool(!obj.is_frozen()));
+        push_desc_prop(d, sh, sf.intern("writable").0, JsValue::bool(obj.is_length_writable()));
         push_desc_prop(d, sh, sf.intern("enumerable").0, JsValue::bool(false));
         push_desc_prop(d, sh, sf.intern("configurable").0, JsValue::bool(false));
         return NativeResult::Ok(JsValue::from_js_object(desc));

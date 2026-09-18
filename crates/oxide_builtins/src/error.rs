@@ -107,6 +107,18 @@ pub fn create_range_error<H: VmHost>(host: &mut H, msg: &str) -> JsValue {
     create_kind_error(host, "RangeError", msg)
 }
 
+/// 从 `defineProperty` 通道的错误文本恢复异常对象。
+///
+/// 数组 length 的 `ArraySetLength` 非法值以 `"RangeError: "` 前缀标记 kind，
+/// 须保留为 RangeError；其余 define 失败（非可配置收窄、不可扩展、accessor
+/// 冲突等）统一投影为 TypeError。
+pub fn create_define_failure<H: VmHost>(host: &mut H, msg: &str) -> JsValue {
+    match msg.strip_prefix("RangeError: ") {
+        Some(rest) => create_range_error(host, rest),
+        None => create_type_error(host, msg),
+    }
+}
+
 /// 创建一个带指定 message 的 SyntaxError 对象。
 pub fn create_syntax_error<H: VmHost>(host: &mut H, msg: &str) -> JsValue {
     create_kind_error(host, "SyntaxError", msg)

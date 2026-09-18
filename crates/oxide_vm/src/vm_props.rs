@@ -364,6 +364,13 @@ impl Vm {
             if obj.is_frozen() {
                 return self.raise_type_error("Cannot assign to read only property 'length'");
             }
+            // defineProperty 显式收窄的不可写 length：严格模式抛 TypeError，sloppy 静默。
+            if !obj.is_length_writable() {
+                if strict {
+                    return self.raise_type_error("Cannot assign to read only property 'length'");
+                }
+                return Ok(());
+            }
             let pc_before = self.pc;
             let number_len = self.coerce_number_bounded(val)?;
             // ToPrimitive 抛错（valueOf/toString throw）已被 unwind 定向到外围 catch 时
@@ -844,6 +851,11 @@ impl Vm {
                 );
             }
         }
+        // 数组 length 是无 shape 槽的虚拟数据属性：按 ArraySetLength 语义应用，
+        // 不得走通用命名属性路径建影子槽（会造成读写分叉）。
+        if obj.is_array() && prop_name_si == self.length_si {
+            return self.define_array_length(obj, val, attributes);
+        }
         // 新命名属性（shape 链 lookup miss）且对象不可扩展 → 拒绝定义
         // （Object.defineProperty 抛 TypeError；Reflect.defineProperty 自动转 false）。
         if self
@@ -924,6 +936,10 @@ impl Vm {
                 return self.define_array_index_element(obj, index, JsValue::undefined(), attributes, true, get, set);
             }
         }
+        // 数组 length 当前为不可配置数据属性，禁止转为访问器属性。
+        if obj.is_array() && prop_name_si == self.length_si {
+            return Err("cannot redefine non-configurable property".to_string());
+        }
         // 新命名属性（shape 链 lookup miss）且对象不可扩展 → 拒绝定义。
         if self
             .kernel_core
@@ -977,6 +993,11 @@ impl Vm {
         if pos > oxide_types::object::MAX_DENSE_PROPS {
             return Err("array index out of dense range".to_string());
         }
+        // 数组 exotic [[DefineOwnProperty]]：索引达到/超过当前 length 时须增长 length，
+        // length 不可写则拒绝；索引小于 length 的元素重定义不受此限。
+        if pos as u32 >= obj.logical_len() && !obj.is_length_writable() {
+            return Err("cannot define property beyond non-writable length".to_string());
+        }
         // 新元素（越界或 hole 空洞）要求对象可扩展；已有元素重定义不受限（走下方
         // non-configurable 校验）。
         let is_new = pos >= obj.array_prop_count as usize || obj.prop_meta_at(pos).is_some_and(|m| m.is_hole());
@@ -1012,6 +1033,75 @@ impl Vm {
         } else {
             obj.set_data_meta(pos, attributes);
         }
+        obj.bump_generation();
+        Ok(())
+    }
+
+    /// 数组 length 虚拟属性的 define 路径：按 `ArraySetLength` 语义把描述符值
+    /// 强转、校验并应用到元素区与逻辑长度。
+    ///
+    /// # 步骤
+    /// 1. `ToUint32` 与 `ToNumber` 两次强转（均可触发用户代码），结果不等抛
+    ///    RangeError；强转严格早于任何描述符校验。
+    /// 2. 校验当前非可配置数据属性的收窄：configurable/enumerable 不得置真；
+    ///    当前不可写时不得再请求 writable 或改动值。
+    /// 3. 收缩时先检查 `[newLen, oldLen)` 内是否存在不可配置元素，存在则整体失败
+    ///    且不改动元素区。
+    /// 4. 应用新逻辑长度（截断/扩 hole、dense 上限覆盖）并按描述符写可写位。
+    ///
+    /// # 边界与前提
+    /// - 仅由 `define_data_property` 对 `is_array()` 对象且键为 `length_si` 时调用。
+    /// - 描述符缺 `value` 时调用方以当前逻辑长度为哨兵值，数值强转为恒等无副作用
+    ///   转换。
+    ///
+    /// # 副作用
+    /// - 截断/扩展元素区与元素元数据、可能置/清 `array_len_override`、写 length
+    ///   可写位、bump 世代。
+    ///
+    /// # 注意事项
+    /// - 非法长度以 `"RangeError: "` 前缀标记 kind，由 Object/Reflect 入口各自投影；
+    ///   其余失败投影为 TypeError。
+    fn define_array_length(
+        &mut self, obj: &mut JsObject, val: JsValue, attributes: PropAttributes,
+    ) -> Result<(), String> {
+        // [[Value]] 两次强转都要实际执行（可触发用户代码），且须早于描述符校验；
+        // 两次强转之间用户代码可能把 length 收窄为不可写。
+        let new_len = self.coerce_uint32_bounded(val)?;
+        let number_len = self.coerce_number_bounded(val)?;
+        if new_len as f64 != number_len {
+            return Err("RangeError: Invalid array length".to_string());
+        }
+
+        let old_logical = obj.logical_len();
+        // 当前 length 是不可配置、不可枚举的数据属性；writable 由冻结标志与独立位决定。
+        if attributes.configurable() || attributes.enumerable() {
+            return Err("cannot redefine non-configurable property".to_string());
+        }
+        if !obj.is_length_writable() && (attributes.writable() || new_len != old_logical) {
+            return Err("cannot redefine non-configurable property".to_string());
+        }
+        // 收缩先验证不可配置元素：存在则整体失败，元素区保持原状（错误先于变更）。
+        if new_len < old_logical {
+            let old_count = obj.array_prop_count as usize;
+            for idx in new_len as usize..old_count {
+                if obj.prop_meta_at(idx).is_some_and(|m| !m.attributes.configurable()) {
+                    return Err("cannot redefine non-configurable property".to_string());
+                }
+            }
+        }
+        // dense 物理槽以 MAX_DENSE_PROPS 封顶，超限长度另记逻辑长度覆盖。
+        let old_count = obj.array_prop_count as usize;
+        let new_phys = (new_len as usize).min(oxide_types::object::MAX_DENSE_PROPS);
+        obj.set_prop_count(new_phys);
+        for idx in old_count..new_phys {
+            obj.mark_hole_at(idx);
+        }
+        if new_len as usize > oxide_types::object::MAX_DENSE_PROPS {
+            obj.set_array_len_override(new_len);
+        } else {
+            obj.clear_array_len_override();
+        }
+        obj.set_length_non_writable(!attributes.writable());
         obj.bump_generation();
         Ok(())
     }

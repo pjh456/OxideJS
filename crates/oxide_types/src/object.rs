@@ -65,6 +65,7 @@ pub const MAX_DENSE_PROPS: usize = 1_000_000;
 ///     \[0\]     is_frozen
 ///     \[1\]     is_sealed
 ///     \[2\]     is_module_namespace
+///     \[3\]     is_length_non_writable（数组 length 虚拟属性的数据属性 writable=false）
 ///   array_elements: *mut u8 (8 字节，数组对象元素区 Box\<Vec\<JsValue\>\>)
 ///   array_elements_meta: *mut u8 (8 字节，数组元素元数据 Box\<Vec\<Option\<PropMetaEntry\>\>\>)
 ///   hash_props: *mut u8 (8 字节，命名属性 Box\<Vec\<JsValue\>\>)
@@ -719,6 +720,27 @@ impl JsObject {
             self._pad |= 1 << 2;
         } else {
             self._pad &= !(1 << 2);
+        }
+    }
+
+    /// 数组 length 虚拟属性是否可写。
+    ///
+    /// # 边界与前提
+    /// - 仅对数组对象有语义；冻结数组（`Object.freeze`）恒返回 `false`，不依赖独立位。
+    /// - 独立位只记录 `defineProperty` 显式设置 `writable:false` 的收窄。
+    pub fn is_length_writable(&self) -> bool {
+        !self.is_frozen() && (self._pad >> 3) & 1 == 0
+    }
+
+    /// 设置数组 length 虚拟属性的不可写标志。
+    ///
+    /// # 副作用
+    /// - 写 `_pad` bit3；`Clone`/晋升复制 `_pad`，标志随之保留。
+    pub fn set_length_non_writable(&mut self, non_writable: bool) {
+        if non_writable {
+            self._pad |= 1 << 3;
+        } else {
+            self._pad &= !(1 << 3);
         }
     }
 
