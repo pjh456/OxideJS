@@ -14,6 +14,12 @@ use oxide_types::value::JsValue;
 /// `Symbol.toStringTag` 在 well-known symbol 表中的序号，命名空间标签键按其编码。
 const TO_STRING_TAG_SYMBOL_ID: u32 = 9;
 
+/// 未初始化导出被读时的 ReferenceError 文本。
+///
+/// exotic `[[Get]]` 与 `[[GetOwnProperty]]` 消费端（`Object.*`、for-in）共用同一
+/// 文本，错误类型由消费端的 `create_reference_error` / `create_from_text` 恢复。
+pub const NS_UNINITIALIZED_MESSAGE: &str = "Cannot access module export before initialization";
+
 /// 模块命名空间导出属性描述符：可写、可枚举、不可配置（module namespace exotic）。
 ///
 /// 规范 10.4.6.5 返回 `{writable: true, enumerable: true, configurable: false}`；

@@ -66,6 +66,7 @@ impl Emitter {
                 Operand::Reg(val_reg),
                 Operand::Imm(uv as u16),
             ));
+            self.emit_module_write_through(name, val_reg, ctx)?;
             Ok(val_reg)
         } else if let Some(cell_idx) = captured_cell {
             let val_reg = ctx.alloc_reg();
@@ -86,6 +87,7 @@ impl Emitter {
                 Operand::Reg(val_reg),
                 Operand::Imm(cell_idx as u16),
             ));
+            self.emit_module_write_through(name, val_reg, ctx)?;
             Ok(val_reg)
         } else {
             let var_reg = ctx.lookup_or_global(name);
@@ -128,6 +130,8 @@ impl Emitter {
                 // 可写内置名：RMW 新值同步落全局对象属性。
                 self.emit_global_put_write(name, var_reg, ctx);
             }
+            // live 模块顶层复合赋值同样写穿命名空间条目。
+            self.emit_module_write_through(name, var_reg, ctx)?;
             Ok(var_reg)
         }
     }
@@ -586,12 +590,12 @@ impl Emitter {
                 if with_dynamic {
                     let is_const = ctx.lookup_const_flag(name);
                     let const_flag: u16 = if is_const { 1 } else { 0 };
-                    self.emit_with_dynamic_write(name, val_reg, const_flag, ctx);
+                    self.emit_with_dynamic_write(name, val_reg, const_flag, ctx)?;
                     return Ok(val_reg);
                 }
                 let is_const = ctx.lookup_const_flag(name);
                 let const_flag: u16 = if is_const { 1 } else { 0 };
-                self.emit_identifier_store(name, val_reg, const_flag, ctx);
+                self.emit_identifier_store(name, val_reg, const_flag, ctx)?;
                 Ok(val_reg)
             }
         } else if matches!(

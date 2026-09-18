@@ -307,3 +307,22 @@ fn pre_register_for_self_namespace_import() {
     assert_eq!(object_calls.len(), 1, "__moduleObject 只应调用一次");
     assert_eq!(object_calls[0].ext.first().copied(), Some(0), "__moduleObject 应保持零实参");
 }
+
+/// 面 11：写穿发射门控——live 模块顶层重赋按导出名集合追加 `__moduleSet`；
+/// 非 live 模块（无自导入 ns）重赋不得产生任何额外注册，IR 零变化。
+#[test]
+fn write_through_only_for_live_modules() {
+    // 一个源绑定 a 背两个导出名 a/b：export 声明注册一次、再导出注册一次，
+    // a = 2 的写穿各写 a、b 一次，共 4 次 `__moduleSet`。
+    let (ir, _) = emit_module(
+        "import * as ns from './self.js'; export let a = 1; export { a as b }; a = 2;",
+        "./self.js",
+        &[("./self.js", ModuleKind::Js, "export let a = 1;")],
+    )
+    .expect("live 模块应编译成功");
+    assert_eq!(native_calls_to(&ir, "__moduleSet"), 4, "live 模块重赋应写穿两个导出名");
+
+    // 非 live：重赋只写绑定槽，不得追加 `__moduleSet`。
+    let (ir, _) = emit_module("export let a = 1; a = 2;", "./entry.js", &[]).expect("非 live 模块应编译成功");
+    assert_eq!(native_calls_to(&ir, "__moduleSet"), 1, "非 live 模块重赋不得写穿");
+}

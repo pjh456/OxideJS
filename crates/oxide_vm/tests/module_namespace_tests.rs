@@ -186,3 +186,85 @@ fn namespace_self_import_live_entries() {
         "live 自导入 ns 的未初始化读 / 键存在性 / 活值读不符"
     );
 }
+
+/// 未初始化导出在枚举面与描述符面经 `? [[GetOwnProperty]]` 抛 ReferenceError；
+/// `[[OwnPropertyKeys]]` 面（getOwnPropertyNames / Reflect.ownKeys）不读值故不抛。
+#[test]
+fn namespace_uninitialized_enumeration_throws_reference_error() {
+    let cwd = std::env::current_dir().expect("cwd");
+    let dir = cwd.join("__module_namespace_uninit_enum__");
+    std::fs::create_dir_all(&dir).expect("mkdir");
+    std::fs::write(
+        dir.join("main.mjs"),
+        "import * as ns from './main.mjs';\n \
+         const threw = fn => { try { fn(); return false; } catch (e) { return e instanceof ReferenceError; } };\n \
+         const names = Object.getOwnPropertyNames(ns).join(',');\n \
+         const ownKeysCount = Reflect.ownKeys(ns).length;\n \
+         globalThis.__ns = [\n \
+           threw(() => Object.keys(ns)),\n \
+           threw(() => Object.values(ns)),\n \
+           threw(() => Object.entries(ns)),\n \
+           threw(() => Object.assign({}, ns)),\n \
+           threw(() => Object.prototype.hasOwnProperty.call(ns, 'default')),\n \
+           threw(() => Object.getOwnPropertyDescriptor(ns, 'default')),\n \
+           threw(() => Object.prototype.propertyIsEnumerable.call(ns, 'default')),\n \
+           threw(() => { for (const k in ns) {} }),\n \
+           names,\n \
+           ownKeysCount,\n \
+         ].join('|');\n \
+         export default 0;",
+    )
+    .expect("write main");
+    let _cleanup = Cleanup(dir.clone());
+
+    let result = run_namespace_module(&dir);
+    assert_eq!(
+        result, "true|true|true|true|true|true|true|true|default|2",
+        "未初始化导出的枚举/描述符抛错或 ownKeys 反向守卫不符"
+    );
+}
+
+/// 顶层对导出源绑定的重赋写穿命名空间：一个源绑定背两个导出名时同值更新，
+/// 复合赋值路径与简单赋值路径一致。
+#[test]
+fn namespace_assignment_write_through_multiple_export_names() {
+    let cwd = std::env::current_dir().expect("cwd");
+    let dir = cwd.join("__module_namespace_write_through__");
+    std::fs::create_dir_all(&dir).expect("mkdir");
+    std::fs::write(
+        dir.join("main.mjs"),
+        "import * as ns from './main.mjs';\n \
+         export let a = 1;\n \
+         export { a as b };\n \
+         export let c = 1;\n \
+         a = 2;\n \
+         c += 2;\n \
+         globalThis.__ns = [ns.a, ns.b, ns.c].join('|');",
+    )
+    .expect("write main");
+    let _cleanup = Cleanup(dir.clone());
+
+    let result = run_namespace_module(&dir);
+    assert_eq!(result, "2|2|3", "导出源绑定重赋未写穿命名空间活值");
+}
+
+/// G2 反向守卫：外部导入的命名空间无条目表（非 live），枚举与 for-in 行为不变。
+#[test]
+fn external_namespace_enumeration_stays_unaffected() {
+    let cwd = std::env::current_dir().expect("cwd");
+    let dir = cwd.join("__module_namespace_external__");
+    std::fs::create_dir_all(&dir).expect("mkdir");
+    std::fs::write(dir.join("dep.mjs"), "export const z = 1;").expect("write dep");
+    std::fs::write(
+        dir.join("main.mjs"),
+        "import * as ns from './dep.mjs';\n \
+         let n = 0;\n \
+         for (const k in ns) n++;\n \
+         globalThis.__ns = [Object.keys(ns).join(','), n, Object.values(ns).join(',')].join('|');",
+    )
+    .expect("write main");
+    let _cleanup = Cleanup(dir.clone());
+
+    let result = run_namespace_module(&dir);
+    assert_eq!(result, "z|1|1", "非 live 外部命名空间枚举行为不应变化");
+}

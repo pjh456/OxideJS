@@ -469,6 +469,25 @@ pub fn object_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     NativeResult::Ok(JsValue::from_js_object(obj))
 }
 
+/// 模块命名空间字符串导出按 exotic `[[GetOwnProperty]]` 读取活值状态：
+/// - `Ok(Some(v))`：该键是已初始化导出，`v` 为条目活值；
+/// - `Ok(None)`：非 module namespace / 非导出名 / symbol 键，调用方落普通属性路径；
+/// - `Err(msg)`：导出名已预注册但未初始化，调用方抛 `msg` 对应的 ReferenceError。
+///
+/// # 注意事项
+/// - 只查条目表、不读真实属性槽：条目表是 live 命名空间的权威状态，真实槽可能
+///   只是初始化前的 `undefined` 占位。
+fn namespace_export_get(obj: &JsObject, key_si: u32) -> Result<Option<JsValue>, &'static str> {
+    if is_symbol_key(key_si) {
+        return Ok(None);
+    }
+    match crate::module::module_ns_export(obj, key_si) {
+        None => Ok(None),
+        Some(crate::module::ModuleNsQuery::Initialized(v)) => Ok(Some(v)),
+        Some(crate::module::ModuleNsQuery::Uninitialized) => Err(crate::module::NS_UNINITIALIZED_MESSAGE),
+    }
+}
+
 /// `Object.keys(obj)`：返回可枚举自身属性的字符串名数组。
 pub fn object_keys<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let obj_ptr = match require_obj_arg(vm, args, "keys") {
@@ -485,6 +504,12 @@ pub fn object_keys<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
                 .unwrap_or(PropAttributes::DEFAULT_DATA.enumerable())
         })
         .collect();
+    // EnumerableOwnProperties 对每个字符串键走 `? [[GetOwnProperty]]`：未初始化导出抛错。
+    for (si, _offset) in &owned_keys {
+        if let Err(msg) = namespace_export_get(obj, *si) {
+            return NativeResult::Err(crate::error::create_reference_error(vm, msg));
+        }
+    }
     let n = owned_keys.len();
     let array_proto = vm.session().builtin_world().array_proto.as_ptr() as *mut JsObject;
     let arr = vm.alloc_object(JsObject::new_array(
@@ -580,7 +605,8 @@ pub fn object_assign<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
             // 触发 getter；getter 抛错按规范中断整个 assign。
             let val = match vm.ordinary_get(source, si, source_val) {
                 Ok(v) => v,
-                Err(err) => return NativeResult::Err(crate::error::create_type_error(vm, &err)),
+                // ReferenceError 等错误文本经 create_from_text 恢复类型，不得降级为 TypeError。
+                Err(err) => return NativeResult::Err(crate::error::create_from_text(vm, &err)),
             };
             all_assignments.push((si, val));
         }
@@ -848,7 +874,12 @@ pub fn object_get_own_property_descriptor<H: VmHost>(vm: &mut H, args: &[u8]) ->
     let Some(offset) = vm.get_own_property_slot(obj, key) else {
         return NativeResult::Ok(JsValue::undefined());
     };
-    let found_value = obj.get_prop_at(offset);
+    // 模块命名空间字符串导出：`? [[Get]]` 读条目活值，未初始化抛 ReferenceError。
+    let found_value = match namespace_export_get(obj, key) {
+        Ok(Some(value)) => value,
+        Ok(None) => obj.get_prop_at(offset),
+        Err(msg) => return NativeResult::Err(crate::error::create_reference_error(vm, msg)),
+    };
     let found_meta = obj.prop_meta_at(offset);
 
     let sf_ptr = vm.kernel_core().perm_interner().as_ref() as *const PermInterner;
@@ -1345,7 +1376,14 @@ pub fn object_proto_has_own_property<H: VmHost>(vm: &mut H, args: &[u8]) -> Nati
         Err(msg) => return NativeResult::Err(crate::error::create_type_error(vm, &msg)),
     };
     let obj = unsafe { &*obj_val.as_js_object_ptr() };
-    NativeResult::Ok(JsValue::bool(vm.get_own_property_slot(obj, key_si).is_some()))
+    if vm.get_own_property_slot(obj, key_si).is_none() {
+        return NativeResult::Ok(JsValue::bool(false));
+    }
+    // HasOwnProperty 经 `? [[GetOwnProperty]]`：未初始化导出抛 ReferenceError。
+    if let Err(msg) = namespace_export_get(obj, key_si) {
+        return NativeResult::Err(crate::error::create_reference_error(vm, msg));
+    }
+    NativeResult::Ok(JsValue::bool(true))
 }
 
 /// `Object.prototype.propertyIsEnumerable(key)`：指定自身属性是否可枚举。
@@ -1367,6 +1405,10 @@ pub fn object_proto_property_is_enumerable<H: VmHost>(vm: &mut H, args: &[u8]) -
     let Some(pos) = vm.get_own_property_slot(obj, key_si) else {
         return NativeResult::Ok(JsValue::bool(false));
     };
+    // PropertyIsEnumerable 同样先经 `? [[GetOwnProperty]]` 再取 enumerable 位。
+    if let Err(msg) = namespace_export_get(obj, key_si) {
+        return NativeResult::Err(crate::error::create_reference_error(vm, msg));
+    }
     let enumerable = obj
         .prop_meta_at(pos)
         .map(|meta| meta.attributes.enumerable())
@@ -1453,7 +1495,12 @@ pub fn object_entries<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     ));
     for (i, (si, offset)) in owned_keys.iter().enumerate() {
         let key_val = key_si_to_js_value(vm, *si);
-        let val = obj.get_prop_at(*offset);
+        // EnumerableOwnProperties 的 "key+value"：值经条目活值查询，未初始化抛错。
+        let val = match namespace_export_get(obj, *si) {
+            Ok(Some(value)) => value,
+            Ok(None) => obj.get_prop_at(*offset),
+            Err(msg) => return NativeResult::Err(crate::error::create_reference_error(vm, msg)),
+        };
         let pair = vm.alloc_object(JsObject::new_array(
             EMPTY_SHAPE_ID,
             JsValue::from_js_object(array_proto),
@@ -1636,7 +1683,12 @@ pub fn object_values<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         vm.epoch().bump(),
     ));
     for (i, (_si, offset)) in owned_keys.iter().enumerate() {
-        let val = obj.get_prop_at(*offset);
+        // EnumerableOwnProperties 的 "value"：值经条目活值查询，未初始化抛错。
+        let val = match namespace_export_get(obj, *_si) {
+            Ok(Some(value)) => value,
+            Ok(None) => obj.get_prop_at(*offset),
+            Err(msg) => return NativeResult::Err(crate::error::create_reference_error(vm, msg)),
+        };
         unsafe {
             (*arr).set_prop_at(i, val);
         }

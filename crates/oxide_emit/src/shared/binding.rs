@@ -102,7 +102,7 @@ impl Emitter {
         } else if !ctx.with_stack.is_empty() && !ctx.is_with_internal_binding(name) {
             // with 内 var 初始化：对象有该属性则写对象，否则写提升槽（动态解析）。
             // ponytail: with 内顶层 var 不写全局对象属性，with 语句本身已是稀见用例。
-            self.emit_with_dynamic_write(name, src_reg, 0, ctx);
+            self.emit_with_dynamic_write(name, src_reg, 0, ctx)?;
         } else {
             // const 声明路径 STORE_VAR 恒 b=0，不查运行时 guard。
             // guard 读 regs[rd] 判断槽是否已初始化，依赖槽初始为 undefined；

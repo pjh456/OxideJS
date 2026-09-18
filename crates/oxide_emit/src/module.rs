@@ -477,6 +477,21 @@ impl Emitter {
             }
         }
 
+        // —— 写穿反演：源绑定名 → 导出名集合。仅 live 模块（自导入 ns）填充：
+        // 非 live 模块不激活写穿，编译产物逐字节零 IR 变化。按名排序保证多导出名
+        // 映射到同一源绑定时的发射顺序确定。——
+        if has_self_ns_import {
+            let mut pairs: Vec<(&String, &String)> =
+                export_name_map.iter().map(|(exported, source)| (source, exported)).collect();
+            pairs.sort();
+            for (source, exported) in pairs {
+                ctx.module_local_exports
+                    .entry(source.clone())
+                    .or_default()
+                    .push(exported.clone());
+            }
+        }
+
         // —— live 命名空间预注册：早于 hoisted 函数声明的 __moduleSet 与 body 求值，
         // 按名序预注册全部本地导出名，使自导入 ns 在读点先观察到未初始化状态。 ——
         if has_self_ns_import {
@@ -659,6 +674,30 @@ impl Emitter {
     fn emit_module_set(&self, ctx: &mut CompileCtx, ns_reg: u32, name: &str, value_reg: u32) -> Result<(), String> {
         let name_reg = self.load_string_const(name, ctx);
         self.emit_module_call(ctx, "__moduleSet", &[ns_reg, name_reg, value_reg])?;
+        Ok(())
+    }
+
+    /// 顶层对导出源绑定的写入同步到命名空间：按反演表把新值写入每个导出名。
+    ///
+    /// # 边界与前提
+    /// - 仅在模块顶层 live 模块激活：`module_local_exports` 只由自导入 ns 模块填充，
+    ///   嵌套函数 ctx 不继承该表，行为自然为零；`name` 非导出源时直接返回。
+    /// - 调用方保证 `value_reg` 是写入后的当前值；const 抛错分支不得调用本函数。
+    ///
+    /// # 副作用
+    /// - 每个命中导出名发射一次 `__moduleSet` 调用，更新命名空间条目与真实槽值。
+    pub(crate) fn emit_module_write_through(
+        &self, name: &str, value_reg: u32, ctx: &mut CompileCtx,
+    ) -> Result<(), String> {
+        let Some(ns_reg) = ctx.module_ns_reg else {
+            return Ok(());
+        };
+        let Some(export_names) = ctx.module_local_exports.get(name).cloned() else {
+            return Ok(());
+        };
+        for export_name in export_names {
+            self.emit_module_set(ctx, ns_reg, &export_name, value_reg)?;
+        }
         Ok(())
     }
 

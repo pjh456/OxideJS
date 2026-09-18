@@ -483,6 +483,27 @@ impl Vm {
             current = cur.proto();
         }
 
+        // 模块命名空间 exotic：EnumerateObjectProperties 构建键表时逐键走
+        // `? [[GetOwnProperty]]`，未初始化导出抛 ReferenceError。校验须在排序与
+        // 迭代器建立之前（INIT 期），不遗留 for-in 迭代器；非 live ns 无条目表，
+        // `module_ns_export` 返回 None，落普通路径零行为变化。
+        if obj_val.is_object() {
+            let ns_obj = unsafe { &*obj_val.as_js_object_ptr() };
+            if ns_obj.is_module_namespace() {
+                for (_key_val, si) in &keys_vec {
+                    if is_symbol_key(*si) {
+                        continue;
+                    }
+                    if let Some(oxide_builtins::module::ModuleNsQuery::Uninitialized) =
+                        oxide_builtins::module::module_ns_export(ns_obj, *si)
+                    {
+                        return self
+                            .raise_error_kind("ReferenceError", oxide_builtins::module::NS_UNINITIALIZED_MESSAGE);
+                    }
+                }
+            }
+        }
+
         // ES 枚举序：整型下标键升序，其余按插入序。稳定排序保持非下标键间的插入序。
         keys_vec.sort_by(|(_, a_si), (_, b_si)| {
             match (self.array_index_from_property_key(*a_si), self.array_index_from_property_key(*b_si)) {

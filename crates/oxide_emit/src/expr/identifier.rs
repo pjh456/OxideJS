@@ -153,14 +153,19 @@ impl Emitter {
     /// - cell 写穿共享单元，无运行时 guard；const 拦截由本入口编译期完成。
     /// - 不可写全局内置（undefined/NaN/Infinity）的全局绑定写在此拦截：sloppy 跳过
     ///   寄存器写（槽保留入口预载原值），strict 抛 TypeError；局部遮蔽绑定不受影响。
-    pub(crate) fn emit_identifier_store(&self, name: &str, val_reg: u32, const_flag: u16, ctx: &mut CompileCtx) {
+    ///
+    /// # 副作用
+    /// - live 模块顶层对导出源绑定的写入追加 `__moduleSet`，同步命名空间条目。
+    pub(crate) fn emit_identifier_store(
+        &self, name: &str, val_reg: u32, const_flag: u16, ctx: &mut CompileCtx,
+    ) -> Result<(), String> {
         // 循环 update 段的 let/const 循环变量是 per-iteration 可变绑定（CreateMutableBinding），
         // 写寄存器而非 cell，且豁免 const 检查（register_update_names 覆盖全部循环头声明名）。
         let in_loop_update = ctx.register_update_names.iter().any(|n| n == name);
         // const 再赋值编译期抛 TypeError：赋值路径（含闭包捕获 const 写 cell）统一拦截。
         if const_flag != 0 && !in_loop_update {
-            let _ = self.emit_throw_error("TypeError", "Assignment to constant variable", ctx);
-            return;
+            let _ = self.emit_throw_error("TypeError", "Assignment to constant variable", ctx)?;
+            return Ok(());
         }
         // 循环 update 段：被捕获绑定走寄存器而非 cell——C 风格 for 的 let/const
         // 循环变量每迭代新分配一个 cell，update 写寄存器供其拷入，不污染本迭代
@@ -172,14 +177,14 @@ impl Emitter {
                     if ctx.is_strict {
                         let _ = self.emit_throw_error("TypeError", "cannot assign to read-only property", ctx);
                     }
-                    return;
+                    return Ok(());
                 }
                 ctx.inst(Inst::new(OpCode::STORE_VAR, Operand::Reg(reg), Operand::Reg(val_reg), Operand::Imm(0)));
                 // 可写内置名：值同步落全局对象属性，裸读（镜像）与反射不失步。
                 if ctx.targets_writable_builtin(name, reg) {
                     self.emit_global_put_write(name, reg, ctx);
                 }
-                return;
+                return Ok(());
             }
         }
         // 目标若是 upvalue 引用，走 STORE_UPVALUE
@@ -190,7 +195,8 @@ impl Emitter {
                 Operand::Reg(val_reg),
                 Operand::Imm(uv_idx as u16),
             ));
-            return;
+            self.emit_module_write_through(name, val_reg, ctx)?;
+            return Ok(());
         }
         // 目标若是被捕获 cell，走 CELL_SET；仅当名字当前可解析为真实词法绑定时才写
         // cell——捕获集按名保留的块级绑定在块退出后不可解析（隐式全局登记不算），
@@ -203,7 +209,8 @@ impl Emitter {
                     Operand::Reg(val_reg),
                     Operand::Imm(cell_idx as u16),
                 ));
-                return;
+                self.emit_module_write_through(name, val_reg, ctx)?;
+                return Ok(());
             }
         }
         let var_reg = ctx.lookup_or_global(name);
@@ -213,20 +220,20 @@ impl Emitter {
             if ctx.is_strict {
                 let _ = self.emit_throw_error("TypeError", "cannot assign to read-only property", ctx);
             }
-            return;
+            return Ok(());
         }
         let is_tier = self.is_global_tier_name(ctx, name);
         let is_implicit = ctx.is_implicit_global_reg(var_reg);
         if is_implicit && ctx.is_strict {
             // 严格模式未声明写：发射 ReferenceError 抛错，跳过寄存器写（值无关）。
-            let _ = self.emit_strict_undeclared_write(name, ctx);
-            return;
+            self.emit_strict_undeclared_write(name, ctx)?;
+            return Ok(());
         }
         if is_tier {
             // 顶层已声明 var 裸写：写入全局对象属性（顶层 var 的唯一存储，引擎侧不保留
             // 镜像副本）。
             self.emit_tier_global_write(name, val_reg, ctx);
-            return;
+            return Ok(());
         }
         ctx.inst(Inst::new(
             OpCode::STORE_VAR,
@@ -242,6 +249,9 @@ impl Emitter {
             // enumerable/configurable 位；否则内置名镜像槽与 globalThis 反射读到不同值。
             self.emit_global_put_write(name, var_reg, ctx);
         }
+        // 模块顶层对导出源绑定的写入同步命名空间条目；非 live 模块空表直接返回。
+        self.emit_module_write_through(name, val_reg, ctx)?;
+        Ok(())
     }
 
     /// with 内动态写入：对象有该属性则写对象，否则回退静态写入。
@@ -250,7 +260,9 @@ impl Emitter {
     /// - 仅在 `with_stack` 非空且名字非 with 内部绑定时调用。
     /// - 对象属性存在性判定与动态读取一致（`in` 含原型链）。
     /// - 回退目标未在静态作用域声明时不登记全局（with 外不应可见）。
-    pub(crate) fn emit_with_dynamic_write(&self, name: &str, val_reg: u32, const_flag: u16, ctx: &mut CompileCtx) {
+    pub(crate) fn emit_with_dynamic_write(
+        &self, name: &str, val_reg: u32, const_flag: u16, ctx: &mut CompileCtx,
+    ) -> Result<(), String> {
         let obj_reg = ctx.innermost_with_obj().expect("with stack non-empty");
         let key_idx = ctx.add_constant(Constant::String(name.to_string()));
         let key_reg = ctx.alloc_reg();
@@ -274,9 +286,10 @@ impl Emitter {
         ctx.labels.set_label_pos(fallback_label, ctx.insts.len());
         // 回退只写静态作用域已声明的绑定；未声明时丢弃值（隐式全局在 with 外不可解析）。
         if ctx.scopes.symbols.lookup_any(name).is_some() {
-            self.emit_identifier_store(name, val_reg, const_flag, ctx);
+            self.emit_identifier_store(name, val_reg, const_flag, ctx)?;
         }
         ctx.labels.set_label_pos(end_label, ctx.insts.len());
+        Ok(())
     }
 
     pub(crate) fn emit_identifier_expression(

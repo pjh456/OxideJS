@@ -56,7 +56,7 @@ impl Vm {
                     return match state {
                         oxide_builtins::module::ModuleNsQuery::Initialized(v) => Ok(v),
                         oxide_builtins::module::ModuleNsQuery::Uninitialized => {
-                            let msg = "Cannot access module export before initialization";
+                            let msg = oxide_builtins::module::NS_UNINITIALIZED_MESSAGE;
                             if self.native_call_depth == 0 {
                                 self.raise_error_kind("ReferenceError", msg)?;
                             } else {
