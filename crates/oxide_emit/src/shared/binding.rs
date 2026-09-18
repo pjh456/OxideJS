@@ -179,6 +179,8 @@ impl Emitter {
                     // 可写内置名：值同步落全局对象属性。
                     self.emit_global_put_write(name, var_reg, ctx);
                 }
+                // live 模块顶层解构赋值目标同样写穿命名空间条目。
+                self.emit_module_write_through(name, src_reg, ctx)?;
                 Ok(())
             }
             AssignmentTarget::ArrayAssignmentTarget(ap) => self.emit_array_assignment(ap, src_reg, ctx),
@@ -390,6 +392,8 @@ impl Emitter {
                     // 可写内置名：值同步落全局对象属性。
                     self.emit_global_put_write(name, var_reg, ctx);
                 }
+                // live 模块顶层解构赋值目标同样写穿命名空间条目。
+                self.emit_module_write_through(name, src_reg, ctx)?;
                 Ok(())
             }
             _ => Err("assignment target not supported".into()),
@@ -483,6 +487,8 @@ impl Emitter {
                         // 可写内置名：值同步落全局对象属性（其余属性继续赋值）。
                         self.emit_global_put_write(name, var_reg, ctx);
                     }
+                    // live 模块顶层解构赋值目标同样写穿命名空间条目。
+                    self.emit_module_write_through(name, prop_reg, ctx)?;
                 }
                 AssignmentTargetProperty::AssignmentTargetPropertyProperty(prop) => {
                     let (prop_reg, static_key, key_reg) =

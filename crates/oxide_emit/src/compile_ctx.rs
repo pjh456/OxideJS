@@ -137,10 +137,11 @@ pub struct CompileCtx {
     pub(crate) for_head_store_registers: HashSet<String>,
     /// 模块编译上下文：当前模块命名空间对象寄存器（`__moduleObject` 返回值）。
     pub(crate) module_ns_reg: Option<u32>,
-    /// 写穿反演表：本模块源绑定名 → 引用它的导出名集合。仅自导入 ns 的 live 模块
-    /// 填充；顶层对该源绑定的赋值据此同步命名空间条目。嵌套函数 ctx 为新建，
-    /// 不继承本字段，写穿天然只作用于模块顶层。
-    pub(crate) module_local_exports: HashMap<String, Vec<String>>,
+    /// 写穿反演表：本模块源绑定槽寄存器 → 引用它的导出名集合。仅自导入 ns 的
+    /// live 模块填充；顶层赋值按解析后的绑定槽命中此表时同步命名空间条目。
+    /// 以槽位而非名字为键，块级/catch 同名遮蔽解析到不同槽位，天然不误触发。
+    /// 嵌套函数 ctx 为新建，不继承本字段，写穿只作用于模块顶层。
+    pub(crate) module_local_export_regs: HashMap<u32, Vec<String>>,
     /// 已求值依赖模块的命名空间对象寄存器（按 import/export source 字符串索引）。
     pub(crate) module_dep_ns_regs: HashMap<String, u32>,
     /// 依赖模块规范路径（按 import/export source 字符串索引）：再导出来源身份用。
@@ -235,7 +236,7 @@ impl CompileCtx {
             register_update_names: Vec::new(),
             for_head_store_registers: HashSet::new(),
             module_ns_reg: None,
-            module_local_exports: HashMap::new(),
+            module_local_export_regs: HashMap::new(),
             module_dep_ns_regs: HashMap::new(),
             module_dep_paths: HashMap::new(),
             module_import_origins: HashMap::new(),

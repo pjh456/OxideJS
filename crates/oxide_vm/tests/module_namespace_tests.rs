@@ -248,6 +248,53 @@ fn namespace_assignment_write_through_multiple_export_names() {
     assert_eq!(result, "2|2|3", "导出源绑定重赋未写穿命名空间活值");
 }
 
+/// 写穿以解析后的绑定身份为准：块级/catch 同名遮蔽的赋值不得污染模块导出。
+/// 遮蔽名解析到内层绑定槽，与导出源绑定槽不同，写穿须按槽位过滤而非仅按名字。
+#[test]
+fn namespace_write_through_respects_block_shadowing() {
+    let cwd = std::env::current_dir().expect("cwd");
+    let dir = cwd.join("__module_namespace_shadow__");
+    std::fs::create_dir_all(&dir).expect("mkdir");
+    std::fs::write(
+        dir.join("main.mjs"),
+        "import * as ns from './main.mjs';\n \
+         export let x = 1;\n \
+         { let x = 2; x = 3; }\n \
+         try { throw 0; } catch (x) { x = 4; }\n \
+         globalThis.__ns = [ns.x, x].join('|');",
+    )
+    .expect("write main");
+    let _cleanup = Cleanup(dir.clone());
+
+    let result = run_namespace_module(&dir);
+    assert_eq!(result, "1|1", "块级/catch 同名遮蔽的赋值不得写穿命名空间条目");
+}
+
+/// 写穿覆盖 Update 表达式、逻辑赋值与解构赋值三条发射路径，与简单/二元复合
+/// 赋值一致地把新值同步到命名空间条目。
+#[test]
+fn namespace_write_through_covers_update_logical_destructuring() {
+    let cwd = std::env::current_dir().expect("cwd");
+    let dir = cwd.join("__module_namespace_write_paths__");
+    std::fs::create_dir_all(&dir).expect("mkdir");
+    std::fs::write(
+        dir.join("main.mjs"),
+        "import * as ns from './main.mjs';\n \
+         export let a = 1;\n \
+         export let b = 0;\n \
+         export let c = 1;\n \
+         a++;\n \
+         b ||= 7;\n \
+         [c] = [9];\n \
+         globalThis.__ns = [ns.a, ns.b, ns.c].join('|');",
+    )
+    .expect("write main");
+    let _cleanup = Cleanup(dir.clone());
+
+    let result = run_namespace_module(&dir);
+    assert_eq!(result, "2|7|9", "Update/逻辑/解构赋值的写穿缺失");
+}
+
 /// G2 反向守卫：外部导入的命名空间无条目表（非 live），枚举与 for-in 行为不变。
 #[test]
 fn external_namespace_enumeration_stays_unaffected() {

@@ -496,18 +496,19 @@ impl Emitter {
             }
         }
 
-        // —— 写穿反演：源绑定名 → 导出名集合。仅 live 模块（自导入 ns）填充：
-        // 非 live 模块不激活写穿，编译产物逐字节零 IR 变化。按名排序保证多导出名
-        // 映射到同一源绑定时的发射顺序确定。——
+        // —— 写穿反演：源绑定槽寄存器 → 导出名集合。仅 live 模块（自导入 ns）填充：
+        // 非 live 模块不激活写穿，编译产物逐字节零 IR 变化。以槽位为键使块级/catch
+        // 同名遮蔽解析到内层槽时不命中；按名排序保证多导出名映射到同一源绑定的
+        // 发射顺序确定。——
         if has_self_ns_import {
             let mut pairs: Vec<(&String, &String)> =
                 export_name_map.iter().map(|(exported, source)| (source, exported)).collect();
             pairs.sort();
             for (source, exported) in pairs {
-                ctx.module_local_exports
-                    .entry(source.clone())
-                    .or_default()
-                    .push(exported.clone());
+                let Some(reg) = ctx.scopes.symbols.lookup_any(source) else {
+                    continue;
+                };
+                ctx.module_local_export_regs.entry(reg).or_default().push(exported.clone());
             }
         }
 
@@ -710,8 +711,10 @@ impl Emitter {
     /// 顶层对导出源绑定的写入同步到命名空间：按反演表把新值写入每个导出名。
     ///
     /// # 边界与前提
-    /// - 仅在模块顶层 live 模块激活：`module_local_exports` 只由自导入 ns 模块填充，
-    ///   嵌套函数 ctx 不继承该表，行为自然为零；`name` 非导出源时直接返回。
+    /// - 仅在模块顶层 live 模块激活：`module_local_export_regs` 只由自导入 ns 模块
+    ///   填充，嵌套函数 ctx 不继承该表，行为自然为零。
+    /// - `name` 按当前作用域解析到绑定槽，槽不在表内（未声明名、块级/catch 同名
+    ///   遮蔽等）时直接返回，不误写同名导出。
     /// - 调用方保证 `value_reg` 是写入后的当前值；const 抛错分支不得调用本函数。
     ///
     /// # 副作用
@@ -722,7 +725,10 @@ impl Emitter {
         let Some(ns_reg) = ctx.module_ns_reg else {
             return Ok(());
         };
-        let Some(export_names) = ctx.module_local_exports.get(name).cloned() else {
+        let Some((binding, _)) = ctx.scopes.symbols.lookup_any_binding(name) else {
+            return Ok(());
+        };
+        let Some(export_names) = ctx.module_local_export_regs.get(&binding.reg).cloned() else {
             return Ok(());
         };
         for export_name in export_names {

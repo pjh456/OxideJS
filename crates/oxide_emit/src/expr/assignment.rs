@@ -474,6 +474,8 @@ impl Emitter {
                             }
                         }
                     }
+                    // 逻辑赋值仅在短路通过后到达此处：写穿同步命名空间条目。
+                    self.emit_module_write_through(name, val_reg, ctx)?;
                     ctx.inst(Inst::new(
                         OpCode::LOAD_VAR,
                         Operand::Reg(result_reg),

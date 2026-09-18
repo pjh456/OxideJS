@@ -674,6 +674,7 @@ impl Emitter {
                 Operand::Reg(new_reg),
                 Operand::Imm(uv as u16),
             ));
+            self.emit_module_write_through(name, new_reg, ctx)?;
             Ok(if update.prefix { new_reg } else { old_reg })
         } else if let Some(cell_idx) = captured_cell {
             // 被捕获 cell：CELL_GET 旧值 + 常量 1 + ADD/SUB + CELL_SET。
@@ -710,6 +711,7 @@ impl Emitter {
                 Operand::Reg(new_reg),
                 Operand::Imm(cell_idx as u16),
             ));
+            self.emit_module_write_through(name, new_reg, ctx)?;
             Ok(if update.prefix { new_reg } else { old_reg })
         } else {
             let var_reg = ctx.lookup_or_global(name);
@@ -766,6 +768,9 @@ impl Emitter {
                 // 可写内置名：RMW 新值同步落全局对象属性。
                 self.emit_global_put_write(name, var_reg, ctx);
             }
+            // 槽位寄存器 rd 承载更新后的新值：后缀形式 result_reg 保留旧值，
+            // 写穿必须取 var_reg，否则命名空间条目被写回旧值。
+            self.emit_module_write_through(name, var_reg, ctx)?;
             Ok(result_reg)
         }
     }
