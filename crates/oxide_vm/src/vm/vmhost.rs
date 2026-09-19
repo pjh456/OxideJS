@@ -87,6 +87,9 @@ impl oxide_runtime_api::VmHost for Vm {
     fn resolve_property(&self, obj: &JsObject, prop_name_si: u32) -> Option<JsValue> {
         self.resolve_property(obj, prop_name_si)
     }
+    fn has_property(&self, obj: &JsObject, prop_name_si: u32) -> bool {
+        self.has_property(obj, prop_name_si)
+    }
     fn get_own_property_slot(&self, obj: &JsObject, prop_name_si: u32) -> Option<u32> {
         self.get_own_property_slot(obj, prop_name_si)
     }

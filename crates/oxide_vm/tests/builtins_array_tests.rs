@@ -392,19 +392,19 @@ fn array_fill_single() {
 }
 
 #[test]
-fn array_iteration_hole_reads_undefined() {
-    // 稀疏数组（字面量空洞 / delete）元素读取落到 undefined：引擎对 hole 不跳过
-    // 回调而是读 undefined（pre-existing 语义，直读 fast path 与慢路径一致）。
+fn array_iteration_holes_skipped_per_spec() {
+    // 稀疏数组（字面量空洞 / delete）：洞位不触发回调，map 结果在洞位留洞，
+    // join 把洞位渲染为空串。
     let (vm, result) = eval("[10,,30].map(x=>x*2).join(',')").unwrap();
-    assert_eq!(to_str(&vm, result), "20,NaN,60");
+    assert_eq!(to_str(&vm, result), "20,,60");
 
-    // delete 产生的 hole 经 map 读 undefined，不残留洞前值。
+    // delete 产生的洞位经 map 同样跳过，不残留洞前值。
     let (vm, result) = eval("var a=[1,2,3]; delete a[1]; a.map(x=>x+1).join(',')").unwrap();
-    assert_eq!(to_str(&vm, result), "2,NaN,4");
+    assert_eq!(to_str(&vm, result), "2,,4");
 
-    // reduce 对 hole 累加 undefined。
+    // reduce 跳过洞位：初值直接接到首个 present 元素。
     let (vm, result) = eval("var a=[1,,3]; a.reduce((s,x)=>s+','+x,'')").unwrap();
-    assert_eq!(to_str(&vm, result), ",1,undefined,3");
+    assert_eq!(to_str(&vm, result), ",1,3");
 }
 
 #[test]

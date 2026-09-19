@@ -212,6 +212,43 @@ impl Vm {
         None
     }
 
+    /// 存在性判定（规范 HasProperty）：自身与原型链逐级检查，任一层 P 为自有
+    /// 属性即存在。数组 length 虚拟属性恒存在；数组元素区 hole 视同缺失；
+    /// TypedArray 整数索引按视图长度判在界；其余按 shape 槽判定。
+    ///
+    /// 与 `resolve_property` 的差异：原型链上每层都检查数组元素区与 TypedArray
+    /// 元素（`resolve_property` 只在顶层检查元素区，链上仅走 shape 槽），
+    /// 继承自父数组/TypedArray 的索引属性在此判存在。
+    pub(crate) fn has_property(&self, obj: &JsObject, prop_name_si: u32) -> bool {
+        let length_si = self.length_si;
+        let mut current = Some(obj);
+        let mut depth = 0usize;
+        while let Some(obj) = current {
+            if obj.is_array() && prop_name_si == length_si {
+                return true;
+            }
+            if obj.is_typed_array_obj() {
+                if let Some((index, len)) =
+                    oxide_builtins::typed_array::typed_array_integer_index(self, obj, prop_name_si)
+                {
+                    if index < len {
+                        return true;
+                    }
+                }
+            }
+            if self.get_own_property_slot(obj, prop_name_si).is_some() {
+                return true;
+            }
+            if depth >= MAX_PROTO_CHAIN_DEPTH {
+                break;
+            }
+            depth += 1;
+            let proto = obj.proto();
+            current = proto.is_object().then(|| unsafe { &*proto.as_js_object_ptr() });
+        }
+        false
+    }
+
     /// 查找自身属性槽下标：数组 length 虚拟属性返回 `None`，元素区返回下标，
     /// shape 槽按数组（元素区之后偏移）与普通对象（槽位即下标）各自定位；
     /// 未命中的槽返回 `None`。

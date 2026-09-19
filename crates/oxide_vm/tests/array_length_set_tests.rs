@@ -263,3 +263,60 @@ fn new_array_holes_pop_shift() {
     assert_eq!(eval_str("var a=new Array(1); var p=a.pop(); (p===undefined)+':'+a.length"), "true:0");
     assert_eq!(eval_str("var a=new Array(1); var s=a.shift(); (s===undefined)+':'+a.length"), "true:0");
 }
+
+#[test]
+fn read_paths_skip_holes_per_spec() {
+    // iterate 族：洞位不触发回调；map 结果在源洞位留洞、长度不变。
+    assert_eq!(eval_str("var n=0; new Array(2).forEach(function(){n++;}); ''+n"), "0");
+    assert_eq!(
+        eval_str("var n=0; var r=[1,,3].map(function(x){n++;return x;}); n+':'+(1 in r)+':'+r.length"),
+        "2:false:3"
+    );
+    assert_eq!(
+        eval_str("var r=new Array(3).map(function(x){return x;}); (0 in r)+':'+r.length"),
+        "false:3"
+    );
+    assert_eq!(eval_str("new Array(2).filter(function(){return true;}).length"), "0");
+    // reduce/reduceRight：无初值取首个/末尾 present 位作累加器，洞位跳过；全洞抛 TypeError。
+    assert_eq!(
+        eval_str("[1,,].reduce(function(a,b){return b;})+':'+(function(){try{new Array(1).reduce(function(){});return 'no-throw';}catch(e){return e.name;}})()"),
+        "1:TypeError"
+    );
+    assert_eq!(
+        eval_str("[,1,2].reduceRight(function(a,b){return a+b;})+':'+(function(){try{new Array(1).reduceRight(function(){});return 'no-throw';}catch(e){return e.name;}})()"),
+        "3:TypeError"
+    );
+    // flatMap：洞位不触发回调；嵌套数组展开丢弃洞位（紧凑结果）。
+    assert_eq!(
+        eval_str("new Array(1).flatMap(function(x){return [x];}).length+':'+[1].flatMap(function(){return [1,,3];}).join(',')+':'+[1].flatMap(function(){return [1,,3];}).length"),
+        "0:1,3:2"
+    );
+    // indexOf/lastIndexOf：洞位不参与比较。
+    assert_eq!(eval_str("[1,,3].indexOf(undefined)+':'+[1,,3].lastIndexOf(undefined)"), "-1:-1");
+    // slice：终长 = end - start；源洞位在结果中留洞。
+    assert_eq!(
+        eval_str("new Array(3).slice().length+':'+[1,,3].slice(0,2).length+':'+(1 in [1,,3].slice(0,2))"),
+        "3:2:false"
+    );
+    // concat：this 与数组实参的洞位均在结果中保洞。
+    assert_eq!(
+        eval_str("[1].concat([,2]).length+':'+(1 in [1].concat([,2]))+':'+[1].concat(new Array(1)).length"),
+        "3:false:2"
+    );
+    // flat：顶层与嵌套洞位均丢弃（紧凑结果）。
+    assert_eq!(eval_str("[,1].flat().length+':'+[1,[2,,3],4].flat().join(',')"), "1:1,2,3,4");
+    // sort：洞位不参与比较；present 值紧凑写回，尾部转洞。
+    assert_eq!(
+        eval_str("var a=[,1,3,2].sort(); (0 in a)+':'+(3 in a)+':'+a.join(',')"),
+        "true:false:1,2,3,"
+    );
+    assert_eq!(
+        eval_str("var b=[5,,1,3].sort(function(x,y){return x-y;}); b.join(',')+':'+(3 in b)"),
+        "1,3,5,:false"
+    );
+    // 防过度门控：find 族无门控（洞位照常调回调）、includes 无门控（洞 Get 得 undefined）。
+    assert_eq!(
+        eval_str("[,1].findIndex(function(){return true;})+':'+[1,,3].includes(undefined)+':'+[,1].findIndex(function(x){return x===1;})"),
+        "0:true:1"
+    );
+}

@@ -177,6 +177,14 @@ pub(crate) fn unit_string_value<H: VmHost>(vm: &mut H, unit: u16) -> JsValue {
     }
 }
 
+/// 索引位置存在性判定（规范 HasProperty：自身与原型链任一层命中即存在，
+/// 数组元素区 hole 视同缺失，TypedArray 整数索引按视图长度判在界）。
+pub(crate) fn arraylike_index_present<H: VmHost>(vm: &mut H, ptr: *mut JsObject, i: usize) -> bool {
+    // SAFETY: ptr 来自 this/参数对象，指向存活对象。
+    let key_si = vm.string_key_si(&i.to_string());
+    vm.has_property(unsafe { &*ptr }, key_si)
+}
+
 /// 元素读取失败时直接把异常作为 NativeResult::Err 返回。
 macro_rules! arraylike_get_or_err {
     ($vm:expr, $ptr:expr, $i:expr) => {

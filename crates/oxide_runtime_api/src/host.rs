@@ -103,6 +103,9 @@ pub trait VmHost {
     /// 供建键入口（fromEntries/json/rest excluded）与 `property_key_si` 的字符串分支统一口径。
     fn string_key_si(&mut self, s: &str) -> u32;
     fn resolve_property(&self, obj: &JsObject, prop_name_si: u32) -> Option<JsValue>;
+    /// 存在性判定（规范 HasProperty）：自身与原型链任一层 P 为自有属性即存在；
+    /// 数组元素区 hole 视同缺失，TypedArray 整数索引按视图长度判在界。
+    fn has_property(&self, obj: &JsObject, prop_name_si: u32) -> bool;
     fn get_own_property_slot(&self, obj: &JsObject, prop_name_si: u32) -> Option<u32>;
 
     // 属性访问

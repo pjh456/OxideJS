@@ -73,7 +73,8 @@ pub(crate) fn parse_sort_comparator<H: VmHost>(vm: &mut H, candidate: JsValue) -
 /// 原地排序数组元素并返回原数组（`Array.prototype.sort`）。
 ///
 /// 未提供比较回调时按 ToString 结果的字符串字典序排序；底层 `sort_by` 为稳定
-/// 排序，比较结果相等（含 NaN）的元素保持原有相对次序。
+/// 排序，比较结果相等（含 NaN）的元素保持原有相对次序。洞位不参与比较：
+/// present 值稳定排序后自索引 0 紧凑写回，尾部空位转为洞。
 ///
 /// # 边界与前提
 /// - 接收者不是数组时抛 TypeError；
@@ -82,7 +83,13 @@ pub fn array_sort<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("Array.prototype.sort called with {} args", args.len());
     let arr_ptr = array_ptr!(vm, args);
     let len = unsafe { (*arr_ptr).prop_count() as usize };
-    let mut vals: Vec<JsValue> = (0..len).map(|i| unsafe { (*arr_ptr).get_prop_at(i) }).collect();
+    // 洞位不参与比较：只收集 present 元素（接收者恒为真数组，元数据表判洞免字符串键）。
+    let arr_ref = unsafe { &*arr_ptr };
+    let dense = arr_ref.array_elements_meta_vec().is_none();
+    let mut vals: Vec<JsValue> = (0..len)
+        .filter(|&i| dense || !arr_ref.prop_meta_at(i).is_some_and(|m| m.is_hole()))
+        .map(|i| arr_ref.get_prop_at(i))
+        .collect();
     let comparator = if args.len() > 1 {
         match parse_sort_comparator(vm, vm.reg(args[1])) {
             Ok(c) => c,
@@ -98,9 +105,13 @@ pub fn array_sort<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         builtins_error!("Array.prototype.sort: invalid receiver");
         return NativeResult::Err(err);
     }
+    // present 值稳定排序后从索引 0 紧凑写回，尾部空位转为洞。
     let arr = unsafe { &mut *arr_ptr };
     for (i, &v) in vals.iter().enumerate() {
         arr.set_prop_at(i, v);
+    }
+    for i in vals.len()..len {
+        arr.mark_hole_at(i);
     }
     NativeResult::Ok(vm.reg(args[0]))
 }

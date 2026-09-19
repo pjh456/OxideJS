@@ -9,8 +9,9 @@ use crate::builtins_debug;
 use crate::builtins_error;
 
 use super::common::{
-    array_ptr, array_type_error, arraylike_get, arraylike_get_or_err, check_array_create_len, clamp_relative,
-    create_new_array, get_this_array_ref, get_this_arraylike, js_array_index, to_integer_or_infinity_bounded,
+    array_ptr, array_type_error, arraylike_get, arraylike_get_or_err, arraylike_index_present, check_array_create_len,
+    clamp_relative, create_new_array, get_this_array_ref, get_this_arraylike, js_array_index,
+    to_integer_or_infinity_bounded,
 };
 use super::from::{array_species_create, create_data_property_or_throw, from_engine_error};
 
@@ -125,28 +126,38 @@ pub fn array_slice<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         Ok(p) => p,
         Err(err) => return NativeResult::Err(err),
     };
-    // HasProperty + Get + CreateDataPropertyOrThrow 逐元素拷贝。
+    // HasProperty + Get + CreateDataPropertyOrThrow 逐元素拷贝；洞位只在真数组
+    // 目标上留洞（目标预填 present-undefined，须显式置洞）。
     let mut k = start;
     let mut out_idx = 0usize;
+    let mut holes: Vec<usize> = Vec::new();
     while k < end {
-        let key_str = vm.new_string(&k.to_string());
-        let key_si = vm.property_key_si(key_str);
-        if vm.resolve_property(unsafe { &*arr_ptr }, key_si).is_some() {
+        if arraylike_index_present(vm, arr_ptr, k) {
             let elem = arraylike_get_or_err!(vm, arr_ptr, k);
             let out_key = vm.new_string(&out_idx.to_string());
             let out_key_si = vm.property_key_si(out_key);
             if let Err(err) = create_data_property_or_throw(vm, unsafe { &mut *a_ptr }, out_key_si, elem) {
                 return NativeResult::Err(err);
             }
-            out_idx += 1;
+        } else {
+            holes.push(out_idx);
         }
+        out_idx += 1;
         k += 1;
     }
-    // 收尾 Set(A, "length", final)：普通 Set 语义（可触发继承 setter/异常）。
+    // 收尾 Set(A, "length", final)：终长 = 区间长度（end - start），洞位计入；
+    // 普通 Set 语义（可触发继承 setter/异常）。
     let a_val = JsValue::from_js_object(a_ptr);
+    if unsafe { &*a_ptr }.is_array() {
+        for p in holes {
+            unsafe {
+                (*a_ptr).mark_hole_at(p);
+            }
+        }
+    }
     let length_key = vm.new_string("length");
     let length_si = vm.property_key_si(length_key);
-    if let Err(err) = vm.ordinary_set(unsafe { &mut *a_ptr }, length_si, js_array_index(out_idx), a_val, true) {
+    if let Err(err) = vm.ordinary_set(unsafe { &mut *a_ptr }, length_si, js_array_index(count), a_val, true) {
         return NativeResult::Err(from_engine_error(vm, &err));
     }
     NativeResult::Ok(JsValue::from_js_object(a_ptr))
@@ -225,12 +236,19 @@ pub fn array_concat<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         Ok(v) => v,
         Err(e) => return NativeResult::Err(e),
     };
+    // this 与数组实参的洞位按缺失复制：结果对应位留洞（记录洞下标，收尾置洞）。
     let mut all: Vec<JsValue> = Vec::new();
+    let mut holes: Vec<usize> = Vec::new();
     if let Err(err) = check_array_create_len(vm, n) {
         return NativeResult::Err(err);
     }
     for i in 0..n {
-        all.push(arraylike_get_or_err!(vm, arr_ptr, i));
+        if arraylike_index_present(vm, arr_ptr, i) {
+            all.push(arraylike_get_or_err!(vm, arr_ptr, i));
+        } else {
+            holes.push(all.len());
+            all.push(JsValue::undefined());
+        }
     }
     for &arg_reg in args.iter().skip(1) {
         let val = vm.reg(arg_reg);
@@ -239,10 +257,16 @@ pub fn array_concat<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
             if !o_ptr.is_null() {
                 let o = unsafe { &*o_ptr };
                 let on = o.prop_count() as usize;
-                // 真数组时展开元素。
+                // 真数组时展开元素（洞位同样留洞）。
                 if o.is_array() && on > 0 {
+                    let dense = o.array_elements_meta_vec().is_none();
                     for i in 0..on {
-                        all.push(o.get_prop_at(i));
+                        if dense || !o.prop_meta_at(i).is_some_and(|m| m.is_hole()) {
+                            all.push(o.get_prop_at(i));
+                        } else {
+                            holes.push(all.len());
+                            all.push(JsValue::undefined());
+                        }
                     }
                     continue;
                 }
@@ -254,6 +278,9 @@ pub fn array_concat<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     unsafe {
         for (i, val) in all.iter().enumerate() {
             (*new_arr).set_prop_at(i, *val);
+        }
+        for h in holes {
+            (*new_arr).mark_hole_at(h);
         }
         (*new_arr).set_prop_count(all.len());
     }
@@ -329,6 +356,10 @@ pub fn array_index_of<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         0
     };
     for i in from_index..n {
+        // 洞位不参与比较：HasProperty 缺失即跳过（洞不是 undefined 元素）。
+        if !arraylike_index_present(vm, ptr, i) {
+            continue;
+        }
         let elem = arraylike_get_or_err!(vm, ptr, i);
         if oxide_runtime_api::strict_equality(elem, target) {
             return NativeResult::Ok(js_array_index(i));
@@ -426,8 +457,15 @@ pub fn array_flat<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
                     let o = unsafe { &*ptr };
                     if o.is_array() {
                         seen.push(ptr);
+                        // 嵌套展开丢弃洞位：flat 结果恒为紧凑数组。
                         let on = o.prop_count() as usize;
-                        let sub: Vec<JsValue> = (0..on).map(|i| o.get_prop_at(i)).collect();
+                        let dense = o.array_elements_meta_vec().is_none();
+                        let mut sub: Vec<JsValue> = Vec::with_capacity(on);
+                        for i in 0..on {
+                            if dense || !o.prop_meta_at(i).is_some_and(|m| m.is_hole()) {
+                                sub.push(o.get_prop_at(i));
+                            }
+                        }
                         let flat = flatten(&sub, remaining_depth - 1, seen);
                         seen.pop();
                         out.extend(flat);
@@ -440,7 +478,14 @@ pub fn array_flat<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         out
     }
 
-    let all: Vec<JsValue> = (0..n).map(|i| arr.get_prop_at(i)).collect();
+    // 顶层同样丢弃洞位（接收者恒为真数组，元数据表判洞免字符串键）。
+    let dense = arr.array_elements_meta_vec().is_none();
+    let mut all: Vec<JsValue> = Vec::with_capacity(n);
+    for i in 0..n {
+        if dense || !arr.prop_meta_at(i).is_some_and(|m| m.is_hole()) {
+            all.push(arr.get_prop_at(i));
+        }
+    }
     let mut seen = vec![arr_ptr];
     let flat = flatten(&all, depth, &mut seen);
     let new_arr = create_new_array(vm, flat.len());
@@ -689,6 +734,10 @@ pub fn array_last_index_of<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         return NativeResult::Ok(JsValue::int(-1));
     }
     for i in (0..=from_index_isize as usize).rev() {
+        // 洞位不参与比较：HasProperty 缺失即跳过（洞不是 undefined 元素）。
+        if !arraylike_index_present(vm, ptr, i) {
+            continue;
+        }
         let elem = arraylike_get_or_err!(vm, ptr, i);
         if oxide_runtime_api::strict_equality(elem, search) {
             return NativeResult::Ok(js_array_index(i));

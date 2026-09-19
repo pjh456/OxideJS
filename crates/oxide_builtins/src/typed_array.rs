@@ -233,7 +233,7 @@ pub fn typed_array_element_get<H: VmHost>(vm: &mut H, obj: &JsObject, index: u32
 
 /// 若对象是 TypedArray 且属性键是整数索引，返回 `(索引, 视图长度)`；否则 `None`。
 /// 供 VM 在 receiver ≠ TA 时裁决整数索引的写前语义（越界直接返回，界内落到 receiver）。
-pub fn typed_array_integer_index<H: VmHost>(vm: &mut H, obj: &JsObject, prop_name_si: u32) -> Option<(usize, usize)> {
+pub fn typed_array_integer_index<H: VmHost>(vm: &H, obj: &JsObject, prop_name_si: u32) -> Option<(usize, usize)> {
     let ptr = typed_array_data_ptr(obj)?;
     if ptr.is_null() {
         return None;
