@@ -511,6 +511,9 @@ impl Vm {
         self.spill_stack.clear();
         self.native_overflow_base = 0;
         self.native_overflow_count = 0;
+        // native pack 实参区上界与溢出描述符同构：仅一次 native 调用期间有效，
+        // 跨 run/reset 残留会在非 pack 上下文的恢复边界误跳镜像重载。
+        self.native_pack_end = 0;
         self.cell_stack.clear();
         self.try_stack.clear();
         self.exception_value = None;
