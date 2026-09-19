@@ -2,7 +2,7 @@
 
 use oxide_types::value::JsValue;
 
-use oxide_runtime_api::{NativeResult, VmHost};
+use oxide_runtime_api::{to_object, NativeResult, VmHost};
 
 use crate::builtins_debug;
 use crate::builtins_error;
@@ -12,6 +12,7 @@ use super::common::{
     check_array_create_len, create_new_array, get_this_arraylike, invoke_native_callback, js_array_index,
     require_callback, unexpected_tail_call_error,
 };
+use super::from::{array_species_create, create_data_property_or_throw, from_engine_error};
 
 /// `Array.prototype.forEach(callback, thisArg)`：对每个元素调用 callback，返回 undefined。
 pub fn array_for_each<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
@@ -315,10 +316,39 @@ pub fn array_every<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 }
 
 /// `Array.prototype.flatMap(callback, thisArg)`：map 后把返回的数组展开一层。
+///
+/// # 步骤
+/// 1. `ToObject` 装箱基元 this（null/undefined 抛 TypeError），装箱体钉入返回
+///    寄存器跨用户窗口保 GC 根（结果数组钉入后让位，按接收者值传递保活）。
+/// 2. 回调可调用校验；逐索引 HasProperty 门控 + Get，回调以 (elem, 索引, O) 调用。
+/// 3. 结果 `A` 按 `ArraySpeciesCreate(O, 0)` 构建（真数组按 constructor/@@species
+///    构造，非可构造值抛 TypeError）并钉入返回寄存器。
+/// 4. 回调结果为真数组时展开一层（长度按 LengthOfArrayLike 读取，洞位不入目标）；
+///    其余结果原样写入；写入一律 CreateDataPropertyOrThrow（受限目标抛
+///    TypeError），真数组结果的 length 随元素写入逐位扩展。
+///
+/// # 副作用
+/// - 回调为用户代码；Get 可经原型链触发 getter；species 构造与目标属性写入
+///   可按规范抛 TypeError。
 pub fn array_flat_map<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("Array.prototype.flatMap called with {} args", args.len());
-    let (arr_ptr, n, _is_array) = array_ptr_len3!(vm, args);
-    let o_val = vm.reg(args[0]);
+    // ToObject：基元 this 装箱（null/undefined 抛 TypeError）。
+    let this_val = match to_object(vm.reg(args[0]), vm) {
+        Ok(v) => v,
+        Err(msg) => return NativeResult::Err(from_engine_error(vm, &msg)),
+    };
+    // 装箱体钉入返回寄存器：它只存于 Rust 局部，跨 length getter / species
+    // 用户窗口须保 GC 根。call 转发形态的实参寄存器集可占该槽，占位时跳过钉位
+    // （装箱体按接收者值传递保活）。结果 A 钉入后此槽让位，循环期装箱体按
+    // 接收者值传递保活。
+    if !args.contains(&0) {
+        vm.set_reg(0, this_val);
+    }
+    let (arr_ptr, n, is_array) = match get_this_arraylike(vm, this_val) {
+        Ok(v) => v,
+        Err(err) => return NativeResult::Err(err),
+    };
+    let o_val = this_val;
     if args.len() < 2 {
         builtins_error!("Array.prototype.flatMap: invalid receiver");
         return NativeResult::Err(array_type_error(vm, "callback is not a function"));
@@ -330,38 +360,27 @@ pub fn array_flat_map<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
             return NativeResult::Err(err);
         }
     };
-    let this_val = if args.len() > 2 { vm.reg(args[2]) } else { JsValue::undefined() };
-    let mut flat: Vec<JsValue> = Vec::new();
+    let this_arg = if args.len() > 2 { vm.reg(args[2]) } else { JsValue::undefined() };
     if let Err(err) = check_array_create_len(vm, n) {
         return NativeResult::Err(err);
     }
+    // ArraySpeciesCreate(O, 0)：真数组按 constructor/@@species 构造目标。
+    let a_ptr = match array_species_create(vm, o_val, is_array, 0) {
+        Ok(p) => p,
+        Err(err) => return NativeResult::Err(err),
+    };
+    // 结果钉入返回寄存器：其后的回调 / 元素 Get 各带用户窗口，结果指针须保
+    // GC 根，返回时从钉位读回。
+    vm.set_reg(0, JsValue::from_js_object(a_ptr));
+    let mut target_index = 0usize;
     for i in 0..n {
         // 洞位跳过：回调不得在缺失索引上触发。
         if !arraylike_index_present(vm, arr_ptr, i) {
             continue;
         }
         let elem = arraylike_get_or_err!(vm, arr_ptr, i);
-        match invoke_native_callback(vm, callback_val, this_val, &[elem, js_array_index(i), o_val]) {
-            NativeResult::Ok(result) => {
-                if result.is_object() {
-                    let r_ptr = result.as_js_object_ptr();
-                    if !r_ptr.is_null() {
-                        let r = unsafe { &*r_ptr };
-                        if r.is_array() {
-                            // 嵌套数组展开丢弃洞位：结果为紧凑数组。
-                            let rn = r.prop_count() as usize;
-                            let dense = r.array_elements_meta_vec().is_none();
-                            for j in 0..rn {
-                                if dense || !r.prop_meta_at(j).is_some_and(|m| m.is_hole()) {
-                                    flat.push(r.get_prop_at(j));
-                                }
-                            }
-                            continue;
-                        }
-                    }
-                }
-                flat.push(result);
-            }
+        let result = match invoke_native_callback(vm, callback_val, this_arg, &[elem, js_array_index(i), o_val]) {
+            NativeResult::Ok(result_val) => result_val,
             NativeResult::Err(err) => {
                 builtins_error!("Array.prototype.flatMap: invalid receiver");
                 return NativeResult::Err(err);
@@ -370,16 +389,48 @@ pub fn array_flat_map<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
                 builtins_error!("Array.prototype.flatMap: invalid receiver");
                 return unexpected_tail_call_error(vm);
             }
+        };
+        // 回调结果为真数组时展开一层，其余结果原样写入目标。
+        let r_ptr = if result.is_object() {
+            result.as_js_object_ptr()
+        } else {
+            std::ptr::null_mut()
+        };
+        if !r_ptr.is_null() && unsafe { &*r_ptr }.is_array() {
+            // elementLen = LengthOfArrayLike(result)：洞位不入目标。
+            let (_, rn, _) = match get_this_arraylike(vm, result) {
+                Ok(v) => v,
+                Err(e) => return NativeResult::Err(e),
+            };
+            for j in 0..rn {
+                if !arraylike_index_present(vm, r_ptr, j) {
+                    continue;
+                }
+                let v = arraylike_get_or_err!(vm, r_ptr, j);
+                // 目标索引上限 2^53-1（规范 FlattenIntoArray 步 6.vi.i）。
+                if target_index >= 9_007_199_254_740_991 {
+                    return NativeResult::Err(array_type_error(vm, "Invalid array length"));
+                }
+                let key = vm.new_string(&target_index.to_string());
+                let key_si = vm.property_key_si(key);
+                if let Err(err) = create_data_property_or_throw(vm, unsafe { &mut *a_ptr }, key_si, v) {
+                    return NativeResult::Err(err);
+                }
+                target_index += 1;
+            }
+            continue;
         }
-    }
-    let new_arr = create_new_array(vm, flat.len());
-    unsafe {
-        for (i, val) in flat.iter().enumerate() {
-            (*new_arr).set_prop_at(i, *val);
+        if target_index >= 9_007_199_254_740_991 {
+            return NativeResult::Err(array_type_error(vm, "Invalid array length"));
         }
-        (*new_arr).set_prop_count(flat.len());
+        let key = vm.new_string(&target_index.to_string());
+        let key_si = vm.property_key_si(key);
+        if let Err(err) = create_data_property_or_throw(vm, unsafe { &mut *a_ptr }, key_si, result) {
+            return NativeResult::Err(err);
+        }
+        target_index += 1;
     }
-    NativeResult::Ok(JsValue::from_js_object(new_arr))
+    NativeResult::Ok(JsValue::from_js_object(a_ptr))
 }
 
 /// `Array.prototype.findIndex(callback, thisArg)`：返回首个 callback 为真的索引，否则 -1。

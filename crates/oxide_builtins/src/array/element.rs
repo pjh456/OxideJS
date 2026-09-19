@@ -678,76 +678,107 @@ pub fn array_reverse<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     NativeResult::Ok(this_val)
 }
 
-/// `Array.prototype.flat(depth)`：按深度递归展开嵌套数组（含循环引用保护）返回新数组。
+/// `Array.prototype.flat([depth])`：按深度递归展开嵌套数组返回新数组（循环引用原样保留）。
+///
+/// # 步骤
+/// 1. `ToObject` 装箱基元 this（null/undefined 抛 TypeError），装箱体钉入返回
+///    寄存器跨用户窗口保 GC 根（结果数组钉入后让位，装箱体按接收者值传递保活）；
+///    长度按规范 `ToLength(Get(O, "length"))` 读取（上限 2^53-1）。
+/// 2. depth：无实参/undefined 实参缺省 1；否则 ToIntegerOrInfinity（转换异常
+///    传播），负数归 0 不展开，+∞ 保留无限深度臂。
+/// 3. 结果 `A` 按 `ArraySpeciesCreate(O, 0)` 构建（真数组按 constructor/@@species
+///    构造，非可构造值抛 TypeError）并钉入返回寄存器；写入一律
+///    CreateDataPropertyOrThrow（frozen 等受限目标抛 TypeError），真数组结果的
+///    length 随元素写入逐位扩展。
+/// 4. 流式 DFS：显式栈帧 = (源对象, 源长度, 剩余深度, 下一索引)；每个源索引
+///    HasProperty 门控、命中才 Get；深度内的数组元素压栈递归（长度按
+///    LengthOfArrayLike 读取），已在栈上的数组（循环引用）原样写入结果；洞位
+///    不写目标（结果恒紧凑）。
+///
+/// # 副作用
+/// - 接收者/元素的 Get 可经原型链触发用户代码；species 构造与目标属性写入
+///   可按规范抛 TypeError。
 pub fn array_flat<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("Array.prototype.flat called with {} args", args.len());
-    let arr_ptr = array_ptr!(vm, args);
-    let arr = unsafe { &*arr_ptr };
-    let n = arr.prop_count() as usize;
-    let depth = if args.len() > 1 {
-        let n = vm.coerce_number_bounded(vm.reg(args[1])).unwrap_or(f64::NAN);
-        if !n.is_finite() {
-            vm.kernel_core().config.max_call_depth
-        } else {
-            (n as i32).max(1) as usize
-        }
-    } else {
-        1
+    // ToObject：基元 this 装箱（null/undefined 抛 TypeError）。
+    let this_val = match oxide_runtime_api::to_object(vm.reg(args[0]), vm) {
+        Ok(v) => v,
+        Err(msg) => return NativeResult::Err(from_engine_error(vm, &msg)),
+    };
+    // 装箱体钉入返回寄存器：它只存于 Rust 局部，跨 length getter / depth 折算
+    // 用户窗口须保 GC 根。call 转发形态的实参寄存器集可占该槽，占位时跳过钉位
+    // （装箱体按接收者值传递保活）。结果 A 钉入后此槽让位。
+    if !args.contains(&0) {
+        vm.set_reg(0, this_val);
     }
-    .min(vm.kernel_core().config.max_call_depth);
+    let (arr_ptr, n, is_array) = match get_this_arraylike(vm, this_val) {
+        Ok(v) => v,
+        Err(e) => return NativeResult::Err(e),
+    };
+    // depth：缺省 1；ToIntegerOrInfinity 后负数归 0（NaN 折算为 0 同不展开），
+    // +∞ 保留无限深度。
+    let mut depth = 1.0f64;
+    if args.len() > 1 && !vm.reg(args[1]).is_undefined() {
+        depth = match to_integer_or_infinity_bounded(vm, vm.reg(args[1])) {
+            Ok(v) => v,
+            Err(e) => return NativeResult::Err(e),
+        };
+        if depth < 0.0 {
+            depth = 0.0;
+        }
+    }
+    // ArraySpeciesCreate(O, 0)：真数组按 constructor/@@species 构造目标。
+    let a_ptr = match array_species_create(vm, this_val, is_array, 0) {
+        Ok(p) => p,
+        Err(err) => return NativeResult::Err(err),
+    };
+    // 结果钉入返回寄存器：其后的元素 Get / 嵌套长度 Get 各带用户窗口，结果
+    // 指针须保 GC 根，返回时从钉位读回。
+    vm.set_reg(0, JsValue::from_js_object(a_ptr));
 
-    fn flatten(items: &[JsValue], remaining_depth: usize, seen: &mut Vec<*mut JsObject>) -> Vec<JsValue> {
-        let mut out = Vec::new();
-        for &v in items {
-            if remaining_depth > 0 && v.is_object() {
-                let ptr = v.as_js_object_ptr();
-                if !ptr.is_null() {
-                    if seen.iter().any(|seen_ptr| std::ptr::eq(*seen_ptr, ptr)) {
-                        out.push(v);
-                        continue;
-                    }
-                    let o = unsafe { &*ptr };
-                    if o.is_array() {
-                        seen.push(ptr);
-                        // 嵌套展开丢弃洞位：flat 结果恒为紧凑数组。
-                        let on = o.prop_count() as usize;
-                        let dense = o.array_elements_meta_vec().is_none();
-                        let mut sub: Vec<JsValue> = Vec::with_capacity(on);
-                        for i in 0..on {
-                            if dense || !o.prop_meta_at(i).is_some_and(|m| m.is_hole()) {
-                                sub.push(o.get_prop_at(i));
-                            }
-                        }
-                        let flat = flatten(&sub, remaining_depth - 1, seen);
-                        seen.pop();
-                        out.extend(flat);
-                        continue;
-                    }
-                }
-            }
-            out.push(v);
+    // 流式 DFS：帧 = (源对象, 源长度, 剩余深度, 下一源索引)。
+    let mut stack: Vec<(*mut JsObject, usize, f64, usize)> = vec![(arr_ptr, n, depth, 0)];
+    let mut target_index = 0usize;
+    while let Some(&top) = stack.last() {
+        let (src, src_len, d, i) = top;
+        if i >= src_len {
+            stack.pop();
+            continue;
         }
-        out
-    }
-
-    // 顶层同样丢弃洞位（接收者恒为真数组，元数据表判洞免字符串键）。
-    let dense = arr.array_elements_meta_vec().is_none();
-    let mut all: Vec<JsValue> = Vec::with_capacity(n);
-    for i in 0..n {
-        if dense || !arr.prop_meta_at(i).is_some_and(|m| m.is_hole()) {
-            all.push(arr.get_prop_at(i));
+        // HasProperty 门控：洞位不写目标（结果恒紧凑）。
+        if !arraylike_index_present(vm, src, i) {
+            stack.last_mut().unwrap().3 = i + 1;
+            continue;
         }
-    }
-    let mut seen = vec![arr_ptr];
-    let flat = flatten(&all, depth, &mut seen);
-    let new_arr = create_new_array(vm, flat.len());
-    unsafe {
-        for (i, val) in flat.iter().enumerate() {
-            (*new_arr).set_prop_at(i, *val);
+        let elem = arraylike_get_or_err!(vm, src, i);
+        // 深度内的数组元素压栈递归；已在栈上的数组（循环引用）原样写入。
+        let e_ptr = if elem.is_object() { elem.as_js_object_ptr() } else { std::ptr::null_mut() };
+        let descend = d > 0.0
+            && !e_ptr.is_null()
+            && unsafe { &*e_ptr }.is_array()
+            && !stack.iter().any(|f| std::ptr::eq(f.0, e_ptr));
+        stack.last_mut().unwrap().3 = i + 1;
+        if descend {
+            // elementLen = LengthOfArrayLike(element)。
+            let (_, elen, _) = match get_this_arraylike(vm, elem) {
+                Ok(v) => v,
+                Err(e) => return NativeResult::Err(e),
+            };
+            stack.push((e_ptr, elen, d - 1.0, 0));
+            continue;
         }
-        (*new_arr).set_prop_count(flat.len());
+        // 目标索引上限 2^53-1（规范 FlattenIntoArray 步 6.vi.i）。
+        if target_index >= 9_007_199_254_740_991 {
+            return NativeResult::Err(array_type_error(vm, "Invalid array length"));
+        }
+        let key = vm.new_string(&target_index.to_string());
+        let key_si = vm.property_key_si(key);
+        if let Err(err) = create_data_property_or_throw(vm, unsafe { &mut *a_ptr }, key_si, elem) {
+            return NativeResult::Err(err);
+        }
+        target_index += 1;
     }
-    NativeResult::Ok(JsValue::from_js_object(new_arr))
+    NativeResult::Ok(JsValue::from_js_object(a_ptr))
 }
 
 /// `Array.prototype.shift()`：移除并返回首元素，其余元素前移；空数组返回 undefined。

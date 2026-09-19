@@ -564,3 +564,236 @@ fn test_concat_mixed_args_order_and_holes() {
     .unwrap();
     assert_eq!(out, "5|1|1,2,3,0|4|1|false");
 }
+
+// ── flat / flatMap 收口钉（node v20.19.2 实测值钉死） ──────────────────────
+
+// 引擎钉：reverse (S,N) 臂非可配置 lower——Delete 先于 Set，抛时零改动。
+#[test]
+fn test_reverse_sn_non_configurable_lower_throws_untouched() {
+    let out = eval_str(
+        "(() => { const a = [1, 2]; delete a[1]; \
+         Object.defineProperty(a, '0', { value: 1, writable: true, enumerable: true, configurable: false }); \
+         let threw = false; try { a.reverse(); } catch (e) { threw = e.name === 'TypeError'; } \
+         return threw + '|' + (1 in a) + '|' + a[0] + '|' + a[1]; })()",
+    )
+    .unwrap();
+    assert_eq!(out, "true|false|1|undefined");
+}
+
+// 引擎钉：reverse (N,S) 臂非可配置 upper——Set(lower) 先成功、Delete(upper) 抛，
+// 部分改动形态保留（判别力核心）。
+#[test]
+fn test_reverse_ns_non_configurable_upper_partial_mutation() {
+    let out = eval_str(
+        "(() => { const a = [undefined, 2, 3]; delete a[0]; \
+         Object.defineProperty(a, '2', { value: 3, writable: true, enumerable: true, configurable: false }); \
+         let threw = false; try { a.reverse(); } catch (e) { threw = e.name === 'TypeError'; } \
+         return threw + '|' + a[0] + '|' + a[1] + '|' + a[2]; })()",
+    )
+    .unwrap();
+    assert_eq!(out, "true|3|2|3");
+}
+
+// 引擎钉：reverse 读序 Hf,Gf,Ht,Gt 逐对交错 + (S,S) 臂写序 S0,S3,S1,S2；
+// getter 还原原值，终读经 getter 呈现原序列（读序钉位核心）。
+// 访问器逐条显式定义（不走 for 循环闭包捕获，规避既有作用域面）。
+#[test]
+fn test_reverse_get_set_order_and_final_values() {
+    let out = eval_str(
+        "(() => { const a = [10, 11, 22, 30]; const log = []; \
+         Object.defineProperty(a, 0, { configurable: true, get() { log.push('G0'); return 10; }, set(x) { log.push('S0=' + x); } }); \
+         Object.defineProperty(a, 1, { configurable: true, get() { log.push('G1'); return 11; }, set(x) { log.push('S1=' + x); } }); \
+         Object.defineProperty(a, 2, { configurable: true, get() { log.push('G2'); return 22; }, set(x) { log.push('S2=' + x); } }); \
+         Object.defineProperty(a, 3, { configurable: true, get() { log.push('G3'); return 30; }, set(x) { log.push('S3=' + x); } }); \
+         a.reverse(); return log.join(',') + '|' + a.join(','); })()",
+    )
+    .unwrap();
+    assert_eq!(out, "G0,G3,S0=30,S3=10,G1,G2,S1=22,S2=11|10,11,22,30");
+}
+
+// 引擎钉：reverse getter 内 length=0 截断（GID 形态）——(S,N) 臂 Delete(lower)
+// 后 upper 写越界扩长，`0 in` 假、`1 in` 真、a[1] 为下值。
+#[test]
+fn test_reverse_getter_length_zero_in_check() {
+    let out = eval_str(
+        "(() => { const array = ['first', 'second']; \
+         Object.defineProperty(array, 0, { get() { array.length = 0; return 'first'; } }); \
+         array.reverse(); return (0 in array) + '|' + (1 in array) + '|' + array[1]; })()",
+    )
+    .unwrap();
+    assert_eq!(out, "false|true|first");
+}
+
+// 引擎钉：flat arraylike 接收者——ToObject 通用入口 + LengthOfArrayLike 长度源，
+// 嵌套数组元素展开一层。
+#[test]
+fn test_flat_arraylike_receiver_nested() {
+    let out = eval_str(
+        "(() => { const r = Array.prototype.flat.call({ length: 2, 0: [1], 1: [2] }); \
+         return r.join(',') + '|' + r.length; })()",
+    )
+    .unwrap();
+    assert_eq!(out, "1,2|2");
+}
+
+// 引擎钉：flat arraylike 分数长度——ToLength 折算 2.9 → 2，第三元素不入。
+#[test]
+fn test_flat_arraylike_fractional_length() {
+    let out = eval_str(
+        "(() => { const r = Array.prototype.flat.call({ length: 2.9, 0: 1, 1: 2, 2: 3 }); \
+         return r.join(',') + '|' + r.length; })()",
+    )
+    .unwrap();
+    assert_eq!(out, "1,2|2");
+}
+
+// 引擎钉：flat arraylike NaN 长度——ToLength(NaN) = 0，空结果。
+#[test]
+fn test_flat_arraylike_nan_length() {
+    let out = eval_str(
+        "(() => { const r = Array.prototype.flat.call({ length: NaN, 0: 1 }); \
+         return r.join(',') + '|' + r.length; })()",
+    )
+    .unwrap();
+    assert_eq!(out, "|0");
+}
+
+// 引擎钉：flat arraylike undefined 长度——Get length 缺省 undefined，ToLength 0。
+#[test]
+fn test_flat_arraylike_undefined_length() {
+    let out = eval_str(
+        "(() => { const r = Array.prototype.flat.call({ length: undefined, 0: [1] }); \
+         return r.join(',') + '|' + r.length; })()",
+    )
+    .unwrap();
+    assert_eq!(out, "|0");
+}
+
+// 引擎钉：flat 装箱基元 this——ToObject 后长度为 0，结果空真数组。
+#[test]
+fn test_flat_boxed_primitive_this() {
+    let out = eval_str(
+        "(() => { const r = Array.prototype.flat.call(true); \
+         return r.length + '|' + Array.isArray(r); })()",
+    )
+    .unwrap();
+    assert_eq!(out, "0|true");
+}
+
+// 引擎钉：flat 负 depth——ToIntegerOrInfinity 后归 0，不展开。
+#[test]
+fn test_flat_negative_depth_no_flatten() {
+    assert_eq!(eval_str("(() => { return JSON.stringify([[1]].flat(-1)); })()").unwrap(), "[[1]]");
+}
+
+// 引擎钉：flat NaN depth——ToIntegerOrInfinity(NaN) = 0，不展开（非默认深 1）。
+#[test]
+fn test_flat_nan_depth_no_flatten() {
+    assert_eq!(eval_str("(() => { return JSON.stringify([[1]].flat(NaN)); })()").unwrap(), "[[1]]");
+}
+
+// 引擎钉：flat 0 depth——0 不展开（旧 (n as i32).max(1) 形态会误展开一层）。
+#[test]
+fn test_flat_zero_depth_no_flatten() {
+    assert_eq!(eval_str("(() => { return JSON.stringify([[1]].flat(0)); })()").unwrap(), "[[1]]");
+}
+
+// 引擎钉：flat +∞ depth——无限深度臂，全嵌套展开。
+#[test]
+fn test_flat_infinity_depth() {
+    let out = eval_str("(() => { return [1, [2, [3, [4]]]].flat(Infinity).join(','); })()").unwrap();
+    assert_eq!(out, "1,2,3,4");
+}
+
+// 引擎钉：flat 超大 depth（i32 回绕域）——f64 域无回绕，浅数组上等效深 1。
+#[test]
+fn test_flat_huge_depth_no_wrap() {
+    assert_eq!(eval_str("(() => { return JSON.stringify([[1]].flat(3000000000)); })()").unwrap(), "[1]",);
+}
+
+// 引擎钉：flat Symbol / null 原型对象 depth——ToPrimitive 转换异常按规范传播
+// TypeError（旧 unwrap_or 吞错形态会静默返空）。
+#[test]
+fn test_flat_symbol_null_proto_depth_throws() {
+    let out = eval_str(
+        "(() => { let t1 = '?'; let t2 = '?'; \
+         try { [1].flat(Symbol()); } catch (e) { t1 = e.name; } \
+         try { [1].flat(Object.create(null)); } catch (e) { t2 = e.name; } \
+         return t1 + '|' + t2; })()",
+    )
+    .unwrap();
+    assert_eq!(out, "TypeError|TypeError");
+}
+
+// 引擎钉：flat species frozen 目标——CreateDataPropertyOrThrow 抛 TypeError。
+#[test]
+fn test_flat_species_frozen_target_throws() {
+    let out = eval_str(
+        "(() => { const a = [1, 2]; a.constructor = {}; \
+         a.constructor[Symbol.species] = (n) => Object.freeze([]); \
+         let t = '?'; try { a.flat(); } catch (e) { t = e.name; } return t; })()",
+    )
+    .unwrap();
+    assert_eq!(out, "TypeError");
+}
+
+// 引擎钉：flat species 构造器为 null——ArraySpeciesCreate 步 9 抛 TypeError。
+#[test]
+fn test_flat_species_null_ctor_throws() {
+    let out = eval_str(
+        "(() => { const a = [1, 2]; a.constructor = null; \
+         let t = '?'; try { a.flat(); } catch (e) { t = e.name; } return t; })()",
+    )
+    .unwrap();
+    assert_eq!(out, "TypeError");
+}
+
+// 引擎钉：flat species 非可写 '0' 槽（configurable）——CDO 覆写并恢复可写描述符；
+// 普通对象目标 length 为普通属性，不随 CDO 扩长。
+#[test]
+fn test_flat_species_non_writable_slot_overwritten() {
+    let out = eval_str(
+        "(() => { function Ctor(n) { const o = {}; o.length = n; \
+         Object.defineProperty(o, '0', { writable: false, configurable: true, enumerable: true, value: 99 }); \
+         return o; } \
+         const a = [0, 1]; a.constructor = {}; a.constructor[Symbol.species] = Ctor; \
+         const r = a.flat(); const d = Object.getOwnPropertyDescriptor(r, '0'); \
+         return r[0] + '|' + d.writable + '|' + d.configurable + '|' + r.length; })()",
+    )
+    .unwrap();
+    assert_eq!(out, "0|true|true|0");
+}
+
+// 引擎钉：flat 洞语义——HasProperty 门控丢洞，结果恒紧凑（防误修回归）。
+#[test]
+fn test_flat_holes_dropped_compact() {
+    let out = eval_str(
+        "(() => { const r1 = [1, , 2].flat(); const r2 = [[1, , 2], [3]].flat(); \
+         return r1.join(',') + '|' + r1.length + '|' + r2.join(',') + '|' + r2.length; })()",
+    )
+    .unwrap();
+    assert_eq!(out, "1,2|2|1,2,3|3");
+}
+
+// 引擎钉：flat 真数组 length 增/减后——长度源为 ToLength(Get length)，洞位丢洞。
+#[test]
+fn test_flat_logical_length_grow_shrink() {
+    let out = eval_str(
+        "(() => { const a = [1, 2, 3]; a.length = 5; const r1 = a.flat(); \
+         const b = [1, 2, 3]; b.length = 1; const r2 = b.flat(); \
+         return r1.join(',') + '|' + r1.length + '|' + r2.join(',') + '|' + r2.length; })()",
+    )
+    .unwrap();
+    assert_eq!(out, "1,2,3|3|1|1");
+}
+
+// 引擎钉：flat 非数组嵌套元素原样保留（防过度展开：仅真数组递归）。
+#[test]
+fn test_flat_non_array_elements_kept() {
+    let out = eval_str(
+        "(() => { const o = { a: 1 }; const r = [[o], 2].flat(); \
+         return r.length + '|' + (r[0] === o) + '|' + r[1]; })()",
+    )
+    .unwrap();
+    assert_eq!(out, "2|true|2");
+}
