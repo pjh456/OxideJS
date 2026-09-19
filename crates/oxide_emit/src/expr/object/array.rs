@@ -58,6 +58,9 @@ impl Emitter {
         let one_reg = ctx.alloc_reg();
         let one_idx = ctx.add_constant(Constant::Int(1));
         ctx.inst(Inst::load_const(Operand::Reg(one_reg), one_idx));
+        let undef_reg = ctx.alloc_reg();
+        let undef_idx = ctx.add_constant(Constant::Undefined);
+        ctx.inst(Inst::load_const(Operand::Reg(undef_reg), undef_idx));
 
         for elem in &arr.elements {
             if let Some(e) = elem.as_expression() {
@@ -75,7 +78,26 @@ impl Emitter {
                     Operand::Reg(one_reg),
                 ));
             } else if elem.is_elision() {
-                // hole：只推进 index，不写元素，length 由后续 SET_ELEM 越界扩容或初值覆盖。
+                // hole：先写 present-undefined 把 length 扩到 I+1，再删除置洞。
+                // 顺序不可换：DELETE 先跑对界外下标是空操作，随后的写会留下 present 槽。
+                ctx.inst(Inst::new(
+                    OpCode::SET_ELEM,
+                    Operand::Reg(arr_reg),
+                    Operand::Reg(index_reg),
+                    Operand::Reg(undef_reg),
+                ));
+
+                // 复制 arr 到 scratch 执行删除：DELETE_PROP_DYNAMIC 把结果写回 rd 槽，
+                // 直接用 arr_reg 会把数组寄存器覆盖成布尔值。
+                let scratch = ctx.alloc_reg();
+                ctx.inst(Inst::inst_mov(Operand::Reg(scratch), Operand::Reg(arr_reg)));
+                ctx.inst(Inst::new(
+                    OpCode::DELETE_PROP_DYNAMIC,
+                    Operand::Reg(scratch),
+                    Operand::Reg(scratch),
+                    Operand::Reg(index_reg),
+                ));
+
                 ctx.inst(Inst::new(
                     OpCode::ADD,
                     Operand::Reg(index_reg),
