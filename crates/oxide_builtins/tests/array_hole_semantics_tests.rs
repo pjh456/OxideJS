@@ -797,3 +797,56 @@ fn test_flat_non_array_elements_kept() {
     .unwrap();
     assert_eq!(out, "2|true|2");
 }
+
+// 引擎钉：flatMap ToObject 通用入口——装箱基元 this（旧无装箱形态对基元抛
+// TypeError）长度为 0 返空真数组；arraylike 接收者形态同入口，回调结果
+// 真数组展开一层。
+#[test]
+fn test_flat_map_to_object_entry() {
+    let out = eval_str(
+        "(() => { const r1 = Array.prototype.flatMap.call(5, (v) => v); \
+         const r2 = Array.prototype.flatMap.call({ length: 1, 0: 5 }, (v) => [v, v + 1]); \
+         return r1.length + '|' + Array.isArray(r1) + '|' + r2.join(',') + '|' + r2.length; })()",
+    )
+    .unwrap();
+    assert_eq!(out, "0|true|5,6|2");
+}
+
+// 引擎钉：flatMap species——ctor 传播结果构造（旧无物种裸构造形态不走 ctor，
+// tag 缺位、ctor 日志空）。
+#[test]
+fn test_flat_map_species_ctor_propagates() {
+    let out = eval_str(
+        "(() => { const log = []; function Ctor(n) { log.push('c' + n); const a = []; a.tag = 'X'; return a; } \
+         const a = [1, 2]; a.constructor = {}; a.constructor[Symbol.species] = Ctor; \
+         const r = a.flatMap((v) => [v]); \
+         return r.join(',') + '|' + r.length + '|' + r.tag + '|' + log.join(','); })()",
+    )
+    .unwrap();
+    assert_eq!(out, "1,2|2|X|c0");
+}
+
+// 引擎钉：flatMap species frozen 目标——CreateDataPropertyOrThrow 抛 TypeError
+// （旧裸写不抛形态静默落空不抛）。
+#[test]
+fn test_flat_map_species_frozen_target_throws() {
+    let out = eval_str(
+        "(() => { const a = [1, 2]; a.constructor = {}; \
+         a.constructor[Symbol.species] = (n) => Object.freeze([]); \
+         let t = '?'; try { a.flatMap((v) => [v]); } catch (e) { t = e.name; } return t; })()",
+    )
+    .unwrap();
+    assert_eq!(out, "TypeError");
+}
+
+// 引擎钉：flatMap 回调结果洞源——展开长度源为 LengthOfArrayLike，洞位不入
+// 目标（旧 prop_count 长度源形态少读洞后存在位，结果短一元素）。
+#[test]
+fn test_flat_map_hole_source_length_of_arraylike() {
+    let out = eval_str(
+        "(() => { const r = [1, 2].flatMap((v) => { const x = new Array(2); x[1] = v; return x; }); \
+         return r.join(',') + '|' + r.length + '|' + (0 in r) + '|' + (1 in r); })()",
+    )
+    .unwrap();
+    assert_eq!(out, "1,2|2|true|true");
+}
