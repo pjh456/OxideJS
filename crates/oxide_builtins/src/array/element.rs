@@ -15,6 +15,35 @@ use super::common::{
 };
 use super::from::{array_species_create, create_data_property_or_throw, from_engine_error};
 
+/// 按规范读单个元素：HasProperty 门控（自身与原型链任一层命中才算存在，
+/// 数组元素区 hole 视同缺失），命中时返回 Get 值（用户 getter 的异常原样
+/// 上抛），缺失返回 `None`。
+fn gated_get<H: VmHost>(
+    vm: &mut H, arr_ptr: *mut JsObject, index: usize, recv: JsValue,
+) -> Result<Option<JsValue>, JsValue> {
+    let key_si = vm.string_key_si(&index.to_string());
+    if !vm.has_property(unsafe { &*arr_ptr }, key_si) {
+        return Ok(None);
+    }
+    let val = match vm.ordinary_get(unsafe { &*arr_ptr }, key_si, recv) {
+        Ok(v) => v,
+        Err(msg) => return Err(from_engine_error(vm, &msg)),
+    };
+    Ok(Some(val))
+}
+
+/// DeletePropertyOrThrow 臂：元素为不可配置自有属性时删除失败抛 TypeError，
+/// 否则置洞（length 与元素区大小不变）。
+fn delete_prop_or_throw<H: VmHost>(vm: &mut H, arr_ptr: *mut JsObject, index: usize) -> Result<(), JsValue> {
+    match unsafe { &*arr_ptr }.prop_meta_at(index) {
+        Some(meta) if !meta.attributes.configurable() => Err(array_type_error(vm, "Cannot delete property")),
+        _ => {
+            unsafe { (*arr_ptr).mark_hole_at(index) };
+            Ok(())
+        }
+    }
+}
+
 /// `Array.prototype.push(...items)`：追加元素到尾部，返回新长度。
 ///
 /// # 步骤
@@ -165,11 +194,24 @@ pub fn array_slice<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 
 /// `Array.prototype.splice(start, deleteCount, ...items)`：删除并/或插入元素，
 /// 返回被删除元素组成的新数组。
+///
+/// # 步骤
+/// 1. 折算 `start` / `deleteCount`（负数自尾部、夹到界内）。
+/// 2. 先建 removed 数组：逐被删下标 HasProperty 门控 + Get，命中
+///    CreateDataPropertyOrThrow、缺失保洞；结果对象钉入返回寄存器（其后的
+///    搬移/插入各带用户调用窗口，Rust 局部指针不属 GC 根集）。
+/// 3. 双向搬移：源存在则 Get + 严格 Set 到目标，源缺失则目标 DeletePropertyOrThrow
+///    （不可配置抛 TypeError）；扩容方向下超出当前元素数的目标先记录，length
+///    写入后补置洞。
+/// 4. 插入项逐个严格 Set，length 快写收尾。
+///
+/// # 副作用
+/// - 元素被删/插/移；Get/Set 可经原型链触发用户代码。
 pub fn array_splice<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("Array.prototype.splice called with {} args", args.len());
     let arr_ptr = array_ptr!(vm, args);
-    let arr = unsafe { &mut *arr_ptr };
-    let n = arr.prop_count() as usize;
+    let recv = JsValue::from_js_object(arr_ptr);
+    let n = unsafe { &*arr_ptr }.prop_count() as usize;
 
     let start = if args.len() > 1 {
         let v = vm.coerce_number_bounded(vm.reg(args[1])).unwrap_or(f64::NAN);
@@ -192,40 +234,84 @@ pub fn array_splice<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 
     let insert_count = if args.len() > 3 { args.len() - 3 } else { 0 };
 
-    let mut removed: Vec<JsValue> = Vec::new();
-    for i in 0..delete_count {
-        removed.push(arr.get_prop_at(start + i));
+    // removed 先行构建并钉入返回寄存器：搬移/插入窗口的用户 setter 可触发
+    // 回收，结果对象指针须保 GC 根，返回时从钉位读回。
+    let removed_arr = create_new_array(vm, delete_count);
+    vm.set_reg(0, JsValue::from_js_object(removed_arr));
+    for k in 0..delete_count {
+        match gated_get(vm, arr_ptr, start + k, recv) {
+            Ok(Some(val)) => {
+                let key_si = vm.string_key_si(&k.to_string());
+                if let Err(err) = create_data_property_or_throw(vm, unsafe { &mut *removed_arr }, key_si, val) {
+                    return NativeResult::Err(err);
+                }
+            }
+            // 源缺失位保洞（removed 预填 present-undefined，须显式置洞）。
+            Ok(None) => unsafe { (*removed_arr).mark_hole_at(k) },
+            Err(err) => return NativeResult::Err(err),
+        }
     }
+
+    // 目标超出当前元素数的洞位无法即时置（越界 no-op），length 写入后补。
+    let mut pending_holes: Vec<usize> = Vec::new();
 
     if insert_count > delete_count {
         let shift = insert_count - delete_count;
         for i in (start + delete_count..n).rev() {
-            let val = arr.get_prop_at(i);
-            arr.set_prop_at(i + shift, val);
+            let to = i + shift;
+            match gated_get(vm, arr_ptr, i, recv) {
+                Ok(Some(val)) => {
+                    let to_si = vm.string_key_si(&to.to_string());
+                    if let Err(err) = vm.ordinary_set(unsafe { &mut *arr_ptr }, to_si, val, recv, true) {
+                        return NativeResult::Err(from_engine_error(vm, &err));
+                    }
+                }
+                Ok(None) => {
+                    if let Err(err) = delete_prop_or_throw(vm, arr_ptr, to) {
+                        return NativeResult::Err(err);
+                    }
+                    if to >= n {
+                        pending_holes.push(to);
+                    }
+                }
+                Err(err) => return NativeResult::Err(err),
+            }
         }
     } else if insert_count < delete_count {
         let shift = delete_count - insert_count;
         for i in start + delete_count..n {
-            let val = arr.get_prop_at(i);
-            arr.set_prop_at(i - shift, val);
+            let to = i - shift;
+            match gated_get(vm, arr_ptr, i, recv) {
+                Ok(Some(val)) => {
+                    let to_si = vm.string_key_si(&to.to_string());
+                    if let Err(err) = vm.ordinary_set(unsafe { &mut *arr_ptr }, to_si, val, recv, true) {
+                        return NativeResult::Err(from_engine_error(vm, &err));
+                    }
+                }
+                Ok(None) => {
+                    if let Err(err) = delete_prop_or_throw(vm, arr_ptr, to) {
+                        return NativeResult::Err(err);
+                    }
+                }
+                Err(err) => return NativeResult::Err(err),
+            }
         }
     }
 
     for i in 0..insert_count {
-        arr.set_prop_at(start + i, vm.reg(args[3 + i]));
+        let to_si = vm.string_key_si(&(start + i).to_string());
+        if let Err(err) = vm.ordinary_set(unsafe { &mut *arr_ptr }, to_si, vm.reg(args[3 + i]), recv, true) {
+            return NativeResult::Err(from_engine_error(vm, &err));
+        }
     }
 
     let new_len = n + insert_count - delete_count;
-    arr.set_prop_count_fast(new_len);
-
-    let removed_arr = create_new_array(vm, removed.len());
-    unsafe {
-        for (i, val) in removed.iter().enumerate() {
-            (*removed_arr).set_prop_at(i, *val);
-        }
-        (*removed_arr).set_prop_count(removed.len());
+    unsafe { (*arr_ptr).set_prop_count_fast(new_len) };
+    for h in pending_holes {
+        unsafe { (*arr_ptr).mark_hole_at(h) };
     }
-    NativeResult::Ok(JsValue::from_js_object(removed_arr))
+
+    NativeResult::Ok(vm.reg(0))
 }
 
 /// `Array.prototype.concat(...items)`：连接 this 与参数（数组参数展开）返回新数组。
@@ -409,21 +495,84 @@ pub fn array_includes<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 }
 
 /// `Array.prototype.reverse()`：原地反转元素顺序，返回 this。
+///
+/// # 步骤
+/// 1. 逐对交换 `[lower, upper]`（`upper = length - lower - 1`，`lower` 到
+///    `floor(length/2)` 为止）：两端各自 HasProperty 门控，存在端 Get 取值。
+/// 2. 双存在：两端严格 Set 互写；单存在：值 Set 到缺失端 + 存在端
+///    DeletePropertyOrThrow；双缺失不动。
+///
+/// # 副作用
+/// - 元素对调/置洞；Get/Set 可经原型链触发用户代码。
 pub fn array_reverse<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("Array.prototype.reverse called with {} args", args.len());
     let arr_ptr = array_ptr!(vm, args);
-    let arr = unsafe { &mut *arr_ptr };
-    let n = arr.prop_count() as usize;
-    let mut i = 0;
-    let mut j = n.saturating_sub(1);
-    while i < j {
-        let tmp = arr.get_prop_at(i);
-        arr.set_prop_at(i, arr.get_prop_at(j));
-        arr.set_prop_at(j, tmp);
-        i += 1;
-        j = j.saturating_sub(1);
+    let recv = JsValue::from_js_object(arr_ptr);
+    let this_val = vm.reg(args[0]);
+    let n = unsafe { &*arr_ptr }.prop_count() as usize;
+    let middle = n / 2;
+    let mut lower = 0usize;
+    while lower < middle {
+        let upper = n - lower - 1;
+        let lower_si = vm.string_key_si(&lower.to_string());
+        let upper_si = vm.string_key_si(&upper.to_string());
+        // 先下后上读值（getter 副作用序对齐规范）；hole 与原型缺失判端不存在。
+        let lower_val = if vm.has_property(unsafe { &*arr_ptr }, lower_si) {
+            match vm.ordinary_get(unsafe { &*arr_ptr }, lower_si, recv) {
+                Ok(v) => Some(v),
+                Err(msg) => return NativeResult::Err(from_engine_error(vm, &msg)),
+            }
+        } else {
+            None
+        };
+        let upper_val = if vm.has_property(unsafe { &*arr_ptr }, upper_si) {
+            match vm.ordinary_get(unsafe { &*arr_ptr }, upper_si, recv) {
+                Ok(v) => Some(v),
+                Err(msg) => return NativeResult::Err(from_engine_error(vm, &msg)),
+            }
+        } else {
+            None
+        };
+        match (lower_val, upper_val) {
+            (Some(lv), Some(ov)) => {
+                // 下值跨上端读与两次 Set 共三个用户调用窗口：先钉返回寄存器
+                // （Rust 局部不属 GC 根集），写后从钉位读回。
+                vm.set_reg(0, lv);
+                if let Err(err) = vm.ordinary_set(unsafe { &mut *arr_ptr }, lower_si, ov, recv, true) {
+                    return NativeResult::Err(from_engine_error(vm, &err));
+                }
+                if let Err(err) = vm.ordinary_set(unsafe { &mut *arr_ptr }, upper_si, vm.reg(0), recv, true) {
+                    return NativeResult::Err(from_engine_error(vm, &err));
+                }
+            }
+            (None, Some(ov)) => {
+                if let Err(err) = vm.ordinary_set(unsafe { &mut *arr_ptr }, lower_si, ov, recv, true) {
+                    return NativeResult::Err(from_engine_error(vm, &err));
+                }
+                if let Err(err) = delete_prop_or_throw(vm, arr_ptr, upper) {
+                    return NativeResult::Err(err);
+                }
+            }
+            (Some(lv), None) => {
+                vm.set_reg(0, lv);
+                let old_count = unsafe { &*arr_ptr }.prop_count() as usize;
+                if let Err(err) = delete_prop_or_throw(vm, arr_ptr, lower) {
+                    return NativeResult::Err(err);
+                }
+                if let Err(err) = vm.ordinary_set(unsafe { &mut *arr_ptr }, upper_si, vm.reg(0), recv, true) {
+                    return NativeResult::Err(from_engine_error(vm, &err));
+                }
+                // 读值期 getter 截断元素区后，上端写在区域外越界扩展会把间隙
+                // 填成 present-undefined：被删端落入新扩展段时须补置洞。
+                if lower >= old_count {
+                    unsafe { (*arr_ptr).mark_hole_at(lower) };
+                }
+            }
+            (None, None) => {}
+        }
+        lower += 1;
     }
-    NativeResult::Ok(vm.reg(args[0]))
+    NativeResult::Ok(this_val)
 }
 
 /// `Array.prototype.flat(depth)`：按深度递归展开嵌套数组（含循环引用保护）返回新数组。
@@ -644,14 +793,27 @@ pub fn array_fill<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     NativeResult::Ok(vm.reg(args[0]))
 }
 
-/// `Array.prototype.copyWithin(target, start, end)`：在数组内部复制元素区间，返回 this。
+/// `Array.prototype.copyWithin(target, start, end)`：在数组内部复制元素区间，
+/// 返回 this。
+///
+/// # 步骤
+/// 1. `target` / `start` / `end` 负数自尾部折算并夹到 [0, length]，
+///    `count = min(end - start, length - target)`。
+/// 2. 源区间与目标重叠且目标领先时反向迭代（否则正向复制会先覆盖源），
+///    其余正向。
+/// 3. 逐位：源 HasProperty 命中则 Get + 严格 Set 到目标，缺失则目标
+///    DeletePropertyOrThrow（不可配置抛 TypeError）。
+///
+/// # 副作用
+/// - 元素被覆写/置洞；Get/Set 可经原型链触发用户代码。
 pub fn array_copy_within<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("Array.prototype.copyWithin called with {} args", args.len());
     let arr_ptr = array_ptr!(vm, args);
-    let arr = unsafe { &mut *arr_ptr };
-    let len = arr.prop_count() as isize;
+    let recv = JsValue::from_js_object(arr_ptr);
+    let this_val = vm.reg(args[0]);
+    let len = unsafe { &*arr_ptr }.prop_count() as isize;
     if len == 0 {
-        return NativeResult::Ok(vm.reg(args[0]));
+        return NativeResult::Ok(this_val);
     }
     let rel_target = if args.len() > 1 {
         oxide_runtime_api::to_integer_or_infinity(vm.reg(args[1])) as isize
@@ -668,26 +830,47 @@ pub fn array_copy_within<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     } else {
         len
     };
-    let target = (if rel_target < 0 { (len + rel_target).max(0) } else { rel_target.min(len) }) as usize;
-    let start = (if rel_start < 0 { (len + rel_start).max(0) } else { rel_start.min(len) }) as usize;
-    let end = (if rel_end < 0 { (len + rel_end).max(0) } else { rel_end.min(len) }) as usize;
-    let len_usize = len as usize;
-    for (to, from) in (target..).zip(start..end) {
-        if to >= len_usize {
-            break;
-        }
-        let v = arr.get_prop_at(from);
-        arr.set_prop_at(to, v);
+    let target = (if rel_target < 0 { (len + rel_target).max(0) } else { rel_target.min(len) }) as isize;
+    let start = (if rel_start < 0 { (len + rel_start).max(0) } else { rel_start.min(len) }) as isize;
+    let end = (if rel_end < 0 { (len + rel_end).max(0) } else { rel_end.min(len) }) as isize;
+    let count = (end - start).min(len - target);
+    if count <= 0 {
+        return NativeResult::Ok(this_val);
     }
-    NativeResult::Ok(vm.reg(args[0]))
+    let (mut from, mut to, dir) = if start < target && target < start + count {
+        (start + count - 1, target + count - 1, -1isize)
+    } else {
+        (start, target, 1isize)
+    };
+    for _ in 0..count {
+        match gated_get(vm, arr_ptr, from as usize, recv) {
+            Ok(Some(v)) => {
+                // 复制值跨 Set 用户调用窗口：先钉返回寄存器再写，写后从钉位读回。
+                vm.set_reg(0, v);
+                let to_si = vm.string_key_si(&to.to_string());
+                if let Err(err) = vm.ordinary_set(unsafe { &mut *arr_ptr }, to_si, vm.reg(0), recv, true) {
+                    return NativeResult::Err(from_engine_error(vm, &err));
+                }
+            }
+            Ok(None) => {
+                if let Err(err) = delete_prop_or_throw(vm, arr_ptr, to as usize) {
+                    return NativeResult::Err(err);
+                }
+            }
+            Err(err) => return NativeResult::Err(err),
+        }
+        from += dir;
+        to += dir;
+    }
+    NativeResult::Ok(this_val)
 }
 
 /// `Array.prototype.at(index)`：按索引取元素，支持负索引；越界返回 undefined。
+/// 元素读走规范 Get（洞位落原型链，原型索引访问器触发），密集数组直读快路径。
 pub fn array_at<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("Array.prototype.at called with {} args", args.len());
     let arr_ptr = array_ptr!(vm, args);
-    let arr = unsafe { &*arr_ptr };
-    let len = arr.prop_count() as i32;
+    let len = unsafe { &*arr_ptr }.prop_count() as i32;
     let mut index = if args.len() > 1 {
         vm.coerce_number_bounded(vm.reg(args[1])).unwrap_or(f64::NAN) as i32
     } else {
@@ -699,7 +882,7 @@ pub fn array_at<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     if index < 0 || index >= len {
         return NativeResult::Ok(JsValue::undefined());
     }
-    NativeResult::Ok(arr.get_prop_at(index))
+    NativeResult::Ok(arraylike_get_or_err!(vm, arr_ptr, index as usize))
 }
 
 /// `Array.prototype.lastIndexOf(searchElement, fromIndex)`：从后往前查找首个匹配索引。
