@@ -227,3 +227,39 @@ fn mutators_still_work_with_writable_length() {
         "3:1:3:9,8,2"
     );
 }
+
+#[test]
+fn new_array_numeric_length_builds_holes() {
+    // 数值长度构造器建 n 个空洞：in / Object.keys / for-in / join /
+    // JSON.stringify 全部按缺失语义观察。
+    assert_eq!(eval_str("''+(0 in new Array(1))+':'+(1 in new Array(2))"), "false:false");
+    assert_eq!(eval_str("Object.keys(new Array(3)).join(',')"), "");
+    assert_eq!(eval_str("var k=0; for (var i in new Array(3)) {k++;} ''+k"), "0");
+    assert_eq!(eval_str("new Array(2).join(',')"), ",");
+    assert_eq!(eval_str("JSON.stringify(new Array(1))"), "[null]");
+}
+
+#[test]
+fn new_array_hole_read_falls_through_to_prototype_getter() {
+    // 洞位读落原型链：继承的索引 getter 被触发一次并返回其值。
+    assert_eq!(
+        eval_str("var n=0; Object.defineProperty(Array.prototype,'0',{get:function(){n++;return 42;}}); var a=new Array(1); var v=a[0]; n+':'+v"),
+        "1:42"
+    );
+}
+
+#[test]
+fn new_array_hole_write_clears_marker() {
+    // 洞位写入后恢复为 present 属性：原洞位保持缺失。
+    assert_eq!(
+        eval_str("var a=new Array(2); a[1]=5; ''+(0 in a)+':'+(1 in a)+':'+a.length"),
+        "false:true:2"
+    );
+}
+
+#[test]
+fn new_array_holes_pop_shift() {
+    // 全洞数组 pop/shift：返回 undefined，length 归 0。
+    assert_eq!(eval_str("var a=new Array(1); var p=a.pop(); (p===undefined)+':'+a.length"), "true:0");
+    assert_eq!(eval_str("var a=new Array(1); var s=a.shift(); (s===undefined)+':'+a.length"), "true:0");
+}
