@@ -526,3 +526,28 @@ fn test_splice_reverse_primitive_this_boxed() {
     .unwrap();
     assert_eq!(out, "true|true|0");
 }
+
+// 引擎钉：concat 空数组实参按 ConcatSteps 展开为零元素——不贡献元素也不占位。
+#[test]
+fn test_concat_empty_array_arg_expands_zero_elements() {
+    let out = eval_str(
+        "(() => { return [1].concat([]).length + '|' + [1].concat([], []).length + '|' + \
+         [].concat([]).length + '|' + [1, 2].concat(new Array(0)).length; })()",
+    )
+    .unwrap();
+    assert_eq!(out, "1|1|0|2");
+}
+
+// 引擎钉：concat 多实参混合 present/空数组/非数组实参展开序与规范一致，
+// 空数组实参中间穿插不占位；洞实参位保洞。
+#[test]
+fn test_concat_mixed_args_order_and_holes() {
+    let out = eval_str(
+        "(() => { const mixed = [].concat([], 5, []).join(','); \
+         const ordered = [1].concat([2, 3], 0, []).join(','); \
+         const r = [].concat(new Array(1)); \
+         return mixed + '|' + ordered + '|' + r.length + '|' + (0 in r); })()",
+    )
+    .unwrap();
+    assert_eq!(out, "5|1,2,3,0|1|false");
+}

@@ -412,8 +412,8 @@ pub fn array_concat<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
             if !o_ptr.is_null() {
                 let o = unsafe { &*o_ptr };
                 let on = o.prop_count() as usize;
-                // 真数组时展开元素（洞位同样留洞）。
-                if o.is_array() && on > 0 {
+                // 真数组时展开元素（空数组展开为零元素，贡献无；洞位同样留洞）。
+                if o.is_array() {
                     let dense = o.array_elements_meta_vec().is_none();
                     for i in 0..on {
                         if dense || !o.prop_meta_at(i).is_some_and(|m| m.is_hole()) {
