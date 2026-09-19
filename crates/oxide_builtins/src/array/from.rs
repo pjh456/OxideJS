@@ -339,6 +339,10 @@ pub(crate) fn array_species_create<H: VmHost>(
         Ok(v) => v,
         Err(msg) => return Err(from_engine_error(vm, &msg)),
     };
+    // C 为 undefined 时不查 species，直接回退内置 ArrayCreate。
+    if c.is_undefined() {
+        return Ok(create_new_array(vm, count));
+    }
     if !is_constructor_value(c) {
         if !c.is_object() {
             return Err(crate::error::create_type_error(vm, "Species constructor not a constructor"));

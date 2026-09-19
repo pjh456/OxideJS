@@ -850,3 +850,40 @@ fn test_flat_map_hole_source_length_of_arraylike() {
     .unwrap();
     assert_eq!(out, "1,2|2|true|true");
 }
+
+// 引擎钉：species 构造器为 undefined 时不查 species，四挂载点（slice/splice/
+// flat/flatMap）均回退内置 ArrayCreate——纯数组、原型 Array.prototype、元素逐值。
+#[test]
+fn test_species_ctor_undefined_plain_array_four_mounts() {
+    let out = eval_str(
+        "(() => { const mk = () => { const a = [1, 2, 3]; a.constructor = undefined; return a; }; \
+         const s = mk().slice(); const sp = mk().splice(1, 1); \
+         const f = mk().flat(); const fm = mk().flatMap((x) => x); \
+         return Array.isArray(s) + '|' + (Object.getPrototypeOf(s) === Array.prototype) + '|' + \
+         s.join(',') + '|' + Array.isArray(sp) + '|' + sp.join(',') + '|' + \
+         Array.isArray(f) + '|' + f.join(',') + '|' + Array.isArray(fm) + '|' + fm.join(','); })()",
+    )
+    .unwrap();
+    assert_eq!(out, "true|true|1,2,3|true|2|true|1,2,3|true|1,2,3");
+}
+
+// 防过度修护栏：species 构造器为 null/数字/字符串/布尔四值时，四挂载点均保持
+// 抛 TypeError（仅 undefined 判定前移，null/基元臂不得回退）。
+#[test]
+fn test_species_ctor_null_primitive_throws_four_mounts() {
+    let out = eval_str(
+        "(() => { let ok = 0; \
+         for (const cv of [null, 1, 'string', true]) { \
+           const a = [1, 2, 3]; a.constructor = cv; \
+           try { a.slice(); } catch (e) { if (e instanceof TypeError) ok++; } \
+           const b = [1, 2, 3]; b.constructor = cv; \
+           try { b.splice(1); } catch (e) { if (e instanceof TypeError) ok++; } \
+           const c = [1, 2, 3]; c.constructor = cv; \
+           try { c.flat(); } catch (e) { if (e instanceof TypeError) ok++; } \
+           const d = [1, 2, 3]; d.constructor = cv; \
+           try { d.flatMap((x) => x); } catch (e) { if (e instanceof TypeError) ok++; } } \
+         return String(ok); })()",
+    )
+    .unwrap();
+    assert_eq!(out, "16");
+}
