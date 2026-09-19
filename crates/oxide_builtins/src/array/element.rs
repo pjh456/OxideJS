@@ -32,15 +32,12 @@ fn gated_get<H: VmHost>(
     Ok(Some(val))
 }
 
-/// DeletePropertyOrThrow 臂：元素为不可配置自有属性时删除失败抛 TypeError，
-/// 否则置洞（length 与元素区大小不变）。
-fn delete_prop_or_throw<H: VmHost>(vm: &mut H, arr_ptr: *mut JsObject, index: usize) -> Result<(), JsValue> {
-    match unsafe { &*arr_ptr }.prop_meta_at(index) {
-        Some(meta) if !meta.attributes.configurable() => Err(array_type_error(vm, "Cannot delete property")),
-        _ => {
-            unsafe { (*arr_ptr).mark_hole_at(index) };
-            Ok(())
-        }
+/// DeletePropertyOrThrow：自有不可配置属性删除失败抛 TypeError，缺失位空操作
+/// 成功。数组元素区与命名属性双路径交由 delete_own_property_outcome 判定。
+fn delete_prop_or_throw<H: VmHost>(vm: &mut H, obj: &mut JsObject, key_si: u32) -> Result<(), JsValue> {
+    match crate::object::delete_own_property_outcome(vm, obj, key_si) {
+        crate::object::DeleteOutcome::NonConfigurable => Err(array_type_error(vm, "Cannot delete property")),
+        _ => Ok(()),
     }
 }
 
@@ -196,53 +193,82 @@ pub fn array_slice<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 /// 返回被删除元素组成的新数组。
 ///
 /// # 步骤
-/// 1. 折算 `start` / `deleteCount`（负数自尾部、夹到界内）。
-/// 2. 先按 ArraySpeciesCreate 建 removed 数组（收集与搬移之前，用户构造器
-///    读到未改动的 O），结果对象钉入返回寄存器（其后的收集/搬移/插入各带
+/// 1. `ToObject` 装箱基元 this（null/undefined 抛 TypeError）；长度按规范
+///    `ToLength(Get(O, "length"))` 读取（上限 2^53-1）。
+/// 2. `start` / `deleteCount` 走 ToIntegerOrInfinity 折算（负数自尾部、夹到
+///    界内）；无实参时删除数恒 0，仅给 start 时删到尾部。新长度超 2^53-1
+///    抛 TypeError。
+/// 3. 先按 ArraySpeciesCreate 建 removed 数组（收集与搬移之前，用户构造器
+///    读到未改动的 O），arraylike 路径无 species 语义但 ArrayCreate 自身
+///    要求长度 ≤ 2^32-1；结果对象钉入返回寄存器（其后的收集/搬移/插入各带
 ///    用户调用窗口，Rust 局部指针不属 GC 根集）。
-/// 3. 逐被删下标 HasProperty 门控 + Get，命中 CreateDataPropertyOrThrow；
+/// 4. 逐被删下标 HasProperty 门控 + Get，命中 CreateDataPropertyOrThrow；
 ///    缺失位仅真数组 A 保洞（A 预填 present-undefined 须显式置洞），非数组
 ///    A 按规范不建属性。
-/// 4. `Set(A, "length", deleteCount, true)` 在搬移前收尾。
-/// 5. 双向搬移：源存在则 Get + 严格 Set 到目标，源缺失则目标 DeletePropertyOrThrow
+/// 5. `Set(A, "length", deleteCount, true)` 在搬移前收尾。
+/// 6. 双向搬移：源存在则 Get + 严格 Set 到目标，源缺失则目标 DeletePropertyOrThrow
 ///    （不可配置抛 TypeError）；扩容方向下超出当前元素数的目标先记录，length
-///    写入后补置洞。
-/// 6. 插入项逐个严格 Set，`Set(this, "length", newLen, true)` 收尾（length
+///    写入后补置洞；收缩方向的尾部区间自 length 写入前的语义由长度截断
+///    覆盖，arraylike 上按 DeletePropertyOrThrow 逐位降序删除。
+/// 7. 插入项逐个严格 Set，`Set(this, "length", newLen, true)` 收尾（length
 ///    不可写抛 TypeError）。
 ///
 /// # 副作用
 /// - 元素被删/插/移；Get/Set 可经原型链触发用户代码。
 pub fn array_splice<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("Array.prototype.splice called with {} args", args.len());
-    let arr_ptr = array_ptr!(vm, args);
-    let recv = JsValue::from_js_object(arr_ptr);
-    let n = unsafe { &*arr_ptr }.prop_count() as usize;
+    // ToObject：基元 this 装箱（null/undefined 抛 TypeError）。
+    let this_val = match oxide_runtime_api::to_object(vm.reg(args[0]), vm) {
+        Ok(v) => v,
+        Err(msg) => return NativeResult::Err(from_engine_error(vm, &msg)),
+    };
+    let (arr_ptr, n, is_array) = match get_this_arraylike(vm, this_val) {
+        Ok(v) => v,
+        Err(e) => return NativeResult::Err(e),
+    };
+    let recv = this_val;
+    let n_f = n as f64;
 
-    let start = if args.len() > 1 {
-        let v = vm.coerce_number_bounded(vm.reg(args[1])).unwrap_or(f64::NAN);
-        let s = v as i32;
-        if s < 0 {
-            (n as i32 + s).max(0) as usize
-        } else {
-            (s as usize).min(n)
+    let insert_count = if args.len() > 3 { args.len() - 3 } else { 0 };
+    let rel_start = if args.len() > 1 {
+        match to_integer_or_infinity_bounded(vm, vm.reg(args[1])) {
+            Ok(v) => v,
+            Err(e) => return NativeResult::Err(e),
         }
     } else {
-        0
+        0.0
     };
-
-    let delete_count = if args.len() > 2 {
-        let v = vm.coerce_number_bounded(vm.reg(args[2])).unwrap_or(f64::NAN);
-        (v as usize).min(n - start)
+    let start = clamp_relative(rel_start, n_f, n);
+    // 无实参时删除数恒 0；deleteCount 缺省（仅有 start）即删到尾部（len - start）。
+    let delete_count = if args.len() == 1 {
+        0
+    } else if args.len() > 2 {
+        let rel_dc = match to_integer_or_infinity_bounded(vm, vm.reg(args[2])) {
+            Ok(v) => v,
+            Err(e) => return NativeResult::Err(e),
+        };
+        if rel_dc < 0.0 {
+            0
+        } else {
+            rel_dc.min(n_f - start as f64) as usize
+        }
     } else {
         n - start
     };
 
-    let insert_count = if args.len() > 3 { args.len() - 3 } else { 0 };
+    // 新长度超 2^53-1 抛 TypeError（node 消息 "Invalid array length"）。
+    let new_len = n - delete_count + insert_count;
+    if new_len > 9_007_199_254_740_991 {
+        return NativeResult::Err(crate::error::create_type_error(vm, "Invalid array length"));
+    }
 
     // removed 先行按 ArraySpeciesCreate 构建（收集/搬移之前）并钉入返回寄存器：
     // 搬移/插入窗口的用户 setter 可触发回收，结果对象指针须保 GC 根，返回时
     // 从钉位读回；species 读与构造器抛错即 splice 抛错。
-    let removed_arr = match array_species_create(vm, recv, true, delete_count) {
+    if let Err(err) = check_array_create_len(vm, delete_count) {
+        return NativeResult::Err(err);
+    }
+    let removed_arr = match array_species_create(vm, recv, is_array, delete_count) {
         Ok(p) => p,
         Err(err) => return NativeResult::Err(err),
     };
@@ -291,10 +317,14 @@ pub fn array_splice<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
                     }
                 }
                 Ok(None) => {
-                    if let Err(err) = delete_prop_or_throw(vm, arr_ptr, to) {
+                    let to_si = vm.string_key_si(&to.to_string());
+                    if let Err(err) = delete_prop_or_throw(vm, unsafe { &mut *arr_ptr }, to_si) {
                         return NativeResult::Err(err);
                     }
-                    if to >= n {
+                    // 越界目标在真数组上被 ordinary_set 自动扩成
+                    // present-undefined，length 写入后须补洞；arraylike 无元素区
+                    // 扩展，属性即 present，无洞可补。
+                    if is_array && to >= n {
                         pending_holes.push(to);
                     }
                 }
@@ -313,11 +343,23 @@ pub fn array_splice<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
                     }
                 }
                 Ok(None) => {
-                    if let Err(err) = delete_prop_or_throw(vm, arr_ptr, to) {
+                    let to_si = vm.string_key_si(&to.to_string());
+                    if let Err(err) = delete_prop_or_throw(vm, unsafe { &mut *arr_ptr }, to_si) {
                         return NativeResult::Err(err);
                     }
                 }
                 Err(err) => return NativeResult::Err(err),
+            }
+        }
+        // 收缩尾部 [new_len, n) 降序 DeletePropertyOrThrow：真数组由 length 写入的
+        // 截断与不可配置阻挡扫描覆盖（重复删除是纯开销），arraylike 的 length
+        // 写不触及索引属性，必须显式删位。
+        if !is_array {
+            for i in (new_len..n).rev() {
+                let key_si = vm.string_key_si(&i.to_string());
+                if let Err(err) = delete_prop_or_throw(vm, unsafe { &mut *arr_ptr }, key_si) {
+                    return NativeResult::Err(err);
+                }
             }
         }
     }
@@ -331,7 +373,6 @@ pub fn array_splice<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 
     // Set(this, "length", newLen, true) 同样走 Set：length 不可写在此抛
     // TypeError（与新旧长度是否相同无关）。
-    let new_len = n + insert_count - delete_count;
     if let Err(err) = vm.ordinary_set(unsafe { &mut *arr_ptr }, length_si, js_array_index(new_len), recv, true) {
         return NativeResult::Err(from_engine_error(vm, &err));
     }
@@ -525,19 +566,27 @@ pub fn array_includes<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 /// `Array.prototype.reverse()`：原地反转元素顺序，返回 this。
 ///
 /// # 步骤
-/// 1. 逐对交换 `[lower, upper]`（`upper = length - lower - 1`，`lower` 到
+/// 1. `ToObject` 装箱基元 this（null/undefined 抛 TypeError）；长度按规范
+///    `ToLength(Get(O, "length"))` 读取（上限 2^53-1）。
+/// 2. 逐对交换 `[lower, upper]`（`upper = length - lower - 1`，`lower` 到
 ///    `floor(length/2)` 为止）：两端各自 HasProperty 门控，存在端 Get 取值。
-/// 2. 双存在：两端严格 Set 互写；单存在：值 Set 到缺失端 + 存在端
+/// 3. 双存在：两端严格 Set 互写；单存在：值 Set 到缺失端 + 存在端
 ///    DeletePropertyOrThrow；双缺失不动。
 ///
 /// # 副作用
 /// - 元素对调/置洞；Get/Set 可经原型链触发用户代码。
 pub fn array_reverse<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("Array.prototype.reverse called with {} args", args.len());
-    let arr_ptr = array_ptr!(vm, args);
-    let recv = JsValue::from_js_object(arr_ptr);
-    let this_val = vm.reg(args[0]);
-    let n = unsafe { &*arr_ptr }.prop_count() as usize;
+    // ToObject：基元 this 装箱（null/undefined 抛 TypeError）。
+    let this_val = match oxide_runtime_api::to_object(vm.reg(args[0]), vm) {
+        Ok(v) => v,
+        Err(msg) => return NativeResult::Err(from_engine_error(vm, &msg)),
+    };
+    let (arr_ptr, n, is_array) = match get_this_arraylike(vm, this_val) {
+        Ok(v) => v,
+        Err(e) => return NativeResult::Err(e),
+    };
+    let recv = this_val;
     let middle = n / 2;
     let mut lower = 0usize;
     while lower < middle {
@@ -579,23 +628,26 @@ pub fn array_reverse<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
                 if let Err(err) = vm.ordinary_set(unsafe { &mut *arr_ptr }, lower_si, ov, recv, true) {
                     return NativeResult::Err(from_engine_error(vm, &err));
                 }
-                if let Err(err) = delete_prop_or_throw(vm, arr_ptr, upper) {
+                if let Err(err) = delete_prop_or_throw(vm, unsafe { &mut *arr_ptr }, upper_si) {
                     return NativeResult::Err(err);
                 }
             }
             (Some(_lv), None) => {
-                let old_count = unsafe { &*arr_ptr }.prop_count() as usize;
-                if let Err(err) = delete_prop_or_throw(vm, arr_ptr, lower) {
+                if let Err(err) = delete_prop_or_throw(vm, unsafe { &mut *arr_ptr }, lower_si) {
                     return NativeResult::Err(err);
                 }
+                // 上端写前记录元素区大小：读值期 getter 截断元素区后，上端写在
+                // 区域外越界扩展会把 [old_count, upper) 填成 present-undefined，
+                // 写后须整段补置洞（lower 落入段内时重复补置幂等）；仅真数组
+                // 有元素区扩展。
+                let old_count = unsafe { &*arr_ptr }.prop_count() as usize;
                 if let Err(err) = vm.ordinary_set(unsafe { &mut *arr_ptr }, upper_si, vm.reg(0), recv, true) {
                     return NativeResult::Err(from_engine_error(vm, &err));
                 }
-                // 读值期 getter 截断元素区后，上端写在区域外越界扩展会把
-                // [old_count, upper) 填成 present-undefined：整段补置洞
-                // （lower 落入段内时重复补置幂等）。
-                for h in old_count..upper {
-                    unsafe { (*arr_ptr).mark_hole_at(h) };
+                if is_array {
+                    for h in old_count..upper {
+                        unsafe { (*arr_ptr).mark_hole_at(h) };
+                    }
                 }
             }
             (None, None) => {}
@@ -799,117 +851,178 @@ pub fn array_unshift<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 }
 
 /// `Array.prototype.fill(value, start, end)`：用给定值填充区间，返回 this。
+///
+/// # 步骤
+/// 1. `ToObject` 装箱基元 this（null/undefined 抛 TypeError）；长度按规范
+///    `ToLength(Get(O, "length"))` 读取（上限 2^53-1）。
+/// 2. `start` / `end` 走 ToIntegerOrInfinity 折算（负数自尾部、夹到界内）；
+///    `end` 为 undefined 取 len。
+/// 3. 区间内每格无条件严格 `Set`（无 HasProperty 门控，洞位物化为 present）。
+///
+/// # 副作用
+/// - 区间元素被覆写；Set 可经原型链触发用户 setter / 继承 setter。
 pub fn array_fill<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("Array.prototype.fill called with {} args", args.len());
-    let arr_ptr = array_ptr!(vm, args);
-    let arr = unsafe { &mut *arr_ptr };
-    let len = arr.prop_count() as isize;
+    // ToObject：基元 this 装箱（null/undefined 抛 TypeError）。
+    let this_val = match oxide_runtime_api::to_object(vm.reg(args[0]), vm) {
+        Ok(v) => v,
+        Err(msg) => return NativeResult::Err(from_engine_error(vm, &msg)),
+    };
+    let (arr_ptr, n, _is_array) = match get_this_arraylike(vm, this_val) {
+        Ok(v) => v,
+        Err(e) => return NativeResult::Err(e),
+    };
+    let n_f = n as f64;
     let value = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
     let rel_start = if args.len() > 2 {
-        oxide_runtime_api::to_integer_or_infinity(vm.reg(args[2])) as isize
+        match to_integer_or_infinity_bounded(vm, vm.reg(args[2])) {
+            Ok(v) => v,
+            Err(e) => return NativeResult::Err(e),
+        }
     } else {
-        0
+        0.0
     };
-    let rel_end = if args.len() > 3 {
-        oxide_runtime_api::to_integer_or_infinity(vm.reg(args[3])) as isize
+    // 规范：end 为 undefined 时取 len，其余走 ToIntegerOrInfinity。
+    let rel_end = if args.len() > 3 && !vm.reg(args[3]).is_undefined() {
+        match to_integer_or_infinity_bounded(vm, vm.reg(args[3])) {
+            Ok(v) => v,
+            Err(e) => return NativeResult::Err(e),
+        }
     } else {
-        len
+        n_f
     };
-    let start = (if rel_start < 0 { (len + rel_start).max(0) } else { rel_start.min(len) }) as usize;
-    let end = (if rel_end < 0 { (len + rel_end).max(0) } else { rel_end.min(len) }) as usize;
+    let start = clamp_relative(rel_start, n_f, n);
+    let end = clamp_relative(rel_end, n_f, n);
     for i in start..end {
-        arr.set_prop_at(i, value);
+        let key_si = vm.string_key_si(&i.to_string());
+        if let Err(err) = vm.ordinary_set(unsafe { &mut *arr_ptr }, key_si, value, this_val, true) {
+            return NativeResult::Err(from_engine_error(vm, &err));
+        }
     }
-    NativeResult::Ok(vm.reg(args[0]))
+    NativeResult::Ok(this_val)
 }
 
 /// `Array.prototype.copyWithin(target, start, end)`：在数组内部复制元素区间，
 /// 返回 this。
 ///
 /// # 步骤
-/// 1. `target` / `start` / `end` 负数自尾部折算并夹到 [0, length]，
-///    `count = min(end - start, length - target)`。
-/// 2. 源区间与目标重叠且目标领先时反向迭代（否则正向复制会先覆盖源），
+/// 1. `ToObject` 装箱基元 this（null/undefined 抛 TypeError）；长度按规范
+///    `ToLength(Get(O, "length"))` 读取（上限 2^53-1）。
+/// 2. `target` / `start` / `end` 走 ToIntegerOrInfinity 折算（负数自尾部、夹到
+///    [0, length]）；`end` 为 undefined 取 len；`count = min(end - start,
+///    length - target)`。
+/// 3. 源区间与目标重叠且目标领先时反向迭代（否则正向复制会先覆盖源），
 ///    其余正向。
-/// 3. 逐位：源 HasProperty 命中则 Get + 严格 Set 到目标，缺失则目标
+/// 4. 逐位：源 HasProperty 命中则 Get + 严格 Set 到目标，缺失则目标
 ///    DeletePropertyOrThrow（不可配置抛 TypeError）。
 ///
 /// # 副作用
 /// - 元素被覆写/置洞；Get/Set 可经原型链触发用户代码。
 pub fn array_copy_within<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("Array.prototype.copyWithin called with {} args", args.len());
-    let arr_ptr = array_ptr!(vm, args);
-    let recv = JsValue::from_js_object(arr_ptr);
-    let this_val = vm.reg(args[0]);
-    let len = unsafe { &*arr_ptr }.prop_count() as isize;
-    if len == 0 {
-        return NativeResult::Ok(this_val);
-    }
+    // ToObject：基元 this 装箱（null/undefined 抛 TypeError）。
+    let this_val = match oxide_runtime_api::to_object(vm.reg(args[0]), vm) {
+        Ok(v) => v,
+        Err(msg) => return NativeResult::Err(from_engine_error(vm, &msg)),
+    };
+    let (arr_ptr, n, _is_array) = match get_this_arraylike(vm, this_val) {
+        Ok(v) => v,
+        Err(e) => return NativeResult::Err(e),
+    };
+    // 空数组同样完成三个索引的 ToIntegerOrInfinity（转换期异常/副作用须
+    // 先于空区间短路）。
+    let n_f = n as f64;
     let rel_target = if args.len() > 1 {
-        oxide_runtime_api::to_integer_or_infinity(vm.reg(args[1])) as isize
+        match to_integer_or_infinity_bounded(vm, vm.reg(args[1])) {
+            Ok(v) => v,
+            Err(e) => return NativeResult::Err(e),
+        }
     } else {
-        0
+        0.0
     };
     let rel_start = if args.len() > 2 {
-        oxide_runtime_api::to_integer_or_infinity(vm.reg(args[2])) as isize
+        match to_integer_or_infinity_bounded(vm, vm.reg(args[2])) {
+            Ok(v) => v,
+            Err(e) => return NativeResult::Err(e),
+        }
     } else {
-        0
+        0.0
     };
-    let rel_end = if args.len() > 3 {
-        oxide_runtime_api::to_integer_or_infinity(vm.reg(args[3])) as isize
+    // 规范：end 为 undefined 时取 len，其余走 ToIntegerOrInfinity。
+    let rel_end = if args.len() > 3 && !vm.reg(args[3]).is_undefined() {
+        match to_integer_or_infinity_bounded(vm, vm.reg(args[3])) {
+            Ok(v) => v,
+            Err(e) => return NativeResult::Err(e),
+        }
     } else {
-        len
+        n_f
     };
-    let target = (if rel_target < 0 { (len + rel_target).max(0) } else { rel_target.min(len) }) as isize;
-    let start = (if rel_start < 0 { (len + rel_start).max(0) } else { rel_start.min(len) }) as isize;
-    let end = (if rel_end < 0 { (len + rel_end).max(0) } else { rel_end.min(len) }) as isize;
-    let count = (end - start).min(len - target);
-    if count <= 0 {
+    let target = clamp_relative(rel_target, n_f, n);
+    let start = clamp_relative(rel_start, n_f, n);
+    let end = clamp_relative(rel_end, n_f, n);
+    // end < start 时区间为空（saturating 免下溢）。
+    let count = end.saturating_sub(start).min(n - target);
+    if count == 0 {
         return NativeResult::Ok(this_val);
     }
-    let (mut from, mut to, dir) = if start < target && target < start + count {
-        (start + count - 1, target + count - 1, -1isize)
+    let (mut from, mut to, backward) = if start < target && target < start + count {
+        (start + count - 1, target + count - 1, true)
     } else {
-        (start, target, 1isize)
+        (start, target, false)
     };
     for _ in 0..count {
-        match gated_get(vm, arr_ptr, from as usize, recv) {
+        match gated_get(vm, arr_ptr, from, this_val) {
             Ok(Some(v)) => {
                 // 复制值跨 Set 用户调用窗口：先钉返回寄存器再写，写后从钉位读回。
                 vm.set_reg(0, v);
                 let to_si = vm.string_key_si(&to.to_string());
-                if let Err(err) = vm.ordinary_set(unsafe { &mut *arr_ptr }, to_si, vm.reg(0), recv, true) {
+                if let Err(err) = vm.ordinary_set(unsafe { &mut *arr_ptr }, to_si, vm.reg(0), this_val, true) {
                     return NativeResult::Err(from_engine_error(vm, &err));
                 }
             }
             Ok(None) => {
-                if let Err(err) = delete_prop_or_throw(vm, arr_ptr, to as usize) {
+                let to_si = vm.string_key_si(&to.to_string());
+                if let Err(err) = delete_prop_or_throw(vm, unsafe { &mut *arr_ptr }, to_si) {
                     return NativeResult::Err(err);
                 }
             }
             Err(err) => return NativeResult::Err(err),
         }
-        from += dir;
-        to += dir;
+        // 末轮迭代后的步进值不再被读取，saturating 免基元 0 下溢。
+        if backward {
+            from = from.saturating_sub(1);
+            to = to.saturating_sub(1);
+        } else {
+            from += 1;
+            to += 1;
+        }
     }
     NativeResult::Ok(this_val)
 }
 
 /// `Array.prototype.at(index)`：按索引取元素，支持负索引；越界返回 undefined。
+/// 长度取逻辑长度（含超出 dense 元素数的稀疏覆盖值），负索引自它折算；
 /// 元素读走规范 Get（洞位落原型链，原型索引访问器触发），密集数组直读快路径。
 pub fn array_at<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("Array.prototype.at called with {} args", args.len());
     let arr_ptr = array_ptr!(vm, args);
-    let len = unsafe { &*arr_ptr }.prop_count() as i32;
-    let mut index = if args.len() > 1 {
-        vm.coerce_number_bounded(vm.reg(args[1])).unwrap_or(f64::NAN) as i32
+    let len = unsafe { &*arr_ptr }.logical_len() as u64;
+    // ToIntegerOrInfinity：NaN/±0 折算 0，符号化转换异常（如 Symbol）原样上抛。
+    let rel = if args.len() > 1 {
+        match vm.coerce_number_bounded(vm.reg(args[1])) {
+            Ok(v) => v,
+            Err(msg) => return NativeResult::Err(from_engine_error(vm, &msg)),
+        }
     } else {
-        0
+        0.0
     };
-    if index < 0 {
-        index += len;
-    }
-    if index < 0 || index >= len {
+    let rel = if rel.is_nan() || rel == 0.0 { 0.0 } else { rel.trunc() };
+    let index = if rel < 0.0 {
+        (len as f64 + rel).max(0.0) as u64
+    } else {
+        rel.min(len as f64) as u64
+    };
+    if index >= len {
         return NativeResult::Ok(JsValue::undefined());
     }
     NativeResult::Ok(arraylike_get_or_err!(vm, arr_ptr, index as usize))

@@ -385,3 +385,144 @@ fn test_splice_frozen_element_set_throws() {
     .unwrap();
     assert_eq!(out, "TypeError");
 }
+
+// 引擎钉：splice 长度源按 ToLength 读取，2^53 及以上钳位到 2^53-1。
+#[test]
+fn test_splice_length_clamped_to_integer_limit() {
+    let out = eval_str(
+        "(() => { const o = {}; o.length = 9007199254740992; \
+         Array.prototype.splice.call(o); return String(o.length); })()",
+    )
+    .unwrap();
+    assert_eq!(out, "9007199254740991");
+}
+
+// 引擎钉：splice 新长度（len + insertCount - actualDeleteCount）超 2^53-1 抛 TypeError。
+#[test]
+fn test_splice_new_length_over_integer_limit_throws() {
+    let out = eval_str(
+        "(() => { const o = {}; o.length = 9007199254740991; \
+         try { Array.prototype.splice.call(o, 0, 0, null); return 'no-throw'; } \
+         catch (e) { return e.constructor.name; } })()",
+    )
+    .unwrap();
+    assert_eq!(out, "TypeError");
+}
+
+// 引擎钉：splice 极限扩容对——arraylike 上元素右移一位、插入位落值、长度扩到 2^53-1。
+#[test]
+fn test_splice_integer_limit_grow_pair() {
+    let out = eval_str(
+        "(() => { const o = { '9007199254740985': '9007199254740985', \
+         '9007199254740986': '9007199254740986', '9007199254740987': '9007199254740987', \
+         '9007199254740989': '9007199254740989', '9007199254740991': '9007199254740991', \
+         length: 9007199254740990 }; \
+         const r = Array.prototype.splice.call(o, 9007199254740986, 0, 'new-value'); \
+         return r.length + '|' + o.length + '|' + o['9007199254740986'] + '|' + \
+         o['9007199254740987'] + '|' + o['9007199254740988'] + '|' + \
+         ('9007199254740989' in o) + '|' + o['9007199254740990'] + '|' + o['9007199254740991']; })()",
+    )
+    .unwrap();
+    assert_eq!(
+        out,
+        "0|9007199254740991|new-value|9007199254740986|9007199254740987|false|9007199254740989|9007199254740991"
+    );
+}
+
+// 引擎钉：splice 极限收缩对——搬移 + 尾部删位 + 长度缩到 2^53-2。
+#[test]
+fn test_splice_integer_limit_shrink_pair() {
+    let out = eval_str(
+        "(() => { const o = { '9007199254740986': '9007199254740986', \
+         '9007199254740987': '9007199254740987', '9007199254740988': '9007199254740988', \
+         '9007199254740990': '9007199254740990', '9007199254740991': '9007199254740991', \
+         length: 9007199254740992 }; \
+         const r = Array.prototype.splice.call(o, 9007199254740987, 1); \
+         return r.length + '|' + r[0] + '|' + o.length + '|' + o['9007199254740986'] + '|' + \
+         o['9007199254740987'] + '|' + ('9007199254740988' in o) + '|' + \
+         o['9007199254740989'] + '|' + ('9007199254740990' in o) + '|' + o['9007199254740991']; })()",
+    )
+    .unwrap();
+    assert_eq!(out, "1|9007199254740987|9007199254740990|9007199254740986|9007199254740988|false|9007199254740990|false|9007199254740991");
+}
+
+// 引擎钉：splice 无参——length getter 恰读一次、setter 恰写一次且值为 0。
+#[test]
+fn test_splice_no_args_length_get_set_once() {
+    let out = eval_str(
+        "(() => { let g = 0, s = 0, v = null; \
+         const o = { get length() { g += 1; return '0'; }, \
+          set length(x) { s += 1; v = x; } }; \
+         Array.prototype.splice.call(o); return g + '|' + s + '|' + v; })()",
+    )
+    .unwrap();
+    assert_eq!(out, "1|1|0");
+}
+
+// 引擎钉：reverse 在超大 arraylike 上首对即触发上端 getter（StopReverse 上抛）。
+#[test]
+fn test_reverse_integer_limit_object_throws_on_first_pair() {
+    let out = eval_str(
+        "(() => { function StopReverse() {} \
+         const o = { get '9007199254740990'() { throw new StopReverse(); }, \
+          length: 9007199254740994 }; \
+         try { Array.prototype.reverse.call(o); return 'no-throw'; } \
+         catch (e) { return String(e instanceof StopReverse); } })()",
+    )
+    .unwrap();
+    assert_eq!(out, "true");
+}
+
+// 引擎钉：copyWithin 极限区间——源缺失位目标删位、present 位跨极大下标拷贝。
+#[test]
+fn test_copy_within_integer_limit_range() {
+    let out = eval_str(
+        "(() => { const si = 9007199254740988; \
+         const o = { 0: 0, 1: 1, 2: 2, length: 9007199254740992 }; \
+         o[si] = -3; o[si + 2] = -1; \
+         Array.prototype.copyWithin.call(o, 0, si, si + 3); \
+         return o[0] + '|' + (1 in o) + '|' + o[2]; })()",
+    )
+    .unwrap();
+    assert_eq!(out, "-3|false|-1");
+}
+
+// 引擎钉：fill 极限区间三格全落值；setter 抛错原样上抛（严格 Set 面）。
+#[test]
+fn test_fill_integer_limit_range_and_setter_throws() {
+    let out = eval_str(
+        "(() => { const si = 9007199254740988; const v = { m: 1 }; \
+         const o = { length: 9007199254740992 }; \
+         Array.prototype.fill.call(o, v, si, si + 3); \
+         const a2 = { length: 1 }; \
+         Object.defineProperty(a2, '0', { set: function () { throw new RangeError('set'); } }); \
+         let th = null; try { Array.prototype.fill.call(a2); } catch (e) { th = e.constructor.name; } \
+         return (o[si] === v) + '|' + (o[si + 1] === v) + '|' + (o[si + 2] === v) + '|' + th; })()",
+    )
+    .unwrap();
+    assert_eq!(out, "true|true|true|RangeError");
+}
+
+// 引擎钉：at 负索引自逻辑长度（稀疏覆盖值）折算，越界返回 undefined。
+#[test]
+fn test_at_negative_index_uses_logical_length() {
+    let out = eval_str(
+        "(() => { const a = new Array(1); a.length = 2147483653; a[0] = 'x'; \
+         const b = new Array(1); b.length = 2147483649; \
+         return a.at(-2147483653) + '|' + String(b.at(2147483648) === undefined); })()",
+    )
+    .unwrap();
+    assert_eq!(out, "x|true");
+}
+
+// 引擎钉：基元 this 经 ToObject 装箱——reverse 返回 Boolean 包装体、splice 返回真数组。
+#[test]
+fn test_splice_reverse_primitive_this_boxed() {
+    let out = eval_str(
+        "(() => { const r1 = Array.prototype.reverse.call(true); \
+         const r2 = Array.prototype.splice.call(false); \
+         return (r1 instanceof Boolean) + '|' + Array.isArray(r2) + '|' + r2.length; })()",
+    )
+    .unwrap();
+    assert_eq!(out, "true|true|0");
+}
