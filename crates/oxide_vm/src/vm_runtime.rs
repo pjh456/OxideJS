@@ -332,8 +332,9 @@ impl Vm {
         let _window_regs: Vec<JsValue> = Vec::new();
         inline_core_fields!(vm, saved, inline_restore, _window_regs);
         // 窗口回拷已复活调用方陈旧镜像槽：重载调用方模块的 builtin 名集
-        // （active_flat_id 已随宏回写还原到调用方）。
-        vm.reload_active_module_mirror_slots();
+        // （active_flat_id 已随宏回写还原到调用方）；外层 native pack 实参区
+        // 在飞时跳过该域，实参值由窗口拷回还原、不在此刷新。
+        vm.reload_active_module_mirror_slots(vm.native_pack_end);
     }
 
     /// 首次执行的 VM 就绪：清空执行核心（regs/pc/bytecode/各栈段/迭代器/内联态），
@@ -486,7 +487,7 @@ impl Vm {
             receiver
         };
         self.regs[255] = JsValue::undefined();
-        self.reload_builtin_mirror_slots(&sub.builtin_reg_map);
+        self.reload_builtin_mirror_slots(&sub.builtin_reg_map, 0);
         let _ = callee;
 
         vm_trace!(
@@ -556,8 +557,9 @@ impl Vm {
         self.active_reg_limit = frame.caller_active_reg_limit;
         self.pc = frame.return_addr;
         // 窗口回拷已复活调用方陈旧镜像槽：重载调用方模块的 builtin 名集
-        // （active_flat_id 已随保存栈弹回还原到调用方）。
-        self.reload_active_module_mirror_slots();
+        // （active_flat_id 已随保存栈弹回还原到调用方）；外层 native pack
+        // 实参区在飞时跳过该域，实参值由窗口拷回还原、不在此刷新。
+        self.reload_active_module_mirror_slots(self.native_pack_end);
     }
 
     /// 重新执行当前已加载的 bytecode：清空执行状态并重置 IC 缓存后再次 dispatch。
@@ -572,7 +574,7 @@ impl Vm {
         self.active_reg_limit = self.root_reg_limit;
         self.regs[254] = self.top_level_this;
         // 寄存器文件清空后镜像槽须重载（与 run 入口同语义），否则裸读回陈旧值。
-        self.reload_active_module_mirror_slots();
+        self.reload_active_module_mirror_slots(0);
         crate::ic_helper::clear_ic_caches(self.bytecode_mut());
         self.dispatch()
     }
@@ -644,7 +646,7 @@ impl Vm {
         self.root_reg_limit = module.n_registers.max(1);
         self.active_reg_limit = self.root_reg_limit;
 
-        self.reload_builtin_mirror_slots(&module.builtin_reg_map);
+        self.reload_builtin_mirror_slots(&module.builtin_reg_map, 0);
 
         // 顶层 this：脚本为全局对象（ECMA-262 全局执行上下文）；
         // ES module 顶层环境 GetThisBinding 返回 undefined。记录到

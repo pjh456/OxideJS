@@ -79,6 +79,7 @@ impl Vm {
             let overflow_base = self.spill_stack.len();
             let saved_overflow_base = self.native_overflow_base;
             let saved_overflow_count = self.native_overflow_count;
+            let saved_pack_end = self.native_pack_end;
             if args.len() > Self::SYNC_NATIVE_ARG_LIMIT {
                 self.spill_stack.extend_from_slice(&args[Self::SYNC_NATIVE_ARG_LIMIT..]);
                 self.native_overflow_base = overflow_base;
@@ -94,6 +95,9 @@ impl Vm {
             let saved_r254 = self.regs[254];
             let pack_limit = args.len().min(Self::SYNC_NATIVE_ARG_LIMIT);
             let arg_regs = self.pack_sync_native_call_args(receiver, callee, &args[..pack_limit]);
+            // 实参区在飞期间生效：native 体内一切恢复边界的镜像重载据此跳过
+            // regs[0..pack_limit)，防止外层 builtin 尚未读取的实参被覆写。
+            self.native_pack_end = pack_limit;
             // SAFETY: native_fn 经 set_native_fn 以合法 NativeFn 指针设置；
             // native_fn_ptr_to_fn 是 NativeFnPtr → NativeFn 的唯一强制转换点。
             let func: NativeFn = unsafe { native_fn_ptr_to_fn(native_fn) };
@@ -106,6 +110,7 @@ impl Vm {
             }
             self.native_overflow_base = saved_overflow_base;
             self.native_overflow_count = saved_overflow_count;
+            self.native_pack_end = saved_pack_end;
             // 窗口回拷 + regs[253]/[254] 单回，缓冲归还池复用。
             self.regs[..window].copy_from_slice(&saved_window);
             self.regs[253] = saved_r253;
@@ -304,7 +309,7 @@ impl Vm {
         self.bytecode = sub_bytecode;
         self.activate_immutables(gen, sub_idx, &sub.constants);
         self.cell_stack.push(Vec::with_capacity(sub.cells_needed as usize));
-        self.reload_builtin_mirror_slots(&sub.builtin_reg_map);
+        self.reload_builtin_mirror_slots(&sub.builtin_reg_map, 0);
 
         self.active_reg_limit = sub_n_registers.max(1);
         self.pc = 0;

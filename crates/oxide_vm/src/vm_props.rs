@@ -271,10 +271,11 @@ impl Vm {
     }
 
     /// 重载活动帧模块（`active_flat_id`）的 builtin 镜像槽：先按值取出名集再
-    /// 写寄存器，避免借用交叉。帧恢复 / 重执行边界调用。
-    pub(crate) fn reload_active_module_mirror_slots(&mut self) {
+    /// 写寄存器，避免借用交叉。帧恢复 / 重执行边界调用；`pack_end` 为外层
+    /// native pack 实参区上界（独占），落域镜像槽跳过。
+    pub(crate) fn reload_active_module_mirror_slots(&mut self, pack_end: usize) {
         let map = self.active_module().map(|m| m.builtin_reg_map.clone()).unwrap_or_default();
-        self.reload_builtin_mirror_slots(&map);
+        self.reload_builtin_mirror_slots(&map, pack_end);
     }
 
     /// 从全局对象 A 侧重载模块 builtin 名集的镜像槽：属性在位取原始存储值，
@@ -283,14 +284,19 @@ impl Vm {
     /// # 边界与前提
     /// - 缺位臂语义为"写 undefined"，各入口（run / 帧 / inline / 恢复）统一，
     ///   使成员形删除后的裸读与入口预载看到同一值。
+    /// - `pack_end` 为 native pack 实参区上界（独占）：落 [0, pack_end) 的镜像
+    ///   槽跳过，实参值只存在于寄存器、无刷新源，窗口拷回负责其还原。
     /// # 副作用
     /// - 只写镜像槽寄存器（槽下标受编译期登记约束）。
-    pub(crate) fn reload_builtin_mirror_slots(&mut self, map: &[(String, u32)]) {
+    pub(crate) fn reload_builtin_mirror_slots(&mut self, map: &[(String, u32)], pack_end: usize) {
         if map.is_empty() {
             return;
         }
         let global = self.session.global_object();
         for (name, reg) in map {
+            if (*reg as usize) < pack_end {
+                continue;
+            }
             let si = self.kernel_core.perm_interner().intern(name.as_str()).0;
             let val = self
                 .kernel_core

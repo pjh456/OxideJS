@@ -268,6 +268,12 @@ pub struct Vm {
     /// `restore_inline_state` 归还。热回调循环内 save/restore 反复使用同一块
     /// 缓冲，只在嵌套（池已被外层取走）时新分配。
     pub(crate) inline_reg_pool: Option<Vec<JsValue>>,
+    /// 外层 native pack 实参区上界（独占）：`call_function_sync` native 分支在飞
+    /// 期间实参已 pack 进 `regs[0..pack_end)`，恢复边界（`restore_inline_state` /
+    /// `restore_frame`）的镜像重载须跳过该域——重载目标恰是外层 builtin 尚未
+    /// 读取的实参寄存器。0 = 无 pack 上下文；跨嵌套 native 调用存/还原
+    /// （与 overflow 描述符同构）。
+    pub(crate) native_pack_end: usize,
     /// 生成器体 `dispatch()` 让出时的信号：YIELD 置 Some(让出值)，恢复方（
     /// generator 内嵌 dispatch 循环）取走并判定挂起。None = 正常返回/异常。
     pub(crate) generator_suspended: Option<JsValue>,
