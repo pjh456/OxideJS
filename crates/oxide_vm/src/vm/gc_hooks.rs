@@ -53,6 +53,7 @@ impl Vm {
         f(self.exception_value.unwrap_or(JsValue::undefined()));
         f(self.pending_exception.unwrap_or(JsValue::undefined()));
         f(self.last_uncaught_value.unwrap_or(JsValue::undefined()));
+        f(self.pending_length_exception.unwrap_or(JsValue::undefined()));
         // 悬挂的 return 完成持有返回值，是 GC 根。
         if let Some(Completion::Return { value, .. }) = self.pending_completion {
             f(value);
@@ -118,6 +119,7 @@ impl Vm {
         self.exception_value = self.exception_value.map(&mut rewrite);
         self.pending_exception = self.pending_exception.map(&mut rewrite);
         self.last_uncaught_value = self.last_uncaught_value.map(&mut rewrite);
+        self.pending_length_exception = self.pending_length_exception.map(&mut rewrite);
         for cached in self.template_objects.values_mut() {
             *cached = rewrite(*cached);
         }

@@ -41,6 +41,17 @@ fn uncaught_value_is_gc_root() {
 }
 
 #[test]
+fn pending_length_exception_is_gc_root() {
+    let mut vm = Vm::new();
+    let obj = plain_object(&mut vm);
+    let session = vm.promote_object(obj);
+    vm.pending_length_exception = Some(JsValue::from_js_object(session));
+    let mut roots = Vec::new();
+    vm.for_each_root(|v| roots.push(v));
+    assert!(has_ptr(&roots, session));
+}
+
+#[test]
 fn suspended_signal_fields_are_roots() {
     let mut vm = Vm::new();
     let a = plain_object(&mut vm);
