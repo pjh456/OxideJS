@@ -551,15 +551,16 @@ fn test_concat_empty_array_arg_expands_zero_elements() {
 }
 
 // 引擎钉：concat 多实参混合 present/空数组/非数组实参展开序与规范一致，
-// 空数组实参中间穿插不占位；洞实参位保洞。
+// 空数组实参中间穿插不占位（length 观察面钉死）；洞实参位保洞。
 #[test]
 fn test_concat_mixed_args_order_and_holes() {
     let out = eval_str(
-        "(() => { const mixed = [].concat([], 5, []).join(','); \
-         const ordered = [1].concat([2, 3], 0, []).join(','); \
+        "(() => { const mixed = [].concat([], 5, []); \
+         const ordered = [1].concat([2, 3], 0, []); \
          const r = [].concat(new Array(1)); \
-         return mixed + '|' + ordered + '|' + r.length + '|' + (0 in r); })()",
+         return mixed.join(',') + '|' + mixed.length + '|' + ordered.join(',') + '|' + \
+          ordered.length + '|' + r.length + '|' + (0 in r); })()",
     )
     .unwrap();
-    assert_eq!(out, "5|1,2,3,0|1|false");
+    assert_eq!(out, "5|1|1,2,3,0|4|1|false");
 }
