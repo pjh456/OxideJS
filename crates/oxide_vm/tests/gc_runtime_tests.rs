@@ -375,6 +375,29 @@ fn shift_getter_temporary_object_survives_runtime_gc() {
     assert!(vm.session_gc_stats().total_collections > 0, "执行期应触发收集");
 }
 
+/// reverse 双存在臂下值跨上端 Get 窗口：getter 临时对象经结果寄存器钉为 GC 根，
+/// 跨低阈值执行期收集存活，落位身份保持。
+#[test]
+fn reverse_getter_temporary_object_survives_runtime_gc() {
+    let mut vm = vm_with_threshold(512);
+    let module = compile(
+        "var g = {}; for (var i = 0; i < 20; i++) { g['k' + i] = 'v'.repeat(64); } \
+         var box = null; var a = new Array(2); \
+         Object.defineProperty(Array.prototype, '0', { \
+           get: function() { box = { m: 1 }; return box; }, \
+           set: function(v) { Object.defineProperty(this, 0, { value: v, writable: true, enumerable: true, configurable: true }); } }); \
+         Object.defineProperty(Array.prototype, '1', { \
+           get: function() { var t = 'z'; for (var j = 0; j < 20; j++) { t = t + t; } return 'up'; }, \
+           set: function(v) { Object.defineProperty(this, 1, { value: v, writable: true, enumerable: true, configurable: true }); } }); \
+         a.reverse(); \
+         (a[1] === box) + ':' + a[0] + ':' + a.length + ':' + a[1].m",
+    );
+    let result = vm.run(&Arc::new(module)).expect("run");
+    let text = vm.lookup_str(result).expect("结果应为字符串");
+    assert_eq!(text, "true:up:2:1");
+    assert!(vm.session_gc_stats().total_collections > 0, "执行期应触发收集");
+}
+
 // ── 原生盒内字符串/BigInt 边存活（mark 边收集去对象预过滤） ─────────────────
 
 /// 盒持唯一引用 session 串（Promise 结算值）：churn 窗口内执行期收集

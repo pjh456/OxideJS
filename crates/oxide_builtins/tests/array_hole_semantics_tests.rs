@@ -163,6 +163,20 @@ fn test_reverse_getter_truncation_pair() {
     assert_eq!(out, "false|true|first|2");
 }
 
+// reverse 读值期 getter 中间截断：上端写越界扩展的整段间隙 [old_count, upper)
+// 补置洞，不只补被删端一洞。
+#[test]
+fn test_reverse_getter_mid_truncation_gaps_holes() {
+    let out = eval_str(
+        "(() => { const a = new Array(5); a[0] = 1; \
+         Object.defineProperty(a, 0, { get: () => { a.length = 3; return 1; } }); \
+         a.reverse(); \
+         return (1 in a) + '|' + (3 in a) + '|' + a[4] + '|' + a.length; })()",
+    )
+    .unwrap();
+    assert_eq!(out, "false|false|1|5");
+}
+
 // 防过度修护栏：fill 对洞位无条件 Set，洞位变 present-0，不改。
 #[test]
 fn test_fill_materializes_hole_unchanged() {

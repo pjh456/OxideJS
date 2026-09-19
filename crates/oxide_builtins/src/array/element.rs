@@ -525,6 +525,11 @@ pub fn array_reverse<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         } else {
             None
         };
+        // 下值取出即钉入返回寄存器：跨上端读与两端 Set 的用户调用窗口期间
+        // 保持 GC 根，写后从钉位读回（Rust 局部不属根集）。
+        if let Some(v) = lower_val {
+            vm.set_reg(0, v);
+        }
         let upper_val = if vm.has_property(unsafe { &*arr_ptr }, upper_si) {
             match vm.ordinary_get(unsafe { &*arr_ptr }, upper_si, recv) {
                 Ok(v) => Some(v),
@@ -534,10 +539,7 @@ pub fn array_reverse<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
             None
         };
         match (lower_val, upper_val) {
-            (Some(lv), Some(ov)) => {
-                // 下值跨上端读与两次 Set 共三个用户调用窗口：先钉返回寄存器
-                // （Rust 局部不属 GC 根集），写后从钉位读回。
-                vm.set_reg(0, lv);
+            (Some(_lv), Some(ov)) => {
                 if let Err(err) = vm.ordinary_set(unsafe { &mut *arr_ptr }, lower_si, ov, recv, true) {
                     return NativeResult::Err(from_engine_error(vm, &err));
                 }
@@ -553,8 +555,7 @@ pub fn array_reverse<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
                     return NativeResult::Err(err);
                 }
             }
-            (Some(lv), None) => {
-                vm.set_reg(0, lv);
+            (Some(_lv), None) => {
                 let old_count = unsafe { &*arr_ptr }.prop_count() as usize;
                 if let Err(err) = delete_prop_or_throw(vm, arr_ptr, lower) {
                     return NativeResult::Err(err);
@@ -562,10 +563,11 @@ pub fn array_reverse<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
                 if let Err(err) = vm.ordinary_set(unsafe { &mut *arr_ptr }, upper_si, vm.reg(0), recv, true) {
                     return NativeResult::Err(from_engine_error(vm, &err));
                 }
-                // 读值期 getter 截断元素区后，上端写在区域外越界扩展会把间隙
-                // 填成 present-undefined：被删端落入新扩展段时须补置洞。
-                if lower >= old_count {
-                    unsafe { (*arr_ptr).mark_hole_at(lower) };
+                // 读值期 getter 截断元素区后，上端写在区域外越界扩展会把
+                // [old_count, upper) 填成 present-undefined：整段补置洞
+                // （lower 落入段内时重复补置幂等）。
+                for h in old_count..upper {
+                    unsafe { (*arr_ptr).mark_hole_at(h) };
                 }
             }
             (None, None) => {}
