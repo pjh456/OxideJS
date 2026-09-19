@@ -22,6 +22,10 @@ impl Emitter {
     pub(crate) fn emit_variable_declaration(
         &self, decl: &VariableDeclaration, ctx: &mut CompileCtx,
     ) -> Result<Option<u32>, String> {
+        // 循环体内的块级 let/const 声明每迭代重执行：被捕获绑定每迭代实例化新
+        // cell，本迭代闭包捕获新 cell、旧闭包保留旧值。var 是规范单绑定，
+        // 保持原位更新；函数体/嵌套块经子 ctx 进入时循环栈为空，不命中。
+        let reexec = !matches!(decl.kind, VariableDeclarationKind::Var) && !ctx.labels.loop_stack.is_empty();
         for d in &decl.declarations {
             let is_const = matches!(decl.kind, VariableDeclarationKind::Const);
             if is_const && d.init.is_none() {
@@ -29,7 +33,7 @@ impl Emitter {
             }
             if let Some(init) = &d.init {
                 let val_reg = self.emit_expression(init, ctx)?;
-                self.emit_binding_pattern(&d.id, val_reg, decl.kind, is_const, false, ctx)?;
+                self.emit_binding_pattern(&d.id, val_reg, decl.kind, is_const, reexec, ctx)?;
                 if let BindingPattern::BindingIdentifier(bi) = &d.id {
                     if crate::is_anonymous_function_definition(init) {
                         if let Some(sub_mod) = ctx.nested.last_mut() {
@@ -70,12 +74,9 @@ impl Emitter {
                     // 被捕获绑定的 cell 在函数入口已实例化（undefined）；声明语句
                     // 不赋值，仅首次声明刷新初值，已绑定的 cell 保留现值。
                     if !already_bound {
-                        ctx.inst(Inst::new(
-                            OpCode::MAKE_CELL,
-                            Operand::Reg(tmp),
-                            Operand::Imm(cell_idx as u16),
-                            Operand::None,
-                        ));
+                        // 重执行迭代取新 cell，与 with-init 臂同一门控。
+                        let op = if reexec { OpCode::MAKE_CELL_FRESH } else { OpCode::MAKE_CELL };
+                        ctx.inst(Inst::new(op, Operand::Reg(tmp), Operand::Imm(cell_idx as u16), Operand::None));
                     }
                 } else if !already_bound {
                     ctx.inst(Inst::new(OpCode::STORE_VAR, Operand::Reg(target_reg), Operand::Reg(tmp), Operand::None));
