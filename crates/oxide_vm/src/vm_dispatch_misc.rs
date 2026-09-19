@@ -381,7 +381,9 @@ impl Vm {
         }
         let obj = unsafe { &*obj_ptr };
         let prop_name_si = self.property_key_si(key_val)?;
-        let found = self.resolve_property(obj, prop_name_si).is_some();
+        // `in` 即 HasProperty：原型链各层都要看数组元素区与 TypedArray 整数索引，
+        // 读值解析不覆盖这两处。
+        let found = self.has_property(obj, prop_name_si);
         self.regs[rd] = JsValue::bool(found);
         Ok(())
     }

@@ -315,6 +315,44 @@ fn typed_array_bigint_sort_uses_bigint_compare() {
 }
 
 #[test]
+fn typed_array_in_operator_uses_has_property_semantics() {
+    // `in` 按 HasProperty 判定：TypedArray 整数索引按视图长度判在界，
+    // 越界索引判不存在。
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "var ta = new Int8Array(2); \
+         (0 in ta) && (1 in ta) && !(2 in ta) && !(3 in ta) && \
+         ('length' in ta) && !('foo' in ta)",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
+#[test]
+fn in_operator_finds_array_elements_on_proto_chain() {
+    // 原型链上的数组元素区索引判存在：Object.create([1,2]) 的 0/1 在界、2 越界。
+    let mut vm = Vm::new();
+    let result = eval(&mut vm, "var o = Object.create([1, 2]); (0 in o) && (1 in o) && !(2 in o)").unwrap();
+    assert!(result.as_bool());
+}
+
+#[test]
+fn in_operator_ordinary_object_zero_drift() {
+    // 普通对象 `in` 既有行为零漂移：自有属性在、未定义键不在、原型链属性在、
+    // 无整型键的对象不判索引存在。
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "var base = { x: 1 }; var o = Object.create(base); \
+         ('x' in o) && !('y' in o) && ('toString' in o) && \
+         !(0 in Object.create({}))",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
+#[test]
 fn typed_array_bigint_methods_receive_bigint_values() {
     let mut vm = Vm::new();
     // map/filter/reduce 回调收到的元素是真 BigInt；map 结果按元素类型转换回写。
