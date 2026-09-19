@@ -249,9 +249,10 @@ impl Vm {
         false
     }
 
-    /// 查找自身属性槽下标：数组 length 虚拟属性返回 `None`，元素区返回下标，
-    /// shape 槽按数组（元素区之后偏移）与普通对象（槽位即下标）各自定位；
-    /// 未命中的槽返回 `None`。
+    /// 查找自身属性槽下标：数组 length 虚拟属性返回 `None`，元素区返回下标
+    /// （hole 视缺失），shape 槽命中即属性在场并返回存储下标（数组加元素区
+    /// 偏移，普通对象槽位即下标）；值可为显式 undefined，不参与存在性判定；
+    /// 未命中返回 `None`。
     pub(crate) fn get_own_property_slot(&self, obj: &JsObject, prop_name_si: u32) -> Option<u32> {
         let length_si = self.length_si;
         if obj.is_array() && prop_name_si == length_si {
@@ -271,13 +272,9 @@ impl Vm {
             .and_then(|pos| {
                 if obj.is_array() {
                     // 数组属性存储索引 = array_prop_count + shape 槽位（与元素区分）。
-                    let idx = obj.array_prop_count as usize + pos as usize;
-                    let val = obj.get_prop_at(idx);
-                    if !val.is_undefined() || obj.prop_vec_len() > idx {
-                        Some(idx as u32)
-                    } else {
-                        None
-                    }
+                    // shape 槽命中即属性在场：删除重建保证槽随属性移除，
+                    // 显式 undefined 值同样在场（规范存在性只看自身槽）。
+                    Some(obj.array_prop_count + pos)
                 } else {
                     let val = obj.get_prop_at(pos);
                     if !val.is_undefined() || obj.prop_vec_len() > pos as usize {

@@ -353,6 +353,35 @@ fn in_operator_ordinary_object_zero_drift() {
 }
 
 #[test]
+fn in_operator_array_explicit_undefined_named_prop_present() {
+    // 数组显式 undefined 自有命名属性判在场：HasProperty 按自身槽存在性
+    // 判定，值语义（显式 undefined）不参与；HasOwnProperty 同面。
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "var a = [1]; a.x = undefined; \
+         ('x' in a) && a.hasOwnProperty('x') && Object.hasOwn(a, 'x') && \
+         !('y' in a) && !a.hasOwnProperty('y')",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
+#[test]
+fn in_operator_ordinary_explicit_undefined_named_prop_zero_drift() {
+    // 普通对象显式 undefined 命名槽零漂移守卫：`in`/hasOwnProperty 判在，
+    // 读值仍为 undefined。
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "var o = {}; o.x = undefined; \
+         ('x' in o) && o.hasOwnProperty('x') && o.x === undefined",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
+#[test]
 fn typed_array_bigint_methods_receive_bigint_values() {
     let mut vm = Vm::new();
     // map/filter/reduce 回调收到的元素是真 BigInt；map 结果按元素类型转换回写。
