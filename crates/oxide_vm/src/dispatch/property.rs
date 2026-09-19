@@ -628,6 +628,14 @@ impl Vm {
             self.raise_type_error("object is not extensible")?;
             return Ok(());
         }
+        // 越界索引写 length 不可写时失败（与 ordinary_set_inner 同序）：SET_ELEM 当前
+        // 仅对 fresh 数组发射不可达，防未来 codegen 对非 fresh 数组发射时绕过守卫。
+        if idx >= obj.logical_len() && !obj.is_length_writable() {
+            if self.current_strict() {
+                self.raise_type_error("Cannot add property, array length is not writable")?;
+            }
+            return Ok(());
+        }
         obj.set_prop_at(idx, value);
         Ok(())
     }

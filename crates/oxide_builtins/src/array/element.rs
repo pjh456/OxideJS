@@ -480,6 +480,10 @@ pub fn array_shift<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         Ok(v) => v,
         Err(msg) => return NativeResult::Err(from_engine_error(vm, &msg)),
     };
+    // 首位为 hole 时 Get 落原型链 getter，返回值可能是全新临时对象。钉入结果寄存器
+    // （GC 根）再跨循环：循环内用户 setter 可触发回收，Rust 局部不属根集，回收后
+    // 返回即悬垂；重入调用保存/恢复调用方窗口，槽值至返回前有效。
+    vm.set_reg(0, first);
 
     for k in 1..len {
         let from = vm.string_key_si(&k.to_string());
@@ -507,13 +511,14 @@ pub fn array_shift<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     if let Err(err) = vm.ordinary_set(unsafe { &mut *arr_ptr }, length_si, js_array_index(len - 1), recv, true) {
         return NativeResult::Err(from_engine_error(vm, &err));
     }
-    NativeResult::Ok(first)
+    // 从钉位读回（回收搬移后局部副本已失效）。
+    NativeResult::Ok(vm.reg(0))
 }
 
 /// `Array.prototype.unshift(...items)`：插入元素到头部，返回新长度。
 ///
 /// # 步骤
-/// 1. 读 `LengthOfArrayLike(this)`；`len + 参数数` 超出 2^53-1 时抛 TypeError。
+/// 1. 读 `LengthOfArrayLike(this)`；`len + 参数数` 超出 2^53-1 时抛 RangeError。
 /// 2. 参数数大于 0 时自高到低搬移已有元素（源存在则 Get + 严格 Set，缺失则
 ///    DeletePropertyOrThrow），再把实参逐个严格 Set 到头部。
 /// 3. 以 `Set(this, "length", len+参数数, true)` 收尾。
@@ -529,7 +534,8 @@ pub fn array_unshift<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let length_si = vm.string_key_si("length");
     if n_items > 0 {
         if len as f64 + n_items as f64 > 9_007_199_254_740_991.0 {
-            return NativeResult::Err(array_type_error(vm, "Invalid array length"));
+            // 长度上限越界按规范为 RangeError。
+            return NativeResult::Err(crate::error::create_range_error(vm, "Invalid array length"));
         }
         for k in (1..=len).rev() {
             let from = vm.string_key_si(&(k - 1).to_string());

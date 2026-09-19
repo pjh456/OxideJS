@@ -1267,7 +1267,10 @@ pub fn object_from_entries<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         // ToPropertyKey 语义建键：int/规范数字串/symbol 统一映射，避免数字键分裂。
         let si = vm.property_key_si(key_val);
         let promoted = vm.promote_if_needed_for_write_ptr(obj, value_val);
-        let _ = vm.ordinary_set(unsafe { &mut *obj }, si, promoted, target_val, true);
+        // 写入失败按 builtin 边界传播（目标为 fresh 对象实际不可达，不得静默吞）。
+        if let Err(err) = vm.ordinary_set(unsafe { &mut *obj }, si, promoted, target_val, true) {
+            return NativeResult::Err(crate::array::from_engine_error(vm, &err));
+        }
     }
     NativeResult::Ok(target_val)
 }
@@ -1722,7 +1725,10 @@ pub fn object_group_by<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
             let new_arr_val = JsValue::from_js_object(arr);
             let result_ref_mut = unsafe { &mut *result };
             let promoted = vm.promote_if_needed_for_write_ptr(result, new_arr_val);
-            let _ = vm.ordinary_set(result_ref_mut, key_si, promoted, result_val, true);
+            // 写入失败按 builtin 边界传播（result 为 fresh 对象实际不可达，不得静默吞）。
+            if let Err(err) = vm.ordinary_set(result_ref_mut, key_si, promoted, result_val, true) {
+                return NativeResult::Err(crate::array::from_engine_error(vm, &err));
+            }
             new_arr_val
         };
         // push element 到分组数组（写入前 promote，与 Array.prototype.push 同款）。

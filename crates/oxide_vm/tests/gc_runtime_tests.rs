@@ -354,6 +354,27 @@ fn unreferenced_table_gens_do_not_grow_with_runs() {
     assert!(pinned > baseline, "每 run 函数对象钉住创建期代际，条目数应增长，实际 {pinned}");
 }
 
+/// shift 首位 hole 落原型链 getter：getter 临时对象经结果寄存器钉为 GC 根，
+/// 跨循环内 setter 分配窗口与低阈值执行期收集存活，返回身份保持。
+#[test]
+fn shift_getter_temporary_object_survives_runtime_gc() {
+    let mut vm = vm_with_threshold(512);
+    let module = compile(
+        "var g = {}; for (var i = 0; i < 20; i++) { g['k' + i] = 'v'.repeat(64); } \
+         var box = null; var a = [, 2, 3]; \
+         Object.defineProperty(Array.prototype, '0', { \
+           get: function() { box = { m: 1 }; return box; }, \
+           set: function(v) { \
+             Object.defineProperty(this, 0, { value: v, writable: true, enumerable: true, configurable: true }); \
+             var t = 'z'; for (var j = 0; j < 20; j++) { t = t + t; } } }); \
+         var r = a.shift(); (r === box) + ':' + r.m + ':' + a.length + ':' + a[0] + ':' + a[1]",
+    );
+    let result = vm.run(&Arc::new(module)).expect("run");
+    let text = vm.lookup_str(result).expect("结果应为字符串");
+    assert_eq!(text, "true:1:2:2:3");
+    assert!(vm.session_gc_stats().total_collections > 0, "执行期应触发收集");
+}
+
 // ── 原生盒内字符串/BigInt 边存活（mark 边收集去对象预过滤） ─────────────────
 
 /// 盒持唯一引用 session 串（Promise 结算值）：churn 窗口内执行期收集

@@ -422,9 +422,19 @@ impl Vm {
             }
         }
 
-        // 数组索引增长（index >= 当前 length）先过 length 可写性检查：与 define 侧
-        // `define_array_index_element` 同序，早于对象可扩展性检查；length 不可写时
-        // 严格抛 TypeError、sloppy 静默。索引小于 length 的已有元素写入不受此限。
+        // 新属性（自身与原型链均无同名）：须对象可扩展（OrdinarySet 的 extensible
+        // 检查先于 length 增长判定），不可扩展时赋值失败（严格抛错，sloppy 静默 no-op）。
+        if !obj.is_extensible() {
+            if strict {
+                return self.write_protection_failure(builtin, "object is not extensible");
+            }
+            return Ok(());
+        }
+
+        // 数组索引增长（index >= 当前 length）过 length 可写性检查：与 define 侧
+        // `define_array_index_element` 同序；length 不可写时严格抛 TypeError、
+        // sloppy 静默。索引小于 length 的已有元素写入在自身槽位命中即返回，
+        // 不达此处。
         if let Some(index) = self.array_index_from_property_key(prop_name_si) {
             if obj.is_array() && index >= obj.logical_len() && !obj.is_length_writable() {
                 return self.array_length_write_failure(
@@ -434,15 +444,6 @@ impl Vm {
                 );
             }
         }
-
-        // 新属性（自身与原型链均无同名）：须对象可扩展（OrdinarySet 的 extensible
-        // 检查），不可扩展时赋值失败（严格抛错，sloppy 静默 no-op）。
-        if !obj.is_extensible() {
-            if strict {
-                return self.write_protection_failure(builtin, "object is not extensible");
-            }
-            return Ok(());
-        }
         self.set_or_create_prop_value(obj, prop_name_si, val);
         Ok(())
     }
@@ -451,22 +452,30 @@ impl Vm {
     /// 调整元素区（与 define 侧 [`Self::define_array_length`] 共用截断/扩洞逻辑）。
     ///
     /// # 步骤
-    /// 1. `ToUint32` 与 `ToNumber` 两次强转各自执行一次（均可触发用户代码）。
-    /// 2. 两次结果不等（非整数、负数、NaN/Infinity、2^32 等）抛 RangeError。
-    /// 3. 强转完成后按当前可写位判定：不可写时严格抛 TypeError、sloppy 静默，且
-    ///    不做任何截断（写不可写数据描述符先于 ArraySetLength 失败）。
-    /// 4. 收缩求最高不可配置阻挡索引：有则以「阻挡索引 + 1」部分截断后按模式返回
+    /// 1. 入口可写位检查：已不可写时按模式直接返回（严格抛 TypeError、sloppy 静默），
+    ///    不执行强转——可写位判定先于 ArrayLength，用户 valueOf/toPrimitive 不触发。
+    /// 2. `ToUint32` 与 `ToNumber` 两次强转各自执行一次（均可触发用户代码）。
+    /// 3. 两次结果不等（非整数、负数、NaN/Infinity、2^32 等）抛 RangeError。
+    /// 4. 强转完成后复查可写位：强转期用户代码可能已收窄 length；失败按模式返回
+    ///    且不做任何截断（写不可写数据描述符先于 ArraySetLength 失败）。
+    /// 5. 收缩求最高不可配置阻挡索引：有则以「阻挡索引 + 1」部分截断后按模式返回
     ///    失败；无则完整截断/扩 hole 到目标长度。
     ///
     /// # 边界与前提
     /// - 仅由 `ordinary_set_inner` 对 `is_array()` 对象且键为 length 时调用。
-    /// - 可写位判定必须放在两次强转之后：用户代码可能在强转期收窄 length 可写位。
+    /// - 两次强转之后须复查可写位：用户代码可能在强转期收窄 length 可写位。
     ///
     /// # 副作用
     /// - 修改元素区与元素元数据、可能置/清 `array_len_override`、bump 世代。
     fn set_array_length_value(
         &mut self, obj: &mut JsObject, val: JsValue, strict: bool, builtin: bool,
     ) -> Result<(), String> {
+        // 可写位判定先于 ArrayLength：入口即不可写时不执行强转——用户强转副作用
+        // 不触发，强转期抛出的自定义错误也不得穿透 kind。
+        if !obj.is_length_writable() {
+            return self.array_length_write_failure(strict, builtin, "Cannot assign to read only property 'length'");
+        }
+
         // ToNumber(BigInt) 抛 TypeError：在通用强转近似接受 BigInt 之前拦截。
         if val.is_bigint() {
             return self.write_protection_failure(builtin, "Cannot convert a BigInt value to a number");

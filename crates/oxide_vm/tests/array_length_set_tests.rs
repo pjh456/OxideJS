@@ -89,6 +89,20 @@ fn set_length_invalid_values_throw_range_error() {
 }
 
 #[test]
+fn set_length_entry_non_writable_skips_coercion() {
+    // 入口即不可写：可写位判定先于 ArrayLength，两次强转不执行（valueOf 零调用），
+    // sloppy 静默、strict 抛 TypeError 而非强转期抛出的自定义 kind。
+    assert_eq!(
+        eval_str("var a=[1,2,3]; Object.defineProperty(a,'length',{writable:false}); var n=0; var v={valueOf:function(){n++;throw new RangeError('x');}}; a.length=v; n+':'+a.length"),
+        "0:3"
+    );
+    assert_eq!(
+        eval_str("var a=[1,2,3]; Object.defineProperty(a,'length',{writable:false}); var n=0; var v={valueOf:function(){n++;throw new RangeError('x');}}; var r; (function(){'use strict';try{a.length=v;r='no-throw';}catch(e){r=e.name;}})(); r+':'+n+':'+a.length"),
+        "TypeError:0:3"
+    );
+}
+
+#[test]
 fn set_length_coerces_twice_before_writable_check() {
     // ToUint32 + ToNumber 各触发一次 ToPrimitive(number)；第二次强转收窄可写位后
     // 由可写位判定拒绝，且不做任何截断。
@@ -175,6 +189,32 @@ fn push_element_write_uses_prototype_setter() {
     assert_eq!(
         eval_str("var a=[]; var calls=0; Object.defineProperty(Array.prototype,'0',{set:function(v){Object.defineProperty(a,'length',{writable:false});calls++;}}); var r; try{a.push(1);r='no-throw';}catch(e){r=e.name;} r+':'+a.length+':'+a.hasOwnProperty(0)+':'+calls"),
         "TypeError:0:false:1"
+    );
+}
+
+#[test]
+fn set_elem_non_extensible_precedes_length_guard() {
+    // 不可扩展 + length 不可写：extensible 检查先于 length 可写性判定，
+    // 错误消息取 not extensible 形态（node 同序）。
+    assert_eq!(
+        eval_str("var a=[1]; Object.preventExtensions(a); Object.defineProperty(a,'length',{writable:false}); var m='none'; (function(){'use strict';try{a[5]=9;m='no-throw';}catch(e){m=String(e.message);}})(); /extensible/.test(m)+':'+a.length+':'+(5 in a)"),
+        "true:1:false"
+    );
+    // 单条件各自独立生效：仅 length 不可写（可扩展）报 length 形态。
+    assert_eq!(
+        eval_str("var a=[1]; Object.defineProperty(a,'length',{writable:false}); var m='none'; (function(){'use strict';try{a[5]=9;m='no-throw';}catch(e){m=String(e.message);}})(); /writable/.test(m)+':'+a.length"),
+        "true:1"
+    );
+}
+
+#[test]
+fn shift_getter_temporary_survives_setter_window() {
+    // 首位为 hole：Get 落原型链 getter（返回新对象），循环内用户 setter 大量
+    // 分配——getter 临时对象经结果寄存器钉为 GC 根，跨重入窗口存活，返回值
+    // 身份保持。
+    assert_eq!(
+        eval_str("var box=null; var a=[,2,3]; Object.defineProperty(Array.prototype,'0',{get:function(){box={m:1};return box;},set:function(v){Object.defineProperty(this,0,{value:v,writable:true,enumerable:true,configurable:true});var t='z';for(var i=0;i<16;i++){t=t+t;}}}); var r=a.shift(); (r===box)+':'+r.m+':'+a.length+':'+a[0]+':'+a[1]"),
+        "true:1:2:2:3"
     );
 }
 
