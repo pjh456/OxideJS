@@ -515,6 +515,18 @@ fn test_at_negative_index_uses_logical_length() {
     assert_eq!(out, "x|true");
 }
 
+// 引擎钉：at 极负索引 k = len + relative < 0 返 undefined（不钳零回首元素）；
+// at(-len) 为首元素、at(-len-1) 为 undefined。
+#[test]
+fn test_at_extreme_negative_index_undefined() {
+    let out = eval_str(
+        "(() => { const a = [7, 8]; \
+         return String(a.at(-1e20) === undefined) + '|' + a.at(-2) + '|' + String(a.at(-3) === undefined); })()",
+    )
+    .unwrap();
+    assert_eq!(out, "true|7|true");
+}
+
 // 引擎钉：基元 this 经 ToObject 装箱——reverse 返回 Boolean 包装体、splice 返回真数组。
 #[test]
 fn test_splice_reverse_primitive_this_boxed() {

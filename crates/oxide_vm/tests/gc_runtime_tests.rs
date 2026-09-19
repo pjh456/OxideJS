@@ -583,3 +583,32 @@ fn disposable_stack_value_string_survives_runtime_gc() {
     assert_eq!(text, "stackbox".repeat(8));
     assert!(vm.session_gc_stats().total_collections > 0, "churn 应触发执行期字符串 GC");
 }
+
+/// 低阈值下基元 this 的装箱体（Number 包装对象）跨执行期 GC 完整存活：
+/// reverse/fill/copyWithin/splice 把基元 this 装箱后跨 length getter 用户窗口
+/// 使用，装箱体身份（instanceof Number + 被包值）在收集后保持完整（装箱体
+/// 此前仅存于 Rust 局部，不在根集）。
+#[test]
+fn arraylike_boxed_this_identity_survives_runtime_gc() {
+    let mut vm = vm_with_threshold(512);
+    let module = compile(
+        "var g = {}; for (var i = 0; i < 20; i++) { g['k' + i] = 'v'.repeat(64); } \
+          var savedLen = 2; \
+          Object.defineProperty(Number.prototype, 'length', { \
+            configurable: true, \
+            get: function () { g['y' + Math.random()] = 'w'.repeat(32); return savedLen; }, \
+            set: function (v) { savedLen = v; } }); \
+          var r1 = Array.prototype.reverse.call(5); \
+          var r2 = Array.prototype.fill.call(5, 'v', 0, 2); \
+          var r3 = Array.prototype.copyWithin.call(5, 0, 0, 1); \
+          var r4 = Array.prototype.splice.call(5, 0); \
+          delete Number.prototype.length; \
+          [r1 instanceof Number, r1.valueOf(), r2 instanceof Number, r2.valueOf(), \
+           r3 instanceof Number, r3.valueOf(), Array.isArray(r4), r4.length].join('|')",
+    );
+    let result = vm.run(&Arc::new(module)).expect("run");
+    let text = vm.lookup_str(result).expect("结果应为字符串").to_string();
+
+    assert_eq!(text, "true|5|true|5|true|5|true|2");
+    assert!(vm.session_gc_stats().total_collections > 0, "执行期应触发字符串 GC");
+}

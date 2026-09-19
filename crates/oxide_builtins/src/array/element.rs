@@ -193,8 +193,10 @@ pub fn array_slice<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 /// 返回被删除元素组成的新数组。
 ///
 /// # 步骤
-/// 1. `ToObject` 装箱基元 this（null/undefined 抛 TypeError）；长度按规范
-///    `ToLength(Get(O, "length"))` 读取（上限 2^53-1）。
+/// 1. `ToObject` 装箱基元 this（null/undefined 抛 TypeError），装箱体钉入返回
+///    寄存器跨用户窗口保 GC 根（removed 数组钉入后让位；返回值为 removed
+///    数组，非装箱体）；长度按规范 `ToLength(Get(O, "length"))` 读取
+///    （上限 2^53-1）。
 /// 2. `start` / `deleteCount` 走 ToIntegerOrInfinity 折算（负数自尾部、夹到
 ///    界内）；无实参时删除数恒 0，仅给 start 时删到尾部。新长度超 2^53-1
 ///    抛 TypeError。
@@ -222,6 +224,14 @@ pub fn array_splice<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         Ok(v) => v,
         Err(msg) => return NativeResult::Err(from_engine_error(vm, &msg)),
     };
+    // 装箱体钉入返回寄存器：它只存于 Rust 局部，this 寄存器持原始基元（不在根集），
+    // 跨 length getter / 折算 / 构造器读用户窗口须保持 GC 根。返回寄存器是调用方
+    // 跨 native 调用不保活值的唯一槽（其余槽位调用方帧可能持活值，钉入即覆写）；
+    // call 转发形态的实参寄存器集可占该槽，占位时跳过钉位（装箱体按接收者值
+    // 传递保活）。removed 数组钉入后此槽让位，其后窗口装箱体按接收者值传递保活。
+    if !args.contains(&0) {
+        vm.set_reg(0, this_val);
+    }
     let (arr_ptr, n, is_array) = match get_this_arraylike(vm, this_val) {
         Ok(v) => v,
         Err(e) => return NativeResult::Err(e),
@@ -380,6 +390,8 @@ pub fn array_splice<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         unsafe { (*arr_ptr).mark_hole_at(h) };
     }
 
+    // 返回被删元素组成的 removed 数组（自返回槽读回）；装箱体钉位仅跨窗口保根，
+    // 不作返回值。
     NativeResult::Ok(vm.reg(0))
 }
 
@@ -566,7 +578,8 @@ pub fn array_includes<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 /// `Array.prototype.reverse()`：原地反转元素顺序，返回 this。
 ///
 /// # 步骤
-/// 1. `ToObject` 装箱基元 this（null/undefined 抛 TypeError）；长度按规范
+/// 1. `ToObject` 装箱基元 this（null/undefined 抛 TypeError），装箱体钉入返回
+///    寄存器跨用户窗口保 GC 根（交换环换值临时钉复用此槽）；长度按规范
 ///    `ToLength(Get(O, "length"))` 读取（上限 2^53-1）。
 /// 2. 逐对交换 `[lower, upper]`（`upper = length - lower - 1`，`lower` 到
 ///    `floor(length/2)` 为止）：两端各自 HasProperty 门控，存在端 Get 取值。
@@ -582,6 +595,14 @@ pub fn array_reverse<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         Ok(v) => v,
         Err(msg) => return NativeResult::Err(from_engine_error(vm, &msg)),
     };
+    // 装箱体钉入返回寄存器：它只存于 Rust 局部，this 寄存器持原始基元（不在根集），
+    // 跨 length getter / 折算用户窗口须保持 GC 根。返回寄存器是调用方跨 native
+    // 调用不保活值的唯一槽；call 转发形态的实参寄存器集可占该槽，占位时跳过
+    // 钉位（装箱体按接收者值传递保活）。交换环换值临时钉复用此槽，循环期装箱体
+    // 按接收者值传递保活。
+    if !args.contains(&0) {
+        vm.set_reg(0, this_val);
+    }
     let (arr_ptr, n, is_array) = match get_this_arraylike(vm, this_val) {
         Ok(v) => v,
         Err(e) => return NativeResult::Err(e),
@@ -853,8 +874,9 @@ pub fn array_unshift<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 /// `Array.prototype.fill(value, start, end)`：用给定值填充区间，返回 this。
 ///
 /// # 步骤
-/// 1. `ToObject` 装箱基元 this（null/undefined 抛 TypeError）；长度按规范
-///    `ToLength(Get(O, "length"))` 读取（上限 2^53-1）。
+/// 1. `ToObject` 装箱基元 this（null/undefined 抛 TypeError），装箱体钉入返回
+///    寄存器跨用户窗口保 GC 根；长度按规范 `ToLength(Get(O, "length"))`
+///    读取（上限 2^53-1）。
 /// 2. `start` / `end` 走 ToIntegerOrInfinity 折算（负数自尾部、夹到界内）；
 ///    `end` 为 undefined 取 len。
 /// 3. 区间内每格无条件严格 `Set`（无 HasProperty 门控，洞位物化为 present）。
@@ -868,6 +890,13 @@ pub fn array_fill<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         Ok(v) => v,
         Err(msg) => return NativeResult::Err(from_engine_error(vm, &msg)),
     };
+    // 装箱体钉入返回寄存器：它只存于 Rust 局部，this 寄存器持原始基元（不在根集），
+    // 跨 length getter / 折算 / 元素 Set 用户窗口须保持 GC 根。返回寄存器是调用方
+    // 跨 native 调用不保活值的唯一槽，本方法全程独占，收尾自钉位读回；call 转发
+    // 形态的实参寄存器集可占该槽，占位时跳过钉位。
+    if !args.contains(&0) {
+        vm.set_reg(0, this_val);
+    }
     let (arr_ptr, n, _is_array) = match get_this_arraylike(vm, this_val) {
         Ok(v) => v,
         Err(e) => return NativeResult::Err(e),
@@ -906,7 +935,8 @@ pub fn array_fill<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 /// 返回 this。
 ///
 /// # 步骤
-/// 1. `ToObject` 装箱基元 this（null/undefined 抛 TypeError）；长度按规范
+/// 1. `ToObject` 装箱基元 this（null/undefined 抛 TypeError），装箱体钉入返回
+///    寄存器跨用户窗口保 GC 根（复制环复制值临时钉复用此槽）；长度按规范
 ///    `ToLength(Get(O, "length"))` 读取（上限 2^53-1）。
 /// 2. `target` / `start` / `end` 走 ToIntegerOrInfinity 折算（负数自尾部、夹到
 ///    [0, length]）；`end` 为 undefined 取 len；`count = min(end - start,
@@ -925,6 +955,14 @@ pub fn array_copy_within<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         Ok(v) => v,
         Err(msg) => return NativeResult::Err(from_engine_error(vm, &msg)),
     };
+    // 装箱体钉入返回寄存器：它只存于 Rust 局部，this 寄存器持原始基元（不在根集），
+    // 跨 length getter / 折算用户窗口须保持 GC 根。返回寄存器是调用方跨 native
+    // 调用不保活值的唯一槽；call 转发形态的实参寄存器集可占该槽，占位时跳过
+    // 钉位（装箱体按接收者值传递保活）。复制环复制值临时钉复用此槽，循环期装箱体
+    // 按接收者值传递保活。
+    if !args.contains(&0) {
+        vm.set_reg(0, this_val);
+    }
     let (arr_ptr, n, _is_array) = match get_this_arraylike(vm, this_val) {
         Ok(v) => v,
         Err(e) => return NativeResult::Err(e),
@@ -1018,7 +1056,14 @@ pub fn array_at<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     };
     let rel = if rel.is_nan() || rel == 0.0 { 0.0 } else { rel.trunc() };
     let index = if rel < 0.0 {
-        (len as f64 + rel).max(0.0) as u64
+        // k = len + relative 在 64 位整型域折算：极负 rel 饱和为 i64::MIN 时 k 必 < 0
+        //（规范 k < 0 返 undefined），仅 rel ∈ [-len, 0) 落入界内下标；浮点域钳零会
+        // 把越界负索引静默映射回首元素。
+        let k = (len as i64) + (rel as i64);
+        if k < 0 {
+            return NativeResult::Ok(JsValue::undefined());
+        }
+        k as u64
     } else {
         rel.min(len as f64) as u64
     };
