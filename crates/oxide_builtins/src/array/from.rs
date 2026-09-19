@@ -86,7 +86,7 @@ pub fn array_of<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
             return NativeResult::Err(err);
         }
     }
-    if let Err(err) = array_from_set_length(vm, a_ptr, is_array, n_elems) {
+    if let Err(err) = array_from_set_length(vm, a_ptr, n_elems) {
         return NativeResult::Err(err);
     }
     NativeResult::Ok(JsValue::from_js_object(a_ptr))
@@ -200,7 +200,7 @@ pub fn array_from<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
             close_iterator(vm, iterator);
             return NativeResult::Err(err);
         }
-        if let Err(err) = array_from_set_length(vm, a_ptr, is_array, k) {
+        if let Err(err) = array_from_set_length(vm, a_ptr, k) {
             return NativeResult::Err(err);
         }
     } else {
@@ -257,7 +257,7 @@ pub fn array_from<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
                 return NativeResult::Err(err);
             }
         }
-        if let Err(err) = array_from_set_length(vm, a_ptr, is_array, len) {
+        if let Err(err) = array_from_set_length(vm, a_ptr, len) {
             return NativeResult::Err(err);
         }
     }
@@ -376,31 +376,38 @@ pub(crate) fn create_data_property_or_throw<H: VmHost>(
     }
 }
 
-/// 把元素写入 Array.from 的结果对象：真数组走密集元素区，普通对象走
-/// CreateDataProperty 语义（属性名按十进制索引字符串）。
+/// 把元素写入 Array.from 的结果对象（CreateDataPropertyOrThrow 语义）：真数组
+/// 走密集元素区，普通对象属性名按十进制索引字符串。
+///
+/// # 边界与前提
+/// - 真数组快路径（可扩展 + length 可写 + 槽位无元数据）与规范 define 同形，
+///   裸写零漂移；完整性受限目标（frozen/sealed/preventExtensions）与携带元
+///   数据的槽位（洞/只读/访问器）一律落慢路径，按规范抛 TypeError。
 fn array_from_set_prop<H: VmHost>(
     vm: &mut H, a: *mut JsObject, is_array: bool, i: usize, val: JsValue,
 ) -> Result<(), JsValue> {
     if is_array {
         unsafe {
-            (*a).set_prop_at(i, val);
+            let a_obj = &mut *a;
+            let count = a_obj.array_prop_count as usize;
+            // 越界增长不读元数据（越界读取会落命名属性区，语义错位）。
+            let fast =
+                a_obj.is_extensible() && a_obj.is_length_writable() && (i >= count || a_obj.prop_meta_at(i).is_none());
+            if fast {
+                a_obj.set_prop_at(i, val);
+                return Ok(());
+            }
         }
-        return Ok(());
     }
     let key = vm.new_string(&i.to_string());
     let key_si = vm.property_key_si(key);
     create_data_property_or_throw(vm, unsafe { &mut *a }, key_si, val)
 }
 
-/// 收尾设置 Array.from 结果对象的 length：真数组直接改元素计数，普通对象走
-/// 普通 Set（可触发继承的 length setter 并透传其异常）。
-fn array_from_set_length<H: VmHost>(vm: &mut H, a: *mut JsObject, is_array: bool, len: usize) -> Result<(), JsValue> {
-    if is_array {
-        unsafe {
-            (*a).set_prop_count_fast(len);
-        }
-        return Ok(());
-    }
+/// 收尾设置 Array.from 结果对象的 length：统一走普通 Set——真数组 length 写
+/// 按 ArraySetLength 可写性判定（frozen / length 收窄不可写目标抛 TypeError），
+/// 普通对象可触发继承的 length setter，其异常透传。
+fn array_from_set_length<H: VmHost>(vm: &mut H, a: *mut JsObject, len: usize) -> Result<(), JsValue> {
     let a_obj = unsafe { &mut *a };
     let length_key = vm.new_string("length");
     let length_si = vm.property_key_si(length_key);
