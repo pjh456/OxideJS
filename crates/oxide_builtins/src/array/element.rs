@@ -197,13 +197,18 @@ pub fn array_slice<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 ///
 /// # 步骤
 /// 1. 折算 `start` / `deleteCount`（负数自尾部、夹到界内）。
-/// 2. 先建 removed 数组：逐被删下标 HasProperty 门控 + Get，命中
-///    CreateDataPropertyOrThrow、缺失保洞；结果对象钉入返回寄存器（其后的
-///    搬移/插入各带用户调用窗口，Rust 局部指针不属 GC 根集）。
-/// 3. 双向搬移：源存在则 Get + 严格 Set 到目标，源缺失则目标 DeletePropertyOrThrow
+/// 2. 先按 ArraySpeciesCreate 建 removed 数组（收集与搬移之前，用户构造器
+///    读到未改动的 O），结果对象钉入返回寄存器（其后的收集/搬移/插入各带
+///    用户调用窗口，Rust 局部指针不属 GC 根集）。
+/// 3. 逐被删下标 HasProperty 门控 + Get，命中 CreateDataPropertyOrThrow；
+///    缺失位仅真数组 A 保洞（A 预填 present-undefined 须显式置洞），非数组
+///    A 按规范不建属性。
+/// 4. `Set(A, "length", deleteCount, true)` 在搬移前收尾。
+/// 5. 双向搬移：源存在则 Get + 严格 Set 到目标，源缺失则目标 DeletePropertyOrThrow
 ///    （不可配置抛 TypeError）；扩容方向下超出当前元素数的目标先记录，length
 ///    写入后补置洞。
-/// 4. 插入项逐个严格 Set，length 快写收尾。
+/// 6. 插入项逐个严格 Set，`Set(this, "length", newLen, true)` 收尾（length
+///    不可写抛 TypeError）。
 ///
 /// # 副作用
 /// - 元素被删/插/移；Get/Set 可经原型链触发用户代码。
@@ -234,9 +239,13 @@ pub fn array_splice<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 
     let insert_count = if args.len() > 3 { args.len() - 3 } else { 0 };
 
-    // removed 先行构建并钉入返回寄存器：搬移/插入窗口的用户 setter 可触发
-    // 回收，结果对象指针须保 GC 根，返回时从钉位读回。
-    let removed_arr = create_new_array(vm, delete_count);
+    // removed 先行按 ArraySpeciesCreate 构建（收集/搬移之前）并钉入返回寄存器：
+    // 搬移/插入窗口的用户 setter 可触发回收，结果对象指针须保 GC 根，返回时
+    // 从钉位读回；species 读与构造器抛错即 splice 抛错。
+    let removed_arr = match array_species_create(vm, recv, true, delete_count) {
+        Ok(p) => p,
+        Err(err) => return NativeResult::Err(err),
+    };
     vm.set_reg(0, JsValue::from_js_object(removed_arr));
     for k in 0..delete_count {
         match gated_get(vm, arr_ptr, start + k, recv) {
@@ -246,10 +255,25 @@ pub fn array_splice<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
                     return NativeResult::Err(err);
                 }
             }
-            // 源缺失位保洞（removed 预填 present-undefined，须显式置洞）。
-            Ok(None) => unsafe { (*removed_arr).mark_hole_at(k) },
+            // 源缺失位仅真数组 A 保洞（A 预填 present-undefined，须显式置洞）；
+            // 非数组 A 不建属性。
+            Ok(None) => {
+                if unsafe { &*removed_arr }.is_array() {
+                    unsafe { (*removed_arr).mark_hole_at(k) }
+                }
+            }
             Err(err) => return NativeResult::Err(err),
         }
+    }
+
+    // Set(A, "length", actualDeleteCount, true) 先于搬移：真数组 A 构造器已置
+    // 长度时为空写，构造器忽略单参时扩长。
+    let a_val = JsValue::from_js_object(removed_arr);
+    let length_si = vm.string_key_si("length");
+    if let Err(err) =
+        vm.ordinary_set(unsafe { &mut *removed_arr }, length_si, js_array_index(delete_count), a_val, true)
+    {
+        return NativeResult::Err(from_engine_error(vm, &err));
     }
 
     // 目标超出当前元素数的洞位无法即时置（越界 no-op），length 写入后补。
@@ -305,8 +329,12 @@ pub fn array_splice<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         }
     }
 
+    // Set(this, "length", newLen, true) 同样走 Set：length 不可写在此抛
+    // TypeError（与新旧长度是否相同无关）。
     let new_len = n + insert_count - delete_count;
-    unsafe { (*arr_ptr).set_prop_count_fast(new_len) };
+    if let Err(err) = vm.ordinary_set(unsafe { &mut *arr_ptr }, length_si, js_array_index(new_len), recv, true) {
+        return NativeResult::Err(from_engine_error(vm, &err));
+    }
     for h in pending_holes {
         unsafe { (*arr_ptr).mark_hole_at(h) };
     }
