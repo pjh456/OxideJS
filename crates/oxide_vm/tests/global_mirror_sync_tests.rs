@@ -59,17 +59,19 @@ fn member_write_across_call() {
 }
 
 #[test]
-fn member_delete_across_call_bare_read_undefined() {
+fn member_delete_across_call_reflection_undefined() {
+    // 删后裸读经 A 侧抛 ReferenceError（见 delete_builtin_read_tests）；
+    // 此钉保成员删的 A 侧真删与保存引用判别。
     eval_truthy(
         "var m = Math; (function(){ delete globalThis.Math; })(); \
-         Math === undefined && Math !== m",
+         globalThis.Math === undefined && m !== undefined",
     );
 }
 
-// ── 成员删同 run：delete 成员形后裸读 undefined ──
+// ── 成员删同 run：delete 成员形后 A 侧反射 undefined ──
 #[test]
-fn member_delete_same_run_bare_read_undefined() {
-    eval_truthy("var m = Math; delete globalThis.Math; Math === undefined && Math !== m");
+fn member_delete_same_run_reflection_undefined() {
+    eval_truthy("var m = Math; delete globalThis.Math; globalThis.Math === undefined && m !== undefined");
 }
 
 // ── defineProperty 数据描述符形同收口 ──

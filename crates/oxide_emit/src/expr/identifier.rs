@@ -65,7 +65,13 @@ impl Emitter {
         // 隐式全局槽（读侧登记与写侧登记同属一个槽）同样读全局对象属性：属性是
         // 隐式全局值的唯一真源，嵌套函数内 delete 真删后外层裸读据此可见，引擎侧
         // 镜像槽不反映删除。
-        if self.is_global_tier_name(ctx, name) || ctx.is_implicit_global_reg(var_reg) {
+        // 已知 builtin 名（非局部遮蔽）同走全局对象属性：镜像槽无法自区分「A 侧
+        // 缺位」与「A 侧在位值 undefined」（两者槽值皆 undefined），delete 真删后
+        // 裸读须经属性在位判定抛 ReferenceError。
+        if self.is_global_tier_name(ctx, name)
+            || ctx.is_implicit_global_reg(var_reg)
+            || (ctx.is_builtin(name) && !ctx.is_local_shadowing_builtin(name))
+        {
             let key_idx = ctx.add_constant(Constant::String(name.to_string()));
             ctx.inst(Inst::new(OpCode::LOAD_GLOBAL, Operand::Reg(r), Operand::Const(key_idx), Operand::None));
         } else {
@@ -145,7 +151,19 @@ impl Emitter {
                 Operand::None,
             ));
         } else if let Some(reg) = ctx.scopes.symbols.lookup_any(name) {
-            ctx.inst(Inst::new(OpCode::LOAD_VAR, Operand::Reg(result_reg), Operand::Reg(reg), Operand::None));
+            // 已知 builtin 名（非局部遮蔽）读 A 侧全局对象属性，与静态读臂同形；
+            // 局部遮蔽绑定保持 LOAD_VAR 读局部槽。
+            if ctx.is_builtin(name) && !ctx.is_local_shadowing_builtin(name) {
+                let key_idx = ctx.add_constant(Constant::String(name.to_string()));
+                ctx.inst(Inst::new(
+                    OpCode::LOAD_GLOBAL,
+                    Operand::Reg(result_reg),
+                    Operand::Const(key_idx),
+                    Operand::None,
+                ));
+            } else {
+                ctx.inst(Inst::new(OpCode::LOAD_VAR, Operand::Reg(result_reg), Operand::Reg(reg), Operand::None));
+            }
         } else {
             let undef_idx = ctx.add_constant(Constant::Undefined);
             ctx.inst(Inst::load_const(Operand::Reg(result_reg), undef_idx));

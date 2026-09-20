@@ -21,6 +21,19 @@ fn eval_truthy(source: &str) {
     assert!(result.is_bool() && result.as_bool(), "expected true, got: {result:?}\nsource: {source}");
 }
 
+/// 运行期应抛 ReferenceError 的钉：删后裸读经 A 侧属性在位判定抛缺位引用错误。
+fn expect_reference_error(source: &str) {
+    let allocator = Allocator::default();
+    let program = oxide_parser::parse(&allocator, source).expect("parse");
+    let module = Compiler::new().compile(&program).expect("compile");
+    let mut vm = Vm::new();
+    let err = vm.run(&Arc::new(module)).expect_err("expected ReferenceError");
+    assert!(
+        err.to_lowercase().contains("referenceerror"),
+        "expected ReferenceError, got: {err}\nsource: {source}"
+    );
+}
+
 // ── 删除返值与属性真删 ──
 #[test]
 fn delete_math_returns_true_and_property_removed() {
@@ -35,18 +48,15 @@ fn delete_writable_builtin_names() {
     }
 }
 
-// ── 镜像槽清：删除后裸读回 undefined ──
+// ── 删后读：A 侧缺失抛 ReferenceError（裸读路由全局对象属性）──
 #[test]
-fn delete_math_then_bare_read_via_mirror() {
-    eval_truthy("var m = Math; delete Math; Math === undefined");
+fn delete_math_then_bare_read_reference_error() {
+    expect_reference_error("var m = Math; delete Math; Math");
 }
 
 #[test]
-fn fn_body_delete_clears_frame_mirror() {
-    eval_truthy(
-        "function f() { var m = Math; delete Math; \
-         return Math === undefined && globalThis.Math === undefined; } f() === true",
-    );
+fn fn_body_delete_bare_read_reference_error() {
+    expect_reference_error("function f() { var m = Math; delete Math; return Math; } f()");
 }
 
 // ── 删后重写：两侧再同步 ──
@@ -75,9 +85,11 @@ fn delete_three_constants_refused_property_kept() {
 // ── globalThis c:true：真删且返 true，镜像槽清 ──
 #[test]
 fn delete_global_this_returns_true_and_property_removed() {
+    // 裸读 globalThis 删后抛 ReferenceError（见 delete_builtin_read_tests）；
+    // 此钉保删除返值与 A 侧成员反射。
     eval_truthy(
         "var g = globalThis; var d = delete globalThis; \
-         d === true && g.globalThis === undefined && globalThis === undefined",
+         d === true && g.globalThis === undefined",
     );
 }
 

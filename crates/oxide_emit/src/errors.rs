@@ -21,9 +21,12 @@ impl Emitter {
     /// # 边界与前提
     /// - `kind` 必须是已注册的全局构造器名（如 "ReferenceError"/"TypeError"）。
     pub(crate) fn emit_throw_error(&self, kind: &str, msg: &str, ctx: &mut CompileCtx) -> Result<u32, String> {
-        let ctor_reg = ctx.lookup_or_builtin(kind)?;
+        // 构造器读 A 侧全局对象属性（冷路径，与已知 builtin 名读路由同形）：
+        // delete 构造器后缺失抛 ReferenceError，与 V8 同形。仅留登记副作用。
+        let _ = ctx.lookup_or_builtin(kind)?;
         let ctor = ctx.alloc_reg();
-        ctx.inst(Inst::new(OpCode::LOAD_VAR, Operand::Reg(ctor), Operand::Reg(ctor_reg), Operand::None));
+        let key_idx = ctx.add_constant(Constant::String(kind.to_string()));
+        ctx.inst(Inst::new(OpCode::LOAD_GLOBAL, Operand::Reg(ctor), Operand::Const(key_idx), Operand::None));
         let msg_reg = ctx.alloc_reg();
         let msg_idx = ctx.add_constant(Constant::String(msg.to_string()));
         ctx.inst(Inst::load_const(Operand::Reg(msg_reg), msg_idx));

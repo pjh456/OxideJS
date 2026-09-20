@@ -372,7 +372,10 @@ impl Emitter {
             // ReferenceError（typeof 对 unresolvable 引用不抛）。
             let implicit_global = binding.is_some_and(|(b, _)| ctx.is_implicit_global_reg(b.reg));
             let is_tier = self.is_global_tier_name(ctx, name);
-            if !in_with_dynamic && !captured && (is_tier || binding.is_none() || implicit_global) {
+            // 已知 builtin 名（非局部遮蔽）同走属性路：delete 真删后缺失 →
+            // "undefined" 而非经镜像槽读 undefined 同值巧合。
+            let is_builtin_slot = ctx.is_builtin(name) && !ctx.is_local_shadowing_builtin(name);
+            if !in_with_dynamic && !captured && (is_tier || binding.is_none() || implicit_global || is_builtin_slot) {
                 let key_idx = ctx.add_constant(Constant::String(name.to_string()));
                 let r = ctx.alloc_reg();
                 ctx.inst(Inst::new(

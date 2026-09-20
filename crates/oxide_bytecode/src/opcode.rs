@@ -376,9 +376,10 @@ define_opcodes! {
     LOAD_CONST = 0x32 => "LOAD_CONST",
         def = Some(SlotSpec::Slot(Slot::Rd)), uses = [],
         pure = true, jump = false, term = false, ic = false,
-    // 未声明标识符读：rd=目标，a/b=常量池 key 下标（imm16，与 LOAD_CONST 同构），
-    // 运行期查 global object 属性存在性，缺失抛 ReferenceError（热路径零开销：
-    // 已声明/内置标识符仍走 LOAD_VAR，本指令只命中真正未声明的读）。
+    // 未声明/已删标识符读：rd=目标，a/b=常量池 key 下标（imm16，与 LOAD_CONST 同构），
+    // 运行期查 global object 属性存在性，缺失抛 ReferenceError（未声明名与已知 builtin
+    // 名非局部遮蔽读均命中本指令：delete 后 A 侧缺失须经属性在位判定，镜像槽无法
+    // 自区分缺位与在位 undefined）。
     LOAD_GLOBAL = 0x95 => "LOAD_GLOBAL",
         def = Some(SlotSpec::Slot(Slot::Rd)), uses = [],
         pure = false, jump = false, term = false, ic = false,
