@@ -10,7 +10,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
-use crate::capture::{collect_captured_bindings, collect_own_binding_names};
+use crate::capture::{collect_captured_bindings, collect_direct_lexical_names, collect_own_binding_names};
 use crate::expr::call::pack_arg_regs;
 use crate::{CompileCtx, Emitter};
 use oxc_allocator::Box;
@@ -440,7 +440,9 @@ impl Emitter {
 
         // —— 预声明（镜像 emit_program；import/export 包装的声明也计入 hoisting）——
         self.predeclare_function_declarations(body, ctx);
-        self.pre_register_builtin_references(body, ctx);
+        // 模块顶层词法声明名排除镜像登记（词法绑定遮蔽同名全局属性，同 program.rs）。
+        let lexical_excluded = collect_direct_lexical_names(body);
+        self.pre_register_builtin_references(body, &lexical_excluded, ctx);
         self.predeclare_var_declarations(body, ctx);
         // 模块 lexical 声明入模块环境（非全局对象），不做受限全局名检查。
         let _ = self.predeclare_lexical_declarations(body, ctx, false);

@@ -301,7 +301,10 @@ impl Emitter {
         self.predeclare_function_declarations(&program.body, &mut ctx);
 
         // 预注册 builtin 引用（先于任何临时寄存器），builtin 槽不进入临时寄存器池。
-        self.pre_register_builtin_references(&program.body, &mut ctx);
+        // 顶层词法声明名（let/const/class）排除登记：词法绑定遮蔽同名全局属性，
+        // 镜像占位先建会与词法预声明撞 scope 0 致合法遮蔽形被编译期误拒。
+        let lexical_excluded = collect_direct_lexical_names(&program.body);
+        self.pre_register_builtin_references(&program.body, &lexical_excluded, &mut ctx);
 
         // 预声明顶层 `var` 名，使首个 sub-pass 中提升的函数声明能解析外层 var。
         self.predeclare_var_declarations(&program.body, &mut ctx);

@@ -355,6 +355,7 @@ impl Emitter {
                     reg: binding.reg,
                     initialized: binding.initialized,
                     is_const: binding.is_const,
+                    lexical: binding.lexical,
                     predeclared: false,
                 },
             );
@@ -378,6 +379,8 @@ impl Emitter {
                     reg: *reg,
                     initialized: true,
                     is_const: true,
+                    // 类 this 自绑定非用户词法声明，不置位。
+                    lexical: false,
                     predeclared: false,
                 },
             );
@@ -408,7 +411,9 @@ impl Emitter {
         self.predeclare_labeled_function_declarations(body_stmts, &mut ctx);
 
         // 预注册 builtin 引用（先于任何临时寄存器），builtin 槽不与被复用的临时值冲突。
-        self.pre_register_builtin_references(body_stmts, &mut ctx);
+        // 函数体直接子级词法声明名排除登记（顶层词法遮蔽同口径，见 program.rs）。
+        let lexical_excluded = collect_direct_lexical_names(body_stmts);
+        self.pre_register_builtin_references(body_stmts, &lexical_excluded, &mut ctx);
 
         // 预声明 `var` 名，使首个 sub-pass 中提升的函数声明能解析其闭包引用的外层 var。
         self.predeclare_var_declarations(body_stmts, &mut ctx);

@@ -23,6 +23,10 @@ pub(crate) struct Binding {
     pub(crate) reg: u32,
     pub(crate) initialized: bool,
     pub(crate) is_const: bool,
+    /// 词法（let/const/class/导入）绑定：写臂谓词据此拒绝全局内置槽解析——
+    /// 顶层词法绑定遮蔽同名全局属性，写不落全局对象（var/隐式全局/镜像占位
+    /// 不置位，其值存储本就是全局对象属性）。
+    pub(crate) lexical: bool,
     /// 由块/函数级预声明（TDZ 占位）创建，声明点据此复用槽位。
     /// 非预声明的同名绑定（如同 scope 的参数/var）不计，避免误复用。
     pub(crate) predeclared: bool,
@@ -109,6 +113,7 @@ impl SymbolTable {
                 reg,
                 initialized: false,
                 is_const: matches!(kind, VariableDeclarationKind::Const) || is_const,
+                lexical: !matches!(kind, VariableDeclarationKind::Var),
                 predeclared: false,
             },
         );
@@ -172,6 +177,7 @@ impl SymbolTable {
                 reg: reg_for_new,
                 initialized: true,
                 is_const: false,
+                lexical: false,
                 predeclared: false,
             },
         );
@@ -212,6 +218,7 @@ impl SymbolTable {
                 reg,
                 initialized: true,
                 is_const: matches!(kind, VariableDeclarationKind::Const) || is_const,
+                lexical: !matches!(kind, VariableDeclarationKind::Var),
                 predeclared: false,
             },
         );
@@ -224,6 +231,7 @@ impl SymbolTable {
             reg,
             initialized: true,
             is_const: false,
+            lexical: false,
             predeclared: false,
         });
     }
@@ -248,6 +256,7 @@ impl SymbolTable {
                 reg,
                 initialized: false,
                 is_const: matches!(kind, VariableDeclarationKind::Const) || is_const,
+                lexical: !matches!(kind, VariableDeclarationKind::Var),
                 predeclared: true,
             },
         );
@@ -306,6 +315,8 @@ impl SymbolTable {
                 reg,
                 initialized,
                 is_const: true,
+                // 导入绑定是模块作用域词法（const）绑定，同 let/const 置位。
+                lexical: true,
                 predeclared: false,
             },
         );

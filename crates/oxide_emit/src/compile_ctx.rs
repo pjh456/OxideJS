@@ -593,11 +593,13 @@ impl CompileCtx {
     /// 名字是否解析到全局内置槽：builtin_reg_map 登记（预注册镜像槽），或绑定
     /// 落全局作用域（scope 0，顶层 var 预声明/隐式全局，含继承的全局槽）。局部
     /// var/let/参数遮蔽同名时解析到局部寄存器/局部作用域，两条件均不命中。
+    /// scope 0 臂拒词法绑定：顶层 let/const/class/导入绑定遮蔽同名全局属性，
+    /// 值存储是其自身槽位，写不落全局对象。
     fn resolves_to_global_builtin_slot(&self, name: &str, reg: u32) -> bool {
         if self.scopes.builtin_reg_map.iter().any(|(n, r)| n == name && *r == reg) {
             return true;
         }
-        matches!(self.scopes.symbols.lookup_any_binding(name), Some((_, 0)))
+        matches!(self.scopes.symbols.lookup_any_binding(name), Some((binding, 0)) if !binding.lexical)
     }
 
     /// 写目标是否为只读全局内置（undefined/NaN/Infinity 的全局绑定——全局对象上
