@@ -58,15 +58,21 @@ fn sweep_runner_forges_rejects_live_vm() {
 #[test]
 fn full_reset_with_session_objects_forces_global_rebuild() {
     let mut vm = Vm::new();
-    // 池路径场景：`globalThis.Array = {}` 覆盖既有 global 槽（不递增 generation），
-    // 新值 `{}` 经 promote 进入 session——global 保留时该指针将悬垂。
+    // 池路径场景：`globalThis.Array = {}` 覆盖既有 global 槽——写屏障直通令
+    // 新值 `{}` 留存 epoch，global 持 epoch 子引用；global 保留时该指针将悬垂。
+    // 覆盖写推进 global generation，快照对比发现脏 global，full_reset 必须重建。
     let _ = run_source(&mut vm, "globalThis.Array = {}; 0");
-    assert!(!vm.gc_state.session_object_ptrs.is_empty(), "覆盖写应触发 promote 进入 session");
+    let written = global_prop(&vm, "Array");
+    // SAFETY: 覆盖值是本 VM 自有的 epoch 对象，本 session 内指针有效。
+    assert!(
+        unsafe { (&*written.as_js_object_ptr()).is_epoch() },
+        "覆盖值应直通留存 epoch，不克隆进 session"
+    );
     let old_global = vm.session.global_object.as_ptr();
 
     vm.full_reset();
 
-    // global 必须重建：旧 global 与其 session 对象随 epoch 释放，Array 恢复内置构造器。
+    // global 必须重建：旧 global 与其 epoch 子引用随 epoch 释放，Array 恢复内置构造器。
     assert!(!std::ptr::eq(old_global, vm.session.global_object.as_ptr()));
     assert!(std::ptr::eq(
         global_prop(&vm, "Array").as_js_object_ptr(),

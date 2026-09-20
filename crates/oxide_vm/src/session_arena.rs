@@ -9,14 +9,9 @@ use crate::vm::Vm;
 use oxide_builtins::{array_buffer, data_view, disposable_stack, map, module, regexp, set, typed_array};
 
 impl Vm {
-    pub(crate) fn is_session_escape_root_ptr(&self, target_ptr: *mut JsObject) -> bool {
-        if target_ptr.is_null() {
-            return false;
-        }
-        let global_ptr = self.session.global_object().as_ptr() as *mut JsObject;
-        std::ptr::eq(target_ptr, global_ptr) || unsafe { (&*target_ptr).is_session_epoch() }
-    }
-
+    /// 单对象晋升测试入口：取/清共享转发表后调 `promote_object_inner`。
+    /// 生产路径（边界修复/执行期晋升档/根晋升）各自持表管理，不经过此包装。
+    #[cfg(test)]
     pub(crate) fn promote_object(&mut self, src: *mut JsObject) -> *mut JsObject {
         vm_debug!("promote_object: src={:p}", src);
         let mut forwarding = std::mem::take(&mut self.gc_state.forwarding);
@@ -135,9 +130,11 @@ impl Vm {
     /// 对象的引用克隆进 session（JS 边 + native 状态盒），消除 epoch 重置后的
     /// 悬垂指针。
     ///
-    /// 覆盖两类绕过写屏障的引用来源：函数对象直接 session 分配后捕获的
+    /// 覆盖三类绕过写屏障的引用来源：函数对象直接 session 分配后捕获的
     /// `captured_this`/`home_object`/upvalue cell/属性值（SET_HOME_OBJECT 与
-    /// 函数目标豁免均直落 epoch 值）；Map/Set 等原生盒按键值直插 epoch 值。
+    /// 函数目标豁免均直落 epoch 值）；Map/Set 等原生盒按键值直插 epoch 值；
+    /// global 对象的属性值（逃逸写直通后 epoch 值直落 global 槽，global 不入
+    /// session 对象表，由 `rewrite_session_epoch_refs` 同趟改写）。
     /// `rewrite_object_values` 覆盖元素/meta/属性/proto/captured_this/home_object/
     /// cell 值；克隆子树经 forwarding 去重，环与共享引用各克隆一次。
     ///
@@ -145,11 +142,9 @@ impl Vm {
     /// - 须在执行外的安全点调用（无在途 builtin 局部裸指针、dispatch 未重入）：
     ///   本方法原地改写 session 对象的引用字段，执行期调用将使 builtin 局部
     ///   裸指针失效（与 `collect_session_gc` 同前提）。
+    /// - session 对象表为空时 global 的 epoch 子引用仍须修复，不做空表早退。
     pub fn promote_session_epoch_refs(&mut self) {
         let objects = std::mem::take(&mut self.gc_state.session_object_ptrs);
-        if objects.is_empty() {
-            return;
-        }
         let mut forwarding = std::mem::take(&mut self.gc_state.forwarding);
         self.rewrite_session_epoch_refs(&objects, &mut forwarding);
         forwarding.clear();
@@ -162,6 +157,9 @@ impl Vm {
     /// 按调用方给定的转发表把对象列表的 epoch 子引用就地改写：未在上游晋升过的
     /// epoch 子对象经转发表克隆进 session（递归去重共享与环），已是 session/
     /// 非 epoch 的值原样保留。JS 边与 native 状态盒走同一改写闭包。
+    ///
+    /// global 对象不入 session 对象表（P 根，不在 arena 内）：其 epoch 子引用
+    /// 与列表同趟改写，无 native 盒只覆盖 JS 边。
     ///
     /// # 注意事项
     /// - 调用方持有转发表期间不得让其它晋升路径改动 `gc_state.forwarding`；
@@ -218,6 +216,14 @@ impl Vm {
                 }
             }
         }
+        // global 对象不入 session 对象表：其 epoch 子引用（逃逸写直通留存、
+        // 函数目标豁免、native 盒直插）与列表同趟修复，免 epoch 释放后悬垂。
+        let global_ptr = self.session.global_object().as_ptr() as *mut JsObject;
+        // SAFETY: global 归本 session 所有，安全点内指针有效。
+        unsafe {
+            let obj = &mut *global_ptr;
+            obj.rewrite_object_values(|value| self.promote_value_if_epoch_object(value, forwarding));
+        }
     }
 
     /// 把根直接持有的 epoch 对象（顶层 var 寄存器、挂起句柄等）晋升进 session，
@@ -257,25 +263,15 @@ impl Vm {
         self.gc_state.forwarding = forwarding;
     }
 
-    /// 逃逸写屏障：写向全局/session 对象的对象值不指向 epoch，否则 epoch
-    /// 重置后悬垂。session 函数目标豁免晋升——克隆会令写入侧与字节码持有的
-    /// 原始对象分裂（类构造器在原型上续建方法会落到非克隆体）；函数持有的
-    /// epoch 子引用由 `promote_session_epoch_refs` 在 epoch 边界统一修复。
-    pub(crate) fn promote_if_needed_for_write_ptr(&mut self, target_ptr: *mut JsObject, value: JsValue) -> JsValue {
-        if !value.is_object() || !self.is_session_escape_root_ptr(target_ptr) {
-            return value;
-        }
-        let value_ptr = value.as_js_object_ptr();
-        if value_ptr.is_null() {
-            return value;
-        }
-        // SAFETY: 执行核心产出的对象值，指针在 session 生命周期内有效。
-        if unsafe { &*target_ptr }.is_function() {
-            return value;
-        }
-        if unsafe { &*value_ptr }.is_epoch() {
-            return JsValue::from_js_object(self.promote_object(value_ptr));
-        }
+    /// 逃逸写屏障：写向全局/session 目标的对象值原样直通。
+    ///
+    /// session 对象持有 epoch 子引用是 GC 设计的一等存活态：epoch 边界 reset
+    /// 经 `promote_session_epoch_refs` 统一克隆晋升（转发表去重共享与环），
+    /// 执行期收集晋升档按同一转发表改写根与存活 session 对象子引用，两条
+    /// 路径覆盖全部跨界持有面；builtin 调用期内 epoch 不重置，帧局部裸指针
+    /// 全程有效。此处若克隆，同一逻辑对象分裂为原件与克隆两份，经克隆的写
+    /// 对方经原件的读不可见（builtin 帧指针与逃逸目标双引用并存时即暴露）。
+    pub(crate) fn promote_if_needed_for_write_ptr(&mut self, _target_ptr: *mut JsObject, value: JsValue) -> JsValue {
         value
     }
 }
@@ -407,20 +403,19 @@ mod tests {
     }
 
     #[test]
-    fn session_arena_barrier_promotes_global_root_write() {
+    fn session_arena_barrier_global_root_write_returns_original() {
         let mut vm = Vm::new();
         let value = JsValue::from_js_object(plain_object(&mut vm));
         let global_ptr = vm.session.global_object().as_ptr() as *mut JsObject;
 
         let promoted = vm.promote_if_needed_for_write_ptr(global_ptr, value);
 
-        assert!(promoted.is_object());
-        assert!(!is_epoch_object(&vm, promoted));
-        assert!(unsafe { (&*promoted.as_js_object_ptr()).is_session_epoch() });
+        assert_eq!(promoted, value);
+        assert!(is_epoch_object(&vm, promoted), "epoch 子引用应直通留存，由边界/晋升档统一修复");
     }
 
     #[test]
-    fn session_arena_barrier_promotes_already_session_target_write() {
+    fn session_arena_barrier_session_target_write_returns_original() {
         let mut vm = Vm::new();
         let target_epoch = plain_object(&mut vm);
         let target = vm.promote_object(target_epoch);
@@ -428,8 +423,8 @@ mod tests {
 
         let promoted = vm.promote_if_needed_for_write_ptr(target, value);
 
-        assert!(!is_epoch_object(&vm, promoted));
-        assert!(unsafe { (&*promoted.as_js_object_ptr()).is_session_epoch() });
+        assert_eq!(promoted, value);
+        assert!(is_epoch_object(&vm, promoted), "session 目标上的 epoch 值应直通留存");
     }
 
     #[test]
