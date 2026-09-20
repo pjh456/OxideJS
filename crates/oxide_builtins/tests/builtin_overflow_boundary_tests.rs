@@ -91,3 +91,10 @@ fn set_full_year_on_invalid_date_uses_epoch() {
     let s = eval_str("String((function() { var d = new Date(NaN); return d.setFullYear(2016) === new Date(2016, 0, 1).getTime(); })())").unwrap();
     assert_eq!(s, "true");
 }
+
+// 有限巨负起点：截断饱和成 isize::MIN 后归一化到 0，debug 构建不得取负溢出。
+#[test]
+fn typed_array_fill_finite_negative_huge_start() {
+    let s = eval_str("new Uint8Array(4).fill(0, -1e300).join(',')").unwrap();
+    assert_eq!(s, "0,0,0,0");
+}

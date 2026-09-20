@@ -42,7 +42,7 @@ fn normalize_index<H: VmHost>(vm: &mut H, value: JsValue, len: usize) -> usize {
     }
     let int = n.trunc() as isize;
     if int < 0 {
-        len.saturating_sub((-int) as usize)
+        len.saturating_sub(int.unsigned_abs())
     } else {
         (int as usize).min(len)
     }

@@ -149,17 +149,31 @@ fn utc_time_ms(ndt: &NaiveDateTime) -> i64 {
         + ndt.time().nanosecond() as i64 / 1_000_000
 }
 
-/// TimeWithinDay 四分量（时/分/秒/毫秒）：按原始时间戳的 UTC 基准提取，
-/// 与 LocalTime 无关（规范中分钟/秒/毫秒缺省值取自原始 t）。
-fn time_components(ms: f64) -> (f64, f64, f64, f64) {
-    let twd = ms.rem_euclid(86_400_000.0);
-    let sec = twd / 1_000.0;
-    (
-        (sec / 3_600.0).trunc(),
-        (sec / 60.0).trunc() % 60.0,
-        sec.trunc() % 60.0,
-        twd.trunc() % 1_000.0,
-    )
+/// 本地时间七分量（年、0-based 月、日、时、分、秒、毫秒）；
+/// 时间戳无效或超出可表示范围返回 None。
+fn local_components(ms: f64) -> Option<(i64, i64, i64, i64, i64, i64, i64)> {
+    let dt = dt_from_ms_local(ms)?;
+    Some((
+        dt.year() as i64,
+        dt.month0() as i64,
+        dt.day() as i64,
+        dt.hour() as i64,
+        dt.minute() as i64,
+        dt.second() as i64,
+        dt.timestamp_subsec_millis() as i64,
+    ))
+}
+
+/// 本地 setter 收尾：组合出的时刻值过 TimeClip 包络，越界（含非有限）为
+/// Invalid Date（存 NaN 并返回 NaN）；有效值写回并原样返回。
+fn finish_local_setter(obj: &mut JsObject, ts: f64) -> NativeResult {
+    let ts = if ts.is_finite() && (-MS_LIMIT as f64..=MS_LIMIT as f64).contains(&ts) {
+        ts
+    } else {
+        f64::NAN
+    };
+    set_timestamp(obj, ts);
+    NativeResult::Ok(JsValue::float(ts))
 }
 
 /// Date 数值参数：完整 ToNumber（对象路径经 engine_error 恢复原始异常值）；
@@ -192,33 +206,78 @@ macro_rules! apply_date_result {
 ///
 /// # 边界与前提
 /// - 调用方保证各分量已 ToNumber 且非 NaN（任一 NaN 由调用方短路）。
-/// - 分量按 ToIntegerOrInfinity 截断；组合时刻超出 chrono 可表示范围返回 NaN。
+/// - 分量按 ToIntegerOrInfinity 截断；超规范包络（|时刻| > 275760 年）的组合时刻由调用方 TimeClip 归 NaN。
 fn make_local_timestamp(y: f64, m: f64, d: f64, h: f64, min: f64, sec: f64, ms: f64) -> f64 {
+    // 远超包络的分量直接拒绝（避免后续整型运算溢出）。
+    if y.abs() > 2e15 {
+        return f64::NAN;
+    }
+
     // 月溢出归一到 [0, 12)，商进位到年份（负月同样成立）。
     let m_norm = m.trunc().rem_euclid(12.0);
     let y_carry = (m.trunc() / 12.0).floor();
+    let y = (y.trunc() + y_carry) as i64;
 
-    // 基准取当月 1 号零点，日偏移与全日毫秒统一折算（日可为负或越界）。
-    let base = match NaiveDate::from_ymd_opt((y.trunc() + y_carry) as i32, m_norm as u32 + 1, 1)
-        .and_then(|nd| nd.and_hms_opt(0, 0, 0))
-    {
-        Some(ndt) => ndt,
-        None => return f64::NAN,
-    };
-    let day_ms = base.and_utc().timestamp_millis() as f64;
+    // 基准取当月 1 号零点，全部分量统一折算为 i64 毫秒，
+    // 覆盖超出 chrono 可表示年份的区间。
+    let day_ms = civil_day_count(y, m_norm as i64 + 1, 1) as f64 * 86_400_000.0;
     let time_ms = h.trunc() * 3_600_000.0 + min.trunc() * 60_000.0 + sec.trunc() * 1_000.0 + ms.trunc();
     let naive_ms = day_ms + (d.trunc() - 1.0) * 86_400_000.0 + time_ms;
+    if !naive_ms.is_finite() {
+        return f64::NAN;
+    }
+    let naive_ms = naive_ms as i64;
 
     // naive 时刻按本地时区解释（DST 歧义取最早），得到真实 UTC 时间戳。
-    match DateTime::from_timestamp_millis(naive_ms as i64) {
+    match DateTime::from_timestamp_millis(naive_ms) {
         Some(dt) => dt
             .naive_utc()
             .and_local_timezone(Local)
             .earliest()
             .map(|dt| dt.timestamp_millis() as f64)
             .unwrap_or(f64::NAN),
-        None => f64::NAN,
+        None => local_offset_sample(naive_ms).map(|ts| ts as f64).unwrap_or(f64::NAN),
     }
+}
+
+/// 1970-01-01 起的日数转民用历法（年, 月, 日）。
+fn civil_from_days(z0: i64) -> (i64, u32, u32) {
+    let z = z0 + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
+    let y = if m <= 2 { y + 1 } else { y };
+    (y, m, d)
+}
+
+/// naive 时刻超出 chrono 可表示范围（约 262142-12-31 / -262143-01-01）时，
+/// 用同一 400 年循环内的参考年采样本地偏移再映射回真实 UTC 时刻。
+///
+/// 规范将 LocalTime 映射定义为实现定义的近似，取同闰年周期的参考年满足该定义；
+/// 参考时刻落在 DST 空档时返回 None（与范围内路径行为一致）。
+fn local_offset_sample(naive_ms: i64) -> Option<i64> {
+    let days = naive_ms.div_euclid(86_400_000);
+    let rem = naive_ms.rem_euclid(86_400_000);
+    let (cy, cm, cd) = civil_from_days(days);
+    // 参考年与原始年位于同一 400 年周期的相同位置，闰年状态一致（2 月 29 日仅闰年可达）。
+    let (ry, rm, rd) = (2000 + cy.rem_euclid(400), cm, cd);
+    let ref_naive = NaiveDate::from_ymd_opt(ry as i32, rm, rd).and_then(|nd| {
+        nd.and_hms_milli_opt(
+            (rem / 3_600_000) as u32,
+            ((rem / 60_000) % 60) as u32,
+            ((rem / 1_000) % 60) as u32,
+            (rem % 1_000) as u32,
+        )
+    })?;
+    let ref_naive_ms = civil_day_count(ry, rm as i64, rd as i64) * 86_400_000 + rem;
+    let earliest = ref_naive.and_local_timezone(Local).earliest()?;
+    let offset_ms = ref_naive_ms - earliest.timestamp_millis();
+    Some(naive_ms - offset_ms)
 }
 
 /// 解析 ISO 8601 日期时间字符串（含时区偏移），返回 UTC 毫秒时间戳；无法解析返回 NaN。
@@ -545,24 +604,28 @@ pub fn date_set_full_year<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let obj = unsafe { &mut *native_try!(date_this_mut(vm, args)) };
     // 先读 this 值；无效时取 +0（按规范不早退）。
     let ms = get_timestamp(obj);
-    let t = if ms.is_finite() { ms } else { 0.0 };
-    let dt = match dt_from_ms_local(t) {
-        Some(d) => d,
-        None => return NativeResult::Ok(JsValue::float(f64::NAN)),
-    };
     let y = native_try!(date_arg_number(vm, if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() }));
+    // 无效 this 值取 +0 基准分量（1970-01-01 时刻全零，+0 不经 LocalTime 换算）。
+    let (_dy, dm, dd, dh, dmin, dsec, dms) = if ms.is_finite() {
+        local_components(ms).unwrap_or((1970, 0, 1, 0, 0, 0, 0))
+    } else {
+        (1970, 0, 1, 0, 0, 0, 0)
+    };
     let m = if args.len() > 2 {
         native_try!(date_arg_number(vm, vm.reg(args[2])))
     } else {
-        dt.month0() as f64
+        dm as f64
     };
     let d = if args.len() > 3 {
         native_try!(date_arg_number(vm, vm.reg(args[3])))
     } else {
-        dt.day() as f64
+        dd as f64
     };
-    let time_ms = t.rem_euclid(86_400_000.0) as i64;
-    apply_date_result!(obj, make_day(y, m, d).and_then(|days| make_date_ms(days, time_ms)))
+    if y.is_nan() || m.is_nan() || d.is_nan() {
+        set_timestamp(obj, f64::NAN);
+        return NativeResult::Ok(JsValue::float(f64::NAN));
+    }
+    finish_local_setter(obj, make_local_timestamp(y, m, d, dh as f64, dmin as f64, dsec as f64, dms as f64))
 }
 /// `Date.prototype.setMonth(m, d)`：设置本地月份（可选日），返回新时间戳。
 pub fn date_set_month<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
@@ -579,13 +642,18 @@ pub fn date_set_month<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     if !ms.is_finite() {
         return NativeResult::Ok(JsValue::float(f64::NAN));
     }
-    let dt = match dt_from_ms_local(ms) {
-        Some(d) => d,
-        None => return NativeResult::Ok(JsValue::float(f64::NAN)),
+    let Some((dy, _dm, dd, dh, dmin, dsec, dms)) = local_components(ms) else {
+        return NativeResult::Ok(JsValue::float(f64::NAN));
     };
-    let d = if has_date { d } else { dt.day() as f64 };
-    let time_ms = ms.rem_euclid(86_400_000.0) as i64;
-    apply_date_result!(obj, make_day(dt.year() as f64, m, d).and_then(|days| make_date_ms(days, time_ms)))
+    let d = if has_date { d } else { dd as f64 };
+    if m.is_nan() || d.is_nan() {
+        set_timestamp(obj, f64::NAN);
+        return NativeResult::Ok(JsValue::float(f64::NAN));
+    }
+    finish_local_setter(
+        obj,
+        make_local_timestamp(dy as f64, m, d, dh as f64, dmin as f64, dsec as f64, dms as f64),
+    )
 }
 /// `Date.prototype.setDate(d)`：设置本地日，返回新时间戳。
 pub fn date_set_date<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
@@ -595,14 +663,16 @@ pub fn date_set_date<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     if !ms.is_finite() {
         return NativeResult::Ok(JsValue::float(f64::NAN));
     }
-    let dt = match dt_from_ms_local(ms) {
-        Some(d) => d,
-        None => return NativeResult::Ok(JsValue::float(f64::NAN)),
+    let Some((dy, dm, _dd, dh, dmin, dsec, dms)) = local_components(ms) else {
+        return NativeResult::Ok(JsValue::float(f64::NAN));
     };
-    let time_ms = ms.rem_euclid(86_400_000.0) as i64;
-    apply_date_result!(
+    if d.is_nan() {
+        set_timestamp(obj, f64::NAN);
+        return NativeResult::Ok(JsValue::float(f64::NAN));
+    }
+    finish_local_setter(
         obj,
-        make_day(dt.year() as f64, dt.month0() as f64, d).and_then(|days| make_date_ms(days, time_ms))
+        make_local_timestamp(dy as f64, dm as f64, d, dh as f64, dmin as f64, dsec as f64, dms as f64),
     )
 }
 /// `Date.prototype.setHours(h, min, s, ms)`：设置本地小时（可选分/秒/毫秒），返回新时间戳。
@@ -628,18 +698,18 @@ pub fn date_set_hours<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     if !ms.is_finite() {
         return NativeResult::Ok(JsValue::float(f64::NAN));
     }
-    let dt = match dt_from_ms_local(ms) {
-        Some(d) => d,
-        None => return NativeResult::Ok(JsValue::float(f64::NAN)),
+    let Some((dy, dm, dd, _dh, dmin, dsec, dms)) = local_components(ms) else {
+        return NativeResult::Ok(JsValue::float(f64::NAN));
     };
-    // 缺省分量取原始时间戳的 TimeWithinDay 值，与 MakeTime 组合后整体进位。
-    let (_raw_h, raw_min, raw_sec, raw_ms) = time_components(ms);
-    let min_v = if args.len() > 2 { min } else { raw_min };
-    let sec_v = if args.len() > 3 { sec } else { raw_sec };
-    let ms_v = if args.len() > 4 { ms_arg } else { raw_ms };
-    let days = civil_day_count(dt.year() as i64, dt.month() as i64, dt.day() as i64);
-    let result = make_time(h, min_v, sec_v, ms_v).and_then(|time_ms| make_date_ms(days, time_ms));
-    apply_date_result!(obj, result)
+    // 缺省分量取本地时刻的 TimeWithinDay 值，与 MakeTime 组合后整体进位。
+    let min_v = if args.len() > 2 { min } else { dmin as f64 };
+    let sec_v = if args.len() > 3 { sec } else { dsec as f64 };
+    let ms_v = if args.len() > 4 { ms_arg } else { dms as f64 };
+    if h.is_nan() || min_v.is_nan() || sec_v.is_nan() || ms_v.is_nan() {
+        set_timestamp(obj, f64::NAN);
+        return NativeResult::Ok(JsValue::float(f64::NAN));
+    }
+    finish_local_setter(obj, make_local_timestamp(dy as f64, dm as f64, dd as f64, h, min_v, sec_v, ms_v))
 }
 /// `Date.prototype.setMinutes(min, s, ms)`：设置本地分钟（可选秒/毫秒），返回新时间戳。
 pub fn date_set_minutes<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
@@ -659,16 +729,16 @@ pub fn date_set_minutes<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     if !ms.is_finite() {
         return NativeResult::Ok(JsValue::float(f64::NAN));
     }
-    let dt = match dt_from_ms_local(ms) {
-        Some(d) => d,
-        None => return NativeResult::Ok(JsValue::float(f64::NAN)),
+    let Some((dy, dm, dd, dh, _dmin, dsec, dms)) = local_components(ms) else {
+        return NativeResult::Ok(JsValue::float(f64::NAN));
     };
-    let (raw_h, _raw_min, raw_sec, raw_ms) = time_components(ms);
-    let sec_v = if args.len() > 2 { sec } else { raw_sec };
-    let ms_v = if args.len() > 3 { ms_arg } else { raw_ms };
-    let days = civil_day_count(dt.year() as i64, dt.month() as i64, dt.day() as i64);
-    let result = make_time(raw_h, min, sec_v, ms_v).and_then(|time_ms| make_date_ms(days, time_ms));
-    apply_date_result!(obj, result)
+    let sec_v = if args.len() > 2 { sec } else { dsec as f64 };
+    let ms_v = if args.len() > 3 { ms_arg } else { dms as f64 };
+    if min.is_nan() || sec_v.is_nan() || ms_v.is_nan() {
+        set_timestamp(obj, f64::NAN);
+        return NativeResult::Ok(JsValue::float(f64::NAN));
+    }
+    finish_local_setter(obj, make_local_timestamp(dy as f64, dm as f64, dd as f64, dh as f64, min, sec_v, ms_v))
 }
 /// `Date.prototype.setSeconds(s, ms)`：设置本地秒（可选毫秒），返回新时间戳。
 pub fn date_set_seconds<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
@@ -683,15 +753,18 @@ pub fn date_set_seconds<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     if !ms.is_finite() {
         return NativeResult::Ok(JsValue::float(f64::NAN));
     }
-    let dt = match dt_from_ms_local(ms) {
-        Some(d) => d,
-        None => return NativeResult::Ok(JsValue::float(f64::NAN)),
+    let Some((dy, dm, dd, dh, dmin, _dsec, dms)) = local_components(ms) else {
+        return NativeResult::Ok(JsValue::float(f64::NAN));
     };
-    let (raw_h, raw_min, _raw_sec, raw_ms) = time_components(ms);
-    let ms_v = if args.len() > 2 { ms_arg } else { raw_ms };
-    let days = civil_day_count(dt.year() as i64, dt.month() as i64, dt.day() as i64);
-    let result = make_time(raw_h, raw_min, sec, ms_v).and_then(|time_ms| make_date_ms(days, time_ms));
-    apply_date_result!(obj, result)
+    let ms_v = if args.len() > 2 { ms_arg } else { dms as f64 };
+    if sec.is_nan() || ms_v.is_nan() {
+        set_timestamp(obj, f64::NAN);
+        return NativeResult::Ok(JsValue::float(f64::NAN));
+    }
+    finish_local_setter(
+        obj,
+        make_local_timestamp(dy as f64, dm as f64, dd as f64, dh as f64, dmin as f64, sec, ms_v),
+    )
 }
 /// `Date.prototype.setMilliseconds(ms)`：设置本地毫秒，返回新时间戳。
 pub fn date_set_milliseconds<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
@@ -701,14 +774,17 @@ pub fn date_set_milliseconds<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult
     if !ms.is_finite() {
         return NativeResult::Ok(JsValue::float(f64::NAN));
     }
-    let dt = match dt_from_ms_local(ms) {
-        Some(d) => d,
-        None => return NativeResult::Ok(JsValue::float(f64::NAN)),
+    let Some((dy, dm, dd, dh, dmin, dsec, _dms)) = local_components(ms) else {
+        return NativeResult::Ok(JsValue::float(f64::NAN));
     };
-    let (raw_h, raw_min, raw_sec, _raw_ms) = time_components(ms);
-    let days = civil_day_count(dt.year() as i64, dt.month() as i64, dt.day() as i64);
-    let result = make_time(raw_h, raw_min, raw_sec, ms_arg).and_then(|time_ms| make_date_ms(days, time_ms));
-    apply_date_result!(obj, result)
+    if ms_arg.is_nan() {
+        set_timestamp(obj, f64::NAN);
+        return NativeResult::Ok(JsValue::float(f64::NAN));
+    }
+    finish_local_setter(
+        obj,
+        make_local_timestamp(dy as f64, dm as f64, dd as f64, dh as f64, dmin as f64, dsec as f64, ms_arg),
+    )
 }
 
 /// `Date.prototype.setUTCFullYear(y, m, d)`：设置 UTC 年份（可选月/日），返回新时间戳。
