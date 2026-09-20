@@ -307,10 +307,15 @@ impl Emitter {
                     .position(|u| u.name == "@@field_keys")
                     .map(|i| i as u8);
                 emit_instance_fields(self, &mut field_ctx)?;
+                // 构造器尾裸 return 须物化 undefined：RETURN 读 rd 槽值，字段初始化器
+                // 尾表达式为返回对象的调用时，该对象会漏出为构造结果。
+                let undef_idx = field_ctx.add_constant(Constant::Undefined);
+                let undef_reg = field_ctx.alloc_reg();
+                field_ctx.inst(Inst::load_const(Operand::Reg(undef_reg), undef_idx));
                 module.insts.extend(field_ctx.insts);
                 module.constants = field_ctx.constants;
                 module.n_registers = field_ctx.max_regs.max(1);
-                module.insts.push(Inst::ret(Operand::None, 0, 0));
+                module.insts.push(Inst::ret(Operand::Reg(undef_reg), 0, 0));
             }
             module
         };
