@@ -120,7 +120,10 @@ fn apply_child_result<H: VmHost>(vm: &mut H, child_ptr: *mut JsObject, child_si:
         let _ = crate::object::delete_own_property(vm, unsafe { &mut *child_ptr }, child_si);
     } else {
         let _ = vm.define_data_property(
-            unsafe { &mut *child_ptr }, child_si, new_val, PropAttributes::new(true, true, true),
+            unsafe { &mut *child_ptr },
+            child_si,
+            new_val,
+            PropAttributes::new(true, true, true),
         );
     }
 }
