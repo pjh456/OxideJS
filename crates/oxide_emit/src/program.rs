@@ -17,8 +17,8 @@ use oxide_ir::IRFunction;
 use oxide_parser::Statement;
 
 use crate::capture::{
-    collect_captured_bindings, collect_own_binding_names, collect_top_level_function_names,
-    collect_top_level_function_names_ordered, collect_var_binding_names,
+    collect_captured_bindings, collect_direct_lexical_names, collect_own_binding_names,
+    collect_top_level_function_names, collect_top_level_function_names_ordered, collect_var_binding_names,
 };
 use crate::compile_ctx::CompileCtx;
 use crate::Emitter;
@@ -371,6 +371,31 @@ impl Emitter {
                         OpCode::MAKE_CELL,
                         Operand::Reg(undef_reg),
                         Operand::Imm(cell_idx as u16),
+                        Operand::None,
+                    ));
+                }
+            }
+        }
+
+        // 被捕获顶层词法（let/const/class）入口 TDZ 占位 cell：声明语句执行前
+        // 创建的闭包指向此未初始化 cell，声明前读写经运行时抛真 TDZ；声明语句
+        // 的 MAKE_CELL 按占位更新语义原位翻转为已初始化。名集取捕获集交集
+        // （直接子级词法名，块级名不提升到顶层），排序保证发射序跨进程稳定。
+        let mut lex_names: Vec<String> = collect_direct_lexical_names(&program.body)
+            .into_iter()
+            .filter(|n| ctx.captured_bindings.contains_key(n))
+            .collect();
+        lex_names.sort();
+        if !lex_names.is_empty() {
+            let undef_reg = self.emit_undefined(&mut ctx);
+            for name in lex_names {
+                if let Some(&cell_idx) = ctx.captured_bindings.get(&name) {
+                    // 未初始化标志折入 16 位立即数高字节（0x0100），dispatch 侧
+                    // 按字节拆回两字段。
+                    ctx.inst(Inst::new(
+                        OpCode::MAKE_CELL,
+                        Operand::Reg(undef_reg),
+                        Operand::Imm(cell_idx as u16 | 0x0100),
                         Operand::None,
                     ));
                 }

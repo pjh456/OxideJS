@@ -16,6 +16,7 @@ mod upvalues;
 use std::collections::HashSet;
 
 pub(crate) use captured::collect_captured_bindings;
+pub(crate) use names::collect_direct_lexical_names;
 pub(crate) use names::collect_own_binding_names;
 pub(crate) use names::collect_top_level_function_names;
 pub(crate) use names::collect_top_level_function_names_ordered;

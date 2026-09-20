@@ -124,6 +124,63 @@ pub(crate) fn collect_top_level_function_names_ordered(stmts: &[Statement]) -> V
     names
 }
 
+/// 收集语句列表**直接子级**词法声明名（let/const，含解构 pattern 叶）：
+/// 入口 TDZ 占位 cell 名集（被捕获的词法绑定在入口未初始化）。
+///
+/// 遍历面与 `predeclare_lexical_declarations` 一致——只走直接子级，不递归块/
+/// if/for/switch case/try 区（块级名不提升到函数/程序作用域，不建入口
+/// cell）；for 头声明是循环作用域绑定，不纳；var 声明不纳（var 入口实例化
+/// 独立覆盖）；import 绑定由模块导入初始化的发射点建 cell，不纳。
+pub(crate) fn collect_direct_lexical_names(stmts: &[Statement]) -> HashSet<String> {
+    let mut names = HashSet::new();
+    for stmt in stmts {
+        match stmt {
+            Statement::VariableDeclaration(decl) => {
+                if matches!(decl.kind, VariableDeclarationKind::Var) {
+                    continue;
+                }
+                for d in &decl.declarations {
+                    collect_binding_pattern_names(&d.id, &mut names);
+                }
+            }
+            Statement::ClassDeclaration(cd) => {
+                if let Some(id) = &cd.id {
+                    names.insert(id.name.to_string());
+                }
+            }
+            Statement::ExportNamedDeclaration(exp) => {
+                if let Some(decl) = &exp.declaration {
+                    match decl {
+                        oxide_parser::Declaration::VariableDeclaration(vd) => {
+                            if matches!(vd.kind, VariableDeclarationKind::Var) {
+                                continue;
+                            }
+                            for d in &vd.declarations {
+                                collect_binding_pattern_names(&d.id, &mut names);
+                            }
+                        }
+                        oxide_parser::Declaration::ClassDeclaration(cd) => {
+                            if let Some(id) = &cd.id {
+                                names.insert(id.name.to_string());
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            Statement::ExportDefaultDeclaration(exp) => {
+                if let oxide_parser::ExportDefaultDeclarationKind::ClassDeclaration(cd) = &exp.declaration {
+                    if let Some(id) = &cd.id {
+                        names.insert(id.name.to_string());
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    names
+}
+
 /// 收集当前函数作用域声明的绑定名（参数 + 变量/函数声明，含嵌套 block，不含嵌套函数体）。
 pub(crate) fn collect_own_binding_names(param_names: &[&str], stmts: &[Statement]) -> HashSet<String> {
     let mut names = HashSet::new();

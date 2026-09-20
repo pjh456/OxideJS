@@ -725,6 +725,31 @@ impl Emitter {
                     }
                 }
             }
+            // 被捕获模块词法（let/const/class）入口 TDZ 占位 cell：模块词法导出
+            // 既有预注册保持未初始化 TDZ（命名空间对象面，按导出名），入口 cell
+            // 只覆盖被嵌套函数捕获的名（按捕获名），两面名集独立。声明语句的
+            // MAKE_CELL 按占位更新语义原位翻转；直接子级 only，块级名不提升。
+            let mut lex_names: Vec<String> = crate::capture::collect_direct_lexical_names(body)
+                .into_iter()
+                .filter(|n| !ctx.param_names.contains(n.as_str()))
+                .filter(|n| ctx.captured_bindings.contains_key(n))
+                .collect();
+            lex_names.sort();
+            if !lex_names.is_empty() {
+                let undef_reg = self.emit_undefined(ctx);
+                for name in lex_names {
+                    if let Some(&cell_idx) = ctx.captured_bindings.get(&name) {
+                        // 未初始化标志折入 16 位立即数高字节（0x0100），dispatch 侧
+                        // 按字节拆回两字段。
+                        ctx.inst(Inst::new(
+                            OpCode::MAKE_CELL,
+                            Operand::Reg(undef_reg),
+                            Operand::Imm(cell_idx as u16 | 0x0100),
+                            Operand::None,
+                        ));
+                    }
+                }
+            }
         }
 
         // —— re-export（export { x } from 'mod'）链接检查：实例化期解析，须先于

@@ -47,9 +47,20 @@ impl Emitter {
     /// 赋值目标 TDZ 检查：未初始化绑定在赋值引用解析时抛 ReferenceError。
     /// 须在 RHS 求值之前调用（规范：赋值 LHS 的 ResolveBinding 先于 RHS 副作用）。
     ///
+    /// # 边界与前提
+    /// - 被捕获名（upvalue）跳过：其 TDZ 由运行时 cell 初始化标志判定，编译期
+    ///   快照对声明序晚于函数编译的绑定是陈旧的。
+    ///
     /// # 副作用
     /// - TDZ 命中时发射 THROW 指令序列，其后指令不可达但保持寄存器良定义。
     pub(crate) fn emit_identifier_tdz_guard(&self, name: &str, ctx: &mut CompileCtx) -> Result<(), String> {
+        // 被捕获绑定经运行时 cell 的初始化标志统一判定（cell 读写与 upvalue
+        // 读写同面）：嵌套函数 ctx 继承的父作用域 initialized 快照是陈旧的
+        // （函数声明编译早于 let/const 声明的初始化点），静态 throw 会误报，
+        // 命中捕获名即跳过，真 TDZ 由运行时抛。
+        if ctx.current_upvalue_captures.iter().any(|u| u.name == name) {
+            return Ok(());
+        }
         if let Some((binding, _)) = ctx.scopes.symbols.lookup_any_binding(name) {
             if !binding.initialized {
                 let _ = self.emit_tdz_throw(&format!("Cannot access '{name}' before initialization"), ctx)?;
