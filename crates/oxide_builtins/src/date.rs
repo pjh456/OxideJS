@@ -164,14 +164,19 @@ fn local_components(ms: f64) -> Option<(i64, i64, i64, i64, i64, i64, i64)> {
     ))
 }
 
-/// 本地 setter 收尾：组合出的时刻值过 TimeClip 包络，越界（含非有限）为
-/// Invalid Date（存 NaN 并返回 NaN）；有效值写回并原样返回。
-fn finish_local_setter(obj: &mut JsObject, ts: f64) -> NativeResult {
-    let ts = if ts.is_finite() && (-MS_LIMIT as f64..=MS_LIMIT as f64).contains(&ts) {
+/// TimeClip：|ts| > 8.64e15 或非有限的时刻值归 NaN（Invalid Date）。
+fn time_clip(ts: f64) -> f64 {
+    if ts.is_finite() && (-MS_LIMIT as f64..=MS_LIMIT as f64).contains(&ts) {
         ts
     } else {
         f64::NAN
-    };
+    }
+}
+
+/// 本地 setter 收尾：组合出的时刻值过 TimeClip 包络，越界（含非有限）为
+/// Invalid Date（存 NaN 并返回 NaN）；有效值写回并原样返回。
+fn finish_local_setter(obj: &mut JsObject, ts: f64) -> NativeResult {
+    let ts = time_clip(ts);
     set_timestamp(obj, ts);
     NativeResult::Ok(JsValue::float(ts))
 }
@@ -205,17 +210,33 @@ macro_rules! apply_date_result {
 /// 再按本地时区映射到真实 UTC 时刻。
 ///
 /// # 边界与前提
-/// - 调用方保证各分量已 ToNumber 且非 NaN（任一 NaN 由调用方短路）。
-/// - 分量按 ToIntegerOrInfinity 截断；超规范包络（|时刻| > 275760 年）的组合时刻由调用方 TimeClip 归 NaN。
+/// - 任一分量非有限（±Infinity 或 NaN）直接返回 NaN。
+/// - 分量按 ToIntegerOrInfinity 截断；年/月进位远超包络（日数公式乘积溢出带）
+///   直接返回 NaN。
+/// - naive 时刻超 TimeClip 包络（|naive_ms| > 8.64e15）返回 NaN，同时兜住
+///   i64 转换的饱和带；最终 UTC 时刻的 TimeClip 由调用方收尾（finish_local_setter
+///   或构造器 time_clip）。
 fn make_local_timestamp(y: f64, m: f64, d: f64, h: f64, min: f64, sec: f64, ms: f64) -> f64 {
-    // 远超包络的分量直接拒绝（避免后续整型运算溢出）。
-    if y.abs() > 2e15 {
+    // 任一非有限分量按规范无效，同时封死后续整型饱和带。
+    if !y.is_finite()
+        || !m.is_finite()
+        || !d.is_finite()
+        || !h.is_finite()
+        || !min.is_finite()
+        || !sec.is_finite()
+        || !ms.is_finite()
+    {
         return f64::NAN;
     }
 
     // 月溢出归一到 [0, 12)，商进位到年份（负月同样成立）。
     let m_norm = m.trunc().rem_euclid(12.0);
     let y_carry = (m.trunc() / 12.0).floor();
+
+    // 年与月进位远超包络时直接拒绝，避免日数公式乘积溢出。
+    if y.abs() > 2e15 || y_carry.abs() > 2e15 {
+        return f64::NAN;
+    }
     let y = (y.trunc() + y_carry) as i64;
 
     // 基准取当月 1 号零点，全部分量统一折算为 i64 毫秒，
@@ -223,7 +244,8 @@ fn make_local_timestamp(y: f64, m: f64, d: f64, h: f64, min: f64, sec: f64, ms: 
     let day_ms = civil_day_count(y, m_norm as i64 + 1, 1) as f64 * 86_400_000.0;
     let time_ms = h.trunc() * 3_600_000.0 + min.trunc() * 60_000.0 + sec.trunc() * 1_000.0 + ms.trunc();
     let naive_ms = day_ms + (d.trunc() - 1.0) * 86_400_000.0 + time_ms;
-    if !naive_ms.is_finite() {
+    // 组合超 TimeClip 包络即无效，同时兜住 i64 转换的饱和带。
+    if !naive_ms.is_finite() || naive_ms.abs() > MS_LIMIT as f64 {
         return f64::NAN;
     }
     let naive_ms = naive_ms as i64;
@@ -363,7 +385,8 @@ pub fn date_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         {
             f64::NAN
         } else {
-            make_local_timestamp(y_val, m_val, d_val, h_val, min_val, sec_val, ms_val)
+            // 组合结果与 setter 同收尾：TimeClip 包络外（含非有限）归 NaN。
+            time_clip(make_local_timestamp(y_val, m_val, d_val, h_val, min_val, sec_val, ms_val))
         }
     } else {
         let val = vm.reg(args[1]);

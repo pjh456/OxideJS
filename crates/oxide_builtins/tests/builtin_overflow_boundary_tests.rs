@@ -98,3 +98,21 @@ fn typed_array_fill_finite_negative_huge_start() {
     let s = eval_str("new Uint8Array(4).fill(0, -1e300).join(',')").unwrap();
     assert_eq!(s, "0,0,0,0");
 }
+
+// 月份分量 ±Infinity/有限巨值：构造器与 setter 均直接 NaN（debug 构建不得整型溢出）。
+#[test]
+fn date_constructor_huge_month_is_nan() {
+    assert_nan("new Date(2020, Infinity, 1).getTime()");
+    assert_nan("new Date(2020, -Infinity, 1).getTime()");
+    assert_nan("new Date(2020, 1e300, 1).getTime()");
+    assert_nan("new Date(2020, 0, 1).setMonth(1e300)");
+}
+
+// 年分量超 TimeClip 包络：构造器组合结果归 NaN；包络内邻近组合不损伤
+// （valueOf 直接读槽位，不经 chrono 年份上限，可钉超 262142 年存储值）。
+#[test]
+fn date_constructor_out_of_envelope_year_is_nan() {
+    assert_nan("new Date(275760, 8, 13, 1).getTime()");
+    let (_vm, result) = eval("new Date(275759, 11, 31).valueOf()").unwrap();
+    assert!(result.is_double() && result.as_double().is_finite(), "包络内组合应得有限时间戳");
+}
