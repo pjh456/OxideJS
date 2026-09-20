@@ -170,7 +170,7 @@ fn this_bigint_value<H: VmHost>(vm: &mut H, this_val: JsValue) -> Result<JsValue
                 let bigint_proto =
                     vm.session().builtin_world().bigint_proto.as_ptr() as *mut oxide_types::object::JsObject;
                 if !proto_ptr.is_null() && std::ptr::eq(proto_ptr, bigint_proto) {
-                    let v = obj.get_prop_at(0);
+                    let v = obj.boxed_value();
                     if v.is_bigint() {
                         return Ok(v);
                     }

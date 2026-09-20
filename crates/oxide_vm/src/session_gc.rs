@@ -162,6 +162,7 @@ impl SessionGc {
         Self::process_edge(obj.proto(), vm, stack, live_strings, live_bigints);
         Self::process_edge(obj.captured_this(), vm, stack, live_strings, live_bigints);
         Self::process_edge(obj.home_object(), vm, stack, live_strings, live_bigints);
+        Self::process_edge(obj.boxed_value(), vm, stack, live_strings, live_bigints);
         if obj.is_map() {
             for value in map::map_native_edges(obj) {
                 Self::process_edge(value, vm, stack, live_strings, live_bigints);
@@ -328,6 +329,9 @@ impl SessionGc {
         }
         if obj.home_object().is_string() {
             Self::mark_string_live(live, obj.home_object().as_string_ptr_mut());
+        }
+        if obj.boxed_value().is_string() {
+            Self::mark_string_live(live, obj.boxed_value().as_string_ptr_mut());
         }
         // 扫描 upvalue cell 中的字符串引用。
         for cell_ptr in obj.upvalues_slice() {

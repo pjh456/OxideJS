@@ -53,7 +53,7 @@ pub fn symbol_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 
 /// `Symbol.prototype.toString`：返回 `Symbol(description)` 形式字符串。
 /// this 必须是 Symbol，否则抛 TypeError。
-/// thisSymbolValue：Symbol 原样返回；包装对象解盒（prop 0 存原始 Symbol）；其它类型 TypeError。
+/// thisSymbolValue：Symbol 原样返回；包装对象解盒（专属载荷字段存原始 Symbol）；其它类型 TypeError。
 fn this_symbol_value<H: VmHost>(vm: &mut H, this_val: JsValue) -> Result<JsValue, JsValue> {
     if this_val.is_symbol() {
         return Ok(this_val);
@@ -67,7 +67,7 @@ fn this_symbol_value<H: VmHost>(vm: &mut H, this_val: JsValue) -> Result<JsValue
                 let symbol_proto =
                     vm.session().builtin_world().symbol_proto.as_ptr() as *mut oxide_types::object::JsObject;
                 if !proto_ptr.is_null() && std::ptr::eq(proto_ptr, symbol_proto) {
-                    let v = obj.get_prop_at(0);
+                    let v = obj.boxed_value();
                     if v.is_symbol() {
                         return Ok(v);
                     }

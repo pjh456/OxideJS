@@ -82,10 +82,11 @@ pub const MAX_DENSE_PROPS: usize = 1_000_000;
 ///   table_gen: u32 (4 字节，创建期所属子模块平表的表代际)
 ///   captured_this: JsValue (8 字节，箭头函数的词法 this)
 ///   home_object: JsValue (8 字节，\[\[HomeObject\]\]，供 super 查找)
+///   boxed_value: JsValue (8 字节，装箱对象的被包基元载荷，见字段注释)
 ///   upvalues: *mut u8 (8 字节，指向闭包的 Box<Vec<*mut Cell>>)
 ///
-///   字段自和：116 字节，另有 4 字节对齐填充（native_fn 之前）
-///   总计：120 字节
+///   字段自和：124 字节，另有 4 字节对齐填充（native_fn 之前）
+///   总计：128 字节
 ///   对齐：8 字节
 pub struct JsObject {
     header: u32,
@@ -126,6 +127,11 @@ pub struct JsObject {
     table_gen: u32,
     captured_this: JsValue,
     home_object: JsValue,
+    /// 装箱基元对象（Number/String/Boolean/Symbol 盒与 BigInt 包装）的被包
+    /// 基元载荷：构造期直接写入本字段，不占用命名属性区——属性区存储位与
+    /// shape 槽位保持恒等映射，后续索引/命名属性写读不干扰被包值。
+    /// 未装箱对象恒为 undefined。
+    boxed_value: JsValue,
     pub upvalues: *mut u8,
 }
 
@@ -375,6 +381,7 @@ impl JsObject {
             table_gen: 0,
             captured_this: JsValue::undefined(),
             home_object: JsValue::undefined(),
+            boxed_value: JsValue::undefined(),
             upvalues: std::ptr::null_mut(),
         }
     }
@@ -401,6 +408,7 @@ impl JsObject {
             table_gen: 0,
             captured_this: JsValue::undefined(),
             home_object: JsValue::undefined(),
+            boxed_value: JsValue::undefined(),
             upvalues: std::ptr::null_mut(),
         };
         let vec = Box::new(vec![JsValue::undefined(); n_elements.min(MAX_DENSE_PROPS)]);
@@ -499,6 +507,7 @@ impl JsObject {
             table_gen: self.table_gen,
             captured_this: self.captured_this,
             home_object: self.home_object,
+            boxed_value: self.boxed_value,
             upvalues: self.upvalues,
         }
     }
@@ -640,6 +649,9 @@ impl JsObject {
         }
         if self.home_object.is_object() {
             self.home_object = rewrite(self.home_object);
+        }
+        if self.boxed_value.is_object() {
+            self.boxed_value = rewrite(self.boxed_value);
         }
         if !self.upvalues.is_null() {
             let cells = unsafe { &mut *(self.upvalues as *mut Vec<*mut Cell>) };
@@ -942,6 +954,20 @@ impl JsObject {
     /// 设置 `[[HomeObject]]`。
     pub fn set_home_object(&mut self, v: JsValue) {
         self.home_object = v;
+    }
+
+    /// 装箱对象的被包基元载荷（未装箱对象为 undefined）。
+    pub fn boxed_value(&self) -> JsValue {
+        self.boxed_value
+    }
+
+    /// 设置装箱对象的被包基元载荷。
+    ///
+    /// # 注意事项
+    /// 仅供装箱构造点调用：写入前对象须尚未进入属性读写路径，
+    /// 载荷不参与 shape/属性区，写后不得再经属性区预存同一值。
+    pub fn set_boxed_value(&mut self, v: JsValue) {
+        self.boxed_value = v;
     }
 }
 

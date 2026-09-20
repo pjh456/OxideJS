@@ -431,7 +431,7 @@ pub fn object_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         let obj = vm.alloc_object(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(proto)));
         let obj_ref = unsafe { &mut *obj };
         obj_ref.type_tag = JsObject::OBJ_TYPE_NUMBER_OBJ;
-        obj_ref.set_prop_at(0, val);
+        obj_ref.set_boxed_value(val);
         return NativeResult::Ok(JsValue::from_js_object(obj));
     }
     if val.is_string() {
@@ -447,7 +447,7 @@ pub fn object_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         let obj = vm.alloc_object(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(proto)));
         let obj_ref = unsafe { &mut *obj };
         obj_ref.type_tag = JsObject::OBJ_TYPE_BOOLEAN_OBJ;
-        obj_ref.set_prop_at(0, val);
+        obj_ref.set_boxed_value(val);
         return NativeResult::Ok(JsValue::from_js_object(obj));
     }
     if val.is_symbol() {
@@ -455,14 +455,14 @@ pub fn object_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         let obj = vm.alloc_object(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(proto)));
         let obj_ref = unsafe { &mut *obj };
         obj_ref.type_tag = JsObject::OBJ_TYPE_SYMBOL_OBJ;
-        obj_ref.set_prop_at(0, val);
+        obj_ref.set_boxed_value(val);
         return NativeResult::Ok(JsValue::from_js_object(obj));
     }
     if val.is_bigint() {
         let proto = vm.session().builtin_world().bigint_proto.as_ptr() as *mut JsObject;
         let obj = vm.alloc_object(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(proto)));
         let obj_ref = unsafe { &mut *obj };
-        obj_ref.set_prop_at(0, val);
+        obj_ref.set_boxed_value(val);
         return NativeResult::Ok(JsValue::from_js_object(obj));
     }
     let obj = vm.alloc_object(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(object_proto)));

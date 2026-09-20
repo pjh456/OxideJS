@@ -741,7 +741,9 @@ pub fn strict_equality(lhs: JsValue, rhs: JsValue) -> bool {
 
 /// ToObject（ECMA-262 §7.1.13）：null/undefined 抛 TypeError，其余原始值包装为对应包装对象。
 ///
-/// 包装对象按类型选择原型（String/Number/Boolean 原型或默认 Object 原型），原始值存入 hash props 槽。
+/// 包装对象按类型选择原型（String/Number/Boolean 原型或默认 Object 原型）；
+/// 被包基元写入对象专属载荷字段，不占命名属性区。字符串盒暂仍预存属性区
+/// 槽 0——其消费面（解盒读原始串）与规范固有属性面同批切换，两端不可分拆。
 pub fn to_object<H: VmHost>(val: JsValue, host: &mut H) -> Result<JsValue, String> {
     if val.is_object() {
         return Ok(val);
@@ -768,8 +770,12 @@ pub fn to_object<H: VmHost>(val: JsValue, host: &mut H) -> Result<JsValue, Strin
     let obj_val = JsValue::from_js_object(obj);
     let obj_ref = unsafe { &mut *obj };
     obj_ref.type_tag = type_tag;
-    obj_ref.ensure_hash_props().push(val);
-    obj_ref.set_prop_count(1);
+    if val.is_string() {
+        obj_ref.ensure_hash_props().push(val);
+        obj_ref.set_prop_count(1);
+    } else {
+        obj_ref.set_boxed_value(val);
+    }
     Ok(obj_val)
 }
 

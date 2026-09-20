@@ -46,7 +46,7 @@ pub fn number_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         } else {
             JsValue::float(n)
         };
-        obj.set_prop_at(0, boxed);
+        obj.set_boxed_value(boxed);
         return NativeResult::Ok(this_val);
     }
 
@@ -514,7 +514,7 @@ pub fn number_value_of<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
             }
             let obj = unsafe { &*ptr };
             if obj.is_number_obj() {
-                return NativeResult::Ok(obj.get_prop_at(0));
+                return NativeResult::Ok(obj.boxed_value());
             }
         }
     }

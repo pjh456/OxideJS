@@ -48,7 +48,7 @@ pub fn boolean_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 
     let obj = unsafe { &mut *this_val.as_js_object_ptr() };
     obj.type_tag = JsObject::OBJ_TYPE_BOOLEAN_OBJ;
-    obj.push_prop(JsValue::bool(bool_val));
+    obj.set_boxed_value(JsValue::bool(bool_val));
     NativeResult::Ok(this_val)
 }
 
@@ -72,7 +72,7 @@ pub fn boolean_prototype_value_of<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeR
             "Boolean.prototype.valueOf called on non-Boolean object",
         ));
     }
-    let val = obj.get_prop_at(0);
+    let val = obj.boxed_value();
     NativeResult::Ok(val)
 }
 
@@ -100,7 +100,7 @@ pub fn boolean_prototype_to_string<H: VmHost>(vm: &mut H, args: &[u8]) -> Native
             "Boolean.prototype.toString called on non-Boolean object",
         ));
     }
-    let val = obj.get_prop_at(0);
+    let val = obj.boxed_value();
     let is_true = if val.is_bool() {
         val.as_bool()
     } else {
