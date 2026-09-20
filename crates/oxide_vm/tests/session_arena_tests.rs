@@ -114,8 +114,9 @@ fn new_object_literal_tracked_and_freed_on_reset() {
     assert_eq!(vm.epoch_object_count(), 0, "reset 后追踪表应清空");
 }
 
-/// full_reset 同样释放 NEW_OBJECT 字面量：带属性写的 epoch 源对象经 promote 深拷贝
-/// 到 session 后，完全重置同时释放源对象与克隆的堆数据，不得双重释放。
+/// full_reset 同样释放 NEW_OBJECT 字面量：带属性写的 epoch 源对象经逃逸写直通
+/// 留存 global 槽（不克隆），完全重置随 global 重建丢弃槽位并释放源对象堆
+/// 数据，不得悬垂。
 #[test]
 fn new_object_literal_freed_by_full_reset() {
     let mut vm = Vm::new();
@@ -125,8 +126,13 @@ fn new_object_literal_freed_by_full_reset() {
          globalThis.keep = o; o.k7",
     );
     assert_eq!(format!("{}", result), "7", "逃逸后属性读取应正常");
-    assert!(vm.epoch_object_count() > 0, "字面量源对象在 promote 后仍登记于 epoch 追踪表");
-    assert!(vm.session_object_count() > 0, "逃逸克隆应登记于 session 追踪表");
+    assert!(vm.epoch_object_count() > 0, "字面量源对象直通留存 epoch，登记于 epoch 追踪表");
+    let keep = global_prop(&vm, "keep");
+    // SAFETY: 逃逸值是本 VM 自有的 epoch 对象，本 session 内指针有效。
+    assert!(
+        unsafe { (&*keep.as_js_object_ptr()).is_epoch() },
+        "逃逸值应直通留存 epoch，不克隆进 session"
+    );
 
     vm.full_reset();
     assert_eq!(vm.epoch_object_count(), 0, "full_reset 后 epoch 追踪表应清空");
