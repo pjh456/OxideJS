@@ -464,6 +464,139 @@ fn parse_reviver_throws_range_error() {
     assert_eq!(out, "RangeError|re");
 }
 
+// --- reviver 读写臂（Get 读臂 / [[Delete]] + CreateDataProperty 写臂 / 根级无写回）---
+
+// 读臂 Get：reviver 删自身 b 后读值走原型链，CreateDataProperty 重建自身 b（对象臂）。
+#[test]
+fn parse_reviver_object_get_prop_from_prototype() {
+    let out = eval_str(
+        "(() => { Object.prototype.b = 3; \
+         const obj = JSON.parse('{\"a\": 1, \"b\": 2}', function(key, value) { \
+           if (key === 'a') { delete this.b; } return value; }); \
+         delete Object.prototype.b; \
+         return [obj.a, obj.hasOwnProperty('b'), obj.b].join('|'); })()",
+    )
+    .unwrap();
+    assert_eq!(out, "1|true|3");
+}
+
+// 读臂 Get：数组臂同款（删自身 [1] 后原型读 3 重建）。
+#[test]
+fn parse_reviver_array_get_prop_from_prototype() {
+    let out = eval_str(
+        "(() => { Array.prototype[1] = 3; \
+         const arr = JSON.parse('[1, 2]', function(key, value) { \
+           if (key === '0') { delete this[1]; } return value; }); \
+         delete Array.prototype[1]; \
+         return [arr[0], arr.hasOwnProperty('1'), arr[1]].join('|'); })()",
+    )
+    .unwrap();
+    assert_eq!(out, "1|true|3");
+}
+
+// 读臂 Get：自身访问器 getter 抛错穿透，原值传播（非 TypeError 折叠）。
+#[test]
+fn parse_reviver_get_name_err_original_value() {
+    let out = eval_str(
+        "(() => { try { JSON.parse('[0,0]', function() { \
+         Object.defineProperty(this, '1', { get() { throw 42; } }); }); } \
+         catch (e) { return typeof e + '|' + e; } return 'nothrow'; })()",
+    )
+    .unwrap();
+    assert_eq!(out, "number|42");
+}
+
+// 写臂 CreateDataProperty：非可配置属性写败静默，保旧值（对象臂）。
+#[test]
+fn parse_reviver_object_non_configurable_prop_create() {
+    let out = eval_str(
+        "(() => { const obj = JSON.parse('{\"a\": 1, \"b\": 2}', function(key, value) { \
+         if (key === 'a') { Object.defineProperty(this, 'b', {configurable: false}); } \
+         if (key === 'b') return 22; return value; }); \
+         return [obj.a, obj.b].join('|'); })()",
+    )
+    .unwrap();
+    assert_eq!(out, "1|2");
+}
+
+// 写臂 [[Delete]]：非可配置属性删败静默，属性保留（对象臂）。
+#[test]
+fn parse_reviver_object_non_configurable_prop_delete() {
+    let out = eval_str(
+        "(() => { const obj = JSON.parse('{\"a\": 1, \"b\": 2}', function(key, value) { \
+         if (key === 'a') { Object.defineProperty(this, 'b', {configurable: false}); } \
+         if (key === 'b') return; return value; }); \
+         return [obj.a, obj.hasOwnProperty('b'), obj.b].join('|'); })()",
+    )
+    .unwrap();
+    assert_eq!(out, "1|true|2");
+}
+
+// 写臂同款两臂（数组臂）。
+#[test]
+fn parse_reviver_array_non_configurable_prop_create() {
+    let out = eval_str(
+        "(() => { const arr = JSON.parse('[1, 2]', function(key, value) { \
+         if (key === '0') { Object.defineProperty(this, '1', {configurable: false}); } \
+         if (key === '1') return 22; return value; }); \
+         return [arr[0], arr[1]].join('|'); })()",
+    )
+    .unwrap();
+    assert_eq!(out, "1|2");
+}
+
+#[test]
+fn parse_reviver_array_non_configurable_prop_delete() {
+    let out = eval_str(
+        "(() => { const arr = JSON.parse('[1, 2]', function(key, value) { \
+         if (key === '0') { Object.defineProperty(this, '1', {configurable: false}); } \
+         if (key === '1') return; return value; }); \
+         return [arr[0], arr.hasOwnProperty('1'), arr[1]].join('|'); })()",
+    )
+    .unwrap();
+    assert_eq!(out, "1|true|2");
+}
+
+// 根级无写回：wrapper `''` 槽值/描述符恒保留（reviver 返 undefined 不抹槽）。
+#[test]
+fn parse_reviver_wrapper_slot_preserved() {
+    let out = eval_str(
+        "(() => { let w; JSON.parse('2', function() { w = this; }); \
+         const d = Object.getOwnPropertyDescriptor(w, ''); \
+         return [w[''], Object.getOwnPropertyNames(w).length, d.writable, d.enumerable, d.configurable].join('|'); })()",
+    )
+    .unwrap();
+    assert_eq!(out, "2|1|true|true|true");
+}
+
+// 根返回值 = 根级 reviver 返回值原样。
+#[test]
+fn parse_reviver_root_return_value() {
+    let (_vm, result) = eval(r#"JSON.parse('5', function(k,v){return v*2})"#).unwrap();
+    assert!(result.is_int() || result.is_double(), "expected number");
+    if result.is_int() {
+        assert_eq!(result.as_int(), 10);
+    } else {
+        assert_eq!(result.as_double() as i32, 10);
+    }
+}
+
+// this 面守卫：根级 this = wrapper（`''` 槽即结果对象）、子级 this = 容器，
+// 前向改写 `this[1] = 99` 在子读点生效。
+#[test]
+fn parse_reviver_this_binding_guard() {
+    let out = eval_str(
+        "(() => { let rootThis, childThis; \
+         const arr = JSON.parse('[1, 2]', function(key, value) { \
+           if (key === '') rootThis = this; \
+           if (key === '0') childThis = this; \
+           if (key === '0') this[1] = 99; return value; }); \
+         return [rootThis[''] === arr, childThis === arr, rootThis === childThis, arr[1]].join('|'); })()",
+    )
+    .unwrap();
+    assert_eq!(out, "true|true|false|99");
+}
+
 // --- PropertyList 列表序（SerializeJSONObject 步 5 K = P）---
 
 // 顶层对象：输出序 = 白名单列表序（非自身枚举序）。

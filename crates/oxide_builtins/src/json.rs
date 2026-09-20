@@ -33,7 +33,8 @@ pub fn json_parse<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let mut result = value_to_jsvalue(vm, &parsed);
 
     // reviver 遍历以 holder 包装对象为根：解析得到的根值存于空串键槽，
-    // 后序遍历自该槽展开，重建完成后以槽内最终值作为返回值。
+    // 后序遍历自该槽展开。返回值 = 根级 reviver 返回值原样（wrapper 的
+    // `''` 槽由父级循环施加，根级无父级，槽恒不被触碰）。
     if args.len() > 2 {
         let reviver_val = vm.reg(args[2]);
         if reviver_val.is_object() {
@@ -42,14 +43,10 @@ pub fn json_parse<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
                 let empty_si = vm.kernel_core().perm_interner().intern("").0;
                 let holder = create_wrapper(vm, result);
                 let holder_ptr = holder.as_js_object_ptr();
-                match walk_reviver(vm, holder_ptr, empty_si, reviver_val) {
-                    Ok(()) => {
-                        let holder_obj = unsafe { &*holder_ptr };
-                        let final_val = holder_obj.get_prop_at(0u32);
-                        result = if final_val.is_undefined() { JsValue::undefined() } else { final_val };
-                    }
+                result = match walk_reviver(vm, holder_ptr, empty_si, reviver_val) {
+                    Ok(new_val) => new_val,
                     Err(e) => return NativeResult::Err(e),
-                }
+                };
             }
         }
     }
@@ -57,51 +54,54 @@ pub fn json_parse<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     NativeResult::Ok(result)
 }
 
+/// InternalizeJSONProperty 后序遍历：Get 读当前值 → 递归子节点并把每子返回值
+/// 施加于容器（undefined → [[Delete]]，否则 CreateDataProperty，两失败路径
+/// 静默）→ 调用 reviver。返回值 = 本级 reviver 返回值原样，由父级循环施加
+/// （根级由 json_parse 直接作 parse 结果）。
 fn walk_reviver<H: VmHost>(
     vm: &mut H, holder_ptr: *mut JsObject, key_si: u32, reviver: JsValue,
-) -> Result<(), JsValue> {
-    let holder = unsafe { &*holder_ptr };
-    let slot = vm.get_own_property_slot(holder, key_si);
-    let pos = match slot {
-        Some(p) => p,
-        None => return Ok(()),
-    };
-    let mut val = holder.get_prop_at(pos);
+) -> Result<JsValue, JsValue> {
+    let holder_val = JsValue::from_js_object(holder_ptr);
 
-    // 后序遍历：先递归处理子节点。
+    // 读臂：完整 Get（原型链 + 自身访问器触发），getter 抛出传播原值。
+    let val = match vm.ordinary_get(unsafe { &*holder_ptr }, key_si, holder_val) {
+        Ok(v) => v,
+        Err(msg) => {
+            let exc = vm
+                .take_uncaught_value()
+                .unwrap_or_else(|| crate::error::create_type_error(vm, &msg));
+            return Err(exc);
+        }
+    };
+
+    // 后序遍历：先递归子节点，每子返回值施加于容器。
     if val.is_object() {
         let obj_ptr = val.as_js_object_ptr();
         if !obj_ptr.is_null() {
-            let obj = unsafe { &*obj_ptr };
-            if obj.is_array() {
-                let len = obj.prop_count() as usize;
+            if unsafe { (*obj_ptr).is_array() } {
+                let len = unsafe { (*obj_ptr).prop_count() } as usize;
                 for i in 0..len {
                     let child_si = make_int_key(i as u32);
-                    walk_reviver(vm, obj_ptr, child_si, reviver)?;
+                    let new_val = walk_reviver(vm, obj_ptr, child_si, reviver)?;
+                    apply_child_result(vm, obj_ptr, child_si, new_val);
                 }
-                // 子节点可能已改写父级，重新读取当前值。
-                val = holder.get_prop_at(pos);
             } else {
-                let keys = walk_own_keys(vm, obj);
+                let keys = {
+                    let obj = unsafe { &*obj_ptr };
+                    walk_own_keys(vm, obj)
+                };
                 for (child_si, _child_pos) in keys {
-                    walk_reviver(vm, obj_ptr, child_si, reviver)?;
+                    let new_val = walk_reviver(vm, obj_ptr, child_si, reviver)?;
+                    apply_child_result(vm, obj_ptr, child_si, new_val);
                 }
-                // 子节点可能已改写父级，重新读取当前值。
-                val = holder.get_prop_at(pos);
             }
         }
     }
 
-    // 对当前值调用 reviver，用返回值覆盖属性槽。
+    // 对当前值调用 reviver，返回值上抛由父级施加。
     let key_val = crate::object::key_si_to_js_value(vm, key_si);
-    let holder_val = JsValue::from_js_object(holder_ptr);
     match vm.call_function_sync(reviver, holder_val, &[key_val, val]) {
-        Ok(new_val) => {
-            unsafe {
-                (*holder_ptr).set_prop_at(pos, new_val);
-            }
-            Ok(())
-        }
+        Ok(new_val) => Ok(new_val),
         Err(msg) => {
             // reviver 内抛出的原始值原样传播（不折叠为 TypeError 文本）。
             let exc = vm
@@ -109,6 +109,19 @@ fn walk_reviver<H: VmHost>(
                 .unwrap_or_else(|| crate::error::create_type_error(vm, &msg));
             Err(exc)
         }
+    }
+}
+
+/// 子节点递归返回值施加于容器：`undefined` → [[Delete]]（非可配置保留），
+/// 否则 CreateDataProperty（非可配置静默保旧值，新键建自身）。两失败路径
+/// 均静默不抛（规范明注）。
+fn apply_child_result<H: VmHost>(vm: &mut H, child_ptr: *mut JsObject, child_si: u32, new_val: JsValue) {
+    if new_val.is_undefined() {
+        let _ = crate::object::delete_own_property(vm, unsafe { &mut *child_ptr }, child_si);
+    } else {
+        let _ = vm.define_data_property(
+            unsafe { &mut *child_ptr }, child_si, new_val, PropAttributes::new(true, true, true),
+        );
     }
 }
 
