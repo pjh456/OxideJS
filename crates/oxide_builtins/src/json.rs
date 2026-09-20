@@ -102,7 +102,13 @@ fn walk_reviver<H: VmHost>(
             }
             Ok(())
         }
-        Err(msg) => Err(crate::error::create_type_error(vm, &msg)),
+        Err(msg) => {
+            // reviver 内抛出的原始值原样传播（不折叠为 TypeError 文本）。
+            let exc = vm
+                .take_uncaught_value()
+                .unwrap_or_else(|| crate::error::create_type_error(vm, &msg));
+            Err(exc)
+        }
     }
 }
 
@@ -194,6 +200,62 @@ fn key_si_to_units<H: VmHost>(vm: &H, si: u32) -> Vec<u16> {
     }
 }
 
+/// 白名单元素 → 键名提取（Stringify 步 4）：String/Number 原语直取；装箱
+/// String/Number 经 ToPrimitive string hint（toString 优先、valueOf 兜底、
+/// 两法皆不可调用落盒值）；其余形态（装箱 Boolean、普通对象、Symbol 等）
+/// 返回 None 跳过。方法读取与调用异常传播原始抛出值。
+fn whitelist_element_name<H: VmHost>(vm: &mut H, elem: JsValue) -> Result<Option<String>, JsValue> {
+    if elem.is_undefined() {
+        return Ok(None);
+    }
+    if elem.is_string() || elem.is_int() || elem.is_double() {
+        return Ok(Some(oxide_runtime_api::to_string(elem)));
+    }
+    if !elem.is_object() {
+        return Ok(None);
+    }
+    let ptr = elem.as_js_object_ptr();
+    if ptr.is_null() {
+        return Ok(None);
+    }
+    let obj = unsafe { &*ptr };
+    // 装箱 String 的盒值存 prop 槽 0（boxed_value 槽不存）。
+    let boxed = obj.boxed_value();
+    let boxed = if boxed.is_undefined() && obj.is_string_obj() {
+        obj.get_prop_at(0)
+    } else {
+        boxed
+    };
+    if !boxed.is_string() && !boxed.is_int() && !boxed.is_double() {
+        return Ok(None);
+    }
+
+    // ToPrimitive string hint：toString 优先，valueOf 兜底。
+    let to_string_si = vm.kernel_core().perm_interner().intern("toString").0;
+    let value_of_si = vm.kernel_core().perm_interner().intern("valueOf").0;
+    for m_si in [to_string_si, value_of_si] {
+        let m = vm.ordinary_get(obj, m_si, elem).map_err(|msg| {
+            vm.take_uncaught_value()
+                .unwrap_or_else(|| crate::error::create_type_error(vm, &msg))
+        })?;
+        if !m.is_object() {
+            continue;
+        }
+        let fptr = m.as_js_object_ptr();
+        if fptr.is_null() || !unsafe { (*fptr).is_function() } {
+            continue;
+        }
+        let r = vm.call_function_sync(m, elem, &[]).map_err(|msg| {
+            vm.take_uncaught_value()
+                .unwrap_or_else(|| crate::error::create_type_error(vm, &msg))
+        })?;
+        return Ok(Some(oxide_runtime_api::to_string(r)));
+    }
+
+    // 装箱原型面理论不可达兜底：盒值直取。
+    Ok(Some(oxide_runtime_api::to_string(boxed)))
+}
+
 fn call_to_json<H: VmHost>(vm: &mut H, obj_val: JsValue, key: &[u16]) -> Result<JsValue, JsValue> {
     // SerializeJSONProperty 步 2：对象与 BigInt 原语均查 toJSON（Get 对原语
     // 自动装箱），BigInt 的查表对象取 %BigIntPrototype%。
@@ -210,27 +272,36 @@ fn call_to_json<H: VmHost>(vm: &mut H, obj_val: JsValue, key: &[u16]) -> Result<
         vm.session().builtin_world().bigint_proto.as_ptr() as *mut JsObject
     };
     let tojson_si = vm.kernel_core().perm_interner().intern("toJSON").0;
-    let resolved = vm.resolve_property(unsafe { &*obj_ptr }, tojson_si);
-    match resolved {
-        Some(fn_val) if fn_val.is_object() => {
-            let fn_ptr = fn_val.as_js_object_ptr();
-            if !fn_ptr.is_null() && unsafe { (*fn_ptr).is_function() } {
-                let key_val = vm.new_string_units_owned(key.to_vec());
-                match vm.call_function_sync(fn_val, obj_val, &[key_val]) {
-                    Ok(v) => Ok(v),
-                    Err(msg) => {
-                        // 用户抛出的原始值原样传播（toJSON 抛非 Error 值不降级为 TypeError）。
-                        let exc = vm
-                            .take_uncaught_value()
-                            .unwrap_or_else(|| crate::error::create_type_error(vm, &msg));
-                        Err(exc)
-                    }
-                }
-            } else {
-                Ok(obj_val)
-            }
+    // Get 语义查表：访问器形 toJSON 触发 getter（receiver = 原值，BigInt 原语
+    // 以自身作 this），getter 异常传播原始抛出值。
+    let fn_val = match vm.ordinary_get(unsafe { &*obj_ptr }, tojson_si, obj_val) {
+        Ok(v) => v,
+        Err(msg) => {
+            let exc = vm
+                .take_uncaught_value()
+                .unwrap_or_else(|| crate::error::create_type_error(vm, &msg));
+            return Err(exc);
         }
-        _ => Ok(obj_val),
+    };
+    if fn_val.is_object() {
+        let fn_ptr = fn_val.as_js_object_ptr();
+        if !fn_ptr.is_null() && unsafe { (*fn_ptr).is_function() } {
+            let key_val = vm.new_string_units_owned(key.to_vec());
+            match vm.call_function_sync(fn_val, obj_val, &[key_val]) {
+                Ok(v) => Ok(v),
+                Err(msg) => {
+                    // 用户抛出的原始值原样传播（toJSON 抛非 Error 值不降级为 TypeError）。
+                    let exc = vm
+                        .take_uncaught_value()
+                        .unwrap_or_else(|| crate::error::create_type_error(vm, &msg));
+                    Err(exc)
+                }
+            }
+        } else {
+            Ok(obj_val)
+        }
+    } else {
+        Ok(obj_val)
     }
 }
 
@@ -267,7 +338,7 @@ pub fn json_stringify<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     }
 
     let mut replacer_fn: Option<JsValue> = None;
-    let mut replacer_whitelist: Option<HashSet<String>> = None;
+    let mut replacer_whitelist: Option<Vec<String>> = None;
     if args.len() > 2 {
         let replacer_val = vm.reg(args[2]);
         if replacer_val.is_object() {
@@ -278,11 +349,18 @@ pub fn json_stringify<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
                     replacer_fn = Some(replacer_val);
                 } else if robj.is_array() {
                     let len = robj.prop_count() as usize;
-                    let mut whitelist = HashSet::new();
+                    let mut whitelist: Vec<String> = Vec::new();
                     for i in 0..len {
                         let elem = robj.get_prop_at(i);
-                        if !elem.is_undefined() {
-                            whitelist.insert(oxide_runtime_api::to_string(elem));
+                        match whitelist_element_name(vm, elem) {
+                            Ok(Some(name)) => {
+                                // 有序去重：重复项不入列表。
+                                if !whitelist.contains(&name) {
+                                    whitelist.push(name);
+                                }
+                            }
+                            Ok(None) => {}
+                            Err(exc) => return NativeResult::Err(exc),
                         }
                     }
                     replacer_whitelist = Some(whitelist);
@@ -340,7 +418,7 @@ pub fn json_stringify<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 #[allow(clippy::too_many_arguments)]
 fn jsvalue_to_json<H: VmHost>(
     vm: &mut H, val: JsValue, visited: &mut HashSet<*const JsObject>, out: &mut String, replacer_fn: Option<JsValue>,
-    replacer_whitelist: Option<&HashSet<String>>, space: &str, indent_level: usize,
+    replacer_whitelist: Option<&Vec<String>>, space: &str, indent_level: usize,
 ) -> Result<(), JsValue> {
     if val.is_null() {
         out.push_str("null");
@@ -431,39 +509,45 @@ fn stringify_string_units(units: &[u16], out: &mut String) {
 #[allow(clippy::too_many_arguments)]
 fn stringify_object<H: VmHost>(
     vm: &mut H, obj: &JsObject, visited: &mut HashSet<*const JsObject>, out: &mut String, replacer_fn: Option<JsValue>,
-    replacer_whitelist: Option<&HashSet<String>>, space: &str, indent_level: usize,
+    replacer_whitelist: Option<&Vec<String>>, space: &str, indent_level: usize,
 ) -> Result<(), JsValue> {
     let has_space = !space.is_empty();
     out.push('{');
 
-    let keys = walk_own_keys(vm, obj);
-    // 仅序列化可枚举自身属性（规范 EnumerableOwnPropertyNames）。数组 replacer
-    // 白名单判定在 Get 之前（SerializeJSONObject 步 4a），非白名单键不触发 getter。
-    let entries: Vec<(Vec<u16>, String, u32, u32)> = keys
-        .into_iter()
-        .filter(|(_si, pos)| {
-            obj.prop_meta_at(*pos)
-                .map(|m| m.attributes.enumerable())
-                .unwrap_or(PropAttributes::DEFAULT_DATA.enumerable())
-        })
-        .filter_map(|(si, pos)| {
-            let units = key_si_to_units(vm, si);
-            // 白名单匹配走 lossy 串形态（与白名单构造侧 to_string 同口径）。
-            let name = String::from_utf16_lossy(&units);
-            if let Some(whitelist) = replacer_whitelist {
-                if !whitelist.contains(&name) {
-                    return None;
-                }
-            }
-            Some((units, name, pos, si))
-        })
-        .collect();
+    // 键集：白名单给定时 K = P（列表序，不限自身可枚举，值读走 Get）；
+    // 无白名单走自身可枚举序（EnumerableOwnPropertyNames）。
+    let entries: Vec<(Vec<u16>, u32, Option<u32>)> = if let Some(whitelist) = replacer_whitelist {
+        whitelist
+            .iter()
+            .map(|name| {
+                let si = vm.string_key_si(name);
+                (key_si_to_units(vm, si), si, None)
+            })
+            .collect()
+    } else {
+        let keys = walk_own_keys(vm, obj);
+        keys.into_iter()
+            .filter(|(_si, pos)| {
+                obj.prop_meta_at(*pos)
+                    .map(|m| m.attributes.enumerable())
+                    .unwrap_or(PropAttributes::DEFAULT_DATA.enumerable())
+            })
+            .map(|(si, pos)| (key_si_to_units(vm, si), si, Some(pos)))
+            .collect()
+    };
 
     let obj_val = JsValue::from_js_object(obj as *const JsObject as *mut JsObject);
     let mut first = true;
-    for (units, _name, pos, si) in entries {
+    for (units, si, read_pos) in entries {
         // 规范序 Get → toJSON → replacer（SerializeJSONProperty 步 1、2a、2b）。
-        let val = read_json_property_value(vm, obj, obj_val, si, pos)?;
+        // K = P 时值读经 Get（原型链 + 访问器），无白名单自身槽直读。
+        let val = match read_pos {
+            Some(pos) => read_json_property_value(vm, obj, obj_val, si, pos)?,
+            None => vm.ordinary_get(obj, si, obj_val).map_err(|msg| {
+                vm.take_uncaught_value()
+                    .unwrap_or_else(|| crate::error::create_type_error(vm, &msg))
+            })?,
+        };
         let val = call_to_json(vm, val, &units)?;
 
         // replacer 函数回调。
@@ -530,7 +614,7 @@ fn stringify_object<H: VmHost>(
 #[allow(clippy::too_many_arguments)]
 fn stringify_array<H: VmHost>(
     vm: &mut H, obj: &JsObject, visited: &mut HashSet<*const JsObject>, out: &mut String, replacer_fn: Option<JsValue>,
-    replacer_whitelist: Option<&HashSet<String>>, space: &str, indent_level: usize,
+    replacer_whitelist: Option<&Vec<String>>, space: &str, indent_level: usize,
 ) -> Result<(), JsValue> {
     let has_space = !space.is_empty();
     out.push('[');
@@ -606,29 +690,49 @@ fn stringify_array<H: VmHost>(
 #[allow(clippy::too_many_arguments)]
 fn stringify_typed_array<H: VmHost>(
     vm: &mut H, obj: &JsObject, visited: &mut HashSet<*const JsObject>, out: &mut String, replacer_fn: Option<JsValue>,
-    replacer_whitelist: Option<&HashSet<String>>, space: &str, indent_level: usize,
+    replacer_whitelist: Option<&Vec<String>>, space: &str, indent_level: usize,
 ) -> Result<(), JsValue> {
     let has_space = !space.is_empty();
     let this_val = JsValue::from_js_object(obj as *const JsObject as *mut JsObject);
     let view = crate::typed_array::get_typed_array_data(vm, this_val)?;
     out.push('{');
-    let mut first = true;
-    for i in 0..view.length {
-        let index_str = i.to_string();
-        // 白名单判定先于 Get（SerializeJSONObject 步 4a），非白名单键不读元素。
-        if let Some(whitelist) = replacer_whitelist {
-            if !whitelist.contains(&index_str) {
-                continue;
+
+    // 键集：白名单给定时 K = P（列表序，整数索引名读元素、越界名跳过、
+    // 非索引名经 Get 读命名键如 length）；无白名单走升序元素序。
+    let entries: Vec<(Vec<u16>, JsValue)> = if let Some(whitelist) = replacer_whitelist {
+        let mut list: Vec<(Vec<u16>, JsValue)> = Vec::new();
+        for name in whitelist {
+            let si = vm.string_key_si(name);
+            let val = if is_int_key(si) {
+                let idx = int_key_value(si);
+                if idx as usize >= view.length {
+                    continue;
+                }
+                crate::typed_array::typed_array_element_get(vm, obj, idx)
+            } else {
+                vm.ordinary_get(obj, si, this_val)
             }
-        }
-        let index_units: Vec<u16> = index_str.encode_utf16().collect();
-        let val = crate::typed_array::typed_array_element_get(vm, obj, i as u32)
             .map_err(|msg| crate::error::create_type_error(vm, &msg))?;
+            list.push((key_si_to_units(vm, si), val));
+        }
+        list
+    } else {
+        let mut list: Vec<(Vec<u16>, JsValue)> = Vec::with_capacity(view.length);
+        for i in 0..view.length {
+            let val = crate::typed_array::typed_array_element_get(vm, obj, i as u32)
+                .map_err(|msg| crate::error::create_type_error(vm, &msg))?;
+            list.push((i.to_string().encode_utf16().collect(), val));
+        }
+        list
+    };
+
+    let mut first = true;
+    for (index_units, val) in entries {
         let val = call_to_json(vm, val, &index_units)?;
 
         // replacer 函数回调。
         let val = if let Some(replacer) = replacer_fn {
-            let key_val = vm.new_string(&index_str);
+            let key_val = vm.new_string_units_owned(index_units.clone());
             match vm.call_function_sync(replacer, this_val, &[key_val, val]) {
                 Ok(v) => {
                     if v.is_undefined() {

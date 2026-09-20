@@ -429,6 +429,184 @@ fn stringify_bigint_replacer_transform_guard() {
     assert_eq!(out, r#"{"b":1}"#);
 }
 
+// --- reviver 抛错原值传播（InternalizeJSONProperty 步 3）---
+
+// reviver 抛非 Error 原语：原值传播（捕获侧见 number 42，非 TypeError 对象）。
+#[test]
+fn parse_reviver_throws_original_value() {
+    let out = eval_str(
+        "(() => { try { JSON.parse('0', function(){ throw 42; }); } \
+         catch (e) { return typeof e + '|' + e; } })()",
+    )
+    .unwrap();
+    assert_eq!(out, "number|42");
+}
+
+// reviver 抛字符串：原始串传播。
+#[test]
+fn parse_reviver_throws_string() {
+    let out = eval_str(
+        "(() => { try { JSON.parse('0', function(){ throw 'boom'; }); } \
+         catch (e) { return typeof e + '|' + e; } })()",
+    )
+    .unwrap();
+    assert_eq!(out, "string|boom");
+}
+
+// reviver 抛 Error 对象：原错误对象传播（种类与消息保真）。
+#[test]
+fn parse_reviver_throws_range_error() {
+    let out = eval_str(
+        "(() => { try { JSON.parse('0', function(){ throw new RangeError('re'); }); } \
+         catch (e) { return e.constructor.name + '|' + e.message; } })()",
+    )
+    .unwrap();
+    assert_eq!(out, "RangeError|re");
+}
+
+// --- PropertyList 列表序（SerializeJSONObject 步 5 K = P）---
+
+// 顶层对象：输出序 = 白名单列表序（非自身枚举序）。
+#[test]
+fn replacer_array_list_order() {
+    let out = eval_str(r#"JSON.stringify({b:1,a:2,c:3}, ['c','b','a'])"#).unwrap();
+    assert_eq!(out, r#"{"c":3,"b":1,"a":2}"#);
+}
+
+// 嵌套层级每级同用列表序。
+#[test]
+fn replacer_array_nested_list_order() {
+    let out = eval_str(r#"JSON.stringify({a:{b:2,c:3}}, ['c','b','a'])"#).unwrap();
+    assert_eq!(out, r#"{"a":{"c":3,"b":2}}"#);
+}
+
+// TypedArray：列表序定输出序，整数索引名读元素。
+#[test]
+fn replacer_array_typed_array_list_order() {
+    let out = eval_str(r#"JSON.stringify(new Float64Array([1,2,3]), ['2','0','1'])"#).unwrap();
+    assert_eq!(out, r#"{"2":3,"0":1,"1":2}"#);
+}
+
+// --- 白名单元素强转（Stringify 步 4：装箱 String/Number 走 ToPrimitive）---
+
+// 装箱 Number 自定义 toString：string hint 调用结果作键。
+#[test]
+fn replacer_boxed_number_tostring() {
+    let out = eval_str(
+        "(() => { const n = new Number(10); \
+         n.toString = function(){ return 'toString'; }; \
+         return JSON.stringify({10:1,toString:2}, [n]); })()",
+    )
+    .unwrap();
+    assert_eq!(out, r#"{"toString":2}"#);
+}
+
+// 素形装箱 Number：盒值 → "10"。
+#[test]
+fn replacer_boxed_number_plain() {
+    let out = eval_str(r#"JSON.stringify({10:1}, [new Number(10)])"#).unwrap();
+    assert_eq!(out, r#"{"10":1}"#);
+}
+
+// 素形装箱 String：盒值 → "str"。
+#[test]
+fn replacer_boxed_string_plain() {
+    let out = eval_str(r#"JSON.stringify({str:4}, [new String('str')])"#).unwrap();
+    assert_eq!(out, r#"{"str":4}"#);
+}
+
+// --- 白名单键 Get 语义（原型链 + 不可枚举自身 + 访问器）---
+
+// 原型链 getter 键在白名单给定时命中（getter 触发）。
+#[test]
+fn replacer_whitelist_proto_getter() {
+    let out = eval_str(
+        "(() => { const base = {get b(){ return 9; }}; \
+         const o = Object.create(base); o.a = 1; \
+         return JSON.stringify(o, ['a','b']); })()",
+    )
+    .unwrap();
+    assert_eq!(out, r#"{"a":1,"b":9}"#);
+}
+
+// 不可枚举自身键在白名单给定时同样序列化。
+#[test]
+fn replacer_whitelist_non_enumerable_own() {
+    let out = eval_str(
+        "(() => { const o = {a:1}; \
+         Object.defineProperty(o,'b',{value:2,enumerable:false,configurable:true}); \
+         return JSON.stringify(o, ['a','b']); })()",
+    )
+    .unwrap();
+    assert_eq!(out, r#"{"a":1,"b":2}"#);
+}
+
+// 嵌套层级原型链 getter 同样命中。
+#[test]
+fn replacer_whitelist_nested_proto_getter() {
+    let out = eval_str(
+        "(() => { const base = {get x(){ return 7; }}; \
+         const o = Object.create(base); o.y = 1; \
+         return JSON.stringify({o}, ['o','x','y']); })()",
+    )
+    .unwrap();
+    assert_eq!(out, r#"{"o":{"x":7,"y":1}}"#);
+}
+
+// --- toJSON 查表 Get 语义（accessor 形 toJSON 触发）---
+
+// BigInt.prototype toJSON accessor 形：getter 触发，receiver = BigInt 原语。
+#[test]
+fn stringify_bigint_tojson_accessor() {
+    let out = eval_str(
+        "(() => { \"use strict\"; \
+         Object.defineProperty(BigInt.prototype, 'toJSON', \
+         {get(){ return () => typeof this; }, configurable:true}); \
+         const s = JSON.stringify(1n); \
+         delete BigInt.prototype.toJSON; \
+         return s; })()",
+    )
+    .unwrap();
+    assert_eq!(out, r#""bigint""#);
+}
+
+// --- 守卫（修后零漂移）---
+
+// 白名单缺失名：空对象输出。
+#[test]
+fn replacer_whitelist_missing_name() {
+    let out = eval_str(r#"JSON.stringify({b:1}, ['zzz'])"#).unwrap();
+    assert_eq!(out, "{}");
+}
+
+// TA 白名单非索引名（length）经 Get 读命名键。
+#[test]
+fn replacer_whitelist_typed_array_length() {
+    let out = eval_str(r#"JSON.stringify(new Float64Array(2), ['length'])"#).unwrap();
+    assert_eq!(out, r#"{"length":2}"#);
+}
+
+// 数组容器不查白名单。
+#[test]
+fn replacer_whitelist_array_container_ignores() {
+    let out = eval_str(r#"JSON.stringify([1,2], ['1'])"#).unwrap();
+    assert_eq!(out, "[1,2]");
+}
+
+// 装箱 Boolean / 普通对象元素跳过（不产键）。
+#[test]
+fn replacer_whitelist_skip_object_elements() {
+    let out = eval_str(r#"JSON.stringify({b:5}, [new Boolean(true), {custom:1}])"#).unwrap();
+    assert_eq!(out, "{}");
+}
+
+// 白名单命中键值为 undefined：跳键。
+#[test]
+fn replacer_whitelist_undefined_value_skipped() {
+    let out = eval_str(r#"JSON.stringify({a:1,b:undefined}, ['a','b'])"#).unwrap();
+    assert_eq!(out, r#"{"a":1}"#);
+}
+
 fn eval_str(source: &str) -> Result<String, String> {
     let (vm, result) = eval(source)?;
     vm.lookup_str(result)
