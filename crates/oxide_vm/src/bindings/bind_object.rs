@@ -17,6 +17,8 @@ pub fn bind_object(core: &Arc<KernelCore>, session: &KernelSession, global: &mut
         define_property: oxide_builtins::object::object_define_property::<crate::vm::Vm> as *const (),
         get_own_property_descriptor: oxide_builtins::object::object_get_own_property_descriptor::<crate::vm::Vm>
             as *const (),
+        get_own_property_descriptors: oxide_builtins::object::object_get_own_property_descriptors::<crate::vm::Vm>
+            as *const (),
         freeze: oxide_builtins::object::object_freeze::<crate::vm::Vm> as *const (),
         seal: oxide_builtins::object::object_seal::<crate::vm::Vm> as *const (),
         prevent_extensions: oxide_builtins::object::object_prevent_extensions::<crate::vm::Vm> as *const (),

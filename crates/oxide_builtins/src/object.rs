@@ -883,6 +883,72 @@ pub fn object_define_property<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResul
     NativeResult::Ok(obj_val)
 }
 
+/// 取单个自身属性的描述符对象（gOPD / gOPDs 共享核）：按 ToPropertyDescriptor
+/// 形态构造描述符对象，proto = %Object.prototype%。
+///
+/// # 边界与前提
+/// - 键不在对象自身返回 `Ok(None)`
+/// - 模块命名空间未初始化导出返回 `Err`（ReferenceError，原值传播）
+///
+/// # 副作用
+/// - 在 epoch 分配一个描述符对象
+fn own_descriptor_of<H: VmHost>(vm: &mut H, obj: &JsObject, key_si: u32) -> Result<Option<JsValue>, JsValue> {
+    // 数组 length 是虚拟属性（无 shape 槽，ordinary_get 直接返回逻辑长度）：
+    // 描述符 {value: len, writable: !frozen && 非显式收窄, enumerable: false,
+    // configurable: false}。冻结数组与经 defineProperty 收窄的数组 writable=false。
+    let length_si = vm.kernel_core().perm_interner().intern("length").0;
+    if obj.is_array() && key_si == length_si {
+        let desc = alloc_desc_object(vm);
+        let sh_ptr = vm.kernel_core().shape_forge().as_ref() as *const ShapeForge;
+        let sf_ptr = vm.kernel_core().perm_interner().as_ref() as *const PermInterner;
+        let d: &mut JsObject = unsafe { &mut *desc };
+        let sh = unsafe { &*sh_ptr };
+        let sf = unsafe { &*sf_ptr };
+        push_desc_prop(d, sh, sf.intern("value").0, obj.logical_len_value());
+        push_desc_prop(d, sh, sf.intern("writable").0, JsValue::bool(obj.is_length_writable()));
+        push_desc_prop(d, sh, sf.intern("enumerable").0, JsValue::bool(false));
+        push_desc_prop(d, sh, sf.intern("configurable").0, JsValue::bool(false));
+        return Ok(Some(JsValue::from_js_object(desc)));
+    }
+
+    let Some(offset) = vm.get_own_property_slot(obj, key_si) else {
+        return Ok(None);
+    };
+    // 模块命名空间字符串导出：`? [[Get]]` 读条目活值，未初始化抛 ReferenceError。
+    let found_value = match namespace_export_get(obj, key_si) {
+        Ok(Some(value)) => value,
+        Ok(None) => obj.get_prop_at(offset),
+        Err(msg) => return Err(crate::error::create_reference_error(vm, msg)),
+    };
+    let found_meta = obj.prop_meta_at(offset);
+
+    let desc = alloc_desc_object(vm);
+    let sh_ptr = vm.kernel_core().shape_forge().as_ref() as *const ShapeForge;
+    let sf_ptr = vm.kernel_core().perm_interner().as_ref() as *const PermInterner;
+    let d: &mut JsObject = unsafe { &mut *desc };
+    let sh = unsafe { &*sh_ptr };
+    let sf = unsafe { &*sf_ptr };
+    let meta = found_meta.unwrap_or_else(|| oxide_types::object::PropMetaEntry::data(PropAttributes::DEFAULT_DATA));
+    if meta.is_accessor {
+        push_desc_prop(d, sh, sf.intern("get").0, meta.get);
+        push_desc_prop(d, sh, sf.intern("set").0, meta.set);
+        push_desc_prop(d, sh, sf.intern("enumerable").0, JsValue::bool(meta.attributes.enumerable()));
+        push_desc_prop(d, sh, sf.intern("configurable").0, JsValue::bool(meta.attributes.configurable()));
+    } else {
+        push_desc_prop(d, sh, sf.intern("value").0, found_value);
+        push_desc_prop(d, sh, sf.intern("writable").0, JsValue::bool(meta.attributes.writable()));
+        push_desc_prop(d, sh, sf.intern("enumerable").0, JsValue::bool(meta.attributes.enumerable()));
+        push_desc_prop(d, sh, sf.intern("configurable").0, JsValue::bool(meta.attributes.configurable()));
+    }
+    Ok(Some(JsValue::from_js_object(desc)))
+}
+
+/// 分配空描述符对象（proto = %Object.prototype%）。
+fn alloc_desc_object<H: VmHost>(vm: &mut H) -> *mut JsObject {
+    let desc_proto = vm.session().builtin_world().object_proto.as_ptr() as *mut JsObject;
+    vm.alloc_object(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(desc_proto)))
+}
+
 /// `Object.getOwnPropertyDescriptor(obj, key)`：返回自身属性的描述符对象；
 /// 不存在返回 undefined。
 pub fn object_get_own_property_descriptor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
@@ -899,59 +965,58 @@ pub fn object_get_own_property_descriptor<H: VmHost>(vm: &mut H, args: &[u8]) ->
     let obj_ptr = obj_val.as_js_object_ptr();
     let key = vm.property_key_si(vm.reg(args[2]));
     let obj = unsafe { &*obj_ptr };
-
-    // 数组 length 是虚拟属性（无 shape 槽，ordinary_get 直接返回逻辑长度）：
-    // 描述符 {value: len, writable: !frozen && 非显式收窄, enumerable: false,
-    // configurable: false}。冻结数组与经 defineProperty 收窄的数组 writable=false。
-    let length_si = vm.kernel_core().perm_interner().intern("length").0;
-    if obj.is_array() && key == length_si {
-        let desc_proto = vm.session().builtin_world().object_proto.as_ptr() as *mut JsObject;
-        let desc = vm.alloc_object(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(desc_proto)));
-        let sh = vm.kernel_core().shape_forge().as_ref() as *const ShapeForge;
-        let sf = vm.kernel_core().perm_interner().as_ref() as *const PermInterner;
-        let d: &mut JsObject = unsafe { &mut *desc };
-        let sh = unsafe { &*sh };
-        let sf = unsafe { &*sf };
-        push_desc_prop(d, sh, sf.intern("value").0, obj.logical_len_value());
-        push_desc_prop(d, sh, sf.intern("writable").0, JsValue::bool(obj.is_length_writable()));
-        push_desc_prop(d, sh, sf.intern("enumerable").0, JsValue::bool(false));
-        push_desc_prop(d, sh, sf.intern("configurable").0, JsValue::bool(false));
-        return NativeResult::Ok(JsValue::from_js_object(desc));
+    match own_descriptor_of(vm, obj, key) {
+        Ok(Some(desc)) => NativeResult::Ok(desc),
+        Ok(None) => NativeResult::Ok(JsValue::undefined()),
+        Err(exc) => NativeResult::Err(exc),
     }
+}
 
-    let Some(offset) = vm.get_own_property_slot(obj, key) else {
-        return NativeResult::Ok(JsValue::undefined());
+/// `Object.getOwnPropertyDescriptors(obj)`：返回全部自身属性描述符集合对象
+/// （键 = 自身属性名，值 = 对应描述符对象）。
+///
+/// # 步骤
+/// 1. ToObject 装箱接收者（null/undefined 抛 TypeError）
+/// 2. 按规范三段序枚举自身键：整数索引数值升序 + 非整数串键插入序
+///    （walk_own_keys），Symbol 键插入序（walk_own_symbol_keys）随后
+/// 3. 逐键取描述符（缺失键跳过），以数据属性定义到结果对象
+///
+/// # 边界与前提
+/// - 结果对象 proto = %Object.prototype%，各键属性恒 writable/enumerable/
+///   configurable 全真（fresh 普通对象的 CreateDataPropertyOrThrow 形态）
+/// - 描述符取值与 gOPD 同核；模块命名空间未初始化导出抛 ReferenceError 原值
+///
+/// # 副作用
+/// - 分配结果对象与每个描述符对象
+pub fn object_get_own_property_descriptors<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let obj_ptr = match require_obj_arg(vm, args, "getOwnPropertyDescriptors") {
+        Ok(ptr) => ptr,
+        Err(err) => return NativeResult::Err(err),
     };
-    // 模块命名空间字符串导出：`? [[Get]]` 读条目活值，未初始化抛 ReferenceError。
-    let found_value = match namespace_export_get(obj, key) {
-        Ok(Some(value)) => value,
-        Ok(None) => obj.get_prop_at(offset),
-        Err(msg) => return NativeResult::Err(crate::error::create_reference_error(vm, msg)),
-    };
-    let found_meta = obj.prop_meta_at(offset);
+    let obj = unsafe { &*obj_ptr };
 
-    let sf_ptr = vm.kernel_core().perm_interner().as_ref() as *const PermInterner;
-    let sh_ptr = vm.kernel_core().shape_forge().as_ref() as *const ShapeForge;
+    // 三段自身键序：字符串/整数键（整键升序在前）后接 Symbol 键插入序。
+    let mut keys = walk_own_keys(vm, obj);
+    keys.extend(walk_own_symbol_keys(vm, obj));
+
+    // 结果对象：proto = %Object.prototype%。
     let desc_proto = vm.session().builtin_world().object_proto.as_ptr() as *mut JsObject;
-    let desc = vm.alloc_object(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(desc_proto)));
-    let sf = unsafe { &*sf_ptr };
-    let sh = unsafe { &*sh_ptr };
+    let result = vm.alloc_object(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(desc_proto)));
+    let result_val = JsValue::from_js_object(result);
 
-    let d: &mut JsObject = unsafe { &mut *desc };
-    let meta = found_meta.unwrap_or_else(|| oxide_types::object::PropMetaEntry::data(PropAttributes::DEFAULT_DATA));
-    if meta.is_accessor {
-        push_desc_prop(d, sh, sf.intern("get").0, meta.get);
-        push_desc_prop(d, sh, sf.intern("set").0, meta.set);
-        push_desc_prop(d, sh, sf.intern("enumerable").0, JsValue::bool(meta.attributes.enumerable()));
-        push_desc_prop(d, sh, sf.intern("configurable").0, JsValue::bool(meta.attributes.configurable()));
-    } else {
-        push_desc_prop(d, sh, sf.intern("value").0, found_value);
-        push_desc_prop(d, sh, sf.intern("writable").0, JsValue::bool(meta.attributes.writable()));
-        push_desc_prop(d, sh, sf.intern("enumerable").0, JsValue::bool(meta.attributes.enumerable()));
-        push_desc_prop(d, sh, sf.intern("configurable").0, JsValue::bool(meta.attributes.configurable()));
+    for (si, _pos) in keys {
+        // 描述符核：缺失键跳过；未初始化导出原值传播。
+        let desc = match own_descriptor_of(vm, obj, si) {
+            Ok(Some(desc)) => desc,
+            Ok(None) => continue,
+            Err(exc) => return NativeResult::Err(exc),
+        };
+        // CreateDataPropertyOrThrow：结果对象为 fresh 普通对象，属性恒全真。
+        if let Err(err) = vm.define_data_property(unsafe { &mut *result }, si, desc, PropAttributes::DEFAULT_DATA) {
+            return NativeResult::Err(crate::error::create_type_error(vm, &err));
+        }
     }
-
-    NativeResult::Ok(JsValue::from_js_object(desc))
+    NativeResult::Ok(result_val)
 }
 
 /// 按 ToPropertyDescriptor 语义取描述符字段：沿原型链判存在性，存在时经

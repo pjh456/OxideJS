@@ -375,3 +375,60 @@ fn entries_values_with_interleaved_symbol_key() {
     assert_eq!(s0, "[[\"a\",1],[\"b\",3]]");
     assert_eq!(s1, "[1,3]");
 }
+
+// -- Object.getOwnPropertyDescriptors --
+
+#[test]
+fn object_get_own_property_descriptors_empty() {
+    // 结果对象 proto 为 %Object.prototype%，空对象无自身键。
+    let (_vm, result) = eval(
+        "(function(){ var d = Object.getOwnPropertyDescriptors({}); \
+         return Object.getPrototypeOf(d) === Object.prototype && Object.keys(d).length === 0 })()",
+    )
+    .unwrap();
+    assert!(result.is_bool() && result.as_bool());
+}
+
+#[test]
+fn object_get_own_property_descriptors_data_and_accessor() {
+    // 数据描述符四字段齐全；访问器描述符有 get 无 value。
+    let (_vm, result) = eval(
+        "var o = {a: 1}; Object.defineProperty(o, 'g', {get: function(){ return 2 }, configurable: true}); \
+         var d = Object.getOwnPropertyDescriptors(o); \
+         d.a.value === 1 && d.a.writable === true && d.a.enumerable === true && d.a.configurable === true \
+         && d.g.get !== undefined && d.g.value === undefined",
+    )
+    .unwrap();
+    assert!(result.is_bool() && result.as_bool());
+}
+
+#[test]
+fn object_get_own_property_descriptors_integer_keys_ascending() {
+    // 整数索引键数值升序在前（10 排在 2 后），非整数串键按插入序随后，Symbol 键末段。
+    let (_vm, result) = eval(
+        "var o = {10: 'a', 2: 'b', x: 'c'}; var s = Symbol(); o[s] = 1; \
+              var d = Object.getOwnPropertyDescriptors(o); \
+              Object.getOwnPropertyNames(d).join(',') + '|' + d[s].value",
+    )
+    .unwrap();
+    let s = unsafe { &*result.as_string_ptr() }.to_owned_string();
+    assert_eq!(s, "2,10,x|1");
+}
+
+#[test]
+fn object_get_own_property_descriptors_primitive_receiver() {
+    // 原始值接收者经 ToObject 装箱，装箱 number 无自身属性。
+    let (_vm, result) =
+        eval("(function(){ var d = Object.getOwnPropertyDescriptors(42); return Object.keys(d).length === 0 })()")
+            .unwrap();
+    assert!(result.is_bool() && result.as_bool());
+}
+
+#[test]
+fn object_get_own_property_descriptors_null_receiver_throws() {
+    let err = match eval("Object.getOwnPropertyDescriptors(null)") {
+        Ok(_) => panic!("null receiver should throw TypeError"),
+        Err(err) => err,
+    };
+    assert!(err.contains("TypeError"), "unexpected error: {err}");
+}

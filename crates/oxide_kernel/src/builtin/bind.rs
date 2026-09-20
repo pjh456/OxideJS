@@ -28,6 +28,7 @@ impl BuiltinWorld {
             ("is", methods.is, 2),
             ("defineProperty", methods.define_property, 3),
             ("getOwnPropertyDescriptor", methods.get_own_property_descriptor, 2),
+            ("getOwnPropertyDescriptors", methods.get_own_property_descriptors, 1),
             ("freeze", methods.freeze, 1),
             ("seal", methods.seal, 1),
             ("preventExtensions", methods.prevent_extensions, 1),

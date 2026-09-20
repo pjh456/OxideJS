@@ -8,6 +8,7 @@ pub struct ObjectMethods {
     pub is: *const (),
     pub define_property: *const (),
     pub get_own_property_descriptor: *const (),
+    pub get_own_property_descriptors: *const (),
     pub freeze: *const (),
     pub seal: *const (),
     pub prevent_extensions: *const (),
