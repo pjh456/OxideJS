@@ -887,3 +887,56 @@ fn test_species_ctor_null_primitive_throws_four_mounts() {
     .unwrap();
     assert_eq!(out, "16");
 }
+
+// 引擎钉：reverse arraylike 单端缺失——(N,S) 臂 Delete 先于 Set，缺端不物化。
+#[test]
+fn test_reverse_arraylike_single_side_missing() {
+    let out = eval_str(
+        "(() => { const o = {0:'a', length:2}; Array.prototype.reverse.call(o); \
+         return (0 in o) + '|' + (1 in o) + '|' + o[1] + '|' + o.length; })()",
+    )
+    .unwrap();
+    assert_eq!(out, "false|true|a|2");
+}
+
+// 引擎钉：reverse arraylike 洞位保持——洞不物化、length 不变。
+#[test]
+fn test_reverse_arraylike_hole_kept() {
+    let out = eval_str(
+        "(() => { const o = {0:'a', 2:'b', length:3}; Array.prototype.reverse.call(o); \
+         return (0 in o) + '|' + (1 in o) + '|' + (2 in o) + '|' + o[0] + '|' + o[2] + '|' + o.length; })()",
+    )
+    .unwrap();
+    assert_eq!(out, "true|false|true|b|a|3");
+}
+
+// 引擎钉：reverse arraylike accessor length——getter 触发一次，抛错原值传播。
+#[test]
+fn test_reverse_arraylike_length_accessor_throws() {
+    let result = eval_value(
+        "(() => { const o = {0:'x', 1:'y', length:2}; \
+         Object.defineProperty(o,'length',{get(){throw 99;},set(v){},enumerable:true,configurable:true}); \
+         Array.prototype.reverse.call(o); return 'no-throw'; })()",
+    );
+    match result {
+        Err(e) => assert!(e.contains("99"), "error should carry thrown 99, got: {}", e),
+        Ok(_) => panic!("expected accessor length throw to propagate"),
+    }
+}
+
+// 引擎钉：reverse arraylike length 值形态——ToLength 取整定界、原值不写回。
+#[test]
+fn test_reverse_arraylike_length_not_written_back() {
+    let out = eval_str(
+        "(() => { const o = {0:'x', 1:'y', length:'2'}; Array.prototype.reverse.call(o); \
+         return o.length + '|' + o[0] + '|' + o[1]; })()",
+    )
+    .unwrap();
+    assert_eq!(out, "2|y|x");
+    let out = eval_str(
+        "(() => { const o = {0:'x', 1:'y', 2:'z', length:2.7}; Array.prototype.reverse.call(o); \
+         return o.length + '|' + o[0] + '|' + o[1]; })()",
+    )
+    .unwrap();
+    assert_eq!(out, "2.7|y|x");
+}

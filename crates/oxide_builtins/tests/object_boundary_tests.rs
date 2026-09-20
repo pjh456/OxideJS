@@ -223,6 +223,61 @@ fn test_values_returns_array() {
     assert!(result.is_int() || result.is_double());
 }
 
+// Object.values 自身 accessor：getter 被触发，值为 getter 返回值。
+#[test]
+fn test_values_triggers_accessor_getter() {
+    let out = eval_str(
+        "(() => { const o = {}; \
+         Object.defineProperty(o,'a',{get(){return 1;},enumerable:true,configurable:true}); \
+          o.b = 2; return Object.values(o).join(','); })()",
+    );
+    assert_eq!(out, "1,2");
+}
+
+// Object.entries 自身 accessor：[key, getter值] 对。
+#[test]
+fn test_entries_triggers_accessor_getter() {
+    let out = eval_str(
+        "(() => { const o = {}; \
+         Object.defineProperty(o,'a',{get(){return 1;},enumerable:true,configurable:true}); \
+          o.b = 2; return JSON.stringify(Object.entries(o)); })()",
+    );
+    assert_eq!(out, r#"[["a",1],["b",2]]"#);
+}
+
+// 数组元素位 accessor：values 对元素触发 getter。
+#[test]
+fn test_values_array_element_accessor() {
+    let out = eval_str(
+        "(() => { const a = [3,4]; \
+         Object.defineProperty(a,2,{get(){return 9;},enumerable:true,configurable:true}); \
+          return Object.values(a).join(','); })()",
+    );
+    assert_eq!(out, "3,4,9");
+}
+
+// getter 的 this 绑定为属性所在对象。
+#[test]
+fn test_values_accessor_this_binding() {
+    let out = eval_str("(() => Object.values({v:1, get p(){return this.v;}}).join(','))()");
+    assert_eq!(out, "1,1");
+}
+
+// values/entries 的 getter 抛非 Error 原始值：原值传播（捕获侧见原类型与值）。
+#[test]
+fn test_values_entries_accessor_throws_original_value() {
+    let out = eval_str(
+        "(() => { try { Object.values({get a(){throw 'boom';}, b:1}); } \
+         catch (e) { return typeof e + '|' + e; } })()",
+    );
+    assert_eq!(out, "string|boom");
+    let out = eval_str(
+        "(() => { try { Object.entries({get a(){throw 42;}, b:1}); } \
+         catch (e) { return typeof e + '|' + e; } })()",
+    );
+    assert_eq!(out, "number|42");
+}
+
 #[test]
 fn test_get_own_property_descriptor_no_args_type_error() {
     assert!(eval("Object.getOwnPropertyDescriptor()").is_err());
