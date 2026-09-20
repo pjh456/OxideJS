@@ -8,12 +8,16 @@ use oxide_runtime_api::{NativeResult, VmHost};
 use crate::builtins_debug;
 use crate::builtins_error;
 
+use oxide_types::private_key::{make_well_known_symbol_key, WELL_KNOWN_SYMBOL_IS_CONCAT_SPREADABLE};
+
 use super::common::{
     array_ptr, array_type_error, arraylike_get, arraylike_get_or_err, arraylike_index_present, check_array_create_len,
-    clamp_relative, create_new_array, get_this_array_ref, get_this_arraylike, js_array_index,
-    to_integer_or_infinity_bounded,
+    clamp_relative, get_this_array_ref, get_this_arraylike, js_array_index, string_arraylike_units,
+    to_integer_or_infinity_bounded, unit_string_value,
 };
-use super::from::{array_species_create, create_data_property_or_throw, from_engine_error};
+use super::from::{
+    array_from_set_length, array_from_set_prop, array_species_create, create_data_property_or_throw, from_engine_error,
+};
 
 /// 按规范读单个元素：HasProperty 门控（自身与原型链任一层命中才算存在，
 /// 数组元素区 hole 视同缺失），命中时返回 Get 值（用户 getter 的异常原样
@@ -395,63 +399,171 @@ pub fn array_splice<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     NativeResult::Ok(vm.reg(0))
 }
 
-/// `Array.prototype.concat(...items)`：连接 this 与参数（数组参数展开）返回新数组。
+/// `Array.prototype.concat(...items)`：连接 this 与参数返回新数组。
+///
+/// # 步骤
+/// 1. `ToObject` 装箱基元 this（null/undefined 抛 TypeError），装箱体钉入返回
+///    寄存器跨用户窗口保 GC 根（结果 A 钉入后让位，装箱体此后按接收者值
+///    传递保活）。
+/// 2. `A = ArraySpeciesCreate(O, 0)`（真数组按 constructor/@@species 构造，
+///    读取先于一切 isConcatSpreadable 读取）并钉入返回寄存器；元素写入一律
+///    CreateDataPropertyOrThrow 语义（frozen 等受限目标抛 TypeError）。
+/// 3. 逐源 `E ∈ [O, ...args]`：`IsConcatSpreadable(E)`——非对象 false；对象
+///    读 `@@isConcatSpreadable`（getter 异常透传），值非 undefined 取
+///    ToBoolean，否则取 IsArray(E)。
+/// 4. spreadable 源：`len = ToLength(Get(E, "length"))`（getter/数值转换异常
+///    透传）；`n + len > 2^53-1` 抛 TypeError；逐索引 HasProperty 门控 + Get，
+///    命中写 `A[n+k]`，缺失位记录洞（真数组目标越界写会扩成 present-undefined，
+///    length 写入后补置洞）。
+/// 5. 非 spreadable 源：整值写 `A[n]`；`n += 1`。
+/// 6. 收尾 `Set(A, "length", n, true)`（length 不可写抛 TypeError）。
+///
+/// # 边界与前提
+/// - 字符串 exotic 源（装箱串）索引未物化：length 与单元直读 [[StringData]]，
+///   与 Array.from 的 array-like 路径同面。
+/// - 引擎密集数组上限 2^32-1（真数组源 len 天然不越界），len 越上限的展开
+///   仅可能来自人造大 length 对象，写入按引擎密集封顶处理。
+///
+/// # 副作用
+/// - species/constructor、isConcatSpreadable、length 与逐元素 Get 各可经原型链
+///   触发用户代码；结果 A 钉返回寄存器，返回时自钉位读回。
 pub fn array_concat<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("Array.prototype.concat called with {} args", args.len());
-    let this_val = vm.reg(args[0]);
-    let (arr_ptr, n, _is_array) = match get_this_arraylike(vm, this_val) {
+    // ToObject：基元 this 装箱（null/undefined 抛 TypeError）。
+    let this_val = match oxide_runtime_api::to_object(vm.reg(args[0]), vm) {
         Ok(v) => v,
-        Err(e) => return NativeResult::Err(e),
+        Err(msg) => return NativeResult::Err(from_engine_error(vm, &msg)),
     };
-    // this 与数组实参的洞位按缺失复制：结果对应位留洞（记录洞下标，收尾置洞）。
-    let mut all: Vec<JsValue> = Vec::new();
+    // 装箱体钉入返回寄存器：它只存于 Rust 局部，this 寄存器持原始基元（不在
+    // 根集），跨 constructor/species 读取用户窗口须保 GC 根；结果 A 钉入后
+    // 让位，其后装箱体按接收者值传递保活。
+    if !args.contains(&0) {
+        vm.set_reg(0, this_val);
+    }
+    // SAFETY: this_val 为对象值，指针指向存活对象。
+    let is_array = unsafe { &*this_val.as_js_object_ptr() }.is_array();
+
+    // 全部源值（this 在前、实参随后）先读入局部：结果钉返回寄存器可能覆写
+    // 实参寄存器槽，须先于钉位完成读取。
+    let mut sources: Vec<JsValue> = Vec::with_capacity(args.len());
+    sources.push(this_val);
+    for &reg in args.iter().skip(1) {
+        sources.push(vm.reg(reg));
+    }
+
+    // ArraySpeciesCreate(O, 0)：真数组按 constructor/@@species 构造目标，
+    // array-like 直接 ArrayCreate（不读 constructor）。
+    let a_ptr = match array_species_create(vm, this_val, is_array, 0) {
+        Ok(p) => p,
+        Err(err) => return NativeResult::Err(err),
+    };
+    // SAFETY: a_ptr 来自 ArraySpeciesCreate，指向存活对象。
+    let a_is_array = unsafe { &*a_ptr }.is_array();
+    // 结果钉入返回寄存器：其后的元素读取 / 写入窗口保 GC 根，返回时自钉位读回。
+    vm.set_reg(0, JsValue::from_js_object(a_ptr));
+
+    let spread_key = make_well_known_symbol_key(WELL_KNOWN_SYMBOL_IS_CONCAT_SPREADABLE);
+    let length_si = vm.string_key_si("length");
+    let mut n_acc: u64 = 0;
     let mut holes: Vec<usize> = Vec::new();
-    if let Err(err) = check_array_create_len(vm, n) {
-        return NativeResult::Err(err);
-    }
-    for i in 0..n {
-        if arraylike_index_present(vm, arr_ptr, i) {
-            all.push(arraylike_get_or_err!(vm, arr_ptr, i));
+
+    // 源按序展开。
+    for e_val in sources.iter().copied() {
+        // IsConcatSpreadable：非对象 false；对象读 @@isConcatSpreadable（getter
+        // 异常透传），值非 undefined 取 ToBoolean，否则取 IsArray(E)。
+        let e_ptr = e_val.as_js_object_ptr();
+        let spreadable = if !e_val.is_object() || e_ptr.is_null() {
+            false
         } else {
-            holes.push(all.len());
-            all.push(JsValue::undefined());
+            // SAFETY: e_ptr 来自对象值，指向存活对象。
+            let v = match vm.ordinary_get(unsafe { &*e_ptr }, spread_key, e_val) {
+                Ok(v) => v,
+                Err(msg) => return NativeResult::Err(from_engine_error(vm, &msg)),
+            };
+            if v.is_undefined() {
+                // SAFETY: 同上。
+                unsafe { &*e_ptr }.is_array()
+            } else {
+                oxide_runtime_api::to_boolean(v)
+            }
+        };
+        if !spreadable {
+            // 非 spreadable 源：整值追加。
+            if let Err(err) = array_from_set_prop(vm, a_ptr, a_is_array, n_acc as usize, e_val) {
+                return NativeResult::Err(err);
+            }
+            n_acc += 1;
+            continue;
         }
-    }
-    for &arg_reg in args.iter().skip(1) {
-        let val = vm.reg(arg_reg);
-        if val.is_object() {
-            let o_ptr = val.as_js_object_ptr();
-            if !o_ptr.is_null() {
-                let o = unsafe { &*o_ptr };
-                let on = o.prop_count() as usize;
-                // 真数组时展开元素（空数组展开为零元素，贡献无；洞位同样留洞）。
-                if o.is_array() {
-                    let dense = o.array_elements_meta_vec().is_none();
-                    for i in 0..on {
-                        if dense || !o.prop_meta_at(i).is_some_and(|m| m.is_hole()) {
-                            all.push(o.get_prop_at(i));
-                        } else {
-                            holes.push(all.len());
-                            all.push(JsValue::undefined());
-                        }
-                    }
-                    continue;
+        // 字符串 exotic 源（装箱串）单元直读（与 Array.from 同面）：length 即
+        // 单元数，其余源 len = ToLength(Get(E, "length"))，getter 与数值转换
+        // 异常透传。
+        let string_units = string_arraylike_units(vm, e_val);
+        let len = match &string_units {
+            Some(units) => units.len(),
+            None => {
+                let len_val = match vm.ordinary_get(unsafe { &*e_ptr }, length_si, e_val) {
+                    Ok(v) => v,
+                    Err(msg) => return NativeResult::Err(from_engine_error(vm, &msg)),
+                };
+                if len_val.is_symbol() {
+                    return NativeResult::Err(array_type_error(vm, "Cannot convert a Symbol value to a number"));
+                }
+                let len_num = match vm.coerce_number_bounded(len_val) {
+                    Ok(v) => v,
+                    Err(msg) => return NativeResult::Err(from_engine_error(vm, &msg)),
+                };
+                if len_num.is_nan() || len_num <= 0.0 {
+                    0usize
+                } else {
+                    len_num.min(9_007_199_254_740_991.0) as usize
                 }
             }
+        };
+        // n + len > 2^53-1 抛 TypeError（f64 比较免整数上溢）。
+        if n_acc as f64 + len as f64 > 9_007_199_254_740_991.0 {
+            return NativeResult::Err(array_type_error(vm, "Invalid array length"));
         }
-        all.push(val);
+        for k in 0..len {
+            let elem = match &string_units {
+                Some(units) => {
+                    if k < units.len() {
+                        Some(unit_string_value(vm, units[k]))
+                    } else {
+                        None
+                    }
+                }
+                None => match gated_get(vm, e_ptr, k, e_val) {
+                    Ok(v) => v,
+                    Err(err) => return NativeResult::Err(err),
+                },
+            };
+            match elem {
+                Some(val) => {
+                    if let Err(err) = array_from_set_prop(vm, a_ptr, a_is_array, (n_acc as usize) + k, val) {
+                        return NativeResult::Err(err);
+                    }
+                }
+                // 缺失位：真数组目标越界写扩成 present-undefined，length 写入后
+                // 补置洞；非数组目标不建属性。
+                None => holes.push((n_acc as usize) + k),
+            }
+        }
+        n_acc += len as u64;
     }
-    let new_arr = create_new_array(vm, all.len());
-    unsafe {
-        for (i, val) in all.iter().enumerate() {
-            (*new_arr).set_prop_at(i, *val);
-        }
+
+    // 收尾 Set(A, "length", n, true)：length 不可写抛 TypeError。
+    if let Err(err) = array_from_set_length(vm, a_ptr, n_acc as usize) {
+        return NativeResult::Err(err);
+    }
+    // 缺失位在 length 写入后补洞（真数组元素区由 length 写扩展，落洞方在界内）。
+    if a_is_array {
         for h in holes {
-            (*new_arr).mark_hole_at(h);
+            // SAFETY: a_ptr 为存活结果对象，h < 终长。
+            unsafe { (*a_ptr).mark_hole_at(h) };
         }
-        (*new_arr).set_prop_count(all.len());
     }
-    NativeResult::Ok(JsValue::from_js_object(new_arr))
+    NativeResult::Ok(vm.reg(0))
 }
 
 /// `Array.prototype.join(separator)`：用分隔符连接元素字符串（null/undefined 视为空串）。

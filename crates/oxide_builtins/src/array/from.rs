@@ -362,14 +362,15 @@ pub(crate) fn create_data_property_or_throw<H: VmHost>(
     }
 }
 
-/// 把元素写入 Array.from 的结果对象（CreateDataPropertyOrThrow 语义）：真数组
-/// 走密集元素区，普通对象属性名按十进制索引字符串。
+/// 把元素写入 Array 族结果对象（CreateDataPropertyOrThrow 语义，Array.from/of
+/// 与 Array.prototype.concat 共用）：真数组走密集元素区，普通对象属性名按十进制
+/// 索引字符串。
 ///
 /// # 边界与前提
 /// - 真数组快路径（可扩展 + length 可写 + 槽位无元数据）与规范 define 同形，
 ///   裸写零漂移；完整性受限目标（frozen/sealed/preventExtensions）与携带元
 ///   数据的槽位（洞/只读/访问器）一律落慢路径，按规范抛 TypeError。
-fn array_from_set_prop<H: VmHost>(
+pub(crate) fn array_from_set_prop<H: VmHost>(
     vm: &mut H, a: *mut JsObject, is_array: bool, i: usize, val: JsValue,
 ) -> Result<(), JsValue> {
     if is_array {
@@ -390,15 +391,17 @@ fn array_from_set_prop<H: VmHost>(
     create_data_property_or_throw(vm, unsafe { &mut *a }, key_si, val)
 }
 
-/// 收尾设置 Array.from 结果对象的 length：统一走普通 Set——真数组 length 写
-/// 按 ArraySetLength 可写性判定（frozen / length 收窄不可写目标抛 TypeError），
-/// 普通对象可触发继承的 length setter，其异常透传。
-fn array_from_set_length<H: VmHost>(vm: &mut H, a: *mut JsObject, len: usize) -> Result<(), JsValue> {
+/// 收尾设置 Array 族结果对象的 length（Array.from/of 与 Array.prototype.concat
+/// 共用）：统一走普通 Set——真数组 length 写按 ArraySetLength 可写性判定
+/// （frozen / length 收窄不可写目标抛 TypeError），普通对象可触发继承的 length
+/// setter，其异常透传。length 值经 `js_array_index` 编码（超 i32 范围用 float
+/// 精确表示，避免收窄为负数）。
+pub(crate) fn array_from_set_length<H: VmHost>(vm: &mut H, a: *mut JsObject, len: usize) -> Result<(), JsValue> {
     let a_obj = unsafe { &mut *a };
     let length_key = vm.new_string("length");
     let length_si = vm.property_key_si(length_key);
     let a_val = JsValue::from_js_object(a);
-    match vm.ordinary_set(a_obj, length_si, JsValue::int(len as i32), a_val, true) {
+    match vm.ordinary_set(a_obj, length_si, js_array_index(len), a_val, true) {
         Ok(()) => Ok(()),
         Err(err) => Err(from_engine_error(vm, &err)),
     }

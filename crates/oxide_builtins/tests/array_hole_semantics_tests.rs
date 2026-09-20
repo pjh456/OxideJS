@@ -565,6 +565,199 @@ fn test_concat_mixed_args_order_and_holes() {
     assert_eq!(out, "5|1|1,2,3,0|4|1|false");
 }
 
+// ── concat species 面收口钉（node v20.19.2 实测值钉死） ───────────────────
+
+// 引擎钉：concat 基元 this 经 ToObject 装箱——数字/布尔接收者展开为单元素
+// 真数组，包装体身份保留。
+#[test]
+fn test_concat_primitive_this_boxed() {
+    let out = eval_str(
+        "(() => { const r1 = Array.prototype.concat.call(101); \
+         const r2 = Array.prototype.concat.call(true); \
+         return (r1[0] instanceof Number) + '|' + r1.length + '|' + \
+         (r2[0] instanceof Boolean) + '|' + r2.length; })()",
+    )
+    .unwrap();
+    assert_eq!(out, "true|1|true|1");
+}
+
+// 引擎钉：spreadable 对象源按 HasProperty 门控展开——洞位保洞、present 位
+// 按 Get 取值，length 决定展开宽度。
+#[test]
+fn test_concat_spreadable_object_holes() {
+    let out = eval_str(
+        "(() => { const o = { length: 6 }; o[Symbol.isConcatSpreadable] = true; \
+         o[0] = 'A'; o[2] = 'C'; \
+         const r = [].concat(o); \
+         return r.length + '|' + (0 in r) + '|' + (1 in r) + '|' + r[0] + '|' + r[2]; })()",
+    )
+    .unwrap();
+    assert_eq!(out, "6|true|false|A|C");
+}
+
+// 引擎钉：spreadable 源 length 为负数 / 经 toString 折算 NaN 均 ToLength 归 0，
+// 不展开任何元素。
+#[test]
+fn test_concat_spreadable_length_to_zero() {
+    let out = eval_str(
+        "(() => { const o = { length: -5, 0: 'A' }; o[Symbol.isConcatSpreadable] = true; \
+         const r1 = [].concat(o); \
+         const o2 = { 0: 'A' }; o2[Symbol.isConcatSpreadable] = true; \
+         o2.length = { toString() { return 'SIX'; }, valueOf: null }; \
+         return r1.length + '|' + [].concat(o2).length; })()",
+    )
+    .unwrap();
+    assert_eq!(out, "0|0");
+}
+
+// 引擎钉：spreadable 源 length getter 抛错 / 索引访问器抛错均原样透传。
+#[test]
+fn test_concat_poisoned_length_and_index_propagate() {
+    let out = eval_str(
+        "(() => { const o = {}; o[Symbol.isConcatSpreadable] = true; \
+         Object.defineProperty(o, 'length', { get() { throw new Error('lc'); } }); \
+         let t1 = ''; try { [].concat(o); } catch (e) { t1 = e.message; } \
+         const a = [1, 2, 3]; \
+         Object.defineProperty(a, 1, { configurable: true, get() { throw new Error('ie'); } }); \
+         let t2 = ''; try { [].concat(a); } catch (e) { t2 = e.message; } \
+         return t1 + '|' + t2; })()",
+    )
+    .unwrap();
+    assert_eq!(out, "lc|ie");
+}
+
+// 引擎钉：isConcatSpreadable getter 抛错透传（读序上先于一切展开）。
+#[test]
+fn test_concat_is_concat_spreadable_getter_throws() {
+    let out = eval_str(
+        "(() => { const o = {}; \
+         Object.defineProperty(o, Symbol.isConcatSpreadable, { get() { throw new Error('sg'); } }); \
+         let t = ''; try { [].concat(o); } catch (e) { t = e.message; } \
+         return t; })()",
+    )
+    .unwrap();
+    assert_eq!(out, "sg");
+}
+
+// 引擎钉：读序 constructor → isConcatSpreadable(this) → isConcatSpreadable(实参)，
+// getter 返回值 undefined 时实参整值追加。
+#[test]
+fn test_concat_read_order_constructor_then_spreadable() {
+    let out = eval_str(
+        "(() => { const calls = []; \
+         const arr = []; \
+         Object.defineProperty(arr, 'constructor', { configurable: true, get() { calls.push('c'); return Array; } }); \
+         Object.defineProperty(arr, Symbol.isConcatSpreadable, { configurable: true, get() { calls.push('s'); } }); \
+         const arg = {}; \
+         Object.defineProperty(arg, Symbol.isConcatSpreadable, { configurable: true, get() { calls.push('as'); } }); \
+         const r = arr.concat(arg); \
+         return calls.join(',') + '|' + (r[0] === arg) + '|' + r.length; })()",
+    )
+    .unwrap();
+    assert_eq!(out, "c,s,as|true|1");
+}
+
+// 引擎钉：isConcatSpreadable 值非 undefined 取 ToBoolean——truthy 展开（零元素
+// length）、falsey 整值追加。
+#[test]
+fn test_concat_spreadable_value_boolean_coercion() {
+    let out = eval_str(
+        "(() => { const o = {}; o[Symbol.isConcatSpreadable] = 86; \
+         const r1 = [].concat(o); \
+         o[Symbol.isConcatSpreadable] = false; \
+         const r2 = [].concat(o); \
+         return r1.length + '|' + (r2[0] === o) + '|' + r2.length; })()",
+    )
+    .unwrap();
+    assert_eq!(out, "0|true|1");
+}
+
+// 引擎钉：函数 / 正则 / 装箱串默认整值，显式 spreadable 时按索引展开（含
+// 原型链命中），实参侧真数组参数自有索引访问器按 Get 触发。
+#[test]
+fn test_concat_spreadable_function_and_proto_chain() {
+    let out = eval_str(
+        "(() => { const fn = function (a, b, c) {}; \
+         const r0 = [].concat(fn); \
+         fn[Symbol.isConcatSpreadable] = true; fn[0] = 1; fn[1] = 2; fn[2] = 3; \
+         const r1 = [].concat(fn); \
+         const a = [1, 2]; \
+         Object.defineProperty(a, 1, { configurable: true, get() { return 99; } }); \
+         const r2 = [0].concat(a); \
+         return (r0[0] === fn) + '|' + r1.join(',') + '|' + r1.length + '|' + r2[2] + '|' + r2.length; })()",
+    )
+    .unwrap();
+    assert_eq!(out, "true|1,2,3|3|99|3");
+}
+
+// 引擎钉：arguments 源 spreadable + 删位——删位保洞、余位按值展开。
+#[test]
+fn test_concat_arguments_deleted_slot_hole() {
+    let out = eval_str(
+        "(() => { const args = (function (a, b, c) { return arguments; })(1, 2, 3); \
+         delete args[1]; args[Symbol.isConcatSpreadable] = true; \
+         const r = [].concat(args); \
+         return r.length + '|' + (1 in r) + '|' + r[0] + '|' + r[2]; })()",
+    )
+    .unwrap();
+    assert_eq!(out, "3|false|1|3");
+}
+
+// 引擎钉：装箱串源 spreadable 时按 UTF-16 单元展开（单元未物化，直读串数据）。
+#[test]
+fn test_concat_string_wrapper_spreadable_units() {
+    let out = eval_str(
+        "(() => { const s = new String('ab'); s[Symbol.isConcatSpreadable] = true; \
+         const r = [].concat(s); \
+         return r.join(',') + '|' + r.length + '|' + (0 in r); })()",
+    )
+    .unwrap();
+    assert_eq!(out, "a,b|2|true");
+}
+
+// 引擎钉：非数组对象 this 整值追加且实参保留（结果真数组、proto 为
+// Array.prototype，不读 constructor）。
+#[test]
+fn test_concat_non_array_this_whole_value_args_kept() {
+    let out = eval_str(
+        "(() => { let ctorReads = 0; \
+         const o = { length: 2, 0: 'x' }; \
+         Object.defineProperty(o, 'constructor', { configurable: true, get() { ctorReads++; } }); \
+         const r = Array.prototype.concat.call(o, 4, 5, 6); \
+         return r.length + '|' + (r[0] === o) + '|' + r[1] + '|' + r[3] + '|' + \
+         Array.isArray(r) + '|' + ctorReads; })()",
+    )
+    .unwrap();
+    assert_eq!(out, "4|true|4|6|true|0");
+}
+
+// 引擎钉：species 目标自有不可写 length——收尾 Set 抛 TypeError。
+#[test]
+fn test_concat_species_non_writable_length_throws() {
+    let out = eval_str(
+        "(() => { const A = function (_l) { Object.defineProperty(this, 'length', { value: 0, writable: false }); }; \
+         const arr = []; arr.constructor = {}; arr.constructor[Symbol.species] = A; \
+         let t = ''; try { arr.concat(1); } catch (e) { t = e.name; } \
+         return t; })()",
+    )
+    .unwrap();
+    assert_eq!(out, "TypeError");
+}
+
+// 引擎钉：Array.prototype 只读 "0" 下 CDO 写自有 writable:true 位。
+#[test]
+fn test_concat_prototype_readonly_index_own_writable() {
+    let out = eval_str(
+        "(() => { Object.defineProperty(Array.prototype, '0', { value: 100, writable: false, configurable: true }); \
+         try { const r = [101].concat(); \
+               const d = Object.getOwnPropertyDescriptor(r, '0'); \
+               return d.value + '|' + d.writable + '|' + r.hasOwnProperty('0'); } \
+         finally { delete Array.prototype['0']; } })()",
+    )
+    .unwrap();
+    assert_eq!(out, "101|true|true");
+}
+
 // ── flat / flatMap 收口钉（node v20.19.2 实测值钉死） ──────────────────────
 
 // 引擎钉：reverse (S,N) 臂非可配置 lower——Delete 先于 Set，抛时零改动。
