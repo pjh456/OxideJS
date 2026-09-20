@@ -19,7 +19,11 @@ impl Emitter {
 
         ctx.inst(Inst::jmp_if_false(test_reg, else_label));
 
+        // if 支臂是 `UpdateEmpty(_, undefined)` 站点：压边界帧，支臂内空体
+        // break/continue 穿越时携值物化 undefined。
+        ctx.push_completion_boundary();
         let cons_reg = self.emit_statement(&ifs.consequent, ctx)?;
+        ctx.pop_completion_boundary();
         let result_reg = ctx.alloc_reg();
         if let Some(r) = cons_reg {
             ctx.inst(Inst::new(OpCode::LOAD_VAR, Operand::Reg(result_reg), Operand::Reg(r), Operand::None));
@@ -34,7 +38,9 @@ impl Emitter {
 
         ctx.labels.set_label_pos(else_label, ctx.insts.len());
         if let Some(alt) = &ifs.alternate {
+            ctx.push_completion_boundary();
             let alt_reg = self.emit_statement(alt, ctx)?;
+            ctx.pop_completion_boundary();
             if let Some(r) = alt_reg {
                 ctx.inst(Inst::new(OpCode::LOAD_VAR, Operand::Reg(result_reg), Operand::Reg(r), Operand::None));
             } else {

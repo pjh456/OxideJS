@@ -23,12 +23,17 @@ impl Emitter {
         for s in &block.body {
             self.emit_block_fn_entry_init_stmt(s, ctx)?;
         }
+        // 块语句列表独立累积：压列表帧，每条非空语句记最后非空值寄存器，
+        // break/continue 携值解析据此取块内累积值。
+        ctx.push_completion_list();
         let mut r = None;
         for s in &block.body {
             if let Some(rr) = self.emit_statement(s, ctx)? {
                 r = Some(rr);
+                ctx.set_completion_last(rr);
             }
         }
+        ctx.pop_completion_list();
         ctx.block_fn_entry_mats.pop();
         ctx.pop_scope();
         Ok(r)

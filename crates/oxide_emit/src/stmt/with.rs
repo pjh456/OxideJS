@@ -20,7 +20,11 @@ impl Emitter {
         let obj_reg = self.emit_expression(&with.object, ctx)?;
         ctx.inst(Inst::new(OpCode::TO_OBJECT, Operand::Reg(obj_reg), Operand::None, Operand::None));
         ctx.push_with(obj_reg);
+        // with 体是 `UpdateEmpty(_, undefined)` 站点：压边界帧，体内空体
+        // break/continue 穿越时携值物化 undefined。
+        ctx.push_completion_boundary();
         let body_result = self.emit_statement(&with.body, ctx)?;
+        ctx.pop_completion_boundary();
         ctx.pop_with();
         // with 完成值 = 体完成值；体为空（空完成）时按规范物化 undefined 作为带值
         // 完成返回，不沿用 with 前的值。

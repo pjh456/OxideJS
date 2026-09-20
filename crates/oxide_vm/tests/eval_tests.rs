@@ -258,6 +258,51 @@ fn compound_statement_completion_values() {
     assert_num(result, 3.0);
     let result = eval(&mut vm, "1; with({}) {}").unwrap();
     assert_eq!(result, JsValue::undefined());
+    // 值语句-break-死语句：应取 break 前累积值（死语句值不得成为完成值）。
+    // switch 域（resultValue 运行期累积）：穿落累积值经 break 带出；空子句/
+    // 无命中保持初值 undefined，不泄漏前值。
+    let result = eval(&mut vm, r#"6; switch ("a") { case "a": 7; case "b": break; default: }"#).unwrap();
+    assert_num(result, 7.0);
+    let result = eval(&mut vm, r#"1; switch ("a") { case "a": 2; case "b": 3; break; default: }"#).unwrap();
+    assert_num(result, 3.0);
+    let result = eval(&mut vm, r#"1; switch ("a") { case "a": break; default: }"#).unwrap();
+    assert_eq!(result, JsValue::undefined());
+    let result = eval(&mut vm, r#"1; switch ("x") { case "a": 5; }"#).unwrap();
+    assert_eq!(result, JsValue::undefined());
+    let result = eval(&mut vm, r#"7; switch ("b") { case "a": 8; default: }"#).unwrap();
+    assert_eq!(result, JsValue::undefined());
+    // 块包裹子句：块列表帧携值出 switch。
+    let result = eval(&mut vm, r#"2; switch ("a") { case "a": { 3; break; } default: }"#).unwrap();
+    assert_num(result, 3.0);
+    // 嵌套 switch：内层 unlabeled break 只出内层，外层继续累积。
+    let result = eval(&mut vm, r#"switch ("a") { case "a": switch ("a") { case "a": 5; break; } 7; }"#).unwrap();
+    assert_num(result, 7.0);
+    // labeled break 穿 switch：取子句列表累积值。
+    let result = eval(&mut vm, r#"9; a: { switch ("a") { case "a": 5; break a; } }"#).unwrap();
+    assert_num(result, 5.0);
+    // with 边界：空体 break/continue 经边界物化 undefined，非空体取体累积值。
+    let result = eval(&mut vm, "1; do { 2; with({}) { 3; break; } 4; } while (false)").unwrap();
+    assert_num(result, 3.0);
+    let result = eval(&mut vm, "5; do { 6; with({}) { break; } 7; } while (false)").unwrap();
+    assert_eq!(result, JsValue::undefined());
+    let result = eval(&mut vm, "8; do { 9; with({}) { 10; continue; } 11; } while (false)").unwrap();
+    assert_num(result, 10.0);
+    let result = eval(&mut vm, "12; do { 13; with({}) { continue; } 14; } while (false)").unwrap();
+    assert_eq!(result, JsValue::undefined());
+    // if 边界：同 with 形（支臂 UpdateEmpty 物化 undefined）。
+    let result = eval(&mut vm, "1; do { 2; if (true) { 3; break; } 4; } while (false)").unwrap();
+    assert_num(result, 3.0);
+    let result = eval(&mut vm, "5; do { 6; if (true) { break; } 7; } while (false)").unwrap();
+    assert_eq!(result, JsValue::undefined());
+    let result = eval(&mut vm, "8; do { 9; if (true) { 10; continue; } 11; } while (false)").unwrap();
+    assert_num(result, 10.0);
+    let result = eval(&mut vm, "12; do { 13; if (true) { continue; } 14; } while (false)").unwrap();
+    assert_eq!(result, JsValue::undefined());
+    // try 体列表帧：非空体累积值穿透 labeled break（finally 体值不渗入）。
+    let result = eval(&mut vm, "a: { try { 5; break a; } finally { 7 } }").unwrap();
+    assert_num(result, 5.0);
+    let result = eval(&mut vm, "a: { try { throw 1; } catch (e) { 5; break a; } }").unwrap();
+    assert_num(result, 5.0);
 }
 
 #[test]
@@ -284,4 +329,54 @@ fn iteration_labeled_completion_values() {
     assert_num(result, 8.0);
     let result = eval(&mut vm, "test262id: 2;").unwrap();
     assert_num(result, 2.0);
+    // 值语句-break-死语句（非迭代标签）：取 break 前块列表累积值；无 break 的
+    // 标签保持透传不回归。
+    let result = eval(&mut vm, "test262id: { 5; break test262id; 9; }").unwrap();
+    assert_num(result, 5.0);
+    let result = eval(&mut vm, "a: { 1; { break a; } 3; }").unwrap();
+    assert_num(result, 1.0);
+    let result = eval(&mut vm, "9; a: {}").unwrap();
+    assert_num(result, 9.0);
+    // 循环出口结果寄存器：break/continue 携本列表累积值写入（空携值不覆写）。
+    let result = eval(&mut vm, "9; a: { 2; if(true){ break a; } }").unwrap();
+    assert_eq!(result, JsValue::undefined());
+    let result = eval(&mut vm, "for (var i = 0; i < 3; ++i) { if (i === 1) continue; i * 10; }").unwrap();
+    assert_num(result, 20.0);
+    let result = eval(&mut vm, "a: for (;;) { if (true) { 3; break a; } }").unwrap();
+    assert_num(result, 3.0);
+    let result = eval(&mut vm, "4; do { continue; } while (false)").unwrap();
+    assert_eq!(result, JsValue::undefined());
+    let result = eval(&mut vm, "2; do { 3; break; } while (false)").unwrap();
+    assert_num(result, 3.0);
+    let result = eval(&mut vm, "1; while (true) { break; }").unwrap();
+    assert_eq!(result, JsValue::undefined());
+    // 子句级 continue 携值出 switch 再入循环出口寄存器（条款列表帧携值）。
+    let result = eval(
+        &mut vm,
+        r#"13; do { switch ("a") { case "a": 14; case "b": continue; default: } } while (false)"#,
+    )
+    .unwrap();
+    assert_num(result, 14.0);
+    let result = eval(
+        &mut vm,
+        r#"11; do { switch ("a") { case "a": case "b": 12; continue; default: } } while (false)"#,
+    )
+    .unwrap();
+    assert_num(result, 12.0);
+    let result = eval(
+        &mut vm,
+        r#"8; do { switch ("a") { case "a": 9; case "b": 10; continue; default: } } while (false)"#,
+    )
+    .unwrap();
+    assert_num(result, 10.0);
+    let result =
+        eval(&mut vm, r#"5; do { switch ("a") { case "a": { 6; continue; } default: } } while (false)"#).unwrap();
+    assert_num(result, 6.0);
+    let result = eval(&mut vm, r#"4; do { switch ("a") { case "a": continue; default: } } while (false)"#).unwrap();
+    assert_eq!(result, JsValue::undefined());
+    // labeled break/continue 穿 switch 出循环：取子句列表累积值写标签出口寄存器。
+    let result = eval(&mut vm, "a: for (var i = 0; i < 2; ++i) { switch (i) { case 0: 5; break a; } }").unwrap();
+    assert_num(result, 5.0);
+    let result = eval(&mut vm, "a: for (var i = 0; i < 2; ++i) { switch (i) { case 0: break a; } }").unwrap();
+    assert_eq!(result, JsValue::undefined());
 }

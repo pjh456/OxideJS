@@ -43,11 +43,16 @@ impl Emitter {
         for s in &ts.block.body {
             self.emit_block_fn_entry_init_stmt(s, ctx)?;
         }
+        // try 体语句列表自压列表帧（不经块语句 emit）：非空语句记累积，
+        // 体内 break/continue 携值解析据此取 try 体累积值。
+        ctx.push_completion_list();
         for s in &ts.block.body {
             if let Some(r) = self.emit_statement(s, ctx)? {
                 last_try_result = Some(r);
+                ctx.set_completion_last(r);
             }
         }
+        ctx.pop_completion_list();
         ctx.block_fn_entry_mats.pop();
         ctx.pop_scope();
         ctx.inst(Inst::new(
@@ -85,12 +90,16 @@ impl Emitter {
             for s in &catch.body.body {
                 self.emit_block_fn_entry_init_stmt(s, ctx)?;
             }
+            // catch 体语句列表自压列表帧（不经块语句 emit）。
+            ctx.push_completion_list();
             let mut last_catch_result: Option<u32> = None;
             for s in &catch.body.body {
                 if let Some(r) = self.emit_statement(s, ctx)? {
                     last_catch_result = Some(r);
+                    ctx.set_completion_last(r);
                 }
             }
+            ctx.pop_completion_list();
             ctx.block_fn_entry_mats.pop();
             ctx.inst(Inst::new(
                 OpCode::LOAD_VAR,
@@ -119,9 +128,15 @@ impl Emitter {
             for s in &ts.finalizer.as_ref().unwrap().body {
                 self.emit_block_fn_entry_init_stmt(s, ctx)?;
             }
+            // finally 体语句列表自压列表帧：体值本身被丢弃，但体内 break/continue
+            // 的携值解析须取 finally 体自身累积值（非空体穿透）。
+            ctx.push_completion_list();
             for s in &ts.finalizer.as_ref().unwrap().body {
-                self.emit_statement(s, ctx)?;
+                if let Some(r) = self.emit_statement(s, ctx)? {
+                    ctx.set_completion_last(r);
+                }
             }
+            ctx.pop_completion_list();
             ctx.block_fn_entry_mats.pop();
             ctx.pop_scope();
             ctx.inst(Inst::new(OpCode::TRY_FINALLY_END, Operand::None, Operand::None, Operand::None));

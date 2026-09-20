@@ -38,8 +38,8 @@ impl Emitter {
         }
         ctx.inst(Inst::new(OpCode::FOR_OF_INIT, Operand::None, Operand::Reg(iter_src_reg), Operand::None));
         ctx.labels.set_label_pos(start_label, ctx.insts.len());
-        ctx.push_loop(end_label, start_label, crate::emit_ctx::LoopKind::ForOf);
-        let n_labeled = ctx.take_pending_loop_labels(end_label, start_label);
+        let _v_reg = ctx.push_loop(end_label, start_label, crate::emit_ctx::LoopKind::ForOf);
+        let n_labeled = ctx.take_pending_loop_labels(end_label, start_label, _v_reg);
         let has_reg = ctx.alloc_reg();
         ctx.inst(Inst::new(OpCode::FOR_OF_DONE, Operand::Reg(has_reg), Operand::None, Operand::None));
         ctx.inst(Inst::jmp_if_false(has_reg, end_label));
@@ -90,8 +90,8 @@ impl Emitter {
             Operand::None,
         ));
         ctx.labels.set_label_pos(start_label, ctx.insts.len());
-        ctx.push_loop(end_label, start_label, crate::emit_ctx::LoopKind::ForAwaitOf);
-        let n_labeled = ctx.take_pending_loop_labels(end_label, start_label);
+        let _v_reg = ctx.push_loop(end_label, start_label, crate::emit_ctx::LoopKind::ForAwaitOf);
+        let n_labeled = ctx.take_pending_loop_labels(end_label, start_label, _v_reg);
         let next_reg = ctx.alloc_reg();
         ctx.inst(Inst::new(OpCode::FOR_AWAIT_OF_NEXT, Operand::Reg(next_reg), Operand::None, Operand::None));
         ctx.inst(Inst::await_expr(Operand::Reg(next_reg)));

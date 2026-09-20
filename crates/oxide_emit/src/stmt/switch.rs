@@ -16,7 +16,15 @@ impl Emitter {
             return Ok(None);
         };
         let end_label = ctx.next_label_id();
-        ctx.push_switch(end_label);
+        // CaseBlock 出口结果寄存器：入口初始 undefined（覆盖无命中/空块路径），
+        // 每条子句的非空语句完成值逐语句覆写（与规范逐子句 `UpdateEmpty`
+        // 累积终态等价：空子句不覆写前值）；abrupt 出口不覆写，保留前子句
+        // 累积值。
+        let result_reg = ctx.alloc_reg();
+        let undef = self.emit_undefined(ctx);
+        ctx.inst(Inst::new(OpCode::LOAD_VAR, Operand::Reg(result_reg), Operand::Reg(undef), Operand::None));
+        ctx.push_switch(end_label, result_reg);
+        ctx.push_completion_target(result_reg);
         // 判别式在 switch 外层词法环境求值，CaseBlock 环境尚未建立。
         let disc_reg = self.emit_expression(&sw.discriminant, ctx)?;
         let cases = &sw.cases;
@@ -60,28 +68,26 @@ impl Emitter {
             Some(label) => ctx.inst(Inst::jmp(label)),
             None => ctx.inst(Inst::jmp(end_label)),
         }
-        let mut last: Option<u32> = None;
         for (case_idx, case) in cases.iter().enumerate() {
             let case_label = case_labels[case_idx];
             ctx.labels.set_label_pos(case_label, ctx.insts.len());
+            // 子句体不经 `emit_block_statement`，其语句列表须自压列表帧：
+            // 非空语句记累积并逐语句覆写出口寄存器（运行期 resultValue）。
+            ctx.push_completion_list();
             for s in &case.consequent {
                 if let Some(r) = self.emit_statement(s, ctx)? {
-                    last = Some(r);
+                    ctx.set_completion_last(r);
+                    ctx.inst(Inst::new(OpCode::LOAD_VAR, Operand::Reg(result_reg), Operand::Reg(r), Operand::None));
                 }
             }
+            ctx.pop_completion_list();
         }
         ctx.block_fn_entry_mats.pop();
         ctx.labels.set_label_pos(end_label, ctx.insts.len());
         ctx.pop_scope();
+        ctx.pop_completion_target();
         ctx.pop_switch();
-        // switch 完成值 = 已执行 case 链最后一次非空完成值（源序最后非空语句的
-        // 收敛寄存器：命中后穿落到 break/尾即为其值，无命中则该寄存器不被写入而
-        // 持 undefined）；无命中物化 undefined 作为带值完成返回。
-        let result = match last {
-            Some(r) => r,
-            None => self.emit_undefined(ctx),
-        };
-        Ok(Some(result))
+        Ok(Some(result_reg))
     }
 
     pub(crate) fn emit_switch_domain(&self, stmt: &Statement, ctx: &mut CompileCtx) -> Result<Option<u32>, String> {

@@ -8,10 +8,12 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 
 use oxide_bytecode::module::{Constant, UpvalueCapture};
 use oxide_ir::inst::Inst;
-use oxide_ir::operand::LabelId;
+use oxide_ir::operand::{LabelId, Operand};
 use oxide_ir::IRFunction;
 
-use crate::emit_ctx::{LabelCtx, LabelScope, LoopEntry, LoopKind, ScopeCtx};
+use crate::emit_ctx::{
+    CompletionCarry, CompletionFrame, LabelCtx, LabelScope, LoopEntry, LoopKind, ScopeCtx, SwitchEntry,
+};
 use crate::program::{BUILTIN_GLOBALS, NON_WRITABLE_GLOBAL_BUILTINS};
 use crate::symbol_table::{ScopeKind, SymbolTable};
 use oxide_parser::VariableDeclarationKind;
@@ -126,6 +128,11 @@ pub struct CompileCtx {
     /// try_stack 组成。每项标记是否为纯 catch handler（TRY_BEGIN，由 TRY_END
     /// 弹出）：return 逃出 try 域时据此弹出栈顶连续纯 catch，防 handler 泄漏。
     pub(crate) open_try_handlers: Vec<bool>,
+    /// 完成值帧栈（见 `CompletionFrame`）：每个活动语句列表独立累积、if 支臂 /
+    /// with 体压边界帧、循环 / switch / 非迭代标签压出口目标帧；break/continue
+    /// 发射跳转前据此解析携值。压弹须在所有非 Err 路径配对（Err 直接终止本次
+    /// 编译、ctx 丢弃，不做 RAII）。
+    pub(crate) completion_frames: Vec<CompletionFrame>,
     /// 循环 update 段中应走寄存器（而非 cell）的被捕获绑定名：C 风格 for 的
     /// let/const 循环变量每迭代新分配一个 cell，update 写寄存器（不污染本迭代
     /// 闭包捕获的 cell），下一迭代把这个寄存器值拷入新分配的 cell。
@@ -246,6 +253,7 @@ impl CompileCtx {
             const_overflow: false,
             with_stack: Vec::new(),
             open_try_handlers: Vec::new(),
+            completion_frames: Vec::new(),
             register_update_names: Vec::new(),
             for_head_store_registers: HashSet::new(),
             module_ns_reg: None,
@@ -425,7 +433,11 @@ impl CompileCtx {
         id
     }
 
-    pub(crate) fn push_loop(&mut self, break_label: LabelId, continue_label: LabelId, kind: LoopKind) {
+    /// 打开一个循环并返回其出口结果寄存器：就地分配并初始化为 undefined
+    /// （覆盖零迭代路径，缺初始化则 `for(;;false;)` 形读垃圾泄漏前值）。
+    /// 调用点须先于循环头标签落位：初始化指令随调用点发射，落在回边内会每
+    /// 迭代重置出口值。
+    pub(crate) fn push_loop(&mut self, break_label: LabelId, continue_label: LabelId, kind: LoopKind) -> u32 {
         let fd = self.labels.finally_depth;
         // 深度计数先递增再快照：条目记录"打开后（含自身）"的深度，与
         // take_pending_loop_labels 的标签作用域快照一致，逃出计数才能对齐。
@@ -437,6 +449,9 @@ impl CompileCtx {
         }
         let fod = self.labels.for_of_depth;
         let fid = self.labels.for_in_depth;
+        let v_reg = self.alloc_reg();
+        let undef_idx = self.add_constant(Constant::Undefined);
+        self.inst(Inst::load_const(Operand::Reg(v_reg), undef_idx));
         self.labels.loop_stack.push(LoopEntry {
             break_label,
             continue_label,
@@ -444,7 +459,9 @@ impl CompileCtx {
             for_of_depth_at_open: fod,
             for_in_depth_at_open: fid,
             kind,
+            v_reg,
         });
+        v_reg
     }
 
     pub(crate) fn pop_loop(&mut self) {
@@ -462,19 +479,88 @@ impl CompileCtx {
         self.labels.loop_stack.last()
     }
 
-    pub(crate) fn push_switch(&mut self, break_label: LabelId) {
+    pub(crate) fn push_switch(&mut self, break_label: LabelId, result_reg: u32) {
         let fd = self.labels.finally_depth;
         let fod = self.labels.for_of_depth;
         let fid = self.labels.for_in_depth;
-        self.labels.switch_stack.push((break_label, fd, fod, fid));
+        self.labels.switch_stack.push(SwitchEntry {
+            break_label,
+            finally_depth_at_open: fd,
+            for_of_depth_at_open: fod,
+            for_in_depth_at_open: fid,
+            result_reg,
+        });
     }
 
     pub(crate) fn pop_switch(&mut self) {
         self.labels.switch_stack.pop();
     }
 
-    pub(crate) fn current_switch(&self) -> Option<&(LabelId, usize, usize, usize)> {
+    pub(crate) fn current_switch(&self) -> Option<&SwitchEntry> {
         self.labels.switch_stack.last()
+    }
+
+    /// 压一个语句列表累积帧：列表内每条非空语句经 `set_completion_last` 记
+    /// 最后非空值寄存器（空语句不覆写，规范 `UpdateEmpty` 的「非空才覆写」）。
+    pub(crate) fn push_completion_list(&mut self) {
+        self.completion_frames.push(CompletionFrame::List { last: None });
+    }
+
+    pub(crate) fn pop_completion_list(&mut self) {
+        debug_assert!(matches!(self.completion_frames.last(), Some(CompletionFrame::List { .. })));
+        self.completion_frames.pop();
+    }
+
+    /// 记栈顶列表帧的最后非空语句寄存器（调用点须刚压过列表帧）。
+    pub(crate) fn set_completion_last(&mut self, reg: u32) {
+        if let CompletionFrame::List { last } = self.completion_frames.last_mut().expect("完成值帧栈顶为语句列表帧")
+        {
+            *last = Some(reg);
+        }
+    }
+
+    /// 压一个边界帧（`UpdateEmpty(_, undefined)` 站点：if 支臂 / with 体）：
+    /// break/continue 携值解析撞它物化 undefined。
+    pub(crate) fn push_completion_boundary(&mut self) {
+        self.completion_frames.push(CompletionFrame::Boundary);
+    }
+
+    pub(crate) fn pop_completion_boundary(&mut self) {
+        debug_assert!(matches!(self.completion_frames.last(), Some(CompletionFrame::Boundary)));
+        self.completion_frames.pop();
+    }
+
+    /// 压一个出口目标帧：break/continue 携值写入该寄存器，空携值保持其原值。
+    pub(crate) fn push_completion_target(&mut self, v_reg: u32) {
+        self.completion_frames.push(CompletionFrame::Target { v_reg });
+    }
+
+    pub(crate) fn pop_completion_target(&mut self) {
+        debug_assert!(matches!(self.completion_frames.last(), Some(CompletionFrame::Target { .. })));
+        self.completion_frames.pop();
+    }
+
+    /// 解析 break/continue 的携值：自栈顶向目标帧走，首个非空列表帧取
+    /// `Value(r)`，撞边界帧取 `Undefined`，首个目标帧——与 `target_v_reg`
+    /// 相等（本跳转自身目标）取 `Empty`（不写，目标寄存器保持既有累积值，
+    /// 规范 `UpdateEmpty(break, iterationResult)` 等义），为内层非目标帧
+    /// （labeled break 穿内层循环）取 `Value(该帧寄存器)`。
+    pub(crate) fn resolve_completion_carry(&self, target_v_reg: u32) -> CompletionCarry {
+        for frame in self.completion_frames.iter().rev() {
+            match frame {
+                CompletionFrame::List { last: Some(r) } => return CompletionCarry::Value(*r),
+                CompletionFrame::List { last: None } => {}
+                CompletionFrame::Boundary => return CompletionCarry::Undefined,
+                CompletionFrame::Target { v_reg } => {
+                    return if *v_reg == target_v_reg {
+                        CompletionCarry::Empty
+                    } else {
+                        CompletionCarry::Value(*v_reg)
+                    };
+                }
+            }
+        }
+        CompletionCarry::Empty
     }
 
     /// 进入/离开一个 try/finally 域：break/continue 跨越 finally 计数用。
@@ -510,7 +596,7 @@ impl CompileCtx {
     }
 
     pub(crate) fn push_label_scope(
-        &mut self, name: &str, break_label: LabelId, continue_label: Option<LabelId>,
+        &mut self, name: &str, break_label: LabelId, continue_label: Option<LabelId>, completion_reg: Option<u32>,
     ) -> Result<(), String> {
         if self.labels.label_scopes.iter().any(|s| s.name == name) {
             return Err(format!("SyntaxError: Label '{name}' has already been declared"));
@@ -525,6 +611,7 @@ impl CompileCtx {
             finally_depth_at_open: fd,
             for_of_depth_at_open: fod,
             for_in_depth_at_open: fid,
+            completion_reg,
         });
         Ok(())
     }
@@ -549,9 +636,11 @@ impl CompileCtx {
         Ok(())
     }
 
-    /// 把待绑定标签名落地为活动标签作用域，绑定到本次循环的 break/continue 目标。
-    /// 返回压入的作用域个数（供事后对称弹出）。
-    pub(crate) fn take_pending_loop_labels(&mut self, break_label: LabelId, continue_label: LabelId) -> usize {
+    /// 把待绑定标签名落地为活动标签作用域，绑定到本次循环的 break/continue 目标
+    /// 与出口结果寄存器。返回压入的作用域个数（供事后对称弹出）。
+    pub(crate) fn take_pending_loop_labels(
+        &mut self, break_label: LabelId, continue_label: LabelId, completion_reg: u32,
+    ) -> usize {
         let names = std::mem::take(&mut self.labels.pending_loop_labels);
         let count = names.len();
         let fd = self.labels.finally_depth;
@@ -565,6 +654,7 @@ impl CompileCtx {
                 finally_depth_at_open: fd,
                 for_of_depth_at_open: fod,
                 for_in_depth_at_open: fid,
+                completion_reg: Some(completion_reg),
             });
         }
         count

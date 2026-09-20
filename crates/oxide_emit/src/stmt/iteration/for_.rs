@@ -47,8 +47,8 @@ impl Emitter {
         let start_label = ctx.next_label_id();
         let update_label = ctx.next_label_id();
         let end_label = ctx.next_label_id();
-        ctx.push_loop(end_label, update_label, crate::emit_ctx::LoopKind::Plain);
-        let n_labeled = ctx.take_pending_loop_labels(end_label, update_label);
+        let v_reg = ctx.push_loop(end_label, update_label, crate::emit_ctx::LoopKind::Plain);
+        let n_labeled = ctx.take_pending_loop_labels(end_label, update_label, v_reg);
         // 循环头 let/const 声明名：update 段是 per-iteration 可变绑定（规范
         // §14.7.4.4 CreatePerIterationEnvironment 用 CreateMutableBinding）——
         // 规范允许 update 段写 let/const 循环变量，每迭代新建一个可变绑定；
@@ -182,6 +182,12 @@ impl Emitter {
             ctx.inst(Inst::jmp_if_false(test_reg, end_label));
         }
         let body_result = self.emit_statement(&fr.body, ctx)?;
+        // 体正常完成回写（回写点在 `update_label` 落位前：体内 continue 目标是
+        // update 段，绕过本点不覆写本迭代累积值；update 段写循环变量寄存器，
+        // 独立于本寄存器）。
+        if let Some(r) = body_result {
+            ctx.inst(Inst::new(OpCode::LOAD_VAR, Operand::Reg(v_reg), Operand::Reg(r), Operand::None));
+        }
         ctx.labels.set_label_pos(update_label, ctx.insts.len());
         if let Some(update) = &fr.update {
             // update 段写循环变量寄存器、不写 cell：被捕获的 let/const 循环变量每迭代
@@ -203,12 +209,8 @@ impl Emitter {
         ctx.pop_label_scopes(n_labeled);
         ctx.pop_loop();
         ctx.pop_scope();
-        // 循环完成值 = 循环体最后一次非空完成值；空体物化 undefined 作为带值完成
-        // 返回，不沿用循环前的值。
-        let result = match body_result {
-            Some(r) => r,
-            None => self.emit_undefined(ctx),
-        };
-        Ok(Some(result))
+        // 循环完成值 = 出口结果寄存器：入口 undefined、体正常完成每迭代覆写、
+        // break/continue 携值写入（空携值不写，保持既有累积值）。
+        Ok(Some(v_reg))
     }
 }

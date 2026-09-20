@@ -45,6 +45,29 @@ pub(crate) struct LoopEntry {
     /// 循环打开时已打开的 for-in 循环数。
     pub(crate) for_in_depth_at_open: usize,
     pub(crate) kind: LoopKind,
+    /// 循环出口结果寄存器：入口初始 undefined，体正常完成回写，break/continue
+    /// 携值写入（空携值不写，保持前次累积值）。
+    pub(crate) v_reg: u32,
+}
+
+/// 完成值帧：编译期帧栈元素，承载「每语句列表独立累积」语义。
+/// `List` 的 `last` 记源序最后非空语句的寄存器（空语句不覆写）；`Boundary`
+/// 是 `UpdateEmpty(_, undefined)` 站点（if 支臂 / with 体），携值解析撞它物化
+/// undefined；`Target` 是循环 / switch / 非迭代标签的出口结果寄存器。
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum CompletionFrame {
+    List { last: Option<u32> },
+    Boundary,
+    Target { v_reg: u32 },
+}
+
+/// break/continue 的携值：`Value(r)` 拷贝寄存器 `r`，`Undefined` 物化 undefined，
+/// `Empty` 不写（出口目标寄存器保持既有累积值）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CompletionCarry {
+    Value(u32),
+    Undefined,
+    Empty,
 }
 
 /// 标签语句作用域：编译期内登记 `break label` / `continue label` 的跳转目标。
@@ -60,6 +83,20 @@ pub struct LabelScope {
     pub(crate) for_of_depth_at_open: usize,
     /// 标签打开时已打开的 for-in 循环数。
     pub(crate) for_in_depth_at_open: usize,
+    /// 标签目标出口结果寄存器：迭代标签取所包裹循环的 `v_reg`；非迭代标签仅当
+    /// 体含指向本标签的 break 时分配（体正常完成回写、break 携值写入）。
+    pub(crate) completion_reg: Option<u32>,
+}
+
+/// switch 打开时的词法快照：switch 内 break 的逃出计数以打开点为准，switch 之前
+/// 已打开的循环不属于本次逃出；另记 CaseBlock 出口结果寄存器（`resultValue` 累积槽）。
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct SwitchEntry {
+    pub(crate) break_label: LabelId,
+    pub(crate) finally_depth_at_open: usize,
+    pub(crate) for_of_depth_at_open: usize,
+    pub(crate) for_in_depth_at_open: usize,
+    pub(crate) result_reg: u32,
 }
 
 /// 跳转目标 / 标签语句解析状态。
@@ -68,10 +105,10 @@ pub(crate) struct LabelCtx {
     pub(crate) label_pos: Vec<Option<usize>>,
     /// 每个条目记录循环打开时的词法快照（finally/for-of/for-in 深度）。
     pub(crate) loop_stack: Vec<LoopEntry>,
-    /// 每个条目记录 switch 打开时的词法快照（finally/for-of/for-in 深度）：
+    /// 每个条目记录 switch 打开时的词法快照与 CaseBlock 出口结果寄存器：
     /// switch 内 break 的逃出计数以打开点为准，switch 之前已打开的迭代器
     /// 不属于本次逃出。
-    pub(crate) switch_stack: Vec<(LabelId, usize, usize, usize)>,
+    pub(crate) switch_stack: Vec<SwitchEntry>,
     /// 活动标签语句作用域（解析 `break label` / `continue label`）。
     pub(crate) label_scopes: Vec<LabelScope>,
     /// 等待绑定到下一个循环 continue 目标的标签名。
