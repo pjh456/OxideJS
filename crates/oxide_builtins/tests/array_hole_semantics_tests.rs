@@ -940,3 +940,310 @@ fn test_reverse_arraylike_length_not_written_back() {
     .unwrap();
     assert_eq!(out, "2.7|y|x");
 }
+
+// map species 实例型 Ctor：构造恰一次且收单参 n=5，返回体直接作结果，
+// 回调值经 CreateDataPropertyOrThrow 逐位写入。
+#[test]
+fn test_map_species_instance_ctor() {
+    let out = eval_str(
+        "(() => { let cc = 0, seen = null; \
+         function C1(n) { cc++; seen = n; return { tag: 'inst' }; } \
+         const a = [1,2,3,4,5]; a.constructor = {}; a.constructor[Symbol.species] = C1; \
+         const r = a.map(x => x * 2); \
+         return cc + '|' + seen + '|' + r.tag + '|' + r[0] + '|' + r[4]; })()",
+    )
+    .unwrap();
+    assert_eq!(out, "1|5|inst|2|10");
+}
+
+// map species 普通 Ctor 无返回体：结果非数组、原型为 Ctor.prototype，且无收尾
+// Set(length)（length 为 undefined，仅元素位 present）。
+#[test]
+fn test_map_species_plain_ctor_no_length() {
+    let out = eval_str(
+        "(() => { let cc = 0; \
+         function C2(n) { cc++; } \
+         const a = [1,2,3]; a.constructor = {}; a.constructor[Symbol.species] = C2; \
+         const r = a.map(x => x + 10); \
+         return cc + '|' + Array.isArray(r) + '|' + (Object.getPrototypeOf(r) === C2.prototype) + '|' + \
+         r.length + '|' + r[0] + '|' + r[2]; })()",
+    )
+    .unwrap();
+    assert_eq!(out, "1|false|true|undefined|11|13");
+}
+
+// map constructor 访问器抛错：Get 异常原样传播。
+#[test]
+fn test_map_ctor_accessor_throws() {
+    let out = eval_str(
+        "(() => { const a = [1]; \
+         Object.defineProperty(a, 'constructor', { get() { throw new Error('ctor-poison'); } }); \
+         try { a.map(x => x); return 'no-throw'; } catch (e) { return e.name + ':' + e.message; } })()",
+    )
+    .unwrap();
+    assert_eq!(out, "Error:ctor-poison");
+}
+
+// map constructor 为非对象非 undefined（null/数字/字符串/布尔四值）均抛 TypeError。
+#[test]
+fn test_map_ctor_non_object_throws() {
+    let out = eval_str(
+        "(() => { let ok = 0; \
+         for (const cv of [null, 1, 'string', true]) { \
+           const a = [1,2]; a.constructor = cv; \
+           try { a.map(x => x); } catch (e) { if (e instanceof TypeError) ok++; } } \
+         return String(ok); })()",
+    )
+    .unwrap();
+    assert_eq!(out, "4");
+}
+
+// map @@species 访问器抛错原样透传。
+#[test]
+fn test_map_species_accessor_throws() {
+    let out = eval_str(
+        "(() => { const a = [1]; a.constructor = { get [Symbol.species]() { throw new Error('species-poison'); } }; \
+         try { a.map(x => x); return 'no-throw'; } catch (e) { return e.name + ':' + e.message; } })()",
+    )
+    .unwrap();
+    assert_eq!(out, "Error:species-poison");
+}
+
+// map species 为非构造器对象（箭头函数）抛 TypeError。
+#[test]
+fn test_map_species_non_ctor_throws() {
+    let out = eval_str(
+        "(() => { const a = [1]; a.constructor = {}; a.constructor[Symbol.species] = () => {}; \
+         try { a.map(x => x); return 'no-throw'; } catch (e) { return e.name; } })()",
+    )
+    .unwrap();
+    assert_eq!(out, "TypeError");
+}
+
+// map 目标不可扩展：CreateDataPropertyOrThrow 抛 TypeError。
+#[test]
+fn test_map_species_non_extensible_throws() {
+    let out = eval_str(
+        "(() => { function C3() { return Object.preventExtensions({}); } \
+         const a = [1]; a.constructor = {}; a.constructor[Symbol.species] = C3; \
+         try { a.map(x => x); return 'no-throw'; } catch (e) { return e.name; } })()",
+    )
+    .unwrap();
+    assert_eq!(out, "TypeError");
+}
+
+// map 洞位输入：洞不写属性（结果该位缺失），length 与 present 位值正确。
+#[test]
+fn test_map_hole_skipped_not_written() {
+    let out = eval_str(
+        "(() => { const r = [1,,3].map(x => x * 10); \
+         return (1 in r) + '|' + r.length + '|' + r[0] + '|' + r[2]; })()",
+    )
+    .unwrap();
+    assert_eq!(out, "false|3|10|30");
+}
+
+// map species 为 null / undefined：回退真数组（原型 Array.prototype），值正确。
+#[test]
+fn test_map_species_null_undef_plain_array() {
+    let out = eval_str(
+        "(() => { const a = [1,2]; a.constructor = {}; a.constructor[Symbol.species] = null; \
+         const r1 = a.map(x => x); \
+         const b = [1,2]; b.constructor = {}; b.constructor[Symbol.species] = undefined; \
+         const r2 = b.map(x => x); \
+         return Array.isArray(r1) + '|' + (Object.getPrototypeOf(r1) === Array.prototype) + '|' + r1.length + '|' + \
+         Array.isArray(r2) + '|' + r2.length; })()",
+    )
+    .unwrap();
+    assert_eq!(out, "true|true|2|true|2");
+}
+
+// filter species 实例型 Ctor：构造恰一次且收单参 count=0，返回体直接作结果，
+// 保留元素逐位写入。
+#[test]
+fn test_filter_species_instance_ctor() {
+    let out = eval_str(
+        "(() => { let cc = 0, seen = null; \
+         function F1(n) { cc++; seen = n; return { tag: 'inst' }; } \
+         const a = [1,2,3,4,5,6]; a.constructor = {}; a.constructor[Symbol.species] = F1; \
+         const r = a.filter(x => x % 2 === 0); \
+         return cc + '|' + seen + '|' + r.tag + '|' + r[0] + '|' + r[1]; })()",
+    )
+    .unwrap();
+    assert_eq!(out, "1|0|inst|2|4");
+}
+
+// filter species Ctor 预设 length=99：无收尾 Set(length)，预设值原样保留，
+// 保留元素逐位写入。
+#[test]
+fn test_filter_species_pre_length_kept() {
+    let out = eval_str(
+        "(() => { let cc = 0; \
+         function F2(n) { cc++; this.length = 99; } \
+         const a = [1,2,3,4]; a.constructor = {}; a.constructor[Symbol.species] = F2; \
+         const r = a.filter(x => x > 1); \
+         return cc + '|' + Object.prototype.hasOwnProperty.call(r, 'length') + '|' + r.length + '|' + \
+         r[0] + '|' + r[1] + '|' + Object.keys(r).join(','); })()",
+    )
+    .unwrap();
+    assert_eq!(out, "1|true|99|2|3|0,1,2,length");
+}
+
+// filter constructor 访问器抛错：Get 异常原样传播。
+#[test]
+fn test_filter_ctor_accessor_throws() {
+    let out = eval_str(
+        "(() => { const a = [1]; \
+         Object.defineProperty(a, 'constructor', { get() { throw new Error('ctor-poison'); } }); \
+         try { a.filter(x => true); return 'no-throw'; } catch (e) { return e.name + ':' + e.message; } })()",
+    )
+    .unwrap();
+    assert_eq!(out, "Error:ctor-poison");
+}
+
+// filter constructor 为非对象非 undefined（null/数字/字符串/布尔四值）均抛 TypeError。
+#[test]
+fn test_filter_ctor_non_object_throws() {
+    let out = eval_str(
+        "(() => { let ok = 0; \
+         for (const cv of [null, 1, 'string', true]) { \
+           const a = [1]; a.constructor = cv; \
+           try { a.filter(x => true); } catch (e) { if (e instanceof TypeError) ok++; } } \
+         return String(ok); })()",
+    )
+    .unwrap();
+    assert_eq!(out, "4");
+}
+
+// filter @@species 访问器抛错原样透传。
+#[test]
+fn test_filter_species_accessor_throws() {
+    let out = eval_str(
+        "(() => { const a = [1]; a.constructor = { get [Symbol.species]() { throw new Error('species-poison'); } }; \
+         try { a.filter(x => true); return 'no-throw'; } catch (e) { return e.name + ':' + e.message; } })()",
+    )
+    .unwrap();
+    assert_eq!(out, "Error:species-poison");
+}
+
+// filter species 为非构造器对象（箭头函数）抛 TypeError。
+#[test]
+fn test_filter_species_non_ctor_throws() {
+    let out = eval_str(
+        "(() => { const a = [1]; a.constructor = {}; a.constructor[Symbol.species] = () => {}; \
+         try { a.filter(x => true); return 'no-throw'; } catch (e) { return e.name; } })()",
+    )
+    .unwrap();
+    assert_eq!(out, "TypeError");
+}
+
+// filter 目标不可扩展：CreateDataPropertyOrThrow 抛 TypeError。
+#[test]
+fn test_filter_species_non_extensible_throws() {
+    let out = eval_str(
+        "(() => { function C3() { return Object.preventExtensions({}); } \
+         const a = [1,2,3,4]; a.constructor = {}; a.constructor[Symbol.species] = C3; \
+         try { a.filter(x => x > 0); return 'no-throw'; } catch (e) { return e.name; } })()",
+    )
+    .unwrap();
+    assert_eq!(out, "TypeError");
+}
+
+// filter 非数组接收者（arraylike）：结果恒为真数组，值正确。
+#[test]
+fn test_filter_arraylike_receiver_plain() {
+    let out = eval_str(
+        "(() => { const r = Array.prototype.filter.call({ 0: 1, 1: 2, length: 2 }, x => x > 0); \
+         return Array.isArray(r) + '|' + r.length + '|' + r.join(','); })()",
+    )
+    .unwrap();
+    assert_eq!(out, "true|2|1,2");
+}
+
+// filter 普通数组无 species 覆写：结果真数组、值与长度正确（防过度修）。
+#[test]
+fn test_filter_plain_array_plain_result() {
+    let out = eval_str(
+        "(() => { const r = [1,2,3,4].filter(x => x % 2 === 0); \
+         return Array.isArray(r) + '|' + r.length + '|' + r.join(','); })()",
+    )
+    .unwrap();
+    assert_eq!(out, "true|2|2,4");
+}
+
+// 可构造 C 覆写 @@species：结果经 species 构造（Other 实例），而非 C 本身。
+#[test]
+fn test_slice_species_ctor_override_returns_other() {
+    let out = eval_str(
+        "(() => { function Base(n) { this.tag = 'base'; } \
+         function Other(n) { this.tag = 'other'; } \
+         Base[Symbol.species] = Other; \
+         const a = [1,2,3]; a.constructor = Base; \
+         const r = a.slice(0); \
+         return r.tag + '|' + Array.isArray(r); })()",
+    )
+    .unwrap();
+    assert_eq!(out, "other|false");
+}
+
+// 可构造 C 无 @@species：Get 查得 undefined，回退真数组（原型 Array.prototype）。
+#[test]
+fn test_slice_ctor_plain_no_species_plain_array() {
+    let out = eval_str(
+        "(() => { function C(n) { this.tag = 'C'; } \
+         const a = [1,2,3]; a.constructor = C; \
+         const r = a.slice(0); \
+         return Array.isArray(r) + '|' + (Object.getPrototypeOf(r) === Array.prototype); })()",
+    )
+    .unwrap();
+    assert_eq!(out, "true|true");
+}
+
+// 可构造 C 的 @@species 为非构造器对象抛 TypeError。
+#[test]
+fn test_slice_species_non_ctor_throws() {
+    let out = eval_str(
+        "(() => { function C3(n) { this.tag = 'C3'; } C3[Symbol.species] = () => {}; \
+         const a = [1,2,3]; a.constructor = C3; \
+         try { a.slice(0); return 'no-throw'; } catch (e) { return e.name; } })()",
+    )
+    .unwrap();
+    assert_eq!(out, "TypeError");
+}
+
+// 可构造 C 的 @@species 访问器抛错原样透传。
+#[test]
+fn test_slice_species_accessor_throws() {
+    let out = eval_str(
+        "(() => { function C4(n) { this.tag = 'C4'; } \
+         Object.defineProperty(C4, Symbol.species, { get() { throw new Error('species-poison'); } }); \
+         const a = [1,2,3]; a.constructor = C4; \
+         try { a.slice(0); return 'no-throw'; } catch (e) { return e.name + ':' + e.message; } })()",
+    )
+    .unwrap();
+    assert_eq!(out, "Error:species-poison");
+}
+
+// 守卫：c={} 不可构造形态经 @@species 构造（136 系列保真，防 228 修点漂移）。
+#[test]
+fn test_slice_ctor_braces_species_plain() {
+    let out = eval_str(
+        "(() => { function G(n) { this.tag = 'G'; } \
+         const a = [1,2,3]; a.constructor = {}; a.constructor[Symbol.species] = G; \
+         const r = a.slice(0); \
+         return r.tag; })()",
+    )
+    .unwrap();
+    assert_eq!(out, "G");
+}
+
+// 守卫：普通数组 slice 无 species 覆写，结果真数组、值正确。
+#[test]
+fn test_slice_plain_array_guard() {
+    let out = eval_str(
+        "(() => { const r = [1,2,3].slice(0); \
+         return Array.isArray(r) + '|' + r.join(','); })()",
+    )
+    .unwrap();
+    assert_eq!(out, "true|1,2,3");
+}

@@ -335,32 +335,32 @@ pub(crate) fn array_species_create<H: VmHost>(
     let o_ptr = o_val.as_js_object_ptr();
     let o_obj = unsafe { &*o_ptr };
     let ctor_key = vm.kernel_core().perm_interner().intern("constructor").0;
-    let mut c = match vm.ordinary_get(o_obj, ctor_key, o_val) {
+    let c = match vm.ordinary_get(o_obj, ctor_key, o_val) {
         Ok(v) => v,
         Err(msg) => return Err(from_engine_error(vm, &msg)),
     };
-    // C 为 undefined 时不查 species，直接回退内置 ArrayCreate。
+    // C 为 undefined 时直接回退内置 ArrayCreate；C 为其余非对象（null/基元）抛 TypeError。
     if c.is_undefined() {
         return Ok(create_new_array(vm, count));
     }
-    if !is_constructor_value(c) {
-        if !c.is_object() {
-            return Err(crate::error::create_type_error(vm, "Species constructor not a constructor"));
-        }
-        let species_key = make_well_known_symbol_key(10);
-        let s = match vm.ordinary_get(unsafe { &*c.as_js_object_ptr() }, species_key, c) {
-            Ok(v) => v,
-            Err(msg) => return Err(from_engine_error(vm, &msg)),
-        };
-        c = if s.is_null() { JsValue::undefined() } else { s };
-    }
-    if c.is_undefined() {
-        return Ok(create_new_array(vm, count));
-    }
-    if !is_constructor_value(c) {
+    if !c.is_object() {
         return Err(crate::error::create_type_error(vm, "Species constructor not a constructor"));
     }
-    match construct_array_from_result(vm, c, &[js_array_index(count)]) {
+    // 一切对象 C 均须查 @@species（null 归一为 undefined）：S 为 undefined 回退
+    // ArrayCreate，S 非构造器抛 TypeError，否则以 S 构造。
+    let species_key = make_well_known_symbol_key(10);
+    let s = match vm.ordinary_get(unsafe { &*c.as_js_object_ptr() }, species_key, c) {
+        Ok(v) => v,
+        Err(msg) => return Err(from_engine_error(vm, &msg)),
+    };
+    let s = if s.is_null() { JsValue::undefined() } else { s };
+    if s.is_undefined() {
+        return Ok(create_new_array(vm, count));
+    }
+    if !is_constructor_value(s) {
+        return Err(crate::error::create_type_error(vm, "Species constructor not a constructor"));
+    }
+    match construct_array_from_result(vm, s, &[js_array_index(count)]) {
         Ok((ptr, _)) => Ok(ptr),
         Err(err) => Err(err),
     }

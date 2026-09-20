@@ -9,8 +9,8 @@ use crate::builtins_error;
 
 use super::common::{
     array_ptr_len3, array_type_error, arraylike_get, arraylike_get_or_err, arraylike_index_present,
-    check_array_create_len, create_new_array, get_this_arraylike, invoke_native_callback, js_array_index,
-    require_callback, unexpected_tail_call_error,
+    check_array_create_len, get_this_arraylike, invoke_native_callback, js_array_index, require_callback,
+    unexpected_tail_call_error,
 };
 use super::from::{array_species_create, create_data_property_or_throw, from_engine_error};
 
@@ -43,9 +43,21 @@ pub fn array_for_each<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 }
 
 /// `Array.prototype.map(callback, thisArg)`：对每个元素调用 callback 生成新数组。
+///
+/// # 步骤
+/// 1. `ArraySpeciesCreate(O, n)` 构建结果对象（真数组按 constructor/@@species
+///    构造，非可构造值抛 TypeError）并钉入返回寄存器。
+/// 2. 逐索引 HasProperty 门控 + Get，回调以 (elem, 索引, O) 调用；present 位以
+///    CreateDataPropertyOrThrow 写入（受限目标抛 TypeError），洞位不写属性，
+///    真数组目标显式置洞（预填 present-undefined）。
+/// 3. 无收尾 Set(length)：规范 map 不设 length，length 由构造器/元素写入决定。
+///
+/// # 副作用
+/// - 回调为用户代码；Get 可经原型链触发 getter；species 构造与目标属性写入
+///   可按规范抛 TypeError。
 pub fn array_map<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("Array.prototype.map called with {} args", args.len());
-    let (arr_ptr, n, _is_array) = array_ptr_len3!(vm, args);
+    let (arr_ptr, n, is_array) = array_ptr_len3!(vm, args);
     let o_val = vm.reg(args[0]);
     if args.len() < 2 {
         return NativeResult::Err(array_type_error(vm, "callback is not a function"));
@@ -55,37 +67,57 @@ pub fn array_map<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         Err(err) => return NativeResult::Err(err),
     };
     let this_val = if args.len() > 2 { vm.reg(args[2]) } else { JsValue::undefined() };
-    let new_arr = create_new_array(vm, n);
     if let Err(err) = check_array_create_len(vm, n) {
         return NativeResult::Err(err);
     }
+    // ArraySpeciesCreate(O, n)：真数组按 constructor/@@species 构造目标。
+    let a_ptr = match array_species_create(vm, o_val, is_array, n) {
+        Ok(p) => p,
+        Err(err) => return NativeResult::Err(err),
+    };
+    // 结果钉入返回寄存器：其后的回调各带用户窗口，结果指针须保 GC 根。
+    vm.set_reg(0, JsValue::from_js_object(a_ptr));
     for i in 0..n {
-        // 洞位跳过回调，并在结果对应位留洞（结果数组预填 present-undefined，须显式置洞）。
+        // 洞位跳过回调且不写属性；真数组目标预填 present-undefined，须显式置洞。
         if !arraylike_index_present(vm, arr_ptr, i) {
-            unsafe {
-                (*new_arr).mark_hole_at(i);
+            if unsafe { &*a_ptr }.is_array() {
+                unsafe {
+                    (*a_ptr).mark_hole_at(i);
+                }
             }
             continue;
         }
         let elem = arraylike_get_or_err!(vm, arr_ptr, i);
-        match invoke_native_callback(vm, callback_val, this_val, &[elem, js_array_index(i), o_val]) {
-            NativeResult::Ok(mapped) => unsafe {
-                (*new_arr).set_prop_at(i, mapped);
-            },
+        let mapped = match invoke_native_callback(vm, callback_val, this_val, &[elem, js_array_index(i), o_val]) {
+            NativeResult::Ok(mapped) => mapped,
             NativeResult::Err(err) => return NativeResult::Err(err),
             NativeResult::TailCall { .. } => return unexpected_tail_call_error(vm),
+        };
+        let key_si = vm.string_key_si(&i.to_string());
+        if let Err(err) = create_data_property_or_throw(vm, unsafe { &mut *a_ptr }, key_si, mapped) {
+            return NativeResult::Err(err);
         }
     }
-    unsafe {
-        (*new_arr).set_prop_count(n);
-    }
-    NativeResult::Ok(JsValue::from_js_object(new_arr))
+    NativeResult::Ok(JsValue::from_js_object(a_ptr))
 }
 
 /// `Array.prototype.filter(callback, thisArg)`：保留 callback 返回真值的元素形成新数组。
+///
+/// # 步骤
+/// 1. `ArraySpeciesCreate(O, 0)` 构建结果对象（真数组按 constructor/@@species
+///    构造，非可构造值抛 TypeError）并钉入返回寄存器；真数组结果元素数随写入
+///    逐位增长。
+/// 2. 逐索引 HasProperty 门控 + Get，回调以 (elem, 索引, O) 调用；真值结果以
+///    CreateDataPropertyOrThrow 写入递增目标位（受限目标抛 TypeError），洞位
+///    不复制（结果保持紧凑）。
+/// 3. 无收尾 Set(length)：规范 filter 不设 length，length 由构造器/元素写入决定。
+///
+/// # 副作用
+/// - 回调为用户代码；Get 可经原型链触发 getter；species 构造与目标属性写入
+///   可按规范抛 TypeError。
 pub fn array_filter<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("Array.prototype.filter called with {} args", args.len());
-    let (arr_ptr, n, _is_array) = array_ptr_len3!(vm, args);
+    let (arr_ptr, n, is_array) = array_ptr_len3!(vm, args);
     let o_val = vm.reg(args[0]);
     if args.len() < 2 {
         builtins_error!("Array.prototype.filter: invalid receiver");
@@ -99,34 +131,37 @@ pub fn array_filter<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         }
     };
     let this_val = if args.len() > 2 { vm.reg(args[2]) } else { JsValue::undefined() };
-    let mut kept: Vec<JsValue> = Vec::new();
     if let Err(err) = check_array_create_len(vm, n) {
         return NativeResult::Err(err);
     }
+    // ArraySpeciesCreate(O, 0)：真数组按 constructor/@@species 构造目标。
+    let a_ptr = match array_species_create(vm, o_val, is_array, 0) {
+        Ok(p) => p,
+        Err(err) => return NativeResult::Err(err),
+    };
+    // 结果钉入返回寄存器：其后的回调各带用户窗口，结果指针须保 GC 根。
+    vm.set_reg(0, JsValue::from_js_object(a_ptr));
+    let mut t = 0usize;
     for i in 0..n {
         // 洞位跳过：结果保持紧凑，不复制缺失索引。
         if !arraylike_index_present(vm, arr_ptr, i) {
             continue;
         }
         let elem = arraylike_get_or_err!(vm, arr_ptr, i);
-        match invoke_native_callback(vm, callback_val, this_val, &[elem, js_array_index(i), o_val]) {
-            NativeResult::Ok(result_val) => {
-                if oxide_runtime_api::to_boolean(result_val) {
-                    kept.push(elem);
-                }
-            }
+        let keep = match invoke_native_callback(vm, callback_val, this_val, &[elem, js_array_index(i), o_val]) {
+            NativeResult::Ok(result_val) => oxide_runtime_api::to_boolean(result_val),
             NativeResult::Err(err) => return NativeResult::Err(err),
             NativeResult::TailCall { .. } => return unexpected_tail_call_error(vm),
+        };
+        if keep {
+            let key_si = vm.string_key_si(&t.to_string());
+            if let Err(err) = create_data_property_or_throw(vm, unsafe { &mut *a_ptr }, key_si, elem) {
+                return NativeResult::Err(err);
+            }
+            t += 1;
         }
     }
-    let new_arr = create_new_array(vm, kept.len());
-    unsafe {
-        for (i, val) in kept.iter().enumerate() {
-            (*new_arr).set_prop_at(i, *val);
-        }
-        (*new_arr).set_prop_count(kept.len());
-    }
-    NativeResult::Ok(JsValue::from_js_object(new_arr))
+    NativeResult::Ok(JsValue::from_js_object(a_ptr))
 }
 
 /// `Array.prototype.reduce(callback, initialValue)`：从左到右累计归约；
