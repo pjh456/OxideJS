@@ -322,6 +322,113 @@ fn stringify_array_ignores_named_props() {
     assert_eq!(out, "[1,2]");
 }
 
+// --- BigInt 值位（SerializeJSONProperty 步 10 抛 TypeError；步 2 查 toJSON）---
+
+fn assert_bigint_serialize_err(source: &str) {
+    let result = eval(source);
+    match result {
+        Err(e) => {
+            assert!(
+                e.to_lowercase().contains("do not know how to serialize a bigint"),
+                "expected BigInt serialize TypeError, got: {}",
+                e
+            )
+        }
+        Ok(_) => panic!("expected BigInt serialize TypeError, got ok: {}", source),
+    }
+}
+
+// 顶层原语四值位：1n / -1n / 0n / -0n 恒抛，无文本产出。
+#[test]
+fn stringify_bigint_top_level_throws() {
+    assert_bigint_serialize_err("JSON.stringify(1n)");
+    assert_bigint_serialize_err("JSON.stringify(-1n)");
+    assert_bigint_serialize_err("JSON.stringify(0n)");
+    assert_bigint_serialize_err("JSON.stringify(-0n)");
+}
+
+// 大位宽 BigInt 同样抛错（不产十进制文本）。
+#[test]
+fn stringify_bigint_wide_bits_throws() {
+    assert_bigint_serialize_err("JSON.stringify(2n ** 32n + 1n)");
+}
+
+// 嵌套对象属性与数组元素位（含深嵌套、稀疏）均经值位臂抛错。
+#[test]
+fn stringify_bigint_nested_throws() {
+    assert_bigint_serialize_err("JSON.stringify({a:1n})");
+    assert_bigint_serialize_err("JSON.stringify([1n,2n,[3n]])");
+    assert_bigint_serialize_err("JSON.stringify({a:{b:1n}})");
+    assert_bigint_serialize_err("JSON.stringify([,1n])");
+}
+
+// 空格缩进不改变抛错路径。
+#[test]
+fn stringify_bigint_space_indent_throws() {
+    assert_bigint_serialize_err("JSON.stringify({a:1n}, null, 2)");
+}
+
+// replacer 白名单命中键后仍走值位抛错。
+#[test]
+fn stringify_bigint_whitelist_throws() {
+    assert_bigint_serialize_err("JSON.stringify({a:1n}, ['a'])");
+}
+
+// 装箱 BigInt（步 4d 无条件解包 [[BigIntData]]）与裸值同抛。
+#[test]
+fn stringify_bigint_boxed_throws() {
+    assert_bigint_serialize_err("JSON.stringify(Object(0n))");
+    assert_bigint_serialize_err("JSON.stringify({a:Object(1n)})");
+}
+
+// BigInt64Array 元素位经对象臂读值后在值位臂抛错。
+#[test]
+fn stringify_bigint64array_throws() {
+    assert_bigint_serialize_err("JSON.stringify(new BigInt64Array([1n,2n]))");
+}
+
+// replacer 透传不改变值位；replacer 结果再入值位臂同样抛错。
+#[test]
+fn stringify_bigint_replacer_throws() {
+    assert_bigint_serialize_err("JSON.stringify(1n, (k,v) => v)");
+    assert_bigint_serialize_err("JSON.stringify({a:1n}, (k,v) => v)");
+    assert_bigint_serialize_err("JSON.stringify({a:1}, (k,v) => 2n)");
+}
+
+// BigInt.prototype 挂数据属性 toJSON：钩子被触发，返回串值正常序列化。
+#[test]
+fn stringify_bigint_tojson_hook_top_level() {
+    let out = eval_str(
+        "(() => { BigInt.prototype.toJSON = function(){ return this.toString(); }; \
+         const s = JSON.stringify(0n); \
+         delete BigInt.prototype.toJSON; \
+         return s; })()",
+    )
+    .unwrap();
+    assert_eq!(out, r#""0""#);
+}
+
+// toJSON 钩子嵌套对象属性位：receiver 为 BigInt 原语，this.toString() 生效。
+#[test]
+fn stringify_bigint_tojson_hook_nested() {
+    let out = eval_str(
+        "(() => { BigInt.prototype.toJSON = function(){ return this.toString(); }; \
+         const s = JSON.stringify({a:1n}); \
+         delete BigInt.prototype.toJSON; \
+         return s; })()",
+    )
+    .unwrap();
+    assert_eq!(out, r#"{"a":"1"}"#);
+}
+
+// 守卫：replacer 先于值位转换 BigInt → number，不抛错。
+#[test]
+fn stringify_bigint_replacer_transform_guard() {
+    let out = eval_str("JSON.stringify({b:1n}, function(k,v){ if(typeof v==='bigint') return Number(v); return v; })")
+        .unwrap();
+    assert_eq!(out, r#"{"b":1}"#);
+}
+
 fn eval_str(source: &str) -> Result<String, String> {
     let (vm, result) = eval(source)?;
     vm.lookup_str(result)

@@ -195,13 +195,20 @@ fn key_si_to_units<H: VmHost>(vm: &H, si: u32) -> Vec<u16> {
 }
 
 fn call_to_json<H: VmHost>(vm: &mut H, obj_val: JsValue, key: &[u16]) -> Result<JsValue, JsValue> {
-    if !obj_val.is_object() {
+    // SerializeJSONProperty 步 2：对象与 BigInt 原语均查 toJSON（Get 对原语
+    // 自动装箱），BigInt 的查表对象取 %BigIntPrototype%。
+    if !obj_val.is_object() && !obj_val.is_bigint() {
         return Ok(obj_val);
     }
-    let obj_ptr = obj_val.as_js_object_ptr();
-    if obj_ptr.is_null() {
-        return Ok(obj_val);
-    }
+    let obj_ptr = if obj_val.is_object() {
+        let p = obj_val.as_js_object_ptr();
+        if p.is_null() {
+            return Ok(obj_val);
+        }
+        p
+    } else {
+        vm.session().builtin_world().bigint_proto.as_ptr() as *mut JsObject
+    };
     let tojson_si = vm.kernel_core().perm_interner().intern("toJSON").0;
     let resolved = vm.resolve_property(unsafe { &*obj_ptr }, tojson_si);
     match resolved {
@@ -349,6 +356,9 @@ fn jsvalue_to_json<H: VmHost>(
         } else {
             oxide_runtime_api::write_number_into(n, out);
         }
+    } else if val.is_bigint() {
+        // SerializeJSONProperty 步 10：BigInt 无 JSON 文本形态，抛 TypeError。
+        return Err(crate::error::create_type_error(vm, "Do not know how to serialize a BigInt"));
     } else if val.is_string() {
         // SAFETY: val 已确认是字符串值；单元视图按码单元流序列化（见 stringify_string_units）。
         let units = unsafe { (*val.as_string_ptr()).units() };
@@ -365,7 +375,13 @@ fn jsvalue_to_json<H: VmHost>(
         }
 
         let obj = unsafe { &*obj_ptr };
-        if obj.is_array() {
+        // 步 4d：装箱 BigInt 无条件解包 [[BigIntData]]，后续步 10 抛 TypeError。
+        if obj.boxed_value().is_bigint() {
+            return Err(crate::error::create_type_error(vm, "Do not know how to serialize a BigInt"));
+        }
+        if obj.is_typed_array_obj() {
+            stringify_typed_array(vm, obj, visited, out, replacer_fn, replacer_whitelist, space, indent_level)?;
+        } else if obj.is_array() {
             stringify_array(vm, obj, visited, out, replacer_fn, replacer_whitelist, space, indent_level)?;
         } else {
             stringify_object(vm, obj, visited, out, replacer_fn, replacer_whitelist, space, indent_level)?;
@@ -582,5 +598,91 @@ fn stringify_array<H: VmHost>(
         }
     }
     out.push(']');
+    Ok(())
+}
+
+/// TypedArray 序列化：整数索引是可枚举自身属性（元素存于原生载荷，不在形状链），
+/// 逐元素按对象臂规范序 Get → toJSON → replacer 处理，输出形态与普通对象一致。
+#[allow(clippy::too_many_arguments)]
+fn stringify_typed_array<H: VmHost>(
+    vm: &mut H, obj: &JsObject, visited: &mut HashSet<*const JsObject>, out: &mut String, replacer_fn: Option<JsValue>,
+    replacer_whitelist: Option<&HashSet<String>>, space: &str, indent_level: usize,
+) -> Result<(), JsValue> {
+    let has_space = !space.is_empty();
+    let this_val = JsValue::from_js_object(obj as *const JsObject as *mut JsObject);
+    let view = crate::typed_array::get_typed_array_data(vm, this_val)?;
+    out.push('{');
+    let mut first = true;
+    for i in 0..view.length {
+        let index_str = i.to_string();
+        // 白名单判定先于 Get（SerializeJSONObject 步 4a），非白名单键不读元素。
+        if let Some(whitelist) = replacer_whitelist {
+            if !whitelist.contains(&index_str) {
+                continue;
+            }
+        }
+        let index_units: Vec<u16> = index_str.encode_utf16().collect();
+        let val = crate::typed_array::typed_array_element_get(vm, obj, i as u32)
+            .map_err(|msg| crate::error::create_type_error(vm, &msg))?;
+        let val = call_to_json(vm, val, &index_units)?;
+
+        // replacer 函数回调。
+        let val = if let Some(replacer) = replacer_fn {
+            let key_val = vm.new_string(&index_str);
+            match vm.call_function_sync(replacer, this_val, &[key_val, val]) {
+                Ok(v) => {
+                    if v.is_undefined() {
+                        continue;
+                    }
+                    v
+                }
+                Err(msg) => {
+                    let exc = vm
+                        .take_uncaught_value()
+                        .unwrap_or_else(|| crate::error::create_type_error(vm, &msg));
+                    return Err(exc);
+                }
+            }
+        } else {
+            val
+        };
+
+        let is_function = val.is_object() && {
+            let ptr = val.as_js_object_ptr();
+            !ptr.is_null() && unsafe { (*ptr).is_function() }
+        };
+        if val.is_undefined() || is_function {
+            continue;
+        }
+
+        if !first && !has_space {
+            out.push(',');
+        } else if !first {
+            out.push_str(",\n");
+        }
+        first = false;
+
+        if has_space {
+            for _ in 0..indent_level + 1 {
+                out.push_str(space);
+            }
+            stringify_string_units(&index_units, out);
+            out.push(':');
+            out.push(' ');
+        } else {
+            stringify_string_units(&index_units, out);
+            out.push(':');
+        }
+
+        jsvalue_to_json(vm, val, visited, out, replacer_fn, replacer_whitelist, space, indent_level + 1)?;
+    }
+
+    if has_space && !first {
+        out.push('\n');
+        for _ in 0..indent_level {
+            out.push_str(space);
+        }
+    }
+    out.push('}');
     Ok(())
 }
