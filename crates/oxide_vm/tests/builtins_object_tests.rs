@@ -432,3 +432,118 @@ fn object_get_own_property_descriptors_null_receiver_throws() {
     };
     assert!(err.contains("TypeError"), "unexpected error: {err}");
 }
+
+// -- defineProperties / create properties 实参语义 --
+
+#[test]
+fn object_define_properties_primitive_props_boxed() {
+    // properties 实参经 ToObject 装箱（布尔/数字/空串/Symbol/数字盒），
+    // 包装盒均无可枚举自身键：零定义，目标原样返回且自身键集不变。
+    for arg in ["false", "-12", "''", "Symbol('s')", "42"] {
+        let (_vm, result) = eval(&format!(
+            "(function(){{ var t = {{m: 1}}; return Object.defineProperties(t, {arg}) === t }})()"
+        ))
+        .unwrap();
+        assert!(result.is_bool() && result.as_bool(), "arg {arg}");
+        let (_vm, result) = eval(&format!(
+            "(function(){{ var t = {{m: 1}}; Object.defineProperties(t, {arg}); return Object.keys(t).length }})()"
+        ))
+        .unwrap();
+        assert_eq!(result.as_int(), 1, "arg {arg}");
+    }
+}
+
+#[test]
+fn object_create_primitive_props_boxed() {
+    // Object.create 的 properties 实参同走 ToObject：数字盒零键，仅原型生效。
+    let (_vm, result) = eval(
+        "(function(){ var p = {}; var o = Object.create(p, 42); \
+         return Object.getPrototypeOf(o) === p && Object.keys(o).length === 0 })()",
+    )
+    .unwrap();
+    assert!(result.is_bool() && result.as_bool());
+}
+
+#[test]
+fn object_create_bigint_props_boxed() {
+    // BigInt 实参装箱，BigInt 盒零可枚举自身键：仅原型生效。
+    let (_vm, result) = eval(
+        "(function(){ var p = {}; var o = Object.create(p, 0n); \
+         return Object.getPrototypeOf(o) === p && Object.keys(o).length === 0 })()",
+    )
+    .unwrap();
+    assert!(result.is_bool() && result.as_bool());
+}
+
+#[test]
+fn object_define_properties_null_props_throws() {
+    // null 是 ToObject 拒绝的值：两入口均抛 TypeError。
+    let err = match eval("Object.defineProperties({}, null)") {
+        Ok(_) => panic!("null properties should throw TypeError"),
+        Err(err) => err,
+    };
+    assert!(err.contains("TypeError"), "unexpected error: {err}");
+    let err = match eval("Object.create(null, null)") {
+        Ok(_) => panic!("null properties should throw TypeError"),
+        Err(err) => err,
+    };
+    assert!(err.contains("TypeError"), "unexpected error: {err}");
+}
+
+#[test]
+fn object_define_property_primitive_target_throws() {
+    // target 不做 ToObject 装箱：原始值直接抛 TypeError。
+    for src in [
+        "Object.defineProperty(0, 'a', {value: 1})",
+        "Object.defineProperty(true, 'a', {value: 1})",
+        "Object.defineProperty('abc', 'a', {value: 1})",
+    ] {
+        let err = match eval(src) {
+            Ok(_) => panic!("{src} should throw TypeError"),
+            Err(err) => err,
+        };
+        assert!(err.contains("TypeError"), "unexpected error: {err}");
+    }
+}
+
+#[test]
+fn object_define_properties_primitive_target_throws() {
+    // target 不做 ToObject 装箱：原始值直接抛 TypeError。
+    for src in [
+        "Object.defineProperties(0, {})",
+        "Object.defineProperties(true, {})",
+        "Object.defineProperties('abc', {})",
+    ] {
+        let err = match eval(src) {
+            Ok(_) => panic!("{src} should throw TypeError"),
+            Err(err) => err,
+        };
+        assert!(err.contains("TypeError"), "unexpected error: {err}");
+    }
+}
+
+#[test]
+fn object_create_getter_range_error_propagates() {
+    // 描述符收集期访问器 getter 抛出的用户异常原类型穿透，不投影为 TypeError。
+    let err = match eval("Object.create(null, {get p(){ throw new RangeError('boom'); }})") {
+        Ok(_) => panic!("getter RangeError should propagate"),
+        Err(err) => err,
+    };
+    assert!(err.contains("RangeError"), "unexpected error: {err}");
+}
+
+#[test]
+fn object_define_properties_two_phase_get_before_define() {
+    // 两阶段语义：全部描述符 getter 先触发后逐键定义；后键 getter 抛出时
+    // 前键尚未定义。
+    let (_vm, result) = eval(
+        "(function(){ var t = {}; var n = 0; \
+         Object.defineProperty(t, 'p1', { get: function(){ n++; return {value: 1}; }, enumerable: true }); \
+         Object.defineProperty(t, 'p2', { get: function(){ if (n === 1) { n++; throw 42; } return {value: 2}; }, enumerable: true }); \
+         var target = {}; \
+         try { Object.defineProperties(target, t); } catch (e) {} \
+         return n === 2 && target.hasOwnProperty('p1') === false && target.hasOwnProperty('p2') === false })()",
+    )
+    .unwrap();
+    assert!(result.is_bool() && result.as_bool());
+}

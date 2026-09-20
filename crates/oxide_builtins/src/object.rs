@@ -566,7 +566,11 @@ pub fn object_create<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         let obj = vm.alloc_object(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()));
         if args.len() >= 3 && !vm.reg(args[2]).is_undefined() {
             if let Err(msg) = define_all_from_properties(vm, obj, vm.reg(args[2])) {
-                return NativeResult::Err(crate::error::create_type_error(vm, &msg));
+                // 强转期用户异常原值重抛；define 失败文本按 kind 前缀恢复原类型。
+                if let Some(exc) = vm.take_pending_length_exception() {
+                    return NativeResult::Err(exc);
+                }
+                return NativeResult::Err(crate::error::create_define_failure(vm, &msg));
             }
         }
         return NativeResult::Ok(JsValue::from_js_object(obj));
@@ -580,7 +584,11 @@ pub fn object_create<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let obj = vm.alloc_object(JsObject::new_empty(EMPTY_SHAPE_ID, proto_val));
     if args.len() >= 3 && !vm.reg(args[2]).is_undefined() {
         if let Err(msg) = define_all_from_properties(vm, obj, vm.reg(args[2])) {
-            return NativeResult::Err(crate::error::create_type_error(vm, &msg));
+            // 强转期用户异常原值重抛；define 失败文本按 kind 前缀恢复原类型。
+            if let Some(exc) = vm.take_pending_length_exception() {
+                return NativeResult::Err(exc);
+            }
+            return NativeResult::Err(crate::error::create_define_failure(vm, &msg));
         }
     }
     NativeResult::Ok(JsValue::from_js_object(obj))
@@ -819,36 +827,54 @@ pub(crate) fn define_from_descriptor<H: VmHost>(
     Ok(())
 }
 
-/// 遍历对象自身的可枚举属性，把每个值当作描述符依次定义到目标对象上。
-/// `Object.defineProperties` 与 `Object.create(proto, properties)` 共用。
+/// 把 properties 实参按 ToObject 装箱后遍历其可枚举自身属性，把每个值当作
+/// 描述符定义到目标对象上。`Object.defineProperties` 与
+/// `Object.create(proto, properties)` 共用。
+///
+/// # 步骤
+/// 1. ToObject 装箱 properties（null/undefined 抛 TypeError，包装盒无键则零定义）
+/// 2. 先对全部可枚举键完成描述符值收集（触发全部 getter），再逐键定义——
+///    先取后写，避免前键定义影响后键读取
 ///
 /// # 边界与前提
-/// - `props_val` 必须是对象，否则返回错误（null 触 ToObject 抛 TypeError）
 /// - 仅处理可枚举自身属性；描述符值经 ordinary_get 读取（触发访问器 getter）
+/// - 描述符值的非对象校验由 define_from_descriptor 承担（ToPropertyDescriptor）
+/// - String 盒的自身键是字符下标 0..len-1（String exotic，各键值为对应
+///   字符），盒存储未落属性枚举面，此处按规范物化
 ///
 /// # 副作用
 /// - 修改 target 的 shape 链、属性表与 generation
 fn define_all_from_properties<H: VmHost>(
     vm: &mut H, target_ptr: *mut JsObject, props_val: JsValue,
 ) -> Result<(), String> {
-    if !props_val.is_object() {
-        return Err("Property description must be an object".to_string());
-    }
-    let props_ptr = props_val.as_js_object_ptr();
-    if props_ptr.is_null() {
-        return Err("Property description must be an object".to_string());
-    }
-    let prop_keys: Vec<(u32, u32)> = {
+    // ToObject：原始值装箱；null/undefined 的 TypeError 文本经调用方 kind
+    // 前缀恢复后原类型抛出。
+    let props_obj = oxide_runtime_api::to_object(props_val, vm)?;
+    let props_ptr = props_obj.as_js_object_ptr();
+    let descriptors: Vec<(u32, JsValue)> = if unsafe { &*props_ptr }.is_string_obj() {
+        // String 盒：键为字符下标、值为字符本身；空串零键。
+        let props = unsafe { &*props_ptr };
+        let raw = props.boxed_value();
+        let raw = if raw.is_undefined() { props.get_prop_at(0) } else { raw };
+        let units = if raw.is_string() { vm.string_units(raw).to_vec() } else { Vec::new() };
+        units
+            .iter()
+            .enumerate()
+            .map(|(i, unit)| (make_int_key(i as u32), vm.new_string_units(std::slice::from_ref(unit))))
+            .collect()
+    } else {
         let props = unsafe { &*props_ptr };
         walk_own_keys(vm, props)
+            .into_iter()
+            // 非可枚举自身属性跳过；无显式 meta 视为可枚举（普通字面量默认）。
+            .filter(|(_si, offset)| !props.prop_meta_at(*offset).map(|m| !m.attributes.enumerable()).unwrap_or(false))
+            .map(|(key_si, _offset)| {
+                let props = unsafe { &*props_ptr };
+                vm.ordinary_get(props, key_si, props_obj).map(|desc_val| (key_si, desc_val))
+            })
+            .collect::<Result<Vec<_>, _>>()?
     };
-    for (key_si, offset) in prop_keys {
-        let props = unsafe { &*props_ptr };
-        // 非可枚举自身属性跳过；无显式 meta 视为可枚举（普通字面量默认）。
-        if props.prop_meta_at(offset).map(|m| !m.attributes.enumerable()).unwrap_or(false) {
-            continue;
-        }
-        let desc_val = vm.ordinary_get(props, key_si, props_val)?;
+    for (key_si, desc_val) in descriptors {
         define_from_descriptor(vm, target_ptr, key_si, desc_val)?;
     }
     Ok(())
@@ -863,10 +889,11 @@ pub fn object_define_property<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResul
             "Object.defineProperty: expected at least 3 arguments",
         ));
     }
-    let obj_val = match oxide_runtime_api::to_object(vm.reg(args[1]), vm) {
-        Ok(v) => v,
-        Err(msg) => return NativeResult::Err(crate::error::create_type_error(vm, &msg)),
-    };
+    // target 非对象直接抛 TypeError（不做 ToObject 装箱）。
+    let obj_val = vm.reg(args[1]);
+    if !obj_val.is_object() {
+        return NativeResult::Err(crate::error::create_type_error(vm, "Object.defineProperty called on non-object"));
+    }
     let obj_ptr = obj_val.as_js_object_ptr();
     // well-known symbol 等特殊键统一走 property_key_si（映射到各自的 Symbol 键），
     // 保证与计算属性访问、Reflect.defineProperty 等读键路径一致。
@@ -1306,11 +1333,12 @@ pub fn object_define_properties<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeRes
             "Object.defineProperties: expected at least 2 arguments",
         ));
     }
+    // target 非对象直接抛 TypeError（不做 ToObject 装箱）。
     let target_val = vm.reg(args[1]);
-    let target_ptr = match require_obj_arg(vm, args, "defineProperties") {
-        Ok(ptr) => ptr,
-        Err(err) => return NativeResult::Err(err),
-    };
+    if !target_val.is_object() {
+        return NativeResult::Err(crate::error::create_type_error(vm, "Object.defineProperties called on non-object"));
+    }
+    let target_ptr = target_val.as_js_object_ptr();
     if let Err(msg) = define_all_from_properties(vm, target_ptr, vm.reg(args[2])) {
         // 与单属性入口一致：强转期用户异常原值重抛，非法 length 以 RangeError
         // kind 穿透，其余 define 失败投影为 TypeError。

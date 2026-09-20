@@ -89,8 +89,13 @@ const KIND_PREFIXES: [(&str, &str); 7] = [
 /// # 注意事项
 /// - 仅在错误文本通道（kind 前缀约定）内使用；kind 名与创建入口的映射保持
 ///   单向，调用方不得据此改写原始异常值。
+/// - 空消息错误的文本即裸 kind 名（如 `"uncaught RangeError"`，与
+///   `String(new RangeError())` 序列化一致），按原文恢复 kind。
 pub fn split_kinded(text: &str) -> Option<(&'static str, &str)> {
     let text = text.strip_prefix("uncaught ").unwrap_or(text);
+    if let Some((kind, _)) = KIND_PREFIXES.iter().find(|(kind, _)| *kind == text) {
+        return Some((*kind, ""));
+    }
     KIND_PREFIXES
         .iter()
         .find_map(|(kind, prefix)| text.strip_prefix(prefix).map(|rest| (*kind, rest)))
