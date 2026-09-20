@@ -56,6 +56,8 @@ impl Vm {
     /// # 副作用
     /// - 临时改写调用方寄存器窗口与 `spill_stack`，返回前还原。
     /// - `native_call_depth` 在 native 调用期间 ±1；错误对象写入异常通道。
+    /// - native 分支返回后重载调用方模块的 builtin 镜像槽（外层 native pack
+    ///   实参区在飞时跳过该域）。
     pub(crate) fn call_function_sync(
         &mut self, callee: JsValue, receiver: JsValue, args: &[JsValue],
     ) -> Result<JsValue, String> {
@@ -116,6 +118,10 @@ impl Vm {
             self.regs[253] = saved_r253;
             self.regs[254] = saved_r254;
             self.inline_reg_pool = Some(saved_window);
+            // 窗口回拷已复活调用方陈旧镜像槽：重载调用方模块的 builtin 名集
+            // （本分支不切 active_flat_id，活动模块即调用方）；外层 native pack
+            // 实参区在飞时跳过该域，实参值由窗口拷回还原、不在此刷新。
+            self.reload_active_module_mirror_slots(self.native_pack_end);
             return match result {
                 NativeResult::Ok(val) => Ok(val),
                 NativeResult::Err(err) => {
