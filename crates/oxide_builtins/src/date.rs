@@ -84,6 +84,109 @@ fn naive_from_ms(ms: f64) -> Option<NaiveDateTime> {
     dt_from_ms(ms).map(|dt| dt.naive_utc())
 }
 
+/// 日期值上界（TimeClip：|t| > 8.64e15 ms 为 Invalid Date）。
+const MS_LIMIT: i64 = 8_640_000_000_000_000;
+const MS_PER_DAY: i64 = 86_400_000;
+
+/// 日数公式（自 1970-01-01 的天数，proleptic Gregorian）：月 1-based、日
+/// 1-based；越界分量直接吸收进线性日数（rollover 语义）。调用方须保证分量
+/// 在 Date 可表示包络内（见 make_day 的上限判），否则乘积溢出。
+fn civil_day_count(y: i64, m1: i64, d1: i64) -> i64 {
+    let y = if m1 <= 2 { y - 1 } else { y };
+    // era 取 400 年周期（负年向下取整），yoe 恒在 [0, 399]。
+    let era = (if y >= 0 { y } else { y - 399 }) / 400;
+    let yoe = y - era * 400;
+    let doy = (153 * (if m1 > 2 { m1 - 3 } else { m1 + 9 }) + 2) / 5 + d1 - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146_097 + doe - 719_468
+}
+
+/// MakeDay(year, month, date)：各分量先截断，返回日数（月 0-based、日 1-based）；
+/// 任一分量非有限或中间结果溢出返回 None（调用方按规范返回或置 NaN）。
+fn make_day(y: f64, m: f64, d: f64) -> Option<i64> {
+    if !y.is_finite() || !m.is_finite() || !d.is_finite() {
+        return None;
+    }
+    let yr = y.trunc() as i64;
+    let mq = m.trunc() as i64;
+    let dq = d.trunc() as i64;
+    // Date 值域约 ±1e11 天；分量远超包络时直接越界，同时兜住后续乘积溢出。
+    if yr.abs() > 1_000_000_000 || mq.abs() > 12_000_000_000 || dq.abs() > 4_000_000_000 {
+        return None;
+    }
+    // 月溢出折入年份（欧几里得除法保持月在 [0, 12)）。
+    let total = yr.checked_mul(12)?.checked_add(mq)?;
+    Some(civil_day_count(total.div_euclid(12), total.rem_euclid(12) + 1, dq))
+}
+
+/// MakeTime(hour, minute, second, millisecond)：各分量截断后线性组合成日内毫秒；
+/// 任一分量非有限或溢出返回 None。
+fn make_time(h: f64, min: f64, s: f64, ms: f64) -> Option<i64> {
+    if !h.is_finite() || !min.is_finite() || !s.is_finite() || !ms.is_finite() {
+        return None;
+    }
+    (h.trunc() as i64)
+        .checked_mul(3_600_000)?
+        .checked_add((min.trunc() as i64).checked_mul(60_000)?)?
+        .checked_add((s.trunc() as i64).checked_mul(1_000)?)?
+        .checked_add(ms.trunc() as i64)
+}
+
+/// 日数与日内毫秒组合为最终时间戳；TimeClip 越界（|ts| > 8.64e15）返回 None。
+fn make_date_ms(days: i64, time_ms: i64) -> Option<f64> {
+    let ts = days.checked_mul(MS_PER_DAY)?.checked_add(time_ms)?;
+    if !(-MS_LIMIT..=MS_LIMIT).contains(&ts) {
+        return None;
+    }
+    Some(ts as f64)
+}
+
+/// UTC 时间的日内毫秒（时/分/秒/毫秒分量组合）。
+fn utc_time_ms(ndt: &NaiveDateTime) -> i64 {
+    ndt.time().hour() as i64 * 3_600_000
+        + ndt.time().minute() as i64 * 60_000
+        + ndt.time().second() as i64 * 1_000
+        + ndt.time().nanosecond() as i64 / 1_000_000
+}
+
+/// TimeWithinDay 四分量（时/分/秒/毫秒）：按原始时间戳的 UTC 基准提取，
+/// 与 LocalTime 无关（规范中分钟/秒/毫秒缺省值取自原始 t）。
+fn time_components(ms: f64) -> (f64, f64, f64, f64) {
+    let twd = ms.rem_euclid(86_400_000.0);
+    let sec = twd / 1_000.0;
+    (
+        (sec / 3_600.0).trunc(),
+        (sec / 60.0).trunc() % 60.0,
+        sec.trunc() % 60.0,
+        twd.trunc() % 1_000.0,
+    )
+}
+
+/// Date 数值参数：完整 ToNumber（对象路径经 engine_error 恢复原始异常值）；
+/// 缺参/undefined 得 NaN。
+fn date_arg_number<H: VmHost>(vm: &mut H, val: JsValue) -> Result<f64, JsValue> {
+    match oxide_runtime_api::to_number_full(val, vm) {
+        Ok(n) => Ok(n),
+        Err(e) => Err(crate::iterator::engine_error(vm, &e)),
+    }
+}
+
+macro_rules! apply_date_result {
+    ($obj:expr, $expr:expr) => {
+        match $expr {
+            Some(ts) => {
+                set_timestamp($obj, ts);
+                NativeResult::Ok(JsValue::float(ts))
+            }
+            None => {
+                // 非有限或越界：置 Invalid Date 并返回 NaN。
+                set_timestamp($obj, f64::NAN);
+                NativeResult::Ok(JsValue::float(f64::NAN))
+            }
+        }
+    };
+}
+
 /// MakeDay + MakeTime 语义组合本地时间戳：月/日/时/分/秒/毫秒分量越界时滚动进位，
 /// 再按本地时区映射到真实 UTC 时刻。
 ///
@@ -286,47 +389,49 @@ pub fn date_parse<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 
 /// `Date.UTC(y, m, d, h, min, s, ms)`：按 UTC 各字段组合成时间戳（m 为 0-based 月）。
 pub fn date_utc<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
-    if args.len() < 3 {
+    if args.len() < 2 {
         return NativeResult::Ok(JsValue::float(f64::NAN));
     }
-    let y = oxide_runtime_api::to_number(vm.reg(args[1]));
-    let m = oxide_runtime_api::to_number(vm.reg(args[2]));
-    if y.is_nan() || m.is_nan() {
-        return NativeResult::Ok(JsValue::float(f64::NAN));
-    }
-    let y = y.trunc() as i32;
-    let m = m.trunc() as u32;
-    let d = if args.len() > 3 {
-        oxide_runtime_api::to_number(vm.reg(args[3])).trunc() as u32
+    let y = native_try!(date_arg_number(vm, vm.reg(args[1])));
+    let m = if args.len() > 2 {
+        native_try!(date_arg_number(vm, vm.reg(args[2])))
     } else {
-        1
+        0.0
+    };
+    let d = if args.len() > 3 {
+        native_try!(date_arg_number(vm, vm.reg(args[3])))
+    } else {
+        1.0
     };
     let h = if args.len() > 4 {
-        oxide_runtime_api::to_number(vm.reg(args[4])).trunc() as u32
+        native_try!(date_arg_number(vm, vm.reg(args[4])))
     } else {
-        0
+        0.0
     };
     let min = if args.len() > 5 {
-        oxide_runtime_api::to_number(vm.reg(args[5])).trunc() as u32
+        native_try!(date_arg_number(vm, vm.reg(args[5])))
     } else {
-        0
+        0.0
     };
     let sec = if args.len() > 6 {
-        oxide_runtime_api::to_number(vm.reg(args[6])).trunc() as u32
+        native_try!(date_arg_number(vm, vm.reg(args[6])))
     } else {
-        0
+        0.0
     };
     let ms = if args.len() > 7 {
-        oxide_runtime_api::to_number(vm.reg(args[7])).trunc() as u32
+        native_try!(date_arg_number(vm, vm.reg(args[7])))
     } else {
-        0
+        0.0
     };
-    let ts = NaiveDate::from_ymd_opt(y, m + 1, d)
-        .and_then(|nd| nd.and_hms_milli_opt(h, min, sec, ms))
-        .and_then(|ndt| ndt.and_local_timezone(Utc).earliest())
-        .map(|dt| dt.timestamp_millis() as f64)
-        .unwrap_or(f64::NAN);
-    NativeResult::Ok(JsValue::float(ts))
+    if y.is_nan() || m.is_nan() || d.is_nan() || h.is_nan() || min.is_nan() || sec.is_nan() || ms.is_nan() {
+        return NativeResult::Ok(JsValue::float(f64::NAN));
+    }
+    // 年 0..99 按规范映射到 1900..1999（ToInteger 截断后判断）。
+    let y = if (0.0..=99.0).contains(&y.trunc()) { y + 1900.0 } else { y };
+    match make_day(y, m, d).and_then(|days| make_time(h, min, sec, ms).and_then(|t| make_date_ms(days, t))) {
+        Some(ts) => NativeResult::Ok(JsValue::float(ts)),
+        None => NativeResult::Ok(JsValue::float(f64::NAN)),
+    }
 }
 
 macro_rules! make_getter {
@@ -426,56 +531,51 @@ fn local_offset_minutes(ms: f64) -> i32 {
     -offset / 60
 }
 
-fn get_opt_arg<H: VmHost>(vm: &H, args: &[u8], idx: usize, default: u32) -> u32 {
-    if args.len() > idx {
-        oxide_runtime_api::to_number(vm.reg(args[idx])) as u32
-    } else {
-        default
-    }
-}
-
 /// `Date.prototype.setTime(ms)`：直接设置时间戳，返回新时间戳。
 pub fn date_set_time<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let obj = unsafe { &mut *native_try!(date_this_mut(vm, args)) };
-    let val = if args.len() > 1 {
-        vm.coerce_number_bounded(vm.reg(args[1])).unwrap_or(f64::NAN)
-    } else {
-        f64::NAN
-    };
-    set_timestamp(obj, val);
-    NativeResult::Ok(JsValue::float(val))
+    let val = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
+    let v = native_try!(date_arg_number(vm, val));
+    set_timestamp(obj, v);
+    NativeResult::Ok(JsValue::float(v))
 }
 
 /// `Date.prototype.setFullYear(y, m, d)`：设置本地年份（可选月/日），返回新时间戳。
 pub fn date_set_full_year<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
-    let val = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
-    let v = vm.coerce_number_bounded(val).unwrap_or(f64::NAN);
     let obj = unsafe { &mut *native_try!(date_this_mut(vm, args)) };
+    // 先读 this 值；无效时取 +0（按规范不早退）。
     let ms = get_timestamp(obj);
-    if !ms.is_finite() {
-        return NativeResult::Ok(JsValue::float(f64::NAN));
-    }
-    let dt = match dt_from_ms_local(ms) {
+    let t = if ms.is_finite() { ms } else { 0.0 };
+    let dt = match dt_from_ms_local(t) {
         Some(d) => d,
         None => return NativeResult::Ok(JsValue::float(f64::NAN)),
     };
-    let m = get_opt_arg(vm, args, 2, dt.month0());
-    let d = get_opt_arg(vm, args, 3, dt.day0());
-    let nd = dt
-        .with_year(v as i32)
-        .and_then(|x| x.with_month0(m))
-        .and_then(|x| x.with_day0(if args.len() > 3 { d - 1 } else { d }))
-        .unwrap_or(dt);
-    let ts = nd.timestamp_millis() as f64;
-    set_timestamp(obj, ts);
-    NativeResult::Ok(JsValue::float(ts))
+    let y = native_try!(date_arg_number(vm, if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() }));
+    let m = if args.len() > 2 {
+        native_try!(date_arg_number(vm, vm.reg(args[2])))
+    } else {
+        dt.month0() as f64
+    };
+    let d = if args.len() > 3 {
+        native_try!(date_arg_number(vm, vm.reg(args[3])))
+    } else {
+        dt.day() as f64
+    };
+    let time_ms = t.rem_euclid(86_400_000.0) as i64;
+    apply_date_result!(obj, make_day(y, m, d).and_then(|days| make_date_ms(days, time_ms)))
 }
 /// `Date.prototype.setMonth(m, d)`：设置本地月份（可选日），返回新时间戳。
 pub fn date_set_month<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
-    let val = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
-    let v = vm.coerce_number_bounded(val).unwrap_or(f64::NAN);
     let obj = unsafe { &mut *native_try!(date_this_mut(vm, args)) };
     let ms = get_timestamp(obj);
+    // 参数强转先于 NaN 判定（按规范序）。
+    let m = native_try!(date_arg_number(vm, if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() }));
+    let d = if args.len() > 2 {
+        native_try!(date_arg_number(vm, vm.reg(args[2])))
+    } else {
+        0.0
+    };
+    let has_date = args.len() > 2;
     if !ms.is_finite() {
         return NativeResult::Ok(JsValue::float(f64::NAN));
     }
@@ -483,21 +583,15 @@ pub fn date_set_month<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         Some(d) => d,
         None => return NativeResult::Ok(JsValue::float(f64::NAN)),
     };
-    let d = get_opt_arg(vm, args, 2, dt.day0());
-    let nd = dt
-        .with_month0(v as u32)
-        .and_then(|x| x.with_day0(if args.len() > 2 { d - 1 } else { d }))
-        .unwrap_or(dt);
-    let ts = nd.timestamp_millis() as f64;
-    set_timestamp(obj, ts);
-    NativeResult::Ok(JsValue::float(ts))
+    let d = if has_date { d } else { dt.day() as f64 };
+    let time_ms = ms.rem_euclid(86_400_000.0) as i64;
+    apply_date_result!(obj, make_day(dt.year() as f64, m, d).and_then(|days| make_date_ms(days, time_ms)))
 }
 /// `Date.prototype.setDate(d)`：设置本地日，返回新时间戳。
 pub fn date_set_date<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
-    let val = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
-    let v = vm.coerce_number_bounded(val).unwrap_or(f64::NAN);
     let obj = unsafe { &mut *native_try!(date_this_mut(vm, args)) };
     let ms = get_timestamp(obj);
+    let d = native_try!(date_arg_number(vm, if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() }));
     if !ms.is_finite() {
         return NativeResult::Ok(JsValue::float(f64::NAN));
     }
@@ -505,17 +599,32 @@ pub fn date_set_date<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         Some(d) => d,
         None => return NativeResult::Ok(JsValue::float(f64::NAN)),
     };
-    let nd = dt.with_day0(v as u32).unwrap_or(dt);
-    let ts = nd.timestamp_millis() as f64;
-    set_timestamp(obj, ts);
-    NativeResult::Ok(JsValue::float(ts))
+    let time_ms = ms.rem_euclid(86_400_000.0) as i64;
+    apply_date_result!(
+        obj,
+        make_day(dt.year() as f64, dt.month0() as f64, d).and_then(|days| make_date_ms(days, time_ms))
+    )
 }
 /// `Date.prototype.setHours(h, min, s, ms)`：设置本地小时（可选分/秒/毫秒），返回新时间戳。
 pub fn date_set_hours<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
-    let val = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
-    let v = vm.coerce_number_bounded(val).unwrap_or(f64::NAN);
     let obj = unsafe { &mut *native_try!(date_this_mut(vm, args)) };
     let ms = get_timestamp(obj);
+    let h = native_try!(date_arg_number(vm, if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() }));
+    let min = if args.len() > 2 {
+        native_try!(date_arg_number(vm, vm.reg(args[2])))
+    } else {
+        0.0
+    };
+    let sec = if args.len() > 3 {
+        native_try!(date_arg_number(vm, vm.reg(args[3])))
+    } else {
+        0.0
+    };
+    let ms_arg = if args.len() > 4 {
+        native_try!(date_arg_number(vm, vm.reg(args[4])))
+    } else {
+        0.0
+    };
     if !ms.is_finite() {
         return NativeResult::Ok(JsValue::float(f64::NAN));
     }
@@ -523,25 +632,30 @@ pub fn date_set_hours<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         Some(d) => d,
         None => return NativeResult::Ok(JsValue::float(f64::NAN)),
     };
-    let min = get_opt_arg(vm, args, 2, dt.minute());
-    let sec = get_opt_arg(vm, args, 3, dt.second());
-    let ms_arg = get_opt_arg(vm, args, 4, dt.timestamp_subsec_millis());
-    let nd = dt
-        .with_hour(v as u32)
-        .and_then(|x| x.with_minute(min))
-        .and_then(|x| x.with_second(sec))
-        .and_then(|x| x.with_nanosecond(ms_arg * 1_000_000))
-        .unwrap_or(dt);
-    let ts = nd.timestamp_millis() as f64;
-    set_timestamp(obj, ts);
-    NativeResult::Ok(JsValue::float(ts))
+    // 缺省分量取原始时间戳的 TimeWithinDay 值，与 MakeTime 组合后整体进位。
+    let (_raw_h, raw_min, raw_sec, raw_ms) = time_components(ms);
+    let min_v = if args.len() > 2 { min } else { raw_min };
+    let sec_v = if args.len() > 3 { sec } else { raw_sec };
+    let ms_v = if args.len() > 4 { ms_arg } else { raw_ms };
+    let days = civil_day_count(dt.year() as i64, dt.month() as i64, dt.day() as i64);
+    let result = make_time(h, min_v, sec_v, ms_v).and_then(|time_ms| make_date_ms(days, time_ms));
+    apply_date_result!(obj, result)
 }
 /// `Date.prototype.setMinutes(min, s, ms)`：设置本地分钟（可选秒/毫秒），返回新时间戳。
 pub fn date_set_minutes<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
-    let val = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
-    let v = vm.coerce_number_bounded(val).unwrap_or(f64::NAN);
     let obj = unsafe { &mut *native_try!(date_this_mut(vm, args)) };
     let ms = get_timestamp(obj);
+    let min = native_try!(date_arg_number(vm, if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() }));
+    let sec = if args.len() > 2 {
+        native_try!(date_arg_number(vm, vm.reg(args[2])))
+    } else {
+        0.0
+    };
+    let ms_arg = if args.len() > 3 {
+        native_try!(date_arg_number(vm, vm.reg(args[3])))
+    } else {
+        0.0
+    };
     if !ms.is_finite() {
         return NativeResult::Ok(JsValue::float(f64::NAN));
     }
@@ -549,23 +663,23 @@ pub fn date_set_minutes<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         Some(d) => d,
         None => return NativeResult::Ok(JsValue::float(f64::NAN)),
     };
-    let sec = get_opt_arg(vm, args, 2, dt.second());
-    let ms_arg = get_opt_arg(vm, args, 3, dt.timestamp_subsec_millis());
-    let nd = dt
-        .with_minute(v as u32)
-        .and_then(|x| x.with_second(sec))
-        .and_then(|x| x.with_nanosecond(ms_arg * 1_000_000))
-        .unwrap_or(dt);
-    let ts = nd.timestamp_millis() as f64;
-    set_timestamp(obj, ts);
-    NativeResult::Ok(JsValue::float(ts))
+    let (raw_h, _raw_min, raw_sec, raw_ms) = time_components(ms);
+    let sec_v = if args.len() > 2 { sec } else { raw_sec };
+    let ms_v = if args.len() > 3 { ms_arg } else { raw_ms };
+    let days = civil_day_count(dt.year() as i64, dt.month() as i64, dt.day() as i64);
+    let result = make_time(raw_h, min, sec_v, ms_v).and_then(|time_ms| make_date_ms(days, time_ms));
+    apply_date_result!(obj, result)
 }
 /// `Date.prototype.setSeconds(s, ms)`：设置本地秒（可选毫秒），返回新时间戳。
 pub fn date_set_seconds<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
-    let val = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
-    let v = vm.coerce_number_bounded(val).unwrap_or(f64::NAN);
     let obj = unsafe { &mut *native_try!(date_this_mut(vm, args)) };
     let ms = get_timestamp(obj);
+    let sec = native_try!(date_arg_number(vm, if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() }));
+    let ms_arg = if args.len() > 2 {
+        native_try!(date_arg_number(vm, vm.reg(args[2])))
+    } else {
+        0.0
+    };
     if !ms.is_finite() {
         return NativeResult::Ok(JsValue::float(f64::NAN));
     }
@@ -573,21 +687,17 @@ pub fn date_set_seconds<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         Some(d) => d,
         None => return NativeResult::Ok(JsValue::float(f64::NAN)),
     };
-    let ms_arg = get_opt_arg(vm, args, 2, dt.timestamp_subsec_millis());
-    let nd = dt
-        .with_second(v as u32)
-        .and_then(|x| x.with_nanosecond(ms_arg * 1_000_000))
-        .unwrap_or(dt);
-    let ts = nd.timestamp_millis() as f64;
-    set_timestamp(obj, ts);
-    NativeResult::Ok(JsValue::float(ts))
+    let (raw_h, raw_min, _raw_sec, raw_ms) = time_components(ms);
+    let ms_v = if args.len() > 2 { ms_arg } else { raw_ms };
+    let days = civil_day_count(dt.year() as i64, dt.month() as i64, dt.day() as i64);
+    let result = make_time(raw_h, raw_min, sec, ms_v).and_then(|time_ms| make_date_ms(days, time_ms));
+    apply_date_result!(obj, result)
 }
 /// `Date.prototype.setMilliseconds(ms)`：设置本地毫秒，返回新时间戳。
 pub fn date_set_milliseconds<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
-    let val = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
-    let v = vm.coerce_number_bounded(val).unwrap_or(f64::NAN);
     let obj = unsafe { &mut *native_try!(date_this_mut(vm, args)) };
     let ms = get_timestamp(obj);
+    let ms_arg = native_try!(date_arg_number(vm, if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() }));
     if !ms.is_finite() {
         return NativeResult::Ok(JsValue::float(f64::NAN));
     }
@@ -595,10 +705,10 @@ pub fn date_set_milliseconds<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult
         Some(d) => d,
         None => return NativeResult::Ok(JsValue::float(f64::NAN)),
     };
-    let nd = dt.with_nanosecond(v as u32 * 1_000_000).unwrap_or(dt);
-    let ts = nd.timestamp_millis() as f64;
-    set_timestamp(obj, ts);
-    NativeResult::Ok(JsValue::float(ts))
+    let (raw_h, raw_min, raw_sec, _raw_ms) = time_components(ms);
+    let days = civil_day_count(dt.year() as i64, dt.month() as i64, dt.day() as i64);
+    let result = make_time(raw_h, raw_min, raw_sec, ms_arg).and_then(|time_ms| make_date_ms(days, time_ms));
+    apply_date_result!(obj, result)
 }
 
 /// `Date.prototype.setUTCFullYear(y, m, d)`：设置 UTC 年份（可选月/日），返回新时间戳。
@@ -612,23 +722,19 @@ pub fn date_set_utc_full_year<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResul
         Some(n) => n,
         None => return NativeResult::Ok(JsValue::float(f64::NAN)),
     };
-    let year_arg = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
-    let y_num = oxide_runtime_api::to_number(year_arg);
-    if y_num.is_nan() {
-        set_timestamp(obj, f64::NAN);
-        return NativeResult::Ok(JsValue::float(f64::NAN));
-    }
-    let y = y_num.trunc() as i32;
-    let m = get_opt_arg(vm, args, 2, ndt.date().month0());
-    let d = get_opt_arg(vm, args, 3, ndt.date().day0());
-    let nd = NaiveDate::from_ymd_opt(y, m + 1, if args.len() > 3 { d } else { d + 1 })
-        .and_then(|date| {
-            date.and_hms_nano_opt(ndt.time().hour(), ndt.time().minute(), ndt.time().second(), ndt.time().nanosecond())
-        })
-        .unwrap_or(ndt);
-    let ts = nd.and_utc().timestamp_millis() as f64;
-    set_timestamp(obj, ts);
-    NativeResult::Ok(JsValue::float(ts))
+    let y = native_try!(date_arg_number(vm, if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() }));
+    let m = if args.len() > 2 {
+        native_try!(date_arg_number(vm, vm.reg(args[2])))
+    } else {
+        ndt.date().month0() as f64
+    };
+    let d = if args.len() > 3 {
+        native_try!(date_arg_number(vm, vm.reg(args[3])))
+    } else {
+        ndt.date().day() as f64
+    };
+    let time_ms = utc_time_ms(&ndt);
+    apply_date_result!(obj, make_day(y, m, d).and_then(|days| make_date_ms(days, time_ms)))
 }
 
 /// `Date.prototype.setUTCMonth(m, d)`：设置 UTC 月份（可选日），返回新时间戳。
@@ -642,22 +748,14 @@ pub fn date_set_utc_month<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         Some(n) => n,
         None => return NativeResult::Ok(JsValue::float(f64::NAN)),
     };
-    let month_arg = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
-    let m_num = oxide_runtime_api::to_number(month_arg);
-    if m_num.is_nan() {
-        set_timestamp(obj, f64::NAN);
-        return NativeResult::Ok(JsValue::float(f64::NAN));
-    }
-    let m = m_num.trunc() as u32;
-    let d = get_opt_arg(vm, args, 2, ndt.date().day0());
-    let nd = NaiveDate::from_ymd_opt(ndt.date().year(), m + 1, if args.len() > 2 { d } else { d + 1 })
-        .and_then(|date| {
-            date.and_hms_nano_opt(ndt.time().hour(), ndt.time().minute(), ndt.time().second(), ndt.time().nanosecond())
-        })
-        .unwrap_or(ndt);
-    let ts = nd.and_utc().timestamp_millis() as f64;
-    set_timestamp(obj, ts);
-    NativeResult::Ok(JsValue::float(ts))
+    let m = native_try!(date_arg_number(vm, if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() }));
+    let d = if args.len() > 2 {
+        native_try!(date_arg_number(vm, vm.reg(args[2])))
+    } else {
+        ndt.date().day() as f64
+    };
+    let time_ms = utc_time_ms(&ndt);
+    apply_date_result!(obj, make_day(ndt.date().year() as f64, m, d).and_then(|days| make_date_ms(days, time_ms)))
 }
 
 /// `Date.prototype.setUTCDate(d)`：设置 UTC 日，返回新时间戳。
@@ -671,21 +769,12 @@ pub fn date_set_utc_date<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         Some(n) => n,
         None => return NativeResult::Ok(JsValue::float(f64::NAN)),
     };
-    let date_arg = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
-    let d_num = oxide_runtime_api::to_number(date_arg);
-    if d_num.is_nan() {
-        set_timestamp(obj, f64::NAN);
-        return NativeResult::Ok(JsValue::float(f64::NAN));
-    }
-    let d = d_num.trunc() as u32;
-    let nd = NaiveDate::from_ymd_opt(ndt.date().year(), ndt.date().month(), d)
-        .and_then(|date| {
-            date.and_hms_nano_opt(ndt.time().hour(), ndt.time().minute(), ndt.time().second(), ndt.time().nanosecond())
-        })
-        .unwrap_or(ndt);
-    let ts = nd.and_utc().timestamp_millis() as f64;
-    set_timestamp(obj, ts);
-    NativeResult::Ok(JsValue::float(ts))
+    let d = native_try!(date_arg_number(vm, if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() }));
+    let time_ms = utc_time_ms(&ndt);
+    apply_date_result!(
+        obj,
+        make_day(ndt.date().year() as f64, ndt.date().month0() as f64, d).and_then(|days| make_date_ms(days, time_ms))
+    )
 }
 
 /// `Date.prototype.setUTCHours(h, min, s, ms)`：设置 UTC 小时（可选分/秒/毫秒），返回新时间戳。
@@ -699,25 +788,33 @@ pub fn date_set_utc_hours<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         Some(n) => n,
         None => return NativeResult::Ok(JsValue::float(f64::NAN)),
     };
-    let hours_arg = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
-    let h_num = oxide_runtime_api::to_number(hours_arg);
-    if h_num.is_nan() {
-        set_timestamp(obj, f64::NAN);
-        return NativeResult::Ok(JsValue::float(f64::NAN));
-    }
-    let h = h_num.trunc() as u32;
-    let min = get_opt_arg(vm, args, 2, ndt.time().minute());
-    let sec = get_opt_arg(vm, args, 3, ndt.time().second());
-    let ms_arg = get_opt_arg(vm, args, 4, ndt.time().nanosecond() / 1_000_000);
-    let nd = ndt
-        .with_hour(h)
-        .and_then(|x| x.with_minute(min))
-        .and_then(|x| x.with_second(sec))
-        .and_then(|x| x.with_nanosecond(ms_arg * 1_000_000))
-        .unwrap_or(ndt);
-    let ts = nd.and_utc().timestamp_millis() as f64;
-    set_timestamp(obj, ts);
-    NativeResult::Ok(JsValue::float(ts))
+    let h = native_try!(date_arg_number(vm, if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() }));
+    let min = if args.len() > 2 {
+        native_try!(date_arg_number(vm, vm.reg(args[2])))
+    } else {
+        0.0
+    };
+    let sec = if args.len() > 3 {
+        native_try!(date_arg_number(vm, vm.reg(args[3])))
+    } else {
+        0.0
+    };
+    let ms_arg = if args.len() > 4 {
+        native_try!(date_arg_number(vm, vm.reg(args[4])))
+    } else {
+        0.0
+    };
+    // 缺省分量取当前 UTC 时刻值，与 MakeTime 组合后整体进位。
+    let min_v = if args.len() > 2 { min } else { ndt.time().minute() as f64 };
+    let sec_v = if args.len() > 3 { sec } else { ndt.time().second() as f64 };
+    let ms_v = if args.len() > 4 {
+        ms_arg
+    } else {
+        ndt.time().nanosecond() as f64 / 1_000_000.0
+    };
+    let days = civil_day_count(ndt.date().year() as i64, ndt.date().month() as i64, ndt.date().day() as i64);
+    let result = make_time(h, min_v, sec_v, ms_v).and_then(|time_ms| make_date_ms(days, time_ms));
+    apply_date_result!(obj, result)
 }
 
 /// `Date.prototype.setUTCMinutes(min, s, ms)`：设置 UTC 分钟（可选秒/毫秒），返回新时间戳。
@@ -731,23 +828,26 @@ pub fn date_set_utc_minutes<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult 
         Some(n) => n,
         None => return NativeResult::Ok(JsValue::float(f64::NAN)),
     };
-    let minutes_arg = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
-    let min_num = oxide_runtime_api::to_number(minutes_arg);
-    if min_num.is_nan() {
-        set_timestamp(obj, f64::NAN);
-        return NativeResult::Ok(JsValue::float(f64::NAN));
-    }
-    let min = min_num.trunc() as u32;
-    let sec = get_opt_arg(vm, args, 2, ndt.time().second());
-    let ms_arg = get_opt_arg(vm, args, 3, ndt.time().nanosecond() / 1_000_000);
-    let nd = ndt
-        .with_minute(min)
-        .and_then(|x| x.with_second(sec))
-        .and_then(|x| x.with_nanosecond(ms_arg * 1_000_000))
-        .unwrap_or(ndt);
-    let ts = nd.and_utc().timestamp_millis() as f64;
-    set_timestamp(obj, ts);
-    NativeResult::Ok(JsValue::float(ts))
+    let min = native_try!(date_arg_number(vm, if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() }));
+    let sec = if args.len() > 2 {
+        native_try!(date_arg_number(vm, vm.reg(args[2])))
+    } else {
+        0.0
+    };
+    let ms_arg = if args.len() > 3 {
+        native_try!(date_arg_number(vm, vm.reg(args[3])))
+    } else {
+        0.0
+    };
+    let sec_v = if args.len() > 2 { sec } else { ndt.time().second() as f64 };
+    let ms_v = if args.len() > 3 {
+        ms_arg
+    } else {
+        ndt.time().nanosecond() as f64 / 1_000_000.0
+    };
+    let days = civil_day_count(ndt.date().year() as i64, ndt.date().month() as i64, ndt.date().day() as i64);
+    let result = make_time(ndt.time().hour() as f64, min, sec_v, ms_v).and_then(|time_ms| make_date_ms(days, time_ms));
+    apply_date_result!(obj, result)
 }
 
 /// `Date.prototype.setUTCSeconds(s, ms)`：设置 UTC 秒（可选毫秒），返回新时间戳。
@@ -761,21 +861,21 @@ pub fn date_set_utc_seconds<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult 
         Some(n) => n,
         None => return NativeResult::Ok(JsValue::float(f64::NAN)),
     };
-    let seconds_arg = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
-    let sec_num = oxide_runtime_api::to_number(seconds_arg);
-    if sec_num.is_nan() {
-        set_timestamp(obj, f64::NAN);
-        return NativeResult::Ok(JsValue::float(f64::NAN));
-    }
-    let sec = sec_num.trunc() as u32;
-    let ms_arg = get_opt_arg(vm, args, 2, ndt.time().nanosecond() / 1_000_000);
-    let nd = ndt
-        .with_second(sec)
-        .and_then(|x| x.with_nanosecond(ms_arg * 1_000_000))
-        .unwrap_or(ndt);
-    let ts = nd.and_utc().timestamp_millis() as f64;
-    set_timestamp(obj, ts);
-    NativeResult::Ok(JsValue::float(ts))
+    let sec = native_try!(date_arg_number(vm, if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() }));
+    let ms_arg = if args.len() > 2 {
+        native_try!(date_arg_number(vm, vm.reg(args[2])))
+    } else {
+        0.0
+    };
+    let ms_v = if args.len() > 2 {
+        ms_arg
+    } else {
+        ndt.time().nanosecond() as f64 / 1_000_000.0
+    };
+    let days = civil_day_count(ndt.date().year() as i64, ndt.date().month() as i64, ndt.date().day() as i64);
+    let result = make_time(ndt.time().hour() as f64, ndt.time().minute() as f64, sec, ms_v)
+        .and_then(|time_ms| make_date_ms(days, time_ms));
+    apply_date_result!(obj, result)
 }
 
 /// `Date.prototype.setUTCMilliseconds(ms)`：设置 UTC 毫秒，返回新时间戳。
@@ -789,17 +889,11 @@ pub fn date_set_utc_milliseconds<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeRe
         Some(n) => n,
         None => return NativeResult::Ok(JsValue::float(f64::NAN)),
     };
-    let millis_arg = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
-    let ms_num = oxide_runtime_api::to_number(millis_arg);
-    if ms_num.is_nan() {
-        set_timestamp(obj, f64::NAN);
-        return NativeResult::Ok(JsValue::float(f64::NAN));
-    }
-    let ms_arg = ms_num.trunc() as u32;
-    let nd = ndt.with_nanosecond(ms_arg * 1_000_000).unwrap_or(ndt);
-    let ts = nd.and_utc().timestamp_millis() as f64;
-    set_timestamp(obj, ts);
-    NativeResult::Ok(JsValue::float(ts))
+    let ms_arg = native_try!(date_arg_number(vm, if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() }));
+    let days = civil_day_count(ndt.date().year() as i64, ndt.date().month() as i64, ndt.date().day() as i64);
+    let result = make_time(ndt.time().hour() as f64, ndt.time().minute() as f64, ndt.time().second() as f64, ms_arg)
+        .and_then(|time_ms| make_date_ms(days, time_ms));
+    apply_date_result!(obj, result)
 }
 
 /// Annex B `Date.prototype.getYear()`：返回本地年减 1900。

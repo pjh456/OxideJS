@@ -58,6 +58,11 @@ fn normalize_index<H: VmHost>(vm: &mut H, value: JsValue, len: usize) -> Result<
     if n.is_nan() {
         return Ok(0);
     }
+    // ToIntegerOrInfinity：±Infinity 不截断，负无穷归 0、正无穷归 len，
+    // 避免饱和成 isize::MIN 后取负溢出。
+    if n.is_infinite() {
+        return Ok(if n < 0.0 { 0 } else { len });
+    }
     let int = n.trunc() as isize;
     if int < 0 {
         Ok(len.saturating_sub((-int) as usize))
@@ -583,12 +588,29 @@ typed_array_ctor!(biguint64array_constructor, BigUint64);
 pub fn typed_array_at<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
     let view = native_try!(get_typed_array_data(vm, this_val));
-    let raw_index = if args.len() > 1 {
-        native_try!(ta_to_number(vm, vm.reg(args[1]))).trunc() as isize
+    let idx: isize = if args.len() > 1 {
+        let n = native_try!(ta_to_number(vm, vm.reg(args[1])));
+        // ToIntegerOrInfinity：NaN 归 0；±Infinity 不截断，负无穷必然越界、
+        // 正无穷归 len（同样越界），避免饱和成 isize::MIN 后加长度下溢。
+        if n.is_nan() {
+            0
+        } else if n.is_infinite() {
+            if n > 0.0 {
+                view.length as isize
+            } else {
+                -1
+            }
+        } else {
+            let k = n.trunc() as isize;
+            if k < 0 {
+                view.length as isize + k
+            } else {
+                k
+            }
+        }
     } else {
         0
     };
-    let idx = if raw_index < 0 { view.length as isize + raw_index } else { raw_index };
     if idx < 0 || idx as usize >= view.length {
         return NativeResult::Ok(JsValue::undefined());
     }
@@ -1147,14 +1169,23 @@ pub fn typed_array_last_index_of<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeRe
             Ok(n) => n,
             Err(e) => return NativeResult::Err(crate::iterator::engine_error(vm, &e)),
         };
+        // ToIntegerOrInfinity：NaN 从 0 起找；±Infinity 不截断，正无穷封顶
+        // len-1、负无穷直接越界返回 -1，避免饱和成 isize::MIN 后加长度下溢。
         if f.is_nan() {
-            return NativeResult::Ok(JsValue::int(-1));
-        }
-        let f = f.trunc();
-        if f >= 0.0 {
-            (f as isize).min(view.length as isize - 1)
+            0
+        } else if f.is_infinite() {
+            if f > 0.0 {
+                view.length as isize - 1
+            } else {
+                -1
+            }
         } else {
-            view.length as isize + f as isize
+            let f = f.trunc() as isize;
+            if f >= 0 {
+                f.min(view.length as isize - 1)
+            } else {
+                view.length as isize + f
+            }
         }
     } else {
         view.length as isize - 1

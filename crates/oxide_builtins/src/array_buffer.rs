@@ -35,6 +35,11 @@ fn normalize_index<H: VmHost>(vm: &mut H, value: JsValue, len: usize) -> usize {
     if n.is_nan() {
         return 0;
     }
+    // ToIntegerOrInfinity：±Infinity 不截断，负无穷归 0、正无穷归 len，
+    // 避免饱和成 isize::MIN 后取负溢出。
+    if n.is_infinite() {
+        return if n < 0.0 { 0 } else { len };
+    }
     let int = n.trunc() as isize;
     if int < 0 {
         len.saturating_sub((-int) as usize)
