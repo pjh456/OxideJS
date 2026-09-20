@@ -251,6 +251,11 @@ pub(crate) fn collect_decl_names_stmt(stmts: &[Statement], out: &mut HashSet<Str
             Statement::TryStatement(ts) => {
                 collect_decl_names_stmt(&ts.block.body, out);
                 if let Some(h) = &ts.handler {
+                    // catch 参数是本函数作用域的词法绑定：计入 own_bindings，
+                    // 嵌套函数引用它时捕获分析才会建 cell 供 upvalue 读取。
+                    if let Some(param) = &h.param {
+                        collect_binding_pattern_names(&param.pattern, out);
+                    }
                     collect_decl_names_stmt(&h.body.body, out);
                 }
                 if let Some(f) = &ts.finalizer {
