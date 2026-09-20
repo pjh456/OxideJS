@@ -146,11 +146,11 @@ pub(crate) fn apply_binding_table(
     }
 }
 
-/// 在原型上绑定一个原生访问器 getter（如 Set/Map 的 `size`），set 恒为 undefined。
+/// 在原型上绑定一个字符串键的原生访问器 getter（如 Set/Map 的 `size`），
+/// set 恒为 undefined。
 ///
 /// # 步骤
-/// 1. 构造一个 native getter 函数对象（name 为 `get <prop>`，length 0）。
-/// 2. 为属性名开 shape 槽位并写入访问器 meta。
+/// 1. 以 `get <prop>` 为 name 标签委托到 [`Self::bind_accessor_getter_key`]。
 ///
 /// # 注意事项
 /// getter 函数对象登记进 world 释放表，与 `bind_method` 的方法 wrapper 同一生命周期约定
@@ -158,19 +158,36 @@ pub(crate) fn apply_binding_table(
 pub(crate) fn bind_accessor_getter(
     core: &Arc<KernelCore>, session: &KernelSession, proto: &mut JsObject, name: &str, getter_fn: *const (),
 ) {
+    let si = core.perm_interner().intern(name).0;
+    let getter_name = format!("get {name}");
+    bind_accessor_getter_key(core, session, proto, si, &getter_name, getter_fn)
+}
+
+/// 在原型上按任意属性键（字符串 intern 键或 well-known symbol 键）绑定一个
+/// 原生访问器 getter，set 恒为 undefined。
+///
+/// # 步骤
+/// 1. 构造一个 native getter 函数对象（name 为 `getter_label`，length 0）。
+/// 2. 为键开 shape 槽位并写入访问器 meta（enumerable=false, configurable=true）。
+///
+/// # 注意事项
+/// getter 函数对象登记进 world 释放表，与 `bind_method` 的方法 wrapper 同一生命周期约定
+/// （session 收尾时统一释放）。
+pub(crate) fn bind_accessor_getter_key(
+    core: &Arc<KernelCore>, session: &KernelSession, proto: &mut JsObject, key: u32, getter_label: &str,
+    getter_fn: *const (),
+) {
     let shape_forge = core.shape_forge().as_ref();
     let string_forge = core.perm_interner().as_ref();
     let world = session.builtin_world();
 
-    let si = string_forge.intern(name).0;
-    let getter_name = format!("get {name}");
-    let si_label = string_forge.intern(&getter_name).0;
+    let si_label = string_forge.intern(getter_label).0;
     // SAFETY: getter_fn 是转成 *const () 的 NativeFn 函数项指针。
     let getter_fn_ptr = unsafe { oxide_types::object::NativeFnPtr::from_raw(getter_fn) };
     // 选择性重建复用：同家族同槽旧 getter 迁移到新 proto 的访问器槽（proto
     // 槽已由重建收尾重指），不再新建对象。
     let reuse_key =
-        oxide_kernel::builtin::FnWrapperKey::new(world.wrapper_family_of(proto as *const JsObject), 0, si, si_label);
+        oxide_kernel::builtin::FnWrapperKey::new(world.wrapper_family_of(proto as *const JsObject), 0, key, si_label);
     let getter_ptr = match world.find_fn_wrapper(reuse_key, getter_fn_ptr, 0) {
         Some(ptr) => ptr,
         None => {
@@ -203,7 +220,7 @@ pub(crate) fn bind_accessor_getter(
     };
     let getter_val = JsValue::from_js_object(getter_ptr);
 
-    let new_shape = shape_forge.make_shape(proto.shape_id(), si);
+    let new_shape = shape_forge.make_shape(proto.shape_id(), key);
     proto.set_shape_id(new_shape);
     let pos = proto.push_prop(JsValue::undefined());
     proto.set_accessor_meta(pos, getter_val, JsValue::undefined(), PropAttributes::new(true, false, true));

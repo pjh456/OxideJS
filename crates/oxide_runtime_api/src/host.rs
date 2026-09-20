@@ -141,6 +141,20 @@ pub trait VmHost {
 
     // 调用基础设施
     fn call_function_sync(&mut self, callee: JsValue, receiver: JsValue, args: &[JsValue]) -> Result<JsValue, String>;
+    /// 构造调用（Construct(C, args)）：native 构造器以新对象为 receiver 值传递调用，
+    /// bytecode 构造器压构造帧执行（含 derived 构造器 super() 语义与 new.target
+    /// 传播），返回值非对象时回退到新对象。
+    ///
+    /// # 边界与前提
+    /// - `ctor` 必须为可构造值（箭头 / 非构造 native / 普通值在入口处拒绝，
+    ///   返回 `Err`）；`args` 为完整实参列表。
+    ///
+    /// # 副作用
+    /// - bytecode 构造器压帧内嵌 dispatch：调用方执行状态在帧边界保存/恢复
+    ///   （寄存器窗口 / 表代际 / spill）。
+    /// - 失败时已消费 `last_uncaught_value`，`Err` 直接携带原始抛出值
+    ///   （保原值身份，不做文本降级）；调用方不得再取槽。
+    fn construct_ctor(&mut self, ctor: JsValue, args: &[JsValue]) -> Result<JsValue, JsValue>;
     /// 取回在 String 展平调用边界上保留下来的原始抛出 JsValue，
     /// 使迭代器包装器能重新抛出原错误而非二次包装。
     fn take_uncaught_value(&mut self) -> Option<JsValue>;

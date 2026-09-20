@@ -130,6 +130,9 @@ impl oxide_runtime_api::VmHost for Vm {
     fn call_function_sync(&mut self, callee: JsValue, receiver: JsValue, args: &[JsValue]) -> Result<JsValue, String> {
         self.call_function_sync(callee, receiver, args)
     }
+    fn construct_ctor(&mut self, ctor: JsValue, args: &[JsValue]) -> Result<JsValue, JsValue> {
+        Vm::construct_ctor(self, ctor, args)
+    }
     fn checked_object_ptr(&mut self, val: JsValue, error_msg: &str) -> Result<Option<*mut JsObject>, String> {
         self.checked_object_ptr(val, error_msg)
     }

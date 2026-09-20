@@ -741,16 +741,26 @@ impl Vm {
             let is_derived_constructor = frame.is_derived_constructor;
             let super_called = frame.super_called;
             let continuation = frame.continuation;
+            // 隐式返回交付当前 this 绑定：super() 已把 regs[254] 换为父构造器新建
+            // 的实例，restore_frame 会把压帧期旧值回写 regs[254]，须先取。
+            let current_this = self.regs[254];
             vm_trace!("RETURN frame: continuation={:?}, derived={}", continuation, is_derived_constructor);
             self.restore_frame(frame);
             if let (Some(target_reg), Some(constructed_this)) = (construct_result_reg, constructed_this) {
                 // 规范 §9.2.2.2：derived 构造器返回非对象值（含 undefined/null/原始值）
-                // 且未调用 super() 时抛 ReferenceError；调过 super() 则回退构造 this。
+                // 且未调用 super() 时抛 ReferenceError；调过 super() 则回退当前 this
+                // （super 已将其换为父构造器实例，构造 this 仅作非对象兜底）。
                 if is_derived_constructor && !result.is_object() && !super_called {
                     self.raise_error_kind("ReferenceError", "derived constructor must call super()")?;
                     return Ok(None);
                 }
-                self.regs[target_reg as usize] = if result.is_object() { result } else { constructed_this };
+                self.regs[target_reg as usize] = if result.is_object() {
+                    result
+                } else if current_this.is_object() {
+                    current_this
+                } else {
+                    constructed_this
+                };
                 self.regs[0] = self.regs[target_reg as usize];
                 vm_trace!("RETURN constructor: target_reg={} regs[0]={:?}", target_reg, self.regs[0]);
             } else {

@@ -42,7 +42,11 @@ impl Vm {
 
     /// 构造调用（Construct(C, args)）：native 构造器值传递调用，bytecode 构造器
     /// 压构造帧执行（含 derived 构造器 super() 语义），返回值非对象时回退到新对象。
-    pub(super) fn construct_ctor(&mut self, ctor: JsValue, args: &[JsValue]) -> Result<JsValue, JsValue> {
+    ///
+    /// # 边界与前提
+    /// - `ctor` 非可构造值（箭头 / 非构造 native / 普通值）返回 TypeError 的 `Err`；
+    ///   消费 `last_uncaught_value`，调用方不得再取槽。
+    pub(crate) fn construct_ctor(&mut self, ctor: JsValue, args: &[JsValue]) -> Result<JsValue, JsValue> {
         // IsConstructor 校验：arrow / 非构造 native / 普通值拒绝。
         if !is_constructor_value(ctor) {
             return Err(oxide_builtins::error::create_type_error(self, "constructor is not a constructor"));

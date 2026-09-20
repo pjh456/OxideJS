@@ -580,14 +580,14 @@ impl Vm {
         }
 
         if super_obj.native_fn().is_some() {
-            self.regs[253] = derived_this;
-            self.regs[254] = super_ctor; // bind_dispatcher 把 regs[254] 当作包装 callee 读取
-            let (args_buf, len) = Self::build_native_args(first_arg_reg, arg_count, 253);
-            // SAFETY: native_fn 经 set_native_fn 以合法 NativeFn 指针设置；
-            // native_fn_ptr_to_fn 是 NativeFnPtr → NativeFn 的唯一强制转换点。
-            let func: NativeFn = unsafe { native_fn_ptr_to_fn(super_obj.native_fn().unwrap()) };
-            match func(self, &args_buf[..len]) {
-                NativeResult::Ok(val) => {
+            // 实参先物化再走同步调用收口：native 调用协议把 253/254 槽固定为
+            // receiver/callee，实参寄存器（颜色 ≤253）占位 253 时裸引用会被覆写
+            // （与 SUPER_CALL_SPREAD 路径同形）。
+            let args: Vec<JsValue> = (0..arg_count)
+                .map(|i| self.regs[first_arg_reg.wrapping_add(i as u8) as usize])
+                .collect();
+            match self.call_function_sync(super_ctor, derived_this, &args) {
+                Ok(val) => {
                     // super() 返回实例的 [[Prototype]] 须设为 new.target.prototype
                     //（native 构造器不知道 new.target，由调用方设置）。
                     let instance = if val.is_object() { val } else { derived_this };
@@ -598,25 +598,17 @@ impl Vm {
                     self.regs[rd] = self.regs[254];
                     self.mark_super_called();
                 }
-                NativeResult::Err(err_val) => {
-                    self.exception_value = Some(err_val);
-                    self.pending_error_kind = Some(self.thrown_error_kind(err_val));
+                Err(_) => {
+                    let exc = self
+                        .last_uncaught_value
+                        .take()
+                        .unwrap_or_else(|| oxide_builtins::error::create_error(self, "super() call failed"));
+                    self.exception_value = Some(exc);
+                    self.pending_error_kind = Some(self.thrown_error_kind(exc));
                     match self.unwind() {
                         Ok(()) => return Ok(true),
                         Err(e) => return Err(e),
                     }
-                }
-                NativeResult::TailCall { callee, this, args } => {
-                    // 如 bound 函数：解析尾调用，用其返回值作为构造实例
-                    // （或回退到 derived_this）。
-                    let val = self.call_function_sync(callee, this, &args)?;
-                    let instance = if val.is_object() { val } else { derived_this };
-                    if instance.is_object() {
-                        self.set_constructed_proto(instance, new_target_obj)?;
-                    }
-                    self.regs[254] = instance;
-                    self.regs[rd] = self.regs[254];
-                    self.mark_super_called();
                 }
             }
         } else if super_obj.sub_module_index() > 0 {

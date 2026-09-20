@@ -66,6 +66,12 @@ pub fn array_is_array<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     NativeResult::Ok(JsValue::bool(unsafe { &*ptr }.is_array()))
 }
 
+/// `Array[Symbol.species]` 访问器 getter：返回 receiver——派生类沿静态原型链
+/// 解析 `@@species` 时得到自身构造器，`Array` 自身解析得到 `Array`。
+pub fn array_species_get<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    NativeResult::ok(vm.reg(args[0]))
+}
+
 /// `Array.of(...items)`：以参数为元素构造新数组。
 ///
 /// # 步骤
@@ -109,7 +115,7 @@ pub fn array_of<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 ///
 /// # 注意事项
 /// - 迭代只读包装器 `next`/`done`/`value` 属性，与 spread 物化共用同一迭代协议。
-/// - new.target 不向被构造的 C 传播（与 Reflect.construct 同一简化）。
+/// - 构造走完整 Construct：new.target 向被构造的 C 传播（与 Reflect.construct 同面）。
 pub fn array_from<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let items = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
     if items.is_null() || items.is_undefined() {
@@ -271,8 +277,9 @@ pub(crate) fn from_engine_error<H: VmHost>(vm: &mut H, err: &str) -> JsValue {
         .unwrap_or_else(|| crate::error::create_from_text(vm, err))
 }
 
-/// 按构造函数 C 构造 Array.from 的结果对象：C 可构造时以 C.prototype 分配 `this`
-/// 后调用 C（返回非对象时回退 `this`），否则返回普通空数组。
+/// 按构造函数 C 构造 Array.from/of / species 的结果对象：C 可构造时走完整
+/// Construct(C, args)（native 值传递 / bytecode 压构造帧，含 derived 构造器
+/// super() 语义与 new.target 传播），否则返回普通空数组。
 ///
 /// # 返回值
 /// `(结果对象指针, 是否为真数组)`。
@@ -285,42 +292,17 @@ fn construct_array_from_result<H: VmHost>(
         let arr = vm.alloc_object(JsObject::new_array(EMPTY_SHAPE_ID, proto_val, 0, vm.epoch().bump()));
         (arr, true)
     };
-    if !c.is_object() {
+    // 不可构造（箭头函数 / 非构造器标记的 native 方法 / 普通值）回退普通数组。
+    if !is_constructor_value(c) {
         return Ok(fallback_array());
     }
-    let c_obj = unsafe { &*c.as_js_object_ptr() };
-    // 不可构造：箭头函数、非构造器标记的 native 方法。
-    let constructible = c_obj.is_function()
-        && !c_obj.is_arrow()
-        && !(c_obj.native_fn().is_some() && c_obj.type_tag != JsObject::OBJ_TYPE_CONSTRUCTOR);
-    if !constructible {
-        return Ok(fallback_array());
-    }
-
-    // 仿 Reflect.construct：以 C.prototype 分配 this 后调用 C。
-    let proto_si = vm.kernel_core().perm_interner().intern("prototype").0;
-    let ctor_proto = match vm.resolve_property(c_obj, proto_si) {
-        Some(p) if p.is_object() => p,
-        _ => JsValue::from_js_object(vm.session().builtin_world().object_proto.as_ptr() as *mut JsObject),
-    };
-    let this_ptr = vm.alloc_object(JsObject::new_empty(EMPTY_SHAPE_ID, ctor_proto));
-    let this_val = JsValue::from_js_object(this_ptr);
-    match vm.call_function_sync(c, this_val, args) {
-        Ok(ret) if ret.is_object() => {
-            let ret_ptr = ret.as_js_object_ptr();
-            let ret_tag = unsafe { &*ret_ptr }.type_tag;
-            // 原始值包装对象（如 `Object(4)` 返回的 Number 包装）的索引属性存储不完整，
-            // 回退到刚分配的对象；真数组/普通对象按规范使用构造返回对象。
-            if matches!(
-                ret_tag,
-                JsObject::OBJ_TYPE_STRING_OBJ | JsObject::OBJ_TYPE_NUMBER_OBJ | JsObject::OBJ_TYPE_BOOLEAN_OBJ
-            ) {
-                return Ok((this_ptr, false));
-            }
-            Ok((ret_ptr, unsafe { &*ret_ptr }.is_array()))
+    match vm.construct_ctor(c, args) {
+        Ok(obj) => {
+            let obj_ptr = obj.as_js_object_ptr();
+            Ok((obj_ptr, unsafe { &*obj_ptr }.is_array()))
         }
-        Ok(_) => Ok((this_ptr, false)),
-        Err(err) => Err(from_engine_error(vm, &err)),
+        // 构造器抛错：原值经 Err 直传（保原值身份，不做文本降级重建）。
+        Err(err) => Err(err),
     }
 }
 

@@ -75,4 +75,15 @@ pub fn bind_array(core: &Arc<KernelCore>, session: &KernelSession, global: &mut 
 
     let ctor_ptr = session.builtin_world().array_constructor.as_ptr() as *mut JsObject;
     bind_constructor!(core, global, "Array", ctor_ptr, oxide_builtins::array::array_constructor::<crate::vm::Vm>, 1, hash: true);
+    // Array[Symbol.species] 访问器：getter 返回 receiver，派生类沿静态原型链
+    // 解析 @@species 得自身构造器（规范不给 class 默认 static @@species，类上
+    // 无 own 属性）。
+    super::bind_accessor_getter_key(
+        core,
+        session,
+        unsafe { &mut *ctor_ptr },
+        oxide_types::private_key::make_well_known_symbol_key(oxide_types::private_key::WELL_KNOWN_SYMBOL_SPECIES),
+        "get [Symbol.species]",
+        oxide_builtins::array::array_species_get::<crate::vm::Vm> as *const (),
+    );
 }
