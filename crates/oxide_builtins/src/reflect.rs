@@ -1,11 +1,11 @@
 use oxide_kernel::shape_forge::EMPTY_SHAPE_ID;
-use oxide_types::mem::P;
 use oxide_types::object::JsObject;
 use oxide_types::value::JsValue;
 
+use crate::array::{arraylike_get, from_engine_error, is_constructor_value};
 use crate::object::{delete_own_property, key_si_to_js_value, own_symbol_key_values, walk_own_keys};
 
-use oxide_runtime_api::{NativeResult, VmHost};
+use oxide_runtime_api::{to_length, NativeResult, VmHost};
 
 /// `Reflect.apply(target, thisArgument, argumentsList)`：以指定 this 与参数数组调用函数。
 pub fn reflect_apply<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
@@ -24,47 +24,53 @@ pub fn reflect_apply<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     }
 }
 
-/// `Reflect.construct(target, argumentsList, newTarget)`：以 newTarget 的 prototype
-/// 分配 this 后调用 target；返回值非对象时回退到新建的 this。
+/// `Reflect.construct(target, argumentsList, newTarget)`：真 `[[Construct]]`——
+/// 按 newTarget 的 prototype 分配 this、new.target = newTarget 压构造帧执行；
+/// 返回值非对象时回退到新建的 this。
+///
+/// # 步骤
+/// 1. IsConstructor(target) 为 false → TypeError。
+/// 2. newTarget 缺省 = target；IsConstructor 为 false → TypeError。
+/// 3. argumentsList 非对象 → TypeError；CreateListFromArrayLike：规范读 length
+///    （访问器异常原值传播）、ToLength、逐索引规范 Get。
+///
+/// # 边界与前提
+/// - 构造失败（derived 未调 super 等）的 `Err` 携带原始异常值，原值直传重抛。
 pub fn reflect_construct<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let target = arg(vm, args, 1);
     let arg_list = arg(vm, args, 2);
     let new_target = if args.len() > 3 { arg(vm, args, 3) } else { target };
 
-    if !is_callable(target) {
-        return type_error(vm, "Reflect.construct target is not callable");
+    if !is_constructor_value(target) {
+        return type_error(vm, "Reflect.construct target is not a constructor");
     }
-    let new_target_ptr = if new_target.is_object() {
-        new_target.as_js_object_ptr()
-    } else {
-        std::ptr::null_mut()
-    };
-    if new_target_ptr.is_null() || !unsafe { &*new_target_ptr }.is_function() {
+    if !is_constructor_value(new_target) {
         return type_error(vm, "Reflect.construct newTarget is not a constructor");
     }
-    // 不可构造：箭头函数、native 方法（非构造器，OBJ_TYPE_CONSTRUCTOR 标记的除外）。
-    let nt = unsafe { &*new_target_ptr };
-    if nt.is_arrow() || (nt.native_fn().is_some() && nt.type_tag != oxide_types::object::JsObject::OBJ_TYPE_CONSTRUCTOR)
-    {
-        return type_error(vm, "Reflect.construct newTarget is not a constructor");
+    let Some(arg_list_ptr) = object_ptr(arg_list) else {
+        return type_error(vm, "Reflect.construct argumentsList is not an object");
+    };
+    // SAFETY: object_ptr 保证指针非空且指向存活对象。
+    let arg_list_obj = unsafe { &*arg_list_ptr };
+
+    // CreateListFromArrayLike：规范读 length（访问器异常原值传播），ToLength 纯函数不抛。
+    let length_si = vm.kernel_core().perm_interner().intern("length").0;
+    let len_val = match vm.ordinary_get(arg_list_obj, length_si, arg_list) {
+        Ok(v) => v,
+        Err(msg) => return NativeResult::Err(from_engine_error(vm, &msg)),
+    };
+    let len = to_length(len_val) as usize;
+    let mut call_args = Vec::with_capacity(len);
+    for i in 0..len {
+        match arraylike_get(vm, arg_list_ptr, i) {
+            Ok(v) => call_args.push(v),
+            Err(exc) => return NativeResult::Err(exc),
+        }
     }
 
-    let proto_si = vm.kernel_core().perm_interner().intern("prototype").0;
-    let proto_val = match vm.resolve_property(unsafe { &*new_target_ptr }, proto_si) {
-        Some(p) if p.is_object() => p,
-        _ => JsValue::from_js_object(P::as_ptr(&vm.session().builtin_world().object_proto) as *mut JsObject),
-    };
-    let this_ptr = vm.alloc_object(JsObject::new_empty(EMPTY_SHAPE_ID, proto_val));
-    let this_val = JsValue::from_js_object(this_ptr);
-
-    let call_args = array_like_elements(arg_list).unwrap_or_default();
-    // ponytail: construct by binding the freshly allocated `this` to a plain call;
-    // new.target is not propagated into target. Upgrade path: expose the VM's
-    // [[Construct]] frame (constructed_this/new_target in vm.rs) through VmHost.
-    match vm.call_function_sync(target, this_val, &call_args) {
-        Ok(ret) if ret.is_object() => NativeResult::Ok(ret),
-        Ok(_) => NativeResult::Ok(this_val),
-        Err(err) => NativeResult::Err(crate::error::create_type_error(vm, &err)),
+    match vm.construct_ctor_nt(target, new_target, &call_args) {
+        Ok(value) => NativeResult::Ok(value),
+        Err(exc) => NativeResult::Err(exc),
     }
 }
 

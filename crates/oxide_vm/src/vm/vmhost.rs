@@ -133,6 +133,9 @@ impl oxide_runtime_api::VmHost for Vm {
     fn construct_ctor(&mut self, ctor: JsValue, args: &[JsValue]) -> Result<JsValue, JsValue> {
         Vm::construct_ctor(self, ctor, args)
     }
+    fn construct_ctor_nt(&mut self, ctor: JsValue, new_target: JsValue, args: &[JsValue]) -> Result<JsValue, JsValue> {
+        Vm::construct_with(self, ctor, new_target, args)
+    }
     fn checked_object_ptr(&mut self, val: JsValue, error_msg: &str) -> Result<Option<*mut JsObject>, String> {
         self.checked_object_ptr(val, error_msg)
     }

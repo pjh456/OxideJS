@@ -47,6 +47,21 @@ impl Vm {
     /// - `ctor` 非可构造值（箭头 / 非构造 native / 普通值）返回 TypeError 的 `Err`；
     ///   消费 `last_uncaught_value`，调用方不得再取槽。
     pub(crate) fn construct_ctor(&mut self, ctor: JsValue, args: &[JsValue]) -> Result<JsValue, JsValue> {
+        self.construct_with(ctor, ctor, args)
+    }
+
+    /// 带 newTarget 覆写的构造调用（Construct(C, args, newTarget)）：this 与
+    /// new.target 均按 `new_target` 推导——this = OrdinaryCreateFromConstructor(newTarget)，
+    /// 构造帧 new.target 槽 = newTarget。Reflect.construct 面的入口；newTarget 与
+    /// 构造器本身同值时与 `construct_ctor` 逐位等价。
+    ///
+    /// # 边界与前提
+    /// - `ctor` 非可构造值返回 TypeError 的 `Err`；`new_target` 的可构造性由调用方
+    ///   入口校验。失败时消费 `last_uncaught_value`，`Err` 携带原始抛出值，
+    ///   调用方不得再取槽。
+    pub(crate) fn construct_with(
+        &mut self, ctor: JsValue, new_target: JsValue, args: &[JsValue],
+    ) -> Result<JsValue, JsValue> {
         // IsConstructor 校验：arrow / 非构造 native / 普通值拒绝。
         if !is_constructor_value(ctor) {
             return Err(oxide_builtins::error::create_type_error(self, "constructor is not a constructor"));
@@ -54,9 +69,12 @@ impl Vm {
         // SAFETY: `is_constructor_value` 已含对象校验，指针非空且指向存活对象；
         // 此处只读 native_fn() 判定分支，不跨 GC/reset。
         let ctor_obj = unsafe { &*ctor.as_js_object_ptr() };
-        // native 构造器：receiver 为新对象，值传递调用（%Promise% 主路径）。
+        // SAFETY: 调用方入口已对 new_target 做过同谓词 IsConstructor 校验，
+        // 指针非空且指向存活对象。
+        let nt_obj = unsafe { &*new_target.as_js_object_ptr() };
+        // native 构造器：receiver 为新对象（this 取 newTarget.prototype），值传递调用。
         if ctor_obj.native_fn().is_some() {
-            let this_ptr = self.alloc_ctor_this(ctor_obj)?;
+            let this_ptr = self.alloc_ctor_this(nt_obj)?;
             let this_val = JsValue::from_js_object(this_ptr);
             return match self.call_function_sync(ctor, this_val, args) {
                 Ok(ret) if ret.is_object() => Ok(ret),
@@ -67,7 +85,7 @@ impl Vm {
                     .unwrap_or_else(|| oxide_builtins::error::create_from_text(self, &e))),
             };
         }
-        self.call_constructor_bytecode_inline(ctor, ctor_obj, args)
+        self.call_constructor_bytecode_inline(ctor, ctor_obj, nt_obj, new_target, args)
     }
 
     /// 分配构造 this：proto = ctor.prototype（缺省 Object.prototype）。
@@ -81,14 +99,14 @@ impl Vm {
     }
 
     /// bytecode 构造器构造调用：压构造帧内嵌 dispatch 执行（derived 构造器
-    /// super() 前 this = undefined，new.target = ctor），结果经 `do_return` 交付
-    /// regs[0]（非对象回退构造 this）。
+    /// super() 前 this = undefined，new.target = newTarget），this 与构造 this
+    /// 均按 newTarget 分配，结果经 `do_return` 交付 regs[0]（非对象回退构造 this）。
     ///
     /// # 副作用
     /// - 经 `save_inline_state` / `restore_inline_state` 保存恢复调用方执行状态。
     /// - `construct_dispatch` 标志令构造帧弹出时交付结果而非继续执行。
     fn call_constructor_bytecode_inline(
-        &mut self, ctor: JsValue, ctor_obj: &JsObject, args: &[JsValue],
+        &mut self, ctor: JsValue, ctor_obj: &JsObject, nt_obj: &JsObject, new_target: JsValue, args: &[JsValue],
     ) -> Result<JsValue, JsValue> {
         // 按构造器自身记录的表代际解析：代际表缺失（已回收）或下标越界与
         // 原生函数哨兵同口径报 TypeError。
@@ -103,7 +121,7 @@ impl Vm {
         }
         // 先拷出寄存器数，释放对代际表的借用后再进入可变借用区。
         let callee_reg_count = callee_module.n_registers;
-        let new_obj_ptr = self.alloc_ctor_this(ctor_obj)?;
+        let new_obj_ptr = self.alloc_ctor_this(nt_obj)?;
         let new_obj_val = JsValue::from_js_object(new_obj_ptr);
         // derived 构造器 super() 前 this 为 undefined，基类 this = 新对象。
         let this_value = if ctor_obj.is_derived_constructor() {
@@ -123,7 +141,7 @@ impl Vm {
                 FrameArgs::Slice(args),
                 Some(0),
                 Some(new_obj_val),
-                ctor,
+                new_target,
                 FrameContinuation::None,
                 0,
             )

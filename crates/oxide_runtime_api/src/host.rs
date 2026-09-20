@@ -155,6 +155,19 @@ pub trait VmHost {
     /// - 失败时已消费 `last_uncaught_value`，`Err` 直接携带原始抛出值
     ///   （保原值身份，不做文本降级）；调用方不得再取槽。
     fn construct_ctor(&mut self, ctor: JsValue, args: &[JsValue]) -> Result<JsValue, JsValue>;
+    /// 带 newTarget 覆写的构造调用（Construct(C, args, newTarget)）：this 与
+    /// new.target 均按 `new_target` 推导；不覆写时调用方传构造器本身（与
+    /// `construct_ctor` 逐位等价）。
+    ///
+    /// # 边界与前提
+    /// - `ctor` 必须为可构造值（入口拒绝，返回 `Err`）；`new_target` 的可构造性
+    ///   由调用方入口校验；`args` 为完整实参列表。
+    ///
+    /// # 副作用
+    /// - 同 `construct_ctor`：bytecode 构造器压帧内嵌 dispatch，失败时消费
+    ///   `last_uncaught_value`，`Err` 直接携带原始抛出值（保原值身份，不做
+    ///   文本降级）；调用方不得再取槽。
+    fn construct_ctor_nt(&mut self, ctor: JsValue, new_target: JsValue, args: &[JsValue]) -> Result<JsValue, JsValue>;
     /// 取回在 String 展平调用边界上保留下来的原始抛出 JsValue，
     /// 使迭代器包装器能重新抛出原错误而非二次包装。
     fn take_uncaught_value(&mut self) -> Option<JsValue>;
