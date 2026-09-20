@@ -594,10 +594,19 @@ fn compile_large_pure_expression_reuses_temp_registers() {
 
 #[test]
 fn compile_builtin_globals_are_registered_lazily() {
-    // 数组字面量内全部 4 个引用均为活代码（结果即脚本值），DCE 不可删；
-    // 未被引用的其它内置全局不得占用槽位。
+    // 纯读形经 A 侧全局对象属性（LOAD_GLOBAL）取值，不消费镜像槽：4 个引用虽
+    // 均为活代码（结果即脚本值）不可 DCE，但读侧不占槽；未被引用的其它内置
+    // 全局同样不占槽——编译产物镜像槽表为空。
     let module = compile_source("[Object, Array, Math, JSON]");
-    assert_eq!(module.builtin_reg_map.len(), 4, "only referenced builtins should allocate registers");
+    assert_eq!(module.builtin_reg_map.len(), 0, "pure read references should not occupy mirror slots");
+    // 写形守卫：可写内置名标识符写须双写（镜像槽 + 全局对象属性），写面镜像槽
+    // 保留在产物中（入口预载与 delete 侧分类依赖在册槽）。
+    let write_module = compile_source("Object = 1; Array = 2;");
+    assert_eq!(
+        write_module.builtin_reg_map.len(),
+        2,
+        "write references should retain writable builtin mirror slots"
+    );
 }
 
 #[test]
