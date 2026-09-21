@@ -186,8 +186,10 @@ impl Vm {
             ("catch", promise_catch as *const (), 1),
             ("finally", promise_finally as *const (), 1),
         );
-        let tag_si = sf.intern("@@toStringTag").0;
-        let tag_shape = sh.make_shape(proto.shape_id(), tag_si);
+        let tag_key = oxide_types::private_key::make_well_known_symbol_key(
+            oxide_types::private_key::WELL_KNOWN_SYMBOL_TO_STRING_TAG,
+        );
+        let tag_shape = sh.make_shape(proto.shape_id(), tag_key);
         proto.set_shape_id(tag_shape);
         let tag_pos = proto.push_prop(JsValue::perm_string(sf.string_ptr(sf.intern("Promise").0)));
         proto.set_data_meta(tag_pos, PropAttributes::new(false, false, true));

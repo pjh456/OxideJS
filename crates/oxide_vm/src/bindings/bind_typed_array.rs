@@ -2,8 +2,8 @@ use std::sync::Arc;
 
 use crate::bind_constructor;
 use crate::bindings::{
-    apply_binding_table, bind_accessor_getter, bind_global_value, bind_method_alias, bind_well_known_method_alias,
-    configure_native_constructor,
+    apply_binding_table, bind_accessor_getter, bind_accessor_getter_key, bind_global_value, bind_method_alias,
+    bind_well_known_method_alias, configure_native_constructor,
 };
 use oxide_kernel::kernel::{KernelCore, KernelSession};
 use oxide_types::object::{JsObject, PropAttributes};
@@ -229,11 +229,12 @@ pub fn bind_typed_array(core: &Arc<KernelCore>, session: &KernelSession, global:
         "length",
         oxide_builtins::typed_array::typed_array_length_getter::<crate::vm::Vm> as *const (),
     );
-    bind_accessor_getter(
+    bind_accessor_getter_key(
         core,
         session,
         shared_proto,
-        "@@toStringTag",
+        oxide_types::private_key::make_well_known_symbol_key(oxide_types::private_key::WELL_KNOWN_SYMBOL_TO_STRING_TAG),
+        "get @@toStringTag",
         oxide_builtins::typed_array::typed_array_to_string_tag_getter::<crate::vm::Vm> as *const (),
     );
 

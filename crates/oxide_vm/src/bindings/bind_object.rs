@@ -57,14 +57,48 @@ pub fn bind_object(core: &Arc<KernelCore>, session: &KernelSession, global: &mut
             ),
             ("valueOf", oxide_builtins::object::object_proto_value_of::<crate::vm::Vm> as *const (), 0),
             (
+                "isPrototypeOf",
+                oxide_builtins::object::object_proto_is_prototype_of::<crate::vm::Vm> as *const (),
+                1,
+            ),
+            (
+                "toLocaleString",
+                oxide_builtins::object::object_proto_to_locale_string::<crate::vm::Vm> as *const (),
+                0,
+            ),
+            (
                 "__defineGetter__",
                 oxide_builtins::object::object_proto_define_getter::<crate::vm::Vm> as *const (),
                 2,
             ),
+            (
+                "__defineSetter__",
+                oxide_builtins::object::object_proto_define_setter::<crate::vm::Vm> as *const (),
+                2,
+            ),
+            (
+                "__lookupGetter__",
+                oxide_builtins::object::object_proto_lookup_getter::<crate::vm::Vm> as *const (),
+                1,
+            ),
+            (
+                "__lookupSetter__",
+                oxide_builtins::object::object_proto_lookup_setter::<crate::vm::Vm> as *const (),
+                1,
+            ),
         ],
     );
     // 内置原型方法不可枚举（否则会泄漏进 for-in）。
-    for name in ["toString", "valueOf", "__defineGetter__"] {
+    for name in [
+        "toString",
+        "valueOf",
+        "isPrototypeOf",
+        "toLocaleString",
+        "__defineGetter__",
+        "__defineSetter__",
+        "__lookupGetter__",
+        "__lookupSetter__",
+    ] {
         let si = core.perm_interner().intern(name).0;
         if let Some(pos) = core.shape_forge().lookup_position(object_proto.shape_id(), si) {
             object_proto.set_data_meta(pos, PropAttributes::new(true, false, true));

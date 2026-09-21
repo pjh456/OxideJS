@@ -742,9 +742,10 @@ pub(crate) fn init_generator_intrinsics(vm: &mut Vm) {
         ("return", generator_return as *const (), 1),
         ("throw", generator_throw as *const (), 1),
     );
-    // @@toStringTag（Object.prototype.toString → "[object Generator]"）。
-    let tag_si = sf.intern("@@toStringTag").0;
-    let tag_shape = sh.make_shape(gen_proto.shape_id(), tag_si);
+    // Symbol.toStringTag（Object.prototype.toString → "[object Generator]"）。
+    let tag_key =
+        oxide_types::private_key::make_well_known_symbol_key(oxide_types::private_key::WELL_KNOWN_SYMBOL_TO_STRING_TAG);
+    let tag_shape = sh.make_shape(gen_proto.shape_id(), tag_key);
     gen_proto.set_shape_id(tag_shape);
     let tag_pos = gen_proto.push_prop(JsValue::perm_string(sf.string_ptr(sf.intern("Generator").0)));
     gen_proto.set_data_meta(tag_pos, oxide_types::object::PropAttributes::new(false, false, true));
@@ -805,7 +806,8 @@ pub(crate) fn init_generator_intrinsics(vm: &mut Vm) {
     let ppos2 = gf_proto.push_prop(JsValue::from_js_object(vm.generator_proto.as_ptr() as *mut JsObject));
     gf_proto.set_data_meta(ppos2, oxide_types::object::PropAttributes::new(false, false, false));
     // gf_proto[Symbol.toStringTag] = "GeneratorFunction"（数据属性，w/e/c = false/false/true）。
-    let tag2_key = oxide_types::private_key::make_well_known_symbol_key(0);
+    let tag2_key =
+        oxide_types::private_key::make_well_known_symbol_key(oxide_types::private_key::WELL_KNOWN_SYMBOL_TO_STRING_TAG);
     let tag2_shape = sh.make_shape(gf_proto.shape_id(), tag2_key);
     gf_proto.set_shape_id(tag2_shape);
     let tag2_pos = gf_proto.push_prop(JsValue::perm_string(sf.string_ptr(sf.intern("GeneratorFunction").0)));

@@ -1456,11 +1456,227 @@ pub fn object_has_own<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     NativeResult::Ok(JsValue::bool(vm.get_own_property_slot(obj, key_si).is_some()))
 }
 
-/// `Object.prototype.valueOf`：返回 this 本身（配合 OrdinaryToPrimitive 的兜底）。
+/// `Object.prototype.valueOf`：返回 this 的对象形式（配合 OrdinaryToPrimitive 的兜底）。
+///
+/// # 步骤
+/// 1. ToObject 装箱 this（null/undefined 抛 TypeError）。
+///
+/// # 副作用
+/// 无；返回装箱后的对象值，OrdinaryToPrimitive 因结果非原始值而继续走 toString。
 pub fn object_proto_value_of<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
-    // Object.prototype.valueOf 原样返回 this 对象；OrdinaryToPrimitive
-    // 因结果非原始值而继续走 toString。
-    NativeResult::Ok(vm.reg(args[0]))
+    if args.is_empty() {
+        return NativeResult::Err(crate::error::create_type_error(vm, "Object.prototype.valueOf called on non-object"));
+    }
+    let this_val = vm.reg(args[0]);
+    let obj_val = match oxide_runtime_api::to_object(this_val, vm) {
+        Ok(v) => v,
+        Err(msg) => return NativeResult::Err(crate::error::create_type_error(vm, &msg)),
+    };
+    NativeResult::Ok(obj_val)
+}
+
+/// `Object.prototype.isPrototypeOf(arg)`：this 是否在 arg 的原型链上。
+///
+/// # 步骤
+/// 1. arg 非对象 → false（this 的转换不做，与 V8 行为一致）。
+/// 2. ToObject 装箱 this（null/undefined 抛 TypeError）。
+/// 3. 沿 arg 原型链逐节点比较指针恒等，命中 true，链尽 false。
+pub fn object_proto_is_prototype_of<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    if args.is_empty() {
+        return NativeResult::Ok(JsValue::bool(false));
+    }
+    let this_val = vm.reg(args[0]);
+    let arg = vm.reg(if args.len() < 2 { 0 } else { args[1] });
+    if !arg.is_object() {
+        return NativeResult::Ok(JsValue::bool(false));
+    }
+    let obj_val = match oxide_runtime_api::to_object(this_val, vm) {
+        Ok(v) => v,
+        Err(msg) => return NativeResult::Err(crate::error::create_type_error(vm, &msg)),
+    };
+    let target = obj_val.as_js_object_ptr();
+    let mut cur = arg.as_js_object_ptr();
+    while !cur.is_null() {
+        if cur == target {
+            return NativeResult::Ok(JsValue::bool(true));
+        }
+        // SAFETY: cur 沿原型链遍历，链上每个节点都是合法 JsObject（proto 非对象时为空指针终止）。
+        let o = unsafe { &*cur };
+        cur = o.proto().as_js_object_ptr();
+    }
+    NativeResult::Ok(JsValue::bool(false))
+}
+
+/// `Object.prototype.toLocaleString`：调用 this 的 `toString` 并以字符串返回。
+///
+/// # 步骤
+/// 1. ToObject 装箱 this（null/undefined 抛 TypeError）。
+/// 2. 以原始 this 值作接收者读 `toString`：accessor getter 的 this 保持原始值
+///    （装箱副本不外泄），getter 抛错透传原异常。
+/// 3. `toString` 非 callable → TypeError；调用结果经 ToString 返回。
+pub fn object_proto_to_locale_string<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    if args.is_empty() {
+        return NativeResult::Err(crate::error::create_type_error(
+            vm,
+            "Object.prototype.toLocaleString called on non-object",
+        ));
+    }
+    let this_val = vm.reg(args[0]);
+    let obj_val = match oxide_runtime_api::to_object(this_val, vm) {
+        Ok(v) => v,
+        Err(msg) => return NativeResult::Err(crate::error::create_type_error(vm, &msg)),
+    };
+    let obj = unsafe { &*obj_val.as_js_object_ptr() };
+    let si_to_string = vm.kernel_core().perm_interner().intern("toString").0;
+    let to_str = match vm.ordinary_get(obj, si_to_string, this_val) {
+        Ok(v) => v,
+        Err(e) => return NativeResult::Err(crate::iterator::engine_error(vm, &e)),
+    };
+    if !is_callable(to_str) {
+        return NativeResult::Err(crate::error::create_type_error(
+            vm,
+            "Object.prototype.toLocaleString: toString is not callable",
+        ));
+    }
+    let result = match vm.call_function_sync(to_str, this_val, &[]) {
+        Ok(v) => v,
+        Err(e) => {
+            let exc = vm
+                .take_uncaught_value()
+                .unwrap_or_else(|| crate::error::create_type_error(vm, &e));
+            return NativeResult::Err(exc);
+        }
+    };
+    match oxide_runtime_api::to_string_value_full(result, vm) {
+        Ok(s) => NativeResult::Ok(s),
+        Err(e) => {
+            let exc = vm
+                .take_uncaught_value()
+                .unwrap_or_else(|| crate::error::create_type_error(vm, &e));
+            NativeResult::Err(exc)
+        }
+    }
+}
+
+/// `Object.prototype.__defineSetter__(key, setter)`：把 key 定义为访问器属性，
+/// setter 作 `[[Set]]`，描述符 `{ enumerable: true, configurable: true }`。
+///
+/// # 步骤
+/// 1. ToObject 装箱 this（null/undefined 抛 TypeError）
+/// 2. setter 非 callable → TypeError
+/// 3. ToPropertyKey 求键（转换异常原样传播）
+/// 4. DefinePropertyOrThrow（复用 `define_accessor_property` 的拒绝语义：
+///    不可扩展对象 / 不可配置属性覆盖均抛 TypeError）
+///
+/// # 副作用
+/// - 修改 this 的 shape 链与属性表；返回 undefined
+pub fn object_proto_define_setter<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    if args.len() < 3 {
+        return NativeResult::Err(crate::error::create_type_error(
+            vm,
+            "Object.prototype.__defineSetter__ requires 2 arguments",
+        ));
+    }
+    let this_val = vm.reg(args[0]);
+    let obj_val = match oxide_runtime_api::to_object(this_val, vm) {
+        Ok(v) => v,
+        Err(msg) => return NativeResult::Err(crate::error::create_type_error(vm, &msg)),
+    };
+    let setter = vm.reg(args[2]);
+    if !is_callable(setter) {
+        return NativeResult::Err(crate::error::create_type_error(
+            vm,
+            "Object.prototype.__defineSetter__: setter must be callable",
+        ));
+    }
+    let key_si = match vm.to_property_key_si(vm.reg(args[1])) {
+        Ok(si) => si,
+        Err(e) => {
+            let exc = vm
+                .take_uncaught_value()
+                .unwrap_or_else(|| crate::error::create_type_error(vm, &e));
+            return NativeResult::Err(exc);
+        }
+    };
+    let obj = unsafe { &mut *obj_val.as_js_object_ptr() };
+    let attrs = PropAttributes::new(false, true, true);
+    // DefinePropertyOrThrow 的 desc 无 [[Get]] 键：覆盖既有访问器时保留其 getter
+    // （define_accessor_property 是全量替换，get 缺省须显式传现有值）。
+    let existing_get = vm
+        .get_own_property_slot(obj, key_si)
+        .and_then(|pos| obj.prop_meta_at(pos))
+        .filter(|m| m.is_accessor)
+        .map(|m| m.get)
+        .unwrap_or(JsValue::undefined());
+    if let Err(e) = vm.define_accessor_property(obj, key_si, existing_get, setter, attrs) {
+        return NativeResult::Err(crate::error::create_type_error(vm, &e));
+    }
+    NativeResult::Ok(JsValue::undefined())
+}
+
+/// 沿 own+proto 链查找指定键的访问器字段（getter 或 setter）：数据属性与
+/// 缺侧（get/set 为 undefined）继续上爬，链尽返回 undefined。
+///
+/// # 步骤
+/// 1. ToObject 装箱 this（null/undefined 抛 TypeError）
+/// 2. ToPropertyKey 求键（转换异常原样传播）
+/// 3. 逐节点 GetOwnProperty：命名空间未初始化导出抛 ReferenceError；
+///    accessor 命中且目标侧非 undefined 即返回
+fn lookup_accessor_field<H: VmHost>(vm: &mut H, args: &[u8], want_getter: bool) -> NativeResult {
+    if args.len() < 2 {
+        return NativeResult::Err(crate::error::create_type_error(
+            vm,
+            if want_getter {
+                "Object.prototype.__lookupGetter__ requires 1 argument"
+            } else {
+                "Object.prototype.__lookupSetter__ requires 1 argument"
+            },
+        ));
+    }
+    let this_val = vm.reg(args[0]);
+    let obj_val = match oxide_runtime_api::to_object(this_val, vm) {
+        Ok(v) => v,
+        Err(msg) => return NativeResult::Err(crate::error::create_type_error(vm, &msg)),
+    };
+    let key_si = match vm.to_property_key_si(vm.reg(args[1])) {
+        Ok(si) => si,
+        Err(e) => {
+            let exc = vm
+                .take_uncaught_value()
+                .unwrap_or_else(|| crate::error::create_type_error(vm, &e));
+            return NativeResult::Err(exc);
+        }
+    };
+    let mut cur = obj_val.as_js_object_ptr();
+    while !cur.is_null() {
+        // SAFETY: cur 沿原型链遍历，链上每个节点都是合法 JsObject。
+        let o = unsafe { &*cur };
+        if let Some(pos) = vm.get_own_property_slot(o, key_si) {
+            if let Err(msg) = namespace_export_get(o, key_si) {
+                return NativeResult::Err(crate::error::create_reference_error(vm, msg));
+            }
+            if let Some(meta) = o.prop_meta_at(pos) {
+                if meta.is_accessor {
+                    let field = if want_getter { meta.get } else { meta.set };
+                    if !field.is_undefined() {
+                        return NativeResult::Ok(field);
+                    }
+                }
+            }
+        }
+        cur = o.proto().as_js_object_ptr();
+    }
+    NativeResult::Ok(JsValue::undefined())
+}
+
+/// `Object.prototype.__lookupGetter__(key)`：沿原型链取 key 的 `[[Get]]`。
+pub fn object_proto_lookup_getter<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    lookup_accessor_field(vm, args, true)
+}
+
+/// `Object.prototype.__lookupSetter__(key)`：沿原型链取 key 的 `[[Set]]`。
+pub fn object_proto_lookup_setter<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    lookup_accessor_field(vm, args, false)
 }
 
 /// 沿原型链判断是否为 Error 家族对象：对象自身带 `OBJ_TYPE_ERROR` 标签，或原型链上
@@ -1482,77 +1698,71 @@ fn is_error_family<H: VmHost>(vm: &H, ptr: *mut JsObject) -> bool {
     false
 }
 
-/// `Object.prototype.toString`：返回 `[object Tag]`。对象路径先按内置类型判定标签，
-/// 再读 `@@toStringTag`——为字符串时覆盖内置标签（TypedArray 依赖它区分具体类型）。
+/// `Object.prototype.toString`：返回 `[object Tag]`。
+///
+/// # 步骤
+/// 1. undefined/null 走快路径（`[object Undefined]` / `[object Null]`）。
+/// 2. ToObject 装箱 this（原始值装箱后按对象品牌判定）。
+/// 3. 品牌表定内置名（String/Number/Boolean/Symbol/Array/ArrayBuffer/DataView/
+///    Function/RegExp/Date/TypedArray/Arguments/Error 族），其余一律 "Object"
+///    （Math/JSON/Promise 等靠自身 `@@toStringTag` 覆盖）。
+/// 4. 读 `Symbol.toStringTag`：字符串覆盖品牌名，非字符串/缺失回退品牌名，
+///    getter 抛错透传原异常。
 pub fn object_proto_to_string<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
-    let tag = if !this_val.is_object() {
-        if this_val.is_string() {
-            "String"
-        } else if this_val.is_int() || this_val.is_double() {
-            "Number"
-        } else if this_val.is_bool() {
-            "Boolean"
-        } else if this_val.is_symbol() {
-            "Symbol"
-        } else {
-            "Object"
-        }
-    } else {
-        let ptr = this_val.as_js_object_ptr();
-        if ptr.is_null() {
-            "Object"
-        } else {
-            let obj = unsafe { &*ptr };
-            let builtin = if obj.is_array() {
-                "Array"
-            } else if obj.is_function() {
-                "Function"
-            } else if obj.is_string_obj() {
-                "String"
-            } else if obj.is_number_obj() {
-                "Number"
-            } else if obj.is_boolean_obj() {
-                "Boolean"
-            } else if obj.is_regexp_obj() {
-                "RegExp"
-            } else if obj.is_date_obj() {
-                "Date"
-            } else if obj.is_typed_array_obj() {
-                "TypedArray"
-            } else if obj.is_array_buffer_obj() {
-                "ArrayBuffer"
-            } else if obj.is_arguments_obj() {
-                "Arguments"
-            } else if is_error_family(vm, ptr) {
-                "Error"
-            } else if std::ptr::eq(ptr, vm.session().builtin_world().math_object.as_ptr()) {
-                "Math"
-            } else if std::ptr::eq(ptr, vm.session().builtin_world().json_object.as_ptr()) {
-                "JSON"
-            } else {
-                "Object"
-            };
-            // @@toStringTag 为字符串时覆盖内置标签；getter 抛错透传原异常。
-            let tag_key = make_well_known_symbol_key(9);
-            let tag_value = match vm.ordinary_get(obj, tag_key, this_val) {
-                Ok(value) if !value.is_undefined() => Ok(value),
-                Ok(_) => {
-                    let legacy_key = vm.kernel_core().perm_interner().intern("@@toStringTag").0;
-                    vm.ordinary_get(obj, legacy_key, this_val)
-                }
-                Err(err) => Err(err),
-            };
-            match tag_value {
-                Ok(v) => match vm.lookup_str(v) {
-                    Some(s) => return NativeResult::Ok(vm.new_string(&format!("[object {s}]"))),
-                    None => builtin,
-                },
-                Err(err) => return NativeResult::Err(crate::iterator::engine_error(vm, &err)),
-            }
-        }
+    if this_val.is_undefined() {
+        return NativeResult::Ok(vm.new_string("[object Undefined]"));
+    }
+    if this_val.is_null() {
+        return NativeResult::Ok(vm.new_string("[object Null]"));
+    }
+    let obj_val = match oxide_runtime_api::to_object(this_val, vm) {
+        Ok(v) => v,
+        Err(msg) => return NativeResult::Err(crate::error::create_type_error(vm, &msg)),
     };
-    NativeResult::Ok(vm.new_string(&format!("[object {tag}]")))
+    let obj = unsafe { &*obj_val.as_js_object_ptr() };
+    // 装箱 Symbol 无内置品牌（原型链 tag 缺失时回退 "Object"，与 V8 一致），
+    // 故品牌表不含 symbol。
+    let builtin = if obj.is_string_obj() {
+        "String"
+    } else if obj.is_number_obj() {
+        "Number"
+    } else if obj.is_boolean_obj() {
+        "Boolean"
+    } else if obj.is_array() {
+        "Array"
+    } else if obj.is_array_buffer_obj() {
+        "ArrayBuffer"
+    } else if obj.is_data_view_obj() {
+        "DataView"
+    } else if obj.is_function() {
+        "Function"
+    } else if obj.is_regexp_obj() {
+        "RegExp"
+    } else if obj.is_date_obj() {
+        "Date"
+    } else if obj.is_typed_array_obj() {
+        "TypedArray"
+    } else if obj.is_arguments_obj() {
+        "Arguments"
+    } else if is_error_family(vm, obj_val.as_js_object_ptr()) {
+        "Error"
+    } else {
+        "Object"
+    };
+    // @@toStringTag 为字符串时覆盖品牌名；非字符串（含缺失）回退品牌名，
+    // getter 抛错透传原异常。
+    let tag_key = make_well_known_symbol_key(9);
+    match vm.ordinary_get(obj, tag_key, obj_val) {
+        Ok(v) => {
+            // 先把 tag 字符串取出（结束对 vm 的不可变借用），再拼结果串。
+            let tag = vm.lookup_str(v);
+            let name = tag.as_deref().unwrap_or(builtin);
+            let text = format!("[object {name}]");
+            NativeResult::Ok(vm.new_string(&text))
+        }
+        Err(err) => NativeResult::Err(crate::iterator::engine_error(vm, &err)),
+    }
 }
 
 /// `Object.prototype.hasOwnProperty(key)`：this 是否有指定自身属性。
@@ -1564,7 +1774,15 @@ pub fn object_proto_has_own_property<H: VmHost>(vm: &mut H, args: &[u8]) -> Nati
     if args.len() < 2 {
         return NativeResult::Ok(JsValue::bool(false));
     }
-    let key_si = vm.property_key_si(vm.reg(args[1]));
+    let key_si = match vm.to_property_key_si(vm.reg(args[1])) {
+        Ok(si) => si,
+        Err(e) => {
+            let exc = vm
+                .take_uncaught_value()
+                .unwrap_or_else(|| crate::error::create_type_error(vm, &e));
+            return NativeResult::Err(exc);
+        }
+    };
     let this_val = vm.reg(args[0]);
     let obj_val = match oxide_runtime_api::to_object(this_val, vm) {
         Ok(v) => v,
@@ -1590,7 +1808,15 @@ pub fn object_proto_property_is_enumerable<H: VmHost>(vm: &mut H, args: &[u8]) -
     if args.len() < 2 {
         return NativeResult::Ok(JsValue::bool(false));
     }
-    let key_si = vm.property_key_si(vm.reg(args[1]));
+    let key_si = match vm.to_property_key_si(vm.reg(args[1])) {
+        Ok(si) => si,
+        Err(e) => {
+            let exc = vm
+                .take_uncaught_value()
+                .unwrap_or_else(|| crate::error::create_type_error(vm, &e));
+            return NativeResult::Err(exc);
+        }
+    };
     let this_val = vm.reg(args[0]);
     let obj_val = match oxide_runtime_api::to_object(this_val, vm) {
         Ok(v) => v,

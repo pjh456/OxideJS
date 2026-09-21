@@ -617,6 +617,41 @@ fn bind_iterator_protos(core: &Arc<KernelCore>, session: &KernelSession) {
     );
 }
 
+/// 给标准内置原型补装缺失的 `@@toStringTag` 数据属性
+/// （`{ writable:false, enumerable:false, configurable:true }`）。
+///
+/// 幂等：目标已有 tag 键槽位时跳过（dirty reset 重复经过不追加重复属性槽）。
+/// `%IteratorPrototype%` / BigInt 原型的 tag 已由各家族绑定点安装，不在此列。
+fn install_to_string_tags(core: &Arc<KernelCore>, session: &KernelSession) {
+    let world = session.builtin_world();
+    let sf = core.perm_interner().as_ref();
+    let sh = core.shape_forge().as_ref();
+    let tag_id = oxide_types::private_key::WELL_KNOWN_SYMBOL_TO_STRING_TAG;
+    let tag_key = oxide_types::private_key::make_well_known_symbol_key(tag_id);
+    let cases: [(*mut JsObject, &str); 11] = [
+        (world.map_proto.as_ptr() as *mut JsObject, "Map"),
+        (world.set_proto.as_ptr() as *mut JsObject, "Set"),
+        (world.data_view_proto.as_ptr() as *mut JsObject, "DataView"),
+        (world.array_iterator_proto.as_ptr() as *mut JsObject, "Array Iterator"),
+        (world.map_iterator_proto.as_ptr() as *mut JsObject, "Map Iterator"),
+        (world.set_iterator_proto.as_ptr() as *mut JsObject, "Set Iterator"),
+        (world.string_iterator_proto.as_ptr() as *mut JsObject, "String Iterator"),
+        (world.regexp_string_iterator_proto.as_ptr() as *mut JsObject, "String Iterator"),
+        (world.math_object.as_ptr() as *mut JsObject, "Math"),
+        (world.json_object.as_ptr() as *mut JsObject, "JSON"),
+        (world.symbol_proto.as_ptr() as *mut JsObject, "Symbol"),
+    ];
+    for (ptr, tag) in cases {
+        // SAFETY: ptr 为当前 builtin world 的内置原型，session 独占期间始终有效。
+        let proto = unsafe { &mut *ptr };
+        if sh.lookup_position(proto.shape_id(), tag_key).is_some() {
+            continue;
+        }
+        let tag_val = JsValue::perm_string(sf.string_ptr(sf.intern(tag).0));
+        bind_well_known_data_property(core, proto, tag_id, tag_val, PropAttributes::new(false, false, true));
+    }
+}
+
 /// 对齐保留 global 上 `Iterator` 函数对象的 `prototype` 属性：object 家族重建会
 /// 产生新的 `%IteratorPrototype%`，保留的 Iterator 函数对象须指向新原型。
 ///
@@ -1174,6 +1209,9 @@ pub fn rebind_dirty_builtins(core: &Arc<KernelCore>, session: &mut KernelSession
     if dirty.map_or(true, |d| d.console) {
         bind_console::bind_console(core, session, global);
     }
+    // tag 目标横跨多个脏分组（Map/Set/DataView/Math/JSON/迭代器原型），
+    // 各组各自重绑后统一补装；安装点自带幂等检查。
+    install_to_string_tags(core, session);
 }
 
 /// 完整初始化一个 session 的内置对象（全量绑定 + `globalThis` + 快照记录）。
