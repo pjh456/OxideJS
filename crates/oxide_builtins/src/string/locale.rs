@@ -428,8 +428,9 @@ fn final_sigma_lower(units: &[u16]) -> Vec<u16> {
         if (0xD800..=0xDBFF).contains(&u) && i + 1 < units.len() && (0xDC00..=0xDFFF).contains(&units[i + 1]) {
             // 代理对整体解码为码点小写后回写 UTF-16。
             let cp = (((u as u32) - 0xD800) << 10 | (units[i + 1] as u32 - 0xDC00)) + 0x10000;
-            let c = char::from_u32(cp).expect("合法代理对必解码为合法码点");
-            out.extend(c.to_lowercase().collect::<String>().encode_utf16());
+            if let Some(c) = char::from_u32(cp) {
+                out.extend(c.to_lowercase().collect::<String>().encode_utf16());
+            }
             i += 2;
             continue;
         }

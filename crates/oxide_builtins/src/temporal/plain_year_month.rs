@@ -398,7 +398,12 @@ pub fn plain_year_month_from<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult
         None => (None, false),
     };
     // year 转换（TypeError/RangeError）在 monthCode 语法之后。
-    let year = native_try!(temporal_number_component(vm, year_raw)) as i32;
+    let year_raw = native_try!(temporal_number_component(vm, year_raw));
+    let year = if year_raw >= i32::MIN as f64 && year_raw <= i32::MAX as f64 {
+        year_raw as i32
+    } else {
+        return NativeResult::Err(crate::error::create_range_error(vm, "invalid year"));
+    };
     let month_f = match month_raw.is_undefined() {
         true => None,
         false => Some(native_try!(temporal_number_component(vm, month_raw))),
@@ -419,7 +424,10 @@ pub fn plain_year_month_from<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult
         }
         code
     } else {
-        let f = month_f.expect("month or monthCode is required checked above");
+        let f = match month_f {
+            Some(v) => v,
+            None => return NativeResult::Err(crate::error::create_type_error(vm, "month is required")),
+        };
         if f < 1.0 {
             return NativeResult::Err(crate::error::create_range_error(vm, "invalid month"));
         }
@@ -530,7 +538,12 @@ fn year_month_like_parts<H: VmHost>(
         None => (None, false),
     };
     // year 转换（TypeError/RangeError）在 monthCode 语法之后。
-    let year = temporal_number_component(vm, year_raw)? as i32;
+    let year_raw = temporal_number_component(vm, year_raw)?;
+    let year = if year_raw >= i32::MIN as f64 && year_raw <= i32::MAX as f64 {
+        year_raw as i32
+    } else {
+        return Err(crate::error::create_range_error(vm, "invalid year"));
+    };
     let month_f = match month_raw.is_undefined() {
         true => None,
         false => Some(temporal_number_component(vm, month_raw)?),
@@ -551,7 +564,7 @@ fn year_month_like_parts<H: VmHost>(
         }
         code
     } else {
-        let f = month_f.expect("month or monthCode is required checked above");
+        let f = month_f.ok_or_else(|| crate::error::create_type_error(vm, "month is required"))?;
         if f < 1.0 {
             return Err(crate::error::create_range_error(vm, "invalid month"));
         }

@@ -77,7 +77,10 @@ fn decode_uri_units(input: &[u16], preserve_reserved: bool) -> Result<Vec<u16>, 
         }
 
         let decoded = std::str::from_utf8(&encoded).map_err(|_| ())?;
-        let ch = decoded.chars().next().expect("单字节序解出恰一个码点");
+        let ch = match decoded.chars().next() {
+            Some(c) => c,
+            None => continue,
+        };
         if preserve_reserved && ch.is_ascii() && URI_RESERVED.contains(ch) {
             out.extend_from_slice(&input[raw_start..i]);
             continue;

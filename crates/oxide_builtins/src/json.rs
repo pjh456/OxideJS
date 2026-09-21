@@ -442,7 +442,7 @@ fn jsvalue_to_json<H: VmHost>(
     } else if val.is_bool() {
         out.push_str(if val.as_bool() { "true" } else { "false" });
     } else if val.is_int() {
-        write!(out, "{}", val.as_int()).unwrap();
+        let _ = write!(out, "{}", val.as_int());
     } else if val.is_double() {
         let n = val.as_double();
         if !n.is_finite() {

@@ -66,15 +66,27 @@ pub fn plain_date_time_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> Native
         return NativeResult::Err(crate::error::create_range_error(vm, "invalid date-time component"));
     }
 
-    let year = year_value as i32;
-    let month = month_value as u32;
-    let day = day_value as u32;
-    let hour = hour_value as u32;
-    let minute = minute_value as u32;
-    let second = second_value as u32;
-    let millisecond = millisecond_value as u32;
-    let microsecond = microsecond_value as u32;
-    let nanosecond = nanosecond_value as u32;
+    // f64 截断后可能超出目标整型范围，先做有界转换。
+    let year = if year_value >= i32::MIN as f64 && year_value <= i32::MAX as f64 {
+        year_value as i32
+    } else {
+        return NativeResult::Err(crate::error::create_range_error(vm, "invalid year"));
+    };
+    let mut to_u32 = |v: f64| -> Result<u32, JsValue> {
+        if v >= 0.0 && v <= u32::MAX as f64 {
+            Ok(v as u32)
+        } else {
+            Err(crate::error::create_range_error(vm, "invalid date-time component"))
+        }
+    };
+    let month = native_try!(to_u32(month_value));
+    let day = native_try!(to_u32(day_value));
+    let hour = native_try!(to_u32(hour_value));
+    let minute = native_try!(to_u32(minute_value));
+    let second = native_try!(to_u32(second_value));
+    let millisecond = native_try!(to_u32(millisecond_value));
+    let microsecond = native_try!(to_u32(microsecond_value));
+    let nanosecond = native_try!(to_u32(nanosecond_value));
     let non_negative = components[1..].iter().all(|value| *value >= 0.0);
     if !non_negative
         || !valid_iso_date(year, month, day)

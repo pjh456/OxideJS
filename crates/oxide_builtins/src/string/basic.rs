@@ -11,6 +11,46 @@ use super::{
     this_units,
 };
 
+/// 安全地将 f64 转为 usize：NaN/±Inf/负值→0，超 u64 上限→usize::MAX。
+fn f64_to_usafe_usize(v: f64) -> usize {
+    if v.is_finite() && v >= 0.0 {
+        let u = v as u64;
+        if u <= usize::MAX as u64 {
+            u as usize
+        } else {
+            usize::MAX
+        }
+    } else {
+        0
+    }
+}
+
+/// 安全地将 f64 转为 i32：NaN/±Inf→0，超 i32 范围→饱和。
+fn f64_to_i32(v: f64) -> i32 {
+    if v.is_finite() && v >= i32::MIN as f64 && v <= i32::MAX as f64 {
+        v as i32
+    } else if v.is_nan() || v.is_infinite() {
+        0
+    } else if v > 0.0 {
+        i32::MAX
+    } else {
+        i32::MIN
+    }
+}
+
+/// 安全地将 f64 转为 isize：NaN/±Inf→0，超 isize 范围→饱和。
+fn f64_to_isize(v: f64) -> isize {
+    if v.is_finite() && v >= isize::MIN as f64 && v <= isize::MAX as f64 {
+        v as isize
+    } else if v.is_nan() || v.is_infinite() {
+        0
+    } else if v > 0.0 {
+        isize::MAX
+    } else {
+        isize::MIN
+    }
+}
+
 // ── 静态方法 / 构造 ─────────────────────────────────────────────────────
 
 /// `String.fromCharCode(...codes)`：把各参数按 ToUint32 低 16 位转为单元拼接
@@ -168,7 +208,7 @@ pub fn string_index_of<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let search_val = if args.len() >= 2 { vm.reg(args[1]) } else { JsValue::undefined() };
     let search: Vec<u16> = try_string!(as_units(vm, search_val)).into_owned();
     let pos_raw = if args.len() > 2 {
-        vm.coerce_number_bounded(vm.reg(args[2])).unwrap_or(f64::NAN) as usize
+        f64_to_usafe_usize(vm.coerce_number_bounded(vm.reg(args[2])).unwrap_or(f64::NAN))
     } else {
         0
     };
@@ -192,7 +232,7 @@ pub fn string_includes<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let search_val = if args.len() >= 2 { vm.reg(args[1]) } else { JsValue::undefined() };
     let search: Vec<u16> = try_string!(as_units(vm, search_val)).into_owned();
     let pos_raw = if args.len() > 2 {
-        vm.coerce_number_bounded(vm.reg(args[2])).unwrap_or(f64::NAN) as usize
+        f64_to_usafe_usize(vm.coerce_number_bounded(vm.reg(args[2])).unwrap_or(f64::NAN))
     } else {
         0
     };
@@ -210,7 +250,7 @@ pub fn string_char_at<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("String.prototype.charAt called with {} args", args.len());
     // index 可能触发对象 ToNumber（&mut 路径），先行转换。
     let idx = if args.len() >= 2 {
-        vm.coerce_number_bounded(vm.reg(args[1])).unwrap_or(f64::NAN) as i32
+        f64_to_i32(vm.coerce_number_bounded(vm.reg(args[1])).unwrap_or(f64::NAN))
     } else {
         0
     };
@@ -231,7 +271,7 @@ pub fn string_char_code_at<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("String.prototype.charCodeAt called with {} args", args.len());
     // index 可能触发对象 ToNumber（&mut 路径），先行转换。
     let idx = if args.len() >= 2 {
-        vm.coerce_number_bounded(vm.reg(args[1])).unwrap_or(f64::NAN) as i32
+        f64_to_i32(vm.coerce_number_bounded(vm.reg(args[1])).unwrap_or(f64::NAN))
     } else {
         0
     };
@@ -347,12 +387,12 @@ pub fn string_slice<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("String.prototype.slice called with {} args", args.len());
     // 位置参数先行（&mut 转换），后借 this 取子串。
     let start_raw = if args.len() > 1 {
-        Some(vm.coerce_number_bounded(vm.reg(args[1])).unwrap_or(f64::NAN) as i32)
+        Some(f64_to_i32(vm.coerce_number_bounded(vm.reg(args[1])).unwrap_or(f64::NAN)))
     } else {
         None
     };
     let end_raw = if args.len() > 2 {
-        Some(vm.coerce_number_bounded(vm.reg(args[2])).unwrap_or(f64::NAN) as i32)
+        Some(f64_to_i32(vm.coerce_number_bounded(vm.reg(args[2])).unwrap_or(f64::NAN)))
     } else {
         None
     };
@@ -436,7 +476,7 @@ pub fn string_substr<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let len = s.len() as isize;
     let start = match start_arg {
         Some(v) => {
-            let n = oxide_runtime_api::to_integer_or_infinity(v) as isize;
+            let n = f64_to_isize(oxide_runtime_api::to_integer_or_infinity(v));
             if n < 0 {
                 (len + n).max(0)
             } else {
@@ -446,7 +486,7 @@ pub fn string_substr<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         None => 0,
     } as usize;
     let length = match length_arg {
-        Some(v) => (oxide_runtime_api::to_integer_or_infinity(v) as isize).max(0) as usize,
+        Some(v) => f64_to_isize(oxide_runtime_api::to_integer_or_infinity(v)).max(0) as usize,
         None => len as usize - start,
     };
     let count = length.min(len as usize - start);
@@ -459,7 +499,7 @@ pub fn string_substr<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 pub fn string_at<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("String.prototype.at called with {} args", args.len());
     let idx = if args.len() > 1 {
-        oxide_runtime_api::to_integer_or_infinity(vm.reg(args[1])) as i32
+        f64_to_i32(oxide_runtime_api::to_integer_or_infinity(vm.reg(args[1])))
     } else {
         0
     };
@@ -537,7 +577,7 @@ pub fn string_repeat<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("String.prototype.repeat called with {} args", args.len());
     // count 转换先行（&mut 路径），后借 this 重复。
     let n = if args.len() > 1 {
-        (vm.coerce_number_bounded(vm.reg(args[1])).unwrap_or(f64::NAN) as usize).min(10000)
+        f64_to_usafe_usize(vm.coerce_number_bounded(vm.reg(args[1])).unwrap_or(f64::NAN)).min(10000)
     } else {
         1
     };
@@ -555,7 +595,7 @@ pub fn string_pad_start<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("String.prototype.padStart called with {} args", args.len());
     // 参数转换先行（&mut 路径）：targetLength 与 padString 均可能触发对象转换。
     let target_arg = if args.len() > 1 {
-        Some(vm.coerce_number_bounded(vm.reg(args[1])).unwrap_or(f64::NAN) as usize)
+        Some(f64_to_usafe_usize(vm.coerce_number_bounded(vm.reg(args[1])).unwrap_or(f64::NAN)))
     } else {
         None
     };
@@ -596,7 +636,7 @@ pub fn string_pad_end<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("String.prototype.padEnd called with {} args", args.len());
     // 参数转换先行（&mut 路径）：targetLength 与 padString 均可能触发对象转换。
     let target_arg = if args.len() > 1 {
-        Some(vm.coerce_number_bounded(vm.reg(args[1])).unwrap_or(f64::NAN) as usize)
+        Some(f64_to_usafe_usize(vm.coerce_number_bounded(vm.reg(args[1])).unwrap_or(f64::NAN)))
     } else {
         None
     };
@@ -639,7 +679,7 @@ pub fn string_starts_with<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let search_val = if args.len() >= 2 { vm.reg(args[1]) } else { JsValue::undefined() };
     let search: Vec<u16> = try_string!(as_units(vm, search_val)).into_owned();
     let pos_raw = if args.len() > 2 {
-        vm.coerce_number_bounded(vm.reg(args[2])).unwrap_or(f64::NAN) as usize
+        f64_to_usafe_usize(vm.coerce_number_bounded(vm.reg(args[2])).unwrap_or(f64::NAN))
     } else {
         0
     };
@@ -657,7 +697,7 @@ pub fn string_ends_with<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let search_val = if args.len() >= 2 { vm.reg(args[1]) } else { JsValue::undefined() };
     let search: Vec<u16> = try_string!(as_units(vm, search_val)).into_owned();
     let end_pos_raw = if args.len() > 2 {
-        vm.coerce_number_bounded(vm.reg(args[2])).unwrap_or(f64::NAN) as usize
+        f64_to_usafe_usize(vm.coerce_number_bounded(vm.reg(args[2])).unwrap_or(f64::NAN))
     } else {
         usize::MAX
     };

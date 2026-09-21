@@ -279,7 +279,8 @@ pub fn string_split<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     // 无编译正则的类正则对象（如 Object.create(RegExp.prototype)）回退字符串路径，
     // 须按 ToString 文本切分，且转换（&mut 路径）须先于 this 借用完成。
     let has_native_re = is_re && {
-        let re_ptr = sep_val.unwrap().as_js_object_ptr();
+        let sep = sep_val.expect("separator present when is_re is true");
+        let re_ptr = sep.as_js_object_ptr();
         // SAFETY: is_re 已保证 sep_val 为非空对象且 proto 恒等 RegExp.prototype。
         let re = unsafe { &*re_ptr };
         re.native_fn().is_some()
@@ -298,7 +299,8 @@ pub fn string_split<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let sep_units: Vec<u16> = if is_undefined_sep || has_native_re {
         Vec::new()
     } else {
-        try_string!(as_units(vm, sep_val.unwrap())).into_owned()
+        let sep = sep_val.expect("separator present when not undefined and not native regexp");
+        try_string!(as_units(vm, sep)).into_owned()
     };
     let s: Vec<u16> = try_string!(this_units(vm, args)).into_owned();
     // 规范：separator 为 undefined 时返回 [this]。
@@ -461,7 +463,10 @@ fn string_replace_impl<H: VmHost>(vm: &mut H, args: &[u8], all: bool) -> NativeR
         if has_native_re {
             let re_ptr = pattern_val.as_js_object_ptr();
             let re = unsafe { &*re_ptr };
-            let fn_ptr = re.native_fn().unwrap();
+            let fn_ptr = match re.native_fn() {
+                Some(p) => p,
+                None => return NativeResult::Err(crate::error::create_type_error(vm, "expected compiled regexp")),
+            };
             // SAFETY: fn_ptr 持有 regexp_constructor 存放的 `Box<regress::Regex>` 指针。
             let regex = unsafe { &*(fn_ptr.as_ptr() as *const regress::Regex) };
             return regex_replace_fn(vm, regex, &s, replacer_val, is_global, text_arg);
@@ -496,7 +501,10 @@ fn string_replace_impl<H: VmHost>(vm: &mut H, args: &[u8], all: bool) -> NativeR
     if this_val.is_string() && has_native_re && replacement_is_string {
         let re_ptr = pattern_val.as_js_object_ptr();
         let re = unsafe { &*re_ptr };
-        let fn_ptr = re.native_fn().unwrap();
+        let fn_ptr = match re.native_fn() {
+            Some(p) => p,
+            None => return NativeResult::Err(crate::error::create_type_error(vm, "expected compiled regexp")),
+        };
         // SAFETY: fn_ptr 持有 regexp_constructor 存放的 `Box<regress::Regex>` 指针。
         let regex = unsafe { &*(fn_ptr.as_ptr() as *const regress::Regex) };
         let h = &*vm;
@@ -530,7 +538,10 @@ fn string_replace_impl<H: VmHost>(vm: &mut H, args: &[u8], all: bool) -> NativeR
     if has_native_re {
         let re_ptr = pattern_val.as_js_object_ptr();
         let re = unsafe { &*re_ptr };
-        let fn_ptr = re.native_fn().unwrap();
+        let fn_ptr = match re.native_fn() {
+            Some(p) => p,
+            None => return NativeResult::Err(crate::error::create_type_error(vm, "expected compiled regexp")),
+        };
         // SAFETY: fn_ptr 持有 regexp_constructor 存放的 `Box<regress::Regex>` 指针。
         let regex = unsafe { &*(fn_ptr.as_ptr() as *const regress::Regex) };
         let result = regex_replace_manual_units(regex, &s, &replacement, is_global);
@@ -564,7 +575,11 @@ pub fn string_match_fn<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     };
     // global 标志前置读：flags 串共享借用与下方 text 转换的 &mut 借用不可重叠。
     let is_global = if is_re {
-        let re_ptr = pattern_val.unwrap().as_js_object_ptr();
+        let re_val = match pattern_val {
+            Some(v) => v,
+            None => return NativeResult::Err(crate::error::create_type_error(vm, "expected regexp")),
+        };
+        let re_ptr = re_val.as_js_object_ptr();
         // SAFETY: is_re 已保证 pattern_val 为非空对象且 proto 恒等 RegExp.prototype。
         let re = unsafe { &*re_ptr };
         re.native_fn().is_some() && crate::regexp::regexp_has_flag(vm, re, 'g')
@@ -575,7 +590,10 @@ pub fn string_match_fn<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     if args.len() < 2 {
         return NativeResult::Ok(JsValue::null());
     }
-    let pattern_val = pattern_val.unwrap();
+    let pattern_val = match pattern_val {
+        Some(v) => v,
+        None => return NativeResult::Err(crate::error::create_type_error(vm, "expected pattern")),
+    };
     if is_re {
         let re_ptr = pattern_val.as_js_object_ptr();
         let re = unsafe { &*re_ptr };

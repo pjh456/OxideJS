@@ -67,14 +67,25 @@ fn dt_from_ms(ms: f64) -> Option<DateTime<Utc>> {
     if !ms.is_finite() {
         return None;
     }
-    DateTime::from_timestamp_millis(ms as i64)
+    // f64 截断到 i64 可能溢出（超 ±9.22e18 ms），先做有界转换。
+    let ms_i64 = if ms >= i64::MIN as f64 && ms <= i64::MAX as f64 {
+        ms as i64
+    } else {
+        return None;
+    };
+    DateTime::from_timestamp_millis(ms_i64)
 }
 
 fn dt_from_ms_local(ms: f64) -> Option<DateTime<Local>> {
     if !ms.is_finite() {
         return None;
     }
-    DateTime::from_timestamp_millis(ms as i64).map(|dt| dt.with_timezone(&Local))
+    let ms_i64 = if ms >= i64::MIN as f64 && ms <= i64::MAX as f64 {
+        ms as i64
+    } else {
+        return None;
+    };
+    DateTime::from_timestamp_millis(ms_i64).map(|dt| dt.with_timezone(&Local))
 }
 
 fn naive_from_ms(ms: f64) -> Option<NaiveDateTime> {
@@ -1028,7 +1039,14 @@ pub fn date_set_year<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         Some(d) => d,
         None => return NativeResult::Ok(JsValue::float(f64::NAN)),
     };
-    let y = y_num.trunc() as i32;
+    let y_trunc = y_num.trunc();
+    // f64 截断后可能超出 i32 范围，先做有界转换。
+    let y = if y_trunc >= i32::MIN as f64 && y_trunc <= i32::MAX as f64 {
+        y_trunc as i32
+    } else {
+        set_timestamp(obj, f64::NAN);
+        return NativeResult::Ok(JsValue::float(f64::NAN));
+    };
     let full_year = if (0..=99).contains(&y) { y + 1900 } else { y };
     let nd = dt.with_year(full_year).unwrap_or(dt);
     let ts = nd.timestamp_millis() as f64;

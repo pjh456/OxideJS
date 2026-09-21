@@ -147,18 +147,33 @@ pub fn plain_date_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResul
     }
     // 分量转换序：year → month → day；缺参归 undefined 经 number-only 路径
     // 统一落 RangeError（日期分量无缺省值，缺参不是合法分量）。
-    let year = native_try!(temporal_number_component(
+    let year_raw = native_try!(temporal_number_component(
         vm,
         if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() },
-    )) as i32;
-    let month = native_try!(temporal_number_component(
+    ));
+    let month_raw = native_try!(temporal_number_component(
         vm,
         if args.len() > 2 { vm.reg(args[2]) } else { JsValue::undefined() },
-    )) as u32;
-    let day = native_try!(temporal_number_component(
+    ));
+    let day_raw = native_try!(temporal_number_component(
         vm,
         if args.len() > 3 { vm.reg(args[3]) } else { JsValue::undefined() },
-    )) as u32;
+    ));
+    // f64 截断后可能超出目标整型范围，先做有界转换。
+    let year = if year_raw >= i32::MIN as f64 && year_raw <= i32::MAX as f64 {
+        year_raw as i32
+    } else {
+        return NativeResult::Err(crate::error::create_range_error(vm, "invalid year"));
+    };
+    let mut to_u32 = |v: f64| -> Result<u32, JsValue> {
+        if v >= 0.0 && v <= u32::MAX as f64 {
+            Ok(v as u32)
+        } else {
+            Err(crate::error::create_range_error(vm, "invalid date component"))
+        }
+    };
+    let month = native_try!(to_u32(month_raw));
+    let day = native_try!(to_u32(day_raw));
     if !valid_iso_date(year, month, day) {
         return NativeResult::Err(crate::error::create_range_error(vm, "invalid ISO date"));
     }

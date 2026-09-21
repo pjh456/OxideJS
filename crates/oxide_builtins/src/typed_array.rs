@@ -312,27 +312,35 @@ fn write_typed_array_element<H: VmHost>(
 /// 读 TypedArray 元素并转为对应 JS 值：BigInt 类型读为 BigInt 值（i64/u64 位模式
 /// 原样搬运，无精度损失），数值类型按位模式读为 Number。
 fn read_element<H: VmHost>(vm: &mut H, kind: TypedArrayKind, bytes: &[u8], offset: usize) -> JsValue {
+    // 安全读取：先校验 slice 长度匹配目标类型字节数，避免 try_into  panic。
+    macro_rules! read_bytes {
+        ($slice:expr, $ty:ty) => {{
+            let s = $slice;
+            let expected = std::mem::size_of::<$ty>();
+            if s.len() == expected {
+                unsafe { std::ptr::read(s.as_ptr() as *const $ty) }
+            } else {
+                return JsValue::undefined();
+            }
+        }};
+    }
     match kind {
         TypedArrayKind::Int8 => JsValue::int(bytes[offset] as i8 as i32),
         TypedArrayKind::Uint8 | TypedArrayKind::Uint8Clamped => JsValue::int(bytes[offset] as i32),
-        TypedArrayKind::Int16 => JsValue::int(i16::from_ne_bytes(bytes[offset..offset + 2].try_into().unwrap()) as i32),
-        TypedArrayKind::Uint16 => {
-            JsValue::int(u16::from_ne_bytes(bytes[offset..offset + 2].try_into().unwrap()) as i32)
+        TypedArrayKind::Int16 => {
+            JsValue::int(read_bytes!(&bytes[offset..offset + 2], i16) as i32)
         }
-        TypedArrayKind::Int32 => JsValue::int(i32::from_ne_bytes(bytes[offset..offset + 4].try_into().unwrap())),
-        TypedArrayKind::Uint32 => {
-            JsValue::float(u32::from_ne_bytes(bytes[offset..offset + 4].try_into().unwrap()) as f64)
-        }
-        TypedArrayKind::Float32 => {
-            JsValue::float(f32::from_ne_bytes(bytes[offset..offset + 4].try_into().unwrap()) as f64)
-        }
-        TypedArrayKind::Float64 => JsValue::float(f64::from_ne_bytes(bytes[offset..offset + 8].try_into().unwrap())),
+        TypedArrayKind::Uint16 => JsValue::int(read_bytes!(&bytes[offset..offset + 2], u16) as i32),
+        TypedArrayKind::Int32 => JsValue::int(read_bytes!(&bytes[offset..offset + 4], i32)),
+        TypedArrayKind::Uint32 => JsValue::float(read_bytes!(&bytes[offset..offset + 4], u32) as f64),
+        TypedArrayKind::Float32 => JsValue::float(read_bytes!(&bytes[offset..offset + 4], f32) as f64),
+        TypedArrayKind::Float64 => JsValue::float(read_bytes!(&bytes[offset..offset + 8], f64)),
         TypedArrayKind::BigInt64 => {
-            let n = i64::from_ne_bytes(bytes[offset..offset + 8].try_into().unwrap());
+            let n = read_bytes!(&bytes[offset..offset + 8], i64);
             vm.new_bigint(BigInt::from(n))
         }
         TypedArrayKind::BigUint64 => {
-            let n = u64::from_ne_bytes(bytes[offset..offset + 8].try_into().unwrap());
+            let n = read_bytes!(&bytes[offset..offset + 8], u64);
             vm.new_bigint(BigInt::from(n))
         }
     }

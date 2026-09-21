@@ -859,7 +859,9 @@ pub fn array_flat<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         }
         // HasProperty 门控：洞位不写目标（结果恒紧凑）。
         if !arraylike_index_present(vm, src, i) {
-            stack.last_mut().unwrap().3 = i + 1;
+            if let Some(top) = stack.last_mut() {
+                top.3 = i + 1;
+            }
             continue;
         }
         let elem = arraylike_get_or_err!(vm, src, i);
@@ -869,7 +871,9 @@ pub fn array_flat<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
             && !e_ptr.is_null()
             && unsafe { &*e_ptr }.is_array()
             && !stack.iter().any(|f| std::ptr::eq(f.0, e_ptr));
-        stack.last_mut().unwrap().3 = i + 1;
+        if let Some(top) = stack.last_mut() {
+            top.3 = i + 1;
+        }
         if descend {
             // elementLen = LengthOfArrayLike(element)。
             let (_, elen, _) = match get_this_arraylike(vm, elem) {

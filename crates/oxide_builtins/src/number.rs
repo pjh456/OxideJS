@@ -197,7 +197,7 @@ pub fn number_parse_int<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     } else {
         let mut acc = 0.0f64;
         for c in prefix.chars() {
-            acc = acc * radix as f64 + c.to_digit(radix).unwrap() as f64;
+            acc = acc * radix as f64 + c.to_digit(radix).unwrap_or(0) as f64;
         }
         acc
     };

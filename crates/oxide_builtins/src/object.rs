@@ -87,7 +87,7 @@ fn int_or_string_index<H: VmHost>(vm: &H, si: u32) -> Option<u32> {
         return Some(int_key_value(si));
     }
     let key = vm.kernel_core().perm_interner().lookup(si)?;
-    is_integer_index(key).then(|| key.parse::<u32>().unwrap())
+    is_integer_index(key).then(|| key.parse::<u32>().ok()).flatten()
 }
 
 /// 键 si 构造为 JS 可见字符串值（Object.keys / ownKeys / entries 族）：

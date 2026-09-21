@@ -76,7 +76,10 @@ fn unescape_string(input: &str) -> String {
             }
         }
 
-        let ch = input[i..].chars().next().expect("valid utf-8 char boundary");
+        let ch = match input[i..].chars().next() {
+            Some(c) => c,
+            None => break,
+        };
         out.push(ch);
         i += ch.len_utf8();
     }

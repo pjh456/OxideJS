@@ -76,14 +76,29 @@ pub fn plain_month_day_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> Native
         vm,
         if args.len() > 2 { vm.reg(args[2]) } else { JsValue::undefined() },
     ));
+    // f64 截断后可能超出 u32 范围，先做有界转换。
+    let mut to_u32 = |v: f64| -> Result<u32, JsValue> {
+        if v >= 0.0 && v <= u32::MAX as f64 {
+            Ok(v as u32)
+        } else {
+            Err(crate::error::create_range_error(vm, "invalid date component"))
+        }
+    };
+    let month = native_try!(to_u32(month));
+    let day = native_try!(to_u32(day));
     let calendar_raw = if args.len() > 3 { vm.reg(args[3]) } else { JsValue::undefined() };
     let calendar = native_try!(temporal_constructor_calendar_id(vm, calendar_raw));
-    let ref_year = if args.len() > 4 && !vm.reg(args[4]).is_undefined() {
-        native_try!(temporal_number_component(vm, vm.reg(args[4]))) as i32
+    let ref_year_raw = if args.len() > 4 && !vm.reg(args[4]).is_undefined() {
+        native_try!(temporal_number_component(vm, vm.reg(args[4])))
     } else {
-        1972
+        1972.0
     };
-    if !valid_iso_date(ref_year, month as u32, day as u32) {
+    let ref_year = if ref_year_raw >= i32::MIN as f64 && ref_year_raw <= i32::MAX as f64 {
+        ref_year_raw as i32
+    } else {
+        return NativeResult::Err(crate::error::create_range_error(vm, "invalid year"));
+    };
+    if !valid_iso_date(ref_year, month, day) {
         return NativeResult::Err(crate::error::create_range_error(vm, "invalid ISO date"));
     }
     // 表示范围（ISODateWithinLimits）：-271821-04-19 … +275760-09-13。
@@ -97,8 +112,8 @@ pub fn plain_month_day_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> Native
         args,
         JsObject::OBJ_TYPE_PLAIN_MONTH_DAY,
         [
-            JsValue::float(month),
-            JsValue::float(day),
+            JsValue::float(month as f64),
+            JsValue::float(day as f64),
             JsValue::float(ref_year as f64),
             calendar_value,
         ],
@@ -516,7 +531,10 @@ pub fn plain_month_day_from<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult 
         }
         code
     } else {
-        let f = month_f.expect("month or monthCode is required checked above");
+        let f = match month_f {
+            Some(v) => v,
+            None => return NativeResult::Err(crate::error::create_type_error(vm, "month is required")),
+        };
         if f < 1.0 {
             return NativeResult::Err(crate::error::create_range_error(vm, "invalid month"));
         }

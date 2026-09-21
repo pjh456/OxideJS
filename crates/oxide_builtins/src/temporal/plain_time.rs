@@ -43,15 +43,29 @@ fn is_ambiguous_date_string(s: &str) -> bool {
     };
     match s.len() {
         4 if all_digits(0..4) => {
-            let (month, day) = (two_digits(0).unwrap(), two_digits(2).unwrap());
-            day_in_month(month, day)
+            match (two_digits(0), two_digits(2)) {
+                (Some(month), Some(day)) => day_in_month(month, day),
+                _ => false,
+            }
         }
-        6 if all_digits(0..6) => (1..=12).contains(&two_digits(4).unwrap()),
+        6 if all_digits(0..6) => {
+            match two_digits(4) {
+                Some(m) => (1..=12).contains(&m),
+                None => false,
+            }
+        }
         5 if bytes[2] == b'-' && all_digits(0..2) && all_digits(3..5) => {
-            let (month, day) = (two_digits(0).unwrap(), two_digits(3).unwrap());
-            day_in_month(month, day)
+            match (two_digits(0), two_digits(3)) {
+                (Some(month), Some(day)) => day_in_month(month, day),
+                _ => false,
+            }
         }
-        7 if bytes[4] == b'-' && all_digits(0..4) && all_digits(5..7) => (1..=12).contains(&two_digits(5).unwrap()),
+        7 if bytes[4] == b'-' && all_digits(0..4) && all_digits(5..7) => {
+            match two_digits(5) {
+                Some(m) => (1..=12).contains(&m),
+                None => false,
+            }
+        }
         _ => false,
     }
 }
@@ -297,12 +311,20 @@ pub fn plain_time_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResul
     {
         return NativeResult::Err(crate::error::create_range_error(vm, "invalid time component"));
     }
-    let hour = hour_value as u32;
-    let minute = minute_value as u32;
-    let second = second_value as u32;
-    let ms = ms_value as u32;
-    let us = us_value as u32;
-    let ns = ns_value as u32;
+    // f64 截断后可能超出 u32 范围，先做有界转换。
+    let mut to_u32 = |v: f64| -> Result<u32, JsValue> {
+        if v >= 0.0 && v <= u32::MAX as f64 {
+            Ok(v as u32)
+        } else {
+            Err(crate::error::create_range_error(vm, "invalid time component"))
+        }
+    };
+    let hour = native_try!(to_u32(hour_value));
+    let minute = native_try!(to_u32(minute_value));
+    let second = native_try!(to_u32(second_value));
+    let ms = native_try!(to_u32(ms_value));
+    let us = native_try!(to_u32(us_value));
+    let ns = native_try!(to_u32(ns_value));
     if !valid_plain_time(hour, minute, second, ms, us, ns) {
         return NativeResult::Err(crate::error::create_range_error(vm, "invalid time component"));
     }

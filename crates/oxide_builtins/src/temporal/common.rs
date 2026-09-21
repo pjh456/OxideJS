@@ -63,7 +63,12 @@ pub(crate) fn get_instant_epoch_ns(obj: &JsObject) -> Option<i128> {
         return Some(unsafe { oxide_runtime_api::bigint_data(value) }.to_i128().unwrap_or(i128::MAX));
     }
     if value.is_int() || value.is_double() {
-        return Some(to_number(value) as i128);
+        let n = to_number(value);
+        // f64 转 i128：超大值饱和到 i128 边界。
+        if n.is_finite() && n >= i128::MIN as f64 && n <= i128::MAX as f64 {
+            return Some(n as i128);
+        }
+        return Some(i128::MAX);
     }
     None
 }
@@ -403,9 +408,28 @@ pub(crate) fn plain_date_time_object_parts<H: VmHost>(
         values[8] = values[8].clamp(0.0, 999.0);
     }
     let [year, month, day, hour, minute, second, millisecond, microsecond, nanosecond] = values;
-    let (year, month, day) = (year as i32, month as u32, day as u32);
-    let (hour, minute, second) = (hour as u32, minute as u32, second as u32);
-    let (millisecond, microsecond, nanosecond) = (millisecond as u32, microsecond as u32, nanosecond as u32);
+    // 分量值可能超出目标整型范围（f64 截断后仍超 i32/u32 上限），先做有界转换。
+    // 超出范围后 valid_iso_date / valid_plain_time 会拒绝，此处兜住 debug 模式 panic。
+    let year = if year.is_finite() && year >= i32::MIN as f64 && year <= i32::MAX as f64 {
+        year as i32
+    } else {
+        return Err(crate::error::create_range_error(vm, "invalid date-time component"));
+    };
+    let mut to_u32 = |v: f64| -> Result<u32, JsValue> {
+        if v.is_finite() && v >= 0.0 && v <= u32::MAX as f64 {
+            Ok(v as u32)
+        } else {
+            Err(crate::error::create_range_error(vm, "invalid date-time component"))
+        }
+    };
+    let month = to_u32(month)?;
+    let day = to_u32(day)?;
+    let hour = to_u32(hour)?;
+    let minute = to_u32(minute)?;
+    let second = to_u32(second)?;
+    let millisecond = to_u32(millisecond)?;
+    let microsecond = to_u32(microsecond)?;
+    let nanosecond = to_u32(nanosecond)?;
     if !valid_iso_date(year, month, day)
         || (!ignore_time && !valid_plain_time(hour, minute, second, millisecond, microsecond, nanosecond))
     {

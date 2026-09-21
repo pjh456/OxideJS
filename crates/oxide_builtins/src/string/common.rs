@@ -268,8 +268,9 @@ pub(crate) fn map_well_formed_segments(units: &[u16], mut f: impl FnMut(&str) ->
             i += 1;
             continue;
         }
-        let s = String::from_utf16(&units[seg_start..i]).expect("良形段 from_utf16 必成功");
-        out.extend(f(&s).encode_utf16());
+        if let Ok(s) = String::from_utf16(&units[seg_start..i]) {
+            out.extend(f(&s).encode_utf16());
+        }
     }
     out
 }

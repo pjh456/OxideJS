@@ -511,7 +511,7 @@ fn low64<H: VmHost>(vm: &mut H, val: JsValue) -> u64 {
     let v = vm.bigint_value(val);
     (v & (BigInt::from(u64::MAX)))
         .to_u64()
-        .expect("与 u64::MAX 掩码后恒在 u64 范围")
+        .unwrap_or(u64::MAX)
 }
 
 /// `DataView.prototype.toString`：校验 receiver 后返回 `[object DataView]`。
