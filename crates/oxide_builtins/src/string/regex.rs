@@ -411,7 +411,7 @@ fn string_replace_impl<H: VmHost>(vm: &mut H, args: &[u8], all: bool) -> NativeR
         // SAFETY: is_re 已保证 pattern_val 为非空对象且 proto 恒等 RegExp.prototype。
         let re = unsafe { &*re_ptr };
         if re.native_fn().is_some() {
-            let g = re.hash_props_vec().and_then(|v| v.get(3)).map(|v| v.as_bool()).unwrap_or(false);
+            let g = crate::regexp::regexp_has_flag(vm, re, 'g');
             (true, g)
         } else {
             (false, false)
@@ -562,6 +562,15 @@ pub fn string_match_fn<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         Some(v) if !is_re => try_string!(as_units(vm, v)).into_owned(),
         _ => Vec::new(),
     };
+    // global 标志前置读：flags 串共享借用与下方 text 转换的 &mut 借用不可重叠。
+    let is_global = if is_re {
+        let re_ptr = pattern_val.unwrap().as_js_object_ptr();
+        // SAFETY: is_re 已保证 pattern_val 为非空对象且 proto 恒等 RegExp.prototype。
+        let re = unsafe { &*re_ptr };
+        re.native_fn().is_some() && crate::regexp::regexp_has_flag(vm, re, 'g')
+    } else {
+        false
+    };
     let text = try_string!(this_text(vm, args));
     if args.len() < 2 {
         return NativeResult::Ok(JsValue::null());
@@ -576,7 +585,6 @@ pub fn string_match_fn<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         };
         // SAFETY: fn_ptr 持有 regexp_constructor 存放的 `Box<regress::Regex>` 指针。
         let regex = unsafe { &*(fn_ptr.as_ptr() as *const regress::Regex) };
-        let is_global = re.hash_props_vec().and_then(|v| v.get(3)).map(|v| v.as_bool()).unwrap_or(false);
         if is_global {
             let mut matches: Vec<Vec<u16>> = Vec::new();
             text.for_each_match(regex, |m| {
@@ -764,7 +772,7 @@ pub fn string_match_all<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let re_obj = if is_regexp_obj(pattern_val, vm) {
         let re_ptr = pattern_val.as_js_object_ptr();
         let re = unsafe { &*re_ptr };
-        let is_global = re.hash_props_vec().and_then(|v| v.get(3)).map(|v| v.as_bool()).unwrap_or(false);
+        let is_global = crate::regexp::regexp_has_flag(vm, re, 'g');
         if !is_global {
             return NativeResult::Err(crate::error::create_type_error(
                 vm,

@@ -1,6 +1,8 @@
 use std::sync::Arc;
 
-use crate::bindings::{apply_binding_table, bind_well_known_method, configure_native_constructor};
+use crate::bindings::{
+    apply_binding_table, bind_accessor_getter, bind_well_known_method, configure_native_constructor,
+};
 use oxide_kernel::kernel::{KernelCore, KernelSession};
 use oxide_types::object::JsObject;
 
@@ -32,6 +34,64 @@ pub fn bind_regexp(core: &Arc<KernelCore>, session: &KernelSession, global: &mut
             ("test", oxide_builtins::regexp::regexp_test::<crate::vm::Vm> as *const (), 1),
             ("toString", oxide_builtins::regexp::regexp_to_string::<crate::vm::Vm> as *const (), 0),
         ],
+    );
+
+    // 8 个单 flag 只读访问器（set 恒 undefined，getter 读实例 flags 串判码元）。
+    bind_accessor_getter(
+        core,
+        session,
+        proto,
+        "global",
+        oxide_builtins::regexp::regexp_get_global::<crate::vm::Vm> as *const (),
+    );
+    bind_accessor_getter(
+        core,
+        session,
+        proto,
+        "ignoreCase",
+        oxide_builtins::regexp::regexp_get_ignore_case::<crate::vm::Vm> as *const (),
+    );
+    bind_accessor_getter(
+        core,
+        session,
+        proto,
+        "multiline",
+        oxide_builtins::regexp::regexp_get_multiline::<crate::vm::Vm> as *const (),
+    );
+    bind_accessor_getter(
+        core,
+        session,
+        proto,
+        "dotAll",
+        oxide_builtins::regexp::regexp_get_dot_all::<crate::vm::Vm> as *const (),
+    );
+    bind_accessor_getter(
+        core,
+        session,
+        proto,
+        "sticky",
+        oxide_builtins::regexp::regexp_get_sticky::<crate::vm::Vm> as *const (),
+    );
+    bind_accessor_getter(
+        core,
+        session,
+        proto,
+        "unicode",
+        oxide_builtins::regexp::regexp_get_unicode::<crate::vm::Vm> as *const (),
+    );
+    bind_accessor_getter(
+        core,
+        session,
+        proto,
+        "hasIndices",
+        oxide_builtins::regexp::regexp_get_has_indices::<crate::vm::Vm> as *const (),
+    );
+    bind_accessor_getter(
+        core,
+        session,
+        proto,
+        "unicodeSets",
+        oxide_builtins::regexp::regexp_get_unicode_sets::<crate::vm::Vm> as *const (),
     );
 
     // Symbol.match 等 well-known symbol 方法按 Symbol 键安装，供 `re[Symbol.match]` 等读取。

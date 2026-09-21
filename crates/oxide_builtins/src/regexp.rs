@@ -21,29 +21,6 @@ fn get_regexp_ptr<H: VmHost>(vm: &mut H, args: &[u8]) -> Result<*mut JsObject, J
     Ok(ptr)
 }
 
-fn parse_flags(flags: &str) -> (bool, bool, bool, bool, bool, bool, bool) {
-    let mut global = false;
-    let mut ignore_case = false;
-    let mut multi_line = false;
-    let mut dot_all = false;
-    let mut sticky = false;
-    let mut unicode = false;
-    let mut has_indices = false;
-    for c in flags.chars() {
-        match c {
-            'g' => global = true,
-            'i' => ignore_case = true,
-            'm' => multi_line = true,
-            's' => dot_all = true,
-            'y' => sticky = true,
-            'u' => unicode = true,
-            'd' => has_indices = true,
-            _ => {}
-        }
-    }
-    (global, ignore_case, multi_line, dot_all, sticky, unicode, has_indices)
-}
-
 fn set_prop<H: VmHost>(obj: &mut JsObject, name: &str, val: JsValue, vm: &H) {
     let si = vm.kernel_core().perm_interner().intern(name).0;
     set_prop_by_si(obj, si, val, vm);
@@ -100,14 +77,21 @@ pub fn regexp_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let pattern = String::from_utf16_lossy(&pattern_units);
     let flags = String::from_utf16_lossy(&flags_units);
 
-    let (global, ignore_case, multi_line, dot_all, sticky, unicode, has_indices) = parse_flags(&flags);
+    // u 与 v 互斥（regress 不校验此约束）：编译前置抛 SyntaxError。
+    if flags.contains('u') && flags.contains('v') {
+        return NativeResult::Err(crate::error::create_syntax_error(
+            vm,
+            "Invalid regular expression flags: 'u' and 'v' are mutually exclusive",
+        ));
+    }
 
     let mut obj = JsObject::new_empty(
         EMPTY_SHAPE_ID,
         JsValue::from_js_object(vm.session().builtin_world().regexp_proto.as_ptr() as *mut JsObject),
     );
 
-    // regress 用 JS flag 字符串编译：g/i/m/s/u/y 原样透传（v 由调用方映射为 u+set 语义）。
+    // regress 用 JS flag 字符串编译：g/i/m/s/y/u/v 原样透传（vendored fork
+    // 原生识别 v 标志，u/v 互斥已在上方前置校验）。
     let compiled = regress::Regex::with_flags(&pattern, flags.as_str());
 
     match compiled {
@@ -128,16 +112,10 @@ pub fn regexp_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     }
 
     set_prop(&mut obj, "lastIndex", JsValue::int(0), vm);
-    // 单元口径物化 source/flags（孤立 surrogate 单元保持往返）。
+    // 单元口径物化 source/flags（孤立 surrogate 单元保持往返）。7 个 flag 布尔
+    // 不再作实例数据属性：读侧走原型只读访问器，以 flags 串为唯一数据源。
     set_prop(&mut obj, "source", vm.new_string_units_owned(pattern_units), vm);
     set_prop(&mut obj, "flags", vm.new_string_units_owned(flags_units), vm);
-    set_prop(&mut obj, "global", JsValue::bool(global), vm);
-    set_prop(&mut obj, "ignoreCase", JsValue::bool(ignore_case), vm);
-    set_prop(&mut obj, "multiline", JsValue::bool(multi_line), vm);
-    set_prop(&mut obj, "dotAll", JsValue::bool(dot_all), vm);
-    set_prop(&mut obj, "sticky", JsValue::bool(sticky), vm);
-    set_prop(&mut obj, "unicode", JsValue::bool(unicode), vm);
-    set_prop(&mut obj, "hasIndices", JsValue::bool(has_indices), vm);
     obj.type_tag = JsObject::OBJ_TYPE_REGEXP;
 
     let obj_ptr = vm.alloc_object(obj);
@@ -219,7 +197,7 @@ pub fn regexp_test<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         Err(err) => return NativeResult::Err(err),
     };
     let last_index = vm.coerce_number_bounded(get_prop(re, 0)).unwrap_or(f64::NAN) as usize;
-    let is_global = is_global(re);
+    let is_global = regexp_has_flag(vm, re, 'g');
 
     // lastIndex 为码元口径；Str 臂的内部字节换算在 find_from_units 内完成。
     let text = haystack.as_match_text();
@@ -259,7 +237,7 @@ pub fn regexp_exec<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let (last_index, is_global) = {
         let re = unsafe { &*re_ptr };
         let li = vm.coerce_number_bounded(get_prop(re, 0)).unwrap_or(f64::NAN) as usize;
-        let g = is_global(re);
+        let g = regexp_has_flag(vm, re, 'g');
         (li, g)
     };
 
@@ -445,18 +423,85 @@ const HEX_DIGITS: [u16; 16] = [
     0x30, 0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0x37, 0x38, 0x39, 0x61, 0x62, 0x63, 0x64, 0x65, 0x66,
 ];
 
-// RegExp 对象 hash 槽中属性的固定下标（构造顺序：lastIndex/source/flags/global/...）。
+// RegExp 对象 hash 槽中属性的固定下标（构造顺序：lastIndex/source/flags）。
 const PROP_LAST_INDEX: usize = 0;
 const PROP_SOURCE: usize = 1;
 const PROP_FLAGS: usize = 2;
-const PROP_GLOBAL: usize = 3;
 
-/// 读 global 标志；槽值被 accessor 重定义后不再保证是 bool，非 bool 一律视为 false。
-fn is_global(re: &JsObject) -> bool {
-    match get_prop(re, PROP_GLOBAL) {
-        v if v.is_bool() => v.as_bool(),
-        _ => false,
+/// 读实例 flags 串（[[OriginalFlags]] 的物化形态）判单个 flag 码元。
+///
+/// # 边界与前提
+/// - `re` 须为持有编译正则的对象（RegExp 实例或 matchAll 载体）；flags 缺失
+///   时各 flag 一律 false。
+/// - 经自身+原型链解析 flags 键：flags 是实例数据属性，原型链回退仅覆盖
+///   用户删改自身属性后的读法。
+pub(crate) fn regexp_has_flag<H: VmHost>(vm: &H, re: &JsObject, unit: char) -> bool {
+    let flags_si = vm.kernel_core().perm_interner().intern("flags").0;
+    match vm.resolve_property(re, flags_si) {
+        Some(val) => vm.lookup_str(val).unwrap_or_default().contains(unit),
+        None => false,
     }
+}
+
+/// 8 个单 flag 只读访问器的公共核：this 为 RegExp.prototype 本身返回
+/// undefined；this 非 RegExp 对象抛 TypeError；其余读实例 flags 串判码元。
+fn regexp_flag_of<H: VmHost>(vm: &mut H, args: &[u8], unit: char) -> NativeResult {
+    // proto 恒等判定先于 RegExp 校验：规范对 prototype 本身返回 undefined
+    // 而非抛错，顺序不可互换。
+    let this_val = vm.reg(args[0]);
+    if this_val.is_object() {
+        let this_ptr = this_val.as_js_object_ptr();
+        let proto_ptr = vm.session().builtin_world().regexp_proto.as_ptr() as *mut JsObject;
+        if !this_ptr.is_null() && this_ptr == proto_ptr {
+            return NativeResult::Ok(JsValue::undefined());
+        }
+    }
+    let re_ptr = match get_regexp_ptr(vm, args) {
+        Ok(ptr) => ptr,
+        Err(err) => return NativeResult::Err(err),
+    };
+    let re = unsafe { &*re_ptr };
+    NativeResult::Ok(JsValue::bool(regexp_has_flag(vm, re, unit)))
+}
+
+/// `RegExp.prototype.global` getter。
+pub fn regexp_get_global<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    regexp_flag_of(vm, args, 'g')
+}
+
+/// `RegExp.prototype.ignoreCase` getter。
+pub fn regexp_get_ignore_case<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    regexp_flag_of(vm, args, 'i')
+}
+
+/// `RegExp.prototype.multiline` getter。
+pub fn regexp_get_multiline<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    regexp_flag_of(vm, args, 'm')
+}
+
+/// `RegExp.prototype.dotAll` getter。
+pub fn regexp_get_dot_all<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    regexp_flag_of(vm, args, 's')
+}
+
+/// `RegExp.prototype.sticky` getter。
+pub fn regexp_get_sticky<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    regexp_flag_of(vm, args, 'y')
+}
+
+/// `RegExp.prototype.unicode` getter。
+pub fn regexp_get_unicode<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    regexp_flag_of(vm, args, 'u')
+}
+
+/// `RegExp.prototype.hasIndices` getter。
+pub fn regexp_get_has_indices<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    regexp_flag_of(vm, args, 'd')
+}
+
+/// `RegExp.prototype.unicodeSets` getter。
+pub fn regexp_get_unicode_sets<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    regexp_flag_of(vm, args, 'v')
 }
 
 /// 取匹配文本参数，按 ToString 语义完整转换（对象经 toString/valueOf）；
@@ -525,7 +570,7 @@ pub fn regexp_symbol_match<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         Ok(ptr) => ptr,
         Err(err) => return NativeResult::Err(err),
     };
-    let is_global = is_global(unsafe { &*re_ptr });
+    let is_global = regexp_has_flag(vm, unsafe { &*re_ptr }, 'g');
     if !is_global {
         return regexp_exec(vm, args);
     }
@@ -562,7 +607,7 @@ pub fn regexp_symbol_replace<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult
         Ok(ptr) => ptr,
         Err(err) => return NativeResult::Err(err),
     };
-    let is_global = is_global(unsafe { &*re_ptr });
+    let is_global = regexp_has_flag(vm, unsafe { &*re_ptr }, 'g');
     let (regex, haystack) = match regexp_regex_and_text(vm, args) {
         Ok(pair) => pair,
         Err(err) => return NativeResult::Err(err),
@@ -695,7 +740,7 @@ pub fn regexp_symbol_match_all<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResu
         Err(err) => return NativeResult::Err(err),
     };
     let re = unsafe { &*re_ptr };
-    let is_global = is_global(re);
+    let is_global = regexp_has_flag(vm, re, 'g');
     let last_index = vm.coerce_number_bounded(get_prop(re, PROP_LAST_INDEX)).unwrap_or(f64::NAN) as usize;
     let haystack = match regexp_text_arg(vm, args) {
         Ok(s) => s,

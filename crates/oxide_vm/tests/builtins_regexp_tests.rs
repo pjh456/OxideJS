@@ -408,3 +408,86 @@ fn regexp_utf16_entry_well_formed_equals_str_path() {
         assert_eq!(str_m, u16_m, "pattern {pattern}");
     }
 }
+
+// --- RegExp flag 只读访问器（M11）---
+
+#[test]
+fn regexp_flag_accessors_read_values() {
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "var r = new RegExp('a', 'gimsyud'); [r.global, r.ignoreCase, r.multiline, r.dotAll, r.sticky, r.unicode, r.hasIndices, r.unicodeSets].join(',')",
+    )
+    .unwrap();
+    assert_eq!(to_str(&vm, result), "true,true,true,true,true,true,true,false");
+    let result = eval(&mut vm, "new RegExp('a', 'v').unicodeSets").unwrap();
+    assert!(result.as_bool());
+    let result =
+        eval(&mut vm, "new RegExp('a', 'u').unicodeSets === false && new RegExp('a').unicode === false").unwrap();
+    assert!(result.as_bool());
+}
+
+#[test]
+fn regexp_flag_accessor_descriptor_and_identity() {
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "var d = Object.getOwnPropertyDescriptor(RegExp.prototype, 'global'); d.set === undefined && typeof d.get === 'function' && d.enumerable === false && d.configurable === true && d.get.length === 0 && d.get.name === 'get global'",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
+#[test]
+fn regexp_instance_has_no_own_flag_props() {
+    let mut vm = Vm::new();
+    let result = eval(&mut vm, "Object.getOwnPropertyNames(new RegExp('a', 'g')).sort().join(',')").unwrap();
+    assert_eq!(to_str(&vm, result), "flags,lastIndex,source");
+}
+
+#[test]
+fn regexp_flag_write_is_noop_sloppy() {
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "var r = new RegExp('a'); r.global = true; r.ignoreCase = false; r.global === false",
+    )
+    .unwrap();
+    assert!(result.as_bool(), "无 setter 访问器在 sloppy 写应静默 no-op");
+}
+
+#[test]
+fn regexp_uv_flags_mutual_exclusive() {
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "(() => { try { new RegExp('.', 'uv'); return 'no-throw'; } catch (e) { return e instanceof SyntaxError ? 'SyntaxError' : 'other'; } })()",
+    )
+    .unwrap();
+    assert_eq!(to_str(&vm, result), "SyntaxError");
+    // u 与 v 单独使用不受影响。
+    let result = eval(&mut vm, "new RegExp('.', 'u').unicode + ',' + new RegExp('.', 'v').unicodeSets").unwrap();
+    assert_eq!(to_str(&vm, result), "true,true");
+}
+
+#[test]
+fn regexp_flag_getter_proto_this_returns_undefined() {
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "Object.getOwnPropertyDescriptor(RegExp.prototype, 'dotAll').get.call(RegExp.prototype) === undefined",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
+#[test]
+fn regexp_flag_getter_non_regexp_this_throws_type_error() {
+    let mut vm = Vm::new();
+    let source = "(() => { var get = Object.getOwnPropertyDescriptor(RegExp.prototype, 'global').get; try { get.call({}); return 'no-throw'; } catch (e) { return e instanceof TypeError ? 'TypeError' : 'other'; } })()";
+    let result = eval(&mut vm, source).unwrap();
+    assert_eq!(to_str(&vm, result), "TypeError");
+    let source = "(() => { var get = Object.getOwnPropertyDescriptor(RegExp.prototype, 'global').get; try { get.call(null); return 'no-throw'; } catch (e) { return e instanceof TypeError ? 'TypeError' : 'other'; } })()";
+    let result = eval(&mut vm, source).unwrap();
+    assert_eq!(to_str(&vm, result), "TypeError");
+}
