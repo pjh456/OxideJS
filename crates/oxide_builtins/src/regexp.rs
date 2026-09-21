@@ -105,7 +105,7 @@ fn rx_set_prop<H: VmHost>(
 
 /// live 语义读 flags 串：ToString(Get(rx, "flags"))，getter 抛错与
 /// ToString 抛错均传播原异常。
-fn rx_get_flags<H: VmHost>(vm: &mut H, rx: *mut JsObject, this_val: JsValue) -> Result<String, JsValue> {
+pub fn rx_get_flags<H: VmHost>(vm: &mut H, rx: *mut JsObject, this_val: JsValue) -> Result<String, JsValue> {
     let val = rx_get_prop(vm, rx, "flags", this_val)?;
     // 回退文案用原始文本（"TypeError: " 前缀恢复错误种类）。
     let s = match oxide_runtime_api::to_string_value_full(val, vm) {

@@ -789,9 +789,12 @@ pub fn string_match_all<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 
     let re_obj = if is_regexp_obj(pattern_val, vm) {
         let re_ptr = pattern_val.as_js_object_ptr();
-        let re = unsafe { &*re_ptr };
-        let is_global = crate::regexp::regexp_has_flag(vm, re, 'g');
-        if !is_global {
+        // 规范：Get(rx, "flags") → ToString → 含 "g" 判定；getter 抛错传播。
+        let flags = match crate::regexp::rx_get_flags(vm, re_ptr, pattern_val) {
+            Ok(f) => f,
+            Err(e) => return NativeResult::Err(e),
+        };
+        if !flags.contains('g') {
             return NativeResult::Err(crate::error::create_type_error(
                 vm,
                 "String.prototype.matchAll: regex must have global flag",
