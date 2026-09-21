@@ -92,9 +92,9 @@ impl Vm {
             depth += 1;
             let proto_obj = unsafe { &*proto.as_js_object_ptr() };
             if let Some(pos) = self.private_slot(proto_obj, private_key) {
-                // 方法槽有 hole 标记（set_private_method_meta）；字段槽（存实例）沿链出现
-                // 说明接收者并非本类实例 → 拒绝穿透。
-                if proto_obj.prop_meta_at(pos).is_some_and(|m| m.is_hole()) {
+                // 方法/访问器槽有 hole 标记（私有方法）或 is_accessor 标记（私有 getter/setter）；
+                // 字段槽（存实例）沿链出现说明接收者并非本类实例 → 拒绝穿透。
+                if proto_obj.prop_meta_at(pos).is_some_and(|m| m.is_hole() || m.is_accessor) {
                     return Some(proto_obj as *const JsObject as *mut JsObject);
                 }
                 return None;
