@@ -250,6 +250,65 @@ fn regexp_to_string() {
     assert_eq!(to_str(&vm, result), "/abc/gi");
 }
 
+// --- RegExp.escape 静态方法 ---
+
+#[test]
+fn regexp_escape_table_representatives() {
+    let mut vm = Vm::new();
+    // 首字符 ASCII 字母先走 \xNN 规则，其余语法字符反斜杠加字符本身。
+    let result = eval(&mut vm, "RegExp.escape('a.b')").unwrap();
+    assert_eq!(to_str(&vm, result), "\\x61\\.b");
+    let result = eval(&mut vm, "RegExp.escape('.a1')").unwrap();
+    assert_eq!(to_str(&vm, result), "\\.a1");
+    // 控制字符：单字母转义形态。
+    let result = eval(&mut vm, "RegExp.escape('\\t\\n\\v\\f\\r')").unwrap();
+    assert_eq!(to_str(&vm, result), "\\t\\n\\v\\f\\r");
+    // 空白：≤0xFF 走 \xNN，扩展 USP 段与 BOM 走 \uNNNN（十六进制小写）。
+    let result = eval(&mut vm, "RegExp.escape(' ')").unwrap();
+    assert_eq!(to_str(&vm, result), "\\x20");
+    let result = eval(&mut vm, "RegExp.escape('\\uFEFF')").unwrap();
+    assert_eq!(to_str(&vm, result), "\\ufeff");
+    let result = eval(&mut vm, "RegExp.escape('\\u202F')").unwrap();
+    assert_eq!(to_str(&vm, result), "\\u202f");
+    // 其它标点。
+    let result = eval(&mut vm, "RegExp.escape(',')").unwrap();
+    assert_eq!(to_str(&vm, result), "\\x2c");
+    // 首字符数字/ASCII 字母：\xNN；非首位不转义。
+    let result = eval(&mut vm, "RegExp.escape('1111')").unwrap();
+    assert_eq!(to_str(&vm, result), "\\x31111");
+    let result = eval(&mut vm, "RegExp.escape('aaa')").unwrap();
+    assert_eq!(to_str(&vm, result), "\\x61aa");
+    // 下划线不转义。
+    let result = eval(&mut vm, "RegExp.escape('_hello')").unwrap();
+    assert_eq!(to_str(&vm, result), "_hello");
+}
+
+#[test]
+fn regexp_escape_surrogates_and_non_bmp() {
+    let mut vm = Vm::new();
+    // 孤立 surrogate：\uXXXX（4 位小写十六进制）。
+    let result = eval(&mut vm, "RegExp.escape('\\uD800')").unwrap();
+    assert_eq!(to_str(&vm, result), "\\ud800");
+    // 非 BMP 码点原样（代理对不按孤立 surrogate 转义）。
+    let result = eval(&mut vm, "RegExp.escape('\\u{1F600}')").unwrap();
+    assert_eq!(to_str(&vm, result), "\u{1F600}");
+}
+
+#[test]
+fn regexp_escape_non_string_throws_type_error() {
+    let mut vm = Vm::new();
+    let source = "(() => { try { RegExp.escape(123); return 'no-throw'; } catch (e) { return e instanceof TypeError ? 'TypeError' : 'other'; } })()";
+    let result = eval(&mut vm, source).unwrap();
+    assert_eq!(to_str(&vm, result), "TypeError");
+}
+
+#[test]
+fn regexp_escape_length_and_name() {
+    let mut vm = Vm::new();
+    let result = eval(&mut vm, "RegExp.escape.length + ':' + RegExp.escape.name").unwrap();
+    assert_eq!(to_str(&vm, result), "1:escape");
+}
+
 // --- Unicode property escapes：Script/Script_Extensions 的 Unknown（Zzzz）取值 ---
 // vendor 的 Unicode 表须含 Unknown（未分配码点集），否则合法模式编译期 SyntaxError。
 

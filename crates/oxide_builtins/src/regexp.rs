@@ -335,6 +335,116 @@ pub fn regexp_to_string<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     NativeResult::Ok(vm.new_string_owned(result))
 }
 
+/// `RegExp.escape(string)`：返回语法字符、其它标点、空白/行终止符、孤立
+/// surrogate、首字符数字/ASCII 字母均被转义的新字符串；参数非字符串抛 TypeError。
+///
+/// # 边界与前提
+/// - 参数取 args[1]（args[0] 为 this，纯字符串变换不使用）；缺参按非字符串抛 TypeError。
+/// - 变换按码点逐个进行（代理对是单码点，非 BMP 码点原样回编码）：控制字符
+///   （0x09–0x0D）走单字母转义（\t \n \v \f \r）；语法字符反斜杠加字符本身；
+///   其它标点 \xNN；空白/行终止符与孤立 surrogate ≤0xFF 用 \xNN、否则 \uNNNN
+///   （十六进制小写）；仅首位码点为数字/ASCII 字母 \xNN；其余原样。
+pub fn regexp_escape<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let val = vm.reg(if args.len() > 1 { args[1] } else { args[0] });
+    if !val.is_string() {
+        return NativeResult::Err(crate::error::create_type_error(vm, "RegExp.escape expects a string argument"));
+    }
+
+    let units = vm.string_units(val).into_owned();
+    let mut out: Vec<u16> = Vec::with_capacity(units.len() + 4);
+    let mut at_start = true;
+    let mut i = 0;
+    while i < units.len() {
+        let (cp, width) = decode_code_point(&units, i);
+        escape_code_point(&mut out, cp, at_start);
+        at_start = false;
+        i += width;
+    }
+    NativeResult::Ok(vm.new_string_units_owned(out))
+}
+
+/// 从单元序列下标处解出一个码点，返回（码点值，消耗单元数）；
+/// 高 surrogate 后紧跟低 surrogate 时代理对合为单码点，孤立 surrogate 自成码点。
+fn decode_code_point(units: &[u16], i: usize) -> (u32, usize) {
+    let cu = units[i];
+    if (0xD800..=0xDBFF).contains(&cu) && i + 1 < units.len() && (0xDC00..=0xDFFF).contains(&units[i + 1]) {
+        let cp = 0x10000 + (((cu - 0xD800) as u32) << 10) + (units[i + 1] as u32 - 0xDC00_u32);
+        (cp, 2)
+    } else {
+        (cu as u32, 1)
+    }
+}
+
+/// 单个码点的转义变换，结果追加到 out；at_start 仅约束首字符数字/字母规则。
+fn escape_code_point(out: &mut Vec<u16>, cp: u32, at_start: bool) {
+    if cp > 0xFFFF {
+        // 非 BMP 码点原样回编码（代理对不按孤立 surrogate 转义）。
+        out.push(0xD800 + ((cp - 0x10000) >> 10) as u16);
+        out.push(0xDC00 + ((cp - 0x10000) & 0x3FF) as u16);
+        return;
+    }
+    let cu = cp as u16;
+    match cu {
+        // 控制字符单字母转义形态。
+        0x09 => push_escape_literal(out, b't'),
+        0x0A => push_escape_literal(out, b'n'),
+        0x0B => push_escape_literal(out, b'v'),
+        0x0C => push_escape_literal(out, b'f'),
+        0x0D => push_escape_literal(out, b'r'),
+        // 语法字符：反斜杠加字符本身。
+        0x24 | 0x28 | 0x29 | 0x2A | 0x2B | 0x2E | 0x2F | 0x3F | 0x5C | 0x5E | 0x5B | 0x5D | 0x7B | 0x7C | 0x7D => {
+            out.push(0x5C);
+            out.push(cu);
+        }
+        // 其它标点：\xNN。
+        0x21 | 0x22 | 0x23 | 0x25 | 0x26 | 0x27 | 0x2C | 0x2D | 0x3A | 0x3B | 0x3C | 0x3D | 0x3E | 0x40 | 0x60
+        | 0x7E => {
+            push_hex_escape(out, b'x', cu, 2);
+        }
+        // 空白/行终止符与孤立 surrogate：\xNN（≤0xFF）或 \uNNNN。
+        c if is_ws_or_line_terminator(c) || (0xD800..=0xDFFF).contains(&c) => {
+            if c <= 0xFF {
+                push_hex_escape(out, b'x', c, 2);
+            } else {
+                push_hex_escape(out, b'u', c, 4);
+            }
+        }
+        // 仅首字符的数字/ASCII 字母：\xNN。
+        c if at_start && ((0x30..=0x39).contains(&c) || (0x41..=0x5A).contains(&c) || (0x61..=0x7A).contains(&c)) => {
+            push_hex_escape(out, b'x', c, 2)
+        }
+        _ => out.push(cu),
+    }
+}
+
+/// 空白/行终止符单元全集（WhiteSpace 文法 + LineTerminator）；
+/// 0x09–0x0D 已被 ControlEscape 分支先行拦截，不列于此。
+fn is_ws_or_line_terminator(cu: u16) -> bool {
+    matches!(
+        cu,
+        0x20 | 0xA0 | 0xFEFF | 0x1680 | 0x1681 | 0x2000..=0x200A | 0x2028 | 0x2029 | 0x202F | 0x205F | 0x3000
+    )
+}
+
+/// 追加反斜杠加转义字母加字符本身（控制字符单字母转义形态）。
+fn push_escape_literal(out: &mut Vec<u16>, letter: u8) {
+    out.push(0x5C);
+    out.push(letter as u16);
+}
+
+/// 追加反斜杠加转义字母加小写十六进制数字（digit_count = 2 为 \xNN，4 为 \uNNNN）。
+fn push_hex_escape(out: &mut Vec<u16>, letter: u8, cu: u16, digit_count: u32) {
+    out.push(0x5C);
+    out.push(letter as u16);
+    for shift in (0..digit_count).rev() {
+        out.push(HEX_DIGITS[(cu >> (shift * 4)) as usize & 0xF]);
+    }
+}
+
+const HEX_DIGITS: [u16; 16] = [
+    0x30, 0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0x37, 0x38, 0x39, 0x61, 0x62, 0x63, 0x64, 0x65, 0x66,
+];
+
 // RegExp 对象 hash 槽中属性的固定下标（构造顺序：lastIndex/source/flags/global/...）。
 const PROP_LAST_INDEX: usize = 0;
 const PROP_SOURCE: usize = 1;

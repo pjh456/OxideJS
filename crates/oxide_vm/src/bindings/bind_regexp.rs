@@ -15,6 +15,14 @@ pub fn bind_regexp(core: &Arc<KernelCore>, session: &KernelSession, global: &mut
 
     configure_native_constructor(ctor, oxide_builtins::regexp::regexp_constructor::<crate::vm::Vm> as *const (), 2);
 
+    // 静态方法 escape 装到构造器对象（wrapper 的 length/name 与槽属性由 bind_method 统一保证）。
+    apply_binding_table(
+        session.builtin_world(),
+        ctor,
+        core,
+        &[("escape", oxide_builtins::regexp::regexp_escape::<crate::vm::Vm> as *const (), 1)],
+    );
+
     apply_binding_table(
         session.builtin_world(),
         proto,
