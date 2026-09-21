@@ -8,12 +8,17 @@ use crate::string::{make_units_array, MatchText, OwnedText};
 
 /// 构建 RegExp match result 的 `groups` 对象：键为命名捕获组名，值为匹配字符串或 undefined。
 pub(crate) fn build_groups_object<H: VmHost>(vm: &mut H, m: &regress::Match, text: &MatchText) -> JsValue {
+    // 收集所有命名组（迭代器惰性，先 collect 判断是否有命名组）。
+    let named: Vec<_> = m.named_groups().collect();
+    if named.is_empty() {
+        return JsValue::undefined();
+    }
     let object_proto = vm.session().builtin_world().object_proto.as_ptr() as *mut JsObject;
     let groups_obj = vm.alloc_object(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(object_proto)));
     let groups_ptr = unsafe { &mut *groups_obj };
 
     // 遍历所有命名捕获组，按名称设置属性（重复名称按规范取最后一次匹配）。
-    for (name, range) in m.named_groups() {
+    for (name, range) in named {
         let name_si = vm.kernel_core().perm_interner().intern(name).0;
         let value = match range {
             Some(r) => vm.new_string_units_owned(text.slice(r.start, r.end).into_owned()),
@@ -201,10 +206,17 @@ fn advance_string_index(units: &[u16], p: usize, unicode: bool) -> usize {
     }
 }
 
-/// GetSubstitution：非函数替换串的 `$` 引用展开（`$$`/`$&`/`` $` ``/`$'`/`$n`）；
+/// GetSubstitution：非函数替换串的 `$` 引用展开（`$$`/`$&`/`` $` ``/`$'`/`$n`/`$<name>`）；
 /// `$n` 越界（含 $0 与两位回退后仍越界）或未匹配组（None）按字面输出。
-fn get_substitution_units(
-    matched: &[u16], s: &[u16], position: usize, captured: &[Option<Vec<u16>>], replacement: &[u16],
+/// `$<name>` 从 named_captures 对象读取；不存在时字面输出 `$<` 开头部分。
+fn get_substitution_units<H: VmHost>(
+    vm: &mut H,
+    matched: &[u16],
+    s: &[u16],
+    position: usize,
+    captured: &[Option<Vec<u16>>],
+    named_captures: Option<&JsObject>,
+    replacement: &[u16],
 ) -> Vec<u16> {
     let mut out = Vec::new();
     let pos = position.min(s.len());
@@ -229,6 +241,36 @@ fn get_substitution_units(
         } else if rest.starts_with(&[0x24, 0x27]) {
             out.extend_from_slice(&s[tail..]);
             i += 2;
+        } else if rest.starts_with(&[0x24, 0x3c]) {
+            // $<name> 命名组引用：扫描到 > 为止。
+            if let Some(end) = rest[2..].iter().position(|&c| c == 0x3e) {
+                let name_units = &rest[2..2 + end];
+                let name_str = String::from_utf16_lossy(name_units);
+                if let Some(obj) = named_captures {
+                    let si = vm.kernel_core().perm_interner().intern(&name_str).0;
+                    if si != 0 {
+                        let key = JsValue::undefined();
+                        if let Ok(cap) = vm.ordinary_get(obj, si, key) {
+                            if !cap.is_undefined() {
+                                if let Ok(cap_str) = to_string_units(vm, cap) {
+                                    out.extend_from_slice(&cap_str);
+                                }
+                            }
+                            // 组存在（含 undefined）：按规范替换为空串或捕获值，跳过 `$<name>`。
+                            i += 2 + end + 1;
+                            continue;
+                        }
+                    }
+                }
+                // 组不存在或无法读取：字面输出 `$<` 到 `>` 的部分。
+                out.extend_from_slice(&rest[..end + 3]);
+                i += end + 3;
+            } else {
+                // 没有闭合的 >：字面输出 `$<`。
+                out.push(0x24);
+                out.push(0x3c);
+                i += 2;
+            }
         } else if i + 1 < replacement.len() && (0x30..=0x39).contains(&replacement[i + 1]) {
             let digit_count = if i + 2 < replacement.len() && (0x30..=0x39).contains(&replacement[i + 2]) {
                 2
@@ -1313,11 +1355,18 @@ fn make_replacement<H: VmHost>(
         };
         return to_string_units(vm, repl_value);
     }
+    let groups_obj = if rec.groups.is_object() && !rec.groups.as_js_object_ptr().is_null() {
+        Some(unsafe { &*rec.groups.as_js_object_ptr() })
+    } else {
+        None
+    };
     Ok(get_substitution_units(
+        vm,
         &rec.matched,
         s_units,
         rec.position,
         &rec.captures,
+        groups_obj,
         replacement_units.unwrap_or(&[]),
     ))
 }
