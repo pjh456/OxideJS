@@ -584,3 +584,185 @@ fn regexp_flag_getter_non_regexp_this_throws_type_error() {
     let result = eval(&mut vm, source).unwrap();
     assert_eq!(to_str(&vm, result), "TypeError");
 }
+
+#[test]
+fn symbol_match_live_global_shadow_and_exec_result() {
+    let mut vm = Vm::new();
+    // 影子 global 数据属性压过原型访问器（非 g 正则走 global 循环）。
+    let result = eval(
+        &mut vm,
+        "(() => { var r = /b/; var n = 0; r.exec = function() { n += 1; return n === 1 ? ['b'] : null; }; Object.defineProperty(r, 'global', { value: true, writable: true, configurable: true }); return r[Symbol.match]('abc').join(','); })()",
+    )
+    .unwrap();
+    assert_eq!(to_str(&vm, result), "b");
+    // 非 global 直接返回 exec 结果原值（对象恒等）。
+    let result = eval(
+        &mut vm,
+        "(() => { var r = /b/; var marker = { tag: 1 }; r.exec = function() { return marker; }; return r[Symbol.match]('abc') === marker; })()",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
+#[test]
+fn symbol_match_live_flag_reads_propagate() {
+    let mut vm = Vm::new();
+    // flags getter 抛错原样传播（unicode 读先于非 global 返回，读序不短路）。
+    let result = eval(
+        &mut vm,
+        "(() => { var r = /b/; Object.defineProperty(r, 'flags', { get() { throw new RangeError('flags-boom'); } }); try { r[Symbol.match]('abc'); return 'no-throw'; } catch (e) { return e.message; } })()",
+    )
+    .unwrap();
+    assert_eq!(to_str(&vm, result), "flags-boom");
+    let result = eval(
+        &mut vm,
+        "(() => { var r = /b/; Object.defineProperty(r, 'unicode', { get() { throw new RangeError('unicode-boom'); } }); try { r[Symbol.match]('abc'); return 'no-throw'; } catch (e) { return e.message; } })()",
+    )
+    .unwrap();
+    assert_eq!(to_str(&vm, result), "unicode-boom");
+}
+
+#[test]
+fn symbol_entries_accept_plain_object_this() {
+    let mut vm = Vm::new();
+    // this 放宽：普通对象（带 exec）可作 match/replace/search 的 this。
+    let result = eval(
+        &mut vm,
+        "(() => { var o = { exec: function() { return ['x', { index: 0 }]; } }; return RegExp.prototype[Symbol.replace].call(o, 'abc', 'Y'); })()",
+    )
+    .unwrap();
+    assert_eq!(to_str(&vm, result), "Ybc");
+    let result = eval(
+        &mut vm,
+        "(() => { var o = { exec: function() { return { index: 2 }; } }; return RegExp.prototype[Symbol.search].call(o, 'abcd'); })()",
+    )
+    .unwrap();
+    // ToNumber 结果为浮点形态（2.0）。
+    assert_eq!(result.as_double(), 2.0);
+}
+
+#[test]
+fn symbol_replace_functional_groups_tail_arg() {
+    let mut vm = Vm::new();
+    // groups 非 undefined 时作末参（5 参）；undefined 时原串为末参（4 参）。
+    let result = eval(
+        &mut vm,
+        "(() => { var r = /b/; r.exec = function() { return { length: 1, 0: 'b', index: 1, groups: { g: 1 } }; }; return r[Symbol.replace]('abc', function() { return arguments.length; }); })()",
+    )
+    .unwrap();
+    assert_eq!(to_str(&vm, result), "a4c");
+    let result = eval(
+        &mut vm,
+        "(() => { var r = /b/; r.exec = function() { return { length: 1, 0: 'b', index: 1 }; }; return r[Symbol.replace]('abc', function() { return arguments.length; }); })()",
+    )
+    .unwrap();
+    assert_eq!(to_str(&vm, result), "a3c");
+}
+
+#[test]
+fn symbol_replace_out_of_order_position_ignored() {
+    let mut vm = Vm::new();
+    // position 回退的替换被忽略（乱序结果）。
+    let result = eval(
+        &mut vm,
+        "(() => { var r = /./g; var n = 0; r.exec = function() { n += 1; if (n === 1) return { index: 1, length: 1, 0: 'x' }; if (n === 2) return { index: 1, length: 1, 0: 'y' }; return null; }; return r[Symbol.replace]('abcde', 'Z'); })()",
+    )
+    .unwrap();
+    assert_eq!(to_str(&vm, result), "aZcde");
+}
+
+#[test]
+fn symbol_search_lastindex_init_and_restore() {
+    let mut vm = Vm::new();
+    // previous 与 +0 非 SameValue 时先 Set 0；exec 后按原值恢复。
+    let result = eval(
+        &mut vm,
+        "(() => { var r = /b/g; var seen = null; r.lastIndex = 3; r.exec = function() { seen = r.lastIndex; return { index: 1 }; }; r[Symbol.search]('abcd'); return seen + '/' + r.lastIndex; })()",
+    )
+    .unwrap();
+    assert_eq!(to_str(&vm, result), "0/3");
+    // 严格 SameValue 口径：-0 与 +0 不同值，初始化 Set 0 与恢复 Set -0
+    // 各触发一次写。
+    let result = eval(
+        &mut vm,
+        "(() => { var r = /b/; var sets = 0; var store = -0; Object.defineProperty(r, 'lastIndex', { configurable: true, set(v) { sets += 1; store = v; }, get() { return store; } }); r.exec = function() { return null; }; r[Symbol.search](''); return sets; })()",
+    )
+    .unwrap();
+    assert!(result.as_int() == 2);
+}
+
+#[test]
+fn symbol_split_species_and_y_flags() {
+    let mut vm = Vm::new();
+    // species 构造收到补 y 的 flags；捕获组按原值推入（undefined 保留）。
+    let result = eval(
+        &mut vm,
+        "(() => { var flagsSeen = null; var o = { constructor: function() {}, flags: '' }; o.constructor[Symbol.species] = function(_, flags) { flagsSeen = flags; return { exec: function() { return null; }, lastIndex: 0 }; }; var out = RegExp.prototype[Symbol.split].call(o, 'ab'); return flagsSeen + '/' + out.length; })()",
+    )
+    .unwrap();
+    // exec 恒 null：逐单元推进后推整串尾段，结果单元素。
+    assert_eq!(to_str(&vm, result), "y/1");
+    let result = eval(
+        &mut vm,
+        "(() => { var o = { constructor: function() {}, flags: 'y' }; o.constructor[Symbol.species] = function(_, flags) { return { exec: function() { return [null, undefined]; }, set lastIndex(v) {}, get lastIndex() { return 1; } }; }; var out = RegExp.prototype[Symbol.split].call(o, 'ab'); return out.length + '/' + String(out[1]); })()",
+    )
+    .unwrap();
+    assert_eq!(to_str(&vm, result), "3/undefined");
+}
+
+#[test]
+fn symbol_split_limit_zero_and_to_uint32() {
+    let mut vm = Vm::new();
+    // lim == 0 直接空数组；limit 经完整 ToNumber（对象转换异常传播）。
+    let result = eval(&mut vm, "RegExp.prototype[Symbol.split].call(/b/, 'ab', 0).length").unwrap();
+    assert!(result.as_int() == 0);
+    let result = eval(
+        &mut vm,
+        "(() => { var o = { valueOf: function() { throw new RangeError('limit-boom'); } }; try { RegExp.prototype[Symbol.split].call(/b/, 'ab', o); return 'no-throw'; } catch (e) { return e.message; } })()",
+    )
+    .unwrap();
+    assert_eq!(to_str(&vm, result), "limit-boom");
+}
+
+#[test]
+fn symbol_match_all_species_matcher_and_cached_lastindex() {
+    let mut vm = Vm::new();
+    // matcher 经物种构造；lastIndex 只从 R 读一次并写入 matcher。
+    let result = eval(
+        &mut vm,
+        "(() => { var r = /b/g; r.lastIndex = 2; var ctorCalls = 0; r.constructor[Symbol.species] = function() { ctorCalls += 1; return /b/g; }; var it = r[Symbol.matchAll]('abc'); return ctorCalls + '/' + it.__mal_re__.lastIndex; })()",
+    )
+    .unwrap();
+    assert_eq!(to_str(&vm, result), "1/2");
+    // 非 RegExp this（@@match 布尔 false）：matcher 直接 Construct(%RegExp%, «R, "g"»)。
+    let result = eval(
+        &mut vm,
+        "(() => { var o = { toString: function() { return 'b'; }, flags: 'x', get [Symbol.match]() { return false; } }; var it = RegExp.prototype[Symbol.matchAll].call(o, 'b'); return it.__mal_re__.source + '/' + it.__mal_re__.flags; })()",
+    )
+    .unwrap();
+    assert_eq!(to_str(&vm, result), "b/g");
+}
+
+#[test]
+fn symbol_method_name_labels() {
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "[Symbol.match, Symbol.replace, Symbol.search, Symbol.split, Symbol.matchAll].map(function (s) { return RegExp.prototype[s].name; }).join('|')",
+    )
+    .unwrap();
+    assert_eq!(
+        to_str(&vm, result),
+        "[Symbol.match]|[Symbol.replace]|[Symbol.search]|[Symbol.split]|[Symbol.matchAll]"
+    );
+}
+
+#[test]
+fn regexp_constructor_regexp_instance_form() {
+    let mut vm = Vm::new();
+    // (RegExp, flags)：source 取实例 source，flags 参数优先；缺省取实例 flags。
+    let result = eval(&mut vm, "new RegExp(/ab/g, 'i').source + '/' + new RegExp(/ab/g, 'i').flags").unwrap();
+    assert_eq!(to_str(&vm, result), "ab/i");
+    let result = eval(&mut vm, "new RegExp(/ab/g).flags").unwrap();
+    assert_eq!(to_str(&vm, result), "g");
+}

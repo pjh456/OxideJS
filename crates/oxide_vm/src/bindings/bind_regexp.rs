@@ -94,14 +94,14 @@ pub fn bind_regexp(core: &Arc<KernelCore>, session: &KernelSession, global: &mut
         oxide_builtins::regexp::regexp_get_unicode_sets::<crate::vm::Vm> as *const (),
     );
 
-    // Symbol.match 等 well-known symbol 方法按 Symbol 键安装，供 `re[Symbol.match]` 等读取。
+    // well-known symbol 方法按 Symbol 键安装，name 属性取 `[Symbol.match]` 式标签，供 `re[Symbol.match]` 等读取。
     let world = session.builtin_world();
     bind_well_known_method(
         world,
         core,
         proto,
         1,
-        "@@match",
+        "[Symbol.match]",
         oxide_builtins::regexp::regexp_symbol_match::<crate::vm::Vm> as *const (),
         1,
     );
@@ -110,7 +110,7 @@ pub fn bind_regexp(core: &Arc<KernelCore>, session: &KernelSession, global: &mut
         core,
         proto,
         2,
-        "@@replace",
+        "[Symbol.replace]",
         oxide_builtins::regexp::regexp_symbol_replace::<crate::vm::Vm> as *const (),
         2,
     );
@@ -119,7 +119,7 @@ pub fn bind_regexp(core: &Arc<KernelCore>, session: &KernelSession, global: &mut
         core,
         proto,
         3,
-        "@@search",
+        "[Symbol.search]",
         oxide_builtins::regexp::regexp_symbol_search::<crate::vm::Vm> as *const (),
         1,
     );
@@ -128,7 +128,7 @@ pub fn bind_regexp(core: &Arc<KernelCore>, session: &KernelSession, global: &mut
         core,
         proto,
         4,
-        "@@split",
+        "[Symbol.split]",
         oxide_builtins::regexp::regexp_symbol_split::<crate::vm::Vm> as *const (),
         2,
     );
@@ -137,7 +137,7 @@ pub fn bind_regexp(core: &Arc<KernelCore>, session: &KernelSession, global: &mut
         core,
         proto,
         7,
-        "@@matchAll",
+        "[Symbol.matchAll]",
         oxide_builtins::regexp::regexp_symbol_match_all::<crate::vm::Vm> as *const (),
         1,
     );

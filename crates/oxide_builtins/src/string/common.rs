@@ -59,14 +59,6 @@ impl<'a> MatchText<'a> {
         }
     }
 
-    /// 臂原生长度（Str 臂字节、Units 臂码元）——`slice` 的端点口径。
-    pub(crate) fn raw_len(&self) -> usize {
-        match self {
-            MatchText::Str(s) => s.len(),
-            MatchText::Units(u) => u.len(),
-        }
-    }
-
     /// 借出单元序列（Str 臂一次性编码为 owned；Units 臂借用/浅拷）。
     pub(crate) fn units(&self) -> Cow<'a, [u16]> {
         match self {

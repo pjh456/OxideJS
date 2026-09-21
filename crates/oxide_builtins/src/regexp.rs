@@ -4,7 +4,7 @@ use oxide_types::value::JsValue;
 
 use oxide_runtime_api::{NativeResult, VmHost};
 
-use crate::string::{make_units_array, regex_replace_fn, regex_replace_manual_units, OwnedText};
+use crate::string::{make_units_array, OwnedText};
 
 fn get_regexp_ptr<H: VmHost>(vm: &mut H, args: &[u8]) -> Result<*mut JsObject, JsValue> {
     let this_val = vm.reg(args[0]);
@@ -63,10 +63,188 @@ fn set_last_index<H: VmHost>(
     vm: &mut H, re_ptr: *mut JsObject, this_val: JsValue, index: usize,
 ) -> Result<(), JsValue> {
     let li_si = vm.kernel_core().perm_interner().intern("lastIndex").0;
+    // setter 抛错优先恢复 uncaught 原异常值（与 rx_set_prop 同口径）。
     match vm.ordinary_set(unsafe { &mut *re_ptr }, li_si, JsValue::int(index as i32), this_val, true) {
         Ok(()) => Ok(()),
-        Err(err) => Err(crate::error::create_from_text(vm, &err)),
+        Err(err) => Err(crate::iterator::engine_error(vm, &err)),
     }
+}
+
+/// 以 Get 语义按名读属性：完整属性解析（自身数据/自身 accessor/原型链），
+/// getter 抛错时恢复原异常值。
+fn rx_get_prop<H: VmHost>(vm: &mut H, obj: *mut JsObject, name: &str, this_val: JsValue) -> Result<JsValue, JsValue> {
+    let si = vm.kernel_core().perm_interner().intern(name).0;
+    match vm.ordinary_get(unsafe { &*obj }, si, this_val) {
+        Ok(v) => Ok(v),
+        Err(_) => Err(crate::iterator::engine_error(vm, "cannot read property")),
+    }
+}
+
+/// 以 Get 语义读结果数组的数值下标属性：下标经规范整数键换算（与字符串
+/// "0" 形态同键），读异常恢复原异常值。
+fn rx_get_index<H: VmHost>(vm: &mut H, obj: *mut JsObject, idx: i32, receiver: JsValue) -> Result<JsValue, JsValue> {
+    let si = vm.property_key_si(JsValue::int(idx));
+    match vm.ordinary_get(unsafe { &*obj }, si, receiver) {
+        Ok(v) => Ok(v),
+        Err(_) => Err(crate::iterator::engine_error(vm, "cannot read result index")),
+    }
+}
+
+/// 以 Set 语义（strict）按名写属性：写失败（非可写等）恢复原异常值。
+fn rx_set_prop<H: VmHost>(
+    vm: &mut H, obj: *mut JsObject, name: &str, val: JsValue, this_val: JsValue,
+) -> Result<(), JsValue> {
+    let si = vm.kernel_core().perm_interner().intern(name).0;
+    // setter 抛错时原异常值留在 uncaught 槽（优先恢复）；写保护失败无
+    // uncaught，经格式化文本的 "TypeError: " 前缀恢复种类。
+    match vm.ordinary_set(unsafe { &mut *obj }, si, val, this_val, true) {
+        Ok(()) => Ok(()),
+        Err(err) => Err(crate::iterator::engine_error(vm, &err)),
+    }
+}
+
+/// live 语义读 flags 串：ToString(Get(rx, "flags"))，getter 抛错与
+/// ToString 抛错均传播原异常。
+fn rx_get_flags<H: VmHost>(vm: &mut H, rx: *mut JsObject, this_val: JsValue) -> Result<String, JsValue> {
+    let val = rx_get_prop(vm, rx, "flags", this_val)?;
+    // 回退文案用原始文本（"TypeError: " 前缀恢复错误种类）。
+    let s = match oxide_runtime_api::to_string_value_full(val, vm) {
+        Ok(v) => v,
+        Err(e) => return Err(crate::iterator::engine_error(vm, &e)),
+    };
+    Ok(String::from_utf16_lossy(&vm.string_units(s)))
+}
+
+/// live 语义读布尔属性：ToBoolean(Get(rx, name))，getter 抛错传播原异常。
+fn rx_get_bool_prop<H: VmHost>(vm: &mut H, rx: *mut JsObject, name: &str, this_val: JsValue) -> Result<bool, JsValue> {
+    Ok(oxide_runtime_api::to_boolean(rx_get_prop(vm, rx, name, this_val)?))
+}
+
+/// 共享 RegExpExec(R, S)：Get(R, "exec") 须可调用，Call(exec, R, «S»)，
+/// 结果非 null 非对象抛 TypeError。exec 自身的抛错恢复原异常值。
+fn regexp_exec_call<H: VmHost>(
+    vm: &mut H, rx: *mut JsObject, rx_val: JsValue, s_val: JsValue,
+) -> Result<JsValue, JsValue> {
+    let exec_val = rx_get_prop(vm, rx, "exec", rx_val)?;
+    if !crate::iterator::is_callable(exec_val) {
+        return Err(crate::error::create_type_error(vm, "RegExp exec is not callable"));
+    }
+    let s_arg = s_val;
+    let result = match vm.call_function_sync(exec_val, rx_val, &[s_arg]) {
+        Ok(r) => r,
+        Err(_) => return Err(crate::iterator::engine_error(vm, "RegExp exec call failed")),
+    };
+    if !(result.is_null() || result.is_object()) {
+        return Err(crate::error::create_type_error(vm, "RegExp exec result must be an object or null"));
+    }
+    Ok(result)
+}
+
+/// SpeciesConstructor(R, default)：constructor 为 undefined 回 default、
+/// 非对象抛 TypeError；@@species 为 undefined/null 回 default、非构造器抛
+/// TypeError。属性读抛错恢复原异常值。
+fn species_constructor<H: VmHost>(
+    vm: &mut H, r: *mut JsObject, r_val: JsValue, default: JsValue,
+) -> Result<JsValue, JsValue> {
+    let c = rx_get_prop(vm, r, "constructor", r_val)?;
+    if c.is_undefined() {
+        return Ok(default);
+    }
+    if !c.is_object() {
+        return Err(crate::error::create_type_error(vm, "RegExp species constructor must be an object"));
+    }
+    let species_key = oxide_types::private_key::make_well_known_symbol_key(10);
+    let s = match vm.ordinary_get(unsafe { &*c.as_js_object_ptr() }, species_key, r_val) {
+        Ok(v) => v,
+        Err(_) => return Err(crate::iterator::engine_error(vm, "cannot read @@species")),
+    };
+    if s.is_undefined() || s.is_null() {
+        return Ok(default);
+    }
+    if !crate::array::is_constructor_value(s) {
+        return Err(crate::error::create_type_error(vm, "RegExp @@species is not a constructor"));
+    }
+    Ok(s)
+}
+
+/// AdvanceStringIndex：零宽匹配后的推进——无条件前移，unicode 口径下起点对
+/// 代理对跨两个单元，其余跨一个码元（越出串长同样前移，与实现语义一致）。
+fn advance_string_index(units: &[u16], p: usize, unicode: bool) -> usize {
+    if unicode
+        && p < units.len()
+        && (0xD800..=0xDBFF).contains(&units[p])
+        && p + 1 < units.len()
+        && (0xDC00..=0xDFFF).contains(&units[p + 1])
+    {
+        p + 2
+    } else {
+        p + 1
+    }
+}
+
+/// GetSubstitution：非函数替换串的 `$` 引用展开（`$$`/`$&`/`` $` ``/`$'`/`$n`）；
+/// `$n` 越界（含 $0 与两位回退后仍越界）或未匹配组（None）按字面输出。
+fn get_substitution_units(
+    matched: &[u16], s: &[u16], position: usize, captured: &[Option<Vec<u16>>], replacement: &[u16],
+) -> Vec<u16> {
+    let mut out = Vec::new();
+    let pos = position.min(s.len());
+    let tail = (pos + matched.len()).min(s.len());
+    let mut i = 0;
+    while i < replacement.len() {
+        if replacement[i] != 0x24 {
+            out.push(replacement[i]);
+            i += 1;
+            continue;
+        }
+        let rest = &replacement[i..];
+        if rest.starts_with(&[0x24, 0x24]) {
+            out.push(0x24);
+            i += 2;
+        } else if rest.starts_with(&[0x24, 0x26]) {
+            out.extend_from_slice(matched);
+            i += 2;
+        } else if rest.starts_with(&[0x24, 0x60]) {
+            out.extend_from_slice(&s[..pos]);
+            i += 2;
+        } else if rest.starts_with(&[0x24, 0x27]) {
+            out.extend_from_slice(&s[tail..]);
+            i += 2;
+        } else if i + 1 < replacement.len() && (0x30..=0x39).contains(&replacement[i + 1]) {
+            let digit_count = if i + 2 < replacement.len() && (0x30..=0x39).contains(&replacement[i + 2]) {
+                2
+            } else {
+                1
+            };
+            let d1 = (replacement[i + 1] - 0x30) as usize;
+            let mut index = if digit_count == 2 {
+                d1 * 10 + (replacement[i + 2] - 0x30) as usize
+            } else {
+                d1
+            };
+            let mut ref_len = 1 + digit_count;
+            if index > captured.len() && digit_count == 2 {
+                index = d1;
+                ref_len = 2;
+            }
+            if index == 0 {
+                // $0 非替换符号，字面输出（且避开 0-1 下溢）。
+                out.extend_from_slice(&replacement[i..i + ref_len]);
+            } else if let Some(cap) = captured.get(index - 1) {
+                // 未匹配组（None 槽）按空串替换，仅越界才字面回退。
+                if let Some(u) = cap {
+                    out.extend_from_slice(u);
+                }
+            } else {
+                out.extend_from_slice(&replacement[i..i + ref_len]);
+            }
+            i += ref_len;
+        } else {
+            out.push(0x24);
+            i += 1;
+        }
+    }
+    out
 }
 
 fn set_prop<H: VmHost>(obj: &mut JsObject, name: &str, val: JsValue, vm: &H) {
@@ -87,17 +265,6 @@ fn get_prop(obj: &JsObject, idx: usize) -> JsValue {
         .unwrap_or(JsValue::undefined())
 }
 
-fn set_prop_at(obj: *mut JsObject, idx: usize, val: JsValue) {
-    unsafe {
-        let re = &mut *obj;
-        if let Some(vec) = re.hash_props_vec() {
-            let ptr = vec.as_ptr() as *mut JsValue;
-            let v = &mut *ptr.add(idx);
-            *v = val;
-        }
-    }
-}
-
 /// `RegExp(pattern, flags)` 构造逻辑：用 regress 引擎编译模式（ECMAScript 语法，
 /// 支持 backreference/lookaround/命名组/v-flag）；非法模式抛 SyntaxError。
 /// 编译结果存于对象的 native_fn 槽。
@@ -106,21 +273,51 @@ pub fn regexp_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     // （lossy `to_string` 会把孤立 surrogate 单元折成 FFFD，破坏 source 往返）。
     // regress 编译用 lossy 文本（其匹配语义对孤立 surrogate 本即既有缺口，
     // 不因本处改变）。
-    let pattern_units = if args.len() < 2 {
-        Vec::<u16>::new()
-    } else {
-        match oxide_runtime_api::to_units_full(vm.reg(args[1]), vm) {
-            Ok(u) => u,
-            Err(e) => return NativeResult::Err(crate::error::create_from_text(vm, &e)),
+    // 模式为已编译 RegExp 实例时 source/flags 从其实例属性 live 读取（flags
+    // 参数缺省取实例 flags）；其余形态按 ToString 单元序列。
+    let (pattern_units, flags_units) = if args.len() >= 2 {
+        let pattern_val = vm.reg(args[1]);
+        let re_ptr = pattern_val.as_js_object_ptr();
+        if pattern_val.is_object() && !re_ptr.is_null() && unsafe { &*re_ptr }.is_regexp_obj() {
+            let source_val = match rx_get_prop(vm, re_ptr, "source", pattern_val) {
+                Ok(v) => v,
+                Err(e) => return NativeResult::Err(e),
+            };
+            let source = match oxide_runtime_api::to_string_value_full(source_val, vm) {
+                Ok(v) => v,
+                Err(e) => return NativeResult::Err(crate::iterator::engine_error(vm, &e)),
+            };
+            let flags_val = if args.len() >= 3 {
+                vm.reg(args[2])
+            } else {
+                match rx_get_prop(vm, re_ptr, "flags", pattern_val) {
+                    Ok(v) => v,
+                    Err(e) => return NativeResult::Err(e),
+                }
+            };
+            let flags = match oxide_runtime_api::to_string_value_full(flags_val, vm) {
+                Ok(v) => v,
+                Err(e) => return NativeResult::Err(crate::iterator::engine_error(vm, &e)),
+            };
+            (vm.string_units(source).into_owned(), vm.string_units(flags).into_owned())
+        } else {
+            let p = match oxide_runtime_api::to_units_full(pattern_val, vm) {
+                Ok(u) => u,
+                // ToPrimitive 调 toString 抛错时原异常值留在 uncaught 槽，优先恢复。
+                Err(e) => return NativeResult::Err(crate::iterator::engine_error(vm, &e)),
+            };
+            let f = if args.len() >= 3 {
+                match oxide_runtime_api::to_units_full(vm.reg(args[2]), vm) {
+                    Ok(u) => u,
+                    Err(e) => return NativeResult::Err(crate::iterator::engine_error(vm, &e)),
+                }
+            } else {
+                Vec::<u16>::new()
+            };
+            (p, f)
         }
-    };
-    let flags_units = if args.len() < 3 {
-        Vec::<u16>::new()
     } else {
-        match oxide_runtime_api::to_units_full(vm.reg(args[2]), vm) {
-            Ok(u) => u,
-            Err(e) => return NativeResult::Err(crate::error::create_from_text(vm, &e)),
-        }
+        (Vec::<u16>::new(), Vec::<u16>::new())
     };
     let pattern = String::from_utf16_lossy(&pattern_units);
     let flags = String::from_utf16_lossy(&flags_units);
@@ -530,11 +727,6 @@ const HEX_DIGITS: [u16; 16] = [
     0x30, 0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0x37, 0x38, 0x39, 0x61, 0x62, 0x63, 0x64, 0x65, 0x66,
 ];
 
-// RegExp 对象 hash 槽中属性的固定下标（构造顺序：lastIndex/source/flags）。
-const PROP_LAST_INDEX: usize = 0;
-const PROP_SOURCE: usize = 1;
-const PROP_FLAGS: usize = 2;
-
 /// 读实例 flags 串（[[OriginalFlags]] 的物化形态）判单个 flag 码元。
 ///
 /// # 边界与前提
@@ -636,22 +828,6 @@ fn regexp_text_arg<H: VmHost>(vm: &mut H, args: &[u8]) -> Result<OwnedText, JsVa
     }
 }
 
-/// 取 this 的已编译 regress 正则与匹配文本；this 非 RegExp 或缺失编译结果时返回 Err。
-fn regexp_regex_and_text<H: VmHost>(vm: &mut H, args: &[u8]) -> Result<(&'static regress::Regex, OwnedText), JsValue> {
-    let re_ptr = get_regexp_ptr(vm, args)?;
-    let fn_ptr = {
-        let re = unsafe { &*re_ptr };
-        match re.native_fn() {
-            None => return Err(crate::error::create_type_error(vm, "invalid RegExp")),
-            Some(p) => p,
-        }
-    };
-    // SAFETY: fn_ptr 持有 regexp_constructor 存放的 `Box<regress::Regex>` 指针。
-    let regex = unsafe { &*(fn_ptr.as_ptr() as *const regress::Regex) };
-    let haystack = regexp_text_arg(vm, args)?;
-    Ok((regex, haystack))
-}
-
 /// 替换参数转单元序列：字符串值按载荷形态原样借出，其余经完整 ToString；
 /// Symbol 按规范抛 TypeError；对象 ToString 抛出的原生异常原样传播。
 fn replacement_units<H: VmHost>(vm: &mut H, val: JsValue) -> Result<Vec<u16>, JsValue> {
@@ -666,241 +842,760 @@ fn replacement_units<H: VmHost>(vm: &mut H, val: JsValue) -> Result<Vec<u16>, Js
     }
 }
 
-/// `RegExp.prototype[Symbol.match](string)`：global 正则收集全部匹配串，
-/// 非 global 返回单个 exec 匹配数组；无匹配返回 null。
+/// `RegExp.prototype[Symbol.match](string)`：global 正则收集全部匹配串成数组，
+/// 非 global 直接返回 exec 结果；无匹配返回 null。
 ///
 /// # 步骤
-/// 1. 非 global：直接复用 exec 结果（数组含 index/input/groups）。
-/// 2. global：lastIndex 归零后逐匹配收集完整匹配串，末次匹配后推进 lastIndex。
+/// 1. this 仅需对象（IsObject 门禁）。
+/// 2. S = ToString(string)；flags/global/unicode 经 Get live 直读（unicode 读
+///    无条件先于非 global 返回，读序与规范一致）。
+/// 3. 非 global：返回共享 exec（GetMethod + Call）结果原值。
+/// 4. global：ToIntegerOrInfinity(Get "lastIndex") 副作用读后 Set 0，再经共享
+///    exec 循环逐匹配收集；零宽匹配按 fullUnicode 口径推进 lastIndex。
+///
+/// # 边界与前提
+/// - 各属性读（flags/global/unicode/lastIndex/结果属性）均传播原异常。
+/// - exec 结果须为 null 或对象，否则 TypeError。
+///
+/// # 副作用
+/// - global 时 Set this.lastIndex（先归零，零宽命中后推进）。
 pub fn regexp_symbol_match<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
-    let re_ptr = match get_regexp_ptr(vm, args) {
+    let re_ptr = match get_this_obj(vm, args) {
         Ok(ptr) => ptr,
         Err(err) => return NativeResult::Err(err),
     };
-    let is_global = regexp_has_flag(vm, unsafe { &*re_ptr }, 'g');
-    if !is_global {
-        return regexp_exec(vm, args);
-    }
-
-    let (regex, haystack) = match regexp_regex_and_text(vm, args) {
-        Ok(pair) => pair,
-        Err(err) => return NativeResult::Err(err),
-    };
-    set_prop_at(re_ptr, PROP_LAST_INDEX, JsValue::int(0));
-    let text = haystack.as_match_text();
-    let mut matches: Vec<Vec<u16>> = Vec::new();
-    let mut last_end = 0usize;
-    text.for_each_match(regex, |m| {
-        let range = m.range();
-        matches.push(text.slice(range.start, range.end).into_owned());
-        last_end = text.unit_pos(range.end);
-    });
-    set_prop_at(re_ptr, PROP_LAST_INDEX, JsValue::int(last_end as i32));
-    if matches.is_empty() {
-        return NativeResult::Ok(JsValue::null());
-    }
-    NativeResult::Ok(make_units_array(vm, matches))
-}
-
-/// `RegExp.prototype[Symbol.replace](string, replacement)`：按匹配替换。
-/// 字符串 replacement 展开 `$` 引用（`$$`/`$&`/`` $` ``/`$'`/`$n`），函数 replacement
-/// 逐匹配调用；global 全替换，否则替换首个。
-///
-/// # 步骤
-/// 1. global 时 lastIndex 归零，复用 string 模块的替换逻辑。
-/// 2. 结束后把 lastIndex 推进到末次匹配末尾（无匹配保持 0）。
-pub fn regexp_symbol_replace<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
-    let re_ptr = match get_regexp_ptr(vm, args) {
-        Ok(ptr) => ptr,
-        Err(err) => return NativeResult::Err(err),
-    };
-    let is_global = regexp_has_flag(vm, unsafe { &*re_ptr }, 'g');
-    let (regex, haystack) = match regexp_regex_and_text(vm, args) {
-        Ok(pair) => pair,
-        Err(err) => return NativeResult::Err(err),
-    };
-    if is_global {
-        set_prop_at(re_ptr, PROP_LAST_INDEX, JsValue::int(0));
-    }
-
-    // 替换文本统一走单元口径（$ 展开/回调参数/拼接全在单元序列上进行）。
-    let text = haystack.as_match_text();
-    let units = text.units();
-
-    let result = if args.len() > 2 {
-        let replacer_val = vm.reg(args[2]);
-        if replacer_val.is_object() {
-            let o = unsafe { &*replacer_val.as_js_object_ptr() };
-            if o.is_function() {
-                // 回调第 4 参（原字符串）预构一次：原始字符串参数直接复用零拷贝，
-                // 对象参数复用已转换的 haystack 建单个会话串（原每匹配整串复制）。
-                let text_val = vm.reg(if args.len() > 1 { args[1] } else { args[0] });
-                let text_arg = if text_val.is_string() { text_val } else { haystack.to_value(vm) };
-                regex_replace_fn(vm, regex, &units, replacer_val, is_global, text_arg)
-            } else {
-                let replacement = match replacement_units(vm, replacer_val) {
-                    Ok(u) => u,
-                    Err(err) => return NativeResult::Err(err),
-                };
-                NativeResult::Ok(vm.new_string_units_owned(regex_replace_manual_units(
-                    regex,
-                    &units,
-                    &replacement,
-                    is_global,
-                )))
-            }
-        } else {
-            let replacement = match replacement_units(vm, replacer_val) {
-                Ok(u) => u,
-                Err(err) => return NativeResult::Err(err),
-            };
-            NativeResult::Ok(vm.new_string_units_owned(regex_replace_manual_units(
-                regex,
-                &units,
-                &replacement,
-                is_global,
-            )))
-        }
-    } else {
-        NativeResult::Ok(vm.new_string_units_owned(regex_replace_manual_units(regex, &units, &[], is_global)))
-    };
-
-    if is_global {
-        let mut last_end = 0usize;
-        text.for_each_match(regex, |m| {
-            last_end = text.unit_pos(m.range().end);
-        });
-        set_prop_at(re_ptr, PROP_LAST_INDEX, JsValue::int(last_end as i32));
-    }
-    result
-}
-
-/// `RegExp.prototype[Symbol.search](string)`：返回首个匹配位置（码元索引），
-/// 无匹配返回 -1。global 标志不影响 search。
-pub fn regexp_symbol_search<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
-    let (regex, haystack) = match regexp_regex_and_text(vm, args) {
-        Ok(pair) => pair,
-        Err(err) => return NativeResult::Err(err),
-    };
-    let text = haystack.as_match_text();
-    if let Some(m) = text.find_from_units(regex, 0) {
-        return NativeResult::Ok(JsValue::int(text.unit_pos(m.range().start) as i32));
-    }
-    NativeResult::Ok(JsValue::int(-1))
-}
-
-/// `RegExp.prototype[Symbol.split](string, limit)`：按匹配切分，捕获组作为
-/// 分隔元素插入结果；limit 限制结果长度，缺省切分全部。
-pub fn regexp_symbol_split<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
-    let (regex, haystack) = match regexp_regex_and_text(vm, args) {
-        Ok(pair) => pair,
-        Err(err) => return NativeResult::Err(err),
-    };
-    let limit = if args.len() > 2 {
-        let l = oxide_runtime_api::to_integer_or_infinity(vm.reg(args[2]));
-        if l.is_infinite() {
-            u32::MAX as usize
-        } else {
-            (l.max(0.0).trunc() as u64).min(u32::MAX as u64) as usize
-        }
-    } else {
-        u32::MAX as usize
-    };
-
-    // 片段切片取臂原生命径（Str 臂字节、Units 臂码元）；limit 触顶后提前停推
-    // 但保持游标语义一致（尾段仅在未触顶时追加）。
-    let text = haystack.as_match_text();
-    let mut parts: Vec<Vec<u16>> = Vec::new();
-    let mut last_end = 0usize;
-    text.for_each_match(regex, |m| {
-        if parts.len() >= limit {
-            return;
-        }
-        let range = m.range();
-        parts.push(text.slice(last_end, range.start).into_owned());
-        if parts.len() >= limit {
-            return;
-        }
-        for i in 1..=m.captures.len() {
-            if parts.len() >= limit {
-                break;
-            }
-            match m.group(i) {
-                Some(g) => parts.push(text.slice(g.start, g.end).into_owned()),
-                None => parts.push(Vec::new()),
-            }
-        }
-        last_end = range.end;
-    });
-    if parts.len() < limit {
-        parts.push(text.slice(last_end, text.raw_len()).into_owned());
-    }
-    NativeResult::Ok(make_units_array(vm, parts))
-}
-
-/// `RegExp.prototype[Symbol.matchAll](string)`：返回按 global 语义逐个产出
-/// 匹配数组的迭代器。global 正则直接复用（初始下标取 lastIndex）；
-/// 非 global 正则复制一份加 `g` 标志后迭代。
-pub fn regexp_symbol_match_all<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
-    let re_ptr = match get_regexp_ptr(vm, args) {
-        Ok(ptr) => ptr,
-        Err(err) => return NativeResult::Err(err),
-    };
-    let re = unsafe { &*re_ptr };
-    let is_global = regexp_has_flag(vm, re, 'g');
-    let last_index = vm.coerce_number_bounded(get_prop(re, PROP_LAST_INDEX)).unwrap_or(f64::NAN) as usize;
+    let this_val = vm.reg(args[0]);
     let haystack = match regexp_text_arg(vm, args) {
         Ok(s) => s,
         Err(err) => return NativeResult::Err(err),
     };
+    let s_val = haystack.to_value(vm);
+    let units = haystack.as_match_text().units().to_vec();
 
-    // 迭代目标：global 用原正则，非 global 复制并补 g 标志。
-    let iter_re = if is_global {
-        vm.reg(args[0])
-    } else {
-        let source = {
-            let val = get_prop(re, PROP_SOURCE);
-            vm.lookup_str(val).unwrap_or_default()
-        };
-        let mut flags = {
-            let val = get_prop(re, PROP_FLAGS);
-            vm.lookup_str(val).unwrap_or_default()
-        };
-        if !flags.contains('g') {
-            flags.push('g');
-        }
-        let compiled = match regress::Regex::with_flags(&source, flags.as_str()) {
-            Ok(rx) => rx,
-            Err(e) => {
-                return NativeResult::Err(crate::error::create_syntax_error(
-                    vm,
-                    &format!("Invalid regular expression: {e}"),
-                ));
-            }
-        };
-        let object_proto = vm.session().builtin_world().object_proto.as_ptr() as *mut JsObject;
-        let mut stub = JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(object_proto));
-        // 载体专型标签：native_fn 槽的 Box 经 RegExp 同一守卫释放/深拷贝，
-        // 避免每次 matchAll 泄漏一个已编译正则。
-        stub.type_tag = JsObject::OBJ_TYPE_REGEX_STUB;
-        let raw = Box::into_raw(Box::new(compiled)) as *const u8;
-        stub.set_native_fn(Some(unsafe { NativeFnPtr::from_raw(raw as *const ()) }));
-        JsValue::from_js_object(vm.alloc_object(stub))
+    // live 读序：flags → global → unicode（unicode 无条件先于非 global 返回）。
+    let _flags = match rx_get_flags(vm, re_ptr, this_val) {
+        Ok(f) => f,
+        Err(err) => return NativeResult::Err(err),
+    };
+    let is_global = match rx_get_bool_prop(vm, re_ptr, "global", this_val) {
+        Ok(g) => g,
+        Err(err) => return NativeResult::Err(err),
+    };
+    let full_unicode = match rx_get_bool_prop(vm, re_ptr, "unicode", this_val) {
+        Ok(u) => u,
+        Err(err) => return NativeResult::Err(err),
     };
 
-    // 复用 String.prototype.matchAll 的迭代器包装（next 经 string_match_all_next 推进，
-    // 挂 %RegExpStringIteratorPrototype% 原型，不设实例 own next）。
+    if !is_global {
+        let result = match regexp_exec_call(vm, re_ptr, this_val, s_val) {
+            Ok(r) => r,
+            Err(err) => return NativeResult::Err(err),
+        };
+        return NativeResult::Ok(result);
+    }
+
+    // lastIndex = ToIntegerOrInfinity(Get)：副作用读，getter 异常传播。
+    let last_val = match rx_get_prop(vm, re_ptr, "lastIndex", this_val) {
+        Ok(v) => v,
+        Err(err) => return NativeResult::Err(err),
+    };
+    let _last = oxide_runtime_api::to_integer_or_infinity(last_val);
+    if let Err(err) = rx_set_prop(vm, re_ptr, "lastIndex", JsValue::int(0), this_val) {
+        return NativeResult::Err(err);
+    }
+
+    // exec 循环：收集完整匹配串；零宽匹配按 fullUnicode 口径推进 lastIndex。
+    let mut matches: Vec<JsValue> = Vec::new();
+    loop {
+        let result = match regexp_exec_call(vm, re_ptr, this_val, s_val) {
+            Ok(r) => r,
+            Err(err) => return NativeResult::Err(err),
+        };
+        if result.is_null() {
+            break;
+        }
+        let result_ptr = result.as_js_object_ptr();
+        let matched_val = match rx_get_index(vm, result_ptr, 0, result) {
+            Ok(v) => v,
+            Err(err) => return NativeResult::Err(err),
+        };
+        let matched = match oxide_runtime_api::to_string_value_full(matched_val, vm) {
+            Ok(v) => v,
+            Err(_) => return NativeResult::Err(crate::iterator::engine_error(vm, "cannot stringify match")),
+        };
+        let matched_units = vm.string_units(matched).into_owned();
+        if matched_units.is_empty() {
+            let li_val = match rx_get_prop(vm, re_ptr, "lastIndex", this_val) {
+                Ok(v) => v,
+                Err(err) => return NativeResult::Err(err),
+            };
+            let this_index = match to_length_value(vm, li_val) {
+                Ok(n) => n,
+                Err(err) => return NativeResult::Err(err),
+            };
+            let next_index = advance_string_index(&units, this_index, full_unicode);
+            if let Err(err) = // 越出 i32 的大值（2^53 口径）以浮点形态写入。
+                rx_set_prop(vm, re_ptr, "lastIndex", JsValue::float(next_index as f64), this_val)
+            {
+                return NativeResult::Err(err);
+            }
+        }
+        matches.push(vm.new_string_units(&matched_units));
+    }
+    if matches.is_empty() {
+        return NativeResult::Ok(JsValue::null());
+    }
+    NativeResult::Ok(crate::string::make_string_array_values(vm, matches))
+}
+
+/// `RegExp.prototype[Symbol.replace](string, replacement)`：按 exec 命中替换。
+/// 字符串 replacement 展开 `$` 引用（`$$`/`$&`/`` $` ``/`$'`/`$n`），函数
+/// replacement 逐匹配调用（groups 非 undefined 时追加为末参）；global 全替换，
+/// 否则替换首个。
+///
+/// # 步骤
+/// 1. this 仅需对象（IsObject 门禁）；S = ToString(string)。
+/// 2. 非函数分支先 ToString(replacement)（Symbol 抛 TypeError）。
+/// 3. flags/global/unicode 经 Get live 直读；global 时
+///    ToIntegerOrInfinity(Get "lastIndex") 副作用读后 Set 0。
+/// 4. 共享 exec 循环收集结果；零宽匹配按 fullUnicode 口径推进 lastIndex。
+/// 5. 替换阶段按结果属性逐条展开（matched/captures/index/groups 均 Get 读取，
+///    undefined 捕获不入表）；position 越上界钳到串长，乱序（position 回退）
+///    的替换被忽略。
+///
+/// # 边界与前提
+/// - 各属性读（flags/global/unicode/lastIndex/结果属性）均传播原异常。
+/// - exec 结果须为 null 或对象，否则 TypeError。
+///
+/// # 副作用
+/// - global 时 Set this.lastIndex（先归零，零宽命中后推进）。
+pub fn regexp_symbol_replace<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let re_ptr = match get_this_obj(vm, args) {
+        Ok(ptr) => ptr,
+        Err(err) => return NativeResult::Err(err),
+    };
+    let this_val = vm.reg(args[0]);
+    let haystack = match regexp_text_arg(vm, args) {
+        Ok(s) => s,
+        Err(err) => return NativeResult::Err(err),
+    };
+    let s_val = haystack.to_value(vm);
+    let units = haystack.as_match_text().units().to_vec();
+    let length_s = units.len();
+
+    let replacer_val = if args.len() > 2 { vm.reg(args[2]) } else { JsValue::undefined() };
+    let functional = crate::iterator::is_callable(replacer_val);
+    // 非函数分支的替换串先行 ToString（Symbol 抛 TypeError，异常传播）。
+    let replacement_units: Option<Vec<u16>> = if functional {
+        None
+    } else {
+        match replacement_units(vm, replacer_val) {
+            Ok(u) => Some(u),
+            Err(err) => return NativeResult::Err(err),
+        }
+    };
+
+    // live 读序：flags → global → unicode。
+    let _flags = match rx_get_flags(vm, re_ptr, this_val) {
+        Ok(f) => f,
+        Err(err) => return NativeResult::Err(err),
+    };
+    let is_global = match rx_get_bool_prop(vm, re_ptr, "global", this_val) {
+        Ok(g) => g,
+        Err(err) => return NativeResult::Err(err),
+    };
+    let full_unicode = match rx_get_bool_prop(vm, re_ptr, "unicode", this_val) {
+        Ok(u) => u,
+        Err(err) => return NativeResult::Err(err),
+    };
+
+    if is_global {
+        // lastIndex = ToIntegerOrInfinity(Get)：副作用读，getter 异常传播。
+        let last_val = match rx_get_prop(vm, re_ptr, "lastIndex", this_val) {
+            Ok(v) => v,
+            Err(err) => return NativeResult::Err(err),
+        };
+        let _last = oxide_runtime_api::to_integer_or_infinity(last_val);
+        if let Err(err) = rx_set_prop(vm, re_ptr, "lastIndex", JsValue::int(0), this_val) {
+            return NativeResult::Err(err);
+        }
+    }
+
+    // exec 循环：global 收集到 null 为止，非 global 至多一条。
+    let mut results: Vec<JsValue> = Vec::new();
+    loop {
+        let result = match regexp_exec_call(vm, re_ptr, this_val, s_val) {
+            Ok(r) => r,
+            Err(err) => return NativeResult::Err(err),
+        };
+        if result.is_null() {
+            break;
+        }
+        results.push(result);
+        if !is_global {
+            break;
+        }
+        // 零宽命中：按 fullUnicode 口径推进 lastIndex。
+        let result_ptr = result.as_js_object_ptr();
+        let matched_val = match rx_get_index(vm, result_ptr, 0, result) {
+            Ok(v) => v,
+            Err(err) => return NativeResult::Err(err),
+        };
+        let matched = match oxide_runtime_api::to_string_value_full(matched_val, vm) {
+            Ok(v) => v,
+            Err(_) => return NativeResult::Err(crate::iterator::engine_error(vm, "cannot stringify match")),
+        };
+        if vm.string_units(matched).is_empty() {
+            let li_val = match rx_get_prop(vm, re_ptr, "lastIndex", this_val) {
+                Ok(v) => v,
+                Err(err) => return NativeResult::Err(err),
+            };
+            let this_index = match to_length_value(vm, li_val) {
+                Ok(n) => n,
+                Err(err) => return NativeResult::Err(err),
+            };
+            let next_index = advance_string_index(&units, this_index, full_unicode);
+            if let Err(err) = // 越出 i32 的大值（2^53 口径）以浮点形态写入。
+                rx_set_prop(vm, re_ptr, "lastIndex", JsValue::float(next_index as f64), this_val)
+            {
+                return NativeResult::Err(err);
+            }
+        }
+    }
+
+    // 单匹配（非 global）：无命中回原串 S。
+    if !is_global {
+        if results.is_empty() {
+            return NativeResult::Ok(vm.new_string_units_owned(units));
+        }
+        let result = results[0];
+        let result_ptr = result.as_js_object_ptr();
+        let n_captures = match result_capture_count(vm, result_ptr, result) {
+            Ok(n) => n,
+            Err(err) => return NativeResult::Err(err),
+        };
+        let rec = match build_substitution_record(vm, result_ptr, result, length_s, n_captures) {
+            Ok(r) => r,
+            Err(err) => return NativeResult::Err(err),
+        };
+        let replacement =
+            match make_replacement(vm, functional, replacer_val, replacement_units.as_deref(), &rec, &units, s_val) {
+                Ok(r) => r,
+                Err(err) => return NativeResult::Err(err),
+            };
+        let mut out: Vec<u16> = Vec::with_capacity(length_s + replacement.len());
+        out.extend_from_slice(&units[..rec.position]);
+        out.extend_from_slice(&replacement);
+        // 尾段自命中末尾（position + matchLength）起，被替换串本身不入结果。
+        let tail_start = (rec.position + rec.matched.len()).min(length_s);
+        out.extend_from_slice(&units[tail_start..]);
+        return NativeResult::Ok(vm.new_string_units_owned(out));
+    }
+
+    // global：先定统一捕获宽（各结果 length 的 ToLength 上界减一），
+    // 再逐条展开替换。
+    let mut n_captures = 0usize;
+    for result in &results {
+        let result_ptr = result.as_js_object_ptr();
+        let n = match result_capture_count(vm, result_ptr, *result) {
+            Ok(n) => n,
+            Err(err) => return NativeResult::Err(err),
+        };
+        n_captures = n_captures.max(n);
+    }
+    let mut out: Vec<u16> = Vec::with_capacity(length_s);
+    let mut next_source_position = 0usize;
+    for result in &results {
+        let result = *result;
+        let result_ptr = result.as_js_object_ptr();
+        let rec = match build_substitution_record(vm, result_ptr, result, length_s, n_captures) {
+            Ok(r) => r,
+            Err(err) => return NativeResult::Err(err),
+        };
+        // position 回退（乱序结果）的替换被忽略。
+        if rec.position < next_source_position {
+            continue;
+        }
+        let replacement =
+            match make_replacement(vm, functional, replacer_val, replacement_units.as_deref(), &rec, &units, s_val) {
+                Ok(r) => r,
+                Err(err) => return NativeResult::Err(err),
+            };
+        out.extend_from_slice(&units[next_source_position..rec.position]);
+        out.extend_from_slice(&replacement);
+        next_source_position = rec.position + rec.matched.len();
+    }
+    if next_source_position < length_s {
+        out.extend_from_slice(&units[next_source_position..]);
+    }
+    NativeResult::Ok(vm.new_string_units_owned(out))
+}
+
+/// 替换记录：matched（ToString 后单元）、position（ToInteger 后钳 [0, 串长]）、
+/// captures（undefined 捕获为 None，其余为 ToString 单元）。
+struct SubstitutionRecord {
+    matched: Vec<u16>,
+    position: usize,
+    captures: Vec<Option<Vec<u16>>>,
+    groups: JsValue,
+}
+
+/// 结果属性 ToString 收尾：完整强转（对象经 ToPrimitive，Symbol 抛
+/// TypeError），转换异常恢复原异常值。
+fn to_string_units<H: VmHost>(vm: &mut H, val: JsValue) -> Result<Vec<u16>, JsValue> {
+    match oxide_runtime_api::to_string_value_full(val, vm) {
+        Ok(v) => Ok(vm.string_units(v).into_owned()),
+        Err(_) => Err(crate::iterator::engine_error(vm, "cannot stringify result property")),
+    }
+}
+
+/// 结果捕获数（length 的 ToLength 减一，下界 0）：各属性读异常传播。
+fn result_capture_count<H: VmHost>(vm: &mut H, result_ptr: *mut JsObject, result: JsValue) -> Result<usize, JsValue> {
+    let len_val = rx_get_prop(vm, result_ptr, "length", result)?;
+    let n = to_length_value(vm, len_val)?;
+    Ok(n.saturating_sub(1))
+}
+
+/// 从单条 exec 结果对象按 GetSubstitution 口径读取 matched/index/captures/
+/// groups：各属性读异常传播，捕获 undefined 以空串占位；捕获宽度由调用方给
+/// （global 统一取各结果上界，非 global 取本结果自身）。
+fn build_substitution_record<H: VmHost>(
+    vm: &mut H, result_ptr: *mut JsObject, result: JsValue, length_s: usize, n_captures: usize,
+) -> Result<SubstitutionRecord, JsValue> {
+    let matched_val = rx_get_index(vm, result_ptr, 0, result)?;
+    let matched = to_string_units(vm, matched_val)?;
+
+    // index 经完整 ToNumber（对象触发 valueOf/toString）后再 ToInteger。
+    let index_val = rx_get_prop(vm, result_ptr, "index", result)?;
+    let num = match oxide_runtime_api::to_number_full(index_val, vm) {
+        Ok(n) => n,
+        Err(e) => return Err(crate::iterator::engine_error(vm, &e)),
+    };
+    let n = oxide_runtime_api::to_integer_or_infinity(JsValue::float(num));
+    let position = if n.is_nan() || n <= 0.0 { 0 } else { n.min(length_s as f64) as usize };
+
+    let mut captures: Vec<Option<Vec<u16>>> = Vec::with_capacity(n_captures);
+    for i in 1..=n_captures {
+        let cap_val = rx_get_index(vm, result_ptr, i as i32, result)?;
+        if cap_val.is_undefined() {
+            captures.push(None);
+        } else {
+            captures.push(Some(to_string_units(vm, cap_val)?));
+        }
+    }
+    let groups = rx_get_prop(vm, result_ptr, "groups", result)?;
+    Ok(SubstitutionRecord {
+        matched,
+        position,
+        captures,
+        groups,
+    })
+}
+
+/// 生成单条替换文本：函数分支 Call(replacer, undefined, «matched, ...captures,
+/// position, S, groups?»）后 ToString（groups 为 undefined 时不追加末参）；
+/// 非函数分支 GetSubstitution 展开。
+fn make_replacement<H: VmHost>(
+    vm: &mut H, functional: bool, replacer_val: JsValue, replacement_units: Option<&[u16]>, rec: &SubstitutionRecord,
+    s_units: &[u16], s_val: JsValue,
+) -> Result<Vec<u16>, JsValue> {
+    if functional {
+        let mut cb_args: Vec<JsValue> = Vec::with_capacity(rec.captures.len() + 5);
+        cb_args.push(vm.new_string_units(&rec.matched));
+        for cap in &rec.captures {
+            match cap {
+                Some(u) => cb_args.push(vm.new_string_units(u)),
+                None => cb_args.push(JsValue::undefined()),
+            }
+        }
+        cb_args.push(JsValue::int(rec.position as i32));
+        cb_args.push(s_val);
+        if !rec.groups.is_undefined() {
+            cb_args.push(rec.groups);
+        }
+        let repl_value = match vm.call_function_sync(replacer_val, JsValue::undefined(), &cb_args) {
+            Ok(v) => v,
+            Err(_) => return Err(crate::iterator::engine_error(vm, "replacer call failed")),
+        };
+        return to_string_units(vm, repl_value);
+    }
+    Ok(get_substitution_units(
+        &rec.matched,
+        s_units,
+        rec.position,
+        &rec.captures,
+        replacement_units.unwrap_or(&[]),
+    ))
+}
+
+/// `RegExp.prototype[Symbol.search](string)`：返回首个匹配位置，无匹配返回
+/// -1。
+///
+/// # 步骤
+/// 1. this 仅需对象（IsObject 门禁）；S = ToString(string)。
+/// 2. previous = Get(rx, "lastIndex")（裸读不转换）；与 +0 非 SameValue 时
+///    Set 0（SameValue 口径：-0 与 +0 相同，不触发写）。
+/// 3. 共享 exec 求匹配。
+/// 4. 恢复：当前 lastIndex 与 previous 非 SameValue 时 Set 回 previous。
+/// 5. null 回 -1，否则 ToNumber(Get(match, "index"))。
+///
+/// # 边界与前提
+/// - lastIndex 读写均 Set/Get 语义，异常传播原异常值。
+///
+/// # 副作用
+/// - lastIndex 先归零再按原值恢复，exec 期间的写入不外泄。
+pub fn regexp_symbol_search<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let re_ptr = match get_this_obj(vm, args) {
+        Ok(ptr) => ptr,
+        Err(err) => return NativeResult::Err(err),
+    };
+    let this_val = vm.reg(args[0]);
+    let haystack = match regexp_text_arg(vm, args) {
+        Ok(s) => s,
+        Err(err) => return NativeResult::Err(err),
+    };
+    let s_val = haystack.to_value(vm);
+
+    let previous = match rx_get_prop(vm, re_ptr, "lastIndex", this_val) {
+        Ok(v) => v,
+        Err(err) => return NativeResult::Err(err),
+    };
+    if !same_value_zero(previous) {
+        if let Err(err) = rx_set_prop(vm, re_ptr, "lastIndex", JsValue::int(0), this_val) {
+            return NativeResult::Err(err);
+        }
+    }
+
+    let match_result = match regexp_exec_call(vm, re_ptr, this_val, s_val) {
+        Ok(r) => r,
+        Err(err) => return NativeResult::Err(err),
+    };
+
+    let current = match rx_get_prop(vm, re_ptr, "lastIndex", this_val) {
+        Ok(v) => v,
+        Err(err) => return NativeResult::Err(err),
+    };
+    if !same_value(previous, current) {
+        if let Err(err) = rx_set_prop(vm, re_ptr, "lastIndex", previous, this_val) {
+            return NativeResult::Err(err);
+        }
+    }
+
+    if match_result.is_null() {
+        return NativeResult::Ok(JsValue::int(-1));
+    }
+    let match_ptr = match_result.as_js_object_ptr();
+    let index_val = match rx_get_prop(vm, match_ptr, "index", match_result) {
+        Ok(v) => v,
+        Err(err) => return NativeResult::Err(err),
+    };
+    let n = match oxide_runtime_api::to_number_full(index_val, vm) {
+        Ok(n) => n,
+        Err(_) => return NativeResult::Err(crate::iterator::engine_error(vm, "cannot convert index")),
+    };
+    NativeResult::Ok(JsValue::float(n))
+}
+
+/// SameValue(val, +0)：严格口径，-0 与 +0 不同（规范步骤用 SameValue 非
+/// SameValueZero：-0 前值仍须触发 Set 0）。
+fn same_value_zero(val: JsValue) -> bool {
+    if val.is_int() {
+        return val.as_int() == 0;
+    }
+    if val.is_double() {
+        return val.as_double() == 0.0 && !val.as_double().is_sign_negative();
+    }
+    false
+}
+
+/// SameValue 全口径比较：同类型同值（-0 与 +0 不同），整数与浮点跨型按数值
+/// 比较（符号位参与），其余类型不同恒 false。
+fn same_value(a: JsValue, b: JsValue) -> bool {
+    match (a.js_type(), b.js_type()) {
+        (oxide_types::value::JsType::Int, oxide_types::value::JsType::Int) => a.as_int() == b.as_int(),
+        (oxide_types::value::JsType::Double, oxide_types::value::JsType::Double) => {
+            a.as_double() == b.as_double() && a.as_double().is_sign_negative() == b.as_double().is_sign_negative()
+        }
+        (oxide_types::value::JsType::Int, oxide_types::value::JsType::Double)
+        | (oxide_types::value::JsType::Double, oxide_types::value::JsType::Int) => {
+            let na = if a.is_int() { a.as_int() as f64 } else { a.as_double() };
+            let nb = if b.is_int() { b.as_int() as f64 } else { b.as_double() };
+            na == nb && na.is_sign_negative() == nb.is_sign_negative()
+        }
+        (oxide_types::value::JsType::Bool, oxide_types::value::JsType::Bool) => a.as_bool() == b.as_bool(),
+        (oxide_types::value::JsType::String, oxide_types::value::JsType::String) => {
+            // SAFETY: 两值均为字符串，按载荷形态逐单元比对。
+            let (pa, pb) = unsafe { (&*a.as_string_ptr(), &*b.as_string_ptr()) };
+            std::ptr::eq(pa, pb) || (pa.utf16_len() == pb.utf16_len() && pa.units() == pb.units())
+        }
+        (oxide_types::value::JsType::Null, oxide_types::value::JsType::Null)
+        | (oxide_types::value::JsType::Undefined, oxide_types::value::JsType::Undefined)
+        | (oxide_types::value::JsType::Symbol, oxide_types::value::JsType::Symbol) => {
+            a.js_type() == b.js_type() && a == b
+        }
+        (oxide_types::value::JsType::Object, oxide_types::value::JsType::Object) => {
+            a.as_js_object_ptr() == b.as_js_object_ptr()
+        }
+        _ => false,
+    }
+}
+
+/// `RegExp.prototype[Symbol.split](string, limit)`：按 splitter（物种构造 +
+/// 补 y 标志）的 exec 命中切分，捕获组作为分隔元素插入结果；limit 限制
+/// 结果长度，缺省切分全部。
+///
+/// # 步骤
+/// 1. this 仅需对象（IsObject 门禁）；S = ToString(string)。
+/// 2. C = SpeciesConstructor(rx, %RegExp%)；flags = ToString(Get "flags")；
+///    newFlags = flags 含 y 取原串、否则追加 y。
+/// 3. splitter = Construct(C, «rx, newFlags»)。
+/// 4. lim = 缺省 2^32-1、否则 ToUint32(limit)；lim == 0 直接回空数组。
+/// 5. 空串特判：exec 非 null 回 []，否则回 [""]。
+/// 6. p = ToLength(Get "lastIndex")、q = p；循环 q < 串长：Set
+///    (splitter, "lastIndex", q) 后共享 exec；null 按 unicodeMatching 口径
+///    推进 q；命中取 e = min(ToLength(Get(splitter, "lastIndex")), 串长)，
+///    e ≠ p 时推片段 + 捕获组并 p = q = e，e == p 时零宽推进。
+/// 7. 循环后无条件推尾段 S[p..]。
+///
+/// # 边界与前提
+/// - splitter 可非 RegExp（物种产物），消费面纯走 exec + 属性读。
+/// - 各属性读（flags/lastIndex/length/捕获组）均传播原异常。
+pub fn regexp_symbol_split<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let re_ptr = match get_this_obj(vm, args) {
+        Ok(ptr) => ptr,
+        Err(err) => return NativeResult::Err(err),
+    };
+    let this_val = vm.reg(args[0]);
+    let haystack = match regexp_text_arg(vm, args) {
+        Ok(s) => s,
+        Err(err) => return NativeResult::Err(err),
+    };
+    let s_val = haystack.to_value(vm);
+    let units = haystack.as_match_text().units().to_vec();
+    let size = units.len();
+
+    // lim：缺省 2^32-1，否则 ToUint32（完整 ToNumber 传播转换异常；
+    // NaN/±0 归零、±∞ 归 2^32-1、负数回绕）。
+    let lim = if args.len() > 2 {
+        let l = match oxide_runtime_api::to_number_full(vm.reg(args[2]), vm) {
+            Ok(n) => n,
+            Err(e) => return NativeResult::Err(crate::iterator::engine_error(vm, &e)),
+        };
+        if l.is_nan() || l == 0.0 {
+            0usize
+        } else if l.is_infinite() {
+            u32::MAX as usize
+        } else {
+            l.trunc().rem_euclid(4_294_967_296.0) as usize
+        }
+    } else {
+        u32::MAX as usize
+    };
+    if lim == 0 {
+        return NativeResult::Ok(make_units_array(vm, Vec::new()));
+    }
+
+    // 物种构造 + y 标志：splitter 是后续唯一匹配面。
+    let regexp_ctor = vm.session().builtin_world().regexp_constructor.as_ptr() as *mut JsObject;
+    let regexp_ctor_val = JsValue::from_js_object(regexp_ctor);
+    let c = match species_constructor(vm, re_ptr, this_val, regexp_ctor_val) {
+        Ok(c) => c,
+        Err(err) => return NativeResult::Err(err),
+    };
+    let flags = match rx_get_flags(vm, re_ptr, this_val) {
+        Ok(f) => f,
+        Err(err) => return NativeResult::Err(err),
+    };
+    let unicode_matching = flags.contains('u');
+    let new_flags = if flags.contains('y') { flags } else { format!("{flags}y") };
+    let new_flags_val = vm.new_string_owned(new_flags);
+    let splitter_val = match vm.construct_ctor(c, &[this_val, new_flags_val]) {
+        Ok(s) => s,
+        Err(e) => return NativeResult::Err(e),
+    };
+    if !splitter_val.is_object() {
+        return NativeResult::Err(crate::error::create_type_error(vm, "RegExp split splitter must be an object"));
+    }
+    let splitter_ptr = splitter_val.as_js_object_ptr();
+
+    // 空串特判：exec 非 null 回空数组，否则回单空串数组。
+    if size == 0 {
+        let z = match regexp_exec_call(vm, splitter_ptr, splitter_val, s_val) {
+            Ok(r) => r,
+            Err(err) => return NativeResult::Err(err),
+        };
+        if z.is_null() {
+            return NativeResult::Ok(make_units_array(vm, vec![Vec::new()]));
+        }
+        return NativeResult::Ok(make_units_array(vm, Vec::new()));
+    }
+
+    // p = ToLength(Get "lastIndex")，q 与 p 同值。
+    let read_position = |vm: &mut H| -> Result<usize, JsValue> {
+        let v = rx_get_prop(vm, re_ptr, "lastIndex", this_val)?;
+        to_length_value(vm, v)
+    };
+    let mut p = match read_position(vm) {
+        Ok(n) => n,
+        Err(err) => return NativeResult::Err(err),
+    };
+    let mut q = p;
+
+    // 结果推入触顶（n == lim）即按规范早退返回；循环自然结束则无条件推尾段。
+    // 片段推字符串值，捕获组推原值（undefined 等不转换）。
+    let mut parts: Vec<JsValue> = Vec::new();
+    while q < size {
+        if let Err(err) = rx_set_prop(vm, splitter_ptr, "lastIndex", JsValue::int(q as i32), splitter_val) {
+            return NativeResult::Err(err);
+        }
+        let z = match regexp_exec_call(vm, splitter_ptr, splitter_val, s_val) {
+            Ok(r) => r,
+            Err(err) => return NativeResult::Err(err),
+        };
+        if z.is_null() {
+            q = advance_string_index(&units, q, unicode_matching);
+            continue;
+        }
+        let e = {
+            let li_val = match rx_get_prop(vm, splitter_ptr, "lastIndex", splitter_val) {
+                Ok(v) => v,
+                Err(err) => return NativeResult::Err(err),
+            };
+            let n = match to_length_value(vm, li_val) {
+                Ok(n) => n,
+                Err(err) => return NativeResult::Err(err),
+            };
+            n.min(size)
+        };
+        if e != p {
+            parts.push(vm.new_string_units(&units[p..q]));
+            if parts.len() >= lim {
+                return NativeResult::Ok(crate::string::make_string_array_values(vm, parts));
+            }
+            let cap_num = {
+                let len_val = match rx_get_prop(vm, z.as_js_object_ptr(), "length", z) {
+                    Ok(v) => v,
+                    Err(err) => return NativeResult::Err(err),
+                };
+                match to_length_value(vm, len_val) {
+                    Ok(n) => n,
+                    Err(err) => return NativeResult::Err(err),
+                }
+            };
+            for k in 1..cap_num {
+                let cap_val = match rx_get_index(vm, z.as_js_object_ptr(), k as i32, z) {
+                    Ok(v) => v,
+                    Err(err) => return NativeResult::Err(err),
+                };
+                parts.push(cap_val);
+                if parts.len() >= lim {
+                    return NativeResult::Ok(crate::string::make_string_array_values(vm, parts));
+                }
+            }
+            p = e;
+            q = p;
+        } else {
+            q = advance_string_index(&units, q, unicode_matching);
+        }
+    }
+    parts.push(vm.new_string_units(&units[p..size]));
+    NativeResult::Ok(crate::string::make_string_array_values(vm, parts))
+}
+
+/// `RegExp.prototype[Symbol.matchAll](string)`：返回按 global 语义逐个产出
+/// 匹配数组的迭代器。
+///
+/// # 步骤
+/// 1. this 仅需对象（IsObject 门禁）；S = ToString(string)。
+/// 2. flags = ToString(Get "flags")；isRegExp 旧式判定：Get(R, @@match) 为
+///    布尔取之，否则 true（读序在 flags 之后）。
+/// 3. matcher 构造：isRegExp 走 SpeciesConstructor + Construct(C, «R, flags»)，
+///    非 RegExp 走 Construct(%RegExp%, «R, "g"»)。
+/// 4. lastIndex = ToLength(Get(R, "lastIndex"))——只从 R 读一次；
+///    Set(matcher, "lastIndex", lastIndex)。
+/// 5. global/fullUnicode 由 flags 串判定（不读构造产物属性）。
+/// 6. 迭代器包装保持三槽（input/index/re）形态。
+///
+/// # 边界与前提
+/// - 各属性读（flags/@@match/lastIndex）均传播原异常。
+///
+/// # 副作用
+/// - 构造 matcher（物种构造可返回任意对象）。
+pub fn regexp_symbol_match_all<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let re_ptr = match get_this_obj(vm, args) {
+        Ok(ptr) => ptr,
+        Err(err) => return NativeResult::Err(err),
+    };
+    let this_val = vm.reg(args[0]);
+    let haystack = match regexp_text_arg(vm, args) {
+        Ok(s) => s,
+        Err(err) => return NativeResult::Err(err),
+    };
+    let s_val = haystack.to_value(vm);
+
+    let flags = match rx_get_flags(vm, re_ptr, this_val) {
+        Ok(f) => f,
+        Err(err) => return NativeResult::Err(err),
+    };
+
+    // 旧式 IsRegExp：Get(R, @@match) 为布尔取之，否则 true。
+    let match_key = oxide_types::private_key::make_well_known_symbol_key(1);
+    let matcher_prop = match vm.ordinary_get(unsafe { &*re_ptr }, match_key, this_val) {
+        Ok(v) => v,
+        Err(_) => return NativeResult::Err(crate::iterator::engine_error(vm, "cannot read @@match")),
+    };
+    let is_regexp = match matcher_prop.js_type() {
+        oxide_types::value::JsType::Bool => matcher_prop.as_bool(),
+        _ => true,
+    };
+
+    let regexp_ctor = vm.session().builtin_world().regexp_constructor.as_ptr() as *mut JsObject;
+    let regexp_ctor_val = JsValue::from_js_object(regexp_ctor);
+    let matcher_val = if is_regexp {
+        let c = match species_constructor(vm, re_ptr, this_val, regexp_ctor_val) {
+            Ok(c) => c,
+            Err(err) => return NativeResult::Err(err),
+        };
+        let flags_val = vm.new_string_owned(flags);
+        match vm.construct_ctor(c, &[this_val, flags_val]) {
+            Ok(m) => m,
+            Err(e) => return NativeResult::Err(e),
+        }
+    } else {
+        let g_val = vm.new_string_owned("g".to_string());
+        match vm.construct_ctor(regexp_ctor_val, &[this_val, g_val]) {
+            Ok(m) => m,
+            Err(e) => return NativeResult::Err(e),
+        }
+    };
+    if !matcher_val.is_object() {
+        return NativeResult::Err(crate::error::create_type_error(vm, "RegExp matchAll matcher must be an object"));
+    }
+    let matcher_ptr = matcher_val.as_js_object_ptr();
+
+    // lastIndex 只从 R 读一次（ToLength），写入 matcher。
+    let li_val = match rx_get_prop(vm, re_ptr, "lastIndex", this_val) {
+        Ok(v) => v,
+        Err(err) => return NativeResult::Err(err),
+    };
+    let last_index = match to_length_value(vm, li_val) {
+        Ok(n) => n,
+        Err(err) => return NativeResult::Err(err),
+    };
+    if let Err(err) = rx_set_prop(vm, matcher_ptr, "lastIndex", JsValue::int(last_index as i32), matcher_val) {
+        return NativeResult::Err(err);
+    }
+
+    // 迭代器包装：三槽（input/index/re），next 由原型提供。
     let regexp_iter_proto = vm.session().builtin_world().regexp_string_iterator_proto.as_ptr() as *mut JsObject;
     let wrapper = vm.alloc_object(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(regexp_iter_proto)));
     let wrapper_obj = unsafe { &mut *wrapper };
     let input_si = vm.kernel_core().perm_interner().intern(crate::string::MALL_INPUT).0;
     let index_si = vm.kernel_core().perm_interner().intern(crate::string::MALL_INDEX).0;
     let re_si = vm.kernel_core().perm_interner().intern(crate::string::MALL_RE).0;
-    // input 属性存完整转换后的字符串值（单元保真）；index 游标为码元口径，
-    // next 按 input 载荷形态各自消费。
-    let input_val = haystack.to_value(vm);
-    vm.set_or_create_prop_value(wrapper_obj, input_si, input_val);
+    // input 属性存完整转换后的字符串值（单元保真）；index 游标为码元口径。
+    vm.set_or_create_prop_value(wrapper_obj, input_si, s_val);
     vm.set_or_create_prop_value(wrapper_obj, index_si, JsValue::int(last_index as i32));
-    vm.set_or_create_prop_value(wrapper_obj, re_si, iter_re);
+    vm.set_or_create_prop_value(wrapper_obj, re_si, matcher_val);
     NativeResult::Ok(JsValue::from_js_object(wrapper))
 }
