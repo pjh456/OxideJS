@@ -55,8 +55,7 @@ pub fn walk_own_keys<H: VmHost>(vm: &H, obj: &JsObject) -> Vec<(u32, u32)> {
     }
     for id in shape_ids.iter().rev() {
         if let Some(shape) = vm.kernel_core().shape_forge().get_shape(*id) {
-            if shape.property_name != 0
-                && !is_symbol_key(shape.property_name)
+            if !is_symbol_key(shape.property_name)
                 && !is_private_name_key(shape.property_name)
             {
                 // 绝对存储索引：数组命名属性位于元素区之后。
@@ -66,17 +65,47 @@ pub fn walk_own_keys<H: VmHost>(vm: &H, obj: &JsObject) -> Vec<(u32, u32)> {
         }
         pos += 1;
     }
-    keys.sort_by(|(a_si, _), (b_si, _)| {
-        // 整数键（含 INT 区间键）以数值升序排在普通字符串键之前。
-        let a_idx = int_or_string_index(vm, *a_si);
-        let b_idx = int_or_string_index(vm, *b_si);
-        match (a_idx, b_idx) {
-            (Some(ai), Some(bi)) => ai.cmp(&bi),
-            (Some(_), None) => std::cmp::Ordering::Less,
-            (None, Some(_)) => std::cmp::Ordering::Greater,
-            (None, None) => std::cmp::Ordering::Equal,
+    // 类构造器属性序修正：shape 链构建序为 prototype→length→name（叶→根），
+    // 规范要求的插入序为 length→name→prototype。按规范重排字符串键。
+    if obj.is_class_constructor() {
+        let perm = vm.kernel_core().perm_interner();
+        let canonical = ["length", "name", "prototype"];
+        let mut canonical_map: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+        for (i, &name) in canonical.iter().enumerate() {
+            canonical_map.insert(name, i);
         }
-    });
+        // 按规范序重新排列字符串键，整数键保持原位。
+        keys.sort_by(|(a_si, _), (b_si, _)| {
+            let a_idx = int_or_string_index(vm, *a_si);
+            let b_idx = int_or_string_index(vm, *b_si);
+            match (a_idx, b_idx) {
+                (Some(ai), Some(bi)) => ai.cmp(&bi),
+                (Some(_), None) => std::cmp::Ordering::Less,
+                (None, Some(_)) => std::cmp::Ordering::Greater,
+                (None, None) => {
+                    // 两者均为字符串键：查规范序。
+                    let a_name = perm.lookup(*a_si).unwrap_or("");
+                    let b_name = perm.lookup(*b_si).unwrap_or("");
+                    let a_rank = canonical_map.get(a_name).copied().unwrap_or(usize::MAX);
+                    let b_rank = canonical_map.get(b_name).copied().unwrap_or(usize::MAX);
+                    // 规范键按序排，其余保持原序。
+                    a_rank.cmp(&b_rank)
+                }
+            }
+        });
+    } else {
+        keys.sort_by(|(a_si, _), (b_si, _)| {
+            // 整数键（含 INT 区间键）以数值升序排在普通字符串键之前。
+            let a_idx = int_or_string_index(vm, *a_si);
+            let b_idx = int_or_string_index(vm, *b_si);
+            match (a_idx, b_idx) {
+                (Some(ai), Some(bi)) => ai.cmp(&bi),
+                (Some(_), None) => std::cmp::Ordering::Less,
+                (None, Some(_)) => std::cmp::Ordering::Greater,
+                (None, None) => std::cmp::Ordering::Equal,
+            }
+        });
+    }
     keys
 }
 
@@ -132,7 +161,7 @@ pub(crate) fn walk_own_symbol_keys<H: VmHost>(vm: &H, obj: &JsObject) -> Vec<(u3
         if let Some(shape) = vm.kernel_core().shape_forge().get_shape(*id) {
             // Symbol 键节点按绝对槽位回传（数组命名属性位于元素区之后）。
             let store = if obj.is_array() { obj.array_prop_count + pos } else { pos };
-            if shape.property_name != 0 && is_symbol_key(shape.property_name) {
+            if is_symbol_key(shape.property_name) {
                 keys.push((shape.property_name, store));
             }
         }

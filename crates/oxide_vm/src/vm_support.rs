@@ -41,7 +41,7 @@ impl Vm {
         let mut session = KernelSession::new(&core);
         bindings::init_kernel_builtins(&core, &mut session);
         // 在 builtin 绑定之后取 id：绑定过程已 intern "length"，此处命中缓存得到
-        // 非 0 的稳定 id（保持枚举层"id 0 哨兵"的既有约定，见 walk_own_keys）。
+        // 稳定的 id，用于运行期常见属性（如函数 length 槽）的快路径。
         let length_si = core.perm_interner().intern("length").0;
         let obj_proto = P::clone(&session.builtin_world().object_proto);
         // 提前缓存执行期字符串 GC 初始水位（构造后 config 不再变化）。
@@ -172,7 +172,7 @@ impl Vm {
         let mut session = KernelSession::new(&core);
         bindings::init_kernel_builtins(&core, &mut session);
         // 在 builtin 绑定之后取 id：绑定过程已 intern "length"，此处命中缓存得到
-        // 非 0 的稳定 id（保持枚举层"id 0 哨兵"的既有约定，见 walk_own_keys）。
+        // 稳定的 id，用于运行期常见属性（如函数 length 槽）的快路径。
         let length_si = core.perm_interner().intern("length").0;
         let obj_proto = P::clone(&session.builtin_world().object_proto);
         // 提前缓存执行期字符串 GC 初始水位（构造后 config 不再变化）。

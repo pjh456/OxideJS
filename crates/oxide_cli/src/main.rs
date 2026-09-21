@@ -16,6 +16,7 @@ use oxide_kernel::{kernel_error, kernel_info};
 use oxide_log::{Level, SUBSYSTEM_COUNT};
 use oxide_parser::Allocator;
 use oxide_types::object::JsObject;
+use oxide_types::private_key::{is_private_name_key, is_symbol_key};
 use oxide_vm::vm::Vm;
 use oxide_vm::vm_error;
 use oxide_vm::vm_pool::VmPool;
@@ -249,7 +250,8 @@ fn format_object(
     let mut pos: u32 = 0;
     for id in shape_ids.iter().rev() {
         if let Some(shape) = shape_forge.get_shape(*id) {
-            if shape.property_name != 0 {
+            // 跳过 Symbol/私有名键，仅展示字符串属性名。
+            if !is_symbol_key(shape.property_name) && !is_private_name_key(shape.property_name) {
                 let prop_val = obj.get_prop_at(pos);
                 if prop_val.is_undefined() {
                     pos += 1;
