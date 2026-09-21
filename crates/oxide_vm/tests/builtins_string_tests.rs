@@ -1404,3 +1404,111 @@ fn unicode_brace_escape_supplementary_and_lone_surrogate() {
     .unwrap();
     assert!(r.as_bool());
 }
+
+#[test]
+fn string_to_locale_lower_case_final_sigma() {
+    // Final Sigma 条件映射 21 断言面（special_casing_conditional 15 + U180E 6）：
+    // σ/ς 按原始序列双向跳过 Mn/Cf 找最近可见字符判定。
+    let mut vm = Vm::new();
+    let r = eval(
+        &mut vm,
+        "(\"\\u03A3\".toLocaleLowerCase() === \"\\u03C3\" && \
+         \"A\\u03A3\".toLocaleLowerCase() === \"a\\u03C2\" && \
+         \"\\uD835\\uDCA2\\u03A3\".toLocaleLowerCase() === \"\\uD835\\uDCA2\\u03C2\" && \
+         \"A.\\u03A3\".toLocaleLowerCase() === \"a.\\u03C2\" && \
+         \"A\\u00AD\\u03A3\".toLocaleLowerCase() === \"a\\u00AD\\u03C2\" && \
+         \"A\\uD834\\uDE42\\u03A3\".toLocaleLowerCase() === \"a\\uD834\\uDE42\\u03C2\" && \
+         \"\\u0345\\u03A3\".toLocaleLowerCase() === \"\\u0345\\u03C3\" && \
+         \"\\u0391\\u0345\\u03A3\".toLocaleLowerCase() === \"\\u03B1\\u0345\\u03C2\" && \
+         \"A\\u03A3B\".toLocaleLowerCase() === \"a\\u03C3b\" && \
+         \"A\\u03A3\\uD835\\uDCA2\".toLocaleLowerCase() === \"a\\u03C3\\uD835\\uDCA2\" && \
+         \"A\\u03A3.b\".toLocaleLowerCase() === \"a\\u03C3.b\" && \
+         \"A\\u03A3\\u00ADB\".toLocaleLowerCase() === \"a\\u03C3\\u00ADb\" && \
+         \"A\\u03A3\\uD834\\uDE42B\".toLocaleLowerCase() === \"a\\u03C3\\uD834\\uDE42b\" && \
+         \"A\\u03A3\\u0345\".toLocaleLowerCase() === \"a\\u03C2\\u0345\" && \
+         \"A\\u03A3\\u0345\\u0391\".toLocaleLowerCase() === \"a\\u03C3\\u0345\\u03B1\" && \
+         \"A\\u180E\\u03A3\".toLocaleLowerCase() === \"a\\u180E\\u03C2\" && \
+         \"A\\u180E\\u03A3B\".toLocaleLowerCase() === \"a\\u180E\\u03C3b\" && \
+         \"A\\u03A3\\u180E\".toLocaleLowerCase() === \"a\\u03C2\\u180E\" && \
+         \"A\\u03A3\\u180EB\".toLocaleLowerCase() === \"a\\u03C3\\u180Eb\" && \
+         \"A\\u180E\\u03A3\\u180E\".toLocaleLowerCase() === \"a\\u180E\\u03C2\\u180E\" && \
+         \"A\\u180E\\u03A3\\u180EB\".toLocaleLowerCase() === \"a\\u180E\\u03C3\\u180Eb\")",
+    )
+    .unwrap();
+    assert!(r.as_bool());
+}
+
+#[test]
+fn string_to_locale_case_basic_mapping() {
+    // 与 toLowerCase/toUpperCase 同表：ß 小写不变、大写 SS；Σ 大写恒 Σ；
+    // 补充平面代理对整体映射。
+    let mut vm = Vm::new();
+    let r = eval(
+        &mut vm,
+        "\"ß\".toLocaleLowerCase() === \"ß\" && \
+         \"ß\".toLocaleUpperCase() === \"SS\" && \
+         \"\\u03A3\".toLocaleUpperCase() === \"\\u03A3\" && \
+         \"\\u03C3\".toLocaleLowerCase() === \"\\u03C3\" && \
+         \"\\u03C3\".toLocaleUpperCase() === \"\\u03A3\" && \
+         \"aB\".toLocaleUpperCase() === \"AB\" && \
+         \"aB\".toLocaleLowerCase() === \"ab\" && \
+          \"\\uD83D\\uDE00\".toLocaleLowerCase() === \"\\uD83D\\uDE00\"",
+    )
+    .unwrap();
+    assert!(r.as_bool());
+}
+
+#[test]
+fn string_locale_compare_canonical_and_order() {
+    // NFC 规范等价对全 0（含组合符重排与 Hangul 合成对）；缺省/undefined/
+    // "undefined" 三式等价；码元序方向与反对称。
+    let mut vm = Vm::new();
+    let r = eval(
+        &mut vm,
+        "(\"o\\u0308\".localeCompare(\"ö\") === 0 && \
+         \"Ç\".localeCompare(\"C\\u0327\") === 0 && \
+         \"가\".localeCompare(\"\\u1100\\u1161\") === 0 && \
+          \"ô\".localeCompare(\"o\\u0302\") === 0 && \
+         \"ṩ\".localeCompare(\"s\\u0323\\u0307\") === 0 && \
+         \"a\".localeCompare() === \"a\".localeCompare(undefined) && \
+         \"a\".localeCompare() === \"a\".localeCompare(\"undefined\") && \
+         \"a\".localeCompare(\"b\") === -1 && \"b\".localeCompare(\"a\") === 1 && \
+         \"h\".localeCompare(\"H\") === -\"H\".localeCompare(\"h\") && \
+         \"a\".localeCompare(1) === \"a\".localeCompare(\"1\"))",
+    )
+    .unwrap();
+    assert!(r.as_bool());
+}
+
+#[test]
+fn string_locale_methods_type_errors() {
+    // null/undefined/symbol 接收者抛 TypeError；localeCompare 第二参
+    // Symbol 抛 TypeError。
+    let mut vm = Vm::new();
+    let r = eval(
+        &mut vm,
+        "((function(){ try { (null).toLocaleLowerCase(); return false; } catch (e) { return e.name === \"TypeError\"; } })() && \
+         (function(){ try { (undefined).toLocaleUpperCase(); return false; } catch (e) { return e.name === \"TypeError\"; } })() && \
+         (function(){ try { (null).localeCompare(\"a\"); return false; } catch (e) { return e.name === \"TypeError\"; } })() && \
+         (function(){ try { \"a\".localeCompare(Symbol(\"s\")); return false; } catch (e) { return e.name === \"TypeError\"; } })())",
+    )
+    .unwrap();
+    assert!(r.as_bool());
+}
+
+#[test]
+fn string_locale_methods_length_and_name() {
+    // 绑定描述符面：length 0/0/1、name 与方法名一致。
+    let mut vm = Vm::new();
+    let r = eval(
+        &mut vm,
+        "String.prototype.toLocaleLowerCase.length === 0 && \
+         String.prototype.toLocaleUpperCase.length === 0 && \
+         String.prototype.localeCompare.length === 1 && \
+         String.prototype.toLocaleLowerCase.name === \"toLocaleLowerCase\" && \
+         String.prototype.toLocaleUpperCase.name === \"toLocaleUpperCase\" && \
+         String.prototype.localeCompare.name === \"localeCompare\"",
+    )
+    .unwrap();
+    assert!(r.as_bool());
+}

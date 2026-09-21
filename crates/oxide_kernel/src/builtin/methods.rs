@@ -122,6 +122,9 @@ pub struct StringMethods {
     pub is_well_formed: *const (),
     pub to_well_formed: *const (),
     pub from_raw: *const (),
+    pub to_locale_lower_case: *const (),
+    pub to_locale_upper_case: *const (),
+    pub locale_compare: *const (),
 }
 
 /// RegExp 原型方法的 native 函数指针集合。
