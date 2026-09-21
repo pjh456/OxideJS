@@ -787,24 +787,74 @@ pub fn string_match_all<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     }
     let pattern_val = vm.reg(args[1]);
 
-    let re_obj = if is_regexp_obj(pattern_val, vm) {
+    // 规范：IsRegExp(pattern) 时先检查 g 标志（Node.js 先行校验，早于
+    // GetMethod 调用），不满足则抛 TypeError；满足后查 GetMethod(pattern,
+    // @@matchAll)，可调用则直调，否则构建包装器。
+    if is_regexp_obj(pattern_val, vm) {
         let re_ptr = pattern_val.as_js_object_ptr();
-        // 规范：Get(rx, "flags") → ToString → 含 "g" 判定；getter 抛错传播。
+        // 规范步骤 3.a-c：Get(rx, "flags") → RequireObjectCoercible →
+        // ToString 含 "g" 判定；getter 抛错传播。
         let flags = match crate::regexp::rx_get_flags(vm, re_ptr, pattern_val) {
             Ok(f) => f,
             Err(e) => return NativeResult::Err(e),
         };
+        // RequireObjectCoercible：flags 为 undefined/null 时抛 TypeError。
+        // rx_get_flags 已将 undefined 转为 "undefined" 字符串，需额外检查。
+        let flags_val = match vm.ordinary_get(unsafe { &*re_ptr }, vm.kernel_core().perm_interner().intern("flags").0, pattern_val) {
+            Ok(v) => v,
+            Err(e) => return NativeResult::err(crate::iterator::engine_error(vm, &e)),
+        };
+        if flags_val.is_undefined() || flags_val.is_null() {
+            return NativeResult::Err(crate::error::create_type_error(
+                vm,
+                "String.prototype.matchAll: regex must have global flag",
+            ));
+        }
         if !flags.contains('g') {
             return NativeResult::Err(crate::error::create_type_error(
                 vm,
                 "String.prototype.matchAll: regex must have global flag",
             ));
         }
-        pattern_val
+        // 标志检查通过：查 GetMethod(pattern, @@matchAll)。
+        let match_all_key = oxide_types::private_key::make_well_known_symbol_key(7);
+        let re_obj = unsafe { &*re_ptr };
+        // 先查实例 own。
+        let own_match_all = match vm.get_own_property_slot(re_obj, match_all_key) {
+            Some(_) => match vm.ordinary_get(re_obj, match_all_key, pattern_val) {
+                Ok(v) => v,
+                Err(e) => return NativeResult::err(crate::iterator::engine_error(vm, &e)),
+            },
+            None => JsValue::undefined(),
+        };
+        if crate::iterator::is_callable(own_match_all) {
+            return match vm.call_function_sync(own_match_all, pattern_val, &[input_val]) {
+                Ok(v) => NativeResult::Ok(v),
+                Err(e) => NativeResult::err(crate::iterator::engine_error(vm, &e)),
+            };
+        }
+        // 实例 @@matchAll 不存在/undefined：回退原型链。
+        if own_match_all.is_undefined() {
+            let proto_val = re_obj.proto();
+            if proto_val.is_object() {
+                let proto_ptr = proto_val.as_js_object_ptr();
+                let proto_match_all = match vm.ordinary_get(unsafe { &*proto_ptr }, match_all_key, proto_val) {
+                    Ok(v) => v,
+                    Err(e) => return NativeResult::err(crate::iterator::engine_error(vm, &e)),
+                };
+                if crate::iterator::is_callable(proto_match_all) {
+                    return match vm.call_function_sync(proto_match_all, pattern_val, &[input_val]) {
+                        Ok(v) => NativeResult::Ok(v),
+                        Err(e) => NativeResult::err(crate::iterator::engine_error(vm, &e)),
+                    };
+                }
+            }
+        }
+        // 默认：构建包装器。
+        builder_wrapper(vm, input_val, pattern_val)
     } else {
+        // 非 RegExp：按文本编译为 stub（非捕获组，免额外 capture）。
         let pattern_units = try_string!(as_units(vm, pattern_val)).into_owned();
-        // 正则模式按文本编译：单元序列桥接为 lossy 文本（孤立 surrogate 映射
-        // FFFD，与 RegExp 构造器的文本口径编译一致）。
         let pattern_str = String::from_utf16_lossy(&pattern_units);
         let escaped = regress::escape(&pattern_str);
         let rx_str = if escaped.is_empty() { String::from("(?:)") } else { format!("(?:{})", escaped) };
@@ -823,11 +873,8 @@ pub fn string_match_all<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         let raw = Box::into_raw(boxed) as *const u8;
         stub.set_native_fn(Some(unsafe { oxide_types::object::NativeFnPtr::from_raw(raw as *const ()) }));
         let stub_ptr = vm.alloc_object(stub);
-        JsValue::from_js_object(stub_ptr)
-    };
-
-    // 构建包装对象。
-    builder_wrapper(vm, input_val, re_obj)
+        builder_wrapper(vm, input_val, JsValue::from_js_object(stub_ptr))
+    }
 }
 
 /// 构造 matchAll 包装对象：原型挂 `%RegExpStringIteratorPrototype%`，
