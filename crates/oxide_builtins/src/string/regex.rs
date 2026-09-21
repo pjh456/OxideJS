@@ -804,7 +804,7 @@ pub fn string_match_all<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         // FFFD，与 RegExp 构造器的文本口径编译一致）。
         let pattern_str = String::from_utf16_lossy(&pattern_units);
         let escaped = regress::escape(&pattern_str);
-        let rx_str = if escaped.is_empty() { String::from("(?:)") } else { format!("({})", escaped) };
+        let rx_str = if escaped.is_empty() { String::from("(?:)") } else { format!("(?:{})", escaped) };
         let compiled = match regress::Regex::new(&rx_str) {
             Ok(rx) => rx,
             Err(e) => {
@@ -902,7 +902,8 @@ pub fn string_match_all_next<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult
         Ok(v) => v,
         Err(_) => return make_match_done_result(vm, JsValue::undefined()),
     };
-    let idx = if idx_val.is_int() { idx_val.as_int().max(0) as usize } else { 0 };
+    let idx_raw = if idx_val.is_int() { idx_val.as_int().max(0) } else { 0 };
+    let idx = idx_raw as usize;
     let re_val = match vm.ordinary_get(wrapper, re_si, this_val) {
         Ok(v) if v.is_object() => v,
         _ => return make_match_done_result(vm, JsValue::undefined()),
@@ -924,7 +925,7 @@ pub fn string_match_all_next<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult
     if idx > total_units {
         return make_match_done_result(vm, JsValue::undefined());
     }
-    let (next_idx, parts): (usize, Vec<Vec<u16>>) = if sp.is_flat() {
+    let (match_start, next_idx, parts): (usize, usize, Vec<Vec<u16>>) = if sp.is_flat() {
         let s = sp.as_str();
         match regex.find_from(s, unit_to_byte(s, idx)).next() {
             Some(m) => {
@@ -939,11 +940,12 @@ pub fn string_match_all_next<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult
                 }
                 // 空匹配（range 无推进）须推进至少一个码元，否则同一位置反复
                 // 空匹配死循环；非空匹配游标落匹配末尾（码元口径）。
+                let start_units = byte_to_unit(s, range.start);
                 let end_units = byte_to_unit(s, range.end);
                 let next_idx = if range.end > range.start { end_units } else { end_units + 1 };
-                (next_idx, parts)
+                (start_units, next_idx, parts)
             }
-            None => (0, Vec::new()),
+            None => (0, 0, Vec::new()),
         }
     } else {
         let u = sp.units();
@@ -959,9 +961,9 @@ pub fn string_match_all_next<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult
                     }
                 }
                 let next_idx = if range.end > range.start { range.end } else { range.end + 1 };
-                (next_idx, parts)
+                (range.start, next_idx, parts)
             }
-            None => (0, Vec::new()),
+            None => (0, 0, Vec::new()),
         }
     };
 
@@ -969,8 +971,24 @@ pub fn string_match_all_next<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult
         return make_match_done_result(vm, JsValue::undefined());
     }
     vm.set_or_create_prop_value(wrapper, index_si, JsValue::int(next_idx as i32));
-    let value = make_units_array(vm, parts);
+    // 构建结果数组：按元素物化字符串值 + 挂 index/input/groups 属性。
+    let value = make_match_result_array(vm, parts, match_start as i32, input_val);
     make_match_done_result(vm, value)
+}
+
+/// 构建 matchAll 结果数组：元素为匹配字符串值，附带 index/input/groups 属性。
+fn make_match_result_array<H: VmHost>(vm: &mut H, parts: Vec<Vec<u16>>, match_index: i32, input_val: JsValue) -> JsValue {
+    let values: Vec<JsValue> = parts.into_iter().map(|u| vm.new_string_units_owned(u)).collect();
+    let arr = make_string_array_values(vm, values);
+    let arr_ptr = arr.as_js_object_ptr();
+    let arr_obj = unsafe { &mut *arr_ptr };
+    let index_si = vm.kernel_core().perm_interner().intern("index").0;
+    vm.set_or_create_prop_value(arr_obj, index_si, JsValue::int(match_index));
+    let input_si = vm.kernel_core().perm_interner().intern("input").0;
+    vm.set_or_create_prop_value(arr_obj, input_si, input_val);
+    let groups_si = vm.kernel_core().perm_interner().intern("groups").0;
+    vm.set_or_create_prop_value(arr_obj, groups_si, JsValue::undefined());
+    arr
 }
 
 /// 构造迭代器结果对象 `{value, done}`（done 仅在 value 为 undefined 时为 true）。
