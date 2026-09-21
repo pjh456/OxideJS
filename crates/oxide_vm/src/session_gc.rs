@@ -222,6 +222,11 @@ impl SessionGc {
                 Self::mark_string_live(live_strings, ptr);
             }
         }
+        // RegExp 实例 source/flags 字段持有字符串边。
+        if obj.is_regexp_obj() {
+            Self::process_edge(obj.get_regexp_source(), vm, stack, live_strings, live_bigints);
+            Self::process_edge(obj.get_regexp_flags(), vm, stack, live_strings, live_bigints);
+        }
         // 遍历 upvalue cell 中的引用。
         for cell_ptr in obj.upvalues_slice() {
             if cell_ptr.is_null() {
@@ -391,6 +396,15 @@ impl SessionGc {
         if obj.is_async_generator_obj() {
             for ptr in crate::async_generator::async_generator_native_string_edges(obj) {
                 Self::mark_string_live(live, ptr);
+            }
+        }
+        // RegExp 实例 source/flags 字段持有字符串边。
+        if obj.is_regexp_obj() {
+            if obj.get_regexp_source().is_string() {
+                Self::mark_string_live(live, obj.get_regexp_source().as_string_ptr_mut());
+            }
+            if obj.get_regexp_flags().is_string() {
+                Self::mark_string_live(live, obj.get_regexp_flags().as_string_ptr_mut());
             }
         }
     }

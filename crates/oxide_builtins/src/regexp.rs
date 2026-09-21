@@ -357,11 +357,10 @@ pub fn regexp_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     }
 
     set_prop(&mut obj, "lastIndex", JsValue::int(0), vm);
-    // 单元口径物化 source/flags（孤立 surrogate 单元保持往返）。7 个 flag 布尔
-    // 不再作实例数据属性：读侧走原型只读访问器，以 flags 串为唯一数据源。
-    set_prop(&mut obj, "source", vm.new_string_units_owned(pattern_units), vm);
-    set_prop(&mut obj, "flags", vm.new_string_units_owned(flags_units), vm);
     obj.type_tag = JsObject::OBJ_TYPE_REGEXP;
+    // source/flags 存实例字段：原型访问器从本字段读取，不作为自身属性枚举。
+    obj.set_regexp_source(vm.new_string_units_owned(pattern_units));
+    obj.set_regexp_flags(vm.new_string_units_owned(flags_units));
 
     let obj_ptr = vm.alloc_object(obj);
     NativeResult::Ok(JsValue::from_js_object(obj_ptr))
@@ -605,14 +604,8 @@ pub fn regexp_to_string<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         Err(err) => return NativeResult::Err(err),
     };
     let re = unsafe { &*re_ptr };
-    let source = {
-        let val = get_prop(re, 1);
-        vm.lookup_str(val).unwrap_or_default()
-    };
-    let flags = {
-        let val = get_prop(re, 2);
-        vm.lookup_str(val).unwrap_or_default()
-    };
+    let source = vm.lookup_str(re.get_regexp_source()).unwrap_or_default();
+    let flags = vm.lookup_str(re.get_regexp_flags()).unwrap_or_default();
     let result = format!("/{}/{}", source, flags);
     NativeResult::Ok(vm.new_string_owned(result))
 }
@@ -732,14 +725,10 @@ const HEX_DIGITS: [u16; 16] = [
 /// # 边界与前提
 /// - `re` 须为持有编译正则的对象（RegExp 实例或 matchAll 载体）；flags 缺失
 ///   时各 flag 一律 false。
-/// - 经自身+原型链解析 flags 键：flags 是实例数据属性，原型链回退仅覆盖
-///   用户删改自身属性后的读法。
-pub(crate) fn regexp_has_flag<H: VmHost>(vm: &H, re: &JsObject, unit: char) -> bool {
-    let flags_si = vm.kernel_core().perm_interner().intern("flags").0;
-    match vm.resolve_property(re, flags_si) {
-        Some(val) => vm.lookup_str(val).unwrap_or_default().contains(unit),
-        None => false,
-    }
+/// - 直接读实例 regexp_flags 字段（避免通过 ordinary_get 触发原型访问器，
+///   防止在 replace 等 builtin 调用期间触发 GC 导致悬垂）。
+pub(crate) fn regexp_has_flag<H: VmHost>(vm: &mut H, re: &JsObject, unit: char) -> bool {
+    vm.lookup_str(re.get_regexp_flags()).unwrap_or_default().contains(unit)
 }
 
 /// 8 个单 flag 只读访问器的公共核：this 为 RegExp.prototype 本身返回
@@ -801,6 +790,44 @@ pub fn regexp_get_has_indices<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResul
 /// `RegExp.prototype.unicodeSets` getter。
 pub fn regexp_get_unicode_sets<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     regexp_flag_of(vm, args, 'v')
+}
+
+/// `RegExp.prototype.flags` getter：返回实例 flags 串。
+pub fn regexp_get_flags<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let this_val = vm.reg(args[0]);
+    // proto 恒等判定：规范对 prototype 本身返回 undefined。
+    if this_val.is_object() {
+        let this_ptr = this_val.as_js_object_ptr();
+        let proto_ptr = vm.session().builtin_world().regexp_proto.as_ptr() as *mut JsObject;
+        if !this_ptr.is_null() && this_ptr == proto_ptr {
+            return NativeResult::Ok(JsValue::undefined());
+        }
+    }
+    let re_ptr = match get_regexp_ptr(vm, args) {
+        Ok(ptr) => ptr,
+        Err(err) => return NativeResult::Err(err),
+    };
+    let re = unsafe { &*re_ptr };
+    NativeResult::Ok(re.get_regexp_flags())
+}
+
+/// `RegExp.prototype.source` getter：返回实例 source 串。
+pub fn regexp_get_source<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let this_val = vm.reg(args[0]);
+    // proto 恒等判定：规范对 prototype 本身返回 undefined。
+    if this_val.is_object() {
+        let this_ptr = this_val.as_js_object_ptr();
+        let proto_ptr = vm.session().builtin_world().regexp_proto.as_ptr() as *mut JsObject;
+        if !this_ptr.is_null() && this_ptr == proto_ptr {
+            return NativeResult::Ok(JsValue::undefined());
+        }
+    }
+    let re_ptr = match get_regexp_ptr(vm, args) {
+        Ok(ptr) => ptr,
+        Err(err) => return NativeResult::Err(err),
+    };
+    let re = unsafe { &*re_ptr };
+    NativeResult::Ok(re.get_regexp_source())
 }
 
 /// 取匹配文本参数，按 ToString 语义完整转换（对象经 toString/valueOf）；

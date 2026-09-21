@@ -36,6 +36,22 @@ pub fn bind_regexp(core: &Arc<KernelCore>, session: &KernelSession, global: &mut
         ],
     );
 
+    // source/flags 只读访问器（set 恒 undefined，getter 读实例字段）。
+    bind_accessor_getter(
+        core,
+        session,
+        proto,
+        "source",
+        oxide_builtins::regexp::regexp_get_source::<crate::vm::Vm> as *const (),
+    );
+    bind_accessor_getter(
+        core,
+        session,
+        proto,
+        "flags",
+        oxide_builtins::regexp::regexp_get_flags::<crate::vm::Vm> as *const (),
+    );
+
     // 8 个单 flag 只读访问器（set 恒 undefined，getter 读实例 flags 串判码元）。
     bind_accessor_getter(
         core,

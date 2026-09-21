@@ -132,6 +132,10 @@ pub struct JsObject {
     /// shape 槽位保持恒等映射，后续索引/命名属性写读不干扰被包值。
     /// 未装箱对象恒为 undefined。
     boxed_value: JsValue,
+    /// RegExp 实例的 source 字符串（RegExp.prototype.source 访问器的数据源）。
+    regexp_source: JsValue,
+    /// RegExp 实例的 flags 字符串（RegExp.prototype.flags 访问器的数据源）。
+    regexp_flags: JsValue,
     pub upvalues: *mut u8,
 }
 
@@ -382,6 +386,8 @@ impl JsObject {
             captured_this: JsValue::undefined(),
             home_object: JsValue::undefined(),
             boxed_value: JsValue::undefined(),
+            regexp_source: JsValue::undefined(),
+            regexp_flags: JsValue::undefined(),
             upvalues: std::ptr::null_mut(),
         }
     }
@@ -409,6 +415,8 @@ impl JsObject {
             captured_this: JsValue::undefined(),
             home_object: JsValue::undefined(),
             boxed_value: JsValue::undefined(),
+            regexp_source: JsValue::undefined(),
+            regexp_flags: JsValue::undefined(),
             upvalues: std::ptr::null_mut(),
         };
         let vec = Box::new(vec![JsValue::undefined(); n_elements.min(MAX_DENSE_PROPS)]);
@@ -508,6 +516,8 @@ impl JsObject {
             captured_this: self.captured_this,
             home_object: self.home_object,
             boxed_value: self.boxed_value,
+            regexp_source: self.regexp_source,
+            regexp_flags: self.regexp_flags,
             upvalues: self.upvalues,
         }
     }
@@ -652,6 +662,12 @@ impl JsObject {
         }
         if self.boxed_value.is_object() {
             self.boxed_value = rewrite(self.boxed_value);
+        }
+        if self.regexp_source.is_object() {
+            self.regexp_source = rewrite(self.regexp_source);
+        }
+        if self.regexp_flags.is_object() {
+            self.regexp_flags = rewrite(self.regexp_flags);
         }
         if !self.upvalues.is_null() {
             let cells = unsafe { &mut *(self.upvalues as *mut Vec<*mut Cell>) };
@@ -968,6 +984,26 @@ impl JsObject {
     /// 载荷不参与 shape/属性区，写后不得再经属性区预存同一值。
     pub fn set_boxed_value(&mut self, v: JsValue) {
         self.boxed_value = v;
+    }
+
+    /// RegExp 实例的 source 字符串（非 RegExp 实例恒为 undefined）。
+    pub fn get_regexp_source(&self) -> JsValue {
+        self.regexp_source
+    }
+
+    /// 设置 RegExp 实例的 source 字符串。
+    pub fn set_regexp_source(&mut self, v: JsValue) {
+        self.regexp_source = v;
+    }
+
+    /// RegExp 实例的 flags 字符串（非 RegExp 实例恒为 undefined）。
+    pub fn get_regexp_flags(&self) -> JsValue {
+        self.regexp_flags
+    }
+
+    /// 设置 RegExp 实例的 flags 字符串。
+    pub fn set_regexp_flags(&mut self, v: JsValue) {
+        self.regexp_flags = v;
     }
 }
 

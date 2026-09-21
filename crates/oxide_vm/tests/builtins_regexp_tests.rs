@@ -534,8 +534,9 @@ fn regexp_flag_accessor_descriptor_and_identity() {
 #[test]
 fn regexp_instance_has_no_own_flag_props() {
     let mut vm = Vm::new();
+    // source/flags 是原型访问器，非实例自身属性；仅 lastIndex 为自身数据属性。
     let result = eval(&mut vm, "Object.getOwnPropertyNames(new RegExp('a', 'g')).sort().join(',')").unwrap();
-    assert_eq!(to_str(&vm, result), "flags,lastIndex,source");
+    assert_eq!(to_str(&vm, result), "lastIndex");
 }
 
 #[test]
