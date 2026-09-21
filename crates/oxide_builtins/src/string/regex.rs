@@ -787,6 +787,55 @@ pub fn string_match_all<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     }
     let pattern_val = vm.reg(args[1]);
 
+    // 规范步骤 2-5：pattern 为 null/undefined 时跳过 IsRegExp 分支，
+    // 直接 RegExpCreate(this, "g") + Invoke(rx, @@matchAll, « S »)。
+    if pattern_val.is_null() || pattern_val.is_undefined() {
+        // rx = new RegExp(ToString(this), "g")。
+        let g_str = vm.new_string("g");
+        let rx_val = match vm.construct_ctor(
+            JsValue::from_js_object(vm.session().builtin_world().regexp_constructor.as_ptr() as *mut JsObject),
+            &[input_val, g_str],
+        ) {
+            Ok(v) => v,
+            Err(e) => return NativeResult::Err(e),
+        };
+        // Invoke(rx, @@matchAll, « S »)。
+        let match_all_key = oxide_types::private_key::make_well_known_symbol_key(7);
+        let rx_ptr = rx_val.as_js_object_ptr();
+        let proto_val = unsafe { &*rx_ptr }.proto();
+        let rx_this = JsValue::from_js_object(rx_ptr);
+        let matcher = match vm.ordinary_get(unsafe { &*rx_ptr }, match_all_key, rx_this) {
+            Ok(v) => v,
+            Err(e) => return NativeResult::err(crate::iterator::engine_error(vm, &e)),
+        };
+        if matcher.is_undefined() || matcher.is_null() {
+            // 查原型链。
+            if proto_val.is_object() {
+                let p_ptr = proto_val.as_js_object_ptr();
+                let p_this = proto_val;
+                let proto_matcher = match vm.ordinary_get(unsafe { &*p_ptr }, match_all_key, p_this) {
+                    Ok(v) => v,
+                    Err(e) => return NativeResult::err(crate::iterator::engine_error(vm, &e)),
+                };
+                if crate::iterator::is_callable(proto_matcher) {
+                    return match vm.call_function_sync(proto_matcher, rx_this, &[input_val]) {
+                        Ok(v) => NativeResult::Ok(v),
+                        Err(e) => NativeResult::err(crate::iterator::engine_error(vm, &e)),
+                    };
+                }
+            }
+            // 无 callable @@matchAll：构建包装器。
+            return builder_wrapper(vm, input_val, rx_this);
+        }
+        if crate::iterator::is_callable(matcher) {
+            return match vm.call_function_sync(matcher, rx_this, &[input_val]) {
+                Ok(v) => NativeResult::Ok(v),
+                Err(e) => NativeResult::err(crate::iterator::engine_error(vm, &e)),
+            };
+        }
+        return builder_wrapper(vm, input_val, rx_this);
+    }
+
     // 规范：IsRegExp(pattern) 时先检查 g 标志（Node.js 先行校验，早于
     // GetMethod 调用），不满足则抛 TypeError；满足后查 GetMethod(pattern,
     // @@matchAll)，可调用则直调，否则构建包装器。
@@ -833,8 +882,8 @@ pub fn string_match_all<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
                 Err(e) => NativeResult::err(crate::iterator::engine_error(vm, &e)),
             };
         }
-        // 实例 @@matchAll 不存在/undefined：回退原型链。
-        if own_match_all.is_undefined() {
+        // 实例 @@matchAll 不存在/undefined/null：回退原型链（GetMethod 对 null/undefined 均返 undefined）。
+        if own_match_all.is_undefined() || own_match_all.is_null() {
             let proto_val = re_obj.proto();
             if proto_val.is_object() {
                 let proto_ptr = proto_val.as_js_object_ptr();
@@ -848,12 +897,38 @@ pub fn string_match_all<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
                         Err(e) => NativeResult::err(crate::iterator::engine_error(vm, &e)),
                     };
                 }
+                // 原型链也无 callable @@matchAll：规范 Invoke 抛 TypeError。
+                return NativeResult::Err(crate::error::create_type_error(
+                    vm,
+                    "RegExp.prototype[Symbol.matchAll] is not a function",
+                ));
             }
         }
-        // 默认：构建包装器。
-        builder_wrapper(vm, input_val, pattern_val)
+        // 无 callable @@matchAll：规范 Invoke 抛 TypeError。
+        NativeResult::Err(crate::error::create_type_error(
+            vm,
+            "RegExp.prototype[Symbol.matchAll] is not a function",
+        ))
     } else {
-        // 非 RegExp：按文本编译为 stub（非捕获组，免额外 capture）。
+        // 非 RegExp：先查 @@matchAll（规范步骤 6-8，IsRegExp 为 false 时
+        // 先 ToString(pattern) 转正则，但规范步骤 8 是 Invoke(rx, @@matchAll)。
+        // 实际上，若 pattern 是对象且有 callable @@matchAll，应直调（类似 RegExp 分支）。
+        if pattern_val.is_object() {
+            let match_all_key = oxide_types::private_key::make_well_known_symbol_key(7);
+            let p_ptr = pattern_val.as_js_object_ptr();
+            let p_this = pattern_val;
+            let matcher = match vm.ordinary_get(unsafe { &*p_ptr }, match_all_key, p_this) {
+                Ok(v) => v,
+                Err(e) => return NativeResult::err(crate::iterator::engine_error(vm, &e)),
+            };
+            if crate::iterator::is_callable(matcher) {
+                return match vm.call_function_sync(matcher, p_this, &[input_val]) {
+                    Ok(v) => NativeResult::Ok(v),
+                    Err(e) => NativeResult::err(crate::iterator::engine_error(vm, &e)),
+                };
+            }
+        }
+        // 按文本编译为 stub（非捕获组，免额外 capture）。
         let pattern_units = try_string!(as_units(vm, pattern_val)).into_owned();
         let pattern_str = String::from_utf16_lossy(&pattern_units);
         let escaped = regress::escape(&pattern_str);
