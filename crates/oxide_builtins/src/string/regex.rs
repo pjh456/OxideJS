@@ -8,8 +8,9 @@ use oxide_runtime_api::{NativeResult, VmHost};
 
 use crate::builtins_debug;
 use crate::builtins_error;
+use crate::regexp::build_groups_object;
 
-use super::common::try_string;
+use super::common::{try_string, MatchText};
 use super::{
     as_units, byte_to_unit, find_units, make_string_array_values, make_units_array, map_well_formed_segments,
     this_text, this_units, unit_to_byte,
@@ -1050,7 +1051,7 @@ pub fn string_match_all_next<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult
     if idx > total_units {
         return make_match_done_result(vm, JsValue::undefined());
     }
-    let (match_start, next_idx, parts): (usize, usize, Vec<Vec<u16>>) = if sp.is_flat() {
+    let (match_start, next_idx, parts, m_opt): (usize, usize, Vec<Vec<u16>>, Option<regress::Match>) = if sp.is_flat() {
         let s = sp.as_str();
         match regex.find_from(s, unit_to_byte(s, idx)).next() {
             Some(m) => {
@@ -1068,9 +1069,9 @@ pub fn string_match_all_next<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult
                 let start_units = byte_to_unit(s, range.start);
                 let end_units = byte_to_unit(s, range.end);
                 let next_idx = if range.end > range.start { end_units } else { end_units + 1 };
-                (start_units, next_idx, parts)
+                (start_units, next_idx, parts, Some(m))
             }
-            None => (0, 0, Vec::new()),
+            None => (0, 0, Vec::new(), None),
         }
     } else {
         let u = sp.units();
@@ -1086,9 +1087,9 @@ pub fn string_match_all_next<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult
                     }
                 }
                 let next_idx = if range.end > range.start { range.end } else { range.end + 1 };
-                (range.start, next_idx, parts)
+                (range.start, next_idx, parts, Some(m))
             }
-            None => (0, 0, Vec::new()),
+            None => (0, 0, Vec::new(), None),
         }
     };
 
@@ -1097,12 +1098,20 @@ pub fn string_match_all_next<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult
     }
     vm.set_or_create_prop_value(wrapper, index_si, JsValue::int(next_idx as i32));
     // 构建结果数组：按元素物化字符串值 + 挂 index/input/groups 属性。
-    let value = make_match_result_array(vm, parts, match_start as i32, input_val);
+    let match_text = MatchText::from_value(input_val);
+    let value = make_match_result_array(vm, parts, match_start as i32, input_val, m_opt.as_ref(), &match_text);
     make_match_done_result(vm, value)
 }
 
 /// 构建 matchAll 结果数组：元素为匹配字符串值，附带 index/input/groups 属性。
-fn make_match_result_array<H: VmHost>(vm: &mut H, parts: Vec<Vec<u16>>, match_index: i32, input_val: JsValue) -> JsValue {
+fn make_match_result_array<H: VmHost>(
+    vm: &mut H,
+    parts: Vec<Vec<u16>>,
+    match_index: i32,
+    input_val: JsValue,
+    m: Option<&regress::Match>,
+    text: &MatchText,
+) -> JsValue {
     let values: Vec<JsValue> = parts.into_iter().map(|u| vm.new_string_units_owned(u)).collect();
     let arr = make_string_array_values(vm, values);
     let arr_ptr = arr.as_js_object_ptr();
@@ -1111,8 +1120,12 @@ fn make_match_result_array<H: VmHost>(vm: &mut H, parts: Vec<Vec<u16>>, match_in
     vm.set_or_create_prop_value(arr_obj, index_si, JsValue::int(match_index));
     let input_si = vm.kernel_core().perm_interner().intern("input").0;
     vm.set_or_create_prop_value(arr_obj, input_si, input_val);
+    let groups_val = match m {
+        Some(m) => build_groups_object(vm, m, text),
+        None => JsValue::undefined(),
+    };
     let groups_si = vm.kernel_core().perm_interner().intern("groups").0;
-    vm.set_or_create_prop_value(arr_obj, groups_si, JsValue::undefined());
+    vm.set_or_create_prop_value(arr_obj, groups_si, groups_val);
     arr
 }
 

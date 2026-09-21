@@ -4,7 +4,26 @@ use oxide_types::value::JsValue;
 
 use oxide_runtime_api::{NativeResult, VmHost};
 
-use crate::string::{make_units_array, OwnedText};
+use crate::string::{make_units_array, MatchText, OwnedText};
+
+/// 构建 RegExp match result 的 `groups` 对象：键为命名捕获组名，值为匹配字符串或 undefined。
+pub(crate) fn build_groups_object<H: VmHost>(vm: &mut H, m: &regress::Match, text: &MatchText) -> JsValue {
+    let object_proto = vm.session().builtin_world().object_proto.as_ptr() as *mut JsObject;
+    let groups_obj = vm.alloc_object(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(object_proto)));
+    let groups_ptr = unsafe { &mut *groups_obj };
+
+    // 遍历所有命名捕获组，按名称设置属性（重复名称按规范取最后一次匹配）。
+    for (name, range) in m.named_groups() {
+        let name_si = vm.kernel_core().perm_interner().intern(name).0;
+        let value = match range {
+            Some(r) => vm.new_string_units_owned(text.slice(r.start, r.end).into_owned()),
+            None => JsValue::undefined(),
+        };
+        vm.set_or_create_prop_value(groups_ptr, name_si, value);
+    }
+
+    JsValue::from_js_object(groups_obj)
+}
 
 fn get_regexp_ptr<H: VmHost>(vm: &mut H, args: &[u8]) -> Result<*mut JsObject, JsValue> {
     let this_val = vm.reg(args[0]);
@@ -584,8 +603,9 @@ pub fn regexp_exec<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let input_val = haystack.to_value(vm);
     let input_si = vm.kernel_core().perm_interner().intern("input").0;
     vm.set_or_create_prop_value(unsafe { &mut *arr }, input_si, input_val);
+    let groups_val = build_groups_object(vm, &m, &text);
     let groups_si = vm.kernel_core().perm_interner().intern("groups").0;
-    vm.set_or_create_prop_value(unsafe { &mut *arr }, groups_si, JsValue::undefined());
+    vm.set_or_create_prop_value(unsafe { &mut *arr }, groups_si, groups_val);
 
     // 成功：lastIndex 推进到匹配末尾（仅 global/sticky），Set 语义。
     if tracks_last_index {
@@ -814,12 +834,12 @@ pub fn regexp_get_flags<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 /// `RegExp.prototype.source` getter：返回实例 source 串。
 pub fn regexp_get_source<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(args[0]);
-    // proto 恒等判定：规范对 prototype 本身返回 undefined。
+    // proto 恒等判定：规范对 prototype 本身返回 "(?:)"（无 [[OriginalFlags]] 槽时）。
     if this_val.is_object() {
         let this_ptr = this_val.as_js_object_ptr();
         let proto_ptr = vm.session().builtin_world().regexp_proto.as_ptr() as *mut JsObject;
         if !this_ptr.is_null() && this_ptr == proto_ptr {
-            return NativeResult::Ok(JsValue::undefined());
+            return NativeResult::Ok(vm.new_string_units_owned(vec!['(' as u16, '?' as u16, ':' as u16, ')' as u16]));
         }
     }
     let re_ptr = match get_regexp_ptr(vm, args) {
@@ -827,7 +847,54 @@ pub fn regexp_get_source<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         Err(err) => return NativeResult::Err(err),
     };
     let re = unsafe { &*re_ptr };
-    NativeResult::Ok(re.get_regexp_source())
+    let source = re.get_regexp_source();
+    let flags = re.get_regexp_flags();
+    let source_str = vm.lookup_str(source).unwrap_or_default();
+    let flags_str = vm.lookup_str(flags).unwrap_or_default();
+    NativeResult::Ok(vm.new_string_units_owned(escape_regexp_pattern(&source_str, &flags_str)))
+}
+
+/// `EscapeRegExpPattern(pattern, flags)`：按规范转义 `\`、`/`（非 u/v 旗时）
+/// 与行终止符，使结果可安全嵌入 `/pattern/flags` 字面量。
+fn escape_regexp_pattern(pattern: &str, flags: &str) -> Vec<u16> {
+    let has_uv = flags.contains('u') || flags.contains('v');
+    let mut out: Vec<u16> = Vec::with_capacity(pattern.len() + 4);
+    for ch in pattern.chars() {
+        match ch {
+            '/' | '\\' if !has_uv => {
+                out.push('\\' as u16);
+                out.push(ch as u16);
+            }
+            '\n' => {
+                out.push('\\' as u16);
+                out.push('n' as u16);
+            }
+            '\r' => {
+                out.push('\\' as u16);
+                out.push('r' as u16);
+            }
+            '\u{2028}' => {
+                out.push('\\' as u16);
+                out.push('u' as u16);
+                out.push('2' as u16);
+                out.push('0' as u16);
+                out.push('2' as u16);
+                out.push('8' as u16);
+            }
+            '\u{2029}' => {
+                out.push('\\' as u16);
+                out.push('u' as u16);
+                out.push('2' as u16);
+                out.push('0' as u16);
+                out.push('2' as u16);
+                out.push('9' as u16);
+            }
+            _ => {
+                out.push(ch as u16);
+            }
+        }
+    }
+    out
 }
 
 /// 取匹配文本参数，按 ToString 语义完整转换（对象经 toString/valueOf）；

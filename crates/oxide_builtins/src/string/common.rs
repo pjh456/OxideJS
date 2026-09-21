@@ -34,7 +34,7 @@ pub(crate) enum MatchText<'a> {
 impl<'a> MatchText<'a> {
     /// 从字符串值按载荷形态借用：Flat → Str 零拷贝，其余 → Units
     /// （FlatU16 直接借用、Cons 经扁平化缓存）。
-    fn from_value(val: JsValue) -> Self {
+    pub(crate) fn from_value(val: JsValue) -> Self {
         debug_assert!(val.is_string());
         // SAFETY: val 为字符串值，借用期存活由调用方借用纪律保证。
         let sp = unsafe { &*val.as_string_ptr() };
