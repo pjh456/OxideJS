@@ -171,6 +171,99 @@ fn regexp_exec_global_resets_on_exhaustion() {
     assert!(result.as_bool());
 }
 
+// --- exec lastIndex 规范语义（sticky 锚定 / 越界短路 / 失败重置 / Set 写回）---
+
+#[test]
+fn regexp_exec_sticky_anchored_hit_advances() {
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "var re = /b/y; re.lastIndex = 1; var m = re.exec('ab'); m[0] + ':' + m.index + ':' + re.lastIndex",
+    )
+    .unwrap();
+    assert_eq!(to_str(&vm, result), "b:1:2");
+}
+
+#[test]
+fn regexp_exec_sticky_miss_not_anchored_resets() {
+    // sticky 匹配起点不在 lastIndex 时判无匹配：置 0 回 null（引擎对 y 不原生锚定，靠后置过滤）。
+    let mut vm = Vm::new();
+    let result =
+        eval(&mut vm, "var re = /b/y; re.lastIndex = 0; re.exec('ab') === null && re.lastIndex === 0").unwrap();
+    assert!(result.as_bool());
+    let result =
+        eval(&mut vm, "var re = /c/y; re.lastIndex = 1; re.exec('ab') === null && re.lastIndex === 0").unwrap();
+    assert!(result.as_bool());
+}
+
+#[test]
+fn regexp_exec_out_of_range_resets_last_index() {
+    // lastIndex 超出串长：先 Set 0 再回 null（global 与 sticky 同口径）。
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "var re = /./g; re.lastIndex = 999; re.exec('abc') === null && re.lastIndex === 0",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+    let result = eval(
+        &mut vm,
+        "var re = /./y; re.lastIndex = 999; re.exec('abc') === null && re.lastIndex === 0",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
+#[test]
+fn regexp_exec_nonwritable_last_index_throws() {
+    // 失败 Set 0 命中不可写 lastIndex：TypeError（Set 语义 strict）。
+    let source = "(() => { var re = /c/y; Object.defineProperty(re, 'lastIndex', { writable: false }); try { re.exec('ab'); return 'no-throw'; } catch (e) { return e instanceof TypeError ? 'TypeError' : 'other'; } })()";
+    let mut vm = Vm::new();
+    let result = eval(&mut vm, source).unwrap();
+    assert_eq!(to_str(&vm, result), "TypeError");
+}
+
+#[test]
+fn regexp_exec_this_relaxed_to_object_gate() {
+    // 门禁只要求对象：普通对象 this 缺编译正则槽，同样 TypeError；null/undefined 非对象，TypeError。
+    for this_expr in ["{}", "null", "undefined", "42"] {
+        let source = "(() => { try { RegExp.prototype.exec.call(__THIS__, 'abc'); return 'no-throw'; } catch (e) { return e instanceof TypeError ? 'TypeError' : 'other'; } })()"
+            .replace("__THIS__", this_expr);
+        let mut vm = Vm::new();
+        let result = eval(&mut vm, &source).unwrap();
+        assert_eq!(to_str(&vm, result), "TypeError", "this = {this_expr}");
+    }
+}
+
+#[test]
+fn regexp_exec_last_index_read_via_get_only() {
+    // lastIndex 读走 Get + ToLength（对象经 valueOf）；非 global/sticky 成功与失败均不写回。
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "var re = /a/; re.lastIndex = { valueOf: function () { return 1; } }; var m = re.exec('xa'); m[0] + ':' + m.index + ':' + (re.lastIndex instanceof Object)",
+    )
+    .unwrap();
+    assert_eq!(to_str(&vm, result), "a:1:true");
+    let result = eval(
+        &mut vm,
+        "var re = /z/; re.lastIndex = { valueOf: function () { return 0; } }; re.exec('xa') === null && re.lastIndex instanceof Object",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
+#[test]
+fn regexp_exec_negative_last_index_clamped_to_zero() {
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "var re = /./g; re.lastIndex = -1; var m = re.exec('a'); m.index + ':' + re.lastIndex",
+    )
+    .unwrap();
+    assert_eq!(to_str(&vm, result), "0:1");
+}
+
 // --- RegExp literal compilation ---
 
 #[test]

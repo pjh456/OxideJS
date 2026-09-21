@@ -21,6 +21,54 @@ fn get_regexp_ptr<H: VmHost>(vm: &mut H, args: &[u8]) -> Result<*mut JsObject, J
     Ok(ptr)
 }
 
+/// 取 this 为对象：入口门禁只要求 IsObject（规范对 exec 的 this 无内部槽要求，
+/// 编译正则槽的可用性在调用方另行判定）；非对象（null/undefined/原始值）抛
+/// TypeError。
+///
+/// 与 `get_regexp_ptr`（强校验 is_regexp_obj）并存：exec 走本放宽门禁，
+/// test/toString 等入口保持强校验。
+fn get_this_obj<H: VmHost>(vm: &mut H, args: &[u8]) -> Result<*mut JsObject, JsValue> {
+    let this_val = vm.reg(args[0]);
+    if !this_val.is_object() {
+        return Err(crate::error::create_type_error(vm, "RegExp.prototype method called on non-object"));
+    }
+    let ptr = this_val.as_js_object_ptr();
+    if ptr.is_null() {
+        return Err(crate::error::create_type_error(vm, "null object"));
+    }
+    Ok(ptr)
+}
+
+/// ToLength(Get) 读值的收尾口径：完整对象强转（对象经 ToPrimitive 触发
+/// valueOf/toString，转换异常传播）后按 ToLength 收敛到 [0, 2^53-1]。
+fn to_length_value<H: VmHost>(vm: &mut H, val: JsValue) -> Result<usize, JsValue> {
+    let n = match oxide_runtime_api::to_number_full(val, vm) {
+        Ok(n) => n,
+        Err(e) => {
+            if let Some(exc) = vm.take_uncaught_value() {
+                return Err(exc);
+            }
+            return Err(crate::error::create_from_text(vm, &e));
+        }
+    };
+    let len = if n.is_nan() || n <= 0.0 { 0.0 } else { n.min(9_007_199_254_740_991.0) };
+    Ok(len.trunc() as usize)
+}
+
+/// 以 Set 语义（strict）写 lastIndex：非可写属性抛 TypeError。
+///
+/// # 边界与前提
+/// - 写入失败返回格式化错误文本，由调用方经 `create_from_text` 恢复错误种类。
+fn set_last_index<H: VmHost>(
+    vm: &mut H, re_ptr: *mut JsObject, this_val: JsValue, index: usize,
+) -> Result<(), JsValue> {
+    let li_si = vm.kernel_core().perm_interner().intern("lastIndex").0;
+    match vm.ordinary_set(unsafe { &mut *re_ptr }, li_si, JsValue::int(index as i32), this_val, true) {
+        Ok(()) => Ok(()),
+        Err(err) => Err(crate::error::create_from_text(vm, &err)),
+    }
+}
+
 fn set_prop<H: VmHost>(obj: &mut JsObject, name: &str, val: JsValue, vm: &H) {
     let si = vm.kernel_core().perm_interner().intern(name).0;
     set_prop_by_si(obj, si, val, vm);
@@ -209,14 +257,38 @@ pub fn regexp_test<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     NativeResult::Ok(JsValue::bool(found))
 }
 
-/// `RegExp.prototype.exec(string)`：执行匹配并返回数组（含捕获组、index、input）。
-/// 无匹配返回 null；global 模式推进/重置 lastIndex。
+/// `RegExp.prototype.exec(string)`：执行匹配并返回数组（含捕获组、index、input）；
+/// 无匹配返回 null。
+///
+/// # 步骤
+/// 1. this 仅需对象（IsObject 门禁）；编译正则槽必须存在，非 RegExp 对象无
+///    可匹配模式，同抛 TypeError。
+/// 2. S = ToString(string)；flags 串判 global/sticky（sticky 时 global 归 false
+///    的效果体现为两者只影响同一分支）。
+/// 3. lastIndex = ToLength(Get)：完整属性解析（accessor 与原型链均生效），
+///    读异常传播原异常。
+/// 4. 搜索起点：global/sticky 取 lastIndex，其余 0；起点越出串长时先 Set 0
+///    （仅 global/sticky），再回 null（规范短路）。
+/// 5. 匹配；sticky 加命中后置锚定过滤：匹配起点须恰在 lastIndex
+///    （底层引擎对 y 不原生锚定，过滤为单点）。
+/// 6. lastIndex 写回走 Set 语义且仅 global/sticky：失败置 0、成功置匹配末尾；
+///    非可写属性抛 TypeError。
+///
+/// # 边界与前提
+/// - lastIndex 负值/NaN/非数字经 ToLength 收敛为 0；值以码元口径计。
+/// - 非对象 this 抛 TypeError（门禁），对象但无编译正则同样抛 TypeError。
+///
+/// # 副作用
+/// - global/sticky 时按匹配结果 Set this.lastIndex。
+/// - 命中时分配结果数组。
 pub fn regexp_exec<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
-    let re_ptr = match get_regexp_ptr(vm, args) {
+    let re_ptr = match get_this_obj(vm, args) {
         Ok(ptr) => ptr,
         Err(err) => return NativeResult::Err(err),
     };
+    let this_val = vm.reg(args[0]);
 
+    // 编译正则槽：非 RegExp 对象无可匹配模式。
     let fn_ptr = {
         let re = unsafe { &*re_ptr };
         match re.native_fn() {
@@ -233,65 +305,100 @@ pub fn regexp_exec<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         Ok(s) => s,
         Err(err) => return NativeResult::Err(err),
     };
-
-    let (last_index, is_global) = {
-        let re = unsafe { &*re_ptr };
-        let li = vm.coerce_number_bounded(get_prop(re, 0)).unwrap_or(f64::NAN) as usize;
-        let g = regexp_has_flag(vm, re, 'g');
-        (li, g)
-    };
-
-    // 匹配范围取臂原生命径（Str 臂字节、Units 臂码元）；index/lastIndex 落盘
-    // 前统一换算到码元口径（规格口径）。
     let text = haystack.as_match_text();
-    let match_result = if is_global {
-        if last_index > text.len_units() {
-            return NativeResult::Ok(JsValue::null());
+
+    // 标志决定搜索起点与 lastIndex 写回条件。
+    let (is_global, is_sticky) = {
+        let re = unsafe { &*re_ptr };
+        (regexp_has_flag(vm, re, 'g'), regexp_has_flag(vm, re, 'y'))
+    };
+    let tracks_last_index = is_global || is_sticky;
+
+    // lastIndex 读走 Get + ToLength：完整属性解析，读异常传播原异常。
+    let last_index = {
+        let li_si = vm.kernel_core().perm_interner().intern("lastIndex").0;
+        match vm.ordinary_get(unsafe { &*re_ptr }, li_si, this_val) {
+            Ok(val) => match to_length_value(vm, val) {
+                Ok(n) => n,
+                Err(err) => return NativeResult::Err(err),
+            },
+            Err(_) => {
+                if let Some(exc) = vm.take_uncaught_value() {
+                    return NativeResult::Err(exc);
+                }
+                return NativeResult::Err(crate::error::create_type_error(vm, "Cannot read lastIndex"));
+            }
         }
-        text.find_from_units(regex, last_index)
-    } else {
-        text.find_from_units(regex, 0)
     };
 
-    if let Some(m) = match_result {
-        let range = m.range();
-        let group_count = m.captures.len();
-        let n = 1 + group_count;
-        let proto = vm.session().builtin_world().array_proto.as_ptr() as *mut JsObject;
-        let arr =
-            vm.alloc_object(JsObject::new_array(EMPTY_SHAPE_ID, JsValue::from_js_object(proto), n, vm.epoch().bump()));
-        unsafe {
-            (*arr).set_prop_at(0, vm.new_string_units_owned(text.slice(range.start, range.end).into_owned()));
-            // 捕获组：未参与匹配的组为 undefined。
-            for i in 1..=group_count {
-                match m.group(i) {
-                    Some(g) => {
-                        (*arr).set_prop_at(i, vm.new_string_units_owned(text.slice(g.start, g.end).into_owned()))
-                    }
-                    None => (*arr).set_prop_at(i, JsValue::undefined()),
-                }
+    // 搜索起点：global/sticky 自 lastIndex 起，其余自 0。
+    let start = if tracks_last_index { last_index } else { 0 };
+
+    // 越界短路：lastIndex 超出串长必不匹配，规范先 Set 0 再空结果。
+    if start > text.len_units() {
+        if tracks_last_index {
+            if let Err(err) = set_last_index(vm, re_ptr, this_val, 0) {
+                return NativeResult::Err(err);
             }
-            (*arr).set_prop_count(n);
         }
-
-        let index_si = vm.kernel_core().perm_interner().intern("index").0;
-        vm.set_or_create_prop_value(unsafe { &mut *arr }, index_si, JsValue::int(text.unit_pos(range.start) as i32));
-        let input_val = haystack.to_value(vm);
-        let input_si = vm.kernel_core().perm_interner().intern("input").0;
-        vm.set_or_create_prop_value(unsafe { &mut *arr }, input_si, input_val);
-        let groups_si = vm.kernel_core().perm_interner().intern("groups").0;
-        vm.set_or_create_prop_value(unsafe { &mut *arr }, groups_si, JsValue::undefined());
-        if is_global {
-            set_prop_at(re_ptr, 0, JsValue::int(text.unit_pos(range.end) as i32));
-        }
-
-        NativeResult::Ok(JsValue::from_js_object(arr))
-    } else {
-        if is_global {
-            set_prop_at(re_ptr, 0, JsValue::int(0));
-        }
-        NativeResult::Ok(JsValue::null())
+        return NativeResult::Ok(JsValue::null());
     }
+
+    // 匹配范围取臂原生命径（Str 臂字节、Units 臂码元）；sticky 加后置锚定
+    // 过滤——底层引擎对 y 不原生锚定，命中起点须恰在 lastIndex 才算有效。
+    let mut match_result = text.find_from_units(regex, start);
+    if is_sticky {
+        if let Some(m) = &match_result {
+            if text.unit_pos(m.range().start) != last_index {
+                match_result = None;
+            }
+        }
+    }
+
+    let Some(m) = match_result else {
+        // 失败：仅 global/sticky Set 0。
+        if tracks_last_index {
+            if let Err(err) = set_last_index(vm, re_ptr, this_val, 0) {
+                return NativeResult::Err(err);
+            }
+        }
+        return NativeResult::Ok(JsValue::null());
+    };
+
+    let range = m.range();
+    let group_count = m.captures.len();
+    let n = 1 + group_count;
+    let proto = vm.session().builtin_world().array_proto.as_ptr() as *mut JsObject;
+    let arr =
+        vm.alloc_object(JsObject::new_array(EMPTY_SHAPE_ID, JsValue::from_js_object(proto), n, vm.epoch().bump()));
+    unsafe {
+        (*arr).set_prop_at(0, vm.new_string_units_owned(text.slice(range.start, range.end).into_owned()));
+        // 捕获组：未参与匹配的组为 undefined。
+        for i in 1..=group_count {
+            match m.group(i) {
+                Some(g) => (*arr).set_prop_at(i, vm.new_string_units_owned(text.slice(g.start, g.end).into_owned())),
+                None => (*arr).set_prop_at(i, JsValue::undefined()),
+            }
+        }
+        (*arr).set_prop_count(n);
+    }
+
+    let index_si = vm.kernel_core().perm_interner().intern("index").0;
+    vm.set_or_create_prop_value(unsafe { &mut *arr }, index_si, JsValue::int(text.unit_pos(range.start) as i32));
+    let input_val = haystack.to_value(vm);
+    let input_si = vm.kernel_core().perm_interner().intern("input").0;
+    vm.set_or_create_prop_value(unsafe { &mut *arr }, input_si, input_val);
+    let groups_si = vm.kernel_core().perm_interner().intern("groups").0;
+    vm.set_or_create_prop_value(unsafe { &mut *arr }, groups_si, JsValue::undefined());
+
+    // 成功：lastIndex 推进到匹配末尾（仅 global/sticky），Set 语义。
+    if tracks_last_index {
+        if let Err(err) = set_last_index(vm, re_ptr, this_val, text.unit_pos(range.end)) {
+            return NativeResult::Err(err);
+        }
+    }
+
+    NativeResult::Ok(JsValue::from_js_object(arr))
 }
 
 /// `RegExp.prototype.toString`：按 `/source/flags` 形式返回。
