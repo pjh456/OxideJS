@@ -2,6 +2,7 @@ use oxide_runtime_api::{NativeResult, VmHost};
 use oxide_types::object::JsObject;
 use oxide_types::value::JsValue;
 
+use crate::array::to_integer_or_infinity_bounded;
 use crate::builtins_debug;
 use crate::builtins_error;
 
@@ -10,46 +11,6 @@ use super::{
     as_units, code_point_count, find_units, is_trim_unit, map_well_formed_segments, rfind_units, take_code_points,
     this_units,
 };
-
-/// 安全地将 f64 转为 usize：NaN/±Inf/负值→0，超 u64 上限→usize::MAX。
-fn f64_to_usafe_usize(v: f64) -> usize {
-    if v.is_finite() && v >= 0.0 {
-        let u = v as u64;
-        if u <= usize::MAX as u64 {
-            u as usize
-        } else {
-            usize::MAX
-        }
-    } else {
-        0
-    }
-}
-
-/// 安全地将 f64 转为 i32：NaN/±Inf→0，超 i32 范围→饱和。
-fn f64_to_i32(v: f64) -> i32 {
-    if v.is_finite() && v >= i32::MIN as f64 && v <= i32::MAX as f64 {
-        v as i32
-    } else if v.is_nan() || v.is_infinite() {
-        0
-    } else if v > 0.0 {
-        i32::MAX
-    } else {
-        i32::MIN
-    }
-}
-
-/// 安全地将 f64 转为 isize：NaN/±Inf→0，超 isize 范围→饱和。
-fn f64_to_isize(v: f64) -> isize {
-    if v.is_finite() && v >= isize::MIN as f64 && v <= isize::MAX as f64 {
-        v as isize
-    } else if v.is_nan() || v.is_infinite() {
-        0
-    } else if v > 0.0 {
-        isize::MAX
-    } else {
-        isize::MIN
-    }
-}
 
 // ── 静态方法 / 构造 ─────────────────────────────────────────────────────
 
@@ -208,14 +169,18 @@ pub fn string_index_of<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     // 单元序列落地为 owned：借用落地后与后续 &mut 调用无交叠。
     let search_val = if args.len() >= 2 { vm.reg(args[1]) } else { JsValue::undefined() };
     let search: Vec<u16> = try_string!(as_units(vm, search_val)).into_owned();
-    let pos_raw = if args.len() > 2 {
-        f64_to_usafe_usize(vm.coerce_number_bounded(vm.reg(args[2])).unwrap_or(f64::NAN))
+    let s: Vec<u16> = try_string!(this_units(vm, args)).into_owned();
+    let n = s.len();
+    // position：ToIntegerOrInfinity 传播式，负值归 0、+Inf 归 len。
+    let pos = if args.len() > 2 {
+        let p = match to_integer_or_infinity_bounded(vm, vm.reg(args[2])) {
+            Ok(p) => p,
+            Err(exc) => return NativeResult::Err(exc),
+        };
+        (p.max(0.0).min(n as f64)) as usize
     } else {
         0
     };
-    let s: Vec<u16> = try_string!(this_units(vm, args)).into_owned();
-    let n = s.len();
-    let pos = pos_raw.min(n);
 
     if search.is_empty() {
         return NativeResult::Ok(JsValue::int(pos as i32));
@@ -232,13 +197,17 @@ pub fn string_includes<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     // 参数转换先行（&mut 路径）：search 缺省为 undefined（经 ToString 得 "undefined"）。
     let search_val = if args.len() >= 2 { vm.reg(args[1]) } else { JsValue::undefined() };
     let search: Vec<u16> = try_string!(as_units(vm, search_val)).into_owned();
-    let pos_raw = if args.len() > 2 {
-        f64_to_usafe_usize(vm.coerce_number_bounded(vm.reg(args[2])).unwrap_or(f64::NAN))
+    let s: Vec<u16> = try_string!(this_units(vm, args)).into_owned();
+    // position：ToIntegerOrInfinity 传播式，负值归 0、+Inf 归 len。
+    let pos = if args.len() > 2 {
+        let p = match to_integer_or_infinity_bounded(vm, vm.reg(args[2])) {
+            Ok(p) => p,
+            Err(exc) => return NativeResult::Err(exc),
+        };
+        (p.max(0.0).min(s.len() as f64)) as usize
     } else {
         0
     };
-    let s: Vec<u16> = try_string!(this_units(vm, args)).into_owned();
-    let pos = pos_raw.min(s.len());
 
     if search.is_empty() {
         return NativeResult::Ok(JsValue::bool(true));
@@ -249,14 +218,18 @@ pub fn string_includes<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 /// `String.prototype.charAt(index)`：返回指定码元位置的 1 单元字符串；越界返回空串。
 pub fn string_char_at<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("String.prototype.charAt called with {} args", args.len());
-    // index 可能触发对象 ToNumber（&mut 路径），先行转换。
+    // index 可能触发对象 ToNumber（&mut 路径），先行转换；ToIntegerOrInfinity
+    // 传播式，负值/越界（含 ±Inf）返回空串。
     let idx = if args.len() >= 2 {
-        f64_to_i32(vm.coerce_number_bounded(vm.reg(args[1])).unwrap_or(f64::NAN))
+        match to_integer_or_infinity_bounded(vm, vm.reg(args[1])) {
+            Ok(p) => p,
+            Err(exc) => return NativeResult::Err(exc),
+        }
     } else {
-        0
+        0.0
     };
     let s: Vec<u16> = try_string!(this_units(vm, args)).into_owned();
-    if idx < 0 || idx as usize >= s.len() {
+    if idx < 0.0 || idx >= s.len() as f64 {
         return NativeResult::Ok(vm.new_string(""));
     }
     let u = s[idx as usize];
@@ -270,14 +243,18 @@ pub fn string_char_at<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 /// `String.prototype.charCodeAt(index)`：返回指定码元位置的 code unit；越界返回 NaN。
 pub fn string_char_code_at<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("String.prototype.charCodeAt called with {} args", args.len());
-    // index 可能触发对象 ToNumber（&mut 路径），先行转换。
+    // index 可能触发对象 ToNumber（&mut 路径），先行转换；ToIntegerOrInfinity
+    // 传播式，负值/越界（含 ±Inf）返回 NaN。
     let idx = if args.len() >= 2 {
-        f64_to_i32(vm.coerce_number_bounded(vm.reg(args[1])).unwrap_or(f64::NAN))
+        match to_integer_or_infinity_bounded(vm, vm.reg(args[1])) {
+            Ok(p) => p,
+            Err(exc) => return NativeResult::Err(exc),
+        }
     } else {
-        0
+        0.0
     };
     let s = try_string!(this_units(vm, args));
-    if idx < 0 || idx as usize >= s.len() {
+    if idx < 0.0 || idx >= s.len() as f64 {
         return NativeResult::Ok(JsValue::float(f64::NAN));
     }
     NativeResult::Ok(JsValue::int(s[idx as usize] as i32))
@@ -333,21 +310,18 @@ pub fn string_last_index_of<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult 
     // 参数转换先行（&mut 路径）：search 缺省为 undefined（经 ToString 得 "undefined"）。
     let search_val = if args.len() >= 2 { vm.reg(args[1]) } else { JsValue::undefined() };
     let search: Vec<u16> = try_string!(as_units(vm, search_val)).into_owned();
-    let pos_raw = if args.len() > 2 {
-        let p = oxide_runtime_api::to_integer_or_infinity(vm.reg(args[2]));
-        if p.is_nan() {
-            None
-        } else {
-            Some(p as usize)
-        }
-    } else {
-        None
-    };
     let s: Vec<u16> = try_string!(this_units(vm, args)).into_owned();
     let n = s.len();
-    let pos = match pos_raw {
-        Some(p) => p.min(n),
-        None => n,
+    // position：ToIntegerOrInfinity 传播式（NaN → 0），负值归 0、+Inf 归 len；
+    // 缺参 → len。
+    let pos = if args.len() > 2 {
+        let p = match to_integer_or_infinity_bounded(vm, vm.reg(args[2])) {
+            Ok(p) => p,
+            Err(exc) => return NativeResult::Err(exc),
+        };
+        (p.max(0.0).min(n as f64)) as usize
+    } else {
+        n
     };
 
     if search.is_empty() {
@@ -386,43 +360,45 @@ pub fn string_concat<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 /// `String.prototype.slice(start, end)`：按码元区间（支持负索引）取子串。
 pub fn string_slice<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("String.prototype.slice called with {} args", args.len());
-    // 位置参数先行（&mut 转换），后借 this 取子串。
-    let start_raw = if args.len() > 1 {
-        Some(f64_to_i32(vm.coerce_number_bounded(vm.reg(args[1])).unwrap_or(f64::NAN)))
-    } else {
-        None
-    };
-    let end_raw = if args.len() > 2 {
-        Some(f64_to_i32(vm.coerce_number_bounded(vm.reg(args[2])).unwrap_or(f64::NAN)))
-    } else {
-        None
-    };
+    // this 单元序列先行（&mut 借用落地），后转两个位置参数。
     let s: Vec<u16> = try_string!(this_units(vm, args)).into_owned();
-    let n = s.len() as i32;
-    let start = match start_raw {
-        Some(v) => {
-            if v < 0 {
-                (n + v).max(0)
-            } else {
-                v.min(n)
-            }
+    let n = s.len();
+    // start：缺参 → 0；ToIntegerOrInfinity 传播式，相对折叠（负从尾数、+Inf 归 len）。
+    let start = if args.len() > 1 {
+        let p = match to_integer_or_infinity_bounded(vm, vm.reg(args[1])) {
+            Ok(p) => p,
+            Err(exc) => return NativeResult::Err(exc),
+        };
+        if p < 0.0 {
+            (n as f64 + p).max(0.0) as usize
+        } else {
+            p.min(n as f64) as usize
         }
-        None => 0,
+    } else {
+        0
     };
-    let end = match end_raw {
-        Some(v) => {
-            if v < 0 {
-                (n + v).max(0)
+    // end：缺参/显式 undefined → len（规范 GetRelativeEnd），其余同相对折叠。
+    let end = if args.len() > 2 {
+        let end_val = vm.reg(args[2]);
+        if end_val.is_undefined() {
+            n
+        } else {
+            let p = match to_integer_or_infinity_bounded(vm, end_val) {
+                Ok(p) => p,
+                Err(exc) => return NativeResult::Err(exc),
+            };
+            if p < 0.0 {
+                (n as f64 + p).max(0.0) as usize
             } else {
-                v.min(n)
+                p.min(n as f64) as usize
             }
         }
-        None => n,
+    } else {
+        n
     };
     // 码元区间精确切片（孤立 surrogate 按单元保留，不吸附字符边界）。
     let out: Vec<u16> = if start < end {
-        let (a, b) = (start as usize, end as usize);
-        s[a.min(s.len())..b.min(s.len())].to_vec()
+        s[start.min(s.len())..end.min(s.len())].to_vec()
     } else {
         Vec::new()
     };
@@ -436,28 +412,34 @@ pub fn string_substring<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let start_arg = if args.len() > 1 { Some(vm.reg(args[1])) } else { None };
     let end_arg = if args.len() > 2 { Some(vm.reg(args[2])) } else { None };
     let s: Vec<u16> = try_string!(this_units(vm, args)).into_owned();
-    let n = s.len() as i32;
+    // ToIntegerOrInfinity 传播式：NaN/负 → 0、+Inf → len，取 min。
     let mut start = match start_arg {
         Some(v) => {
-            let v = oxide_runtime_api::to_integer_or_infinity(v);
-            if v.is_nan() || v < 0.0 {
-                0
+            let p = match to_integer_or_infinity_bounded(vm, v) {
+                Ok(p) => p,
+                Err(exc) => return NativeResult::Err(exc),
+            };
+            if p < 0.0 {
+                0.0
             } else {
-                (v as i32).min(n)
+                p.min(s.len() as f64)
             }
         }
-        None => 0,
+        None => 0.0,
     };
     let mut end = match end_arg {
         Some(v) => {
-            let v = oxide_runtime_api::to_integer_or_infinity(v);
-            if v.is_nan() || v < 0.0 {
-                0
+            let p = match to_integer_or_infinity_bounded(vm, v) {
+                Ok(p) => p,
+                Err(exc) => return NativeResult::Err(exc),
+            };
+            if p < 0.0 {
+                0.0
             } else {
-                (v as i32).min(n)
+                p.min(s.len() as f64)
             }
         }
-        None => n,
+        None => s.len() as f64,
     };
     if start > end {
         std::mem::swap(&mut start, &mut end);
@@ -474,23 +456,34 @@ pub fn string_substr<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let start_arg = if args.len() > 1 { Some(vm.reg(args[1])) } else { None };
     let length_arg = if args.len() > 2 { Some(vm.reg(args[2])) } else { None };
     let s: Vec<u16> = try_string!(this_units(vm, args)).into_owned();
-    let len = s.len() as isize;
+    let len = s.len();
+    // start：ToIntegerOrInfinity 传播式，相对折叠（负从尾数、+Inf 归 len）。
     let start = match start_arg {
         Some(v) => {
-            let n = f64_to_isize(oxide_runtime_api::to_integer_or_infinity(v));
-            if n < 0 {
-                (len + n).max(0)
+            let p = match to_integer_or_infinity_bounded(vm, v) {
+                Ok(p) => p,
+                Err(exc) => return NativeResult::Err(exc),
+            };
+            if p < 0.0 {
+                (len as f64 + p).max(0.0) as usize
             } else {
-                n.min(len)
+                p.min(len as f64) as usize
             }
         }
         None => 0,
-    } as usize;
-    let length = match length_arg {
-        Some(v) => f64_to_isize(oxide_runtime_api::to_integer_or_infinity(v)).max(0) as usize,
-        None => len as usize - start,
     };
-    let count = length.min(len as usize - start);
+    // length：负 → 0；+Inf 取剩余全部。
+    let length = match length_arg {
+        Some(v) => {
+            let p = match to_integer_or_infinity_bounded(vm, v) {
+                Ok(p) => p,
+                Err(exc) => return NativeResult::Err(exc),
+            };
+            p.max(0.0) as usize
+        }
+        None => len - start,
+    };
+    let count = length.min(len - start);
     let out: Vec<u16> = s[start..start + count].to_vec();
     NativeResult::Ok(vm.new_string_units_owned(out))
 }
@@ -499,15 +492,19 @@ pub fn string_substr<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 /// 越界返回 undefined。
 pub fn string_at<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("String.prototype.at called with {} args", args.len());
+    // index：ToIntegerOrInfinity 传播式，负索引从尾折算，越界（含 ±Inf）→ undefined。
     let idx = if args.len() > 1 {
-        f64_to_i32(oxide_runtime_api::to_integer_or_infinity(vm.reg(args[1])))
+        match to_integer_or_infinity_bounded(vm, vm.reg(args[1])) {
+            Ok(p) => p,
+            Err(exc) => return NativeResult::Err(exc),
+        }
     } else {
-        0
+        0.0
     };
     let s = try_string!(this_units(vm, args));
-    let len = s.len() as i32;
-    let idx = if idx < 0 { len + idx } else { idx };
-    if idx < 0 || idx >= len {
+    let len = s.len() as f64;
+    let idx = if idx < 0.0 { len + idx } else { idx };
+    if idx < 0.0 || idx >= len {
         return NativeResult::Ok(JsValue::undefined());
     }
     let u = s[idx as usize];
@@ -576,9 +573,17 @@ pub fn string_trim_end<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 /// `String.prototype.repeat(count)`：重复字符串 count 次（当前上限 10000 防滥用）。
 pub fn string_repeat<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("String.prototype.repeat called with {} args", args.len());
-    // count 转换先行（&mut 路径），后借 this 重复。
+    // count 转换先行（&mut 路径）：ToIntegerOrInfinity 传播式，负值与 +Inf
+    // 抛 RangeError（规范步），后借 this 重复。
     let n = if args.len() > 1 {
-        f64_to_usafe_usize(vm.coerce_number_bounded(vm.reg(args[1])).unwrap_or(f64::NAN)).min(10000)
+        let p = match to_integer_or_infinity_bounded(vm, vm.reg(args[1])) {
+            Ok(p) => p,
+            Err(exc) => return NativeResult::Err(exc),
+        };
+        if p < 0.0 || p.is_infinite() {
+            return NativeResult::Err(crate::error::create_range_error(vm, "Invalid count argument"));
+        }
+        (p as usize).min(10000)
     } else {
         1
     };
@@ -595,8 +600,14 @@ pub fn string_repeat<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 pub fn string_pad_start<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("String.prototype.padStart called with {} args", args.len());
     // 参数转换先行（&mut 路径）：targetLength 与 padString 均可能触发对象转换。
+    // targetLength：ToIntegerOrInfinity 传播式，负值归 0；+Inf 经既有 10000
+    // 上限检查自然落 RangeError。
     let target_arg = if args.len() > 1 {
-        Some(f64_to_usafe_usize(vm.coerce_number_bounded(vm.reg(args[1])).unwrap_or(f64::NAN)))
+        let p = match to_integer_or_infinity_bounded(vm, vm.reg(args[1])) {
+            Ok(p) => p,
+            Err(exc) => return NativeResult::Err(exc),
+        };
+        Some(p.max(0.0))
     } else {
         None
     };
@@ -609,7 +620,7 @@ pub fn string_pad_start<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     };
     let s: Vec<u16> = try_string!(this_units(vm, args)).into_owned();
     let s_len = code_point_count(&s);
-    let target = target_arg.unwrap_or(s_len);
+    let target = target_arg.map(|p| p as usize).unwrap_or(s_len);
     if target > 10000 {
         builtins_error!("String.prototype.padStart: invalid receiver");
         return NativeResult::Err(crate::error::create_range_error(vm, "Invalid string length"));
@@ -636,8 +647,14 @@ pub fn string_pad_start<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 pub fn string_pad_end<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("String.prototype.padEnd called with {} args", args.len());
     // 参数转换先行（&mut 路径）：targetLength 与 padString 均可能触发对象转换。
+    // targetLength：ToIntegerOrInfinity 传播式，负值归 0；+Inf 经既有 10000
+    // 上限检查自然落 RangeError。
     let target_arg = if args.len() > 1 {
-        Some(f64_to_usafe_usize(vm.coerce_number_bounded(vm.reg(args[1])).unwrap_or(f64::NAN)))
+        let p = match to_integer_or_infinity_bounded(vm, vm.reg(args[1])) {
+            Ok(p) => p,
+            Err(exc) => return NativeResult::Err(exc),
+        };
+        Some(p.max(0.0))
     } else {
         None
     };
@@ -650,7 +667,7 @@ pub fn string_pad_end<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     };
     let s: Vec<u16> = try_string!(this_units(vm, args)).into_owned();
     let s_len = code_point_count(&s);
-    let target = target_arg.unwrap_or(s_len);
+    let target = target_arg.map(|p| p as usize).unwrap_or(s_len);
     if target > 10000 {
         builtins_error!("String.prototype.padEnd: invalid receiver");
         return NativeResult::Err(crate::error::create_range_error(vm, "Invalid string length"));
@@ -679,13 +696,17 @@ pub fn string_starts_with<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     // 参数转换先行（&mut 路径）：search 缺省为 undefined（经 ToString 得 "undefined"）。
     let search_val = if args.len() >= 2 { vm.reg(args[1]) } else { JsValue::undefined() };
     let search: Vec<u16> = try_string!(as_units(vm, search_val)).into_owned();
-    let pos_raw = if args.len() > 2 {
-        f64_to_usafe_usize(vm.coerce_number_bounded(vm.reg(args[2])).unwrap_or(f64::NAN))
+    let s: Vec<u16> = try_string!(this_units(vm, args)).into_owned();
+    // position：ToIntegerOrInfinity 传播式，负值归 0、+Inf 归 len。
+    let pos = if args.len() > 2 {
+        let p = match to_integer_or_infinity_bounded(vm, vm.reg(args[2])) {
+            Ok(p) => p,
+            Err(exc) => return NativeResult::Err(exc),
+        };
+        (p.max(0.0).min(s.len() as f64)) as usize
     } else {
         0
     };
-    let s: Vec<u16> = try_string!(this_units(vm, args)).into_owned();
-    let pos = pos_raw.min(s.len());
     let result = if search.is_empty() { true } else { s[pos..].starts_with(&search) };
     NativeResult::Ok(JsValue::bool(result))
 }
@@ -697,13 +718,23 @@ pub fn string_ends_with<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     // 参数转换先行（&mut 路径）：search 缺省为 undefined（经 ToString 得 "undefined"）。
     let search_val = if args.len() >= 2 { vm.reg(args[1]) } else { JsValue::undefined() };
     let search: Vec<u16> = try_string!(as_units(vm, search_val)).into_owned();
-    let end_pos_raw = if args.len() > 2 {
-        f64_to_usafe_usize(vm.coerce_number_bounded(vm.reg(args[2])).unwrap_or(f64::NAN))
-    } else {
-        usize::MAX
-    };
     let s: Vec<u16> = try_string!(this_units(vm, args)).into_owned();
-    let end_pos = end_pos_raw.min(s.len());
+    // endPosition：缺参/显式 undefined → len（规范步），其余 ToIntegerOrInfinity
+    // 传播式折叠，负值归 0、+Inf 归 len。
+    let end_pos = if args.len() > 2 {
+        let end_val = vm.reg(args[2]);
+        if end_val.is_undefined() {
+            s.len()
+        } else {
+            let p = match to_integer_or_infinity_bounded(vm, end_val) {
+                Ok(p) => p,
+                Err(exc) => return NativeResult::Err(exc),
+            };
+            (p.max(0.0).min(s.len() as f64)) as usize
+        }
+    } else {
+        s.len()
+    };
     let result = if search.is_empty() { true } else { s[..end_pos].ends_with(&search) };
     NativeResult::Ok(JsValue::bool(result))
 }

@@ -1624,3 +1624,51 @@ fn string_locale_methods_length_and_name() {
     .unwrap();
     assert!(r.as_bool());
 }
+
+/// BigInt 位置参数钉：17 个方法的 ToIntegerOrInfinity 面对 BigInt 抛 TypeError。
+#[test]
+fn string_methods_bigint_position_type_error() {
+    let mut vm = Vm::new();
+    for src in [
+        "'a'.indexOf('a', 0n)",
+        "'abc'.includes('b', 1n)",
+        "'abc'.charAt(0n)",
+        "'abc'.charCodeAt(0n)",
+        "'abc'.lastIndexOf('b', 1n)",
+        "'abc'.slice(1n)",
+        "'abc'.slice(0, 1n)",
+        "'abc'.substring(1n)",
+        "'abc'.substring(0, 1n)",
+        "'abc'.substr(1n)",
+        "'abc'.substr(0, 1n)",
+        "'abc'.at(0n)",
+        "'ab'.repeat(2n)",
+        "'ab'.padStart(3n)",
+        "'ab'.padEnd(3n)",
+        "'abc'.startsWith('a', 1n)",
+        "'abc'.endsWith('c', 2n)",
+    ] {
+        let err = eval(&mut vm, src).unwrap_err();
+        assert!(err.contains("TypeError"), "{}: {}", src, err);
+    }
+}
+
+/// valueOf 异常透传钉：A 形（indexOf）与 B 形（at）均保留原异常值。
+#[test]
+fn string_methods_value_of_abort_passes_through() {
+    let mut vm = Vm::new();
+    let v = eval(&mut vm, "try { 'a'.indexOf('a', {valueOf(){ throw 42 }}) } catch (e) { e }").unwrap();
+    assert_eq!(v.as_int(), 42);
+    let v = eval(&mut vm, "try { 'abc'.at({valueOf(){ throw 42 }}) } catch (e) { e }").unwrap();
+    assert_eq!(v.as_int(), 42);
+}
+
+/// repeat count 界判钉：负值与 +Infinity 均抛 RangeError。
+#[test]
+fn string_repeat_count_range_error() {
+    let mut vm = Vm::new();
+    let err = eval(&mut vm, "'ab'.repeat(-1)").unwrap_err();
+    assert!(err.contains("RangeError"), "got: {}", err);
+    let err = eval(&mut vm, "'ab'.repeat(Infinity)").unwrap_err();
+    assert!(err.contains("RangeError"), "got: {}", err);
+}
