@@ -822,3 +822,137 @@ fn regexp_constructor_regexp_instance_form() {
     let result = eval(&mut vm, "new RegExp(/ab/g).flags").unwrap();
     assert_eq!(to_str(&vm, result), "g");
 }
+
+// --- exec/match 结果面：groups 对象（null 原型、重名键序）与 indices（d 标志）---
+
+#[test]
+fn regexp_exec_duplicate_named_groups_first_source_order() {
+    // groups 键序按首现源序（y 先于 x）；各分支命中各自命名组取值。
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "(() => { var m = /(?<y>a)(?<x>a)|(?<x>b)(?<y>b)/.exec('aa'); return Object.keys(m.groups).join(',') + '|' + m.groups.y + m.groups.x; })()",
+    )
+    .unwrap();
+    assert_eq!(to_str(&vm, result), "y,x|aa");
+    let result = eval(
+        &mut vm,
+        "(() => { var m = /(?<y>a)(?<x>a)|(?<x>b)(?<y>b)/.exec('bb'); return Object.keys(m.groups).join(',') + '|' + m.groups.y + m.groups.x; })()",
+    )
+    .unwrap();
+    assert_eq!(to_str(&vm, result), "y,x|bb");
+}
+
+#[test]
+fn regexp_exec_groups_undefined_own_property() {
+    // 无命名组时 groups 是自身属性 undefined（非删除），对象不构建。
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "(() => { var m = /a/.exec('a'); return (m.groups === undefined) + ':' + m.hasOwnProperty('groups') + ':' + (/(a)/.exec('a').groups === undefined); })()",
+    )
+    .unwrap();
+    assert_eq!(to_str(&vm, result), "true:true:true");
+}
+
+#[test]
+fn regexp_exec_groups_null_prototype() {
+    // groups 对象原型为 null（ObjectCreate(null)），不挂 Object.prototype。
+    let mut vm = Vm::new();
+    let result = eval(&mut vm, "Object.getPrototypeOf(/a(?<g>b)/.exec('ab').groups) === null").unwrap();
+    assert!(result.as_bool());
+}
+
+#[test]
+fn regexp_constructor_undefined_pattern_is_empty() {
+    // undefined 模式按空串编译（非 "undefined"）：串头空命中，index 0。
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "(() => { var m = new RegExp(undefined).exec('xyz'); return new RegExp(undefined).source + ':' + m[0] + ':' + m.index; })()",
+    )
+    .unwrap();
+    assert_eq!(to_str(&vm, result), "::0");
+}
+
+#[test]
+fn regexp_exec_indices_basic_pairs() {
+    // d 标志：indices[0] 为完整匹配 [start, end] 码元对，逐捕获组同形；
+    // 无 d 标志时无 indices 属性。
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "(() => { var m = /(?<g>a)b/d.exec('cab'); return m.indices[0][0] + ',' + m.indices[0][1] + '|' + m.indices[1][0] + ',' + m.indices[1][1]; })()",
+    )
+    .unwrap();
+    assert_eq!(to_str(&vm, result), "1,3|1,2");
+    let result = eval(&mut vm, "/(a)/.exec('a').indices === undefined").unwrap();
+    assert!(result.as_bool());
+}
+
+#[test]
+fn regexp_exec_indices_unmatched_and_groups() {
+    // 未匹配捕获组在 indices 中为 undefined；indices.groups 原型 null、值为码元对。
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "(() => { var m = /a(?<x>b)?/d.exec('a'); return m.indices[1] === undefined ? 'u' : 'n'; })()",
+    )
+    .unwrap();
+    assert_eq!(to_str(&vm, result), "u");
+    let result = eval(
+        &mut vm,
+        "(() => { var m = /(?<g>a)b/d.exec('cab'); return (Object.getPrototypeOf(m.indices.groups) === null) + ':' + m.indices.groups.g[0] + ',' + m.indices.groups.g[1]; })()",
+    )
+    .unwrap();
+    assert_eq!(to_str(&vm, result), "true:1,2");
+}
+
+#[test]
+fn string_match_delegates_exec_result() {
+    // 非 global match 交付 exec 结果本体（index/input/未匹配捕获 undefined/
+    // groups null 原型）；缺参按空模式串头命中。
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "(() => { var m = 'x0'.match(/(0)(1)?/); return m.index + ':' + m.input + ':' + (m[2] === undefined ? 'u' : 'n') + ':' + (m.groups === undefined ? 'u' : 'n'); })()",
+    )
+    .unwrap();
+    assert_eq!(to_str(&vm, result), "1:x0:u:u");
+    let result = eval(
+        &mut vm,
+        "(() => { var m = 'x'.match(); return m.length + ':' + m.index + ':' + m[0] + ':' + m.input; })()",
+    )
+    .unwrap();
+    assert_eq!(to_str(&vm, result), "1:0::x");
+}
+
+#[test]
+fn string_split_unmatched_capture_undefined() {
+    // split 捕获组未匹配时元素为 undefined（非空串）。
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "(() => { var p = 'xa(xb)'.split(/x(a)(b)?/); return p.length + ':' + (p[2] === undefined ? 'u' : 'n') + ':' + p[3]; })()",
+    )
+    .unwrap();
+    assert_eq!(to_str(&vm, result), "4:u:(xb)");
+}
+
+#[test]
+fn string_match_all_result_indices_and_unmatched() {
+    // d 标志下 matchAll 结果挂 indices（与 exec 同面）；未匹配捕获组 undefined。
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "(() => { var it = 'aab'.matchAll(/a(?<g>a)?/dg); var r = it.next().value; return JSON.stringify(r.indices) + ':' + JSON.stringify(r.groups) + ':' + r.index; })()",
+    )
+    .unwrap();
+    assert_eq!(to_str(&vm, result), "[[0,2],[1,2]]:{\"g\":\"a\"}:0");
+    let result = eval(
+        &mut vm,
+        "(() => { var it = 'x0'.matchAll(/(0)(1)?/g); var r = it.next().value; return r[2] === undefined ? 'u' : 'n'; })()",
+    )
+    .unwrap();
+    assert_eq!(to_str(&vm, result), "u");
+}
