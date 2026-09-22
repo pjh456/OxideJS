@@ -150,8 +150,14 @@ fn typed_array_bigint_fill_with_number_throws() {
 #[test]
 fn typed_array_to_string_is_identifiable() {
     let mut vm = Vm::new();
-    let result = eval(&mut vm, "var ta = new Uint8Array(1); ta.toString()").unwrap();
-    assert_eq!(to_str(&vm, result), "[object Uint8Array]");
+    // own toString 走 Array join 语义（Uint8Array(1) → "0")；
+    // @@toStringTag 经 Object.prototype.toString 仍可辨识。
+    let result = eval(
+        &mut vm,
+        "var ta = new Uint8Array(1); Object.prototype.toString.call(ta) + \";\" + ta.toString()",
+    )
+    .unwrap();
+    assert_eq!(to_str(&vm, result), "[object Uint8Array];0");
 }
 
 #[test]

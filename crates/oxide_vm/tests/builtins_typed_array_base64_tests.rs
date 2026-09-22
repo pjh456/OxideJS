@@ -361,8 +361,10 @@ fn typed_array_prototype_to_string_chain() {
             var d = Object.getOwnPropertyDescriptor(TypedArray.prototype, "toString");
             if (d === undefined) return "not own";
             if (d.writable !== true || d.enumerable !== false || d.configurable !== true) return "attrs";
-            // proto 链接 Array.prototype。
-            if (Object.getPrototypeOf(TypedArray.prototype) !== Array.prototype) return "chain";
+            // proto 链接 Object.prototype，不继承 Array.prototype。
+            if (Object.getPrototypeOf(TypedArray.prototype) !== Object.prototype) return "chain";
+            if (new Int8Array(1) instanceof Array) return "instanceof";
+            if (Int8Array.prototype.push !== undefined) return "inherited";
             // 实例 toString 走 Array 语义（经 TA 自身 join）。
             if (new Uint8Array([1, 2, 3]).toString() !== "1,2,3") return "instance";
             if (new Int16Array([7]).toString() !== "7") return "instance16";

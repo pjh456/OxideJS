@@ -159,12 +159,12 @@ fn make_typed_array_abstract_ctor(
 }
 
 pub(crate) fn make_typed_array_family(
-    string_forge: &PermInterner, shape_forge: &ShapeForge, labels: BuiltinLabels, array_proto: &P<JsObject>,
+    string_forge: &PermInterner, shape_forge: &ShapeForge, labels: BuiltinLabels, object_proto: &P<JsObject>,
 ) -> TypedArrayFamily {
-    let array_proto_val = JsValue::from_js_object(array_proto.as_ptr() as *mut JsObject);
+    let obj_proto_val = JsValue::from_js_object(object_proto.as_ptr() as *mut JsObject);
     // 给共享原型开 "constructor" 槽位（占位值在 wire 时填抽象构造器）；
-    // [[Prototype]] 按规范接 Array.prototype（toString 经绑定层共享同一函数对象）。
-    let mut typed_array_proto_obj = JsObject::new_empty(EMPTY_SHAPE_ID, array_proto_val);
+    // [[Prototype]] 接 Object.prototype（own toString 由绑定层安装，不经 Array.prototype 继承）。
+    let mut typed_array_proto_obj = JsObject::new_empty(EMPTY_SHAPE_ID, obj_proto_val);
     let ctor_si = labels.constructor;
     let proto_shape = shape_forge.make_shape(typed_array_proto_obj.shape_id(), ctor_si);
     typed_array_proto_obj.set_shape_id(proto_shape);
@@ -253,9 +253,9 @@ fn set_proto_if_changed(obj: &P<JsObject>, proto: JsValue) {
 ///    TypedArray 家族共享对），经 `wire_ctor_proto` 覆盖占位槽；
 /// 2. 23 个非 TypedArray 构造器的 `[[Prototype]]` → Function.prototype
 ///    （标准内置函数对象均继承 Function.prototype）；
-/// 3. 24 个非 Object 原型的 `[[Prototype]]` → Object.prototype，另含
+/// 3. 25 个非 Object 原型的 `[[Prototype]]` → Object.prototype，另含
 ///    Temporal 命名空间对象、Temporal.now、Console 单例与 Math/JSON
-///    命名空间对象；%TypedArray% 共享原型例外接 Array.prototype；
+///    命名空间对象；
 /// 4. %IteratorPrototype% → Object.prototype，6 个集合迭代器原型
 ///    → %IteratorPrototype%；
 /// 5. TypedArray 家族：11 个具体原型 → %TypedArray% 共享原型，11 个具体
@@ -338,7 +338,7 @@ pub(crate) fn wire_builtin_world_links(world: &BuiltinWorld) {
     }
 
     let obj_proto_val = JsValue::from_js_object(world.object_proto.as_ptr() as *mut JsObject);
-    let non_object_protos: [&P<JsObject>; 24] = [
+    let non_object_protos: [&P<JsObject>; 25] = [
         &world.array_proto,
         &world.function_proto,
         &world.string_proto,
@@ -352,6 +352,7 @@ pub(crate) fn wire_builtin_world_links(world: &BuiltinWorld) {
         &world.regexp_proto,
         &world.array_buffer_proto,
         &world.data_view_proto,
+        &world.typed_array_proto,
         &world.instant_proto,
         &world.plain_date_proto,
         &world.plain_time_proto,
@@ -367,9 +368,6 @@ pub(crate) fn wire_builtin_world_links(world: &BuiltinWorld) {
     for proto in &non_object_protos {
         set_proto_if_changed(proto, obj_proto_val);
     }
-    // %TypedArray%.prototype → Array.prototype（toString 语义经此继承）。
-    let array_proto_val = JsValue::from_js_object(world.array_proto.as_ptr() as *mut JsObject);
-    set_proto_if_changed(&world.typed_array_proto, array_proto_val);
 
     // Temporal 命名空间对象（非构造器）继承 Object.prototype。
     set_proto_if_changed(&world.temporal_object, obj_proto_val);
@@ -471,7 +469,7 @@ impl BuiltinWorld {
         let (array_buffer_proto, array_buffer_constructor) =
             make_named_pair(string_forge, shape_forge, labels, "ArrayBuffer");
         let (data_view_proto, data_view_constructor) = make_named_pair(string_forge, shape_forge, labels, "DataView");
-        let typed_arrays = make_typed_array_family(string_forge, shape_forge, labels, &array_proto);
+        let typed_arrays = make_typed_array_family(string_forge, shape_forge, labels, &object_proto);
 
         let sym_match = P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()));
         let sym_replace = P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()));

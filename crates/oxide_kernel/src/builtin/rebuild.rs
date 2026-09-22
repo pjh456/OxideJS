@@ -311,7 +311,7 @@ impl BuiltinWorld {
             (current.data_view_proto.clone(), current.data_view_constructor.clone())
         };
         let typed_arrays = if dirty.typed_array_family {
-            make_typed_array_family(string_forge, shape_forge, labels, &array_proto)
+            make_typed_array_family(string_forge, shape_forge, labels, &object_proto)
         } else {
             TypedArrayFamily {
                 typed_array_proto: current.typed_array_proto.clone(),
