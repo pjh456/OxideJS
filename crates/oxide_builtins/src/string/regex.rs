@@ -1,5 +1,3 @@
-use std::borrow::Cow;
-
 use oxide_kernel::shape_forge::EMPTY_SHAPE_ID;
 use oxide_types::object::JsObject;
 use oxide_types::value::JsValue;
@@ -18,85 +16,6 @@ use super::{
 
 // ── 正则替换（单元口径） ────────────────────────────────────────────────
 
-/// 展开单个匹配的 replacement `$` 引用（`$$`、`$&`、`` $` ``、`$'`、`$n`），
-/// 输入/输出均为单元序列。
-fn expand_dollar_units(text: &[u16], m: &regress::Match, replacement: &[u16]) -> Vec<u16> {
-    let mut out = Vec::new();
-    let mut i = 0;
-    while i < replacement.len() {
-        if replacement[i] != 0x24 {
-            out.push(replacement[i]);
-            i += 1;
-            continue;
-        }
-        let range = m.range();
-        let rest = &replacement[i..];
-        if rest.starts_with(&[0x24, 0x24]) {
-            out.push(0x24);
-            i += 2;
-        } else if rest.starts_with(&[0x24, 0x26]) {
-            out.extend_from_slice(&text[range.start..range.end]);
-            i += 2;
-        } else if rest.starts_with(&[0x24, 0x60]) {
-            out.extend_from_slice(&text[..range.start]);
-            i += 2;
-        } else if rest.starts_with(&[0x24, 0x27]) {
-            out.extend_from_slice(&text[range.end..]);
-            i += 2;
-        } else if i + 1 < replacement.len() && (0x30..=0x39).contains(&replacement[i + 1]) {
-            // $digits：digitCount 取 2（后续尚有数字）否则 1；两位数值越界回退
-            // 一位（次位留给后续按字面处理）；仍越界（含 $0）→ 整段 ref 字面。
-            let digit_count = if i + 2 < replacement.len() && (0x30..=0x39).contains(&replacement[i + 2]) {
-                2
-            } else {
-                1
-            };
-            let d1 = (replacement[i + 1] - 0x30) as u32;
-            let mut index = if digit_count == 2 { d1 * 10 + (replacement[i + 2] - 0x30) as u32 } else { d1 };
-            let mut ref_len = 1 + digit_count;
-            let capture_len = (m.groups().count() - 1) as u32;
-            if index > capture_len && digit_count == 2 {
-                index = d1;
-                ref_len = 2;
-            }
-            if (1..=capture_len).contains(&index) {
-                if let Some(g) = m.group(index as usize) {
-                    out.extend_from_slice(&text[g.start..g.end]);
-                }
-            } else {
-                out.extend_from_slice(&replacement[i..i + ref_len]);
-            }
-            i += ref_len;
-        } else {
-            out.push(0x24);
-            i += 1;
-        }
-    }
-    out
-}
-
-/// 正则替换的手动实现（单元口径）：按 JS 语义展开 replacement 中的 `$` 引用，
-/// global 全替换否则首个。
-pub(crate) fn regex_replace_manual_units(
-    regex: &regress::Regex, text: &[u16], replacement: &[u16], global: bool,
-) -> Vec<u16> {
-    let mut out = Vec::new();
-    let mut last_end = 0;
-    let matches: Vec<regress::Match> = if global {
-        regex.find_from_utf16(text, 0).collect()
-    } else {
-        regex.find_from_utf16(text, 0).take(1).collect()
-    };
-    for m in &matches {
-        let range = m.range();
-        out.extend_from_slice(&text[last_end..range.start]);
-        out.extend_from_slice(&expand_dollar_units(text, m, replacement));
-        last_end = range.end;
-    }
-    out.extend_from_slice(&text[last_end..]);
-    out
-}
-
 /// 调用函数 replacer 并把返回值转为单元序列；调用抛出的异常原样恢复。
 fn call_replacer<H: VmHost>(vm: &mut H, replacer: JsValue, cb_args: &[JsValue]) -> Result<Vec<u16>, JsValue> {
     match vm.call_function_sync(replacer, JsValue::undefined(), cb_args) {
@@ -114,129 +33,6 @@ fn call_replacer<H: VmHost>(vm: &mut H, replacer: JsValue, cb_args: &[JsValue]) 
             .take_uncaught_value()
             .unwrap_or_else(|| crate::error::create_type_error(vm, &format!("replace replacer: {}", err)))),
     }
-}
-
-/// 函数 replacer 的回调参数：匹配串、各捕获组（未匹配为 undefined）、position
-/// （码元口径）、原字符串。原字符串参数由调用方预构传入（`text_arg`），
-/// 避免每匹配复制整个源串——字符串不可变，同一 `JsValue` 可安全复用。
-fn replacer_cb_args<H: VmHost>(vm: &mut H, text: &[u16], m: &regress::Match, text_arg: JsValue) -> Vec<JsValue> {
-    let range = m.range();
-    let mut cb_args: Vec<JsValue> = Vec::with_capacity(m.captures.len() + 2);
-    cb_args.push(vm.new_string_units(&text[range.start..range.end]));
-    for i in 1..=m.captures.len() {
-        match m.group(i) {
-            Some(g) => cb_args.push(vm.new_string_units(&text[g.start..g.end])),
-            None => cb_args.push(JsValue::undefined()),
-        }
-    }
-    cb_args.push(JsValue::int(range.start as i32));
-    cb_args.push(text_arg);
-    cb_args
-}
-
-/// 正则模式 + 函数 replacer：global 全替换否则替换首个，逐匹配调用回调，
-/// 返回值转单元序列作为替换文本（不展开 `$` 引用）。`text_arg` 为回调第 4 参
-/// （原字符串），调用方预构一次，回调期按值复用。
-pub(crate) fn regex_replace_fn<H: VmHost>(
-    vm: &mut H, regex: &regress::Regex, text: &[u16], replacer: JsValue, global: bool, text_arg: JsValue,
-) -> NativeResult {
-    let matches: Vec<regress::Match> = if global {
-        regex.find_from_utf16(text, 0).collect()
-    } else {
-        regex.find_from_utf16(text, 0).take(1).collect()
-    };
-    let mut out = Vec::new();
-    let mut last_end = 0;
-    for m in &matches {
-        let range = m.range();
-        out.extend_from_slice(&text[last_end..range.start]);
-        let cb_args = replacer_cb_args(vm, text, m, text_arg);
-        let repl = try_string!(call_replacer(vm, replacer, &cb_args));
-        out.extend_from_slice(&repl);
-        last_end = range.end;
-    }
-    out.extend_from_slice(&text[last_end..]);
-    NativeResult::Ok(vm.new_string_units_owned(out))
-}
-
-/// 单元序列上的整体替换（空模式在每个单元边界插入替换文本，与 String::replace
-/// 口径一致）。
-fn replace_units_all(hay: &[u16], from: &[u16], to: &[u16]) -> Vec<u16> {
-    if from.is_empty() {
-        let mut out = Vec::with_capacity(hay.len() + (hay.len() + 1) * to.len());
-        out.extend_from_slice(to);
-        for &u in hay {
-            out.push(u);
-            out.extend_from_slice(to);
-        }
-        return out;
-    }
-    let mut out = Vec::with_capacity(hay.len());
-    let mut start = 0;
-    while let Some(p) = find_units(hay, from, start) {
-        out.extend_from_slice(&hay[start..p]);
-        out.extend_from_slice(to);
-        start = p + from.len();
-    }
-    out.extend_from_slice(&hay[start..]);
-    out
-}
-
-/// 单元序列上的首个替换；未命中返回原序列拷贝。空模式在位置 0 命中
-/// （插入替换文本于串首，与 String::replace 口径一致）。
-fn replace_units_first(hay: &[u16], from: &[u16], to: &[u16]) -> Vec<u16> {
-    if from.is_empty() {
-        let mut out = Vec::with_capacity(hay.len() + to.len());
-        out.extend_from_slice(to);
-        out.extend_from_slice(hay);
-        return out;
-    }
-    if let Some(rel) = find_units(hay, from, 0) {
-        let mut out = Vec::with_capacity(hay.len());
-        out.extend_from_slice(&hay[..rel]);
-        out.extend_from_slice(to);
-        out.extend_from_slice(&hay[rel + from.len()..]);
-        return out;
-    }
-    hay.to_vec()
-}
-
-/// 字符串模式 + 函数 replacer：all 全替换否则替换首个。回调参数
-/// `(match, position, string)`（无捕获组）。空模式在每个单元边界匹配一次。
-/// `text_arg` 为回调第 4 参（原字符串），调用方预构一次。
-fn string_replace_fn<H: VmHost>(
-    vm: &mut H, text: &[u16], pattern: &[u16], replacer: JsValue, all: bool, text_arg: JsValue,
-) -> NativeResult {
-    let search_length = pattern.len();
-    let mut positions: Vec<usize> = Vec::new();
-    if search_length == 0 {
-        positions.push(0);
-        if all {
-            for i in 1..=text.len() {
-                positions.push(i);
-            }
-        }
-    } else {
-        let mut start = 0;
-        while let Some(p) = find_units(text, pattern, start) {
-            positions.push(p);
-            if !all {
-                break;
-            }
-            start = p + search_length;
-        }
-    }
-    let mut out = Vec::new();
-    let mut last_end = 0;
-    for p in positions {
-        out.extend_from_slice(&text[last_end..p]);
-        let cb_args = [vm.new_string_units(&text[p..p + search_length]), JsValue::int(p as i32), text_arg];
-        let repl = try_string!(call_replacer(vm, replacer, &cb_args));
-        out.extend_from_slice(&repl);
-        last_end = p + search_length;
-    }
-    out.extend_from_slice(&text[last_end..]);
-    NativeResult::Ok(vm.new_string_units_owned(out))
 }
 
 /// 判断值是否为 RegExp 对象：非对象、空指针、原型非对象均返回 false，
@@ -261,6 +57,109 @@ fn is_regexp_obj<H: VmHost>(val: JsValue, vm: &H) -> bool {
     let rp = vm.session().builtin_world().regexp_proto.as_ptr() as *mut JsObject;
     std::ptr::eq(proto_ptr, rp)
 }
+
+/// IsRegExp 口径判定：非对象 false；对象一律 Get(@@match) 后 ToBoolean
+/// （真 RegExp 亦读，getter 副作用可观测；getter 抛错恢复原异常上抛）。
+fn is_regexp_live<H: VmHost>(vm: &mut H, val: JsValue) -> Result<bool, JsValue> {
+    if !val.is_object() {
+        return Ok(false);
+    }
+    let match_key = oxide_types::private_key::make_well_known_symbol_key(1);
+    let ptr = val.as_js_object_ptr();
+    // SAFETY: val 已校验为非空对象值。
+    let obj = unsafe { &*ptr };
+    let b = match vm.ordinary_get(obj, match_key, val) {
+        Ok(v) => v,
+        Err(_) => {
+            if let Some(exc) = vm.take_uncaught_value() {
+                return Err(exc);
+            }
+            return Err(crate::error::create_type_error(vm, "cannot read @@match"));
+        }
+    };
+    Ok(oxide_runtime_api::to_boolean(b))
+}
+
+/// GetMethod(searchValue, @@replace)：undefined/null 返回 None，不可调用抛
+/// TypeError，属性读抛错恢复原异常值。
+fn rx_get_replace_method<H: VmHost>(
+    vm: &mut H, rx: *mut JsObject, this_val: JsValue,
+) -> Result<Option<JsValue>, JsValue> {
+    let replace_key = oxide_types::private_key::make_well_known_symbol_key(2);
+    // SAFETY: this_val 为对象值，rx 与其同址。
+    let func = match vm.ordinary_get(unsafe { &*rx }, replace_key, this_val) {
+        Ok(v) => v,
+        Err(_) => {
+            if let Some(exc) = vm.take_uncaught_value() {
+                return Err(exc);
+            }
+            return Err(crate::error::create_type_error(vm, "cannot read @@replace"));
+        }
+    };
+    if func.is_undefined() || func.is_null() {
+        return Ok(None);
+    }
+    if !crate::iterator::is_callable(func) {
+        return Err(crate::error::create_type_error(vm, "Symbol.replace is not callable"));
+    }
+    Ok(Some(func))
+}
+
+/// 字符串臂的替换形态：功能替换器（回调值）或非功能替换串单元序列，
+/// 恰好其一在场。
+enum ArmReplacer<'a> {
+    Fn(JsValue),
+    Text(&'a [u16]),
+}
+
+/// 字符串臂：子串定位 + 逐命中替换。功能替换器经
+/// Call(replaceValue, undefined, «matched, position, string»)+ToString；非功能
+/// 走 GetSubstitution（捕获表空、namedCaptures undefined）。空模式在每个码元
+/// 边界命中（replaceAll 含串尾，replace 仅串首）。
+fn string_arm_replace<H: VmHost>(
+    vm: &mut H, text: &[u16], search: &[u16], replacer: &ArmReplacer<'_>, all: bool, s_val: JsValue,
+) -> NativeResult {
+    let search_length = search.len();
+    let mut positions: Vec<usize> = Vec::new();
+    if search_length == 0 {
+        positions.push(0);
+        if all {
+            for i in 1..=text.len() {
+                positions.push(i);
+            }
+        }
+    } else {
+        let mut start = 0;
+        while let Some(p) = find_units(text, search, start) {
+            positions.push(p);
+            if !all {
+                break;
+            }
+            start = p + search_length;
+        }
+    }
+    let mut out = Vec::new();
+    let mut last_end = 0;
+    for p in positions {
+        out.extend_from_slice(&text[last_end..p]);
+        let matched = &text[p..p + search_length];
+        let repl = match replacer {
+            ArmReplacer::Fn(f) => {
+                let cb_args = [vm.new_string_units(matched), JsValue::int(p as i32), s_val];
+                try_string!(call_replacer(vm, *f, &cb_args))
+            }
+            ArmReplacer::Text(r) => match crate::regexp::get_substitution_units(vm, matched, text, p, &[], None, r) {
+                Ok(u) => u,
+                Err(e) => return NativeResult::Err(e),
+            },
+        };
+        out.extend_from_slice(&repl);
+        last_end = p + search_length;
+    }
+    out.extend_from_slice(&text[last_end..]);
+    NativeResult::Ok(vm.new_string_units_owned(out))
+}
+
 // ── 拆分 / 正则匹配 ─────────────────────────────────────────────────────
 
 /// `String.prototype.split(separator, limit)`：按分隔符拆分为字符串数组；
@@ -375,20 +274,27 @@ pub fn string_split<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     NativeResult::Ok(make_units_array(vm, parts))
 }
 
-/// `replace`/`replaceAll` 共用的分叉实现：按 replacer 类型与参数形态选择路径。
+/// `replace`/`replaceAll` 共用的分叉实现：
 ///
 /// # 步骤
 /// 1. receiver 前置校验（RequireObjectCoercible，纯 is_* 读取）。
-/// 2. 纯对象头读取判定分叉：正则身份/编译正则/global 标志/函数 replacer。
-/// 3. 按分支执行替换（单元口径；良形内容的结果与旧文本路径逐位一致）。
+/// 2. searchValue 非 null/undefined 时：IsRegExp（真 RegExp 原型恒等；其余对象
+///    Get @@match 后 ToBoolean，getter 抛错传播）；replaceAll 命中正则时 live
+///    Get "flags" + RequireObjectCoercible + ToString 须含 "g"。
+/// 3. GetMethod(searchValue, @@replace) 定义（可调用）则
+///    Call(matcher, searchValue, «this, replaceValue»)，结果原值返回（不
+///    ToString）；真 RegExp 默认经此委托 regexp_symbol_replace（参数槽位与
+///    直接派发一致）。
+/// 4. 字符串臂：string = ToString(this)、searchString = ToString(searchValue)
+///    （异常传播），子串定位后逐命中替换（string_arm_replace）。
 ///
 /// # 边界与前提
 /// - 缺省 searchValue/replaceValue 均按 ToString(undefined)="undefined" 处理
 ///   （`s.replace()` 全缺省等价于把 "undefined" 替换为 "undefined"，结果与
 ///   原串一致；`s.replace("b")` 得到 "aundefinedc" 而非 "ac"）。
-/// - replaceAll 遇非 global 正则抛 TypeError；类正则对象（proto 恒等
-///   RegExp.prototype 但无编译正则）replace/replaceAll 统一按 ToString 文本走
-///   字符串路径。
+/// - searchValue 为 null/undefined 时跳过整段第 2 步（无 IsRegExp/GetMethod）。
+/// - searchValue 的 @@replace 为 undefined/null（含真 RegExp 自置 undefined）
+///   回退字符串臂，searchString 取 ToString(searchValue)。
 fn string_replace_impl<H: VmHost>(vm: &mut H, args: &[u8], all: bool) -> NativeResult {
     let this_val = vm.reg(args[0]);
 
@@ -407,154 +313,127 @@ fn string_replace_impl<H: VmHost>(vm: &mut H, args: &[u8], all: bool) -> NativeR
     let pattern_val = if args.len() >= 2 { vm.reg(args[1]) } else { JsValue::undefined() };
     let replacement_val = if args.len() > 2 { vm.reg(args[2]) } else { JsValue::undefined() };
 
-    // 分叉判定（全部纯读取/纯对象头读，无用户代码）：正则对象身份、是否持有
-    // 编译正则、global 标志、replacer 是否为函数。
-    let is_re = is_regexp_obj(pattern_val, vm);
-    let (has_native_re, is_global) = if is_re {
-        let re_ptr = pattern_val.as_js_object_ptr();
-        // SAFETY: is_re 已保证 pattern_val 为非空对象且 proto 恒等 RegExp.prototype。
-        let re = unsafe { &*re_ptr };
-        if re.native_fn().is_some() {
-            let g = crate::regexp::regexp_has_flag(vm, re, 'g');
-            (true, g)
-        } else {
-            (false, false)
-        }
-    } else {
-        (false, false)
-    };
-    let replacer_val = if replacement_val.is_object() {
-        let o = unsafe { &*replacement_val.as_js_object_ptr() };
-        if o.is_function() {
-            Some(replacement_val)
-        } else {
-            None
-        }
-    } else {
-        None
-    };
-
-    // replaceAll 要求正则带 global：非 global 正则直接抛 TypeError（规范 flags 检查）。
-    // 类正则对象（无编译正则）无 flags 概念，统一走 as_units 文本路径，不在此检查。
-    if all && has_native_re && !is_global {
-        return NativeResult::Err(crate::error::create_type_error(
-            vm,
-            "String.prototype.replaceAll called with a non-global RegExp",
-        ));
-    }
-
-    // 分支 A：函数 replacer。回调经 call_function_sync（&mut），receiver 单元
-    // 序列先落地为 owned（跨回调的硬约束）。
-    if let Some(replacer_val) = replacer_val {
-        let s = try_string!(this_units(vm, args)).into_owned();
-        // 回调第 4 参（原字符串）预构一次：原始字符串 receiver 直接复用 this_val
-        // 零拷贝，对象 receiver 提升为单次转换值（原每匹配整串复制）。
-        let text_arg = match this_val.is_string() {
-            true => this_val,
-            false => match oxide_runtime_api::to_string_value_full(this_val, vm) {
+    // 第 2 步：searchValue 非 null/undefined 的对象走 IsRegExp + flags +
+    // GetMethod；matcher 定义则 Call 后原值返回。
+    if !pattern_val.is_null() && !pattern_val.is_undefined() && pattern_val.is_object() {
+        let is_regexp = match is_regexp_live(vm, pattern_val) {
+            Ok(b) => b,
+            Err(e) => return NativeResult::Err(e),
+        };
+        if all && is_regexp {
+            // 规范序：Get "flags"（单读，getter 异常传播）→
+            // RequireObjectCoercible（undefined/null 抛 TypeError）→
+            // ToString 须含 "g"（转换异常传播）。
+            let re_ptr = pattern_val.as_js_object_ptr();
+            // SAFETY: pattern_val 已校验为非空对象值。
+            let flags_val = match vm.ordinary_get(
+                unsafe { &*re_ptr },
+                vm.kernel_core().perm_interner().intern("flags").0,
+                pattern_val,
+            ) {
                 Ok(v) => v,
                 Err(_) => {
-                    // ToString 触发对象 toString/valueOf 抛出的原生异常须原样传播。
+                    if let Some(exc) = vm.take_uncaught_value() {
+                        return NativeResult::Err(exc);
+                    }
+                    return NativeResult::Err(crate::error::create_type_error(vm, "cannot read flags"));
+                }
+            };
+            if flags_val.is_undefined() || flags_val.is_null() {
+                return NativeResult::Err(crate::error::create_type_error(
+                    vm,
+                    "String.prototype.replaceAll called on a regex without the global flag",
+                ));
+            }
+            let flags = match oxide_runtime_api::to_string_value_full(flags_val, vm) {
+                Ok(v) => v,
+                Err(_) => {
                     if let Some(exc) = vm.take_uncaught_value() {
                         return NativeResult::Err(exc);
                     }
                     return NativeResult::Err(crate::error::create_type_error(vm, "Cannot convert value to a string"));
                 }
-            },
-        };
-        if has_native_re {
-            let re_ptr = pattern_val.as_js_object_ptr();
-            let re = unsafe { &*re_ptr };
-            let fn_ptr = match re.native_fn() {
-                Some(p) => p,
-                None => return NativeResult::Err(crate::error::create_type_error(vm, "expected compiled regexp")),
             };
-            // SAFETY: fn_ptr 持有 regexp_constructor 存放的 `Box<regress::Regex>` 指针。
-            let regex = unsafe { &*(fn_ptr.as_ptr() as *const regress::Regex) };
-            return regex_replace_fn(vm, regex, &s, replacer_val, is_global, text_arg);
+            let flags_str = String::from_utf16_lossy(&vm.string_units(flags));
+            if !flags_str.contains('g') {
+                return NativeResult::Err(crate::error::create_type_error(
+                    vm,
+                    "String.prototype.replaceAll called on a regex without the global flag",
+                ));
+            }
         }
-        let pattern = try_string!(as_units(vm, pattern_val)).into_owned();
-        return string_replace_fn(vm, &s, &pattern, replacer_val, all, text_arg);
-    }
-
-    let replacement_is_string = args.len() <= 2 || replacement_val.is_string();
-
-    // 分支 B：全原始字符串快路径——三值按载荷形态共享借用（`&H` 共享借用
-    // 派生多个单元借用可共存，E0499 只发生在 `&mut` 派生）。
-    if this_val.is_string() && pattern_val.is_string() && replacement_is_string {
-        let h = &*vm;
-        let s = h.string_units(this_val);
-        let p = h.string_units(pattern_val);
-        let r: Cow<'_, [u16]> = if replacement_val.is_string() {
-            h.string_units(replacement_val)
-        } else {
-            Cow::Owned("undefined".encode_utf16().collect())
-        };
-        let result = if all {
-            replace_units_all(&s, &p, &r)
-        } else {
-            replace_units_first(&s, &p, &r)
-        };
-        return NativeResult::Ok(vm.new_string_units_owned(result));
-    }
-
-    // 分支 B2：正则 pattern 快路径——regex 为对象内裸指针（不占 vm 借用），
-    // receiver/replacement 共享借用零拷贝。
-    if this_val.is_string() && has_native_re && replacement_is_string {
         let re_ptr = pattern_val.as_js_object_ptr();
-        let re = unsafe { &*re_ptr };
-        let fn_ptr = match re.native_fn() {
-            Some(p) => p,
-            None => return NativeResult::Err(crate::error::create_type_error(vm, "expected compiled regexp")),
+        let matcher = match rx_get_replace_method(vm, re_ptr, pattern_val) {
+            Ok(m) => m,
+            Err(e) => return NativeResult::Err(e),
         };
-        // SAFETY: fn_ptr 持有 regexp_constructor 存放的 `Box<regress::Regex>` 指针。
-        let regex = unsafe { &*(fn_ptr.as_ptr() as *const regress::Regex) };
-        let h = &*vm;
-        let s = h.string_units(this_val);
-        let r: Cow<'_, [u16]> = if replacement_val.is_string() {
-            h.string_units(replacement_val)
-        } else {
-            Cow::Owned("undefined".encode_utf16().collect())
-        };
-        let result = regex_replace_manual_units(regex, &s, &r, is_global);
-        return NativeResult::Ok(vm.new_string_units_owned(result));
+        if let Some(matcher) = matcher {
+            // Call(matcher, searchValue, « this, replaceValue »)。
+            return match vm.call_function_sync(matcher, pattern_val, &[this_val, replacement_val]) {
+                Ok(r) => NativeResult::Ok(r),
+                Err(_) => {
+                    if let Some(exc) = vm.take_uncaught_value() {
+                        return NativeResult::Err(exc);
+                    }
+                    NativeResult::Err(crate::error::create_type_error(vm, "replace matcher call failed"))
+                }
+            };
+        }
     }
 
-    // 分支 C：一般路径（对象参与转换）。原始字符串 receiver 与对象 receiver
-    // 统一：参数转换前置（&mut 路径）后按单元序列扫描。
-    let s = try_string!(this_units(vm, args)).into_owned();
-    let pattern = if has_native_re {
+    // 字符串臂：string/searchString 完整 ToString（对象 toString/valueOf 抛错
+    // 原样传播）；replacer 功能判定 IsCallable，非功能替换串先 ToString
+    // （Symbol 抛 TypeError，对象转换抛错传播）。
+    let (s_units, s_val) = if this_val.is_string() {
+        // SAFETY: this_val 为字符串值，借用即时消费。
+        let sp = unsafe { &*this_val.as_string_ptr() };
+        (sp.units().into_owned(), this_val)
+    } else {
+        let v = match oxide_runtime_api::to_string_value_full(this_val, vm) {
+            Ok(v) => v,
+            Err(_) => {
+                if let Some(exc) = vm.take_uncaught_value() {
+                    return NativeResult::Err(exc);
+                }
+                return NativeResult::Err(crate::error::create_type_error(vm, "Cannot convert value to a string"));
+            }
+        };
+        // SAFETY: v 为字符串值，借用即时消费。
+        let sp = unsafe { &*v.as_string_ptr() };
+        (sp.units().into_owned(), v)
+    };
+    let search_units = if pattern_val.is_string() {
+        // SAFETY: pattern_val 为字符串值，借用即时消费。
+        let sp = unsafe { &*pattern_val.as_string_ptr() };
+        sp.units().into_owned()
+    } else if pattern_val.is_undefined() {
+        "undefined".encode_utf16().collect()
+    } else {
+        match oxide_runtime_api::to_units_full(pattern_val, vm) {
+            Ok(u) => u,
+            Err(_) => {
+                if let Some(exc) = vm.take_uncaught_value() {
+                    return NativeResult::Err(exc);
+                }
+                return NativeResult::Err(crate::error::create_type_error(vm, "Cannot convert value to a string"));
+            }
+        }
+    };
+    let functional = crate::iterator::is_callable(replacement_val);
+    let replacement_units: Vec<u16> = if functional {
         Vec::new()
-    } else if args.len() < 2 {
-        "undefined".encode_utf16().collect()
     } else {
-        try_string!(as_units(vm, pattern_val)).into_owned()
+        match crate::regexp::replacement_units(vm, replacement_val) {
+            Ok(u) => u,
+            Err(e) => return NativeResult::Err(e),
+        }
     };
-    let replacement = if args.len() > 2 {
-        try_string!(as_units(vm, replacement_val)).into_owned()
+    let replacer = if functional {
+        ArmReplacer::Fn(replacement_val)
     } else {
-        "undefined".encode_utf16().collect()
+        ArmReplacer::Text(&replacement_units)
     };
-
-    // 统一扫描：命中编译正则走手动 $ 展开，否则字符串子串替换。
-    if has_native_re {
-        let re_ptr = pattern_val.as_js_object_ptr();
-        let re = unsafe { &*re_ptr };
-        let fn_ptr = match re.native_fn() {
-            Some(p) => p,
-            None => return NativeResult::Err(crate::error::create_type_error(vm, "expected compiled regexp")),
-        };
-        // SAFETY: fn_ptr 持有 regexp_constructor 存放的 `Box<regress::Regex>` 指针。
-        let regex = unsafe { &*(fn_ptr.as_ptr() as *const regress::Regex) };
-        let result = regex_replace_manual_units(regex, &s, &replacement, is_global);
-        return NativeResult::Ok(vm.new_string_units_owned(result));
-    }
-    let result = if all {
-        replace_units_all(&s, &pattern, &replacement)
-    } else {
-        replace_units_first(&s, &pattern, &replacement)
-    };
-    NativeResult::Ok(vm.new_string_units_owned(result))
+    string_arm_replace(vm, &s_units, &search_units, &replacer, all, s_val)
 }
 
 /// `String.prototype.replace(pattern, replacement)`：替换首个匹配；

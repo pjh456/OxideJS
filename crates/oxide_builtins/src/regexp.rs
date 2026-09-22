@@ -269,11 +269,13 @@ fn advance_string_index(units: &[u16], p: usize, unicode: bool) -> usize {
 
 /// GetSubstitution：非函数替换串的 `$` 引用展开（`$$`/`$&`/`` $` ``/`$'`/`$n`/`$<name>`）；
 /// `$n` 越界（含 $0 与两位回退后仍越界）或未匹配组（None）按字面输出。
-/// `$<name>` 从 named_captures 对象读取；不存在时字面输出 `$<` 开头部分。
-fn get_substitution_units<H: VmHost>(
+/// `$<name>` 经真 Get 从 named_captures 对象读取（receiver 为对象本身，getter
+/// 抛错与捕获值 ToString 抛错均恢复原异常上抛）；named_captures 为 None 或无闭合
+/// `>` 时只字面输出 `$<`，其后文本继续逐码元处理。
+pub(crate) fn get_substitution_units<H: VmHost>(
     vm: &mut H, matched: &[u16], s: &[u16], position: usize, captured: &[Option<Vec<u16>>],
     named_captures: Option<&JsObject>, replacement: &[u16],
-) -> Vec<u16> {
+) -> Result<Vec<u16>, JsValue> {
     let mut out = Vec::new();
     let pos = position.min(s.len());
     let tail = (pos + matched.len()).min(s.len());
@@ -298,34 +300,34 @@ fn get_substitution_units<H: VmHost>(
             out.extend_from_slice(&s[tail..]);
             i += 2;
         } else if rest.starts_with(&[0x24, 0x3c]) {
-            // $<name> 命名组引用：扫描到 > 为止。
-            if let Some(end) = rest[2..].iter().position(|&c| c == 0x3e) {
-                let name_units = &rest[2..2 + end];
-                let name_str = String::from_utf16_lossy(name_units);
-                if let Some(obj) = named_captures {
+            // $<name> 命名组引用。named_captures 为 None 或无闭合 > 时只字面
+            // 输出 `$<`：名段（含其中的 $ 序列）回落主循环继续逐码元处理。
+            match (rest[2..].iter().position(|&c| c == 0x3e), named_captures) {
+                (Some(end), Some(obj)) => {
+                    let name_units = &rest[2..2 + end];
+                    let name_str = String::from_utf16_lossy(name_units);
                     let si = vm.kernel_core().perm_interner().intern(&name_str).0;
-                    if si != 0 {
-                        let key = JsValue::undefined();
-                        if let Ok(cap) = vm.ordinary_get(obj, si, key) {
-                            if !cap.is_undefined() {
-                                if let Ok(cap_str) = to_string_units(vm, cap) {
-                                    out.extend_from_slice(&cap_str);
-                                }
-                            }
-                            // 组存在（含 undefined）：按规范替换为空串或捕获值，跳过 `$<name>`。
-                            i += 2 + end + 1;
-                            continue;
-                        }
+                    // 真 Get 走完整原型链；getter 抛错恢复原异常上抛。
+                    let cap = match vm.ordinary_get(
+                        obj,
+                        si,
+                        JsValue::from_js_object(obj as *const JsObject as *mut JsObject),
+                    ) {
+                        Ok(v) => v,
+                        Err(_) => return Err(crate::iterator::engine_error(vm, "cannot read named capture")),
+                    };
+                    // 捕获 undefined 替换为空串；其余经 ToString（抛错传播）。
+                    if !cap.is_undefined() {
+                        let cap_str = to_string_units(vm, cap)?;
+                        out.extend_from_slice(&cap_str);
                     }
+                    i += 2 + end + 1;
                 }
-                // 组不存在或无法读取：字面输出 `$<` 到 `>` 的部分。
-                out.extend_from_slice(&rest[..end + 3]);
-                i += end + 3;
-            } else {
-                // 没有闭合的 >：字面输出 `$<`。
-                out.push(0x24);
-                out.push(0x3c);
-                i += 2;
+                _ => {
+                    out.push(0x24);
+                    out.push(0x3c);
+                    i += 2;
+                }
             }
         } else if i + 1 < replacement.len() && (0x30..=0x39).contains(&replacement[i + 1]) {
             let digit_count = if i + 2 < replacement.len() && (0x30..=0x39).contains(&replacement[i + 2]) {
@@ -361,7 +363,7 @@ fn get_substitution_units<H: VmHost>(
             i += 1;
         }
     }
-    out
+    Ok(out)
 }
 
 fn set_prop<H: VmHost>(obj: &mut JsObject, name: &str, val: JsValue, vm: &H) {
@@ -1067,7 +1069,7 @@ fn regexp_text_arg<H: VmHost>(vm: &mut H, args: &[u8]) -> Result<OwnedText, JsVa
 
 /// 替换参数转单元序列：字符串值按载荷形态原样借出，其余经完整 ToString；
 /// Symbol 按规范抛 TypeError；对象 ToString 抛出的原生异常原样传播。
-fn replacement_units<H: VmHost>(vm: &mut H, val: JsValue) -> Result<Vec<u16>, JsValue> {
+pub(crate) fn replacement_units<H: VmHost>(vm: &mut H, val: JsValue) -> Result<Vec<u16>, JsValue> {
     match oxide_runtime_api::to_string_value_full(val, vm) {
         Ok(v) => Ok(vm.string_units(v).into_owned()),
         Err(_) => {
@@ -1195,10 +1197,10 @@ pub fn regexp_symbol_match<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 /// 2. 非函数分支先 ToString(replacement)（Symbol 抛 TypeError）。
 /// 3. flags/global/unicode 经 Get live 直读；global 时
 ///    ToIntegerOrInfinity(Get "lastIndex") 副作用读后 Set 0。
-/// 4. 共享 exec 循环收集结果；零宽匹配按 fullUnicode 口径推进 lastIndex。
-/// 5. 替换阶段按结果属性逐条展开（matched/captures/index/groups 均 Get 读取，
-///    undefined 捕获不入表）；position 越上界钳到串长，乱序（position 回退）
-///    的替换被忽略。
+/// 4. 替换体（regexp_replace_results）：exec 循环收集结果（零宽匹配按
+///    fullUnicode 口径推进 lastIndex），按结果属性逐条展开
+///    （matched/captures/index/groups 均 Get 读取，undefined 捕获不入表）；
+///    position 越上界钳到串长，乱序（position 回退）的替换被忽略。
 ///
 /// # 边界与前提
 /// - 各属性读（flags/global/unicode/lastIndex/结果属性）均传播原异常。
@@ -1218,7 +1220,6 @@ pub fn regexp_symbol_replace<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult
     };
     let s_val = haystack.to_value(vm);
     let units = haystack.as_match_text().units().to_vec();
-    let length_s = units.len();
 
     let replacer_val = if args.len() > 2 { vm.reg(args[2]) } else { JsValue::undefined() };
     let functional = crate::iterator::is_callable(replacer_val);
@@ -1241,11 +1242,6 @@ pub fn regexp_symbol_replace<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult
         Ok(g) => g,
         Err(err) => return NativeResult::Err(err),
     };
-    let full_unicode = match rx_get_bool_prop(vm, re_ptr, "unicode", this_val) {
-        Ok(u) => u,
-        Err(err) => return NativeResult::Err(err),
-    };
-
     if is_global {
         // lastIndex = ToIntegerOrInfinity(Get)：副作用读，getter 异常传播。
         let last_val = match rx_get_prop(vm, re_ptr, "lastIndex", this_val) {
@@ -1258,13 +1254,40 @@ pub fn regexp_symbol_replace<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult
         }
     }
 
+    let ctx = ReplacementCtx {
+        functional,
+        replacer_val,
+        units: replacement_units.as_deref(),
+    };
+    let out = match regexp_replace_results(vm, re_ptr, this_val, s_val, &units, &ctx, is_global) {
+        Ok(u) => u,
+        Err(err) => return NativeResult::Err(err),
+    };
+    NativeResult::Ok(vm.new_string_units_owned(out))
+}
+
+/// @@replace 共享臂的替换上下文：功能替换器（replacer_val，逐匹配回调）与
+/// 非功能替换串单元序列（units）恰好其一在场。
+pub(crate) struct ReplacementCtx<'a> {
+    pub(crate) functional: bool,
+    pub(crate) replacer_val: JsValue,
+    pub(crate) units: Option<&'a [u16]>,
+}
+
+/// @@replace 共享臂的替换体：exec 循环（global 收集到 null 为止，非 global 至多
+/// 一条；零宽命中按 fullUnicode 口径推进 lastIndex）+ 逐结果 SubstitutionRecord
+/// 装配 + 逐条 make_replacement；返回装配后的单元序列。
+pub(crate) fn regexp_replace_results<H: VmHost>(
+    vm: &mut H, re_ptr: *mut JsObject, this_val: JsValue, s_val: JsValue, units: &[u16], ctx: &ReplacementCtx<'_>,
+    is_global: bool,
+) -> Result<Vec<u16>, JsValue> {
+    let length_s = units.len();
+    let full_unicode = rx_get_bool_prop(vm, re_ptr, "unicode", this_val)?;
+
     // exec 循环：global 收集到 null 为止，非 global 至多一条。
     let mut results: Vec<JsValue> = Vec::new();
     loop {
-        let result = match regexp_exec_call(vm, re_ptr, this_val, s_val) {
-            Ok(r) => r,
-            Err(err) => return NativeResult::Err(err),
-        };
+        let result = regexp_exec_call(vm, re_ptr, this_val, s_val)?;
         if result.is_null() {
             break;
         }
@@ -1274,59 +1297,35 @@ pub fn regexp_symbol_replace<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult
         }
         // 零宽命中：按 fullUnicode 口径推进 lastIndex。
         let result_ptr = result.as_js_object_ptr();
-        let matched_val = match rx_get_index(vm, result_ptr, 0, result) {
-            Ok(v) => v,
-            Err(err) => return NativeResult::Err(err),
-        };
-        let matched = match oxide_runtime_api::to_string_value_full(matched_val, vm) {
-            Ok(v) => v,
-            Err(_) => return NativeResult::Err(crate::iterator::engine_error(vm, "cannot stringify match")),
-        };
+        let matched_val = rx_get_index(vm, result_ptr, 0, result)?;
+        let matched = oxide_runtime_api::to_string_value_full(matched_val, vm)
+            .map_err(|_| crate::iterator::engine_error(vm, "cannot stringify match"))?;
         if vm.string_units(matched).is_empty() {
-            let li_val = match rx_get_prop(vm, re_ptr, "lastIndex", this_val) {
-                Ok(v) => v,
-                Err(err) => return NativeResult::Err(err),
-            };
-            let this_index = match to_length_value(vm, li_val) {
-                Ok(n) => n,
-                Err(err) => return NativeResult::Err(err),
-            };
-            let next_index = advance_string_index(&units, this_index, full_unicode);
-            if let Err(err) = // 越出 i32 的大值（2^53 口径）以浮点形态写入。
-                rx_set_prop(vm, re_ptr, "lastIndex", JsValue::float(next_index as f64), this_val)
-            {
-                return NativeResult::Err(err);
-            }
+            let li_val = rx_get_prop(vm, re_ptr, "lastIndex", this_val)?;
+            let this_index = to_length_value(vm, li_val)?;
+            let next_index = advance_string_index(units, this_index, full_unicode);
+            // 越出 i32 的大值（2^53 口径）以浮点形态写入。
+            rx_set_prop(vm, re_ptr, "lastIndex", JsValue::float(next_index as f64), this_val)?;
         }
     }
 
     // 单匹配（非 global）：无命中回原串 S。
     if !is_global {
         if results.is_empty() {
-            return NativeResult::Ok(vm.new_string_units_owned(units));
+            return Ok(units.to_vec());
         }
         let result = results[0];
         let result_ptr = result.as_js_object_ptr();
-        let n_captures = match result_capture_count(vm, result_ptr, result) {
-            Ok(n) => n,
-            Err(err) => return NativeResult::Err(err),
-        };
-        let rec = match build_substitution_record(vm, result_ptr, result, length_s, n_captures) {
-            Ok(r) => r,
-            Err(err) => return NativeResult::Err(err),
-        };
-        let replacement =
-            match make_replacement(vm, functional, replacer_val, replacement_units.as_deref(), &rec, &units, s_val) {
-                Ok(r) => r,
-                Err(err) => return NativeResult::Err(err),
-            };
+        let n_captures = result_capture_count(vm, result_ptr, result)?;
+        let rec = build_substitution_record(vm, result_ptr, result, length_s, n_captures)?;
+        let replacement = make_replacement(vm, ctx.functional, ctx.replacer_val, ctx.units, &rec, units, s_val)?;
         let mut out: Vec<u16> = Vec::with_capacity(length_s + replacement.len());
         out.extend_from_slice(&units[..rec.position]);
         out.extend_from_slice(&replacement);
         // 尾段自命中末尾（position + matchLength）起，被替换串本身不入结果。
         let tail_start = (rec.position + rec.matched.len()).min(length_s);
         out.extend_from_slice(&units[tail_start..]);
-        return NativeResult::Ok(vm.new_string_units_owned(out));
+        return Ok(out);
     }
 
     // global：先定统一捕获宽（各结果 length 的 ToLength 上界减一），
@@ -1334,10 +1333,7 @@ pub fn regexp_symbol_replace<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult
     let mut n_captures = 0usize;
     for result in &results {
         let result_ptr = result.as_js_object_ptr();
-        let n = match result_capture_count(vm, result_ptr, *result) {
-            Ok(n) => n,
-            Err(err) => return NativeResult::Err(err),
-        };
+        let n = result_capture_count(vm, result_ptr, *result)?;
         n_captures = n_captures.max(n);
     }
     let mut out: Vec<u16> = Vec::with_capacity(length_s);
@@ -1345,19 +1341,12 @@ pub fn regexp_symbol_replace<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult
     for result in &results {
         let result = *result;
         let result_ptr = result.as_js_object_ptr();
-        let rec = match build_substitution_record(vm, result_ptr, result, length_s, n_captures) {
-            Ok(r) => r,
-            Err(err) => return NativeResult::Err(err),
-        };
+        let rec = build_substitution_record(vm, result_ptr, result, length_s, n_captures)?;
         // position 回退（乱序结果）的替换被忽略。
         if rec.position < next_source_position {
             continue;
         }
-        let replacement =
-            match make_replacement(vm, functional, replacer_val, replacement_units.as_deref(), &rec, &units, s_val) {
-                Ok(r) => r,
-                Err(err) => return NativeResult::Err(err),
-            };
+        let replacement = make_replacement(vm, ctx.functional, ctx.replacer_val, ctx.units, &rec, units, s_val)?;
         out.extend_from_slice(&units[next_source_position..rec.position]);
         out.extend_from_slice(&replacement);
         next_source_position = rec.position + rec.matched.len();
@@ -1365,7 +1354,7 @@ pub fn regexp_symbol_replace<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult
     if next_source_position < length_s {
         out.extend_from_slice(&units[next_source_position..]);
     }
-    NativeResult::Ok(vm.new_string_units_owned(out))
+    Ok(out)
 }
 
 /// 替换记录：matched（ToString 后单元）、position（ToInteger 后钳 [0, 串长]）、
@@ -1456,20 +1445,29 @@ fn make_replacement<H: VmHost>(
         };
         return to_string_units(vm, repl_value);
     }
-    let groups_obj = if rec.groups.is_object() && !rec.groups.as_js_object_ptr().is_null() {
-        Some(unsafe { &*rec.groups.as_js_object_ptr() })
-    } else {
+    // 非函数分支：namedCaptures 非 undefined 时先 ToObject（null/undefined 抛
+    // TypeError 恢复原异常上抛），装箱体作为 named_captures 传入。
+    let named_captures = if rec.groups.is_undefined() {
         None
+    } else {
+        // ToObject 仅对 null/undefined 抛 TypeError（规范步 l.i 同面）。
+        let boxed = match oxide_runtime_api::to_object(rec.groups, vm) {
+            Ok(v) => v,
+            Err(_) => return Err(crate::error::create_type_error(vm, "Cannot convert null or undefined to object")),
+        };
+        let ptr = boxed.as_js_object_ptr();
+        // SAFETY: boxed 为 ToObject 返回的非空对象指针。
+        Some(unsafe { &*ptr })
     };
-    Ok(get_substitution_units(
+    get_substitution_units(
         vm,
         &rec.matched,
         s_units,
         rec.position,
         &rec.captures,
-        groups_obj,
+        named_captures,
         replacement_units.unwrap_or(&[]),
-    ))
+    )
 }
 
 /// `RegExp.prototype[Symbol.search](string)`：返回首个匹配位置，无匹配返回

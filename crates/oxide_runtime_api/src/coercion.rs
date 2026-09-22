@@ -400,6 +400,11 @@ pub fn to_units_full<H: VmHost>(val: JsValue, host: &mut H) -> Result<Vec<u16>, 
         return Err(host.error_message_text("TypeError", "Cannot convert a Symbol value to a string"));
     }
     let prim = to_primitive(val, ToPrimitiveHint::String, host)?;
+    // ToPrimitive 的基元结果可为 Symbol（toString/valueOf 返回 Symbol）：
+    // ToString(Symbol) 按规范须抛 TypeError。
+    if prim.is_symbol() {
+        return Err(host.error_message_text("TypeError", "Cannot convert a Symbol value to a string"));
+    }
     if prim.is_string() {
         return Ok(host.string_units(prim).into_owned());
     }
