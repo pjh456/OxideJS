@@ -1,5 +1,7 @@
 //! splice/reverse/copyWithin/at 四方法洞语义与原型链读语义引擎钉：
-//! 源洞保洞/换洞/删洞、重叠反向复制、元素读走 Get。
+//! 源洞保洞/换洞/删洞、重叠反向复制、元素读走 Get；
+//! push/pop/shift/unshift arraylike 接收者族：ToObject 通用入口、
+//! ToLength 长度源、2^53-1 上限、DeletePropertyOrThrow 删位、末位显式删。
 
 use std::sync::Arc;
 
@@ -1439,4 +1441,168 @@ fn test_slice_plain_array_guard() {
     )
     .unwrap();
     assert_eq!(out, "true|1,2,3");
+}
+
+// ── push/pop/shift/unshift arraylike 接收者族收口钉（node v20.19.2 实测值钉死） ──
+
+// 引擎钉：push arraylike 接收者——length 经 ToLength 折算（1.5→1），尾部写值，
+// length 置新长度。
+#[test]
+fn test_push_arraylike_receiver_length_coerce() {
+    let out = eval_str(
+        "(() => { const o = { length: 1.5, 0: 'a' }; \
+         const r = Array.prototype.push.call(o, -13); \
+         return r + '|' + o[1] + '|' + o.length; })()",
+    )
+    .unwrap();
+    assert_eq!(out, "2|-13|2");
+}
+
+// 引擎钉：push arraylike valueOf length——ToObject 后 ToLength 取整定界。
+#[test]
+fn test_push_arraylike_value_of_length() {
+    let out = eval_str(
+        "(() => { const r = Array.prototype.push.call({ length: { valueOf() { return 3; } } }); \
+         return String(r); })()",
+    )
+    .unwrap();
+    assert_eq!(out, "3");
+}
+
+// 引擎钉：push ToObject 装箱基元 this——Boolean 包装体 length 0，返回 0。
+#[test]
+fn test_push_primitive_this_boxed() {
+    let out = eval_str("(() => { return String(Array.prototype.push.call(true)); })()").unwrap();
+    assert_eq!(out, "0");
+}
+
+// 引擎钉：push 2^53-1 预检——len + 参数数越限抛 TypeError。
+#[test]
+fn test_push_integer_limit_throws_type_error() {
+    let out = eval_str(
+        "(() => { const o = {}; o.length = 9007199254740991; \
+         let t = '?'; try { Array.prototype.push.call(o, 1); } catch (e) { t = e.name; } \
+         return t; })()",
+    )
+    .unwrap();
+    assert_eq!(out, "TypeError");
+}
+
+// 引擎钉：pop arraylike 2^53 长度——ToLength 钳 2^53-1，pop 末位（undefined），
+// length 收 2^53-2。
+#[test]
+fn test_pop_arraylike_integer_limit() {
+    let out = eval_str(
+        "(() => { const o = { length: 9007199254740992 }; \
+         const r = Array.prototype.pop.call(o); \
+         return String(r === undefined) + '|' + o.length; })()",
+    )
+    .unwrap();
+    assert_eq!(out, "true|9007199254740990");
+}
+
+// 引擎钉：pop 末位非可配置自有索引——DeletePropertyOrThrow 抛 TypeError。
+#[test]
+fn test_pop_last_slot_non_configurable_throws() {
+    let out = eval_str(
+        "(() => { const o = { length: 1, 0: 5 }; \
+         Object.defineProperty(o, '0', { value: 5, writable: true, enumerable: true, configurable: false }); \
+         let t = '?'; try { Array.prototype.pop.call(o); } catch (e) { t = e.name; } \
+         return t; })()",
+    )
+    .unwrap();
+    assert_eq!(out, "TypeError");
+}
+
+// 引擎钉：pop 原型链继承末位元素——Get 读继承值，末位非自有删位空操作，
+// 继承读持续可读。
+#[test]
+fn test_pop_inherited_last_element() {
+    let out = eval_str(
+        "(() => { Array.prototype[1] = 1; \
+         try { const x = [0]; x.length = 2; const r = x.pop(); \
+         return r + '|' + x.length + '|' + x[1]; } \
+         finally { delete Array.prototype[1]; } })()",
+    )
+    .unwrap();
+    assert_eq!(out, "1|1|1");
+}
+
+// 引擎钉：shift arraylike 接收者——缺失中位删目标格、present 位前移、
+// 末位显式删除。
+#[test]
+fn test_shift_arraylike_receiver() {
+    let out = eval_str(
+        "(() => { const o = { 0: 0, 3: 3, length: 4 }; \
+         const r = Array.prototype.shift.call(o); \
+         return r + '|' + o.length + '|' + (3 in o) + '|' + o[2]; })()",
+    )
+    .unwrap();
+    assert_eq!(out, "0|3|false|3");
+}
+
+// 引擎钉：shift ToObject 装箱基元 this——Boolean 包装体 length 0，返回 undefined。
+#[test]
+fn test_shift_primitive_this_boxed() {
+    let out = eval_str("(() => { return String(Array.prototype.shift.call(true)); })()").unwrap();
+    assert_eq!(out, "undefined");
+}
+
+// 引擎钉：unshift 无参 2^53-1 极限——argCount 0 不查限，返回 2^53-1。
+#[test]
+fn test_unshift_no_args_integer_limit_no_check() {
+    let out = eval_str(
+        "(() => { const o = {}; o.length = 9007199254740991; \
+         const r = Array.prototype.unshift.call(o); \
+         return String(r === 9007199254740991) + '|' + o.length; })()",
+    )
+    .unwrap();
+    assert_eq!(out, "true|9007199254740991");
+}
+
+// 引擎钉：unshift 2^53-1 预检——len + 参数数越限抛 TypeError（现行规范文本，
+// 非 RangeError）。
+#[test]
+fn test_unshift_integer_limit_throws_type_error() {
+    let out = eval_str(
+        "(() => { const o = {}; o.length = 9007199254740991; \
+         let t = '?'; try { Array.prototype.unshift.call(o, 1); } catch (e) { t = e.name; } \
+         return t; })()",
+    )
+    .unwrap();
+    assert_eq!(out, "TypeError");
+}
+
+// 引擎钉：unshift arraylike 接收者——已有元素右移、实参填头、length 扩容。
+#[test]
+fn test_unshift_arraylike_receiver() {
+    let out = eval_str(
+        "(() => { const o = { length: 1, 0: 'a' }; \
+         const r = Array.prototype.unshift.call(o, 'x'); \
+         return r + '|' + o[0] + '|' + o[1]; })()",
+    )
+    .unwrap();
+    assert_eq!(out, "2|x|a");
+}
+
+// 引擎钉：unshift ToObject 装箱基元 this——Boolean 包装体 length 0，两实参返回 2。
+#[test]
+fn test_unshift_primitive_this_boxed() {
+    let out = eval_str("(() => { return String(Array.prototype.unshift.call(false, 7, 8)); })()").unwrap();
+    assert_eq!(out, "2");
+}
+
+// 引擎钉：pop 末位 getter 返回冻结哨兵对象跨 delete/Set-length 用户窗口——
+// 身份保持（钉位语义的可观察契约）。
+#[test]
+fn test_pop_getter_sentinel_identity_across_window() {
+    let out = eval_str(
+        "(() => { const a = [10, 20]; const sentinel = Object.freeze({ tag: 'S' }); \
+         Object.defineProperty(a, 1, { get() { const junk = []; for (let i = 0; i < 100000; i++) junk.push({ i }); return sentinel; }, \
+         configurable: true }); \
+         const r = a.pop(); \
+         return String(r === sentinel) + '|' + a.length; })()",
+    )
+    .unwrap();
+    assert_eq!(out, "true|1");
 }

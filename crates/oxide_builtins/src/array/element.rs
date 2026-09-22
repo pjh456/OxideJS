@@ -48,19 +48,39 @@ fn delete_prop_or_throw<H: VmHost>(vm: &mut H, obj: &mut JsObject, key_si: u32) 
 /// `Array.prototype.push(...items)`：追加元素到尾部，返回新长度。
 ///
 /// # 步骤
-/// 1. 读 `LengthOfArrayLike(this)` 作起始索引。
-/// 2. 每个实参按当前索引生成属性键，以严格模式 `[[Set]]` 写入（继承 setter /
+/// 1. `ToObject` 装箱基元 this（null/undefined 抛 TypeError），装箱体钉入返回
+///    寄存器跨用户窗口保 GC 根；长度按规范 `ToLength(Get(O, "length"))`
+///    读取（上限 2^53-1）。
+/// 2. `len + 参数数 > 2^53-1` 抛 TypeError（"Invalid array length"）。
+/// 3. 每个实参按当前索引生成属性键，以严格模式 `[[Set]]` 写入（继承 setter /
 ///    不可写元素按规范抛 TypeError），写入成功后才递增索引。
-/// 3. 以 `Set(this, "length", len, true)` 收尾，length 不可写时抛 TypeError。
+/// 4. 以 `Set(this, "length", len, true)` 收尾，length 不可写时抛 TypeError。
 ///
 /// # 副作用
 /// - 修改元素区与 length；元素写入可经原型链触发用户 setter。
 pub fn array_push<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("Array.prototype.push called with {} args", args.len());
-    let arr_ptr = array_ptr!(vm, args);
-    let recv = JsValue::from_js_object(arr_ptr);
-    let mut len = unsafe { &*arr_ptr }.logical_len() as usize;
-
+    // ToObject：基元 this 装箱（null/undefined 抛 TypeError）。
+    let this_val = match oxide_runtime_api::to_object(vm.reg(args[0]), vm) {
+        Ok(v) => v,
+        Err(msg) => return NativeResult::Err(from_engine_error(vm, &msg)),
+    };
+    // 装箱体钉入返回寄存器：它只存于 Rust 局部，this 寄存器持原始基元（不在根集），
+    // 跨 length getter / 元素 Set 用户窗口须保持 GC 根。call 转发形态的实参寄存器集
+    // 可占该槽，占位时跳过钉位（装箱体按接收者值传递保活）。
+    if !args.contains(&0) {
+        vm.set_reg(0, this_val);
+    }
+    let (arr_ptr, mut len, _is_array) = match get_this_arraylike(vm, this_val) {
+        Ok(v) => v,
+        Err(e) => return NativeResult::Err(e),
+    };
+    let recv = this_val;
+    let n_items = args.len().saturating_sub(1);
+    // len + 参数数超 2^53-1 抛 TypeError（node 消息 "Invalid array length"）。
+    if len + n_items > 9_007_199_254_740_991 {
+        return NativeResult::Err(crate::error::create_type_error(vm, "Invalid array length"));
+    }
     for &arg_reg in args.iter().skip(1) {
         let key = vm.string_key_si(&len.to_string());
         if let Err(err) = vm.ordinary_set(unsafe { &mut *arr_ptr }, key, vm.reg(arg_reg), recv, true) {
@@ -80,16 +100,34 @@ pub fn array_push<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 /// `Array.prototype.pop()`：移除并返回末位元素；空数组返回 undefined。
 ///
 /// # 步骤
-/// 1. 读 `LengthOfArrayLike(this)`；为 0 时以 `Set(this, "length", +0, true)` 收尾。
-/// 2. 否则按 Get / DeletePropertyOrThrow / Set length 的顺序处理末位元素。
+/// 1. `ToObject` 装箱基元 this（null/undefined 抛 TypeError），装箱体钉入返回
+///    寄存器跨用户窗口保 GC 根；长度按规范 `ToLength(Get(O, "length"))`
+///    读取（上限 2^53-1）。
+/// 2. 长度为 0 时以 `Set(this, "length", +0, true)` 收尾返回 undefined。
+/// 3. 否则 Get 末位元素（钉入返回寄存器跨后续窗口保 GC 根），
+///    DeletePropertyOrThrow 末位（不可配置自有索引抛 TypeError），
+///    以 `Set(this, "length", len-1, true)` 收尾，返回末位元素。
 ///
 /// # 副作用
 /// - 删除末位元素并收缩 length；Get 可触发原型链 getter，length 不可写时抛 TypeError。
 pub fn array_pop<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("Array.prototype.pop called with {} args", args.len());
-    let arr_ptr = array_ptr!(vm, args);
-    let recv = JsValue::from_js_object(arr_ptr);
-    let len = unsafe { &*arr_ptr }.logical_len() as usize;
+    // ToObject：基元 this 装箱（null/undefined 抛 TypeError）。
+    let this_val = match oxide_runtime_api::to_object(vm.reg(args[0]), vm) {
+        Ok(v) => v,
+        Err(msg) => return NativeResult::Err(from_engine_error(vm, &msg)),
+    };
+    // 装箱体钉入返回寄存器：它只存于 Rust 局部，this 寄存器持原始基元（不在根集），
+    // 跨 length getter 用户窗口须保持 GC 根；末位元素钉入后此槽让位，其后装箱体
+    // 按接收者值传递保活。call 转发形态的实参寄存器集可占该槽，占位时跳过钉位。
+    if !args.contains(&0) {
+        vm.set_reg(0, this_val);
+    }
+    let (arr_ptr, len, _is_array) = match get_this_arraylike(vm, this_val) {
+        Ok(v) => v,
+        Err(e) => return NativeResult::Err(e),
+    };
+    let recv = this_val;
     let length_si = vm.string_key_si("length");
     if len == 0 {
         if let Err(err) = vm.ordinary_set(unsafe { &mut *arr_ptr }, length_si, JsValue::int(0), recv, true) {
@@ -104,18 +142,17 @@ pub fn array_pop<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         Err(msg) => return NativeResult::Err(from_engine_error(vm, &msg)),
     };
 
-    // DeletePropertyOrThrow：不可配置元素删除失败抛 TypeError，否则标记为 hole。
-    match unsafe { &*arr_ptr }.prop_meta_at(index) {
-        Some(meta) if !meta.attributes.configurable() => {
-            return NativeResult::Err(array_type_error(vm, "Cannot delete property"));
-        }
-        _ => unsafe { (*arr_ptr).mark_hole_at(index) },
+    // 末位元素可能来自原型链 getter 的全新临时对象：钉入返回寄存器
+    // 跨 delete / Set length 用户窗口保 GC 根，收尾自钉位读回。
+    vm.set_reg(0, last);
+    // DeletePropertyOrThrow：不可配置自有索引删除失败抛 TypeError，hole / 缺失位空操作。
+    if let Err(err) = delete_prop_or_throw(vm, unsafe { &mut *arr_ptr }, key) {
+        return NativeResult::Err(err);
     }
-
     if let Err(err) = vm.ordinary_set(unsafe { &mut *arr_ptr }, length_si, js_array_index(index), recv, true) {
         return NativeResult::Err(from_engine_error(vm, &err));
     }
-    NativeResult::Ok(last)
+    NativeResult::Ok(vm.reg(0))
 }
 
 /// `Array.prototype.slice(start, end)`：复制区间元素返回新数组（支持负索引）。
@@ -900,18 +937,35 @@ pub fn array_flat<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 /// `Array.prototype.shift()`：移除并返回首元素，其余元素前移；空数组返回 undefined。
 ///
 /// # 步骤
-/// 1. 读 `LengthOfArrayLike(this)`；为 0 时以 `Set(this, "length", +0, true)` 收尾。
-/// 2. Get 首元素后，把 `1..len` 逐位前移：源存在则 Get + 严格 Set 到前一格，
-///    源缺失（hole）则 DeletePropertyOrThrow 目标格。
-/// 3. 以 `Set(this, "length", len-1, true)` 收尾。
+/// 1. `ToObject` 装箱基元 this（null/undefined 抛 TypeError），装箱体钉入返回
+///    寄存器跨用户窗口保 GC 根；长度按规范 `ToLength(Get(O, "length"))`
+///    读取（上限 2^53-1）。
+/// 2. 长度为 0 时以 `Set(this, "length", +0, true)` 收尾返回 undefined。
+/// 3. Get 首元素并钉入返回寄存器；`1..len` 逐位前移：HasProperty 命中
+///    （自身与原型链，hole 视同缺失）则 Get + 严格 Set 到前一格，缺失则
+///    DeletePropertyOrThrow 目标格。
+/// 4. 末位 DeletePropertyOrThrow 后以 `Set(this, "length", len-1, true)` 收尾。
 ///
 /// # 副作用
 /// - 元素整体前移并收缩 length；Get/Set 可经原型链触发用户代码。
 pub fn array_shift<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("Array.prototype.shift called with {} args", args.len());
-    let arr_ptr = array_ptr!(vm, args);
-    let recv = JsValue::from_js_object(arr_ptr);
-    let len = unsafe { &*arr_ptr }.logical_len() as usize;
+    // ToObject：基元 this 装箱（null/undefined 抛 TypeError）。
+    let this_val = match oxide_runtime_api::to_object(vm.reg(args[0]), vm) {
+        Ok(v) => v,
+        Err(msg) => return NativeResult::Err(from_engine_error(vm, &msg)),
+    };
+    // 装箱体钉入返回寄存器：它只存于 Rust 局部，this 寄存器持原始基元（不在根集），
+    // 跨 length getter 用户窗口须保持 GC 根；首位元素钉入后此槽让位，其后装箱体
+    // 按接收者值传递保活。call 转发形态的实参寄存器集可占该槽，占位时跳过钉位。
+    if !args.contains(&0) {
+        vm.set_reg(0, this_val);
+    }
+    let (arr_ptr, len, _is_array) = match get_this_arraylike(vm, this_val) {
+        Ok(v) => v,
+        Err(e) => return NativeResult::Err(e),
+    };
+    let recv = this_val;
     let length_si = vm.string_key_si("length");
     if len == 0 {
         if let Err(err) = vm.ordinary_set(unsafe { &mut *arr_ptr }, length_si, JsValue::int(0), recv, true) {
@@ -930,28 +984,30 @@ pub fn array_shift<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     vm.set_reg(0, first);
 
     for k in 1..len {
-        let from = vm.string_key_si(&k.to_string());
         let to = vm.string_key_si(&(k - 1).to_string());
         // HasProperty 走原型链存在性判定（hole 视同缺失），命中才 Get + Set。
-        if vm.resolve_property(unsafe { &*arr_ptr }, from).is_some() {
-            let val = match vm.ordinary_get(unsafe { &*arr_ptr }, from, recv) {
-                Ok(v) => v,
-                Err(msg) => return NativeResult::Err(from_engine_error(vm, &msg)),
-            };
-            if let Err(err) = vm.ordinary_set(unsafe { &mut *arr_ptr }, to, val, recv, true) {
-                return NativeResult::Err(from_engine_error(vm, &err));
-            }
-        } else {
-            // DeletePropertyOrThrow(O, to)：不可配置元素删除失败抛 TypeError。
-            match unsafe { &*arr_ptr }.prop_meta_at(k - 1) {
-                Some(meta) if !meta.attributes.configurable() => {
-                    return NativeResult::Err(array_type_error(vm, "Cannot delete property"));
+        match gated_get(vm, arr_ptr, k, recv) {
+            Ok(Some(val)) => {
+                if let Err(err) = vm.ordinary_set(unsafe { &mut *arr_ptr }, to, val, recv, true) {
+                    return NativeResult::Err(from_engine_error(vm, &err));
                 }
-                _ => unsafe { (*arr_ptr).mark_hole_at(k - 1) },
             }
+            Ok(None) => {
+                // DeletePropertyOrThrow(O, to)：不可配置元素删除失败抛 TypeError。
+                if let Err(err) = delete_prop_or_throw(vm, unsafe { &mut *arr_ptr }, to) {
+                    return NativeResult::Err(err);
+                }
+            }
+            Err(err) => return NativeResult::Err(err),
         }
     }
 
+    // 末位 DeletePropertyOrThrow：真数组上该位已由 length 写入截断覆盖，
+    // arraylike 上该位不在搬移路径内，须显式删除。
+    let last_key = vm.string_key_si(&(len - 1).to_string());
+    if let Err(err) = delete_prop_or_throw(vm, unsafe { &mut *arr_ptr }, last_key) {
+        return NativeResult::Err(err);
+    }
     if let Err(err) = vm.ordinary_set(unsafe { &mut *arr_ptr }, length_si, js_array_index(len - 1), recv, true) {
         return NativeResult::Err(from_engine_error(vm, &err));
     }
@@ -962,50 +1018,69 @@ pub fn array_shift<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 /// `Array.prototype.unshift(...items)`：插入元素到头部，返回新长度。
 ///
 /// # 步骤
-/// 1. 读 `LengthOfArrayLike(this)`；`len + 参数数` 超出 2^53-1 时抛 RangeError。
-/// 2. 参数数大于 0 时自高到低搬移已有元素（源存在则 Get + 严格 Set，缺失则
-///    DeletePropertyOrThrow），再把实参逐个严格 Set 到头部。
-/// 3. 以 `Set(this, "length", len+参数数, true)` 收尾。
+/// 1. `ToObject` 装箱基元 this（null/undefined 抛 TypeError），装箱体钉入返回
+///    寄存器跨用户窗口保 GC 根；长度按规范 `ToLength(Get(O, "length"))`
+///    读取（上限 2^53-1）。
+/// 2. 参数数大于 0 且 `len + 参数数 > 2^53-1` 抛 TypeError（现行规范文本，
+///    非 RangeError）。
+/// 3. 参数数大于 0 时自高到低搬移已有元素：HasProperty 命中（自身与原型链，
+///    hole 视同缺失）则 Get + 严格 Set（搬移值钉入返回寄存器跨 Set 窗口保
+///    GC 根），缺失则 DeletePropertyOrThrow，再把实参逐个严格 Set 到头部。
+/// 4. 以 `Set(this, "length", len+参数数, true)` 收尾。
 ///
 /// # 副作用
 /// - 元素整体后移并扩容 length；Get/Set 可经原型链触发用户代码。
 pub fn array_unshift<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("Array.prototype.unshift called with {} args", args.len());
-    let arr_ptr = array_ptr!(vm, args);
-    let recv = JsValue::from_js_object(arr_ptr);
-    let len = unsafe { &*arr_ptr }.logical_len() as usize;
+    // ToObject：基元 this 装箱（null/undefined 抛 TypeError）。
+    let this_val = match oxide_runtime_api::to_object(vm.reg(args[0]), vm) {
+        Ok(v) => v,
+        Err(msg) => return NativeResult::Err(from_engine_error(vm, &msg)),
+    };
+    // 装箱体钉入返回寄存器：它只存于 Rust 局部，this 寄存器持原始基元（不在根集），
+    // 跨 length getter / 搬移窗口用户窗口须保持 GC 根；搬移值钉入后此槽让位，
+    // 其后装箱体按接收者值传递保活。call 转发形态的实参寄存器集可占该槽，
+    // 占位时跳过钉位。
+    if !args.contains(&0) {
+        vm.set_reg(0, this_val);
+    }
+    let (arr_ptr, len, _is_array) = match get_this_arraylike(vm, this_val) {
+        Ok(v) => v,
+        Err(e) => return NativeResult::Err(e),
+    };
+    let recv = this_val;
     let n_items = args.len().saturating_sub(1);
     let length_si = vm.string_key_si("length");
+    // 实参值先读入局部：搬移循环把搬移值钉入返回寄存器，可能覆写实参寄存器
+    // 槽，读取须先于钉位完成。
+    let arg_values: Vec<JsValue> = args.iter().skip(1).map(|&r| vm.reg(r)).collect();
     if n_items > 0 {
-        if len as f64 + n_items as f64 > 9_007_199_254_740_991.0 {
-            // 长度上限越界按规范为 RangeError。
-            return NativeResult::Err(crate::error::create_range_error(vm, "Invalid array length"));
+        // len + 参数数超 2^53-1 抛 TypeError（规范现行文本，node 实测同形）。
+        if len + n_items > 9_007_199_254_740_991 {
+            return NativeResult::Err(crate::error::create_type_error(vm, "Invalid array length"));
         }
         for k in (1..=len).rev() {
-            let from = vm.string_key_si(&(k - 1).to_string());
             let to_idx = k - 1 + n_items;
             let to = vm.string_key_si(&to_idx.to_string());
-            if vm.resolve_property(unsafe { &*arr_ptr }, from).is_some() {
-                let val = match vm.ordinary_get(unsafe { &*arr_ptr }, from, recv) {
-                    Ok(v) => v,
-                    Err(msg) => return NativeResult::Err(from_engine_error(vm, &msg)),
-                };
-                if let Err(err) = vm.ordinary_set(unsafe { &mut *arr_ptr }, to, val, recv, true) {
-                    return NativeResult::Err(from_engine_error(vm, &err));
-                }
-            } else {
-                // DeletePropertyOrThrow(O, to)：不可配置元素删除失败抛 TypeError。
-                match unsafe { &*arr_ptr }.prop_meta_at(to_idx) {
-                    Some(meta) if !meta.attributes.configurable() => {
-                        return NativeResult::Err(array_type_error(vm, "Cannot delete property"));
+            match gated_get(vm, arr_ptr, k - 1, recv) {
+                Ok(Some(val)) => {
+                    // 搬移值跨 Set 用户调用窗口：先钉返回寄存器再写，写后从钉位读回。
+                    vm.set_reg(0, val);
+                    if let Err(err) = vm.ordinary_set(unsafe { &mut *arr_ptr }, to, vm.reg(0), recv, true) {
+                        return NativeResult::Err(from_engine_error(vm, &err));
                     }
-                    _ => unsafe { (*arr_ptr).mark_hole_at(to_idx) },
                 }
+                Ok(None) => {
+                    if let Err(err) = delete_prop_or_throw(vm, unsafe { &mut *arr_ptr }, to) {
+                        return NativeResult::Err(err);
+                    }
+                }
+                Err(err) => return NativeResult::Err(err),
             }
         }
-        for (j, &arg_reg) in args.iter().skip(1).enumerate() {
+        for (j, val) in arg_values.iter().enumerate() {
             let key = vm.string_key_si(&j.to_string());
-            if let Err(err) = vm.ordinary_set(unsafe { &mut *arr_ptr }, key, vm.reg(arg_reg), recv, true) {
+            if let Err(err) = vm.ordinary_set(unsafe { &mut *arr_ptr }, key, *val, recv, true) {
                 return NativeResult::Err(from_engine_error(vm, &err));
             }
         }

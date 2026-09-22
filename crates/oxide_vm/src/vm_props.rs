@@ -383,6 +383,15 @@ impl Vm {
         if obj.is_array() && prop_name_si == length_si {
             return self.set_array_length_value(obj, val, strict, builtin);
         }
+        // 字符串 exotic 的 length 是 [[Writable]]: false 的固有数据属性（规范
+        // String exotic [[Set]]）：写不成立，严格抛 TypeError、sloppy 静默
+        // no-op——不得落命名属性区。
+        if obj.is_string_obj() && prop_name_si == length_si {
+            if strict {
+                return self.write_protection_failure(builtin, "cannot assign to read-only property");
+            }
+            return Ok(());
+        }
         if let Some(pos) = self.get_own_property_slot(obj, prop_name_si) {
             if let Some(meta) = obj.prop_meta_at(pos) {
                 if meta.is_accessor {
