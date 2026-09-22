@@ -541,8 +541,8 @@ pub fn clone_regexp_native(old_obj: &JsObject, new_obj: &mut JsObject) {
 ///
 /// # 步骤
 /// 1. this 须为 RegExp 实例（内部槽门禁，非对象/非 RegExp 抛 TypeError）。
-/// 2. S = ToString(string)；flags 串判 global/sticky（sticky 时 global 归
-///    false 的效果体现为两者只影响同一分支）。
+/// 2. S = ToString(string)；flags 串判 global/sticky（g/y 字面量互斥，至多
+///    其一，共用 tracks 分支）。
 /// 3. 共享搜索核（与 exec 同一实现）：lastIndex 读、越界短路、sticky 锚定
 ///    过滤、lastIndex Set 写回。
 /// 4. 命中返回 true，否则 false。
@@ -593,7 +593,7 @@ pub fn regexp_test<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 }
 
 /// exec/test 共享搜索核（规范 RegExpBuiltinExec 的搜索部分）：lastIndex 经
-/// Get + ToLength 读取，搜索起点（global/sticky 取 lastIndex、其余取 0），
+/// Get + ToLength 无条件读取（非 global/sticky 臂读到后丢弃、起点恒 0），
 /// 越界短路（先 Set 0），匹配与 sticky 后置锚定过滤，lastIndex Set 写回
 /// （失败置 0、成功置匹配末尾，仅 global/sticky，非可写属性抛 TypeError）。
 ///
@@ -607,7 +607,8 @@ fn rx_search<H: VmHost>(
     vm: &mut H, re_ptr: *mut JsObject, this_val: JsValue, regex: &regress::Regex, text: &MatchText,
     tracks_last_index: bool, is_sticky: bool,
 ) -> Result<Option<regress::Match>, JsValue> {
-    // lastIndex 读走 Get + ToLength：完整属性解析，读异常传播原异常。
+    // lastIndex 读无条件执行（规范先读后在非 global/sticky 臂丢弃）；
+    // 读走 Get + ToLength：完整属性解析，读异常传播原异常。
     let last_index = {
         let li_si = vm.kernel_core().perm_interner().intern("lastIndex").0;
         match vm.ordinary_get(unsafe { &*re_ptr }, li_si, this_val) {
@@ -636,7 +637,7 @@ fn rx_search<H: VmHost>(
     // 过滤——底层引擎对 y 不原生锚定，命中起点须恰在 lastIndex 才算有效。
     let match_result = text.find_from_units(regex, start);
     let anchored = if is_sticky {
-        match_result.filter(|m| text.unit_pos(m.range().start) == last_index)
+        match_result.filter(|m| text.unit_pos(m.range().start) == start)
     } else {
         match_result
     };
@@ -662,8 +663,8 @@ fn rx_search<H: VmHost>(
 /// # 步骤
 /// 1. this 仅需对象（IsObject 门禁）；编译正则槽必须存在，非 RegExp 对象无
 ///    可匹配模式，同抛 TypeError。
-/// 2. S = ToString(string)；flags 串判 global/sticky（sticky 时 global 归 false
-///    的效果体现为两者只影响同一分支）。
+/// 2. S = ToString(string)；flags 串判 global/sticky（g/y 字面量互斥，至多
+///    其一，共用 tracks 分支）。
 /// 3. 共享搜索核（与 test 同一实现）：lastIndex 读（Get + ToLength）、越界
 ///    短路（先 Set 0）、sticky 后置锚定过滤、lastIndex Set 写回。
 /// 4. 无匹配回 null；命中构建结果数组（捕获组、index、input、groups）。
@@ -750,13 +751,6 @@ pub fn regexp_exec<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         let indices_val = build_indices_array(vm, &m, &text);
         let indices_si = vm.kernel_core().perm_interner().intern("indices").0;
         vm.set_or_create_prop_value(unsafe { &mut *arr }, indices_si, indices_val);
-    }
-
-    // 成功：lastIndex 推进到匹配末尾（仅 global/sticky），Set 语义。
-    if tracks_last_index {
-        if let Err(err) = set_last_index(vm, re_ptr, this_val, text.unit_pos(range.end)) {
-            return NativeResult::Err(err);
-        }
     }
 
     NativeResult::Ok(JsValue::from_js_object(arr))

@@ -265,6 +265,15 @@ fn regexp_exec_negative_last_index_clamped_to_zero() {
     assert_eq!(to_str(&vm, result), "0:1");
 }
 
+#[test]
+fn regexp_exec_last_index_set_once_on_success() {
+    // 成功路径 lastIndex 恰好 Set 一次（写回在核内单点）：计数 setter 只被观察一次。
+    let source = "(() => { var re = /a/g; var n = 0; Object.defineProperty(re, 'lastIndex', { configurable: true, set() { n += 1; }, get() { return 0; } }); re.exec('a'); return String(n); })()";
+    let mut vm = Vm::new();
+    let result = eval(&mut vm, source).unwrap();
+    assert_eq!(to_str(&vm, result), "1");
+}
+
 // --- test() lastIndex 规范语义（sticky 锚定 / 越界短路 / 不追踪不写回）---
 
 #[test]
