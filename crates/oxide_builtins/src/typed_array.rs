@@ -35,6 +35,15 @@ fn range_error<H: VmHost>(vm: &mut H, msg: &str) -> JsValue {
 }
 
 fn to_index<H: VmHost>(vm: &mut H, value: JsValue, msg: &str) -> Result<usize, JsValue> {
+    // ToIndex 的 BigInt 面：整数原语截断即自身，负值或超 2^53-1 抛
+    // RangeError（与数值臂同消息），无 NaN 概念。
+    if value.is_bigint() {
+        let b = vm.bigint_value(value);
+        if *b < BigInt::from(0) || *b > BigInt::from(9_007_199_254_740_991u64) {
+            return Err(range_error(vm, msg));
+        }
+        return Ok(b.to_usize().unwrap_or(0));
+    }
     let n = match vm.coerce_number_bounded(value) {
         Ok(n) => n,
         Err(e) => return Err(crate::iterator::engine_error(vm, &e)),
@@ -51,19 +60,27 @@ fn to_index<H: VmHost>(vm: &mut H, value: JsValue, msg: &str) -> Result<usize, J
 /// 按 ToIntegerOrInfinity 语义把索引归一化到 `[0, len]`（越界夹取）；符号等不可
 /// 转换值透传异常。
 fn normalize_index<H: VmHost>(vm: &mut H, value: JsValue, len: usize) -> Result<usize, JsValue> {
-    let n = match vm.coerce_number_bounded(value) {
-        Ok(n) => n,
-        Err(e) => return Err(crate::iterator::engine_error(vm, &e)),
+    // BigInt 面：ToIntegerOrInfinity 对整数原语即截断自身（无 NaN/±Infinity 臂），
+    // 超 isize 域饱和到对应端点后走同一负/正夹取尾段。
+    let int: isize = if value.is_bigint() {
+        let b = vm.bigint_value(value);
+        b.to_isize()
+            .unwrap_or(if *b < BigInt::from(0) { isize::MIN } else { isize::MAX })
+    } else {
+        let n = match vm.coerce_number_bounded(value) {
+            Ok(n) => n,
+            Err(e) => return Err(crate::iterator::engine_error(vm, &e)),
+        };
+        if n.is_nan() {
+            return Ok(0);
+        }
+        // ToIntegerOrInfinity：±Infinity 不截断，负无穷归 0、正无穷归 len，
+        // 避免饱和成 isize::MIN 后取负溢出。
+        if n.is_infinite() {
+            return Ok(if n < 0.0 { 0 } else { len });
+        }
+        n.trunc() as isize
     };
-    if n.is_nan() {
-        return Ok(0);
-    }
-    // ToIntegerOrInfinity：±Infinity 不截断，负无穷归 0、正无穷归 len，
-    // 避免饱和成 isize::MIN 后取负溢出。
-    if n.is_infinite() {
-        return Ok(if n < 0.0 { 0 } else { len });
-    }
-    let int = n.trunc() as isize;
     if int < 0 {
         Ok(len.saturating_sub(int.unsigned_abs()))
     } else {
