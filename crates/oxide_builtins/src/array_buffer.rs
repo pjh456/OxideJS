@@ -368,36 +368,38 @@ pub fn detach_array_buffer_native<H: VmHost>(vm: &mut H, this_val: JsValue) -> N
 ///
 /// # 步骤
 /// 1. this 品牌校验（非对象/非 ArrayBuffer → TypeError）。
-/// 2. 载荷三状态位（detached / immutable / max）先于任何 JS 调用拷入局部
-///    标量。
-/// 3. detached → TypeError。
-/// 4. immutable → TypeError。
-/// 5. newByteLength = ToIntegerOrInfinity(newLength) 传播式（NaN → 0，
+/// 2. immutable 状态位先于任何 JS 调用拷出并守卫（该守卫在 newLength
+///    读取之前：强转副作用不先于 immutable 观测）。
+/// 3. newByteLength = ToIntegerOrInfinity(newLength) 传播式（NaN → 0，
 ///    ±Infinity 保留）。
-/// 6. 定长（存储态上限 = 0）→ TypeError，先于界判。
-/// 7. newByteLength < 0 或 > 真实上限（存储态 − 1）→ RangeError。
-/// 8. 重取载荷指针：步 5 的 JS 调用可触发 epoch 晋升，旧指针悬垂。
-/// 9. 载荷重检：强转调用可已 detach 本缓冲，detached 与步 3 同文本 TypeError。
-/// 10. `Vec::resize` 一次调用收口目标长度。
-/// 11. 返回 undefined。
+/// 4. 重取载荷指针（强转调用可触发 epoch 晋升，旧指针悬垂）；detached
+///    守卫在求值之后：强转内 detach 与本步前已 detach 同形 TypeError。
+/// 5. 定长（重读存储态上限 = 0）→ TypeError，先于界判。
+/// 6. newByteLength < 0 或 > 真实上限（重读存储态 − 1）→ RangeError。
+/// 7. `Vec::resize` 一次调用收口目标长度。
+/// 8. 返回 undefined。
 pub fn array_buffer_resize<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let this_reg = if args.is_empty() { 0 } else { args[0] };
     let this_val = vm.reg(this_reg);
     let payload_ptr = native_try!(array_buffer_payload(vm, this_val));
     // SAFETY: payload_ptr 经 array_buffer_payload 校验为合法 ArrayBuffer 载荷；
-    // 三状态位拷出后本次借用即结束，不跨 JS 调用点。
-    let (detached, immutable, max) = unsafe {
-        let payload = &*payload_ptr;
-        (payload.data.is_none(), payload.immutable, payload.max_byte_length)
-    };
-    if detached {
-        return NativeResult::Err(crate::error::create_type_error(vm, "ArrayBuffer internal state invalid"));
-    }
+    // 状态位拷出后本次借用即结束，不跨 JS 调用点。
+    let immutable = unsafe { &*payload_ptr }.immutable;
     if immutable {
         return NativeResult::Err(crate::error::create_type_error(vm, "ArrayBuffer is immutable"));
     }
     let new_val = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
     let new_length = native_try!(to_integer_or_infinity(vm, new_val));
+    // 强转调用可能已把本缓冲区晋升进 session 或 detach：接收者寄存器与
+    // 状态位均须重取重检，不得消费求值前快照。
+    let this_val = vm.reg(this_reg);
+    let payload_ptr = native_try!(array_buffer_payload(vm, this_val));
+    // SAFETY: 重取的 payload_ptr 指向存活载荷盒。
+    let payload = unsafe { &mut *payload_ptr };
+    let max = payload.max_byte_length;
+    let Some(data) = payload.data.as_mut() else {
+        return NativeResult::Err(crate::error::create_type_error(vm, "ArrayBuffer internal state invalid"));
+    };
     if max == 0 {
         return NativeResult::Err(crate::error::create_type_error(vm, "ArrayBuffer is not resizable"));
     }
@@ -406,15 +408,6 @@ pub fn array_buffer_resize<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     if new_length < 0.0 || new_length > real_max as f64 {
         return NativeResult::Err(crate::error::create_range_error(vm, "invalid ArrayBuffer length"));
     }
-    // 步 5 的 JS 调用可能已把本缓冲区晋升进 session：接收者寄存器经晋升
-    // 重写，须重新读取后再取载荷指针（旧 this 值可能指向已释放 epoch 对象）。
-    let this_val = vm.reg(this_reg);
-    let payload_ptr = native_try!(array_buffer_payload(vm, this_val));
-    // SAFETY: 重取的 payload_ptr 指向存活载荷盒。
-    let Some(data) = (unsafe { &mut *payload_ptr }).data.as_mut() else {
-        // 步 5 的强转调用可在中途 detach 本缓冲：重检不通过按步 3 同文本抛。
-        return NativeResult::Err(crate::error::create_type_error(vm, "ArrayBuffer internal state invalid"));
-    };
     data.resize(new_length as usize, 0);
     NativeResult::Ok(JsValue::undefined())
 }
@@ -754,20 +747,34 @@ mod tests {
         assert_eq!(payload.data.as_ref().expect("产物应附着").len(), 5);
     }
 
-    /// resize 后置 detach 重检钉：强转调用中途 detach 后按 TypeError 抛，
-    /// 不触碰已 detach 载荷（现树 expect 臂的 abort 钉改点）。
+    /// resize detach 守卫序钉：守卫在 newLength 求值之后——强转内 detach
+    /// 与求值前已 detach 两形均先跑完 valueOf 再按 TypeError 抛；
+    /// immutable 守卫在求值之前（强转不跑）。
     #[test]
-    fn resize_recheck_after_coercion_detach() {
+    fn resize_guard_order_pins() {
         let mut vm = Vm::new();
-        let e = eval_ab(
+        let r = eval_ab(
             &mut vm,
-            "var ab = new ArrayBuffer(64, {maxByteLength: 1024}); \
-             try { ab.resize({ valueOf() { $262.detachArrayBuffer(ab); return 0; } }); \
-                   'no-throw' } catch (err) { err.name }",
+            "(function () { var calls = 0; var ab = new ArrayBuffer(64, {maxByteLength: 1024}); \
+             try { ab.resize({ valueOf() { calls++; $262.detachArrayBuffer(ab); return 0; } }); \
+                   return 'no-throw' + calls; } \
+             catch (err) { return (err.name === 'TypeError' ? 'T' : 'X') + calls; } })() \
+             + '|' + \
+             (function () { var c2 = 0; var ab2 = new ArrayBuffer(64, {maxByteLength: 1024}); \
+              $262.detachArrayBuffer(ab2); \
+              try { ab2.resize({ valueOf() { c2++; return 0; } }); return 'no-throw' + c2; } \
+              catch (err) { return (err.name === 'TypeError' ? 'T' : 'X') + c2; } })()",
         )
         .unwrap();
-        assert_eq!(vm.lookup_str(e).unwrap(), "TypeError");
-        let r = eval_ab(&mut vm, "ab.detached === true && ab.byteLength === 0").unwrap();
-        assert!(r.as_bool());
+        assert_eq!(vm.lookup_str(r).unwrap(), "T1|T1");
+        let r = eval_ab(
+            &mut vm,
+            "var calls = 0; \
+             var ab = new ArrayBuffer(4).transferToImmutable(); \
+             try { ab.resize({ valueOf() { calls++; return 0; } }); 'no-throw' } \
+             catch (err) { (err.name === 'TypeError' ? 'T' : 'X') + calls }",
+        )
+        .unwrap();
+        assert_eq!(vm.lookup_str(r).unwrap(), "T0");
     }
 }
