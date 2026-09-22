@@ -58,6 +58,11 @@ pub fn bind_array_buffer(core: &Arc<KernelCore>, session: &KernelSession, global
                 oxide_builtins::array_buffer::array_buffer_to_string::<crate::vm::Vm> as *const (),
                 0,
             ),
+            (
+                "markImmutable",
+                oxide_builtins::array_buffer::array_buffer_mark_immutable::<crate::vm::Vm> as *const (),
+                0,
+            ),
         ],
     );
 
@@ -77,6 +82,34 @@ pub fn bind_array_buffer(core: &Arc<KernelCore>, session: &KernelSession, global
         proto,
         "resizable",
         oxide_builtins::array_buffer::array_buffer_resizable::<crate::vm::Vm> as *const (),
+    );
+
+    // maxByteLength 原型访问器（set 恒 undefined）：detached 回 +0，定长回
+    // 当前字节数，resizable 回存储态上限 − 1。
+    bind_accessor_getter(
+        core,
+        session,
+        proto,
+        "maxByteLength",
+        oxide_builtins::array_buffer::array_buffer_max_byte_length::<crate::vm::Vm> as *const (),
+    );
+
+    // immutable 原型访问器（set 恒 undefined）：读载荷 immutable 标志。
+    bind_accessor_getter(
+        core,
+        session,
+        proto,
+        "immutable",
+        oxide_builtins::array_buffer::array_buffer_immutable::<crate::vm::Vm> as *const (),
+    );
+
+    // detached 原型访问器（set 恒 undefined）：读载荷 data 存活位。
+    bind_accessor_getter(
+        core,
+        session,
+        proto,
+        "detached",
+        oxide_builtins::array_buffer::array_buffer_detached::<crate::vm::Vm> as *const (),
     );
 
     bind_constructor!(

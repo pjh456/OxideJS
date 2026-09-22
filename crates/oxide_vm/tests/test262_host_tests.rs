@@ -63,17 +63,21 @@ fn eval_script_syntax_error_is_catchable() {
 /// 未实现方法抛能力缺失错误（消息带 `not supported`），不抛 ReferenceError。
 #[test]
 fn unsupported_methods_throw_not_supported() {
-    let r =
-        eval("try { $262.detachArrayBuffer(new ArrayBuffer(8)); 'no-throw' } catch (e) { e.name + ':' + e.message }");
-    assert!(r.contains("TypeError"), "期望 TypeError，实际 {r}");
-    assert!(r.contains("not supported"), "期望能力缺失消息，实际 {r}");
-
     let r = eval("try { $262.createRealm(); 'no-throw' } catch (e) { e.name + ':' + e.message }");
     assert!(r.contains("TypeError"), "期望 TypeError，实际 {r}");
     assert!(r.contains("not supported"), "期望能力缺失消息，实际 {r}");
 
     let r = eval("try { $262.agent(); 'no-throw' } catch (e) { e.name + ':' + e.message }");
     assert!(r.contains("TypeError"), "期望 TypeError，实际 {r}");
+}
+
+/// `detachArrayBuffer` 真实现钉：detach 后 `detached` 访问器读 true、
+/// 非 ArrayBuffer 实参抛 TypeError。
+#[test]
+fn detach_array_buffer_detaches() {
+    assert_eq!(eval("var ab = new ArrayBuffer(8); $262.detachArrayBuffer(ab); ab.detached"), "true");
+    let r = eval("try { $262.detachArrayBuffer(1); 'no-throw' } catch (e) { e.name }");
+    assert_eq!(r, "TypeError");
 }
 
 /// `$262.gc()` 触发一次 session 回收且不抛错。

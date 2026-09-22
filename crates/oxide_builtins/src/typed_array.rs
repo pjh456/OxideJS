@@ -6,7 +6,8 @@ use oxide_types::private_key::{int_key_value, is_int_key, make_well_known_symbol
 use oxide_types::value::JsValue;
 
 use crate::array_buffer::{
-    array_buffer_payload, default_array_buffer_proto, new_array_buffer, MAX_ARRAY_BUFFER_LENGTH,
+    array_buffer_payload, array_buffer_payload_ptr, default_array_buffer_proto, new_array_buffer,
+    MAX_ARRAY_BUFFER_LENGTH,
 };
 
 use oxide_runtime_api::{NativeResult, VmHost};
@@ -336,7 +337,8 @@ pub fn ta_index_gate<H: VmHost>(vm: &H, obj: &JsObject, key_si: u32) -> TaIndexG
 }
 
 /// 取 TypedArray 视图长度（供只需 length 不需门的枚举面消费方）；
-/// 非 TypedArray 或内部状态无效返回 0。
+/// 非 TypedArray 或内部状态无效返回 0。底层缓冲已 detach（载荷 `data`
+/// 为 `None`）时视图长度统一为 0，界内键经门归数字无效。
 pub(crate) fn ta_view_length<H: VmHost>(_vm: &H, obj: &JsObject) -> usize {
     let Some(ptr) = typed_array_data_ptr(obj) else {
         return 0;
@@ -347,6 +349,16 @@ pub(crate) fn ta_view_length<H: VmHost>(_vm: &H, obj: &JsObject) -> usize {
     // SAFETY: ptr 非空，为 TypedArray 对象 native_fn 槽内的 Box<TypedArrayData>，
     // 与对象同生命周期，此处只读拷贝视图字段。
     let view = unsafe { *ptr };
+    // 底层缓冲已 detach：视图长度统一 0。
+    let buffer_ptr = view.buffer.as_js_object_ptr();
+    if !buffer_ptr.is_null() {
+        // SAFETY: buffer 对象与视图同生命周期，此处只读载荷存活位。
+        if let Some(payload_ptr) = array_buffer_payload_ptr(unsafe { &*buffer_ptr }) {
+            if !payload_ptr.is_null() && unsafe { (*payload_ptr).data.is_none() } {
+                return 0;
+            }
+        }
+    }
     view.length
 }
 

@@ -70,8 +70,6 @@ fn is_blacklisted_harness(name: &str) -> bool {
             | "atomicsHelper.js"
             | "proxyTrapsHelper.js"
             | "tcoHelper.js"
-            | "detachArrayBuffer.js"
-            | "resizableArrayBufferUtils.js"
             | "byteConversionValues.js"
             | "compareIterator.js"
             | "iteratorZipUtils.js"

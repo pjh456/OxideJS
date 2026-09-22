@@ -475,3 +475,199 @@ fn ab_length_range_error_not_regressed() {
     .unwrap();
     assert!(result.as_bool());
 }
+
+/// maxByteLength 访问器钉：描述符 {get 函数, set undefined, e:0, c:1}、
+/// name/length、定长 42→42 / 0→0、resizable(4,{max 8})→8、detached→0、
+/// this 四形 TypeError。
+#[test]
+fn ab_maxbytelength_accessor_pins() {
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "var d = Object.getOwnPropertyDescriptor(ArrayBuffer.prototype, 'maxByteLength'); \
+         var ok = d.set === undefined && typeof d.get === 'function' \
+           && d.enumerable === false && d.configurable === true \
+           && d.get.name === 'get maxByteLength' && d.get.length === 0; \
+         var t1 = false, t2 = false, t3 = false, t4 = false; \
+         try { d.get.call(ArrayBuffer.prototype); } catch (e) { t1 = e instanceof TypeError; } \
+         try { d.get.call(undefined); } catch (e) { t2 = e instanceof TypeError; } \
+         try { d.get.call({}); } catch (e) { t3 = e instanceof TypeError; } \
+         try { d.get.call([]); } catch (e) { t4 = e instanceof TypeError; } \
+         ok && t1 && t2 && t3 && t4 \
+           && new ArrayBuffer(42).maxByteLength === 42 \
+           && new ArrayBuffer(0).maxByteLength === 0 \
+           && new ArrayBuffer(4, {maxByteLength: 8}).maxByteLength === 8",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+    let result =
+        eval(&mut vm, "var ab = new ArrayBuffer(1); $262.detachArrayBuffer(ab); ab.maxByteLength === 0").unwrap();
+    assert!(result.as_bool());
+}
+
+/// immutable 访问器钉：描述符形、markImmutable 前后 false→true、this 两形。
+#[test]
+fn ab_immutable_accessor_pins() {
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "var d = Object.getOwnPropertyDescriptor(ArrayBuffer.prototype, 'immutable'); \
+         var ok = d.set === undefined && typeof d.get === 'function' \
+           && d.enumerable === false && d.configurable === true \
+           && d.get.name === 'get immutable' && d.get.length === 0; \
+         var ab = new ArrayBuffer(2); \
+         var before = ab.immutable; \
+         ab.markImmutable(); \
+         var t1 = false, t2 = false; \
+         try { d.get.call({}); } catch (e) { t1 = e instanceof TypeError; } \
+         try { d.get.call(undefined); } catch (e) { t2 = e instanceof TypeError; } \
+         ok && before === false && ab.immutable === true && t1 && t2",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
+/// detached 访问器钉：描述符形、附着 false → $262 detach → true、this 两形。
+#[test]
+fn ab_detached_accessor_pins() {
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "var d = Object.getOwnPropertyDescriptor(ArrayBuffer.prototype, 'detached'); \
+         var ok = d.set === undefined && typeof d.get === 'function' \
+           && d.enumerable === false && d.configurable === true \
+           && d.get.name === 'get detached' && d.get.length === 0; \
+         var ab = new ArrayBuffer(1); \
+         var before = ab.detached; \
+         $262.detachArrayBuffer(ab); \
+         var t1 = false, t2 = false; \
+         try { d.get.call({}); } catch (e) { t1 = e instanceof TypeError; } \
+         try { d.get.call(undefined); } catch (e) { t2 = e instanceof TypeError; } \
+         ok && before === false && ab.detached === true && t1 && t2",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
+/// byteLength detached 臂改点钉：detach 后读 0（原 TypeError 臂）。
+#[test]
+fn ab_bytelength_detached_zero() {
+    let mut vm = Vm::new();
+    let result = eval(&mut vm, "var ab = new ArrayBuffer(1); $262.detachArrayBuffer(ab); ab.byteLength === 0").unwrap();
+    assert!(result.as_bool());
+}
+
+/// resizable detached 不受影响钉：resizable(1,{max 1}) detach 后仍 true。
+#[test]
+fn ab_resizable_detached_unchanged() {
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "var ab = new ArrayBuffer(1, {maxByteLength: 1}); $262.detachArrayBuffer(ab); ab.resizable === true",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
+/// own maxByteLength 数据属性与原型访问器并存读同值钉（resizable 专属）。
+#[test]
+fn ab_maxbytelength_own_still_resizable_only() {
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "var ab = new ArrayBuffer(4, {maxByteLength: 8}); \
+         Object.getOwnPropertyDescriptor(ab, 'maxByteLength').value === 8 && ab.maxByteLength === 8",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
+/// markImmutable 返回接收者并置位钉：返回 === ab、immutable true、二调幂等、
+/// byteLength 不变。
+#[test]
+fn ab_markimmutable_returns_this_and_sets_flag() {
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "var ab = new ArrayBuffer(4); \
+         var ret = ab.markImmutable(); \
+         ret === ab && ab.immutable === true && ab.markImmutable() === ab \
+         && ab.immutable === true && ab.byteLength === 4",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
+/// markImmutable resizable 源钉：TypeError。
+#[test]
+fn ab_markimmutable_resizable_type_error() {
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "var t = false; \
+         try { new ArrayBuffer(4, {maxByteLength: 8}).markImmutable(); } catch (e) { t = e instanceof TypeError; } \
+         t",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
+/// markImmutable detached 源钉：$262 detach 后 TypeError。
+#[test]
+fn ab_markimmutable_detached_type_error() {
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "var ab = new ArrayBuffer(4); $262.detachArrayBuffer(ab); \
+         var t = false; \
+         try { ab.markImmutable(); } catch (e) { t = e instanceof TypeError; } \
+         t",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
+/// markImmutable this 品牌校验钉：原型/undefined/{}/[] 四形 TypeError。
+#[test]
+fn ab_markimmutable_this_checks() {
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "var t1 = false, t2 = false, t3 = false, t4 = false; \
+         try { ArrayBuffer.prototype.markImmutable(); } catch (e) { t1 = e instanceof TypeError; } \
+         try { ArrayBuffer.prototype.markImmutable.call(undefined); } catch (e) { t2 = e instanceof TypeError; } \
+         try { ArrayBuffer.prototype.markImmutable.call({}); } catch (e) { t3 = e instanceof TypeError; } \
+         try { ArrayBuffer.prototype.markImmutable.call([]); } catch (e) { t4 = e instanceof TypeError; } \
+         t1 && t2 && t3 && t4",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
+/// P2-1 门钉：TA 界内整数键 detached 前 NumericValid(0)、detached 后
+/// NumericInvalid（232.19.2 Get 臂 detached 界内键用例的前置钉）。
+#[test]
+fn ab_ta_view_length_detached_zero() {
+    let mut vm = Vm::new();
+    eval(
+        &mut vm,
+        "var ab = new ArrayBuffer(8); \
+         globalThis.__ab = ab; globalThis.__ta = new Uint8Array(ab); true",
+    )
+    .unwrap();
+    let si = vm.kernel_core().perm_interner().intern("0").0;
+    let ta_val = eval(&mut vm, "globalThis.__ta").unwrap();
+    // SAFETY: __ta 为已晋升 session 的 TypedArray 对象，借用止于断言、不跨下一次 eval。
+    let ta_obj = unsafe { &*ta_val.as_js_object_ptr() };
+    assert_eq!(
+        oxide_builtins::typed_array::ta_index_gate(&vm, ta_obj, si),
+        oxide_builtins::typed_array::TaIndexGate::NumericValid(0)
+    );
+    eval(&mut vm, "$262.detachArrayBuffer(globalThis.__ab); true").unwrap();
+    let ta_val = eval(&mut vm, "globalThis.__ta").unwrap();
+    let ta_obj = unsafe { &*ta_val.as_js_object_ptr() };
+    assert_eq!(
+        oxide_builtins::typed_array::ta_index_gate(&vm, ta_obj, si),
+        oxide_builtins::typed_array::TaIndexGate::NumericInvalid
+    );
+}

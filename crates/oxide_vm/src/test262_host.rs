@@ -57,9 +57,11 @@ pub fn eval_script(vm: &mut Vm, args: &[u8]) -> NativeResult {
     }
 }
 
-/// `$262.detachArrayBuffer(buf)`：ArrayBuffer detach 未实现，抛能力缺失错误。
-pub fn detach_array_buffer(vm: &mut Vm, _args: &[u8]) -> NativeResult {
-    not_supported(vm, "detachArrayBuffer")
+/// `$262.detachArrayBuffer(buf)`：真 detach——品牌守卫后载荷 `data → None`，
+/// 返回 undefined。
+pub fn detach_array_buffer(vm: &mut Vm, args: &[u8]) -> NativeResult {
+    let this_val = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
+    oxide_builtins::array_buffer::detach_array_buffer_native::<Vm>(vm, this_val)
 }
 
 /// `$262.createRealm()`：跨 realm 未支持，抛能力缺失错误。
