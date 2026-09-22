@@ -768,11 +768,18 @@ pub fn typed_array_length_getter<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeRe
     NativeResult::Ok(JsValue::int(view.length as i32))
 }
 
-/// `%TypedArray%.prototype[@@toStringTag]` 访问器：返回具体类型名（如 `Int16Array`），
-/// 供 `Object.prototype.toString` 区分类型。
+/// `%TypedArray%.prototype[@@toStringTag]` 访问器：返回具体类型名（如
+/// `Int16Array`），供 `Object.prototype.toString` 区分类型。
+///
+/// # 边界与前提
+/// - this 非对象、无 `[[TypedArrayName]]` 内部槽（如原型自身）或内部状态无效时
+///   返回 undefined（规范语义，不抛错）。
 pub fn typed_array_to_string_tag_getter<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
-    let view = native_try!(get_typed_array_data(vm, this_val));
+    let view = match get_typed_array_data(vm, this_val) {
+        Ok(view) => view,
+        Err(_) => return NativeResult::Ok(JsValue::undefined()),
+    };
     NativeResult::Ok(vm.new_string(view.kind.name()))
 }
 

@@ -406,3 +406,50 @@ fn typed_array_bigint_methods_receive_bigint_values() {
     .unwrap();
     assert!(result.as_bool());
 }
+
+#[test]
+fn typed_array_to_string_tag_undefined_for_non_ta_this() {
+    // 原型自身（无 [[TypedArrayName]] 内部槽）与基元/非 TA 对象 this 读值均为
+    // undefined，规范语义不抛错。
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "var g = Object.getOwnPropertyDescriptor(TypedArray.prototype, Symbol.toStringTag).get; \
+         g.call(TypedArray.prototype) === undefined && \
+         g.call(null) === undefined && g.call(42) === undefined && \
+         g.call('x') === undefined && g.call({}) === undefined && g.call([]) === undefined",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
+#[test]
+fn typed_array_to_string_tag_accessor_name_label() {
+    // getter 的 name/length/set 描述符面按规范钉。
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "var d = Object.getOwnPropertyDescriptor(TypedArray.prototype, Symbol.toStringTag); \
+         d.set === undefined && d.enumerable === false && d.configurable === true && \
+         d.get.name === 'get [Symbol.toStringTag]' && d.get.length === 0",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
+#[test]
+fn typed_array_instance_tag_and_arraybuffer_proto_tag() {
+    // 实例读类型名（经 Object.prototype.toString 与直读两面）；
+    // ArrayBuffer.prototype 的 tag 为数据属性。
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "new Int16Array(2)[Symbol.toStringTag] === 'Int16Array' && \
+         Object.prototype.toString.call(new BigUint64Array(1)) === '[object BigUint64Array]' && \
+         Object.prototype.toString.call(new ArrayBuffer(4)) === '[object ArrayBuffer]' && \
+         ArrayBuffer.prototype[Symbol.toStringTag] === 'ArrayBuffer' && \
+         Object.getOwnPropertyDescriptor(ArrayBuffer.prototype, Symbol.toStringTag).writable === false",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}

@@ -250,7 +250,7 @@ pub fn bind_typed_array(core: &Arc<KernelCore>, session: &KernelSession, global:
         session,
         shared_proto,
         oxide_types::private_key::make_well_known_symbol_key(oxide_types::private_key::WELL_KNOWN_SYMBOL_TO_STRING_TAG),
-        "get @@toStringTag",
+        "get [Symbol.toStringTag]",
         oxide_builtins::typed_array::typed_array_to_string_tag_getter::<crate::vm::Vm> as *const (),
     );
 

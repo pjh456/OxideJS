@@ -628,8 +628,9 @@ fn install_to_string_tags(core: &Arc<KernelCore>, session: &KernelSession) {
     let sh = core.shape_forge().as_ref();
     let tag_id = oxide_types::private_key::WELL_KNOWN_SYMBOL_TO_STRING_TAG;
     let tag_key = oxide_types::private_key::make_well_known_symbol_key(tag_id);
-    let cases: [(*mut JsObject, &str); 11] = [
+    let cases: [(*mut JsObject, &str); 12] = [
         (world.map_proto.as_ptr() as *mut JsObject, "Map"),
+        (world.array_buffer_proto.as_ptr() as *mut JsObject, "ArrayBuffer"),
         (world.set_proto.as_ptr() as *mut JsObject, "Set"),
         (world.data_view_proto.as_ptr() as *mut JsObject, "DataView"),
         (world.array_iterator_proto.as_ptr() as *mut JsObject, "Array Iterator"),
