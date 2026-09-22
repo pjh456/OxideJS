@@ -210,13 +210,8 @@ fn advance_string_index(units: &[u16], p: usize, unicode: bool) -> usize {
 /// `$n` 越界（含 $0 与两位回退后仍越界）或未匹配组（None）按字面输出。
 /// `$<name>` 从 named_captures 对象读取；不存在时字面输出 `$<` 开头部分。
 fn get_substitution_units<H: VmHost>(
-    vm: &mut H,
-    matched: &[u16],
-    s: &[u16],
-    position: usize,
-    captured: &[Option<Vec<u16>>],
-    named_captures: Option<&JsObject>,
-    replacement: &[u16],
+    vm: &mut H, matched: &[u16], s: &[u16], position: usize, captured: &[Option<Vec<u16>>],
+    named_captures: Option<&JsObject>, replacement: &[u16],
 ) -> Vec<u16> {
     let mut out = Vec::new();
     let pos = position.min(s.len());

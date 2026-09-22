@@ -42,30 +42,22 @@ fn is_ambiguous_date_string(s: &str) -> bool {
         day >= 1 && day <= max
     };
     match s.len() {
-        4 if all_digits(0..4) => {
-            match (two_digits(0), two_digits(2)) {
-                (Some(month), Some(day)) => day_in_month(month, day),
-                _ => false,
-            }
-        }
-        6 if all_digits(0..6) => {
-            match two_digits(4) {
-                Some(m) => (1..=12).contains(&m),
-                None => false,
-            }
-        }
-        5 if bytes[2] == b'-' && all_digits(0..2) && all_digits(3..5) => {
-            match (two_digits(0), two_digits(3)) {
-                (Some(month), Some(day)) => day_in_month(month, day),
-                _ => false,
-            }
-        }
-        7 if bytes[4] == b'-' && all_digits(0..4) && all_digits(5..7) => {
-            match two_digits(5) {
-                Some(m) => (1..=12).contains(&m),
-                None => false,
-            }
-        }
+        4 if all_digits(0..4) => match (two_digits(0), two_digits(2)) {
+            (Some(month), Some(day)) => day_in_month(month, day),
+            _ => false,
+        },
+        6 if all_digits(0..6) => match two_digits(4) {
+            Some(m) => (1..=12).contains(&m),
+            None => false,
+        },
+        5 if bytes[2] == b'-' && all_digits(0..2) && all_digits(3..5) => match (two_digits(0), two_digits(3)) {
+            (Some(month), Some(day)) => day_in_month(month, day),
+            _ => false,
+        },
+        7 if bytes[4] == b'-' && all_digits(0..4) && all_digits(5..7) => match two_digits(5) {
+            Some(m) => (1..=12).contains(&m),
+            None => false,
+        },
         _ => false,
     }
 }

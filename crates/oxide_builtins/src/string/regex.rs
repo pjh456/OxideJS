@@ -850,10 +850,12 @@ pub fn string_match_all<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         };
         // RequireObjectCoercible：flags 为 undefined/null 时抛 TypeError。
         // rx_get_flags 已将 undefined 转为 "undefined" 字符串，需额外检查。
-        let flags_val = match vm.ordinary_get(unsafe { &*re_ptr }, vm.kernel_core().perm_interner().intern("flags").0, pattern_val) {
-            Ok(v) => v,
-            Err(e) => return NativeResult::err(crate::iterator::engine_error(vm, &e)),
-        };
+        let flags_val =
+            match vm.ordinary_get(unsafe { &*re_ptr }, vm.kernel_core().perm_interner().intern("flags").0, pattern_val)
+            {
+                Ok(v) => v,
+                Err(e) => return NativeResult::err(crate::iterator::engine_error(vm, &e)),
+            };
         if flags_val.is_undefined() || flags_val.is_null() {
             return NativeResult::Err(crate::error::create_type_error(
                 vm,
@@ -906,10 +908,7 @@ pub fn string_match_all<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
             }
         }
         // 无 callable @@matchAll：规范 Invoke 抛 TypeError。
-        NativeResult::Err(crate::error::create_type_error(
-            vm,
-            "RegExp.prototype[Symbol.matchAll] is not a function",
-        ))
+        NativeResult::Err(crate::error::create_type_error(vm, "RegExp.prototype[Symbol.matchAll] is not a function"))
     } else {
         // 非 RegExp：先查 @@matchAll（规范步骤 6-8，IsRegExp 为 false 时
         // 先 ToString(pattern) 转正则，但规范步骤 8 是 Invoke(rx, @@matchAll)。
@@ -933,7 +932,11 @@ pub fn string_match_all<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         let pattern_units = try_string!(as_units(vm, pattern_val)).into_owned();
         let pattern_str = String::from_utf16_lossy(&pattern_units);
         let escaped = regress::escape(&pattern_str);
-        let rx_str = if escaped.is_empty() { String::from("(?:)") } else { format!("(?:{})", escaped) };
+        let rx_str = if escaped.is_empty() {
+            String::from("(?:)")
+        } else {
+            format!("(?:{})", escaped)
+        };
         let compiled = match regress::Regex::new(&rx_str) {
             Ok(rx) => rx,
             Err(e) => {
@@ -1105,11 +1108,7 @@ pub fn string_match_all_next<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult
 
 /// 构建 matchAll 结果数组：元素为匹配字符串值，附带 index/input/groups 属性。
 fn make_match_result_array<H: VmHost>(
-    vm: &mut H,
-    parts: Vec<Vec<u16>>,
-    match_index: i32,
-    input_val: JsValue,
-    m: Option<&regress::Match>,
+    vm: &mut H, parts: Vec<Vec<u16>>, match_index: i32, input_val: JsValue, m: Option<&regress::Match>,
     text: &MatchText,
 ) -> JsValue {
     let values: Vec<JsValue> = parts.into_iter().map(|u| vm.new_string_units_owned(u)).collect();

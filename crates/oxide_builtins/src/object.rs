@@ -55,9 +55,7 @@ pub fn walk_own_keys<H: VmHost>(vm: &H, obj: &JsObject) -> Vec<(u32, u32)> {
     }
     for id in shape_ids.iter().rev() {
         if let Some(shape) = vm.kernel_core().shape_forge().get_shape(*id) {
-            if !is_symbol_key(shape.property_name)
-                && !is_private_name_key(shape.property_name)
-            {
+            if !is_symbol_key(shape.property_name) && !is_private_name_key(shape.property_name) {
                 // 绝对存储索引：数组命名属性位于元素区之后。
                 let store = if obj.is_array() { obj.array_prop_count + pos } else { pos };
                 keys.push((shape.property_name, store));
@@ -1092,9 +1090,7 @@ pub fn object_get_own_property_descriptors<H: VmHost>(vm: &mut H, args: &[u8]) -
 /// # 边界与前提
 /// - 空串：仅返回 length 描述符
 /// - 非字符串被包值：退化为零键
-fn string_exotic_get_own_property_descriptors<H: VmHost>(
-    vm: &mut H, obj_ptr: *mut JsObject,
-) -> NativeResult {
+fn string_exotic_get_own_property_descriptors<H: VmHost>(vm: &mut H, obj_ptr: *mut JsObject) -> NativeResult {
     let obj = unsafe { &*obj_ptr };
     // 取被包字符串值：优先 boxed_value，回退 hash_props[0]。
     let raw = obj.boxed_value();
@@ -1123,11 +1119,17 @@ fn string_exotic_get_own_property_descriptors<H: VmHost>(
         let desc_obj = unsafe { &mut *desc };
         let desc_obj_ptr = JsValue::from_js_object(desc);
         // 构造描述符对象：value + writable/enumerable/configurable。
-        vm.define_data_property(desc_obj, value_si, char_val, PropAttributes::DEFAULT_DATA).ok();
-        vm.define_data_property(desc_obj, writable_si, JsValue::bool(false), PropAttributes::DEFAULT_DATA).ok();
-        vm.define_data_property(desc_obj, enumerable_si, JsValue::bool(true), PropAttributes::DEFAULT_DATA).ok();
-        vm.define_data_property(desc_obj, configurable_si, JsValue::bool(false), PropAttributes::DEFAULT_DATA).ok();
-        if let Err(err) = vm.define_data_property(unsafe { &mut *result }, si, desc_obj_ptr, PropAttributes::DEFAULT_DATA) {
+        vm.define_data_property(desc_obj, value_si, char_val, PropAttributes::DEFAULT_DATA)
+            .ok();
+        vm.define_data_property(desc_obj, writable_si, JsValue::bool(false), PropAttributes::DEFAULT_DATA)
+            .ok();
+        vm.define_data_property(desc_obj, enumerable_si, JsValue::bool(true), PropAttributes::DEFAULT_DATA)
+            .ok();
+        vm.define_data_property(desc_obj, configurable_si, JsValue::bool(false), PropAttributes::DEFAULT_DATA)
+            .ok();
+        if let Err(err) =
+            vm.define_data_property(unsafe { &mut *result }, si, desc_obj_ptr, PropAttributes::DEFAULT_DATA)
+        {
             return NativeResult::Err(crate::error::create_type_error(vm, &err));
         }
     }
@@ -1136,11 +1138,17 @@ fn string_exotic_get_own_property_descriptors<H: VmHost>(
     let desc = alloc_desc_object(vm);
     let desc_obj = unsafe { &mut *desc };
     let desc_obj_ptr = JsValue::from_js_object(desc);
-    vm.define_data_property(desc_obj, value_si, JsValue::int(len as i32), PropAttributes::DEFAULT_DATA).ok();
-    vm.define_data_property(desc_obj, writable_si, JsValue::bool(false), PropAttributes::DEFAULT_DATA).ok();
-    vm.define_data_property(desc_obj, enumerable_si, JsValue::bool(false), PropAttributes::DEFAULT_DATA).ok();
-    vm.define_data_property(desc_obj, configurable_si, JsValue::bool(false), PropAttributes::DEFAULT_DATA).ok();
-    if let Err(err) = vm.define_data_property(unsafe { &mut *result }, length_si, desc_obj_ptr, PropAttributes::DEFAULT_DATA) {
+    vm.define_data_property(desc_obj, value_si, JsValue::int(len as i32), PropAttributes::DEFAULT_DATA)
+        .ok();
+    vm.define_data_property(desc_obj, writable_si, JsValue::bool(false), PropAttributes::DEFAULT_DATA)
+        .ok();
+    vm.define_data_property(desc_obj, enumerable_si, JsValue::bool(false), PropAttributes::DEFAULT_DATA)
+        .ok();
+    vm.define_data_property(desc_obj, configurable_si, JsValue::bool(false), PropAttributes::DEFAULT_DATA)
+        .ok();
+    if let Err(err) =
+        vm.define_data_property(unsafe { &mut *result }, length_si, desc_obj_ptr, PropAttributes::DEFAULT_DATA)
+    {
         return NativeResult::Err(crate::error::create_type_error(vm, &err));
     }
 

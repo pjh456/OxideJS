@@ -327,9 +327,7 @@ fn read_element<H: VmHost>(vm: &mut H, kind: TypedArrayKind, bytes: &[u8], offse
     match kind {
         TypedArrayKind::Int8 => JsValue::int(bytes[offset] as i8 as i32),
         TypedArrayKind::Uint8 | TypedArrayKind::Uint8Clamped => JsValue::int(bytes[offset] as i32),
-        TypedArrayKind::Int16 => {
-            JsValue::int(read_bytes!(&bytes[offset..offset + 2], i16) as i32)
-        }
+        TypedArrayKind::Int16 => JsValue::int(read_bytes!(&bytes[offset..offset + 2], i16) as i32),
         TypedArrayKind::Uint16 => JsValue::int(read_bytes!(&bytes[offset..offset + 2], u16) as i32),
         TypedArrayKind::Int32 => JsValue::int(read_bytes!(&bytes[offset..offset + 4], i32)),
         TypedArrayKind::Uint32 => JsValue::float(read_bytes!(&bytes[offset..offset + 4], u32) as f64),

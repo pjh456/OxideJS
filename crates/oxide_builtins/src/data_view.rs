@@ -509,9 +509,7 @@ pub fn data_view_set_big_uint64<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeRes
 /// 取 BigInt 值低 64 位位模式：与 2^64-1 掩码后恒非负且可转 u64。
 fn low64<H: VmHost>(vm: &mut H, val: JsValue) -> u64 {
     let v = vm.bigint_value(val);
-    (v & (BigInt::from(u64::MAX)))
-        .to_u64()
-        .unwrap_or(u64::MAX)
+    (v & (BigInt::from(u64::MAX))).to_u64().unwrap_or(u64::MAX)
 }
 
 /// `DataView.prototype.toString`：校验 receiver 后返回 `[object DataView]`。
