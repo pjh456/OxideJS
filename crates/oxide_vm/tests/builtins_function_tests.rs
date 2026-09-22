@@ -245,6 +245,45 @@ fn bound_function_construct_semantics() {
 }
 
 #[test]
+fn function_apply_non_callable_this_throws_catchable_type_error() {
+    // 不可调用 this（实例原型链含函数）经 apply 转发：抛可捕获 TypeError，
+    // 不得绕过 try/catch 成为引擎级错误。
+    let mut vm = Vm::new();
+    let name = eval(
+        &mut vm,
+        "function FACTORY(){} FACTORY.prototype = Function(); var o = new FACTORY(); try { o.apply(); } catch (e) { e.name }",
+    )
+    .unwrap();
+    assert_eq!(vm.lookup_str(name).unwrap_or_default(), "TypeError");
+}
+
+#[test]
+fn function_call_non_callable_target_keeps_type_error_kind() {
+    // call 转发到非可调用目标（原始值 thisArg）：内层递归无原值可恢复时，
+    // 错误种类仍须保持 TypeError。
+    let mut vm = Vm::new();
+    for src in [
+        "try { Function.prototype.call.call(undefined, {}) } catch (e) { e.name }",
+        "try { Function.prototype.call.call(null, {}) } catch (e) { e.name }",
+        "try { Function.prototype.call.call({}, {}) } catch (e) { e.name }",
+        "try { Function.prototype.call.call(undefined) } catch (e) { e.name }",
+    ] {
+        let name = eval(&mut vm, src).unwrap();
+        assert_eq!(vm.lookup_str(name).unwrap_or_default(), "TypeError", "for {}", src);
+    }
+}
+
+#[test]
+fn function_call_callable_native_target_still_works() {
+    // 守卫不得误伤合法 native 目标：经 call/apply 转发 native 函数照常执行。
+    let mut vm = Vm::new();
+    let result = eval(&mut vm, "Math.max.call(null, 3, 9)").unwrap();
+    assert_num(result, 9.0);
+    let result = eval(&mut vm, "Math.max.apply(null, [3, 9])").unwrap();
+    assert_num(result, 9.0);
+}
+
+#[test]
 fn bound_function_construct_errors() {
     let mut vm = Vm::new();
     // 不可构造 target（arrow / native 方法）经 bound 构造 → TypeError。

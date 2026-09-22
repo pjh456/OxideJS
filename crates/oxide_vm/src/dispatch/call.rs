@@ -94,20 +94,28 @@ impl Vm {
             NativeResult::TailCall { callee, this, args } => {
                 if callee.is_object() {
                     let obj = unsafe { &*callee.as_js_object_ptr() };
+                    // 不可调用目标（apply/call/bound 转发的 thisArg 不可调用等）抛
+                    // 可捕获 TypeError；落入 push_bytecode_frame 会产生引擎级错误，
+                    // 绕过 JS try/catch。
+                    if !obj.is_function() || (obj.native_fn().is_none() && obj.sub_module_index() == 0) {
+                        return self.raise_type_error("CALL target is not callable");
+                    }
                     if obj.native_fn().is_some() {
                         match self.call_function_sync(callee, this, &args) {
                             Ok(val) => {
                                 self.regs[0] = val;
                                 return Ok(());
                             }
-                            Err(_) => {
+                            Err(e) => {
                                 // call_function_sync 已把 native 错误展平为 String，
                                 // 原始 JsValue 暂存在 last_uncaught_value——恢复为 JS 异常，
-                                // 使外围 try/catch 能捕获（而非作为引擎错误上抛）。
+                                // 使外围 try/catch 能捕获（而非作为引擎错误上抛）；
+                                // 无原值时从展平文本恢复 kind，泛型回退会把种类
+                                // 降级为普通 Error。
                                 let exc = self
                                     .last_uncaught_value
                                     .take()
-                                    .unwrap_or_else(|| oxide_builtins::error::create_error(self, "call failed"));
+                                    .unwrap_or_else(|| oxide_builtins::error::create_from_text(self, &e));
                                 let kind = self.thrown_error_kind(exc);
                                 self.exception_value = Some(exc);
                                 self.pending_error_kind = Some(kind);
@@ -116,6 +124,8 @@ impl Vm {
                             }
                         }
                     }
+                } else {
+                    return self.raise_type_error("CALL target is not callable");
                 }
                 self.push_bytecode_frame(
                     callee,
