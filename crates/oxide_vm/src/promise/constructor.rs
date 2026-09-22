@@ -13,7 +13,7 @@ use crate::vm::{FrameArgs, FrameContinuation, Vm};
 
 use super::aggregate::{
     promise_static_all, promise_static_all_settled, promise_static_any, promise_static_race, promise_static_reject,
-    promise_static_resolve, promise_static_with_resolvers,
+    promise_static_resolve, promise_static_try, promise_static_with_resolvers,
 };
 use super::reactions::{promise_catch, promise_finally, promise_then};
 use super::{is_constructor_value, PromiseState, PromiseStateKind};
@@ -248,6 +248,7 @@ impl Vm {
             ("allSettled", promise_static_all_settled as *const (), 1),
             ("any", promise_static_any as *const (), 1),
             ("withResolvers", promise_static_with_resolvers as *const (), 0),
+            ("try", promise_static_try as *const (), 1),
         );
 
         // 固定地址后互相接线：proto.constructor ↔ ctor.prototype。

@@ -396,10 +396,11 @@ fn error_message_property_non_enumerable() {
         ),
         "false"
     );
-    // 可枚举自身键为空：Object.keys / JSON.stringify 不再泄漏 message。
+    // 可枚举自身键为空：Object.keys 不泄漏 message；JSON.stringify 走
+    // Error.prototype.toJSON 钩子（spec 序列化 name/message）。
     assert_eq!(format!("{}", eval_in(&mut vm, "Object.keys(new Error('msg')).length").unwrap()), "0");
     let r = eval_in(&mut vm, "JSON.stringify(new Error('secret'))").unwrap();
-    assert_eq!(vm.lookup_str(r), Some("{}".to_string()));
+    assert_eq!(vm.lookup_str(r), Some("{\"name\":\"Error\",\"message\":\"secret\"}".to_string()));
     // Error.prototype 的 name/message 同样非枚举。
     assert_eq!(format!("{}", eval_in(&mut vm, "Object.keys(Error.prototype).length").unwrap()), "0");
     // 子类型原型上的 name/constructor 非枚举，for-in 不泄漏。
@@ -481,7 +482,7 @@ fn format_error_message_empty_name() {
 #[test]
 fn error_stack_is_string() {
     let allocator = oxide_parser::Allocator::default();
-    let program = oxide_parser::parse(&allocator, "typeof new Error().stack()").unwrap();
+    let program = oxide_parser::parse(&allocator, "typeof new Error().stack").unwrap();
     let module = Compiler::new().compile(&program).unwrap();
     let mut vm = make_vm();
     let result = vm.run(&Arc::new(module)).unwrap();
@@ -493,7 +494,7 @@ fn error_stack_is_string() {
 #[test]
 fn error_stack_starts_with_header() {
     let mut vm = make_vm();
-    let result = eval_in(&mut vm, "new Error().stack()").unwrap();
+    let result = eval_in(&mut vm, "new Error().stack").unwrap();
     let s = vm.lookup_str(result).unwrap();
     assert!(s.starts_with("Error"), "stack should start with 'Error', got: {}", s);
 }
@@ -501,7 +502,7 @@ fn error_stack_starts_with_header() {
 #[test]
 fn error_stack_frame_format() {
     let mut vm = make_vm();
-    let result = eval_in(&mut vm, "(function foo() { return new Error('boom').stack(); })()").unwrap();
+    let result = eval_in(&mut vm, "(function foo() { return new Error('boom').stack; })()").unwrap();
     let s = vm.lookup_str(result).unwrap();
     assert!(s.contains("    at "), "stack should have 4-space indent, got: {}", s);
 }

@@ -106,13 +106,34 @@ pub fn bind_error(core: &Arc<KernelCore>, session: &KernelSession, global: &mut 
         eval_error: oxide_builtins::error::eval_error_constructor::<crate::vm::Vm> as *const (),
         suppressed_error: oxide_builtins::error::suppressed_error_constructor::<crate::vm::Vm> as *const (),
         to_string: oxide_builtins::error::error_to_string::<crate::vm::Vm> as *const (),
-        stack: oxide_builtins::error::error_stack_getter::<crate::vm::Vm> as *const (),
+        is_error: oxide_builtins::error::error_is_error::<crate::vm::Vm> as *const (),
+        to_json: oxide_builtins::error::error_to_json::<crate::vm::Vm> as *const (),
     };
     session.builtin_world().bind_error_methods(
         &error_methods,
         core.perm_interner().as_ref(),
         core.shape_forge().as_ref(),
     );
+
+    // stack 为访问器成对安装（getter 现算栈串 / setter 走
+    // SetterThatIgnoresPrototypeProperties），经 getset 绑定器登记复用键，
+    // 选择性重建时同槽迁移旧 wrapper。
+    {
+        let proto_ptr = session.builtin_world().error_proto.as_ptr() as *mut JsObject;
+        // SAFETY: error_proto 由 session 持有，存活整个 session；本块内只改其 shape/属性区，无 reset。
+        let proto = unsafe { &mut *proto_ptr };
+        let si_stack = core.perm_interner().intern("stack").0;
+        super::bind_accessor_getset(
+            core,
+            session,
+            proto,
+            si_stack,
+            "get stack",
+            "set stack",
+            oxide_builtins::error::error_stack_getter::<crate::vm::Vm> as *const (),
+            oxide_builtins::error::error_stack_setter::<crate::vm::Vm> as *const (),
+        );
+    }
 
     // 全局 Error 槽位既有槽原位更新（旧家族构造器指针不得滞留在属性 vec），
     // 无槽时开新槽；描述符非枚举（规范 { writable:true, enumerable:false, configurable:true }）。

@@ -83,7 +83,8 @@ pub struct ErrorMethods {
     pub eval_error: *const (),
     pub suppressed_error: *const (),
     pub to_string: *const (),
-    pub stack: *const (),
+    pub is_error: *const (),
+    pub to_json: *const (),
 }
 
 /// String 静态方法与原型方法的 native 函数指针集合，由 [crate::builtin::BuiltinWorld::bind_string_methods] 安装。

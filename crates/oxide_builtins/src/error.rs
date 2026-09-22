@@ -150,14 +150,26 @@ pub fn create_uri_error<H: VmHost>(host: &mut H, msg: &str) -> JsValue {
 macro_rules! error_ctor {
     ($name:ident, $proto_field:ident) => {
         /// 对应 Error 子类（如 `TypeError`）的构造函数：接收第一个实参作为 message，
-        /// 返回原型链指向对应 prototype 的 Error 对象。
+        /// 返回携带 Error 家族标签（`[[ErrorData]]` 谓词）的实例。
         ///
-        /// # 注意事项
-        /// 无论以 `new` 还是普通函数调用（如 `TypeError.call(obj)`）都新建对象，
-        /// 忽略调用方传入的 this——与规范构造器语义一致。
+        /// # 边界与前提
+        /// - 构造路径（new / Reflect.construct，new.target 为对象）：复用调用方
+        ///   按 newTarget.prototype 预分配的 receiver，原型基由 newTarget 决定；
+        /// - 普通调用（如 `TypeError.call(obj)`）：自分配原型基为构造器
+        ///   prototype 的新对象，忽略传入的 this。
         pub fn $name<H: VmHost>(host: &mut H, args: &[u8]) -> NativeResult {
+            let this_val = host.reg(if args.is_empty() { 0 } else { args[0] });
+            let new_target = host.reg(255);
             let proto_ptr = P::as_ptr(&host.session().builtin_world().$proto_field) as *mut JsObject;
-            let this = host.alloc_object(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(proto_ptr)));
+            let this = if this_val.is_object() && new_target.is_object() {
+                this_val.as_js_object_ptr()
+            } else {
+                host.alloc_object(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(proto_ptr)))
+            };
+            // SAFETY: this 来自构造路径预分配或 alloc_object 新建，均存活且本段无别名。
+            unsafe {
+                (*this).type_tag = JsObject::OBJ_TYPE_ERROR;
+            }
             set_own_message(host, this, args);
             NativeResult::Ok(JsValue::from_js_object(this))
         }
@@ -193,13 +205,25 @@ fn set_own_data_prop<H: VmHost>(host: &mut H, obj: *mut JsObject, key: &str, val
 /// undefined 时省略；三者均非枚举数据属性。
 ///
 /// # 边界与前提
-/// - args[0]=this 被忽略：普通调用（无 new）同样新建对象，与既有 Error 子类型一致；
+/// - 构造路径（new / Reflect.construct，new.target 为对象）：复用调用方按
+///   newTarget.prototype 预分配的 receiver；普通调用自分配 SuppressedError
+///   prototype 基新对象，忽略传入的 this；
 /// - args[1]=error、args[2]=suppressed 原样存储不转换；
 /// - args[3]=message 走完整 ToString 强制转换：对象经 ToPrimitive（string hint），
 ///   Symbol 抛 TypeError；用户 toString 抛出的异常原样传播。
 pub fn suppressed_error_constructor<H: VmHost>(host: &mut H, args: &[u8]) -> NativeResult {
+    let this_val = host.reg(if args.is_empty() { 0 } else { args[0] });
+    let new_target = host.reg(255);
     let proto_ptr = P::as_ptr(&host.session().builtin_world().suppressed_error_proto) as *mut JsObject;
-    let obj = host.alloc_object(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(proto_ptr)));
+    let obj = if this_val.is_object() && new_target.is_object() {
+        this_val.as_js_object_ptr()
+    } else {
+        host.alloc_object(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(proto_ptr)))
+    };
+    // SAFETY: obj 来自构造路径预分配或 alloc_object 新建，均存活且本段无别名。
+    unsafe {
+        (*obj).type_tag = JsObject::OBJ_TYPE_ERROR;
+    }
 
     // message（args[3]）非 undefined 时做完整 ToString 转换并先写属性。
     if args.len() > 3 && !host.reg(args[3]).is_undefined() {
@@ -224,9 +248,6 @@ pub fn suppressed_error_constructor<H: VmHost>(host: &mut H, args: &[u8]) -> Nat
     }
     if args.len() > 2 {
         set_own_data_prop(host, obj, "suppressed", host.reg(args[2]));
-    }
-    unsafe {
-        (*obj).type_tag = JsObject::OBJ_TYPE_ERROR;
     }
     NativeResult::Ok(JsValue::from_js_object(obj))
 }
@@ -300,32 +321,171 @@ pub fn error_to_string<H: VmHost>(host: &mut H, args: &[u8]) -> NativeResult {
     NativeResult::Ok(host.new_string(&result))
 }
 
-/// `Error.prototype.stack` getter：输出 `name: message` 头后附调用栈函数名列表。
+/// `Error.prototype.stack` getter：带 `[[ErrorData]]` 槽（Error 家族标签）的对象
+/// 现算 `name: message` 头并附调用栈函数名列表；无槽对象返回 undefined；
+/// 非对象 this 抛 TypeError。
+///
+/// # 边界与前提
+/// - 槽判定纯走类型标签、不走原型链：`Object.create(Error.prototype)` 无槽，
+///   返回 undefined（own "stack" 数据属性也不参与——own 属性经 [[Get]] 直接
+///   遮蔽访问器，到达不了 getter）；
+/// - name/message 经原型链 Get 读取，每次读取现算，不建 own 属性缓存。
 pub fn error_stack_getter<H: VmHost>(host: &mut H, args: &[u8]) -> NativeResult {
-    let this_val = host.reg(args[0]);
-    let (name_str, msg_str) = if this_val.is_object() {
-        let obj = unsafe { &*this_val.as_js_object_ptr() };
-        let sf = Arc::clone(host.kernel_core().perm_interner());
-        let si_name = sf.intern("name").0;
-        let si_msg = sf.intern("message").0;
-        let n = host
-            .resolve_property(obj, si_name)
-            .and_then(|v| host.lookup_str(v))
-            .unwrap_or_else(|| "Error".to_string());
-        let m = host
-            .resolve_property(obj, si_msg)
-            .and_then(|v| host.lookup_str(v))
-            .unwrap_or_default();
-        (n, m)
-    } else {
-        ("Error".to_string(), String::new())
-    };
+    let this_val = host.reg(if args.is_empty() { 0 } else { args[0] });
+    if !this_val.is_object() {
+        return NativeResult::Err(create_type_error(host, "Error.prototype.stack getter called on non-object"));
+    }
+    // SAFETY: is_object 保证指针非空且对象本 session 存活；只读标签即时消费。
+    let obj = unsafe { &*this_val.as_js_object_ptr() };
+    if !obj.is_error_obj() {
+        return NativeResult::Ok(JsValue::undefined());
+    }
+    let sf = Arc::clone(host.kernel_core().perm_interner());
+    let si_name = sf.intern("name").0;
+    let si_msg = sf.intern("message").0;
+    let n = host
+        .resolve_property(obj, si_name)
+        .and_then(|v| host.lookup_str(v))
+        .unwrap_or_else(|| "Error".to_string());
+    let m = host
+        .resolve_property(obj, si_msg)
+        .and_then(|v| host.lookup_str(v))
+        .unwrap_or_default();
 
-    let header = oxide_runtime_api::format_error_message(&name_str, &msg_str);
+    let header = oxide_runtime_api::format_error_message(&n, &m);
     let mut result = header;
     let names = host.call_stack_function_names();
-    for n in &names {
-        result.push_str(&format!("\n    at {} (<unknown>:0:0)", n));
+    for name in &names {
+        result.push_str(&format!("\n    at {} (<unknown>:0:0)", name));
     }
     NativeResult::Ok(host.new_string(&result))
+}
+
+/// `Error.prototype.stack` setter：按 SetterThatIgnoresPrototypeProperties 语义把
+/// String `v` 落到 this 的 own "stack"。
+///
+/// # 步骤
+/// 1. this 非对象 → TypeError；
+/// 2. this 为 `%Error.prototype%` 本体 → TypeError（模拟严格模式对原型上不可写
+///    数据属性的赋值）；
+/// 3. v 非 String → TypeError；
+/// 4. 无 own "stack" → CreateDataPropertyOrThrow（writable/enumerable/configurable
+///    全 true；不可扩展对象 → TypeError）；
+/// 5. 有 own "stack" → [[Set]]：own 访问器调其 setter（无 setter → TypeError），
+///    own 数据只更值并原样保留描述符（non-writable → TypeError）。
+pub fn error_stack_setter<H: VmHost>(host: &mut H, args: &[u8]) -> NativeResult {
+    let this_val = host.reg(if args.is_empty() { 0 } else { args[0] });
+    if !this_val.is_object() {
+        return NativeResult::Err(create_type_error(host, "Error.prototype.stack setter called on non-object"));
+    }
+    let home = P::as_ptr(&host.session().builtin_world().error_proto) as *mut JsObject;
+    if std::ptr::eq(this_val.as_js_object_ptr(), home) {
+        return NativeResult::Err(create_type_error(host, "cannot assign to read only property of Error prototype"));
+    }
+    let val = if args.len() > 1 { host.reg(args[1]) } else { JsValue::undefined() };
+    if !val.is_string() {
+        return NativeResult::Err(create_type_error(host, "stack value must be a string"));
+    }
+    // SAFETY: is_object 保证指针非空且对象本 session 存活；写入路径对象不搬移。
+    let this_obj = unsafe { &mut *this_val.as_js_object_ptr() };
+    let si = host.kernel_core().perm_interner().intern("stack").0;
+    match host.get_own_property_slot(this_obj, si) {
+        None => match host.define_data_property(this_obj, si, val, PropAttributes::new(true, true, true)) {
+            Ok(()) => NativeResult::Ok(JsValue::undefined()),
+            Err(err) => NativeResult::Err(create_type_error(host, &err)),
+        },
+        Some(_) => match host.ordinary_set(this_obj, si, val, this_val, true) {
+            Ok(()) => NativeResult::Ok(JsValue::undefined()),
+            Err(err) => NativeResult::Err(create_type_error(host, &err)),
+        },
+    }
+}
+
+/// `Error.isError(value)`：value 为对象且携带 `[[ErrorData]]` 槽（Error 家族
+/// 标签）时返回 true，其余一律 false。
+///
+/// # 边界与前提
+/// - 纯标签判定、不走原型链：`{__proto__: Error.prototype}` 伪错误返回 false；
+/// - 静态方法，实参取 args[1]（args[0] 为接收者）。
+pub fn error_is_error<H: VmHost>(host: &mut H, args: &[u8]) -> NativeResult {
+    let v = if args.len() > 1 { host.reg(args[1]) } else { JsValue::undefined() };
+    let is_error = if v.is_object() {
+        // SAFETY: is_object 保证指针非空且对象本 session 存活；只读标签即时消费。
+        unsafe { &*v.as_js_object_ptr() }.is_error_obj()
+    } else {
+        false
+    };
+    NativeResult::Ok(JsValue::bool(is_error))
+}
+
+/// `Error.prototype.toJSON(property)`：property 为 "name"/"message" 时返回对应
+/// 值，否则返回携带 name/message 两个可枚举数据属性的新对象。
+///
+/// # 步骤
+/// 1. this 非对象 → TypeError；
+/// 2. Get(name)/Get(message) 走原型链（访问器触发，用户异常原样传播），
+///    undefined 分别回退 "Error"/"" 后 ToString；
+/// 3. property 为 String 且命中 "name"/"message" → 返回对应值；
+/// 4. 否则建普通对象（proto = %Object.prototype%）写 name/message。
+pub fn error_to_json<H: VmHost>(host: &mut H, args: &[u8]) -> NativeResult {
+    let this_val = host.reg(if args.is_empty() { 0 } else { args[0] });
+    if !this_val.is_object() {
+        return NativeResult::Err(create_type_error(host, "Error.prototype.toJSON called on non-object"));
+    }
+    // SAFETY: is_object 保证指针非空且对象本 session 存活；读取期间不搬移。
+    let obj = unsafe { &*this_val.as_js_object_ptr() };
+    let sf = Arc::clone(host.kernel_core().perm_interner());
+    let si_name = sf.intern("name").0;
+    let si_msg = sf.intern("message").0;
+
+    let name_val = match host.ordinary_get(obj, si_name, this_val) {
+        Ok(v) => v,
+        Err(e) => return NativeResult::Err(crate::iterator::engine_error(host, &e)),
+    };
+    let name_str = if name_val.is_undefined() {
+        "Error".to_string()
+    } else {
+        match to_string_full(name_val, host) {
+            Ok(s) => s,
+            Err(e) => return NativeResult::Err(crate::iterator::engine_error(host, &e)),
+        }
+    };
+    let msg_val = match host.ordinary_get(obj, si_msg, this_val) {
+        Ok(v) => v,
+        Err(e) => return NativeResult::Err(crate::iterator::engine_error(host, &e)),
+    };
+    let msg_str = if msg_val.is_undefined() {
+        String::new()
+    } else {
+        match to_string_full(msg_val, host) {
+            Ok(s) => s,
+            Err(e) => return NativeResult::Err(crate::iterator::engine_error(host, &e)),
+        }
+    };
+
+    let prop = if args.len() > 1 { host.reg(args[1]) } else { JsValue::undefined() };
+    if let Some(text) = host.lookup_str(prop) {
+        if text == "name" {
+            return NativeResult::Ok(host.new_string(&name_str));
+        }
+        if text == "message" {
+            return NativeResult::Ok(host.new_string(&msg_str));
+        }
+    }
+
+    // 新对象：proto = %Object.prototype%，name/message 为可枚举数据属性。
+    let object_proto = P::as_ptr(&host.session().builtin_world().object_proto) as *mut JsObject;
+    let ptr = host.alloc_object(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(object_proto)));
+    // SAFETY: ptr 由 alloc_object 新建，非空 arena 指针；后续 shape/属性分配不改对象地址，无别名。
+    let obj_ref = unsafe { &mut *ptr };
+    let sh = Arc::clone(host.kernel_core().shape_forge());
+    let name_shape = sh.make_shape(EMPTY_SHAPE_ID, si_name);
+    obj_ref.set_shape_id(name_shape);
+    let name_pos = obj_ref.push_prop(host.new_string(&name_str));
+    obj_ref.set_data_meta(name_pos, PropAttributes::new(true, true, true));
+    let msg_shape = sh.make_shape(obj_ref.shape_id(), si_msg);
+    obj_ref.set_shape_id(msg_shape);
+    let msg_pos = obj_ref.push_prop(host.new_string(&msg_str));
+    obj_ref.set_data_meta(msg_pos, PropAttributes::new(true, true, true));
+    NativeResult::Ok(JsValue::from_js_object(ptr))
 }

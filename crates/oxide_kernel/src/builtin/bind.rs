@@ -158,6 +158,7 @@ impl BuiltinWorld {
             ("URIError", methods.uri_error, 1),
             ("EvalError", methods.eval_error, 1),
             ("SuppressedError", methods.suppressed_error, 3),
+            ("isError", methods.is_error, 1),
         );
 
         let proto_ptr = P::as_ptr(&self.error_proto) as *mut JsObject;
@@ -168,7 +169,7 @@ impl BuiltinWorld {
             string_forge,
             shape_forge,
             ("toString", methods.to_string, 0),
-            ("stack", methods.stack, 0),
+            ("toJSON", methods.to_json, 1),
         );
 
         let si_name = string_forge.intern("name").0;

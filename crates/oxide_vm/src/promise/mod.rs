@@ -104,12 +104,18 @@ const AGG_INDEX_PROP: &str = "__oxide_agg_index__";
 const AGG_ALREADY_PROP: &str = "__oxide_agg_already__";
 /// 记录对象上存剩余未结算元素计数（含尾部哨兵 1）。
 const AGG_REMAINING_PROP: &str = "__oxide_agg_remaining__";
-/// 记录对象上存结果数组（all/allSettled 的 values，any 的 errors）。
+/// 记录对象上存结果数组（all 的 values，any 的 errors）。
 const AGG_VALUES_PROP: &str = "__oxide_agg_values__";
 /// 记录对象上存能力 resolve 闭包。
 const AGG_RESOLVE_PROP: &str = "__oxide_agg_resolve__";
 /// 记录对象上存能力 reject 闭包。
 const AGG_REJECT_PROP: &str = "__oxide_agg_reject__";
+
+// ── Promise.try 包装闭包（W）状态属性 ──
+/// W 上存用户 executor 函数。
+const TRY_EXECUTOR_PROP: &str = "__oxide_try_executor__";
+/// W 上存转发实参数组（resolve/reject 经调用实参传入，不落属性）。
+const TRY_ARGS_PROP: &str = "__oxide_try_args__";
 
 /// 聚合静态方法的语义模式（决定元素处理器与结算方式）。
 #[derive(Clone, Copy, PartialEq, Eq)]

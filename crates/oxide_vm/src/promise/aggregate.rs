@@ -15,7 +15,7 @@ use crate::vm::Vm;
 
 use super::{
     AggregateKind, AGG_ALREADY_PROP, AGG_INDEX_PROP, AGG_RECORD_PROP, AGG_REJECT_PROP, AGG_REMAINING_PROP,
-    AGG_RESOLVE_PROP, AGG_VALUES_PROP,
+    AGG_RESOLVE_PROP, AGG_VALUES_PROP, TRY_ARGS_PROP, TRY_EXECUTOR_PROP,
 };
 
 impl Vm {
@@ -92,6 +92,8 @@ impl Vm {
         let ptr = self.alloc_object(JsObject::new_empty(EMPTY_SHAPE_ID, proto_val));
         // SAFETY: ptr 由 alloc_object 新建，返回非空 arena 指针；写 message/errors 数据属性期间不搬移，借出期间无别名。
         let obj = unsafe { &mut *ptr };
+        // Error 家族标签：[[ErrorData]] 谓词（stack 访问器 / Error.isError）据此判定。
+        obj.type_tag = JsObject::OBJ_TYPE_ERROR;
         // message/errors 为数据属性：writable、非枚举、configurable（CreateMethodProperty）。
         let attrs = PropAttributes::new(true, false, true);
         if !message.is_undefined() {
@@ -119,6 +121,40 @@ impl Vm {
             Ok(())
         })?;
         Ok(list)
+    }
+
+    /// 建普通数组对象并依次写入元素（Promise.try 转发实参的承载）。
+    fn make_plain_array(&mut self, elements: Vec<JsValue>) -> JsValue {
+        let array_proto = JsValue::from_js_object(self.session.builtin_world().array_proto.as_ptr() as *mut JsObject);
+        let ptr = self.alloc_object(JsObject::new_array(EMPTY_SHAPE_ID, array_proto, 0, self.epoch.bump()));
+        // SAFETY: ptr 由 alloc_object 新建，返回非空 arena 指针；元素写入不搬移对象。
+        let obj = unsafe { &mut *ptr };
+        for (i, elem) in elements.into_iter().enumerate() {
+            obj.set_prop_at(i as u32, elem);
+        }
+        JsValue::from_js_object(ptr)
+    }
+
+    /// 建 Promise.try 的包装闭包 W：native 函数对象，executor 与转发实参数组挂
+    /// 自身属性（GC 边走属性区，免 native_data 接线）；W 被构造器以
+    /// (resolve, reject) 实参调用。
+    fn make_try_wrapper(&mut self, executor: JsValue, call_args: Vec<JsValue>) -> JsValue {
+        let fn_proto = self.session.builtin_world().fn_proto_val();
+        let mut func = JsObject::new_empty(EMPTY_SHAPE_ID, fn_proto);
+        func.set_function(true);
+        // SAFETY: promise_try_wrapper 是 NativeFn 函数项。
+        func.set_native_fn(Some(unsafe { NativeFnPtr::from_raw(promise_try_wrapper as *const ()) }));
+        func.set_native_arg_count(2);
+        let ptr = self.alloc_object(func);
+        // SAFETY: ptr 由 alloc_object 新建，返回非空 arena 指针；后续属性/shape 分配不改对象地址，无别名。
+        let obj = unsafe { &mut *ptr };
+        let exec_si = self.kernel_core.perm_interner().intern(TRY_EXECUTOR_PROP).0;
+        self.set_or_create_prop_value(obj, exec_si, executor);
+        let args_array = self.make_plain_array(call_args);
+        let args_si = self.kernel_core.perm_interner().intern(TRY_ARGS_PROP).0;
+        self.set_or_create_prop_value(obj, args_si, args_array);
+        self.add_fn_name_length(obj, "", 2);
+        JsValue::from_js_object(ptr)
     }
 
     /// 初始化/重建 AggregateError 内建对象：`%AggregateError%` 构造器与
@@ -689,12 +725,17 @@ fn aggregate_error_constructor(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
     let errors = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
     let message = if args.len() > 2 { vm.reg(args[2]) } else { JsValue::undefined() };
-    let this = if this_val.is_object() {
+    let new_target = vm.reg(255);
+    let this = if this_val.is_object() && new_target.is_object() {
         this_val.as_js_object_ptr()
     } else {
         let proto_val = JsValue::from_js_object(vm.aggregate_error_proto.as_ptr() as *mut JsObject);
         vm.alloc_object(JsObject::new_empty(EMPTY_SHAPE_ID, proto_val))
     };
+    // SAFETY: this 来自构造路径预分配或 alloc_object 新建，均存活且本段无别名。
+    unsafe {
+        (*this).type_tag = JsObject::OBJ_TYPE_ERROR;
+    }
     if !message.is_undefined() {
         let msg_str = match oxide_runtime_api::to_string_full(message, vm) {
             Ok(s) => s,
@@ -719,4 +760,71 @@ fn aggregate_error_constructor(vm: &mut Vm, args: &[u8]) -> NativeResult {
     // SAFETY: this 为本次构造得到的既有或新建存活对象；此处写 errors 数据属性，与上方 message 写入顺序独占同一对象，无别名。
     let _ = vm.define_data_property(unsafe { &mut *this }, err_si, errors_list, PropAttributes::new(true, false, true));
     NativeResult::Ok(JsValue::from_js_object(this))
+}
+
+/// `Promise.try(executor, ...args)` 静态方法：以包装闭包 W 为唯一构造器实参
+/// `Construct(this, «W»)`；W 被构造器以 (resolve, reject) 调用时执行 executor
+/// （接收者 undefined、转发实参），正常完成经 resolve 结算、异常完成以原抛出值
+/// 经 reject 结算。
+///
+/// # 边界与前提
+/// - this 非对象 → TypeError；非构造器 this 由 `construct_ctor` 的 IsConstructor
+///   校验拒绝（同样 TypeError）；
+/// - 构造器自身抛错原样向调用方同步传播（不转拒绝）。
+pub(super) fn promise_static_try(vm: &mut Vm, args: &[u8]) -> NativeResult {
+    let ctor = vm.reg(if args.is_empty() { 0 } else { args[0] });
+    if !ctor.is_object() {
+        return NativeResult::Err(oxide_builtins::error::create_type_error(vm, "Promise.try called on non-object"));
+    }
+    let executor = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
+    let call_args: Vec<JsValue> = match args.get(2..) {
+        Some(regs) => regs.iter().map(|&r| vm.reg(r)).collect(),
+        None => Vec::new(),
+    };
+    let wrapper = vm.make_try_wrapper(executor, call_args);
+    match vm.construct_ctor(ctor, &[wrapper]) {
+        Ok(promise) => NativeResult::Ok(promise),
+        Err(exc) => NativeResult::Err(exc),
+    }
+}
+
+/// Promise.try 的包装闭包 W：以 (resolve, reject) 实参被构造器调用，执行用户
+/// executor 并按完成形态结算；两态均返回 undefined（不同步向 try 调用方抛错）。
+fn promise_try_wrapper(vm: &mut Vm, args: &[u8]) -> NativeResult {
+    let resolve = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
+    let reject = if args.len() > 2 { vm.reg(args[2]) } else { JsValue::undefined() };
+    let callee = vm.reg(254);
+    if !callee.is_object() {
+        return NativeResult::Ok(JsValue::undefined());
+    }
+    // SAFETY: is_object 保证指针非空且指向存活对象；只读 TRY_* 属性即时消费，不跨 GC/reset。
+    let callee_obj = unsafe { &*callee.as_js_object_ptr() };
+    let exec_si = vm.kernel_core.perm_interner().intern(TRY_EXECUTOR_PROP).0;
+    let executor = vm.resolve_property(callee_obj, exec_si).unwrap_or(JsValue::undefined());
+    // 转发实参自 W 的 args 数组逐位读出（元素区）。
+    let mut call_args: Vec<JsValue> = Vec::new();
+    let args_si = vm.kernel_core.perm_interner().intern(TRY_ARGS_PROP).0;
+    if let Some(args_val) = vm.resolve_property(callee_obj, args_si) {
+        if args_val.is_object() {
+            // SAFETY: args_val 是存活数组对象；元素区读取不搬移，即时消费。
+            let args_obj = unsafe { &*args_val.as_js_object_ptr() };
+            for i in 0..args_obj.logical_len() {
+                call_args.push(args_obj.get_prop_at(i));
+            }
+        }
+    }
+    match vm.call_function_sync(executor, JsValue::undefined(), &call_args) {
+        Ok(value) => {
+            let _ = vm.call_function_sync(resolve, JsValue::undefined(), &[value]);
+        }
+        Err(e) => {
+            // executor 抛错：以原抛出值拒绝（原值经 last_uncaught_value 保留）。
+            let exc = vm
+                .last_uncaught_value
+                .take()
+                .unwrap_or_else(|| oxide_builtins::error::create_from_text(vm, &e));
+            let _ = vm.call_function_sync(reject, JsValue::undefined(), &[exc]);
+        }
+    }
+    NativeResult::Ok(JsValue::undefined())
 }
