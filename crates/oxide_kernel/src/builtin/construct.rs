@@ -241,7 +241,8 @@ fn set_proto_if_changed(obj: &P<JsObject>, proto: JsValue) {
 /// 2. 23 个非 TypedArray 构造器的 `[[Prototype]]` → Function.prototype
 ///    （标准内置函数对象均继承 Function.prototype）；
 /// 3. 25 个非 Object 原型的 `[[Prototype]]` → Object.prototype，另含
-///    Temporal 命名空间对象、Temporal.now 与 Console 单例；
+///    Temporal 命名空间对象、Temporal.now、Console 单例与 Math/JSON
+///    命名空间对象；
 /// 4. %IteratorPrototype% → Object.prototype，6 个集合迭代器原型
 ///    → %IteratorPrototype%；
 /// 5. TypedArray 家族：11 个具体原型 → %TypedArray% 共享原型，11 个具体
@@ -361,6 +362,10 @@ pub(crate) fn wire_builtin_world_links(world: &BuiltinWorld) {
 
     // Console 对象（单例命名空间）继承 Object.prototype。
     set_proto_if_changed(&world.console_object, obj_proto_val);
+
+    // Math / JSON 命名空间对象（非构造器）继承 Object.prototype。
+    set_proto_if_changed(&world.math_object, obj_proto_val);
+    set_proto_if_changed(&world.json_object, obj_proto_val);
 
     // 迭代器原型链：%IteratorPrototype% → Object.prototype；各集合迭代器原型
     // → %IteratorPrototype%（next/@@iterator 方法由绑定层——oxide_builtins

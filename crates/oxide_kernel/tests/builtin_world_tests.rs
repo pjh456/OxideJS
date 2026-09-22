@@ -70,6 +70,21 @@ fn test_protos_have_null_proto() {
 }
 
 #[test]
+fn test_math_json_proto_links_to_object_proto() {
+    let w = make_world();
+    let obj_proto_ptr = w.object_proto.as_ptr() as *mut JsObject;
+    // Math/JSON 命名空间对象的 proto 槽应指向 Object.prototype 本体。
+    assert!(
+        std::ptr::eq(w.math_object.proto().as_js_object_ptr(), obj_proto_ptr),
+        "Math namespace object should inherit Object.prototype"
+    );
+    assert!(
+        std::ptr::eq(w.json_object.proto().as_js_object_ptr(), obj_proto_ptr),
+        "JSON namespace object should inherit Object.prototype"
+    );
+}
+
+#[test]
 fn test_shapes_populated() {
     let w = make_world();
     assert!(

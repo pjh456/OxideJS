@@ -23,8 +23,10 @@ pub struct KernelSession {
 }
 
 impl KernelSession {
-    fn new_global_object(core: &KernelCore) -> P<JsObject> {
-        let mut global_obj = JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null());
+    /// 创建全局对象本体：`[[Prototype]]` 挂 Object.prototype（无代理分层
+    /// 引擎的最简等价形态），并预置 NaN/undefined/Infinity 三个全局常量。
+    fn new_global_object(core: &KernelCore, object_proto: JsValue) -> P<JsObject> {
+        let mut global_obj = JsObject::new_empty(EMPTY_SHAPE_ID, object_proto);
 
         let si_nan = core.perm_interner.intern("NaN").0;
         let si_undef = core.perm_interner.intern("undefined").0;
@@ -65,7 +67,8 @@ impl KernelSession {
     /// 第二次及后续调用时命中缓存。
     pub fn new(core: &KernelCore) -> Self {
         let builtin_world = Arc::new(BuiltinWorld::new(&core.perm_interner, &core.shape_forge));
-        let global_object = Self::new_global_object(core);
+        let object_proto_val = JsValue::from_js_object(builtin_world.object_proto.as_ptr() as *mut JsObject);
+        let global_object = Self::new_global_object(core, object_proto_val);
         let builtin_snapshot = BuiltinSnapshot::new(&builtin_world, &global_object);
 
         Self {
@@ -244,7 +247,10 @@ impl KernelSession {
             // 旧 global 的属性区在替换前释放，避免旧引用长期持有该内存。
             let old_global = unsafe { &mut *(self.global_object.as_ptr() as *mut JsObject) };
             old_global.release_raw_heap();
-            self.global_object = Self::new_global_object(core);
+            // proto 取当前（可能旧）world 的 ObjectProto；object 家族脏重建后
+            // 由下方收尾重指修正。
+            let object_proto_val = JsValue::from_js_object(self.builtin_world.object_proto.as_ptr() as *mut JsObject);
+            self.global_object = Self::new_global_object(core, object_proto_val);
         }
         if dirty.any_builtin_dirty() {
             let old_world = self.builtin_world.clone();
@@ -263,7 +269,15 @@ impl KernelSession {
             // （Function/Object 4 个对象本体永久保留、属性区同批释放）；原型
             // 槽改写须先于释放、先于旧 world 被替换完成。
             new_world.retire_replaced(&old_world);
+            // 保留 global 的 proto 槽重指：object 家族脏重建替换 ObjectProto，
+            // global 不在 BuiltinWorld 内，retire_replaced 不覆盖。
+            let new_obj_proto = new_world.object_proto.as_ptr();
+            let old_obj_proto = old_world.object_proto.as_ptr();
             self.builtin_world = Arc::new(new_world);
+            if new_obj_proto != old_obj_proto {
+                let global = unsafe { &mut *(self.global_object.as_ptr() as *mut JsObject) };
+                global.set_proto(JsValue::from_js_object(new_obj_proto as *mut JsObject)).ok();
+            }
         }
         dirty
     }
