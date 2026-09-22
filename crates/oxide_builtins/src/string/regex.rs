@@ -313,14 +313,15 @@ pub fn string_split<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         let re = unsafe { &*re_ptr };
         if let Some(fn_ptr) = re.native_fn() {
             let regex = unsafe { &*(fn_ptr.as_ptr() as *const regress::Regex) };
-            let mut parts: Vec<Vec<u16>> = Vec::new();
+            // 片段物化字符串值，未匹配捕获组推 undefined（结果数组按值混排）。
+            let mut parts: Vec<JsValue> = Vec::new();
             let mut last_end = 0;
             for m in regex.find_from_utf16(&s, 0) {
                 if parts.len() >= limit {
                     break;
                 }
                 let range = m.range();
-                parts.push(s[last_end..range.start].to_vec());
+                parts.push(vm.new_string_units_owned(s[last_end..range.start].to_vec()));
                 if parts.len() >= limit {
                     break;
                 }
@@ -329,16 +330,16 @@ pub fn string_split<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
                         break;
                     }
                     match m.group(i) {
-                        Some(g) => parts.push(s[g.start..g.end].to_vec()),
-                        None => parts.push(Vec::new()),
+                        Some(g) => parts.push(vm.new_string_units_owned(s[g.start..g.end].to_vec())),
+                        None => parts.push(JsValue::undefined()),
                     }
                 }
                 last_end = range.end;
             }
             if last_end <= s.len() && parts.len() < limit {
-                parts.push(s[last_end..].to_vec());
+                parts.push(vm.new_string_units(&s[last_end..]));
             }
-            return NativeResult::Ok(make_units_array(vm, parts));
+            return NativeResult::Ok(make_string_array_values(vm, parts));
         }
         // 无原生正则的类正则对象回退到字符串路径。
     }
@@ -570,10 +571,6 @@ pub fn string_match_fn<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     // 正则判定与参数字符串转换先行（&mut 路径），后借 this 匹配扫描。
     let pattern_val = if args.len() >= 2 { Some(vm.reg(args[1])) } else { None };
     let is_re = pattern_val.map(|v| is_regexp_obj(v, vm)).unwrap_or(false);
-    let pattern: Vec<u16> = match pattern_val {
-        Some(v) if !is_re => try_string!(as_units(vm, v)).into_owned(),
-        _ => Vec::new(),
-    };
     // global 标志前置读：flags 串共享借用与下方 text 转换的 &mut 借用不可重叠。
     let is_global = if is_re {
         let re_val = match pattern_val {
@@ -588,23 +585,21 @@ pub fn string_match_fn<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         false
     };
     let text = try_string!(this_text(vm, args));
-    if args.len() < 2 {
-        return NativeResult::Ok(JsValue::null());
-    }
+    // 缺参按 undefined 模式（规范：构造空模式正则，串头命中）。
     let pattern_val = match pattern_val {
         Some(v) => v,
-        None => return NativeResult::Err(crate::error::create_type_error(vm, "expected pattern")),
+        None => JsValue::undefined(),
     };
     if is_re {
         let re_ptr = pattern_val.as_js_object_ptr();
-        let re = unsafe { &*re_ptr };
-        let fn_ptr = match re.native_fn() {
-            Some(p) => p,
-            None => return NativeResult::Ok(JsValue::null()),
-        };
-        // SAFETY: fn_ptr 持有 regexp_constructor 存放的 `Box<regress::Regex>` 指针。
-        let regex = unsafe { &*(fn_ptr.as_ptr() as *const regress::Regex) };
         if is_global {
+            let re = unsafe { &*re_ptr };
+            let fn_ptr = match re.native_fn() {
+                Some(p) => p,
+                None => return NativeResult::Ok(JsValue::null()),
+            };
+            // SAFETY: fn_ptr 持有 regexp_constructor 存放的 `Box<regress::Regex>` 指针。
+            let regex = unsafe { &*(fn_ptr.as_ptr() as *const regress::Regex) };
             let mut matches: Vec<Vec<u16>> = Vec::new();
             text.for_each_match(regex, |m| {
                 let range = m.range();
@@ -615,30 +610,57 @@ pub fn string_match_fn<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
             }
             return NativeResult::Ok(make_units_array(vm, matches));
         }
-        if let Some(m) = text.find_from_units(regex, 0) {
-            let range = m.range();
-            let mut parts: Vec<Vec<u16>> = Vec::with_capacity(m.captures.len() + 1);
-            parts.push(text.slice(range.start, range.end).into_owned());
-            for i in 1..=m.captures.len() {
-                match m.group(i) {
-                    Some(g) => parts.push(text.slice(g.start, g.end).into_owned()),
-                    None => parts.push(Vec::new()),
-                }
-            }
-            return NativeResult::Ok(make_units_array(vm, parts));
-        }
-        return NativeResult::Ok(JsValue::null());
+        // 非 global：GetMethod(rx, @@match) + Invoke，结果原值返回
+        // （默认 @@match 非 global 臂交付 exec 结果本体，index/input/groups/
+        // indices 与 exec 同源；影子 @@match 可替换）。
+        let s_units = text.units().into_owned();
+        let s_val = vm.new_string_units_owned(s_units);
+        let matcher = match rx_get_match_method(vm, re_ptr, pattern_val) {
+            Ok(v) => v,
+            Err(e) => return NativeResult::Err(e),
+        };
+        return match vm.call_function_sync(matcher, pattern_val, &[s_val]) {
+            Ok(r) => NativeResult::Ok(r),
+            Err(e) => NativeResult::Err(crate::iterator::engine_error(vm, &e)),
+        };
     }
-    // 空模式命中串头：产出单元素空串数组（规格口径）。
-    if pattern.is_empty() {
-        return NativeResult::Ok(make_units_array(vm, vec![Vec::new()]));
+    // 非正则模式：Construct %RegExp%（undefined → 空模式、其余经 ToString），
+    // 再 GetMethod(rx, @@match) + Invoke；转换抛错（含 Symbol）原样传播。
+    let s_units = text.units().into_owned();
+    let s_val = vm.new_string_units_owned(s_units);
+    let regexp_ctor = vm.session().builtin_world().regexp_constructor.as_ptr() as *mut JsObject;
+    let rx_val = match vm.construct_ctor(JsValue::from_js_object(regexp_ctor), &[pattern_val]) {
+        Ok(v) => v,
+        Err(e) => return NativeResult::Err(e),
+    };
+    if !rx_val.is_object() {
+        return NativeResult::Err(crate::error::create_type_error(
+            vm,
+            "match pattern constructor must return an object",
+        ));
     }
-    let s = text.units();
-    if let Some(pos) = find_units(&s, &pattern, 0) {
-        let matched = s[pos..pos + pattern.len()].to_vec();
-        return NativeResult::Ok(make_units_array(vm, vec![matched]));
+    let matcher = match rx_get_match_method(vm, rx_val.as_js_object_ptr(), rx_val) {
+        Ok(v) => v,
+        Err(e) => return NativeResult::Err(e),
+    };
+    match vm.call_function_sync(matcher, rx_val, &[s_val]) {
+        Ok(r) => NativeResult::Ok(r),
+        Err(e) => NativeResult::Err(crate::iterator::engine_error(vm, &e)),
     }
-    NativeResult::Ok(JsValue::null())
+}
+
+/// GetMethod(rx, @@match)：可调用返回之，null/undefined/不可调用抛 TypeError；
+/// 属性读抛错恢复原异常值。
+fn rx_get_match_method<H: VmHost>(vm: &mut H, rx: *mut JsObject, this_val: JsValue) -> Result<JsValue, JsValue> {
+    let match_key = oxide_types::private_key::make_well_known_symbol_key(1);
+    let matcher = match vm.ordinary_get(unsafe { &*rx }, match_key, this_val) {
+        Ok(v) => v,
+        Err(e) => return Err(crate::iterator::engine_error(vm, &e)),
+    };
+    if !crate::iterator::is_callable(matcher) {
+        return Err(crate::error::create_type_error(vm, "RegExp @@match is not callable"));
+    }
+    Ok(matcher)
 }
 
 /// `String.prototype.search(pattern)`：返回首个匹配位置（码元），无匹配返回 -1。
@@ -1043,6 +1065,8 @@ pub fn string_match_all_next<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult
         None => return make_match_done_result(vm, JsValue::undefined()),
     };
     let regex = unsafe { &*(fn_ptr.as_ptr() as *const regress::Regex) };
+    // d 标志门控 indices 产出（flags 串实例字段直读，与 exec 同口径）。
+    let has_indices = crate::regexp::regexp_has_flag(vm, re_obj, 'd');
 
     // 按 input 载荷形态分臂：Flat 走字节通道（游标经码元↔字节换算），
     // 其余走单元通道（游标即码元）。
@@ -1054,17 +1078,18 @@ pub fn string_match_all_next<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult
     if idx > total_units {
         return make_match_done_result(vm, JsValue::undefined());
     }
-    let (match_start, next_idx, parts, m_opt): (usize, usize, Vec<Vec<u16>>, Option<regress::Match>) = if sp.is_flat() {
+    // 元素按值混排：匹配片段物化字符串值，未匹配捕获组为 undefined。
+    let (match_start, next_idx, parts, m_opt): (usize, usize, Vec<JsValue>, Option<regress::Match>) = if sp.is_flat() {
         let s = sp.as_str();
         match regex.find_from(s, unit_to_byte(s, idx)).next() {
             Some(m) => {
                 let range = m.range();
                 let mut parts = Vec::with_capacity(m.captures.len() + 1);
-                parts.push(s[range.start..range.end].encode_utf16().collect());
+                parts.push(vm.new_string_units_owned(s[range.start..range.end].encode_utf16().collect()));
                 for i in 1..=m.captures.len() {
                     match m.group(i) {
-                        Some(g) => parts.push(s[g.start..g.end].encode_utf16().collect()),
-                        None => parts.push(Vec::new()),
+                        Some(g) => parts.push(vm.new_string_units_owned(s[g.start..g.end].encode_utf16().collect())),
+                        None => parts.push(JsValue::undefined()),
                     }
                 }
                 // 空匹配（range 无推进）须推进至少一个码元，否则同一位置反复
@@ -1082,11 +1107,11 @@ pub fn string_match_all_next<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult
             Some(m) => {
                 let range = m.range();
                 let mut parts = Vec::with_capacity(m.captures.len() + 1);
-                parts.push(u[range.start..range.end].to_vec());
+                parts.push(vm.new_string_units_owned(u[range.start..range.end].to_vec()));
                 for i in 1..=m.captures.len() {
                     match m.group(i) {
-                        Some(g) => parts.push(u[g.start..g.end].to_vec()),
-                        None => parts.push(Vec::new()),
+                        Some(g) => parts.push(vm.new_string_units_owned(u[g.start..g.end].to_vec())),
+                        None => parts.push(JsValue::undefined()),
                     }
                 }
                 let next_idx = if range.end > range.start { range.end } else { range.end + 1 };
@@ -1100,19 +1125,20 @@ pub fn string_match_all_next<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult
         return make_match_done_result(vm, JsValue::undefined());
     }
     vm.set_or_create_prop_value(wrapper, index_si, JsValue::int(next_idx as i32));
-    // 构建结果数组：按元素物化字符串值 + 挂 index/input/groups 属性。
+    // 构建结果数组：按元素混排字符串值/undefined + 挂 index/input/groups 属性。
     let match_text = MatchText::from_value(input_val);
-    let value = make_match_result_array(vm, parts, match_start as i32, input_val, m_opt.as_ref(), &match_text);
+    let value =
+        make_match_result_array(vm, parts, match_start as i32, input_val, m_opt.as_ref(), &match_text, has_indices);
     make_match_done_result(vm, value)
 }
 
-/// 构建 matchAll 结果数组：元素为匹配字符串值，附带 index/input/groups 属性。
+/// 构建 matchAll 结果数组：元素为匹配字符串值（未匹配捕获组为 undefined），
+/// 附带 index/input/groups 属性（d 标志下另挂 indices，与 exec 结果同面）。
 fn make_match_result_array<H: VmHost>(
-    vm: &mut H, parts: Vec<Vec<u16>>, match_index: i32, input_val: JsValue, m: Option<&regress::Match>,
-    text: &MatchText,
+    vm: &mut H, parts: Vec<JsValue>, match_index: i32, input_val: JsValue, m: Option<&regress::Match>,
+    text: &MatchText, has_indices: bool,
 ) -> JsValue {
-    let values: Vec<JsValue> = parts.into_iter().map(|u| vm.new_string_units_owned(u)).collect();
-    let arr = make_string_array_values(vm, values);
+    let arr = make_string_array_values(vm, parts);
     let arr_ptr = arr.as_js_object_ptr();
     let arr_obj = unsafe { &mut *arr_ptr };
     let index_si = vm.kernel_core().perm_interner().intern("index").0;
@@ -1125,6 +1151,14 @@ fn make_match_result_array<H: VmHost>(
     };
     let groups_si = vm.kernel_core().perm_interner().intern("groups").0;
     vm.set_or_create_prop_value(arr_obj, groups_si, groups_val);
+    // d 标志：挂 indices 属性（与 exec 结果同口径的码元对数组族）。
+    if has_indices {
+        if let Some(m) = m {
+            let indices_val = crate::regexp::build_indices_array(vm, m, text);
+            let indices_si = vm.kernel_core().perm_interner().intern("indices").0;
+            vm.set_or_create_prop_value(arr_obj, indices_si, indices_val);
+        }
+    }
     arr
 }
 

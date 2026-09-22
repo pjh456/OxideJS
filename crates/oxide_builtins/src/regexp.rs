@@ -6,18 +6,19 @@ use oxide_runtime_api::{NativeResult, VmHost};
 
 use crate::string::{make_units_array, MatchText, OwnedText};
 
-/// 构建 RegExp match result 的 `groups` 对象：键为命名捕获组名，值为匹配字符串或 undefined。
+/// 构建 RegExp match result 的 `groups` 对象：null 原型（ObjectCreate(null)），
+/// 键为命名捕获组名，值为匹配字符串或 undefined。
 pub(crate) fn build_groups_object<H: VmHost>(vm: &mut H, m: &regress::Match, text: &MatchText) -> JsValue {
     // 收集所有命名组（迭代器惰性，先 collect 判断是否有命名组）。
     let named: Vec<_> = m.named_groups().collect();
     if named.is_empty() {
         return JsValue::undefined();
     }
-    let object_proto = vm.session().builtin_world().object_proto.as_ptr() as *mut JsObject;
-    let groups_obj = vm.alloc_object(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(object_proto)));
+    // null 原型：groups 对象不挂 Object.prototype（与 indices.groups 同面）。
+    let groups_obj = vm.alloc_object(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()));
     let groups_ptr = unsafe { &mut *groups_obj };
 
-    // 遍历所有命名捕获组，按名称设置属性（重复名称按规范取最后一次匹配）。
+    // 遍历所有命名捕获组，按名称设置属性（重复名称取首个已定义的出现）。
     for (name, range) in named {
         let name_si = vm.kernel_core().perm_interner().intern(name).0;
         let value = match range {
@@ -27,6 +28,66 @@ pub(crate) fn build_groups_object<H: VmHost>(vm: &mut H, m: &regress::Match, tex
         vm.set_or_create_prop_value(groups_ptr, name_si, value);
     }
 
+    JsValue::from_js_object(groups_obj)
+}
+
+/// 构建 d 标志下的 `indices` 数组：`indices[0]` 为完整匹配 [start, end] 码元对，
+/// 其后逐捕获组（未参与匹配的组为 undefined）；自有 `groups` 属性为同构
+/// indices.groups 对象（null 原型），全部经 CreateDataProperty 写入。
+pub(crate) fn build_indices_array<H: VmHost>(vm: &mut H, m: &regress::Match, text: &MatchText) -> JsValue {
+    let group_count = m.captures.len();
+    let n = 1 + group_count;
+    let proto = vm.session().builtin_world().array_proto.as_ptr() as *mut JsObject;
+    let arr =
+        vm.alloc_object(JsObject::new_array(EMPTY_SHAPE_ID, JsValue::from_js_object(proto), n, vm.epoch().bump()));
+    unsafe {
+        let range = m.range();
+        (*arr).set_prop_at(0, index_pair(vm, text.unit_pos(range.start), text.unit_pos(range.end)));
+        for i in 1..=group_count {
+            let v = match m.group(i) {
+                Some(g) => index_pair(vm, text.unit_pos(g.start), text.unit_pos(g.end)),
+                None => JsValue::undefined(),
+            };
+            (*arr).set_prop_at(i, v);
+        }
+        (*arr).set_prop_count(n);
+    }
+    let groups_val = build_indices_groups_object(vm, m, text);
+    let groups_si = vm.kernel_core().perm_interner().intern("groups").0;
+    vm.set_or_create_prop_value(unsafe { &mut *arr }, groups_si, groups_val);
+    JsValue::from_js_object(arr)
+}
+
+/// 单个 [start, end] 码元对数组（数组原型，两个自身元素）。
+fn index_pair<H: VmHost>(vm: &mut H, start: usize, end: usize) -> JsValue {
+    let proto = vm.session().builtin_world().array_proto.as_ptr() as *mut JsObject;
+    let arr =
+        vm.alloc_object(JsObject::new_array(EMPTY_SHAPE_ID, JsValue::from_js_object(proto), 2, vm.epoch().bump()));
+    unsafe {
+        (*arr).set_prop_at(0, JsValue::int(start as i32));
+        (*arr).set_prop_at(1, JsValue::int(end as i32));
+        (*arr).set_prop_count(2);
+    }
+    JsValue::from_js_object(arr)
+}
+
+/// 构建 indices.groups：null 原型，键为命名捕获组名（首现源序），值为
+/// [start, end] 码元对（未参与匹配的组为 undefined）。
+fn build_indices_groups_object<H: VmHost>(vm: &mut H, m: &regress::Match, text: &MatchText) -> JsValue {
+    let named: Vec<_> = m.named_groups().collect();
+    if named.is_empty() {
+        return JsValue::undefined();
+    }
+    let groups_obj = vm.alloc_object(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()));
+    let groups_ptr = unsafe { &mut *groups_obj };
+    for (name, range) in named {
+        let name_si = vm.kernel_core().perm_interner().intern(name).0;
+        let value = match range {
+            Some(r) => index_pair(vm, text.unit_pos(r.start), text.unit_pos(r.end)),
+            None => JsValue::undefined(),
+        };
+        vm.set_or_create_prop_value(groups_ptr, name_si, value);
+    }
     JsValue::from_js_object(groups_obj)
 }
 
@@ -146,7 +207,7 @@ fn rx_get_bool_prop<H: VmHost>(vm: &mut H, rx: *mut JsObject, name: &str, this_v
 
 /// 共享 RegExpExec(R, S)：Get(R, "exec") 须可调用，Call(exec, R, «S»)，
 /// 结果非 null 非对象抛 TypeError。exec 自身的抛错恢复原异常值。
-fn regexp_exec_call<H: VmHost>(
+pub(crate) fn regexp_exec_call<H: VmHost>(
     vm: &mut H, rx: *mut JsObject, rx_val: JsValue, s_val: JsValue,
 ) -> Result<JsValue, JsValue> {
     let exec_val = rx_get_prop(vm, rx, "exec", rx_val)?;
@@ -350,10 +411,15 @@ pub fn regexp_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
             };
             (vm.string_units(source).into_owned(), vm.string_units(flags).into_owned())
         } else {
-            let p = match oxide_runtime_api::to_units_full(pattern_val, vm) {
-                Ok(u) => u,
-                // ToPrimitive 调 toString 抛错时原异常值留在 uncaught 槽，优先恢复。
-                Err(e) => return NativeResult::Err(crate::iterator::engine_error(vm, &e)),
+            // undefined 模式按空串编译（null 仍走 ToString → "null"）。
+            let p = if pattern_val.is_undefined() {
+                Vec::new()
+            } else {
+                match oxide_runtime_api::to_units_full(pattern_val, vm) {
+                    Ok(u) => u,
+                    // ToPrimitive 调 toString 抛错时原异常值留在 uncaught 槽，优先恢复。
+                    Err(e) => return NativeResult::Err(crate::iterator::engine_error(vm, &e)),
+                }
             };
             let f = if args.len() >= 3 {
                 match oxide_runtime_api::to_units_full(vm.reg(args[2]), vm) {
@@ -633,10 +699,10 @@ pub fn regexp_exec<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     };
     let text = haystack.as_match_text();
 
-    // 标志决定搜索起点与 lastIndex 写回条件。
-    let (is_global, is_sticky) = {
+    // 标志决定搜索起点、lastIndex 写回条件与 indices 产出（d 标志）。
+    let (is_global, is_sticky, has_indices) = {
         let re = unsafe { &*re_ptr };
-        (regexp_has_flag(vm, re, 'g'), regexp_has_flag(vm, re, 'y'))
+        (regexp_has_flag(vm, re, 'g'), regexp_has_flag(vm, re, 'y'), regexp_has_flag(vm, re, 'd'))
     };
     let tracks_last_index = is_global || is_sticky;
 
@@ -676,6 +742,13 @@ pub fn regexp_exec<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let groups_val = build_groups_object(vm, &m, &text);
     let groups_si = vm.kernel_core().perm_interner().intern("groups").0;
     vm.set_or_create_prop_value(unsafe { &mut *arr }, groups_si, groups_val);
+
+    // d 标志：挂 indices 属性（逐组 [start, end] 码元对 + indices.groups 同构对象）。
+    if has_indices {
+        let indices_val = build_indices_array(vm, &m, &text);
+        let indices_si = vm.kernel_core().perm_interner().intern("indices").0;
+        vm.set_or_create_prop_value(unsafe { &mut *arr }, indices_si, indices_val);
+    }
 
     // 成功：lastIndex 推进到匹配末尾（仅 global/sticky），Set 语义。
     if tracks_last_index {
