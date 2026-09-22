@@ -552,8 +552,8 @@ fn typed_array_species_insufficient_length_throws() {
 
 #[test]
 fn typed_array_species_non_ctor_and_non_ta_throws() {
-    // species 构造结果非 TypedArray（filter 得空函数构造体 / toSorted 得普通对象）
-    // 抛 TypeError。
+    // species 构造结果非 TypedArray（filter 得空函数构造体 / map 得普通对象）
+    // 抛 TypeError（toReversed/toSorted/with 走 SameType 忽略 species，不在其列）。
     let mut vm = Vm::new();
     let result = eval(
         &mut vm,
@@ -564,7 +564,7 @@ fn typed_array_species_non_ctor_and_non_ta_throws() {
          catch (e) { t = e instanceof TypeError; } \
          var r = new Uint8Array(1); \
          r.constructor = { [Symbol.species]: function () { return {}; } }; \
-         try { r.toSorted(); t = t && false; } \
+         try { r.map(function (v) { return v; }); t = t && false; } \
          catch (e) { t = t && e instanceof TypeError; } \
          return t; })()",
     )
@@ -653,17 +653,21 @@ fn typed_array_species_use_default_ctor() {
 }
 
 #[test]
-fn typed_array_species_immutable_methods_same_shape() {
-    // toReversed/toSorted/with 同走 species 构造（长度 = 源长度）。
+fn typed_array_same_type_immutable_methods_ignore_species() {
+    // toReversed/toSorted/with 走 TypedArrayCreateSameType（规范语义：忽略
+    // species）：species 构造器不被调用，结果为接收者同类型的内建实例。
     let mut vm = Vm::new();
     let result = eval(
         &mut vm,
-        "(function () { var ta = new Uint8Array([1, 2, 3]); var seen; \
+        "(function () { var ta = new Uint8Array([1, 2, 3]); var called; \
          ta.constructor = { [Symbol.species]: function (n) { \
-         seen = n; return new Uint8Array(n); } }; \
+         called = true; return new Int32Array(n); } }; \
          var r = ta.toReversed(); var so = ta.toSorted(); var w = ta.with(1, 9); \
-         return r.length === 3 && r.at(0) === 3 && so.at(0) === 1 && \
-         w.at(1) === 9 && seen === 3; })()",
+         return called === undefined && \
+         Object.getPrototypeOf(r) === Uint8Array.prototype && \
+         Object.getPrototypeOf(so) === Uint8Array.prototype && \
+         Object.getPrototypeOf(w) === Uint8Array.prototype && \
+         r.length === 3 && r.at(0) === 3 && so.at(0) === 1 && w.at(1) === 9; })()",
     )
     .unwrap();
     assert!(result.as_bool());

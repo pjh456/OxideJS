@@ -137,6 +137,14 @@ fn create_typed_array<H: VmHost>(
     vm.alloc_object(obj)
 }
 
+/// TypedArrayCreateSameType 单长度参数形态：按 O 的类型建同长度新对象
+/// （规范上忽略 species，toReversed/toSorted/with 的交付语义）。
+fn create_same_type_typed_array<H: VmHost>(vm: &mut H, kind: TypedArrayKind, length: usize) -> *mut JsObject {
+    let bpe = kind.bytes_per_element();
+    let buffer = JsValue::from_js_object(new_array_buffer(vm, vec![0; length * bpe]));
+    create_typed_array(vm, kind, buffer, 0, length)
+}
+
 fn typed_array_data_ptr(obj: &JsObject) -> Option<*mut TypedArrayData> {
     if !obj.is_typed_array_obj() {
         return None;
@@ -1585,18 +1593,12 @@ pub fn typed_array_to_locale_string<H: VmHost>(vm: &mut H, args: &[u8]) -> Nativ
     NativeResult::Ok(vm.new_string(&parts.join(",")))
 }
 
-/// `%TypedArray%.prototype.toReversed()`：返回元素反转的、经 species 构造的
-/// 新 TypedArray（原对象不变）。
+/// `%TypedArray%.prototype.toReversed()`：返回元素反转的 TypedArrayCreateSameType
+/// 新 TypedArray（同类型、忽略 species；原对象不变）。
 pub fn typed_array_to_reversed<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
     let view = native_try!(get_typed_array_data(vm, this_val));
-    let a = native_try!(typed_array_species_create(
-        vm,
-        this_val,
-        view.kind,
-        vec![JsValue::int(view.length as i32)],
-        Some(view.length),
-    ));
+    let a = JsValue::from_js_object(create_same_type_typed_array(vm, view.kind, view.length));
     for i in 0..view.length {
         let elem = native_try!(ta_read(vm, view, view.length - 1 - i));
         native_try!(set_typed_array_element(vm, a, i, elem));
@@ -1604,8 +1606,8 @@ pub fn typed_array_to_reversed<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResu
     NativeResult::Ok(a)
 }
 
-/// `%TypedArray%.prototype.toSorted(comparefn)`：返回元素排序后的、经 species
-/// 构造的新 TypedArray（原对象不变）。
+/// `%TypedArray%.prototype.toSorted(comparefn)`：返回元素排序后的
+/// TypedArrayCreateSameType 新 TypedArray（同类型、忽略 species；原对象不变）。
 pub fn typed_array_to_sorted<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
     let view = native_try!(get_typed_array_data(vm, this_val));
@@ -1665,22 +1667,17 @@ pub fn typed_array_to_sorted<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult
     if let Some(err) = sort_error {
         return NativeResult::Err(err);
     }
-    let a = native_try!(typed_array_species_create(
-        vm,
-        this_val,
-        view.kind,
-        vec![JsValue::int(vals.len() as i32)],
-        Some(vals.len()),
-    ));
+    let a = JsValue::from_js_object(create_same_type_typed_array(vm, view.kind, vals.len()));
     for (k, v) in vals.into_iter().enumerate() {
         native_try!(set_typed_array_element(vm, a, k, v));
     }
     NativeResult::Ok(a)
 }
 
-/// `%TypedArray%.prototype.with(index, value)`：返回替换指定索引元素后的、经
-/// species 构造的新 TypedArray；负索引从尾部折算，折算后越界抛 RangeError
-/// （先于 value 的类型转换）。
+/// `%TypedArray%.prototype.with(index, value)`：返回替换指定索引元素后的
+/// TypedArrayCreateSameType 新 TypedArray（同类型、忽略 species）。
+/// 负索引从尾部折算；value 的类型转换（ToNumber/ToBigInt，副作用对后续源元素读
+/// 可见）先于越界 RangeError。
 pub fn typed_array_with<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
     let view = native_try!(get_typed_array_data(vm, this_val));
@@ -1701,21 +1698,17 @@ pub fn typed_array_with<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     } else {
         view.length as f64 + relative_index
     };
+    // 规范步 7/8：value 先转换（副作用/抛错原样上抛），步 9 才做越界检查。
+    let value = if args.len() > 2 { vm.reg(args[2]) } else { JsValue::undefined() };
+    let replacement = native_try!(ta_element_value(vm, view.kind, value));
     if actual_index.is_nan() || actual_index < 0.0 || actual_index >= view.length as f64 {
         return NativeResult::Err(range_error(vm, "Invalid typed array index"));
     }
     let index = actual_index as usize;
-    let value = if args.len() > 2 { vm.reg(args[2]) } else { JsValue::undefined() };
-    let a = native_try!(typed_array_species_create(
-        vm,
-        this_val,
-        view.kind,
-        vec![JsValue::int(view.length as i32)],
-        Some(view.length),
-    ));
-    // 目标索引写 value（经目标元素类型转换），其余索引顺序拷源元素。
+    let a = JsValue::from_js_object(create_same_type_typed_array(vm, view.kind, view.length));
+    // 目标索引写已转换的 value（副作用已先于源读发生），其余索引顺序拷源元素。
     for i in 0..view.length {
-        let elem = if i == index { value } else { native_try!(ta_read(vm, view, i)) };
+        let elem = if i == index { replacement } else { native_try!(ta_read(vm, view, i)) };
         native_try!(set_typed_array_element(vm, a, i, elem));
     }
     NativeResult::Ok(a)
