@@ -5,7 +5,9 @@ use oxide_types::object::{JsObject, NativeFnPtr, TypedArrayKind};
 use oxide_types::private_key::{int_key_value, is_int_key, make_well_known_symbol_key, WELL_KNOWN_SYMBOL_SPECIES};
 use oxide_types::value::JsValue;
 
-use crate::array_buffer::{array_buffer_payload, new_array_buffer, MAX_ARRAY_BUFFER_LENGTH};
+use crate::array_buffer::{
+    array_buffer_payload, default_array_buffer_proto, new_array_buffer, MAX_ARRAY_BUFFER_LENGTH,
+};
 
 use oxide_runtime_api::{NativeResult, VmHost};
 
@@ -141,7 +143,8 @@ fn create_typed_array<H: VmHost>(
 /// （规范上忽略 species，toReversed/toSorted/with 的交付语义）。
 fn create_same_type_typed_array<H: VmHost>(vm: &mut H, kind: TypedArrayKind, length: usize) -> *mut JsObject {
     let bpe = kind.bytes_per_element();
-    let buffer = JsValue::from_js_object(new_array_buffer(vm, vec![0; length * bpe]));
+    let buffer =
+        JsValue::from_js_object(new_array_buffer(vm, vec![0; length * bpe], 0, default_array_buffer_proto(vm)));
     create_typed_array(vm, kind, buffer, 0, length)
 }
 
@@ -460,6 +463,11 @@ fn write_typed_array_element<H: VmHost>(
 /// 读 TypedArray 元素并转为对应 JS 值：BigInt 类型读为 BigInt 值（i64/u64 位模式
 /// 原样搬运，无精度损失），数值类型按位模式读为 Number。
 fn read_element<H: VmHost>(vm: &mut H, kind: TypedArrayKind, bytes: &[u8], offset: usize) -> JsValue {
+    // 底层缓冲可能已被 resize 收缩：元素字节区越界时按 undefined 读
+    // （live 视图越界语义），不切片 panic。
+    if offset + kind.bytes_per_element() > bytes.len() {
+        return JsValue::undefined();
+    }
     // 安全读取：先校验 slice 长度匹配目标类型字节数，避免 try_into  panic。
     macro_rules! read_bytes {
         ($slice:expr, $ty:ty) => {{
@@ -546,6 +554,11 @@ fn element_error_text<H: VmHost>(vm: &mut H, err: JsValue) -> String {
 /// 把已按元素类型转换的值（数值 kind 为 Number、BigInt kind 为 BigInt）按位模式
 /// 截断写入底层 buffer。转换由调用方 [`ta_element_value`] 完成，本函数无副作用。
 fn write_element<H: VmHost>(vm: &mut H, kind: TypedArrayKind, bytes: &mut [u8], offset: usize, value: JsValue) {
+    // 底层缓冲可能已被 resize 收缩：元素字节区越界时静默不写
+    // （live 视图越界语义），不切片 panic。
+    if offset + kind.bytes_per_element() > bytes.len() {
+        return;
+    }
     let n = oxide_runtime_api::to_number(value);
     match kind {
         TypedArrayKind::Int8 => bytes[offset] = n as i32 as u8 as i8 as u8,
@@ -559,8 +572,10 @@ fn write_element<H: VmHost>(vm: &mut H, kind: TypedArrayKind, bytes: &mut [u8], 
         TypedArrayKind::Float64 => bytes[offset..offset + 8].copy_from_slice(&n.to_ne_bytes()),
         TypedArrayKind::BigInt64 | TypedArrayKind::BigUint64 => {
             // 取低 64 位位模式：与 2^64-1 掩码后恒非负且可转 u64，BigInt64 按位
-            // 模式重解释为 i64（二进制补码）。
-            let v = vm.bigint_value(value);
+            // 模式重解释为 i64（二进制补码）。非 BigInt 值按 ToBigInt 语义落 0
+            // （越界读哨值回写路径，防对非 BigInt 取位模式）。
+            static ZERO_BI: std::sync::LazyLock<BigInt> = std::sync::LazyLock::new(|| BigInt::from(0_i64));
+            let v: &BigInt = if value.is_bigint() { vm.bigint_value(value) } else { &ZERO_BI };
             let low = (v & (BigInt::from(u64::MAX)))
                 .to_u64()
                 .expect("与 u64::MAX 掩码后恒在 u64 范围");
@@ -688,7 +703,9 @@ fn typed_array_new<H: VmHost>(vm: &mut H, args: &[u8], kind: TypedArrayKind) -> 
                 return NativeResult::Err(range_error(vm, "TypedArray byteOffset out of bounds"));
             }
             let remaining = buffer_len - byte_offset;
-            let length = if args.len() > 3 {
+            // 规范以 "length is not undefined" 分支：显式 undefined 与省略同义，
+            // 取整缓冲剩余长度（live 全长），不落入 ToIndex(undefined)=0。
+            let length = if args.len() > 3 && !vm.reg(args[3]).is_undefined() {
                 native_try!(to_index(vm, vm.reg(args[3]), "TypedArray length out of bounds"))
             } else {
                 remaining / bpe
@@ -703,7 +720,8 @@ fn typed_array_new<H: VmHost>(vm: &mut H, args: &[u8], kind: TypedArrayKind) -> 
         } else {
             let values = native_try!(collect_array_like(vm, first, true));
             let byte_len = values.len().saturating_mul(bpe);
-            let buffer = JsValue::from_js_object(new_array_buffer(vm, vec![0; byte_len]));
+            let buffer =
+                JsValue::from_js_object(new_array_buffer(vm, vec![0; byte_len], 0, default_array_buffer_proto(vm)));
             let payload_ptr = native_try!(array_buffer_payload(vm, buffer));
             // SAFETY: payload_ptr 经 array_buffer_payload 校验为合法 ArrayBuffer 载荷。
             let Some(buffer_ref) = unsafe { &mut *payload_ptr }.data.as_deref_mut() else {
@@ -728,7 +746,8 @@ fn typed_array_new<H: VmHost>(vm: &mut H, args: &[u8], kind: TypedArrayKind) -> 
         if byte_len > MAX_ARRAY_BUFFER_LENGTH {
             return NativeResult::Err(range_error(vm, "invalid TypedArray length"));
         }
-        let buffer = JsValue::from_js_object(new_array_buffer(vm, vec![0; byte_len]));
+        let buffer =
+            JsValue::from_js_object(new_array_buffer(vm, vec![0; byte_len], 0, default_array_buffer_proto(vm)));
         (buffer, 0, len)
     };
 
@@ -939,20 +958,26 @@ pub fn typed_array_subarray<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult 
     } else {
         0
     };
-    let end = if args.len() > 2 && !vm.reg(args[2]).is_undefined() {
+    let end_undefined = args.len() <= 2 || vm.reg(args[2]).is_undefined();
+    let end = if !end_undefined {
         native_try!(normalize_index(vm, vm.reg(args[2]), view.length))
     } else {
         view.length
     };
     let count = end.max(start).saturating_sub(start);
     let byte_offset = view.byte_offset + start * view.kind.bytes_per_element();
-    let result = native_try!(typed_array_species_create(
-        vm,
-        this_val,
-        view.kind,
-        vec![view.buffer, JsValue::int(byte_offset as i32), JsValue::int(count as i32)],
-        None,
-    ));
+    // end 未给且底层 buffer 可缩放：构造参数省略 count，子视图随 buffer
+    // 伸缩（定长 buffer 恒三参，count 定死区间）。
+    let resizable = match array_buffer_payload(vm, view.buffer) {
+        Ok(p) => unsafe { &*p }.max_byte_length != 0,
+        Err(_) => false,
+    };
+    let ctor_args = if end_undefined && resizable {
+        vec![view.buffer, JsValue::int(byte_offset as i32)]
+    } else {
+        vec![view.buffer, JsValue::int(byte_offset as i32), JsValue::int(count as i32)]
+    };
+    let result = native_try!(typed_array_species_create(vm, this_val, view.kind, ctor_args, None));
     NativeResult::Ok(result)
 }
 
@@ -1110,14 +1135,30 @@ pub fn typed_array_of<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 /// 越界返回 undefined。
 fn ta_read<H: VmHost>(vm: &mut H, view: TypedArrayData, index: usize) -> Result<JsValue, JsValue> {
     if index >= view.length {
-        return Ok(JsValue::undefined());
+        return Ok(ta_oob_neutral(vm, view.kind));
     }
     let payload_ptr = array_buffer_payload(vm, view.buffer)?;
     // SAFETY: payload_ptr 经 array_buffer_payload 校验为合法 ArrayBuffer 载荷。
     let Some(buffer) = unsafe { &*payload_ptr }.data.as_deref() else {
         return Err(crate::error::create_type_error(vm, "ArrayBuffer internal state invalid"));
     };
-    Ok(read_element(vm, view.kind, buffer, absolute_byte_offset(view, index)))
+    let val = read_element(vm, view.kind, buffer, absolute_byte_offset(view, index));
+    // 底层缓冲被 resize 收缩后越界读返回 undefined；BigInt 类型归一成 0n
+    // （ToBigInt(undefined) 语义），使原地方法的比较/回写拿到合法 BigInt。
+    if is_bigint_kind(view.kind) && val.is_undefined() {
+        return Ok(vm.new_bigint(BigInt::from(0_i64)));
+    }
+    Ok(val)
+}
+
+/// 越界索引的中性元素值：BigInt 类型给 0n（后续按 BigInt 消费），数值类型
+/// 给 undefined（后续 to_number 归 0）。
+fn ta_oob_neutral<H: VmHost>(vm: &mut H, kind: TypedArrayKind) -> JsValue {
+    if is_bigint_kind(kind) {
+        vm.new_bigint(BigInt::from(0_i64))
+    } else {
+        JsValue::undefined()
+    }
 }
 
 /// 把已转换的值写入 TypedArray 指定索引（视图 data 已取出的形式，供原型方法内部使用）。
@@ -2096,11 +2137,10 @@ pub fn uint8array_to_base64<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult 
     let Some(buffer) = unsafe { &*payload_ptr }.data.as_deref() else {
         return NativeResult::Err(crate::error::create_type_error(vm, "ArrayBuffer internal state invalid"));
     };
-    NativeResult::Ok(vm.new_string_owned(crate::ta_codec::encode_base64(
-        &buffer[view.byte_offset..view.byte_offset + view.length],
-        alphabet,
-        omit_padding,
-    )))
+    // 视图范围按当前缓冲长度收口（缓冲可被 resize 收缩）。
+    let start = view.byte_offset.min(buffer.len());
+    let end = (view.byte_offset + view.length).min(buffer.len());
+    NativeResult::Ok(vm.new_string_owned(crate::ta_codec::encode_base64(&buffer[start..end], alphabet, omit_padding)))
 }
 
 /// `%Uint8Array%.prototype.toHex()`：ValidateUint8Array 后编码小写两位 hex。
@@ -2112,9 +2152,10 @@ pub fn uint8array_to_hex<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let Some(buffer) = unsafe { &*payload_ptr }.data.as_deref() else {
         return NativeResult::Err(crate::error::create_type_error(vm, "ArrayBuffer internal state invalid"));
     };
-    NativeResult::Ok(
-        vm.new_string_owned(crate::ta_codec::encode_hex(&buffer[view.byte_offset..view.byte_offset + view.length])),
-    )
+    // 视图范围按当前缓冲长度收口（缓冲可被 resize 收缩）。
+    let start = view.byte_offset.min(buffer.len());
+    let end = (view.byte_offset + view.length).min(buffer.len());
+    NativeResult::Ok(vm.new_string_owned(crate::ta_codec::encode_hex(&buffer[start..end])))
 }
 
 /// `%Uint8Array%.prototype.setFromBase64(string, options)`：解码写入视图，
@@ -2131,7 +2172,10 @@ pub fn uint8array_set_from_base64<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeR
     };
     let start = view.byte_offset;
     let (read, written) = native_try!(ta_decode_base64(vm, string, options, Some(view.length), &mut |idx, b| {
-        buffer[start + idx] = b;
+        // 缓冲可被 resize 收缩：目标字节越界时静默不写（live 视图越界语义）。
+        if start + idx < buffer.len() {
+            buffer[start + idx] = b;
+        }
     }));
     NativeResult::Ok(ta_read_written_result(vm, read, written))
 }
@@ -2153,7 +2197,10 @@ pub fn uint8array_set_from_hex<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResu
     let start = view.byte_offset;
     let units = vm.string_units(string).into_owned();
     let (read, written) = match crate::ta_codec::decode_hex(&units, Some(view.length), &mut |idx, b| {
-        buffer[start + idx] = b;
+        // 缓冲可被 resize 收缩：目标字节越界时静默不写（live 视图越界语义）。
+        if start + idx < buffer.len() {
+            buffer[start + idx] = b;
+        }
     }) {
         Ok(r) => r,
         Err(_) => return NativeResult::Err(crate::error::create_syntax_error(vm, "invalid hex input")),
@@ -2169,7 +2216,7 @@ pub fn uint8array_from_base64<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResul
     let mut bytes = Vec::new();
     native_try!(ta_decode_base64(vm, string, options, None, &mut |_, b| bytes.push(b)));
     let len = bytes.len();
-    let buffer = JsValue::from_js_object(new_array_buffer(vm, bytes));
+    let buffer = JsValue::from_js_object(new_array_buffer(vm, bytes, 0, default_array_buffer_proto(vm)));
     NativeResult::Ok(JsValue::from_js_object(create_typed_array(vm, TypedArrayKind::Uint8, buffer, 0, len)))
 }
 
@@ -2186,7 +2233,7 @@ pub fn uint8array_from_hex<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         Err(_) => return NativeResult::Err(crate::error::create_syntax_error(vm, "invalid hex input")),
     }
     let len = bytes.len();
-    let buffer = JsValue::from_js_object(new_array_buffer(vm, bytes));
+    let buffer = JsValue::from_js_object(new_array_buffer(vm, bytes, 0, default_array_buffer_proto(vm)));
     NativeResult::Ok(JsValue::from_js_object(create_typed_array(vm, TypedArrayKind::Uint8, buffer, 0, len)))
 }
 
