@@ -552,32 +552,18 @@ fn string_replace_regex_proto_subclass_fallback() {
 #[test]
 fn string_replace_regex_proto_subclass_custom_tostring() {
     // 判别性回归：自定义 toString 命中源串的类正则对象，replace/replaceAll
-    // 均按 ToString 文本替换（不返回原串、不抛 TypeError），两入口对称。
+    // 的 IsRegExp 判定经 GetMethod(@@match) 调默认 @@match——非 RegExp receiver
+    // 抛 TypeError 原样传播，不降级为 ToString 文本替换，两入口对称（node 同形）。
     let mut vm = Vm::new();
-    let s = eval(
-        &mut vm,
+    for src in [
         "var sp = Object.create(RegExp.prototype); sp.toString = function(){ return 'X' }; 'aXb'.replace(sp, 'Y')",
-    )
-    .unwrap();
-    assert_eq!(to_str(&vm, s), "aYb");
-    let s = eval(
-        &mut vm,
         "var sp = Object.create(RegExp.prototype); sp.toString = function(){ return 'X' }; 'aXb'.replaceAll(sp, 'Y')",
-    )
-    .unwrap();
-    assert_eq!(to_str(&vm, s), "aYb");
-    let s = eval(
-        &mut vm,
         "var sp = Object.create(RegExp.prototype); sp.toString = function(){ return 'X' }; 'aXb'.replace(sp, function(){ return 'Z' })",
-    )
-    .unwrap();
-    assert_eq!(to_str(&vm, s), "aZb");
-    let s = eval(
-        &mut vm,
         "var sp = Object.create(RegExp.prototype); sp.toString = function(){ return 'X' }; 'aXb'.replaceAll(sp, function(){ return 'Z' })",
-    )
-    .unwrap();
-    assert_eq!(to_str(&vm, s), "aZb");
+    ] {
+        let err = eval(&mut vm, src).unwrap_err();
+        assert!(err.contains("TypeError"), "{src} 应抛 TypeError，实际: {err}");
+    }
 }
 
 #[test]
