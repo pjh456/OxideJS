@@ -278,10 +278,13 @@ fn typed_array_numeric_write_bigint_throws() {
 #[test]
 fn typed_array_constructor_bigint_length() {
     let mut vm = Vm::new();
-    // G6：第一参数 BigInt 按 ToIndex 语义建数组。
+    // 长度参数走 ToIndex：BigInt 实参在 ToNumber 步抛 TypeError，不截断建数组；
+    // 布尔/null 等原语按数值转换语义建数组。
     let result = eval(
         &mut vm,
-        "new BigInt64Array(5n).length === 5 && new Int8Array(true).length === 1 && new Int8Array(null).length === 0",
+        "(function () { var t = false; \
+         try { new BigInt64Array(5n); } catch (e) { t = e instanceof TypeError; } \
+         return t && new Int8Array(true).length === 1 && new Int8Array(null).length === 0; })()",
     )
     .unwrap();
     assert!(result.as_bool());
