@@ -268,6 +268,27 @@ pub fn map_get<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     NativeResult::Ok(found.unwrap_or(JsValue::undefined()))
 }
 
+/// `Map.prototype.getOrInsert(key, value)`：键命中返回已有存储值（不插入、
+/// size 不变）；键缺失时末尾追加新条目并返回实参 value。
+///
+/// # 边界与前提
+/// - 命中判定不区分存储值 undefined：命中即返回现值，不得视为缺失。
+/// - 键按 SameValueZero 语义归一（±0 同键、NaN 自相等），与 set/get 同域。
+pub fn map_get_or_insert<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
+    let inner = native_try!(get_map_inner(vm, this_val));
+    let key = vm.reg(if args.len() > 1 { args[1] } else { 0 });
+    let val = vm.reg(if args.len() > 2 { args[2] } else { 0 });
+    let found = unsafe { (*inner).get(&SetKey(key)).copied() };
+    if let Some(existing) = found {
+        return NativeResult::Ok(existing);
+    }
+    unsafe {
+        (*inner).insert(SetKey(key), val);
+    }
+    NativeResult::Ok(val)
+}
+
 /// `Map.prototype.has(key)`：key 是否存在。
 pub fn map_has<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });

@@ -210,3 +210,61 @@ fn map_many_runtime_string_keys() {
     .unwrap();
     assert_eq!(str_val(&vm, r), "ok");
 }
+
+// ── getOrInsert：命中返回现值不插入，缺失末尾追加并返回实参 ──
+
+#[test]
+fn map_get_or_insert_missing_appends_and_returns_arg() {
+    // 键缺失：末尾追加新条目、返回实参值，size 加一。
+    let mut vm = Vm::new();
+    let r = eval(
+        &mut vm,
+        "var m = new Map(); m.set('a', 1); var v = m.getOrInsert('b', 2); v + '/' + m.size",
+    )
+    .unwrap();
+    assert_eq!(str_val(&vm, r), "2/2");
+}
+
+#[test]
+fn map_get_or_insert_present_returns_stored_value() {
+    // 键命中：返回现值、不插入，size 不变。
+    let mut vm = Vm::new();
+    let r = eval(
+        &mut vm,
+        "var m = new Map(); m.set('a', 1); var v = m.getOrInsert('a', 99); v + '/' + m.size",
+    )
+    .unwrap();
+    assert_eq!(str_val(&vm, r), "1/1");
+}
+
+#[test]
+fn map_get_or_insert_present_undefined_value_returns_undefined() {
+    // 存储值为 undefined 也计命中：直接返回 undefined，不插入、size 不变。
+    let mut vm = Vm::new();
+    let r = eval(
+        &mut vm,
+        "var m = new Map(); m.set('u', undefined); var hit = m.getOrInsert('u', 7); hit === undefined && m.size === 1",
+    )
+    .unwrap();
+    assert!(r.as_bool());
+}
+
+#[test]
+fn map_get_or_insert_zero_key_normalized() {
+    // ±0 归一同键：存 -0 后以 +0 查，命中返回现值。
+    let mut vm = Vm::new();
+    let r = eval(&mut vm, "var m = new Map(); m.set(-0, 1); m.getOrInsert(0, 9) + '/' + m.size").unwrap();
+    assert_eq!(str_val(&vm, r), "1/1");
+}
+
+#[test]
+fn map_get_or_insert_length_and_name() {
+    // 函数描述符：length 2、name 'getOrInsert'。
+    let mut vm = Vm::new();
+    let r = eval(
+        &mut vm,
+        "Map.prototype.getOrInsert.length === 2 && Map.prototype.getOrInsert.name === 'getOrInsert'",
+    )
+    .unwrap();
+    assert!(r.as_bool());
+}

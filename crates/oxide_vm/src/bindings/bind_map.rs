@@ -24,6 +24,7 @@ pub fn bind_map(core: &Arc<KernelCore>, session: &KernelSession, global: &mut Js
         &[
             ("set", oxide_builtins::map::map_set::<crate::vm::Vm> as *const (), 2),
             ("get", oxide_builtins::map::map_get::<crate::vm::Vm> as *const (), 1),
+            ("getOrInsert", oxide_builtins::map::map_get_or_insert::<crate::vm::Vm> as *const (), 2),
             ("has", oxide_builtins::map::map_has::<crate::vm::Vm> as *const (), 1),
             ("delete", oxide_builtins::map::map_delete::<crate::vm::Vm> as *const (), 1),
             ("clear", oxide_builtins::map::map_clear::<crate::vm::Vm> as *const (), 0),
