@@ -743,7 +743,10 @@ fn session_gc_keeps_shared_array_buffer_alive_through_view_native_edges() {
     let root = plain_object(&mut vm);
 
     vm.regs[1] = JsValue::int(8);
+    // 构造形态标记夹持：原生直调构造器须模拟 NEW 臂的置位/恢复。
+    vm.constructing_native = true;
     let buffer = native_ok(array_buffer::array_buffer_constructor(&mut vm, &[0, 1]));
+    vm.constructing_native = false;
 
     vm.regs[1] = buffer;
     let typed = native_ok(typed_array::int32array_constructor(&mut vm, &[0, 1]));
@@ -803,7 +806,10 @@ fn session_gc_keeps_shared_array_buffer_alive_through_view_native_edges() {
 fn session_gc_rewrites_buffer_retained_only_by_data_view_native_edge() {
     let mut vm = vm_with_low_threshold();
     vm.regs[1] = JsValue::int(8);
+    // 构造形态标记夹持：原生直调构造器须模拟 NEW 臂的置位/恢复。
+    vm.constructing_native = true;
     let buffer = native_ok(array_buffer::array_buffer_constructor(&mut vm, &[0, 1]));
+    vm.constructing_native = false;
     vm.regs[1] = buffer;
     data_view_this(&mut vm, 0);
     let view = native_ok(data_view::data_view_constructor(&mut vm, &[0, 1]));

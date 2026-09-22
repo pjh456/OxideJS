@@ -5,7 +5,7 @@ use crate::bindings::{
     apply_binding_table, bind_accessor_getter, bind_accessor_getter_key, configure_native_constructor,
 };
 use oxide_kernel::kernel::{KernelCore, KernelSession};
-use oxide_types::object::JsObject;
+use oxide_types::object::{JsObject, PropAttributes};
 
 /// 把 ArrayBuffer 构造器与原型方法绑定到 global。
 pub fn bind_array_buffer(core: &Arc<KernelCore>, session: &KernelSession, global: &mut JsObject) {
@@ -47,6 +47,11 @@ pub fn bind_array_buffer(core: &Arc<KernelCore>, session: &KernelSession, global
         proto,
         core,
         &[
+            (
+                "resize",
+                oxide_builtins::array_buffer::array_buffer_resize::<crate::vm::Vm> as *const (),
+                1,
+            ),
             ("slice", oxide_builtins::array_buffer::array_buffer_slice::<crate::vm::Vm> as *const (), 2),
             (
                 "toString",
@@ -65,6 +70,15 @@ pub fn bind_array_buffer(core: &Arc<KernelCore>, session: &KernelSession, global
         oxide_builtins::array_buffer::array_buffer_byte_length::<crate::vm::Vm> as *const (),
     );
 
+    // resizable 原型访问器（set 恒 undefined）：读载荷 max_byte_length 状态位。
+    bind_accessor_getter(
+        core,
+        session,
+        proto,
+        "resizable",
+        oxide_builtins::array_buffer::array_buffer_resizable::<crate::vm::Vm> as *const (),
+    );
+
     bind_constructor!(
         core,
         global,
@@ -74,4 +88,9 @@ pub fn bind_array_buffer(core: &Arc<KernelCore>, session: &KernelSession, global
         1,
         hash: true
     );
+
+    // 宏推入的 length 槽默认可写可枚举，补钉规范描述符
+    // { [[Writable]]: false, [[Enumerable]]: false, [[Configurable]]: true }。
+    let length_pos = ctor.hash_props_vec().map_or(0, |v| v.len() as u32).saturating_sub(1);
+    ctor.set_data_meta(length_pos, PropAttributes::new(false, false, true));
 }
