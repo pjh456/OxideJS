@@ -1,7 +1,9 @@
 use std::sync::Arc;
 
 use crate::bind_constructor;
-use crate::bindings::{apply_binding_table, bind_accessor_getter_key, configure_native_constructor};
+use crate::bindings::{
+    apply_binding_table, bind_accessor_getter, bind_accessor_getter_key, configure_native_constructor,
+};
 use oxide_kernel::kernel::{KernelCore, KernelSession};
 use oxide_types::object::JsObject;
 
@@ -45,11 +47,6 @@ pub fn bind_array_buffer(core: &Arc<KernelCore>, session: &KernelSession, global
         proto,
         core,
         &[
-            (
-                "byteLength",
-                oxide_builtins::array_buffer::array_buffer_byte_length::<crate::vm::Vm> as *const (),
-                0,
-            ),
             ("slice", oxide_builtins::array_buffer::array_buffer_slice::<crate::vm::Vm> as *const (), 2),
             (
                 "toString",
@@ -57,6 +54,15 @@ pub fn bind_array_buffer(core: &Arc<KernelCore>, session: &KernelSession, global
                 0,
             ),
         ],
+    );
+
+    // byteLength 原型访问器（set 恒 undefined）：读载荷字节数，实例无 own 属性。
+    bind_accessor_getter(
+        core,
+        session,
+        proto,
+        "byteLength",
+        oxide_builtins::array_buffer::array_buffer_byte_length::<crate::vm::Vm> as *const (),
     );
 
     bind_constructor!(

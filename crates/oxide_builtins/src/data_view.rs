@@ -5,7 +5,7 @@ use oxide_types::value::JsValue;
 use num_bigint::BigInt;
 use num_traits::ToPrimitive;
 
-use crate::array_buffer::array_buffer_data_ptr;
+use crate::array_buffer::array_buffer_payload;
 
 use oxide_runtime_api::{NativeResult, VmHost};
 
@@ -121,8 +121,11 @@ fn checked_absolute_offset<H: VmHost>(
 /// GetViewValue 后半：按已校验的视图与偏移读 N 字节（越界抛 RangeError）。
 fn read_bytes_at<const N: usize, H: VmHost>(vm: &mut H, view: DataViewData, offset: usize) -> Result<[u8; N], JsValue> {
     let abs = checked_absolute_offset(vm, view, offset, N)?;
-    let buffer_ptr = array_buffer_data_ptr(vm, view.buffer)?;
-    let buffer = unsafe { &*buffer_ptr };
+    let payload_ptr = array_buffer_payload(vm, view.buffer)?;
+    // SAFETY: payload_ptr 经 array_buffer_payload 校验为合法 ArrayBuffer 载荷。
+    let Some(buffer) = unsafe { &*payload_ptr }.data.as_deref() else {
+        return Err(crate::error::create_type_error(vm, "ArrayBuffer internal state invalid"));
+    };
     if abs + N > buffer.len() {
         return Err(crate::error::create_range_error(vm, "DataView offset out of bounds"));
     }
@@ -136,8 +139,11 @@ fn write_bytes<const N: usize, H: VmHost>(
     vm: &mut H, view: DataViewData, offset: usize, bytes: [u8; N],
 ) -> Result<(), JsValue> {
     let abs = checked_absolute_offset(vm, view, offset, N)?;
-    let buffer_ptr = array_buffer_data_ptr(vm, view.buffer)?;
-    let buffer = unsafe { &mut *buffer_ptr };
+    let payload_ptr = array_buffer_payload(vm, view.buffer)?;
+    // SAFETY: payload_ptr 经 array_buffer_payload 校验为合法 ArrayBuffer 载荷。
+    let Some(buffer) = unsafe { &mut *payload_ptr }.data.as_deref_mut() else {
+        return Err(crate::error::create_type_error(vm, "ArrayBuffer internal state invalid"));
+    };
     if abs + N > buffer.len() {
         return Err(crate::error::create_range_error(vm, "DataView offset out of bounds"));
     }
@@ -195,8 +201,12 @@ pub fn data_view_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult
         return NativeResult::Err(crate::error::create_type_error(vm, "DataView requires an ArrayBuffer"));
     }
     let buffer = vm.reg(args[1]);
-    let buffer_ptr = native_try!(array_buffer_data_ptr(vm, buffer));
-    let buffer_len = unsafe { (*buffer_ptr).len() };
+    let payload_ptr = native_try!(array_buffer_payload(vm, buffer));
+    // SAFETY: payload_ptr 经 array_buffer_payload 校验为合法 ArrayBuffer 载荷。
+    let Some(data) = unsafe { &*payload_ptr }.data.as_ref() else {
+        return NativeResult::Err(crate::error::create_type_error(vm, "ArrayBuffer internal state invalid"));
+    };
+    let buffer_len = data.len();
     let byte_offset = if args.len() > 2 {
         native_try!(to_index(vm, vm.reg(args[2]), "DataView byteOffset out of bounds"))
     } else {

@@ -5,7 +5,7 @@ use oxide_types::object::{JsObject, NativeFnPtr, TypedArrayKind};
 use oxide_types::private_key::{int_key_value, is_int_key, make_well_known_symbol_key, WELL_KNOWN_SYMBOL_SPECIES};
 use oxide_types::value::JsValue;
 
-use crate::array_buffer::{array_buffer_data_ptr, new_array_buffer, MAX_ARRAY_BUFFER_LENGTH};
+use crate::array_buffer::{array_buffer_payload, new_array_buffer, MAX_ARRAY_BUFFER_LENGTH};
 
 use oxide_runtime_api::{NativeResult, VmHost};
 
@@ -270,8 +270,11 @@ pub fn typed_array_element_get<H: VmHost>(vm: &mut H, obj: &JsObject, index: u32
     if index as usize >= view.length {
         return Ok(JsValue::undefined());
     }
-    let buffer_ptr = array_buffer_data_ptr(vm, view.buffer).map_err(|e| format!("{e}"))?;
-    let buffer = unsafe { &*buffer_ptr };
+    let payload_ptr = array_buffer_payload(vm, view.buffer).map_err(|e| format!("{e}"))?;
+    // SAFETY: payload_ptr 经 array_buffer_payload 校验为合法 ArrayBuffer 载荷。
+    let Some(buffer) = unsafe { &*payload_ptr }.data.as_deref() else {
+        return Err("ArrayBuffer internal state invalid".into());
+    };
     Ok(read_element(vm, view.kind, buffer, absolute_byte_offset(view, index as usize)))
 }
 
@@ -341,9 +344,11 @@ fn write_typed_array_element<H: VmHost>(
     if index as usize >= view.length {
         return Ok(());
     }
-    let buffer_ptr = array_buffer_data_ptr(vm, view.buffer).map_err(|e| format!("{e}"))?;
-    // SAFETY: buffer_ptr 经 array_buffer_data_ptr 校验为合法 ArrayBuffer。
-    let buffer = unsafe { &mut *buffer_ptr };
+    let payload_ptr = array_buffer_payload(vm, view.buffer).map_err(|e| format!("{e}"))?;
+    // SAFETY: payload_ptr 经 array_buffer_payload 校验为合法 ArrayBuffer 载荷。
+    let Some(buffer) = unsafe { &mut *payload_ptr }.data.as_deref_mut() else {
+        return Err("ArrayBuffer internal state invalid".into());
+    };
     write_element(vm, view.kind, buffer, absolute_byte_offset(view, index as usize), elem);
     Ok(())
 }
@@ -489,8 +494,11 @@ fn collect_array_like<H: VmHost>(vm: &mut H, value: JsValue, consult_iterator: b
     }
     if obj.is_typed_array_obj() {
         let view = get_typed_array_data(vm, value)?;
-        let buffer_ptr = array_buffer_data_ptr(vm, view.buffer)?;
-        let buffer = unsafe { &*buffer_ptr };
+        let payload_ptr = array_buffer_payload(vm, view.buffer)?;
+        // SAFETY: payload_ptr 经 array_buffer_payload 校验为合法 ArrayBuffer 载荷。
+        let Some(buffer) = unsafe { &*payload_ptr }.data.as_deref() else {
+            return Err(crate::error::create_type_error(vm, "ArrayBuffer internal state invalid"));
+        };
         return Ok((0..view.length)
             .map(|i| read_element(vm, view.kind, buffer, absolute_byte_offset(view, i)))
             .collect());
@@ -558,8 +566,12 @@ fn typed_array_new<H: VmHost>(vm: &mut H, args: &[u8], kind: TypedArrayKind) -> 
         let first_ptr = first.as_js_object_ptr();
         let first_obj = unsafe { &*first_ptr };
         if first_obj.is_array_buffer_obj() {
-            let buffer_ptr = native_try!(array_buffer_data_ptr(vm, first));
-            let buffer_len = unsafe { (*buffer_ptr).len() };
+            let payload_ptr = native_try!(array_buffer_payload(vm, first));
+            // SAFETY: payload_ptr 经 array_buffer_payload 校验为合法 ArrayBuffer 载荷。
+            let Some(data) = unsafe { &*payload_ptr }.data.as_ref() else {
+                return NativeResult::Err(crate::error::create_type_error(vm, "ArrayBuffer internal state invalid"));
+            };
+            let buffer_len = data.len();
             let byte_offset = if args.len() > 2 {
                 native_try!(to_index(vm, vm.reg(args[2]), "TypedArray byteOffset out of bounds"))
             } else {
@@ -585,8 +597,11 @@ fn typed_array_new<H: VmHost>(vm: &mut H, args: &[u8], kind: TypedArrayKind) -> 
             let values = native_try!(collect_array_like(vm, first, true));
             let byte_len = values.len().saturating_mul(bpe);
             let buffer = JsValue::from_js_object(new_array_buffer(vm, vec![0; byte_len]));
-            let buffer_ptr = native_try!(array_buffer_data_ptr(vm, buffer));
-            let buffer_ref = unsafe { &mut *buffer_ptr };
+            let payload_ptr = native_try!(array_buffer_payload(vm, buffer));
+            // SAFETY: payload_ptr 经 array_buffer_payload 校验为合法 ArrayBuffer 载荷。
+            let Some(buffer_ref) = unsafe { &mut *payload_ptr }.data.as_deref_mut() else {
+                return NativeResult::Err(crate::error::create_type_error(vm, "ArrayBuffer internal state invalid"));
+            };
             for (idx, value) in values.into_iter().enumerate() {
                 let elem = native_try!(ta_element_value(vm, kind, value));
                 write_element(vm, kind, buffer_ref, idx * bpe, elem);
@@ -673,8 +688,11 @@ pub fn typed_array_at<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     if idx < 0 || idx as usize >= view.length {
         return NativeResult::Ok(JsValue::undefined());
     }
-    let buffer_ptr = native_try!(array_buffer_data_ptr(vm, view.buffer));
-    let buffer = unsafe { &*buffer_ptr };
+    let payload_ptr = native_try!(array_buffer_payload(vm, view.buffer));
+    // SAFETY: payload_ptr 经 array_buffer_payload 校验为合法 ArrayBuffer 载荷。
+    let Some(buffer) = unsafe { &*payload_ptr }.data.as_deref() else {
+        return NativeResult::Err(crate::error::create_type_error(vm, "ArrayBuffer internal state invalid"));
+    };
     NativeResult::Ok(read_element(vm, view.kind, buffer, absolute_byte_offset(view, idx as usize)))
 }
 
@@ -695,8 +713,11 @@ pub fn typed_array_fill<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     } else {
         view.length
     };
-    let buffer_ptr = native_try!(array_buffer_data_ptr(vm, view.buffer));
-    let buffer = unsafe { &mut *buffer_ptr };
+    let payload_ptr = native_try!(array_buffer_payload(vm, view.buffer));
+    // SAFETY: payload_ptr 经 array_buffer_payload 校验为合法 ArrayBuffer 载荷。
+    let Some(buffer) = unsafe { &mut *payload_ptr }.data.as_deref_mut() else {
+        return NativeResult::Err(crate::error::create_type_error(vm, "ArrayBuffer internal state invalid"));
+    };
     for idx in start..end.max(start) {
         write_element(vm, view.kind, buffer, absolute_byte_offset(view, idx), elem);
     }
@@ -854,8 +875,11 @@ pub fn typed_array_set<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     for v in values {
         converted.push(native_try!(ta_element_value(vm, view.kind, v)));
     }
-    let buffer_ptr = native_try!(array_buffer_data_ptr(vm, view.buffer));
-    let buffer = unsafe { &mut *buffer_ptr };
+    let payload_ptr = native_try!(array_buffer_payload(vm, view.buffer));
+    // SAFETY: payload_ptr 经 array_buffer_payload 校验为合法 ArrayBuffer 载荷。
+    let Some(buffer) = unsafe { &mut *payload_ptr }.data.as_deref_mut() else {
+        return NativeResult::Err(crate::error::create_type_error(vm, "ArrayBuffer internal state invalid"));
+    };
     for (i, elem) in converted.into_iter().enumerate() {
         write_element(vm, view.kind, buffer, absolute_byte_offset(view, offset + i), elem);
     }
@@ -948,8 +972,11 @@ fn set_typed_array_element<H: VmHost>(vm: &mut H, ta: JsValue, index: usize, val
         return Ok(());
     }
     let elem = ta_element_value(vm, view.kind, value)?;
-    let buffer_ptr = array_buffer_data_ptr(vm, view.buffer)?;
-    let buffer = unsafe { &mut *buffer_ptr };
+    let payload_ptr = array_buffer_payload(vm, view.buffer)?;
+    // SAFETY: payload_ptr 经 array_buffer_payload 校验为合法 ArrayBuffer 载荷。
+    let Some(buffer) = unsafe { &mut *payload_ptr }.data.as_deref_mut() else {
+        return Err(crate::error::create_type_error(vm, "ArrayBuffer internal state invalid"));
+    };
     write_element(vm, view.kind, buffer, absolute_byte_offset(view, index), elem);
     Ok(())
 }
@@ -978,15 +1005,21 @@ fn ta_read<H: VmHost>(vm: &mut H, view: TypedArrayData, index: usize) -> Result<
     if index >= view.length {
         return Ok(JsValue::undefined());
     }
-    let buffer_ptr = array_buffer_data_ptr(vm, view.buffer)?;
-    let buffer = unsafe { &*buffer_ptr };
+    let payload_ptr = array_buffer_payload(vm, view.buffer)?;
+    // SAFETY: payload_ptr 经 array_buffer_payload 校验为合法 ArrayBuffer 载荷。
+    let Some(buffer) = unsafe { &*payload_ptr }.data.as_deref() else {
+        return Err(crate::error::create_type_error(vm, "ArrayBuffer internal state invalid"));
+    };
     Ok(read_element(vm, view.kind, buffer, absolute_byte_offset(view, index)))
 }
 
 /// 把已转换的值写入 TypedArray 指定索引（视图 data 已取出的形式，供原型方法内部使用）。
 fn ta_write<H: VmHost>(vm: &mut H, view: TypedArrayData, index: usize, value: JsValue) -> Result<(), JsValue> {
-    let buffer_ptr = array_buffer_data_ptr(vm, view.buffer)?;
-    let buffer = unsafe { &mut *buffer_ptr };
+    let payload_ptr = array_buffer_payload(vm, view.buffer)?;
+    // SAFETY: payload_ptr 经 array_buffer_payload 校验为合法 ArrayBuffer 载荷。
+    let Some(buffer) = unsafe { &mut *payload_ptr }.data.as_deref_mut() else {
+        return Err(crate::error::create_type_error(vm, "ArrayBuffer internal state invalid"));
+    };
     write_element(vm, view.kind, buffer, absolute_byte_offset(view, index), value);
     Ok(())
 }
@@ -1951,9 +1984,11 @@ pub fn uint8array_to_base64<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult 
             .map_err(|e| crate::iterator::engine_error(vm, &e)));
         omit_padding = ta_to_boolean(v);
     }
-    let buffer_ptr = native_try!(array_buffer_data_ptr(vm, view.buffer));
-    let buffer = unsafe { &*buffer_ptr };
-    // SAFETY: buffer_ptr 来自活动 ArrayBuffer 对象，视图范围由构造保证界内。
+    let payload_ptr = native_try!(array_buffer_payload(vm, view.buffer));
+    // SAFETY: payload_ptr 来自活动 ArrayBuffer 对象，视图范围由构造保证界内。
+    let Some(buffer) = unsafe { &*payload_ptr }.data.as_deref() else {
+        return NativeResult::Err(crate::error::create_type_error(vm, "ArrayBuffer internal state invalid"));
+    };
     NativeResult::Ok(vm.new_string_owned(crate::ta_codec::encode_base64(
         &buffer[view.byte_offset..view.byte_offset + view.length],
         alphabet,
@@ -1965,9 +2000,11 @@ pub fn uint8array_to_base64<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult 
 pub fn uint8array_to_hex<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
     let view = native_try!(validate_uint8_array(vm, this_val));
-    let buffer_ptr = native_try!(array_buffer_data_ptr(vm, view.buffer));
-    let buffer = unsafe { &*buffer_ptr };
-    // SAFETY: buffer_ptr 来自活动 ArrayBuffer 对象，视图范围由构造保证界内。
+    let payload_ptr = native_try!(array_buffer_payload(vm, view.buffer));
+    // SAFETY: payload_ptr 来自活动 ArrayBuffer 对象，视图范围由构造保证界内。
+    let Some(buffer) = unsafe { &*payload_ptr }.data.as_deref() else {
+        return NativeResult::Err(crate::error::create_type_error(vm, "ArrayBuffer internal state invalid"));
+    };
     NativeResult::Ok(
         vm.new_string_owned(crate::ta_codec::encode_hex(&buffer[view.byte_offset..view.byte_offset + view.length])),
     )
@@ -1980,9 +2017,11 @@ pub fn uint8array_set_from_base64<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeR
     let view = native_try!(validate_uint8_array(vm, this_val));
     let string = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
     let options = if args.len() > 2 { vm.reg(args[2]) } else { JsValue::undefined() };
-    let buffer_ptr = native_try!(array_buffer_data_ptr(vm, view.buffer));
-    let buffer = unsafe { &mut *buffer_ptr };
-    // SAFETY: buffer_ptr 来自活动 ArrayBuffer 对象，视图范围由构造保证界内。
+    let payload_ptr = native_try!(array_buffer_payload(vm, view.buffer));
+    // SAFETY: payload_ptr 来自活动 ArrayBuffer 对象，视图范围由构造保证界内。
+    let Some(buffer) = unsafe { &mut *payload_ptr }.data.as_deref_mut() else {
+        return NativeResult::Err(crate::error::create_type_error(vm, "ArrayBuffer internal state invalid"));
+    };
     let start = view.byte_offset;
     let (read, written) = native_try!(ta_decode_base64(vm, string, options, Some(view.length), &mut |idx, b| {
         buffer[start + idx] = b;
@@ -1999,9 +2038,11 @@ pub fn uint8array_set_from_hex<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResu
     if !string.is_string() {
         return NativeResult::Err(type_error(vm, "string argument required"));
     }
-    let buffer_ptr = native_try!(array_buffer_data_ptr(vm, view.buffer));
-    let buffer = unsafe { &mut *buffer_ptr };
-    // SAFETY: buffer_ptr 来自活动 ArrayBuffer 对象，视图范围由构造保证界内。
+    let payload_ptr = native_try!(array_buffer_payload(vm, view.buffer));
+    // SAFETY: payload_ptr 来自活动 ArrayBuffer 对象，视图范围由构造保证界内。
+    let Some(buffer) = unsafe { &mut *payload_ptr }.data.as_deref_mut() else {
+        return NativeResult::Err(crate::error::create_type_error(vm, "ArrayBuffer internal state invalid"));
+    };
     let start = view.byte_offset;
     let units = vm.string_units(string).into_owned();
     let (read, written) = match crate::ta_codec::decode_hex(&units, Some(view.length), &mut |idx, b| {

@@ -24,10 +24,16 @@ fn array_buffer_global_and_static_method_exist() {
 }
 
 #[test]
-fn array_buffer_constructor_sets_byte_length_property() {
+fn array_buffer_constructor_reads_byte_length_via_proto_accessor() {
+    // byteLength 经原型访问器可读，实例无 own 数据属性。
     let mut vm = Vm::new();
-    let result = eval(&mut vm, "var buf = new ArrayBuffer(8); buf.byteLength").unwrap();
-    assert_eq!(result.as_int(), 8);
+    let result = eval(
+        &mut vm,
+        "var buf = new ArrayBuffer(8); buf.byteLength === 8 \
+         && Object.getOwnPropertyDescriptor(buf, 'byteLength') === undefined",
+    )
+    .unwrap();
+    assert!(result.as_bool());
 }
 
 #[test]
