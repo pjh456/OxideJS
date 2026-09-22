@@ -966,6 +966,82 @@ fn string_match_all_result_indices_and_unmatched() {
     assert_eq!(to_str(&vm, result), "u");
 }
 
+#[test]
+fn string_match_all_null_and_undefined_patterns() {
+    // null/undefined pattern 走构造路径：null 按 "null" 文本模式（g 拷贝），
+    // undefined 按空模式串头/串尾两个空匹配。
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "(() => { var out = []; var it = '-null-'.matchAll(null); for (;;) { var r = it.next(); if (r.done) break; out.push(r.value[0] + '@' + r.value.index); } return out.join('|'); })()",
+    )
+    .unwrap();
+    assert_eq!(to_str(&vm, result), "null@1");
+    let result = eval(
+        &mut vm,
+        "(() => { var out = []; var it = 'a'.matchAll(undefined); for (;;) { var r = it.next(); if (r.done) break; out.push('[' + r.value[0] + ']@' + r.value.index); } return out.join('|'); })()",
+    )
+    .unwrap();
+    assert_eq!(to_str(&vm, result), "[]@0|[]@1");
+}
+
+#[test]
+fn string_match_all_object_matcher_receives_raw_this() {
+    // Call(matcher, pattern, « thisValue »)：this 与实参均为原始 this 值，
+    // 非 ToString 结果（带 toString 的接收者可区分两形态）。
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "(() => { var o = { toString: function () { return 'T'; }, [Symbol.matchAll]: function (s) { return this.toString() + '/' + s; } }; return 'abc'.matchAll(o); })()",
+    )
+    .unwrap();
+    assert_eq!(to_str(&vm, result), "T/abc");
+}
+
+#[test]
+fn string_match_all_flags_single_read_and_g_before_tostring() {
+    // flags getter 抛错原样传播且恰好观察一次（单读，无二次 Get）。
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "(() => { var r = /a/g; var n = 0; Object.defineProperty(r, 'flags', { get() { n += 1; throw new RangeError('flags-boom'); } }); try { 'x'.matchAll(r); return 'no-throw'; } catch (e) { return n + ':' + e.message; } })()",
+    )
+    .unwrap();
+    assert_eq!(to_str(&vm, result), "1:flags-boom");
+    // g 判定先于 ToString(thisValue)：抛错 toString 不被观察，先抛 global flag。
+    let result = eval(
+        &mut vm,
+        "(() => { var n = 0; var recv = { toString() { n += 1; throw new RangeError('to-boom'); } }; try { String.prototype.matchAll.call(recv, /a/); return 'no-throw:' + n; } catch (e) { return (e instanceof TypeError ? 'TypeError' : 'other') + ':' + n; } })()",
+    )
+    .unwrap();
+    assert_eq!(to_str(&vm, result), "TypeError:0");
+}
+
+#[test]
+fn string_match_all_own_matchall_undefined_goes_construct() {
+    // own @@matchAll=undefined 使 GetMethod 链即停（不回落原型直调）：落构造
+    // 路径，构造产物为新 g 正则，由原型 @@matchAll 以串为实参调用。
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "(() => { var r = /a/g; var seen = null; var orig = RegExp.prototype[Symbol.matchAll]; RegExp.prototype[Symbol.matchAll] = function (s) { seen = s + '/' + this.flags; return 'ok'; }; r[Symbol.matchAll] = undefined; try { return 'xa'.matchAll(r) + '/' + seen; } finally { RegExp.prototype[Symbol.matchAll] = orig; } })()",
+    )
+    .unwrap();
+    assert_eq!(to_str(&vm, result), "ok/xa/g");
+}
+
+#[test]
+fn string_match_all_result_index_input_groups() {
+    // 结果数组三连：index 为匹配起点码元、input 为原串、groups 为命名组值。
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "(() => { var it = 'xab'.matchAll(/a(?<g>b)/g); var r = it.next().value; return r[0] + '|' + r.index + '|' + r.input + '|' + r.groups.g; })()",
+    )
+    .unwrap();
+    assert_eq!(to_str(&vm, result), "ab|1|xab|b");
+}
+
 // --- String.replace/replaceAll 替换收尾共享面钉（GetSubstitution 四形态） ---
 
 #[test]
