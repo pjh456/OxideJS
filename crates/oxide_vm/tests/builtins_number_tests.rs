@@ -550,3 +550,25 @@ fn number_format_default_shortest_digits() {
         assert_eq!(str_of(&mut vm, src), expected, "for {}", src);
     }
 }
+
+// 二进指数 q 为 limb 位宽整数倍（q ≡ 0 mod 32，偏置指数 e2 ≡ 19 mod 32）
+// 的分数面：余数掩码边界恰落整 limb，digit 提取失真即此面（对照 node
+// v20.19.2 逐位核定）。
+#[test]
+fn number_format_limb_aligned_fraction_digits() {
+    let mut vm = Vm::new();
+    let cases = [
+        // q = 64（[2^-12, 2^-11) 量级）。
+        ("(2 ** -12).toExponential(5)", "2.44141e-4"),
+        ("(2 ** -12).toExponential(15)", "2.441406250000000e-4"),
+        // q = 32（[2^20, 2^21) 量级）。
+        ("(1048576.0000000002).toExponential(15)", "1.048576000000000e+6"),
+        ("(1048576.0000000002).toFixed(10)", "1048576.0000000002"),
+        // 非受影响类的整数面守卫（小数值与 2^32 + 1）。
+        ("(4.294967297).toFixed(2)", "4.29"),
+        ("(4294967297).toFixed(2)", "4294967297.00"),
+    ];
+    for (src, expected) in cases {
+        assert_eq!(str_of(&mut vm, src), expected, "for {}", src);
+    }
+}

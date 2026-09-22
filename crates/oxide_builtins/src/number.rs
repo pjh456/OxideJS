@@ -380,7 +380,7 @@ fn coerce_to_integer_or_infinity<H: VmHost>(vm: &mut H, arg: JsValue) -> Result<
 // 传播进位。Rust `format!("{:.N$}")` 是 half-even，tie 面与规范分歧，
 // 仅 String() 路径可用。
 
-/// base 2^32 小整数（limb 升序），承载 f64 展开所需位宽（≤ 2^1127）。
+/// base 2^32 小整数（limb 升序），承载 f64 展开所需位宽（≤ 2^1024）。
 #[derive(Clone)]
 struct Dec(Vec<u32>);
 
@@ -441,7 +441,8 @@ impl Dec {
         self.trim();
     }
 
-    /// 保留低 q 位（& (2^q − 1)）。
+    /// 保留低 q 位（& (2^q − 1)）。q 为 32 整数倍时低 q 位恰为前 wm 整 limb，
+    /// limb wm 整体丢弃（先置 0 再由 trim 剥除），与 bm ≠ 0 臂统一截断。
     fn rem_pow2(&mut self, q: u32) {
         let total = (self.0.len() * 32) as u32;
         if q >= total {
@@ -449,9 +450,7 @@ impl Dec {
         }
         let wm = (q / 32) as usize;
         let bm = q % 32;
-        if bm != 0 {
-            self.0[wm] &= (1u32 << bm) - 1;
-        }
+        self.0[wm] = if bm != 0 { self.0[wm] & ((1u32 << bm) - 1) } else { 0 };
         self.0.truncate(wm + 1);
         self.trim();
     }
@@ -491,10 +490,10 @@ fn significant_digits(x: f64, count: usize) -> (Vec<u8>, i32) {
     let b = x.to_bits();
     let (m, p) = if (b >> 52) == 0 {
         // 次正规：值 = frac × 2^-1074（隐含位 0）。
-        (b as u64, -1074)
+        (b, -1074)
     } else {
         // 正规：显式隐含位补齐尾数（指数位先掩掉，勿随位模式带入）。
-        (((b as u64 & ((1u64 << 52) - 1)) | (1u64 << 52)), ((b >> 52) as i32) - 1075)
+        (((b & ((1u64 << 52) - 1)) | (1u64 << 52)), ((b >> 52) as i32) - 1075)
     };
     if p >= 0 {
         // 整数面：V = M × 2^p，位数 D 定首位指数，弃低位后逐位提取。
