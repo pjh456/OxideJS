@@ -453,3 +453,237 @@ fn typed_array_instance_tag_and_arraybuffer_proto_tag() {
     .unwrap();
     assert!(result.as_bool());
 }
+
+#[test]
+fn typed_array_species_accessor_descriptor() {
+    // 抽象构造器 @@species 访问器描述符四项 + getter name/length +
+    // receiver 直读（派生类沿静态原型链解析得自身的前提）。
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "var d = Object.getOwnPropertyDescriptor(TypedArray, Symbol.species); \
+         d.set === undefined && d.enumerable === false && d.configurable === true && \
+         typeof d.get === 'function' && d.get.name === 'get [Symbol.species]' && d.get.length === 0 && \
+         d.get.call(Uint8Array) === Uint8Array && d.get.call(Float64Array) === Float64Array",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
+#[test]
+fn typed_array_species_no_own_on_concrete_ctor() {
+    // 具体构造器无 own @@species（链上继承抽象构造器），内置构造器
+    // 解析得自身。
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "Object.getOwnPropertyDescriptor(Uint8Array, Symbol.species) === undefined && \
+         Object.getOwnPropertyDescriptor(BigInt64Array, Symbol.species) === undefined && \
+         Uint8Array[Symbol.species] === Uint8Array && Int32Array[Symbol.species] === Int32Array",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
+#[test]
+fn typed_array_species_subclass_resolves_self() {
+    // 派生类静态链解析 @@species 得自身构造器。
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "(function () { class Sub extends Uint8Array {} return Sub[Symbol.species] === Sub; })()",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
+#[test]
+fn typed_array_species_subclass_methods_instanceof() {
+    // slice/map/filter/subarray 四法结果均保持派生类身份。
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "(function () { class Sub extends Uint8Array {} \
+         var s = new Sub(2); \
+         return s.slice(0) instanceof Sub && \
+         s.map(function (v) { return v; }) instanceof Sub && \
+         s.filter(function (v) { return true; }) instanceof Sub && \
+         s.subarray(0) instanceof Sub; })()",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
+#[test]
+fn typed_array_species_subclass_of_from() {
+    // of/from 走构造（new）形态：派生类 super() 与 new.target 传播成立，
+    // 结果为子类实例且元素正确。
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "(function () { class Sub extends Uint8Array {} \
+         var o = Sub.of(1, 2); var f = Sub.from([3, 4]); \
+         return o instanceof Sub && o.length === 2 && o.at(0) === 1 && o.at(1) === 2 && \
+         f instanceof Sub && f.length === 2 && f.at(0) === 3 && f.at(1) === 4; })()",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
+#[test]
+fn typed_array_species_insufficient_length_throws() {
+    // species 返回长度不足的目标（slice/map 请求 3 得 2）抛 TypeError。
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "(function () { var t = true; \
+         var s = new Uint8Array(3); \
+         s.constructor = { [Symbol.species]: function (n) { return new Uint8Array(n - 1); } }; \
+         try { s.slice(0); t = false; } catch (e) { t = e instanceof TypeError; } \
+         var m = new Uint8Array(3); \
+         m.constructor = { [Symbol.species]: function (n) { return new Uint8Array(n - 1); } }; \
+         try { m.map(function (v) { return v; }); t = t && false; } \
+         catch (e) { t = t && e instanceof TypeError; } \
+         return t; })()",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
+#[test]
+fn typed_array_species_non_ctor_and_non_ta_throws() {
+    // species 构造结果非 TypedArray（filter 得空函数构造体 / toSorted 得普通对象）
+    // 抛 TypeError。
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "(function () { var t = true; \
+         var n = new Uint8Array(1); \
+         n.constructor = { [Symbol.species]: function () {} }; \
+         try { n.filter(function (v) { return true; }); t = false; } \
+         catch (e) { t = e instanceof TypeError; } \
+         var r = new Uint8Array(1); \
+         r.constructor = { [Symbol.species]: function () { return {}; } }; \
+         try { r.toSorted(); t = t && false; } \
+         catch (e) { t = t && e instanceof TypeError; } \
+         return t; })()",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
+#[test]
+fn typed_array_species_ctor_getter_throws() {
+    // constructor 访问器抛错经完整 Get 原样传播（非 TypeError 吞并）。
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "(function () { var ta = new Uint8Array(2); \
+         Object.defineProperty(ta, 'constructor', { get() { throw new RangeError('ctor-get'); } }); \
+         try { ta.slice(0); return false; } catch (e) { \
+         return e instanceof RangeError && e.message === 'ctor-get'; } })()",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
+#[test]
+fn typed_array_species_species_getter_throws() {
+    // @@species 访问器抛错原样传播。
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "(function () { var ta = new Uint8Array(2); \
+         ta.constructor = { get [Symbol.species]() { throw new RangeError('species-get'); } }; \
+         try { ta.map(function (v) { return v; }); return false; } catch (e) { \
+         return e instanceof RangeError && e.message === 'species-get'; } })()",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
+#[test]
+fn typed_array_species_subarray_three_args() {
+    // subarray 的 species 实参为 (buffer, byteOffset, count) 三参形态，
+    // 默认臂经同三参内建构造产出共享 buffer 视图。
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "(function () { var ta = new Uint8Array(8); var captured; \
+         ta.constructor = { [Symbol.species]: function (b, o, l) { \
+         captured = [b === ta.buffer, o, l]; return new Uint8Array(b, o, l); } }; \
+         var out = ta.subarray(2, 6); \
+         return captured[0] === true && captured[1] === 2 && captured[2] === 4 && \
+         out.buffer === ta.buffer && out.byteOffset === 2 && out.length === 4; })()",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
+#[test]
+fn typed_array_slice_alias_cascade_exact_values() {
+    // 别名连锁：species 返回与源共享 buffer 的偏移视图时，slice 逐元素
+    // 读→转换→写交错，读须看到前一轮写入后的值（node 精确期望 20,20,20,60）。
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "(function () { var ta = new Uint8Array([10, 20, 30, 40, 50, 60]); \
+         ta.constructor = { [Symbol.species]: function () { return new Uint8Array(ta.buffer, 2); } }; \
+         var out = ta.slice(1, 4); \
+         return out.length === 4 && out.at(0) === 20 && out.at(1) === 20 && \
+         out.at(2) === 20 && out.at(3) === 60; })()",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
+#[test]
+fn typed_array_species_use_default_ctor() {
+    // constructor 无 @@species（读得 undefined）时回退接收者类型的内建构造器。
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "(function () { var s = new Uint8Array(3); s.constructor = {}; \
+         var m = s.map(function (v) { return v; }); \
+         return m instanceof Uint8Array && Object.getPrototypeOf(m) === Uint8Array.prototype \
+         && m.length === 3 && m.at(0) === 0; })()",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
+#[test]
+fn typed_array_species_immutable_methods_same_shape() {
+    // toReversed/toSorted/with 同走 species 构造（长度 = 源长度）。
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "(function () { var ta = new Uint8Array([1, 2, 3]); var seen; \
+         ta.constructor = { [Symbol.species]: function (n) { \
+         seen = n; return new Uint8Array(n); } }; \
+         var r = ta.toReversed(); var so = ta.toSorted(); var w = ta.with(1, 9); \
+         return r.length === 3 && r.at(0) === 3 && so.at(0) === 1 && \
+         w.at(1) === 9 && seen === 3; })()",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
+#[test]
+fn typed_array_plain_call_and_construct_zero_drift() {
+    // 普通调用（无 new）与构造调用双路径零漂移：结果均为内建实例；
+    // 派生类显式构造器 super() 后可继续扩展属性。
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "(function () { var plain = Uint8Array(2); var constructed = new Uint8Array(2); \
+         if (!(plain instanceof Uint8Array && constructed instanceof Uint8Array)) return false; \
+         if (plain.length !== 2 || constructed.length !== 2) return false; \
+         class S extends Uint8Array { constructor(len) { super(len); this.marked = true; } } \
+         var s = new S(2); var f = S.from([7, 8]); \
+         return s instanceof S && s.marked === true && f instanceof S && \
+         f.length === 2 && f.at(0) === 7 && f.at(1) === 8; })()",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}

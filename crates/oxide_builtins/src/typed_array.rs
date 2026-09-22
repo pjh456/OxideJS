@@ -2,7 +2,7 @@ use num_bigint::BigInt;
 use num_traits::ToPrimitive;
 use oxide_kernel::shape_forge::EMPTY_SHAPE_ID;
 use oxide_types::object::{JsObject, NativeFnPtr, TypedArrayKind};
-use oxide_types::private_key::{int_key_value, is_int_key};
+use oxide_types::private_key::{int_key_value, is_int_key, make_well_known_symbol_key, WELL_KNOWN_SYMBOL_SPECIES};
 use oxide_types::value::JsValue;
 
 use crate::array_buffer::{array_buffer_data_ptr, new_array_buffer, MAX_ARRAY_BUFFER_LENGTH};
@@ -88,11 +88,34 @@ fn typed_array_proto_ptr<H: VmHost>(vm: &mut H, kind: TypedArrayKind) -> *mut Js
     }
 }
 
-fn create_typed_array<H: VmHost>(
-    vm: &mut H, kind: TypedArrayKind, buffer: JsValue, byte_offset: usize, length: usize,
-) -> *mut JsObject {
-    let proto = typed_array_proto_ptr(vm, kind);
-    let mut obj = JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(proto));
+/// 取指定类型的内建构造器值（`[[TypedArrayName]]` → world 槽），species 默认臂
+/// 的构造目标。
+fn typed_array_ctor_value<H: VmHost>(vm: &mut H, kind: TypedArrayKind) -> JsValue {
+    let world = vm.session().builtin_world();
+    let ctor = match kind {
+        TypedArrayKind::Int8 => world.int8array_constructor.clone(),
+        TypedArrayKind::Uint8 => world.uint8array_constructor.clone(),
+        TypedArrayKind::Uint8Clamped => world.uint8clampedarray_constructor.clone(),
+        TypedArrayKind::Int16 => world.int16array_constructor.clone(),
+        TypedArrayKind::Uint16 => world.uint16array_constructor.clone(),
+        TypedArrayKind::Int32 => world.int32array_constructor.clone(),
+        TypedArrayKind::Uint32 => world.uint32array_constructor.clone(),
+        TypedArrayKind::Float32 => world.float32array_constructor.clone(),
+        TypedArrayKind::Float64 => world.float64array_constructor.clone(),
+        TypedArrayKind::BigInt64 => world.bigint64array_constructor.clone(),
+        TypedArrayKind::BigUint64 => world.biguint64array_constructor.clone(),
+    };
+    JsValue::from_js_object(ctor.as_ptr() as *mut JsObject)
+}
+
+/// 把 TypedArray 实例数据（类型标签 + 视图内部槽）写入指定对象；构造调用与
+/// 普通调用建对象共用同一物化路径。
+///
+/// # 边界与前提
+/// - 对象须为空槽位（构造帧分配的 this / 新建对象）；重复物化会泄漏旧数据盒。
+fn materialize_typed_array(
+    obj: &mut JsObject, kind: TypedArrayKind, buffer: JsValue, byte_offset: usize, length: usize,
+) {
     obj.type_tag = JsObject::OBJ_TYPE_TYPED_ARRAY;
     let data = Box::into_raw(Box::new(TypedArrayData {
         kind,
@@ -103,6 +126,14 @@ fn create_typed_array<H: VmHost>(
     // SAFETY: TypedArray 实例不可调用，native_fn 存不透明 `Box<TypedArrayData>`，
     // 与本 VM 中 ArrayBuffer/DataView 的类型化对象存储一致。
     obj.set_native_fn(Some(unsafe { NativeFnPtr::from_raw(data as *const ()) }));
+}
+
+fn create_typed_array<H: VmHost>(
+    vm: &mut H, kind: TypedArrayKind, buffer: JsValue, byte_offset: usize, length: usize,
+) -> *mut JsObject {
+    let proto = typed_array_proto_ptr(vm, kind);
+    let mut obj = JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(proto));
+    materialize_typed_array(&mut obj, kind, buffer, byte_offset, length);
     vm.alloc_object(obj)
 }
 
@@ -506,6 +537,12 @@ fn to_collect_len(n: f64) -> usize {
 }
 
 fn typed_array_new<H: VmHost>(vm: &mut H, args: &[u8], kind: TypedArrayKind) -> NativeResult {
+    let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
+    // reg 255（new.target）为对象即构造调用（NEW/SUPER_CALL/construct 三路径同形）：
+    // 视图数据物化到 receiver（其原型 = new.target.prototype，派生类 super() 与
+    // species 构造由此拿到子类实例）；普通调用（new.target 为 undefined）按规范
+    // TypedArrayCreate 忽略 this、自建新对象。
+    let in_construct = vm.reg(255).is_object() && this_val.is_object();
     let first = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::int(0) };
     let bpe = kind.bytes_per_element();
 
@@ -565,7 +602,15 @@ fn typed_array_new<H: VmHost>(vm: &mut H, args: &[u8], kind: TypedArrayKind) -> 
         (buffer, 0, len)
     };
 
-    NativeResult::Ok(JsValue::from_js_object(create_typed_array(vm, kind, buffer, byte_offset, length)))
+    if in_construct {
+        // SAFETY: receiver 是构造帧分配的 this（本 session 存活），此处只写
+        // type_tag 与 native_fn 两个槽位，与调用方无别名。
+        let obj = unsafe { &mut *this_val.as_js_object_ptr() };
+        materialize_typed_array(obj, kind, buffer, byte_offset, length);
+        NativeResult::Ok(this_val)
+    } else {
+        NativeResult::Ok(JsValue::from_js_object(create_typed_array(vm, kind, buffer, byte_offset, length)))
+    }
 }
 
 macro_rules! typed_array_ctor {
@@ -650,7 +695,72 @@ pub fn typed_array_fill<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     NativeResult::Ok(this_val)
 }
 
+/// TypedArraySpeciesCreate(O, argumentList)：读 O 的 constructor / @@species
+/// 决定构造目标，按 TypedArrayCreate 语义校验构造结果。
+///
+/// # 步骤
+/// 1. 完整 Get `O.constructor`（原型链 / 访问器 / 异常传播）；undefined 回退
+///    接收者类型的内建构造器，其余非对象（null/基元）抛 TypeError。
+/// 2. 读 C 的 `@@species`（null 归一为 undefined）；undefined 回退内建构造器，
+///    非构造器抛 TypeError。
+/// 3. Construct(S, argumentList)：native 值传递 / 字节码压构造帧（派生类
+///    super() 与 new.target 传播），构造器抛出值原样上抛。
+/// 4. 校验结果确为 TypedArray 对象；`expect_len` 为 Some 时长度不足抛
+///    TypeError（argumentList 为单 Number 的 ValidateTypedArray 形态）。
+///
+/// # 边界与前提
+/// - 默认臂（内建构造器）结果必为接收者类型的实例；species 臂交付构造器
+///   返回对象原值，不做身份改写。
+/// - 用户 getter / 构造器执行窗口内 O 由寄存器根保活，Rust 局部值拷贝
+///   跨窗口有效（该窗口内无 GC 安全点）。
+fn typed_array_species_create<H: VmHost>(
+    vm: &mut H, o_val: JsValue, kind: TypedArrayKind, args: Vec<JsValue>, expect_len: Option<usize>,
+) -> Result<JsValue, JsValue> {
+    let o_ptr = o_val.as_js_object_ptr();
+    let o_obj = unsafe { &*o_ptr };
+    let ctor_key = vm.kernel_core().perm_interner().intern("constructor").0;
+    let c = match vm.ordinary_get(o_obj, ctor_key, o_val) {
+        Ok(v) => v,
+        Err(msg) => return Err(crate::iterator::engine_error(vm, &msg)),
+    };
+    let target = if c.is_undefined() {
+        typed_array_ctor_value(vm, kind)
+    } else if !c.is_object() {
+        return Err(type_error(vm, "Species constructor not a constructor"));
+    } else {
+        let species_key = make_well_known_symbol_key(WELL_KNOWN_SYMBOL_SPECIES);
+        let s = match vm.ordinary_get(unsafe { &*c.as_js_object_ptr() }, species_key, c) {
+            Ok(v) => v,
+            Err(msg) => return Err(crate::iterator::engine_error(vm, &msg)),
+        };
+        let s = if s.is_null() { JsValue::undefined() } else { s };
+        if s.is_undefined() {
+            typed_array_ctor_value(vm, kind)
+        } else if !crate::array::is_constructor_value(s) {
+            return Err(type_error(vm, "Species constructor not a constructor"));
+        } else {
+            s
+        }
+    };
+    let result = vm.construct_ctor(target, &args)?;
+    if !result.is_object() || result.as_js_object_ptr().is_null() {
+        return Err(type_error(vm, "Species constructor did not return a TypedArray"));
+    }
+    let view = get_typed_array_data(vm, result)?;
+    if let Some(expect) = expect_len {
+        if view.length < expect {
+            return Err(type_error(vm, "Species constructor returned a TypedArray with insufficient length"));
+        }
+    }
+    Ok(result)
+}
+
 /// `TypedArray.prototype.slice(start, end)`：复制区间元素生成新同类型 TypedArray。
+///
+/// # 步骤
+/// 1. 归一 start/end 得 count，经 TypedArraySpeciesCreate(O, « count ») 建目标。
+/// 2. 逐元素读源元素 → 转换为目标元素类型 → 写入目标（读转写交错；目标与
+///    源共享 buffer 别名时，本轮读须看到前一轮写入后的值）。
 pub fn typed_array_slice<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
     let view = native_try!(get_typed_array_data(vm, this_val));
@@ -665,18 +775,26 @@ pub fn typed_array_slice<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         view.length
     };
     let count = end.max(start).saturating_sub(start);
-    let bpe = view.kind.bytes_per_element();
-    let src_ptr = native_try!(array_buffer_data_ptr(vm, view.buffer));
-    let src = unsafe { &*src_ptr };
-    let mut out = vec![0u8; count * bpe];
-    let src_start = absolute_byte_offset(view, start);
-    let src_end = src_start + count * bpe;
-    out.copy_from_slice(&src[src_start..src_end]);
-    let buffer = JsValue::from_js_object(new_array_buffer(vm, out));
-    NativeResult::Ok(JsValue::from_js_object(create_typed_array(vm, view.kind, buffer, 0, count)))
+    let a = native_try!(typed_array_species_create(
+        vm,
+        this_val,
+        view.kind,
+        vec![JsValue::int(count as i32)],
+        Some(count),
+    ));
+    for k in 0..count {
+        let elem = native_try!(ta_read(vm, view, start + k));
+        native_try!(set_typed_array_element(vm, a, k, elem));
+    }
+    NativeResult::Ok(a)
 }
 
 /// `TypedArray.prototype.subarray(start, end)`：共享底层 buffer 创建区间子视图。
+///
+/// # 步骤
+/// 1. 归一 start/end 得 count 与字节偏移。
+/// 2. TypedArraySpeciesCreate(O, « buffer, byteOffset, count »)：多参
+///    argumentList 不查长度；默认臂经内建构造器同三参形态产出共享视图。
 pub fn typed_array_subarray<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
     let view = native_try!(get_typed_array_data(vm, this_val));
@@ -692,13 +810,14 @@ pub fn typed_array_subarray<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult 
     };
     let count = end.max(start).saturating_sub(start);
     let byte_offset = view.byte_offset + start * view.kind.bytes_per_element();
-    NativeResult::Ok(JsValue::from_js_object(create_typed_array(
+    let result = native_try!(typed_array_species_create(
         vm,
+        this_val,
         view.kind,
-        view.buffer,
-        byte_offset,
-        count,
-    )))
+        vec![view.buffer, JsValue::int(byte_offset as i32), JsValue::int(count as i32)],
+        None,
+    ));
+    NativeResult::Ok(result)
 }
 
 /// `TypedArray.prototype.set(source, offset)`：从 array-like/另一个 TypedArray 拷贝元素；
@@ -792,9 +911,10 @@ fn allocate_typed_array<H: VmHost>(vm: &mut H, c: JsValue, len: usize) -> Result
     if !c.is_object() || c.as_js_object_ptr().is_null() || !unsafe { &*c.as_js_object_ptr() }.is_function() {
         return Err(type_error(vm, "TypedArray.of/from requires a constructor"));
     }
-    let result = vm
-        .call_function_sync(c, JsValue::undefined(), &[JsValue::int(len as i32)])
-        .map_err(|e| crate::iterator::engine_error(vm, &e))?;
+    // 构造（new）形态调用：派生类的 super() 与 new.target 传播只在构造帧成立，
+    // 普通调用会在派生类上抛 "super() used outside class constructor"；
+    // 构造器抛出值经 Err 原样上抛。
+    let result = vm.construct_ctor(c, &[JsValue::int(len as i32)])?;
     if !result.is_object() || result.as_js_object_ptr().is_null() {
         return Err(type_error(vm, "TypedArray.of/from constructor did not return a TypedArray"));
     }
@@ -863,22 +983,6 @@ fn ta_write<H: VmHost>(vm: &mut H, view: TypedArrayData, index: usize, value: Js
     Ok(())
 }
 
-/// 把一组已按元素类型转换的值写成同类型的新 TypedArray
-/// （map/filter/toReversed/toSorted/with 共用）。
-fn create_ta_from_values<H: VmHost>(
-    vm: &mut H, kind: TypedArrayKind, values: Vec<JsValue>,
-) -> Result<*mut JsObject, JsValue> {
-    let bpe = kind.bytes_per_element();
-    let len = values.len();
-    let buffer = JsValue::from_js_object(new_array_buffer(vm, vec![0; len * bpe]));
-    let buffer_ptr = array_buffer_data_ptr(vm, buffer)?;
-    let buffer_ref = unsafe { &mut *buffer_ptr };
-    for (idx, v) in values.into_iter().enumerate() {
-        write_element(vm, kind, buffer_ref, idx * bpe, v);
-    }
-    Ok(create_typed_array(vm, kind, buffer, 0, len))
-}
-
 /// 调用 TypedArray 回调并收敛异常：tail call 一律视为内部错误。
 fn invoke_cb<H: VmHost>(vm: &mut H, cb: JsValue, this_arg: JsValue, cb_args: &[JsValue]) -> Result<JsValue, JsValue> {
     match crate::array::invoke_native_callback(vm, cb, this_arg, cb_args) {
@@ -911,7 +1015,7 @@ pub fn typed_array_for_each<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult 
 }
 
 /// `%TypedArray%.prototype.map(callback, thisArg)`：对每个元素调用 callback，
-/// 结果按元素类型转换后写入同类型的新 TypedArray。
+/// 结果经 species 构造的目标 TypedArray 按元素类型转换写入。
 pub fn typed_array_map<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
     let view = native_try!(get_typed_array_data(vm, this_val));
@@ -920,18 +1024,25 @@ pub fn typed_array_map<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     }
     let callback = native_try!(crate::array::require_callback(vm, vm.reg(args[1])));
     let this_arg = if args.len() > 2 { vm.reg(args[2]) } else { JsValue::undefined() };
-    let mut values = Vec::with_capacity(view.length);
+    // 目标对象经 species 构造（长度 = 源长度）；逐元素"回调 → 写入"交错，
+    // 目标与源别名时后续回调看到前一轮写入值。
+    let a = native_try!(typed_array_species_create(
+        vm,
+        this_val,
+        view.kind,
+        vec![JsValue::int(view.length as i32)],
+        Some(view.length),
+    ));
     for i in 0..view.length {
         let elem = native_try!(ta_read(vm, view, i));
         let mapped = native_try!(invoke_cb(vm, callback, this_arg, &[elem, JsValue::int(i as i32), this_val]));
-        values.push(native_try!(ta_element_value(vm, view.kind, mapped)));
+        native_try!(set_typed_array_element(vm, a, i, mapped));
     }
-    let new_obj = native_try!(create_ta_from_values(vm, view.kind, values));
-    NativeResult::Ok(JsValue::from_js_object(new_obj))
+    NativeResult::Ok(a)
 }
 
 /// `%TypedArray%.prototype.filter(callback, thisArg)`：保留 callback 为真的元素，
-/// 组成同类型的新 TypedArray。
+/// 组成经 species 构造的目标 TypedArray。
 pub fn typed_array_filter<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
     let view = native_try!(get_typed_array_data(vm, this_val));
@@ -940,16 +1051,27 @@ pub fn typed_array_filter<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     }
     let callback = native_try!(crate::array::require_callback(vm, vm.reg(args[1])));
     let this_arg = if args.len() > 2 { vm.reg(args[2]) } else { JsValue::undefined() };
-    let mut values = Vec::new();
+    // 先全量回调得通过元素（规范序：count 先于目标构造），再经 species
+    // 构造目标（长度 = 通过数）并顺序写入。
+    let mut kept = Vec::new();
     for i in 0..view.length {
         let elem = native_try!(ta_read(vm, view, i));
         let result = native_try!(invoke_cb(vm, callback, this_arg, &[elem, JsValue::int(i as i32), this_val]));
         if oxide_runtime_api::to_boolean(result) {
-            values.push(elem);
+            kept.push(elem);
         }
     }
-    let new_obj = native_try!(create_ta_from_values(vm, view.kind, values));
-    NativeResult::Ok(JsValue::from_js_object(new_obj))
+    let a = native_try!(typed_array_species_create(
+        vm,
+        this_val,
+        view.kind,
+        vec![JsValue::int(kept.len() as i32)],
+        Some(kept.len()),
+    ));
+    for (k, elem) in kept.into_iter().enumerate() {
+        native_try!(set_typed_array_element(vm, a, k, elem));
+    }
+    NativeResult::Ok(a)
 }
 
 /// `%TypedArray%.prototype.reduce(callback, initialValue)`：从左到右累计归约；
@@ -1463,20 +1585,27 @@ pub fn typed_array_to_locale_string<H: VmHost>(vm: &mut H, args: &[u8]) -> Nativ
     NativeResult::Ok(vm.new_string(&parts.join(",")))
 }
 
-/// `%TypedArray%.prototype.toReversed()`：返回元素反转的同类型新 TypedArray（原对象不变）。
+/// `%TypedArray%.prototype.toReversed()`：返回元素反转的、经 species 构造的
+/// 新 TypedArray（原对象不变）。
 pub fn typed_array_to_reversed<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
     let view = native_try!(get_typed_array_data(vm, this_val));
-    let mut values = Vec::with_capacity(view.length);
-    for i in (0..view.length).rev() {
-        values.push(native_try!(ta_read(vm, view, i)));
+    let a = native_try!(typed_array_species_create(
+        vm,
+        this_val,
+        view.kind,
+        vec![JsValue::int(view.length as i32)],
+        Some(view.length),
+    ));
+    for i in 0..view.length {
+        let elem = native_try!(ta_read(vm, view, view.length - 1 - i));
+        native_try!(set_typed_array_element(vm, a, i, elem));
     }
-    let new_obj = native_try!(create_ta_from_values(vm, view.kind, values));
-    NativeResult::Ok(JsValue::from_js_object(new_obj))
+    NativeResult::Ok(a)
 }
 
-/// `%TypedArray%.prototype.toSorted(comparefn)`：返回元素排序后的同类型新 TypedArray
-/// （原对象不变）。
+/// `%TypedArray%.prototype.toSorted(comparefn)`：返回元素排序后的、经 species
+/// 构造的新 TypedArray（原对象不变）。
 pub fn typed_array_to_sorted<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
     let view = native_try!(get_typed_array_data(vm, this_val));
@@ -1536,12 +1665,22 @@ pub fn typed_array_to_sorted<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult
     if let Some(err) = sort_error {
         return NativeResult::Err(err);
     }
-    let new_obj = native_try!(create_ta_from_values(vm, view.kind, vals));
-    NativeResult::Ok(JsValue::from_js_object(new_obj))
+    let a = native_try!(typed_array_species_create(
+        vm,
+        this_val,
+        view.kind,
+        vec![JsValue::int(vals.len() as i32)],
+        Some(vals.len()),
+    ));
+    for (k, v) in vals.into_iter().enumerate() {
+        native_try!(set_typed_array_element(vm, a, k, v));
+    }
+    NativeResult::Ok(a)
 }
 
-/// `%TypedArray%.prototype.with(index, value)`：返回替换指定索引元素后的同类型新 TypedArray；
-/// 负索引从尾部折算，折算后越界抛 RangeError。
+/// `%TypedArray%.prototype.with(index, value)`：返回替换指定索引元素后的、经
+/// species 构造的新 TypedArray；负索引从尾部折算，折算后越界抛 RangeError
+/// （先于 value 的类型转换）。
 pub fn typed_array_with<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
     let view = native_try!(get_typed_array_data(vm, this_val));
@@ -1562,23 +1701,24 @@ pub fn typed_array_with<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     } else {
         view.length as f64 + relative_index
     };
-    // 先按元素类型转换 value（可触发副作用/抛错），再做索引范围校验。
-    let value = if args.len() > 2 { vm.reg(args[2]) } else { JsValue::undefined() };
-    let replacement = native_try!(ta_element_value(vm, view.kind, value));
     if actual_index.is_nan() || actual_index < 0.0 || actual_index >= view.length as f64 {
         return NativeResult::Err(range_error(vm, "Invalid typed array index"));
     }
     let index = actual_index as usize;
-    let mut values = Vec::with_capacity(view.length);
+    let value = if args.len() > 2 { vm.reg(args[2]) } else { JsValue::undefined() };
+    let a = native_try!(typed_array_species_create(
+        vm,
+        this_val,
+        view.kind,
+        vec![JsValue::int(view.length as i32)],
+        Some(view.length),
+    ));
+    // 目标索引写 value（经目标元素类型转换），其余索引顺序拷源元素。
     for i in 0..view.length {
-        if i == index {
-            values.push(replacement);
-            continue;
-        }
-        values.push(native_try!(ta_read(vm, view, i)));
+        let elem = if i == index { value } else { native_try!(ta_read(vm, view, i)) };
+        native_try!(set_typed_array_element(vm, a, i, elem));
     }
-    let new_obj = native_try!(create_ta_from_values(vm, view.kind, values));
-    NativeResult::Ok(JsValue::from_js_object(new_obj))
+    NativeResult::Ok(a)
 }
 
 /// `%TypedArray%.from(source, mapfn?, thisArg?)`：从可迭代对象或 array-like 构造
