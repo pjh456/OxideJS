@@ -1606,22 +1606,12 @@ pub fn regexp_symbol_split<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let units = haystack.as_match_text().units().to_vec();
     let size = units.len();
 
-    // lim：缺省 2^32-1，否则 ToUint32（完整 ToNumber 传播转换异常；
-    // NaN/±0 归零、±∞ 归 2^32-1、负数回绕）。
-    let lim = if args.len() > 2 {
-        let l = match oxide_runtime_api::to_number_full(vm.reg(args[2]), vm) {
-            Ok(n) => n,
-            Err(e) => return NativeResult::Err(crate::iterator::engine_error(vm, &e)),
-        };
-        if l.is_nan() || l == 0.0 {
-            0usize
-        } else if l.is_infinite() {
-            u32::MAX as usize
-        } else {
-            l.trunc().rem_euclid(4_294_967_296.0) as usize
-        }
-    } else {
-        u32::MAX as usize
+    // lim：缺省或 undefined 为 2^32-1，否则 ToUint32（完整 ToNumber 传播
+    // 转换异常；NaN/±0/±∞ 归零、负数回绕）。
+    let lim_val = if args.len() > 2 { vm.reg(args[2]) } else { JsValue::undefined() };
+    let lim = match crate::string::split_limit_to_uint32(vm, lim_val) {
+        Ok(n) => n,
+        Err(e) => return NativeResult::Err(e),
     };
     if lim == 0 {
         return NativeResult::Ok(make_units_array(vm, Vec::new()));

@@ -350,6 +350,26 @@ pub(crate) fn as_units<'a, H: VmHost>(vm: &'a mut H, val: JsValue) -> Result<Cow
     }
 }
 
+// ── split limit 换算 ────────────────────────────────────────────────────
+
+/// split 的 limit 参数 → ToUint32 口径的 usize：undefined 为 2^32-1（全量）；
+/// 其余值经完整 ToNumber（对象走 ToPrimitive number hint，Symbol 抛 TypeError），
+/// NaN/±0/±∞ 归 0，有限值按 mod 2^32 回绕（负数回绕，-1 为 2^32-1）。
+/// 对象转换抛出的原生异常原样传播。
+pub(crate) fn split_limit_to_uint32<H: VmHost>(vm: &mut H, limit_val: JsValue) -> Result<usize, JsValue> {
+    if limit_val.is_undefined() {
+        return Ok(u32::MAX as usize);
+    }
+    let n = match oxide_runtime_api::to_number_full(limit_val, vm) {
+        Ok(n) => n,
+        Err(e) => return Err(crate::iterator::engine_error(vm, &e)),
+    };
+    if n.is_nan() || n == 0.0 || n.is_infinite() {
+        return Ok(0);
+    }
+    Ok(n.trunc().rem_euclid(4_294_967_296.0) as usize)
+}
+
 // ── 数组产出 ─────────────────────────────────────────────────────────────
 
 /// 以已构造的字符串值构建字符串数组（元素零拷贝落地），供逐单元产出路径

@@ -702,6 +702,132 @@ fn string_split_real_regex_still_regex_path() {
     assert_eq!(to_str(&vm, obj.get_prop_at(1)), "");
 }
 
+#[test]
+fn string_split_regexp_zero_width_skips_separator() {
+    // 零宽匹配不推分隔段："hello".split(new RegExp) 逐边界零宽，结果即逐码元。
+    let mut vm = Vm::new();
+    let result = eval(&mut vm, "'hello'.split(new RegExp).join('|')").unwrap();
+    assert_eq!(to_str(&vm, result), "h|e|l|l|o");
+}
+
+#[test]
+fn string_split_zero_width_stars_pattern() {
+    // /l*/ 每边界零宽匹配：仅非零宽命中处分段，结果 ["h","e","o"]。
+    let mut vm = Vm::new();
+    let result = eval(&mut vm, "'hello'.split(/l*/g).join('|')").unwrap();
+    assert_eq!(to_str(&vm, result), "h|e|o");
+}
+
+#[test]
+fn string_split_zero_width_trailing_excluded() {
+    // "x".split(/(?:)/) 尾段取自 lastMatchEnd，串尾零宽匹配被循环排除 → ["x"]；
+    // 非零宽末匹配尾段照推 → "x".split(/./) 得 ["",""]。
+    let mut vm = Vm::new();
+    let one = eval(&mut vm, "'x'.split(/(?:)/).join('|')").unwrap();
+    assert_eq!(to_str(&vm, one), "x");
+    let two = eval(&mut vm, "'x'.split(/./).join('|')").unwrap();
+    assert_eq!(to_str(&vm, two), "|");
+}
+
+#[test]
+fn string_split_empty_input_regexp() {
+    // 空串输入：可命中正则单次 exec 得 []，不可命中得 [""]。
+    let mut vm = Vm::new();
+    let hit = eval(&mut vm, "''.split(/(?:)/).length").unwrap();
+    assert_eq!(hit.as_int(), 0);
+    let miss = eval(&mut vm, "''.split(/x/).length").unwrap();
+    assert_eq!(miss.as_int(), 1);
+}
+
+#[test]
+fn string_split_limit_to_uint32_wrap() {
+    // limit 按 ToUint32 回绕：2^32 → 0 空数组、-1 → 2^32-1 全量、NaN → 0、
+    // 缺省与 undefined 均全量。
+    let mut vm = Vm::new();
+    let wrap = eval(&mut vm, "'a,b,c'.split(',', 2 ** 32).length").unwrap();
+    assert_eq!(wrap.as_int(), 0);
+    let neg = eval(&mut vm, "'a,b,c'.split(',', -1).length").unwrap();
+    assert_eq!(neg.as_int(), 3);
+    let nan = eval(&mut vm, "'a,b,c'.split(',', NaN).length").unwrap();
+    assert_eq!(nan.as_int(), 0);
+    let undef = eval(&mut vm, "'a,b,c'.split(',', undefined).length").unwrap();
+    assert_eq!(undef.as_int(), 3);
+}
+
+#[test]
+fn string_split_limit_object_full_tonumber() {
+    // limit 对象经完整 ToNumber：valueOf 直取、转换异常传播。
+    let mut vm = Vm::new();
+    let via_value_of = eval(&mut vm, "'a|b|c'.split('|', { valueOf: function () { return 2; } }).length").unwrap();
+    assert_eq!(via_value_of.as_int(), 2);
+    let err = eval(
+        &mut vm,
+        "'a|b'.split('|', { valueOf: function () { throw new RangeError('limit-boom'); } })",
+    )
+    .unwrap_err();
+    assert!(err.contains("RangeError"), "limit 对象转换异常应传播，实际: {err}");
+}
+
+#[test]
+fn string_split_order_limit_before_separator_tostring() {
+    // 序位：ToUint32(limit) 先于 ToString(separator)——limit 的 valueOf 抛错胜出。
+    let mut vm = Vm::new();
+    let err = eval(
+        &mut vm,
+        concat!(
+            "'foo'.split(",
+            "{ toString: function () { throw new RangeError('sep-boom'); } }, ",
+            "{ valueOf: function () { throw new RangeError('limit-boom'); } })"
+        ),
+    )
+    .unwrap_err();
+    assert!(err.contains("limit-boom"), "limit 转换应先于 separator 转换，实际: {err}");
+}
+
+#[test]
+fn string_split_getmethod_dispatch() {
+    // 对象分隔符经 GetMethod 派发：Call(splitter, sep, «this, limit»）传原始
+    // 寄存器（this 未 ToString、limit 未 ToUint32），结果原值返回。
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        concat!(
+            "var sep = {}; sep[Symbol.split] = function (s, l) { return [s, l]; }; ",
+            "var o = Object.create(String.prototype); ",
+            "var r = o.split(sep, 7); ",
+            "(r[0] === o) + '|' + r[1]"
+        ),
+    )
+    .unwrap();
+    assert_eq!(to_str(&vm, result), "true|7");
+}
+
+#[test]
+fn string_split_getmethod_short_circuits_this_tostring() {
+    // GetMethod 派发先于 ToString(this)：this 的 toString 抛错不被触发。
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        concat!(
+            "var o = new String('x'); ",
+            "o.toString = function () { throw new RangeError('this-boom'); }; ",
+            "var sep = {}; sep[Symbol.split] = function () { return 42; }; ",
+            "o.split(sep)"
+        ),
+    )
+    .unwrap();
+    assert_eq!(result.as_int(), 42);
+}
+
+#[test]
+fn string_split_zero_width_missing_capture_not_pushed() {
+    // 零宽匹配不推分隔段与捕获组：串内仅零宽命中时缺席捕获组不占位，
+    // 结果只剩尾段。
+    let mut vm = Vm::new();
+    let result = eval(&mut vm, "'a'.split(/(b)*/).join('|')").unwrap();
+    assert_eq!(to_str(&vm, result), "a");
+}
+
 // ── match 测试 ──
 
 #[test]

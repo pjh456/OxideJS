@@ -256,7 +256,7 @@ impl BuiltinWorld {
             ("padEnd", methods.pad_end, 1),
             ("startsWith", methods.starts_with, 1),
             ("endsWith", methods.ends_with, 1),
-            ("split", methods.split, 1),
+            ("split", methods.split, 2),
             ("replace", methods.replace, 2),
             ("match", methods.match_fn, 1),
             ("search", methods.search, 1),

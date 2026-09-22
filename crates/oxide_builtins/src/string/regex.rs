@@ -11,7 +11,7 @@ use crate::regexp::build_groups_object;
 use super::common::{try_string, MatchText};
 use super::{
     as_units, byte_to_unit, find_units, make_string_array_values, make_units_array, map_well_formed_segments,
-    this_text, this_units, unit_to_byte,
+    split_limit_to_uint32, this_text, this_units, unit_to_byte,
 };
 
 // ── 正则替换（单元口径） ────────────────────────────────────────────────
@@ -162,90 +162,109 @@ fn string_arm_replace<H: VmHost>(
 
 // ── 拆分 / 正则匹配 ─────────────────────────────────────────────────────
 
+/// GetMethod(sep, @@split)：undefined/null 返回 None（落字符串臂），不可调用
+/// 抛 TypeError，属性读抛错恢复原异常值。
+fn rx_get_split_method<H: VmHost>(vm: &mut H, sep: JsValue) -> Result<Option<JsValue>, JsValue> {
+    let split_key = oxide_types::private_key::make_well_known_symbol_key(4);
+    let ptr = sep.as_js_object_ptr();
+    // SAFETY: 调用方已校验 sep 为非空对象值。
+    let func = match vm.ordinary_get(unsafe { &*ptr }, split_key, sep) {
+        Ok(v) => v,
+        Err(_) => {
+            if let Some(exc) = vm.take_uncaught_value() {
+                return Err(exc);
+            }
+            return Err(crate::error::create_type_error(vm, "cannot read @@split"));
+        }
+    };
+    if func.is_undefined() || func.is_null() {
+        return Ok(None);
+    }
+    if !crate::iterator::is_callable(func) {
+        return Err(crate::error::create_type_error(vm, "Symbol.split is not callable"));
+    }
+    Ok(Some(func))
+}
+
 /// `String.prototype.split(separator, limit)`：按分隔符拆分为字符串数组；
 /// 分隔符可为 RegExp（含捕获组）或字符串。空分隔按单元逐个产出（规格口径，
 /// 孤立 surrogate 为 1 单元元素）。
+///
+/// # 步骤
+/// 1. receiver 前置校验（RequireObjectCoercible，纯 is_* 读取，先于一切分叉）。
+/// 2. separator 为对象时：GetMethod(separator, @@split)，可调用则
+///    Call(splitter, separator, «thisValue, limit»)——传原始 this/limit
+///    寄存器不预转换，结果原值返回（RegExp 分隔经此委托 Symbol.split）。
+/// 3. string = ToString(this)（转换异常传播）。
+/// 4. lim：limit 缺省或 undefined 为 2^32-1，否则 ToUint32（mod 2^32 回绕）。
+/// 5. separatorString = ToString(separator)（转换异常传播；先于 lim = 0 判定）。
+/// 6. lim = 0 → 空数组（先于 sep-undefined 判定）。
+/// 7. separator 为 undefined → [string]。
+/// 8. 空分隔逐码元产出（clamp(lim, 0, 串长)）；非空分隔搜索循环，尾段恒推。
+///
+/// # 边界与前提
+/// - 规范序位：GetMethod 派发先于 ToString(this)，ToUint32(limit) 先于
+///   ToString(separator)，ToString(separator) 先于 lim = 0 判定，
+///   lim = 0 判定先于 sep-undefined 判定。
+/// - 各转换（this/limit/separator）抛出的原生异常原样传播。
 pub fn string_split<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("String.prototype.split called with {} args", args.len());
-    // 参数转换先行：separator 为对象时 ToString 可能触发用户代码（&mut 路径），
-    // limit 仅纯函数计算；之后借 this 源串扫描切分。
-    let sep_val = if args.len() >= 2 { Some(vm.reg(args[1])) } else { None };
-    let is_undefined_sep = sep_val.map(|v| v.is_undefined()).unwrap_or(true);
-    let is_re = match sep_val {
-        Some(v) if !v.is_undefined() => is_regexp_obj(v, vm),
-        _ => false,
-    };
-    // 类正则对象是否持有编译正则：native_fn 存在才是真 RegExp 实例，命中正则切分路径；
-    // 无编译正则的类正则对象（如 Object.create(RegExp.prototype)）回退字符串路径，
-    // 须按 ToString 文本切分，且转换（&mut 路径）须先于 this 借用完成。
-    let has_native_re = is_re && {
-        let sep = sep_val.expect("separator present when is_re is true");
-        let re_ptr = sep.as_js_object_ptr();
-        // SAFETY: is_re 已保证 sep_val 为非空对象且 proto 恒等 RegExp.prototype。
-        let re = unsafe { &*re_ptr };
-        re.native_fn().is_some()
-    };
-    // ToUint32(limit)，缺省为 2^32-1。
-    let limit = if args.len() > 2 {
-        let l = oxide_runtime_api::to_integer_or_infinity(vm.reg(args[2]));
-        if l.is_infinite() {
-            u32::MAX as usize
-        } else {
-            (l.max(0.0).trunc() as u64).min(u32::MAX as u64) as usize
+    let this_val = vm.reg(args[0]);
+
+    // receiver 前置校验：null/undefined 抛 TypeError（RequireObjectCoercible，
+    // 纯 is_* 读取无用户代码，先于一切分叉）；symbol 的 ToString 必败，提前抛。
+    if this_val.is_null() || this_val.is_undefined() {
+        return NativeResult::Err(crate::error::create_type_error(
+            vm,
+            "String.prototype method called on null or undefined",
+        ));
+    }
+    if this_val.is_symbol() {
+        return NativeResult::Err(crate::error::create_type_error(vm, "Cannot convert a Symbol value to a string"));
+    }
+
+    let sep_val = if args.len() >= 2 { vm.reg(args[1]) } else { JsValue::undefined() };
+    let limit_val = if args.len() > 2 { vm.reg(args[2]) } else { JsValue::undefined() };
+
+    // 对象分隔符经 GetMethod 派发：调用定义则 Call 后原值返回，须先于
+    // ToString(this) 短路（实参为原始寄存器，不预转换）。
+    if sep_val.is_object() {
+        let splitter = try_string!(rx_get_split_method(vm, sep_val));
+        if let Some(splitter) = splitter {
+            return match vm.call_function_sync(splitter, sep_val, &[this_val, limit_val]) {
+                Ok(r) => NativeResult::Ok(r),
+                Err(_) => {
+                    if let Some(exc) = vm.take_uncaught_value() {
+                        return NativeResult::Err(exc);
+                    }
+                    NativeResult::Err(crate::error::create_type_error(vm, "split matcher call failed"))
+                }
+            };
         }
-    } else {
-        u32::MAX as usize
-    };
-    let sep_units: Vec<u16> = if is_undefined_sep || has_native_re {
-        Vec::new()
-    } else {
-        let sep = sep_val.expect("separator present when not undefined and not native regexp");
-        try_string!(as_units(vm, sep)).into_owned()
-    };
+    }
+
+    // string = ToString(this)。
     let s: Vec<u16> = try_string!(this_units(vm, args)).into_owned();
-    // 规范：separator 为 undefined 时返回 [this]。
-    if is_undefined_sep {
+
+    // lim = ToUint32(limit)：undefined 为 2^32-1，对象经完整 ToNumber（异常传播）。
+    let lim = try_string!(split_limit_to_uint32(vm, limit_val));
+
+    // separatorString = ToString(separator)（先于 lim = 0 判定：sep 转换
+    // 抛错时 lim = 0 的早退不生效）。
+    let sep_units: Vec<u16> = try_string!(as_units(vm, sep_val)).into_owned();
+
+    if lim == 0 {
+        return NativeResult::Ok(make_units_array(vm, Vec::new()));
+    }
+    // separator 为 undefined 时返回单元素 [string]。
+    if sep_val.is_undefined() {
         return NativeResult::Ok(make_units_array(vm, vec![s.to_vec()]));
     }
-    if is_re {
-        let re_ptr = sep_val.unwrap().as_js_object_ptr();
-        let re = unsafe { &*re_ptr };
-        if let Some(fn_ptr) = re.native_fn() {
-            let regex = unsafe { &*(fn_ptr.as_ptr() as *const regress::Regex) };
-            // 片段物化字符串值，未匹配捕获组推 undefined（结果数组按值混排）。
-            let mut parts: Vec<JsValue> = Vec::new();
-            let mut last_end = 0;
-            for m in regex.find_from_utf16(&s, 0) {
-                if parts.len() >= limit {
-                    break;
-                }
-                let range = m.range();
-                parts.push(vm.new_string_units_owned(s[last_end..range.start].to_vec()));
-                if parts.len() >= limit {
-                    break;
-                }
-                for i in 1..=m.captures.len() {
-                    if parts.len() >= limit {
-                        break;
-                    }
-                    match m.group(i) {
-                        Some(g) => parts.push(vm.new_string_units_owned(s[g.start..g.end].to_vec())),
-                        None => parts.push(JsValue::undefined()),
-                    }
-                }
-                last_end = range.end;
-            }
-            if last_end <= s.len() && parts.len() < limit {
-                parts.push(vm.new_string_units(&s[last_end..]));
-            }
-            return NativeResult::Ok(make_string_array_values(vm, parts));
-        }
-        // 无原生正则的类正则对象回退到字符串路径。
-    }
+
     if sep_units.is_empty() {
         // 每单元一个元素（ASCII 走单字符缓存零分配，其余 1 单元串创建）。
-        let mut values = Vec::with_capacity(s.len().min(limit));
-        for &u in s.iter().take(limit) {
+        let mut values = Vec::with_capacity(s.len().min(lim));
+        for &u in s.iter().take(lim) {
             values.push(match vm.single_unit(u) {
                 Some(v) => v,
                 None => vm.new_string_units(&[u]),
@@ -253,11 +272,12 @@ pub fn string_split<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         }
         return NativeResult::Ok(make_string_array_values(vm, values));
     }
+
     // 非空字符串分隔：手动查找循环 + limit。
     let mut parts: Vec<Vec<u16>> = Vec::new();
     let mut start = 0;
     loop {
-        if parts.len() >= limit {
+        if parts.len() >= lim {
             break;
         }
         match find_units(&s, &sep_units, start) {

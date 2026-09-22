@@ -790,6 +790,16 @@ fn symbol_split_limit_zero_and_to_uint32() {
 }
 
 #[test]
+fn symbol_split_undefined_limit_full() {
+    // limit 缺省与显式 undefined 均为 2^32-1 全量（非 ToUint32(NaN)=0）。
+    let mut vm = Vm::new();
+    let result = eval(&mut vm, "RegExp.prototype[Symbol.split].call(/,/, 'a,b', undefined).length").unwrap();
+    assert!(result.as_int() == 2);
+    let result = eval(&mut vm, "'a,b'.split(/,/, undefined).length").unwrap();
+    assert!(result.as_int() == 2);
+}
+
+#[test]
 fn symbol_match_all_species_matcher_and_cached_lastindex() {
     let mut vm = Vm::new();
     // matcher 经物种构造；lastIndex 只从 R 读一次并写入 matcher。
