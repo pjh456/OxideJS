@@ -921,7 +921,7 @@ pub fn bind_global_builtin_slots(core: &Arc<KernelCore>, session: &KernelSession
     configure_existing_ctor(
         &world.data_view_constructor,
         oxide_builtins::data_view::data_view_constructor::<crate::vm::Vm> as *const (),
-        3,
+        1,
     );
     configure_existing_ctor(
         &world.error_constructor,
