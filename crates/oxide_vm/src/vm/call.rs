@@ -106,6 +106,9 @@ impl Vm {
             self.native_call_depth += 1;
             let result = func(self, &arg_regs);
             self.native_call_depth -= 1;
+            // 构造形态标记不跨 native 调用存活：本次调用内的置位（构造臂）
+            // 与清零（普通调用臂）在此收口，异常展开亦不残留。
+            self.constructing_native = false;
             // 溢出区随本次调用结束截断回收，并还原外层的溢出区描述（嵌套调用安全）。
             if args.len() > Self::SYNC_NATIVE_ARG_LIMIT {
                 self.spill_stack.truncate(overflow_base);

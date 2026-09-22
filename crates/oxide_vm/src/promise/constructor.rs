@@ -90,10 +90,14 @@ impl Vm {
                 let this_ptr = self.alloc_ctor_this(nt_obj)?;
                 JsValue::from_js_object(this_ptr)
             };
-            // newTarget 经 reg(255) 暴露给 native 构造器（快照/恢复：call 窗口不触及 255）。
+            // newTarget 经 reg(255) 暴露给 native 构造器（快照/恢复：call 窗口
+            // 不触及 255）；构造形态标记同窗夹持（调用后恢复）。
             let saved_nt = self.regs[255];
+            let saved_constructing = self.constructing_native;
             self.regs[255] = new_target;
+            self.constructing_native = true;
             let result = self.call_function_sync(ctor, this_val, args);
+            self.constructing_native = saved_constructing;
             self.regs[255] = saved_nt;
             return match result {
                 Ok(ret) if ret.is_object() => Ok(ret),

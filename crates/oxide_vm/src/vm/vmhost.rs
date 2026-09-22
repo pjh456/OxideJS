@@ -22,6 +22,9 @@ impl oxide_runtime_api::VmHost for Vm {
     fn native_overflow_at(&self, i: usize) -> JsValue {
         self.spill_stack[self.native_overflow_base + i]
     }
+    fn constructing_native(&self) -> bool {
+        self.constructing_native
+    }
     fn alloc_object(&mut self, obj: JsObject) -> *mut JsObject {
         self.alloc_object(obj)
     }

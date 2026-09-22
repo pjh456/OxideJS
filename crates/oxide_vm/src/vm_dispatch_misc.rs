@@ -88,10 +88,14 @@ impl Vm {
             // 该入口统一保存/恢复调用窗口与 253/254 槽且不触碰 255，调用方
             // new.target 与 this 跨 native 构造不被污染；receiver 经 arg0 打包，
             // native 侧经 reg(args[0]) 读取，构造语义不变。newTarget 快照后置入
-            // reg(255) 暴露给 native 构造器（调用后恢复原值）。
+            // reg(255) 暴露给 native 构造器（调用后恢复原值）；构造形态标记同窗
+            // 夹持（调用后恢复）。
             let saved_new_target = self.regs[255];
+            let saved_constructing = self.constructing_native;
             self.regs[255] = constructor;
+            self.constructing_native = true;
             let result = self.call_function_sync(constructor, new_obj_val, &args);
+            self.constructing_native = saved_constructing;
             self.regs[255] = saved_new_target;
             match result {
                 Ok(v) => {
@@ -230,10 +234,14 @@ impl Vm {
         if target_obj.native_fn().is_some() {
             // native 构造器：receiver = 新对象，值传递调用（错误原值恢复后展开）。
             // new.target 按 bound [[Construct]] 语义取最外层 bound 包装（wrapper_val），
-            // 快照后置入 reg(255) 暴露给 native 构造器（调用后恢复原值）。
+            // 快照后置入 reg(255) 暴露给 native 构造器（调用后恢复原值）；构造
+            // 形态标记同窗夹持（调用后恢复）。
             let saved_new_target = self.regs[255];
+            let saved_constructing = self.constructing_native;
             self.regs[255] = wrapper_val;
+            self.constructing_native = true;
             let result = self.call_function_sync(target_val, new_obj_val, &call_args);
+            self.constructing_native = saved_constructing;
             self.regs[255] = saved_new_target;
             match result {
                 Ok(v) => {

@@ -691,3 +691,23 @@ fn typed_array_plain_call_and_construct_zero_drift() {
     .unwrap();
     assert!(result.as_bool());
 }
+
+#[test]
+fn typed_array_plain_member_call_in_class_ctor_not_construct() {
+    // 类构造器帧内对 TA 构造器的成员式普通调用是普通形态：返回全新 TA，
+    // receiver 不物化（长度与 buffer 不动），receiver 为普通对象时亦不改建。
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "(function () { class Sub extends Uint8Array { constructor() { \
+          super(4); this.f = Uint8Array; var r = this.f(2); this.r = r; this.len = this.length; \
+          var o = {}; o.f = Uint8Array; var p = o.f(2); this.p = p; this.o = o; } } \
+          var s = new Sub(); \
+          return s.r !== s && s.r instanceof Uint8Array && \
+          Object.getPrototypeOf(s.r) === Uint8Array.prototype && s.r.length === 2 && \
+          s.len === 4 && s.length === 4 && s.buffer.byteLength === 4 && \
+          s.p !== s.o && s.p.length === 2 && typeof s.o.length === 'undefined'; })()",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}

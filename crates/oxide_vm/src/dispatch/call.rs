@@ -46,7 +46,8 @@ impl Vm {
     /// - `Err` 保留异常原值：用户回调 throw 的原始值经 catch 原样收到，不包装成 Error。
     ///
     /// # 副作用
-    /// - 修改 `native_call_depth`、`regs[0]`、`regs[254]`，可能压帧或触发异常展开。
+    /// - 修改 `native_call_depth`、`regs[0]`、`regs[254]`，普通调用形态清零
+    ///   `constructing_native`，可能压帧或触发异常展开。
     ///
     /// # 注意事项
     /// - `native_fn_ptr_to_fn` 是 NativeFnPtr → NativeFn 的唯一强制转换点，SAFETY 前提
@@ -72,6 +73,9 @@ impl Vm {
         // `this` 寄存器里。
         let saved_this = self.regs[254];
         self.regs[254] = callee;
+        // 普通调用形态：清零构造形态标记，防止外层构造窗口残留误判
+        // （成员式普通调用落在构造器帧内时 new.target 槽仍为类构造器）。
+        self.constructing_native = false;
         self.native_call_depth += 1;
         let result = func(self, args_slice);
         self.native_call_depth -= 1;
@@ -101,6 +105,8 @@ impl Vm {
                         return self.raise_type_error("CALL target is not callable");
                     }
                     if obj.native_fn().is_some() {
+                        // 尾调用转发为普通调用形态。
+                        self.constructing_native = false;
                         match self.call_function_sync(callee, this, &args) {
                             Ok(val) => {
                                 self.regs[0] = val;
@@ -596,7 +602,13 @@ impl Vm {
             let args: Vec<JsValue> = (0..arg_count)
                 .map(|i| self.regs[first_arg_reg.wrapping_add(i as u8) as usize])
                 .collect();
-            match self.call_function_sync(super_ctor, derived_this, &args) {
+            // 构造形态标记夹持（SUPER native 臂不写 reg255，new.target 继承
+            // 外层类构造器帧，形态判定只能靠本标记）。
+            let saved_constructing = self.constructing_native;
+            self.constructing_native = true;
+            let result = self.call_function_sync(super_ctor, derived_this, &args);
+            self.constructing_native = saved_constructing;
+            match result {
                 Ok(val) => {
                     // super() 返回实例的 [[Prototype]] 须设为 new.target.prototype
                     //（native 构造器不知道 new.target，由调用方设置）。
@@ -852,6 +864,8 @@ impl Vm {
                             .map(|_| true);
                     }
                     if obj.native_fn().is_some() {
+                        // spread 普通调用形态：清零构造形态标记。
+                        self.constructing_native = false;
                         match self.call_function_sync(callee, this_value, &args) {
                             Ok(v) => {
                                 self.regs[0] = v;
@@ -983,10 +997,14 @@ impl Vm {
 
         if ctor_obj.native_fn().is_some() {
             // native 构造器：receiver 为新对象，值传递调用。newTarget 快照后置入
-            // reg(255) 暴露给 native 构造器（调用后恢复原值）。
+            // reg(255) 暴露给 native 构造器（调用后恢复原值）；构造形态标记同窗
+            // 夹持（调用返回即恢复，先于结果分派，异常结局不残留）。
             let saved_new_target = self.regs[255];
+            let saved_constructing = self.constructing_native;
             self.regs[255] = constructor;
+            self.constructing_native = true;
             let result = self.call_function_sync(constructor, new_obj_val, &args);
+            self.constructing_native = saved_constructing;
             self.regs[255] = saved_new_target;
             match result {
                 Ok(v) => {
@@ -1091,7 +1109,13 @@ impl Vm {
         };
 
         if super_obj.native_fn().is_some() {
-            match self.call_function_sync(super_ctor, derived_this, &args) {
+            // 构造形态标记夹持（SUPER native 臂不写 reg255，new.target 继承
+            // 外层类构造器帧，形态判定只能靠本标记）。
+            let saved_constructing = self.constructing_native;
+            self.constructing_native = true;
+            let result = self.call_function_sync(super_ctor, derived_this, &args);
+            self.constructing_native = saved_constructing;
+            match result {
                 Ok(val) => {
                     // super() 返回实例的 [[Prototype]] 须设为 new.target.prototype
                     let instance = if val.is_object() { val } else { derived_this };

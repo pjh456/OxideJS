@@ -304,6 +304,13 @@ pub struct Vm {
     /// 已做非对象回退 this）交付给恢复方（与 generator_dispatch 同语义，
     /// 同样经 InlineSyncState 限定作用域于属主 dispatch）。
     pub(crate) construct_dispatch: bool,
+    /// 当前 native 调用是否以构造形态发起（NEW/SUPER native 臂与
+    /// `construct_with` native 臂在调用前置 true，普通调用入口前置 false）：
+    /// builtin 构造器（`typed_array_new`）据此判定向 receiver 物化，替代
+    /// 寄存器推断——native 调用与调用方共享寄存器文件，类构造器帧内的
+    /// new.target 槽会残留类构造器对象，按寄存器判定会把成员式普通调用
+    /// 误判为构造。调用结束即恢复/清零，不跨 native 调用存活。
+    pub(crate) constructing_native: bool,
     /// 当前正在执行的异步生成器上下文对象（`OBJ_TYPE_ASYNC_GENERATOR`，持有
     /// `AsyncGeneratorState` 快照）。AWAIT dispatch 据此登记异步生成器恢复反应；
     /// 跨嵌套 async 调用保存/恢复（与 `async_context` 同生命周期，二者互斥占用）。

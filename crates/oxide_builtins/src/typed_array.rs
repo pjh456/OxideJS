@@ -554,11 +554,14 @@ fn to_collect_len(n: f64) -> usize {
 
 fn typed_array_new<H: VmHost>(vm: &mut H, args: &[u8], kind: TypedArrayKind) -> NativeResult {
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
-    // reg 255（new.target）为对象即构造调用（NEW/SUPER_CALL/construct 三路径同形）：
-    // 视图数据物化到 receiver（其原型 = new.target.prototype，派生类 super() 与
-    // species 构造由此拿到子类实例）；普通调用（new.target 为 undefined）按规范
-    // TypedArrayCreate 忽略 this、自建新对象。
-    let in_construct = vm.reg(255).is_object() && this_val.is_object();
+    // 调用形态取构造入口标记（NEW/SUPER native 臂与 construct_with 三入口调用前
+    // 置位、普通调用入口调用前清零），不推断 new.target 寄存器：native 调用与
+    // 调用方共享寄存器文件，类构造器帧内 new.target 槽残留类构造器对象，按
+    // 寄存器推断会把成员式普通调用误判为构造（双物化 receiver、旧数据盒泄漏）。
+    // 构造形态下视图数据物化到 receiver（其原型 = new.target.prototype，派生类
+    // super() 与 species 构造由此拿到子类实例）；普通形态按规范 TypedArrayCreate
+    // 忽略 this、自建新对象。
+    let in_construct = vm.constructing_native() && this_val.is_object();
     let first = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::int(0) };
     let bpe = kind.bytes_per_element();
 

@@ -45,6 +45,14 @@ pub trait VmHost {
             self.native_overflow_at(idx - window)
         }
     }
+    /// 当前 native 调用是否以构造形态发起（NEW/SUPER native 臂与 `construct_with`
+    /// native 臂置 true，普通调用入口置 false，调用结束即恢复）。
+    ///
+    /// # 边界与前提
+    /// - 仅在 native 实现内部读取；构造器 builtin 据此判定向 receiver 物化，
+    ///   不得用寄存器推断（native 调用与调用方共享寄存器文件，new.target
+    ///   槽在类构造器帧内残留类构造器对象）。
+    fn constructing_native(&self) -> bool;
 
     // 对象分配 / 字符串创建
     fn alloc_object(&mut self, obj: JsObject) -> *mut JsObject;
