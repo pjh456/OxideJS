@@ -139,12 +139,12 @@ pub(crate) fn arraylike_get<H: VmHost>(vm: &mut H, ptr: *mut JsObject, i: usize)
 
 /// 字符串源的 array-like 单元序列；非字符串源返回 `None`。
 ///
-/// String exotic 对象的 `length` 与索引属性在引擎内未物化，Array.from /
-/// %TypedArray%.from 的 array-like 回退按 UTF-16 单元直接读：原始串取自身单元，
-/// 装箱串取其 `[[StringData]]`（槽 0）。单元长度即 `length`，第 i 个索引为第 i 个码元。
+/// Array.from / %TypedArray%.from 的 array-like 回退按 UTF-16 单元直接读：
+/// 原始串取自身单元，装箱串取其 `[[StringData]]`（boxed_value 载荷）。
+/// 单元长度即 `length`，第 i 个索引为第 i 个码元。
 ///
 /// # 边界
-/// 装箱串槽 0 非字符串（异常形态）按非字符串源处理；指针为空返回 `None`。
+/// 装箱串载荷非字符串（异常形态）按非字符串源处理；指针为空返回 `None`。
 pub(crate) fn string_arraylike_units<H: VmHost>(vm: &H, value: JsValue) -> Option<Vec<u16>> {
     let raw = if value.is_string() {
         value
@@ -158,7 +158,7 @@ pub(crate) fn string_arraylike_units<H: VmHost>(vm: &H, value: JsValue) -> Optio
         if !obj.is_string_obj() {
             return None;
         }
-        let data = obj.get_prop_at(0);
+        let data = obj.boxed_value();
         if !data.is_string() {
             return None;
         }

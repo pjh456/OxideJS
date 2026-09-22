@@ -8,7 +8,8 @@ use std::cmp::Ordering;
 
 use num_traits::{ToPrimitive, Zero};
 use oxide_types::mem::P;
-use oxide_types::object::JsObject;
+use oxide_types::object::{JsObject, PropAttributes};
+use oxide_types::private_key::make_int_key;
 use oxide_types::shape::EMPTY_SHAPE_ID;
 use oxide_types::value::{JsType, JsValue};
 
@@ -744,11 +745,55 @@ pub fn strict_equality(lhs: JsValue, rhs: JsValue) -> bool {
     }
 }
 
+/// 把 String 盒的规范固有属性面物化为普通 shape 属性：被包串写入
+/// `boxed_value` 载荷，字符索引 0..len-1（writable:false / enumerable:true /
+/// configurable:false）与 `length`（writable:false / enumerable:false /
+/// configurable:false）逐键 shape 转换后落属性区。
+///
+/// 物化后 String exotic 的 [[Get]]/[[Has]]/[[Set]]/[[DefineOwnProperty]]/
+/// [[Delete]]/枚举语义由既有属性机制承担：写失败静默（sloppy）/抛错
+/// （strict）、同值重定义放行与异值重定义抛 TypeError、delete 返 false，
+/// 与 exotic 定义逐条同值，VM 属性派发面零特判。
+///
+/// # 步骤
+/// 1. 整串单元序列落地（借用结束），`boxed_value` 记被包串
+/// 2. 逐单元：整数键 shape 转换 → 单单元串落槽 → 索引属性 meta
+/// 3. `length` 键 shape 转换 → 单元数落槽 → length 属性 meta
+///
+/// # 边界与前提
+/// - 调用时对象须为刚分配的空盒（EMPTY_SHAPE_ID、无属性），构造点唯一入口
+/// - 长串构造成本与单元数线性（每键一次 shape 转换 + 单单元串），
+///   ASCII 单元命中 perm 静态表免 session 分配
+///
+/// # 副作用
+/// - 修改对象 shape 链、属性区与 generation；单单元串/整串进 session 字符串区
+pub fn materialize_string_box<H: VmHost>(host: &mut H, obj: &mut JsObject, str_val: JsValue) {
+    let units = host.string_units(str_val).into_owned();
+    let len = units.len();
+    obj.set_boxed_value(str_val);
+    for (i, &unit) in units.iter().enumerate() {
+        let shape_id = host
+            .kernel_core()
+            .shape_forge()
+            .make_shape(obj.shape_id(), make_int_key(i as u32));
+        obj.set_shape_id(shape_id);
+        let ch = host.single_unit(unit).unwrap_or_else(|| host.new_string_units(&[unit]));
+        obj.push_prop(ch);
+        obj.set_data_meta(i as u32, PropAttributes::new(false, true, false));
+    }
+    let length_si = host.kernel_core().perm_interner().intern("length").0;
+    let shape_id = host.kernel_core().shape_forge().make_shape(obj.shape_id(), length_si);
+    obj.set_shape_id(shape_id);
+    obj.push_prop(JsValue::int(len as i32));
+    obj.set_data_meta(len as u32, PropAttributes::new(false, false, false));
+    obj.bump_generation();
+}
+
 /// ToObject（ECMA-262 §7.1.13）：null/undefined 抛 TypeError，其余原始值包装为对应包装对象。
 ///
 /// 包装对象按类型选择原型（String/Number/Boolean 原型或默认 Object 原型）；
-/// 被包基元写入对象专属载荷字段，不占命名属性区。字符串盒暂仍预存属性区
-/// 槽 0——其消费面（解盒读原始串）与规范固有属性面同批切换，两端不可分拆。
+/// 被包基元写入对象专属载荷字段，不占命名属性区。字符串盒经
+/// [`materialize_string_box`] 同步物化字符索引与 length 固有属性面。
 pub fn to_object<H: VmHost>(val: JsValue, host: &mut H) -> Result<JsValue, String> {
     if val.is_object() {
         return Ok(val);
@@ -776,8 +821,7 @@ pub fn to_object<H: VmHost>(val: JsValue, host: &mut H) -> Result<JsValue, Strin
     let obj_ref = unsafe { &mut *obj };
     obj_ref.type_tag = type_tag;
     if val.is_string() {
-        obj_ref.ensure_hash_props().push(val);
-        obj_ref.set_prop_count(1);
+        materialize_string_box(host, obj_ref, val);
     } else {
         obj_ref.set_boxed_value(val);
     }

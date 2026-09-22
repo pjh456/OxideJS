@@ -87,6 +87,26 @@ pub(crate) fn tag_number_proto(proto: &P<JsObject>) {
     obj.set_boxed_value(JsValue::int(0));
 }
 
+/// 把 String.prototype 标成 String 对象本体：规范 22.7.3 规定其是
+/// [[StringData]] = 空串的 String object。type_tag 是品牌表判据，boxed 值
+/// 供 thisStringValue/valueOf 的通用分支读取；length 自身属性按构造期
+/// 物化约定落地（writable:false / enumerable:false / configurable:false）。
+pub(crate) fn tag_string_proto(proto: &P<JsObject>, string_forge: &PermInterner, shape_forge: &ShapeForge) {
+    let ptr = proto.as_ptr() as *mut JsObject;
+    // SAFETY: proto 是 make_named_pair 刚建的本进程对象，P 引用与裸指针同址。
+    let obj = unsafe { &mut *ptr };
+    obj.type_tag = JsObject::OBJ_TYPE_STRING_OBJ;
+    obj.set_boxed_value(JsValue::perm_string(crate::string_forge::empty_string_ptr()));
+    let length_si = string_forge.intern("length").0;
+    let shape_id = shape_forge.make_shape(obj.shape_id(), length_si);
+    obj.set_shape_id(shape_id);
+    // push_prop 返回绝对存储下标（尾部槽），meta 按同下标落位，
+    // 避免写死槽号覆盖既有属性（如 constructor）的元数据。
+    let length_pos = obj.push_prop(JsValue::int(0));
+    obj.set_data_meta(length_pos, PropAttributes::new(false, false, false));
+    obj.bump_generation();
+}
+
 pub(crate) fn make_error_subtypes(error_proto: &P<JsObject>) -> ErrorSubtypeProtos {
     let error_proto_val = JsValue::from_js_object(error_proto.as_ptr() as *mut JsObject);
     ErrorSubtypeProtos {
@@ -448,6 +468,7 @@ impl BuiltinWorld {
         let (array_proto, array_constructor) = make_named_pair(string_forge, shape_forge, labels, "Array");
         let (function_proto, function_constructor) = make_named_pair(string_forge, shape_forge, labels, "Function");
         let (string_proto, string_constructor) = make_named_pair(string_forge, shape_forge, labels, "String");
+        tag_string_proto(&string_proto, string_forge, shape_forge);
         let (number_proto, number_constructor) = make_named_pair(string_forge, shape_forge, labels, "Number");
         tag_number_proto(&number_proto);
         let (boolean_proto, boolean_constructor) = make_named_pair(string_forge, shape_forge, labels, "Boolean");

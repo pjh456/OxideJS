@@ -235,13 +235,7 @@ fn whitelist_element_name<H: VmHost>(vm: &mut H, elem: JsValue) -> Result<Option
         return Ok(None);
     }
     let obj = unsafe { &*ptr };
-    // 装箱 String 的盒值存 prop 槽 0（boxed_value 槽不存）。
     let boxed = obj.boxed_value();
-    let boxed = if boxed.is_undefined() && obj.is_string_obj() {
-        obj.get_prop_at(0)
-    } else {
-        boxed
-    };
     if !boxed.is_string() && !boxed.is_int() && !boxed.is_double() {
         return Ok(None);
     }

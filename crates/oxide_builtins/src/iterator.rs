@@ -1547,10 +1547,10 @@ fn get_iterator<H: VmHost>(vm: &mut H, value: JsValue) -> Result<Option<(JsValue
                 return Err(exc);
             }
         };
-        // 码元快速路径的 inner：原始串取 value 本身；装箱串取其内容（槽 0 恒为
-        // 原始串）——wrapper 码元步进按原始串产出，装箱串不直接作 inner。
+        // 码元快速路径的 inner：原始串取 value 本身；装箱串取其 boxed_value
+        // 载荷——wrapper 码元步进按原始串产出，装箱串不直接作 inner。
         let inner = if value_is_string_box {
-            let raw = unsafe { (&*value.as_js_object_ptr()).get_prop_at(0) };
+            let raw = unsafe { (&*value.as_js_object_ptr()).boxed_value() };
             if raw.is_string() {
                 raw
             } else {

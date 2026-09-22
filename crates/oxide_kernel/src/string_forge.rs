@@ -399,6 +399,29 @@ pub fn single_char_ptr(ch: u8) -> *const JsString {
     }
 }
 
+/// 空串永久 `JsString` 指针，首用惰性物化后恒复用同一地址。
+/// 供 %StringPrototype% 的 `[[StringData]]` 载荷等零分配场景复用。
+static EMPTY_STRING: OnceLock<StringPtr> = OnceLock::new();
+
+/// 取空串的永久 `JsString` 指针，惰性物化一次后恒返回同一地址。
+pub fn empty_string_ptr() -> *const JsString {
+    match EMPTY_STRING.get() {
+        Some(ptr) => ptr.0,
+        None => {
+            let ptr = Box::into_raw(Box::new(JsString::new(String::new())));
+            match EMPTY_STRING.set(StringPtr(ptr)) {
+                Ok(()) => ptr,
+                Err(_) => {
+                    let existing = EMPTY_STRING.get().expect("set 失败时槽必已初始化").0;
+                    // SAFETY: ptr 来自本线程的 Box::into_raw，无任何外部引用。
+                    unsafe { drop(Box::from_raw(ptr)) };
+                    existing
+                }
+            }
+        }
+    }
+}
+
 /// 小整数（0..=99）永久 `JsString` 指针表：`s += j` 等数字叶子拼接的高频命中路径，
 /// 免每次 `to_string` + 登记 2 次分配。物化面严格有界：100 条目 ≈ 4KB，
 /// 随进程生命周期有意保留（同 `SINGLE_CHAR_TABLE` 论证）。

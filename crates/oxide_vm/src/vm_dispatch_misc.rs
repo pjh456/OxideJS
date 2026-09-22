@@ -920,22 +920,8 @@ impl Vm {
 
         // 收集-提交：先取齐 (键, 值)，取值阶段触发 getter（可能抛异常），再统一写
         // 目标对象，避免提交写与取值互相交错。只复制可枚举自有属性（CopyDataProperties）。
+        // 字符串包装对象的索引字符是构造期物化的可枚举自有属性，走同一 walk 路径。
         let mut assignments: Vec<(u32, JsValue)> = Vec::new();
-
-        // 字符串包装对象：索引字符是可枚举自有属性（ToObject("str") 的 0..len-1）。
-        if src_obj.type_tag == JsObject::OBJ_TYPE_STRING_OBJ {
-            let raw = src_obj.get_prop_at(0);
-            // SAFETY: 包装对象槽 0 恒为字符串值；单元序列展开（lone surrogate 保真）。
-            let code_units: Vec<u16> = unsafe { (*raw.as_string_ptr()).units().into_owned() };
-            for (i, unit) in code_units.iter().enumerate() {
-                let si = make_int_key(i as u32);
-                if excluded.contains(&si) {
-                    continue;
-                }
-                let ch_val = self.unit_char_value(*unit);
-                assignments.push((si, ch_val));
-            }
-        }
 
         // 自身属性：walk_own_keys 已合并数组元素区（hole 跳过）并返回绝对存储索引，
         // 仅可枚举，跳过 pattern 已绑定的键。

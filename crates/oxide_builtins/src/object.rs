@@ -466,7 +466,8 @@ pub fn object_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         let obj = vm.alloc_object(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(proto)));
         let obj_ref = unsafe { &mut *obj };
         obj_ref.type_tag = JsObject::OBJ_TYPE_STRING_OBJ;
-        obj_ref.set_prop_at(0, val);
+        // 构造期物化：boxed_value 载荷与字符索引/length 固有属性同批落地。
+        oxide_runtime_api::materialize_string_box(vm, obj_ref, val);
         return NativeResult::Ok(JsValue::from_js_object(obj));
     }
     if val.is_bool() {
@@ -638,10 +639,12 @@ pub fn object_assign<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 
     let mut all_assignments: Vec<(u32, JsValue)> = Vec::new();
     for &arg_reg in args.iter().skip(2) {
-        let source_val = vm.reg(arg_reg);
-        if !source_val.is_object() {
-            continue;
-        }
+        // null/undefined 源静默跳过（语料口径，非规范 ToObject 抛错）；其余
+        // 基元经 ToObject 装箱后走同一 walk（string 源自此获字符属性拷贝）。
+        let source_val = match oxide_runtime_api::to_object(vm.reg(arg_reg), vm) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
         let source_ptr = source_val.as_js_object_ptr();
         if source_ptr.is_null() {
             continue;
@@ -866,8 +869,8 @@ pub(crate) fn define_from_descriptor<H: VmHost>(
 /// # 边界与前提
 /// - 仅处理可枚举自身属性；描述符值经 ordinary_get 读取（触发访问器 getter）
 /// - 描述符值的非对象校验由 define_from_descriptor 承担（ToPropertyDescriptor）
-/// - String 盒的自身键是字符下标 0..len-1（String exotic，各键值为对应
-///   字符），盒存储未落属性枚举面，此处按规范物化
+/// - String 盒装箱后自身键为物化的字符下标（值为对应字符），走同一
+///   walk 路径；字符值非对象，ToPropertyDescriptor 按规范抛 TypeError
 ///
 /// # 副作用
 /// - 修改 target 的 shape 链、属性表与 generation
@@ -878,18 +881,7 @@ fn define_all_from_properties<H: VmHost>(
     // 前缀恢复后原类型抛出。
     let props_obj = oxide_runtime_api::to_object(props_val, vm)?;
     let props_ptr = props_obj.as_js_object_ptr();
-    let descriptors: Vec<(u32, JsValue)> = if unsafe { &*props_ptr }.is_string_obj() {
-        // String 盒：键为字符下标、值为字符本身；空串零键。
-        let props = unsafe { &*props_ptr };
-        let raw = props.boxed_value();
-        let raw = if raw.is_undefined() { props.get_prop_at(0) } else { raw };
-        let units = if raw.is_string() { vm.string_units(raw).to_vec() } else { Vec::new() };
-        units
-            .iter()
-            .enumerate()
-            .map(|(i, unit)| (make_int_key(i as u32), vm.new_string_units(std::slice::from_ref(unit))))
-            .collect()
-    } else {
+    let descriptors: Vec<(u32, JsValue)> = {
         let props = unsafe { &*props_ptr };
         walk_own_keys(vm, props)
             .into_iter()
@@ -1031,15 +1023,14 @@ pub fn object_get_own_property_descriptor<H: VmHost>(vm: &mut H, args: &[u8]) ->
 ///
 /// # 步骤
 /// 1. ToObject 装箱接收者（null/undefined 抛 TypeError）
-/// 2. String 盒：按规范枚举虚拟键（整数下标 0..len-1 + "length"），构造描述符
-/// 3. 普通对象：按规范三段序枚举自身键（walk_own_keys + walk_own_symbol_keys）
-/// 4. 逐键取描述符（缺失键跳过），以数据属性定义到结果对象
+/// 2. 按规范三段序枚举自身键（walk_own_keys + walk_own_symbol_keys）；
+///    String 盒装箱后自身键为物化的字符下标 + length，走同一路径
+/// 3. 逐键取描述符（缺失键跳过），以数据属性定义到结果对象
 ///
 /// # 边界与前提
 /// - 结果对象 proto = %Object.prototype%，各键属性恒 writable/enumerable/
 ///   configurable 全真（fresh 普通对象的 CreateDataPropertyOrThrow 形态）
 /// - 描述符取值与 gOPD 同核；模块命名空间未初始化导出抛 ReferenceError 原值
-/// - String 盒虚拟属性：字符下标 enumerable=true，length enumerable=false
 ///
 /// # 副作用
 /// - 分配结果对象与每个描述符对象
@@ -1048,11 +1039,6 @@ pub fn object_get_own_property_descriptors<H: VmHost>(vm: &mut H, args: &[u8]) -
         Ok(ptr) => ptr,
         Err(err) => return NativeResult::Err(err),
     };
-
-    // String 盒：自身键为虚拟属性（从被包字符串值派生），不走 shape 链枚举。
-    if unsafe { &*obj_ptr }.is_string_obj() {
-        return string_exotic_get_own_property_descriptors(vm, obj_ptr);
-    }
 
     let obj = unsafe { &*obj_ptr };
 
@@ -1077,81 +1063,6 @@ pub fn object_get_own_property_descriptors<H: VmHost>(vm: &mut H, args: &[u8]) -
             return NativeResult::Err(crate::error::create_type_error(vm, &err));
         }
     }
-    NativeResult::Ok(result_val)
-}
-
-/// String 盒的 `getOwnPropertyDescriptors`：枚举虚拟键（字符下标 + length）。
-///
-/// # 步骤
-/// 1. 取被包字符串值（boxed_value 或 hash_props[0] fallback）
-/// 2. 按 UTF-16 单元枚举：整数下标 0..len-1（enumerable=true）+ "length"（enumerable=false）
-/// 3. 逐键构造描述符对象并写入结果
-///
-/// # 边界与前提
-/// - 空串：仅返回 length 描述符
-/// - 非字符串被包值：退化为零键
-fn string_exotic_get_own_property_descriptors<H: VmHost>(vm: &mut H, obj_ptr: *mut JsObject) -> NativeResult {
-    let obj = unsafe { &*obj_ptr };
-    // 取被包字符串值：优先 boxed_value，回退 hash_props[0]。
-    let raw = obj.boxed_value();
-    let raw = if raw.is_undefined() { obj.get_prop_at(0) } else { raw };
-    let units = if raw.is_string() { vm.string_units(raw).to_vec() } else { Vec::new() };
-    let len = units.len();
-
-    // 结果对象：proto = %Object.prototype%。
-    let desc_proto = vm.session().builtin_world().object_proto.as_ptr() as *mut JsObject;
-    let result = vm.alloc_object(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(desc_proto)));
-    let result_val = JsValue::from_js_object(result);
-
-    // 预计算 interned 键。
-    let intern = vm.kernel_core().perm_interner();
-    let value_si = intern.intern("value").0;
-    let writable_si = intern.intern("writable").0;
-    let enumerable_si = intern.intern("enumerable").0;
-    let configurable_si = intern.intern("configurable").0;
-    let length_si = intern.intern("length").0;
-
-    // 整数下标键 0..len-1：enumerable=true, writable=false, configurable=false。
-    for (i, unit) in units.iter().enumerate() {
-        let si = make_int_key(i as u32);
-        let char_val = vm.new_string_units(std::slice::from_ref(unit));
-        let desc = alloc_desc_object(vm);
-        let desc_obj = unsafe { &mut *desc };
-        let desc_obj_ptr = JsValue::from_js_object(desc);
-        // 构造描述符对象：value + writable/enumerable/configurable。
-        vm.define_data_property(desc_obj, value_si, char_val, PropAttributes::DEFAULT_DATA)
-            .ok();
-        vm.define_data_property(desc_obj, writable_si, JsValue::bool(false), PropAttributes::DEFAULT_DATA)
-            .ok();
-        vm.define_data_property(desc_obj, enumerable_si, JsValue::bool(true), PropAttributes::DEFAULT_DATA)
-            .ok();
-        vm.define_data_property(desc_obj, configurable_si, JsValue::bool(false), PropAttributes::DEFAULT_DATA)
-            .ok();
-        if let Err(err) =
-            vm.define_data_property(unsafe { &mut *result }, si, desc_obj_ptr, PropAttributes::DEFAULT_DATA)
-        {
-            return NativeResult::Err(crate::error::create_type_error(vm, &err));
-        }
-    }
-
-    // "length" 键：enumerable=false, writable=false, configurable=false。
-    let desc = alloc_desc_object(vm);
-    let desc_obj = unsafe { &mut *desc };
-    let desc_obj_ptr = JsValue::from_js_object(desc);
-    vm.define_data_property(desc_obj, value_si, JsValue::int(len as i32), PropAttributes::DEFAULT_DATA)
-        .ok();
-    vm.define_data_property(desc_obj, writable_si, JsValue::bool(false), PropAttributes::DEFAULT_DATA)
-        .ok();
-    vm.define_data_property(desc_obj, enumerable_si, JsValue::bool(false), PropAttributes::DEFAULT_DATA)
-        .ok();
-    vm.define_data_property(desc_obj, configurable_si, JsValue::bool(false), PropAttributes::DEFAULT_DATA)
-        .ok();
-    if let Err(err) =
-        vm.define_data_property(unsafe { &mut *result }, length_si, desc_obj_ptr, PropAttributes::DEFAULT_DATA)
-    {
-        return NativeResult::Err(crate::error::create_type_error(vm, &err));
-    }
-
     NativeResult::Ok(result_val)
 }
 

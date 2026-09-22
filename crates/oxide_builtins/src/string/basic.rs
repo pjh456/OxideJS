@@ -114,7 +114,7 @@ pub fn string_value_of<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         if !ptr.is_null() {
             let obj = unsafe { &*ptr };
             if obj.is_string_obj() {
-                return NativeResult::Ok(obj.get_prop_at(0));
+                return NativeResult::Ok(obj.boxed_value());
             }
         }
     }
@@ -172,7 +172,8 @@ pub fn string_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 
     let obj = unsafe { &mut *this_val.as_js_object_ptr() };
     obj.type_tag = JsObject::OBJ_TYPE_STRING_OBJ;
-    obj.push_prop(str_val);
+    // 构造期物化：boxed_value 载荷与字符索引/length 固有属性同批落地。
+    oxide_runtime_api::materialize_string_box(vm, obj, str_val);
     NativeResult::Ok(this_val)
 }
 
@@ -187,7 +188,7 @@ pub fn string_to_string<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         if !ptr.is_null() {
             let obj = unsafe { &*ptr };
             if obj.is_string_obj() {
-                return NativeResult::Ok(obj.get_prop_at(0));
+                return NativeResult::Ok(obj.boxed_value());
             }
         }
     }

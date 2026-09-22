@@ -7,7 +7,7 @@ use oxide_types::object::JsObject;
 use oxide_types::value::JsValue;
 
 use super::construct::{
-    builtin_labels, make_error_subtypes, make_named_pair, make_typed_array_family, tag_number_proto,
+    builtin_labels, make_error_subtypes, make_named_pair, make_typed_array_family, tag_number_proto, tag_string_proto,
     wire_builtin_world_links, ErrorSubtypeProtos, TypedArrayFamily,
 };
 use super::BuiltinWorld;
@@ -178,7 +178,11 @@ impl BuiltinWorld {
             (current.function_proto.clone(), current.function_constructor.clone())
         };
         let (string_proto, string_constructor) = if dirty.string {
-            make_named_pair(string_forge, shape_forge, labels, "String")
+            // 脏重建与全量构造同形：原型本体须带 String 对象 tag 与空串包值
+            // （+length 物化），漏此分支 full_reset 后 tag 翻回 "Object"。
+            let (proto, ctor) = make_named_pair(string_forge, shape_forge, labels, "String");
+            tag_string_proto(&proto, string_forge, shape_forge);
+            (proto, ctor)
         } else {
             (current.string_proto.clone(), current.string_constructor.clone())
         };

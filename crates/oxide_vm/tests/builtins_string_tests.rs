@@ -1396,8 +1396,8 @@ fn utf16_iterator_lone_surrogate_units() {
 #[test]
 fn utf16_spread_and_to_object_lone_surrogate() {
     // 迭代/spread 按单元产出；rest 解构的 ToObject 字符串下标读得 1 单元串
-    // （非空串）。字符串包装对象的索引/length 读（new String(...)[0]）另有
-    // 独立既有缺口，不在此钉。
+    // （非空串）。字符串包装对象索引/length 的构造期物化钉测见
+    // boxed_string_exotic_tests.rs。
     let mut vm = Vm::new();
     let r = eval(
         &mut vm,
