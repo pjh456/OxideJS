@@ -444,6 +444,121 @@ pub fn array_buffer_slice<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     NativeResult::Ok(JsValue::from_js_object(new_array_buffer(vm, data[start..end].to_vec(), 0, proto)))
 }
 
+/// transfer 族新缓冲保持性：Preserve 源存储态上限原样拷贝，Fixed 定长，
+/// Immutable 定长并置 immutable 标志。
+#[derive(Clone, Copy)]
+enum TransferKeep {
+    Preserve,
+    Fixed,
+    Immutable,
+}
+
+/// `ArrayBufferCopyAndDetach(O, newLength, keep)` 共享核：品牌守卫 →
+/// newLength 求值 → detached/immutable 判定 → 界校验 → 前缀拷贝零填充建新
+/// 缓冲 → 源 detach。
+///
+/// # 步骤
+/// 1. this 品牌校验（非对象/非 ArrayBuffer → TypeError）。
+/// 2. newLength 缺省 → 源当前字节长；在场 → ToIndex 传播式（强转副作用
+///    先于一切守卫观测）。
+/// 3. 重取源载荷指针（求值可已晋升/detach/改 immutable），重检状态位：
+///    detached → TypeError；immutable → TypeError。
+/// 4. 界校验：resizable 源且 newByteLength > 真实上限（重读存储态 − 1）→
+///    RangeError；newByteLength > 引擎分配上界 → RangeError。
+/// 5. 物化拷贝（载荷指针新鲜，字节借出止于本步）。
+/// 6. 新建缓冲（proto 取 %ArrayBuffer.prototype%，保持性按 keep），字节
+///    序列零填充至 newByteLength。
+/// 7. 再重取源载荷指针 detach（`data → None`）：分配可已晋升源对象，新缓冲
+///    持独立拷贝，源 detach 不影响返回值。
+/// 8. 返回新缓冲。
+fn array_buffer_copy_and_detach<H: VmHost>(
+    vm: &mut H, this_reg: u8, new_length: Option<JsValue>, keep: TransferKeep,
+) -> NativeResult {
+    let this_val = vm.reg(this_reg);
+    let payload_ptr = native_try!(array_buffer_payload(vm, this_val));
+    // SAFETY: payload_ptr 经 array_buffer_payload 校验为合法 ArrayBuffer 载荷；
+    // 只读当前字节长，借用即结束，不跨 JS 调用点。
+    let cur_len = unsafe { &*payload_ptr }.data.as_ref().map_or(0, |d| d.len());
+    let new_len = match new_length {
+        None => cur_len,
+        Some(v) => native_try!(to_index(vm, v)),
+    };
+    // 求值可已把本缓冲区晋升进 session、detach 或置 immutable：接收者寄存器
+    // 与状态位均须重取重检，不得消费求值前快照。
+    let this_val = vm.reg(this_reg);
+    let payload_ptr = native_try!(array_buffer_payload(vm, this_val));
+    // SAFETY: 重取的 payload_ptr 指向存活载荷盒；标量拷出后借用即结束。
+    let (cur_len, stored_max, immutable, detached) = unsafe {
+        let p = &*payload_ptr;
+        (p.data.as_ref().map_or(0, |d| d.len()), p.max_byte_length, p.immutable, p.data.is_none())
+    };
+    if detached {
+        return NativeResult::Err(crate::error::create_type_error(vm, "ArrayBuffer internal state invalid"));
+    }
+    if immutable {
+        return NativeResult::Err(crate::error::create_type_error(vm, "ArrayBuffer is immutable"));
+    }
+    // 存储态上限 +1 编码：真实上限 = 存储态 − 1（上限 0 的缓冲只许同长）。
+    if stored_max != 0 && new_len > stored_max - 1 {
+        return NativeResult::Err(crate::error::create_range_error(vm, "invalid ArrayBuffer length"));
+    }
+    if new_len > MAX_ARRAY_BUFFER_LENGTH {
+        return NativeResult::Err(crate::error::create_range_error(vm, "invalid ArrayBuffer length"));
+    }
+    // SAFETY: 重取的 payload_ptr 指向存活载荷盒；detached 已排除，data 必为
+    // Some。字节借出止于本语句。
+    let copy_len = new_len.min(cur_len);
+    let mut new_data: Vec<u8> = unsafe { &*payload_ptr }
+        .data
+        .as_deref()
+        .map_or_else(Vec::new, |d| d[..copy_len].to_vec());
+    new_data.resize(new_len, 0);
+    let (dest_max, dest_immutable) = match keep {
+        TransferKeep::Preserve => (stored_max, false),
+        TransferKeep::Fixed => (0, false),
+        TransferKeep::Immutable => (0, true),
+    };
+    let proto = default_array_buffer_proto(vm);
+    let dest_ptr = new_array_buffer(vm, new_data, dest_max, proto);
+    // SAFETY: dest_ptr 为 alloc_object 新建对象，载荷盒由 new_array_buffer 建。
+    if dest_immutable {
+        let Some(p) = array_buffer_payload_ptr(unsafe { &*dest_ptr }) else {
+            return type_error(vm, "ArrayBuffer internal state invalid");
+        };
+        unsafe { (*p).immutable = true };
+    }
+    // 分配可已将源晋升：detach 前再重取指针，免悬垂窗。
+    let this_val = vm.reg(this_reg);
+    let payload_ptr = native_try!(array_buffer_payload(vm, this_val));
+    // SAFETY: 重取的 payload_ptr 指向存活载荷盒。
+    unsafe { (*payload_ptr).data = None };
+    NativeResult::Ok(JsValue::from_js_object(dest_ptr))
+}
+
+/// `ArrayBuffer.prototype.transfer([newLength])`：拷贝并 detach，保持性
+/// 原样（定长→定长，resizable 源→resizable 同上限）。
+pub fn array_buffer_transfer<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let this_reg = if args.is_empty() { 0 } else { args[0] };
+    let new_length = if args.len() > 1 { Some(vm.reg(args[1])) } else { None };
+    array_buffer_copy_and_detach(vm, this_reg, new_length, TransferKeep::Preserve)
+}
+
+/// `ArrayBuffer.prototype.transferToFixedLength([newLength])`：拷贝并
+/// detach，新缓冲恒定长。
+pub fn array_buffer_transfer_to_fixed_length<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let this_reg = if args.is_empty() { 0 } else { args[0] };
+    let new_length = if args.len() > 1 { Some(vm.reg(args[1])) } else { None };
+    array_buffer_copy_and_detach(vm, this_reg, new_length, TransferKeep::Fixed)
+}
+
+/// `ArrayBuffer.prototype.transferToImmutable([newLength])`：拷贝并
+/// detach，新缓冲恒定长且 immutable。
+pub fn array_buffer_transfer_to_immutable<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let this_reg = if args.is_empty() { 0 } else { args[0] };
+    let new_length = if args.len() > 1 { Some(vm.reg(args[1])) } else { None };
+    array_buffer_copy_and_detach(vm, this_reg, new_length, TransferKeep::Immutable)
+}
+
 /// `ArrayBuffer.isView(value)`：参数是 DataView 或 TypedArray 才返回 true。
 pub fn array_buffer_is_view<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let value = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
@@ -599,6 +714,44 @@ mod tests {
         )
         .unwrap();
         assert_eq!(vm.lookup_str(e).unwrap(), "TypeError");
+    }
+
+    /// transfer 族新缓冲存储态字段表：Preserve 源上限原样（+1 编码不变）、
+    /// Fixed/Immutable 定长，仅 Immutable 置位；源均 detach。
+    #[test]
+    fn transfer_dest_payload_field_table() {
+        let mut vm = Vm::new();
+        let r = eval_ab(
+            &mut vm,
+            "var src = new ArrayBuffer(4, {maxByteLength: 8}); \
+             var v = new Uint8Array(src); v[0] = 9; \
+             var dest = src.transfer(5); \
+             var a = new Uint8Array(dest)[0]; \
+             var src1 = new ArrayBuffer(4, {maxByteLength: 8}); \
+             var d1 = src1.transferToFixedLength(5).maxByteLength; \
+             var src2 = new ArrayBuffer(4, {maxByteLength: 8}); \
+             var d2 = src2.transferToImmutable(5); \
+             var fixed = new ArrayBuffer(3); \
+             var d3 = fixed.transfer(3).resizable; \
+             [a, src.detached, d1, d2.immutable, d2.resizable, fixed.detached, d3].join(',')",
+        )
+        .unwrap();
+        assert_eq!(vm.lookup_str(r).unwrap(), "9,true,5,true,false,true,false");
+        // 载荷存储态直读：transfer 产物 max = 8 + 1（+1 编码），ttf/tti 产物 = 0。
+        let dest_val = eval_ab(
+            &mut vm,
+            "var s = new ArrayBuffer(4, {maxByteLength: 8}); \
+             globalThis.__d = s.transfer(5); globalThis.__d",
+        )
+        .unwrap();
+        // SAFETY: __d 为已晋升 session 的 ArrayBuffer 对象，借用止于断言、不跨下一次 eval。
+        let dest_obj = unsafe { &*dest_val.as_js_object_ptr() };
+        let p = array_buffer_payload_ptr(dest_obj).expect("产物应携带载荷盒");
+        // SAFETY: p 指向存活载荷盒。
+        let payload = unsafe { &*p };
+        assert_eq!(payload.max_byte_length, 9);
+        assert!(!payload.immutable);
+        assert_eq!(payload.data.as_ref().expect("产物应附着").len(), 5);
     }
 
     /// resize 后置 detach 重检钉：强转调用中途 detach 后按 TypeError 抛，

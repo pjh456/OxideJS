@@ -63,6 +63,21 @@ pub fn bind_array_buffer(core: &Arc<KernelCore>, session: &KernelSession, global
                 oxide_builtins::array_buffer::array_buffer_mark_immutable::<crate::vm::Vm> as *const (),
                 0,
             ),
+            (
+                "transfer",
+                oxide_builtins::array_buffer::array_buffer_transfer::<crate::vm::Vm> as *const (),
+                0,
+            ),
+            (
+                "transferToFixedLength",
+                oxide_builtins::array_buffer::array_buffer_transfer_to_fixed_length::<crate::vm::Vm> as *const (),
+                0,
+            ),
+            (
+                "transferToImmutable",
+                oxide_builtins::array_buffer::array_buffer_transfer_to_immutable::<crate::vm::Vm> as *const (),
+                0,
+            ),
         ],
     );
 

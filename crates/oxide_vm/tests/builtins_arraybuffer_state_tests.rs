@@ -671,3 +671,150 @@ fn ab_ta_view_length_detached_zero() {
         oxide_builtins::typed_array::TaIndexGate::NumericInvalid
     );
 }
+
+/// transfer 拷贝/增减/零填充/源 detach 钉：grow 补零、same 原样、shrink
+/// 截断；transfer(0) 产物附着 0 长（区别于 detach）。
+#[test]
+fn ab_transfer_copies_grows_shrinks_and_detaches() {
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "function fill(ab) { var v = new Uint8Array(ab); v[0]=1; v[1]=2; v[2]=3; v[3]=4; return ab; } \
+         var a = new Uint8Array(fill(new ArrayBuffer(4)).transfer(5)); \
+         a[0]===1 && a[1]===2 && a[2]===3 && a[3]===4 && a[4]===0 \
+         && new Uint8Array(fill(new ArrayBuffer(4)).transfer(4)).length === 4 \
+         && new Uint8Array(fill(new ArrayBuffer(4)).transfer(2)).join(',') === '1,2' \
+         && fill(new ArrayBuffer(4)).transfer(0).detached === false \
+         && fill(new ArrayBuffer(4)).transfer(0).byteLength === 0",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+    let result = eval(
+        &mut vm,
+        "var ab = new ArrayBuffer(4); ab.transfer(2); ab.detached === true && ab.byteLength === 0",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
+/// transfer 保持性钉：resizable 源 → 产物 resizable 同上限，产物附着。
+#[test]
+fn ab_transfer_preserves_resizability() {
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "var dest = new ArrayBuffer(4, {maxByteLength: 8}).transfer(5); \
+         dest.resizable === true && dest.maxByteLength === 8 \
+         && dest.detached === false && dest.byteLength === 5",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
+/// transferToFixedLength 钉：resizable 源 → 产物恒定长、源 detach。
+#[test]
+fn ab_transfer_to_fixed_length_fixed() {
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "var ab = new ArrayBuffer(4, {maxByteLength: 8}); \
+         var dest = ab.transferToFixedLength(6); \
+         dest.resizable === false && dest.maxByteLength === 6 && dest.byteLength === 6 \
+         && ab.detached === true && ab.byteLength === 0",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
+/// transferToImmutable 钉：产物 immutable + 恒定长、源 detach；显式 longer
+/// 零填充。
+#[test]
+fn ab_transfer_to_immutable_sets_flag() {
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "var ab = new ArrayBuffer(4); \
+         var dest = ab.transferToImmutable(); \
+         dest.immutable === true && dest.resizable === false && ab.detached === true \
+         && new Uint8Array(new ArrayBuffer(4).transferToImmutable(9)).length === 9 \
+         && new Uint8Array(new ArrayBuffer(4).transferToImmutable(9))[8] === 0",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
+/// newLength 求值序与强转钉：valueOf→toString 序 TypeError、2^53 RangeError、
+/// valueOf 内 detach 后走 detached 判定（求值先于守卫）。
+#[test]
+fn ab_transfer_new_length_order_and_coercion() {
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "var log = []; \
+         var nl = { toString() { log.push('toString'); return {}; }, \
+                    valueOf() { log.push('valueOf'); return {}; } }; \
+         var t1 = false; \
+         try { new ArrayBuffer(0).transfer(nl); } catch (e) { t1 = e instanceof TypeError; } \
+         t1 && log.length === 2 && log[0] === 'valueOf' && log[1] === 'toString' \
+         && (function () { var t2 = false; \
+              try { new ArrayBuffer(0).transfer(2 ** 53); } catch (e) { t2 = e instanceof RangeError; } \
+              return t2; })() \
+         && (function () { var ab = new ArrayBuffer(8); var t3 = false; \
+              try { ab.transfer({ valueOf() { $262.detachArrayBuffer(ab); return 1; } }); } \
+              catch (e) { t3 = e instanceof TypeError; } \
+              return t3; })()",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
+/// detached 源钉：三方法同形 TypeError。
+#[test]
+fn ab_transfer_detached_source_type_error() {
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "var a = new ArrayBuffer(4); a.transfer(); \
+         var t1 = false, t2 = false, t3 = false; \
+         try { a.transfer(); } catch (e) { t1 = e instanceof TypeError; } \
+         try { a.transferToFixedLength(); } catch (e) { t2 = e instanceof TypeError; } \
+         try { a.transferToImmutable(); } catch (e) { t3 = e instanceof TypeError; } \
+         t1 && t2 && t3",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
+/// immutable 源钉：三方法同形 TypeError，newLength 读取先于 mutability 守卫。
+#[test]
+fn ab_transfer_immutable_source_type_error() {
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "var iab = new ArrayBuffer(4).transferToImmutable(); \
+         var calls = []; \
+         var nl = { valueOf() { calls.push('valueOf'); return 1; } }; \
+         var t1 = false, t2 = false, t3 = false; \
+         try { iab.transfer(nl); } catch (e) { t1 = e instanceof TypeError; } \
+         try { iab.transferToFixedLength(); } catch (e) { t2 = e instanceof TypeError; } \
+         try { iab.transferToImmutable(); } catch (e) { t3 = e instanceof TypeError; } \
+         t1 && t2 && t3 && calls.length === 1 && calls[0] === 'valueOf'",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
+/// 界校验钉：resizable 源超真实上限 RangeError、超引擎分配上界 RangeError。
+#[test]
+fn ab_transfer_range_and_alloc_limits() {
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "var t1 = false, t2 = false; \
+         try { new ArrayBuffer(4, {maxByteLength: 8}).transfer(9); } catch (e) { t1 = e instanceof RangeError; } \
+         try { new ArrayBuffer(0).transfer(2 ** 32); } catch (e) { t2 = e instanceof RangeError; } \
+         t1 && t2",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
