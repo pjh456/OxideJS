@@ -238,6 +238,103 @@ pub fn bind_typed_array(core: &Arc<KernelCore>, session: &KernelSession, global:
         oxide_builtins::typed_array::typed_array_to_string_tag_getter::<crate::vm::Vm> as *const (),
     );
 
+    // 共享原型的 own toString 与 Array.prototype.toString 共享同一函数对象
+    // （规范：同一内置函数对象；身份与描述符均按 own 属性验收）。
+    let to_string_si = core.perm_interner().intern("toString").0;
+    let array_proto_ref = unsafe { &*session.builtin_world().array_proto.as_ptr() };
+    // SAFETY: array_proto 由 BuiltinWorld 构造期建立，session 存活期内恒有效。
+    if let Some(pos) = core.shape_forge().lookup_position(array_proto_ref.shape_id(), to_string_si) {
+        let value = array_proto_ref.get_prop_at(pos);
+        let new_shape = core.shape_forge().make_shape(shared_proto.shape_id(), to_string_si);
+        shared_proto.set_shape_id(new_shape);
+        let new_pos = shared_proto.push_prop(value);
+        shared_proto.set_data_meta(new_pos, PropAttributes::new(true, false, true));
+        shared_proto.bump_generation();
+    }
+
+    // base64/hex 四原型法挂 Uint8Array 专属原型（Uint8ClampedArray 经链继承、
+    // kind 校验拒绝）；两静态法挂 Uint8Array 构造器。
+    let world = session.builtin_world();
+    let sh = core.shape_forge().as_ref();
+    let sf = core.perm_interner().as_ref();
+    let u8_proto_ptr = session.builtin_world().uint8array_proto.as_ptr() as *mut JsObject;
+    let u8_proto = unsafe { &mut *u8_proto_ptr };
+    // SAFETY: 指针来自 session 存活期内的 BuiltinWorld 对象。
+    let _ = world.bind_method(
+        u8_proto,
+        sh,
+        sf,
+        "toBase64",
+        unsafe {
+            oxide_types::object::NativeFnPtr::from_raw(
+                oxide_builtins::typed_array::uint8array_to_base64::<crate::vm::Vm> as *const (),
+            )
+        },
+        0,
+    );
+    let _ = world.bind_method(
+        u8_proto,
+        sh,
+        sf,
+        "toHex",
+        unsafe {
+            oxide_types::object::NativeFnPtr::from_raw(
+                oxide_builtins::typed_array::uint8array_to_hex::<crate::vm::Vm> as *const (),
+            )
+        },
+        0,
+    );
+    let _ = world.bind_method(
+        u8_proto,
+        sh,
+        sf,
+        "setFromBase64",
+        unsafe {
+            oxide_types::object::NativeFnPtr::from_raw(
+                oxide_builtins::typed_array::uint8array_set_from_base64::<crate::vm::Vm> as *const (),
+            )
+        },
+        1,
+    );
+    let _ = world.bind_method(
+        u8_proto,
+        sh,
+        sf,
+        "setFromHex",
+        unsafe {
+            oxide_types::object::NativeFnPtr::from_raw(
+                oxide_builtins::typed_array::uint8array_set_from_hex::<crate::vm::Vm> as *const (),
+            )
+        },
+        1,
+    );
+    let u8_ctor_ptr = session.builtin_world().uint8array_constructor.as_ptr() as *mut JsObject;
+    let u8_ctor = unsafe { &mut *u8_ctor_ptr };
+    let _ = world.bind_method(
+        u8_ctor,
+        sh,
+        sf,
+        "fromBase64",
+        unsafe {
+            oxide_types::object::NativeFnPtr::from_raw(
+                oxide_builtins::typed_array::uint8array_from_base64::<crate::vm::Vm> as *const (),
+            )
+        },
+        1,
+    );
+    let _ = world.bind_method(
+        u8_ctor,
+        sh,
+        sf,
+        "fromHex",
+        unsafe {
+            oxide_types::object::NativeFnPtr::from_raw(
+                oxide_builtins::typed_array::uint8array_from_hex::<crate::vm::Vm> as *const (),
+            )
+        },
+        1,
+    );
+
     bind_typed_array_abstract_ctor(core, session);
 
     // 把 `%TypedArray%` 抽象构造器暴露为全局 `TypedArray`（具体构造器的 [[Prototype]]）。

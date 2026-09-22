@@ -60,6 +60,8 @@ pub mod string;
 pub mod stubs;
 /// Symbol 内置对象实现（constructor/for/keyFor/toString）。
 pub mod symbol;
+/// TypedArray base64/hex 编解码纯函数（FromBase64/FromHex 状态机与编码输出）。
+pub mod ta_codec;
 /// Temporal 内置对象实现（目录模块树：Now / Instant / PlainDate / PlainTime / PlainDateTime / PlainMonthDay / PlainYearMonth / ZonedDateTime / Duration）。
 pub mod temporal;
 /// TypedArray 内置对象实现（元素访问、fill/slice/subarray/set 等）。

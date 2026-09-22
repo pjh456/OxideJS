@@ -1671,3 +1671,233 @@ pub fn typed_array_from<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     }
     NativeResult::Ok(new_obj)
 }
+
+// ── Uint8Array base64/hex 六方法族 ─────────────────────────────────────────────
+
+/// ValidateUint8Array：接收者须为 kind 恰为 Uint8 的 TypedArray 对象；
+/// Uint8Clamped 与其他种类一律抛 TypeError。
+fn validate_uint8_array<H: VmHost>(vm: &mut H, this_val: JsValue) -> Result<TypedArrayData, JsValue> {
+    let view = get_typed_array_data(vm, this_val)?;
+    if view.kind != TypedArrayKind::Uint8 {
+        return Err(type_error(vm, "Uint8Array method called on incompatible receiver"));
+    }
+    Ok(view)
+}
+
+/// GetOptionsObject：undefined 直通；其余值过 ToObject，失败抛 TypeError。
+fn ta_options_object<H: VmHost>(vm: &mut H, value: JsValue) -> Result<Option<JsValue>, JsValue> {
+    if value.is_undefined() {
+        return Ok(None);
+    }
+    match oxide_runtime_api::to_object(value, vm) {
+        Ok(obj) => Ok(Some(obj)),
+        Err(e) => Err(type_error(vm, &e)),
+    }
+}
+
+/// 读只收字符串原始值的选项字段（alphabet/lastChunkHandling）：undefined 取
+/// 默认值；装箱串/抛错 toString 对象等一律抛 TypeError，不做 ToPrimitive。
+fn ta_string_option<H: VmHost>(
+    vm: &mut H, opts: &JsObject, opts_val: JsValue, key: &str, default: &'static str,
+) -> Result<String, JsValue> {
+    let key_si = vm.string_key_si(key);
+    let v = vm
+        .ordinary_get(opts, key_si, opts_val)
+        .map_err(|e| crate::iterator::engine_error(vm, &e))?;
+    if v.is_undefined() {
+        return Ok(default.to_string());
+    }
+    if !v.is_string() {
+        return Err(type_error(vm, &format!("{key} must be a string")));
+    }
+    Ok(vm.lookup_str(v).unwrap_or_default())
+}
+
+/// ToBoolean：仅 null/undefined/false/NaN/±0 为假。
+fn ta_to_boolean(v: JsValue) -> bool {
+    if v.is_null() || v.is_undefined() {
+        return false;
+    }
+    if v.is_bool() {
+        return v.as_bool();
+    }
+    if v.is_int() {
+        return v.as_int() != 0;
+    }
+    if v.is_double() {
+        let d = v.as_double();
+        return !d.is_nan() && d != 0.0;
+    }
+    true
+}
+
+/// 取选项中的 alphabet 值并归一到字母表枚举；非 "base64"/"base64url" 抛 TypeError。
+fn ta_alphabet_option<H: VmHost>(
+    vm: &mut H, opts: &JsObject, opts_val: JsValue,
+) -> Result<crate::ta_codec::Base64Alphabet, JsValue> {
+    let s = ta_string_option(vm, opts, opts_val, "alphabet", "base64")?;
+    match s.as_str() {
+        "base64url" => Ok(crate::ta_codec::Base64Alphabet::Url),
+        "base64" => Ok(crate::ta_codec::Base64Alphabet::Standard),
+        _ => Err(type_error(vm, "alphabet must be 'base64' or 'base64url'")),
+    }
+}
+
+/// 取选项中的 lastChunkHandling 值并归一到模式枚举；非三取值抛 TypeError。
+fn ta_handling_option<H: VmHost>(
+    vm: &mut H, opts: &JsObject, opts_val: JsValue,
+) -> Result<crate::ta_codec::LastChunkHandling, JsValue> {
+    let s = ta_string_option(vm, opts, opts_val, "lastChunkHandling", "loose")?;
+    match s.as_str() {
+        "strict" => Ok(crate::ta_codec::LastChunkHandling::Strict),
+        "stop-before-partial" => Ok(crate::ta_codec::LastChunkHandling::StopBeforePartial),
+        "loose" => Ok(crate::ta_codec::LastChunkHandling::Loose),
+        _ => Err(type_error(vm, "lastChunkHandling must be 'loose', 'strict', or 'stop-before-partial'")),
+    }
+}
+
+/// setFromBase64/fromBase64 共用入口：string 类型检查先于选项读取，
+/// 选项读完跑 FromBase64 状态机，已解码字节经 `write` 逐块写出；
+/// `max_len` 为 None 时静态方法无界。
+fn ta_decode_base64<H: VmHost>(
+    vm: &mut H, string: JsValue, options: JsValue, max_len: Option<usize>, write: &mut dyn FnMut(usize, u8),
+) -> Result<(usize, usize), JsValue> {
+    if !string.is_string() {
+        return Err(type_error(vm, "string argument required"));
+    }
+    let opts = ta_options_object(vm, options)?;
+    let mut alphabet = crate::ta_codec::Base64Alphabet::Standard;
+    let mut handling = crate::ta_codec::LastChunkHandling::Loose;
+    if let Some(opts_val) = opts {
+        let obj = unsafe { &*opts_val.as_js_object_ptr() };
+        // SAFETY: opts_val 来自 ToObject 成功路径，必为活动对象指针。
+        alphabet = ta_alphabet_option(vm, obj, opts_val)?;
+        handling = ta_handling_option(vm, obj, opts_val)?;
+    }
+    let units = vm.string_units(string).into_owned();
+    match crate::ta_codec::decode_base64(&units, alphabet, handling, max_len, write) {
+        Ok(r) => Ok(r),
+        Err(_) => Err(crate::error::create_syntax_error(vm, "invalid base64 input")),
+    }
+}
+
+/// setFrom* 结果对象 `{ read, written }`：普通对象 + 两数据属性。
+fn ta_read_written_result<H: VmHost>(vm: &mut H, read: usize, written: usize) -> JsValue {
+    let object_proto = vm.session().builtin_world().object_proto.as_ptr() as *mut JsObject;
+    let obj = vm.alloc_object(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(object_proto)));
+    let read_si = vm.kernel_core().perm_interner().intern("read").0;
+    let written_si = vm.kernel_core().perm_interner().intern("written").0;
+    let obj_ref = unsafe { &mut *obj };
+    vm.set_or_create_prop_value(obj_ref, read_si, JsValue::int(read as i32));
+    vm.set_or_create_prop_value(obj_ref, written_si, JsValue::int(written as i32));
+    JsValue::from_js_object(obj)
+}
+
+/// `%Uint8Array%.prototype.toBase64(options)`：ValidateUint8Array 先于选项
+/// 副作用，按字母表与 omitPadding 编码视图字节。
+pub fn uint8array_to_base64<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
+    let view = native_try!(validate_uint8_array(vm, this_val));
+    let opts = native_try!(ta_options_object(vm, if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() }));
+    let mut alphabet = crate::ta_codec::Base64Alphabet::Standard;
+    let mut omit_padding = false;
+    if let Some(opts_val) = opts {
+        let obj = unsafe { &*opts_val.as_js_object_ptr() };
+        // SAFETY: opts_val 来自 ToObject 成功路径，必为活动对象指针。
+        alphabet = native_try!(ta_alphabet_option(vm, obj, opts_val));
+        let key_si = vm.string_key_si("omitPadding");
+        let v = native_try!(vm
+            .ordinary_get(obj, key_si, opts_val)
+            .map_err(|e| crate::iterator::engine_error(vm, &e)));
+        omit_padding = ta_to_boolean(v);
+    }
+    let buffer_ptr = native_try!(array_buffer_data_ptr(vm, view.buffer));
+    let buffer = unsafe { &*buffer_ptr };
+    // SAFETY: buffer_ptr 来自活动 ArrayBuffer 对象，视图范围由构造保证界内。
+    NativeResult::Ok(vm.new_string_owned(crate::ta_codec::encode_base64(
+        &buffer[view.byte_offset..view.byte_offset + view.length],
+        alphabet,
+        omit_padding,
+    )))
+}
+
+/// `%Uint8Array%.prototype.toHex()`：ValidateUint8Array 后编码小写两位 hex。
+pub fn uint8array_to_hex<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
+    let view = native_try!(validate_uint8_array(vm, this_val));
+    let buffer_ptr = native_try!(array_buffer_data_ptr(vm, view.buffer));
+    let buffer = unsafe { &*buffer_ptr };
+    // SAFETY: buffer_ptr 来自活动 ArrayBuffer 对象，视图范围由构造保证界内。
+    NativeResult::Ok(
+        vm.new_string_owned(crate::ta_codec::encode_hex(&buffer[view.byte_offset..view.byte_offset + view.length])),
+    )
+}
+
+/// `%Uint8Array%.prototype.setFromBase64(string, options)`：解码写入视图，
+/// 返回 `{ read, written }`；前块已写入后遇错抛 SyntaxError（前字节保留）。
+pub fn uint8array_set_from_base64<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
+    let view = native_try!(validate_uint8_array(vm, this_val));
+    let string = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
+    let options = if args.len() > 2 { vm.reg(args[2]) } else { JsValue::undefined() };
+    let buffer_ptr = native_try!(array_buffer_data_ptr(vm, view.buffer));
+    let buffer = unsafe { &mut *buffer_ptr };
+    // SAFETY: buffer_ptr 来自活动 ArrayBuffer 对象，视图范围由构造保证界内。
+    let start = view.byte_offset;
+    let (read, written) = native_try!(ta_decode_base64(vm, string, options, Some(view.length), &mut |idx, b| {
+        buffer[start + idx] = b;
+    }));
+    NativeResult::Ok(ta_read_written_result(vm, read, written))
+}
+
+/// `%Uint8Array%.prototype.setFromHex(string)`：无选项；奇数长度最前判定
+/// （零写入）抛 SyntaxError；坏字符保留前字节写入后抛。
+pub fn uint8array_set_from_hex<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
+    let view = native_try!(validate_uint8_array(vm, this_val));
+    let string = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
+    if !string.is_string() {
+        return NativeResult::Err(type_error(vm, "string argument required"));
+    }
+    let buffer_ptr = native_try!(array_buffer_data_ptr(vm, view.buffer));
+    let buffer = unsafe { &mut *buffer_ptr };
+    // SAFETY: buffer_ptr 来自活动 ArrayBuffer 对象，视图范围由构造保证界内。
+    let start = view.byte_offset;
+    let units = vm.string_units(string).into_owned();
+    let (read, written) = match crate::ta_codec::decode_hex(&units, Some(view.length), &mut |idx, b| {
+        buffer[start + idx] = b;
+    }) {
+        Ok(r) => r,
+        Err(_) => return NativeResult::Err(crate::error::create_syntax_error(vm, "invalid hex input")),
+    };
+    NativeResult::Ok(ta_read_written_result(vm, read, written))
+}
+
+/// `Uint8Array.fromBase64(string, options)`：不读 this，结果 proto 恒为
+/// %Uint8Array%.prototype（不经 species/构造器）。
+pub fn uint8array_from_base64<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let string = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
+    let options = if args.len() > 2 { vm.reg(args[2]) } else { JsValue::undefined() };
+    let mut bytes = Vec::new();
+    native_try!(ta_decode_base64(vm, string, options, None, &mut |_, b| bytes.push(b)));
+    let len = bytes.len();
+    let buffer = JsValue::from_js_object(new_array_buffer(vm, bytes));
+    NativeResult::Ok(JsValue::from_js_object(create_typed_array(vm, TypedArrayKind::Uint8, buffer, 0, len)))
+}
+
+/// `Uint8Array.fromHex(string)`：不读 this；奇数长度最前判定抛 SyntaxError。
+pub fn uint8array_from_hex<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let string = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
+    if !string.is_string() {
+        return NativeResult::Err(type_error(vm, "string argument required"));
+    }
+    let units = vm.string_units(string).into_owned();
+    let mut bytes = Vec::new();
+    match crate::ta_codec::decode_hex(&units, None, &mut |_, b| bytes.push(b)) {
+        Ok(_) => {}
+        Err(_) => return NativeResult::Err(crate::error::create_syntax_error(vm, "invalid hex input")),
+    }
+    let len = bytes.len();
+    let buffer = JsValue::from_js_object(new_array_buffer(vm, bytes));
+    NativeResult::Ok(JsValue::from_js_object(create_typed_array(vm, TypedArrayKind::Uint8, buffer, 0, len)))
+}
