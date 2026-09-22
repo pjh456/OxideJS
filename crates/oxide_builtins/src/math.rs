@@ -1,3 +1,5 @@
+use num_bigint::BigInt;
+use num_traits::{FromPrimitive, One, Signed, ToPrimitive, Zero};
 use oxide_types::value::JsValue;
 
 use oxide_runtime_api::{NativeResult, VmHost};
@@ -268,4 +270,222 @@ pub fn math_min<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 pub fn math_random<H: VmHost>(vm: &mut H, _args: &[u8]) -> NativeResult {
     vm.step_rng();
     NativeResult::Ok(JsValue::float(vm.math_rng_value()))
+}
+
+// ── Math.sumPrecise：精确数学和 ──
+
+/// sumPrecise 累加状态机的五态（规范 20.1.3.21）。
+#[derive(Clone, Copy, PartialEq)]
+enum SumState {
+    MinusZero,
+    Finite,
+    PlusInf,
+    MinusInf,
+    NotANumber,
+}
+
+/// 有限 f64 → 精确整数 `x·2^1074`（正常数 `(2^52+mant)·2^(e_f+1022)`、次正规 `mant`），
+/// 供多个项在整数域无损失累加。
+///
+/// # 边界与前提
+/// - 输入保证有限（±∞/NaN 由调用方状态机先行拦截）。
+/// - 位宽上限 2100 位，单次 BigInt 构造代价可忽略。
+fn finite_to_bigint(x: f64) -> BigInt {
+    let bits = x.to_bits();
+    let sign = (bits >> 63) == 1;
+    let exp = (bits >> 52) & 0x7FF;
+    let mant = bits & 0xF_FFFF_FFFF_FFFF;
+    let mag = if exp == 0 {
+        // 次正规：|x| = mant · 2^-1074，整数即尾数本身。
+        BigInt::from_u64(mant).expect("u64 必可转 BigInt")
+    } else {
+        // 正常数：(1.mant) · 2^e_f = (2^52+mant) · 2^(e_f-52)。
+        let e_f = exp as i64 - 1023;
+        let significand = BigInt::from_u64((1u64 << 52) | mant).expect("u64 必可转 BigInt");
+        significand << (e_f + 1022) as usize
+    };
+    if sign {
+        -mag
+    } else {
+        mag
+    }
+}
+
+/// 精确整数和 `S`（每项 `x·2^1074` 之和）→ f64：对 `S·2^-1074` 的一次 RNE 舍入。
+///
+/// # 边界与前提
+/// - 零和 → +0（符号面由状态机 minus-zero 臂负责，此处不产生 -0）。
+/// - p < 52：次正规区，`S` 全 52 位内，精确无舍入。
+/// - 52 ≤ p ≤ 2097：高 53 位 RNE（半位进位按 tie-even），进位溢出指数 +1。
+/// - p > 2097 或进位后指数超 1023：±Infinity。
+fn exact_sum_to_f64(s: &BigInt) -> f64 {
+    if s.is_zero() {
+        return 0.0;
+    }
+    let sign_bit = if s.is_negative() { 1u64 << 63 } else { 0 };
+    let a = s.abs();
+
+    // p = 最高位 0-based 下标（顶段非零位数加低位段整段宽度）。
+    let (_, digits) = a.to_u64_digits();
+    let top = digits.last().expect("非零 BigInt 至少一段");
+    let p = 64 * (digits.len() - 1) + 64 - top.leading_zeros() as usize - 1;
+
+    // 溢出面：超过最大 f64 的 2^1074 刻度（p = 2097）。
+    if p > 2097 {
+        return if s.is_negative() { f64::NEG_INFINITY } else { f64::INFINITY };
+    }
+    if p < 52 {
+        // 次正规 f64 尾数字段 = S 本体（值 = 尾数字段 · 2^-1074），S < 2^52 必入 u64，
+        // 精确无舍入还原。
+        return f64::from_bits(sign_bit | a.to_u64().expect("次正规和必入 u64"));
+    }
+    // p ≥ 52：高 53 位 keep + 余位 drop 做 RNE。
+    let shift = p - 52;
+    let mut keep = a.clone() >> shift;
+    if shift > 0 {
+        let drop = a & ((BigInt::one() << shift) - 1);
+        let half = BigInt::one() << (shift - 1);
+        // tie-even：keep 末位为 1 时进位（keep 至多 53 位，必入 u64）。
+        let keep_odd = (keep.to_u64().expect("53 位必入 u64") & 1) == 1;
+        if drop > half || (drop == half && keep_odd) {
+            keep += 1;
+        }
+    }
+    let mut e = p as i64 - 1074;
+    if keep == (BigInt::one() << 53) {
+        // 进位溢出 53 位：归一化（指数 +1），再超 f64 指数上限即溢出。
+        keep >>= 1;
+        e += 1;
+    }
+    if e > 1023 {
+        return if s.is_negative() { f64::NEG_INFINITY } else { f64::INFINITY };
+    }
+    let mant: BigInt = keep - (BigInt::one() << 52);
+    f64::from_bits(sign_bit | ((e + 1023) as u64) << 52 | mant.to_u64().expect("52 位尾数必入 u64"))
+}
+
+/// `Math.sumPrecise(items)`：逐项迭代 `items` 求有限项的精确数学和，
+/// 终态一次 RNE 舍入为 double 返回（非逐次 f64 累加）。
+///
+/// # 步骤
+/// 1. `items` 为 null/undefined → TypeError（RequireObjectCoercible）。
+/// 2. GetIterator + GetIteratorDirect，循环 IteratorStepValue 取元素。
+/// 3. 元素数 ≥ 2^53 → RangeError；元素非 Number → TypeError；两路均先
+///    IteratorClose 再传播原异常（close 期间 return 抛错时原异常胜出）。
+/// 4. 五态状态机驱动：NaN → not-a-number 停摆；±∞ 按异号互抵规则翻转；
+///    有限项非 -0 且状态为 minus-zero/finite 时转 finite 并整数域累加。
+/// 5. done 后按终态映射返回值。
+///
+/// # 边界与前提
+/// - 元素判定只走 `is_int() || is_double()`，绝不做 ToNumber（带 valueOf/
+///   toString 的对象不触发任何强转）。
+/// - -0 元素不改状态、不参与累加；全 -0 列表返回 -0。
+/// - int 臂精确入 f64（i32 范围内双表示无损）。
+pub fn math_sum_precise<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let items = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
+    if items.is_null() || items.is_undefined() {
+        return NativeResult::Err(crate::error::create_type_error(vm, "Cannot convert undefined or null to object"));
+    }
+    // GetIterator（包装器带 next/return），再 GetIteratorDirect 缓存 next。
+    let iterator = match crate::iterator::make_iterator_for_value(vm, items) {
+        Ok(it) => it,
+        Err(err) => return NativeResult::Err(err),
+    };
+    let (iterated, next) = match crate::iterator::get_iterator_direct(vm, iterator) {
+        Ok(pair) => pair,
+        Err(err) => return NativeResult::Err(err),
+    };
+
+    let mut state = SumState::MinusZero;
+    let mut sum = BigInt::zero();
+    let mut count = 0u64;
+    loop {
+        let elem = match crate::iterator::iterator_record_step(vm, next, iterated) {
+            Ok(Some(v)) => v,
+            Ok(None) => {
+                // done：终态映射。
+                let result = match state {
+                    SumState::NotANumber => f64::NAN,
+                    SumState::PlusInf => f64::INFINITY,
+                    SumState::MinusInf => f64::NEG_INFINITY,
+                    SumState::MinusZero => -0.0,
+                    SumState::Finite => exact_sum_to_f64(&sum),
+                };
+                return NativeResult::Ok(JsValue::float(result));
+            }
+            Err(err) => {
+                // 迭代器自身抛错：先关再传播原异常。
+                let _ = crate::iterator::iterator_close_record(vm, iterated, Some(err));
+                return NativeResult::Err(err);
+            }
+        };
+        count += 1;
+        if count >= 1u64 << 53 {
+            let err = crate::error::create_range_error(vm, "too many elements");
+            let _ = crate::iterator::iterator_close_record(vm, iterated, Some(err));
+            return NativeResult::Err(err);
+        }
+        // 元素类型面：非 Number 先关迭代器再抛 TypeError。
+        if !elem.is_int() && !elem.is_double() {
+            let err = crate::error::create_type_error(vm, "Math.sumPrecise requires Number elements");
+            let _ = crate::iterator::iterator_close_record(vm, iterated, Some(err));
+            return NativeResult::Err(err);
+        }
+        let x = if elem.is_int() { elem.as_int() as f64 } else { elem.as_double() };
+        // 五态推进：-0 元素判据须显式符号臂（Rust 中 -0.0 == 0.0 为真）。
+        if x.is_nan() {
+            state = SumState::NotANumber;
+        } else if x == f64::INFINITY {
+            state = if state == SumState::MinusInf {
+                SumState::NotANumber
+            } else {
+                SumState::PlusInf
+            };
+        } else if x == f64::NEG_INFINITY {
+            state = if state == SumState::PlusInf {
+                SumState::NotANumber
+            } else {
+                SumState::MinusInf
+            };
+        } else {
+            let is_minus_zero = x == 0.0 && x.is_sign_negative();
+            if !is_minus_zero && (state == SumState::MinusZero || state == SumState::Finite) {
+                state = SumState::Finite;
+                sum += finite_to_bigint(x);
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn finite_to_bigint_roundtrip() {
+        // 往返对：常见值 / 极值 / 最小最大次正规。
+        for x in [0.1f64, 1e308, -1e308, 5e-324, 2.2250738585072014e-308, f64::MAX, -0.5] {
+            assert_eq!(exact_sum_to_f64(&finite_to_bigint(x)), x);
+        }
+    }
+
+    #[test]
+    fn exact_sum_to_f64_boundaries() {
+        // 零和符号面与 f64 最大值/溢出边界。
+        assert_eq!(exact_sum_to_f64(&BigInt::zero()), 0.0);
+        assert!(exact_sum_to_f64(&BigInt::zero()).is_sign_positive());
+        // ±f64::MAX 的 2^1074 刻度恰在可表示边界（p = 2097），±2× 溢出。
+        let max = finite_to_bigint(f64::MAX);
+        assert_eq!(exact_sum_to_f64(&max), f64::MAX);
+        assert_eq!(exact_sum_to_f64(&(BigInt::zero() - &max)), -f64::MAX);
+        assert_eq!(exact_sum_to_f64(&(max.clone() + &max)), f64::INFINITY);
+        assert_eq!(exact_sum_to_f64(&(-max.clone() - &max)), f64::NEG_INFINITY);
+
+        // sum.js 代表性向量：大指数对抵消后的精确尾差。
+        let mut sum = BigInt::zero();
+        for x in [1e308f64, 1e308, 0.1, 0.1, 1e30, 0.1, -1e30, -1e308, -1e308] {
+            sum += finite_to_bigint(x);
+        }
+        assert_eq!(exact_sum_to_f64(&sum), 0.30000000000000004);
+    }
 }

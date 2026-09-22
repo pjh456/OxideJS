@@ -441,3 +441,20 @@ fn array_iteration_dense_elements_read_correct() {
     let (vm, result) = eval("[1,2,3].slice(1).join(',')").unwrap();
     assert_eq!(to_str(&vm, result), "2,3");
 }
+
+#[test]
+fn array_is_array_accepts_array_prototype() {
+    // %Array.prototype% 本体走恒等臂判真。
+    let (_vm, result) = eval("Array.isArray(Array.prototype)").unwrap();
+    assert_eq!(result, JsValue::bool(true));
+}
+
+#[test]
+fn array_is_array_rejects_prototype_inherited_object() {
+    // 原型继承自 Array.prototype 的普通对象无 array 标记，恒等臂不得翻转。
+    let (_vm, result) = eval("Array.isArray(Object.create(Array.prototype))").unwrap();
+    assert_eq!(result, JsValue::bool(false));
+
+    let (_vm, result) = eval("Array.isArray([])").unwrap();
+    assert_eq!(result, JsValue::bool(true));
+}

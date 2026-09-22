@@ -55,6 +55,7 @@ pub fn bind_math(core: &Arc<KernelCore>, session: &KernelSession, global: &mut J
         ("f16round", oxide_builtins::math::math_f16round::<crate::vm::Vm>, 1),
         ("fround", oxide_builtins::math::math_fround::<crate::vm::Vm>, 1),
         ("log1p", oxide_builtins::math::math_log1p::<crate::vm::Vm>, 1),
+        ("sumPrecise", oxide_builtins::math::math_sum_precise::<crate::vm::Vm>, 1),
     );
 
     for (name, val) in [

@@ -50,7 +50,8 @@ pub fn array_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     NativeResult::Ok(JsValue::from_js_object(arr))
 }
 
-/// `Array.isArray(value)`：参数是否为真正的 Array 对象。
+/// `Array.isArray(value)`：参数是否为真正的 Array 对象（含 `%Array.prototype%`
+/// 本体；原型继承自 Array.prototype 的普通对象不认）。
 pub fn array_is_array<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     if args.len() < 2 {
         return NativeResult::Ok(JsValue::bool(false));
@@ -63,7 +64,8 @@ pub fn array_is_array<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     if ptr.is_null() {
         return NativeResult::Ok(JsValue::bool(false));
     }
-    NativeResult::Ok(JsValue::bool(unsafe { &*ptr }.is_array()))
+    let array_proto = vm.session().builtin_world().array_proto.as_ptr();
+    NativeResult::Ok(JsValue::bool(unsafe { &*ptr }.is_array() || std::ptr::eq(ptr, array_proto)))
 }
 
 /// `Array[Symbol.species]` 访问器 getter：返回 receiver——派生类沿静态原型链
