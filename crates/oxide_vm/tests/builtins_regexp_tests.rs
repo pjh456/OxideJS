@@ -956,3 +956,118 @@ fn string_match_all_result_indices_and_unmatched() {
     .unwrap();
     assert_eq!(to_str(&vm, result), "u");
 }
+
+// --- String.replace/replaceAll 替换收尾共享面钉（GetSubstitution 四形态） ---
+
+#[test]
+fn string_arm_dollar_expansion_forms() {
+    // 字符串臂（捕获表空）：$$/$&/$`/$' 四形态 + $N/$NN 字面回退。
+    let mut vm = Vm::new();
+    let result = eval(&mut vm, "'xay'.replace('a', '$$')").unwrap();
+    assert_eq!(to_str(&vm, result), "x$y");
+    let result = eval(&mut vm, "'abc'.replace('b', '[$&]')").unwrap();
+    assert_eq!(to_str(&vm, result), "a[b]c");
+    let result = eval(&mut vm, r"'abc'.replace('b', '$`|$\'')").unwrap();
+    assert_eq!(to_str(&vm, result), "aa|cc");
+    let result = eval(&mut vm, "'x'.replace('x', '$$$')").unwrap();
+    assert_eq!(to_str(&vm, result), "$$");
+    let result = eval(&mut vm, "'x'.replace('x', '$1$12')").unwrap();
+    assert_eq!(to_str(&vm, result), "$1$12");
+}
+
+#[test]
+fn string_arm_dollar_lt_forms() {
+    // 字符串臂 namedCaptures 恒 undefined：`$<` 只字面输出两码元，其后文本
+    // 继续逐码元处理——无 `>` 形、含 `>` 形、名段含 $ 序列形均字面。
+    let mut vm = Vm::new();
+    let result = eval(&mut vm, "'cd'.replace('c', '$<sndcd')").unwrap();
+    assert_eq!(to_str(&vm, result), "$<sndcdd");
+    let result = eval(&mut vm, "'x'.replace('x', '$<a>')").unwrap();
+    assert_eq!(to_str(&vm, result), "$<a>");
+    let result = eval(&mut vm, "'x'.replace('x', '$<42$1>')").unwrap();
+    assert_eq!(to_str(&vm, result), "$<42$1>");
+}
+
+#[test]
+fn string_replaceall_dollar_positions() {
+    // replaceAll 全量替换 + 空模式逐码元边界（含串尾）。
+    let mut vm = Vm::new();
+    let result = eval(&mut vm, "'aaa'.replaceAll('a', '$&!')").unwrap();
+    assert_eq!(to_str(&vm, result), "a!a!a!");
+    let result = eval(&mut vm, "'ab'.replaceAll('', '+')").unwrap();
+    assert_eq!(to_str(&vm, result), "+a+b+");
+}
+
+#[test]
+fn string_replace_regexp_arm_substitution_forms() {
+    // RegExp 臂经 String 入口共享 get_substitution_units：$NN 两位回退次位
+    // 回落字面、越界整段字面、$< 无 `>` 形续扫、duplicate-names 末次命中。
+    let mut vm = Vm::new();
+    let result = eval(&mut vm, "'abcd'.replace(/a(b)(c)(d)/, '$13')").unwrap();
+    assert_eq!(to_str(&vm, result), "b3");
+    // 两位越界回退一位仍越界（0 组）：整段字面。
+    let result = eval(&mut vm, "'x'.replace(/x/, '$33')").unwrap();
+    assert_eq!(to_str(&vm, result), "$33");
+    let result = eval(&mut vm, "'ab'.replace(/(?<x>a)|(?<x>b)/, '[$<x>]')").unwrap();
+    assert_eq!(to_str(&vm, result), "[a]b");
+    let result = eval(&mut vm, "'ba'.replace(/(?<x>a)|(?<x>b)/g, '[$<x>]')").unwrap();
+    assert_eq!(to_str(&vm, result), "[b][a]");
+    let result = eval(&mut vm, r##"'cd'.replace(/(cd)/, '$<sndcd')"##).unwrap();
+    assert_eq!(to_str(&vm, result), "$<sndcd");
+    let result = eval(&mut vm, r##"'cd'.replace(/(cd)/, '$<snd$<snd')"##).unwrap();
+    assert_eq!(to_str(&vm, result), "$<snd$<snd");
+    // 未匹配命名组（groups 存在、capture undefined）整段删空至 `>`。
+    let result = eval(&mut vm, "'x'.replace(/(?<b>y)?/, '$<b>')").unwrap();
+    assert_eq!(to_str(&vm, result), "x");
+}
+
+#[test]
+fn string_replace_object_searchvalue_delegation() {
+    // 对象 searchValue：GetMethod(@@replace) 定义则 Call(matcher, searchValue,
+    // «this, replaceValue») 原值返回；真 RegExp 自置 @@replace=undefined 回退
+    // 字符串臂（searchString 取 ToString 文本）。
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "(() => { var o = { [Symbol.replace]: function (s, r) { return 'R' + s + r; } }; return 'xy'.replace(o, 'z'); })()",
+    )
+    .unwrap();
+    assert_eq!(to_str(&vm, result), "Rxyz");
+    let result = eval(
+        &mut vm,
+        "(() => { var r = /./g; Object.defineProperty(r, Symbol.replace, { value: undefined }); return 'aa /./g'.replaceAll(r, 'z'); })()",
+    )
+    .unwrap();
+    assert_eq!(to_str(&vm, result), "aa z");
+}
+
+#[test]
+fn regexp_replace_results_groups_to_object_and_receiver() {
+    // 替换收尾 groups 面：ToObject 装箱（对象直通）、null 抛 TypeError、
+    // 原型链数据属性可读、accessor 抛错恢复原异常值。
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        r##"(() => { var re = { [Symbol.match]: true, [Symbol.replace]: RegExp.prototype[Symbol.replace], flags: '', exec: function () { return { 0: 'A', index: 1, length: 2, groups: { length: 3 } }; } }; return 'xAy'.replace(re, '[$<length>]'); })()"##,
+    )
+    .unwrap();
+    assert_eq!(to_str(&vm, result), "x[3]y");
+    let result = eval(
+        &mut vm,
+        r##"(() => { var re = { [Symbol.match]: true, [Symbol.replace]: RegExp.prototype[Symbol.replace], flags: '', exec: function () { return { 0: 'A', index: 1, length: 2, groups: null }; } }; try { 'xAy'.replace(re, '$<x>'); return 'no-throw'; } catch (e) { return e instanceof TypeError ? 'TypeError' : 'other'; } })()"##,
+    )
+    .unwrap();
+    assert_eq!(to_str(&vm, result), "TypeError");
+    let result = eval(
+        &mut vm,
+        r##"(() => { var g = {}; Object.setPrototypeOf(g, { x: 'c' }); var re = { [Symbol.match]: true, [Symbol.replace]: RegExp.prototype[Symbol.replace], flags: '', exec: function () { return { 0: 'A', index: 1, length: 2, groups: g }; } }; return 'xAy'.replace(re, '[$<x>]'); })()"##,
+    )
+    .unwrap();
+    assert_eq!(to_str(&vm, result), "x[c]y");
+    let result = eval(
+        &mut vm,
+        r##"(() => { var re = { [Symbol.match]: true, [Symbol.replace]: RegExp.prototype[Symbol.replace], flags: '', exec: function () { return { 0: 'A', index: 1, length: 2, groups: { get x() { throw 'E'; } } }; } }; try { 'xAy'.replace(re, '$<x>'); return 'no-throw'; } catch (e) { return e; } })()"##,
+    )
+    .unwrap();
+    assert_eq!(to_str(&vm, result), "E");
+}
