@@ -264,6 +264,17 @@ impl Vm {
         // prototype 槽位在 length/name 之后（下标 2）。
         ctor_mut.set_prop_at(2u32, JsValue::from_js_object(self.promise_proto.as_ptr() as *mut JsObject));
 
+        // Promise[Symbol.species] 访问器：getter 返回 receiver，派生类沿静态原型链
+        // 解析 @@species 得自身构造器。ctor 经本函数每次调用全新构造，同键槽不累积。
+        crate::bindings::bind_accessor_getter_key(
+            &self.kernel_core,
+            &self.session,
+            ctor_mut,
+            oxide_types::private_key::make_well_known_symbol_key(oxide_types::private_key::WELL_KNOWN_SYMBOL_SPECIES),
+            "get [Symbol.species]",
+            oxide_builtins::array::array_species_get::<crate::vm::Vm> as *const (),
+        );
+
         // 绑定 global：槽已存在则更新（full_reset 未重建 global 时旧槽指向已弃 ctor）。
         let global_ptr = self.session.global_object().as_ptr() as *mut JsObject;
         // SAFETY: global 对象由 session 持有，存活整个 session；本函数内只改其

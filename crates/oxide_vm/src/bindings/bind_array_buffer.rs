@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use crate::bind_constructor;
-use crate::bindings::{apply_binding_table, configure_native_constructor};
+use crate::bindings::{apply_binding_table, bind_accessor_getter_key, configure_native_constructor};
 use oxide_kernel::kernel::{KernelCore, KernelSession};
 use oxide_types::object::JsObject;
 
@@ -27,6 +27,17 @@ pub fn bind_array_buffer(core: &Arc<KernelCore>, session: &KernelSession, global
             oxide_builtins::array_buffer::array_buffer_is_view::<crate::vm::Vm> as *const (),
             1,
         )],
+    );
+
+    // ArrayBuffer[Symbol.species] 访问器：getter 返回 receiver，派生类沿静态原型链
+    // 解析 @@species 得自身构造器（规范不给 class 默认 static @@species，类上无 own）。
+    bind_accessor_getter_key(
+        core,
+        session,
+        ctor,
+        oxide_types::private_key::make_well_known_symbol_key(oxide_types::private_key::WELL_KNOWN_SYMBOL_SPECIES),
+        "get [Symbol.species]",
+        oxide_builtins::array::array_species_get::<crate::vm::Vm> as *const (),
     );
 
     apply_binding_table(

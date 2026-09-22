@@ -56,6 +56,22 @@ fn bind_typed_array_abstract_ctor(core: &Arc<KernelCore>, session: &KernelSessio
         },
         1,
     );
+
+    // %TypedArray%[Symbol.species] 访问器：getter 返回 receiver，十一具体构造器
+    // （及派生类）沿原型链解析 @@species 得自身（具体构造器无 own 属性）。绑定站
+    // 与 TA 构造器后续消费面改造共用，先查槽位防重复绑定追加第二访问器槽。
+    let species_key =
+        oxide_types::private_key::make_well_known_symbol_key(oxide_types::private_key::WELL_KNOWN_SYMBOL_SPECIES);
+    if core.shape_forge().lookup_position(ctor.shape_id(), species_key).is_none() {
+        bind_accessor_getter_key(
+            core,
+            session,
+            ctor,
+            species_key,
+            "get [Symbol.species]",
+            oxide_builtins::array::array_species_get::<crate::vm::Vm> as *const (),
+        );
+    }
 }
 
 /// 给构造器与对应原型设置 `BYTES_PER_ELEMENT`（只读、不可枚举、不可配置）。

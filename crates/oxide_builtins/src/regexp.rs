@@ -238,8 +238,11 @@ fn species_constructor<H: VmHost>(
     if !c.is_object() {
         return Err(crate::error::create_type_error(vm, "RegExp species constructor must be an object"));
     }
+    // Get(C, @@species) 的 receiver 是构造器 C 本身：访问器 getter 返回
+    // receiver，传实例会让返回值错指到接收者本体。
     let species_key = oxide_types::private_key::make_well_known_symbol_key(10);
-    let s = match vm.ordinary_get(unsafe { &*c.as_js_object_ptr() }, species_key, r_val) {
+    let c_val = JsValue::from_js_object(c.as_js_object_ptr());
+    let s = match vm.ordinary_get(unsafe { &*c.as_js_object_ptr() }, species_key, c_val) {
         Ok(v) => v,
         Err(_) => return Err(crate::iterator::engine_error(vm, "cannot read @@species")),
     };

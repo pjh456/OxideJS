@@ -802,10 +802,12 @@ fn symbol_split_undefined_limit_full() {
 #[test]
 fn symbol_match_all_species_matcher_and_cached_lastindex() {
     let mut vm = Vm::new();
-    // matcher 经物种构造；lastIndex 只从 R 读一次并写入 matcher。
+    // matcher 经物种构造；lastIndex 只从 R 读一次并写入 matcher。静态 species 是
+    // getter-only 访问器，简单赋值静默失效（set 为 undefined），须 defineProperty
+    // 重定义为数据属性才能覆写。
     let result = eval(
         &mut vm,
-        "(() => { var r = /b/g; r.lastIndex = 2; var ctorCalls = 0; r.constructor[Symbol.species] = function() { ctorCalls += 1; return /b/g; }; var it = r[Symbol.matchAll]('abc'); return ctorCalls + '/' + it.__mal_re__.lastIndex; })()",
+        "(() => { var r = /b/g; r.lastIndex = 2; var ctorCalls = 0; Object.defineProperty(r.constructor, Symbol.species, { value: function() { ctorCalls += 1; return /b/g; }, configurable: true }); var it = r[Symbol.matchAll]('abc'); return ctorCalls + '/' + it.__mal_re__.lastIndex; })()",
     )
     .unwrap();
     assert_eq!(to_str(&vm, result), "1/2");

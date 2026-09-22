@@ -1,7 +1,8 @@
 use std::sync::Arc;
 
 use crate::bindings::{
-    apply_binding_table, bind_accessor_getter, bind_well_known_method, configure_native_constructor,
+    apply_binding_table, bind_accessor_getter, bind_accessor_getter_key, bind_well_known_method,
+    configure_native_constructor,
 };
 use oxide_kernel::kernel::{KernelCore, KernelSession};
 use oxide_types::object::JsObject;
@@ -156,6 +157,17 @@ pub fn bind_regexp(core: &Arc<KernelCore>, session: &KernelSession, global: &mut
         "[Symbol.matchAll]",
         oxide_builtins::regexp::regexp_symbol_match_all::<crate::vm::Vm> as *const (),
         1,
+    );
+
+    // RegExp[Symbol.species] 访问器：getter 返回 receiver，派生类沿静态原型链解析
+    // @@species 得自身构造器（规范不给 class 默认 static @@species，类上无 own）。
+    bind_accessor_getter_key(
+        core,
+        session,
+        ctor,
+        oxide_types::private_key::make_well_known_symbol_key(oxide_types::private_key::WELL_KNOWN_SYMBOL_SPECIES),
+        "get [Symbol.species]",
+        oxide_builtins::array::array_species_get::<crate::vm::Vm> as *const (),
     );
 
     bind_constructor!(core, global, "RegExp", ctor_ptr, oxide_builtins::regexp::regexp_constructor::<crate::vm::Vm>, 2, hash: true);

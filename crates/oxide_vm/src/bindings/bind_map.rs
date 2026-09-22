@@ -2,7 +2,8 @@ use std::sync::Arc;
 
 use crate::bind_constructor;
 use crate::bindings::{
-    apply_binding_table, bind_accessor_getter, bind_well_known_method_alias, configure_native_constructor,
+    apply_binding_table, bind_accessor_getter, bind_accessor_getter_key, bind_well_known_method_alias,
+    configure_native_constructor,
 };
 use oxide_kernel::kernel::{KernelCore, KernelSession};
 use oxide_types::object::JsObject;
@@ -38,6 +39,17 @@ pub fn bind_map(core: &Arc<KernelCore>, session: &KernelSession, global: &mut Js
     // Map 的 @@iterator（Symbol.iterator）是 entries 的同一函数对象。
     bind_well_known_method_alias(core, proto, "entries", 0);
     bind_accessor_getter(core, session, proto, "size", oxide_builtins::map::map_size::<crate::vm::Vm> as *const ());
+
+    // Map[Symbol.species] 访问器：getter 返回 receiver，派生类沿静态原型链解析
+    // @@species 得自身构造器（规范不给 class 默认 static @@species，类上无 own）。
+    bind_accessor_getter_key(
+        core,
+        session,
+        ctor,
+        oxide_types::private_key::make_well_known_symbol_key(oxide_types::private_key::WELL_KNOWN_SYMBOL_SPECIES),
+        "get [Symbol.species]",
+        oxide_builtins::array::array_species_get::<crate::vm::Vm> as *const (),
+    );
 
     // Map.groupBy 静态方法。
     apply_binding_table(
