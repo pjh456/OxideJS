@@ -385,20 +385,16 @@ pub fn regexp_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     // （lossy `to_string` 会把孤立 surrogate 单元折成 FFFD，破坏 source 往返）。
     // regress 编译用 lossy 文本（其匹配语义对孤立 surrogate 本即既有缺口，
     // 不因本处改变）。
-    // 模式为已编译 RegExp 实例时 source/flags 从其实例属性 live 读取（flags
-    // 参数缺省取实例 flags）；其余形态按 ToString 单元序列。
+    // 模式为已编译 RegExp 实例时 source/flags 取其原始模式文本（flags 参数
+    // 缺省取实例 flags）；其余形态按 ToString 单元序列。
     let (pattern_units, flags_units) = if args.len() >= 2 {
         let pattern_val = vm.reg(args[1]);
         let re_ptr = pattern_val.as_js_object_ptr();
         if pattern_val.is_object() && !re_ptr.is_null() && unsafe { &*re_ptr }.is_regexp_obj() {
-            let source_val = match rx_get_prop(vm, re_ptr, "source", pattern_val) {
-                Ok(v) => v,
-                Err(e) => return NativeResult::Err(e),
-            };
-            let source = match oxide_runtime_api::to_string_value_full(source_val, vm) {
-                Ok(v) => v,
-                Err(e) => return NativeResult::Err(crate::iterator::engine_error(vm, &e)),
-            };
+            // source 取实例原始模式字段而非 live 属性：source 访问器输出已
+            // 转义文本（可安全嵌入字面量），直接编译会破坏模式匹配等价
+            // （含反斜杠的模式恒失配）；原始文本经同一编译器保持往返一致。
+            let source = unsafe { &*re_ptr }.get_regexp_source();
             let flags_val = if args.len() >= 3 {
                 vm.reg(args[2])
             } else {
