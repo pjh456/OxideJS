@@ -1,4 +1,4 @@
-//! test262 harness 内嵌注册表与前缀拼接/缓存：`HarnessSources`（21 处 `include_str!`）、`HARNESS`、黑名单、
+//! test262 harness 内嵌注册表与前缀拼接/缓存：`HarnessSources`（23 处 `include_str!`）、`HARNESS`、黑名单、
 //! 前缀拼接与缓存。全部 `include_str!` 路径相对上 3 级到仓库根，依赖本文件平铺 `src/` 一级，禁子目录。
 
 use crate::meta::TestMeta;
@@ -50,6 +50,14 @@ impl HarnessSources {
         sources.insert("asyncHelpers.js", include_str!("../../../tests/test262/harness/asyncHelpers.js"));
         sources.insert("doneprintHandle.js", include_str!("../../../tests/test262/harness/doneprintHandle.js"));
         sources.insert("promiseHelper.js", include_str!("../../../tests/test262/harness/promiseHelper.js"));
+        sources.insert(
+            "detachArrayBuffer.js",
+            include_str!("../../../tests/test262/harness/detachArrayBuffer.js"),
+        );
+        sources.insert(
+            "resizableArrayBufferUtils.js",
+            include_str!("../../../tests/test262/harness/resizableArrayBufferUtils.js"),
+        );
         Self { sources }
     }
 
