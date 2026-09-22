@@ -170,8 +170,9 @@ impl Vm {
     /// bound 函数构造分支：按 bound [[Construct]] 语义解包链后转发到最内层 target。
     ///
     /// # 步骤
-    /// 1. 逐层解包 [[BoundTargetFunction]]：每层绑定实参（dense 槽 6+）拼到调用
-    ///    实参之前（外层先解包 → 最终顺序为内层绑定实参先、外层后、调用实参尾）
+    /// 1. 逐层解包 [[BoundTargetFunction]]：每层绑定实参（状态对象存储槽 2+）
+    ///    拼到调用实参之前（外层先解包 → 最终顺序为内层绑定实参先、外层后、
+    ///    调用实参尾）
     /// 2. 校验最内层 target 可构造（native 须 CONSTRUCTOR 标记；字节码须非
     ///    arrow/async/generator），否则抛 TypeError
     /// 3. 新对象原型取 target.prototype（new 表达式路径 newTarget 恒等于构造器，
@@ -190,9 +191,11 @@ impl Vm {
         let mut target_val = wrapper_val;
         loop {
             let wrapper_obj = unsafe { &*target_val.as_js_object_ptr() };
-            let props = wrapper_obj.hash_props_vec().cloned().unwrap_or_default();
-            let target = props.get(4).copied().unwrap_or(JsValue::undefined());
-            let mut combined: Vec<JsValue> = props.iter().skip(6).copied().collect();
+            // 绑定状态对象 [target, thisArg, ...boundArgs]（oxide_builtins::function
+            // 固定第 4 号 shape 属性）：target 取存储槽 0，绑定实参取存储槽 2+。
+            let state = oxide_builtins::function::bound_state_values(wrapper_obj);
+            let target = state.first().copied().unwrap_or(JsValue::undefined());
+            let mut combined: Vec<JsValue> = state.iter().skip(2).copied().collect();
             combined.extend_from_slice(&call_args);
             call_args = combined;
             let is_bound = target.is_object()

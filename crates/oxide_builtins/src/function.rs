@@ -88,8 +88,7 @@ pub fn function_symbol_has_instance<H: VmHost>(vm: &mut H, args: &[u8]) -> Nativ
     // bound 包装：[[BoundTargetFunction]] 递归到最内层 target 判定
     // （InstanceofOperator 语义，target 链上的 @@hasInstance 解析到本函数）。
     while c_obj.type_tag == oxide_types::object::JsObject::OBJ_TYPE_BOUND {
-        let props = c_obj.hash_props_vec().cloned().unwrap_or_default();
-        let target = props.get(4).copied().unwrap_or(JsValue::undefined());
+        let target = bound_state_values(c_obj).first().copied().unwrap_or(JsValue::undefined());
         if !target.is_object()
             || target.as_js_object_ptr().is_null()
             || !unsafe { &*target.as_js_object_ptr() }.is_function()
@@ -138,16 +137,14 @@ pub fn function_symbol_has_instance<H: VmHost>(vm: &mut H, args: &[u8]) -> Nativ
 fn bind_dispatcher<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let wrapper_val = vm.reg(254);
     let wrapper = unsafe { &*wrapper_val.as_js_object_ptr() };
-    // dense 布局：[length, name, caller, arguments, target, thisArg, ...boundArgs]——
-    // 前 4 槽是 shape 属性（length/name 数据 + caller/arguments 访问器占位），
-    // 绑定状态从槽位 4 起（shape 槽位与 dense 下标对齐）。
-    let props = wrapper.hash_props_vec().cloned().unwrap_or_default();
-    let bound_target = props.get(4).copied().unwrap_or(JsValue::undefined());
-    let bound_this = props.get(5).copied().unwrap_or(JsValue::undefined());
+    // 绑定状态对象布局 [target, thisArg, ...boundArgs]（见 bound_state_values）。
+    let state = bound_state_values(wrapper);
+    let bound_target = state.first().copied().unwrap_or(JsValue::undefined());
+    let bound_this = state.get(1).copied().unwrap_or(JsValue::undefined());
 
-    // 拼接调用实参：绑定实参（props[6..]）在前，本次调用实参（跳过 args[0]
+    // 拼接调用实参：绑定实参（存储槽 2+）在前，本次调用实参（跳过 args[0]
     // 即绑定包装器的 receiver）在后，与规范的"绑定实参先于调用实参"一致。
-    let mut call_args: Vec<JsValue> = props.iter().skip(6).copied().collect();
+    let mut call_args: Vec<JsValue> = state.iter().skip(2).copied().collect();
     for &r in args.iter().skip(1) {
         call_args.push(vm.reg(r));
     }
@@ -238,8 +235,9 @@ pub fn function_bind<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         (*wrapper).set_native_arg_count(bound_arg_count as u8);
     }
 
-    // length/name 先定义占 dense 槽位 0/1（shape 属性），绑定状态 [target, thisArg,
-    // ...boundArgs] 随后从槽位 2 起存放，保证 shape 槽位与 dense 下标对齐。
+    // length/name/caller/arguments 先定义占 shape 槽位 0..3（length/name 数据 +
+    // caller/arguments 访问器占位）；绑定状态随后以独立状态对象存为第 4 号 shape
+    // 属性（保留键），不与用户 own 属性共享下标空间。
     let length_si = vm.kernel_core().perm_interner().intern("length").0;
     let name_si = vm.kernel_core().perm_interner().intern("name").0;
     let caller_si = vm.kernel_core().perm_interner().intern("caller").0;
@@ -293,16 +291,37 @@ pub fn function_bind<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
             return NativeResult::Err(crate::error::create_type_error(vm, &e));
         }
     }
+    // 绑定状态（[target, thisArg, ...boundArgs]）存独立状态对象：命名属性存储与
+    // shape 槽位共享下标，状态值若直接裸推包装器存储槽 4+，用户新增 own 属性时
+    // shape 槽位与存储下标错位（读写互串）。状态对象内部存储不占 shape 槽位，
+    // 经保留键作为包装器固定第 4 号 shape 属性暴露，用户代码不可见。
+    let object_proto = vm.session().builtin_world().object_proto.as_ptr() as *mut JsObject;
+    let state = vm.alloc_object(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(object_proto)));
     unsafe {
-        let props = (*wrapper).ensure_hash_props();
-        props.push(target_val);
-        props.push(bound_this);
+        let state_props = (*state).ensure_hash_props();
+        state_props.push(target_val);
+        state_props.push(bound_this);
         for &r in args.iter().skip(2) {
-            props.push(vm.reg(r));
+            state_props.push(vm.reg(r));
         }
+    }
+    let state_si = vm.kernel_core().perm_interner().intern("\u{0}bound-state").0;
+    if let Err(e) = vm.define_data_property(unsafe { &mut *wrapper }, state_si, JsValue::from_js_object(state), attrs) {
+        return NativeResult::Err(crate::error::create_type_error(vm, &e));
     }
 
     NativeResult::Ok(JsValue::from_js_object(wrapper))
+}
+
+/// 读 bound 包装器固定第 4 号 shape 属性处的状态对象，返回其存储
+/// [target, thisArg, ...boundArgs]（缺位时返回空 vec）。
+pub fn bound_state_values(wrapper: &JsObject) -> Vec<JsValue> {
+    wrapper
+        .hash_props_vec()
+        .and_then(|props| props.get(4).copied())
+        .filter(|v| v.is_object() && !v.as_js_object_ptr().is_null())
+        .and_then(|sv| unsafe { &*sv.as_js_object_ptr() }.hash_props_vec().cloned())
+        .unwrap_or_default()
 }
 
 /// bound 函数 caller/arguments 的受限访问器：任何访问（get/set）都抛 TypeError。
