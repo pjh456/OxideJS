@@ -412,7 +412,65 @@ fn ab_resizable_accessor_pins() {
          var t1 = false, t2 = false; \
          try { getter.call({}); } catch (e) { t1 = e instanceof TypeError; } \
          try { getter.call(undefined); } catch (e) { t2 = e instanceof TypeError; } \
-         ok && fixed.resizable === false && resizable.resizable === true && t1 && t2",
+          ok && fixed.resizable === false && resizable.resizable === true && t1 && t2",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
+/// BigInt 参钉：ctor 与 slice 单参/双参/中间参四形均抛 TypeError。
+#[test]
+fn ab_bigint_argument_type_error() {
+    let mut vm = Vm::new();
+    let err = eval(&mut vm, "new ArrayBuffer(8n)").unwrap_err();
+    assert!(err.contains("TypeError"), "ctor: {}", err);
+    for src in [
+        "new ArrayBuffer(8).slice(2n)",
+        "new ArrayBuffer(8).slice(2n, 4n)",
+        "new ArrayBuffer(8).slice(1n, 2n)",
+    ] {
+        let err = eval(&mut vm, src).unwrap_err();
+        assert!(err.contains("TypeError"), "{}: {}", src, err);
+    }
+}
+
+/// valueOf 异常透传钉：ctor 与 slice 的转换异常保留原异常值。
+#[test]
+fn ab_value_of_abort_passes_through() {
+    let mut vm = Vm::new();
+    let v = eval(&mut vm, "try { new ArrayBuffer({valueOf(){ throw 42 }}) } catch (e) { e }").unwrap();
+    assert_eq!(v.as_int(), 42);
+    let v = eval(&mut vm, "try { new ArrayBuffer(8).slice({valueOf(){ throw 7 }}) } catch (e) { e }").unwrap();
+    assert_eq!(v.as_int(), 7);
+}
+
+/// fold 保留钉：slice ±Infinity 饱和 0/len，Number 分支语义不回退。
+#[test]
+fn ab_slice_infinity_fold_preserved() {
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "new ArrayBuffer(8).slice(Infinity).byteLength === 0 \
+         && new ArrayBuffer(8).slice(-Infinity).byteLength === 8 \
+         && new ArrayBuffer(8).slice(-Infinity, 3).byteLength === 3 \
+         && new ArrayBuffer(8).slice(2, Infinity).byteLength === 6",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
+/// RangeError 不回退钉：负值/超引擎上限抛 RangeError，分数截断、字符串强转。
+#[test]
+fn ab_length_range_error_not_regressed() {
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "var t1 = false, t2 = false; \
+         try { new ArrayBuffer(-1); } catch (e) { t1 = e instanceof RangeError; } \
+         try { new ArrayBuffer(2 ** 40); } catch (e) { t2 = e instanceof RangeError; } \
+         t1 && t2 \
+         && new ArrayBuffer(4.9).byteLength === 4 \
+         && new ArrayBuffer('8').byteLength === 8",
     )
     .unwrap();
     assert!(result.as_bool());

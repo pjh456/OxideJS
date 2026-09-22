@@ -4,6 +4,8 @@ use oxide_types::value::JsValue;
 
 use oxide_runtime_api::{NativeResult, VmHost};
 
+use crate::array::to_integer_or_infinity_bounded;
+
 pub(crate) const MAX_ARRAY_BUFFER_LENGTH: usize = 1 << 30;
 
 /// ArrayBuffer 载荷：字节缓冲与状态位。`data` 为 `None` 即缓冲区已 detach；
@@ -64,21 +66,20 @@ fn to_integer_or_infinity<H: VmHost>(vm: &mut H, value: JsValue) -> Result<f64, 
     Ok(if n.is_nan() { 0.0 } else { n.trunc() })
 }
 
-fn normalize_index<H: VmHost>(vm: &mut H, value: JsValue, len: usize) -> usize {
-    let n = vm.coerce_number_bounded(value).unwrap_or(f64::NAN);
-    if n.is_nan() {
-        return 0;
-    }
-    // ToIntegerOrInfinity：±Infinity 不截断，负无穷归 0、正无穷归 len，
+/// ToIntegerOrInfinity：ToNumber 传播式（BigInt/Symbol/转换异常向上传播），
+/// NaN → 0、trunc、±Infinity 保留——负值归 0、正值归 len 由调用侧折叠。
+fn normalize_index<H: VmHost>(vm: &mut H, value: JsValue, len: usize) -> Result<usize, JsValue> {
+    let n = to_integer_or_infinity_bounded(vm, value)?;
+    // ±Infinity 不截断，负无穷归 0、正无穷归 len，
     // 避免饱和成 isize::MIN 后取负溢出。
     if n.is_infinite() {
-        return if n < 0.0 { 0 } else { len };
+        return Ok(if n < 0.0 { 0 } else { len });
     }
     let int = n.trunc() as isize;
     if int < 0 {
-        len.saturating_sub(int.unsigned_abs())
+        Ok(len.saturating_sub(int.unsigned_abs()))
     } else {
-        (int as usize).min(len)
+        Ok((int as usize).min(len))
     }
 }
 
@@ -358,8 +359,16 @@ pub fn array_buffer_slice<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         return NativeResult::Err(crate::error::create_type_error(vm, "ArrayBuffer internal state invalid"));
     };
     let len = data.len();
-    let start = if args.len() > 1 { normalize_index(vm, vm.reg(args[1]), len) } else { 0 };
-    let end = if args.len() > 2 { normalize_index(vm, vm.reg(args[2]), len) } else { len };
+    let start = if args.len() > 1 {
+        native_try!(normalize_index(vm, vm.reg(args[1]), len))
+    } else {
+        0
+    };
+    let end = if args.len() > 2 {
+        native_try!(normalize_index(vm, vm.reg(args[2]), len))
+    } else {
+        len
+    };
     let end = end.max(start);
     // 切片产物恒定长，原型取默认 %ArrayBuffer.prototype%。
     let proto = default_array_buffer_proto(vm);
