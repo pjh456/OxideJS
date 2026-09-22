@@ -6,15 +6,29 @@ use oxide_runtime_api::{NativeResult, VmHost};
 /// 普通调用返回原始 number（整数走 int 表示）；new 语义返回 `[[NumberData]]` 包装对象。
 pub fn number_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let n = if args.len() > 1 {
-        match vm.coerce_number_bounded(vm.reg(args[1])) {
-            Ok(n) => n,
+        let raw = vm.reg(args[1]);
+        // ToPrimitive 先解盒：BigInt 原始值走 lossy 转换（BigIntToNumber 不抛错，
+        // 显式 `Number(bigint)` 是规范唯一合法入口）；其余经 bounded ToNumber
+        // 入口（Symbol 抛 TypeError）。
+        let prim = match vm.coerce_primitive_bounded(raw, false) {
+            Ok(p) => p,
             Err(_) => {
-                // 对象经 ToNumber 转换时 toString/valueOf 可抛异常，须原样传播原始异常。
+                // 对象经 ToPrimitive 转换时 toString/valueOf 可抛异常，须原样传播原始异常。
                 if let Some(exc) = vm.take_uncaught_value() {
                     return NativeResult::Err(exc);
                 }
                 return NativeResult::Err(crate::error::create_type_error(vm, "Cannot convert value to a number"));
             }
+        };
+        if prim.is_bigint() {
+            oxide_runtime_api::bigint_to_f64(unsafe { oxide_runtime_api::bigint_data(prim) })
+        } else if prim.is_symbol() {
+            if let Some(exc) = vm.take_uncaught_value() {
+                return NativeResult::Err(exc);
+            }
+            return NativeResult::Err(crate::error::create_type_error(vm, "Cannot convert a Symbol value to a number"));
+        } else {
+            oxide_runtime_api::to_number(prim)
         }
     } else {
         0.0

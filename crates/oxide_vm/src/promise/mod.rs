@@ -121,7 +121,8 @@ enum AggregateKind {
 }
 
 /// IsConstructor 近似判定：可调用、非 arrow，且 native 函数须带构造器 tag
-/// （与 `construct_ctor` 的校验一致）。
+/// （与 `construct_ctor` 的校验一致）；bound 包装恒接受（target 可构造性在
+/// `dispatch_new_bound` 入口复核）。
 fn is_constructor_value(c: JsValue) -> bool {
     if !c.is_object() {
         return false;
@@ -130,7 +131,9 @@ fn is_constructor_value(c: JsValue) -> bool {
     let c_obj = unsafe { &*c.as_js_object_ptr() };
     c_obj.is_function()
         && !c_obj.is_arrow()
-        && !(c_obj.native_fn().is_some() && c_obj.type_tag != JsObject::OBJ_TYPE_CONSTRUCTOR)
+        && !(c_obj.native_fn().is_some()
+            && c_obj.type_tag != JsObject::OBJ_TYPE_CONSTRUCTOR
+            && c_obj.type_tag != JsObject::OBJ_TYPE_BOUND)
 }
 
 // ── session GC 支撑：状态盒中的 JsValues 作为 Promise 对象边追踪 ──

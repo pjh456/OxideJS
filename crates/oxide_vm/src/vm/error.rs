@@ -147,12 +147,18 @@ impl Vm {
     /// ToNumber 有界版：先按 number hint 做 ToPrimitive，再转 `f64`。
     ///
     /// # 边界与前提
-    /// 原始值为 Symbol 时按规范（ECMA-262 §7.1.4）抛 `TypeError`，不落入
-    /// [`coercion::to_number`] 的宽松快路径（后者对该输入返回 `NaN`）。
+    /// 原始值为 Symbol 或 BigInt 时抛 `TypeError`，不落入
+    /// [`coercion::to_number`] 的宽松快路径（后者对 Symbol 返回 `NaN`、
+    /// 对 BigInt 做 lossy 转换）。BigInt 入口语义：显式 lossy 站点
+    /// （`Number` 构造器）先解盒自行转换，不经本入口。
     pub(crate) fn coerce_number_bounded(&mut self, value: JsValue) -> Result<f64, String> {
         let primitive = self.coerce_primitive_bounded(value, false)?;
         if primitive.is_symbol() {
             self.conversion_error("Cannot convert a Symbol value to a number")?;
+            return Ok(f64::NAN);
+        }
+        if primitive.is_bigint() {
+            self.conversion_error("Cannot convert a BigInt value to a number")?;
             return Ok(f64::NAN);
         }
         Ok(coercion::to_number(primitive))

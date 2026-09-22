@@ -325,6 +325,20 @@ fn map_this(vm: &mut Vm, reg: u8) -> JsValue {
     val
 }
 
+/// 分配一个原型指向 DataView.prototype 的占位对象并写入寄存器，作为构造器调用的 `this`。
+fn data_view_this(vm: &mut Vm, reg: u8) -> JsValue {
+    let proto = vm.session.builtin_world().data_view_proto.as_ptr() as *mut JsObject;
+    let obj = vm.epoch.alloc(JsObject::new_empty(
+        oxide_kernel::shape_forge::EMPTY_SHAPE_ID,
+        JsValue::from_js_object(proto),
+    ));
+    // 测试辅助函数绕过 alloc_object，需手动置位 EPOCH_BIT。
+    unsafe { (*obj).set_is_epoch(true) };
+    let val = JsValue::from_js_object(obj);
+    vm.regs[reg as usize] = val;
+    val
+}
+
 /// 分配一个原型指向 Set.prototype 的占位对象并写入寄存器，作为构造器调用的 `this`。
 fn set_this(vm: &mut Vm, reg: u8) -> JsValue {
     let proto = vm.session.builtin_world().set_proto.as_ptr() as *mut JsObject;
@@ -735,6 +749,7 @@ fn session_gc_keeps_shared_array_buffer_alive_through_view_native_edges() {
     let typed = native_ok(typed_array::int32array_constructor(&mut vm, &[0, 1]));
 
     vm.regs[1] = buffer;
+    data_view_this(&mut vm, 0);
     let view = native_ok(data_view::data_view_constructor(&mut vm, &[0, 1]));
 
     vm.regs[0] = view;
@@ -790,6 +805,7 @@ fn session_gc_rewrites_buffer_retained_only_by_data_view_native_edge() {
     vm.regs[1] = JsValue::int(8);
     let buffer = native_ok(array_buffer::array_buffer_constructor(&mut vm, &[0, 1]));
     vm.regs[1] = buffer;
+    data_view_this(&mut vm, 0);
     let view = native_ok(data_view::data_view_constructor(&mut vm, &[0, 1]));
 
     vm.regs[0] = view;

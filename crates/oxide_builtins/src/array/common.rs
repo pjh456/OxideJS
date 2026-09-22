@@ -233,6 +233,9 @@ pub(crate) fn clamp_relative(rel: f64, n_f: f64, n: usize) -> usize {
 }
 
 /// IsConstructor 的近似判定（与 construct_array_from_result 保持一致）。
+///
+/// native 函数须带构造器 tag；bound 包装恒接受（target 可构造性在
+/// `dispatch_new_bound` 入口复核，此处仅判值形态）。
 #[inline]
 pub(crate) fn is_constructor_value(c: JsValue) -> bool {
     if !c.is_object() {
@@ -241,7 +244,9 @@ pub(crate) fn is_constructor_value(c: JsValue) -> bool {
     let c_obj = unsafe { &*c.as_js_object_ptr() };
     c_obj.is_function()
         && !c_obj.is_arrow()
-        && !(c_obj.native_fn().is_some() && c_obj.type_tag != JsObject::OBJ_TYPE_CONSTRUCTOR)
+        && !(c_obj.native_fn().is_some()
+            && c_obj.type_tag != JsObject::OBJ_TYPE_CONSTRUCTOR
+            && c_obj.type_tag != JsObject::OBJ_TYPE_BOUND)
 }
 
 /// 校验回调参数为可调用函数对象（判空与 is_function 均须通过），不是则抛 TypeError。

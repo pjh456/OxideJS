@@ -1,9 +1,9 @@
 use std::sync::Arc;
 
 use crate::bind_constructor;
-use crate::bindings::{apply_binding_table, configure_native_constructor};
+use crate::bindings::{apply_binding_table, bind_accessor_getter, configure_native_constructor};
 use oxide_kernel::kernel::{KernelCore, KernelSession};
-use oxide_types::object::JsObject;
+use oxide_types::object::{JsObject, PropAttributes};
 
 /// 把 DataView 构造器与原型方法绑定到 global。
 pub fn bind_data_view(core: &Arc<KernelCore>, session: &KernelSession, global: &mut JsObject) {
@@ -15,7 +15,7 @@ pub fn bind_data_view(core: &Arc<KernelCore>, session: &KernelSession, global: &
     configure_native_constructor(
         ctor,
         oxide_builtins::data_view::data_view_constructor::<crate::vm::Vm> as *const (),
-        3,
+        1,
     );
 
     apply_binding_table(
@@ -133,5 +133,36 @@ pub fn bind_data_view(core: &Arc<KernelCore>, session: &KernelSession, global: &
         ],
     );
 
-    bind_constructor!(core, global, "DataView", ctor_ptr, oxide_builtins::data_view::data_view_constructor::<crate::vm::Vm>, 3, hash: true);
+    bind_constructor!(core, global, "DataView", ctor_ptr, oxide_builtins::data_view::data_view_constructor::<crate::vm::Vm>, 1, hash: true);
+    // length 属性描述符补 { writable:false, enumerable:false, configurable:true }
+    // （bind_constructor! 宏的通用缺省 meta 不可写回，此处理仅覆盖 DataView）。
+    {
+        let length_si = core.perm_interner().intern("length").0;
+        if let Some(pos) = core.shape_forge().lookup_position(ctor.shape_id(), length_si) {
+            ctor.set_data_meta(pos, PropAttributes::new(false, false, true));
+        }
+    }
+
+    // buffer/byteOffset/byteLength 只读访问器（set 恒 undefined，getter 读视图状态盒）。
+    bind_accessor_getter(
+        core,
+        session,
+        proto,
+        "buffer",
+        oxide_builtins::data_view::data_view_buffer_getter::<crate::vm::Vm> as *const (),
+    );
+    bind_accessor_getter(
+        core,
+        session,
+        proto,
+        "byteOffset",
+        oxide_builtins::data_view::data_view_byte_offset_getter::<crate::vm::Vm> as *const (),
+    );
+    bind_accessor_getter(
+        core,
+        session,
+        proto,
+        "byteLength",
+        oxide_builtins::data_view::data_view_byte_length_getter::<crate::vm::Vm> as *const (),
+    );
 }

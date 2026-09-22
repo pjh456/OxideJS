@@ -74,9 +74,28 @@ impl Vm {
         let nt_obj = unsafe { &*new_target.as_js_object_ptr() };
         // native 构造器：receiver 为新对象（this 取 newTarget.prototype），值传递调用。
         if ctor_obj.native_fn().is_some() {
-            let this_ptr = self.alloc_ctor_this(nt_obj)?;
-            let this_val = JsValue::from_js_object(this_ptr);
-            return match self.call_function_sync(ctor, this_val, args) {
+            // DataView 构造器不预分配 this：其体内先做全部校验、后读 newTarget.prototype
+            // （抛错的 prototype getter 不得先于越界 RangeError 触发），占位 receiver
+            // 不可观测（构造器恒返回自建对象）；原型取 %DataView.prototype% 使构造器
+            // 的 receiver 原型链判定通过。
+            let is_data_view = std::ptr::eq(
+                ctor.as_js_object_ptr(),
+                self.session.builtin_world().data_view_constructor.as_ptr() as *mut JsObject,
+            );
+            let this_val = if is_data_view {
+                let data_view_proto_val =
+                    JsValue::from_js_object(self.session.builtin_world().data_view_proto.as_ptr() as *mut JsObject);
+                JsValue::from_js_object(self.alloc_object(JsObject::new_empty(EMPTY_SHAPE_ID, data_view_proto_val)))
+            } else {
+                let this_ptr = self.alloc_ctor_this(nt_obj)?;
+                JsValue::from_js_object(this_ptr)
+            };
+            // newTarget 经 reg(255) 暴露给 native 构造器（快照/恢复：call 窗口不触及 255）。
+            let saved_nt = self.regs[255];
+            self.regs[255] = new_target;
+            let result = self.call_function_sync(ctor, this_val, args);
+            self.regs[255] = saved_nt;
+            return match result {
                 Ok(ret) if ret.is_object() => Ok(ret),
                 Ok(_) => Ok(this_val),
                 Err(e) => Err(self

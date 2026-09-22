@@ -972,8 +972,13 @@ impl Vm {
         let new_obj_val = JsValue::object(new_obj as *mut u8);
 
         if ctor_obj.native_fn().is_some() {
-            // native 构造器：receiver 为新对象，值传递调用。
-            match self.call_function_sync(constructor, new_obj_val, &args) {
+            // native 构造器：receiver 为新对象，值传递调用。newTarget 快照后置入
+            // reg(255) 暴露给 native 构造器（调用后恢复原值）。
+            let saved_new_target = self.regs[255];
+            self.regs[255] = constructor;
+            let result = self.call_function_sync(constructor, new_obj_val, &args);
+            self.regs[255] = saved_new_target;
+            match result {
                 Ok(v) => {
                     self.regs[rd] = if v.is_object() { v } else { new_obj_val };
                     Ok(false)
