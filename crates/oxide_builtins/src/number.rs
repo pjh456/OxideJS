@@ -2,6 +2,19 @@ use oxide_types::value::JsValue;
 
 use oxide_runtime_api::{NativeResult, VmHost};
 
+/// 整值且 i32 域内的有限数转 int 表示；-0 排除
+/// （int 表示丢符号，规范要求 `Number(-0)` 得 -0）。
+fn i32_of_integral(n: f64) -> Option<i32> {
+    if n == 0.0 && n.is_sign_negative() {
+        return None;
+    }
+    if n.fract() == 0.0 && n.is_finite() && n >= i32::MIN as f64 && n <= i32::MAX as f64 {
+        Some(n as i32)
+    } else {
+        None
+    }
+}
+
 /// JS `Number()` 构造逻辑：把参数按 ToNumber 语义转换。
 /// 普通调用返回原始 number（整数走 int 表示）；new 语义返回 `[[NumberData]]` 包装对象。
 pub fn number_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
@@ -55,38 +68,42 @@ pub fn number_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         let this_val = vm.reg(args[0]);
         let obj = unsafe { &mut *this_val.as_js_object_ptr() };
         obj.type_tag = oxide_types::object::JsObject::OBJ_TYPE_NUMBER_OBJ;
-        let boxed = if n.fract() == 0.0 && n.is_finite() && n >= i32::MIN as f64 && n <= i32::MAX as f64 {
-            JsValue::int(n as i32)
-        } else {
-            JsValue::float(n)
-        };
+        let boxed = i32_of_integral(n).map(JsValue::int).unwrap_or_else(|| JsValue::float(n));
         obj.set_boxed_value(boxed);
         return NativeResult::Ok(this_val);
     }
 
-    if n.fract() == 0.0 && n.is_finite() && n >= i32::MIN as f64 && n <= i32::MAX as f64 {
-        NativeResult::Ok(JsValue::int(n as i32))
-    } else {
-        NativeResult::Ok(JsValue::float(n))
-    }
+    NativeResult::Ok(i32_of_integral(n).map(JsValue::int).unwrap_or_else(|| JsValue::float(n)))
 }
 
 /// `Number.isNaN`：参数严格等于 NaN 才返回 true（不做隐式类型转换）。
+///
+/// 步 1 为严格判型：非 Number 原始类型（含 Number 对象）直接 false，
+/// 不走 ToNumber 强转（否则 "NaN"/对象装箱会误报 true）。
 pub fn number_is_nan<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     if args.len() < 2 {
         return NativeResult::Ok(JsValue::bool(false));
     }
-    let n = oxide_runtime_api::to_number(vm.reg(args[1]));
-    NativeResult::Ok(JsValue::bool(n.is_nan()))
+    let val = vm.reg(args[1]);
+    if !val.is_int() && !val.is_double() {
+        return NativeResult::Ok(JsValue::bool(false));
+    }
+    NativeResult::Ok(JsValue::bool(oxide_runtime_api::to_number(val).is_nan()))
 }
 
 /// `Number.isFinite`：参数为有限数才返回 true（不做隐式类型转换）。
+///
+/// 步 1 为严格判型：非 Number 原始类型（含 Number 对象）直接 false，
+/// 不走 ToNumber 强转（否则 "1" 等会误报 true）。
 pub fn number_is_finite<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     if args.len() < 2 {
         return NativeResult::Ok(JsValue::bool(false));
     }
-    let n = oxide_runtime_api::to_number(vm.reg(args[1]));
-    NativeResult::Ok(JsValue::bool(n.is_finite()))
+    let val = vm.reg(args[1]);
+    if !val.is_int() && !val.is_double() {
+        return NativeResult::Ok(JsValue::bool(false));
+    }
+    NativeResult::Ok(JsValue::bool(oxide_runtime_api::to_number(val).is_finite()))
 }
 
 /// 判定 parseInt/parseFloat 修剪时要剥掉的空白字符（规范 WhiteSpace 与
@@ -303,13 +320,75 @@ pub fn number_parse_float<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     }
 }
 
+/// thisNumberValue（spec 21.7.3 共用步 1）：Number 原始值直返；带
+/// [[NumberData]] 的 Number 对象取被包值；其余一律 TypeError。
+/// toFixed/toExponential/toPrecision/toString 四方法均以本助手起步，
+/// 取代 ToObject 语义的 coerce（后者对 {} 静默装箱，不抛错）。
+fn this_number_value<H: VmHost>(vm: &mut H, this_val: JsValue) -> Result<f64, JsValue> {
+    if this_val.is_int() || this_val.is_double() {
+        return Ok(oxide_runtime_api::to_number(this_val));
+    }
+    if this_val.is_object() {
+        let ptr = this_val.as_js_object_ptr();
+        if !ptr.is_null() {
+            // Number.prototype 本身即 [[NumberData]] = +0 的 Number 对象；
+            // 与 number_value_of 的 proto 特判同形。
+            let number_proto = vm.session().builtin_world().number_proto.as_ptr() as *mut oxide_types::object::JsObject;
+            if std::ptr::eq(ptr, number_proto) {
+                return Ok(0.0);
+            }
+            let obj = unsafe { &*ptr };
+            if obj.is_number_obj() {
+                return Ok(oxide_runtime_api::to_number(obj.boxed_value()));
+            }
+        }
+    }
+    Err(crate::error::create_type_error(vm, "Cannot convert this value to a number"))
+}
+
+/// f/p/radix 参数转换：完整 ToNumber（对象执行 ToPrimitive 且 valueOf/toString
+/// 抛出的异常原样传播）后走 ToIntegerOrInfinity。纯核 `to_integer_or_infinity`
+/// 不传播异常，不得用于参数位。
+fn coerce_to_integer_or_infinity<H: VmHost>(vm: &mut H, arg: JsValue) -> Result<f64, JsValue> {
+    let raw = match vm.coerce_number_bounded(arg) {
+        Ok(n) => n,
+        Err(_) => {
+            if let Some(exc) = vm.take_uncaught_value() {
+                return Err(exc);
+            }
+            return Err(crate::error::create_type_error(vm, "Cannot convert argument to a number"));
+        }
+    };
+    if raw.is_nan() || raw == 0.0 {
+        Ok(0.0)
+    } else if raw.is_infinite() {
+        Ok(raw)
+    } else {
+        Ok(raw.trunc())
+    }
+}
+
+/// `Number.prototype.toLocaleString()`：locale 参数忽略，恒按十进制输出。
+/// 与 toString 的 radix-10 路径同形；不读第二个实参（length 为 0）。
+pub fn number_to_locale_string<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let n = match this_number_value(vm, vm.reg(args[0])) {
+        Ok(v) => v,
+        Err(exc) => return NativeResult::Err(exc),
+    };
+    NativeResult::Ok(vm.new_string_owned(oxide_runtime_api::js_number_to_string(n)))
+}
+
 /// `Number.prototype.toString(radix)`：按指定进制（2..36）转字符串。
 ///
-/// 十进制走共享的 ECMA-262 Number::toString 格式化；非十进制对截断后的整数
-/// 部分做进制转换（小数部分按近似处理）。radix 经 ToInteger 后越界抛 RangeError，
+/// 步 1 先 thisNumberValue（非 Number 原始值/对象抛 TypeError）；十进制走共享的
+/// ECMA-262 Number::toString 格式化；非十进制对截断后的整数部分做进制转换
+/// （小数部分按近似处理）。radix 经 ToInteger 后越界抛 RangeError，
 /// NaN/Infinity 输出专名。
 pub fn number_to_string<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
-    let n = vm.coerce_number_bounded(vm.reg(args[0])).unwrap_or(f64::NAN);
+    let n = match this_number_value(vm, vm.reg(args[0])) {
+        Ok(v) => v,
+        Err(exc) => return NativeResult::Err(exc),
+    };
     let radix = if args.len() > 1 {
         let radix_arg = vm.reg(args[1]);
         if radix_arg.is_undefined() {
@@ -385,28 +464,43 @@ pub fn number_to_string<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 
 /// `Number.prototype.toFixed(digits)`：固定小数位数（0..100）输出字符串，
 /// 超出范围抛 RangeError；NaN/Infinity 输出专名。
+///
+/// 步序：先 thisNumberValue，再转换 fractionDigits 并做范围校验（范围检查
+/// 先于 NaN 短路，NaN.toFixed(Infinity) 须抛 RangeError）；随后 x ≥ 10^21
+/// 退化为 String(x) 科学式（±Infinity 同形，经此分支输出专名）。
 pub fn number_to_fixed<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
-    let n = vm.coerce_number_bounded(vm.reg(args[0])).unwrap_or(f64::NAN);
+    let n = match this_number_value(vm, vm.reg(args[0])) {
+        Ok(v) => v,
+        Err(exc) => return NativeResult::Err(exc),
+    };
+    let raw = if args.len() > 1 {
+        match coerce_to_integer_or_infinity(vm, vm.reg(args[1])) {
+            Ok(v) => v,
+            Err(exc) => return NativeResult::Err(exc),
+        }
+    } else {
+        0.0
+    };
+    if !(0.0..=100.0).contains(&raw) {
+        return NativeResult::Err(crate::error::create_range_error(
+            vm,
+            "toFixed() fractionDigits must be between 0 and 100",
+        ));
+    }
     if n.is_nan() {
         return NativeResult::Ok(vm.new_string("NaN"));
     }
-    if n.is_infinite() {
-        return NativeResult::Ok(vm.new_string(if n.is_sign_positive() { "Infinity" } else { "-Infinity" }));
+    // x ≥ 10^21 用科学式 String 形态（±Infinity 同为该形态）。
+    if n.abs() >= 1e21 {
+        let s = if n < 0.0 {
+            format!("-{}", oxide_runtime_api::js_number_to_string(-n))
+        } else {
+            oxide_runtime_api::js_number_to_string(n)
+        };
+        return NativeResult::Ok(vm.new_string_owned(s));
     }
-    let fraction_digits = if args.len() > 1 {
-        let raw = oxide_runtime_api::to_integer_or_infinity(vm.reg(args[1]));
-        if !(0.0..=100.0).contains(&raw) {
-            return NativeResult::Err(crate::error::create_range_error(
-                vm,
-                "toFixed() fractionDigits must be between 0 and 100",
-            ));
-        }
-        raw as usize
-    } else {
-        0usize
-    };
     let n_abs = if n == 0.0 && n.is_sign_negative() { 0.0 } else { n };
-    let formatted = format!("{:.precision$}", n_abs, precision = fraction_digits);
+    let formatted = format!("{:.precision$}", n_abs, precision = raw as usize);
     NativeResult::Ok(vm.new_string(&formatted))
 }
 
@@ -433,15 +527,28 @@ pub fn number_is_safe_integer<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResul
 
 /// `Number.prototype.toPrecision(precision)`：按有效数字位数（1..100）输出，
 /// 科学计数法与定点表示按指数自动切换，超范围抛 RangeError。
+///
+/// 步序：先 thisNumberValue；precision 缺省直接返 ToString(x)（含 NaN/±∞
+/// 全形）；再转 precision，NaN/±∞ 专名先于范围校验（(±∞).toPrecision(1000)
+/// 返 "Infinity" 而非 RangeError），最后舍入渲染（指数恒带符号）。
 pub fn number_to_precision<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
-    if args.len() <= 1 {
-        return NativeResult::Err(crate::error::create_range_error(
-            vm,
-            "toPrecision() requires a precision argument between 1 and 100",
-        ));
+    let n = match this_number_value(vm, vm.reg(args[0])) {
+        Ok(v) => v,
+        Err(exc) => return NativeResult::Err(exc),
+    };
+    if args.len() <= 1 || vm.reg(args[1]).is_undefined() {
+        return NativeResult::Ok(vm.new_string_owned(oxide_runtime_api::js_number_to_string(n)));
     }
-    let n = vm.coerce_number_bounded(vm.reg(args[0])).unwrap_or(f64::NAN);
-    let raw = oxide_runtime_api::to_integer_or_infinity(vm.reg(args[1]));
+    let raw = match coerce_to_integer_or_infinity(vm, vm.reg(args[1])) {
+        Ok(v) => v,
+        Err(exc) => return NativeResult::Err(exc),
+    };
+    if n.is_nan() {
+        return NativeResult::Ok(vm.new_string("NaN"));
+    }
+    if n.is_infinite() {
+        return NativeResult::Ok(vm.new_string(if n.is_sign_positive() { "Infinity" } else { "-Infinity" }));
+    }
     if !(1.0..=100.0).contains(&raw) {
         return NativeResult::Err(crate::error::create_range_error(
             vm,
@@ -449,12 +556,6 @@ pub fn number_to_precision<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         ));
     }
     let precision = raw as usize;
-    if n.is_nan() {
-        return NativeResult::Ok(vm.new_string("NaN"));
-    }
-    if n.is_infinite() {
-        return NativeResult::Ok(vm.new_string(if n.is_sign_positive() { "Infinity" } else { "-Infinity" }));
-    }
     let n_abs = if n == 0.0 && n.is_sign_negative() { 0.0 } else { n.abs() };
     let is_neg = n.is_sign_negative() && !(n == 0.0);
     let e = if n_abs == 0.0 { 0i32 } else { n_abs.log10().floor() as i32 };
@@ -462,7 +563,14 @@ pub fn number_to_precision<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         let dec = ((precision as i32 - e - 1).max(0)) as usize;
         format!("{:.dec$}", n_abs, dec = dec)
     } else {
-        format!("{:.dec$e}", n_abs, dec = precision - 1)
+        // Rust 的 {:e} 指数不带符号，规范要求恒带 +/-。
+        let mut s = format!("{:.dec$e}", n_abs, dec = precision - 1);
+        if let Some(e_pos) = s.find('e') {
+            if !s[e_pos + 1..].starts_with('-') {
+                s.insert(e_pos + 1, '+');
+            }
+        }
+        s
     };
     if is_neg {
         NativeResult::Ok(vm.new_string(&format!("-{}", formatted)))
@@ -472,18 +580,39 @@ pub fn number_to_precision<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 }
 
 /// `Number.prototype.toExponential(digits)`：按科学计数法输出；
-/// digits 缺省时自动决定小数位数，超范围抛 RangeError。
+/// digits 缺省/undefined 取最短精确有效数字数，超范围抛 RangeError。
+///
+/// 步序：先 thisNumberValue，再转换 fractionDigits（对象参数执行 ToPrimitive
+/// 且异常原样传播）；NaN/±∞ 专名先于范围检查；指数恒带符号。
 pub fn number_to_exponential<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
-    let n = vm.coerce_number_bounded(vm.reg(args[0])).unwrap_or(f64::NAN);
+    let n = match this_number_value(vm, vm.reg(args[0])) {
+        Ok(v) => v,
+        Err(exc) => return NativeResult::Err(exc),
+    };
+    let raw = if args.len() > 1 && !vm.reg(args[1]).is_undefined() {
+        match coerce_to_integer_or_infinity(vm, vm.reg(args[1])) {
+            Ok(v) => v,
+            Err(exc) => return NativeResult::Err(exc),
+        }
+    } else {
+        f64::NAN
+    };
     if n.is_nan() {
         return NativeResult::Ok(vm.new_string("NaN"));
     }
     if n.is_infinite() {
         return NativeResult::Ok(vm.new_string(if n.is_sign_positive() { "Infinity" } else { "-Infinity" }));
     }
+    let has_digits = !raw.is_nan();
+    if has_digits && !(0.0..=100.0).contains(&raw) {
+        return NativeResult::Err(crate::error::create_range_error(
+            vm,
+            "toExponential() fractionDigits must be between 0 and 100",
+        ));
+    }
     let n_abs = if n == 0.0 && n.is_sign_negative() { 0.0 } else { n.abs() };
-    let sign_prefix = if n.is_sign_negative() && !n.is_nan() && !(n == 0.0) { "-" } else { "" };
-    if args.len() <= 1 {
+    let sign_prefix = if n < 0.0 { "-" } else { "" };
+    if !has_digits {
         let formatted = format!("{:e}", n_abs);
         let mut s = formatted;
         if let Some(e_pos) = s.find('e') {
@@ -495,20 +624,23 @@ pub fn number_to_exponential<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult
             if mantissa.contains('.') {
                 s = format!("{}{}", mantissa, &s[e_pos..]);
             }
+            // 指数恒带符号（Rust 正指数不输出 +）。
+            if !s[e_pos + 1..].starts_with('-') {
+                s.insert(e_pos + 1, '+');
+            }
         }
         let result = format!("{}{}", sign_prefix, s);
         return NativeResult::Ok(vm.new_string_owned(result));
     }
-    let raw = oxide_runtime_api::to_integer_or_infinity(vm.reg(args[1]));
-    if !(0.0..=100.0).contains(&raw) {
-        return NativeResult::Err(crate::error::create_range_error(
-            vm,
-            "toExponential() fractionDigits must be between 0 and 100",
-        ));
+    let formatted = format!("{:.digits$e}", n_abs, digits = raw as usize);
+    // 指数恒带符号（Rust 正指数不输出 +）。
+    let mut s = formatted;
+    if let Some(e_pos) = s.find('e') {
+        if !s[e_pos + 1..].starts_with('-') {
+            s.insert(e_pos + 1, '+');
+        }
     }
-    let fraction_digits = raw as usize;
-    let formatted = format!("{:.digits$e}", n_abs, digits = fraction_digits);
-    NativeResult::Ok(vm.new_string(&format!("{}{}", sign_prefix, formatted)))
+    NativeResult::Ok(vm.new_string(&format!("{}{}", sign_prefix, s)))
 }
 
 /// `Number.prototype.valueOf`：返回包装对象的原始 number；

@@ -75,6 +75,18 @@ pub(crate) fn make_named_pair(
     make_pair(string_forge, shape_forge, name, labels.prototype, labels.constructor, labels.name)
 }
 
+/// 把 Number.prototype 标成 Number 对象本体：规范 21.7.3 规定其是
+/// [[NumberData]] = +0 的 Number object。type_tag 是 Object.prototype.toString
+/// 品牌表的判据（置位后报 "[object Number]"），boxed 值供 thisNumberValue/
+/// valueOf 的通用分支读取。
+pub(crate) fn tag_number_proto(proto: &P<JsObject>) {
+    let ptr = proto.as_ptr() as *mut JsObject;
+    // SAFETY: proto 是 make_named_pair 刚建的本进程对象，P 引用与裸指针同址。
+    let obj = unsafe { &mut *ptr };
+    obj.type_tag = JsObject::OBJ_TYPE_NUMBER_OBJ;
+    obj.set_boxed_value(JsValue::int(0));
+}
+
 pub(crate) fn make_error_subtypes(error_proto: &P<JsObject>) -> ErrorSubtypeProtos {
     let error_proto_val = JsValue::from_js_object(error_proto.as_ptr() as *mut JsObject);
     ErrorSubtypeProtos {
@@ -436,6 +448,7 @@ impl BuiltinWorld {
         let (function_proto, function_constructor) = make_named_pair(string_forge, shape_forge, labels, "Function");
         let (string_proto, string_constructor) = make_named_pair(string_forge, shape_forge, labels, "String");
         let (number_proto, number_constructor) = make_named_pair(string_forge, shape_forge, labels, "Number");
+        tag_number_proto(&number_proto);
         let (boolean_proto, boolean_constructor) = make_named_pair(string_forge, shape_forge, labels, "Boolean");
         let (error_proto, error_constructor) = make_named_pair(string_forge, shape_forge, labels, "Error");
         let (symbol_proto, symbol_constructor) = make_named_pair(string_forge, shape_forge, labels, "Symbol");

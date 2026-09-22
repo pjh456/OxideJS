@@ -282,7 +282,8 @@ fn number_to_exponential() {
     let mut vm = Vm::new();
     let result = eval(&mut vm, "var n = 123.456; n.toExponential(2)").unwrap();
     let s = vm.lookup_str(result).unwrap_or_default();
-    assert_eq!(s, "1.23e2");
+    // 指数恒带符号（规范科学式形态）。
+    assert_eq!(s, "1.23e+2");
 }
 
 #[test]
@@ -315,4 +316,134 @@ fn boxed_number_is_object_and_call_stays_primitive() {
 
     let n = eval(&mut vm, "Number('7')").unwrap();
     assert_eq!(n.as_int(), 7);
+}
+
+fn str_of(vm: &mut Vm, source: &str) -> String {
+    let r = eval(vm, source).unwrap();
+    vm.lookup_str(r).unwrap_or_default()
+}
+
+#[test]
+fn number_proto_methods_this_number_value() {
+    let mut vm = Vm::new();
+    // Number 原始值与 Number 对象均合法 this。
+    assert_eq!(str_of(&mut vm, "(new Number(7)).toFixed(1)"), "7.0");
+    assert_eq!(str_of(&mut vm, "(new Number(7)).toPrecision(2)"), "7.0");
+    assert_eq!(str_of(&mut vm, "(new Number(7)).toExponential(1)"), "7.0e+0");
+    assert_eq!(str_of(&mut vm, "(new Number(255)).toString(16)"), "ff");
+    // Number.prototype 本体是 [[NumberData]] = +0 的 Number 对象。
+    assert_eq!(str_of(&mut vm, "Number.prototype.toFixed(1)"), "0.0");
+    assert_eq!(str_of(&mut vm, "Number.prototype.toExponential(0)"), "0e+0");
+    // 其余 this 一律 TypeError（四方法非通用）。
+    for method in ["toString", "toFixed", "toExponential", "toPrecision"] {
+        let src = format!("Number.prototype.{}.call({{}})", method);
+        let err = eval(&mut vm, &src).unwrap_err();
+        assert!(err.contains("TypeError"), "for {}: {}", method, err);
+    }
+    let err = eval(&mut vm, "Number.prototype.toFixed.call(new String('1'))").unwrap_err();
+    assert!(err.contains("TypeError"), "got: {}", err);
+    let err = eval(&mut vm, "Number.prototype.toPrecision.call(null)").unwrap_err();
+    assert!(err.contains("TypeError"), "got: {}", err);
+}
+
+#[test]
+fn number_methods_argument_coercion_and_ordering() {
+    let mut vm = Vm::new();
+    // 参数走完整 ToNumber：Symbol/BigInt 抛 TypeError。
+    for method in ["toFixed", "toExponential", "toPrecision"] {
+        let err = eval(&mut vm, &format!("(0).{}(0n)", method)).unwrap_err();
+        assert!(err.contains("TypeError"), "bigint for {}: {}", method, err);
+        let err = eval(&mut vm, &format!("(0).{}(Symbol())", method)).unwrap_err();
+        assert!(err.contains("TypeError"), "symbol for {}: {}", method, err);
+    }
+    // 参数 valueOf 抛出的原始异常原样传播（保留异常值）。
+    let v = eval(&mut vm, "try { (0).toFixed({valueOf(){ throw 42 }}) } catch (e) { e }").unwrap();
+    assert_eq!(v.as_int(), 42);
+    // toFixed：范围检查先于 NaN 短路。
+    let err = eval(&mut vm, "NaN.toFixed(Infinity)").unwrap_err();
+    assert!(err.contains("RangeError"), "got: {}", err);
+    assert_eq!(str_of(&mut vm, "NaN.toFixed(0)"), "NaN");
+    // toPrecision：NaN/±∞ 专名先于范围检查。
+    assert_eq!(str_of(&mut vm, "NaN.toPrecision(1000)"), "NaN");
+    assert_eq!(str_of(&mut vm, "(Infinity).toPrecision(1000)"), "Infinity");
+    assert_eq!(str_of(&mut vm, "(-Infinity).toPrecision(1000)"), "-Infinity");
+    let err = eval(&mut vm, "(10).toPrecision(0)").unwrap_err();
+    assert!(err.contains("RangeError"), "got: {}", err);
+    // toExponential：NaN/±∞ 专名先于范围检查。
+    assert_eq!(str_of(&mut vm, "NaN.toExponential(101)"), "NaN");
+    assert_eq!(str_of(&mut vm, "(Infinity).toExponential(101)"), "Infinity");
+    let err = eval(&mut vm, "(3).toExponential(101)").unwrap_err();
+    assert!(err.contains("RangeError"), "got: {}", err);
+    let err = eval(&mut vm, "(3).toExponential(-1)").unwrap_err();
+    assert!(err.contains("RangeError"), "got: {}", err);
+    // toExponential 的 undefined 走最短式，非按 0 位处理。
+    assert_eq!(str_of(&mut vm, "(123.456).toExponential(undefined)"), "1.23456e+2");
+}
+
+#[test]
+fn number_methods_default_precision_and_boundaries() {
+    let mut vm = Vm::new();
+    // toPrecision 缺省 precision = ToString(x)。
+    assert_eq!(str_of(&mut vm, "(42).toPrecision()"), "42");
+    assert_eq!(str_of(&mut vm, "(123.456).toPrecision(undefined)"), "123.456");
+    assert_eq!(str_of(&mut vm, "NaN.toPrecision()"), "NaN");
+    assert_eq!(str_of(&mut vm, "Number.prototype.toPrecision()"), "0");
+    // toFixed 的 x ≥ 1e21 退化为 String 科学式。
+    assert_eq!(str_of(&mut vm, "(1e21).toFixed()"), "1e+21");
+    assert_eq!(str_of(&mut vm, "(-1e21).toFixed(0)"), "-1e+21");
+    assert_eq!(str_of(&mut vm, "(new Number(1e21)).toFixed()"), "1e+21");
+    // -0 三面：构造、toFixed、toExponential。
+    assert_eq!(str_of(&mut vm, "String(Object.is(Number(-0), -0))"), "true");
+    assert_eq!(str_of(&mut vm, "String(Object.is(new Number(-0).valueOf(), -0))"), "true");
+    assert_eq!(str_of(&mut vm, "(-0).toFixed(0)"), "0");
+    assert_eq!(str_of(&mut vm, "(-0).toExponential(0)"), "0e+0");
+    assert_eq!(str_of(&mut vm, "(-0).toPrecision(2)"), "0.0");
+    // 指数恒带符号。
+    assert_eq!(str_of(&mut vm, "(3).toExponential(0)"), "3e+0");
+    assert_eq!(str_of(&mut vm, "(0).toExponential(1)"), "0.0e+0");
+    assert_eq!(str_of(&mut vm, "(10).toPrecision(1)"), "1e+1");
+    assert_eq!(str_of(&mut vm, "(1.1e-32).toExponential()"), "1.1e-32");
+}
+
+#[test]
+fn number_isnan_isfinite_strict_type() {
+    let mut vm = Vm::new();
+    // 非 Number 类型（含字符串/对象）一律 false，不强转。
+    assert_eq!(str_of(&mut vm, "String(Number.isFinite('1'))"), "false");
+    assert_eq!(str_of(&mut vm, "String(Number.isNaN('NaN'))"), "false");
+    assert_eq!(str_of(&mut vm, "String(Number.isFinite(new Number(42)))"), "false");
+    assert_eq!(str_of(&mut vm, "String(Number.isFinite(42))"), "true");
+    assert_eq!(str_of(&mut vm, "String(Number.isNaN(NaN))"), "true");
+    assert_eq!(str_of(&mut vm, "String(Number.isFinite(Infinity))"), "false");
+}
+
+#[test]
+fn number_proto_tag_and_metadata() {
+    let mut vm = Vm::new();
+    // Number.prototype 本体 tag 为 Number（品牌表据 type_tag 命中）。
+    assert_eq!(str_of(&mut vm, "Object.prototype.toString.call(Number.prototype)"), "[object Number]");
+    // parseInt/parseFloat 与全局同名函数是同一函数对象。
+    assert_eq!(str_of(&mut vm, "String(Number.parseInt === parseInt)"), "true");
+    assert_eq!(str_of(&mut vm, "String(Number.parseFloat === parseFloat)"), "true");
+    // toLocaleString 为 own 属性，行为同 toString（locale 参数忽略）。
+    assert_eq!(str_of(&mut vm, "String(Number.prototype.hasOwnProperty('toLocaleString'))"), "true");
+    assert_eq!(str_of(&mut vm, "(1.5).toLocaleString()"), "1.5");
+    // 四方法 length 为 1。
+    assert_eq!(str_of(&mut vm, "String(Number.prototype.toString.length)"), "1");
+    assert_eq!(str_of(&mut vm, "String(Number.prototype.toFixed.length)"), "1");
+    assert_eq!(str_of(&mut vm, "String(Number.prototype.toExponential.length)"), "1");
+    assert_eq!(str_of(&mut vm, "String(Number.prototype.toPrecision.length)"), "1");
+}
+
+/// full_reset 脏重建：number 家族重建后 Number.prototype 仍带 Number 对象 tag
+/// 与 +0 包值（漏此分支则 tag 翻回 "Object"）。
+#[test]
+fn number_proto_tag_survives_dirty_rebuild() {
+    let mut vm = Vm::new();
+    // 属性写使 number 家族置脏，触发选择性重建路径。
+    eval(&mut vm, "Number.prototype.marker = 1").unwrap();
+    vm.full_reset();
+    assert_eq!(str_of(&mut vm, "Object.prototype.toString.call(Number.prototype)"), "[object Number]");
+    assert_eq!(str_of(&mut vm, "Number.prototype.toFixed(1)"), "0.0");
+    assert_eq!(str_of(&mut vm, "String(Number.parseInt === parseInt)"), "true");
 }

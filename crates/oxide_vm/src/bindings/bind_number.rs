@@ -38,16 +38,23 @@ pub fn bind_number(core: &Arc<KernelCore>, session: &KernelSession, global: &mut
         proto,
         core,
         &[
-            ("toString", oxide_builtins::number::number_to_string::<crate::vm::Vm> as *const (), 0),
-            ("toFixed", oxide_builtins::number::number_to_fixed::<crate::vm::Vm> as *const (), 0),
+            ("toString", oxide_builtins::number::number_to_string::<crate::vm::Vm> as *const (), 1),
+            ("toFixed", oxide_builtins::number::number_to_fixed::<crate::vm::Vm> as *const (), 1),
             (
                 "toExponential",
                 oxide_builtins::number::number_to_exponential::<crate::vm::Vm> as *const (),
-                0,
+                1,
             ),
             (
                 "toPrecision",
                 oxide_builtins::number::number_to_precision::<crate::vm::Vm> as *const (),
+                1,
+            ),
+            // toLocaleString 为 Number.prototype 的 own 属性（规范 21.7.3.25）：
+            // 保留参数不计 length（length 0），locale 参数忽略、恒十进制。
+            (
+                "toLocaleString",
+                oxide_builtins::number::number_to_locale_string::<crate::vm::Vm> as *const (),
                 0,
             ),
             ("valueOf", oxide_builtins::number::number_value_of::<crate::vm::Vm> as *const (), 0),
@@ -85,4 +92,17 @@ pub fn bind_number(core: &Arc<KernelCore>, session: &KernelSession, global: &mut
             ("isFinite", oxide_builtins::global::global_is_finite::<crate::vm::Vm> as *const (), 1),
         ],
     );
+
+    // 规范（21.7.3 / 20.1.3 注）：Number.parseInt/parseFloat 与全局同名函数
+    // 是同一函数对象（SameValue）。ctor 侧绑定先执行、产生独立 wrapper，
+    // 此处把 global 侧 wrapper 值原位写回 ctor 同名槽，描述符形态不变。
+    for name in ["parseInt", "parseFloat"] {
+        let si = core.perm_interner().intern(name).0;
+        if let Some(global_pos) = core.shape_forge().lookup_position(global.shape_id(), si) {
+            let val = global.get_prop_at(global_pos);
+            if let Some(ctor_pos) = core.shape_forge().lookup_position(ctor.shape_id(), si) {
+                ctor.set_prop_at(ctor_pos, val);
+            }
+        }
+    }
 }

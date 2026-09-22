@@ -7,8 +7,8 @@ use oxide_types::object::JsObject;
 use oxide_types::value::JsValue;
 
 use super::construct::{
-    builtin_labels, make_error_subtypes, make_named_pair, make_typed_array_family, wire_builtin_world_links,
-    ErrorSubtypeProtos, TypedArrayFamily,
+    builtin_labels, make_error_subtypes, make_named_pair, make_typed_array_family, tag_number_proto,
+    wire_builtin_world_links, ErrorSubtypeProtos, TypedArrayFamily,
 };
 use super::BuiltinWorld;
 use crate::kernel::BuiltinDirtySet;
@@ -183,7 +183,11 @@ impl BuiltinWorld {
             (current.string_proto.clone(), current.string_constructor.clone())
         };
         let (number_proto, number_constructor) = if dirty.number {
-            make_named_pair(string_forge, shape_forge, labels, "Number")
+            // 脏重建与全量构造同形：原型本体须带 Number 对象 tag 与 +0 包值，
+            // 漏此分支 full_reset 后 tag 翻回 "Object"。
+            let (proto, ctor) = make_named_pair(string_forge, shape_forge, labels, "Number");
+            tag_number_proto(&proto);
+            (proto, ctor)
         } else {
             (current.number_proto.clone(), current.number_constructor.clone())
         };
