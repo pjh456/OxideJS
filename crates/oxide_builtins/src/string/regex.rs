@@ -662,9 +662,24 @@ pub(crate) const MALL_RE: &str = "__mal_re__";
 /// `String.prototype.matchAll(pattern)`：返回带 `next` 的迭代器，逐步产出全部匹配
 /// （要求 RegExp 带 global 标志；普通字符串会被转义成等效正则）。包装器 input
 /// 属性存原始字符串值（单元保真），index 属性为码元游标。
+///
+/// # 步骤
+/// 1. receiver 前置校验（RequireObjectCoercible，纯 is_* 读取）。
+/// 2. pattern 为 null/undefined：跳过对象分支，直接构造路径。
+/// 3. pattern 为对象：真 RegExp 先 flags 单读 g 判定；GetMethod 全链单读，
+///    undefined/null 落构造路径，非 callable 非空值抛 TypeError，可调用则
+///    Call(matcher, pattern, « thisValue ») 原值返回。
+/// 4. 非对象 pattern：跳过对象分支，按字面文本编译载体正则。
+///
+/// # 边界与前提
+/// - ToString(thisValue) 延迟到构造路径实际消费（matcher 直调臂不触发）。
+/// - 构造路径（RegExpCreate(pattern, "g") + Invoke）复用
+///   `match_all_construct_invoke`，无 callable @@matchAll 时抛 TypeError。
 pub fn string_match_all<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("String.prototype.matchAll called with {} args", args.len());
     let this_val = vm.reg(args[0]);
+    // receiver 前置校验：null/undefined/symbol 抛 TypeError（规范第 1-2 步
+    // RequireObjectCoercible，纯 is_* 读取无用户代码，先于一切分叉）。
     if this_val.is_null() || this_val.is_undefined() {
         return NativeResult::Err(crate::error::create_type_error(
             vm,
@@ -674,162 +689,80 @@ pub fn string_match_all<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     if this_val.is_symbol() {
         return NativeResult::Err(crate::error::create_type_error(vm, "Cannot convert a Symbol value to a string"));
     }
-    let input_val = match oxide_runtime_api::to_string_value_full(this_val, vm) {
-        Ok(v) => v,
-        Err(_) => {
-            if let Some(exc) = vm.take_uncaught_value() {
-                return NativeResult::Err(exc);
-            }
-            return NativeResult::Err(crate::error::create_type_error(vm, "Cannot convert value to a string"));
-        }
-    };
     if args.len() < 2 {
         builtins_error!("String.prototype.matchAll: invalid receiver");
         return NativeResult::Err(JsValue::undefined());
     }
     let pattern_val = vm.reg(args[1]);
 
-    // 规范步骤 2-5：pattern 为 null/undefined 时跳过 IsRegExp 分支，
-    // 直接 RegExpCreate(this, "g") + Invoke(rx, @@matchAll, « S »)。
+    // 对象分支条件（IsObject）为假：null/undefined pattern 跳过 flags/GetMethod
+    // 全部步骤，直接落构造路径。
     if pattern_val.is_null() || pattern_val.is_undefined() {
-        // rx = new RegExp(ToString(this), "g")。
-        let g_str = vm.new_string("g");
-        let rx_val = match vm.construct_ctor(
-            JsValue::from_js_object(vm.session().builtin_world().regexp_constructor.as_ptr() as *mut JsObject),
-            &[input_val, g_str],
-        ) {
-            Ok(v) => v,
-            Err(e) => return NativeResult::Err(e),
-        };
-        // Invoke(rx, @@matchAll, « S »)。
-        let match_all_key = oxide_types::private_key::make_well_known_symbol_key(7);
-        let rx_ptr = rx_val.as_js_object_ptr();
-        let proto_val = unsafe { &*rx_ptr }.proto();
-        let rx_this = JsValue::from_js_object(rx_ptr);
-        let matcher = match vm.ordinary_get(unsafe { &*rx_ptr }, match_all_key, rx_this) {
-            Ok(v) => v,
-            Err(e) => return NativeResult::err(crate::iterator::engine_error(vm, &e)),
-        };
-        if matcher.is_undefined() || matcher.is_null() {
-            // 查原型链。
-            if proto_val.is_object() {
-                let p_ptr = proto_val.as_js_object_ptr();
-                let p_this = proto_val;
-                let proto_matcher = match vm.ordinary_get(unsafe { &*p_ptr }, match_all_key, p_this) {
-                    Ok(v) => v,
-                    Err(e) => return NativeResult::err(crate::iterator::engine_error(vm, &e)),
-                };
-                if crate::iterator::is_callable(proto_matcher) {
-                    return match vm.call_function_sync(proto_matcher, rx_this, &[input_val]) {
-                        Ok(v) => NativeResult::Ok(v),
-                        Err(e) => NativeResult::err(crate::iterator::engine_error(vm, &e)),
-                    };
-                }
-            }
-            // 无 callable @@matchAll：构建包装器。
-            return builder_wrapper(vm, input_val, rx_this);
-        }
-        if crate::iterator::is_callable(matcher) {
-            return match vm.call_function_sync(matcher, rx_this, &[input_val]) {
-                Ok(v) => NativeResult::Ok(v),
-                Err(e) => NativeResult::err(crate::iterator::engine_error(vm, &e)),
-            };
-        }
-        return builder_wrapper(vm, input_val, rx_this);
+        return match_all_construct_invoke(vm, this_val, pattern_val);
     }
 
-    // 规范：IsRegExp(pattern) 时先检查 g 标志（Node.js 先行校验，早于
-    // GetMethod 调用），不满足则抛 TypeError；满足后查 GetMethod(pattern,
-    // @@matchAll)，可调用则直调，否则构建包装器。
-    if is_regexp_obj(pattern_val, vm) {
-        let re_ptr = pattern_val.as_js_object_ptr();
-        // 规范步骤 3.a-c：Get(rx, "flags") → RequireObjectCoercible →
-        // ToString 含 "g" 判定；getter 抛错传播。
-        let flags = match crate::regexp::rx_get_flags(vm, re_ptr, pattern_val) {
-            Ok(f) => f,
-            Err(e) => return NativeResult::Err(e),
-        };
-        // RequireObjectCoercible：flags 为 undefined/null 时抛 TypeError。
-        // rx_get_flags 已将 undefined 转为 "undefined" 字符串，需额外检查。
-        let flags_val =
-            match vm.ordinary_get(unsafe { &*re_ptr }, vm.kernel_core().perm_interner().intern("flags").0, pattern_val)
-            {
+    if pattern_val.is_object() {
+        // 真 RegExp：flags 单读原始值（getter 副作用/抛错只观察一次）→
+        // RequireObjectCoercible → ToString 含 "g" 判定；g 判定先于 GetMethod。
+        if is_regexp_obj(pattern_val, vm) {
+            let re_ptr = pattern_val.as_js_object_ptr();
+            // SAFETY: pattern_val 已校验为非空对象值。
+            let re_obj = unsafe { &*re_ptr };
+            let flags_si = vm.kernel_core().perm_interner().intern("flags").0;
+            let flags_val = match vm.ordinary_get(re_obj, flags_si, pattern_val) {
                 Ok(v) => v,
                 Err(e) => return NativeResult::err(crate::iterator::engine_error(vm, &e)),
             };
-        if flags_val.is_undefined() || flags_val.is_null() {
-            return NativeResult::Err(crate::error::create_type_error(
-                vm,
-                "String.prototype.matchAll: regex must have global flag",
-            ));
-        }
-        if !flags.contains('g') {
-            return NativeResult::Err(crate::error::create_type_error(
-                vm,
-                "String.prototype.matchAll: regex must have global flag",
-            ));
-        }
-        // 标志检查通过：查 GetMethod(pattern, @@matchAll)。
-        let match_all_key = oxide_types::private_key::make_well_known_symbol_key(7);
-        let re_obj = unsafe { &*re_ptr };
-        // 先查实例 own。
-        let own_match_all = match vm.get_own_property_slot(re_obj, match_all_key) {
-            Some(_) => match vm.ordinary_get(re_obj, match_all_key, pattern_val) {
-                Ok(v) => v,
-                Err(e) => return NativeResult::err(crate::iterator::engine_error(vm, &e)),
-            },
-            None => JsValue::undefined(),
-        };
-        if crate::iterator::is_callable(own_match_all) {
-            return match vm.call_function_sync(own_match_all, pattern_val, &[input_val]) {
-                Ok(v) => NativeResult::Ok(v),
-                Err(e) => NativeResult::err(crate::iterator::engine_error(vm, &e)),
-            };
-        }
-        // 实例 @@matchAll 不存在/undefined/null：回退原型链（GetMethod 对 null/undefined 均返 undefined）。
-        if own_match_all.is_undefined() || own_match_all.is_null() {
-            let proto_val = re_obj.proto();
-            if proto_val.is_object() {
-                let proto_ptr = proto_val.as_js_object_ptr();
-                let proto_match_all = match vm.ordinary_get(unsafe { &*proto_ptr }, match_all_key, proto_val) {
-                    Ok(v) => v,
-                    Err(e) => return NativeResult::err(crate::iterator::engine_error(vm, &e)),
-                };
-                if crate::iterator::is_callable(proto_match_all) {
-                    return match vm.call_function_sync(proto_match_all, pattern_val, &[input_val]) {
-                        Ok(v) => NativeResult::Ok(v),
-                        Err(e) => NativeResult::err(crate::iterator::engine_error(vm, &e)),
-                    };
-                }
-                // 原型链也无 callable @@matchAll：规范 Invoke 抛 TypeError。
+            if flags_val.is_undefined() || flags_val.is_null() {
                 return NativeResult::Err(crate::error::create_type_error(
                     vm,
-                    "RegExp.prototype[Symbol.matchAll] is not a function",
+                    "String.prototype.matchAll: regex must have global flag",
+                ));
+            }
+            let flags_sv = match oxide_runtime_api::to_string_value_full(flags_val, vm) {
+                Ok(v) => v,
+                Err(_) => {
+                    if let Some(exc) = vm.take_uncaught_value() {
+                        return NativeResult::Err(exc);
+                    }
+                    return NativeResult::Err(crate::error::create_type_error(vm, "Cannot convert value to a string"));
+                }
+            };
+            if !String::from_utf16_lossy(&vm.string_units(flags_sv)).contains('g') {
+                return NativeResult::Err(crate::error::create_type_error(
+                    vm,
+                    "String.prototype.matchAll: regex must have global flag",
                 ));
             }
         }
-        // 无 callable @@matchAll：规范 Invoke 抛 TypeError。
-        NativeResult::Err(crate::error::create_type_error(vm, "RegExp.prototype[Symbol.matchAll] is not a function"))
-    } else {
-        // 非 RegExp：先查 @@matchAll（规范步骤 6-8，IsRegExp 为 false 时
-        // 先 ToString(pattern) 转正则，但规范步骤 8 是 Invoke(rx, @@matchAll)。
-        // 实际上，若 pattern 是对象且有 callable @@matchAll，应直调（类似 RegExp 分支）。
-        if pattern_val.is_object() {
-            let match_all_key = oxide_types::private_key::make_well_known_symbol_key(7);
-            let p_ptr = pattern_val.as_js_object_ptr();
-            let p_this = pattern_val;
-            let matcher = match vm.ordinary_get(unsafe { &*p_ptr }, match_all_key, p_this) {
-                Ok(v) => v,
-                Err(e) => return NativeResult::err(crate::iterator::engine_error(vm, &e)),
-            };
-            if crate::iterator::is_callable(matcher) {
-                return match vm.call_function_sync(matcher, p_this, &[input_val]) {
-                    Ok(v) => NativeResult::Ok(v),
-                    Err(e) => NativeResult::err(crate::iterator::engine_error(vm, &e)),
-                };
-            }
+        // GetMethod(pattern, @@matchAll) 全链单次 Get：own 命中 undefined/null
+        // 即停（Get 语义），不回退原型链。
+        let match_all_key = oxide_types::private_key::make_well_known_symbol_key(7);
+        let matcher = match vm.ordinary_get(unsafe { &*pattern_val.as_js_object_ptr() }, match_all_key, pattern_val) {
+            Ok(v) => v,
+            Err(e) => return NativeResult::err(crate::iterator::engine_error(vm, &e)),
+        };
+        // GetMethod 返 undefined/null：落构造路径（ToString(thisValue) →
+        // RegExpCreate(pattern, "g") → Invoke 产物 @@matchAll）。
+        if matcher.is_undefined() || matcher.is_null() {
+            return match_all_construct_invoke(vm, this_val, pattern_val);
         }
-        // 按文本编译为 stub（非捕获组，免额外 capture）。
+        if !crate::iterator::is_callable(matcher) {
+            return NativeResult::Err(crate::error::create_type_error(
+                vm,
+                "String.prototype.matchAll: matcher is not a function",
+            ));
+        }
+        // Call(matcher, pattern, « thisValue »)：实参为原始 this 值。
+        return match vm.call_function_sync(matcher, pattern_val, &[this_val]) {
+            Ok(v) => NativeResult::Ok(v),
+            Err(e) => NativeResult::err(crate::iterator::engine_error(vm, &e)),
+        };
+    }
+
+    // 非对象 pattern：对象分支整体跳过，按文本编译为 stub（非捕获组，免额外
+    // capture）。
+    {
         let pattern_units = try_string!(as_units(vm, pattern_val)).into_owned();
         let pattern_str = String::from_utf16_lossy(&pattern_units);
         let escaped = regress::escape(&pattern_str);
@@ -853,7 +786,73 @@ pub fn string_match_all<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         let raw = Box::into_raw(boxed) as *const u8;
         stub.set_native_fn(Some(unsafe { oxide_types::object::NativeFnPtr::from_raw(raw as *const ()) }));
         let stub_ptr = vm.alloc_object(stub);
+        // string = ToString(thisValue)：构造路径消费点，仅此臂实际转换。
+        let input_val = match oxide_runtime_api::to_string_value_full(this_val, vm) {
+            Ok(v) => v,
+            Err(_) => {
+                if let Some(exc) = vm.take_uncaught_value() {
+                    return NativeResult::Err(exc);
+                }
+                return NativeResult::Err(crate::error::create_type_error(vm, "Cannot convert value to a string"));
+            }
+        };
         builder_wrapper(vm, input_val, JsValue::from_js_object(stub_ptr))
+    }
+}
+
+/// 构造路径（规范步骤 4-6）：string = ToString(thisValue) →
+/// regexp = RegExpCreate(pattern, "g") → Invoke(regexp, @@matchAll, « string »)。
+///
+/// # 边界与前提
+/// - pattern 为 null/undefined 时构造器内部映射（null → "null" 文本、
+///   undefined → 空模式），不在此处重复转换
+/// - 构造产物无 callable @@matchAll（含原型链删除）时 Invoke 抛 TypeError
+/// - 对象 toString/valueOf 抛出的原始异常原样传播
+fn match_all_construct_invoke<H: VmHost>(vm: &mut H, this_val: JsValue, pattern_val: JsValue) -> NativeResult {
+    // string = ToString(thisValue)。
+    let input_val = match oxide_runtime_api::to_string_value_full(this_val, vm) {
+        Ok(v) => v,
+        Err(_) => {
+            if let Some(exc) = vm.take_uncaught_value() {
+                return NativeResult::Err(exc);
+            }
+            return NativeResult::Err(crate::error::create_type_error(vm, "Cannot convert value to a string"));
+        }
+    };
+
+    // regexp = RegExpCreate(pattern, "g")。
+    let g_str = vm.new_string("g");
+    let rx_val = match vm.construct_ctor(
+        JsValue::from_js_object(vm.session().builtin_world().regexp_constructor.as_ptr() as *mut JsObject),
+        &[pattern_val, g_str],
+    ) {
+        Ok(v) => v,
+        Err(e) => return NativeResult::Err(e),
+    };
+    if !rx_val.is_object() {
+        return NativeResult::Err(crate::error::create_type_error(
+            vm,
+            "match pattern constructor must return an object",
+        ));
+    }
+
+    // Invoke(regexp, @@matchAll, « string »)：产物全链 Get，无 callable 抛 TypeError。
+    let match_all_key = oxide_types::private_key::make_well_known_symbol_key(7);
+    let rx_ptr = rx_val.as_js_object_ptr();
+    let rx_this = JsValue::from_js_object(rx_ptr);
+    let matcher = match vm.ordinary_get(unsafe { &*rx_ptr }, match_all_key, rx_this) {
+        Ok(v) => v,
+        Err(e) => return NativeResult::err(crate::iterator::engine_error(vm, &e)),
+    };
+    if matcher.is_undefined() || matcher.is_null() || !crate::iterator::is_callable(matcher) {
+        return NativeResult::Err(crate::error::create_type_error(
+            vm,
+            "RegExp.prototype[Symbol.matchAll] is not a function",
+        ));
+    }
+    match vm.call_function_sync(matcher, rx_this, &[input_val]) {
+        Ok(v) => NativeResult::Ok(v),
+        Err(e) => NativeResult::err(crate::iterator::engine_error(vm, &e)),
     }
 }
 
