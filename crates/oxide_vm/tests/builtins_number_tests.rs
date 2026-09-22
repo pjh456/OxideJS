@@ -447,3 +447,106 @@ fn number_proto_tag_survives_dirty_rebuild() {
     assert_eq!(str_of(&mut vm, "Number.prototype.toFixed(1)"), "0.0");
     assert_eq!(str_of(&mut vm, "String(Number.parseInt === parseInt)"), "true");
 }
+
+// 全表值对照 node v20.19.2 逐位核定（half-up 对 half-even 的分歧点、
+// 进位传播、位数增长、精确展开面、零与 -0 三面）。
+#[test]
+fn number_format_tie_half_up_and_carry() {
+    let mut vm = Vm::new();
+    let cases = [
+        // tie 取较大者（away-from-zero），负数同形。
+        ("(2.5).toExponential(0)", "3e+0"),
+        ("(2.4).toExponential(0)", "2e+0"),
+        ("(-2.5).toExponential(0)", "-3e+0"),
+        ("(-0.5).toExponential(0)", "-5e-1"),
+        ("(0.5).toFixed(0)", "1"),
+        ("(0.4).toFixed(0)", "0"),
+        ("(2.5).toFixed(0)", "3"),
+        ("(-0.5).toFixed(0)", "-1"),
+        ("(2.675).toFixed(2)", "2.67"),
+        // 精确展开低于 tie 点时不得进位（仅看最短形会误进位）。
+        ("(1.15).toFixed(1)", "1.1"),
+        ("(1.005).toFixed(2)", "1.00"),
+        ("(1.005).toFixed(1)", "1.0"),
+        ("(0.05).toFixed(1)", "0.1"),
+        ("(0.145).toFixed(2)", "0.14"),
+        ("(1.2345).toFixed(3)", "1.234"),
+        ("(1.0005).toFixed(3)", "1.000"),
+        ("(0.615).toFixed(2)", "0.61"),
+        // 进位传播与位数增长（9.99→10.0 型）。
+        ("(9.999).toFixed(1)", "10.0"),
+        ("(9.999).toFixed(0)", "10"),
+        ("(-9.999).toFixed(1)", "-10.0"),
+        ("(0.9999).toExponential(0)", "1e+0"),
+        ("(-0.9999).toExponential(0)", "-1e+0"),
+        ("(9.9999999999999999).toFixed(0)", "10"),
+        ("(999).toPrecision(2)", "1.0e+3"),
+        ("(-999).toPrecision(2)", "-1.0e+3"),
+        ("(99.99).toPrecision(3)", "100"),
+        ("(999999).toPrecision(2)", "1.0e+6"),
+        ("(25).toExponential(0)", "3e+1"),
+        ("(12345).toExponential(3)", "1.235e+4"),
+        // 精确整数展开（位数超最短形）。
+        ("(1000000000000000128).toFixed(0)", "1000000000000000128"),
+        ("(9007199254740993).toFixed(0)", "9007199254740992"),
+        ("(9.9e20).toFixed(0)", "990000000000000000000"),
+        // 进位后 e 决定定点/指数分界。
+        ("(1.23456).toPrecision(4)", "1.235"),
+        ("(123456).toPrecision(3)", "1.23e+5"),
+        ("(1e-6).toPrecision(2)", "0.0000010"),
+        ("(1e-7).toPrecision(2)", "1.0e-7"),
+        ("(0.5).toPrecision(1)", "0.5"),
+        ("(0.05).toPrecision(2)", "0.050"),
+        ("(10).toPrecision(1)", "1e+1"),
+        // 零与 -0 三面（-0 落正分支）。
+        ("(0).toFixed(3)", "0.000"),
+        ("(0).toExponential(2)", "0.00e+0"),
+        ("(0).toPrecision(2)", "0.0"),
+        ("(-0).toFixed(3)", "0.000"),
+        ("(-0).toExponential(2)", "0.00e+0"),
+        ("(-0).toPrecision(2)", "0.0"),
+        // x ≥ 1e21 走科学式 String（f64 已达 1e21）。
+        ("(1e21-1).toFixed(0)", "1e+21"),
+        ("(-1e21).toFixed(0)", "-1e+21"),
+        ("(1234567890123456789012345678901234567890).toFixed(0)", "1.2345678901234568e+39"),
+        // 长小数面（展开终止后按 0 补齐）。
+        ("(3.141592653589793).toPrecision(17)", "3.1415926535897931"),
+        (
+            "(3.141592653589793).toFixed(100)",
+            "3.1415926535897931159979634685441851615905761718750000000000000000000000000000000000000000000000000000",
+        ),
+        // 次正规数与超大指数面。
+        ("(1e308).toPrecision(2)", "1.0e+308"),
+        ("(1.5e308).toExponential(1)", "1.5e+308"),
+        ("(1e-323).toExponential(2)", "9.88e-324"),
+        ("(5e-324).toExponential(0)", "5e-324"),
+        ("(4.9e-324).toFixed(1)", "0.0"),
+    ];
+    for (src, expected) in cases {
+        assert_eq!(str_of(&mut vm, src), expected, "for {}", src);
+    }
+}
+
+#[test]
+fn number_format_default_shortest_digits() {
+    let mut vm = Vm::new();
+    // 缺省位数 = 最短精确有效数字数 − 1（round-trip 前缀，非任意最短十进制形）。
+    let cases = [
+        ("(123.456).toExponential()", "1.23456e+2"),
+        ("(2).toExponential()", "2e+0"),
+        ("(0.1).toExponential()", "1e-1"),
+        ("(0.3).toExponential()", "3e-1"),
+        ("(1e-7).toExponential()", "1e-7"),
+        ("(1.1e-32).toExponential()", "1.1e-32"),
+        ("(1e20).toExponential()", "1e+20"),
+        ("(1e-20).toExponential()", "1e-20"),
+        ("(0.1+0.2).toExponential()", "3.0000000000000004e-1"),
+        ("(123456789012345678901234567890.5).toExponential()", "1.2345678901234568e+29"),
+        ("(42).toPrecision()", "42"),
+        ("(0.0000001).toPrecision(3)", "1.00e-7"),
+        ("(0.00000012345).toPrecision(2)", "1.2e-7"),
+    ];
+    for (src, expected) in cases {
+        assert_eq!(str_of(&mut vm, src), expected, "for {}", src);
+    }
+}

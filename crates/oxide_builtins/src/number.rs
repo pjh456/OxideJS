@@ -346,6 +346,18 @@ fn this_number_value<H: VmHost>(vm: &mut H, this_val: JsValue) -> Result<f64, Js
     Err(crate::error::create_type_error(vm, "Cannot convert this value to a number"))
 }
 
+/// ToIntegerOrInfinity 数值核（前置完整 ToNumber 后调用）：NaN/±0 归 0，
+/// ±∞ 取原值，其余向零截断。
+fn to_integer_or_infinity(n: f64) -> f64 {
+    if n.is_nan() || n == 0.0 {
+        0.0
+    } else if n.is_infinite() {
+        n
+    } else {
+        n.trunc()
+    }
+}
+
 /// f/p/radix 参数转换：完整 ToNumber（对象执行 ToPrimitive 且 valueOf/toString
 /// 抛出的异常原样传播）后走 ToIntegerOrInfinity。纯核 `to_integer_or_infinity`
 /// 不传播异常，不得用于参数位。
@@ -359,13 +371,281 @@ fn coerce_to_integer_or_infinity<H: VmHost>(vm: &mut H, arg: JsValue) -> Result<
             return Err(crate::error::create_type_error(vm, "Cannot convert argument to a number"));
         }
     };
-    if raw.is_nan() || raw == 0.0 {
-        Ok(0.0)
-    } else if raw.is_infinite() {
-        Ok(raw)
-    } else {
-        Ok(raw.trunc())
+    Ok(to_integer_or_infinity(raw))
+}
+
+// ── 精确十进制展开与 half-up 舍入 ──
+// toFixed/toExponential/toPrecision 共享：f64 是二进有理数，精确十进制展开
+// 有限；在 digit 串上按 keep 位 half-up 舍入（tie 取较大者，规范语义）并
+// 传播进位。Rust `format!("{:.N$}")` 是 half-even，tie 面与规范分歧，
+// 仅 String() 路径可用。
+
+/// base 2^32 小整数（limb 升序），承载 f64 展开所需位宽（≤ 2^1127）。
+#[derive(Clone)]
+struct Dec(Vec<u32>);
+
+impl Dec {
+    fn from_u64(v: u64) -> Self {
+        Dec(vec![v as u32, (v >> 32) as u32])
     }
+
+    fn trim(&mut self) {
+        while self.0.len() > 1 && *self.0.last().unwrap() == 0 {
+            self.0.pop();
+        }
+    }
+
+    fn is_zero(&self) -> bool {
+        self.0.iter().all(|&l| l == 0)
+    }
+
+    /// 左移 k 位（× 2^k）：原位高→低；word j 的低段来自 limb j−ws，
+    /// 高段来自 limb j−ws−1（处理 j 时该 limb 尚未被覆写）。
+    fn shl(&mut self, k: u32) {
+        let ws = (k / 32) as usize;
+        let bs = k % 32;
+        let n = self.0.len();
+        let orig = self.0[..n].to_vec();
+        self.0 = vec![0; n + ws + 1];
+        let mut top = 0u32;
+        for i in (0..n).rev() {
+            let v = orig[i];
+            if i == n - 1 && bs != 0 {
+                top = v >> (32 - bs);
+            }
+            let low = if bs == 0 { v } else { v << bs };
+            let carry_in = if i == 0 || bs == 0 { 0 } else { orig[i - 1] >> (32 - bs) };
+            self.0[i + ws] = low | carry_in;
+        }
+        self.0[n + ws] = top;
+        self.trim();
+    }
+
+    /// 右移 q 位（截断），q 超位宽时归 0。
+    fn shr(&mut self, q: u32) {
+        let ws = (q / 32) as usize;
+        if ws >= self.0.len() {
+            self.0 = vec![0];
+            return;
+        }
+        self.0.drain(..ws);
+        let bs = q % 32;
+        if bs != 0 {
+            let mut borrow = 0u32;
+            for limb in self.0.iter_mut() {
+                let cur = *limb;
+                *limb = (cur >> bs) | borrow;
+                borrow = cur << (32 - bs);
+            }
+        }
+        self.trim();
+    }
+
+    /// 保留低 q 位（& (2^q − 1)）。
+    fn rem_pow2(&mut self, q: u32) {
+        let total = (self.0.len() * 32) as u32;
+        if q >= total {
+            return;
+        }
+        let wm = (q / 32) as usize;
+        let bm = q % 32;
+        if bm != 0 {
+            self.0[wm] &= (1u32 << bm) - 1;
+        }
+        self.0.truncate(wm + 1);
+        self.trim();
+    }
+
+    /// 乘单个小因子（digit 步进用 ×10）。
+    fn mul_small(&mut self, k: u32) {
+        let mut carry = 0u64;
+        for limb in self.0.iter_mut() {
+            let acc = (*limb as u64) * k as u64 + carry;
+            *limb = acc as u32;
+            carry = acc >> 32;
+        }
+        if carry != 0 {
+            self.0.push(carry as u32);
+        }
+    }
+
+    /// 就地整除 10，返回余数（一个十进制 digit）。
+    fn divmod10(&mut self) -> u8 {
+        let mut rem = 0u64;
+        for i in (0..self.0.len()).rev() {
+            let cur = (rem << 32) | self.0[i] as u64;
+            self.0[i] = (cur / 10) as u32;
+            rem = cur % 10;
+        }
+        self.trim();
+        rem as u8
+    }
+}
+
+/// f64 精确十进制展开：前 count 个有效数字与首位十进制指数。
+///
+/// 返回 (digits, e)：x = 0.d1d2… × 10^(e+1)，d1 ≠ 0；展开恰在 count 前
+/// 终止时位数不足，缺失位恒 0（调用方按 0 补齐）。
+fn significant_digits(x: f64, count: usize) -> (Vec<u8>, i32) {
+    debug_assert!(x > 0.0 && x.is_finite() && count > 0);
+    let b = x.to_bits();
+    let (m, p) = if (b >> 52) == 0 {
+        // 次正规：值 = frac × 2^-1074（隐含位 0）。
+        (b as u64, -1074)
+    } else {
+        // 正规：显式隐含位补齐尾数（指数位先掩掉，勿随位模式带入）。
+        (((b as u64 & ((1u64 << 52) - 1)) | (1u64 << 52)), ((b >> 52) as i32) - 1075)
+    };
+    if p >= 0 {
+        // 整数面：V = M × 2^p，位数 D 定首位指数，弃低位后逐位提取。
+        let mut v = Dec::from_u64(m);
+        v.shl(p as u32);
+        let mut d = 0usize;
+        let mut tmp = v.clone();
+        while !tmp.is_zero() {
+            tmp.divmod10();
+            d += 1;
+        }
+        let e = d as i32 - 1;
+        let take = count.min(d);
+        for _ in 0..(d - take) {
+            v.divmod10();
+        }
+        let mut digits = Vec::with_capacity(take);
+        for _ in 0..take {
+            digits.push(v.divmod10());
+        }
+        digits.reverse();
+        (digits, e)
+    } else {
+        // 分数面：整数部分 + 小数余数逐步 ×10 取商（前导零定 e）。
+        let q = (-p) as u32;
+        let (int_part, mut r) = if q < 64 {
+            (m >> q, Dec::from_u64(m & ((1u64 << q) - 1)))
+        } else {
+            (0u64, Dec::from_u64(m))
+        };
+        let mut digits: Vec<u8> = Vec::new();
+        let mut e: Option<i32> = None;
+        if int_part != 0 {
+            let mut ip = int_part;
+            let mut id = Vec::new();
+            while ip > 0 {
+                id.push((ip % 10) as u8);
+                ip /= 10;
+            }
+            id.reverse();
+            e = Some(id.len() as i32 - 1);
+            digits.extend(id);
+        }
+        let mut pos = 0usize;
+        while digits.len() < count && !r.is_zero() {
+            r.mul_small(10);
+            let mut t = r.clone();
+            t.shr(q);
+            let d = t.0.first().copied().unwrap_or(0) as u8;
+            r.rem_pow2(q);
+            pos += 1;
+            // 无前导整数时，首个非零位之前的零不显著（定 e）；
+            // 有整数部分后每一位（含零）均显著。
+            if d == 0 && e.is_none() {
+                continue;
+            }
+            if e.is_none() {
+                e = Some(-(pos as i32));
+            }
+            digits.push(d);
+        }
+        (digits, e.unwrap_or(0))
+    }
+}
+
+/// 精确 digit 串 half-up 舍入：rd 为舍入判定位下标（负下标按 0），
+/// 进位自最后一个渲染位 rd−1 向首位传播；渲染位之后的输入位原样保留
+/// （不再被读取）。
+///
+/// 判定位 ≥ 5 进位（规范 tie 取较大 n：恰好相等也取较大者）；全链进位时
+/// 值恰为 10^(e+1)，低位全 0、e + 1（9.99→10.0 型）。位数不足时缺失位
+/// 恒 0（展开已终止），不进位。
+fn round_digits(d: &[u8], e: i32, rd: i32) -> (Vec<u8>, i32) {
+    // 舍入位在展开之前（rd < 0）时无渲染位，输出空串。
+    let mut out = if rd < 0 { Vec::new() } else { d.to_vec() };
+    let rd_digit = if rd >= 0 { d.get(rd as usize).copied().unwrap_or(0) } else { 0 };
+    if rd_digit < 5 {
+        return (out, e);
+    }
+    let mut k = rd - 1;
+    loop {
+        if k < 0 {
+            // 无渲染位可进：0.x 型直接 10^e'。
+            return (vec![1], e + 1);
+        }
+        out[k as usize] += 1;
+        if out[k as usize] < 10 {
+            return (out, e);
+        }
+        out[k as usize] = 0;
+        if k == 0 {
+            // 全链进位：值恰为 10^(e+1)，低位全 0。
+            return (vec![1], e + 1);
+        }
+        k -= 1;
+    }
+}
+
+/// digit i 落十进制位置 e−i；越界（含负下标）按 0。
+fn dig(d: &[u8], i: i32) -> u8 {
+    if i >= 0 {
+        d.get(i as usize).copied().unwrap_or(0)
+    } else {
+        0
+    }
+}
+
+/// 定点形渲染：整数部分自位置 e 至 0，小数部分 f 位，越界位按 0。
+fn fixed_string(d: &[u8], e: i32, f: usize, neg: bool) -> String {
+    let mut s = String::new();
+    if neg {
+        s.push('-');
+    }
+    if e < 0 {
+        s.push('0');
+    } else {
+        // 整数部分自高位到低位：digit i 落位置 e−i。
+        for i in 0..=e {
+            s.push((b'0' + dig(d, i)) as char);
+        }
+    }
+    if f > 0 {
+        s.push('.');
+        for p in 1..=f as i32 {
+            s.push((b'0' + dig(d, e + p)) as char);
+        }
+    }
+    s
+}
+
+/// 科学式渲染：d1[.d2…d(f+1)] 恒带符号指数。
+fn exp_string(d: &[u8], e: i32, f: usize, neg: bool) -> String {
+    let mut s = String::new();
+    if neg {
+        s.push('-');
+    }
+    s.push((b'0' + dig(d, 0)) as char);
+    if f > 0 {
+        s.push('.');
+        for i in 1..=f as i32 {
+            s.push((b'0' + dig(d, i)) as char);
+        }
+    }
+    s.push('e');
+    if e < 0 {
+        s.push('-');
+    } else {
+        s.push('+');
+    }
+    s.push_str(&e.abs().to_string());
+    s
 }
 
 /// `Number.prototype.toLocaleString()`：locale 参数忽略，恒按十进制输出。
@@ -407,13 +687,7 @@ pub fn number_to_string<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
                     return NativeResult::Err(crate::error::create_type_error(vm, "Cannot convert radix to a number"));
                 }
             };
-            let r = if raw.is_nan() || raw == 0.0 {
-                0.0
-            } else if raw.is_infinite() {
-                raw
-            } else {
-                raw.trunc()
-            };
+            let r = to_integer_or_infinity(raw);
             if !(2.0..=36.0).contains(&r) {
                 return NativeResult::Err(crate::error::create_range_error(
                     vm,
@@ -467,7 +741,8 @@ pub fn number_to_string<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 ///
 /// 步序：先 thisNumberValue，再转换 fractionDigits 并做范围校验（范围检查
 /// 先于 NaN 短路，NaN.toFixed(Infinity) 须抛 RangeError）；随后 x ≥ 10^21
-/// 退化为 String(x) 科学式（±Infinity 同形，经此分支输出专名）。
+/// 退化为 String(x) 科学式（±Infinity 同形，经此分支输出专名）；其余按精确
+/// digit 串 half-up 舍入渲染（tie 取较大者，Rust 格式化 half-even 不可用）。
 pub fn number_to_fixed<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let n = match this_number_value(vm, vm.reg(args[0])) {
         Ok(v) => v,
@@ -499,9 +774,19 @@ pub fn number_to_fixed<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         };
         return NativeResult::Ok(vm.new_string_owned(s));
     }
-    let n_abs = if n == 0.0 && n.is_sign_negative() { 0.0 } else { n };
-    let formatted = format!("{:.precision$}", n_abs, precision = raw as usize);
-    NativeResult::Ok(vm.new_string(&formatted))
+    let f = raw as usize;
+    let neg = n < 0.0;
+    if n == 0.0 {
+        // -0 落正分支：定点形无符号位可携。
+        return NativeResult::Ok(vm.new_string_owned(fixed_string(&[], 0, f, false)));
+    }
+    // 定点形覆盖位置 e..−f；进位传播最多使 e+1，覆盖到舍入位共 e+f+2 位。
+    // 舍入判定位 = 位置 −(f+1) 的 digit（e+f+1，负下标按 0）。
+    let (_, e0) = significant_digits(n.abs(), 1);
+    let count = (e0 + f as i32 + 2).max(1) as usize;
+    let (d, e) = significant_digits(n.abs(), count);
+    let (d, e) = round_digits(&d, e, e0 + f as i32 + 1);
+    NativeResult::Ok(vm.new_string_owned(fixed_string(&d, e, f, neg)))
 }
 
 /// `Number.isInteger`：参数是有限且无小数部分的数值才返回 true。
@@ -530,7 +815,8 @@ pub fn number_is_safe_integer<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResul
 ///
 /// 步序：先 thisNumberValue；precision 缺省直接返 ToString(x)（含 NaN/±∞
 /// 全形）；再转 precision，NaN/±∞ 专名先于范围校验（(±∞).toPrecision(1000)
-/// 返 "Infinity" 而非 RangeError），最后舍入渲染（指数恒带符号）。
+/// 返 "Infinity" 而非 RangeError）；最后按精确 digit 串 half-up 舍入，
+/// 定点/指数分界用**进位后**的首位指数（999.toPrecision(2) = "1.0e+3"）。
 pub fn number_to_precision<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let n = match this_number_value(vm, vm.reg(args[0])) {
         Ok(v) => v,
@@ -556,34 +842,34 @@ pub fn number_to_precision<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         ));
     }
     let precision = raw as usize;
-    let n_abs = if n == 0.0 && n.is_sign_negative() { 0.0 } else { n.abs() };
-    let is_neg = n.is_sign_negative() && !(n == 0.0);
-    let e = if n_abs == 0.0 { 0i32 } else { n_abs.log10().floor() as i32 };
-    let formatted = if e >= -6 && e < precision as i32 {
-        let dec = ((precision as i32 - e - 1).max(0)) as usize;
-        format!("{:.dec$}", n_abs, dec = dec)
-    } else {
-        // Rust 的 {:e} 指数不带符号，规范要求恒带 +/-。
-        let mut s = format!("{:.dec$e}", n_abs, dec = precision - 1);
-        if let Some(e_pos) = s.find('e') {
-            if !s[e_pos + 1..].starts_with('-') {
-                s.insert(e_pos + 1, '+');
+    let neg = n < 0.0;
+    if n == 0.0 {
+        // -0 落正分支；"0" 后跟 precision−1 个零。
+        let mut s = String::from("0");
+        if precision > 1 {
+            s.push('.');
+            for _ in 0..precision - 1 {
+                s.push('0');
             }
         }
-        s
-    };
-    if is_neg {
-        NativeResult::Ok(vm.new_string(&format!("-{}", formatted)))
-    } else {
-        NativeResult::Ok(vm.new_string(&formatted))
+        return NativeResult::Ok(vm.new_string_owned(s));
     }
+    let (d, e) = significant_digits(n.abs(), precision + 1);
+    let (d, e) = round_digits(&d, e, precision as i32);
+    let s = if e >= -6 && e < precision as i32 {
+        fixed_string(&d, e, (precision as i32 - e - 1) as usize, neg)
+    } else {
+        exp_string(&d, e, precision - 1, neg)
+    };
+    NativeResult::Ok(vm.new_string_owned(s))
 }
 
 /// `Number.prototype.toExponential(digits)`：按科学计数法输出；
 /// digits 缺省/undefined 取最短精确有效数字数，超范围抛 RangeError。
 ///
 /// 步序：先 thisNumberValue，再转换 fractionDigits（对象参数执行 ToPrimitive
-/// 且异常原样传播）；NaN/±∞ 专名先于范围检查；指数恒带符号。
+/// 且异常原样传播）；NaN/±∞ 专名先于范围检查；缺省位数走最短 round-trip
+/// 前缀，显式位数按精确 digit 串 half-up 舍入（tie 取较大者）；指数恒带符号。
 pub fn number_to_exponential<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let n = match this_number_value(vm, vm.reg(args[0])) {
         Ok(v) => v,
@@ -610,37 +896,28 @@ pub fn number_to_exponential<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult
             "toExponential() fractionDigits must be between 0 and 100",
         ));
     }
-    let n_abs = if n == 0.0 && n.is_sign_negative() { 0.0 } else { n.abs() };
-    let sign_prefix = if n < 0.0 { "-" } else { "" };
+    let neg = n < 0.0;
+    if n == 0.0 {
+        // -0 落正分支：科学式 "0e+0" 形。
+        let f = if has_digits { raw as usize } else { 0 };
+        return NativeResult::Ok(vm.new_string_owned(exp_string(&[], 0, f, false)));
+    }
     if !has_digits {
-        let formatted = format!("{:e}", n_abs);
-        let mut s = formatted;
+        // 缺省位数 = Rust {:e} 最短 round-trip 形（规范"最短精确有效数字数"
+        // 同口径），仅补指数符号。
+        let mut s = format!("{:e}", n.abs());
         if let Some(e_pos) = s.find('e') {
-            let mut mantissa = s[..e_pos].to_string();
-            while mantissa.ends_with('0') && mantissa.len() > 1 {
-                mantissa.pop();
-            }
-            mantissa = mantissa.trim_end_matches('.').to_string();
-            if mantissa.contains('.') {
-                s = format!("{}{}", mantissa, &s[e_pos..]);
-            }
-            // 指数恒带符号（Rust 正指数不输出 +）。
             if !s[e_pos + 1..].starts_with('-') {
                 s.insert(e_pos + 1, '+');
             }
         }
-        let result = format!("{}{}", sign_prefix, s);
+        let result = format!("{}{}", if neg { "-" } else { "" }, s);
         return NativeResult::Ok(vm.new_string_owned(result));
     }
-    let formatted = format!("{:.digits$e}", n_abs, digits = raw as usize);
-    // 指数恒带符号（Rust 正指数不输出 +）。
-    let mut s = formatted;
-    if let Some(e_pos) = s.find('e') {
-        if !s[e_pos + 1..].starts_with('-') {
-            s.insert(e_pos + 1, '+');
-        }
-    }
-    NativeResult::Ok(vm.new_string(&format!("{}{}", sign_prefix, s)))
+    let f = raw as usize;
+    let (d, e) = significant_digits(n.abs(), f + 2);
+    let (d, e) = round_digits(&d, e, f as i32 + 1);
+    NativeResult::Ok(vm.new_string_owned(exp_string(&d, e, f, neg)))
 }
 
 /// `Number.prototype.valueOf`：返回包装对象的原始 number；
