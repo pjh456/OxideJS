@@ -111,7 +111,7 @@ pub fn number_is_finite<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 ///
 /// 与 Rust `char::is_whitespace` 的差异：规范集合不含 U+0085（NEL），手工
 /// 按白名单匹配避免误剥。
-fn is_js_ws(c: char) -> bool {
+pub(crate) fn is_js_ws(c: char) -> bool {
     matches!(
         c,
         '\u{0009}' | '\u{000B}' | '\u{000C}' | '\u{0020}' | '\u{00A0}' | '\u{1680}' | '\u{2000}'
@@ -245,41 +245,17 @@ pub fn number_parse_int<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     }
 }
 
-/// `parseFloat(string)`：解析字符串前缀为浮点数。
+/// 按 StrDecimalLiteral 文法扫描最长合法十进制数字前缀：数字 + 至多一个
+/// '.'（'.' 后必须有数字，整数部分可为空）+ 可选指数（e/E 可带符号，
+/// mantissa 须先有数字，指数须有数字）。
 ///
-/// 规范白名单 trim 后读 `+`/`-` 符号，特判精确大小写的 `Infinity`；随后按
-/// StrDecimalLiteral 文法扫描最长合法十进制前缀（整数 + 可选小数 + 可选
-/// 指数，`0x10` 在 'x' 处停止得 0，`1.2.3` 得 1.2），前缀子串交给
-/// fast_float 解析（溢出归 ±Infinity），无合法前缀返回 NaN。
-pub fn number_parse_float<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
-    if args.len() < 2 {
-        return NativeResult::Ok(JsValue::float(f64::NAN));
-    }
-    // 参数按 ToString 完整转换：对象经 ToPrimitive(string hint)，Symbol 抛
-    // TypeError；对象方法抛出的原生异常原样传播。
-    let s = match oxide_runtime_api::to_string_full(vm.reg(args[1]), vm) {
-        Ok(s) => s,
-        Err(_) => {
-            if let Some(exc) = vm.take_uncaught_value() {
-                return NativeResult::Err(exc);
-            }
-            return NativeResult::Err(crate::error::create_type_error(vm, "Cannot convert value to a string"));
-        }
-    };
-    let s = s.trim_start_matches(is_js_ws).trim_end_matches(is_js_ws);
-
-    // 读符号；`Infinity` 大小写敏感，其后可带任意后缀（取最长合法前缀）。
-    let (neg, rest) = match s.as_bytes().first() {
-        Some(b'-') => (true, &s[1..]),
-        Some(b'+') => (false, &s[1..]),
-        _ => (false, s),
-    };
-    if rest.starts_with("Infinity") {
-        return NativeResult::Ok(JsValue::float(if neg { f64::NEG_INFINITY } else { f64::INFINITY }));
-    }
-
-    // 扫描 mantissa：数字与至多一个 '.'（'.' 后必须有数字，整数部分可为空）。
-    let b = rest.as_bytes();
+/// # 边界与前提
+/// - 前缀值经 fast_float 正确舍入解析（溢出饱和为 ±Infinity）；
+/// - 无数字前缀（空串、'.'、'abc'、'1e'）返回 None；
+/// - 消费长度是前缀的字节长，调用方自取前缀语义（parseFloat）或全串语义
+///   （消费长度须等于全长，如 ToNumber 门）。
+pub(crate) fn parse_decimal_prefix(text: &str) -> Option<(f64, usize)> {
+    let b = text.as_bytes();
     let mut i = 0usize;
     let mut dot = false;
     let mut mantissa_digits = 0usize;
@@ -311,12 +287,48 @@ pub fn number_parse_float<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         }
     }
     if mantissa_digits == 0 {
+        return None;
+    }
+    match fast_float::parse::<f64, _>(&text[..end]) {
+        Ok(v) => Some((v, end)),
+        Err(_) => None,
+    }
+}
+
+/// `parseFloat(string)`：解析字符串前缀为浮点数。
+///
+/// 规范白名单 trim 后读 `+`/`-` 符号，特判精确大小写的 `Infinity`；随后取
+/// 共享前缀扫描核（[`parse_decimal_prefix`]）的最长合法十进制前缀（`0x10`
+/// 在 'x' 处停止得 0，`1.2.3` 得 1.2），无合法前缀返回 NaN。
+pub fn number_parse_float<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    if args.len() < 2 {
         return NativeResult::Ok(JsValue::float(f64::NAN));
     }
+    // 参数按 ToString 完整转换：对象经 ToPrimitive(string hint)，Symbol 抛
+    // TypeError；对象方法抛出的原生异常原样传播。
+    let s = match oxide_runtime_api::to_string_full(vm.reg(args[1]), vm) {
+        Ok(s) => s,
+        Err(_) => {
+            if let Some(exc) = vm.take_uncaught_value() {
+                return NativeResult::Err(exc);
+            }
+            return NativeResult::Err(crate::error::create_type_error(vm, "Cannot convert value to a string"));
+        }
+    };
+    let s = s.trim_start_matches(is_js_ws).trim_end_matches(is_js_ws);
 
-    match fast_float::parse::<f64, _>(&rest[..end]) {
-        Ok(v) => NativeResult::Ok(JsValue::float(if neg { -v } else { v })),
-        Err(_) => NativeResult::Ok(JsValue::float(f64::NAN)),
+    // 读符号；`Infinity` 大小写敏感，其后可带任意后缀（取最长合法前缀）。
+    let (neg, rest) = match s.as_bytes().first() {
+        Some(b'-') => (true, &s[1..]),
+        Some(b'+') => (false, &s[1..]),
+        _ => (false, s),
+    };
+    if rest.starts_with("Infinity") {
+        return NativeResult::Ok(JsValue::float(if neg { f64::NEG_INFINITY } else { f64::INFINITY }));
+    }
+    match parse_decimal_prefix(rest) {
+        Some((value, _)) => NativeResult::Ok(JsValue::float(if neg { -value } else { value })),
+        None => NativeResult::Ok(JsValue::float(f64::NAN)),
     }
 }
 

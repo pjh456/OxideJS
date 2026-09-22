@@ -298,6 +298,110 @@ pub fn typed_array_integer_index<H: VmHost>(vm: &H, obj: &JsObject, prop_name_si
     Some((index as usize, view.length))
 }
 
+// ── 统一数值键门 ─────────────────────────────────────────────────────────
+
+/// TypedArray 统一数值键门三态：`Ordinary` 非数字串（走普通属性路径）；
+/// `NumericInvalid` 数字无效（负/分数/±Infinity/NaN/越界，含 "-0" 特例）；
+/// `NumericValid` 界内整数索引（携带索引）。
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum TaIndexGate {
+    Ordinary,
+    NumericInvalid,
+    NumericValid(u32),
+}
+
+/// 统一数值键门：消费方唯一入口。谓词 `P === ToString(ToNumber(P))` 全形态
+/// round-trip（"NaN"/±"Infinity" 天然归数字无效臂），`"-0"`（trim 后）独立
+/// 特例归数字无效；整数键免字符串解析短路。内部取 length 值传递，消费方
+/// 零视图接触。
+///
+/// # 边界与前提
+/// - 非 TypedArray 对象、symbol 键与查不到的字符串键一律 `Ordinary`（防御，
+///   调用方均已先判）。
+pub fn ta_index_gate<H: VmHost>(vm: &H, obj: &JsObject, key_si: u32) -> TaIndexGate {
+    if !obj.is_typed_array_obj() {
+        return TaIndexGate::Ordinary;
+    }
+    let length = ta_view_length(vm, obj);
+    if is_int_key(key_si) {
+        return ta_index_gate_int(int_key_value(key_si), length);
+    }
+    let Some(key) = vm.kernel_core().perm_interner().lookup(key_si) else {
+        return TaIndexGate::Ordinary;
+    };
+    ta_index_gate_from_text(key, length)
+}
+
+/// 取 TypedArray 视图长度（供只需 length 不需门的枚举面消费方）；
+/// 非 TypedArray 或内部状态无效返回 0。
+pub(crate) fn ta_view_length<H: VmHost>(_vm: &H, obj: &JsObject) -> usize {
+    let Some(ptr) = typed_array_data_ptr(obj) else {
+        return 0;
+    };
+    if ptr.is_null() {
+        return 0;
+    }
+    // SAFETY: ptr 非空，为 TypedArray 对象 native_fn 槽内的 Box<TypedArrayData>，
+    // 与对象同生命周期，此处只读拷贝视图字段。
+    let view = unsafe { *ptr };
+    view.length
+}
+
+/// 纯核（无 VM）整数键臂：界内有效，越界数字无效（length 0 时全无效）。
+pub(crate) fn ta_index_gate_int(index: u32, length: usize) -> TaIndexGate {
+    if (index as usize) < length {
+        TaIndexGate::NumericValid(index)
+    } else {
+        TaIndexGate::NumericInvalid
+    }
+}
+
+/// 纯核（无 VM）文本键臂：先 "-0" 特例，再 round-trip 判定；命中数字臂且
+/// 界内整数时携带索引。
+pub(crate) fn ta_index_gate_from_text(text: &str, length: usize) -> TaIndexGate {
+    let t = text
+        .trim_start_matches(crate::number::is_js_ws)
+        .trim_end_matches(crate::number::is_js_ws);
+    if t == "-0" {
+        return TaIndexGate::NumericInvalid;
+    }
+    let n = ta_to_number_text(t);
+    // round-trip 对原文比较（含空白）：`" 1"`/`"1 "` 不成立归 Ordinary。
+    if text != oxide_runtime_api::js_number_to_string(n) {
+        return TaIndexGate::Ordinary;
+    }
+    if n.is_nan() || n.is_infinite() || n.fract() != 0.0 || n < 0.0 || n >= length as f64 {
+        return TaIndexGate::NumericInvalid;
+    }
+    TaIndexGate::NumericValid(n as u32)
+}
+
+/// 纯文本的整串 ToNumber（供门 round-trip）：空串 +0；`±Infinity` 前缀取
+/// 专名；十进制前缀须消费整串否则 NaN（hex/八/二进制与下划线文本全 NaN）。
+fn ta_to_number_text(t: &str) -> f64 {
+    if t.is_empty() {
+        return 0.0;
+    }
+    let (neg, rest) = match t.as_bytes().first() {
+        Some(b'-') => (true, &t[1..]),
+        Some(b'+') => (false, &t[1..]),
+        _ => (false, t),
+    };
+    if rest.starts_with("Infinity") {
+        return if neg { f64::NEG_INFINITY } else { f64::INFINITY };
+    }
+    match crate::number::parse_decimal_prefix(rest) {
+        Some((value, consumed)) if consumed == rest.len() => {
+            if neg {
+                -value
+            } else {
+                value
+            }
+        }
+        _ => f64::NAN,
+    }
+}
+
 /// 写 TypedArray 指定整数索引的元素（供 VM 普通属性 set 的 typed 分支使用）。
 /// 越界忽略（不创建属性、不报错）；内部状态非法返回 Err(String)。
 pub fn typed_array_element_set<H: VmHost>(
@@ -2084,4 +2188,129 @@ pub fn uint8array_from_hex<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let len = bytes.len();
     let buffer = JsValue::from_js_object(new_array_buffer(vm, bytes));
     NativeResult::Ok(JsValue::from_js_object(create_typed_array(vm, TypedArrayKind::Uint8, buffer, 0, len)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn gate(text: &str, length: usize) -> TaIndexGate {
+        ta_index_gate_from_text(text, length)
+    }
+
+    // A 整数键（length 除注明外取 2）。
+    #[test]
+    fn gate_text_integer_keys() {
+        assert_eq!(gate("0", 2), TaIndexGate::NumericValid(0));
+        assert_eq!(gate("1", 2), TaIndexGate::NumericValid(1));
+        assert_eq!(gate("0", 1), TaIndexGate::NumericValid(0));
+        assert_eq!(gate("2", 2), TaIndexGate::NumericInvalid);
+        assert_eq!(gate("4294967295", 2), TaIndexGate::NumericInvalid);
+        assert_eq!(gate("4294967296", 2), TaIndexGate::NumericInvalid);
+        assert_eq!(gate("007", 2), TaIndexGate::Ordinary);
+    }
+
+    // B 小数键：round-trip 成立的非整数归数字无效，round-trip 失败归 Ordinary。
+    #[test]
+    fn gate_text_fractional_keys() {
+        assert_eq!(gate("1.1", 2), TaIndexGate::NumericInvalid);
+        assert_eq!(gate("0.0001", 2), TaIndexGate::NumericInvalid);
+        assert_eq!(gate("0.1", 2), TaIndexGate::NumericInvalid);
+        assert_eq!(gate("0.000001", 2), TaIndexGate::NumericInvalid);
+        assert_eq!(gate("0.30000000000000004", 2), TaIndexGate::NumericInvalid);
+        assert_eq!(gate("1e-7", 2), TaIndexGate::NumericInvalid);
+        assert_eq!(gate("1e-20", 2), TaIndexGate::NumericInvalid);
+        assert_eq!(gate("1e-21", 2), TaIndexGate::NumericInvalid);
+        assert_eq!(gate("-9007199254740992", 2), TaIndexGate::NumericInvalid);
+        assert_eq!(gate("1.0", 2), TaIndexGate::Ordinary);
+        assert_eq!(gate("+1", 2), TaIndexGate::Ordinary);
+        assert_eq!(gate("-1.0", 2), TaIndexGate::Ordinary);
+        assert_eq!(gate("0.0000001", 2), TaIndexGate::Ordinary);
+        assert_eq!(gate("1000000000000000000000", 2), TaIndexGate::Ordinary);
+        assert_eq!(gate(" 1", 2), TaIndexGate::Ordinary);
+        assert_eq!(gate("1 ", 2), TaIndexGate::Ordinary);
+        assert_eq!(gate(".5", 2), TaIndexGate::Ordinary);
+        assert_eq!(gate("5.", 2), TaIndexGate::Ordinary);
+        assert_eq!(gate("1e2", 2), TaIndexGate::Ordinary);
+        assert_eq!(gate("1e20", 2), TaIndexGate::Ordinary);
+        assert_eq!(gate("1.7976931348623157e308", 2), TaIndexGate::Ordinary);
+        assert_eq!(gate("1.7976931348623159e308", 2), TaIndexGate::Ordinary);
+        assert_eq!(gate("1e400", 2), TaIndexGate::Ordinary);
+        assert_eq!(gate("2e308", 2), TaIndexGate::Ordinary);
+        assert_eq!(gate("9007199254740993", 2), TaIndexGate::Ordinary);
+        assert_eq!(gate("123456789012345678901234567890", 2), TaIndexGate::Ordinary);
+    }
+
+    // C 负数键：round-trip 成立的负数归数字无效，ToNumber=NaN 归 Ordinary。
+    #[test]
+    fn gate_text_negative_keys() {
+        assert_eq!(gate("-1", 2), TaIndexGate::NumericInvalid);
+        assert_eq!(gate("-1", 0), TaIndexGate::NumericInvalid);
+        assert_eq!(gate("-0.5", 2), TaIndexGate::NumericInvalid);
+        assert_eq!(gate("--1", 2), TaIndexGate::Ordinary);
+        assert_eq!(gate("-", 2), TaIndexGate::Ordinary);
+    }
+
+    // D 十六/八/二进制与下划线键：数字对象 ToString 永不输出 0x 前缀，
+    // 全部不 round-trip，归 Ordinary。
+    #[test]
+    fn gate_text_radix_and_underscore_keys() {
+        assert_eq!(gate("0x1", 2), TaIndexGate::Ordinary);
+        assert_eq!(gate("0X1", 2), TaIndexGate::Ordinary);
+        assert_eq!(gate("0o17", 2), TaIndexGate::Ordinary);
+        assert_eq!(gate("0b1", 2), TaIndexGate::Ordinary);
+        assert_eq!(gate("1_000", 2), TaIndexGate::Ordinary);
+        assert_eq!(gate("0x1.8p1", 2), TaIndexGate::Ordinary);
+    }
+
+    // E "-0" 特例：字符串相归数字无效（不得 Valid(0)），round-trip 失败的
+    // 变体归 Ordinary。
+    #[test]
+    fn gate_text_minus_zero_special() {
+        assert_eq!(gate("-0", 2), TaIndexGate::NumericInvalid);
+        assert_eq!(gate("-0", 0), TaIndexGate::NumericInvalid);
+        assert_eq!(gate("-0.0", 2), TaIndexGate::Ordinary);
+        assert_eq!(gate("- 0", 2), TaIndexGate::Ordinary);
+        assert_eq!(gate("+0", 2), TaIndexGate::Ordinary);
+    }
+
+    // F 保留字：NaN/±Infinity 走数字路径（round-trip 成立），拼写偏差归
+    // Ordinary。
+    #[test]
+    fn gate_text_reserved_words() {
+        assert_eq!(gate("NaN", 2), TaIndexGate::NumericInvalid);
+        assert_eq!(gate("Infinity", 2), TaIndexGate::NumericInvalid);
+        assert_eq!(gate("-Infinity", 2), TaIndexGate::NumericInvalid);
+        assert_eq!(gate("inf", 2), TaIndexGate::Ordinary);
+        assert_eq!(gate("INFINITY", 2), TaIndexGate::Ordinary);
+        assert_eq!(gate("NaNx", 2), TaIndexGate::Ordinary);
+        assert_eq!(gate("Infinity1", 2), TaIndexGate::Ordinary);
+    }
+
+    // G 空串与怪文本：ToNumber(+0) 的 round-trip "0" 与原文不等，归 Ordinary。
+    #[test]
+    fn gate_text_empty_and_odd() {
+        assert_eq!(gate("", 2), TaIndexGate::Ordinary);
+        assert_eq!(gate(" ", 2), TaIndexGate::Ordinary);
+        assert_eq!(gate("\u{3000}", 2), TaIndexGate::Ordinary);
+    }
+
+    // H 2^32 溢出与最大长度边界（最大长度取 1 字节 TA 上界 2^30）。
+    #[test]
+    fn gate_text_2pow32_and_max_length() {
+        assert_eq!(gate("4294967295", 1073741824), TaIndexGate::NumericInvalid);
+        assert_eq!(gate("1073741823", 1073741824), TaIndexGate::NumericValid(1073741823));
+        assert_eq!(gate("1073741824", 1073741824), TaIndexGate::NumericInvalid);
+        // 2^64 的规范 ToString 是最短回环式 "18446744073709552000"（V8 实测），
+        // 与原文不等，round-trip 不成立归 Ordinary（建真实属性）。
+        assert_eq!(gate("18446744073709551616", 2), TaIndexGate::Ordinary);
+        assert_eq!(gate("99999999999999999999999", 2), TaIndexGate::Ordinary);
+    }
+
+    // I int-key 臂（纯核）。
+    #[test]
+    fn gate_int_arm() {
+        assert_eq!(ta_index_gate_int(0, 2), TaIndexGate::NumericValid(0));
+        assert_eq!(ta_index_gate_int(2, 2), TaIndexGate::NumericInvalid);
+    }
 }
