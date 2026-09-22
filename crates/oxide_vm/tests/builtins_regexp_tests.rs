@@ -19,8 +19,9 @@ fn to_str(vm: &Vm, val: JsValue) -> String {
 fn regexp_survives_gc_and_still_matches() {
     // 回归：正则存入全局对象触发晋升/GC 搬移后，native_fn 槽的已编译 Box
     // 必须深拷贝到新对象（而非共享指针），否则 epoch 释放与 teardown 双重释放。
+    // 非 global 正则：test/exec 不追踪 lastIndex，跨 reset 探针不受写回干扰。
     let mut vm = Vm::new();
-    let result = eval(&mut vm, "var r = /ab+c/g; globalThis.r = r; r.test('xxabbcx')").unwrap();
+    let result = eval(&mut vm, "var r = /ab+c/; globalThis.r = r; r.test('xxabbcx')").unwrap();
     assert!(result.as_bool());
 
     // 触发完整收集：存活正则克隆进新 arena，旧 Box 由 sweep 释放。
@@ -262,6 +263,60 @@ fn regexp_exec_negative_last_index_clamped_to_zero() {
     )
     .unwrap();
     assert_eq!(to_str(&vm, result), "0:1");
+}
+
+// --- test() lastIndex 规范语义（sticky 锚定 / 越界短路 / 不追踪不写回）---
+
+#[test]
+fn regexp_test_sticky_anchor_failure_resets() {
+    // sticky 命中起点不在 lastIndex：判无匹配，lastIndex 置 0（后置锚定过滤）。
+    let mut vm = Vm::new();
+    let result = eval(&mut vm, "var re = /b/y; re.test('ab') === false && re.lastIndex === 0").unwrap();
+    assert!(result.as_bool());
+    let result =
+        eval(&mut vm, "var re = /c/y; re.lastIndex = 1; re.test('abc') === false && re.lastIndex === 0").unwrap();
+    assert!(result.as_bool());
+}
+
+#[test]
+fn regexp_test_sticky_hit_advances_last_index() {
+    // 命中时 lastIndex 推进到匹配末尾；初始 lastIndex 受尊重（匹配须恰从其起点）。
+    let mut vm = Vm::new();
+    let result = eval(&mut vm, "var re = /abc/y; re.test('abc') === true && re.lastIndex === 3").unwrap();
+    assert!(result.as_bool());
+    let result =
+        eval(&mut vm, "var re = /./y; re.lastIndex = 1; re.test('a') === false && re.lastIndex === 0").unwrap();
+    assert!(result.as_bool());
+}
+
+#[test]
+fn regexp_test_sticky_out_of_range_resets_last_index() {
+    // lastIndex 超出串长：先 Set 0 再回 false（sticky 与 global 同口径）。
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "var re = /./y; re.lastIndex = 999; re.test('abc') === false && re.lastIndex === 0",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
+#[test]
+fn regexp_test_sticky_nonwritable_last_index_throws() {
+    // 失败 Set 0 命中不可写 lastIndex：TypeError（Set 语义 strict）。
+    let source = "(() => { var re = /c/y; Object.defineProperty(re, 'lastIndex', { writable: false }); try { re.test('abc'); return 'no-throw'; } catch (e) { return e instanceof TypeError ? 'TypeError' : 'other'; } })()";
+    let mut vm = Vm::new();
+    let result = eval(&mut vm, source).unwrap();
+    assert_eq!(to_str(&vm, result), "TypeError");
+}
+
+#[test]
+fn regexp_test_non_global_no_write_back() {
+    // 非 global/sticky：无 lastIndex 写回，不可写属性静默通过（不触发 Set）。
+    let source = "(() => { var re = /a/; Object.defineProperty(re, 'lastIndex', { writable: false, value: 7 }); return re.test('xa') === true && re.lastIndex === 7 && re.test('z') === false && re.lastIndex === 7; })()";
+    let mut vm = Vm::new();
+    let result = eval(&mut vm, source).unwrap();
+    assert!(result.as_bool());
 }
 
 // --- RegExp literal compilation ---

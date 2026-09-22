@@ -314,13 +314,6 @@ fn set_prop_by_si<H: VmHost>(obj: &mut JsObject, prop_name_si: u32, val: JsValue
     obj.ensure_hash_props().push(val);
 }
 
-fn get_prop(obj: &JsObject, idx: usize) -> JsValue {
-    obj.hash_props_vec()
-        .and_then(|v| v.get(idx))
-        .copied()
-        .unwrap_or(JsValue::undefined())
-}
-
 /// `RegExp(pattern, flags)` 构造逻辑：用 regress 引擎编译模式（ECMAScript 语法，
 /// 支持 backreference/lookaround/命名组/v-flag）；非法模式抛 SyntaxError。
 /// 编译结果存于对象的 native_fn 槽。
@@ -475,19 +468,38 @@ pub fn clone_regexp_native(old_obj: &JsObject, new_obj: &mut JsObject) {
     new_obj.set_native_fn(Some(unsafe { NativeFnPtr::from_raw(cloned_ptr as *const ()) }));
 }
 
-/// `RegExp.prototype.test(string)`：判断是否匹配。global 模式下从 lastIndex 开始匹配。
+/// `RegExp.prototype.test(string)`：判断是否匹配。global/sticky 从 lastIndex
+/// 开始匹配，sticky 要求匹配恰在 lastIndex 起点。
+///
+/// # 步骤
+/// 1. this 须为 RegExp 实例（内部槽门禁，非对象/非 RegExp 抛 TypeError）。
+/// 2. S = ToString(string)；flags 串判 global/sticky（sticky 时 global 归
+///    false 的效果体现为两者只影响同一分支）。
+/// 3. 共享搜索核（与 exec 同一实现）：lastIndex 读、越界短路、sticky 锚定
+///    过滤、lastIndex Set 写回。
+/// 4. 命中返回 true，否则 false。
+///
+/// # 边界与前提
+/// - lastIndex 负值/NaN/非数字经 ToLength 收敛为 0；值以码元口径计。
+/// - 非 global/sticky 时 lastIndex 不读入搜索、不写回（属性保持原值）。
+///
+/// # 副作用
+/// - global/sticky 时按匹配结果 Set this.lastIndex（失败置 0、成功置匹配末尾）。
 pub fn regexp_test<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let re_ptr = match get_regexp_ptr(vm, args) {
         Ok(ptr) => ptr,
         Err(err) => return NativeResult::Err(err),
     };
-    let re = unsafe { &*re_ptr };
+    let this_val = vm.reg(args[0]);
 
-    let fn_ptr = match re.native_fn() {
-        None => {
-            return NativeResult::Err(crate::error::create_type_error(vm, "invalid RegExp"));
+    let fn_ptr = {
+        let re = unsafe { &*re_ptr };
+        match re.native_fn() {
+            None => {
+                return NativeResult::Err(crate::error::create_type_error(vm, "invalid RegExp"));
+            }
+            Some(p) => p,
         }
-        Some(p) => p,
     };
 
     // SAFETY: fn_ptr 持有 regexp_constructor 存放的 `Box<regress::Regex>` 指针。
@@ -496,17 +508,84 @@ pub fn regexp_test<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         Ok(s) => s,
         Err(err) => return NativeResult::Err(err),
     };
-    let last_index = vm.coerce_number_bounded(get_prop(re, 0)).unwrap_or(f64::NAN) as usize;
-    let is_global = regexp_has_flag(vm, re, 'g');
-
-    // lastIndex 为码元口径；Str 臂的内部字节换算在 find_from_units 内完成。
     let text = haystack.as_match_text();
-    let found = if is_global {
-        text.find_from_units(regex, last_index).is_some()
-    } else {
-        text.find_from_units(regex, 0).is_some()
+
+    // 标志决定搜索起点与 lastIndex 写回条件。
+    let (is_global, is_sticky) = {
+        let re = unsafe { &*re_ptr };
+        (regexp_has_flag(vm, re, 'g'), regexp_has_flag(vm, re, 'y'))
     };
-    NativeResult::Ok(JsValue::bool(found))
+    let tracks_last_index = is_global || is_sticky;
+
+    let found = match rx_search(vm, re_ptr, this_val, regex, &text, tracks_last_index, is_sticky) {
+        Ok(r) => r,
+        Err(err) => return NativeResult::Err(err),
+    };
+    NativeResult::Ok(JsValue::bool(found.is_some()))
+}
+
+/// exec/test 共享搜索核（规范 RegExpBuiltinExec 的搜索部分）：lastIndex 经
+/// Get + ToLength 读取，搜索起点（global/sticky 取 lastIndex、其余取 0），
+/// 越界短路（先 Set 0），匹配与 sticky 后置锚定过滤，lastIndex Set 写回
+/// （失败置 0、成功置匹配末尾，仅 global/sticky，非可写属性抛 TypeError）。
+///
+/// # 边界与前提
+/// - lastIndex 负值/NaN/非数字经 ToLength 收敛为 0；值以码元口径计。
+/// - sticky 锚定过滤：底层引擎对 y 不原生锚定，命中起点须恰在 lastIndex 才算有效。
+///
+/// # 副作用
+/// - global/sticky 时按匹配结果 Set this.lastIndex（越界/失败置 0、成功置末尾）。
+fn rx_search<H: VmHost>(
+    vm: &mut H, re_ptr: *mut JsObject, this_val: JsValue, regex: &regress::Regex, text: &MatchText,
+    tracks_last_index: bool, is_sticky: bool,
+) -> Result<Option<regress::Match>, JsValue> {
+    // lastIndex 读走 Get + ToLength：完整属性解析，读异常传播原异常。
+    let last_index = {
+        let li_si = vm.kernel_core().perm_interner().intern("lastIndex").0;
+        match vm.ordinary_get(unsafe { &*re_ptr }, li_si, this_val) {
+            Ok(val) => to_length_value(vm, val)?,
+            Err(_) => {
+                if let Some(exc) = vm.take_uncaught_value() {
+                    return Err(exc);
+                }
+                return Err(crate::error::create_type_error(vm, "Cannot read lastIndex"));
+            }
+        }
+    };
+
+    // 搜索起点：global/sticky 自 lastIndex 起，其余自 0。
+    let start = if tracks_last_index { last_index } else { 0 };
+
+    // 越界短路：lastIndex 超出串长必不匹配，规范先 Set 0 再空结果。
+    if start > text.len_units() {
+        if tracks_last_index {
+            set_last_index(vm, re_ptr, this_val, 0)?;
+        }
+        return Ok(None);
+    }
+
+    // 匹配范围取臂原生命径（Str 臂字节、Units 臂码元）；sticky 加后置锚定
+    // 过滤——底层引擎对 y 不原生锚定，命中起点须恰在 lastIndex 才算有效。
+    let match_result = text.find_from_units(regex, start);
+    let anchored = if is_sticky {
+        match_result.filter(|m| text.unit_pos(m.range().start) == last_index)
+    } else {
+        match_result
+    };
+
+    let Some(m) = anchored else {
+        // 失败：仅 global/sticky Set 0。
+        if tracks_last_index {
+            set_last_index(vm, re_ptr, this_val, 0)?;
+        }
+        return Ok(None);
+    };
+
+    // 成功：lastIndex 推进到匹配末尾（仅 global/sticky），Set 语义。
+    if tracks_last_index {
+        set_last_index(vm, re_ptr, this_val, text.unit_pos(m.range().end))?;
+    }
+    Ok(Some(m))
 }
 
 /// `RegExp.prototype.exec(string)`：执行匹配并返回数组（含捕获组、index、input）；
@@ -517,21 +596,16 @@ pub fn regexp_test<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 ///    可匹配模式，同抛 TypeError。
 /// 2. S = ToString(string)；flags 串判 global/sticky（sticky 时 global 归 false
 ///    的效果体现为两者只影响同一分支）。
-/// 3. lastIndex = ToLength(Get)：完整属性解析（accessor 与原型链均生效），
-///    读异常传播原异常。
-/// 4. 搜索起点：global/sticky 取 lastIndex，其余 0；起点越出串长时先 Set 0
-///    （仅 global/sticky），再回 null（规范短路）。
-/// 5. 匹配；sticky 加命中后置锚定过滤：匹配起点须恰在 lastIndex
-///    （底层引擎对 y 不原生锚定，过滤为单点）。
-/// 6. lastIndex 写回走 Set 语义且仅 global/sticky：失败置 0、成功置匹配末尾；
-///    非可写属性抛 TypeError。
+/// 3. 共享搜索核（与 test 同一实现）：lastIndex 读（Get + ToLength）、越界
+///    短路（先 Set 0）、sticky 后置锚定过滤、lastIndex Set 写回。
+/// 4. 无匹配回 null；命中构建结果数组（捕获组、index、input、groups）。
 ///
 /// # 边界与前提
 /// - lastIndex 负值/NaN/非数字经 ToLength 收敛为 0；值以码元口径计。
 /// - 非对象 this 抛 TypeError（门禁），对象但无编译正则同样抛 TypeError。
 ///
 /// # 副作用
-/// - global/sticky 时按匹配结果 Set this.lastIndex。
+/// - global/sticky 时按匹配结果 Set this.lastIndex（失败置 0、成功置末尾）。
 /// - 命中时分配结果数组。
 pub fn regexp_exec<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let re_ptr = match get_this_obj(vm, args) {
@@ -566,54 +640,13 @@ pub fn regexp_exec<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     };
     let tracks_last_index = is_global || is_sticky;
 
-    // lastIndex 读走 Get + ToLength：完整属性解析，读异常传播原异常。
-    let last_index = {
-        let li_si = vm.kernel_core().perm_interner().intern("lastIndex").0;
-        match vm.ordinary_get(unsafe { &*re_ptr }, li_si, this_val) {
-            Ok(val) => match to_length_value(vm, val) {
-                Ok(n) => n,
-                Err(err) => return NativeResult::Err(err),
-            },
-            Err(_) => {
-                if let Some(exc) = vm.take_uncaught_value() {
-                    return NativeResult::Err(exc);
-                }
-                return NativeResult::Err(crate::error::create_type_error(vm, "Cannot read lastIndex"));
-            }
-        }
+    // 共享搜索核：lastIndex 读、越界短路、sticky 锚定过滤、lastIndex 写回。
+    let match_result = match rx_search(vm, re_ptr, this_val, regex, &text, tracks_last_index, is_sticky) {
+        Ok(r) => r,
+        Err(err) => return NativeResult::Err(err),
     };
 
-    // 搜索起点：global/sticky 自 lastIndex 起，其余自 0。
-    let start = if tracks_last_index { last_index } else { 0 };
-
-    // 越界短路：lastIndex 超出串长必不匹配，规范先 Set 0 再空结果。
-    if start > text.len_units() {
-        if tracks_last_index {
-            if let Err(err) = set_last_index(vm, re_ptr, this_val, 0) {
-                return NativeResult::Err(err);
-            }
-        }
-        return NativeResult::Ok(JsValue::null());
-    }
-
-    // 匹配范围取臂原生命径（Str 臂字节、Units 臂码元）；sticky 加后置锚定
-    // 过滤——底层引擎对 y 不原生锚定，命中起点须恰在 lastIndex 才算有效。
-    let mut match_result = text.find_from_units(regex, start);
-    if is_sticky {
-        if let Some(m) = &match_result {
-            if text.unit_pos(m.range().start) != last_index {
-                match_result = None;
-            }
-        }
-    }
-
     let Some(m) = match_result else {
-        // 失败：仅 global/sticky Set 0。
-        if tracks_last_index {
-            if let Err(err) = set_last_index(vm, re_ptr, this_val, 0) {
-                return NativeResult::Err(err);
-            }
-        }
         return NativeResult::Ok(JsValue::null());
     };
 
