@@ -119,13 +119,15 @@ fn checked_absolute_offset<H: VmHost>(
 }
 
 /// GetViewValue 后半：按已校验的视图与偏移读 N 字节（越界抛 RangeError）。
+/// detach 守卫先于范围校验（规范序：IsDetachedBuffer 检查先于越界判定，
+/// detach 后越界偏移也抛 TypeError 而非 RangeError）。
 fn read_bytes_at<const N: usize, H: VmHost>(vm: &mut H, view: DataViewData, offset: usize) -> Result<[u8; N], JsValue> {
-    let abs = checked_absolute_offset(vm, view, offset, N)?;
     let payload_ptr = array_buffer_payload(vm, view.buffer)?;
     // SAFETY: payload_ptr 经 array_buffer_payload 校验为合法 ArrayBuffer 载荷。
     let Some(buffer) = unsafe { &*payload_ptr }.data.as_deref() else {
         return Err(crate::error::create_type_error(vm, "ArrayBuffer internal state invalid"));
     };
+    let abs = checked_absolute_offset(vm, view, offset, N)?;
     if abs + N > buffer.len() {
         return Err(crate::error::create_range_error(vm, "DataView offset out of bounds"));
     }
@@ -135,15 +137,16 @@ fn read_bytes_at<const N: usize, H: VmHost>(vm: &mut H, view: DataViewData, offs
 }
 
 /// SetViewValue 后半：按已校验的视图与偏移写 N 字节（越界抛 RangeError）。
+/// detach 守卫先于范围校验（规范序同读路径）。
 fn write_bytes<const N: usize, H: VmHost>(
     vm: &mut H, view: DataViewData, offset: usize, bytes: [u8; N],
 ) -> Result<(), JsValue> {
-    let abs = checked_absolute_offset(vm, view, offset, N)?;
     let payload_ptr = array_buffer_payload(vm, view.buffer)?;
     // SAFETY: payload_ptr 经 array_buffer_payload 校验为合法 ArrayBuffer 载荷。
     let Some(buffer) = unsafe { &mut *payload_ptr }.data.as_deref_mut() else {
         return Err(crate::error::create_type_error(vm, "ArrayBuffer internal state invalid"));
     };
+    let abs = checked_absolute_offset(vm, view, offset, N)?;
     if abs + N > buffer.len() {
         return Err(crate::error::create_range_error(vm, "DataView offset out of bounds"));
     }
@@ -181,7 +184,8 @@ fn has_data_view_proto<H: VmHost>(vm: &mut H, this_val: JsValue) -> bool {
 /// 1. receiver 原型链不含 %DataView.prototype% → TypeError（普通调用面：
 ///    this = globalThis 不满足；构造路径恒传 DataView 原型链上的 receiver）。
 /// 2. buffer 品牌校验（ArrayBufferData）。
-/// 3. offset = ToIndex(byteOffset) 传播式；offset > bufferLen → RangeError。
+/// 3. offset = ToIndex(byteOffset) 传播式；detached 缓冲 → TypeError（在
+///    偏移强转之后）；offset > bufferLen → RangeError。
 /// 4. byteLength 缺省/undefined → bufferLen - offset，否则 ToIndex 传播式；
 ///    offset + byteLength > bufferLen → RangeError。
 /// 5. GetPrototypeFromConstructor：经 `ordinary_get` 读 NewTarget（regs[255]）
@@ -203,15 +207,18 @@ pub fn data_view_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult
     let buffer = vm.reg(args[1]);
     let payload_ptr = native_try!(array_buffer_payload(vm, buffer));
     // SAFETY: payload_ptr 经 array_buffer_payload 校验为合法 ArrayBuffer 载荷。
-    let Some(data) = unsafe { &*payload_ptr }.data.as_ref() else {
-        return NativeResult::Err(crate::error::create_type_error(vm, "ArrayBuffer internal state invalid"));
-    };
-    let buffer_len = data.len();
+    let buf = unsafe { &*payload_ptr }.data.as_deref();
+    let buffer_len = buf.map_or(0, |d| d.len());
     let byte_offset = if args.len() > 2 {
         native_try!(to_index(vm, vm.reg(args[2]), "DataView byteOffset out of bounds"))
     } else {
         0
     };
+    // detach 守卫在偏移强转之后、越界判定之前（规范序：detached 缓冲构造
+    // 抛 TypeError，且偏移的 ToNumber 已恰好发生一次）。
+    if buf.is_none() {
+        return NativeResult::Err(crate::error::create_type_error(vm, "ArrayBuffer internal state invalid"));
+    }
     if byte_offset > buffer_len {
         return NativeResult::Err(crate::error::create_range_error(vm, "DataView byteOffset out of bounds"));
     }
@@ -686,8 +693,14 @@ pub fn data_view_byte_offset_getter<H: VmHost>(vm: &mut H, args: &[u8]) -> Nativ
 }
 
 /// `DataView.prototype.byteLength` getter：返回视图覆盖的字节长度。
+/// 缓冲已 detach → TypeError（规范序：IsDetachedBuffer 检查先于返回值）。
 pub fn data_view_byte_length_getter<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
     let view = native_try!(get_data_view_data(vm, this_val));
+    let payload_ptr = native_try!(array_buffer_payload(vm, view.buffer));
+    // SAFETY: payload_ptr 经 array_buffer_payload 校验为合法 ArrayBuffer 载荷。
+    if unsafe { &*payload_ptr }.data.is_none() {
+        return NativeResult::Err(crate::error::create_type_error(vm, "ArrayBuffer internal state invalid"));
+    }
     NativeResult::Ok(JsValue::float(view.byte_length as f64))
 }

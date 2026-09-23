@@ -456,8 +456,9 @@ enum TransferKeep {
 ///    先于一切守卫观测）。
 /// 3. 重取源载荷指针（求值可已晋升/detach/改 immutable），重检状态位：
 ///    detached → TypeError；immutable → TypeError。
-/// 4. 界校验：resizable 源且 newByteLength > 真实上限（重读存储态 − 1）→
-///    RangeError；newByteLength > 引擎分配上界 → RangeError。
+/// 4. 界校验：仅保持性原样臂——resizable 源且 newByteLength > 真实上限
+///    （重读存储态 − 1）→ RangeError；newByteLength > 引擎分配上界 →
+///    RangeError（全保持性）。
 /// 5. 物化拷贝（载荷指针新鲜，字节借出止于本步）。
 /// 6. 新建缓冲（proto 取 %ArrayBuffer.prototype%，保持性按 keep），字节
 ///    序列零填充至 newByteLength。
@@ -491,8 +492,9 @@ fn array_buffer_copy_and_detach<H: VmHost>(
     if immutable {
         return NativeResult::Err(crate::error::create_type_error(vm, "ArrayBuffer is immutable"));
     }
-    // 存储态上限 +1 编码：真实上限 = 存储态 − 1（上限 0 的缓冲只许同长）。
-    if stored_max != 0 && new_len > stored_max - 1 {
+    // 保持性原样臂：resizable 源的真实上限（存储态 − 1）须容纳新长度
+    // （ttf/tti 定长分配无上限约束）。
+    if matches!(keep, TransferKeep::Preserve) && stored_max != 0 && new_len > stored_max - 1 {
         return NativeResult::Err(crate::error::create_range_error(vm, "invalid ArrayBuffer length"));
     }
     if new_len > MAX_ARRAY_BUFFER_LENGTH {
