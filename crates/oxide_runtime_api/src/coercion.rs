@@ -125,11 +125,13 @@ pub fn to_number(val: JsValue) -> f64 {
 /// 需先按十进制字符集排除这些令牌（JS 只接受精确的 "Infinity"）。
 ///
 /// # 边界与前提
-/// - trim 后空串 → 0
+/// - 首尾空白（Unicode White_Space 并 BOM U+FEFF，即 StringNumericLiteral
+///   的 WhiteSpace 集）trim 后空串 → 0
 /// - 十六/八/二进制要求全部字符为有效数字，含非法字符 → NaN
 /// - 十进制结果与 Rust parse 一致，溢出时归 ±inf / 0
 fn parse_js_number(s: &str) -> f64 {
-    let t = s.trim();
+    // Rust trim 的 White_Space 不含 U+FEFF，按 ES 空白集显式补齐。
+    let t = s.trim_matches(|c: char| c.is_whitespace() || c == '\u{FEFF}');
     if t.is_empty() {
         return 0.0;
     }
@@ -1048,5 +1050,18 @@ mod tests {
         assert_eq!(parse_js_number("1.5e3"), 1500.0);
         assert_eq!(parse_js_number("-0"), -0.0);
         assert!(parse_js_number("1abc").is_nan());
+    }
+
+    #[test]
+    fn parse_js_number_es_whitespace_set() {
+        // StringNumericLiteral 的 WhiteSpace 集 = Unicode White_Space 并 BOM
+        // U+FEFF：首尾均容忍，数字内部空白仍 NaN。
+        let ws = "\t\u{000B}\u{000C}\u{FEFF}\u{3000}\n\r\u{2028}\u{2029} ";
+        assert_eq!(parse_js_number(&format!("{ws}0{ws}")), 0.0);
+        assert_eq!(parse_js_number(&format!("{ws}1{ws}")), 1.0);
+        assert_eq!(parse_js_number("\u{FEFF}0"), 0.0);
+        assert_eq!(parse_js_number("0\u{FEFF}"), 0.0);
+        assert_eq!(parse_js_number("\u{FEFF}"), 0.0);
+        assert!(parse_js_number("1\u{FEFF}2").is_nan());
     }
 }
