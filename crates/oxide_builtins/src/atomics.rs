@@ -4,7 +4,8 @@
 //! 阻塞、无 waiter 面）；宽度截断与元素写路径（`write_element`）结构同构。
 
 use num_bigint::BigInt;
-use oxide_types::object::TypedArrayKind;
+use oxide_kernel::shape_forge::EMPTY_SHAPE_ID;
+use oxide_types::object::{JsObject, TypedArrayKind};
 use oxide_types::value::JsValue;
 
 use crate::array_buffer::{buffer_payload_ptr, ArrayBufferPayload};
@@ -243,19 +244,26 @@ pub fn atomics_wait<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 
 /// `Atomics.notify(typedArray, index, count)`：值验证后 count 经
 /// ToIntegerOrInfinity（毒传播，NaN → +∞、有限负值 → 0）；非 SAB 提前返 0
-/// （先于本早返的越界/类型异常照常抛出）；单线程无 waiter 面，恒返 0。
+/// （先于本早返的越界/类型异常照常抛出）；SAB 臂唤醒 (缓冲, 偏移) 处登记的
+/// waitAsync waiter，返唤醒数（无登记恒 0）。
 pub fn atomics_notify<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let ta_val = arg_at(vm, args, 1);
     let index_val = arg_at(vm, args, 2);
     let count_val = arg_at(vm, args, 3);
-    let (_payload_ptr, _view, _offset, is_sab) = native_try!(resolve_atomic_wait_access(vm, ta_val, index_val, false));
-    // count 归一：单线程下无观察差，只承载毒传播（语料钉：非 SAB 亦先评估
-    // count 再返 0）。
-    native_try!(ta_to_integer_or_infinity(vm, count_val));
+    let (_payload_ptr, view, offset, is_sab) = native_try!(resolve_atomic_wait_access(vm, ta_val, index_val, false));
+    // count 实参缺省 → +∞（全唤醒）；显式传入才走强转（毒传播语料钉：
+    // 非 SAB 亦先评估 count 再返 0）。
+    let count = if args.len() > 3 {
+        native_try!(ta_to_integer_or_infinity(vm, count_val))
+    } else {
+        f64::INFINITY
+    };
     if !is_sab {
         return NativeResult::Ok(JsValue::int(0));
     }
-    NativeResult::Ok(JsValue::int(0))
+    // 与登记侧同一读径取缓冲现指针，同 run 无 GC 时恒匹配。
+    let buffer_ptr = view.buffer.as_js_object_ptr();
+    NativeResult::Ok(JsValue::int(vm.atomics_wake_waiters(buffer_ptr, offset, count) as i32))
 }
 
 /// `Atomics.load(typedArray, index)`：读指定索引元素。
@@ -356,4 +364,68 @@ pub fn atomics_is_lock_free<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult 
     let size_val = arg_at(vm, args, 1);
     let n = native_try!(ta_to_integer_or_infinity(vm, size_val));
     NativeResult::Ok(JsValue::bool(matches!(n, 1.0 | 2.0 | 4.0 | 8.0)))
+}
+
+/// waitAsync 结果对象：普通对象（proto = Object.prototype），own 属性
+/// async/value 双 data 属性（普通创建路径默认形）。
+fn wait_async_result_object<H: VmHost>(vm: &mut H, async_arm: bool, value: JsValue) -> JsValue {
+    let object_proto = vm.session().builtin_world().object_proto.as_ptr() as *mut JsObject;
+    let obj_ptr = vm.alloc_object(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(object_proto)));
+    // SAFETY: alloc_object 返回存活 arena 指针，借出期间无别名。
+    let obj = unsafe { &mut *obj_ptr };
+    let async_si = vm.string_key_si("async");
+    let value_si = vm.string_key_si("value");
+    vm.set_or_create_prop_value(obj, async_si, JsValue::bool(async_arm));
+    vm.set_or_create_prop_value(obj, value_si, value);
+    JsValue::from_js_object(obj_ptr)
+}
+
+/// `Atomics.waitAsync(typedArray, index, value, timeout)`：值强转（毒传播）
+/// 后读载荷比较——不等值返 {async:false, value:"not-equal"}；等值再归一 timeout
+/// （NaN → +∞、<0 → 0），≤0 返 {async:false, value:"timed-out"}；等值且 >0
+/// 建 pending Promise 登记 waiter 表（notify 唤醒结算 "ok"），返
+/// {async:true, value:Promise}。timeout 强转在不等值早返之后（spec 步序）。
+pub fn atomics_wait_async<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let ta_val = arg_at(vm, args, 1);
+    let index_val = arg_at(vm, args, 2);
+    let value_val = arg_at(vm, args, 3);
+    let timeout_val = arg_at(vm, args, 4);
+    let (payload_ptr, view, offset, _) = native_try!(resolve_atomic_wait_access(vm, ta_val, index_val, true));
+    let value = native_try!(ta_element_value(vm, view.kind, value_val));
+    let old = atomic_read(vm, payload_ptr, view.kind, offset).unwrap_or(JsValue::undefined());
+    let equal = if is_bigint_kind(view.kind) {
+        let old_bi = vm.bigint_value(old).clone();
+        let value_bi = vm.bigint_value(value).clone();
+        old_bi.cmp(&value_bi) == std::cmp::Ordering::Equal
+    } else {
+        oxide_runtime_api::to_number(old) == oxide_runtime_api::to_number(value)
+    };
+    if !equal {
+        let str = vm.new_string("not-equal");
+        return NativeResult::Ok(wait_async_result_object(vm, false, str));
+    }
+    // 超时 ToNumber 归一：毒传播 + NaN → +∞、负值 → 0。
+    let timeout = native_try!(
+        oxide_runtime_api::to_number_full(timeout_val, vm).map_err(|e| crate::iterator::engine_error(vm, &e))
+    );
+    let normalized = if timeout.is_nan() {
+        f64::INFINITY
+    } else if timeout < 0.0 {
+        0.0
+    } else {
+        timeout
+    };
+    if normalized <= 0.0 {
+        let str = vm.new_string("timed-out");
+        return NativeResult::Ok(wait_async_result_object(vm, false, str));
+    }
+    // 登记期取视图 buffer 现指针为键：同 run 无 GC 时 notify 侧同读径恒匹配。
+    let promise = vm.atomics_new_waiter_promise();
+    vm.atomics_register_waiter(view.buffer.as_js_object_ptr(), offset, promise);
+    NativeResult::Ok(wait_async_result_object(vm, true, promise))
+}
+
+/// `Atomics.pause(hint)`：零参语义（不校验、不延迟），任意实参形直返 undefined。
+pub fn atomics_pause<H: VmHost>(_vm: &mut H, _args: &[u8]) -> NativeResult {
+    NativeResult::Ok(JsValue::undefined())
 }

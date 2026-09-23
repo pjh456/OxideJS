@@ -75,6 +75,12 @@ impl Vm {
         for job in &self.job_queue {
             crate::promise::for_each_job_value(job, &mut f);
         }
+        // Atomics waiter 表登记的 promise 是 GC 根（run 内跨调用存活）。
+        for promises in self.atomics_waiters.values() {
+            for p in promises {
+                f(*p);
+            }
+        }
         for iter in &self.iters.for_in_iters {
             if iter.is_null() {
                 continue;
@@ -149,6 +155,12 @@ impl Vm {
         // 微任务队列中的值随 sweep 重写。
         for job in &mut self.job_queue {
             crate::promise::rewrite_job_values(job, &mut rewrite);
+        }
+        // Atomics waiter 表中的 promise 随 sweep 重写（与 mark 段一一对应）。
+        for promises in self.atomics_waiters.values_mut() {
+            for p in promises {
+                *p = rewrite(*p);
+            }
         }
         for iter in &mut self.iters.for_in_iters {
             if iter.is_null() {

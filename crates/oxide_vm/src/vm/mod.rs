@@ -189,6 +189,10 @@ pub struct Vm {
     pub async_generator_function_proto: P<JsObject>,
     /// 微任务队列（Promise reactions / thenable 委托），`run()` 末尾 FIFO drain。
     pub(crate) job_queue: VecDeque<crate::promise::Microtask>,
+    /// Atomics.waitAsync waiter 表：键 = (缓冲对象指针, 元素字节偏移)，值 =
+    /// 登记的 promise FIFO。键取登记时刻视图的 `buffer` 现指针（同 run 无 GC 时
+    /// notify 侧读同一指针恒匹配）；run 边界清空，清位后 promise 无强根自然回收。
+    pub(crate) atomics_waiters: HashMap<(u64, usize), Vec<JsValue>>,
     pub math_rng_state: u64,
     /// 子模块平表的表代际注册表：键 = 表代际（`current_gen` 为当前 run 正在
     /// 装载的代际）。函数对象创建时记录自身所属代际（`JsObject::table_gen`），

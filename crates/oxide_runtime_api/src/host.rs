@@ -243,4 +243,18 @@ pub trait VmHost {
     fn symbol_lookup_global(&self, key: &str) -> Option<u32>;
     fn symbol_register_global(&mut self, key: String, idx: u32);
     fn symbol_key_for_id(&self, idx: u32) -> Option<String>;
+
+    // Atomics waiter 面（waitAsync 登记 / notify 唤醒）
+    /// 新建 pending Promise，供 `Atomics.waitAsync` 异步臂的 value 槽；结算不
+    /// 经能力闭包，由 notify 唤醒直调引擎结算核。
+    fn atomics_new_waiter_promise(&mut self) -> JsValue;
+    /// 登记 waitAsync waiter：键 = (缓冲对象指针, 元素字节偏移)，同键 FIFO 追加。
+    ///
+    /// # 注意事项
+    /// `buffer` 须为登记时刻视图的 `buffer` 现指针（与 notify 侧同一读径），
+    /// 同 run 无 GC 时两侧指针恒匹配。
+    fn atomics_register_waiter(&mut self, buffer: *mut JsObject, offset: usize, promise: JsValue);
+    /// 唤醒 (缓冲, 偏移) 处登记的前 `count` 个 waiter（`<= 0` 不唤醒、`+Inf`
+    /// 全唤醒），逐个以 "ok" 结算（反应入队随 run 收尾 drain）；返回唤醒数。
+    fn atomics_wake_waiters(&mut self, buffer: *mut JsObject, offset: usize, count: f64) -> usize;
 }

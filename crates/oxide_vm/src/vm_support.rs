@@ -67,6 +67,7 @@ impl Vm {
             async_generator_proto: P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
             async_generator_function_proto: P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
             job_queue: VecDeque::new(),
+            atomics_waiters: std::collections::HashMap::new(),
             math_rng_state: 0,
             // gen 0 预登记空表占位：函数对象恒在 run 内创建（彼时 current_gen
             // ≥ 1），gen 0 表只是首 run 前路径的占位，首 run 边界即被回收。
@@ -199,6 +200,7 @@ impl Vm {
             async_generator_proto: P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
             async_generator_function_proto: P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
             job_queue: VecDeque::new(),
+            atomics_waiters: std::collections::HashMap::new(),
             math_rng_state: 0,
             // gen 0 预登记空表占位：函数对象恒在 run 内创建（彼时 current_gen
             // ≥ 1），gen 0 表只是首 run 前路径的占位，首 run 边界即被回收。
@@ -544,6 +546,8 @@ impl Vm {
         self.inline_reg_pool = None;
         // 微任务队列是执行期状态：跨 run 不保留。
         self.job_queue.clear();
+        // Atomics waiter 表同属执行期状态：未结算 promise 清位后无强根。
+        self.atomics_waiters.clear();
     }
 
     /// 轻量重置：清空执行状态并回收 epoch 内存，但保留 session 字符串与 builtin。

@@ -216,4 +216,13 @@ impl oxide_runtime_api::VmHost for Vm {
     fn symbol_key_for_id(&self, idx: u32) -> Option<String> {
         self.symbols.key_for_id(idx)
     }
+    fn atomics_new_waiter_promise(&mut self) -> JsValue {
+        self.atomics_new_waiter_promise()
+    }
+    fn atomics_register_waiter(&mut self, buffer: *mut JsObject, offset: usize, promise: JsValue) {
+        self.atomics_register_waiter(buffer, offset, promise)
+    }
+    fn atomics_wake_waiters(&mut self, buffer: *mut JsObject, offset: usize, count: f64) -> usize {
+        self.atomics_wake_waiters(buffer, offset, count)
+    }
 }

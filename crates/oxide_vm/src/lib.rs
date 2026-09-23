@@ -11,6 +11,7 @@ mod async_disposable;
 mod async_from_sync;
 mod async_func;
 mod async_generator;
+mod atomics;
 /// 内置对象绑定模块：向 session 的 global 对象安装 Object/Array/... 及各原型。
 pub mod bindings;
 mod dispatch;

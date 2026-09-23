@@ -253,3 +253,153 @@ fn atomics_wait_notify_name_and_length() {
          && Atomics.notify.name === 'notify' && Atomics.notify.length === 3",
     );
 }
+
+/// waitAsync：不等值 → 同步结果对象 {async:false, value:"not-equal"}。
+#[test]
+fn eval_waitasync_not_equal() {
+    let mut vm = Vm::new();
+    truthy(
+        &mut vm,
+        "(function () { \
+         var ta = new Int32Array(new SharedArrayBuffer(8)); \
+         ta[0] = 7; \
+         var r = Atomics.waitAsync(ta, 0, 8, 100); \
+         return r.async === false && r.value === 'not-equal' && !(r.value instanceof Promise); })()",
+    );
+}
+
+/// waitAsync：等值 + 归一 timeout ≤ 0 → {async:false, value:"timed-out"}；
+/// NaN/缺省 timeout → +∞ 走异步臂。
+#[test]
+fn eval_waitasync_timeout_zero() {
+    let mut vm = Vm::new();
+    truthy(
+        &mut vm,
+        "(function () { \
+         var ta = new Int32Array(new SharedArrayBuffer(8)); \
+         ta[0] = 7; \
+         var r0 = Atomics.waitAsync(ta, 0, 7, 0); \
+         var rneg = Atomics.waitAsync(ta, 0, 7, -5); \
+         var rnan = Atomics.waitAsync(ta, 0, 7, NaN); \
+         var rdef = Atomics.waitAsync(ta, 0, 7); \
+         return r0.async === false && r0.value === 'timed-out' \
+            && rneg.async === false && rneg.value === 'timed-out' \
+            && rnan.async === true && rnan.value instanceof Promise \
+            && rdef.async === true && rdef.value instanceof Promise; })()",
+    );
+}
+
+/// waitAsync：等值 + timeout > 0 → {async:true, value:<pending Promise>}。
+#[test]
+fn eval_waitasync_async_arm() {
+    let mut vm = Vm::new();
+    truthy(
+        &mut vm,
+        "(function () { \
+         var ta = new Int32Array(new SharedArrayBuffer(8)); \
+         ta[0] = 7; \
+         var r = Atomics.waitAsync(ta, 0, 7, 100); \
+         return r.async === true && r.value instanceof Promise; })()",
+    );
+}
+
+/// waitAsync "ok" 结算核心钉：同 run 内 notify 唤醒 → drain 执行 then 处理器
+/// 写 global；跨 run 断言（同 Vm 双段）。
+#[test]
+fn eval_waitasync_notify_wakes() {
+    let mut vm = Vm::new();
+    eval(
+        &mut vm,
+        "var ta = new Int32Array(new SharedArrayBuffer(8)); \
+         ta[0] = 0; \
+         var r = Atomics.waitAsync(ta, 0, 0, 100); \
+         globalThis.__w2 = Atomics.notify(ta, 0); \
+         r.value.then(function (v) { globalThis.__w3 = (v === 'ok'); });",
+    )
+    .unwrap();
+    truthy(&mut vm, "globalThis.__w2 === 1 && globalThis.__w3 === true");
+}
+
+/// waitAsync：非 SAB 视图 → TypeError 同步抛（非 Promise reject），且毒 value
+/// 不评估（非 SAB 早返先于值强转）。
+#[test]
+fn eval_waitasync_non_sab_throws() {
+    let mut vm = Vm::new();
+    truthy(
+        &mut vm,
+        &format!(
+            "(function () {{ \
+             var ta = new Int32Array(new ArrayBuffer(8)); \
+             var calls = 0; var poison = {{ valueOf: function () {{ calls = 1; }} }}; \
+             return {} && calls === 0; }})()",
+            throws("Atomics.waitAsync(ta, 0, poison, 1)", "TypeError"),
+        ),
+    );
+}
+
+/// waitAsync：run 边界清位——run1 登记不 notify，run2 同 Vm notify 恒 0。
+#[test]
+fn eval_waitasync_per_run_clear() {
+    let mut vm = Vm::new();
+    eval(
+        &mut vm,
+        "var ta = new Int32Array(new SharedArrayBuffer(8)); \
+         ta[0] = 0; \
+         Atomics.waitAsync(ta, 0, 0, 100);",
+    )
+    .unwrap();
+    truthy(&mut vm, "Atomics.notify(ta, 0) === 0");
+}
+
+/// pause：任意实参形（含缺省）恒 undefined。
+#[test]
+fn eval_pause_returns_undefined() {
+    let mut vm = Vm::new();
+    truthy(
+        &mut vm,
+        "Atomics.pause(undefined) === undefined && Atomics.pause(42) === undefined \
+         && Atomics.pause(0) === undefined && Atomics.pause(-0) === undefined \
+         && Atomics.pause(9007199254740991) === undefined && Atomics.pause() === undefined",
+    );
+}
+
+/// pause：零参语义不校验（true/小数/NaN/串 均不抛）。
+#[test]
+fn eval_pause_no_validation() {
+    let mut vm = Vm::new();
+    truthy(
+        &mut vm,
+        "Atomics.pause(true) === undefined && Atomics.pause(42.42) === undefined \
+         && Atomics.pause(NaN) === undefined && Atomics.pause('42') === undefined \
+         && Atomics.pause({}) === undefined",
+    );
+}
+
+/// pause 方法元数据钉：length 0、name "pause"。
+#[test]
+fn eval_pause_meta() {
+    let mut vm = Vm::new();
+    truthy(&mut vm, "Atomics.pause.length === 0 && Atomics.pause.name === 'pause'");
+}
+
+/// waitAsync：值强转毒传播（BigInt64 视图配数值/非整串；Int32 视图配 BigInt），
+/// 防共享核回归。
+#[test]
+fn eval_waitasync_value_coercion() {
+    let mut vm = Vm::new();
+    truthy(
+        &mut vm,
+        &format!(
+            "(function () {{ \
+             var ta = new BigInt64Array(new SharedArrayBuffer(8)); \
+             ta[0] = 5n; \
+             var ab = new Int32Array(new SharedArrayBuffer(4)); \
+             ab[0] = 3; \
+             return {} && {} && {} && {}; }})()",
+            throws("Atomics.waitAsync(ta, 0, 0.5, 1)", "TypeError"),
+            throws("Atomics.waitAsync(ta, 0, null, 1)", "TypeError"),
+            throws("Atomics.waitAsync(ta, 0, 'x', 1)", "SyntaxError"),
+            throws("Atomics.waitAsync(ab, 0, 1n, 1)", "TypeError"),
+        ),
+    );
+}

@@ -36,6 +36,8 @@ pub fn bind_atomics(core: &Arc<KernelCore>, session: &KernelSession, global: &mu
         ("isLockFree", oxide_builtins::atomics::atomics_is_lock_free::<crate::vm::Vm>, 1),
         ("wait", oxide_builtins::atomics::atomics_wait::<crate::vm::Vm>, 4),
         ("notify", oxide_builtins::atomics::atomics_notify::<crate::vm::Vm>, 3),
+        ("waitAsync", oxide_builtins::atomics::atomics_wait_async::<crate::vm::Vm>, 4),
+        ("pause", oxide_builtins::atomics::atomics_pause::<crate::vm::Vm>, 0),
     );
 
     let a_val = JsValue::from_js_object(atomics_ptr);
