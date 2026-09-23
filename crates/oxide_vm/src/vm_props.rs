@@ -103,8 +103,8 @@ impl Vm {
             // 统一数值键门（exotic [[Get]]）：界内整数读底层 buffer；数字无效
             // 键（负/分数/±Infinity/NaN/越界，含 "-0" 特例）立即 undefined 不
             // 查自身命名属性也不走原型链；非规范数字串落下方普通属性路径。
-            // 门只落在顶层对象：原型链上的 TA 维持普通 shape 槽查找。
-            if obj.is_typed_array_obj() && depth == 0 {
+            // 链上每层同口径：原型链上的 TA 亦按 exotic 语义判定。
+            if obj.is_typed_array_obj() {
                 match oxide_builtins::typed_array::ta_index_gate(self, obj, prop_name_si) {
                     oxide_builtins::typed_array::TaIndexGate::NumericValid(index) => {
                         return oxide_builtins::typed_array::typed_array_element_get(self, obj, index);
@@ -1105,6 +1105,17 @@ impl Vm {
         let target_ptr = obj as *mut JsObject;
         let get = self.promote_if_needed_for_write_ptr(target_ptr, get);
         let set = self.promote_if_needed_for_write_ptr(target_ptr, set);
+        // TA 数值索引臂：界内 / 数字无效索引不接受 accessor（false）；非规范数字
+        // 串 / symbol 键落真实 accessor 属性。
+        if obj.is_typed_array_obj() {
+            match oxide_builtins::typed_array::ta_index_gate(self, obj, prop_name_si) {
+                oxide_builtins::typed_array::TaIndexGate::NumericValid(_)
+                | oxide_builtins::typed_array::TaIndexGate::NumericInvalid => {
+                    return Err("cannot define property: TypedArray index only accepts a data descriptor".to_string());
+                }
+                oxide_builtins::typed_array::TaIndexGate::Ordinary => {}
+            }
+        }
         if obj.is_array() {
             if let Some(index) = self.array_index_from_property_key(prop_name_si) {
                 return self.define_array_index_element(obj, index, JsValue::undefined(), attributes, true, get, set);

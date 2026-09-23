@@ -192,6 +192,14 @@ pub trait VmHost {
     ///   写入的值，本槽仅由 length 强转失败写入，入口据此区分「强转异常」与
     ///   「描述符收敛失败」。
     fn take_pending_length_exception(&mut self) -> Option<JsValue>;
+    /// 清空 uncaught 槽。define 通道强转入口先清后转：强转失败后槽内值必为
+    /// 本次强转产生的原值，先前操作的残留不得被误转存为本次原值（与 length
+    /// 路径同纪律）。
+    fn clear_uncaught_value(&mut self);
+    /// 把 uncaught 槽移入 define 专用槽（强转期用户回调抛出的原值）：
+    /// Object/Reflect define 入口失败时先取专用槽原值重抛，不投影为 false
+    /// 或改写成引擎错误。
+    fn move_uncaught_to_pending_length(&mut self);
 
     // 错误处理
     fn checked_object_ptr(&mut self, val: JsValue, error_msg: &str) -> Result<Option<*mut JsObject>, String>;

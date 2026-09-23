@@ -543,11 +543,18 @@ pub fn typed_array_receiver_set<H: VmHost>(
 
 /// 定义 TypedArray 整数索引元素（defineProperty 语义）。
 ///
+/// # 步骤
+/// 1. 取视图（内部状态非法返回防御背板 Err）。
+/// 2. 界判：越界（含 detach：live 长 0）拒绝定义。
+/// 3. 清 uncaught 槽后强转写入；强转失败把原值转存 define 专用槽。
+///
 /// # 边界与前提
 /// - 索引越界：拒绝定义（Err），与整数索引 exotic 对象的 [[DefineOwnProperty]] 一致
 ///
 /// # 副作用
 /// - 把值 ToNumber 后写入底层 buffer
+/// - 强转期用户回调抛错时原值入 define 专用槽，Object/Reflect 入口据此
+///   原值重抛
 // ponytail: 不校验 writable 描述符——调用方把"省略 writable"折叠为 false，
 // 无法与显式 false 区分；TA 元素天然可写，直接写入。
 pub fn typed_array_element_define<H: VmHost>(
@@ -558,7 +565,14 @@ pub fn typed_array_element_define<H: VmHost>(
     if index as usize >= ta_live_length(view) {
         return Err("cannot define property: TypedArray index out of range".to_string());
     }
-    write_typed_array_element(vm, view, index, value)
+    // 强转前清 uncaught 槽（length 路径同纪律）：失败后槽内值必为本次强转
+    // 产生的原值。
+    vm.clear_uncaught_value();
+    let r = write_typed_array_element(vm, view, index, value);
+    if r.is_err() {
+        vm.move_uncaught_to_pending_length();
+    }
+    r
 }
 
 fn write_typed_array_element<H: VmHost>(
@@ -577,7 +591,12 @@ fn write_typed_array_element<H: VmHost>(
         Ok(v) => v,
         // 转换失败恢复为可捕获的 JS 异常：深度 0 原值入通道就地展开到外围
         // catch（kind 保真），深度 >0 以 kind 前缀文本由原生调用边界恢复。
-        Err(err) => return vm.raise_captured(err),
+        Err(err) => {
+            // 原值放回 uncaught 槽：define 通道专用槽转存依赖槽内原值
+            // （set 通道经文本消费，槽不改变其可观测行为）。
+            vm.restore_uncaught_value(Some(err));
+            return vm.raise_captured(err);
+        }
     };
     // live 边界：越界（含 detach）静默不写（规范 IntegerIndexedElementSet 的
     // IsValidIndexedAccess 臂），转换副作用已先发生。

@@ -731,6 +731,8 @@ pub(crate) fn define_from_descriptor<H: VmHost>(
     let get_field = own_field(vm, desc_val, get_si);
     let set_field = own_field(vm, desc_val, set_si);
     let writable_field = own_field(vm, desc_val, writable_si);
+    let enumerable_field = own_field(vm, desc_val, enumerable_si);
+    let configurable_field = own_field(vm, desc_val, configurable_si);
 
     // 数组 length 是无 shape 槽的虚拟数据属性：需与普通已有属性一样参与描述符
     // 缺省回填（writable 保持当前值、value 保持当前长度），其当前描述符由元素
@@ -779,10 +781,10 @@ pub(crate) fn define_from_descriptor<H: VmHost>(
     }
 
     // 修改已有属性时缺省字段回填现有值，仅定义新属性时缺省才为 false。
-    let enumerable = own_field(vm, desc_val, enumerable_si)
+    let enumerable = enumerable_field
         .map(oxide_runtime_api::to_boolean)
         .unwrap_or_else(|| existing_meta.map(|m| m.attributes.enumerable()).unwrap_or(false));
-    let configurable = own_field(vm, desc_val, configurable_si)
+    let configurable = configurable_field
         .map(oxide_runtime_api::to_boolean)
         .unwrap_or_else(|| existing_meta.map(|m| m.attributes.configurable()).unwrap_or(false));
 
@@ -801,8 +803,9 @@ pub(crate) fn define_from_descriptor<H: VmHost>(
         })
     };
 
-    let obj = unsafe { &mut *obj_ptr };
-    if has_accessor {
+    // 访问器描述符：解析 get/set（缺失字段回填现有属性）并做可调用性校验——
+    // 规范步序先于索引/约束检查。
+    let (get, set) = if has_accessor {
         let get = get_field.unwrap_or_else(|| {
             existing_meta
                 .filter(|m| m.is_accessor)
@@ -818,6 +821,43 @@ pub(crate) fn define_from_descriptor<H: VmHost>(
         if (!get.is_undefined() && !is_callable(get)) || (!set.is_undefined() && !is_callable(set)) {
             return Err("accessor descriptor get/set must be callable or undefined".to_string());
         }
+        (get, set)
+    } else {
+        (JsValue::undefined(), JsValue::undefined())
+    };
+
+    // TA 数值索引臂：置于混入/可调用检查之后、define 路由之前。字段在场四检查
+    // 取原始描述符字段（非缺省回填后的属性位）；有效索引值臂缺省读当前元素
+    // （通用描述符）；数字无效索引零副作用直接失败；非规范数字串 / symbol 键
+    // 落真实自有属性路径。
+    if unsafe { &*obj_ptr }.is_typed_array_obj() {
+        match crate::typed_array::ta_index_gate(vm, unsafe { &*obj_ptr }, key_si) {
+            crate::typed_array::TaIndexGate::NumericValid(index) => {
+                if has_accessor
+                    || writable_field.is_some_and(|w| !oxide_runtime_api::to_boolean(w))
+                    || enumerable_field.is_some_and(|e| !oxide_runtime_api::to_boolean(e))
+                    || configurable_field.is_some_and(|c| !oxide_runtime_api::to_boolean(c))
+                {
+                    return Err(
+                        "cannot define property: TypedArray index only accepts a writable, enumerable, configurable data descriptor"
+                            .to_string(),
+                    );
+                }
+                let value = value_field.unwrap_or_else(|| {
+                    crate::typed_array::typed_array_element_get(vm, unsafe { &*obj_ptr }, index)
+                        .unwrap_or(JsValue::undefined())
+                });
+                return crate::typed_array::typed_array_element_define(vm, unsafe { &mut *obj_ptr }, index, value);
+            }
+            crate::typed_array::TaIndexGate::NumericInvalid => {
+                return Err("cannot define property: TypedArray index out of range".to_string());
+            }
+            crate::typed_array::TaIndexGate::Ordinary => {}
+        }
+    }
+
+    let obj = unsafe { &mut *obj_ptr };
+    if has_accessor {
         vm.define_accessor_property(obj, key_si, get, set, PropAttributes::new(false, enumerable, configurable))?;
     } else if has_data {
         let value = if has_existing {

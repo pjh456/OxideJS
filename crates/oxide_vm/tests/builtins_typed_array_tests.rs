@@ -1050,3 +1050,249 @@ fn ta_set_resize_convert_first() {
     .unwrap();
     assert!(result.as_bool());
 }
+
+// ── DefineOwnProperty 数值索引臂 ───────────────────────────────────────────
+
+#[test]
+fn ta_dop_valid_write() {
+    // 界内规范键 + 全 true 数据描述符：定义成功、元素写入、length 不变
+    // （Reflect 与 Object.defineProperty 同臂）。
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "(function () { var ta = new Uint8Array(4); \
+          var r1 = Reflect.defineProperty(ta, '1', { value: 200, writable: true, enumerable: true, configurable: true }); \
+          Object.defineProperty(ta, 3, { value: 7, writable: true, enumerable: true, configurable: true }); \
+          return r1 === true && ta[1] === 200 && ta[3] === 7 && ta.length === 4 && ta[0] === 0 && ta[2] === 0; })()",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
+#[test]
+fn ta_dop_partial_and_generic() {
+    // 部分描述符（缺省字段非显式 false）与通用描述符（无 [[Value]] 读当前
+    // 元素回写）均定义成功；元素值除显式 value 外不变（NaN 样本）。
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "(function () { var ta = new Float64Array(2); \
+          ta[0] = NaN; ta[1] = NaN; \
+          var r1 = Reflect.defineProperty(ta, '0', { value: 5 }); \
+          var r2 = Reflect.defineProperty(ta, '1', { writable: true, enumerable: true, configurable: true }); \
+          return r1 === true && ta[0] === 5 && r2 === true && Number.isNaN(ta[1]); })()",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
+#[test]
+fn ta_dop_constraint_false() {
+    // 字段在场四检查（writable/enumerable/configurable 显式 false、accessor
+    // 描述符）：Reflect 投影 false、元素不动、不建自有属性。
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "(function () { var ta = new Int16Array(2); ta[0] = 9; \
+          var shapes = [ \
+            { value: 3, writable: false, enumerable: true, configurable: true }, \
+            { value: 3, writable: true, enumerable: false, configurable: true }, \
+            { value: 3, writable: true, enumerable: true, configurable: false }, \
+            { get: function () { return 1; }, set: function () {} } ]; \
+          for (var i = 0; i < shapes.length; i++) { \
+            if (Reflect.defineProperty(ta, '0', shapes[i]) !== false) return false; \
+            if (ta[0] !== 9) return false; } \
+          return Object.getOwnPropertyNames(ta).length === 0; })()",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
+#[test]
+fn ta_dop_constraint_throws() {
+    // 同四约束形经 Object.defineProperty：抛 TypeError、元素不动、无属性。
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "(function () { var ta = new Int16Array(2); ta[0] = 9; \
+          var t1 = 0; \
+          try { Object.defineProperty(ta, '0', { value: 3, writable: false, enumerable: true, configurable: true }); } \
+          catch (e) { if (!(e instanceof TypeError)) return false; t1 = 1; } \
+          var t2 = 0; \
+          try { Object.defineProperty(ta, '0', { get: function () { return 1; } }); } \
+          catch (e) { if (!(e instanceof TypeError)) return false; t2 = 1; } \
+          return t1 === 1 && t2 === 1 && ta[0] === 9 && Object.getOwnPropertyNames(ta).length === 0; })()",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
+#[test]
+fn ta_dop_numeric_invalid_false() {
+    // 数字无效键（"-0"/负/越界/分数）：false、不抛、元素不动、不建属性。
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "(function () { var ta = new Int8Array(2); ta[0] = 5; \
+          var keys = ['-0', '-1', '2', '0.1', '0.000001', '3.5']; \
+          for (var i = 0; i < keys.length; i++) { \
+            var d = { value: 1, writable: true, enumerable: true, configurable: true }; \
+            if (Reflect.defineProperty(ta, keys[i], d) !== false) return false; \
+            if (ta[0] !== 5) return false; } \
+          return Object.getOwnPropertyNames(ta).length === 0; })()",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
+#[test]
+fn ta_dop_ordinary_key_property() {
+    // 非规范数字串键 round-trip 不成：定义真实自有属性（数据与访问器），
+    // 键 "1.0" 与 "1" 独立互不干扰。
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "(function () { var ta = new Int8Array(1); \
+          var keys = ['1.0', '+1', '1000000000000000000000', '0.0000001']; \
+          for (var i = 0; i < keys.length; i++) { \
+            var r = Reflect.defineProperty(ta, keys[i], { value: i + 1, writable: true, enumerable: true, configurable: true }); \
+            if (r !== true) return false; \
+            if (!Object.prototype.hasOwnProperty.call(ta, keys[i])) return false; \
+            if (ta[keys[i]] !== i + 1) return false; } \
+          var r2 = Reflect.defineProperty(ta, '1.0', { get: function () { return 'baz'; }, configurable: true }); \
+          return r2 === true && ta['1.0'] === 'baz' && ta['1'] === undefined; })()",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
+#[test]
+fn ta_dop_detach_false_no_throw() {
+    // detach 后 live 长 0：全数值键归数字无效，false 不抛（投错值不触发
+    // 强转）、不建属性。
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "(function () { var ab = new ArrayBuffer(8); var ta = new Int8Array(ab); ta[0] = 7; \
+          ab.transfer(); \
+          var keys = ['0', '-1', '1.1', '-0', '2']; \
+          for (var i = 0; i < keys.length; i++) { \
+            var r = Reflect.defineProperty(ta, keys[i], { \
+              value: { valueOf: function () { throw new Error('no'); } }, \
+              writable: true, enumerable: true, configurable: true }); \
+            if (r !== false) return false; } \
+          return Object.getOwnPropertyNames(ta).length === 0; })()",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
+#[test]
+fn ta_dop_detach_in_valueof_true() {
+    // valueOf 期 detach：强转成功、写期 live 复判 detach 静默——定义 true、
+    // 元素保持 undefined。
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "(function () { var ab = new ArrayBuffer(8); var ta = new Int8Array(ab); \
+          var v = { valueOf: function () { ab.transfer(); return 9; } }; \
+          var r = Reflect.defineProperty(ta, '0', { value: v, writable: true, enumerable: true, configurable: true }); \
+          return r === true && ta[0] === undefined; })()",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
+#[test]
+fn ta_dop_value_throws_original() {
+    // 强转期用户回调抛出原值经专用槽重抛：catch 收到原对象身份（构造器
+    // 身份不可丢）、不建属性。
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "(function () { var ta = new Int8Array(2); \
+          function Marker() { this.tag = 'marker'; } \
+          var marker = new Marker(); \
+          var v = { valueOf: function () { throw marker; } }; \
+          var caught = null; \
+          try { Object.defineProperty(ta, '0', { value: v, writable: true, enumerable: true, configurable: true }); \
+            return false; } \
+          catch (e) { caught = e; } \
+          return caught === marker && caught.tag === 'marker' && Object.getOwnPropertyNames(ta).length === 0; })()",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
+#[test]
+fn ta_dop_bigint_content_conversion() {
+    // BigInt 元素内容强转：Number 值 TypeError、非整数字符串 SyntaxError、
+    // BigInt 值成功写入。
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "(function () { var ta = new BigInt64Array(2); \
+          var t1 = 0; \
+          try { Object.defineProperty(ta, '0', { value: 42, writable: true, enumerable: true, configurable: true }); } \
+          catch (e) { if (!(e instanceof TypeError)) return false; t1 = 1; } \
+          var t2 = 0; \
+          try { Object.defineProperty(ta, '0', { value: '1.5', writable: true, enumerable: true, configurable: true }); } \
+          catch (e) { if (!(e instanceof SyntaxError)) return false; t2 = 1; } \
+          var r3 = Reflect.defineProperty(ta, '1', { value: 7n, writable: true, enumerable: true, configurable: true }); \
+          return t1 === 1 && t2 === 1 && r3 === true && ta[1] === 7n; })()",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
+#[test]
+fn ta_dop_non_extensible() {
+    // 不可扩展 TA：界内索引定义不受限；数字无效/新命名/新 symbol 键 false；
+    // 既有真实命名属性重定义不受限。
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "(function () { var ta = new Int8Array(2); ta[0] = 1; ta.newProp = 5; \
+          Object.preventExtensions(ta); \
+          var r1 = Reflect.defineProperty(ta, '1', { value: 9, writable: true, enumerable: true, configurable: true }); \
+          var r2 = Reflect.defineProperty(ta, '2', { value: 9, writable: true, enumerable: true, configurable: true }); \
+          var r3 = Reflect.defineProperty(ta, 'brandnew', { value: 1, writable: true, enumerable: true, configurable: true }); \
+          var r4 = Reflect.defineProperty(ta, 'newProp', { value: 6, writable: true, enumerable: true, configurable: true }); \
+          var r5 = Reflect.defineProperty(ta, Symbol('s'), { value: 1, writable: true, enumerable: true, configurable: true }); \
+          return r1 === true && ta[1] === 9 && r2 === false && r3 === false && r4 === true && ta.newProp === 6 && r5 === false; })()",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
+#[test]
+fn ta_dop_int_key_same_arm() {
+    // 整数键（非字符串）与字符串键同臂：界内定义成功、detach 后归数字无效。
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "(function () { var ab = new ArrayBuffer(8); var ta = new Int8Array(ab); \
+          var r1 = Reflect.defineProperty(ta, 1, { value: 4, writable: true, enumerable: true, configurable: true }); \
+          if (r1 !== true || ta[1] !== 4) return false; \
+          ab.transfer(); \
+          var r2 = Reflect.defineProperty(ta, 0, { value: 7, writable: true, enumerable: true, configurable: true }); \
+          return r2 === false; })()",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
+#[test]
+fn ta_dop_get_dir_arm4() {
+    // 非规范数字串键 + accessor 描述符：定义真实 accessor 属性、getter 经
+    // 普通读路径触发（Get 目录 key-is-not-canonical-index 联绿臂）。
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "(function () { var ta = new Int8Array(2); \
+          var r = Reflect.defineProperty(ta, '+1', { get: function () { return 'baz'; }, set: function () {}, configurable: true }); \
+          return r === true && ta['+1'] === 'baz'; })()",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}

@@ -216,10 +216,10 @@ impl Vm {
     /// 属性即存在。数组 length 虚拟属性恒存在；数组元素区 hole 视同缺失；
     /// 其余按 shape 槽判定。
     ///
-    /// 顶层 TypedArray 经统一数值键门（exotic [[HasProperty]]）：界内整数索引
+    /// TypedArray 经统一数值键门（exotic [[HasProperty]]）：界内整数索引
     /// 判存在；数字无效键（负/分数/±Infinity/NaN/越界，含 "-0" 特例）立即
-    /// false，不查自身命名属性也不走原型链；非规范数字串落普通路径。原型链上
-    /// 的 TA 按普通对象查 shape 槽。
+    /// false，不查自身命名属性也不走原型链；非规范数字串落普通路径。原型链
+    /// 上的 TA 按同口径经门判定。
     ///
     /// 与 `resolve_property` 的差异：原型链上每层都检查数组元素区
     /// （`resolve_property` 只在顶层检查元素区，链上仅走 shape 槽），
@@ -233,8 +233,8 @@ impl Vm {
                 return true;
             }
             // 统一数值键门（exotic [[HasProperty]]）：同 `ordinary_get_inner`
-            // 的口径，门只落在顶层对象。
-            if obj.is_typed_array_obj() && depth == 0 {
+            // 的口径，链上每层同口径判定。
+            if obj.is_typed_array_obj() {
                 match oxide_builtins::typed_array::ta_index_gate(self, obj, prop_name_si) {
                     oxide_builtins::typed_array::TaIndexGate::NumericValid(_) => return true,
                     oxide_builtins::typed_array::TaIndexGate::NumericInvalid => return false,
