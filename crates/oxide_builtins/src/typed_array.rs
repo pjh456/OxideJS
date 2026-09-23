@@ -1388,7 +1388,10 @@ fn allocate_typed_array<H: VmHost>(vm: &mut H, c: JsValue, len: usize) -> Result
         return Err(type_error(vm, "TypedArray.of/from constructor did not return a TypedArray"));
     }
     let view = get_typed_array_data(vm, result)?;
-    if view.length < len {
+    // 结果长校验取 live 口径（规范 TypedArrayCreateFromConstructor：长度取
+    // TypedArrayLength 实时值，构造器窗口内 auto 视图可已收缩）；越界（含
+    // detach）恒 0，自然落入长度不足 TypeError。
+    if ta_live_length(view) < len {
         return Err(type_error(
             vm,
             "TypedArray.of/from constructor returned a TypedArray with insufficient length",
@@ -1488,12 +1491,12 @@ fn ta_to_number<H: VmHost>(vm: &mut H, value: JsValue) -> Result<f64, JsValue> {
 pub fn typed_array_for_each<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
     let view = native_try!(get_typed_array_data(vm, this_val));
+    native_try!(ta_validate(vm, view, false));
     if args.len() < 2 {
         return NativeResult::Err(type_error(vm, "callback is not a function"));
     }
     let callback = native_try!(crate::array::require_callback(vm, vm.reg(args[1])));
     let this_arg = if args.len() > 2 { vm.reg(args[2]) } else { JsValue::undefined() };
-    native_try!(ta_validate(vm, view, false));
     // 入口见证：循环长度一次捕获，回调期 buffer 伸缩不改本轮范围。
     let len = ta_spec_length(view);
     for i in 0..len {
@@ -1508,12 +1511,12 @@ pub fn typed_array_for_each<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult 
 pub fn typed_array_map<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
     let view = native_try!(get_typed_array_data(vm, this_val));
+    native_try!(ta_validate(vm, view, false));
     if args.len() < 2 {
         return NativeResult::Err(type_error(vm, "callback is not a function"));
     }
     let callback = native_try!(crate::array::require_callback(vm, vm.reg(args[1])));
     let this_arg = if args.len() > 2 { vm.reg(args[2]) } else { JsValue::undefined() };
-    native_try!(ta_validate(vm, view, false));
     // 入口见证：目标长度 = 源见证长度，回调期 buffer 伸缩不改本轮范围。
     let len = ta_spec_length(view);
     // 目标对象经 species 构造（长度 = 源长度）；逐元素"回调 → 写入"
@@ -1539,12 +1542,12 @@ pub fn typed_array_map<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 pub fn typed_array_filter<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
     let view = native_try!(get_typed_array_data(vm, this_val));
+    native_try!(ta_validate(vm, view, false));
     if args.len() < 2 {
         return NativeResult::Err(type_error(vm, "callback is not a function"));
     }
     let callback = native_try!(crate::array::require_callback(vm, vm.reg(args[1])));
     let this_arg = if args.len() > 2 { vm.reg(args[2]) } else { JsValue::undefined() };
-    native_try!(ta_validate(vm, view, false));
     // 先全量回调得通过元素（规范序：count 先于目标构造），再经 species
     // 构造目标（长度 = 通过数）并顺序写入；循环走入口见证长度。
     let len = ta_spec_length(view);
@@ -1575,6 +1578,7 @@ pub fn typed_array_filter<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 pub fn typed_array_reduce<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
     let view = native_try!(get_typed_array_data(vm, this_val));
+    native_try!(ta_validate(vm, view, false));
     // 见证长度一次捕获：空检与循环同口径（shrink 到 0 的 auto 视图按空抛错）。
     let len = ta_spec_length(view);
     if len == 0 && args.len() < 3 {
@@ -1584,7 +1588,6 @@ pub fn typed_array_reduce<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         return NativeResult::Err(type_error(vm, "callback is not a function"));
     }
     let callback = native_try!(crate::array::require_callback(vm, vm.reg(args[1])));
-    native_try!(ta_validate(vm, view, false));
     let (mut accumulator, start_idx) = if args.len() > 2 {
         (vm.reg(args[2]), 0usize)
     } else {
@@ -1606,6 +1609,7 @@ pub fn typed_array_reduce<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 pub fn typed_array_reduce_right<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
     let view = native_try!(get_typed_array_data(vm, this_val));
+    native_try!(ta_validate(vm, view, false));
     // 见证长度一次捕获：空检与循环同口径（shrink 到 0 的 auto 视图按空抛错）。
     let len = ta_spec_length(view);
     if len == 0 && args.len() < 3 {
@@ -1615,7 +1619,6 @@ pub fn typed_array_reduce_right<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeRes
         return NativeResult::Err(type_error(vm, "callback is not a function"));
     }
     let callback = native_try!(crate::array::require_callback(vm, vm.reg(args[1])));
-    native_try!(ta_validate(vm, view, false));
     let (mut accumulator, start_idx): (JsValue, i32) = if args.len() > 2 {
         (vm.reg(args[2]), len as i32 - 1)
     } else {
@@ -1637,12 +1640,12 @@ pub fn typed_array_reduce_right<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeRes
 pub fn typed_array_every<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
     let view = native_try!(get_typed_array_data(vm, this_val));
+    native_try!(ta_validate(vm, view, false));
     if args.len() < 2 {
         return NativeResult::Err(type_error(vm, "callback is not a function"));
     }
     let callback = native_try!(crate::array::require_callback(vm, vm.reg(args[1])));
     let this_arg = if args.len() > 2 { vm.reg(args[2]) } else { JsValue::undefined() };
-    native_try!(ta_validate(vm, view, false));
     let len = ta_spec_length(view);
     for i in 0..len {
         let elem = native_try!(ta_read(vm, view, i));
@@ -1658,12 +1661,12 @@ pub fn typed_array_every<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 pub fn typed_array_some<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
     let view = native_try!(get_typed_array_data(vm, this_val));
+    native_try!(ta_validate(vm, view, false));
     if args.len() < 2 {
         return NativeResult::Err(type_error(vm, "callback is not a function"));
     }
     let callback = native_try!(crate::array::require_callback(vm, vm.reg(args[1])));
     let this_arg = if args.len() > 2 { vm.reg(args[2]) } else { JsValue::undefined() };
-    native_try!(ta_validate(vm, view, false));
     let len = ta_spec_length(view);
     for i in 0..len {
         let elem = native_try!(ta_read(vm, view, i));
@@ -1679,12 +1682,12 @@ pub fn typed_array_some<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 pub fn typed_array_find<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
     let view = native_try!(get_typed_array_data(vm, this_val));
+    native_try!(ta_validate(vm, view, false));
     if args.len() < 2 {
         return NativeResult::Err(type_error(vm, "callback is not a function"));
     }
     let callback = native_try!(crate::array::require_callback(vm, vm.reg(args[1])));
     let this_arg = if args.len() > 2 { vm.reg(args[2]) } else { JsValue::undefined() };
-    native_try!(ta_validate(vm, view, false));
     let len = ta_spec_length(view);
     for i in 0..len {
         let elem = native_try!(ta_read(vm, view, i));
@@ -1700,12 +1703,12 @@ pub fn typed_array_find<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 pub fn typed_array_find_index<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
     let view = native_try!(get_typed_array_data(vm, this_val));
+    native_try!(ta_validate(vm, view, false));
     if args.len() < 2 {
         return NativeResult::Err(type_error(vm, "callback is not a function"));
     }
     let callback = native_try!(crate::array::require_callback(vm, vm.reg(args[1])));
     let this_arg = if args.len() > 2 { vm.reg(args[2]) } else { JsValue::undefined() };
-    native_try!(ta_validate(vm, view, false));
     let len = ta_spec_length(view);
     for i in 0..len {
         let elem = native_try!(ta_read(vm, view, i));
@@ -1721,12 +1724,12 @@ pub fn typed_array_find_index<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResul
 pub fn typed_array_find_last<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
     let view = native_try!(get_typed_array_data(vm, this_val));
+    native_try!(ta_validate(vm, view, false));
     if args.len() < 2 {
         return NativeResult::Err(type_error(vm, "callback is not a function"));
     }
     let callback = native_try!(crate::array::require_callback(vm, vm.reg(args[1])));
     let this_arg = if args.len() > 2 { vm.reg(args[2]) } else { JsValue::undefined() };
-    native_try!(ta_validate(vm, view, false));
     let len = ta_spec_length(view);
     for i in (0..len).rev() {
         let elem = native_try!(ta_read(vm, view, i));
@@ -1743,12 +1746,12 @@ pub fn typed_array_find_last<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult
 pub fn typed_array_find_last_index<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
     let view = native_try!(get_typed_array_data(vm, this_val));
+    native_try!(ta_validate(vm, view, false));
     if args.len() < 2 {
         return NativeResult::Err(type_error(vm, "callback is not a function"));
     }
     let callback = native_try!(crate::array::require_callback(vm, vm.reg(args[1])));
     let this_arg = if args.len() > 2 { vm.reg(args[2]) } else { JsValue::undefined() };
-    native_try!(ta_validate(vm, view, false));
     let len = ta_spec_length(view);
     for i in (0..len).rev() {
         let elem = native_try!(ta_read(vm, view, i));

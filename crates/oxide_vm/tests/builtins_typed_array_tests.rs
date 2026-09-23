@@ -693,6 +693,45 @@ fn typed_array_plain_call_and_construct_zero_drift() {
 }
 
 #[test]
+fn typed_array_of_from_result_length_live_check() {
+    // of/from 结果长校验取 live 口径：构造器窗口内把 auto 视图收缩到请求
+    // 长度之下时抛 TypeError（长度不足）；未收缩的正常臂不受影响。
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "(function () { \
+          function C() { var ab = new ArrayBuffer(16, { maxByteLength: 16 }); \
+          var t = new Int8Array(ab); ab.resize(2); return t; } \
+          var o, f; \
+          try { o = Int8Array.of.call(C, 1, 2, 3); } catch (e) { o = e instanceof TypeError; } \
+          try { f = Int8Array.from.call(C, [1, 2, 3]); } catch (e) { f = e instanceof TypeError; } \
+          var ok = o === true && f === true; \
+          var n = Int8Array.of(1, 2, 3); \
+          return ok && n.length === 3 && n.at(0) === 1 && n.at(2) === 3; })()",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
+#[test]
+fn typed_array_detached_entry_validate_before_callback_check() {
+    // 回调族入口校验先于回调检查：detached 源上非函数回调与有效回调均抛
+    // TypeError（detached 守卫臂），种类与消息不回归。
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "(function () { \
+          var ab = new ArrayBuffer(8); var ta = new Int8Array(ab); ab.transfer(); \
+          var t1, t2; \
+          try { ta.map('nope'); } catch (e) { t1 = e instanceof TypeError; } \
+          try { ta.forEach(function (v) { return v; }); } catch (e) { t2 = e instanceof TypeError; } \
+          return t1 === true && t2 === true; })()",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
+#[test]
 fn typed_array_plain_member_call_in_class_ctor_not_construct() {
     // 类构造器帧内对 TA 构造器的成员式普通调用是普通形态：返回全新 TA，
     // receiver 不物化（长度与 buffer 不动），receiver 为普通对象时亦不改建。
