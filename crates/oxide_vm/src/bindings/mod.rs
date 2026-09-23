@@ -8,6 +8,8 @@ pub mod bind_array;
 pub mod bind_array_buffer;
 /// AsyncDisposableStack 构造器与原型的 native 方法绑定（含 dirty reset 同步）。
 pub mod bind_async_disposable_stack;
+/// Atomics 全局纯对象及其 10 个原子方法绑定。
+pub mod bind_atomics;
 /// BigInt 构造器与原型的 native 方法绑定。
 pub mod bind_bigint;
 /// Boolean 构造器与原型的 native 方法绑定。
@@ -634,7 +636,7 @@ fn install_to_string_tags(core: &Arc<KernelCore>, session: &KernelSession) {
     let sh = core.shape_forge().as_ref();
     let tag_id = oxide_types::private_key::WELL_KNOWN_SYMBOL_TO_STRING_TAG;
     let tag_key = oxide_types::private_key::make_well_known_symbol_key(tag_id);
-    let cases: [(*mut JsObject, &str); 13] = [
+    let cases: [(*mut JsObject, &str); 14] = [
         (world.map_proto.as_ptr() as *mut JsObject, "Map"),
         (world.array_buffer_proto.as_ptr() as *mut JsObject, "ArrayBuffer"),
         (world.shared_array_buffer_proto.as_ptr() as *mut JsObject, "SharedArrayBuffer"),
@@ -648,6 +650,7 @@ fn install_to_string_tags(core: &Arc<KernelCore>, session: &KernelSession) {
         (world.math_object.as_ptr() as *mut JsObject, "Math"),
         (world.json_object.as_ptr() as *mut JsObject, "JSON"),
         (world.symbol_proto.as_ptr() as *mut JsObject, "Symbol"),
+        (world.atomics_object.as_ptr() as *mut JsObject, "Atomics"),
     ];
     for (ptr, tag) in cases {
         // SAFETY: ptr 为当前 builtin world 的内置原型，session 独占期间始终有效。
@@ -887,7 +890,6 @@ fn bind_stub_globals(core: &Arc<KernelCore>, session: &KernelSession, global: &m
             oxide_builtins::stubs::finalization_registry_stub::<crate::vm::Vm> as *const (),
             1,
         ),
-        ("Atomics", oxide_builtins::stubs::atomics_stub::<crate::vm::Vm> as *const (), 0),
     ]
     .into_iter()
     .enumerate()
@@ -997,6 +999,7 @@ pub fn bind_global_builtin_slots(core: &Arc<KernelCore>, session: &KernelSession
         ("Math", JsValue::from_js_object(world.math_object.as_ptr() as *mut JsObject)),
         ("JSON", JsValue::from_js_object(world.json_object.as_ptr() as *mut JsObject)),
         ("Temporal", JsValue::from_js_object(world.temporal_object.as_ptr() as *mut JsObject)),
+        ("Atomics", JsValue::from_js_object(world.atomics_object.as_ptr() as *mut JsObject)),
     ] {
         bind_existing_global(core, global, name, value);
     }
@@ -1187,6 +1190,9 @@ pub fn rebind_dirty_builtins(core: &Arc<KernelCore>, session: &mut KernelSession
     }
     if dirty.map_or(true, |d| d.math) {
         bind_math::bind_math(core, session, global);
+    }
+    if dirty.map_or(true, |d| d.atomics) {
+        bind_atomics::bind_atomics(core, session, global);
     }
     if dirty.map_or(true, |d| d.json) {
         bind_json::bind_json(core, session, global);

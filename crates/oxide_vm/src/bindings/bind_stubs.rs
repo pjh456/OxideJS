@@ -8,7 +8,7 @@ use oxide_types::value::JsValue;
 
 use crate::bindings::{bind_global_value, configure_native_constructor};
 
-const STUBS: [(&str, *const (), u8); 6] = [
+const STUBS: [(&str, *const (), u8); 5] = [
     ("Proxy", oxide_builtins::stubs::proxy_stub::<crate::vm::Vm> as *const (), 2),
     ("WeakMap", oxide_builtins::stubs::weakmap_stub::<crate::vm::Vm> as *const (), 0),
     ("WeakSet", oxide_builtins::stubs::weakset_stub::<crate::vm::Vm> as *const (), 0),
@@ -18,10 +18,9 @@ const STUBS: [(&str, *const (), u8); 6] = [
         oxide_builtins::stubs::finalization_registry_stub::<crate::vm::Vm> as *const (),
         1,
     ),
-    ("Atomics", oxide_builtins::stubs::atomics_stub::<crate::vm::Vm> as *const (), 0),
 ];
 
-/// 把未实现内置（Proxy/WeakMap/WeakSet/WeakRef/FinalizationRegistry/Atomics）
+/// 把未实现内置（Proxy/WeakMap/WeakSet/WeakRef/FinalizationRegistry）
 /// 的 stub 构造器绑定到 global，并登记到 `stub_objects` 供快照跟踪。
 pub fn bind_stubs(core: &Arc<KernelCore>, session: &mut KernelSession, global: &mut JsObject) {
     let builtin_world = Arc::get_mut(&mut session.builtin_world)

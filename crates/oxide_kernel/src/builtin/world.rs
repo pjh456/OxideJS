@@ -725,10 +725,7 @@ mod tests {
         assert!(!dirty.shared_array_buffer);
 
         // 脏家族换新对象，未脏家族指针原样保留。
-        assert!(!std::ptr::eq(
-            atomics,
-            session.builtin_world.atomics_object.as_ptr() as *mut JsObject
-        ));
+        assert!(!std::ptr::eq(atomics, session.builtin_world.atomics_object.as_ptr() as *mut JsObject));
         assert!(std::ptr::eq(ab_proto, session.builtin_world.array_buffer_proto.as_ptr() as *mut JsObject));
     }
 }

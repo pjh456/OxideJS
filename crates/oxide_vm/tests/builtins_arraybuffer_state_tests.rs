@@ -1303,20 +1303,21 @@ fn sab_full_reset_rebinds() {
     assert_eq!(text, "true|true|true|true");
 }
 
-/// STUBS 表收缩钉：剩余 6 枚 stub 全局仍为 function 且 Atomics 调用仍抛
-/// TypeError（占位行为未随 SAB 移出而漂移）。
+/// STUBS 表收缩钉：Atomics 移出 stub 后剩 5 枚 stub 全局仍为 function；
+/// Atomics 现为纯对象（typeof 'object'），对其调用抛 TypeError（非函数）。
 #[test]
-fn sab_stubs_shrunk_six_remain() {
+fn sab_stubs_shrunk_five_remain() {
     let mut vm = Vm::new();
     let result = eval(
         &mut vm,
         "(function () { \
-         var names = ['Proxy', 'WeakMap', 'WeakSet', 'WeakRef', 'FinalizationRegistry', 'Atomics']; \
+         var names = ['Proxy', 'WeakMap', 'WeakSet', 'WeakRef', 'FinalizationRegistry']; \
          for (var i = 0; i < names.length; i++) { \
             if (typeof globalThis[names[i]] !== 'function') { return false; } \
          } \
+         if (typeof globalThis.Atomics !== 'object') { return false; } \
          var threw = false; \
-         try { Atomics.add(new SharedArrayBuffer(4), 0, 1); } catch (e) { threw = e instanceof TypeError; } \
+         try { globalThis.Atomics(); } catch (e) { threw = e instanceof TypeError; } \
          return threw; })()",
     )
     .unwrap();
