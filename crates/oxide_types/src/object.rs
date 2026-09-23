@@ -208,6 +208,11 @@ impl JsObject {
     /// 与宽松相等按 undefined 处理，Type 与其余强制转换按普通对象处理；无额外
     /// 内部载荷。
     pub const OBJ_TYPE_HTML_DDA: u8 = 29;
+    /// SharedArrayBuffer 对象：与 ArrayBuffer 同构的字节载荷盒（`native_fn`
+    /// 槽存 `ArrayBufferPayload`），但无 `[[ArrayBufferMaxByteLength]]`/定长
+    /// 语义面；接收者品牌守卫按本 tag 拒绝，ArrayBuffer 方法族对其抛
+    /// TypeError。释放与深拷贝守卫同 ArrayBuffer。
+    pub const OBJ_TYPE_SHARED_ARRAY_BUFFER: u8 = 30;
     /// `is_session_epoch` 字段中的 session 标记位。
     pub const SESSION_EPOCH_BIT: u8 = 0x01;
     /// `is_session_epoch` 字段中的 GC 标记位。
@@ -267,6 +272,11 @@ impl JsObject {
     #[inline]
     pub fn is_array_buffer_obj(&self) -> bool {
         self.type_tag == Self::OBJ_TYPE_ARRAY_BUFFER
+    }
+    /// 是否 SharedArrayBuffer 对象。
+    #[inline]
+    pub fn is_shared_array_buffer_obj(&self) -> bool {
+        self.type_tag == Self::OBJ_TYPE_SHARED_ARRAY_BUFFER
     }
     /// 是否 DataView 对象。
     #[inline]

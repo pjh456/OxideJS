@@ -159,6 +159,88 @@ pub fn drop_array_buffer_native(obj: &mut JsObject) -> u64 {
     bytes
 }
 
+/// 分配定长 SharedArrayBuffer 对象（零填充字节缓冲，`max_byte_length` 存 0）。
+pub(crate) fn new_shared_array_buffer<H: VmHost>(vm: &mut H, data: Vec<u8>) -> *mut JsObject {
+    let mut obj = JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null());
+    obj.type_tag = JsObject::OBJ_TYPE_SHARED_ARRAY_BUFFER;
+    let payload = ArrayBufferPayload {
+        data: Some(data),
+        max_byte_length: 0,
+        immutable: false,
+    };
+    let payload_ptr = Box::into_raw(Box::new(payload));
+    // SAFETY: SharedArrayBuffer 对象不可调用，native_fn 槽复用为不透明载荷盒
+    // 指针，与 ArrayBuffer 存储模式一致。
+    obj.set_native_fn(Some(unsafe { NativeFnPtr::from_raw(payload_ptr as *const ()) }));
+    vm.alloc_object(obj)
+}
+
+pub(crate) fn shared_array_buffer_payload_ptr(obj: &JsObject) -> Option<*mut ArrayBufferPayload> {
+    if !obj.is_shared_array_buffer_obj() {
+        return None;
+    }
+    obj.native_fn().map(|ptr| ptr.as_ptr() as *mut ArrayBufferPayload)
+}
+
+/// SharedArrayBuffer 载荷盒字节数（`native_fn` 槽）；非 SAB 或已释放 → 0。
+pub fn shared_array_buffer_native_size(obj: &JsObject) -> u64 {
+    let payload_ptr = match shared_array_buffer_payload_ptr(obj) {
+        Some(p) => p,
+        None => return 0,
+    };
+    if payload_ptr.is_null() {
+        return 0;
+    }
+    // SAFETY: payload_ptr 非空且指向存活载荷盒。
+    let payload = unsafe { &*payload_ptr };
+    (std::mem::size_of::<ArrayBufferPayload>() + payload.data.as_ref().map_or(0, |d| d.capacity())) as u64
+}
+
+/// 释放 SharedArrayBuffer 载荷盒（native_fn 槽），返回字节数；槽置空后重复调用零释放。
+pub fn drop_shared_array_buffer_native(obj: &mut JsObject) -> u64 {
+    let bytes = shared_array_buffer_native_size(obj);
+    if bytes == 0 {
+        return 0;
+    }
+    let Some(payload_ptr) = shared_array_buffer_payload_ptr(obj) else {
+        return 0;
+    };
+    // SAFETY: payload_ptr 非空（size 已验证），Box::from_raw 恰好释放一次。
+    let payload = unsafe { Box::from_raw(payload_ptr) };
+    drop(payload);
+    obj.set_native_fn(None);
+    bytes
+}
+
+/// 克隆 SharedArrayBuffer 载荷（字节缓冲）到新对象（跨 epoch 克隆流程用）。
+pub fn clone_shared_array_buffer_native(old_obj: &JsObject, new_obj: &mut JsObject) {
+    let Some(ptr) = shared_array_buffer_payload_ptr(old_obj) else {
+        return;
+    };
+    if ptr.is_null() {
+        return;
+    }
+    // SAFETY: ptr 非空且指向存活载荷盒（克隆/晋升臂由 GC 持有源对象）。
+    let cloned = unsafe { &*ptr }.clone();
+    let cloned_ptr = Box::into_raw(Box::new(cloned));
+    new_obj.set_native_fn(Some(unsafe { NativeFnPtr::from_raw(cloned_ptr as *const ()) }));
+}
+
+/// `SharedArrayBuffer(length)`：构造语义仅 `new`；length 缺省 0，经 ToIndex
+/// 传播式（强转副作用原值上抛），超引擎上界 → RangeError。最小实现：字节
+/// 缓冲零填充定长，无 resizable 选项面与 `[[ArrayBufferMaxByteLength]]`。
+pub fn shared_array_buffer_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    if !vm.constructing_native() {
+        return NativeResult::Err(crate::error::create_type_error(vm, "SharedArrayBuffer must be called with new"));
+    }
+    let length = if args.len() > 1 { native_try!(to_index(vm, vm.reg(args[1]))) } else { 0 };
+    if length > MAX_ARRAY_BUFFER_LENGTH {
+        return NativeResult::Err(crate::error::create_range_error(vm, "invalid SharedArrayBuffer length"));
+    }
+    let obj_ptr = new_shared_array_buffer(vm, vec![0; length]);
+    NativeResult::Ok(JsValue::from_js_object(obj_ptr))
+}
+
 /// 读入口：校验 receiver 为 ArrayBuffer 并取载荷指针。detach（载荷 `data` 为
 /// `None`）不在此分叉，由消费方现读 `data` 时按既有错误形态处理。
 pub(crate) fn array_buffer_payload<H: VmHost>(

@@ -67,6 +67,9 @@ impl Vm {
         } else if src_ref.is_array_buffer_obj() {
             // 字节缓冲深拷贝到新对象：源 Vec 随 epoch 释放，互不共享。
             array_buffer::clone_array_buffer_native(src_ref, dst_ref);
+        } else if src_ref.is_shared_array_buffer_obj() {
+            // 字节缓冲深拷贝到新对象：源 Vec 随 epoch 释放，互不共享。
+            array_buffer::clone_shared_array_buffer_native(src_ref, dst_ref);
         } else if src_ref.is_generator_obj() {
             // 生成器状态盒深拷贝到新对象：源盒随 epoch 释放，互不共享。
             crate::generator::clone_generator_native_with_rewrite(src_ref, dst_ref, |value| {

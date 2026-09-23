@@ -25,10 +25,6 @@ pub fn weakref_stub<H: VmHost>(vm: &mut H, _args: &[u8]) -> NativeResult {
 pub fn finalization_registry_stub<H: VmHost>(vm: &mut H, _args: &[u8]) -> NativeResult {
     stub_error(vm, "FinalizationRegistry")
 }
-/// `SharedArrayBuffer` 全局占位：始终抛 TypeError。按设计延后实现。
-pub fn shared_array_buffer_stub<H: VmHost>(vm: &mut H, _args: &[u8]) -> NativeResult {
-    stub_error(vm, "SharedArrayBuffer")
-}
 /// `Atomics` 全局占位：始终抛 TypeError。按设计延后实现。
 pub fn atomics_stub<H: VmHost>(vm: &mut H, _args: &[u8]) -> NativeResult {
     stub_error(vm, "Atomics")

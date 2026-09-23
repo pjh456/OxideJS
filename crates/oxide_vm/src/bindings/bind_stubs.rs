@@ -20,7 +20,7 @@ const STUBS: [(&str, *const (), u8); 7] = [
     ),
     (
         "SharedArrayBuffer",
-        oxide_builtins::stubs::shared_array_buffer_stub::<crate::vm::Vm> as *const (),
+        oxide_builtins::array_buffer::shared_array_buffer_constructor::<crate::vm::Vm> as *const (),
         1,
     ),
     ("Atomics", oxide_builtins::stubs::atomics_stub::<crate::vm::Vm> as *const (), 0),

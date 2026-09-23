@@ -116,6 +116,7 @@ impl SessionGc {
         bytes += module::module_ns_native_size(obj);
         bytes += disposable_stack::disposable_stack_native_size(obj);
         bytes += array_buffer::array_buffer_native_size(obj);
+        bytes += array_buffer::shared_array_buffer_native_size(obj);
         bytes += regexp::regexp_native_size(obj);
         bytes += typed_array::typed_array_native_size(obj);
         bytes += data_view::data_view_native_size(obj);
@@ -537,6 +538,7 @@ impl SessionGc {
             freed_bytes += module::drop_module_ns_native(obj);
             freed_bytes += disposable_stack::drop_dispose_native(obj);
             freed_bytes += array_buffer::drop_array_buffer_native(obj);
+            freed_bytes += array_buffer::drop_shared_array_buffer_native(obj);
             freed_bytes += regexp::drop_regexp_native(obj);
             freed_bytes += typed_array::drop_typed_array_native(obj);
             freed_bytes += data_view::drop_data_view_native(obj);
@@ -625,6 +627,8 @@ impl SessionGc {
                     disposable_stack::clone_dispose_native_with_rewrite(old_ref, new_ref, |value| value);
                 } else if old_ref.is_array_buffer_obj() {
                     array_buffer::clone_array_buffer_native(old_ref, new_ref);
+                } else if old_ref.is_shared_array_buffer_obj() {
+                    array_buffer::clone_shared_array_buffer_native(old_ref, new_ref);
                 } else if old_ref.is_typed_array_obj() {
                     typed_array::clone_typed_array_native_with_rewrite(old_ref, new_ref, |value| value);
                 } else if old_ref.is_data_view_obj() {

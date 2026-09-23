@@ -1134,7 +1134,26 @@ fn ab_sti_brand_family() {
          var t2 = false, t3 = false; \
          var nab = new ArrayBuffer(8); \
          try { new nab.sliceToImmutable(); t3 = true; } catch (e) { t2 = e instanceof TypeError; t3 = false; } \
-         return ok && calls.length === 0 && t2 && calls2.length === 0 && !t3; })()",
+          return ok && calls.length === 0 && t2 && calls2.length === 0 && !t3; })()",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
+/// SharedArrayBuffer 最小构造钉：`new SharedArrayBuffer(n)` 建 n 字节缓冲，
+/// 非 ArrayBuffer 品牌（ArrayBuffer 方法族对其先读参后抛 TypeError）。
+#[test]
+fn sab_constructor_and_brand_rejection() {
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "(function () { var sab = new SharedArrayBuffer(4); \
+          var calls = []; \
+          var start = { valueOf: function () { calls.push('s'); return 0; } }; \
+          var t = false; \
+          try { ArrayBuffer.prototype.sliceToImmutable.call(sab, start); t = true; } \
+          catch (e) { t = e instanceof TypeError; } \
+          return t && calls.length === 0; })()",
     )
     .unwrap();
     assert!(result.as_bool());
