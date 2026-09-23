@@ -164,14 +164,17 @@ pub(crate) fn default_shared_array_buffer_proto<H: VmHost>(vm: &H) -> JsValue {
     JsValue::from_js_object(vm.session().builtin_world().shared_array_buffer_proto.as_ptr() as *mut JsObject)
 }
 
-/// 分配携给定 proto 与载荷形态（`max_byte_length` 恒 0 定长）的
-/// SharedArrayBuffer 对象；byteLength 经原型访问器读（不写 own 数据属性）。
-pub(crate) fn new_shared_array_buffer<H: VmHost>(vm: &mut H, data: Vec<u8>, proto: JsValue) -> *mut JsObject {
+/// 分配携给定 proto 与载荷形态（`max_byte_length` 为存储态：0 定长，非 0 可
+/// grow）的 SharedArrayBuffer 对象；byteLength 经原型访问器读（不写 own 数据
+/// 属性）。
+pub(crate) fn new_shared_array_buffer<H: VmHost>(
+    vm: &mut H, data: Vec<u8>, max_byte_length: usize, proto: JsValue,
+) -> *mut JsObject {
     let mut obj = JsObject::new_empty(EMPTY_SHAPE_ID, proto);
     obj.type_tag = JsObject::OBJ_TYPE_SHARED_ARRAY_BUFFER;
     let payload = ArrayBufferPayload {
         data: Some(data),
-        max_byte_length: 0,
+        max_byte_length,
         immutable: false,
     };
     let payload_ptr = Box::into_raw(Box::new(payload));
@@ -242,24 +245,57 @@ pub fn clone_shared_array_buffer_native(old_obj: &JsObject, new_obj: &mut JsObje
     new_obj.set_native_fn(Some(unsafe { NativeFnPtr::from_raw(cloned_ptr as *const ()) }));
 }
 
-/// `SharedArrayBuffer(length)`：构造语义仅 `new`；length 缺省 0，经 ToIndex
-/// 传播式（强转副作用原值上抛），超引擎上界 → RangeError。
+/// `SharedArrayBuffer(length [, options])`：构造语义仅 `new`；length 缺省 0，
+/// 经 ToIndex 传播式（强转副作用原值上抛）；`maxByteLength` 选项经传播式
+/// Get + ToIndex，`resizable` 键恒忽略（SAB 面不读）；分配期上界校验在原型
+/// 读之后。
 ///
 /// # 步骤
 /// 1. 非构造形态（普通调用，new.target 缺失）→ TypeError。
 /// 2. length = ToIndex(length) 传播式；undefined/缺省 → 0。
-/// 3. 分配期上界校验（超引擎上限 → RangeError）。
-/// 4. GetPrototypeFromConstructor：经 ordinary_get 读 new.target 的
+/// 3. GetArrayBufferMaxByteLengthOption：options 非对象 → 定长；Get
+///    "maxByteLength" 传播式；undefined → 定长；否则 ToIndex 传播式。
+/// 4. length > max → RangeError（先于原型读与对象创建）。
+/// 5. GetPrototypeFromConstructor：经 ordinary_get 读 new.target 的
 ///    "prototype"（访问器触发，异常原值传播）；非对象结果回落
 ///    %SharedArrayBuffer.prototype%。
-/// 5. 对象创建（零填充定长，无 resizable 选项面）。
+/// 6. 分配期上界校验（length 与 max 各一条，超引擎上限 → RangeError）。
+/// 7. 对象创建（零填充，定长/growable 由选项是否在场决定）；不设 own
+///    maxByteLength 数据属性（ArrayBuffer 构造器有此步，SAB 面经原型访问器
+///    读）。
 pub fn shared_array_buffer_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     if !vm.constructing_native() {
         return NativeResult::Err(crate::error::create_type_error(vm, "SharedArrayBuffer must be called with new"));
     }
     let length = if args.len() > 1 { native_try!(to_index(vm, vm.reg(args[1]))) } else { 0 };
-    if length > MAX_ARRAY_BUFFER_LENGTH {
-        return NativeResult::Err(crate::error::create_range_error(vm, "invalid SharedArrayBuffer length"));
+    // GetArrayBufferMaxByteLengthOption：None = 空（定长），Some(v) = 请求的
+    // 上限（v 可为 0，与"空"语义相异：length > v 的界判须生效）。
+    let max_opt = if args.len() > 2 {
+        let options = vm.reg(args[2]);
+        if !options.is_object() {
+            None
+        } else {
+            let options_ptr = options.as_js_object_ptr();
+            // SAFETY: is_object 保证指针非空且对象本 session 存活。
+            let options_obj = unsafe { &*options_ptr };
+            let si = vm.kernel_core().perm_interner().intern("maxByteLength").0;
+            let max_val = match vm.ordinary_get(options_obj, si, options) {
+                Ok(v) => v,
+                Err(err) => return NativeResult::Err(crate::iterator::engine_error(vm, &err)),
+            };
+            if max_val.is_undefined() {
+                None
+            } else {
+                Some(native_try!(to_index(vm, max_val)))
+            }
+        }
+    } else {
+        None
+    };
+    if let Some(max) = max_opt {
+        if length > max {
+            return NativeResult::Err(crate::error::create_range_error(vm, "invalid SharedArrayBuffer length"));
+        }
     }
     // GetPrototypeFromConstructor：prototype getter 可抛错，异常原值传播；
     // 结果非对象时回落默认原型。
@@ -282,7 +318,12 @@ pub fn shared_array_buffer_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> Na
     } else {
         default_proto
     };
-    let obj_ptr = new_shared_array_buffer(vm, vec![0; length], proto);
+    // 分配期上界：length 与 max 超引擎上限一律拒绝（ToIndex 阶段不校验）。
+    if length > MAX_ARRAY_BUFFER_LENGTH || max_opt.is_some_and(|m| m > MAX_ARRAY_BUFFER_LENGTH) {
+        return NativeResult::Err(crate::error::create_range_error(vm, "invalid SharedArrayBuffer length"));
+    }
+    // 存储态上限 = 请求上限 + 1（上限 0 与定长可分；定长存 0）。
+    let obj_ptr = new_shared_array_buffer(vm, vec![0; length], max_opt.map_or(0, |m| m + 1), proto);
     NativeResult::Ok(JsValue::from_js_object(obj_ptr))
 }
 
@@ -328,23 +369,78 @@ pub fn shared_array_buffer_byte_length<H: VmHost>(vm: &mut H, args: &[u8]) -> Na
     NativeResult::Ok(JsValue::int(len as i32))
 }
 
-/// `SharedArrayBuffer.prototype.growable` getter：定长臂恒 false
-/// （载荷存储态上限 0；growable 真值臂归后续面）。
+/// `SharedArrayBuffer.prototype.growable` getter：返回缓冲区是否 growable
+/// （载荷存储态上限非 0：0 = 定长，非 0 = 请求上限 + 1）。
 /// 非 SAB receiver 经品牌校验抛 TypeError（RequireInternalSlot 同语义）。
 pub fn shared_array_buffer_growable<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
-    native_try!(shared_array_buffer_payload(vm, this_val));
-    NativeResult::Ok(JsValue::bool(false))
+    let payload_ptr = native_try!(shared_array_buffer_payload(vm, this_val));
+    // SAFETY: payload_ptr 经 shared_array_buffer_payload 校验为合法 SAB 载荷。
+    NativeResult::Ok(JsValue::bool(unsafe { &*payload_ptr }.max_byte_length != 0))
 }
 
-/// `SharedArrayBuffer.prototype.maxByteLength` getter：非 growable
-/// （载荷存储态上限 0）返回当前字节数；growable 臂归后续面。
+/// `SharedArrayBuffer.prototype.maxByteLength` getter：定长（存储态上限 0）
+/// 返回当前字节数；growable 返回真实上限（存储态 − 1 解码）。SAB 无
+/// detached 臂（载荷 `data` 恒在场）。
 pub fn shared_array_buffer_max_byte_length<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
     let payload_ptr = native_try!(shared_array_buffer_payload(vm, this_val));
     // SAFETY: payload_ptr 经 shared_array_buffer_payload 校验为合法 SAB 载荷。
     let payload = unsafe { &*payload_ptr };
-    NativeResult::Ok(JsValue::int(payload.data.as_ref().map_or(0, |d| d.len()) as i32))
+    let value = if payload.max_byte_length == 0 {
+        payload.data.as_ref().map_or(0, |d| d.len())
+    } else {
+        payload.max_byte_length - 1
+    };
+    NativeResult::Ok(JsValue::int(value as i32))
+}
+
+/// `SharedArrayBuffer.prototype.grow(newLength)`：growable 缓冲区原地增长到
+/// newLength，前缀保留、增补零填；只增不缩（缩为 RangeError）。
+///
+/// # 步骤
+/// 1. this 品牌校验（非对象/非 SAB → TypeError）。
+/// 2. 非 growable（存储态上限 0）→ TypeError，先于强转。
+/// 3. newByteLength = ToIntegerOrInfinity(newLength) 传播式（NaN → 0，
+///    ±Infinity 保留）。
+/// 4. 重取 this 寄存器 + 载荷指针（强转 JS 调用窗可晋升——AB resize 同式；
+///    SAB 无 detach 面，仅晋升面）。
+/// 5. 重读存储态上限 0 → TypeError。
+/// 6. newByteLength < 0 或 > 真实上限（重读存储态 − 1）或 < 当前字节数
+///    （grow-only）→ RangeError。
+/// 7. `Vec::resize` 一次调用收口目标长度。
+/// 8. 返回 undefined。
+pub fn shared_array_buffer_grow<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let this_reg = if args.is_empty() { 0 } else { args[0] };
+    let this_val = vm.reg(this_reg);
+    let payload_ptr = native_try!(shared_array_buffer_payload(vm, this_val));
+    // SAFETY: payload_ptr 经 shared_array_buffer_payload 校验为合法 SAB 载荷；
+    // 状态位拷出后本次借用即结束，不跨 JS 调用点。
+    if unsafe { &*payload_ptr }.max_byte_length == 0 {
+        return NativeResult::Err(crate::error::create_type_error(vm, "SharedArrayBuffer is not growable"));
+    }
+    let new_val = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
+    let new_length = native_try!(to_integer_or_infinity(vm, new_val));
+    // 强转调用可能已把本缓冲区晋升进 session：接收者寄存器与载荷指针均须
+    // 重取重检，不得消费求值前快照。
+    let this_val = vm.reg(this_reg);
+    let payload_ptr = native_try!(shared_array_buffer_payload(vm, this_val));
+    // SAFETY: 重取的 payload_ptr 指向存活载荷盒。
+    let payload = unsafe { &mut *payload_ptr };
+    if payload.max_byte_length == 0 {
+        return NativeResult::Err(crate::error::create_type_error(vm, "SharedArrayBuffer is not growable"));
+    }
+    let Some(data) = payload.data.as_mut() else {
+        return NativeResult::Err(crate::error::create_type_error(vm, "SharedArrayBuffer internal state invalid"));
+    };
+    // 存储态上限 +1 编码：真实上限 = max - 1（上限 0 的缓冲区只许 grow(0)）；
+    // 当前长度之下拒缩。
+    let real_max = payload.max_byte_length - 1;
+    if new_length < 0.0 || new_length > real_max as f64 || new_length < data.len() as f64 {
+        return NativeResult::Err(crate::error::create_range_error(vm, "invalid SharedArrayBuffer length"));
+    }
+    data.resize(new_length as usize, 0);
+    NativeResult::Ok(JsValue::undefined())
 }
 
 /// 读入口：校验 receiver 为 ArrayBuffer 并取载荷指针。detach（载荷 `data` 为

@@ -1303,6 +1303,177 @@ fn sab_full_reset_rebinds() {
     assert_eq!(text, "true|true|true|true");
 }
 
+/// SAB 构造器 options 真值臂钉：maxByteLength 在场 → growable true 且
+/// maxByteLength 回请求上限；undefined / 非对象 options → 定长。
+#[test]
+fn sab_constructor_options_growable_and_fixed() {
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "(function () { \
+         var g = new SharedArrayBuffer(4, { maxByteLength: 5 }); \
+         var u = new SharedArrayBuffer(4, { maxByteLength: undefined }); \
+         var n = new SharedArrayBuffer(0, 9); \
+         return g.growable === true && g.maxByteLength === 5 \
+            && u.growable === false && u.maxByteLength === 4 \
+            && n.growable === false && n.maxByteLength === 0; })()",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
+/// SAB options 抛形钉：length > max / max 负值 / max 2^53−1（引擎上界）
+/// 均 RangeError；options getter 抛错原值传播。
+#[test]
+fn sab_constructor_options_errors() {
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "(function () { \
+         var t1 = false; \
+         try { new SharedArrayBuffer(1, { maxByteLength: 0 }); } catch (e) { t1 = e instanceof RangeError; } \
+         var t2 = false; \
+         try { new SharedArrayBuffer(0, { maxByteLength: -1 }); } catch (e) { t2 = e instanceof RangeError; } \
+         var t3 = false; \
+         try { new SharedArrayBuffer(0, { maxByteLength: 9007199254740991 }); } catch (e) { t3 = e instanceof RangeError; } \
+         function Test262Error() {} \
+         var t4 = false; \
+         var options = { get maxByteLength() { throw new Test262Error(); } }; \
+         try { new SharedArrayBuffer(0, options); } catch (e) { t4 = e instanceof Test262Error; } \
+         return t1 && t2 && t3 && t4; })()",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
+/// SAB length>max 先于对象创建钉：max 在场且 length 超限时 RangeError 先出，
+/// 抛错 prototype getter 不得先出。
+#[test]
+fn sab_constructor_length_gt_max_before_gpfc() {
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "(function () { \
+         function Test262Error() {} \
+         var newTarget = function() {}.bind(null); \
+         Object.defineProperty(newTarget, 'prototype', { get: function () { throw new Test262Error(); } }); \
+         var t = false; \
+         try { Reflect.construct(SharedArrayBuffer, [10, { maxByteLength: 0 }], newTarget); } catch (e) { t = e instanceof RangeError; } \
+         return t; })()",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
+/// SAB 分配期上界移序钉：合法 length/max 下抛错 prototype getter 先出；
+/// 7 PiB length（超引擎上界）同样 prototype getter 先出（上界后移于原型读）。
+#[test]
+fn sab_constructor_gpfc_before_allocation_limit() {
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "(function () { \
+         function DummyError() {} \
+         var newTarget = function() {}.bind(null); \
+         Object.defineProperty(newTarget, 'prototype', { get: function () { throw new DummyError(); } }); \
+         var t1 = false; \
+         try { Reflect.construct(SharedArrayBuffer, [8, { maxByteLength: 16 }], newTarget); } catch (e) { t1 = e instanceof DummyError; } \
+         var t2 = false; \
+         try { Reflect.construct(SharedArrayBuffer, [7 * 1125899906842624], newTarget); } catch (e) { t2 = e instanceof DummyError; } \
+         return t1 && t2; })()",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
+/// SAB grow 守卫序钉：品牌 / 非 growable / receiver 类型均 TypeError；
+/// growable 界判 grow-only（超上限 / 负值 / 缩长均 RangeError）。
+#[test]
+fn sab_grow_guard_order() {
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "(function () { \
+         var fixed = new SharedArrayBuffer(4); \
+         var t1 = false; \
+         try { fixed.grow(5); } catch (e) { t1 = e instanceof TypeError; } \
+         var t2 = false; \
+         try { SharedArrayBuffer.prototype.grow.call(new ArrayBuffer(4)); } catch (e) { t2 = e instanceof TypeError; } \
+         var t3 = false; \
+         try { SharedArrayBuffer.prototype.grow.call({}); } catch (e) { t3 = e instanceof TypeError; } \
+         var g = new SharedArrayBuffer(4, { maxByteLength: 5 }); \
+         var t4 = false; \
+         try { g.grow(6); } catch (e) { t4 = e instanceof RangeError; } \
+         var t5 = false; \
+         try { g.grow(-1); } catch (e) { t5 = e instanceof RangeError; } \
+         var t6 = false; \
+         try { g.grow(3); } catch (e) { t6 = e instanceof RangeError; } \
+         return t1 && t2 && t3 && t4 && t5 && t6; })()",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
+/// SAB grow 原地语义钉：grow(上限) 后 byteLength 更新且回 undefined；
+/// 同长 no-op；零长 growable 缓冲 grow(0)/grow(上限) 均合法。
+#[test]
+fn sab_grow_inplace_semantics() {
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "(function () { \
+         var g = new SharedArrayBuffer(4, { maxByteLength: 5 }); \
+         if (g.grow(5) !== undefined || g.byteLength !== 5) { return false; } \
+         if (g.grow(5) !== undefined || g.byteLength !== 5) { return false; } \
+         var z = new SharedArrayBuffer(0, { maxByteLength: 4 }); \
+         if (z.grow(0) !== undefined || z.byteLength !== 0) { return false; } \
+         if (z.grow(4) !== undefined || z.byteLength !== 4) { return false; } \
+         return true; })()",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
+/// SAB grow NaN 归零钉：ToIntegerOrInfinity 将 NaN 折为 0——非零长 growable
+/// 经 grow-only 界判 RangeError，零长 growable 同长成功（node 20 同形）。
+#[test]
+fn sab_grow_nan_folds_to_zero() {
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "(function () { \
+         var g = new SharedArrayBuffer(4, { maxByteLength: 5 }); \
+         var t1 = false; \
+         try { g.grow(NaN); } catch (e) { t1 = e instanceof RangeError; } \
+         if (g.byteLength !== 4) { return false; } \
+         var z = new SharedArrayBuffer(0, { maxByteLength: 4 }); \
+         var r = z.grow(NaN); \
+         return t1 && r === undefined && z.byteLength === 0; })()",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
+/// SAB growable / maxByteLength 访问器真值臂钉：growable 双形态、
+/// maxByteLength 0/23/42 三形态与语料同值。
+#[test]
+fn sab_growable_and_max_bytelength_truth_arms() {
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "(function () { \
+         var s1 = new SharedArrayBuffer(1); \
+         var s2 = new SharedArrayBuffer(1, { maxByteLength: 1 }); \
+         var m0 = new SharedArrayBuffer(0, { maxByteLength: 0 }); \
+         var m23 = new SharedArrayBuffer(0, { maxByteLength: 23 }); \
+         var m42 = new SharedArrayBuffer(42, { maxByteLength: 42 }); \
+         return s1.growable === false && s2.growable === true \
+            && m0.maxByteLength === 0 && m23.maxByteLength === 23 && m42.maxByteLength === 42; })()",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
 /// STUBS 表收缩钉：Atomics 移出 stub 后剩 5 枚 stub 全局仍为 function；
 /// Atomics 现为纯对象（typeof 'object'），对其调用抛 TypeError（非函数）。
 #[test]

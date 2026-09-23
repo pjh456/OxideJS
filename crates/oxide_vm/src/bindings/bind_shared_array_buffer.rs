@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use crate::bind_constructor;
-use crate::bindings::{bind_accessor_getter, configure_native_constructor};
+use crate::bindings::{apply_binding_table, bind_accessor_getter, configure_native_constructor};
 use oxide_kernel::kernel::{KernelCore, KernelSession};
 use oxide_types::object::JsObject;
 
@@ -18,8 +18,20 @@ pub fn bind_shared_array_buffer(core: &Arc<KernelCore>, session: &KernelSession,
         1,
     );
 
-    // SAB 原型当前无静态方法（grow/growable 臂与 slice 归后续面）；
-    // byteLength/maxByteLength 两枚访问器（set 恒 undefined）读载荷字节数。
+    // grow 方法（slice 归后续面）：growable 缓冲区原地增长，只增不缩。
+    apply_binding_table(
+        session.builtin_world(),
+        proto,
+        core,
+        &[(
+            "grow",
+            oxide_builtins::array_buffer::shared_array_buffer_grow::<crate::vm::Vm> as *const (),
+            1,
+        )],
+    );
+
+    // byteLength/maxByteLength 两枚访问器（set 恒 undefined）读载荷字节数 /
+    // 存储态上限，品牌校验抛 TypeError（proto 自身访问即抛）。
     bind_accessor_getter(
         core,
         session,
@@ -36,7 +48,7 @@ pub fn bind_shared_array_buffer(core: &Arc<KernelCore>, session: &KernelSession,
         oxide_builtins::array_buffer::shared_array_buffer_max_byte_length::<crate::vm::Vm> as *const (),
     );
 
-    // growable 定长臂：恒 false，品牌校验抛 TypeError（proto 自身访问即抛）。
+    // growable 真值臂：读载荷存储态上限（0 定长 false / 非 0 growable true）。
     bind_accessor_getter(
         core,
         session,
