@@ -2039,9 +2039,61 @@ fn ta_keys_int_index_2pow32_boundary() {
     let result = eval(
         &mut vm,
         "(function () { var ks1 = Object.keys({ a: 1, '4294967295': 2 }); \
-          if (ks1.join(',') !== '4294967295,a') return false; \
-          var ks2 = Object.keys({ b: 1, '4294967296': 2 }); \
-          return ks2.join(',') === 'b,4294967296'; })()",
+           if (ks1.join(',') !== '4294967295,a') return false; \
+           var ks2 = Object.keys({ b: 1, '4294967296': 2 }); \
+           return ks2.join(',') === 'b,4294967296'; })()",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
+#[test]
+fn ta_ownkeys_stable_after_delete_str_prop() {
+    // 删 own 串键后枚举键集稳定：元素键住 buffer 不占形状链，删除重建命名属性
+    // 不得把元素键物化为形状节点——ownKeys/keys/gOPN 均无重复整数键。
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "(function () { var ta = new Uint8Array([1, 2]); \
+           ta.foo = 1; \
+           if (!delete ta.foo) return false; \
+           if (Reflect.ownKeys(ta).join(',') !== '0,1') return false; \
+           if (Object.keys(ta).join(',') !== '0,1') return false; \
+           return Object.getOwnPropertyNames(ta).join(',') === '0,1'; })()",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
+#[test]
+fn ta_gopd_no_phantom_after_delete_str_prop() {
+    // 删 own 串键后元素位描述符不变（value + w/e/c 全真）、被删键无残留
+    // 幻影 own 属性、元素值不动。
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "(function () { var ta = new Uint8Array([1, 2]); \
+           ta.foo = 1; delete ta.foo; \
+           var d = Object.getOwnPropertyDescriptor(ta, '0'); \
+           if (!d || d.value !== 1 || d.writable !== true \
+               || d.enumerable !== true || d.configurable !== true) return false; \
+           if (Object.getOwnPropertyDescriptor(ta, 'foo') !== undefined) return false; \
+           return ta[0] === 1 && ta[1] === 2 && ta.foo === undefined; })()",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
+#[test]
+fn ta_for_in_stable_after_delete_str_prop() {
+    // 删 own 串键后 for-in 出元素键升序 + 无重复、无被删键残留。
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "(function () { var ta = new Uint8Array([1, 2]); \
+           ta.foo = 1; delete ta.foo; \
+           var ks = []; for (var k in ta) ks.push(k); \
+           return ks.length === 2 && ks[0] === '0' && ks[1] === '1'; })()",
     )
     .unwrap();
     assert!(result.as_bool());

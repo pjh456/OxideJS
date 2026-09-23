@@ -419,8 +419,14 @@ pub fn delete_own_property_outcome<H: VmHost>(vm: &mut H, obj: &mut JsObject, ke
 
     let retained: Vec<(u32, JsValue, Option<PropMetaEntry>)> = all_keys
         .into_iter()
-        // 数组元素区由下方独立保存/恢复，此处只重建命名属性（元素键绝对下标 < 元素数）。
-        .filter(|(_, pos)| *pos != delete_pos && !(obj.is_array() && *pos < obj.array_prop_count))
+        // 数组元素区由下方独立保存/恢复，此处只重建命名属性（元素键绝对下标 <
+        // 元素数）；TA 元素键（0..live 长）元素住 buffer 不占形状链，同样排除出
+        // 重建，防经空 meta 取值 undefined 物化成 shape 链真 own 属性。
+        .filter(|(si, pos)| {
+            *pos != delete_pos
+                && !(obj.is_array() && *pos < obj.array_prop_count)
+                && !(obj.is_typed_array_obj() && is_int_key(*si))
+        })
         .map(|(si, pos)| (si, obj.get_prop_at(pos), obj.prop_meta_at(pos)))
         .collect();
 
