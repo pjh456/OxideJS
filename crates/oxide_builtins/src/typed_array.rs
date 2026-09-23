@@ -350,7 +350,8 @@ fn clamp_index_to_len(raw: f64, len: usize) -> usize {
 }
 
 /// 读 TypedArray 指定整数索引的元素（供 VM 普通属性 get 的 typed 分支使用）。
-/// 越界返回 undefined；内部状态非法返回 Err(String)。
+/// 越界（含 detach）一律返回 undefined（规范 [[Get]] 静默臂）；内部状态
+/// 非法返回 Err(String)（防御背板）。
 pub fn typed_array_element_get<H: VmHost>(vm: &mut H, obj: &JsObject, index: u32) -> Result<JsValue, String> {
     let this_val = JsValue::from_js_object(obj as *const JsObject as *mut JsObject);
     let view = get_typed_array_data(vm, this_val).map_err(|e| format!("{e}"))?;
@@ -361,7 +362,8 @@ pub fn typed_array_element_get<H: VmHost>(vm: &mut H, obj: &JsObject, index: u32
     let payload_ptr = array_buffer_payload(vm, view.buffer).map_err(|e| format!("{e}"))?;
     // SAFETY: payload_ptr 经 array_buffer_payload 校验为合法 ArrayBuffer 载荷。
     let Some(buffer) = unsafe { &*payload_ptr }.data.as_deref() else {
-        return Err("ArrayBuffer internal state invalid".into());
+        // 载荷缺失即 detach（live 界判后不可达，防御背板）：按 [[Get]] 读 undefined。
+        return Ok(JsValue::undefined());
     };
     Ok(read_element(vm, view.kind, buffer, absolute_byte_offset(view, index as usize)))
 }
@@ -493,8 +495,52 @@ fn ta_to_number_text(t: &str) -> f64 {
     }
 }
 
+/// detach 后数值键静默写判定：buffer 已 detach（载荷缺失，含 buffer 非
+/// ArrayBuffer 对象）且键落在统一数值键门的数字臂（规范整数索引，或
+/// "1.1"/"-0" 类 round-trip 数值串）时，写静默忽略、不落命名属性；
+/// 非数字串与 symbol 键返回 false（调用方落普通属性路径）。供 VM 普通
+/// 属性 set 的 typed 分支作 [[Set]] 静默臂。
+pub fn typed_array_detached_numeric_key_noop<H: VmHost>(vm: &mut H, obj: &JsObject, key_si: u32) -> bool {
+    let this_val = JsValue::from_js_object(obj as *const JsObject as *mut JsObject);
+    let Ok(view) = get_typed_array_data(vm, this_val) else {
+        return false;
+    };
+    typed_array_detached_numeric_key_noop_view(vm, obj, view, key_si)
+}
+
+/// 只读变体：判定逻辑同 `typed_array_detached_numeric_key_noop`，视图直接
+/// 从对象 native 槽读出，不要求可变 VM 访问。供 IC 快路径新属性分流等
+/// 只持读引用的场景（该场景下视图状态与写路径同一口径）。
+pub fn typed_array_detached_numeric_key_noop_ro<H: VmHost>(vm: &H, obj: &JsObject, key_si: u32) -> bool {
+    let Some(ptr) = typed_array_data_ptr(obj) else {
+        return false;
+    };
+    if ptr.is_null() {
+        return false;
+    }
+    // SAFETY: ptr 非空，为 TypedArray 对象 native_fn 槽内的 Box<TypedArrayData>，
+    // 与对象同生命周期，此处只读拷贝视图字段。
+    let view = unsafe { *ptr };
+    typed_array_detached_numeric_key_noop_view(vm, obj, view, key_si)
+}
+
+/// 两变体共享尾段：非 TypedArray 对象、buffer 载荷存活（未 detach）均不
+/// 静默；detach 且键落数值臂（界内索引或数字无效）时静默。
+fn typed_array_detached_numeric_key_noop_view<H: VmHost>(
+    vm: &H, obj: &JsObject, view: TypedArrayData, key_si: u32,
+) -> bool {
+    if !obj.is_typed_array_obj() {
+        return false;
+    }
+    if ta_buffer_byte_length(view).is_some() {
+        return false;
+    }
+    matches!(ta_index_gate(vm, obj, key_si), TaIndexGate::NumericValid(_) | TaIndexGate::NumericInvalid)
+}
+
 /// 写 TypedArray 指定整数索引的元素（供 VM 普通属性 set 的 typed 分支使用）。
-/// 越界忽略（不创建属性、不报错）；内部状态非法返回 Err(String)。
+/// 先按元素类型转换（副作用/抛错先于界判触发），越界（含 detach）静默忽略
+/// （不创建属性、不报错）；内部状态非法返回 Err(String)（防御背板）。
 pub fn typed_array_element_set<H: VmHost>(
     vm: &mut H, obj: &JsObject, index: u32, value: JsValue,
 ) -> Result<(), String> {
@@ -544,7 +590,9 @@ fn write_typed_array_element<H: VmHost>(
     let payload_ptr = array_buffer_payload(vm, view.buffer).map_err(|e| format!("{e}"))?;
     // SAFETY: payload_ptr 经 array_buffer_payload 校验为合法 ArrayBuffer 载荷。
     let Some(buffer) = unsafe { &mut *payload_ptr }.data.as_deref_mut() else {
-        return Err("ArrayBuffer internal state invalid".into());
+        // 载荷缺失即 detach（live 界判后不可达，防御背板）：转换副作用已先
+        // 发生，写按 [[Set]] 静默 no-op。
+        return Ok(());
     };
     write_element(vm, view.kind, buffer, absolute_byte_offset(view, index as usize), elem);
     Ok(())
@@ -706,6 +754,8 @@ fn collect_array_like<H: VmHost>(vm: &mut H, value: JsValue, consult_iterator: b
         let payload_ptr = array_buffer_payload(vm, view.buffer)?;
         // SAFETY: payload_ptr 经 array_buffer_payload 校验为合法 ArrayBuffer 载荷。
         let Some(buffer) = unsafe { &*payload_ptr }.data.as_deref() else {
+            // 源 buffer detach：按规范的源缓冲校验步抛 TypeError；各入口的
+            // 校验/活长界判先行，此臂为防御背板。
             return Err(crate::error::create_type_error(vm, "ArrayBuffer internal state invalid"));
         };
         // 源视图按 live 长度收集：buffer 收缩越界后视同空源（与构造器
@@ -783,6 +833,8 @@ fn typed_array_new<H: VmHost>(vm: &mut H, args: &[u8], kind: TypedArrayKind) -> 
             let payload_ptr = native_try!(array_buffer_payload(vm, first));
             // SAFETY: payload_ptr 经 array_buffer_payload 校验为合法 ArrayBuffer 载荷。
             let Some(data) = unsafe { &*payload_ptr }.data.as_ref() else {
+                // 首参 buffer 已 detach：按规范的 ArrayBuffer 校验步抛 TypeError
+                // （构造器入口的 detach 守卫即本臂）。
                 return NativeResult::Err(crate::error::create_type_error(vm, "ArrayBuffer internal state invalid"));
             };
             let buffer_len = data.len();
@@ -820,6 +872,7 @@ fn typed_array_new<H: VmHost>(vm: &mut H, args: &[u8], kind: TypedArrayKind) -> 
             let payload_ptr = native_try!(array_buffer_payload(vm, buffer));
             // SAFETY: payload_ptr 经 array_buffer_payload 校验为合法 ArrayBuffer 载荷。
             let Some(buffer_ref) = unsafe { &mut *payload_ptr }.data.as_deref_mut() else {
+                // 新建 buffer 载荷恒存活（无人可 detach），此臂为防御背板。
                 return NativeResult::Err(crate::error::create_type_error(vm, "ArrayBuffer internal state invalid"));
             };
             for (idx, value) in values.into_iter().enumerate() {
@@ -962,7 +1015,9 @@ pub fn typed_array_fill<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let payload_ptr = native_try!(array_buffer_payload(vm, view.buffer));
     // SAFETY: payload_ptr 经 array_buffer_payload 校验为合法 ArrayBuffer 载荷。
     let Some(buffer) = unsafe { &mut *payload_ptr }.data.as_deref_mut() else {
-        return NativeResult::Err(crate::error::create_type_error(vm, "ArrayBuffer internal state invalid"));
+        // 转换窗口内 detach：填充写退化为静默 no-op（循环内无重入窗，单次
+        // 判即封窗），按 [[Set]] 语义正常返回 this。
+        return NativeResult::Ok(this_val);
     };
     for idx in start..end.max(start) {
         write_element(vm, view.kind, buffer, absolute_byte_offset(view, idx), elem);
@@ -1198,11 +1253,10 @@ pub fn typed_array_set<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     }
     let payload_ptr = native_try!(array_buffer_payload(vm, view.buffer));
     // SAFETY: payload_ptr 经 array_buffer_payload 校验为合法 ArrayBuffer 载荷。
-    let Some(buffer) = unsafe { &mut *payload_ptr }.data.as_deref_mut() else {
-        return NativeResult::Err(crate::error::create_type_error(vm, "ArrayBuffer internal state invalid"));
-    };
+    let mut buffer = unsafe { &mut *payload_ptr }.data.as_deref_mut();
     // 逐元素惰性读源→转换→写：循环中的 detach/收缩使后续写入静默失效
-    // （目标越界不写，与规范 SetValueInBuffer 边界无操作同语义）。
+    // （目标越界不写，与规范 SetValueInBuffer 边界无操作同语义）；载荷缺失
+    // 等同 detach，全循环退化为源读副作用与转换、零写入。
     for k in 0..source_len {
         let value = match &source_kind {
             SetSourceKind::TypedArray(sview) => native_try!(ta_read(vm, *sview, k)),
@@ -1211,7 +1265,9 @@ pub fn typed_array_set<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         };
         let elem = native_try!(ta_element_value(vm, view.kind, value));
         if offset + k < ta_live_length(view) {
-            write_element(vm, view.kind, buffer, absolute_byte_offset(view, offset + k), elem);
+            if let Some(buffer) = buffer.as_deref_mut() {
+                write_element(vm, view.kind, buffer, absolute_byte_offset(view, offset + k), elem);
+            }
         }
     }
     NativeResult::Ok(JsValue::undefined())
@@ -1353,7 +1409,9 @@ fn set_typed_array_element<H: VmHost>(vm: &mut H, ta: JsValue, index: usize, val
     let payload_ptr = array_buffer_payload(vm, view.buffer)?;
     // SAFETY: payload_ptr 经 array_buffer_payload 校验为合法 ArrayBuffer 载荷。
     let Some(buffer) = unsafe { &mut *payload_ptr }.data.as_deref_mut() else {
-        return Err(crate::error::create_type_error(vm, "ArrayBuffer internal state invalid"));
+        // 载荷缺失即 detach（live 界判后不可达，防御背板）：转换副作用已先
+        // 发生，写按 [[Set]] 静默 no-op。
+        return Ok(());
     };
     write_element(vm, view.kind, buffer, absolute_byte_offset(view, index), elem);
     Ok(())
@@ -1387,7 +1445,9 @@ fn ta_read<H: VmHost>(vm: &mut H, view: TypedArrayData, index: usize) -> Result<
     let payload_ptr = array_buffer_payload(vm, view.buffer)?;
     // SAFETY: payload_ptr 经 array_buffer_payload 校验为合法 ArrayBuffer 载荷。
     let Some(buffer) = unsafe { &*payload_ptr }.data.as_deref() else {
-        return Err(crate::error::create_type_error(vm, "ArrayBuffer internal state invalid"));
+        // 载荷缺失即 detach（live 界判后不可达，防御背板）：按 [[Get]] 读
+        // undefined。
+        return Ok(JsValue::undefined());
     };
     Ok(read_element(vm, view.kind, buffer, absolute_byte_offset(view, index)))
 }
@@ -1402,7 +1462,8 @@ fn ta_write<H: VmHost>(vm: &mut H, view: TypedArrayData, index: usize, value: Js
     let payload_ptr = array_buffer_payload(vm, view.buffer)?;
     // SAFETY: payload_ptr 经 array_buffer_payload 校验为合法 ArrayBuffer 载荷。
     let Some(buffer) = unsafe { &mut *payload_ptr }.data.as_deref_mut() else {
-        return Err(crate::error::create_type_error(vm, "ArrayBuffer internal state invalid"));
+        // 载荷缺失即 detach（live 界判后不可达，防御背板）：写静默 no-op。
+        return Ok(());
     };
     write_element(vm, view.kind, buffer, absolute_byte_offset(view, index), value);
     Ok(())
@@ -2483,6 +2544,8 @@ pub fn uint8array_to_base64<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult 
     let payload_ptr = native_try!(array_buffer_payload(vm, view.buffer));
     // SAFETY: payload_ptr 来自活动 ArrayBuffer 对象，视图范围由构造保证界内。
     let Some(buffer) = unsafe { &*payload_ptr }.data.as_deref() else {
+        // buffer detach：按规范的视图校验步抛 TypeError；入口校验先行，
+        // 此臂为防御背板。
         return NativeResult::Err(crate::error::create_type_error(vm, "ArrayBuffer internal state invalid"));
     };
     // 视图范围按 live 长度与当前缓冲长度双收口（缓冲可被 resize 收缩、
@@ -2499,6 +2562,8 @@ pub fn uint8array_to_hex<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let payload_ptr = native_try!(array_buffer_payload(vm, view.buffer));
     // SAFETY: payload_ptr 来自活动 ArrayBuffer 对象，视图范围由构造保证界内。
     let Some(buffer) = unsafe { &*payload_ptr }.data.as_deref() else {
+        // buffer detach：按规范的视图校验步抛 TypeError；入口校验先行，
+        // 此臂为防御背板。
         return NativeResult::Err(crate::error::create_type_error(vm, "ArrayBuffer internal state invalid"));
     };
     // 视图范围按 live 长度与当前缓冲长度双收口（缓冲可被 resize 收缩、
@@ -2518,6 +2583,8 @@ pub fn uint8array_set_from_base64<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeR
     let payload_ptr = native_try!(array_buffer_payload(vm, view.buffer));
     // SAFETY: payload_ptr 来自活动 ArrayBuffer 对象，视图范围由构造保证界内。
     let Some(buffer) = unsafe { &mut *payload_ptr }.data.as_deref_mut() else {
+        // buffer detach：按规范的视图校验步抛 TypeError；入口校验先行，
+        // 此臂为防御背板。
         return NativeResult::Err(crate::error::create_type_error(vm, "ArrayBuffer internal state invalid"));
     };
     let start = view.byte_offset;
@@ -2543,6 +2610,8 @@ pub fn uint8array_set_from_hex<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResu
     let payload_ptr = native_try!(array_buffer_payload(vm, view.buffer));
     // SAFETY: payload_ptr 来自活动 ArrayBuffer 对象，视图范围由构造保证界内。
     let Some(buffer) = unsafe { &mut *payload_ptr }.data.as_deref_mut() else {
+        // buffer detach：按规范的视图校验步抛 TypeError；入口校验先行，
+        // 此臂为防御背板。
         return NativeResult::Err(crate::error::create_type_error(vm, "ArrayBuffer internal state invalid"));
     };
     let start = view.byte_offset;

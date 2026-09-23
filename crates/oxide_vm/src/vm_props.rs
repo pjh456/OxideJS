@@ -359,6 +359,8 @@ impl Vm {
         }
         // TypedArray 整数索引：receiver 为 TA 本体时写底层 buffer（越界静默忽略）；
         // receiver 非 TA 时按规范把写入落到 receiver 对象，不碰 TA buffer。
+        // buffer 已 detach 的 TA：数值键（含非规范数值串）写静默忽略、不落
+        // 命名属性；非数字串与 symbol 键落普通属性路径。
         if obj.is_typed_array_obj() {
             if let Some(index) = self.array_index_from_property_key(prop_name_si) {
                 if !std::ptr::eq(receiver.as_js_object_ptr(), obj as *mut JsObject) {
@@ -374,6 +376,11 @@ impl Vm {
                     );
                 }
                 return oxide_builtins::typed_array::typed_array_element_set(self, obj, index, val);
+            }
+            if std::ptr::eq(receiver.as_js_object_ptr(), obj as *mut JsObject)
+                && oxide_builtins::typed_array::typed_array_detached_numeric_key_noop(self, obj, prop_name_si)
+            {
+                return Ok(());
             }
         }
         // 数组 length 赋值：走 ArraySetLength 语义（两次数值强转、可写性判定与
@@ -801,12 +808,16 @@ impl Vm {
     }
 
     /// 写新属性须分流到完整 ordinary_set 语义的场景：数组 length（ArraySetLength）与
-    /// 数组/TA 整数索引键（元素区 / buffer 写）——这些键不在 shape 链上，CreateDataProperty
-    /// 快路径会错误地为其建命名属性。
+    /// 数组/TA 整数索引键（元素区 / buffer 写）、detach 后 TA 的数值键（[[Set]]
+    /// 静默臂，非规范数值串如 "1.1"/"-0" 不在 shape 链上，CreateDataProperty
+    /// 快路径会错误地为其建命名属性）。
     pub(crate) fn named_prop_create_needs_ordinary_set(&self, obj: &JsObject, prop_name_si: u32) -> bool {
         (obj.is_array() && prop_name_si == self.length_si)
             || (obj.is_typed_array_obj() || obj.is_array())
                 && self.array_index_from_property_key(prop_name_si).is_some()
+            || obj.is_typed_array_obj()
+                && self.array_index_from_property_key(prop_name_si).is_none()
+                && oxide_builtins::typed_array::typed_array_detached_numeric_key_noop_ro(self, obj, prop_name_si)
     }
 
     /// 值写入直调路径：REST / SPREAD / builtin 内部等已确定目标对象的场景，
@@ -831,10 +842,14 @@ impl Vm {
     ///   仅供语义已确定的内部调用方使用。
     pub(crate) fn set_or_create_prop_value(&mut self, obj: &mut JsObject, prop_name_si: u32, val: JsValue) {
         vm_trace!("set_or_create_prop_value: shape_id={} prop_name_si={}", obj.shape_id(), prop_name_si);
-        // TypedArray 整数索引写 buffer（越界忽略），不进入 shape/prop 槽。
+        // TypedArray 整数索引写 buffer（越界忽略），不进入 shape/prop 槽；
+        // buffer 已 detach 的数值键写静默忽略（与 ordinary_set_inner 同臂）。
         if obj.is_typed_array_obj() {
             if let Some(index) = self.array_index_from_property_key(prop_name_si) {
                 let _ = oxide_builtins::typed_array::typed_array_element_set(self, obj, index, val);
+                return;
+            }
+            if oxide_builtins::typed_array::typed_array_detached_numeric_key_noop(self, obj, prop_name_si) {
                 return;
             }
         }
