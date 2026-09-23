@@ -171,9 +171,114 @@ fn atomics_rejects_non_integer_views() {
     truthy(
         &mut vm,
         "(function () { \
-         function throws(fn) { try { fn(); return false; } catch (e) { return e instanceof TypeError; } } \
-         return throws(function () { Atomics.load(new Float32Array(new ArrayBuffer(4)), 0); }) \
-            && throws(function () { Atomics.store(new Float64Array(new ArrayBuffer(8)), 0, 1); }) \
-            && throws(function () { Atomics.load(new Uint8ClampedArray(new ArrayBuffer(4)), 0); }); })()",
+          function throws(fn) { try { fn(); return false; } catch (e) { return e instanceof TypeError; } } \
+          return throws(function () { Atomics.load(new Float32Array(new ArrayBuffer(4)), 0); }) \
+             && throws(function () { Atomics.store(new Float64Array(new ArrayBuffer(8)), 0, 1); }) \
+             && throws(function () { Atomics.load(new Uint8ClampedArray(new ArrayBuffer(4)), 0); }); })()",
     );
+}
+
+/// 品牌拒收：接收者非 TypedArray 对象时抛 TypeError（kind 守卫之外的 brand 面）。
+#[test]
+fn atomics_brand_rejection() {
+    let mut vm = Vm::new();
+    truthy(
+        &mut vm,
+        "(function () { \
+          var threw = false; \
+          try { Atomics.load.call({}, 0); } catch (e) { threw = e instanceof TypeError; } \
+          return threw; })()",
+    );
+}
+
+/// 越界索引全族抛 RangeError：-1 / length / 2·length / ±Infinity /
+/// valueOf 越界对象 / 非调用 valueOf 落 toString 的越界对象。
+#[test]
+fn atomics_oob_range_error() {
+    let mut vm = Vm::new();
+    truthy(
+        &mut vm,
+        "(function () { \
+          var view = new Int32Array(new SharedArrayBuffer(500)); \
+          var bad_indices = [ \
+            function (v) { return -1; }, \
+            function (v) { return v.length; }, \
+            function (v) { return v.length * 2; }, \
+            function (v) { return Number.POSITIVE_INFINITY; }, \
+            function (v) { return Number.NEGATIVE_INFINITY; }, \
+            function (v) { return { valueOf: function () { return 125; } }; }, \
+            function (v) { return { toString: function () { return '125'; }, valueOf: false }; } \
+          ]; \
+          for (var i = 0; i < bad_indices.length; i++) { \
+            var threw = false; \
+            try { Atomics.load(view, bad_indices[i](view)); } catch (e) { threw = e instanceof RangeError; } \
+            if (!threw) { return false; } \
+          } \
+          return true; })()",
+    );
+}
+
+/// 不可变缓冲写守卫序：写族在 immutable 缓冲上抛 TypeError，且值对象的
+/// valueOf 先于抛错未被调用（守卫先于值转换）。
+#[test]
+fn atomics_immutable_guard_order() {
+    let mut vm = Vm::new();
+    truthy(
+        &mut vm,
+        "(function () { \
+          var view = new Int32Array((new ArrayBuffer(8)).transferToImmutable()); \
+          var calls = 0; \
+          var value = { valueOf: function () { calls++; return 5; } }; \
+          var threw = false; \
+          try { Atomics.store(view, 0, value); } catch (e) { threw = e instanceof TypeError; } \
+          return threw && calls === 0; })()",
+    );
+}
+
+/// add 宽度回绕（模 2^宽）：Int8 -128+(-1) 存 127 返 -128；BigInt64 MAX+1n 存
+/// -MIN 返 MAX；BigUint64 MAX+1n 存 0n 返 MAX。
+#[test]
+fn atomics_add_sub_wrap() {
+    let mut vm = Vm::new();
+    truthy(
+        &mut vm,
+        "(function () { \
+          var i8 = new Int8Array(new ArrayBuffer(16)); \
+          i8[0] = -128; \
+          var r1 = Atomics.add(i8, 0, -1); \
+          if (!(r1 === -128 && i8[0] === 127)) { return false; } \
+          var b64 = new BigInt64Array(new ArrayBuffer(32)); \
+          b64[0] = 9223372036854775807n; \
+          var r2 = Atomics.add(b64, 0, 1n); \
+          if (!(r2 === 9223372036854775807n && b64[0] === -9223372036854775808n)) { return false; } \
+          var ub64 = new BigUint64Array(new ArrayBuffer(32)); \
+          ub64[0] = 18446744073709551615n; \
+          var r3 = Atomics.add(ub64, 0, 1n); \
+          if (!(r3 === 18446744073709551615n && ub64[0] === 0n)) { return false; } \
+          return true; })()",
+    );
+}
+
+/// full_reset（dirty 重建）重绑钉：方法污染 + 全局槽覆盖后，重置复原 10 方法、
+/// 全局槽与 toStringTag。
+#[test]
+fn atomics_full_reset_rebinds() {
+    let mut vm = Vm::new();
+    eval(&mut vm, "Atomics.add = function () { return 1; }; Atomics = 42; 0").expect("run1");
+    vm.full_reset();
+    let result = eval(
+        &mut vm,
+        "(function () { \
+          var methods = ['load','store','exchange','add','sub','and','or','xor','compareExchange','isLockFree']; \
+          var allfn = true; \
+          for (var i = 0; i < methods.length; i++) { \
+            if (typeof Atomics[methods[i]] !== 'function') { allfn = false; break; } \
+          } \
+          var tag = Atomics[Symbol.toStringTag] === 'Atomics'; \
+          var len = typeof Atomics.add === 'function' && Atomics.add.length === 3; \
+          return (typeof Atomics === 'object') + '|' + tag + '|' + len + '|' + allfn; })()",
+    )
+    .unwrap();
+    let text = vm.lookup_str(result).unwrap_or_default().to_string();
+    assert_eq!(text, "true|true|true|true");
 }
