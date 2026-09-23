@@ -49,6 +49,9 @@ impl oxide_runtime_api::VmHost for Vm {
     fn epoch(&self) -> &Epoch {
         self.epoch()
     }
+    fn pc(&self) -> usize {
+        self.pc
+    }
     fn take_uncaught_value(&mut self) -> Option<JsValue> {
         self.last_uncaught_value.take()
     }
@@ -144,6 +147,9 @@ impl oxide_runtime_api::VmHost for Vm {
     }
     fn raise_type_error(&mut self, msg: &str) -> Result<(), String> {
         self.raise_type_error(msg)
+    }
+    fn raise_captured(&mut self, exc: JsValue) -> Result<(), String> {
+        self.raise_captured(exc)
     }
     fn error_message_text(&self, kind: &str, msg: &str) -> String {
         self.error_message_text(kind, msg)

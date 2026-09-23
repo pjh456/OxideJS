@@ -144,6 +144,29 @@ impl Vm {
         Err(err.to_string())
     }
 
+    /// 恢复已捕获的原始异常值（强转失败载荷）并走异常展开，保原值 kind：
+    /// 深度 0 置原值入异常通道就地展开到外围 catch；深度 >0 返回 kind 前缀
+    /// 文本 `Err`，由原生调用边界恢复为异常对象。
+    ///
+    /// # 步骤
+    /// 1. 深度 0：原值与 kind 写入异常通道，就地 `unwind`。
+    /// 2. 深度 >0：以 `Kind: message` 文本 `Err` 返回，不就地展开。
+    ///
+    /// # 边界与前提
+    /// - `exc` 为调用方已提取的原始异常值；本入口不重取 uncaught 槽。
+    ///
+    /// # 副作用
+    /// - 深度 0 写 `exception_value`/`pending_error_kind`，pc 经展开改写。
+    pub(crate) fn raise_captured(&mut self, exc: JsValue) -> Result<(), String> {
+        if self.native_call_depth == 0 {
+            let kind = self.thrown_error_kind(exc);
+            self.exception_value = Some(exc);
+            self.pending_error_kind = Some(kind);
+            return self.unwind();
+        }
+        Err(oxide_builtins::typed_array::element_error_text(self, exc))
+    }
+
     /// ToNumber 有界版：先按 number hint 做 ToPrimitive，再转 `f64`。
     ///
     /// # 边界与前提

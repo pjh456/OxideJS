@@ -195,7 +195,22 @@ pub trait VmHost {
 
     // 错误处理
     fn checked_object_ptr(&mut self, val: JsValue, error_msg: &str) -> Result<Option<*mut JsObject>, String>;
+    /// 读当前分派指令位置（pc）。供有界强转调用方在强转前后采样：深度 0
+    /// 用户回调抛错已就地展开时 pc 必已变化，调用方须立即停止执行后续步骤
+    /// （强转结果为残值，继续即假值写或二次抛错）。
+    fn pc(&self) -> usize;
     fn raise_type_error(&mut self, msg: &str) -> Result<(), String>;
+    /// 恢复已捕获的原始异常值（强转失败载荷）并走异常展开，保原值 kind：
+    /// 深度 0 置原值入异常通道就地展开到外围 catch；深度 >0 返回 kind 前缀
+    /// 文本，由原生调用边界恢复为异常对象。
+    ///
+    /// # 边界与前提
+    /// - `exc` 须为调用方已提取的原始异常值（如经 `take_uncaught_value`）；
+    ///   本入口不重取 uncaught 槽。
+    ///
+    /// # 副作用
+    /// - 深度 0 写 `exception_value`/`pending_error_kind`，pc 经展开改写。
+    fn raise_captured(&mut self, exc: JsValue) -> Result<(), String>;
     fn error_message_text(&self, kind: &str, msg: &str) -> String;
     fn call_stack_function_names(&self) -> Vec<String>;
     fn promote_if_needed_for_write_ptr(&mut self, target_ptr: *mut JsObject, value: JsValue) -> JsValue;

@@ -368,13 +368,23 @@ impl Vm {
             }
             return Ok(());
         }
-        // TypedArray 整数索引：receiver 为 TA 本体时写底层 buffer（越界静默忽略）；
-        // receiver 非 TA 时按规范把写入落到 receiver 对象，不碰 TA buffer。
-        // buffer 已 detach 的 TA：数值键（含非规范数值串）写静默忽略、不落
-        // 命名属性；非数字串与 symbol 键落普通属性路径。
+        // 统一数值键门（exotic [[Set]]）：界内规范键写底层 buffer（自臂界内
+        // 写 / 越界静默；他臂先按自身判界再按 receiver 分类）；数字无效键强转
+        // （可抛、kind 保真）后丢弃、receiver 不 consult（detach 同臂：live 长
+        // 0 时全数值键落此臂）；非规范数值串落下方普通属性路径。
         if obj.is_typed_array_obj() {
-            if let Some(index) = self.array_index_from_property_key(prop_name_si) {
-                if !std::ptr::eq(receiver.as_js_object_ptr(), obj as *mut JsObject) {
+            let receiver_is_obj = std::ptr::eq(receiver.as_js_object_ptr(), obj as *mut JsObject);
+            match oxide_builtins::typed_array::ta_index_gate(self, obj, prop_name_si) {
+                oxide_builtins::typed_array::TaIndexGate::NumericValid(index) => {
+                    if receiver_is_obj {
+                        return oxide_builtins::typed_array::typed_array_element_set(self, obj, index, val);
+                    }
+                    // 界判先于 receiver consult：越界直接返回零副作用（门
+                    // 保证界内，此处为防御背板）。
+                    let live = oxide_builtins::typed_array::ta_view_length(self, obj);
+                    if (index as usize) >= live {
+                        return Ok(());
+                    }
                     return self.set_to_receiver(
                         obj,
                         prop_name_si,
@@ -386,12 +396,20 @@ impl Vm {
                         builtin,
                     );
                 }
-                return oxide_builtins::typed_array::typed_array_element_set(self, obj, index, val);
-            }
-            if std::ptr::eq(receiver.as_js_object_ptr(), obj as *mut JsObject)
-                && oxide_builtins::typed_array::typed_array_detached_numeric_key_noop(self, obj, prop_name_si)
-            {
-                return Ok(());
+                oxide_builtins::typed_array::TaIndexGate::NumericInvalid => {
+                    // 强转（副作用/抛错先触发）后按 live 复判落位；receiver
+                    // 不 consult。整数键与规范越界串键携带索引：走元素写入口
+                    // （强转后 live 复判——强转期 resize 可翻越界为界内）；
+                    // 非规范数值串无索引可落，纯强转丢弃。
+                    if receiver_is_obj {
+                        if let Some(index) = self.array_index_from_property_key(prop_name_si) {
+                            return oxide_builtins::typed_array::typed_array_element_set(self, obj, index, val);
+                        }
+                        return oxide_builtins::typed_array::typed_array_numeric_key_convert_only(self, obj, val);
+                    }
+                    return Ok(());
+                }
+                oxide_builtins::typed_array::TaIndexGate::Ordinary => {}
             }
         }
         // 数组 length 赋值：走 ArraySetLength 语义（两次数值强转、可写性判定与
@@ -475,6 +493,22 @@ impl Vm {
                     strict,
                     builtin,
                     "Cannot add property, array length is not writable",
+                );
+            }
+        }
+        // receiver 非基对象且为 TypedArray：写入路由到 receiver 的 [[Set]]
+        // （数值键：界内元素写 / 数字无效强转后丢弃；非数字键：落 receiver
+        // 属性），不在基对象上建影子属性。
+        let receiver_ptr = receiver.as_js_object_ptr();
+        if !receiver_ptr.is_null() && !std::ptr::eq(receiver_ptr, obj as *mut JsObject) {
+            // SAFETY: receiver_ptr 为 receiver 值携带的非空对象指针，对象在
+            // 本会话内存活；写路径不移动对象。
+            if unsafe { &*receiver_ptr }.is_typed_array_obj() {
+                return oxide_builtins::typed_array::typed_array_receiver_set(
+                    self,
+                    unsafe { &mut *receiver_ptr },
+                    prop_name_si,
+                    val,
                 );
             }
         }
@@ -569,28 +603,58 @@ impl Vm {
         }
     }
 
-    /// TypedArray 整数索引在 `receiver` ≠ TA 时的 [[Set]] 语义：越界或非对象
-    /// receiver 直接返回 true（不写、不 ToNumber）；界内对象 receiver 走普通 set
-    /// 把属性落到 receiver 自身。
+    /// TypedArray 界内规范键在 `receiver` ≠ TA 时的 [[Set]] 语义：
+    ///
+    /// # 步骤
+    /// 1. 基元 receiver：Set 失败（strict 抛 TypeError，sloppy 静默）。
+    /// 2. TA receiver：按自身 live 长判界——界内强转后写元素（可抛、kind
+    ///    保真）；越界失败，零强转。
+    /// 3. 非 TA 对象 receiver：按自身属性层判——own accessor 失败（setter
+    ///    不调用）；own 不可写数据失败；own 可写数据直写（零强转）；无 own
+    ///    且可扩展建属性（值原样）；无 own 且不可扩展失败。
+    ///
+    /// # 边界与前提
+    /// - 调用方须已判定键对 TA 自身界内（`ta_index_gate` NumericValid）。
+    ///
+    /// # 副作用
+    /// - 可能写 receiver 的 buffer / 属性存储；强转副作用与自写臂同。
     #[allow(clippy::too_many_arguments)]
     fn set_to_receiver(
-        &mut self, ta_obj: &mut JsObject, prop_name_si: u32, val: JsValue, receiver: JsValue, index: usize,
-        use_frame_push: bool, strict: bool, builtin: bool,
+        &mut self, _ta_obj: &mut JsObject, prop_name_si: u32, val: JsValue, receiver: JsValue, index: usize,
+        _use_frame_push: bool, _strict: bool, builtin: bool,
     ) -> Result<(), String> {
-        let Some((_, length)) = oxide_builtins::typed_array::typed_array_integer_index(self, ta_obj, prop_name_si)
-        else {
-            return Ok(());
-        };
-        if index >= length {
-            return Ok(());
-        }
         let receiver_ptr = receiver.as_js_object_ptr();
         if receiver_ptr.is_null() {
+            return self.write_protection_failure(builtin, "Cannot set property on a primitive receiver");
+        }
+        // SAFETY: receiver_ptr 为 receiver 值携带的非空对象指针，对象在会话内
+        // 存活；此处顺序读写，写路径不移动对象。
+        let receiver_obj = unsafe { &*receiver_ptr };
+        if receiver_obj.is_typed_array_obj() {
+            let live = oxide_builtins::typed_array::ta_view_length(self, receiver_obj);
+            if index >= live {
+                return self.write_protection_failure(builtin, "TypedArray receiver index out of bounds");
+            }
+            return oxide_builtins::typed_array::typed_array_element_set(self, receiver_obj, index as u32, val);
+        }
+        if let Some(pos) = self.get_own_property_slot(receiver_obj, prop_name_si) {
+            if let Some(meta) = receiver_obj.prop_meta_at(pos) {
+                // own accessor（setter 不调用）与不可写数据均失败。
+                if meta.is_accessor || !meta.attributes.writable() {
+                    return self.write_protection_failure(builtin, "Cannot set property on the receiver");
+                }
+            }
+            // SAFETY: 同 receiver_ptr 所指对象，写路径不移动对象。
+            unsafe { (*receiver_ptr).set_prop_storage(pos as usize, val) };
+            self.sync_global_builtin_mirror(receiver_obj, prop_name_si, val);
             return Ok(());
         }
-        let promoted = self.promote_if_needed_for_write_ptr(receiver_ptr, val);
-        let receiver_obj = unsafe { &mut *receiver_ptr };
-        self.ordinary_set_inner(receiver_obj, prop_name_si, promoted, receiver, use_frame_push, strict, builtin)
+        if !receiver_obj.is_extensible() {
+            return self.write_protection_failure(builtin, "The receiver is not extensible");
+        }
+        // SAFETY: 同 receiver_ptr 所指对象，写路径不移动对象。
+        self.set_or_create_prop_value(unsafe { &mut *receiver_ptr }, prop_name_si, val);
+        Ok(())
     }
 
     /// 调用或帧化访问器 setter：native（或禁止帧化的调用方）同步执行，
@@ -819,16 +883,19 @@ impl Vm {
     }
 
     /// 写新属性须分流到完整 ordinary_set 语义的场景：数组 length（ArraySetLength）与
-    /// 数组/TA 整数索引键（元素区 / buffer 写）、detach 后 TA 的数值键（[[Set]]
-    /// 静默臂，非规范数值串如 "1.1"/"-0" 不在 shape 链上，CreateDataProperty
-    /// 快路径会错误地为其建命名属性）。
+    /// 数组/TA 整数索引键（元素区 / buffer 写）、TA 的统一数值键门两数值臂
+    /// （[[Set]] 元素写 / 强转后丢弃，非规范数值串如 "1.1"/"-0" 不在 shape
+    /// 链上，CreateDataProperty 快路径会错误地为其建命名属性）。
     pub(crate) fn named_prop_create_needs_ordinary_set(&self, obj: &JsObject, prop_name_si: u32) -> bool {
         (obj.is_array() && prop_name_si == self.length_si)
             || (obj.is_typed_array_obj() || obj.is_array())
                 && self.array_index_from_property_key(prop_name_si).is_some()
             || obj.is_typed_array_obj()
-                && self.array_index_from_property_key(prop_name_si).is_none()
-                && oxide_builtins::typed_array::typed_array_detached_numeric_key_noop_ro(self, obj, prop_name_si)
+                && matches!(
+                    oxide_builtins::typed_array::ta_index_gate(self, obj, prop_name_si),
+                    oxide_builtins::typed_array::TaIndexGate::NumericValid(_)
+                        | oxide_builtins::typed_array::TaIndexGate::NumericInvalid,
+                )
     }
 
     /// 值写入直调路径：REST / SPREAD / builtin 内部等已确定目标对象的场景，
@@ -853,15 +920,25 @@ impl Vm {
     ///   仅供语义已确定的内部调用方使用。
     pub(crate) fn set_or_create_prop_value(&mut self, obj: &mut JsObject, prop_name_si: u32, val: JsValue) {
         vm_trace!("set_or_create_prop_value: shape_id={} prop_name_si={}", obj.shape_id(), prop_name_si);
-        // TypedArray 整数索引写 buffer（越界忽略），不进入 shape/prop 槽；
-        // buffer 已 detach 的数值键写静默忽略（与 ordinary_set_inner 同臂）。
+        // 统一数值键门：界内规范键写 buffer（越界静默），数字无效键强转后
+        // 丢弃（detach 同臂），不进入 shape/prop 槽；非规范数值串落形状路径。
         if obj.is_typed_array_obj() {
-            if let Some(index) = self.array_index_from_property_key(prop_name_si) {
-                let _ = oxide_builtins::typed_array::typed_array_element_set(self, obj, index, val);
-                return;
-            }
-            if oxide_builtins::typed_array::typed_array_detached_numeric_key_noop(self, obj, prop_name_si) {
-                return;
+            match oxide_builtins::typed_array::ta_index_gate(self, obj, prop_name_si) {
+                oxide_builtins::typed_array::TaIndexGate::NumericValid(index) => {
+                    let _ = oxide_builtins::typed_array::typed_array_element_set(self, obj, index, val);
+                    return;
+                }
+                oxide_builtins::typed_array::TaIndexGate::NumericInvalid => {
+                    // 与 ordinary_set_inner 同臂：携带索引的键走元素写入口
+                    // （强转后 live 复判），非规范数值串纯强转丢弃。
+                    if let Some(index) = self.array_index_from_property_key(prop_name_si) {
+                        let _ = oxide_builtins::typed_array::typed_array_element_set(self, obj, index, val);
+                    } else {
+                        let _ = oxide_builtins::typed_array::typed_array_numeric_key_convert_only(self, obj, val);
+                    }
+                    return;
+                }
+                oxide_builtins::typed_array::TaIndexGate::Ordinary => {}
             }
         }
         // 数组下标键写入元素区（维护 array_prop_count），不进入 shape 链。
@@ -920,10 +997,18 @@ impl Vm {
     ) -> Result<(), String> {
         vm_trace!("define_data_property: shape={} prop_si={}", obj.shape_id(), prop_name_si);
         let val = self.promote_if_needed_for_write_ptr(obj as *mut JsObject, val);
-        // TypedArray 整数索引：走元素定义（界内写 buffer，越界/非法描述符拒绝）。
+        // TypedArray 统一数值键门：界内规范键走元素定义（界内写 buffer）；
+        // 规范越界键（含 detach：live 长 0）拒绝定义；非规范数值串
+        // （"+1"/"1.0" 等，round-trip 不成）与 symbol 键落命名属性路径。
         if obj.is_typed_array_obj() {
-            if let Some(index) = self.array_index_from_property_key(prop_name_si) {
-                return oxide_builtins::typed_array::typed_array_element_define(self, obj, index, val);
+            match oxide_builtins::typed_array::ta_index_gate(self, obj, prop_name_si) {
+                oxide_builtins::typed_array::TaIndexGate::NumericValid(index) => {
+                    return oxide_builtins::typed_array::typed_array_element_define(self, obj, index, val);
+                }
+                oxide_builtins::typed_array::TaIndexGate::NumericInvalid => {
+                    return Err("cannot define property: TypedArray index out of range".to_string());
+                }
+                oxide_builtins::typed_array::TaIndexGate::Ordinary => {}
             }
         }
         if obj.is_array() {

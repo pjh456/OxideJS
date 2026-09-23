@@ -832,8 +832,220 @@ fn ta_gate_detached_numeric_invalid() {
     let result = eval(
         &mut vm,
         "(function () { var ab = new ArrayBuffer(8); var ta = new Int8Array(ab); \
-         ta[0] = 9; ab.transfer(); \
-         return ta[0] === undefined && !(0 in ta); })()",
+          ta[0] = 9; ab.transfer(); \
+          return ta[0] === undefined && !(0 in ta); })()",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
+#[test]
+fn ta_set_numeric_invalid_self_silent() {
+    // 数字无效键（分数/负数/"-0"）自写：不建属性、读 undefined，原型预置
+    // 同键抛 getter/setter 不被触达。
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "(function () { var ta = new Int8Array([42]); \
+          var keys = ['1.1', '-1', '-0']; \
+          for (var i = 0; i < keys.length; i++) { \
+            Object.defineProperty(Int8Array.prototype, keys[i], { \
+              get: function () { throw new Error('proto getter must not fire'); }, \
+              set: function () { throw new Error('proto setter must not fire'); }, \
+              configurable: true }); } \
+          for (var i = 0; i < keys.length; i++) { \
+            ta[keys[i]] = 7; \
+            if (Object.prototype.hasOwnProperty.call(ta, keys[i])) return false; \
+            if (ta[keys[i]] !== undefined) return false; } \
+          return true; })()",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
+#[test]
+fn ta_set_numeric_invalid_other_no_side_effect() {
+    // 数字无效键 + receiver ≠ 自身：全 receiver 类 Reflect.set 恒 true，
+    // target 与 receiver 均无新属性，valueOf 零次，原型 accessor 不触发。
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "(function () { var calls = 0; \
+          var value = { valueOf: function () { calls++; return 2.3; } }; \
+          var keys = [1, 1.5, -1]; \
+          for (var i = 0; i < keys.length; i++) { var key = keys[i]; \
+            Object.defineProperty(Int8Array.prototype, key, { \
+              get: function () { throw new Error('getter must not fire'); }, \
+              set: function () { throw new Error('setter must not fire'); }, \
+              configurable: true }); \
+            var target = new Int8Array([0]); \
+            var receiver = {}; \
+            if (Reflect.set(target, key, value, receiver) !== true) return false; \
+            if (Object.prototype.hasOwnProperty.call(target, key)) return false; \
+            if (Object.prototype.hasOwnProperty.call(receiver, key)) return false; \
+            receiver = new Int8Array([1]); \
+            if (Reflect.set(target, key, value, receiver) !== true) return false; \
+            if (Object.prototype.hasOwnProperty.call(target, key)) return false; \
+            if (Object.prototype.hasOwnProperty.call(receiver, key)) return false; \
+            receiver = Object.defineProperty({}, key, { \
+              get: function () { return 1; }, \
+              set: function () { throw new Error('setter must not fire'); }, \
+              configurable: true }); \
+            if (Reflect.set(target, key, value, receiver) !== true) return false; \
+            if (receiver[key] !== 1) return false; \
+            receiver = Object.preventExtensions({}); \
+            if (Reflect.set(target, key, value, receiver) !== true) return false; \
+            if (Object.prototype.hasOwnProperty.call(receiver, key)) return false; \
+            delete Int8Array.prototype[key]; } \
+          return calls === 0; })()",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
+#[test]
+fn ta_set_ordinary_key_property() {
+    // 非规范数值串（round-trip 不成）落普通属性：建属性、readback 值、
+    // 二次写覆盖、defineProperty 不可写后 Reflect.set false。
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "(function () { var keys = ['1.0', '+1', '1000000000000000000000', '0.0000001']; \
+          for (var i = 0; i < keys.length; i++) { \
+            var sample = new Int8Array([42]); \
+            if (Reflect.set(sample, keys[i], 'ecma262') !== true) return false; \
+            if (sample[keys[i]] !== 'ecma262') return false; \
+            if (Reflect.set(sample, keys[i], 'es3000') !== true) return false; \
+            if (sample[keys[i]] !== 'es3000') return false; \
+            Object.defineProperty(sample, keys[i], { value: undefined, writable: false, configurable: true }); \
+            if (Reflect.set(sample, keys[i], 42) !== false) return false; \
+            if (sample[keys[i]] !== undefined) return false; } \
+          return true; })()",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
+#[test]
+fn ta_set_valid_receiver_table() {
+    // 界内规范键 + receiver ≠ 自身六臂表：空对象建属性（值原样零强转）/
+    // 同长 TA 强转写 / 短 TA false 零强转 / 不可扩展 false / own accessor
+    // false 不调 setter / own 不可写 false。
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "(function () { var calls = 0; \
+          var value = { valueOf: function () { calls++; return 2.3; } }; \
+          var target = new Int8Array([0]); var receiver = {}; \
+          if (Reflect.set(target, 0, value, receiver) !== true) return false; \
+          if (target[0] !== 0) return false; \
+          if (receiver[0] !== value) return false; \
+          target = new Int8Array([0]); receiver = new Int8Array([1]); \
+          if (Reflect.set(target, 0, new Number(2.3), receiver) !== true) return false; \
+          if (target[0] !== 0) return false; \
+          if (receiver[0] !== 2) return false; \
+          target = new Int8Array([0, 0]); receiver = new Int8Array([1]); \
+          if (Reflect.set(target, 1, value, receiver) !== false) return false; \
+          if (target[1] !== 0) return false; \
+          if (Object.prototype.hasOwnProperty.call(receiver, 1)) return false; \
+          target = new Int8Array([0]); receiver = Object.preventExtensions({}); \
+          if (Reflect.set(target, 0, value, receiver) !== false) return false; \
+          if (Object.prototype.hasOwnProperty.call(receiver, 0)) return false; \
+          target = new Int8Array([0]); \
+          receiver = { get 0() { return 1; }, set 0(v) { throw new Error('setter must not fire'); } }; \
+          if (Reflect.set(target, 0, value, receiver) !== false) return false; \
+          if (receiver[0] !== 1) return false; \
+          target = new Int8Array([0]); \
+          receiver = Object.defineProperty({}, 0, { value: 1, writable: false, configurable: true }); \
+          if (Reflect.set(target, 0, value, receiver) !== false) return false; \
+          if (receiver[0] !== 1) return false; \
+          return calls === 0; })()",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
+#[test]
+fn ta_set_receiver_ta_oob_plain_obj() {
+    // 普通对象 + 原型链 TA + 越界数值键：写入路由到 receiver 的 [[Set]]
+    // （强转后丢弃，valueOf 恰一次），基对象上不建属性。
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "(function () { var receiver = new Int32Array(10); \
+          var obj = Object.create(receiver); \
+          var called = 0; \
+          var value = { valueOf: function () { called++; return 1; } }; \
+          if (Reflect.set(obj, 100, value, receiver) !== true) return false; \
+          if (called !== 1) return false; \
+          if (Object.prototype.hasOwnProperty.call(obj, 100)) return false; \
+          if (Object.prototype.hasOwnProperty.call(receiver, 100)) return false; \
+          return true; })()",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
+#[test]
+fn ta_set_coerce_kind_preserved() {
+    // 强转抛错 kind 保真：valueOf 抛原错误原样传播（非 TypeError 包裹）；
+    // 字符串转 BigInt 非法值保 SyntaxError。
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "(function () { var sample = new Float64Array([42]); \
+          var thrown = null; \
+          try { sample['0'] = { valueOf: function () { throw new TypeError('boom'); } }; } \
+          catch (e) { thrown = e; } \
+          if (!(thrown instanceof TypeError) || thrown.message !== 'boom') return false; \
+          var bsample = new BigInt64Array([42n]); \
+          var bthrown = null; \
+          try { bsample['0'] = '1.1'; } catch (e) { bthrown = e; } \
+          if (!(bthrown instanceof SyntaxError)) return false; \
+          return true; })()",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
+#[test]
+fn ta_set_detach_coerce_then_silent() {
+    // detach 后数值键自写：平凡值静默（不建属性）；抛错 valueOf 抛原错误
+    // （kind 保真）。
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "(function () { var ab = new ArrayBuffer(8); \
+          var sample = new BigInt64Array(ab); \
+          sample[0] = 42n; \
+          ab.transfer(); \
+          sample[0] = 1n; \
+          if (sample[0] !== undefined) return false; \
+          sample['1.1'] = 1n; \
+          if (sample['1.1'] !== undefined) return false; \
+          var thrown = null; \
+          try { sample['0'] = { valueOf: function () { throw new RangeError('detach coerce'); } }; } \
+          catch (e) { thrown = e; } \
+          if (!(thrown instanceof RangeError)) return false; \
+          return true; })()",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
+#[test]
+fn ta_set_resize_convert_first() {
+    // 强转先于界判（整数键）：valueOf 期间 buffer resize 到界内，强转后
+    // live 复判界内写成功（零长键 0 原越界）。
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "(function () { var ab = new ArrayBuffer(0, { maxByteLength: 1 }); \
+          var ta = new Int8Array(ab); \
+          var index = 0; \
+          var value = { valueOf: function () { ab.resize(1); return 100; } }; \
+          ta[index] = value; \
+          return ta.length === 1 && ta[0] === 100; })()",
     )
     .unwrap();
     assert!(result.as_bool());

@@ -368,28 +368,6 @@ pub fn typed_array_element_get<H: VmHost>(vm: &mut H, obj: &JsObject, index: u32
     Ok(read_element(vm, view.kind, buffer, absolute_byte_offset(view, index as usize)))
 }
 
-/// 若对象是 TypedArray 且属性键是整数索引，返回 `(索引, 视图长度)`；否则 `None`。
-/// 供 VM 在 receiver ≠ TA 时裁决整数索引的写前语义（越界直接返回，界内落到 receiver）。
-pub fn typed_array_integer_index<H: VmHost>(vm: &H, obj: &JsObject, prop_name_si: u32) -> Option<(usize, usize)> {
-    let ptr = typed_array_data_ptr(obj)?;
-    if ptr.is_null() {
-        return None;
-    }
-    let view = unsafe { *ptr };
-    let index = if is_int_key(prop_name_si) {
-        int_key_value(prop_name_si)
-    } else {
-        let key = vm.kernel_core().perm_interner().lookup(prop_name_si)?;
-        if key.is_empty() || (key.len() > 1 && key.starts_with('0')) {
-            return None;
-        }
-        key.parse::<u32>().ok()?
-    };
-    // 长度走 live 口径：buffer 收缩越界后视同空视图，写前语义不落到
-    // receiver（与 ta_view_length 同口径）。
-    Some((index as usize, ta_live_length(view)))
-}
-
 // ── 统一数值键门 ─────────────────────────────────────────────────────────
 
 /// TypedArray 统一数值键门三态：`Ordinary` 非数字串（走普通属性路径）；
@@ -424,10 +402,11 @@ pub fn ta_index_gate<H: VmHost>(vm: &H, obj: &JsObject, key_si: u32) -> TaIndexG
     ta_index_gate_from_text(key, length)
 }
 
-/// 取 TypedArray 视图的 live 长度（供只需 length 不需门的枚举面消费方）；
-/// 非 TypedArray 或内部状态无效返回 0。越界（detach、定长窗口被 buffer
-/// 收缩裁掉、auto offset 超 buffer）统一 0，界内键经门归数字无效。
-pub(crate) fn ta_view_length<H: VmHost>(_vm: &H, obj: &JsObject) -> usize {
+/// 取 TypedArray 视图的 live 长度（供只需 length 不需门的枚举面与
+/// receiver 界判消费方）；非 TypedArray 或内部状态无效返回 0。越界
+/// （detach、定长窗口被 buffer 收缩裁掉、auto offset 超 buffer）统一 0，
+/// 界内键经门归数字无效。
+pub fn ta_view_length<H: VmHost>(_vm: &H, obj: &JsObject) -> usize {
     let Some(ptr) = typed_array_data_ptr(obj) else {
         return 0;
     };
@@ -495,49 +474,6 @@ fn ta_to_number_text(t: &str) -> f64 {
     }
 }
 
-/// detach 后数值键静默写判定：buffer 已 detach（载荷缺失，含 buffer 非
-/// ArrayBuffer 对象）且键落在统一数值键门的数字臂（规范整数索引，或
-/// "1.1"/"-0" 类 round-trip 数值串）时，写静默忽略、不落命名属性；
-/// 非数字串与 symbol 键返回 false（调用方落普通属性路径）。供 VM 普通
-/// 属性 set 的 typed 分支作 [[Set]] 静默臂。
-pub fn typed_array_detached_numeric_key_noop<H: VmHost>(vm: &mut H, obj: &JsObject, key_si: u32) -> bool {
-    let this_val = JsValue::from_js_object(obj as *const JsObject as *mut JsObject);
-    let Ok(view) = get_typed_array_data(vm, this_val) else {
-        return false;
-    };
-    typed_array_detached_numeric_key_noop_view(vm, obj, view, key_si)
-}
-
-/// 只读变体：判定逻辑同 `typed_array_detached_numeric_key_noop`，视图直接
-/// 从对象 native 槽读出，不要求可变 VM 访问。供 IC 快路径新属性分流等
-/// 只持读引用的场景（该场景下视图状态与写路径同一口径）。
-pub fn typed_array_detached_numeric_key_noop_ro<H: VmHost>(vm: &H, obj: &JsObject, key_si: u32) -> bool {
-    let Some(ptr) = typed_array_data_ptr(obj) else {
-        return false;
-    };
-    if ptr.is_null() {
-        return false;
-    }
-    // SAFETY: ptr 非空，为 TypedArray 对象 native_fn 槽内的 Box<TypedArrayData>，
-    // 与对象同生命周期，此处只读拷贝视图字段。
-    let view = unsafe { *ptr };
-    typed_array_detached_numeric_key_noop_view(vm, obj, view, key_si)
-}
-
-/// 两变体共享尾段：非 TypedArray 对象、buffer 载荷存活（未 detach）均不
-/// 静默；detach 且键落数值臂（界内索引或数字无效）时静默。
-fn typed_array_detached_numeric_key_noop_view<H: VmHost>(
-    vm: &H, obj: &JsObject, view: TypedArrayData, key_si: u32,
-) -> bool {
-    if !obj.is_typed_array_obj() {
-        return false;
-    }
-    if ta_buffer_byte_length(view).is_some() {
-        return false;
-    }
-    matches!(ta_index_gate(vm, obj, key_si), TaIndexGate::NumericValid(_) | TaIndexGate::NumericInvalid)
-}
-
 /// 写 TypedArray 指定整数索引的元素（供 VM 普通属性 set 的 typed 分支使用）。
 /// 先按元素类型转换（副作用/抛错先于界判触发），越界（含 detach）静默忽略
 /// （不创建属性、不报错）；内部状态非法返回 Err(String)（防御背板）。
@@ -547,6 +483,62 @@ pub fn typed_array_element_set<H: VmHost>(
     let this_val = JsValue::from_js_object(obj as *const JsObject as *mut JsObject);
     let view = get_typed_array_data(vm, this_val).map_err(|e| format!("{e}"))?;
     write_typed_array_element(vm, view, index, value)
+}
+
+/// 数值键纯强转入口：按元素类型 ToBigInt/ToNumber（副作用/抛错先触发），
+/// 不做任何写入。供 [[Set]] 数字无效臂（含 detach：live 长 0 时全数值键落
+/// 此臂）消费——强转后结果丢弃。
+///
+/// # 步骤
+/// 1. 取视图（内部状态非法返回防御背板 Err）。
+/// 2. 强转：深度 0 抛错已就地展开到外围 catch，pc 守卫即停。
+/// 3. 强转结果丢弃。
+///
+/// # 边界与前提
+/// - 调用方须已判定键落门数字无效臂（或 receiver-TA 同臂）；本入口不重判键。
+///
+/// # 副作用
+/// - 执行用户代码（valueOf/toString/toPrimitive），可能抛错；抛错时深度 0
+///   已 unwind、深度 >0 以 kind 前缀文本 `Err` 返回。
+pub fn typed_array_numeric_key_convert_only<H: VmHost>(
+    vm: &mut H, obj: &JsObject, value: JsValue,
+) -> Result<(), String> {
+    let this_val = JsValue::from_js_object(obj as *const JsObject as *mut JsObject);
+    let view = get_typed_array_data(vm, this_val).map_err(|e| format!("{e}"))?;
+    let pc_before = vm.pc();
+    let converted = ta_element_value(vm, view.kind, value);
+    // pc 守卫：深度 0 强转抛错已展开，直接返回由 dispatch 执行 catch。
+    if vm.pc() != pc_before {
+        return Ok(());
+    }
+    match converted {
+        Ok(_) => Ok(()),
+        // 深度 >0：kind 前缀文本由原生调用边界恢复为异常对象。
+        Err(err) => vm.raise_captured(err),
+    }
+}
+
+/// TypedArray receiver 上的 [[Set]] 写路由：门按 receiver 自身取。界内规范
+/// 键强转后写 receiver 元素（可抛、kind 保真，越界静默）；数字无效键强转后
+/// 丢弃；非数字键落 receiver 的普通属性路径。
+///
+/// # 边界与前提
+/// - 调用方须已确认 receiver 是 TypedArray 且 receiver ≠ 写入基对象。
+///
+/// # 副作用
+/// - 可能写 receiver buffer / 创建 receiver 属性；强转副作用与自写臂同
+///   （深度 0 抛错已 unwind 到外围 catch，深度 >0 以 `Err` 文本传播）。
+pub fn typed_array_receiver_set<H: VmHost>(
+    vm: &mut H, receiver: &mut JsObject, key_si: u32, value: JsValue,
+) -> Result<(), String> {
+    match ta_index_gate(vm, receiver, key_si) {
+        TaIndexGate::NumericValid(index) => typed_array_element_set(vm, receiver, index, value),
+        TaIndexGate::NumericInvalid => typed_array_numeric_key_convert_only(vm, receiver, value),
+        TaIndexGate::Ordinary => {
+            vm.set_or_create_prop_value(receiver, key_si, value);
+            Ok(())
+        }
+    }
 }
 
 /// 定义 TypedArray 整数索引元素（defineProperty 语义）。
@@ -573,14 +565,19 @@ fn write_typed_array_element<H: VmHost>(
     vm: &mut H, view: TypedArrayData, index: u32, value: JsValue,
 ) -> Result<(), String> {
     // 先按元素类型转换（valueOf 副作用先于越界判定触发），越界再静默忽略。
-    let elem = match ta_element_value(vm, view.kind, value) {
+    let pc_before = vm.pc();
+    let converted = ta_element_value(vm, view.kind, value);
+    // pc 守卫：深度 0 强转抛错已就地展开到外围 catch，转换结果为残值——
+    // 继续即假值写（undefined 强转 NaN）或二次抛错，直接返回由 dispatch
+    // 执行 catch。
+    if vm.pc() != pc_before {
+        return Ok(());
+    }
+    let elem = match converted {
         Ok(v) => v,
-        Err(err) => {
-            // 转换失败恢复为可捕获的 JS 异常：主 dispatch 下就地展开到外围 catch，
-            // builtin 内部展开到调用方 try 处理器；uncaught 时以文本上抛。
-            let text = element_error_text(vm, err);
-            return vm.raise_type_error(&text);
-        }
+        // 转换失败恢复为可捕获的 JS 异常：深度 0 原值入通道就地展开到外围
+        // catch（kind 保真），深度 >0 以 kind 前缀文本由原生调用边界恢复。
+        Err(err) => return vm.raise_captured(err),
     };
     // live 边界：越界（含 detach）静默不写（规范 IntegerIndexedElementSet 的
     // IsValidIndexedAccess 臂），转换副作用已先发生。
@@ -660,8 +657,9 @@ fn is_bigint_kind(kind: TypedArrayKind) -> bool {
     matches!(kind, TypedArrayKind::BigInt64 | TypedArrayKind::BigUint64)
 }
 
-/// 把异常 JsValue 格式化为 `Kind: message` 文本（属性写路径的 String 错误契约用）。
-fn element_error_text<H: VmHost>(vm: &mut H, err: JsValue) -> String {
+/// 把异常 JsValue 格式化为 `Kind: message` 文本（属性写路径的 String 错误
+/// 契约用；原生调用边界据此经 `create_from_text` 恢复 kind）。
+pub fn element_error_text<H: VmHost>(vm: &mut H, err: JsValue) -> String {
     if let Some(s) = vm.lookup_str(err) {
         return s;
     }
