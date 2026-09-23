@@ -64,5 +64,5 @@ pub fn bind_set(core: &Arc<KernelCore>, session: &KernelSession, global: &mut Js
         oxide_builtins::array::array_species_get::<crate::vm::Vm> as *const (),
     );
 
-    bind_constructor!(core, global, "Set", ctor_ptr, oxide_builtins::set::set_constructor::<crate::vm::Vm>, 1, hash: true);
+    bind_constructor!(core, global, "Set", ctor_ptr, oxide_builtins::set::set_constructor::<crate::vm::Vm>, 0, hash: true);
 }

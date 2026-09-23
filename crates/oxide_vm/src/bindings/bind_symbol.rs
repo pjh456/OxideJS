@@ -52,7 +52,7 @@ pub fn bind_symbol(core: &Arc<KernelCore>, session: &KernelSession, global: &mut
         bind_well_known_symbol(core, ctor, name, JsValue::symbol(id as u32));
     }
 
-    bind_constructor!(core, global, "Symbol", ctor_ptr, oxide_builtins::symbol::symbol_constructor::<crate::vm::Vm>, 1, hash: true);
+    bind_constructor!(core, global, "Symbol", ctor_ptr, oxide_builtins::symbol::symbol_constructor::<crate::vm::Vm>, 0, hash: true);
 }
 
 fn bind_well_known_symbol(core: &Arc<KernelCore>, ctor: &mut JsObject, name: &str, val: JsValue) {

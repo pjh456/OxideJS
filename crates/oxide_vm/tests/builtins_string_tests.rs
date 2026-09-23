@@ -1672,3 +1672,16 @@ fn string_repeat_count_range_error() {
     let err = eval(&mut vm, "'ab'.repeat(Infinity)").unwrap_err();
     assert!(err.contains("RangeError"), "got: {}", err);
 }
+
+#[test]
+fn string_length_descriptor() {
+    // String.length = 1，描述符 { writable:false, enumerable:false, configurable:true }。
+    let mut vm = Vm::new();
+    let r = eval(
+        &mut vm,
+        "var d = Object.getOwnPropertyDescriptor(String, 'length'); \
+         d.value === 1 && d.writable === false && d.enumerable === false && d.configurable === true",
+    )
+    .unwrap();
+    assert!(r.as_bool());
+}

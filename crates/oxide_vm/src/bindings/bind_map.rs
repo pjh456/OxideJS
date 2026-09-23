@@ -59,5 +59,5 @@ pub fn bind_map(core: &Arc<KernelCore>, session: &KernelSession, global: &mut Js
         &[("groupBy", oxide_builtins::map::map_group_by::<crate::vm::Vm> as *const (), 2)],
     );
 
-    bind_constructor!(core, global, "Map", ctor_ptr, oxide_builtins::map::map_constructor::<crate::vm::Vm>, 1, hash: true);
+    bind_constructor!(core, global, "Map", ctor_ptr, oxide_builtins::map::map_constructor::<crate::vm::Vm>, 0, hash: true);
 }

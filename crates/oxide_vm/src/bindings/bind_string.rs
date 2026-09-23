@@ -56,6 +56,13 @@ pub fn bind_string(core: &Arc<KernelCore>, session: &KernelSession, global: &mut
     let ctor_ptr = session.builtin_world().string_constructor.as_ptr() as *mut JsObject;
     let ctor = unsafe { &mut *ctor_ptr };
     configure_native_constructor(ctor, oxide_builtins::string::string_constructor::<crate::vm::Vm> as *const (), 1);
+    // String.length = 1，描述符 { writable:false, enumerable:false, configurable:true }。
+    let length_si = core.perm_interner().intern("length").0;
+    let length_shape = core.shape_forge().make_shape(ctor.shape_id(), length_si);
+    ctor.set_shape_id(length_shape);
+    ctor.ensure_hash_props().push(JsValue::int(1));
+    let length_pos = ctor.hash_props_vec().map_or(0, |v| v.len() as u32).saturating_sub(1);
+    ctor.set_data_meta(length_pos, PropAttributes::new(false, false, true));
 
     let proto_ptr = session.builtin_world().string_proto.as_ptr() as *mut JsObject;
     let proto = unsafe { &mut *proto_ptr };

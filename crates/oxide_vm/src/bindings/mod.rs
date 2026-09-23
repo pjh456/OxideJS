@@ -101,6 +101,10 @@ macro_rules! bind_constructor {
         let length_shape = $core.shape_forge().make_shape(ctor.shape_id(), length_si);
         ctor.set_shape_id(length_shape);
         ctor.ensure_hash_props().push($crate::JsValue::int($nargs as i32));
+        // length 描述符 { writable:false, enumerable:false, configurable:true }
+        // （规范构造器通用面；不写 meta 缺省全枚举会泄漏进 Object.keys）。
+        let length_pos = ctor.hash_props_vec().map_or(0, |v| v.len() as u32).saturating_sub(1);
+        ctor.set_data_meta(length_pos, oxide_types::object::PropAttributes::new(false, false, true));
     }};
 }
 

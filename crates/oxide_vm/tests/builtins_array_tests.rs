@@ -458,3 +458,15 @@ fn array_is_array_rejects_prototype_inherited_object() {
     let (_vm, result) = eval("Array.isArray([])").unwrap();
     assert_eq!(result, JsValue::bool(true));
 }
+
+#[test]
+fn array_length_descriptor() {
+    // Array.length = 1，描述符 { writable:false, enumerable:false, configurable:true }。
+    let (vm, r) = eval(
+        "var d = Object.getOwnPropertyDescriptor(Array, 'length'); \
+         d.value === 1 && d.writable === false && d.enumerable === false && d.configurable === true",
+    )
+    .unwrap();
+    let _ = vm;
+    assert!(r.as_bool());
+}

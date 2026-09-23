@@ -226,3 +226,16 @@ fn set_object_key_identity() {
     let r = eval(&mut vm, "var o = { a: 1 }; var s = new Set(); s.add(o); s.has(o) && !s.has({ a: 1 })").unwrap();
     assert!(r.as_bool());
 }
+
+#[test]
+fn set_length_descriptor() {
+    // Set.length = 0，描述符 { writable:false, enumerable:false, configurable:true }。
+    let mut vm = Vm::new();
+    let r = eval(
+        &mut vm,
+        "var d = Object.getOwnPropertyDescriptor(Set, 'length'); \
+         d.value === 0 && d.writable === false && d.enumerable === false && d.configurable === true",
+    )
+    .unwrap();
+    assert!(r.as_bool());
+}

@@ -268,3 +268,16 @@ fn map_get_or_insert_length_and_name() {
     .unwrap();
     assert!(r.as_bool());
 }
+
+#[test]
+fn map_length_descriptor() {
+    // Map.length = 0，描述符 { writable:false, enumerable:false, configurable:true }。
+    let mut vm = Vm::new();
+    let r = eval(
+        &mut vm,
+        "var d = Object.getOwnPropertyDescriptor(Map, 'length'); \
+         d.value === 0 && d.writable === false && d.enumerable === false && d.configurable === true",
+    )
+    .unwrap();
+    assert!(r.as_bool());
+}

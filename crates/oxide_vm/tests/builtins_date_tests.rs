@@ -580,3 +580,16 @@ fn date_set_utc_hours_valid_kept() {
     let r = eval(&mut vm, "var d = new Date(0); d.setUTCHours(13); d.getUTCHours()").unwrap();
     assert_eq!(r.as_double() as i64, 13);
 }
+
+#[test]
+fn date_length_descriptor() {
+    // Date.length = 7，描述符 { writable:false, enumerable:false, configurable:true }。
+    let mut vm = Vm::new();
+    let r = eval(
+        &mut vm,
+        "var d = Object.getOwnPropertyDescriptor(Date, 'length'); \
+         d.value === 7 && d.writable === false && d.enumerable === false && d.configurable === true",
+    )
+    .unwrap();
+    assert!(r.as_bool());
+}

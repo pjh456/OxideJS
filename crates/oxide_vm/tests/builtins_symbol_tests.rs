@@ -356,3 +356,16 @@ fn symbol_proto_direct_description_access_throws_type_error() {
     .unwrap();
     assert!(result.as_bool());
 }
+
+#[test]
+fn symbol_length_descriptor() {
+    // Symbol.length = 0，描述符 { writable:false, enumerable:false, configurable:true }。
+    let mut vm = Vm::new();
+    let r = eval(
+        &mut vm,
+        "var d = Object.getOwnPropertyDescriptor(Symbol, 'length'); \
+         d.value === 0 && d.writable === false && d.enumerable === false && d.configurable === true",
+    )
+    .unwrap();
+    assert!(r.as_bool());
+}
