@@ -154,14 +154,19 @@ pub fn reflect_get_prototype_of<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeRes
     NativeResult::Ok(unsafe { &*target_ptr }.proto())
 }
 
-/// `Reflect.has(target, key)`：属性是否存在（含原型链）。
+/// `Reflect.has(target, key)`：属性存在性判定（规范 HasProperty，含原型链）。
+///
+/// TypedArray 经统一数值键门（exotic [[HasProperty]]）：界内整数索引判存在；
+/// 数字无效键（负/分数/±Infinity/NaN/越界，含 "-0" 特例）立即 false，不查
+/// 自身命名属性也不走原型链；非规范数字串落普通路径。原型链上的 TA 按同口径
+/// 经门判定。
 pub fn reflect_has<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let target_val = arg(vm, args, 1);
     let Some(target_ptr) = object_ptr(target_val) else {
         return type_error(vm, "Reflect.has target is not an object");
     };
     let key_si = vm.property_key_si(arg(vm, args, 2));
-    NativeResult::Ok(JsValue::bool(vm.resolve_property(unsafe { &*target_ptr }, key_si).is_some()))
+    NativeResult::Ok(JsValue::bool(vm.has_property(unsafe { &*target_ptr }, key_si)))
 }
 
 /// `Reflect.isExtensible(target)`：对象是否可扩展。

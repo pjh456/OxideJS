@@ -11,12 +11,12 @@ use oxide_runtime_api::{NativeResult, VmHost};
 
 use crate::builtins_debug;
 
-/// 判断字符串是否为规范整数索引：非空、无前导零、全数字且值 < 2^32-1。
+/// 判断字符串是否为规范整数索引：非空、无前导零、全数字且值 < 2^32。
 fn is_integer_index(key: &str) -> bool {
     if key.is_empty() || key.len() > 1 && key.as_bytes()[0] == b'0' {
         return false;
     }
-    key.bytes().all(|b| b.is_ascii_digit()) && key.parse::<u64>().unwrap_or(u64::MAX) < (1u64 << 32) - 1
+    key.bytes().all(|b| b.is_ascii_digit()) && key.parse::<u64>().unwrap_or(u64::MAX) < (1u64 << 32)
 }
 
 /// 收集对象全部自身属性（数组元素区 + shape 链），按规范顺序排列：整数索引在前

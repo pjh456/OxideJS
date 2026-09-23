@@ -1889,3 +1889,160 @@ fn ta_integrity_freeze_seal_no_element_touch() {
     .unwrap();
     assert!(result.as_bool());
 }
+
+#[test]
+fn ta_reflect_has_in_range_true() {
+    // 界内整数键 Reflect.has 判 true：int 与规范串同臂；len-0 形判 false；
+    // BigInt 族键集同形。
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "(function () { var ta = new Uint8Array([7, 8]); \
+          if (!Reflect.has(ta, 0) || !Reflect.has(ta, 1) || !Reflect.has(ta, '1')) return false; \
+          var ta0 = new Uint8Array(0); \
+          if (Reflect.has(ta0, 0)) return false; \
+          var b = new BigInt64Array([1n, 2n]); \
+          if (!Reflect.has(b, 0) || !Reflect.has(b, 1) || !Reflect.has(b, '1')) return false; \
+          var b0 = new BigInt64Array(0); \
+          return !Reflect.has(b0, 0); })()",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
+#[test]
+fn ta_reflect_has_numeric_invalid_false() {
+    // 数字无效键（越界整数/负/"-0"/分数）判 false：原型逐键预置抓假阳，
+    // 数字臂不走原型链。
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "(function () { var ta = new Uint8Array([7]); \
+          var keys = ['1', '-1', '-0', '1.1', '0.000001']; \
+          for (var i = 0; i < keys.length; i++) Uint8Array.prototype[keys[i]] = 'test262'; \
+          for (var i = 0; i < keys.length; i++) if (Reflect.has(ta, keys[i])) return false; \
+          return true; })()",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
+#[test]
+fn ta_reflect_has_inherited_ordinary() {
+    // 普通键路径：继承串属性 true；原型预置 "42" 后越界规范串仍 false；
+    // 缺失 symbol false、own symbol true；非规范串无 own false、defineProperty
+    // 后 true 且读值同键；"1" 规范越界恒 false。
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "(function () { var ta = new Uint8Array([7]); \
+          Object.getPrototypeOf(ta).foo = 42; \
+          if (!Reflect.has(ta, 'foo')) return false; \
+          Object.getPrototypeOf(ta)['42'] = true; \
+          if (Reflect.has(ta, '42')) return false; \
+          var s = Symbol('s'); \
+          if (Reflect.has(ta, s)) return false; \
+          ta[s] = 5; \
+          if (!Reflect.has(ta, s)) return false; \
+          if (Reflect.has(ta, '1.0') || Reflect.has(ta, '+1')) return false; \
+          Object.defineProperty(ta, '+1', { value: 7 }); \
+          if (!Reflect.has(ta, '+1') || ta['+1'] !== 7) return false; \
+          return !Reflect.has(ta, '1'); })()",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
+#[test]
+fn ta_reflect_has_chain_ta() {
+    // 链上 TA 经门判定：一层链 has(p,0) true / has(p,3) false；两层链
+    // has(q,0) true；`0 in p` 与 Reflect.has 同值（has_property 同源锚）。
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "(function () { var ta3 = new Uint8Array(3); \
+          var p = Object.create(ta3); \
+          if (!Reflect.has(p, 0)) return false; \
+          if (Reflect.has(p, 3)) return false; \
+          var q = Object.create(p); \
+          if (!Reflect.has(q, 0)) return false; \
+          return 0 in p; })()",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
+#[test]
+fn ta_reflect_has_detached_false() {
+    // detach 后 live 长 0：界内/负键归数字无效判 false；缺失 symbol false；
+    // own symbol 与真属性值不动。
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "(function () { var ab = new ArrayBuffer(8); var ta = new Uint8Array(ab); \
+          ta[0] = 9; ta.foo = 42; \
+          var s1 = Symbol('s1'); ta[s1] = 5; \
+          var s2 = Symbol('s2'); \
+          ab.transfer(); \
+          if (Reflect.has(ta, '0')) return false; \
+          if (Reflect.has(ta, '-1')) return false; \
+          if (Reflect.has(ta, s2)) return false; \
+          return Reflect.has(ta, s1) && ta.foo === 42; })()",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
+#[test]
+fn ta_reflect_has_resize_follows() {
+    // auto 视图 has 跟随 live 长：初始 3 键 0..2 true 且 3 false；grow 8 后
+    // 3..7 true；shrink-0 全 false。fixed 窗口 grow 键集不变、裁出窗口全 false。
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "(function () { var ab = new ArrayBuffer(3, { maxByteLength: 12 }); \
+          var ta = new Uint8Array(ab); \
+          if (!Reflect.has(ta, 0) || !Reflect.has(ta, 1) || !Reflect.has(ta, 2)) return false; \
+          if (Reflect.has(ta, 3)) return false; \
+          ab.resize(8); \
+          for (var i = 3; i < 8; i++) if (!Reflect.has(ta, i)) return false; \
+          ab.resize(0); \
+          if (Reflect.has(ta, 0)) return false; \
+          var ab2 = new ArrayBuffer(8, { maxByteLength: 16 }); \
+          var ta2 = new Uint8Array(ab2, 2, 2); \
+          ab2.resize(16); \
+          if (!Reflect.has(ta2, 0) || !Reflect.has(ta2, 1) || Reflect.has(ta2, 2)) return false; \
+          ab2.resize(3); \
+          return !Reflect.has(ta2, 0); })()",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
+#[test]
+fn ta_reflect_has_subarray_view() {
+    // 视图相对下标：subarray(2) 键集 0..视图长-1，越界 false。
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "(function () { var ta = new Uint8Array(4).subarray(2); \
+          return Reflect.has(ta, 0) && Reflect.has(ta, 1) && !Reflect.has(ta, 2); })()",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
+#[test]
+fn ta_keys_int_index_2pow32_boundary() {
+    // 2^32 边界：2^32-1 为规范数组索引（升序前置），2^32 起为串键（插入序）。
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "(function () { var ks1 = Object.keys({ a: 1, '4294967295': 2 }); \
+          if (ks1.join(',') !== '4294967295,a') return false; \
+          var ks2 = Object.keys({ b: 1, '4294967296': 2 }); \
+          return ks2.join(',') === 'b,4294967296'; })()",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
