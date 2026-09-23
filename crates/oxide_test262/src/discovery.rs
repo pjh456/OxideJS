@@ -40,7 +40,6 @@ pub(crate) fn is_skipped(meta: &TestMeta) -> Option<String> {
         "Proxy",
         "Intl",
         "Atomics",
-        "SharedArrayBuffer",
         "cross-realm",
         // await-dictionary（Promise.allKeyed/allSettledKeyed）是 2025 proposal，未实现。
         "await-dictionary",

@@ -2131,3 +2131,146 @@ fn ta_for_in_stable_after_delete_str_prop() {
     .unwrap();
     assert!(result.as_bool());
 }
+
+#[test]
+fn ta_sab_fill() {
+    // TA-over-SAB fill 全量回填并读回，构造/写/读同走双认载荷入口。
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "(function () { var ta = new Int32Array(new SharedArrayBuffer(16)); \
+           var ok = ta.length === 4 && ta.buffer instanceof SharedArrayBuffer; \
+           ta.fill(7); \
+           return ok && ta[0] === 7 && ta[1] === 7 && ta[2] === 7 && ta[3] === 7; })()",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
+#[test]
+fn ta_sab_set_ta_source() {
+    // TA-over-SAB set(TypedArray) 三形：跨 buffer 拷贝、同 buffer 快照
+    // 写前取值、BigInt 宽度源。
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "(function () { \
+           var src = new Int32Array(new SharedArrayBuffer(16)); src.fill(5); \
+           var dst = new Int32Array(new SharedArrayBuffer(32)); \
+           dst.set(src, 2); \
+           var ok = dst[0] === 0 && dst[2] === 5 && dst[5] === 5 && dst[6] === 0; \
+           var t2 = new Int32Array(new SharedArrayBuffer(16)); t2.fill(1); t2[0] = 9; \
+           t2.set(t2.subarray(1, 3), 0); \
+           ok = ok && t2[0] === 1 && t2[1] === 1; \
+           var bs = new BigInt64Array(new SharedArrayBuffer(16)); bs.fill(9n); \
+           var bd = new BigInt64Array(new SharedArrayBuffer(32)); \
+           bd.set(bs, 1); \
+           return ok && bd[0] === 0n && bd[1] === 9n && bd[2] === 9n; })()",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
+#[test]
+fn ta_sab_copy_within() {
+    // TA-over-SAB copyWithin 前/后向重叠两形全位回卷。
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "(function () { \
+           var f = new Int8Array(new SharedArrayBuffer(8)); \
+           f.set([1, 2, 3, 4, 5, 6, 7, 8]); \
+           f.copyWithin(2, 0, 6); \
+           var ok = f.join(',') === '1,2,1,2,3,4,5,6'; \
+           var r = new Int8Array(new SharedArrayBuffer(8)); \
+           r.set([1, 2, 3, 4, 5, 6, 7, 8]); \
+           r.copyWithin(0, 2, 8); \
+           return ok && r.join(',') === '3,4,5,6,7,8,7,8'; })()",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
+#[test]
+fn ta_sab_subarray() {
+    // TA-over-SAB subarray：视图属性指向 SAB 本体，界内子视图共享 buffer。
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "(function () { var sab = new SharedArrayBuffer(16); \
+           var ta = new Int32Array(sab); \
+           var sub = ta.subarray(1, 3); \
+           return sub.length === 2 && sub.byteOffset === 4 \
+              && sub.buffer === sab && ta.buffer instanceof SharedArrayBuffer; })()",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
+#[test]
+fn ta_sab_slice() {
+    // TA-over-SAB slice 返回独立 AB 缓冲：值拷贝 + 缓冲类型断言。
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "(function () { var ta = new Int32Array(new SharedArrayBuffer(16)); \
+           ta.fill(3); \
+           var out = ta.slice(1, 3); \
+           return out.length === 2 && out[0] === 3 && out[1] === 3 \
+              && out.buffer instanceof ArrayBuffer \
+              && !(out.buffer instanceof SharedArrayBuffer); })()",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
+#[test]
+fn ta_sab_element_rw() {
+    // TA-over-SAB 元素读写：写命中 SAB 载荷、读回值 + 邻位不受扰。
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "(function () { var ta = new Int32Array(new SharedArrayBuffer(16)); \
+           ta[2] = 42; \
+           return ta[2] === 42 && ta[0] === 0 && ta[3] === 0; })()",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
+#[test]
+fn ta_sab_sort_reverse() {
+    // TA-over-SAB sort/reverse：原地重排回卷，reverse 返回 this。
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "(function () { var ta = new Int32Array(new SharedArrayBuffer(16)); \
+           ta.set([3, 1, 4, 2]); \
+           ta.sort(); \
+           var ok = ta.join(',') === '1,2,3,4'; \
+           var rv = ta.reverse(); \
+           return ok && rv === ta && ta.join(',') === '4,3,2,1'; })()",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
+#[test]
+fn ta_sab_base64() {
+    // TA-over-SAB base64 对：编码输出与同形 AB 视图逐位一致（双认入口
+    // 零漂移）+ setFromBase64 解码计数与未写尾位清零。
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "(function () { var ta = new Uint8Array(new SharedArrayBuffer(4)); \
+           ta.set([0xfb, 0xff, 0xfe, 0x00]); \
+           var ref = new Uint8Array(new ArrayBuffer(4)); \
+           ref.set([0xfb, 0xff, 0xfe, 0x00]); \
+           var ok = ta.toBase64() === ref.toBase64(); \
+           var r = ta.setFromBase64('////'); \
+           return ok && r.read === 4 && r.written === 3 \
+              && ta[0] === 0xff && ta[1] === 0xff && ta[2] === 0xff && ta[3] === 0; })()",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}

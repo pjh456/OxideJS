@@ -201,6 +201,34 @@ pub(crate) fn buffer_payload_ptr(obj: &JsObject) -> Option<*mut ArrayBufferPaylo
     shared_array_buffer_payload_ptr(obj)
 }
 
+/// 缓冲区载荷读入口（两标签双认）：校验 receiver 为 ArrayBuffer 或
+/// SharedArrayBuffer 并取载荷指针。AB 臂经 `array_buffer_payload_ptr` 与
+/// `array_buffer_payload` 路径同函数同序（逐位同形），SAB 臂经
+/// `shared_array_buffer_payload_ptr`；非对象 / 双标签外 / 槽位空（防御背板）
+/// → TypeError。
+///
+/// # 边界与前提
+/// - SAB 无 detach 生产路径，载荷 `data` 恒在场；detach 分叉由消费方现读处理。
+/// - 调用方不得跨 JS 调用窗口持有返回指针（晋升可改写对象，须重取）。
+pub(crate) fn buffer_payload<H: VmHost>(vm: &mut H, this_val: JsValue) -> Result<*mut ArrayBufferPayload, JsValue> {
+    if !this_val.is_object() {
+        return Err(crate::error::create_type_error(vm, "ArrayBuffer method called on incompatible receiver"));
+    }
+    let obj_ptr = this_val.as_js_object_ptr();
+    if obj_ptr.is_null() {
+        return Err(crate::error::create_type_error(vm, "ArrayBuffer internal state invalid"));
+    }
+    // SAFETY: is_object 保证指针非空且对象本 session 存活。
+    let obj = unsafe { &*obj_ptr };
+    let Some(payload_ptr) = buffer_payload_ptr(obj) else {
+        return Err(crate::error::create_type_error(vm, "ArrayBuffer method called on incompatible receiver"));
+    };
+    if payload_ptr.is_null() {
+        return Err(crate::error::create_type_error(vm, "ArrayBuffer internal state invalid"));
+    }
+    Ok(payload_ptr)
+}
+
 /// SharedArrayBuffer 载荷盒字节数（`native_fn` 槽）；非 SAB 或已释放 → 0。
 pub fn shared_array_buffer_native_size(obj: &JsObject) -> u64 {
     let payload_ptr = match shared_array_buffer_payload_ptr(obj) {

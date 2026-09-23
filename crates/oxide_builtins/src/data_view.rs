@@ -5,7 +5,7 @@ use oxide_types::value::JsValue;
 use num_bigint::BigInt;
 use num_traits::ToPrimitive;
 
-use crate::array_buffer::{array_buffer_payload, ArrayBufferPayload};
+use crate::array_buffer::{buffer_payload, ArrayBufferPayload};
 
 use oxide_runtime_api::{NativeResult, VmHost};
 
@@ -117,7 +117,7 @@ fn get_data_view_data<H: VmHost>(vm: &mut H, this_val: JsValue) -> Result<DataVi
 fn dv_view_bounds<H: VmHost>(
     vm: &mut H, payload_ptr: *mut ArrayBufferPayload, view: DataViewData,
 ) -> Result<usize, JsValue> {
-    // SAFETY: payload_ptr 经 array_buffer_payload 校验为合法 ArrayBuffer 载荷。
+    // SAFETY: payload_ptr 由调用方读入口（buffer_payload）校验为合法缓冲区载荷。
     let Some(data) = unsafe { &*payload_ptr }.data.as_deref() else {
         return Err(crate::error::create_type_error(vm, "ArrayBuffer internal state invalid"));
     };
@@ -136,8 +136,8 @@ fn dv_view_bounds<H: VmHost>(
 
 /// set 面入口写守卫：immutable 缓冲 → TypeError（先于一切实参强转）。
 fn dv_buffer_writable<H: VmHost>(vm: &mut H, view: DataViewData) -> Result<(), JsValue> {
-    let payload_ptr = array_buffer_payload(vm, view.buffer)?;
-    // SAFETY: payload_ptr 经 array_buffer_payload 校验为合法 ArrayBuffer 载荷。
+    let payload_ptr = buffer_payload(vm, view.buffer)?;
+    // SAFETY: payload_ptr 经 buffer_payload 校验为合法缓冲区载荷（AB/SAB 双认）。
     if unsafe { &*payload_ptr }.immutable {
         return Err(crate::error::create_type_error(vm, "ArrayBuffer is immutable"));
     }
@@ -149,8 +149,8 @@ fn dv_buffer_writable<H: VmHost>(vm: &mut H, view: DataViewData) -> Result<(), J
 /// 返回（寄存器重读值、live 长、存储上限）。
 fn revalidate_buffer<H: VmHost>(vm: &mut H, buf_reg: u8) -> Result<(JsValue, usize, usize), JsValue> {
     let buffer = vm.reg(buf_reg);
-    let payload_ptr = array_buffer_payload(vm, buffer)?;
-    // SAFETY: payload_ptr 经 array_buffer_payload 校验为合法 ArrayBuffer 载荷。
+    let payload_ptr = buffer_payload(vm, buffer)?;
+    // SAFETY: payload_ptr 经 buffer_payload 校验为合法缓冲区载荷（AB/SAB 双认）。
     let payload = unsafe { &*payload_ptr };
     let Some(data) = payload.data.as_deref() else {
         return Err(crate::error::create_type_error(vm, "ArrayBuffer internal state invalid"));
@@ -162,8 +162,8 @@ fn revalidate_buffer<H: VmHost>(vm: &mut H, buf_reg: u8) -> Result<(JsValue, usi
 /// （detach/OOB → TypeError，live 长口径），后视图相对越界
 /// （→ RangeError，判活视图长）。
 fn read_bytes_at<const N: usize, H: VmHost>(vm: &mut H, view: DataViewData, offset: usize) -> Result<[u8; N], JsValue> {
-    let payload_ptr = array_buffer_payload(vm, view.buffer)?;
-    // SAFETY: payload_ptr 经 array_buffer_payload 校验为合法 ArrayBuffer 载荷。
+    let payload_ptr = buffer_payload(vm, view.buffer)?;
+    // SAFETY: payload_ptr 经 buffer_payload 校验为合法缓冲区载荷（AB/SAB 双认）。
     let Some(buffer) = unsafe { &*payload_ptr }.data.as_deref() else {
         return Err(crate::error::create_type_error(vm, "ArrayBuffer internal state invalid"));
     };
@@ -182,10 +182,10 @@ fn read_bytes_at<const N: usize, H: VmHost>(vm: &mut H, view: DataViewData, offs
 fn write_bytes<const N: usize, H: VmHost>(
     vm: &mut H, view: DataViewData, offset: usize, bytes: [u8; N],
 ) -> Result<(), JsValue> {
-    let payload_ptr = array_buffer_payload(vm, view.buffer)?;
+    let payload_ptr = buffer_payload(vm, view.buffer)?;
     // 界判核共享借用先于可变借用建立，避免活别名。
     let view_len = dv_view_bounds(vm, payload_ptr, view)?;
-    // SAFETY: payload_ptr 经 array_buffer_payload 校验为合法 ArrayBuffer 载荷；
+    // SAFETY: payload_ptr 经 buffer_payload 校验为合法缓冲区载荷（AB/SAB 双认）；
     // 界判核已证 data 在场，下方守卫为结构性兜底。
     let Some(buffer) = unsafe { &mut *payload_ptr }.data.as_deref_mut() else {
         return Err(crate::error::create_type_error(vm, "ArrayBuffer internal state invalid"));
@@ -259,7 +259,7 @@ pub fn data_view_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult
     }
     let buffer = vm.reg(args[1]);
     // 首个载荷取用只做品牌校验，指针即弃，不持借用跨 JS 调用。
-    native_try!(array_buffer_payload(vm, buffer));
+    native_try!(buffer_payload(vm, buffer));
 
     let byte_offset = if args.len() > 2 {
         native_try!(to_index(vm, vm.reg(args[2]), "DataView byteOffset out of bounds"))
@@ -765,7 +765,7 @@ pub fn data_view_buffer_getter<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResu
 pub fn data_view_byte_offset_getter<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
     let view = native_try!(get_data_view_data(vm, this_val));
-    let payload_ptr = native_try!(array_buffer_payload(vm, view.buffer));
+    let payload_ptr = native_try!(buffer_payload(vm, view.buffer));
     native_try!(dv_view_bounds(vm, payload_ptr, view));
     NativeResult::Ok(JsValue::float(view.byte_offset as f64))
 }
@@ -776,7 +776,7 @@ pub fn data_view_byte_offset_getter<H: VmHost>(vm: &mut H, args: &[u8]) -> Nativ
 pub fn data_view_byte_length_getter<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
     let view = native_try!(get_data_view_data(vm, this_val));
-    let payload_ptr = native_try!(array_buffer_payload(vm, view.buffer));
+    let payload_ptr = native_try!(buffer_payload(vm, view.buffer));
     let view_len = native_try!(dv_view_bounds(vm, payload_ptr, view));
     NativeResult::Ok(JsValue::float(view_len as f64))
 }

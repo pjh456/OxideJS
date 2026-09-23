@@ -296,3 +296,158 @@ fn dv_ctor_fixed_default_len_static() {
     .unwrap();
     assert!(result.as_bool());
 }
+
+/// DV-over-SAB 构造基础形：缺省长视图，buffer 指向 SAB 本体。
+#[test]
+fn dv_sab_ctor_basic() {
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "var sab = new SharedArrayBuffer(8); \
+         var dv = new DataView(sab); \
+         dv.byteLength === 8 && dv.byteOffset === 0 && dv.buffer === sab \
+         && Object.getPrototypeOf(dv) === DataView.prototype",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
+/// DV-over-SAB 显式 offset/length 形：视图界与 buffer 指向。
+#[test]
+fn dv_sab_ctor_offset_length() {
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "var sab = new SharedArrayBuffer(8); \
+         var dv = new DataView(sab, 2, 4); \
+         dv.byteLength === 4 && dv.byteOffset === 2 && dv.buffer === sab",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
+/// DV-over-SAB 构造越界三形：offset > live / 显式长越界 / 负 offset 均 RangeError。
+#[test]
+fn dv_sab_ctor_oob() {
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "(function () { \
+         var sab = new SharedArrayBuffer(4); \
+         function kind(expr) { try { expr(); return 'none'; } catch (e) { return e.name; } } \
+         return kind(function () { new DataView(sab, 5); }) === 'RangeError' \
+           && kind(function () { new DataView(sab, 0, 5); }) === 'RangeError' \
+           && kind(function () { new DataView(sab, -1); }) === 'RangeError'; })()",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
+/// DV-over-SAB 读写核回卷：各宽 get/set 位模式与同形 AB 视图对照同值。
+#[test]
+fn dv_sab_get_set_roundtrip() {
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "(function () { \
+         var sab = new SharedArrayBuffer(32); \
+         var dv = new DataView(sab); \
+         dv.setInt8(0, -7); \
+         dv.setUint8(1, 200); \
+         dv.setInt32(2, 0x01020304, true); \
+         dv.setInt32(6, 0x01020304, false); \
+         dv.setFloat64(8, 1.5); \
+         dv.setBigInt64(16, 42n); \
+         dv.setBigUint64(24, 18446744073709551615n); \
+         var ab = new ArrayBuffer(32); \
+         var ref = new DataView(ab); \
+         ref.setInt8(0, -7); \
+         ref.setUint8(1, 200); \
+         ref.setInt32(2, 0x01020304, true); \
+         ref.setInt32(6, 0x01020304, false); \
+         ref.setFloat64(8, 1.5); \
+         ref.setBigInt64(16, 42n); \
+         ref.setBigUint64(24, 18446744073709551615n); \
+         return dv.getInt8(0) === ref.getInt8(0) \
+           && dv.getUint8(1) === ref.getUint8(1) \
+           && dv.getInt32(2, true) === ref.getInt32(2, true) \
+           && dv.getInt32(6, false) === ref.getInt32(6, false) \
+           && dv.getFloat64(8, true) === ref.getFloat64(8, true) \
+           && dv.getBigInt64(16, true) === ref.getBigInt64(16, true) \
+           && dv.getBigUint64(24, false) === ref.getBigUint64(24, false); })()",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
+/// DV-over-SAB 读越界：跨视图尾 getInt32 → RangeError。
+#[test]
+fn dv_sab_get_oob() {
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "(function () { \
+         var dv = new DataView(new SharedArrayBuffer(4)); \
+         try { dv.getInt32(1); return false; } catch (e) { return e instanceof RangeError; } })()",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
+/// DV-over-SAB live 读：定长视图静态界 + growable SAB auto 视图随 grow 活读。
+#[test]
+fn dv_sab_live_getters() {
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "(function () { \
+         var sab = new SharedArrayBuffer(8); \
+         var fixed = new DataView(sab, 1, 3); \
+         var ok = fixed.byteOffset === 1 && fixed.byteLength === 3; \
+         var growable = new SharedArrayBuffer(4, { maxByteLength: 8 }); \
+         var auto = new DataView(growable); \
+         ok = ok && auto.byteLength === 4 && auto.byteOffset === 0; \
+         growable.grow(8); \
+         return ok && auto.byteLength === 8 && auto.byteOffset === 0; })()",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
+/// DV-over-SAB 原型链：buffer 属性返回 SAB 本体 + custom-proto 臂
+/// （newTarget 自定义原型经 GpFC 落位）。
+#[test]
+fn dv_sab_proto_chain() {
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "(function () { \
+         var sab = new SharedArrayBuffer(4); \
+         var dv = new DataView(sab); \
+         var ok = dv.buffer === sab; \
+         var newTarget = function() {}.bind(null); \
+         newTarget.prototype = {}; \
+         var dv2 = Reflect.construct(DataView, [sab], newTarget); \
+         return ok && Object.getPrototypeOf(dv2) === newTarget.prototype; })()",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
+/// DV-over-SAB 品牌负钉：非缓冲区对象（裸对象 / TypedArray / null）构造
+/// 首检均 TypeError。
+#[test]
+fn dv_sab_brand_reject() {
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "(function () { \
+         function kind(expr) { try { expr(); return 'none'; } catch (e) { return e.name; } } \
+         var ta = new Int8Array(4); \
+         return kind(function () { new DataView({}); }) === 'TypeError' \
+           && kind(function () { new DataView(ta); }) === 'TypeError' \
+           && kind(function () { new DataView(null); }) === 'TypeError'; })()",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
