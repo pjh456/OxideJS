@@ -54,6 +54,11 @@ pub fn bind_array_buffer(core: &Arc<KernelCore>, session: &KernelSession, global
             ),
             ("slice", oxide_builtins::array_buffer::array_buffer_slice::<crate::vm::Vm> as *const (), 2),
             (
+                "sliceToImmutable",
+                oxide_builtins::array_buffer::array_buffer_slice_to_immutable::<crate::vm::Vm> as *const (),
+                2,
+            ),
+            (
                 "toString",
                 oxide_builtins::array_buffer::array_buffer_to_string::<crate::vm::Vm> as *const (),
                 0,

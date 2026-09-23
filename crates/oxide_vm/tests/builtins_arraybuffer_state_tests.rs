@@ -756,7 +756,7 @@ fn ab_transfer_new_length_order_and_coercion() {
          var t1 = false; \
          try { new ArrayBuffer(0).transfer(nl); } catch (e) { t1 = e instanceof TypeError; } \
          t1 && log.length === 2 && log[0] === 'valueOf' && log[1] === 'toString' \
-         && (function () { var t2 = false; \
+         && (function () { var t2 = false, t3 = false, e2 = '?'; \
               try { new ArrayBuffer(0).transfer(2 ** 53); } catch (e) { t2 = e instanceof RangeError; } \
               return t2; })() \
          && (function () { var ab = new ArrayBuffer(8); var t3 = false; \
@@ -1001,6 +1001,140 @@ fn ab_slice_source_detach_family() {
          c4[Symbol.species] = function (len) { $262.detachArrayBuffer(a4); return new ArrayBuffer(len); }; \
          a4.constructor = c4; var t4 = ty(function () { a4.slice(); }); \
          return t1 && calls1.length === 0 && t2 && t3 && t4 })()",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
+/// sliceToImmutable 界与缺省钉：(undefined,undefined)/(6,undefined)/负/越界/
+/// 空窗长度形 + immutable 产物形 + prop-desc 描述符与 name/length。
+#[test]
+fn ab_sti_bounds_and_defaults() {
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "(function () { var ab = new ArrayBuffer(8); \
+         var bl = function (s) { return ab.sliceToImmutable(s[0], s[1]).byteLength; }; \
+         return bl([undefined, undefined]) === 8 && bl([6, undefined]) === 2 \
+         && bl([6]) === 2 && bl([-2]) === 2 && bl([0, -2]) === 6 \
+         && bl([20]) === 0 && bl([2, 20]) === 6 && bl([5, 2]) === 0 && bl([3, 3]) === 0 \
+         && ab.sliceToImmutable().immutable === true \
+         && ab.sliceToImmutable().resizable === false })()",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+    let result = eval(
+        &mut vm,
+        "(function () { var d = Object.getOwnPropertyDescriptor(ArrayBuffer.prototype, 'sliceToImmutable'); \
+         return typeof d.value === 'function' && d.value.name === 'sliceToImmutable' \
+         && d.value.length === 2 && d.writable === true && d.enumerable === false \
+         && d.configurable === true; })()",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
+/// sliceToImmutable 源增缩钉：grows 形产物 [4,5,6] 源 12 长；shrinks 第一
+/// block 同形源 8 长；resize 到解析界下 → RangeError。
+#[test]
+fn ab_sti_grow_shrink_bounds() {
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "(function () { var source = new ArrayBuffer(10, { maxByteLength: 12 }); \
+         var view = new Uint8Array(source); \
+         for (var i = 0; i < 10; i++) view[i] = i + 1; \
+         var start = { valueOf: function () { source.resize(11); return -7; } }; \
+         var end = { valueOf: function () { source.resize(12); return -4; } }; \
+         var dest = source.sliceToImmutable(start, end); \
+         var dv = new Uint8Array(dest); \
+         var ok = dv.length === 3 && dv[0] === 4 && dv[1] === 5 && dv[2] === 6 && source.byteLength === 12; \
+         var source2 = new ArrayBuffer(10, { maxByteLength: 10 }); \
+         var view2 = new Uint8Array(source2); \
+         for (var j = 0; j < 10; j++) view2[j] = j + 1; \
+         var s2 = { valueOf: function () { source2.resize(9); return -7; } }; \
+         var e2 = { valueOf: function () { source2.resize(8); return -4; } }; \
+         var d2 = new Uint8Array(source2.sliceToImmutable(s2, e2)); \
+         ok = ok && d2.length === 3 && d2[0] === 4 && d2[1] === 5 && d2[2] === 6 && source2.byteLength === 8; \
+         source2.resize(10); \
+         var e3 = { valueOf: function () { source2.resize(5); return -4; } }; \
+         var t3 = false; \
+         try { source2.sliceToImmutable(s2, e3); } catch (err) { t3 = err instanceof RangeError; } \
+         return ok && t3; })()",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
+/// sliceToImmutable 源 detach 两形钉：源已 detach → TypeError 且参数未读；
+/// end.valueOf 内 detach → TypeError，calls 双记。
+#[test]
+fn ab_sti_source_detach_family() {
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "(function () { function ty(fn) { try { fn(); return false; } catch (e) { return e instanceof TypeError; } } \
+         var a1 = new ArrayBuffer(8); $262.detachArrayBuffer(a1); \
+         var calls1 = []; \
+         var s1 = { valueOf: function () { calls1.push('s'); return 0; } }; \
+         var e1 = { valueOf: function () { calls1.push('e'); return 1; } }; \
+         var t1 = ty(function () { a1.sliceToImmutable(s1, e1); }); \
+         var a2 = new ArrayBuffer(8); \
+         var calls2 = []; \
+         var s2 = { valueOf: function () { calls2.push('start.valueOf'); return 0; } }; \
+         var e2 = { valueOf: function () { $262.detachArrayBuffer(a2); calls2.push('end.valueOf'); return 1; } }; \
+         var t2 = ty(function () { a2.sliceToImmutable(s2, e2); }); \
+         return t1 && calls1.length === 0 && t2 && calls2.join(',') === 'start.valueOf,end.valueOf'; })()",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
+/// sliceToImmutable 源后改无影响钉：源写/resize/detach 后产物内容不变、
+/// 产物恒 8 长 immutable。
+#[test]
+fn ab_sti_modify_source() {
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "(function () { var source = new ArrayBuffer(8, { maxByteLength: 8 }); \
+         var view = new Uint8Array(source); \
+         for (var i = 0; i < 8; i++) view[i] = i + 1; \
+         var dest = source.sliceToImmutable(); \
+         var dv = new Uint8Array(dest); \
+         var ok = dv.length === 8 && dv[0] === 1 && dv[7] === 8 && dest.immutable === true; \
+         view[0] = 86; \
+         ok = ok && new Uint8Array(dest)[0] === 1; \
+         source.resize(4); \
+         ok = ok && dest.byteLength === 8 && new Uint8Array(dest)[7] === 8; \
+         $262.detachArrayBuffer(source); \
+         return ok && new Uint8Array(dest)[0] === 1 && source.detached === true; })()",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
+/// sliceToImmutable 品牌钉：非对象/普通对象/数组/函数/DataView/TypedArray
+/// 六形 TypeError 且参数未读；`new (实例.sliceToImmutable)()` 形态
+/// TypeError（nonconstructor，成员链绑定使 new 目标即方法本身）。
+#[test]
+fn ab_sti_brand_family() {
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "(function () { var fn = ArrayBuffer.prototype.sliceToImmutable; \
+         var calls = []; \
+         var s = { valueOf: function () { calls.push('s'); return 0; } }; \
+         function ty(v) { calls.length = 0; \
+             try { fn.call(v, s); return false; } catch (e) { return e instanceof TypeError; } } \
+         var ok = ty(undefined) && ty(null) && ty({}) && ty([]) && ty(function () {}) \
+         && ty(new DataView(new ArrayBuffer(8), 0)) && ty(new Int8Array(8)); \
+         var calls2 = []; \
+         var s2 = { valueOf: function () { calls2.push('s'); return 0; } }; \
+         var t2 = false, t3 = false; \
+         var nab = new ArrayBuffer(8); \
+         try { new nab.sliceToImmutable(); t3 = true; } catch (e) { t2 = e instanceof TypeError; t3 = false; } \
+         return ok && calls.length === 0 && t2 && calls2.length === 0 && !t3; })()",
     )
     .unwrap();
     assert!(result.as_bool());

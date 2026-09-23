@@ -560,6 +560,82 @@ pub fn array_buffer_slice<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     NativeResult::Ok(new_val)
 }
 
+/// `ArrayBuffer.prototype.sliceToImmutable(start, end)`：复制字节区间生成
+/// immutable 新 ArrayBuffer，源缓冲不 detach、不改任何状态位。
+///
+/// # 步骤
+/// 1. 品牌守卫与 detached 源守卫先于参数读（抛错时参数无副作用）。
+/// 2. len 快照 → ResolveBounds（与 slice 共享助手）→ newLen。
+/// 3. 强转窗口后重取源载荷重检：detached → TypeError（先于长度终检）；
+///    currentLen < final → RangeError（源中途收缩到解析界之下）。
+/// 4. GetPrototypeFromConstructor(%ArrayBuffer%)：完整读构造器 "prototype"
+///    （访问器抛错传播，非对象回落 %ArrayBuffer.prototype%）。
+/// 5. proto 读窗口后再次重取源载荷（窗口内源可 detach/收缩/晋升），
+///    重检 detached 与在界后拷贝前 newLen 字节（恒在界内），零填充分配，
+///    后置 immutable 标志；源不动。
+///
+/// # 边界与前提
+/// - 源 immutable 是合法输入（只读拷贝）；产物恒 immutable、恒定长。
+/// - 无物种面：构造器恒 %ArrayBuffer%。
+pub fn array_buffer_slice_to_immutable<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let this_reg = if args.is_empty() { 0 } else { args[0] };
+    let this_val = vm.reg(this_reg);
+    let payload_ptr = native_try!(array_buffer_payload(vm, this_val));
+    // SAFETY: payload_ptr 经 array_buffer_payload 校验为合法 ArrayBuffer 载荷；
+    // 标量拷出后借用即结束，不跨 JS 调用窗口。
+    let Some(data) = unsafe { &*payload_ptr }.data.as_ref() else {
+        return NativeResult::Err(crate::error::create_type_error(vm, "ArrayBuffer internal state invalid"));
+    };
+    let len = data.len();
+    let start = if args.len() > 1 { Some(vm.reg(args[1])) } else { None };
+    let end = if args.len() > 2 { Some(vm.reg(args[2])) } else { None };
+    let (first, final_) = native_try!(ab_resolve_bounds(vm, len, start, end));
+    let new_len = final_.saturating_sub(first);
+
+    // 强转窗口可 detach/晋升源：重取寄存器与载荷后重检（先于长度终检）。
+    let this_val = vm.reg(this_reg);
+    let payload_ptr = native_try!(array_buffer_payload(vm, this_val));
+    // SAFETY: 重取的 payload_ptr 指向存活载荷盒；标量拷出后借用即结束。
+    let Some(data) = unsafe { &*payload_ptr }.data.as_ref() else {
+        return NativeResult::Err(crate::error::create_type_error(vm, "ArrayBuffer internal state invalid"));
+    };
+    if data.len() < final_ {
+        return NativeResult::Err(crate::error::create_range_error(vm, "invalid ArrayBuffer length"));
+    }
+    // GetPrototypeFromConstructor(%ArrayBuffer%)：prototype 读为 JS 窗口
+    // （访问器可被用户重定义），抛错传播；非对象回落默认原型。
+    let ctor_val =
+        JsValue::from_js_object(vm.session().builtin_world().array_buffer_constructor.as_ptr() as *mut JsObject);
+    let ctor_obj = unsafe { &*ctor_val.as_js_object_ptr() };
+    let proto_si = vm.kernel_core().perm_interner().intern("prototype").0;
+    let proto_val = match vm.ordinary_get(ctor_obj, proto_si, ctor_val) {
+        Ok(v) => v,
+        Err(msg) => return NativeResult::Err(crate::iterator::engine_error(vm, &msg)),
+    };
+    let proto = if proto_val.is_object() { proto_val } else { default_array_buffer_proto(vm) };
+    // proto 读窗口可 detach/收缩/晋升源：再重取载荷重检 detached 与在界，
+    // 拷贝恒在界内（currentLen ≥ final ≥ first + newLen）。
+    let this_val = vm.reg(this_reg);
+    let payload_ptr = native_try!(array_buffer_payload(vm, this_val));
+    // SAFETY: 重取的 payload_ptr 指向存活载荷盒；字节借出止于本语句。
+    let Some(data) = unsafe { &*payload_ptr }.data.as_ref() else {
+        return NativeResult::Err(crate::error::create_type_error(vm, "ArrayBuffer internal state invalid"));
+    };
+    if data.len() < final_ {
+        return NativeResult::Err(crate::error::create_range_error(vm, "invalid ArrayBuffer length"));
+    }
+    let out: Vec<u8> = data[first..first + new_len].to_vec();
+    let dest_ptr = new_array_buffer(vm, out, 0, proto);
+    // SAFETY: dest_ptr 为 alloc_object 新建对象，载荷盒由 new_array_buffer 建。
+    let Some(dest_payload) = array_buffer_payload_ptr(unsafe { &*dest_ptr }) else {
+        return type_error(vm, "ArrayBuffer internal state invalid");
+    };
+    // SAFETY: dest_payload 指向存活载荷盒；immutable 后置位与 transfer-Immutable
+    // 同形，不扩 new_array_buffer 签名。
+    unsafe { (*dest_payload).immutable = true };
+    NativeResult::Ok(JsValue::from_js_object(dest_ptr))
+}
+
 /// transfer 族新缓冲保持性：Preserve 源存储态上限原样拷贝，Fixed 定长，
 /// Immutable 定长并置 immutable 标志。
 #[derive(Clone, Copy)]
@@ -914,6 +990,25 @@ mod tests {
              && new ArrayBuffer(8).slice(undefined).byteLength === 8 \
              && new ArrayBuffer(8).slice(6).byteLength === 2 \
              && new ArrayBuffer(8).slice(undefined, undefined).byteLength === 8",
+        )
+        .unwrap();
+        assert!(r.as_bool());
+    }
+
+    /// sliceToImmutable 源不 detach 钉：产物 immutable，源返回后可写/可
+    /// resize/可 detach，产物内容独立于源。
+    #[test]
+    fn sti_source_writable_after_return() {
+        let mut vm = Vm::new();
+        let r = eval_ab(
+            &mut vm,
+            "(function () { var ab = new ArrayBuffer(8); \
+             var v = new Uint8Array(ab); for (var i = 0; i < 8; i++) v[i] = i + 1; \
+             var dest = ab.sliceToImmutable(); \
+             var ok = dest.immutable === true && dest.resizable === false && ab.detached === false; \
+             v[0] = 86; \
+             var v2 = new Uint8Array(dest); \
+             return ok && v2[0] === 1 && v2[7] === 8 && ab.byteLength === 8; })()",
         )
         .unwrap();
         assert!(r.as_bool());
