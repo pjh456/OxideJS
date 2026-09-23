@@ -44,6 +44,8 @@ pub mod bind_reflect;
 pub mod bind_regexp;
 /// Set 构造器与原型的 native 方法绑定。
 pub mod bind_set;
+/// SharedArrayBuffer 构造器与原型的 native 方法绑定。
+pub mod bind_shared_array_buffer;
 /// String 构造器与原型的 native 方法绑定。
 pub mod bind_string;
 /// 未实现内置（Proxy/BigInt/WeakMap 等）的 stub 构造器绑定。
@@ -632,9 +634,10 @@ fn install_to_string_tags(core: &Arc<KernelCore>, session: &KernelSession) {
     let sh = core.shape_forge().as_ref();
     let tag_id = oxide_types::private_key::WELL_KNOWN_SYMBOL_TO_STRING_TAG;
     let tag_key = oxide_types::private_key::make_well_known_symbol_key(tag_id);
-    let cases: [(*mut JsObject, &str); 12] = [
+    let cases: [(*mut JsObject, &str); 13] = [
         (world.map_proto.as_ptr() as *mut JsObject, "Map"),
         (world.array_buffer_proto.as_ptr() as *mut JsObject, "ArrayBuffer"),
+        (world.shared_array_buffer_proto.as_ptr() as *mut JsObject, "SharedArrayBuffer"),
         (world.set_proto.as_ptr() as *mut JsObject, "Set"),
         (world.data_view_proto.as_ptr() as *mut JsObject, "DataView"),
         (world.array_iterator_proto.as_ptr() as *mut JsObject, "Array Iterator"),
@@ -884,11 +887,6 @@ fn bind_stub_globals(core: &Arc<KernelCore>, session: &KernelSession, global: &m
             oxide_builtins::stubs::finalization_registry_stub::<crate::vm::Vm> as *const (),
             1,
         ),
-        (
-            "SharedArrayBuffer",
-            oxide_builtins::array_buffer::shared_array_buffer_constructor::<crate::vm::Vm> as *const (),
-            1,
-        ),
         ("Atomics", oxide_builtins::stubs::atomics_stub::<crate::vm::Vm> as *const (), 0),
     ]
     .into_iter()
@@ -921,6 +919,11 @@ pub fn bind_global_builtin_slots(core: &Arc<KernelCore>, session: &KernelSession
     configure_existing_ctor(
         &world.array_buffer_constructor,
         oxide_builtins::array_buffer::array_buffer_constructor::<crate::vm::Vm> as *const (),
+        1,
+    );
+    configure_existing_ctor(
+        &world.shared_array_buffer_constructor,
+        oxide_builtins::array_buffer::shared_array_buffer_constructor::<crate::vm::Vm> as *const (),
         1,
     );
     configure_existing_ctor(
@@ -975,6 +978,10 @@ pub fn bind_global_builtin_slots(core: &Arc<KernelCore>, session: &KernelSession
         (
             "ArrayBuffer",
             JsValue::from_js_object(world.array_buffer_constructor.as_ptr() as *mut JsObject),
+        ),
+        (
+            "SharedArrayBuffer",
+            JsValue::from_js_object(world.shared_array_buffer_constructor.as_ptr() as *mut JsObject),
         ),
         ("DataView", JsValue::from_js_object(world.data_view_constructor.as_ptr() as *mut JsObject)),
         ("Error", JsValue::from_js_object(world.error_constructor.as_ptr() as *mut JsObject)),
@@ -1159,6 +1166,9 @@ pub fn rebind_dirty_builtins(core: &Arc<KernelCore>, session: &mut KernelSession
     }
     if dirty.map_or(true, |d| d.array_buffer) {
         bind_array_buffer::bind_array_buffer(core, session, global);
+    }
+    if dirty.map_or(true, |d| d.shared_array_buffer) {
+        bind_shared_array_buffer::bind_shared_array_buffer(core, session, global);
     }
     if dirty.map_or(true, |d| d.data_view) {
         bind_data_view::bind_data_view(core, session, global);

@@ -6,7 +6,7 @@
 //! 每个内置方法以 `fn xxx<H: VmHost>(vm, args: &[u8]) -> NativeResult` 形式暴露，
 //! 由上层（oxide_vm / oxide_api）注册为 JS 全局对象上的 native function。
 //! 架构性延后的特性（Proxy、WeakMap、WeakSet、WeakRef、FinalizationRegistry、
-//! SharedArrayBuffer、Atomics）在 `stubs` 中仅提供占位实现，调用时抛 TypeError。
+//! Atomics）在 `stubs` 中仅提供占位实现，调用时抛 TypeError。
 
 /// Array 内置对象实现（目录模块：common 共享助手、from 构造器与静态方法、element 元素变更、iterate 高阶迭代、sort_iterator 排序与迭代协议、immutable ES2023 不可变方法族）。
 pub mod array;

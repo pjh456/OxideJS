@@ -1158,3 +1158,167 @@ fn sab_constructor_and_brand_rejection() {
     .unwrap();
     assert!(result.as_bool());
 }
+
+/// 构造器 meta 面钉：length 值 1 描述符 {f,f,t}，prototype {f,f,f} 值恒等，
+/// prototype.constructor 互指 {1,0,1}，proto 链挂 Object.prototype。
+#[test]
+fn sab_ctor_meta_descriptors() {
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "(function () { \
+         var l = Object.getOwnPropertyDescriptor(SharedArrayBuffer, 'length'); \
+         var p = Object.getOwnPropertyDescriptor(SharedArrayBuffer, 'prototype'); \
+         var c = Object.getOwnPropertyDescriptor(SharedArrayBuffer.prototype, 'constructor'); \
+         return l.value === 1 && l.writable === false && l.enumerable === false && l.configurable === true \
+            && p.value === SharedArrayBuffer.prototype \
+            && p.writable === false && p.enumerable === false && p.configurable === false \
+            && SharedArrayBuffer.prototype.constructor === SharedArrayBuffer \
+            && c.writable === true && c.enumerable === false && c.configurable === true \
+            && Object.getPrototypeOf(SharedArrayBuffer.prototype) === Object.prototype; })()",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
+/// 原型 @@toStringTag 钉：值 "SharedArrayBuffer"、{f,f,t}，Object.prototype
+/// toString 经标签链读出 "[object SharedArrayBuffer]"。
+#[test]
+fn sab_proto_to_string_tag() {
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "(function () { \
+         var d = Object.getOwnPropertyDescriptor(SharedArrayBuffer.prototype, Symbol.toStringTag); \
+         return d.value === 'SharedArrayBuffer' \
+            && d.writable === false && d.enumerable === false && d.configurable === true \
+            && Object.prototype.toString.call(new SharedArrayBuffer(0)) === '[object SharedArrayBuffer]'; })()",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
+/// 实例 proto 挂回钉：getPrototypeOf === proto，无 own byteLength 数据属性，
+/// 构造长度经原型访问器读回，访问器描述符 {get,set 缺,e:false,c:true}。
+#[test]
+fn sab_instance_proto_and_readback() {
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "(function () { \
+         var sab = new SharedArrayBuffer(42); \
+         var own = Object.getOwnPropertyDescriptor(sab, 'byteLength'); \
+         var d = Object.getOwnPropertyDescriptor(SharedArrayBuffer.prototype, 'byteLength'); \
+         return Object.getPrototypeOf(sab) === SharedArrayBuffer.prototype \
+            && SharedArrayBuffer.prototype.constructor === SharedArrayBuffer \
+            && own === undefined \
+            && sab.byteLength === 42 \
+            && typeof d.get === 'function' && d.set === undefined \
+            && d.enumerable === false && d.configurable === true; })()",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
+/// receiver 品牌校验钉：get.call(undefined/{} / ArrayBuffer 实例) 均 TypeError。
+#[test]
+fn sab_bytelength_this_checks() {
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "(function () { \
+         var d = Object.getOwnPropertyDescriptor(SharedArrayBuffer.prototype, 'byteLength'); \
+         var undef_threw = false, obj_threw = false, ab_threw = false; \
+         try { d.get.call(undefined); } catch (e) { undef_threw = e instanceof TypeError; } \
+         try { d.get.call({}); } catch (e) { obj_threw = e instanceof TypeError; } \
+         try { d.get.call(new ArrayBuffer(4)); } catch (e) { ab_threw = e instanceof TypeError; } \
+         return undef_threw && obj_threw && ab_threw; })()",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
+/// maxByteLength 非 growable 臂钉：值同字节数，描述符 {get,set 缺,e:false,c:true}，
+/// getter name/length 元数据。
+#[test]
+fn sab_max_bytelength_descriptor_and_values() {
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "(function () { \
+         var sab8 = new SharedArrayBuffer(8); \
+         var sab0 = new SharedArrayBuffer(0); \
+         var d = Object.getOwnPropertyDescriptor(SharedArrayBuffer.prototype, 'maxByteLength'); \
+         return sab8.maxByteLength === 8 && sab0.maxByteLength === 0 \
+            && typeof d.get === 'function' && d.set === undefined \
+            && d.enumerable === false && d.configurable === true \
+            && d.get.name === 'get maxByteLength' && d.get.length === 0; })()",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
+/// GetPrototypeFromConstructor 钉：newTarget.prototype 为对象时实例挂其原型；
+/// prototype 属性非对象时回落 %SharedArrayBuffer.prototype%；getter 抛错原值传播。
+#[test]
+fn sab_new_target_proto_and_fallback() {
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "(function () { \
+         var c = Reflect.construct(SharedArrayBuffer, [8], Object); \
+         if (Object.getPrototypeOf(c) !== Object.prototype) { return false; } \
+         var D = function () {}; \
+         D.prototype = null; \
+         var d = Reflect.construct(SharedArrayBuffer, [4], D); \
+         if (Object.getPrototypeOf(d) !== SharedArrayBuffer.prototype) { return false; } \
+         var E = function () {}; \
+         Object.defineProperty(E, 'prototype', { get: function () { throw new RangeError('x'); } }); \
+         var threw = false; \
+         try { Reflect.construct(SharedArrayBuffer, [1], E); } catch (e) { threw = e instanceof RangeError; } \
+         return threw; })()",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
+/// full_reset（dirty 重建）重绑钉：重建后构造、实例读回、proto 互指、
+/// toStringTag 标签全部存活。
+#[test]
+fn sab_full_reset_rebinds() {
+    let mut vm = Vm::new();
+    eval(&mut vm, "new SharedArrayBuffer(4).byteLength; 0").expect("run1");
+    vm.full_reset();
+    let result = eval(
+        &mut vm,
+        "(function () { \
+         var sab = new SharedArrayBuffer(4); \
+         return (sab instanceof SharedArrayBuffer) + '|' \
+            + (sab.byteLength === 4) + '|' \
+            + (SharedArrayBuffer.prototype.constructor === SharedArrayBuffer) + '|' \
+            + (sab[Symbol.toStringTag] === 'SharedArrayBuffer'); })()",
+    )
+    .unwrap();
+    let text = vm.lookup_str(result).unwrap_or_default().to_string();
+    assert_eq!(text, "true|true|true|true");
+}
+
+/// STUBS 表收缩钉：剩余 6 枚 stub 全局仍为 function 且 Atomics 调用仍抛
+/// TypeError（占位行为未随 SAB 移出而漂移）。
+#[test]
+fn sab_stubs_shrunk_six_remain() {
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "(function () { \
+         var names = ['Proxy', 'WeakMap', 'WeakSet', 'WeakRef', 'FinalizationRegistry', 'Atomics']; \
+         for (var i = 0; i < names.length; i++) { \
+            if (typeof globalThis[names[i]] !== 'function') { return false; } \
+         } \
+         var threw = false; \
+         try { Atomics.add(new SharedArrayBuffer(4), 0, 1); } catch (e) { threw = e instanceof TypeError; } \
+         return threw; })()",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
