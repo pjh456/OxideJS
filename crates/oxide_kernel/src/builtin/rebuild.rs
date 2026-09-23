@@ -314,6 +314,11 @@ impl BuiltinWorld {
         } else {
             (current.shared_array_buffer_proto.clone(), current.shared_array_buffer_constructor.clone())
         };
+        let atomics_object = if dirty.atomics {
+            P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()))
+        } else {
+            current.atomics_object.clone()
+        };
         let (data_view_proto, data_view_constructor) = if dirty.data_view {
             make_named_pair(string_forge, shape_forge, labels, "DataView")
         } else {
@@ -518,6 +523,7 @@ impl BuiltinWorld {
             array_buffer_proto,
             shared_array_buffer_proto,
             shared_array_buffer_constructor,
+            atomics_object,
             data_view_constructor,
             data_view_proto,
             typed_array_proto: typed_arrays.typed_array_proto,

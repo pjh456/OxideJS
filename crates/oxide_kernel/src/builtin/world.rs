@@ -52,6 +52,9 @@ pub struct BuiltinWorld {
     /// `make_named_pair` 成对构造，方法/访问器由绑定层安装。
     pub shared_array_buffer_proto: P<JsObject>,
     pub shared_array_buffer_constructor: P<JsObject>,
+    /// `Atomics` 全局纯对象（非函数）：10 个原子方法由绑定层安装，
+    /// `@@toStringTag` 与原型链在 `wire_builtin_world_links` 落到 Object.prototype。
+    pub atomics_object: P<JsObject>,
     pub data_view_constructor: P<JsObject>,
     pub data_view_proto: P<JsObject>,
     pub typed_array_proto: P<JsObject>,
@@ -347,7 +350,7 @@ impl BuiltinWorld {
     /// session 收尾（`teardown_heap_data`）与选择性重建收尾（`retire_replaced`）
     /// 的 P 字段枚举唯一入口：`BuiltinWorld` 新增 P 字段须在此同步补一行，否则
     /// 收尾时该字段属性区无法释放、重建原型槽改写/释放漏掉该字段。
-    pub(crate) fn all_p_fields(&self) -> [&P<JsObject>; 106] {
+    pub(crate) fn all_p_fields(&self) -> [&P<JsObject>; 107] {
         [
             &self.object_proto,
             &self.array_proto,
@@ -386,6 +389,7 @@ impl BuiltinWorld {
             &self.array_buffer_proto,
             &self.shared_array_buffer_proto,
             &self.shared_array_buffer_constructor,
+            &self.atomics_object,
             &self.data_view_constructor,
             &self.data_view_proto,
             &self.typed_array_proto,
@@ -540,6 +544,7 @@ impl BuiltinWorld {
             BuiltinId::ArrayBufferProto => &self.array_buffer_proto,
             BuiltinId::SharedArrayBufferProto => &self.shared_array_buffer_proto,
             BuiltinId::SharedArrayBufferConstructor => &self.shared_array_buffer_constructor,
+            BuiltinId::AtomicsObject => &self.atomics_object,
             BuiltinId::DataViewConstructor => &self.data_view_constructor,
             BuiltinId::DataViewProto => &self.data_view_proto,
             BuiltinId::TypedArrayProto => &self.typed_array_proto,
@@ -696,6 +701,33 @@ mod tests {
         assert!(!std::ptr::eq(
             sab_ctor,
             session.builtin_world.shared_array_buffer_constructor.as_ptr() as *mut JsObject
+        ));
+        assert!(std::ptr::eq(ab_proto, session.builtin_world.array_buffer_proto.as_ptr() as *mut JsObject));
+    }
+
+    /// Atomics 家族脏线冒烟：仅 Atomics 单例世代漂移 → 选择性重置只判 Atomics
+    /// 家族脏，ArrayBuffer 家族指针原样保留（钉 dirty_since_snapshot 家族线接线）。
+    #[test]
+    fn atomics_family_selective_rebuild() {
+        use crate::kernel::{KernelConfig, KernelCore, KernelSession};
+        let core = KernelCore::new(KernelConfig::minimal());
+        let mut session = KernelSession::new(&core);
+        let old_world = std::sync::Arc::clone(&session.builtin_world);
+        let atomics = old_world.atomics_object.as_ptr() as *mut JsObject;
+        let ab_proto = old_world.array_buffer_proto.as_ptr() as *mut JsObject;
+
+        unsafe {
+            (&mut *atomics).bump_generation();
+        }
+        let dirty = session.selective_reset(&core);
+        assert!(dirty.atomics);
+        assert!(!dirty.array_buffer);
+        assert!(!dirty.shared_array_buffer);
+
+        // 脏家族换新对象，未脏家族指针原样保留。
+        assert!(!std::ptr::eq(
+            atomics,
+            session.builtin_world.atomics_object.as_ptr() as *mut JsObject
         ));
         assert!(std::ptr::eq(ab_proto, session.builtin_world.array_buffer_proto.as_ptr() as *mut JsObject));
     }

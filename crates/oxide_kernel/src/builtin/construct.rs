@@ -360,7 +360,7 @@ pub(crate) fn wire_builtin_world_links(world: &BuiltinWorld) {
     }
 
     let obj_proto_val = JsValue::from_js_object(world.object_proto.as_ptr() as *mut JsObject);
-    let non_object_protos: [&P<JsObject>; 26] = [
+    let non_object_protos: [&P<JsObject>; 27] = [
         &world.array_proto,
         &world.function_proto,
         &world.string_proto,
@@ -374,6 +374,7 @@ pub(crate) fn wire_builtin_world_links(world: &BuiltinWorld) {
         &world.regexp_proto,
         &world.array_buffer_proto,
         &world.shared_array_buffer_proto,
+        &world.atomics_object,
         &world.data_view_proto,
         &world.typed_array_proto,
         &world.instant_proto,
@@ -484,6 +485,8 @@ impl BuiltinWorld {
 
         let json_object = P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()));
 
+        let atomics_object = P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()));
+
         let console_object = P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()));
 
         let (date_proto, date_constructor) = make_named_pair(string_forge, shape_forge, labels, "Date");
@@ -583,6 +586,7 @@ impl BuiltinWorld {
             array_buffer_proto,
             shared_array_buffer_proto,
             shared_array_buffer_constructor,
+            atomics_object,
             data_view_constructor,
             data_view_proto,
             typed_array_proto: typed_arrays.typed_array_proto,

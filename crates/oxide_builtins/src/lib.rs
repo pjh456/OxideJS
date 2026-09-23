@@ -5,13 +5,15 @@
 //! ArrayBuffer、DataView、Reflect、Function、Error 与全局函数（URI/escape 等）。
 //! 每个内置方法以 `fn xxx<H: VmHost>(vm, args: &[u8]) -> NativeResult` 形式暴露，
 //! 由上层（oxide_vm / oxide_api）注册为 JS 全局对象上的 native function。
-//! 架构性延后的特性（Proxy、WeakMap、WeakSet、WeakRef、FinalizationRegistry、
-//! Atomics）在 `stubs` 中仅提供占位实现，调用时抛 TypeError。
+//! 架构性延后的特性（Proxy、WeakMap、WeakSet、WeakRef、FinalizationRegistry）
+//! 在 `stubs` 中仅提供占位实现，调用时抛 TypeError。
 
 /// Array 内置对象实现（目录模块：common 共享助手、from 构造器与静态方法、element 元素变更、iterate 高阶迭代、sort_iterator 排序与迭代协议、immutable ES2023 不可变方法族）。
 pub mod array;
 /// ArrayBuffer 内置对象实现（字节缓冲区与 byteLength/slice/isView）。
 pub mod array_buffer;
+/// Atomics 全局纯对象实现（10 个原子方法，单线程退化读-改-写）。
+pub mod atomics;
 /// BigInt 内置对象实现（constructor 与 prototype 的 toString）。
 pub mod bigint;
 /// Boolean 内置对象实现（constructor 与 prototype 的 valueOf/toString）。
