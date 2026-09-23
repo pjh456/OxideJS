@@ -68,9 +68,10 @@ impl oxide_runtime_api::VmHost for Vm {
         self.pending_length_exception = self.last_uncaught_value.take();
     }
     fn property_key_si(&mut self, val: JsValue) -> u32 {
-        // 对象键转换（to_string_full）失败时降级为空键：本 trait 路径供
-        // Reflect/Object 内置使用，这些内置按规范不传播键转换异常；计算属性
-        // 访问走返回 Result 的 inherent 版本，转换异常原样保留。
+        // 对象键转换（to_string_full）失败时降级为空键：本 trait 路径供不传播
+        // 键转换异常的内置站点（Object defineProperty/fromEntries/hasOwn、
+        // 数值串内部键等）使用；按规范须传播异常的站点用返回 Result 的
+        // `to_property_key_si`，转换异常原样保留。
         self.property_key_si(val)
             .unwrap_or_else(|_| self.kernel_core.perm_interner().intern("").0)
     }

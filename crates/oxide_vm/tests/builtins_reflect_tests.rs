@@ -306,6 +306,52 @@ fn reflect_construct_guard_face() {
     assert!(result.as_bool());
 }
 
+// 键转换异常原值传播：Reflect.has 的键 ToPropertyKey 抛 "X" → 捕获值 === "X"。
+#[test]
+fn reflect_has_propagates_key_conversion_original_value() {
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "var key = { toString: function() { throw 'X'; } }; \
+         var caught; \
+         try { Reflect.has({}, key); caught = 'none'; } catch (e) { caught = e; } \
+         caught === 'X'",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
+// 同族探针：Reflect.get 的键转换异常同式原值传播。
+#[test]
+fn reflect_get_propagates_key_conversion_original_value() {
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "var key = { toString: function() { throw 'X'; } }; \
+         var caught; \
+         try { Reflect.get({}, key); caught = 'none'; } catch (e) { caught = e; } \
+         caught === 'X'",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
+// 守卫序钉：defineProperty 键转换先于 descriptor 类型检——descriptor 缺省且
+// 键抛 "X" 时捕获的必须是键异常原值，不是 descriptor TypeError。
+#[test]
+fn reflect_define_property_key_evaluates_before_descriptor_check() {
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "var key = { toString: function() { throw 'X'; } }; \
+         var caught; \
+         try { Reflect.defineProperty({}, key, undefined); caught = 'none'; } catch (e) { caught = e; } \
+         caught === 'X'",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
 // 227.1 回归守卫：隐式 super 面经 `new` 直接构造不回归。
 #[test]
 fn construct_direct_new_derived_array_guard() {

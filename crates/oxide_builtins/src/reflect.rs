@@ -88,12 +88,16 @@ pub fn reflect_define_property<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResu
     let Some(target_ptr) = object_ptr(target_val) else {
         return type_error(vm, "Reflect.defineProperty target is not an object");
     };
+    // 规范步序：键转换（ToPropertyKey）先于 descriptor 类型检；键转换异常原值传播。
+    let key_si = match vm.to_property_key_si(arg(vm, args, 2)) {
+        Ok(si) => si,
+        Err(e) => return NativeResult::Err(from_engine_error(vm, &e)),
+    };
     let desc_val = arg(vm, args, 3);
     let Some(_) = object_ptr(desc_val) else {
         return type_error(vm, "Reflect.defineProperty descriptor is not an object");
     };
 
-    let key_si = vm.property_key_si(arg(vm, args, 2));
     match crate::object::define_from_descriptor(vm, target_ptr, key_si, desc_val) {
         Ok(()) => NativeResult::Ok(JsValue::bool(true)),
         Err(msg) => {
@@ -117,7 +121,11 @@ pub fn reflect_delete_property<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResu
     let Some(target_ptr) = object_ptr(target_val) else {
         return type_error(vm, "Reflect.deleteProperty target is not an object");
     };
-    let key_si = vm.property_key_si(arg(vm, args, 2));
+    // 键转换异常原值传播（ToPropertyKey 步先于 DeleteOwnProperty）。
+    let key_si = match vm.to_property_key_si(arg(vm, args, 2)) {
+        Ok(si) => si,
+        Err(e) => return NativeResult::Err(from_engine_error(vm, &e)),
+    };
     let target = unsafe { &mut *target_ptr };
     NativeResult::Ok(JsValue::bool(delete_own_property(vm, target, key_si)))
 }
@@ -128,7 +136,11 @@ pub fn reflect_get<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let Some(target_ptr) = object_ptr(target_val) else {
         return type_error(vm, "Reflect.get target is not an object");
     };
-    let key_si = vm.property_key_si(arg(vm, args, 2));
+    // 键转换异常原值传播（ToPropertyKey 步先于 Get）。
+    let key_si = match vm.to_property_key_si(arg(vm, args, 2)) {
+        Ok(si) => si,
+        Err(e) => return NativeResult::Err(from_engine_error(vm, &e)),
+    };
     let receiver = if args.len() > 3 { vm.reg(args[3]) } else { target_val };
     match vm.ordinary_get(unsafe { &*target_ptr }, key_si, receiver) {
         Ok(value) => NativeResult::Ok(value),
@@ -165,7 +177,11 @@ pub fn reflect_has<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let Some(target_ptr) = object_ptr(target_val) else {
         return type_error(vm, "Reflect.has target is not an object");
     };
-    let key_si = vm.property_key_si(arg(vm, args, 2));
+    // 键转换异常原值传播（ToPropertyKey 步先于 HasProperty）。
+    let key_si = match vm.to_property_key_si(arg(vm, args, 2)) {
+        Ok(si) => si,
+        Err(e) => return NativeResult::Err(from_engine_error(vm, &e)),
+    };
     NativeResult::Ok(JsValue::bool(vm.has_property(unsafe { &*target_ptr }, key_si)))
 }
 
@@ -241,7 +257,11 @@ pub fn reflect_set<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let Some(target_ptr) = object_ptr(target_val) else {
         return type_error(vm, "Reflect.set target is not an object");
     };
-    let key_si = vm.property_key_si(arg(vm, args, 2));
+    // 键转换异常原值传播（ToPropertyKey 步先于 Set）。
+    let key_si = match vm.to_property_key_si(arg(vm, args, 2)) {
+        Ok(si) => si,
+        Err(e) => return NativeResult::Err(from_engine_error(vm, &e)),
+    };
     let value = arg(vm, args, 3);
     let receiver = if args.len() > 4 { vm.reg(args[4]) } else { target_val };
     let target = unsafe { &mut *target_ptr };

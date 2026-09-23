@@ -1115,7 +1115,17 @@ pub fn object_get_own_property_descriptor<H: VmHost>(vm: &mut H, args: &[u8]) ->
         Err(msg) => return NativeResult::Err(crate::error::create_type_error(vm, &msg)),
     };
     let obj_ptr = obj_val.as_js_object_ptr();
-    let key = vm.property_key_si(vm.reg(args[2]));
+    // 键转换异常原值传播（ToPropertyKey 步先于 GetOwnProperty）：Reflect 委托面
+    // 与 Object 同核，须按规范传播。
+    let key = match vm.to_property_key_si(vm.reg(args[2])) {
+        Ok(si) => si,
+        Err(e) => {
+            let exc = vm
+                .take_uncaught_value()
+                .unwrap_or_else(|| crate::error::create_type_error(vm, &e));
+            return NativeResult::Err(exc);
+        }
+    };
     let obj = unsafe { &*obj_ptr };
     match own_descriptor_of(vm, obj, key) {
         Ok(Some(desc)) => NativeResult::Ok(desc),
