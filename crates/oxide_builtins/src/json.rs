@@ -185,21 +185,39 @@ fn create_wrapper<H: VmHost>(vm: &mut H, value: JsValue) -> JsValue {
     JsValue::from_js_object(obj_ptr)
 }
 
-fn process_space(val: JsValue) -> String {
+/// space 参数文本化（Stringify 步 5）：数字经 ToIntegerOrInfinity 钳 10，
+/// 字符串取前 10 字符；装箱 String 走完整 ToString（步 4c 同款语义，
+/// 抛出值原样上抛），其余形态维持占位行为。
+fn process_space<H: VmHost>(vm: &mut H, val: JsValue) -> Result<String, JsValue> {
     if val.is_int() || val.is_double() {
         let n = oxide_runtime_api::to_integer_or_infinity(val);
         if n.is_nan() || n.is_infinite() || n <= 0.0 {
-            return String::new();
+            return Ok(String::new());
         }
         let clamped = (n as usize).min(10);
-        " ".repeat(clamped)
-    } else if val.is_string() {
-        let s = unsafe { (*val.as_string_ptr()).to_owned_string() };
-        s.chars().take(10).collect()
-    } else {
-        let s = oxide_runtime_api::to_string(val);
-        s.chars().take(10).collect()
+        return Ok(" ".repeat(clamped));
     }
+    if val.is_string() {
+        let s = unsafe { (*val.as_string_ptr()).to_owned_string() };
+        return Ok(s.chars().take(10).collect());
+    }
+    if val.is_object() {
+        let ptr = val.as_js_object_ptr();
+        if !ptr.is_null() && unsafe { (*ptr).is_string_obj() } {
+            let s = match oxide_runtime_api::to_string_value_full(val, vm) {
+                Ok(s) => s,
+                Err(msg) => {
+                    return Err(vm
+                        .take_uncaught_value()
+                        .unwrap_or_else(|| crate::error::create_type_error(vm, &msg)));
+                }
+            };
+            let s = unsafe { (*s.as_string_ptr()).to_owned_string() };
+            return Ok(s.chars().take(10).collect());
+        }
+    }
+    let s = oxide_runtime_api::to_string(val);
+    Ok(s.chars().take(10).collect())
 }
 
 /// 键 si 物化为单元序列：整数键 → ASCII 数字串，字符串键 → 码表键经 `decode_key`
@@ -379,7 +397,14 @@ pub fn json_stringify<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         }
     }
 
-    let space = if args.len() > 3 { process_space(vm.reg(args[3])) } else { String::new() };
+    let space = if args.len() > 3 {
+        match process_space(vm, vm.reg(args[3])) {
+            Ok(s) => s,
+            Err(exc) => return NativeResult::Err(exc),
+        }
+    } else {
+        String::new()
+    };
 
     let holder = create_wrapper(vm, value);
 
@@ -467,7 +492,22 @@ fn jsvalue_to_json<H: VmHost>(
         if obj.boxed_value().is_bigint() {
             return Err(crate::error::create_type_error(vm, "Do not know how to serialize a BigInt"));
         }
-        if obj.is_typed_array_obj() {
+        // 步 4c：装箱 String 走完整 ToString（[[StringData]] 臂）：尊重
+        // toString/Symbol.toPrimitive 覆盖、不直读载荷，抛出值原样传播。
+        if obj.is_string_obj() {
+            let s = match oxide_runtime_api::to_string_value_full(val, vm) {
+                Ok(s) => s,
+                Err(msg) => {
+                    let exc = vm
+                        .take_uncaught_value()
+                        .unwrap_or_else(|| crate::error::create_type_error(vm, &msg));
+                    visited.remove(&(obj_ptr as *const JsObject));
+                    return Err(exc);
+                }
+            };
+            let units = vm.string_units(s);
+            stringify_string_units(&units, out);
+        } else if obj.is_typed_array_obj() {
             stringify_typed_array(vm, obj, visited, out, replacer_fn, replacer_whitelist, space, indent_level)?;
         } else if obj.is_array() {
             stringify_array(vm, obj, visited, out, replacer_fn, replacer_whitelist, space, indent_level)?;

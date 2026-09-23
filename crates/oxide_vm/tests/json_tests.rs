@@ -340,6 +340,114 @@ fn json_stringify_surrogate_pair_raw() {
     assert!(r2.as_bool(), "unpaired units around a pair must each be escaped");
 }
 
+// -- JSON.stringify 装箱 String（[[StringData]] 臂） --
+
+#[test]
+fn json_stringify_boxed_string_top_level() {
+    // 顶层装箱 String 序列化为载荷文本（[[StringData]] 臂 ToString，非索引枚举）。
+    let mut vm = Vm::new();
+    let result = eval(&mut vm, "JSON.stringify(new String('x'))").unwrap();
+    assert_eq!(string_value(&vm, result), "\"x\"");
+}
+
+#[test]
+fn json_stringify_boxed_string_object_property() {
+    // 对象属性位同臂：{"a":"x"}。
+    let mut vm = Vm::new();
+    let result = eval(&mut vm, "JSON.stringify({a: new String('x')})").unwrap();
+    assert_eq!(string_value(&vm, result), "{\"a\":\"x\"}");
+}
+
+#[test]
+fn json_stringify_boxed_string_array_elements() {
+    // 数组元素位：["x","yz"]。
+    let mut vm = Vm::new();
+    let result = eval(&mut vm, "JSON.stringify([new String('x'), new String('yz')])").unwrap();
+    assert_eq!(string_value(&vm, result), "[\"x\",\"yz\"]");
+}
+
+#[test]
+fn json_stringify_boxed_string_respects_tostring_override() {
+    // 完整 ToString 语义：toString 覆盖生效，valueOf 不在 string hint 路径被调用。
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "var s = new String('x'); s.toString = function() { return 'y'; }; \
+         s.valueOf = function() { throw new Error('no'); }; JSON.stringify(s)",
+    )
+    .unwrap();
+    assert_eq!(string_value(&vm, result), "\"y\"");
+}
+
+#[test]
+fn json_stringify_boxed_string_abrupt_tostring_propagates() {
+    // 值位 abrupt toString 抛原始值（原样传播，不折叠为环检 TypeError）。
+    let mut vm = Vm::new();
+    let err = eval(
+        &mut vm,
+        "var s = new String('x'); s.toString = function() { throw new RangeError('SE'); }; \
+         JSON.stringify(s)",
+    );
+    assert!(err.is_err());
+}
+
+#[test]
+fn json_stringify_string_prototype_is_empty_string() {
+    // String.prototype 是规范 String exotic 对象（[[StringData]] 空串）→ ""。
+    let mut vm = Vm::new();
+    let result = eval(&mut vm, "JSON.stringify(String.prototype)").unwrap();
+    assert_eq!(string_value(&vm, result), "\"\"");
+}
+
+#[test]
+fn json_stringify_boxed_string_space_argument() {
+    // space 位装箱 String 与同文本原语串缩进同形。
+    let mut vm = Vm::new();
+    let r1 = eval(&mut vm, "JSON.stringify({a: 1}, undefined, new String('xxx'))").unwrap();
+    let r2 = eval(&mut vm, "JSON.stringify({a: 1}, undefined, 'xxx')").unwrap();
+    assert_eq!(string_value(&vm, r1), string_value(&vm, r2));
+}
+
+#[test]
+fn json_stringify_boxed_string_space_tostring_override() {
+    // space 位 toString 覆盖生效（完整 ToString，非直读载荷）。
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "var s = new String('zzz'); s.toString = function() { return '---'; }; \
+         JSON.stringify({a: 1}, undefined, s)",
+    )
+    .unwrap();
+    let plain = eval(&mut vm, "JSON.stringify({a: 1}, undefined, '---')").unwrap();
+    assert_eq!(string_value(&vm, result), string_value(&vm, plain));
+}
+
+#[test]
+fn json_stringify_boxed_string_space_abrupt_throws() {
+    // space 位 abrupt toString 抛原始值。
+    let mut vm = Vm::new();
+    let err = eval(
+        &mut vm,
+        "var s = new String('x'); s.toString = function() { throw new RangeError('SE'); }; \
+         JSON.stringify({a: 1}, undefined, s)",
+    );
+    assert!(err.is_err());
+}
+
+#[test]
+fn json_stringify_boxed_string_tostring_result_units_escaped() {
+    // 完整 ToString 产物经单元流序列化：孤立 surrogate → \uXXXX 转义（well-formed JSON）。
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "var s = new String('x'); \
+         s.toString = function() { return String.fromCharCode(0xD800); }; \
+         JSON.stringify(s) === '\"\\\\ud800\"'",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
 #[test]
 fn json_stringify_key_units_real() {
     // 键序列化用真实键串（孤立 surrogate 转义），toJSON/replacer 键参数同口径。
