@@ -750,3 +750,91 @@ fn typed_array_plain_member_call_in_class_ctor_not_construct() {
     .unwrap();
     assert!(result.as_bool());
 }
+
+#[test]
+fn ta_gate_get_numeric_invalid_undefined() {
+    // 数字无效键（分数/负/"-0"/越界整数）读 undefined：exotic 数字臂不走
+    // 原型链，原型同键抛 getter 不被触达。
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "(function () { var ta = new Int8Array([42, 43]); \
+         var keys = ['1.1', '-1', '-0', '2']; \
+         for (var i = 0; i < keys.length; i++) { \
+           Object.defineProperty(Int8Array.prototype, keys[i], { \
+             get: function () { throw new Error('OrdinaryGet was called'); } }); } \
+         for (var i = 0; i < keys.length; i++) { \
+           if (ta[keys[i]] !== undefined) return false; } \
+         return true; })()",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
+#[test]
+fn ta_gate_has_numeric_invalid_false() {
+    // 数字无效键 in 判 false：exotic 数字臂不走原型链，原型同键数据属性
+    // 不被触达（防假阳）。length-1 样本覆盖越界整数键。
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "(function () { var ta = new Int8Array([42]); \
+         var keys = ['1.1', '0.000001', '-1', '-0']; \
+         for (var i = 0; i < keys.length; i++) { \
+           Int8Array.prototype[keys[i]] = 'test262'; } \
+         Int8Array.prototype[1] = 'test262'; \
+         for (var i = 0; i < keys.length; i++) { \
+           if (keys[i] in ta) return false; } \
+         return !(1 in ta); })()",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
+#[test]
+fn ta_gate_ordinary_arm_proto_walk() {
+    // 非规范数字串（round-trip 不成）落普通属性路径：缺失读 undefined，
+    // 原型预置后继承读值且 in 判 true；"+1" 与 "1" 独立成键互不干扰。
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "(function () { var ta = new Int8Array([42]); \
+         var keys = ['1.0', '+1', '1000000000000000000000', '0.0000001']; \
+         for (var i = 0; i < keys.length; i++) { \
+           if (ta[keys[i]] !== undefined) return false; } \
+         for (var i = 0; i < keys.length; i++) { \
+           Int8Array.prototype[keys[i]] = 'test262'; \
+           if (ta[keys[i]] !== 'test262') return false; \
+           if (!(keys[i] in ta)) return false; } \
+         return ta['1'] === undefined; })()",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
+#[test]
+fn ta_gate_valid_arm_no_drift() {
+    // 界内整数臂回归钉：读元素值、in 判 true、length 不变（Valid 臂零漂移）。
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "var ta = new Int8Array([42, 7]); \
+         ta[0] === 42 && (0 in ta) && (1 in ta) && ta.length === 2",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
+#[test]
+fn ta_gate_detached_numeric_invalid() {
+    // detach 后 live 长 0：界内整数键归数字无效，读 undefined、in 判 false。
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "(function () { var ab = new ArrayBuffer(8); var ta = new Int8Array(ab); \
+         ta[0] = 9; ab.transfer(); \
+         return ta[0] === undefined && !(0 in ta); })()",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}

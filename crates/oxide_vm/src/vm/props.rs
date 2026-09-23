@@ -214,11 +214,16 @@ impl Vm {
 
     /// 存在性判定（规范 HasProperty）：自身与原型链逐级检查，任一层 P 为自有
     /// 属性即存在。数组 length 虚拟属性恒存在；数组元素区 hole 视同缺失；
-    /// TypedArray 整数索引按视图长度判在界；其余按 shape 槽判定。
+    /// 其余按 shape 槽判定。
     ///
-    /// 与 `resolve_property` 的差异：原型链上每层都检查数组元素区与 TypedArray
-    /// 元素（`resolve_property` 只在顶层检查元素区，链上仅走 shape 槽），
-    /// 继承自父数组/TypedArray 的索引属性在此判存在。
+    /// 顶层 TypedArray 经统一数值键门（exotic [[HasProperty]]）：界内整数索引
+    /// 判存在；数字无效键（负/分数/±Infinity/NaN/越界，含 "-0" 特例）立即
+    /// false，不查自身命名属性也不走原型链；非规范数字串落普通路径。原型链上
+    /// 的 TA 按普通对象查 shape 槽。
+    ///
+    /// 与 `resolve_property` 的差异：原型链上每层都检查数组元素区
+    /// （`resolve_property` 只在顶层检查元素区，链上仅走 shape 槽），
+    /// 继承自父数组的索引属性在此判存在。
     pub(crate) fn has_property(&self, obj: &JsObject, prop_name_si: u32) -> bool {
         let length_si = self.length_si;
         let mut current = Some(obj);
@@ -227,13 +232,13 @@ impl Vm {
             if obj.is_array() && prop_name_si == length_si {
                 return true;
             }
-            if obj.is_typed_array_obj() {
-                if let Some((index, len)) =
-                    oxide_builtins::typed_array::typed_array_integer_index(self, obj, prop_name_si)
-                {
-                    if index < len {
-                        return true;
-                    }
+            // 统一数值键门（exotic [[HasProperty]]）：同 `ordinary_get_inner`
+            // 的口径，门只落在顶层对象。
+            if obj.is_typed_array_obj() && depth == 0 {
+                match oxide_builtins::typed_array::ta_index_gate(self, obj, prop_name_si) {
+                    oxide_builtins::typed_array::TaIndexGate::NumericValid(_) => return true,
+                    oxide_builtins::typed_array::TaIndexGate::NumericInvalid => return false,
+                    oxide_builtins::typed_array::TaIndexGate::Ordinary => {}
                 }
             }
             if self.get_own_property_slot(obj, prop_name_si).is_some() {

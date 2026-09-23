@@ -12,7 +12,8 @@ impl Vm {
     /// # 步骤
     /// 1. 数组 length 键返回逻辑长度值，不落属性存储。
     /// 2. 数组整数索引在元素区命中且非 hole 时返回元素值；访问器元素触发 getter。
-    /// 3. TypedArray 整数索引读底层 buffer。
+    /// 3. 顶层 TypedArray 经统一数值键门：界内整数读底层 buffer，数字无效键
+    ///    立即 undefined，非规范数字串落普通路径。
     /// 4. 命名属性槽命中返回槽值；accessor 触发 getter。
     /// 5. 全部 miss 时沿原型链逐层查找，深度以 `MAX_PROTO_CHAIN_DEPTH` 为界。
     ///
@@ -99,9 +100,19 @@ impl Vm {
                     }
                 }
             }
-            if obj.is_typed_array_obj() {
-                if let Some(index) = self.array_index_from_property_key(prop_name_si) {
-                    return oxide_builtins::typed_array::typed_array_element_get(self, obj, index);
+            // 统一数值键门（exotic [[Get]]）：界内整数读底层 buffer；数字无效
+            // 键（负/分数/±Infinity/NaN/越界，含 "-0" 特例）立即 undefined 不
+            // 查自身命名属性也不走原型链；非规范数字串落下方普通属性路径。
+            // 门只落在顶层对象：原型链上的 TA 维持普通 shape 槽查找。
+            if obj.is_typed_array_obj() && depth == 0 {
+                match oxide_builtins::typed_array::ta_index_gate(self, obj, prop_name_si) {
+                    oxide_builtins::typed_array::TaIndexGate::NumericValid(index) => {
+                        return oxide_builtins::typed_array::typed_array_element_get(self, obj, index);
+                    }
+                    oxide_builtins::typed_array::TaIndexGate::NumericInvalid => {
+                        return Ok(JsValue::undefined());
+                    }
+                    oxide_builtins::typed_array::TaIndexGate::Ordinary => {}
                 }
             }
             if let Some(pos) = self.get_own_property_slot(obj, prop_name_si) {
