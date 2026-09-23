@@ -1442,15 +1442,227 @@ fn ta_delete_live_zero_all_true() {
     let result = eval(
         &mut vm,
         "(function () { var ab = new ArrayBuffer(8); var ta = new Int8Array(ab); \
-          ta[0] = 7; \
-          ab.transfer(); \
-          var r1 = delete ta[0]; \
-          var r2 = delete ta['-0']; \
-          var r3 = delete ta['1.1']; \
-          var r4 = delete ta['1']; \
-          var r5 = Reflect.deleteProperty(ta, 0); \
-          return r1 === true && r2 === true && r3 === true && r4 === true && r5 === true \
-            && !Object.prototype.hasOwnProperty.call(ta, '0'); })()",
+           ta[0] = 7; \
+           ab.transfer(); \
+           var r1 = delete ta[0]; \
+           var r2 = delete ta['-0']; \
+           var r3 = delete ta['1.1']; \
+           var r4 = delete ta['1']; \
+           var r5 = Reflect.deleteProperty(ta, 0); \
+           return r1 === true && r2 === true && r3 === true && r4 === true && r5 === true \
+             && !Object.prototype.hasOwnProperty.call(ta, '0'); })()",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
+#[test]
+fn ta_gopd_index_desc() {
+    // gOPD 界内整数键：元素值 + 常量四字段（writable/enumerable/configurable
+    // 恒真，不读 buffer 状态）；BigInt 族同形。
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "(function () { var ta = new Int8Array([42, 7]); \
+           var d = Object.getOwnPropertyDescriptor(ta, '0'); \
+           var di = Object.getOwnPropertyDescriptor(ta, 0); \
+           if (!d || d.value !== 42 || d.writable !== true \
+               || d.enumerable !== true || d.configurable !== true) return false; \
+           if (!di || di.value !== 42 || di.writable !== true \
+               || di.enumerable !== true || di.configurable !== true) return false; \
+           var b = new BigInt64Array([42n, 43n]); \
+           var db = Object.getOwnPropertyDescriptor(b, 1); \
+           return !!db && db.value === 43n && db.writable === true \
+             && db.enumerable === true && db.configurable === true; })()",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
+#[test]
+fn ta_gopd_oob_numeric_undefined() {
+    // 数字无效键（越界/负/"-0"/分数）gOPD 恒 undefined：不建属性、不查形状。
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "(function () { var ta = new Int8Array([42]); \
+           var keys = ['-1', '-42', '1', '42', '-0', '1.1', '0.1']; \
+           for (var i = 0; i < keys.length; i++) { \
+             if (Object.getOwnPropertyDescriptor(ta, keys[i]) !== undefined) return false; } \
+           return true; })()",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
+#[test]
+fn ta_gopd_ordinary_real_prop() {
+    // 非规范数字串键落真实 own 属性路径：完整描述符原样返回；无定义键
+    // undefined（非 fall-through 吞属性）。
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "(function () { var ta = new Int8Array([42]); \
+           Object.defineProperty(ta, '1.0', { value: 7 }); \
+           var d = Object.getOwnPropertyDescriptor(ta, '1.0'); \
+           if (!d || d.value !== 7 || d.writable !== false \
+               || d.enumerable !== false || d.configurable !== false) return false; \
+           return Object.getOwnPropertyDescriptor(ta, 'undef') === undefined; })()",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
+#[test]
+fn ta_gopd_symbol_real_prop() {
+    // symbol 键真实 own 属性：定义后 gOPD 返回其描述符，无定义 undefined。
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "(function () { var ta = new Int8Array([42]); \
+           var s = Symbol('s'); \
+           if (Object.getOwnPropertyDescriptor(ta, s) !== undefined) return false; \
+           Object.defineProperty(ta, s, { value: 'x', enumerable: true, configurable: false }); \
+           var d = Object.getOwnPropertyDescriptor(ta, s); \
+           return !!d && d.value === 'x' && d.writable === false \
+             && d.enumerable === true && d.configurable === false; })()",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
+#[test]
+fn ta_gopd_detached_undefined() {
+    // detach 后 live 长 0：全数值键 gOPD 恒 undefined（元素臂不触达）。
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "(function () { var ab = new ArrayBuffer(8); var ta = new Int8Array(ab); \
+           ta[0] = 9; \
+           ab.transfer(); \
+           return Object.getOwnPropertyDescriptor(ta, 0) === undefined \
+             && Object.getOwnPropertyDescriptor(ta, '0') === undefined \
+             && Object.getOwnPropertyDescriptor(ta, '-1') === undefined; })()",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
+#[test]
+fn ta_gopd_subarray_view_offset() {
+    // subarray 视图偏移：视图下标 0 的元素是底层偏移后第 2 个元素（与
+    // 元素读同口径）。
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "(function () { var base = new Int8Array([11, 22, 33]); \
+           var view = base.subarray(1); \
+           var d0 = Object.getOwnPropertyDescriptor(view, 0); \
+           var d1 = Object.getOwnPropertyDescriptor(view, 1); \
+           return !!d0 && d0.value === 22 && !!d1 && d1.value === 33; })()",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
+#[test]
+fn ta_gopd_length_undefined_unchanged() {
+    // TA length 非 own 属性（经原型访问器读）：gOPD('length') 恒 undefined，
+    // 防 TA 臂误吞 length 键。
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "(function () { var ta = new Int8Array([42]); \
+           return Object.getOwnPropertyDescriptor(ta, 'length') === undefined; })()",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
+#[test]
+fn ta_gopd_int_key_same_arm() {
+    // int 键与规范串键同臂：描述符值一致（ToKey 后同路）。
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "(function () { var ta = new Int8Array([11, 22]); \
+           var di = Object.getOwnPropertyDescriptor(ta, 1); \
+           var ds = Object.getOwnPropertyDescriptor(ta, '1'); \
+           return !!di && !!ds && di.value === 22 && ds.value === 22 \
+             && di.value === ds.value; })()",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
+#[test]
+fn ta_hasown_index_true() {
+    // hasOwn 面：界内整数键（int 与规范串）恒 true；数字无效键（"-0"/分数）
+    // 无属性 false。
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "(function () { var ta = new Int8Array([42, 7]); \
+           if (ta.hasOwnProperty(0) !== true) return false; \
+           if (ta.hasOwnProperty('1') !== true) return false; \
+           if (Object.hasOwn(ta, 0) !== true) return false; \
+           if (ta.hasOwnProperty('-0') !== false) return false; \
+           if (ta.hasOwnProperty('1.1') !== false) return false; \
+           return ta.hasOwnProperty(2) === false; })()",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
+#[test]
+fn ta_pie_index_true() {
+    // propertyIsEnumerable 面：界内整数键恒可枚举；越界与数字无效键 false。
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "(function () { var ta = new Int8Array([42]); \
+           if (ta.propertyIsEnumerable(0) !== true) return false; \
+           if (ta.propertyIsEnumerable('0') !== true) return false; \
+           if (ta.propertyIsEnumerable('1.1') !== false) return false; \
+           return ta.propertyIsEnumerable(5) === false; })()",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
+#[test]
+fn ta_reflect_gopd() {
+    // Reflect.getOwnPropertyDescriptor 经共享核消费 TA 臂：界内键元素值，
+    // 越界与数字无效键 undefined。
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "(function () { var ta = new Int8Array([42]); \
+           var d = Reflect.getOwnPropertyDescriptor(ta, 0); \
+           if (!d || d.value !== 42 || d.writable !== true \
+               || d.enumerable !== true || d.configurable !== true) return false; \
+           return Reflect.getOwnPropertyDescriptor(ta, 9) === undefined \
+             && Reflect.getOwnPropertyDescriptor(ta, '-1') === undefined; })()",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
+#[test]
+fn ta_gopd_real_prop_attrs_passthrough() {
+    // Ordinary 键真属性四字段原样返回（非常量四真）：钉 fall-through 槽位路径
+    // 不被 TA 臂覆盖——configurable 为 false 即非常量描述符。
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "(function () { var ta = new Int8Array([42]); \
+           Object.defineProperty(ta, '1.0', { \
+             value: 7, writable: true, enumerable: true, configurable: false }); \
+           var d = Object.getOwnPropertyDescriptor(ta, '1.0'); \
+           if (!d || d.value !== 7) return false; \
+           if (d.writable !== true || d.enumerable !== true || d.configurable !== false) return false; \
+           return ta.hasOwnProperty('1.0') === true \
+             && ta.propertyIsEnumerable('1.0') === true; })()",
     )
     .unwrap();
     assert!(result.as_bool());

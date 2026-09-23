@@ -994,10 +994,34 @@ pub fn object_define_property<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResul
 /// # 边界与前提
 /// - 键不在对象自身返回 `Ok(None)`
 /// - 模块命名空间未初始化导出返回 `Err`（ReferenceError，原值传播）
+/// - TypedArray 界内整数键返回常量四字段描述符（writable/enumerable/
+///   configurable 恒真，不读 buffer 状态）；数字无效与非数字串键落槽位路径
 ///
 /// # 副作用
 /// - 在 epoch 分配一个描述符对象
 fn own_descriptor_of<H: VmHost>(vm: &mut H, obj: &JsObject, key_si: u32) -> Result<Option<JsValue>, JsValue> {
+    // TA 数值键：界内索引返回元素值 + 常量四字段描述符（writable/enumerable/
+    // configurable 恒真）；数字无效与非数字串键落下方槽位路径（真实 own 属性
+    // 原样返回，无属性则 None）。
+    if obj.is_typed_array_obj() {
+        if let crate::typed_array::TaIndexGate::NumericValid(index) = crate::typed_array::ta_index_gate(vm, obj, key_si)
+        {
+            let value = crate::typed_array::typed_array_element_get(vm, obj, index).unwrap_or(JsValue::undefined());
+            let desc = alloc_desc_object(vm);
+            let sh_ptr = vm.kernel_core().shape_forge().as_ref() as *const ShapeForge;
+            let sf_ptr = vm.kernel_core().perm_interner().as_ref() as *const PermInterner;
+            // SAFETY: desc 为本函数刚分配的 epoch 对象；sh/sf 为 kernel 永久引用。
+            let d: &mut JsObject = unsafe { &mut *desc };
+            let sh = unsafe { &*sh_ptr };
+            let sf = unsafe { &*sf_ptr };
+            push_desc_prop(d, sh, sf.intern("value").0, value);
+            push_desc_prop(d, sh, sf.intern("writable").0, JsValue::bool(true));
+            push_desc_prop(d, sh, sf.intern("enumerable").0, JsValue::bool(true));
+            push_desc_prop(d, sh, sf.intern("configurable").0, JsValue::bool(true));
+            return Ok(Some(JsValue::from_js_object(desc)));
+        }
+    }
+
     // 数组 length 是虚拟属性（无 shape 槽，ordinary_get 直接返回逻辑长度）：
     // 描述符 {value: len, writable: !frozen && 非显式收窄, enumerable: false,
     // configurable: false}。冻结数组与经 defineProperty 收窄的数组 writable=false。
@@ -1525,6 +1549,9 @@ pub fn object_set_prototype_of<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResu
 }
 
 /// `Object.hasOwn(obj, key)`：对象是否有指定自身属性。
+///
+/// # 边界与前提
+/// - TypedArray 界内整数键经统一数值键门预支恒 true，不查形状槽。
 pub fn object_has_own<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     if args.len() < 3 {
         return NativeResult::Ok(JsValue::bool(false));
@@ -1532,6 +1559,16 @@ pub fn object_has_own<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let obj_ptr = native_try!(require_obj_arg(vm, args, "hasOwn"));
     let key_si = vm.property_key_si(vm.reg(args[2]));
     let obj = unsafe { &*obj_ptr };
+    // 统一数值键门（exotic [[HasOwnProperty]]）：界内整数键恒存在；数字无效
+    // 与非数字串键落下方槽位判定。
+    if obj.is_typed_array_obj()
+        && matches!(
+            crate::typed_array::ta_index_gate(vm, obj, key_si),
+            crate::typed_array::TaIndexGate::NumericValid(_)
+        )
+    {
+        return NativeResult::Ok(JsValue::bool(true));
+    }
     NativeResult::Ok(JsValue::bool(vm.get_own_property_slot(obj, key_si).is_some()))
 }
 
@@ -1849,6 +1886,9 @@ pub fn object_proto_to_string<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResul
 /// # 步骤
 /// 1. 先 ToPropertyKey 求键（spec 顺序：键先于 ToObject）。
 /// 2. ToObject 装箱 this（null/undefined 抛 TypeError，原始值装箱后查 own 槽）。
+///
+/// # 边界与前提
+/// - TypedArray 界内整数键经统一数值键门预支恒 true，不查形状槽。
 pub fn object_proto_has_own_property<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     if args.len() < 2 {
         return NativeResult::Ok(JsValue::bool(false));
@@ -1868,6 +1908,17 @@ pub fn object_proto_has_own_property<H: VmHost>(vm: &mut H, args: &[u8]) -> Nati
         Err(msg) => return NativeResult::Err(crate::error::create_type_error(vm, &msg)),
     };
     let obj = unsafe { &*obj_val.as_js_object_ptr() };
+    // 统一数值键门（exotic [[HasOwnProperty]]）：界内整数键恒存在；数字无效
+    // 与非数字串键落下方槽位判定（命名空间检查在门臂之后，TA 非命名空间
+    // 不触达）。
+    if obj.is_typed_array_obj()
+        && matches!(
+            crate::typed_array::ta_index_gate(vm, obj, key_si),
+            crate::typed_array::TaIndexGate::NumericValid(_)
+        )
+    {
+        return NativeResult::Ok(JsValue::bool(true));
+    }
     if vm.get_own_property_slot(obj, key_si).is_none() {
         return NativeResult::Ok(JsValue::bool(false));
     }
@@ -1883,6 +1934,10 @@ pub fn object_proto_has_own_property<H: VmHost>(vm: &mut H, args: &[u8]) -> Nati
 /// # 步骤
 /// 1. 先 ToPropertyKey 求键。
 /// 2. ToObject 装箱 this（null/undefined 抛 TypeError）。
+///
+/// # 边界与前提
+/// - TypedArray 界内整数键经统一数值键门预支恒 true（enumerable 恒真），
+///   不读 meta。
 pub fn object_proto_property_is_enumerable<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     if args.len() < 2 {
         return NativeResult::Ok(JsValue::bool(false));
@@ -1902,6 +1957,16 @@ pub fn object_proto_property_is_enumerable<H: VmHost>(vm: &mut H, args: &[u8]) -
         Err(msg) => return NativeResult::Err(crate::error::create_type_error(vm, &msg)),
     };
     let obj = unsafe { &*obj_val.as_js_object_ptr() };
+    // 统一数值键门（exotic PropertyIsEnumerable）：界内整数键恒可枚举；
+    // 数字无效与非数字串键落下方 meta 读取。
+    if obj.is_typed_array_obj()
+        && matches!(
+            crate::typed_array::ta_index_gate(vm, obj, key_si),
+            crate::typed_array::TaIndexGate::NumericValid(_)
+        )
+    {
+        return NativeResult::Ok(JsValue::bool(true));
+    }
     let Some(pos) = vm.get_own_property_slot(obj, key_si) else {
         return NativeResult::Ok(JsValue::bool(false));
     };
