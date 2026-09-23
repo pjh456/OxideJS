@@ -309,6 +309,11 @@ impl BuiltinWorld {
         } else {
             (current.array_buffer_proto.clone(), current.array_buffer_constructor.clone())
         };
+        let (shared_array_buffer_proto, shared_array_buffer_constructor) = if dirty.shared_array_buffer {
+            make_named_pair(string_forge, shape_forge, labels, "SharedArrayBuffer")
+        } else {
+            (current.shared_array_buffer_proto.clone(), current.shared_array_buffer_constructor.clone())
+        };
         let (data_view_proto, data_view_constructor) = if dirty.data_view {
             make_named_pair(string_forge, shape_forge, labels, "DataView")
         } else {
@@ -511,6 +516,8 @@ impl BuiltinWorld {
             regexp_proto,
             array_buffer_constructor,
             array_buffer_proto,
+            shared_array_buffer_proto,
+            shared_array_buffer_constructor,
             data_view_constructor,
             data_view_proto,
             typed_array_proto: typed_arrays.typed_array_proto,

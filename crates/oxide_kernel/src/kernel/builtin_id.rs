@@ -1,4 +1,4 @@
-//! 内置对象 id 枚举（`BuiltinId` 94 变体 + `ALL` 顺序钉表）、世代快照
+//! 内置对象 id 枚举（`BuiltinId` 96 变体 + `ALL` 顺序钉表）、世代快照
 //! （`BuiltinSnapshot`）与按家族划分的脏标记位集（`BuiltinDirtySet`）；
 //! `NUM_BUILTINS` 文档承载"新增 BuiltinWorld 字段须同步"四处约束注记。
 
@@ -11,7 +11,7 @@ use crate::builtin::BuiltinWorld;
 /// 维护注意：每个新增的 `BuiltinWorld` 对象字段都必须加到这里以及
 /// `KernelSession::dirty_since_snapshot()`，以便选择性重置重建正确的
 /// builtin 家族。
-pub const NUM_BUILTINS: usize = 94;
+pub const NUM_BUILTINS: usize = 96;
 
 /// 内置对象枚举 id，与 `BuiltinWorld` 中的存储槽一一对应。
 ///
@@ -115,6 +115,8 @@ pub enum BuiltinId {
     PlainMonthDayProto = 91,
     PlainYearMonthConstructor = 92,
     PlainYearMonthProto = 93,
+    SharedArrayBufferProto = 94,
+    SharedArrayBufferConstructor = 95,
 }
 
 impl BuiltinId {
@@ -216,6 +218,8 @@ impl BuiltinId {
         BuiltinId::PlainMonthDayProto,
         BuiltinId::PlainYearMonthConstructor,
         BuiltinId::PlainYearMonthProto,
+        BuiltinId::SharedArrayBufferProto,
+        BuiltinId::SharedArrayBufferConstructor,
     ];
 }
 
@@ -283,6 +287,7 @@ pub struct BuiltinDirtySet {
     pub map: bool,
     pub regexp: bool,
     pub array_buffer: bool,
+    pub shared_array_buffer: bool,
     pub data_view: bool,
     pub typed_array_family: bool,
     pub temporal: bool,
@@ -314,6 +319,7 @@ impl BuiltinDirtySet {
             map: true,
             regexp: true,
             array_buffer: true,
+            shared_array_buffer: true,
             data_view: true,
             typed_array_family: true,
             temporal: true,
@@ -340,6 +346,7 @@ impl BuiltinDirtySet {
             || self.map
             || self.regexp
             || self.array_buffer
+            || self.shared_array_buffer
             || self.data_view
             || self.typed_array_family
             || self.temporal
@@ -350,5 +357,30 @@ impl BuiltinDirtySet {
     /// 是否存在任何污染（builtin world 或 global object）。
     pub fn any(&self) -> bool {
         self.any_builtin_dirty() || self.global
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 槽对齐面：表尾追加 SAB 家族后总槽数 96，既有 94 个判别值零位移，
+    /// 快照数组随 NUM_BUILTINS 自动扩维、逐槽对齐。
+    #[test]
+    fn builtin_snapshot_all_slots_aligned() {
+        assert_eq!(NUM_BUILTINS, 96);
+        assert_eq!(BuiltinId::ALL.len(), NUM_BUILTINS);
+        // 前 94 项判别值 0-93 逐项不变（尾追加零位移）。
+        for i in 0..94usize {
+            assert_eq!(BuiltinId::ALL[i] as usize, i);
+        }
+        assert_eq!(BuiltinId::ALL[94], BuiltinId::SharedArrayBufferProto);
+        assert_eq!(BuiltinId::ALL[95], BuiltinId::SharedArrayBufferConstructor);
+
+        // 快照经 session 全量构造路径采集，generations 数组维度 = 槽数。
+        use crate::kernel::{KernelConfig, KernelCore, KernelSession};
+        let core = KernelCore::new(KernelConfig::minimal());
+        let session = KernelSession::new(&core);
+        assert_eq!(session.builtin_snapshot.generations.len(), NUM_BUILTINS);
     }
 }

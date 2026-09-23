@@ -1,4 +1,4 @@
-//! 注册表职责：BuiltinWorld 结构（104 固定 P 字段 + stub 族 + Box::into_raw
+//! 注册表职责：BuiltinWorld 结构（106 固定 P 字段 + stub 族 + Box::into_raw
 //! 登记表）、get_by_id 派发、all_p_fields 104 元组枚举（新增 P 字段四处同步
 //! 约束载体）与登记表 track/find/inherit/teardown。
 
@@ -48,6 +48,10 @@ pub struct BuiltinWorld {
     pub regexp_proto: P<JsObject>,
     pub array_buffer_constructor: P<JsObject>,
     pub array_buffer_proto: P<JsObject>,
+    /// `SharedArrayBuffer.prototype` 与 `SharedArrayBuffer` 构造器：经
+    /// `make_named_pair` 成对构造，方法/访问器由绑定层安装。
+    pub shared_array_buffer_proto: P<JsObject>,
+    pub shared_array_buffer_constructor: P<JsObject>,
     pub data_view_constructor: P<JsObject>,
     pub data_view_proto: P<JsObject>,
     pub typed_array_proto: P<JsObject>,
@@ -343,7 +347,7 @@ impl BuiltinWorld {
     /// session 收尾（`teardown_heap_data`）与选择性重建收尾（`retire_replaced`）
     /// 的 P 字段枚举唯一入口：`BuiltinWorld` 新增 P 字段须在此同步补一行，否则
     /// 收尾时该字段属性区无法释放、重建原型槽改写/释放漏掉该字段。
-    pub(crate) fn all_p_fields(&self) -> [&P<JsObject>; 104] {
+    pub(crate) fn all_p_fields(&self) -> [&P<JsObject>; 106] {
         [
             &self.object_proto,
             &self.array_proto,
@@ -380,6 +384,8 @@ impl BuiltinWorld {
             &self.regexp_proto,
             &self.array_buffer_constructor,
             &self.array_buffer_proto,
+            &self.shared_array_buffer_proto,
+            &self.shared_array_buffer_constructor,
             &self.data_view_constructor,
             &self.data_view_proto,
             &self.typed_array_proto,
@@ -532,6 +538,8 @@ impl BuiltinWorld {
             BuiltinId::RegExpProto => &self.regexp_proto,
             BuiltinId::ArrayBufferConstructor => &self.array_buffer_constructor,
             BuiltinId::ArrayBufferProto => &self.array_buffer_proto,
+            BuiltinId::SharedArrayBufferProto => &self.shared_array_buffer_proto,
+            BuiltinId::SharedArrayBufferConstructor => &self.shared_array_buffer_constructor,
             BuiltinId::DataViewConstructor => &self.data_view_constructor,
             BuiltinId::DataViewProto => &self.data_view_proto,
             BuiltinId::TypedArrayProto => &self.typed_array_proto,
@@ -657,5 +665,38 @@ mod tests {
         assert!(std::ptr::eq(unsafe { (*wrapper).proto().as_js_object_ptr() }, new_fn_proto));
         // 登记表并入新 world：保留 wrapper 仍须由 session 收尾统一释放。
         assert!(session.builtin_world.leaked_objects.borrow().iter().any(|s| s.ptr == wrapper));
+    }
+
+    /// SAB 家族脏线冒烟：仅 SAB 对世代漂移 → 选择性重置只判 SAB 家族脏，
+    /// ArrayBuffer 家族指针原样保留（钉 dirty_since_snapshot 家族线接线）。
+    #[test]
+    fn sab_family_selective_rebuild() {
+        use crate::kernel::{KernelConfig, KernelCore, KernelSession};
+        let core = KernelCore::new(KernelConfig::minimal());
+        let mut session = KernelSession::new(&core);
+        let old_world = std::sync::Arc::clone(&session.builtin_world);
+        let sab_proto = old_world.shared_array_buffer_proto.as_ptr() as *mut JsObject;
+        let sab_ctor = old_world.shared_array_buffer_constructor.as_ptr() as *mut JsObject;
+        let ab_proto = old_world.array_buffer_proto.as_ptr() as *mut JsObject;
+
+        unsafe {
+            (&mut *sab_proto).bump_generation();
+            (&mut *sab_ctor).bump_generation();
+        }
+        let dirty = session.selective_reset(&core);
+        assert!(dirty.shared_array_buffer);
+        assert!(!dirty.array_buffer);
+        assert!(!dirty.data_view);
+
+        // 脏家族换新对象对，未脏家族指针原样保留。
+        assert!(!std::ptr::eq(
+            sab_proto,
+            session.builtin_world.shared_array_buffer_proto.as_ptr() as *mut JsObject
+        ));
+        assert!(!std::ptr::eq(
+            sab_ctor,
+            session.builtin_world.shared_array_buffer_constructor.as_ptr() as *mut JsObject
+        ));
+        assert!(std::ptr::eq(ab_proto, session.builtin_world.array_buffer_proto.as_ptr() as *mut JsObject));
     }
 }

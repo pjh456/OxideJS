@@ -157,6 +157,8 @@ impl KernelSession {
                 || gen(BuiltinId::RegExpProto) != snap(BuiltinId::RegExpProto),
             array_buffer: gen(BuiltinId::ArrayBufferConstructor) != snap(BuiltinId::ArrayBufferConstructor)
                 || gen(BuiltinId::ArrayBufferProto) != snap(BuiltinId::ArrayBufferProto),
+            shared_array_buffer: gen(BuiltinId::SharedArrayBufferProto) != snap(BuiltinId::SharedArrayBufferProto)
+                || gen(BuiltinId::SharedArrayBufferConstructor) != snap(BuiltinId::SharedArrayBufferConstructor),
             data_view: gen(BuiltinId::DataViewConstructor) != snap(BuiltinId::DataViewConstructor)
                 || gen(BuiltinId::DataViewProto) != snap(BuiltinId::DataViewProto),
             typed_array_family: gen(BuiltinId::TypedArrayProto) != snap(BuiltinId::TypedArrayProto)

@@ -269,11 +269,11 @@ fn set_proto_if_changed(obj: &P<JsObject>, proto: JsValue) {
 /// `[[Prototype]]` 赋值。
 ///
 /// # 步骤
-/// 1. 35 组构造器/原型对互指（`.prototype` / `.constructor` 槽，含
+/// 1. 36 组构造器/原型对互指（`.prototype` / `.constructor` 槽，含
 ///    TypedArray 家族共享对），经 `wire_ctor_proto` 覆盖占位槽；
-/// 2. 23 个非 TypedArray 构造器的 `[[Prototype]]` → Function.prototype
+/// 2. 24 个非 TypedArray 构造器的 `[[Prototype]]` → Function.prototype
 ///    （标准内置函数对象均继承 Function.prototype）；
-/// 3. 25 个非 Object 原型的 `[[Prototype]]` → Object.prototype，另含
+/// 3. 26 个非 Object 原型的 `[[Prototype]]` → Object.prototype，另含
 ///    Temporal 命名空间对象、Temporal.now、Console 单例与 Math/JSON
 ///    命名空间对象；
 /// 4. %IteratorPrototype% → Object.prototype，6 个集合迭代器原型
@@ -304,6 +304,7 @@ pub(crate) fn wire_builtin_world_links(world: &BuiltinWorld) {
     wire_ctor_proto(&world.map_constructor, &world.map_proto);
     wire_ctor_proto(&world.regexp_constructor, &world.regexp_proto);
     wire_ctor_proto(&world.array_buffer_constructor, &world.array_buffer_proto);
+    wire_ctor_proto(&world.shared_array_buffer_constructor, &world.shared_array_buffer_proto);
     wire_ctor_proto(&world.data_view_constructor, &world.data_view_proto);
     wire_ctor_proto(&world.int8array_constructor, &world.int8array_proto);
     wire_ctor_proto(&world.uint8array_constructor, &world.uint8array_proto);
@@ -343,6 +344,7 @@ pub(crate) fn wire_builtin_world_links(world: &BuiltinWorld) {
         &world.map_constructor,
         &world.regexp_constructor,
         &world.array_buffer_constructor,
+        &world.shared_array_buffer_constructor,
         &world.data_view_constructor,
         &world.bigint_constructor,
         &world.instant_constructor,
@@ -358,7 +360,7 @@ pub(crate) fn wire_builtin_world_links(world: &BuiltinWorld) {
     }
 
     let obj_proto_val = JsValue::from_js_object(world.object_proto.as_ptr() as *mut JsObject);
-    let non_object_protos: [&P<JsObject>; 25] = [
+    let non_object_protos: [&P<JsObject>; 26] = [
         &world.array_proto,
         &world.function_proto,
         &world.string_proto,
@@ -371,6 +373,7 @@ pub(crate) fn wire_builtin_world_links(world: &BuiltinWorld) {
         &world.map_proto,
         &world.regexp_proto,
         &world.array_buffer_proto,
+        &world.shared_array_buffer_proto,
         &world.data_view_proto,
         &world.typed_array_proto,
         &world.instant_proto,
@@ -489,6 +492,8 @@ impl BuiltinWorld {
         let (regexp_proto, regexp_constructor) = make_named_pair(string_forge, shape_forge, labels, "RegExp");
         let (array_buffer_proto, array_buffer_constructor) =
             make_named_pair(string_forge, shape_forge, labels, "ArrayBuffer");
+        let (shared_array_buffer_proto, shared_array_buffer_constructor) =
+            make_named_pair(string_forge, shape_forge, labels, "SharedArrayBuffer");
         let (data_view_proto, data_view_constructor) = make_named_pair(string_forge, shape_forge, labels, "DataView");
         let typed_arrays = make_typed_array_family(string_forge, shape_forge, labels, &object_proto);
 
@@ -576,6 +581,8 @@ impl BuiltinWorld {
             regexp_proto,
             array_buffer_constructor,
             array_buffer_proto,
+            shared_array_buffer_proto,
+            shared_array_buffer_constructor,
             data_view_constructor,
             data_view_proto,
             typed_array_proto: typed_arrays.typed_array_proto,
