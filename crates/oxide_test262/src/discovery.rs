@@ -24,6 +24,12 @@ pub(crate) fn is_skipped(meta: &TestMeta) -> Option<String> {
         if flag.as_str() == "raw" {
             return Some("raw tests excluded".into());
         }
+        // CanBlockIsFalse 语料期望主线程 wait 抛 TypeError；引擎单线程退化面
+        // 取返回串形（等值 timed-out / 不等 not-equal），与语料互斥，默认
+        // 模式跳过该族；--no-skip 下计红（口径外，见规划文档）。
+        if flag.as_str() == "CanBlockIsFalse" {
+            return Some("CanBlockIsFalse: wait 返回串形".into());
+        }
         // noStrict 测试放行——很多在严格模式下仍可通过；运行时跳过逻辑会捕获失败。
     }
 

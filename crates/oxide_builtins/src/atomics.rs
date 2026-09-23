@@ -1,6 +1,7 @@
-//! Atomics 全局纯对象的 10 个原子方法（load/store/exchange/add/sub/and/or/
-//! xor/compareExchange/isLockFree）。单线程引擎无锁层级，全部退化为
-//! 读-改-写；宽度截断与元素写路径（`write_element`）结构同构。
+//! Atomics 全局纯对象的 12 个原子方法（load/store/exchange/add/sub/and/or/
+//! xor/compareExchange/isLockFree/wait/notify）。单线程引擎无锁层级：算术族
+//! 退化为读-改-写；wait/notify 退化为"调用时即定"的同步比较/恒 0（无真
+//! 阻塞、无 waiter 面）；宽度截断与元素写路径（`write_element`）结构同构。
 
 use num_bigint::BigInt;
 use oxide_types::object::TypedArrayKind;
@@ -159,6 +160,102 @@ fn arithmetic_write_value<H: VmHost>(
         _ => unreachable!("未知原子运算"),
     };
     JsValue::int(r)
+}
+
+/// wait/notify 共享验证核：品牌 → {Int32, BigInt64} 宽度守卫 → 越界/detach
+/// TypeError → 缓冲字节长读取（先于 index 强转，"长度读取"语料钉）→
+/// index ToIntegerOrInfinity → 相对字节偏移越界 RangeError。
+///
+/// # 步骤
+/// 1. `get_typed_array_data` 品牌校验（非 TA 对象抛 TypeError）。
+/// 2. 宽度守卫（仅 Int32/BigInt64；其余整数/浮点/clamped 视图抛 TypeError，
+///    与算术族的八整数宽度集不同）。
+/// 3. 越界/detach 守卫（只读面，不查 immutable——notify 对不可变缓冲返 0 不抛）。
+/// 4. `require_sab` 臂：非 SAB 抛 TypeError（先于 index 强转）。
+/// 5. 缓冲字节长与载荷指针在 index 强转前读取：index 的 valueOf 内若发生
+///    缓冲 grow/resize，越界判定仍用强转前读到的长度（语料钉）。
+/// 6. 索引越界（负值，或元素字节区间超缓冲）抛 RangeError。
+///
+/// # 边界与前提
+/// - 返回的载荷指针在 session 独占期内有效，调用方同一语句内消费。
+/// - `require_sab` 臂（wait）在 index 强转前即抛非 SAB TypeError（毒序钉：
+///   毒 index 不得被评估）；`is_sab` 标志供 notify 臂在 count 强转后选早返 0。
+///
+/// # 副作用
+/// 无（纯读）。
+fn resolve_atomic_wait_access<H: VmHost>(
+    vm: &mut H, this_val: JsValue, index_val: JsValue, require_sab: bool,
+) -> Result<(*mut ArrayBufferPayload, TypedArrayData, usize, bool), JsValue> {
+    let view = get_typed_array_data(vm, this_val)?;
+    if !matches!(view.kind, TypedArrayKind::Int32 | TypedArrayKind::BigInt64) {
+        return Err(type_error(vm, "not an int32 or BigInt64 typed array"));
+    }
+    ta_validate(vm, view, false)?;
+
+    let buffer_ptr = view.buffer.as_js_object_ptr();
+    if buffer_ptr.is_null() {
+        return Err(type_error(vm, "TypedArray buffer internal state invalid"));
+    }
+    // SAFETY: buffer 对象与视图同生命周期，此处只读标签与载荷指针。
+    let buffer = unsafe { &*buffer_ptr };
+    let is_sab = buffer.is_shared_array_buffer_obj();
+    if require_sab && !is_sab {
+        return Err(type_error(vm, "Atomics.wait cannot be used on a non-shared buffer"));
+    }
+    let payload_ptr = match buffer_payload_ptr(buffer) {
+        Some(p) if !p.is_null() => p,
+        _ => return Err(range_error(vm, "invalid indexed access to Atomics")),
+    };
+    // SAFETY: payload_ptr 经 buffer_payload_ptr 校验为合法载荷盒，只读字节长。
+    let buffer_len = unsafe { (*payload_ptr).data.as_ref().map_or(0, |d| d.len()) };
+
+    let index = ta_to_integer_or_infinity(vm, index_val)?;
+    let esize = view.kind.bytes_per_element() as f64;
+    let offset = view.byte_offset as f64 + index * esize;
+    if offset < 0.0 || offset + esize > buffer_len as f64 {
+        return Err(range_error(vm, "invalid indexed access to Atomics"));
+    }
+    Ok((payload_ptr, view, offset as usize, is_sab))
+}
+
+/// `Atomics.wait(typedArray, index, value, timeout)` 单线程退化面：值/超时
+/// 强转（毒传播）后读载荷比较——等值返 "timed-out"、不等返 "not-equal"；
+/// 无真阻塞（单线程无他 agent 可改值，结果调用时即定）。
+pub fn atomics_wait<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let ta_val = arg_at(vm, args, 1);
+    let index_val = arg_at(vm, args, 2);
+    let value_val = arg_at(vm, args, 3);
+    let timeout_val = arg_at(vm, args, 4);
+    let (payload_ptr, view, offset, _) = native_try!(resolve_atomic_wait_access(vm, ta_val, index_val, true));
+    let value = native_try!(ta_element_value(vm, view.kind, value_val));
+    // 超时 ToNumber 归一（NaN → +∞、负值 → 0）：单线程下无观察差，只承载毒传播。
+    native_try!(oxide_runtime_api::to_number_full(timeout_val, vm).map_err(|e| crate::iterator::engine_error(vm, &e)));
+    let old = atomic_read(vm, payload_ptr, view.kind, offset).unwrap_or(JsValue::undefined());
+    let equal = if is_bigint_kind(view.kind) {
+        let old_bi = vm.bigint_value(old).clone();
+        let value_bi = vm.bigint_value(value).clone();
+        old_bi.cmp(&value_bi) == std::cmp::Ordering::Equal
+    } else {
+        oxide_runtime_api::to_number(old) == oxide_runtime_api::to_number(value)
+    };
+    NativeResult::Ok(vm.new_string(if equal { "timed-out" } else { "not-equal" }))
+}
+
+/// `Atomics.notify(typedArray, index, count)`：值验证后 count 经
+/// ToIntegerOrInfinity（毒传播，NaN → +∞、有限负值 → 0）；非 SAB 提前返 0
+/// （先于本早返的越界/类型异常照常抛出）；单线程无 waiter 面，恒返 0。
+pub fn atomics_notify<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let ta_val = arg_at(vm, args, 1);
+    let index_val = arg_at(vm, args, 2);
+    let count_val = arg_at(vm, args, 3);
+    let (_payload_ptr, _view, _offset, is_sab) = native_try!(resolve_atomic_wait_access(vm, ta_val, index_val, false));
+    // count 归一：单线程下无观察差，只承载毒传播（语料钉：非 SAB 亦先评估
+    // count 再返 0）。
+    native_try!(ta_to_integer_or_infinity(vm, count_val));
+    if !is_sab {
+        return NativeResult::Ok(JsValue::int(0));
+    }
+    NativeResult::Ok(JsValue::int(0))
 }
 
 /// `Atomics.load(typedArray, index)`：读指定索引元素。
