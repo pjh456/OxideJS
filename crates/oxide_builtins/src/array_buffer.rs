@@ -935,8 +935,8 @@ enum TransferKeep {
 ///
 /// # 步骤
 /// 1. this 品牌校验（非对象/非 ArrayBuffer → TypeError）。
-/// 2. newLength 缺省 → 源当前字节长；在场 → ToIndex 传播式（强转副作用
-///    先于一切守卫观测）。
+/// 2. newLength 缺省（含显式 undefined）→ 源当前字节长；其余在场 → ToIndex
+///    传播式（强转副作用先于一切守卫观测）。
 /// 3. 重取源载荷指针（求值可已晋升/detach/改 immutable），重检状态位：
 ///    detached → TypeError；immutable → TypeError。
 /// 4. 界校验：仅保持性原样臂——resizable 源且 newByteLength > 真实上限
@@ -957,7 +957,10 @@ fn array_buffer_copy_and_detach<H: VmHost>(
     // 只读当前字节长，借用即结束，不跨 JS 调用点。
     let cur_len = unsafe { &*payload_ptr }.data.as_ref().map_or(0, |d| d.len());
     let new_len = match new_length {
+        // undefined 缺省臂（含显式 undefined）先于 ToIndex：显式 undefined 与
+        // 缺省同义，直接取源当前字节长。
         None => cur_len,
+        Some(v) if v.is_undefined() => cur_len,
         Some(v) => native_try!(to_index(vm, v)),
     };
     // 求值可已把本缓冲区晋升进 session、detach 或置 immutable：接收者寄存器

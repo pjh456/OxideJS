@@ -72,6 +72,19 @@ fn array_buffer_negative_length_throws_range_error() {
     assert!(result.as_bool());
 }
 
+// newLength 缺省（含显式 undefined）保持源当前字节长：两臂同钉。
+#[test]
+fn array_buffer_transfer_to_immutable_default_keeps_byte_length() {
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "var a = new ArrayBuffer(8); var b = new ArrayBuffer(8); \
+         a.transferToImmutable(undefined).byteLength === 8 && b.transferToImmutable().byteLength === 8",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
 #[test]
 fn array_buffer_to_string_is_identifiable() {
     let mut vm = Vm::new();
