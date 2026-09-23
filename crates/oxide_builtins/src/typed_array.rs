@@ -55,29 +55,6 @@ fn to_index<H: VmHost>(vm: &mut H, value: JsValue, msg: &str) -> Result<usize, J
     Ok(n.trunc() as usize)
 }
 
-/// 按 ToIntegerOrInfinity 语义把索引归一化到 `[0, len]`（越界夹取）；符号等不可
-/// 转换值透传异常。
-fn normalize_index<H: VmHost>(vm: &mut H, value: JsValue, len: usize) -> Result<usize, JsValue> {
-    let n = match vm.coerce_number_bounded(value) {
-        Ok(n) => n,
-        Err(e) => return Err(crate::iterator::engine_error(vm, &e)),
-    };
-    if n.is_nan() {
-        return Ok(0);
-    }
-    // ToIntegerOrInfinity：±Infinity 不截断，负无穷归 0、正无穷归 len，
-    // 避免饱和成 isize::MIN 后取负溢出。
-    if n.is_infinite() {
-        return Ok(if n < 0.0 { 0 } else { len });
-    }
-    let int = n.trunc() as isize;
-    if int < 0 {
-        Ok(len.saturating_sub(int.unsigned_abs()))
-    } else {
-        Ok((int as usize).min(len))
-    }
-}
-
 fn typed_array_proto_ptr<H: VmHost>(vm: &mut H, kind: TypedArrayKind) -> *mut JsObject {
     let world = vm.session().builtin_world();
     match kind {
@@ -317,11 +294,59 @@ fn ta_is_oob(view: TypedArrayData) -> bool {
 
 /// live 长度（元素面消费口径）：越界（含 detach）一律 0，界内取规范
 /// TypedArrayLength。
-fn ta_live_length(view: TypedArrayData) -> usize {
+pub(crate) fn ta_live_length(view: TypedArrayData) -> usize {
     if ta_is_oob(view) {
         return 0;
     }
     ta_spec_length(view)
+}
+
+/// ValidateTypedArray 入口校验：越界视图（含 detach）抛 TypeError；原地
+/// 写方法（`writable`）加查 buffer 写守卫（immutable 抛 TypeError），只读
+/// 方法不查。
+pub(crate) fn ta_validate<H: VmHost>(
+    vm: &mut H, view: TypedArrayData, writable: bool,
+) -> Result<TypedArrayData, JsValue> {
+    if ta_is_oob(view) {
+        return Err(type_error(vm, "TypedArray is detached or out of bounds"));
+    }
+    if writable {
+        let buffer_ptr = view.buffer.as_js_object_ptr();
+        if !buffer_ptr.is_null() {
+            // SAFETY: buffer 对象与视图同生命周期，此处只读写守卫位。
+            if let Some(payload_ptr) = array_buffer_payload_ptr(unsafe { &*buffer_ptr }) {
+                if !payload_ptr.is_null() && unsafe { (*payload_ptr).immutable } {
+                    return Err(type_error(vm, "ArrayBuffer is immutable"));
+                }
+            }
+        }
+    }
+    Ok(view)
+}
+
+/// ToIntegerOrInfinity 裸转换（不夹取）：NaN → +0，±Infinity 保留，有限值
+/// 截断；转换异常（valueOf 抛错）原值上抛。
+fn ta_to_integer_or_infinity<H: VmHost>(vm: &mut H, value: JsValue) -> Result<f64, JsValue> {
+    let n = match vm.coerce_number_bounded(value) {
+        Ok(n) => n,
+        Err(e) => return Err(crate::iterator::engine_error(vm, &e)),
+    };
+    Ok(if n.is_nan() { 0.0 } else { n.trunc() })
+}
+
+/// 把 ToIntegerOrInfinity 结果夹到 `[0, len]`：+Infinity → len，负值从尾部
+/// 折算（max(len + k, 0)，slice/fill/copyWithin/subarray 共用语义），正值夹
+/// 到 len。
+fn clamp_index_to_len(raw: f64, len: usize) -> usize {
+    if raw.is_infinite() {
+        return if raw > 0.0 { len } else { 0 };
+    }
+    let int = raw as isize;
+    if int < 0 {
+        len.saturating_sub(int.unsigned_abs())
+    } else {
+        (int as usize).min(len)
+    }
 }
 
 /// 读 TypedArray 指定整数索引的元素（供 VM 普通属性 get 的 typed 分支使用）。
@@ -865,8 +890,9 @@ typed_array_ctor!(biguint64array_constructor, BigUint64);
 pub fn typed_array_at<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
     let view = native_try!(get_typed_array_data(vm, this_val));
+    native_try!(ta_validate(vm, view, false));
     // 负索引折算与越界判定走规范 TypedArrayLength 口径（auto 随 buffer、定长
-    // 静态），越界视图入口 TypeError 由调用方前置校验。
+    // 静态）。
     let len = ta_spec_length(view);
     let idx: isize = if args.len() > 1 {
         let n = native_try!(ta_to_number(vm, vm.reg(args[1])));
@@ -894,31 +920,45 @@ pub fn typed_array_at<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     if idx < 0 || idx as usize >= len {
         return NativeResult::Ok(JsValue::undefined());
     }
-    let payload_ptr = native_try!(array_buffer_payload(vm, view.buffer));
-    // SAFETY: payload_ptr 经 array_buffer_payload 校验为合法 ArrayBuffer 载荷。
-    let Some(buffer) = unsafe { &*payload_ptr }.data.as_deref() else {
-        return NativeResult::Err(crate::error::create_type_error(vm, "ArrayBuffer internal state invalid"));
-    };
-    NativeResult::Ok(read_element(vm, view.kind, buffer, absolute_byte_offset(view, idx as usize)))
+    // 定长视图越界（含转换窗口内收缩）：元素窗口起点已到/过 buffer 尾抛
+    // TypeError；窗口起点仍在 buffer 内（含 detach）读回 undefined（语料库
+    // 双验收口径）。auto 视图经 live 门控自然越界读 undefined。
+    if !view.auto_length && ta_is_oob(view) {
+        if let Some(buffer_len) = ta_buffer_byte_length(view) {
+            if view.byte_offset + (idx as usize) * view.kind.bytes_per_element() >= buffer_len {
+                return NativeResult::Err(type_error(vm, "TypedArray is detached or out of bounds"));
+            }
+        }
+        return NativeResult::Ok(JsValue::undefined());
+    }
+    NativeResult::Ok(native_try!(ta_read(vm, view, idx as usize)))
 }
 
 /// `TypedArray.prototype.fill(value, start, end)`：用给定值填充区间，返回 this。
 pub fn typed_array_fill<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
     let view = native_try!(get_typed_array_data(vm, this_val));
+    // 入口校验先于任何参数转换（detach 时参数副作用不可观测）；见证长度
+    // 取入口口径（value 转换可伸缩 buffer，只影响二次校验后的 live 重读）。
+    native_try!(ta_validate(vm, view, true));
+    let len = ta_spec_length(view);
     let value = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
     // 值只转换一次（valueOf 副作用一次），转换结果写入每个目标元素。
     let elem = native_try!(ta_element_value(vm, view.kind, value));
-    let start = if args.len() > 2 {
-        native_try!(normalize_index(vm, vm.reg(args[2]), view.length))
+    let start_raw = if args.len() > 2 {
+        native_try!(ta_to_integer_or_infinity(vm, vm.reg(args[2])))
     } else {
-        0
+        0.0
     };
-    let end = if args.len() > 3 && !vm.reg(args[3]).is_undefined() {
-        native_try!(normalize_index(vm, vm.reg(args[3]), view.length))
+    let end_raw = if args.len() > 3 && !vm.reg(args[3]).is_undefined() {
+        native_try!(ta_to_integer_or_infinity(vm, vm.reg(args[3])))
     } else {
-        view.length
+        f64::INFINITY
     };
+    // 转换窗口内的 detach 由二次校验捕获；收缩只收 end（仅填仍适用的前缀）。
+    native_try!(ta_validate(vm, view, true));
+    let start = clamp_index_to_len(start_raw, len);
+    let end = clamp_index_to_len(end_raw, len).min(ta_spec_length(view));
     let payload_ptr = native_try!(array_buffer_payload(vm, view.buffer));
     // SAFETY: payload_ptr 经 array_buffer_payload 校验为合法 ArrayBuffer 载荷。
     let Some(buffer) = unsafe { &mut *payload_ptr }.data.as_deref_mut() else {
@@ -948,8 +988,13 @@ pub fn typed_array_fill<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 ///   返回对象原值，不做身份改写。
 /// - 用户 getter / 构造器执行窗口内 O 由寄存器根保活，Rust 局部值拷贝
 ///   跨窗口有效（该窗口内无 GC 安全点）。
+///
+/// # 参数
+/// - `writable`：~write~ 访问模式（map/filter/slice 取 true，subarray
+///   等纯视图方法取 false）；true 时结果过 immutable 写守卫（交付源
+///   buffer 子视图豁免）。
 fn typed_array_species_create<H: VmHost>(
-    vm: &mut H, o_val: JsValue, kind: TypedArrayKind, args: Vec<JsValue>, expect_len: Option<usize>,
+    vm: &mut H, o_val: JsValue, kind: TypedArrayKind, args: Vec<JsValue>, expect_len: Option<usize>, writable: bool,
 ) -> Result<JsValue, JsValue> {
     let o_ptr = o_val.as_js_object_ptr();
     let o_obj = unsafe { &*o_ptr };
@@ -982,8 +1027,21 @@ fn typed_array_species_create<H: VmHost>(
         return Err(type_error(vm, "Species constructor did not return a TypedArray"));
     }
     let view = get_typed_array_data(vm, result)?;
+    // 规范 TypedArrayCreate：构造结果过 ValidateTypedArray（构造器窗口内
+    // detach/越界结果抛 TypeError，与 count 无关）。写守卫（~write~ 访问
+    // 模式的 immutable 检查）仅在结果交付的不是源 buffer 时生效：构造器
+    // 返回源 buffer 子视图正常交付（语料库双验收）。
+    let write_guard = writable
+        && match get_typed_array_data(vm, o_val) {
+            Ok(src) => src.buffer != view.buffer,
+            Err(_) => true,
+        };
+    ta_validate(vm, view, write_guard)?;
+    // 长度不足校验取 live 口径（auto 视图的静态长度在 buffer 再伸缩后
+    // 失真）；语料库的 immutable-destination 族红即由本条触发（结果长度
+    // 小于请求数）。
     if let Some(expect) = expect_len {
-        if view.length < expect {
+        if ta_live_length(view) < expect {
             return Err(type_error(vm, "Species constructor returned a TypedArray with insufficient length"));
         }
     }
@@ -993,22 +1051,31 @@ fn typed_array_species_create<H: VmHost>(
 /// `TypedArray.prototype.slice(start, end)`：复制区间元素生成新同类型 TypedArray。
 ///
 /// # 步骤
-/// 1. 归一 start/end 得 count，经 TypedArraySpeciesCreate(O, « count ») 建目标。
-/// 2. 逐元素读源元素 → 转换为目标元素类型 → 写入目标（读转写交错；目标与
-///    源共享 buffer 别名时，本轮读须看到前一轮写入后的值）。
+/// 1. start/end 转换（副作用可 detach）后入口校验，见证长度夹取得 count，
+///    经 TypedArraySpeciesCreate(O, « count ») 建目标（零初始化）。
+/// 2. 构造窗口后再校验一次：species 构造器可收缩/分离源 buffer。定长视图
+///    被裁到越界抛 TypeError；auto 视图按新 live 长度收口。
+/// 3. 逐元素读→写交错拷贝：源索引越界（构造期收缩）时跳过写入，目标保持
+///    零初始化；别名级联须看到前一轮写入。
 pub fn typed_array_slice<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
     let view = native_try!(get_typed_array_data(vm, this_val));
-    let start = if args.len() > 1 {
-        native_try!(normalize_index(vm, vm.reg(args[1]), view.length))
+    // 入口校验先于 start/end 转换（detach 时转换副作用不可观测），
+    // 见证长度取入口口径。
+    native_try!(ta_validate(vm, view, false));
+    let len = ta_spec_length(view);
+    let start_raw = if args.len() > 1 {
+        native_try!(ta_to_integer_or_infinity(vm, vm.reg(args[1])))
     } else {
-        0
+        0.0
     };
-    let end = if args.len() > 2 && !vm.reg(args[2]).is_undefined() {
-        native_try!(normalize_index(vm, vm.reg(args[2]), view.length))
+    let end_raw = if args.len() > 2 && !vm.reg(args[2]).is_undefined() {
+        native_try!(ta_to_integer_or_infinity(vm, vm.reg(args[2])))
     } else {
-        view.length
+        f64::INFINITY
     };
+    let start = clamp_index_to_len(start_raw, len);
+    let end = clamp_index_to_len(end_raw, len);
     let count = end.max(start).saturating_sub(start);
     let a = native_try!(typed_array_species_create(
         vm,
@@ -1016,10 +1083,21 @@ pub fn typed_array_slice<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         view.kind,
         vec![JsValue::int(count as i32)],
         Some(count),
+        true,
     ));
-    for k in 0..count {
-        let elem = native_try!(ta_read(vm, view, start + k));
-        native_try!(set_typed_array_element(vm, a, k, elem));
+    // 逐元素读→写交错：别名级联（目标与源共享 buffer）时本轮读看到前一轮
+    // 写入；源索引已越界（构造器收缩源 buffer）时跳过写入，目标保持
+    // 零初始化。count 为 0 时整段跳过（含构造器 detach 窗口，规范
+    // "If count > 0" 臂）。
+    if count > 0 {
+        // species 构造窗口后再校验源视图（构造器可 resize/detach 源 buffer）。
+        native_try!(ta_validate(vm, view, false));
+        for k in 0..count {
+            if start + k < ta_live_length(view) {
+                let elem = native_try!(ta_read(vm, view, start + k));
+                native_try!(set_typed_array_element(vm, a, k, elem));
+            }
+        }
     }
     NativeResult::Ok(a)
 }
@@ -1033,31 +1111,37 @@ pub fn typed_array_slice<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 pub fn typed_array_subarray<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
     let view = native_try!(get_typed_array_data(vm, this_val));
-    let start = if args.len() > 1 {
-        native_try!(normalize_index(vm, vm.reg(args[1]), view.length))
+    // 见证长度先于 start/end 转换：调用时越界/detach 不抛（源长度记 0），
+    // 转换窗口内的 detach 只影响 species 构造，不改入口口径。
+    let len = ta_live_length(view);
+    let start_raw = if args.len() > 1 {
+        native_try!(ta_to_integer_or_infinity(vm, vm.reg(args[1])))
     } else {
-        0
+        0.0
     };
     let end_undefined = args.len() <= 2 || vm.reg(args[2]).is_undefined();
-    let end = if !end_undefined {
-        native_try!(normalize_index(vm, vm.reg(args[2]), view.length))
+    let end_raw = if end_undefined {
+        f64::INFINITY
     } else {
-        view.length
+        native_try!(ta_to_integer_or_infinity(vm, vm.reg(args[2])))
     };
+    let start = clamp_index_to_len(start_raw, len);
+    let end = clamp_index_to_len(end_raw, len);
     let count = end.max(start).saturating_sub(start);
     let byte_offset = view.byte_offset + start * view.kind.bytes_per_element();
-    // end 未给且底层 buffer 可缩放：构造参数省略 count，子视图随 buffer
-    // 伸缩（定长 buffer 恒三参，count 定死区间）。
+    // 2 参构造（省略 count，子视图随 buffer 伸缩）仅当 end 未给、源视图为
+    // auto 且 buffer 可缩放；定长视图恒三参定死区间（窗口超 buffer 由构造器
+    // 抛 RangeError）。
     let resizable = match array_buffer_payload(vm, view.buffer) {
         Ok(p) => unsafe { &*p }.max_byte_length != 0,
         Err(_) => false,
     };
-    let ctor_args = if end_undefined && resizable {
+    let ctor_args = if end_undefined && view.auto_length && resizable {
         vec![view.buffer, JsValue::int(byte_offset as i32)]
     } else {
         vec![view.buffer, JsValue::int(byte_offset as i32), JsValue::int(count as i32)]
     };
-    let result = native_try!(typed_array_species_create(vm, this_val, view.kind, ctor_args, None));
+    let result = native_try!(typed_array_species_create(vm, this_val, view.kind, ctor_args, None, false));
     NativeResult::Ok(result)
 }
 
@@ -1074,28 +1158,104 @@ pub fn typed_array_set<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         return NativeResult::Err(type_error(vm, "TypedArray.set source required"));
     }
     let source = vm.reg(args[1]);
-    let offset = if args.len() > 2 {
-        native_try!(to_index(vm, vm.reg(args[2]), "TypedArray.set offset out of bounds"))
+    // 入口校验（含 immutable 写守卫）先于任何参数副作用；offset 按
+    // ToIntegerOrInfinity 取整（负值 / +∞ 抛 RangeError），转换窗口内的
+    // detach 由二次校验捕获。
+    native_try!(ta_validate(vm, view, true));
+    let offset_raw = if args.len() > 2 {
+        native_try!(ta_to_integer_or_infinity(vm, vm.reg(args[2])))
     } else {
-        0
+        0.0
     };
-    let values = native_try!(collect_array_like(vm, source, false));
-    if offset > view.length || values.len() > view.length - offset {
+    if offset_raw < 0.0 || offset_raw.is_infinite() {
         return NativeResult::Err(range_error(vm, "TypedArray.set offset out of bounds"));
     }
-    let mut converted = Vec::with_capacity(values.len());
-    for v in values {
-        converted.push(native_try!(ta_element_value(vm, view.kind, v)));
+    let offset = offset_raw as usize;
+    native_try!(ta_validate(vm, view, true));
+    let len = ta_spec_length(view);
+    // 源长度在二次校验后读：TA 源按 live 口径，array-like 源读 `length`
+    // 属性（ToObject 装箱基元源）。
+    let source_obj =
+        native_try!(oxide_runtime_api::to_object(source, vm).map_err(|e| crate::iterator::engine_error(vm, &e)));
+    let (source_len, source_kind) = match get_typed_array_data(vm, source_obj) {
+        Ok(sview) => {
+            native_try!(ta_validate(vm, sview, false));
+            // 同 buffer 重叠：规范先克隆源字节区，按 live 口径快照源元素，
+            // 循环中读快照（重叠写不污染未读源位）。
+            if sview.buffer == view.buffer {
+                let snap: Vec<JsValue> = native_try!((0..ta_live_length(sview))
+                    .map(|i| ta_read(vm, sview, i))
+                    .collect::<Result<_, _>>());
+                (snap.len(), SetSourceKind::TypedArraySnapshot(snap))
+            } else {
+                (ta_live_length(sview), SetSourceKind::TypedArray(sview))
+            }
+        }
+        Err(_) => (native_try!(set_array_like_length(vm, source_obj)), SetSourceKind::ArrayLike(source_obj)),
+    };
+    if (source_len as u64) + (offset as u64) > len as u64 {
+        return NativeResult::Err(range_error(vm, "TypedArray.set offset out of bounds"));
     }
     let payload_ptr = native_try!(array_buffer_payload(vm, view.buffer));
     // SAFETY: payload_ptr 经 array_buffer_payload 校验为合法 ArrayBuffer 载荷。
     let Some(buffer) = unsafe { &mut *payload_ptr }.data.as_deref_mut() else {
         return NativeResult::Err(crate::error::create_type_error(vm, "ArrayBuffer internal state invalid"));
     };
-    for (i, elem) in converted.into_iter().enumerate() {
-        write_element(vm, view.kind, buffer, absolute_byte_offset(view, offset + i), elem);
+    // 逐元素惰性读源→转换→写：循环中的 detach/收缩使后续写入静默失效
+    // （目标越界不写，与规范 SetValueInBuffer 边界无操作同语义）。
+    for k in 0..source_len {
+        let value = match &source_kind {
+            SetSourceKind::TypedArray(sview) => native_try!(ta_read(vm, *sview, k)),
+            SetSourceKind::TypedArraySnapshot(snap) => snap[k],
+            SetSourceKind::ArrayLike(src) => native_try!(set_source_get(vm, *src, k)),
+        };
+        let elem = native_try!(ta_element_value(vm, view.kind, value));
+        if offset + k < ta_live_length(view) {
+            write_element(vm, view.kind, buffer, absolute_byte_offset(view, offset + k), elem);
+        }
     }
     NativeResult::Ok(JsValue::undefined())
+}
+
+/// `set` 的源形态：TA 源直读元素区（同 buffer 先快照）；array-like 源
+/// 按索引键逐取。
+enum SetSourceKind {
+    TypedArray(TypedArrayData),
+    TypedArraySnapshot(Vec<JsValue>),
+    ArrayLike(JsValue),
+}
+
+/// array-like 源的 `length` 属性读 + ToLength 收敛（NaN/负取 0，上限 2^53-1）。
+fn set_array_like_length<H: VmHost>(vm: &mut H, source: JsValue) -> Result<usize, JsValue> {
+    let si = vm.kernel_core().perm_interner().intern("length").0;
+    let ptr = source.as_js_object_ptr();
+    let len_val = unsafe { vm.ordinary_get(&*ptr, si, source) }.map_err(|e| crate::iterator::engine_error(vm, &e))?;
+    let n = oxide_runtime_api::to_number_full(len_val, vm).map_err(|e| crate::iterator::engine_error(vm, &e))?;
+    if n.is_nan() || n <= 0.0 {
+        return Ok(0);
+    }
+    Ok((n.min(9_007_199_254_740_991.0).trunc() as u64) as usize)
+}
+
+/// array-like 源第 k 个元素：Array 走密集槽，字符串源按 UTF-16 单元，
+/// 其余按 ToString(k) 键普通 Get。
+fn set_source_get<H: VmHost>(vm: &mut H, source: JsValue, k: usize) -> Result<JsValue, JsValue> {
+    let ptr = source.as_js_object_ptr();
+    if !ptr.is_null() {
+        let obj = unsafe { &*ptr };
+        if obj.is_array() {
+            return Ok(obj.get_prop_at(k));
+        }
+        if let Some(units) = crate::array::string_arraylike_units(vm, source) {
+            return Ok(crate::array::unit_string_value(vm, units[k.min(units.len() - 1)]));
+        }
+    }
+    let key = vm.new_string(&k.to_string());
+    let key_si = vm.property_key_si(key);
+    if ptr.is_null() {
+        return Ok(JsValue::undefined());
+    }
+    unsafe { vm.ordinary_get(&*ptr, key_si, source) }.map_err(|e| crate::iterator::engine_error(vm, &e))
 }
 
 /// `%TypedArray%` 抽象构造器：不可 new 也不可调用，任何调用方式都抛 TypeError。
@@ -1234,6 +1394,11 @@ fn ta_read<H: VmHost>(vm: &mut H, view: TypedArrayData, index: usize) -> Result<
 
 /// 把已转换的值写入 TypedArray 指定索引（视图 data 已取出的形式，供原型方法内部使用）。
 fn ta_write<H: VmHost>(vm: &mut H, view: TypedArrayData, index: usize, value: JsValue) -> Result<(), JsValue> {
+    // 越界（含循环中的 detach/收缩）静默失效，与规范 SetValueInBuffer
+    // 边界无操作同语义。
+    if index >= ta_live_length(view) {
+        return Ok(());
+    }
     let payload_ptr = array_buffer_payload(vm, view.buffer)?;
     // SAFETY: payload_ptr 经 array_buffer_payload 校验为合法 ArrayBuffer 载荷。
     let Some(buffer) = unsafe { &mut *payload_ptr }.data.as_deref_mut() else {
@@ -1267,6 +1432,7 @@ pub fn typed_array_for_each<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult 
     }
     let callback = native_try!(crate::array::require_callback(vm, vm.reg(args[1])));
     let this_arg = if args.len() > 2 { vm.reg(args[2]) } else { JsValue::undefined() };
+    native_try!(ta_validate(vm, view, false));
     // 入口见证：循环长度一次捕获，回调期 buffer 伸缩不改本轮范围。
     let len = ta_spec_length(view);
     for i in 0..len {
@@ -1286,16 +1452,18 @@ pub fn typed_array_map<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     }
     let callback = native_try!(crate::array::require_callback(vm, vm.reg(args[1])));
     let this_arg = if args.len() > 2 { vm.reg(args[2]) } else { JsValue::undefined() };
+    native_try!(ta_validate(vm, view, false));
     // 入口见证：目标长度 = 源见证长度，回调期 buffer 伸缩不改本轮范围。
     let len = ta_spec_length(view);
-    // 目标对象经 species 构造（长度 = 源长度）；逐元素"回调 → 写入"交错，
-    // 目标与源别名时后续回调看到前一轮写入值。
+    // 目标对象经 species 构造（长度 = 源长度）；逐元素"回调 → 写入"
+    // 交错，目标与源别名时后续回调看到前一轮写入值。
     let a = native_try!(typed_array_species_create(
         vm,
         this_val,
         view.kind,
         vec![JsValue::int(len as i32)],
         Some(len),
+        true,
     ));
     for i in 0..len {
         let elem = native_try!(ta_read(vm, view, i));
@@ -1315,6 +1483,7 @@ pub fn typed_array_filter<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     }
     let callback = native_try!(crate::array::require_callback(vm, vm.reg(args[1])));
     let this_arg = if args.len() > 2 { vm.reg(args[2]) } else { JsValue::undefined() };
+    native_try!(ta_validate(vm, view, false));
     // 先全量回调得通过元素（规范序：count 先于目标构造），再经 species
     // 构造目标（长度 = 通过数）并顺序写入；循环走入口见证长度。
     let len = ta_spec_length(view);
@@ -1332,6 +1501,7 @@ pub fn typed_array_filter<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         view.kind,
         vec![JsValue::int(kept.len() as i32)],
         Some(kept.len()),
+        true,
     ));
     for (k, elem) in kept.into_iter().enumerate() {
         native_try!(set_typed_array_element(vm, a, k, elem));
@@ -1353,6 +1523,7 @@ pub fn typed_array_reduce<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         return NativeResult::Err(type_error(vm, "callback is not a function"));
     }
     let callback = native_try!(crate::array::require_callback(vm, vm.reg(args[1])));
+    native_try!(ta_validate(vm, view, false));
     let (mut accumulator, start_idx) = if args.len() > 2 {
         (vm.reg(args[2]), 0usize)
     } else {
@@ -1383,6 +1554,7 @@ pub fn typed_array_reduce_right<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeRes
         return NativeResult::Err(type_error(vm, "callback is not a function"));
     }
     let callback = native_try!(crate::array::require_callback(vm, vm.reg(args[1])));
+    native_try!(ta_validate(vm, view, false));
     let (mut accumulator, start_idx): (JsValue, i32) = if args.len() > 2 {
         (vm.reg(args[2]), len as i32 - 1)
     } else {
@@ -1409,6 +1581,7 @@ pub fn typed_array_every<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     }
     let callback = native_try!(crate::array::require_callback(vm, vm.reg(args[1])));
     let this_arg = if args.len() > 2 { vm.reg(args[2]) } else { JsValue::undefined() };
+    native_try!(ta_validate(vm, view, false));
     let len = ta_spec_length(view);
     for i in 0..len {
         let elem = native_try!(ta_read(vm, view, i));
@@ -1429,6 +1602,7 @@ pub fn typed_array_some<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     }
     let callback = native_try!(crate::array::require_callback(vm, vm.reg(args[1])));
     let this_arg = if args.len() > 2 { vm.reg(args[2]) } else { JsValue::undefined() };
+    native_try!(ta_validate(vm, view, false));
     let len = ta_spec_length(view);
     for i in 0..len {
         let elem = native_try!(ta_read(vm, view, i));
@@ -1449,6 +1623,7 @@ pub fn typed_array_find<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     }
     let callback = native_try!(crate::array::require_callback(vm, vm.reg(args[1])));
     let this_arg = if args.len() > 2 { vm.reg(args[2]) } else { JsValue::undefined() };
+    native_try!(ta_validate(vm, view, false));
     let len = ta_spec_length(view);
     for i in 0..len {
         let elem = native_try!(ta_read(vm, view, i));
@@ -1469,6 +1644,7 @@ pub fn typed_array_find_index<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResul
     }
     let callback = native_try!(crate::array::require_callback(vm, vm.reg(args[1])));
     let this_arg = if args.len() > 2 { vm.reg(args[2]) } else { JsValue::undefined() };
+    native_try!(ta_validate(vm, view, false));
     let len = ta_spec_length(view);
     for i in 0..len {
         let elem = native_try!(ta_read(vm, view, i));
@@ -1489,6 +1665,7 @@ pub fn typed_array_find_last<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult
     }
     let callback = native_try!(crate::array::require_callback(vm, vm.reg(args[1])));
     let this_arg = if args.len() > 2 { vm.reg(args[2]) } else { JsValue::undefined() };
+    native_try!(ta_validate(vm, view, false));
     let len = ta_spec_length(view);
     for i in (0..len).rev() {
         let elem = native_try!(ta_read(vm, view, i));
@@ -1510,6 +1687,7 @@ pub fn typed_array_find_last_index<H: VmHost>(vm: &mut H, args: &[u8]) -> Native
     }
     let callback = native_try!(crate::array::require_callback(vm, vm.reg(args[1])));
     let this_arg = if args.len() > 2 { vm.reg(args[2]) } else { JsValue::undefined() };
+    native_try!(ta_validate(vm, view, false));
     let len = ta_spec_length(view);
     for i in (0..len).rev() {
         let elem = native_try!(ta_read(vm, view, i));
@@ -1547,6 +1725,7 @@ fn normalize_from_index<H: VmHost>(vm: &mut H, value: JsValue, len: usize) -> Re
 pub fn typed_array_index_of<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
     let view = native_try!(get_typed_array_data(vm, this_val));
+    native_try!(ta_validate(vm, view, false));
     let len = ta_spec_length(view);
     if len == 0 || args.len() < 2 {
         return NativeResult::Ok(JsValue::int(-1));
@@ -1559,6 +1738,11 @@ pub fn typed_array_index_of<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult 
     };
     for i in from_index..len {
         let elem = native_try!(ta_read(vm, view, i));
+        // 越界（转换窗口内 detach/收缩）视同 HasProperty 为假：跳过，
+        // 不参与相等比较（in-bounds 元素恒非 undefined）。
+        if elem.is_undefined() {
+            continue;
+        }
         if oxide_runtime_api::strict_equality(elem, target) {
             return NativeResult::Ok(JsValue::int(i as i32));
         }
@@ -1570,6 +1754,7 @@ pub fn typed_array_index_of<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult 
 pub fn typed_array_last_index_of<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
     let view = native_try!(get_typed_array_data(vm, this_val));
+    native_try!(ta_validate(vm, view, false));
     let len = ta_spec_length(view);
     if len == 0 {
         return NativeResult::Ok(JsValue::int(-1));
@@ -1607,6 +1792,11 @@ pub fn typed_array_last_index_of<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeRe
     }
     for i in (0..=from_index as usize).rev() {
         let elem = native_try!(ta_read(vm, view, i));
+        // 越界（转换窗口内 detach/收缩）视同 HasProperty 为假：跳过，
+        // 不参与相等比较（in-bounds 元素恒非 undefined）。
+        if elem.is_undefined() {
+            continue;
+        }
         if oxide_runtime_api::strict_equality(elem, target) {
             return NativeResult::Ok(JsValue::int(i as i32));
         }
@@ -1619,6 +1809,7 @@ pub fn typed_array_last_index_of<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeRe
 pub fn typed_array_includes<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
     let view = native_try!(get_typed_array_data(vm, this_val));
+    native_try!(ta_validate(vm, view, false));
     let len = ta_spec_length(view);
     if len == 0 {
         return NativeResult::Ok(JsValue::bool(false));
@@ -1642,18 +1833,30 @@ pub fn typed_array_includes<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult 
 pub fn typed_array_join<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
     let view = native_try!(get_typed_array_data(vm, this_val));
-    let sep = if args.len() > 1 {
+    // 见证先于分隔符转换：转换可伸缩 buffer，循环长度取入口口径（起始长度），
+    // 伸缩后的新元素不进本轮。
+    native_try!(ta_validate(vm, view, false));
+    let len = ta_spec_length(view);
+    // 分隔符缺省或 undefined 时取 ","（规范：undefined 视同未给）；
+    // 其余值过完整 ToString（null → "null"）。
+    let sep = if args.len() > 1 && !vm.reg(args[1]).is_undefined() {
         native_try!(
             oxide_runtime_api::to_string_full(vm.reg(args[1]), vm).map_err(|e| crate::iterator::engine_error(vm, &e))
         )
     } else {
         ",".to_string()
     };
-    let len = ta_spec_length(view);
     let mut parts = Vec::with_capacity(len);
     for i in 0..len {
         let elem = native_try!(ta_read(vm, view, i));
-        parts.push(oxide_runtime_api::to_string(elem));
+        // 越界/detach 读回 undefined（或 null）时拼空串，与 Array.join 同
+        // 口径。
+        let part = if elem.is_undefined() || elem.is_null() {
+            String::new()
+        } else {
+            oxide_runtime_api::to_string(elem)
+        };
+        parts.push(part);
     }
     NativeResult::Ok(vm.new_string(&parts.join(&sep)))
 }
@@ -1661,7 +1864,8 @@ pub fn typed_array_join<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 /// `%TypedArray%.prototype.values()`：返回迭代元素值的迭代器。
 pub fn typed_array_values<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
-    native_try!(get_typed_array_data(vm, this_val));
+    let view = native_try!(get_typed_array_data(vm, this_val));
+    native_try!(ta_validate(vm, view, false));
     // TA 迭代器与 Array 共享 %ArrayIteratorPrototype%（规范 CreateArrayIterator
     // 同族），next 由原型提供；接收者合法性已在上方校验。
     match crate::array::make_array_iterator(vm, this_val, crate::array::ARRAY_ITER_KIND_VALUES) {
@@ -1673,7 +1877,8 @@ pub fn typed_array_values<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 /// `%TypedArray%.prototype.keys()`：返回迭代元素索引的迭代器。
 pub fn typed_array_keys<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
-    native_try!(get_typed_array_data(vm, this_val));
+    let view = native_try!(get_typed_array_data(vm, this_val));
+    native_try!(ta_validate(vm, view, false));
     match crate::array::make_array_iterator(vm, this_val, crate::array::ARRAY_ITER_KIND_KEYS) {
         Ok(iter) => NativeResult::Ok(iter),
         Err(err) => NativeResult::Err(err),
@@ -1683,24 +1888,36 @@ pub fn typed_array_keys<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 /// `%TypedArray%.prototype.entries()`：返回迭代 `[index, element]` 对的迭代器。
 pub fn typed_array_entries<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
-    native_try!(get_typed_array_data(vm, this_val));
+    let view = native_try!(get_typed_array_data(vm, this_val));
+    native_try!(ta_validate(vm, view, false));
     match crate::array::make_array_iterator(vm, this_val, crate::array::ARRAY_ITER_KIND_ENTRIES) {
         Ok(iter) => NativeResult::Ok(iter),
         Err(err) => NativeResult::Err(err),
     }
 }
 
-/// 默认数值排序比较：NaN 视为最大排到末尾，其余按数值升序。
+/// 默认数值排序比较（规范 CompareTypedArrayElements 无比较器臂）：NaN
+/// 视为最大排到末尾；-0 排在 +0 之前；其余按数值升序。
 fn default_ta_order(a: f64, b: f64) -> std::cmp::Ordering {
     if a.is_nan() && b.is_nan() {
-        std::cmp::Ordering::Equal
-    } else if a.is_nan() {
-        std::cmp::Ordering::Greater
-    } else if b.is_nan() {
-        std::cmp::Ordering::Less
-    } else {
-        a.partial_cmp(&b).unwrap_or(std::cmp::Ordering::Equal)
+        return std::cmp::Ordering::Equal;
     }
+    if a.is_nan() {
+        return std::cmp::Ordering::Greater;
+    }
+    if b.is_nan() {
+        return std::cmp::Ordering::Less;
+    }
+    if a == 0.0 && b == 0.0 {
+        return if a.is_sign_negative() && !b.is_sign_negative() {
+            std::cmp::Ordering::Less
+        } else if b.is_sign_negative() && !a.is_sign_negative() {
+            std::cmp::Ordering::Greater
+        } else {
+            std::cmp::Ordering::Equal
+        };
+    }
+    a.partial_cmp(&b).unwrap_or(std::cmp::Ordering::Equal)
 }
 
 /// `%TypedArray%.prototype.sort(comparefn)`：原地排序，默认按数值升序（NaN 排末尾；
@@ -1719,6 +1936,9 @@ pub fn typed_array_sort<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     } else {
         None
     };
+    // 原地写方法：入口校验（detach/越界/immutable 抛 TypeError），比较器
+    // 检查先于校验（规范序）。
+    native_try!(ta_validate(vm, view, true));
     let len = ta_spec_length(view);
     let mut vals: Vec<JsValue> = Vec::with_capacity(len);
     for i in 0..len {
@@ -1732,7 +1952,15 @@ pub fn typed_array_sort<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         if let Some(cb) = comparator {
             match crate::array::invoke_native_callback(vm, cb, JsValue::undefined(), &[*a, *b]) {
                 NativeResult::Ok(r) => {
-                    let n = oxide_runtime_api::to_number(r);
+                    // 规范 CompareTypedArrayElements：结果过完整 ToNumber
+                    // （对象触发 toPrimitive），NaN 视同 +0；异常上抛。
+                    let n = match oxide_runtime_api::to_number_full(r, vm) {
+                        Ok(n) => n,
+                        Err(e) => {
+                            sort_error = Some(crate::iterator::engine_error(vm, &e));
+                            return std::cmp::Ordering::Equal;
+                        }
+                    };
                     if n.is_nan() || n == 0.0 {
                         std::cmp::Ordering::Equal
                     } else if n < 0.0 {
@@ -1778,6 +2006,7 @@ pub fn typed_array_sort<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 pub fn typed_array_reverse<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
     let view = native_try!(get_typed_array_data(vm, this_val));
+    native_try!(ta_validate(vm, view, true));
     let len = ta_spec_length(view);
     let mut i = 0;
     let mut j = len.saturating_sub(1);
@@ -1796,25 +2025,38 @@ pub fn typed_array_reverse<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 pub fn typed_array_copy_within<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
     let view = native_try!(get_typed_array_data(vm, this_val));
+    // 入口校验先于三索引转换（detach 时转换副作用不可观测），见证长度
+    // 取入口口径（转换窗口内的 detach 不影响入口长度）。
+    native_try!(ta_validate(vm, view, true));
     let len = ta_spec_length(view);
-    let target = if args.len() > 1 {
-        native_try!(normalize_index(vm, vm.reg(args[1]), len))
+    let target_raw = if args.len() > 1 {
+        native_try!(ta_to_integer_or_infinity(vm, vm.reg(args[1])))
     } else {
-        0
+        0.0
     };
-    let start = if args.len() > 2 {
-        native_try!(normalize_index(vm, vm.reg(args[2]), len))
+    let start_raw = if args.len() > 2 {
+        native_try!(ta_to_integer_or_infinity(vm, vm.reg(args[2])))
     } else {
-        0
+        0.0
     };
-    let end = if args.len() > 3 && !vm.reg(args[3]).is_undefined() {
-        native_try!(normalize_index(vm, vm.reg(args[3]), len))
+    let end_raw = if args.len() > 3 && !vm.reg(args[3]).is_undefined() {
+        native_try!(ta_to_integer_or_infinity(vm, vm.reg(args[3])))
     } else {
-        len
+        f64::INFINITY
     };
-    let count = end.max(start).saturating_sub(start).min(len.saturating_sub(target));
+    let target = clamp_index_to_len(target_raw, len);
+    let start = clamp_index_to_len(start_raw, len);
+    let end = clamp_index_to_len(end_raw, len);
+    let mut count = end.max(start).saturating_sub(start).min(len.saturating_sub(target));
+    if count > 0 {
+        // 转换窗口内的 detach 由二次校验捕获；收缩后的 live 长度再收
+        // 一次 count（仅拷仍适用的最长前缀）。
+        native_try!(ta_validate(vm, view, true));
+        let len2 = ta_spec_length(view);
+        count = count.min(len2.saturating_sub(start)).min(len2.saturating_sub(target));
+    }
     // 目标区间前移与源区间重叠时逆序遍历，避免覆盖未读的源元素。
-    let (mut from, mut to, direction) = if start < target && target < start + count {
+    let (mut from, mut to, direction) = if count > 0 && start < target && target < start + count {
         (start + count - 1, target + count - 1, -1isize)
     } else {
         (start, target, 1isize)
@@ -1852,6 +2094,7 @@ fn invoke_element_to_locale_string<H: VmHost>(vm: &mut H, element: JsValue) -> R
 pub fn typed_array_to_locale_string<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
     let view = native_try!(get_typed_array_data(vm, this_val));
+    native_try!(ta_validate(vm, view, false));
     let len = ta_spec_length(view);
     if len == 0 {
         return NativeResult::Ok(vm.new_string(""));
@@ -1872,6 +2115,7 @@ pub fn typed_array_to_locale_string<H: VmHost>(vm: &mut H, args: &[u8]) -> Nativ
 pub fn typed_array_to_reversed<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
     let view = native_try!(get_typed_array_data(vm, this_val));
+    native_try!(ta_validate(vm, view, false));
     let len = ta_spec_length(view);
     let a = JsValue::from_js_object(create_same_type_typed_array(vm, view.kind, len));
     for i in 0..len {
@@ -1886,6 +2130,7 @@ pub fn typed_array_to_reversed<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResu
 pub fn typed_array_to_sorted<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
     let view = native_try!(get_typed_array_data(vm, this_val));
+    native_try!(ta_validate(vm, view, false));
     let comparator = if args.len() > 1 {
         let c = vm.reg(args[1]);
         if c.is_undefined() {
@@ -1909,7 +2154,15 @@ pub fn typed_array_to_sorted<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult
         if let Some(cb) = comparator {
             match crate::array::invoke_native_callback(vm, cb, JsValue::undefined(), &[*a, *b]) {
                 NativeResult::Ok(r) => {
-                    let n = oxide_runtime_api::to_number(r);
+                    // 规范 CompareTypedArrayElements：结果过完整 ToNumber
+                    // （对象触发 toPrimitive），NaN 视同 +0；异常上抛。
+                    let n = match oxide_runtime_api::to_number_full(r, vm) {
+                        Ok(n) => n,
+                        Err(e) => {
+                            sort_error = Some(crate::iterator::engine_error(vm, &e));
+                            return std::cmp::Ordering::Equal;
+                        }
+                    };
                     if n.is_nan() || n == 0.0 {
                         std::cmp::Ordering::Equal
                     } else if n < 0.0 {
@@ -1960,6 +2213,7 @@ pub fn typed_array_with<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     if args.len() < 2 {
         return NativeResult::Err(type_error(vm, "TypedArray.prototype.with requires an index"));
     }
+    native_try!(ta_validate(vm, view, false));
     let len = ta_spec_length(view);
     // ToIntegerOrInfinity(index)，负值折算为 len + index。
     let raw = native_try!(ta_to_number(vm, vm.reg(args[1])));
@@ -1971,15 +2225,17 @@ pub fn typed_array_with<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         raw.trunc()
     };
     let actual_index = if relative_index >= 0.0 { relative_index } else { len as f64 + relative_index };
-    // 规范步 7/8：value 先转换（副作用/抛错原样上抛），步 9 才做越界检查。
+    // 规范序：value 先转换（副作用可伸缩 buffer），越界检查（IsValidIntegerIndex
+    // 口径）在转换后对当前 live 长度做；结果长度取入口见证。
     let value = if args.len() > 2 { vm.reg(args[2]) } else { JsValue::undefined() };
     let replacement = native_try!(ta_element_value(vm, view.kind, value));
-    if actual_index.is_nan() || actual_index < 0.0 || actual_index >= len as f64 {
+    if actual_index.is_nan() || actual_index < 0.0 || actual_index >= ta_live_length(view) as f64 {
         return NativeResult::Err(range_error(vm, "Invalid typed array index"));
     }
     let index = actual_index as usize;
     let a = JsValue::from_js_object(create_same_type_typed_array(vm, view.kind, len));
-    // 目标索引写已转换的 value（副作用已先于源读发生），其余索引顺序拷源元素。
+    // 目标索引写已转换的 value（副作用已先于源读发生），其余索引顺序拷源元素；
+    // 索引超结果长度时写入自然无操作（SetElement 边界语义）。
     for i in 0..len {
         let elem = if i == index { replacement } else { native_try!(ta_read(vm, view, i)) };
         native_try!(set_typed_array_element(vm, a, i, elem));
@@ -2428,6 +2684,19 @@ mod tests {
             assert_eq!(ta_live_length(v), 0);
             assert_eq!(ta_spec_length(v), 0);
         }
+    }
+
+    // M 见证夹取边界：±Infinity 归端点，负值从尾部折算（max(len+k, 0)），
+    // 有限值截断后夹到长度。
+    #[test]
+    fn clamp_index_edges() {
+        assert_eq!(clamp_index_to_len(f64::INFINITY, 4), 4);
+        assert_eq!(clamp_index_to_len(f64::NEG_INFINITY, 4), 0);
+        assert_eq!(clamp_index_to_len(-2.0, 4), 2);
+        assert_eq!(clamp_index_to_len(-9.0, 4), 0);
+        assert_eq!(clamp_index_to_len(9.0, 4), 4);
+        assert_eq!(clamp_index_to_len(2.7, 4), 2);
+        assert_eq!(clamp_index_to_len(0.0, 0), 0);
     }
 
     // A 整数键（length 除注明外取 2）。

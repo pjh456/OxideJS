@@ -705,6 +705,8 @@ fn stringify_typed_array<H: VmHost>(
     let has_space = !space.is_empty();
     let this_val = JsValue::from_js_object(obj as *const JsObject as *mut JsObject);
     let view = crate::typed_array::get_typed_array_data(vm, this_val)?;
+    // live 口径：buffer 收缩/detach 后按当前 live 长度枚举（detached 空对象形态）。
+    let len = crate::typed_array::ta_live_length(view);
     out.push('{');
 
     // 键集：白名单给定时 K = P（列表序，整数索引名读元素、越界名跳过、
@@ -715,7 +717,7 @@ fn stringify_typed_array<H: VmHost>(
             let si = vm.string_key_si(name);
             let val = if is_int_key(si) {
                 let idx = int_key_value(si);
-                if idx as usize >= view.length {
+                if idx as usize >= len {
                     continue;
                 }
                 crate::typed_array::typed_array_element_get(vm, obj, idx)
@@ -727,8 +729,8 @@ fn stringify_typed_array<H: VmHost>(
         }
         list
     } else {
-        let mut list: Vec<(Vec<u16>, JsValue)> = Vec::with_capacity(view.length);
-        for i in 0..view.length {
+        let mut list: Vec<(Vec<u16>, JsValue)> = Vec::with_capacity(len);
+        for i in 0..len {
             let val = crate::typed_array::typed_array_element_get(vm, obj, i as u32)
                 .map_err(|msg| crate::error::create_type_error(vm, &msg))?;
             list.push((i.to_string().encode_utf16().collect(), val));

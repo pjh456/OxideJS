@@ -611,7 +611,8 @@ pub fn array_join<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         Ok(v) => v,
         Err(e) => return NativeResult::Err(e),
     };
-    let sep = if args.len() > 1 {
+    // 分隔符缺省或 undefined 时取 ","（规范：undefined 视同未给）。
+    let sep = if args.len() > 1 && !vm.reg(args[1]).is_undefined() {
         oxide_runtime_api::to_string(vm.reg(args[1]))
     } else {
         ",".to_string()
@@ -636,8 +637,12 @@ pub fn array_join<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 
 /// `Array.prototype.toString`：委托给 join，默认用 `,` 分隔。
 pub fn array_to_string<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
-    // Array.prototype.toString() 委托给 join，默认用 "," 分隔，
-    // 按规范忽略自身参数。
+    // 与 TA 原型共享同一函数对象：TA 臂先入口校验（detach 抛 TypeError）
+    // 再按逗号连接（与 join 同口径），Array 臂委托 join。
+    let this_ptr = vm.reg(args[0]).as_js_object_ptr();
+    if !this_ptr.is_null() && unsafe { &*this_ptr }.is_typed_array_obj() {
+        return crate::typed_array::typed_array_join(vm, &[args[0]]);
+    }
     array_join(vm, &[args[0]])
 }
 

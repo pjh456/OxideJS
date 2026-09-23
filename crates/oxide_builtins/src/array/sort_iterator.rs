@@ -215,7 +215,12 @@ pub fn array_iterator_next<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
             Ok(view) => view,
             Err(err) => return NativeResult::Err(err),
         };
-        if (index as usize) >= view.length {
+        // 每次 next 入口校验：detach/越界抛 TypeError，auto 收缩按 live 长度停。
+        let view = match crate::typed_array::ta_validate(vm, view, false) {
+            Ok(view) => view,
+            Err(e) => return NativeResult::Err(e),
+        };
+        if (index as usize) >= crate::typed_array::ta_live_length(view) {
             vm.set_or_create_prop_value(iter, target_si, JsValue::undefined());
             return NativeResult::Ok(crate::iterator::make_iter_result(vm, JsValue::undefined(), true));
         }

@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use crate::bind_constructor;
 use crate::bindings::{
-    apply_binding_table, bind_accessor_getter, bind_accessor_getter_key, bind_global_value, bind_method_alias,
+    apply_binding_table, bind_accessor_getter, bind_accessor_getter_key, bind_global_value,
     bind_well_known_method_alias, configure_native_constructor,
 };
 use oxide_kernel::kernel::{KernelCore, KernelSession};
@@ -121,8 +121,8 @@ pub fn bind_typed_array(core: &Arc<KernelCore>, session: &KernelSession, global:
         core,
         &[
             ("at", oxide_builtins::typed_array::typed_array_at::<crate::vm::Vm> as *const (), 1),
-            ("fill", oxide_builtins::typed_array::typed_array_fill::<crate::vm::Vm> as *const (), 3),
-            ("set", oxide_builtins::typed_array::typed_array_set::<crate::vm::Vm> as *const (), 2),
+            ("fill", oxide_builtins::typed_array::typed_array_fill::<crate::vm::Vm> as *const (), 1),
+            ("set", oxide_builtins::typed_array::typed_array_set::<crate::vm::Vm> as *const (), 1),
             ("slice", oxide_builtins::typed_array::typed_array_slice::<crate::vm::Vm> as *const (), 2),
             (
                 "subarray",
@@ -212,7 +212,8 @@ pub fn bind_typed_array(core: &Arc<KernelCore>, session: &KernelSession, global:
             ("with", oxide_builtins::typed_array::typed_array_with::<crate::vm::Vm> as *const (), 2),
         ],
     );
-    bind_method_alias(core, shared_proto, "values", "keys");
+    // `keys` 已由方法表独立绑定（索引流 ≠ 值流）；@@iterator 与 `values`
+    // 共享同一函数对象。
     bind_well_known_method_alias(core, shared_proto, "values", 0);
 
     // 原型访问器：视图属性（buffer/byteOffset/byteLength/length）读内部数据槽，

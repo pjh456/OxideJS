@@ -1768,12 +1768,11 @@ fn next_array_like<H: VmHost>(
 
     if is_typed_array_value(inner) {
         let index = current_index(vm, wrapper, index_si);
-        let length_si = vm.kernel_core().perm_interner().intern("length").0;
         let obj = unsafe { &*inner.as_js_object_ptr() };
-        let len = vm
-            .ordinary_get(obj, length_si, inner)
-            .map(|v| if v.is_int() { v.as_int().max(0) as usize } else { 0 })
-            .unwrap_or(0);
+        // 每次 next 入口校验：detach/越界抛 TypeError，auto 收缩按 live 长度停。
+        let view = crate::typed_array::get_typed_array_data(vm, inner)?;
+        let view = crate::typed_array::ta_validate(vm, view, false)?;
+        let len = crate::typed_array::ta_live_length(view);
         if index < len {
             let value = match crate::typed_array::typed_array_element_get(vm, obj, index as u32) {
                 Ok(v) => v,
