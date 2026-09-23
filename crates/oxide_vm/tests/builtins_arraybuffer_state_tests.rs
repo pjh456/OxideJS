@@ -818,3 +818,190 @@ fn ab_transfer_range_and_alloc_limits() {
     .unwrap();
     assert!(result.as_bool());
 }
+
+/// slice 窗口钉：全窗/前缀/后缀/负 start/负 end/start 越界/end 越界/
+/// start 超 end/空窗九形长度，源不 detach。
+#[test]
+fn ab_slice_window_pins() {
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "(function () { var ab = new ArrayBuffer(8); \
+         var bl = function (s) { return ab.slice(s[0], s[1]).byteLength; }; \
+         return bl([undefined, undefined]) === 8 && bl([0, 3]) === 3 && bl([6, undefined]) === 2 \
+         && bl([-2]) === 2 && bl([0, -2]) === 6 && bl([20]) === 0 \
+         && bl([2, 20]) === 6 && bl([5, 2]) === 0 && bl([3, 3]) === 0 \
+         && ab.detached === false })()",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
+/// slice 空窗钉：产物附着 0 长（区别于 detach 空缓冲）。
+#[test]
+fn ab_slice_empty_window_not_detached() {
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "(function () { var r = new ArrayBuffer(4).slice(3, 3); \
+         return r.byteLength === 0 && r.detached === false && r.immutable === false })()",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
+/// slice 内容钉：[1..8] 源 slice(2,6) → [3,4,5,6]，产物独立于源。
+#[test]
+fn ab_slice_content_copy() {
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "(function () { var ab = new ArrayBuffer(8); var v = new Uint8Array(ab); \
+         for (var i = 0; i < 8; i++) v[i] = i + 1; \
+         var d = new Uint8Array(ab.slice(2, 6)); \
+         return d.length === 4 && d[0] === 3 && d[1] === 4 && d[2] === 5 && d[3] === 6 \
+         && (v[0] = 90, new Uint8Array(ab.slice(2, 6))[0] === 3) })()",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
+/// slice 构造窗内源收缩钉：species 构造器内 resize(1) 后返回 AB(8) →
+/// 不抛、结果 8 长、前 1 字节为源现存、余零填充（活 currentLen 夹拷贝）。
+#[test]
+fn ab_slice_source_shrink_in_construct() {
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "(function () { var ab = new ArrayBuffer(8, {maxByteLength: 16}); \
+         var v = new Uint8Array(ab); v[0] = 9; \
+         var c = {}; c[Symbol.species] = function (len) { \
+             ab.resize(1); return new ArrayBuffer(8); }; \
+         ab.constructor = c; \
+         var r = ab.slice(); \
+         var d = new Uint8Array(r); \
+         return r.byteLength === 8 && ab.byteLength === 1 \
+         && d[0] === 9 && d[1] === 0 && d[6] === 0 && d[7] === 0 })()",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
+/// slice 物种回落三形钉：constructor undefined / species undefined /
+/// species null → 默认原型 + 内容正确（防回归钉，语料现巧合绿）。
+#[test]
+fn ab_slice_species_default_fallbacks() {
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "(function () { \
+         var ab1 = new ArrayBuffer(8); ab1.constructor = undefined; \
+         var r1 = ab1.slice(); \
+         var c2 = {}; var ab2 = new ArrayBuffer(8); ab2.constructor = c2; \
+         var r2 = ab2.slice(); \
+         var c3 = {}; c3[Symbol.species] = null; var ab3 = new ArrayBuffer(8); ab3.constructor = c3; \
+         var r3 = ab3.slice(); \
+         var v = new Uint8Array(ab1); v[0] = 7; \
+         var d = new Uint8Array(ab1.slice()); \
+         return Object.getPrototypeOf(r1) === ArrayBuffer.prototype && r1.byteLength === 8 \
+         && Object.getPrototypeOf(r2) === ArrayBuffer.prototype \
+         && Object.getPrototypeOf(r3) === ArrayBuffer.prototype \
+         && d[0] === 7 })()",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
+/// slice 物种交付钉：构造器实参 «8» 逐次捕获、返回自建 AB → 交付原值且
+/// 内容拷贝入产物。
+#[test]
+fn ab_slice_species_custom_returns() {
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "(function () { var calls = []; var c = {}; \
+         c[Symbol.species] = function (len) { calls.push(len); return new ArrayBuffer(8); }; \
+         var ab = new ArrayBuffer(8); var v = new Uint8Array(ab); \
+         for (var i = 0; i < 8; i++) v[i] = i + 1; \
+         ab.constructor = c; \
+         var r = ab.slice(); \
+         var d = new Uint8Array(r); \
+         return r.byteLength === 8 && calls.join(',') === '8' \
+         && d[0] === 1 && d[7] === 8 && ab.detached === false })()",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
+/// slice 物种 TypeError 五形钉：constructor null/true/\"\"、species
+/// 对象/Function.prototype 均 TypeError。
+#[test]
+fn ab_slice_species_type_error_family() {
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "(function () { function ty(fn) { try { fn(); return false; } catch (e) { return e instanceof TypeError; } } \
+         var ab = new ArrayBuffer(8); \
+         ab.constructor = null; var t1 = ty(function () { ab.slice(); }); \
+         ab.constructor = true; var t2 = ty(function () { ab.slice(); }); \
+         ab.constructor = ''; var t3 = ty(function () { ab.slice(); }); \
+         var c = {}; ab.constructor = c; \
+         c[Symbol.species] = {}; var t4 = ty(function () { ab.slice(); }); \
+         c[Symbol.species] = Function.prototype; var t5 = ty(function () { ab.slice(); }); \
+         return t1 && t2 && t3 && t4 && t5 })()",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
+/// slice 结果五检前四形钉：物种返回非 AB / 返回 O 自身 / 返回小缓冲 →
+/// TypeError；返回大缓冲 → 交付（内容只填前缀）。
+#[test]
+fn ab_slice_species_result_checks() {
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "(function () { function ty(fn) { try { fn(); return false; } catch (e) { return e instanceof TypeError; } } \
+         var a1 = new ArrayBuffer(8); var c1 = {}; \
+         c1[Symbol.species] = function () { return {}; }; a1.constructor = c1; \
+         var t1 = ty(function () { a1.slice(); }); \
+         var a2 = new ArrayBuffer(8); var c2 = {}; \
+         c2[Symbol.species] = function () { return a2; }; a2.constructor = c2; \
+         var t2 = ty(function () { a2.slice(); }); \
+         var a3 = new ArrayBuffer(8); var c3 = {}; \
+         c3[Symbol.species] = function () { return new ArrayBuffer(4); }; a3.constructor = c3; \
+         var t3 = ty(function () { a3.slice(); }); \
+         var a4 = new ArrayBuffer(8); var v = new Uint8Array(a4); v[0] = 5; \
+         var c4 = {}; c4[Symbol.species] = function () { return new ArrayBuffer(10); }; a4.constructor = c4; \
+         var r4 = a4.slice(); var d4 = new Uint8Array(r4); \
+         return t1 && t2 && t3 && r4.byteLength === 10 && d4[0] === 5 && d4[8] === 0 })()",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
+/// slice 源 detach 四形钉：源已 detach（参数未读）、start/end valueOf 内
+/// detach、species 构造内 detach（构造后重检步）均 TypeError。
+#[test]
+fn ab_slice_source_detach_family() {
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "(function () { function ty(fn) { try { fn(); return false; } catch (e) { return e instanceof TypeError; } } \
+         var a1 = new ArrayBuffer(8); $262.detachArrayBuffer(a1); \
+         var calls1 = []; var s1 = { valueOf: function () { calls1.push('s'); return 0; } }; \
+         var t1 = ty(function () { a1.slice(s1); }); \
+         var a2 = new ArrayBuffer(8); \
+         var s2 = { valueOf: function () { $262.detachArrayBuffer(a2); return 0; } }; \
+         var t2 = ty(function () { a2.slice(s2); }); \
+         var a3 = new ArrayBuffer(8); \
+         var e3 = { valueOf: function () { $262.detachArrayBuffer(a3); return 2; } }; \
+         var t3 = ty(function () { a3.slice(1, e3); }); \
+         var a4 = new ArrayBuffer(8); var c4 = {}; \
+         c4[Symbol.species] = function (len) { $262.detachArrayBuffer(a4); return new ArrayBuffer(len); }; \
+         a4.constructor = c4; var t4 = ty(function () { a4.slice(); }); \
+         return t1 && calls1.length === 0 && t2 && t3 && t4 })()",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}

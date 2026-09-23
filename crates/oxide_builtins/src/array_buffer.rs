@@ -1,5 +1,6 @@
 use oxide_kernel::shape_forge::EMPTY_SHAPE_ID;
 use oxide_types::object::{JsObject, NativeFnPtr};
+use oxide_types::private_key::{make_well_known_symbol_key, WELL_KNOWN_SYMBOL_SPECIES};
 use oxide_types::value::JsValue;
 
 use oxide_runtime_api::{NativeResult, VmHost};
@@ -412,29 +413,151 @@ pub fn array_buffer_resize<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     NativeResult::Ok(JsValue::undefined())
 }
 
+/// ResolveBounds(len, start, end) 共享核：start 为 undefined（或缺省）归 0、
+/// end 为 undefined（或缺省）归 len，在场臂 ToIntegerOrInfinity 上下夹取
+/// （NaN → 0、±Infinity 饱和 0/len、负值按 len 偏移）。slice 与
+/// sliceToImmutable 同源共用。
+fn ab_resolve_bounds<H: VmHost>(
+    vm: &mut H, len: usize, start: Option<JsValue>, end: Option<JsValue>,
+) -> Result<(usize, usize), JsValue> {
+    let start_val = start.unwrap_or(JsValue::undefined());
+    let first = if start_val.is_undefined() { 0 } else { normalize_index(vm, start_val, len)? };
+    let end_val = end.unwrap_or(JsValue::undefined());
+    let final_ = if end_val.is_undefined() { len } else { normalize_index(vm, end_val, len)? };
+    Ok((first, final_))
+}
+
+/// SpeciesConstructor(O, %ArrayBuffer%)：完整 Get O.constructor（访问器/异常
+/// 传播）；undefined 回落 %ArrayBuffer%，其余非对象抛 TypeError；完整 Get
+/// C[Symbol.species]（null 归一为 undefined）；undefined 回落 %ArrayBuffer%，
+/// 非构造器抛 TypeError。
+fn ab_species_constructor<H: VmHost>(vm: &mut H, o_val: JsValue) -> Result<JsValue, JsValue> {
+    let o_obj = unsafe { &*o_val.as_js_object_ptr() };
+    let ctor_key = vm.kernel_core().perm_interner().intern("constructor").0;
+    let c = match vm.ordinary_get(o_obj, ctor_key, o_val) {
+        Ok(v) => v,
+        Err(msg) => return Err(crate::iterator::engine_error(vm, &msg)),
+    };
+    let default_ctor =
+        JsValue::from_js_object(vm.session().builtin_world().array_buffer_constructor.as_ptr() as *mut JsObject);
+    if c.is_undefined() {
+        return Ok(default_ctor);
+    }
+    if !c.is_object() {
+        return Err(crate::error::create_type_error(vm, "ArrayBuffer constructor is not an object"));
+    }
+    let species_key = make_well_known_symbol_key(WELL_KNOWN_SYMBOL_SPECIES);
+    let s = match vm.ordinary_get(unsafe { &*c.as_js_object_ptr() }, species_key, c) {
+        Ok(v) => v,
+        Err(msg) => return Err(crate::iterator::engine_error(vm, &msg)),
+    };
+    let s = if s.is_null() { JsValue::undefined() } else { s };
+    if s.is_undefined() {
+        Ok(default_ctor)
+    } else if !crate::array::is_constructor_value(s) {
+        Err(crate::error::create_type_error(vm, "ArrayBuffer species is not a constructor"))
+    } else {
+        Ok(s)
+    }
+}
+
 /// `ArrayBuffer.prototype.slice(start, end)`：复制字节区间生成新 ArrayBuffer。
+///
+/// # 步骤
+/// 1. 品牌守卫与 detached 源守卫先于参数读（抛错时参数无副作用）。
+/// 2. len 快照 → ResolveBounds（start undefined/缺省 → 0、end undefined/缺省
+///    → len，不调强转）→ newLen = max(final - first, 0)。
+/// 3. SpeciesConstructor(O, %ArrayBuffer%)（构造器/@@species 完整 Get，异常
+///    传播；undefined 臂回落 %ArrayBuffer%；非对象/非构造器 TypeError）。
+/// 4. Construct(ctor, «newLen») 经 vm.construct_ctor（native 值传递 / bytecode
+///    压构造帧，含 derived 构造器 super() 语义；构造器抛出值原样上抛）。
+/// 5. 结果五检：AB 载荷槽 → detached → immutable → SameValue(new, O) →
+///    new.byteLength < newLen，均 TypeError。
+/// 6. 构造窗口后重取源载荷（窗口内源可被 detach/晋升）：detached →
+///    TypeError；按活 currentLen 夹拷贝（count = min(newLen, currentLen -
+///    first)，first < currentLen 守卫），余位零填充。
+///
+/// # 边界与前提
+/// - 源 immutable 是合法输入（只读拷贝）；对 new 的 immutable 检只挡物种
+///   构造器返回的 immutable 产物。
+/// - 源对象经寄存器根保活；每次 JS 调用窗口后重新读接收者寄存器与载荷指针。
 pub fn array_buffer_slice<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
-    let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
+    let this_reg = if args.is_empty() { 0 } else { args[0] };
+    let this_val = vm.reg(this_reg);
     let payload_ptr = native_try!(array_buffer_payload(vm, this_val));
-    // SAFETY: payload_ptr 经 array_buffer_payload 校验为合法 ArrayBuffer 载荷。
+    // SAFETY: payload_ptr 经 array_buffer_payload 校验为合法 ArrayBuffer 载荷；
+    // 标量拷出后借用即结束，不跨 JS 调用窗口。
     let Some(data) = unsafe { &*payload_ptr }.data.as_ref() else {
         return NativeResult::Err(crate::error::create_type_error(vm, "ArrayBuffer internal state invalid"));
     };
     let len = data.len();
-    let start = if args.len() > 1 {
-        native_try!(normalize_index(vm, vm.reg(args[1]), len))
-    } else {
-        0
+    let start = if args.len() > 1 { Some(vm.reg(args[1])) } else { None };
+    let end = if args.len() > 2 { Some(vm.reg(args[2])) } else { None };
+    let (first, final_) = native_try!(ab_resolve_bounds(vm, len, start, end));
+    let new_len = final_.saturating_sub(first);
+
+    // 物种读与构造各是 JS 调用窗口：getter/构造器可 detach、resize、晋升源。
+    let ctor = native_try!(ab_species_constructor(vm, this_val));
+    let new_val = match vm.construct_ctor(ctor, &[JsValue::int(new_len as i32)]) {
+        Ok(v) => v,
+        Err(err) => return NativeResult::Err(err),
     };
-    let end = if args.len() > 2 {
-        native_try!(normalize_index(vm, vm.reg(args[2]), len))
-    } else {
-        len
+
+    // 构造窗口后重取接收者与载荷（源对象可被晋升进 session，旧指针悬垂）。
+    let this_val = vm.reg(this_reg);
+    let payload_ptr = native_try!(array_buffer_payload(vm, this_val));
+    // SAFETY: 重取的 payload_ptr 指向存活载荷盒；标量拷出后借用即结束。
+    let Some(data) = unsafe { &*payload_ptr }.data.as_ref() else {
+        return NativeResult::Err(crate::error::create_type_error(vm, "ArrayBuffer internal state invalid"));
     };
-    let end = end.max(start);
-    // 切片产物恒定长，原型取默认 %ArrayBuffer.prototype%。
-    let proto = default_array_buffer_proto(vm);
-    NativeResult::Ok(JsValue::from_js_object(new_array_buffer(vm, data[start..end].to_vec(), 0, proto)))
+    // 结果五检：AB 载荷槽 → detached → immutable → SameValue → 长度。
+    let new_ptr = new_val.as_js_object_ptr();
+    if new_ptr.is_null() {
+        return NativeResult::Err(crate::error::create_type_error(
+            vm,
+            "ArrayBuffer slice result is not an ArrayBuffer",
+        ));
+    }
+    // SAFETY: new_val 为对象且指针非空，对象本 session 存活。
+    let Some(new_payload) = array_buffer_payload_ptr(unsafe { &*new_ptr }) else {
+        return NativeResult::Err(crate::error::create_type_error(
+            vm,
+            "ArrayBuffer slice result is not an ArrayBuffer",
+        ));
+    };
+    if new_payload.is_null() {
+        return NativeResult::Err(crate::error::create_type_error(
+            vm,
+            "ArrayBuffer slice result is not an ArrayBuffer",
+        ));
+    }
+    // SAFETY: new_payload 经 array_buffer_payload_ptr 校验为 ArrayBuffer 载荷盒。
+    let new_state = unsafe { &*new_payload };
+    if new_state.data.is_none() {
+        return NativeResult::Err(crate::error::create_type_error(vm, "ArrayBuffer slice result is detached"));
+    }
+    if new_state.immutable {
+        return NativeResult::Err(crate::error::create_type_error(vm, "ArrayBuffer slice result is immutable"));
+    }
+    if new_val == this_val {
+        return NativeResult::Err(crate::error::create_type_error(
+            vm,
+            "ArrayBuffer slice result must not be the source buffer",
+        ));
+    }
+    if new_state.data.as_ref().map_or(0, |d| d.len()) < new_len {
+        return NativeResult::Err(crate::error::create_type_error(vm, "ArrayBuffer slice result is too small"));
+    }
+    // 活长度夹拷贝写入结果缓冲前区（构造器已零填充）：源中途收缩只拷现存
+    // 字节，first 越界零拷。
+    let current_len = data.len();
+    let count = if first < current_len { new_len.min(current_len - first) } else { 0 };
+    // SAFETY: new_payload 经 array_buffer_payload_ptr 校验；detached 臂已先行
+    // 排除，data 必为 Some，可变借用止于本语句。
+    if let Some(dest) = unsafe { (*new_payload).data.as_mut() } {
+        dest[..count].copy_from_slice(&data[first..first + count]);
+    }
+    NativeResult::Ok(new_val)
 }
 
 /// transfer 族新缓冲保持性：Preserve 源存储态上限原样拷贝，Fixed 定长，
@@ -772,11 +895,44 @@ mod tests {
         let r = eval_ab(
             &mut vm,
             "var calls = 0; \
-             var ab = new ArrayBuffer(4).transferToImmutable(); \
-             try { ab.resize({ valueOf() { calls++; return 0; } }); 'no-throw' } \
-             catch (err) { (err.name === 'TypeError' ? 'T' : 'X') + calls }",
+         var ab = new ArrayBuffer(4).transferToImmutable(); \
+         try { ab.resize({ valueOf() { calls++; return 0; } }); 'no-throw' } \
+         catch (err) { (err.name === 'TypeError' ? 'T' : 'X') + calls }",
         )
         .unwrap();
         assert_eq!(vm.lookup_str(r).unwrap(), "T0");
+    }
+
+    /// slice end 缺省臂钉：end 为 undefined 归 len 不经强转（6, undefined) → 2；
+    /// start/end 全缺省 → 全长。
+    #[test]
+    fn slice_end_undefined_defaults_len() {
+        let mut vm = Vm::new();
+        let r = eval_ab(
+            &mut vm,
+            "new ArrayBuffer(8).slice(6, undefined).byteLength === 2 \
+             && new ArrayBuffer(8).slice(undefined).byteLength === 8 \
+             && new ArrayBuffer(8).slice(6).byteLength === 2 \
+             && new ArrayBuffer(8).slice(undefined, undefined).byteLength === 8",
+        )
+        .unwrap();
+        assert!(r.as_bool());
+    }
+
+    /// slice 构造窗口源 detach 重检钉：species 构造器内 detach 源 → 构造后
+    /// 重检抛 TypeError（不交付结果）。
+    #[test]
+    fn slice_source_detach_in_construct_throws() {
+        let mut vm = Vm::new();
+        let r = eval_ab(
+            &mut vm,
+            "(function () { var ab = new ArrayBuffer(8); \
+             var c = {}; c[Symbol.species] = function (len) { \
+                 $262.detachArrayBuffer(ab); return new ArrayBuffer(len); }; \
+             ab.constructor = c; \
+             try { ab.slice(); return 'no-throw'; } catch (err) { return err.name; } })()",
+        )
+        .unwrap();
+        assert_eq!(vm.lookup_str(r).unwrap(), "TypeError");
     }
 }
