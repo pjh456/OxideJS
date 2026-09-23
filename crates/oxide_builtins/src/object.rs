@@ -313,23 +313,42 @@ pub enum DeleteOutcome {
 /// 参与删除判定，原型链属性不影响结果。
 ///
 /// # 步骤
-/// 1. 数组 length 虚拟属性：不可配置，返回 `NonConfigurable`
-/// 2. 数组下标元素：检查 configurable，`mark_hole_at` 标记为 hole
-/// 3. 命名属性：walk_own_keys 定位槽位，不可配置返回 `NonConfigurable`
-/// 4. 数组先保存元素区（值 + meta），重建命名属性后恢复元素区
+/// 1. TA 数值键：界内索引返回 `NonConfigurable`（元素零修改）；数字无效键
+///    返回 `Missing`；非数字串 / symbol 键落下方普通路径
+/// 2. 数组 length 虚拟属性：不可配置，返回 `NonConfigurable`
+/// 3. 数组下标元素：检查 configurable，`mark_hole_at` 标记为 hole
+/// 4. 命名属性：walk_own_keys 定位槽位，不可配置返回 `NonConfigurable`
+/// 5. 数组先保存元素区（值 + meta），重建命名属性后恢复元素区
 ///
 /// # 边界与前提
 /// - 键不在对象自身（含原型链属性）返回 `Missing`
 /// - 非 configurable 属性返回 `NonConfigurable`
+/// - TA 键 live 长 0（detach / 收缩越界）时全数值键归数字无效，删除成功
 /// - `key_si` 须已 intern
 ///
 /// # 副作用
 /// - 修改 obj 的 shape_id、属性表与 generation；数组元素区内容不变
+/// - TA 数字无效臂同步全局内置镜像槽为 undefined（非全局内置 TA 上为 no-op）
 ///
 /// # 注意事项
 /// - 数组元素存在性以 `prop_meta_at` 的 hole 标记判定，删除后重新写入元素
 ///   会自动清除 hole 标记恢复存在
 pub fn delete_own_property_outcome<H: VmHost>(vm: &mut H, obj: &mut JsObject, key_si: u32) -> DeleteOutcome {
+    // TA 数值键：界内索引不可配置（删除失败，元素零修改、镜像槽不同步）；
+    // 数字无效键视为缺失（删除成功，镜像槽同步 undefined，对非全局内置 TA
+    // 为 no-op）；非数字串 / symbol 键落下方普通属性路径。live 长 0
+    // （detach / 收缩越界）时全数值键自然归数字无效，与读 / 写 / 定义面同口径。
+    if obj.is_typed_array_obj() {
+        match crate::typed_array::ta_index_gate(vm, obj, key_si) {
+            crate::typed_array::TaIndexGate::NumericValid(_) => return DeleteOutcome::NonConfigurable,
+            crate::typed_array::TaIndexGate::NumericInvalid => {
+                vm.sync_global_builtin_mirror(obj, key_si, JsValue::undefined());
+                return DeleteOutcome::Missing;
+            }
+            crate::typed_array::TaIndexGate::Ordinary => {}
+        }
+    }
+
     // 数组下标元素在元素区，不参与 shape 链，单独删除（保持 length 不变）。
     if obj.is_array() {
         if let Some(index) = array_index_of(vm, key_si) {

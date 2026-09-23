@@ -1296,3 +1296,162 @@ fn ta_dop_get_dir_arm4() {
     .unwrap();
     assert!(result.as_bool());
 }
+
+#[test]
+fn ta_delete_valid_in_range_false() {
+    // 界内索引删除失败（sloppy false）：元素与 length 不变，原型同键抛 getter
+    // 不被触达（界内臂不查自身命名属性也不走原型链）。
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "(function () { var ta = new Int8Array([42, 43]); \
+          Object.defineProperty(Int8Array.prototype, '0', { \
+            get: function () { throw new Error('proto getter must not fire'); }, \
+            configurable: true }); \
+          var r0 = delete ta[0]; \
+          var r1 = delete ta['0']; \
+          var r2 = delete ta[1]; \
+          return r0 === false && r1 === false && r2 === false \
+            && ta[0] === 42 && ta[1] === 43 && ta.length === 2; })()",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
+#[test]
+fn ta_delete_valid_strict_typeerror() {
+    // 严格模式界内索引删除抛 TypeError（构造器断言）；元素不动、length 不变。
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "'use strict'; (function () { var ta = new Int8Array([42, 43]); \
+          var thrown = false; \
+          try { delete ta[1]; } \
+          catch (e) { if (!(e instanceof TypeError)) return false; thrown = true; } \
+          return thrown && ta[0] === 42 && ta[1] === 43 && ta.length === 2; })()",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
+#[test]
+fn ta_delete_int_minus_zero() {
+    // -0 两相分臂：int 相（ta[-0] → 键 "0" 界内）删除失败；串相（"-0" 数字
+    // 无效）删除成功且不建属性；元素不动。
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "(function () { var ta = new Int8Array([42]); \
+          var rInt = delete ta[-0]; \
+          var rStr = delete ta['-0']; \
+          return rInt === false && rStr === true \
+            && ta[0] === 42 \
+            && !Object.prototype.hasOwnProperty.call(ta, '-0'); })()",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
+#[test]
+fn ta_delete_oob_true() {
+    // 越界 / 负索引删除成功（true）：元素不动、无自身属性、严格模式不抛。
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "'use strict'; (function () { var ta = new Int8Array([42]); \
+          var ok = delete ta[-1] && delete ta[1] && delete ta['-1'] && delete ta['1'] && delete ta['4294967295']; \
+          var keys = ['-1', '1', '4294967295']; \
+          for (var i = 0; i < keys.length; i++) { \
+            if (Object.prototype.hasOwnProperty.call(ta, keys[i])) return false; } \
+          return ok && ta[0] === 42 && ta.length === 1; })()",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
+#[test]
+fn ta_delete_numeric_invalid_strings() {
+    // 数字无效串（非整数 / NaN / ±Infinity / "-0" 特例）删除恒成功：不建自身
+    // 属性，原型同键抛 getter 不被触达（数字无效臂不走原型链）。
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "(function () { var ta = new Int8Array([42]); \
+          var keys = ['1.1', '0.000001', '-0', 'Infinity', 'NaN']; \
+          for (var i = 0; i < keys.length; i++) { \
+            Object.defineProperty(Int8Array.prototype, keys[i], { \
+              get: function () { throw new Error('OrdinaryDelete was called'); }, \
+              configurable: true }); } \
+          for (var i = 0; i < keys.length; i++) { \
+            if (!delete ta[keys[i]]) return false; \
+            if (Object.prototype.hasOwnProperty.call(ta, keys[i])) return false; } \
+          return ta[0] === 42; })()",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
+#[test]
+fn ta_delete_ordinary_own_property() {
+    // 非 round-trip 串（Ordinary 臂）落真实自身属性路径：不可配置 accessor
+    // 删除失败且 getter 保留可读；可配置数据属性删除成功、hasOwn 转假。
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "(function () { var ta = new Int8Array(2); \
+          var rDef = Object.defineProperty(ta, '1.0', { \
+            get: function () { return 'g'; }, configurable: false }); \
+          var d1 = delete ta['1.0']; \
+          var d2 = delete ta['+1']; \
+          Object.defineProperty(ta, '+1', { value: 9, configurable: true }); \
+          var d3 = delete ta['+1']; \
+          return rDef === ta && d1 === false && ta['1.0'] === 'g' \
+            && d2 === true && d3 === true \
+            && !Object.prototype.hasOwnProperty.call(ta, '+1'); })()",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
+#[test]
+fn ta_delete_symbol_and_reflect() {
+    // symbol 键缺失删除成功、建自身属性后删除成功；Reflect.deleteProperty
+    // 界内索引 false 不抛、越界 true（恒不抛契约）。
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "(function () { var ta = new Int8Array([42]); \
+          var s = Symbol('s'); \
+          var r1 = delete ta[s]; \
+          ta[s] = 'x'; \
+          var r2 = delete ta[s]; \
+          var r3 = Reflect.deleteProperty(ta, 0); \
+          var r4 = Reflect.deleteProperty(ta, 9); \
+          return r1 === true && r2 === true && r3 === false && r4 === true \
+            && ta[0] === 42; })()",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
+#[test]
+fn ta_delete_live_zero_all_true() {
+    // detach 后 live 长 0：全数值键归数字无效，成员形与 Reflect 删除恒成功、
+    // 无自身属性、不抛。
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "(function () { var ab = new ArrayBuffer(8); var ta = new Int8Array(ab); \
+          ta[0] = 7; \
+          ab.transfer(); \
+          var r1 = delete ta[0]; \
+          var r2 = delete ta['-0']; \
+          var r3 = delete ta['1.1']; \
+          var r4 = delete ta['1']; \
+          var r5 = Reflect.deleteProperty(ta, 0); \
+          return r1 === true && r2 === true && r3 === true && r4 === true && r5 === true \
+            && !Object.prototype.hasOwnProperty.call(ta, '0'); })()",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
