@@ -6,7 +6,7 @@ use oxide_types::private_key::{int_key_value, is_int_key, make_well_known_symbol
 use oxide_types::value::JsValue;
 
 use crate::array_buffer::{
-    array_buffer_payload, array_buffer_payload_ptr, default_array_buffer_proto, new_array_buffer,
+    array_buffer_payload, array_buffer_payload_ptr, buffer_payload_ptr, default_array_buffer_proto, new_array_buffer,
     MAX_ARRAY_BUFFER_LENGTH,
 };
 
@@ -249,19 +249,19 @@ fn absolute_byte_offset(view: TypedArrayData, index: usize) -> usize {
     view.byte_offset + index * view.kind.bytes_per_element()
 }
 
-/// 读视图引用 buffer 的当前字节长度；buffer 非 ArrayBuffer 对象、无载荷或已
-/// detach（`data` 为 `None`）时返回 `None`。
+/// 读视图引用 buffer 的当前字节长度；ArrayBuffer/SharedArrayBuffer 双认，
+/// buffer 两标签之外、无载荷或已 detach（`data` 为 `None`）时返回 `None`。
 fn ta_buffer_byte_length(view: TypedArrayData) -> Option<usize> {
     let buffer_ptr = view.buffer.as_js_object_ptr();
     if buffer_ptr.is_null() {
         return None;
     }
     // SAFETY: buffer 对象与视图同生命周期，此处只读载荷存活位与长度。
-    let payload_ptr = array_buffer_payload_ptr(unsafe { &*buffer_ptr })?;
+    let payload_ptr = buffer_payload_ptr(unsafe { &*buffer_ptr })?;
     if payload_ptr.is_null() {
         return None;
     }
-    // SAFETY: payload_ptr 经 array_buffer_payload_ptr 校验为合法载荷盒。
+    // SAFETY: payload_ptr 经 buffer_payload_ptr 校验为合法载荷盒。
     unsafe { (*payload_ptr).data.as_ref().map(|data| data.len()) }
 }
 
@@ -326,7 +326,7 @@ pub(crate) fn ta_validate<H: VmHost>(
 
 /// ToIntegerOrInfinity 裸转换（不夹取）：NaN → +0，±Infinity 保留，有限值
 /// 截断；转换异常（valueOf 抛错）原值上抛。
-fn ta_to_integer_or_infinity<H: VmHost>(vm: &mut H, value: JsValue) -> Result<f64, JsValue> {
+pub(crate) fn ta_to_integer_or_infinity<H: VmHost>(vm: &mut H, value: JsValue) -> Result<f64, JsValue> {
     let n = match vm.coerce_number_bounded(value) {
         Ok(n) => n,
         Err(e) => return Err(crate::iterator::engine_error(vm, &e)),
@@ -359,8 +359,15 @@ pub fn typed_array_element_get<H: VmHost>(vm: &mut H, obj: &JsObject, index: u32
     if index as usize >= ta_live_length(view) {
         return Ok(JsValue::undefined());
     }
-    let payload_ptr = array_buffer_payload(vm, view.buffer).map_err(|e| format!("{e}"))?;
-    // SAFETY: payload_ptr 经 array_buffer_payload 校验为合法 ArrayBuffer 载荷。
+    let buffer_ptr = view.buffer.as_js_object_ptr();
+    if buffer_ptr.is_null() {
+        return Err("TypedArray buffer internal state invalid".to_string());
+    }
+    // SAFETY: buffer 对象与视图同生命周期，此处只读载荷存活位与字节切片。
+    let Some(payload_ptr) = buffer_payload_ptr(unsafe { &*buffer_ptr }) else {
+        // 防御背板：构造期 buffer 必为 ArrayBuffer/SharedArrayBuffer 之一。
+        return Err("TypedArray buffer internal state invalid".to_string());
+    };
     let Some(buffer) = unsafe { &*payload_ptr }.data.as_deref() else {
         // 载荷缺失即 detach（live 界判后不可达，防御背板）：按 [[Get]] 读 undefined。
         return Ok(JsValue::undefined());
@@ -603,8 +610,15 @@ fn write_typed_array_element<H: VmHost>(
     if index as usize >= ta_live_length(view) {
         return Ok(());
     }
-    let payload_ptr = array_buffer_payload(vm, view.buffer).map_err(|e| format!("{e}"))?;
-    // SAFETY: payload_ptr 经 array_buffer_payload 校验为合法 ArrayBuffer 载荷。
+    let buffer_ptr = view.buffer.as_js_object_ptr();
+    if buffer_ptr.is_null() {
+        return Err("TypedArray buffer internal state invalid".to_string());
+    }
+    // SAFETY: buffer 对象与视图同生命周期，此处只写载荷字节切片。
+    let Some(payload_ptr) = buffer_payload_ptr(unsafe { &*buffer_ptr }) else {
+        // 防御背板：构造期 buffer 必为 ArrayBuffer/SharedArrayBuffer 之一。
+        return Err("TypedArray buffer internal state invalid".to_string());
+    };
     let Some(buffer) = unsafe { &mut *payload_ptr }.data.as_deref_mut() else {
         // 载荷缺失即 detach（live 界判后不可达，防御背板）：转换副作用已先
         // 发生，写按 [[Set]] 静默 no-op。
@@ -616,7 +630,7 @@ fn write_typed_array_element<H: VmHost>(
 
 /// 读 TypedArray 元素并转为对应 JS 值：BigInt 类型读为 BigInt 值（i64/u64 位模式
 /// 原样搬运，无精度损失），数值类型按位模式读为 Number。
-fn read_element<H: VmHost>(vm: &mut H, kind: TypedArrayKind, bytes: &[u8], offset: usize) -> JsValue {
+pub(crate) fn read_element<H: VmHost>(vm: &mut H, kind: TypedArrayKind, bytes: &[u8], offset: usize) -> JsValue {
     // 底层缓冲可能已被 resize 收缩：元素字节区越界时按 undefined 读
     // （live 视图越界语义），不切片 panic。
     if offset + kind.bytes_per_element() > bytes.len() {
@@ -658,7 +672,9 @@ fn read_element<H: VmHost>(vm: &mut H, kind: TypedArrayKind, bytes: &[u8], offse
 ///
 /// 数值类型显式拒绝 BigInt 值（规范 ToNumber(BigInt) 抛 TypeError），避免
 /// 经 f64 近似的静默精度丢失。
-fn ta_element_value<H: VmHost>(vm: &mut H, kind: TypedArrayKind, value: JsValue) -> Result<JsValue, JsValue> {
+pub(crate) fn ta_element_value<H: VmHost>(
+    vm: &mut H, kind: TypedArrayKind, value: JsValue,
+) -> Result<JsValue, JsValue> {
     if is_bigint_kind(kind) {
         return oxide_runtime_api::to_bigint_full(value, vm).map_err(|e| crate::iterator::engine_error(vm, &e));
     }
@@ -708,7 +724,9 @@ pub fn element_error_text<H: VmHost>(vm: &mut H, err: JsValue) -> String {
 
 /// 把已按元素类型转换的值（数值 kind 为 Number、BigInt kind 为 BigInt）按位模式
 /// 截断写入底层 buffer。转换由调用方 [`ta_element_value`] 完成，本函数无副作用。
-fn write_element<H: VmHost>(vm: &mut H, kind: TypedArrayKind, bytes: &mut [u8], offset: usize, value: JsValue) {
+pub(crate) fn write_element<H: VmHost>(
+    vm: &mut H, kind: TypedArrayKind, bytes: &mut [u8], offset: usize, value: JsValue,
+) {
     // 底层缓冲可能已被 resize 收缩：元素字节区越界时静默不写
     // （live 视图越界语义），不切片 panic。
     if offset + kind.bytes_per_element() > bytes.len() {
@@ -846,12 +864,16 @@ fn typed_array_new<H: VmHost>(vm: &mut H, args: &[u8], kind: TypedArrayKind) -> 
     let (buffer, byte_offset, length, auto_length) = if first.is_object() {
         let first_ptr = first.as_js_object_ptr();
         let first_obj = unsafe { &*first_ptr };
-        if first_obj.is_array_buffer_obj() {
-            let payload_ptr = native_try!(array_buffer_payload(vm, first));
-            // SAFETY: payload_ptr 经 array_buffer_payload 校验为合法 ArrayBuffer 载荷。
+        // ArrayBuffer/SharedArrayBuffer 双认：长度/偏移/长度校验与定长臂同构；
+        // SAB 无 detach 产出路径，载荷恒在（防御背板保留）。
+        if first_obj.is_array_buffer_obj() || first_obj.is_shared_array_buffer_obj() {
+            let Some(payload_ptr) = buffer_payload_ptr(first_obj) else {
+                return NativeResult::Err(crate::error::create_type_error(vm, "ArrayBuffer internal state invalid"));
+            };
+            // SAFETY: payload_ptr 经 buffer_payload_ptr 校验为合法缓冲区载荷。
             let Some(data) = unsafe { &*payload_ptr }.data.as_ref() else {
-                // 首参 buffer 已 detach：按规范的 ArrayBuffer 校验步抛 TypeError
-                // （构造器入口的 detach 守卫即本臂）。
+                // 首参 buffer 载荷缺失（AB 已 detach；SAB 为防御背板）：按规范的
+                // ArrayBuffer 校验步抛 TypeError（构造器入口的 detach 守卫即本臂）。
                 return NativeResult::Err(crate::error::create_type_error(vm, "ArrayBuffer internal state invalid"));
             };
             let buffer_len = data.len();
@@ -2715,6 +2737,14 @@ mod tests {
         obj
     }
 
+    /// 手工构造带载荷盒的 SharedArrayBuffer 对象（不经 Vm，只验 live 长度纯核；
+    /// 载荷盒形态与 ArrayBuffer 臂同构）。
+    fn sab_object_with_data(data: Option<Vec<u8>>) -> JsObject {
+        let mut obj = ab_object_with_data(data);
+        obj.type_tag = JsObject::OBJ_TYPE_SHARED_ARRAY_BUFFER;
+        obj
+    }
+
     fn ta_view(
         buffer: &JsObject, kind: TypedArrayKind, byte_offset: usize, length: usize, auto: bool,
     ) -> TypedArrayData {
@@ -2902,5 +2932,39 @@ mod tests {
     fn gate_int_arm() {
         assert_eq!(ta_index_gate_int(0, 2), TaIndexGate::NumericValid(0));
         assert_eq!(ta_index_gate_int(2, 2), TaIndexGate::NumericInvalid);
+    }
+
+    // M SAB 双认：live 长度/越界判定/规范长度对 SAB 载荷与 AB 同口径
+    // （SAB 无 detach 产出路径，载荷恒在）。
+    #[test]
+    fn live_length_sab_dual_arm() {
+        let sab = sab_object_with_data(Some(vec![0; 8]));
+        let v = ta_view(&sab, TypedArrayKind::Int32, 4, 1, false);
+        assert!(!ta_is_oob(v));
+        assert_eq!(ta_live_length(v), 1);
+        assert_eq!(ta_spec_length(v), 1);
+
+        let v = ta_view(&sab, TypedArrayKind::Uint8, 0, 8, true);
+        assert_eq!(ta_live_length(v), 8);
+        assert!(!ta_is_oob(v));
+
+        // 界内 auto 视图：live 长按 buffer 当前字节折算裁剪。
+        let v = ta_view(&sab, TypedArrayKind::Uint8, 4, 8, true);
+        assert!(!ta_is_oob(v));
+        assert_eq!(ta_live_length(v), 4);
+
+        // offset 超 SAB 缓冲即越界 0（与 AB 臂同口径）。
+        let v = ta_view(&sab, TypedArrayKind::Uint8, 12, 8, true);
+        assert!(ta_is_oob(v));
+        assert_eq!(ta_live_length(v), 0);
+    }
+
+    // N 双认标签之外的对象：同 AB 口径越界 0。
+    #[test]
+    fn live_length_non_buffer_is_oob() {
+        let plain = JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::undefined());
+        let v = ta_view(&plain, TypedArrayKind::Uint8, 0, 4, true);
+        assert!(ta_is_oob(v));
+        assert_eq!(ta_live_length(v), 0);
     }
 }

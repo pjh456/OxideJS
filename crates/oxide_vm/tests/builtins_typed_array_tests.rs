@@ -105,6 +105,39 @@ fn typed_array_constructs_from_array_buffer() {
 }
 
 #[test]
+fn typed_array_over_shared_array_buffer_view() {
+    // SAB 双认最小面：构造器 SAB 臂（长度/偏移/长度与 AB 同构）、元素
+    // 读写、byteLength 读 SAB 载荷长度。
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "var sab = new SharedArrayBuffer(8); var view = new Int32Array(sab, 4, 1); \
+         view.length === 1 && view.byteOffset === 4 && view.byteLength === 4 && \
+         view.buffer === sab && view[0] === 0 && \
+         (view[0] = -5, view[0] === -5) && sab.byteLength === 8 && \
+         new Int8Array(sab).length === 8",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
+#[test]
+fn typed_array_over_shared_array_buffer_offset_guard() {
+    // SAB 臂校验与 AB 同构：byteOffset 非 bpe 倍数抛 RangeError，窗口超缓冲
+    // 抛 RangeError，定长/省略长度双形态。
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "(function () { var sab = new SharedArrayBuffer(8); var t1, t2; \
+         try { new Int32Array(sab, 2); t1 = false; } catch (e) { t1 = e instanceof RangeError; } \
+         try { new Int32Array(sab, 0, 3); t2 = false; } catch (e) { t2 = e instanceof RangeError; } \
+         return t1 && t2 && new Int32Array(sab).length === 2 && new Int32Array(sab, 4).length === 1; })()",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
+#[test]
 fn typed_array_views_share_data_with_data_view() {
     let mut vm = Vm::new();
     let result = eval(

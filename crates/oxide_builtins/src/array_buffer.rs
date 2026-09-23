@@ -188,6 +188,16 @@ pub(crate) fn shared_array_buffer_payload_ptr(obj: &JsObject) -> Option<*mut Arr
     obj.native_fn().map(|ptr| ptr.as_ptr() as *mut ArrayBufferPayload)
 }
 
+/// 缓冲区载荷指针单收口：ArrayBuffer 与 SharedArrayBuffer 共用同一载荷
+/// 结构，双标签双认，返回统一形态的载荷盒指针；两标签之外（含槽位空）
+/// 返回 `None`。
+pub(crate) fn buffer_payload_ptr(obj: &JsObject) -> Option<*mut ArrayBufferPayload> {
+    if obj.is_array_buffer_obj() {
+        return array_buffer_payload_ptr(obj);
+    }
+    shared_array_buffer_payload_ptr(obj)
+}
+
 /// SharedArrayBuffer 载荷盒字节数（`native_fn` 槽）；非 SAB 或已释放 → 0。
 pub fn shared_array_buffer_native_size(obj: &JsObject) -> u64 {
     let payload_ptr = match shared_array_buffer_payload_ptr(obj) {
