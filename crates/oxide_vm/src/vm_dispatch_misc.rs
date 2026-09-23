@@ -4,7 +4,7 @@ use oxide_runtime_api::{push_units_to, to_boolean, to_units_full};
 use oxide_types::object::{JsObject, PropAttributes};
 use oxide_types::private_key::{
     int_key_value, is_int_key, is_private_name_key, is_symbol_key, make_int_key, make_well_known_symbol_key,
-    WELL_KNOWN_SYMBOL_HAS_INSTANCE,
+    INT_KEY_COUNT, WELL_KNOWN_SYMBOL_HAS_INSTANCE,
 };
 use oxide_types::value::JsValue;
 
@@ -451,6 +451,14 @@ impl Vm {
                         let idx = make_int_key(i);
                         keys_vec.push((self.new_string(&i.to_string()), idx));
                     }
+                }
+            }
+            // TA 元素键：整数下标 0..live 长升序排前（尾稳定排序负责序）；
+            // 越界（含 detach）live 长 0 零枚；元素住 buffer，不在形状链。
+            if arr.is_typed_array_obj() {
+                let len = oxide_builtins::typed_array::ta_view_length(self, arr) as u32;
+                for i in 0..len.min(INT_KEY_COUNT) {
+                    keys_vec.push((self.new_string(&i.to_string()), make_int_key(i)));
                 }
             }
         }

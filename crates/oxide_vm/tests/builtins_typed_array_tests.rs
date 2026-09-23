@@ -1102,7 +1102,7 @@ fn ta_dop_constraint_false() {
           for (var i = 0; i < shapes.length; i++) { \
             if (Reflect.defineProperty(ta, '0', shapes[i]) !== false) return false; \
             if (ta[0] !== 9) return false; } \
-          return Object.getOwnPropertyNames(ta).length === 0; })()",
+          return Object.getOwnPropertyNames(ta).join(',') === '0,1'; })()",
     )
     .unwrap();
     assert!(result.as_bool());
@@ -1121,7 +1121,7 @@ fn ta_dop_constraint_throws() {
           var t2 = 0; \
           try { Object.defineProperty(ta, '0', { get: function () { return 1; } }); } \
           catch (e) { if (!(e instanceof TypeError)) return false; t2 = 1; } \
-          return t1 === 1 && t2 === 1 && ta[0] === 9 && Object.getOwnPropertyNames(ta).length === 0; })()",
+          return t1 === 1 && t2 === 1 && ta[0] === 9 && Object.getOwnPropertyNames(ta).join(',') === '0,1'; })()",
     )
     .unwrap();
     assert!(result.as_bool());
@@ -1139,7 +1139,7 @@ fn ta_dop_numeric_invalid_false() {
             var d = { value: 1, writable: true, enumerable: true, configurable: true }; \
             if (Reflect.defineProperty(ta, keys[i], d) !== false) return false; \
             if (ta[0] !== 5) return false; } \
-          return Object.getOwnPropertyNames(ta).length === 0; })()",
+          return Object.getOwnPropertyNames(ta).join(',') === '0,1'; })()",
     )
     .unwrap();
     assert!(result.as_bool());
@@ -1218,7 +1218,7 @@ fn ta_dop_value_throws_original() {
           try { Object.defineProperty(ta, '0', { value: v, writable: true, enumerable: true, configurable: true }); \
             return false; } \
           catch (e) { caught = e; } \
-          return caught === marker && caught.tag === 'marker' && Object.getOwnPropertyNames(ta).length === 0; })()",
+          return caught === marker && caught.tag === 'marker' && Object.getOwnPropertyNames(ta).join(',') === '0,1'; })()",
     )
     .unwrap();
     assert!(result.as_bool());
@@ -1656,13 +1656,235 @@ fn ta_gopd_real_prop_attrs_passthrough() {
     let result = eval(
         &mut vm,
         "(function () { var ta = new Int8Array([42]); \
-           Object.defineProperty(ta, '1.0', { \
-             value: 7, writable: true, enumerable: true, configurable: false }); \
-           var d = Object.getOwnPropertyDescriptor(ta, '1.0'); \
-           if (!d || d.value !== 7) return false; \
-           if (d.writable !== true || d.enumerable !== true || d.configurable !== false) return false; \
-           return ta.hasOwnProperty('1.0') === true \
-             && ta.propertyIsEnumerable('1.0') === true; })()",
+            Object.defineProperty(ta, '1.0', { \
+              value: 7, writable: true, enumerable: true, configurable: false }); \
+            var d = Object.getOwnPropertyDescriptor(ta, '1.0'); \
+            if (!d || d.value !== 7) return false; \
+            if (d.writable !== true || d.enumerable !== true || d.configurable !== false) return false; \
+            return ta.hasOwnProperty('1.0') === true \
+              && ta.propertyIsEnumerable('1.0') === true; })()",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
+#[test]
+fn ta_ownkeys_integer_indexes() {
+    // ownKeys 元素键 = 0..live 长升序：len-3 三键、len-4 四键、subarray 视图
+    // 相对下标、len-0 空、BigInt 族同形。
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "(function () { var ta = new Uint8Array([1, 2, 3]); \
+            if (Reflect.ownKeys(ta).join(',') !== '0,1,2') return false; \
+            if (Reflect.ownKeys(new Uint8Array(4)).join(',') !== '0,1,2,3') return false; \
+            var base = new Int8Array(4); var sub = base.subarray(2); \
+            if (Reflect.ownKeys(sub).join(',') !== '0,1') return false; \
+            if (Reflect.ownKeys(new Uint8Array(0)).length !== 0) return false; \
+            var b = new BigInt64Array([1n, 2n, 3n]); \
+            return Reflect.ownKeys(b).join(',') === '0,1,2'; })()",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
+#[test]
+fn ta_ownkeys_order_indexes_strings_symbols() {
+    // 三段序：整数下标升序 → 真串键创建序 → 符号创建序；原型同键（含整数
+    // 索引形态）不入 ownKeys。
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "(function () { var ta = new Uint8Array([1, 2]); \
+            ta.test262 = 'a'; ta.ecma262 = 'b'; \
+            var s1 = Symbol('s1'), s2 = Symbol('s2'); \
+            ta[s1] = 1; ta[s2] = 2; \
+            Uint8Array.prototype[3] = 'x'; Uint8Array.prototype.bar = 'y'; \
+            var ks = Reflect.ownKeys(ta); \
+            return ks.length === 6 && ks[0] === '0' && ks[1] === '1' \
+              && ks[2] === 'test262' && ks[3] === 'ecma262' && ks[4] === s1 && ks[5] === s2; })()",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
+#[test]
+fn ta_keys_values_entries_strings_only() {
+    // keys = 下标 + 可枚举真串键（符号不入、e:false 真属性不入）；values/entries
+    // 同序含元素值与真属性值。
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "(function () { var ta = new Uint8Array([1, 2]); \
+            ta.foo = 42; \
+            Object.defineProperty(ta, 'bar', { value: 7, enumerable: false }); \
+            if (Object.keys(ta).join(',') !== '0,1,foo') return false; \
+            var vs = Object.values(ta); \
+            if (vs.length !== 3 || vs[0] !== 1 || vs[1] !== 2 || vs[2] !== 42) return false; \
+            var es = Object.entries(ta); \
+            return es.length === 3 && es[0][0] === '0' && es[0][1] === 1 \
+              && es[1][0] === '1' && es[1][1] === 2 && es[2][0] === 'foo' && es[2][1] === 42; })()",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
+#[test]
+fn ta_gopn_gopds_include_indexes() {
+    // getOwnPropertyNames = 下标 + 真串键；getOwnPropertyDescriptors 下标描述符
+    // 常量四字段（value + w/e/c 全真），真属性原样。
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "(function () { var ta = new Uint8Array([1, 2]); \
+            ta.foo = 42; \
+            if (Object.getOwnPropertyNames(ta).join(',') !== '0,1,foo') return false; \
+            var ds = Object.getOwnPropertyDescriptors(ta); \
+            var d0 = ds['0']; \
+            if (!d0 || d0.value !== 1 || d0.writable !== true \
+                || d0.enumerable !== true || d0.configurable !== true) return false; \
+            var dfoo = ds['foo']; \
+            return !!dfoo && dfoo.value === 42 \
+              && dfoo.writable === true && dfoo.enumerable === true && dfoo.configurable === true; })()",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
+#[test]
+fn ta_for_in_indexes_then_strings() {
+    // for-in = 下标升序 + 真串键（符号不入）；len-0 与 detach 形仅真属性、无下标。
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "(function () { var ta = new Uint8Array([1, 2]); \
+            ta.foo = 42; var s = Symbol('s'); ta[s] = 1; \
+            var ks = []; for (var k in ta) ks.push(k); \
+            if (ks.length !== 3 || ks[0] !== '0' || ks[1] !== '1' || ks[2] !== 'foo') return false; \
+            var e = new Uint8Array(0); \
+            var ke = 0; for (var k2 in e) ke++; \
+            if (ke !== 0) return false; \
+            var ab = new ArrayBuffer(8); var d = new Uint8Array(ab); d.foo = 1; \
+            ab.transfer(); \
+            var kd = []; for (var k3 in d) kd.push(k3); \
+            return kd.length === 1 && kd[0] === 'foo'; })()",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
+#[test]
+fn ta_assign_spread_rest_copy_indexes() {
+    // Object.assign / 展开 / 解构 rest 均拷下标值 + 可枚举真属性（rest 排除
+    // 已绑定键）。
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "(function () { var ta = new Uint8Array([1, 2]); \
+            ta.foo = 9; \
+            var o1 = Object.assign({}, ta); \
+            if (Object.keys(o1).sort().join(',') !== '0,1,foo') return false; \
+            if (o1['0'] !== 1 || o1['1'] !== 2 || o1.foo !== 9) return false; \
+            var o2 = { ...ta }; \
+            if (o2['0'] !== 1 || o2['1'] !== 2 || o2.foo !== 9) return false; \
+            var { foo, ...rest } = ta; \
+            return Object.keys(rest).sort().join(',') === '0,1' \
+              && rest['0'] === 1 && rest['1'] === 2 && rest.foo === undefined; })()",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
+#[test]
+fn ta_resize_auto_follows_live_length() {
+    // auto 视图 ownKeys 跟随 live 长：grow/shrink/边界（maxByteLength）四步；
+    // offset 超 buffer 越界形零枚。
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "(function () { var ab = new ArrayBuffer(4, { maxByteLength: 12 }); \
+            var ta = new Uint8Array(ab); \
+            if (Reflect.ownKeys(ta).join(',') !== '0,1,2,3') return false; \
+            ab.resize(8); \
+            if (Reflect.ownKeys(ta).join(',') !== '0,1,2,3,4,5,6,7') return false; \
+            ab.resize(2); \
+            if (Reflect.ownKeys(ta).join(',') !== '0,1') return false; \
+            ab.resize(12); \
+            if (Reflect.ownKeys(ta).join(',') !== '0,1,2,3,4,5,6,7,8,9,10,11') return false; \
+            var v = new Uint8Array(ab, 12); \
+            return Reflect.ownKeys(v).length === 0; })()",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
+#[test]
+fn ta_resize_fixed_clip_oob_empty() {
+    // fixed 视图（offset 2 len 2）：grow 与窗口内 shrink 键集保持 0,1；
+    // buffer 收缩裁出窗口即越界零枚。
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "(function () { var ab = new ArrayBuffer(8, { maxByteLength: 16 }); \
+            var ta = new Uint8Array(ab, 2, 2); \
+            if (Reflect.ownKeys(ta).join(',') !== '0,1') return false; \
+            ab.resize(16); \
+            if (Reflect.ownKeys(ta).join(',') !== '0,1') return false; \
+            ab.resize(4); \
+            if (Reflect.ownKeys(ta).join(',') !== '0,1') return false; \
+            ab.resize(3); \
+            return Reflect.ownKeys(ta).length === 0; })()",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
+#[test]
+fn ta_detached_empty_enum() {
+    // detach 后 live 长 0：ownKeys/keys/values/for-in 仅真属性（序不变、无下标），
+    // 真属性值不动。
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "(function () { var ab = new ArrayBuffer(8); \
+            var ta = new Uint8Array(ab); \
+            ta.foo = 42; var s = Symbol('s'); ta[s] = 5; \
+            ab.transfer(); \
+            var ks = Reflect.ownKeys(ta); \
+            if (ks.length !== 2 || ks[0] !== 'foo' || ks[1] !== s) return false; \
+            if (Object.keys(ta).join(',') !== 'foo') return false; \
+            var vs = Object.values(ta); \
+            if (vs.length !== 1 || vs[0] !== 42) return false; \
+            var kf = []; for (var k in ta) kf.push(k); \
+            return kf.length === 1 && kf[0] === 'foo' && ta.foo === 42; })()",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
+#[test]
+fn ta_integrity_freeze_seal_no_element_touch() {
+    // 完整性家族跳键：seal 后 isSealed 真、元素写仍通、加真属性失败、键集不变、
+    // 无损坏（读/长/缓冲不动）；freeze len-0 → isFrozen 真；fresh len>0 非冻结；
+    // PE 的 TA 判 sealed（元素键描述符 c:true 口径）。
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "(function () { var ta = new Int8Array([1, 2]); \
+            Object.seal(ta); \
+            if (Object.isSealed(ta) !== true) return false; \
+            ta[0] = 9; \
+            if (ta[0] !== 9 || ta[1] !== 2 || ta.length !== 2) return false; \
+            if (Reflect.defineProperty(ta, 'x', { value: 1, configurable: true }) !== false) return false; \
+            if (Reflect.ownKeys(ta).join(',') !== '0,1') return false; \
+            var f = new Int8Array(0); \
+            Object.freeze(f); \
+            if (Object.isFrozen(f) !== true) return false; \
+            var t2 = new Int8Array([5, 6]); \
+            if (Object.isFrozen(t2) !== false || Object.isSealed(t2) !== false) return false; \
+            var t3 = new Int8Array(2); \
+            Object.preventExtensions(t3); \
+            return Object.isSealed(t3) === true; })()",
     )
     .unwrap();
     assert!(result.as_bool());

@@ -3,7 +3,7 @@ use oxide_kernel::string_forge::PermInterner;
 use oxide_types::object::{JsObject, PropAttributes, PropMetaEntry};
 use oxide_types::private_key::{
     int_key_value, is_int_key, is_private_name_key, is_symbol_key, make_int_key, make_well_known_symbol_key,
-    symbol_index_from_key, well_known_symbol_id_from_key,
+    symbol_index_from_key, well_known_symbol_id_from_key, INT_KEY_COUNT,
 };
 use oxide_types::value::JsValue;
 
@@ -22,9 +22,19 @@ fn is_integer_index(key: &str) -> bool {
 /// 收集对象全部自身属性（数组元素区 + shape 链），按规范顺序排列：整数索引在前
 /// 升序，其余保持插入序。si 指 interned 字符串键编号（PermInterner 分配的 u32 id）。
 /// 返回 `(属性键 si, 绝对存储索引)`：数组对象元素区索引即绝对下标，命名属性 =
-/// `array_prop_count + shape 槽位`；普通对象即 shape 槽位。
+/// `array_prop_count + shape 槽位`；普通对象即 shape 槽位。TA 元素键（0..live
+/// 长）以哨兵存储索引 `u32::MAX` 推入（无槽位），越界（含 detach）live 长 0 键集空。
 pub fn walk_own_keys<H: VmHost>(vm: &H, obj: &JsObject) -> Vec<(u32, u32)> {
     let mut keys: Vec<(u32, u32)> = Vec::new();
+    // TA 元素键：整数下标 0..live 长是可枚举自身属性（元素住 buffer，不在形状
+    // 链）；越界（含 detach）live 长 0，键集自然空。哨兵存储下标 u32::MAX =
+    // 无槽位（meta 读一律 None，取值消费方按键路由元素读）。
+    if obj.is_typed_array_obj() {
+        let len = crate::typed_array::ta_view_length(vm, obj) as u32;
+        for i in 0..len.min(INT_KEY_COUNT) {
+            keys.push((make_int_key(i), u32::MAX));
+        }
+    }
     // 数组元素区：整数下标是可枚举自身属性（hole 视为不存在），排在命名属性之前。
     if obj.is_array() {
         for i in 0..obj.array_prop_count {
@@ -537,10 +547,17 @@ fn namespace_export_get(obj: &JsObject, key_si: u32) -> Result<Option<JsValue>, 
 
 /// values/entries 族单自身属性值读（EnumerableOwnProperties 的 Get）：模块命名空间
 /// 导出走活值查询（未初始化抛 ReferenceError）；访问器属性触发 getter（this = 对象
-/// 自身），异常传播原始抛出值；数据属性直读存储槽。
+/// 自身），异常传播原始抛出值；数据属性直读存储槽。TA 元素键无存储槽：live 界判
+/// （含 detach/收缩）直读元素值，访问器语义不适用。
 fn own_property_value<H: VmHost>(
     vm: &mut H, obj: &JsObject, obj_val: JsValue, si: u32, offset: u32,
 ) -> Result<JsValue, JsValue> {
+    // TA 元素键无存储槽（元素住 buffer）：live 界判含 detach/收缩，直读元素值。
+    if obj.is_typed_array_obj() && is_int_key(si) {
+        return Ok(
+            crate::typed_array::typed_array_element_get(vm, obj, int_key_value(si)).unwrap_or(JsValue::undefined())
+        );
+    }
     match namespace_export_get(obj, si) {
         Ok(Some(value)) => return Ok(value),
         Ok(None) => {}
@@ -1227,6 +1244,7 @@ fn seal_own_prop_meta(obj: &mut JsObject, store: u32) {
 /// # 副作用
 /// - 逐属性写 meta 使 `has_prop_meta()` 恒 true，IC 直写路径自动失效，后续
 ///   写/define 一律回落 ordinary_set / define 检查（writable/configurable 判定）
+/// - TA 元素键无 meta 槽，循环跳键（元素零修改）
 pub fn object_freeze<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     if args.len() < 2 {
         return NativeResult::Err(crate::error::create_type_error(vm, "Object.freeze called on non-object"));
@@ -1248,7 +1266,12 @@ pub fn object_freeze<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         let obj = unsafe { &mut *obj_ptr };
         // 命名属性：walk_own_keys 返回绝对存储索引（数组含元素区偏移）。
         let keys = walk_own_keys(vm, obj);
-        for (_si, pos) in keys {
+        for (si, pos) in keys {
+            // TA 元素键无 meta 槽（元素住 buffer）：完整性处理不触元素，跳键免
+            // set_meta_at 越界扩属性表。
+            if obj.is_typed_array_obj() && is_int_key(si) {
+                continue;
+            }
             freeze_own_prop_meta(obj, pos);
         }
         // 数组元素区独立于 shape 链（hole 非 own 属性，跳过）。
@@ -1271,6 +1294,7 @@ pub fn object_freeze<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 /// # 副作用
 /// - 逐属性写 meta 使 `has_prop_meta()` 恒 true，IC 直写路径自动失效，后续
 ///   define 回落 non-configurable 检查（已有属性写仍可正常进行）
+/// - TA 元素键无 meta 槽，循环跳键（元素零修改）
 pub fn object_seal<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     if args.len() < 2 {
         return NativeResult::Err(crate::error::create_type_error(vm, "Object.seal called on non-object"));
@@ -1283,7 +1307,12 @@ pub fn object_seal<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     {
         let obj = unsafe { &mut *obj_ptr };
         let keys = walk_own_keys(vm, obj);
-        for (_si, pos) in keys {
+        for (si, pos) in keys {
+            // TA 元素键无 meta 槽（元素住 buffer）：完整性处理不触元素，跳键免
+            // set_meta_at 越界扩属性表。
+            if obj.is_typed_array_obj() && is_int_key(si) {
+                continue;
+            }
             seal_own_prop_meta(obj, pos);
         }
         if obj.is_array() {
@@ -1373,7 +1402,12 @@ pub fn object_is_sealed<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         return NativeResult::Ok(JsValue::bool(false));
     }
     let keys = walk_own_keys(vm, obj);
-    for (_si, offset) in keys {
+    for (si, offset) in keys {
+        // 同款跳键：元素键描述符 configurable:true，PE/sealed 的 TA 判 sealed
+        // （V8 同口径）。
+        if obj.is_typed_array_obj() && is_int_key(si) {
+            continue;
+        }
         if let Some(meta) = obj.prop_meta_at(offset) {
             if meta.attributes.configurable() {
                 return NativeResult::Ok(JsValue::bool(false));
