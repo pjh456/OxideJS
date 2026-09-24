@@ -960,7 +960,16 @@ fn string_to_bigint_full<H: VmHost>(host: &mut H, s: &str) -> Result<JsValue, St
         (10u32, rest)
     };
     if digits.is_empty() {
-        return Err(host.error_message_text("SyntaxError", "Cannot convert string to BigInt: invalid integer literal"));
+        return Err(
+            host.error_message_text("SyntaxError", "Cannot convert string to a BigInt: invalid integer literal")
+        );
+    }
+    // StringIntegerLiteral 四种基数语法均不含数字分隔符；parse_bytes 会接受
+    // 下划线，故先显式拒绝。
+    if digits.contains('_') {
+        return Err(
+            host.error_message_text("SyntaxError", "Cannot convert string to a BigInt: invalid integer literal")
+        );
     }
     let m = num_bigint::BigInt::parse_bytes(digits.as_bytes(), radix).ok_or_else(|| {
         host.error_message_text("SyntaxError", "Cannot convert string to BigInt: invalid integer literal")

@@ -2,23 +2,17 @@ use num_bigint::BigInt;
 use oxide_runtime_api::{to_primitive, NativeResult, ToPrimitiveHint, VmHost};
 use oxide_types::value::JsValue;
 
-/// JS `BigInt(value)` 构造逻辑：
-/// - `new BigInt()` 抛 TypeError（BigInt 不可 new）
-/// - 无参 → `0n`
-/// - 其余参数先 ToPrimitive(number)，Number 走 NumberToBigInt，其余走 ToBigInt。
+/// JS `BigInt(value)` 构造逻辑（§21.2.1.1）：
+/// - new 形态无条件抛 TypeError（BigInt 不可 new）；
+/// - 无参走 ToBigInt(undefined) → TypeError；
+/// - Number 参数走 NumberToBigInt（非整数抛 RangeError，幅值无 2^53 上界），
+///   其余参数走 ToBigInt。
 pub fn bigint_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
-    if args.len() > 1 {
-        let this_val = vm.reg(args[0]);
-        if this_val.is_object() {
-            // new 语义：BigInt 不可 new，抛 TypeError。
-            return NativeResult::Err(crate::error::create_type_error(vm, "BigInt is not a constructor"));
-        }
+    if vm.constructing_native() {
+        return NativeResult::Err(crate::error::create_type_error(vm, "BigInt is not a constructor"));
     }
-    // 无参 BigInt() → 0n（注意 BigInt(undefined) 必须抛 TypeError）。
-    if args.len() <= 1 {
-        return NativeResult::Ok(vm.new_bigint(BigInt::from(0)));
-    }
-    let val = vm.reg(args[1]);
+    // 无参 BigInt() 等价于 ToBigInt(undefined) → TypeError，与显式 undefined 同路。
+    let val = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
     // ToPrimitive(value, number)：对象先出盒，用户 @@toPrimitive/valueOf/toString
     // 抛出的异常原样传播，且装箱转换的异常只触发一次。
     let prim = match to_primitive(val, ToPrimitiveHint::Number, vm) {
@@ -42,12 +36,35 @@ pub fn bigint_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
                 "The number cannot be converted to a BigInt because it is not an integer",
             ));
         }
-        return NativeResult::Ok(vm.new_bigint(BigInt::from(d.trunc() as i128)));
+        return NativeResult::Ok(vm.new_bigint(integer_double_to_bigint(d)));
     }
     // 步骤 4：其它原始类型走 ToBigInt。
     match to_bigint(vm, prim) {
         Ok(v) => NativeResult::Ok(v),
         Err(e) => NativeResult::Err(e),
+    }
+}
+
+/// NumberToBigInt 步骤 3：整数 double 的精确值 ℤ(x)。
+/// |x| < 2^53 由尾数右移指数位直转；|x| ≥ 2^53 位分解（尾数左移 exp-1075 位），
+/// 全程精确无饱和。-0 返回 0（BigInt 无负零）。
+fn integer_double_to_bigint(d: f64) -> BigInt {
+    let bits = d.to_bits();
+    let negative = bits >> 63 != 0;
+    let exp_field = (bits >> 52) & 0x7FF;
+    let significand = bits & 0xF_FFFF_FFFF_FFFF;
+    if exp_field == 0 {
+        return BigInt::from(0);
+    }
+    let mag = if exp_field < 1075 {
+        BigInt::from((0x10_0000_0000_0000u64 + significand) >> (1075 - exp_field))
+    } else {
+        BigInt::from(0x10_0000_0000_0000u64 + significand) << (exp_field - 1075)
+    };
+    if negative {
+        -mag
+    } else {
+        mag
     }
 }
 
