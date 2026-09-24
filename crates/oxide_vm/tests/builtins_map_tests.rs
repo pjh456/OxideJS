@@ -281,3 +281,121 @@ fn map_length_descriptor() {
     .unwrap();
     assert!(r.as_bool());
 }
+
+// ── getOrInsertComputed：命中短路，缺失回调求值，二扫原位覆盖保序位 ──
+
+#[test]
+fn map_get_or_insert_computed_missing_invokes_callback_once() {
+    // 键缺失：callback 恰调用一次，返回值末尾追加，size 加一。
+    let mut vm = Vm::new();
+    let r = eval(
+        &mut vm,
+        "var m = new Map(); m.set('a', 1); var n = 0; \
+         var v = m.getOrInsertComputed('b', function () { n += 1; return 'vb'; }); \
+         v + '/' + m.size + '/' + n + '/' + m.get('b')",
+    )
+    .unwrap();
+    assert_eq!(str_val(&vm, r), "vb/2/1/vb");
+}
+
+#[test]
+fn map_get_or_insert_computed_present_skips_callback() {
+    // 键命中：callback 不求值，返回存储值，size 不变。
+    let mut vm = Vm::new();
+    let r = eval(
+        &mut vm,
+        "var m = new Map(); m.set('a', 1); var n = 0; \
+         var v = m.getOrInsertComputed('a', function () { n += 1; return 99; }); \
+         v + '/' + m.size + '/' + n",
+    )
+    .unwrap();
+    assert_eq!(str_val(&vm, r), "1/1/0");
+}
+
+#[test]
+fn map_get_or_insert_computed_present_undefined_value_returns_undefined() {
+    // 存储值为 undefined 也计命中：返回 undefined，不插入、size 不变。
+    let mut vm = Vm::new();
+    let r = eval(
+        &mut vm,
+        "var m = new Map(); m.set('u', undefined); var n = 0; \
+         var hit = m.getOrInsertComputed('u', function () { n += 1; return 7; }); \
+         (hit === undefined) + '/' + m.size + '/' + n",
+    )
+    .unwrap();
+    assert_eq!(str_val(&vm, r), "true/1/0");
+}
+
+#[test]
+fn map_get_or_insert_computed_zero_key_canonicalized_for_callback() {
+    // 键规范化：-0 键在传 callback 前归一为 +0（Object.is 区分 ±0）。
+    let mut vm = Vm::new();
+    let r = eval(
+        &mut vm,
+        "var m = new Map(); \
+         var v = m.getOrInsertComputed(-0, function (k) { return (Object.is(k, 0) && (1 / k) === Infinity) ? 5 : 6; }); \
+         v + '/' + m.size + '/' + (m.get(-0) === 5)",
+    )
+    .unwrap();
+    assert_eq!(str_val(&vm, r), "5/1/true");
+}
+
+#[test]
+fn map_get_or_insert_computed_callback_throws_propagates_original() {
+    // callback 抛错：原异常值上抛，零条目落表，size 不变。
+    let mut vm = Vm::new();
+    let r = eval(
+        &mut vm,
+        "var m = new Map(); m.set('a', 1); var e = null; \
+         try { m.getOrInsertComputed('b', function () { throw 'E'; }); } catch (t) { e = t; } \
+         e + '/' + m.size + '/' + m.has('b')",
+    )
+    .unwrap();
+    assert_eq!(str_val(&vm, r), "E/1/false");
+}
+
+#[test]
+fn map_get_or_insert_computed_rejects_non_callable_and_non_map() {
+    // 非函数 callback 抛 TypeError；非 Map receiver 抛 TypeError（receiver 校验先于 callback 检查）。
+    let mut vm = Vm::new();
+    let r = eval(
+        &mut vm,
+        "var m = new Map(); var ok = false; \
+         try { m.getOrInsertComputed('a', 42); } catch (t) { ok = t instanceof TypeError; } \
+         var ok2 = false; \
+         try { Map.prototype.getOrInsertComputed.call({}, 'a', function () {}); } catch (t) { ok2 = t instanceof TypeError; } \
+         ok + '/' + ok2",
+    )
+    .unwrap();
+    assert_eq!(str_val(&vm, r), "true/true");
+}
+
+#[test]
+fn map_get_or_insert_computed_second_scan_overwrites_in_place() {
+    // callback 内 set 同键后返回 3：二扫命中，原位覆盖并返回，插入序保留，size 不变。
+    let mut vm = Vm::new();
+    let r = eval(
+        &mut vm,
+        "var m = new Map(); m.set('first', 'f'); \
+         var v = m.getOrInsertComputed('k', function () { m.set('k', 0); return 3; }); \
+         v + '/' + m.get('k') + '/' + m.size + '/' + \
+         (function () { var out = []; m.forEach(function (val, key) { out.push(key); }); return out.join(','); })()",
+    )
+    .unwrap();
+    assert_eq!(str_val(&vm, r), "3/3/2/first,k");
+}
+
+#[test]
+fn map_get_or_insert_computed_length_name_and_descriptor() {
+    // 函数描述符：length 2、name 'getOrInsertComputed'，原型属性 writable/enumerable/configurable 三属性。
+    let mut vm = Vm::new();
+    let r = eval(
+        &mut vm,
+        "var f = Map.prototype.getOrInsertComputed; \
+         var d = Object.getOwnPropertyDescriptor(Map.prototype, 'getOrInsertComputed'); \
+         f.length === 2 && f.name === 'getOrInsertComputed' && \
+         d.writable === true && d.enumerable === false && d.configurable === true",
+    )
+    .unwrap();
+    assert!(r.as_bool());
+}

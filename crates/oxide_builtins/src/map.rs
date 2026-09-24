@@ -289,6 +289,64 @@ pub fn map_get_or_insert<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     NativeResult::Ok(val)
 }
 
+/// `Map.prototype.getOrInsertComputed(key, callback)`：键命中返回存储值（callback
+/// 不求值）；缺失时调用 callback（this 恒为 undefined，唯一实参为规范化后的键），
+/// 以返回值作条目值原位覆盖（callback 期间同键已入表）或末尾追加。
+///
+/// # 步骤
+/// 1. 校验 receiver 持 Map 内部槽（先于 callback 检查）。
+/// 2. callback 须可调用，否则 TypeError。
+/// 3. 键规范化：Double 零值统一为 +0（±0 唯一规范化点，存储、扫描、callback
+///    实参三处同一值；NaN 不归一）。
+/// 4. 首扫：命中即返回存储值，callback 不求值。
+/// 5. 调用 callback；抛错时原异常值上抛，零条目落表。
+/// 6. 二扫：callback 期间同键已入表则原位写值返回，不重新追加。
+/// 7. 否则末尾追加新条目并返回 callback 返回值。
+///
+/// # 边界与前提
+/// - 存储值 undefined 同样计命中：直接返回现值，不得视为缺失。
+/// - callback 内可重入同 Map 方法（native 重入），键值表指针跨重入稳定。
+///
+/// # 注意事项
+/// - 二扫覆盖保序位：命中键值更新不移动插入序，条目不重新追加末尾。
+/// - 无 thisArg 形参：callback 的 this 恒为 undefined，恰一个实参（规范化键）。
+/// - -0 键规范化为 +0 后才进入存储/扫描/callback 实参。
+pub fn map_get_or_insert_computed<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
+    let inner = native_try!(get_map_inner(vm, this_val));
+    let key = vm.reg(if args.len() > 1 { args[1] } else { 0 });
+    let callback = vm.reg(if args.len() > 2 { args[2] } else { 0 });
+    if !crate::iterator::is_callable(callback) {
+        return NativeResult::Err(crate::error::create_type_error(vm, "callback is not a function"));
+    }
+    let key = if key.is_double() && key.as_double() == 0.0 {
+        JsValue::float(0.0)
+    } else {
+        key
+    };
+    let found = unsafe { (*inner).get(&SetKey(key)).copied() };
+    if let Some(existing) = found {
+        return NativeResult::Ok(existing);
+    }
+    let value = match vm.call_function_sync(callback, JsValue::undefined(), &[key]) {
+        Ok(v) => v,
+        Err(e) => {
+            let exc = vm
+                .take_uncaught_value()
+                .unwrap_or_else(|| crate::error::create_type_error(vm, &e));
+            return NativeResult::Err(exc);
+        }
+    };
+    if let Some(slot) = unsafe { (*inner).get_mut(&SetKey(key)) } {
+        *slot = value;
+        return NativeResult::Ok(value);
+    }
+    unsafe {
+        (*inner).insert(SetKey(key), value);
+    }
+    NativeResult::Ok(value)
+}
+
 /// `Map.prototype.has(key)`：key 是否存在。
 pub fn map_has<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
