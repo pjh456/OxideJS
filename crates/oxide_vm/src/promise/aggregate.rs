@@ -265,11 +265,18 @@ impl Vm {
     }
 }
 
-/// `Promise.resolve(x)`：`x` 为原生 Promise 且 `x.constructor === this` 时直接返回；
-/// 否则按 `this`（构造器）建能力并 PromiseResolve。
+/// `Promise.resolve(x)`：`this` 非 Object 抛 TypeError（先于同值快路径）；
+/// `x` 为原生 Promise 且 `x.constructor === this` 时直接返回；否则按 `this`
+///（构造器）建能力并 PromiseResolve。
 pub(super) fn promise_static_resolve(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let ctor = vm.reg(if args.is_empty() { 0 } else { args[0] });
     let x = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
+    if !ctor.is_object() {
+        return NativeResult::Err(oxide_builtins::error::create_type_error(
+            vm,
+            "Promise.resolve called on non-object this",
+        ));
+    }
     if vm.is_promise_value(x) {
         // SAFETY: is_promise_value 已验证 x 为原生 Promise 对象，指针非空且存活；此处只读 constructor，即时消费。
         let x_obj = unsafe { &*x.as_js_object_ptr() };
@@ -305,10 +312,17 @@ pub(super) fn promise_static_resolve(vm: &mut Vm, args: &[u8]) -> NativeResult {
     }
 }
 
-/// `Promise.reject(x)`：按 `this`（构造器）建能力并直接拒绝。
+/// `Promise.reject(x)`：`this` 非 Object 抛 TypeError（与 resolve 同形镜像）；
+/// 否则按 `this`（构造器）建能力并直接拒绝。
 pub(super) fn promise_static_reject(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let ctor = vm.reg(if args.is_empty() { 0 } else { args[0] });
     let x = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
+    if !ctor.is_object() {
+        return NativeResult::Err(oxide_builtins::error::create_type_error(
+            vm,
+            "Promise.reject called on non-object this",
+        ));
+    }
     let (promise, _, reject) = match vm.new_promise_capability_with_ctor(ctor) {
         Ok(t) => t,
         Err(err) => return NativeResult::Err(err),

@@ -91,6 +91,10 @@ const DELEGATED_PROP: &str = "__oxide_delegated__";
 const ON_FINALLY_PROP: &str = "__oxide_on_finally__";
 /// finally 处理器上区分 reject 角色的属性名。
 const FINALLY_REJECT_PROP: &str = "__oxide_finally_reject__";
+/// finally 处理器上存派生构造器的属性名。
+const FINALLY_CTOR_PROP: &str = "__oxide_finally_ctor__";
+/// finally 直通 thunk 上存透传值/拒绝原因的属性名。
+const FINALLY_THUNK_VALUE_PROP: &str = "__oxide_finally_thunk_value__";
 /// 能力 executor 上捕获 resolve/reject 的属性名。
 const CAP_RESOLVE_PROP: &str = "__oxide_cap_resolve__";
 const CAP_REJECT_PROP: &str = "__oxide_cap_reject__";

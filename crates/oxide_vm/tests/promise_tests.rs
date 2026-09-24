@@ -280,6 +280,165 @@ fn await_subclass_promise_resumes_with_value() {
 }
 
 #[test]
+fn finally_subclass_count_resolve_side() {
+    // finally ES2020 语义：子类 resolved 面共 7 次构造
+    //（new + finally-then + 语料 then + 尾部 then + PromiseResolve 能力
+    // + thunk-then + 委托任务 then）。
+    let mut vm = Vm::new();
+    let (ok, val) = settled(
+        &mut vm,
+        "var count = 0; var P = class extends Promise { constructor(exec) { count++; super(exec); } }; \
+         P.resolve().finally(() => {}).then(() => count).then(c => c)",
+    );
+    assert!(ok);
+    assert_eq!(val.as_int(), 7, "resolved-side finally should create 7 subclass promises");
+}
+
+#[test]
+fn finally_subclass_count_reject_side() {
+    // 子类 rejected 面镜像：计数同为 7，拒绝原因透传。
+    let mut vm = Vm::new();
+    let (ok, val) = settled(
+        &mut vm,
+        "var count = 0; var P = class extends Promise { constructor(exec) { count++; super(exec); } }; \
+         P.reject('r').finally(() => {}).then(() => 'ok', e => 'caught:' + e + ':' + count).then(s => s)",
+    );
+    assert!(ok);
+    assert_eq!(vm.lookup_str(val).as_deref(), Some("caught:r:7"));
+}
+
+#[test]
+fn finally_resolved_observable_sequence() {
+    // resolved 面 then 可观测序列 [1,2,3,4,5]：finally 返回的 promise 被
+    // 下游捕获，拒绝原因经 th 链路透传。
+    let mut vm = Vm::new();
+    let (ok, val) = settled(
+        &mut vm,
+        "var seq = []; var yes = Promise.resolve(1); \
+         yes.then = function() { seq.push(1); return Promise.prototype.then.apply(this, arguments); }; \
+         var no = Promise.reject(2); \
+         no.then = function() { seq.push(4); return Promise.prototype.then.apply(this, arguments); }; \
+         yes.then(x => { seq.push(2); return x; }).finally(() => { seq.push(3); return no; }) \
+           .catch(e => { seq.push(5); return e; }) \
+           .then(e => seq.join(','))",
+    );
+    assert!(ok);
+    assert_eq!(vm.lookup_str(val).as_deref(), Some("1,2,3,4,5"));
+}
+
+#[test]
+fn finally_rejected_observable_sequence() {
+    // rejected 面镜像序列 [1,2,3,4,5]：重抛经 reject 角色 thunk 原值透传。
+    let mut vm = Vm::new();
+    let (ok, val) = settled(
+        &mut vm,
+        "var seq = []; var no = Promise.reject('r'); \
+         no.then = function() { seq.push(1); return Promise.prototype.then.apply(this, arguments); }; \
+         var yes = Promise.resolve(1); \
+         yes.then = function() { seq.push(4); return Promise.prototype.then.apply(this, arguments); }; \
+         no.catch(e => { seq.push(2); throw e; }).finally(() => { seq.push(3); return yes; }) \
+           .catch(e => { seq.push(5); return e; }) \
+           .then(v => seq.join(','))",
+    );
+    assert!(ok);
+    assert_eq!(vm.lookup_str(val).as_deref(), Some("1,2,3,4,5"));
+}
+
+#[test]
+fn finally_non_callable_on_finally_passed_through() {
+    // onFinally 不可调用时，双处理器取 onFinally 自身原值传给 then。
+    let mut vm = Vm::new();
+    let (ok, val) = settled(
+        &mut vm,
+        "var seen; var p = Promise.resolve(1); \
+         p.then = function(f, r) { seen = [f === 1, r === 1]; return Promise.prototype.then.call(this, f, r); }; \
+         p.finally(1).then(v => seen.join(','))",
+    );
+    assert!(ok);
+    assert_eq!(vm.lookup_str(val).as_deref(), Some("true,true"));
+}
+
+#[test]
+fn then_species_override_used_for_derivation() {
+    // constructor 上的 @@species 覆写优先于 constructor 本身：派生走
+    // SpeciesConstructor 构造器且恰调用一次。
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "var callCount = 0; \
+         var SpeciesCtor = class extends Promise { constructor(a) { super(a); callCount++; } }; \
+         var p1 = new Promise(function() {}); \
+         p1.constructor = function() {}; \
+         p1.constructor[Symbol.species] = SpeciesCtor; \
+         var d = p1.then(v => v); \
+         [d.constructor === SpeciesCtor, callCount].join(',')",
+    )
+    .unwrap();
+    assert_eq!(vm.lookup_str(result).as_deref(), Some("true,1"));
+}
+
+#[test]
+fn then_species_ctor_throw_preserves_original_value() {
+    // %Promise%[Symbol.species] 覆写为抛错构造器：then 透传原异常值。
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "var boom = new Error('boom'); \
+         var original = Object.getOwnPropertyDescriptor(Promise, Symbol.species); \
+         Object.defineProperty(Promise, Symbol.species, { value: function() { throw boom; } }); \
+         var thrown; \
+         try { new Promise(r => r(1)).then(); } catch (e) { thrown = e; } \
+         Object.defineProperty(Promise, Symbol.species, original); \
+         thrown === boom",
+    )
+    .unwrap();
+    assert!(result.as_bool(), "species getter throw should propagate the original value");
+}
+
+#[test]
+fn finally_species_returning_promise_keeps_intrinsic() {
+    // 子类 @@species getter 返回 %Promise%：finally 派生留在内建，不进子类。
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "var FooPromise = class extends Promise { static get [Symbol.species]() { return Promise; } }; \
+         var p = Promise.resolve().finally(() => FooPromise.resolve()); \
+         [p instanceof Promise, p instanceof FooPromise].join(',')",
+    )
+    .unwrap();
+    assert_eq!(vm.lookup_str(result).as_deref(), Some("true,false"));
+}
+
+#[test]
+fn static_resolve_non_object_this_throws() {
+    // this 非 Object 在 Type 守卫步抛 TypeError，先于同值快路径短路。
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "var promise = new Promise(function() {}); promise.constructor = undefined; \
+         var name = 'no-throw'; \
+         try { Promise.resolve.call(undefined, promise); } catch (e) { name = e.name; } \
+         name",
+    )
+    .unwrap();
+    assert_eq!(vm.lookup_str(result).as_deref(), Some("TypeError"));
+}
+
+#[test]
+fn static_reject_non_object_this_throws() {
+    // reject 镜像守卫：this 非 Object 抛 TypeError。
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "var name = 'no-throw'; \
+         try { Promise.reject.call(null, 1); } catch (e) { name = e.name; } \
+         name",
+    )
+    .unwrap();
+    assert_eq!(vm.lookup_str(result).as_deref(), Some("TypeError"));
+}
+
+#[test]
 fn async_gen_yield_subclass_promise_skips_species() {
     // 内部 await 能力不走 species：async generator yield 子类 promise 时，
     // yield 包装（await 展开）不得再经子类构造器派生。

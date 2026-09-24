@@ -157,6 +157,43 @@ impl Vm {
         self.job_queue.push_back(job);
     }
 
+    /// PromiseResolve(C, value)：value 为原生 Promise 且其 `constructor` 与 C
+    /// 同值时原样返回（快路径，不新建能力）；否则按 C 建能力并经能力 resolve
+    /// 结算（thenable 委托入队）。constructor getter / 能力构造 / resolve 抛错时
+    /// 透传原异常值。
+    ///
+    /// # 副作用
+    /// - 快路径无副作用；其余路径新建 Promise 并可能直接结算或入队 Thenable 微任务。
+    pub(super) fn promise_resolve_ctor(&mut self, ctor: JsValue, value: JsValue) -> Result<JsValue, JsValue> {
+        if self.is_promise_value(value) {
+            // SAFETY: is_promise_value 保证指针非空且 type_tag 为 Promise；此处只读 `constructor`，即时消费。
+            let obj = unsafe { &*value.as_js_object_ptr() };
+            let ctor_si = self.kernel_core.perm_interner().intern("constructor").0;
+            let v_ctor = match self.ordinary_get(obj, ctor_si, value) {
+                Ok(c) => c,
+                Err(e) => {
+                    let exc = self
+                        .last_uncaught_value
+                        .take()
+                        .unwrap_or_else(|| oxide_builtins::error::create_from_text(self, &e));
+                    return Err(exc);
+                }
+            };
+            if oxide_runtime_api::same_value(v_ctor, ctor) {
+                return Ok(value);
+            }
+        }
+        let (promise, resolve, _) = self.new_promise_capability_with_ctor(ctor)?;
+        if let Err(e) = self.call_function_sync(resolve, JsValue::undefined(), &[value]) {
+            let exc = self
+                .last_uncaught_value
+                .take()
+                .unwrap_or_else(|| oxide_builtins::error::create_from_text(self, &e));
+            return Err(exc);
+        }
+        Ok(promise)
+    }
+
     /// `PromiseResolve` 核心：`x === promise` 抛 TypeError；thenable 委托入队；
     /// 其余直接以 `x` 完成 promise。
     ///

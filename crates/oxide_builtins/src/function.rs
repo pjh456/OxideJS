@@ -2,7 +2,7 @@ use oxide_kernel::shape_forge::EMPTY_SHAPE_ID;
 use oxide_types::object::{JsObject, NativeFnPtr, PropAttributes};
 use oxide_types::value::JsValue;
 
-use oxide_runtime_api::{to_integer_or_infinity, to_units_full, NativeResult, VmHost};
+use oxide_runtime_api::{to_integer_or_infinity, to_length, to_units_full, NativeResult, VmHost};
 
 fn invoke_target<H: VmHost>(vm: &mut H, target_val: JsValue, this_val: JsValue, arg_regs: &[u8]) -> NativeResult {
     let args: Vec<JsValue> = arg_regs.iter().map(|&r| vm.reg(r)).collect();
@@ -167,8 +167,11 @@ pub fn function_call<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     invoke_target(vm, target_val, this_val, &arg_regs)
 }
 
-/// `Function.prototype.apply(thisArg, argsArray)`：以指定 this 和参数数组调用目标函数。
-/// 数组元素直接物化为实参切片经 TailCall 下发（帧参数区），不受寄存器窗口限制。
+/// `Function.prototype.apply(thisArg, argsArray)`：以指定 this 和参数对象调用
+/// 目标函数。argsArray 为 null/undefined → 无实参；对象（数组 / Arguments /
+/// 数组类对象）读 `length`（传播读，强转为长度）后逐下标传播读元素（空位取
+/// undefined）；元素物化为实参切片经 TailCall 下发（帧参数区），不受寄存器
+/// 窗口限制。length/元素 getter 抛错时透传原异常值。
 pub fn function_apply<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     if args.is_empty() {
         return NativeResult::Err(JsValue::undefined());
@@ -182,12 +185,19 @@ pub fn function_apply<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         if arr_val.is_object() {
             let arr_ptr = arr_val.as_js_object_ptr();
             if !arr_ptr.is_null() {
+                // SAFETY: is_object 与非空守卫保证存活对象；length/下标读取即时消费，不跨 GC/reset。
                 let arr = unsafe { &*arr_ptr };
-                if arr.is_array() {
-                    let n = arr.prop_count() as usize;
-                    call_args.reserve(n);
-                    for i in 0..n {
-                        call_args.push(arr.get_prop_at(i));
+                let length_si = vm.kernel_core().perm_interner().intern("length").0;
+                let count = match vm.ordinary_get(arr, length_si, arr_val) {
+                    Ok(v) => to_length(v).min(oxide_types::private_key::INT_KEY_COUNT as u64) as u32,
+                    Err(e) => return NativeResult::Err(to_string_error_value(vm, &e)),
+                };
+                call_args.reserve(count as usize);
+                for i in 0..count {
+                    let key_si = oxide_types::private_key::make_int_key(i);
+                    match vm.ordinary_get(arr, key_si, arr_val) {
+                        Ok(v) => call_args.push(v),
+                        Err(e) => return NativeResult::Err(to_string_error_value(vm, &e)),
                     }
                 }
             }
