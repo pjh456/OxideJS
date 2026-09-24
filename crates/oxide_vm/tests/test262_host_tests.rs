@@ -4,7 +4,9 @@
 use std::sync::Arc;
 
 use oxide_compiler::compiler::Compiler;
+use oxide_kernel::kernel::{KernelConfig, KernelCore};
 use oxide_parser::Allocator;
+use oxide_types::value::JsValue;
 use oxide_vm::vm::Vm;
 
 /// 单测辅助：源串 → 结果串（字符串值解包实际内容，运行错误以 `vm error: ...` 呈现）。
@@ -23,6 +25,14 @@ fn eval(source: &str) -> String {
         Ok(result) => vm.lookup_str(result).unwrap_or_else(|| format!("{result}")),
         Err(e) => format!("vm error: {e}"),
     }
+}
+
+/// 单测辅助：在调用方提供的 VM 上执行源串，返回原始结果值（低阈值配置钉用）。
+fn eval_on(vm: &mut Vm, source: &str) -> Result<JsValue, String> {
+    let allocator = Allocator::default();
+    let program = oxide_parser::parse(&allocator, source).map_err(|e| format!("parse error: {}", e[0].message))?;
+    let module = Compiler::new().compile(&program).map_err(|e| format!("compile error: {e}"))?;
+    vm.run(&Arc::new(module))
 }
 
 /// `$262` 作为编译期已知全局绑定：typeof 为 object，`global` 即 globalThis。
@@ -84,4 +94,26 @@ fn detach_array_buffer_detaches() {
 #[test]
 fn gc_runs_without_error() {
     assert_eq!(eval("$262.gc(); 'ok'"), "ok");
+}
+
+/// `$262.gc()` 存活钉（低阈值形态）：小阈值长循环反复触发执行期收集，
+/// 全局可达的 session 对象经强制收集后身份与属性读回保持完整——
+/// 收集前的 mark 必须覆盖全部可达对象，漏标即误回收、读回悬垂。
+#[test]
+fn gc_keeps_reachable_session_objects_alive() {
+    let mut config = KernelConfig::minimal();
+    config.set_session_gc_threshold(4096);
+    let mut vm = Vm::with_kernel_core(KernelCore::new(config));
+    let result = eval_on(
+        &mut vm,
+        "(function () { \
+          globalThis.o = { x: 41, s: 'keep' }; \
+          globalThis.o.x = 42; \
+          for (var i = 0; i < 500000; i++) { var t = 'str' + i; } \
+          $262.gc(); \
+          return globalThis.o.x + globalThis.o.s.length === 46 \
+             && $262.global.o === globalThis.o; })()",
+    )
+    .unwrap();
+    assert!(result.as_bool());
 }

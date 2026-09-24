@@ -121,6 +121,12 @@ impl Vm {
             // 返回顶层后检查恢复，存活值此时已回拷为执行根。账目未超水位时仅
             // 少量字段比较。
             if self.native_call_depth == 0 {
+                // 宿主 `$262.gc()` 置位的强制收集在此边界消费：移动式 sweep
+                // 唯一安全点（无在途 dispatch 局部值），与正常触发路径同一入口。
+                if self.gc_state.pending_forced_collect {
+                    self.gc_state.pending_forced_collect = false;
+                    self.collect_session_gc();
+                }
                 // 峰值高水位：同一边界采样 session 堆账目上界
                 let bytes = self.gc_state.session_bytes_allocated;
                 if bytes > self.gc_state.session_bytes_peak {

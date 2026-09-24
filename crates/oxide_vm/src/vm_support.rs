@@ -134,6 +134,7 @@ impl Vm {
                 gc_threshold_cached: gc_threshold,
                 gc_watermark: gc_threshold,
                 gc_gate_retry_alloc: 0,
+                pending_forced_collect: false,
                 forwarding: std::collections::HashMap::with_hasher(rustc_hash::FxBuildHasher),
             },
             symbols: SymbolState {
@@ -267,6 +268,7 @@ impl Vm {
                 gc_threshold_cached: gc_threshold,
                 gc_watermark: gc_threshold,
                 gc_gate_retry_alloc: 0,
+                pending_forced_collect: false,
                 forwarding: std::collections::HashMap::with_hasher(rustc_hash::FxBuildHasher),
             },
             symbols: SymbolState {

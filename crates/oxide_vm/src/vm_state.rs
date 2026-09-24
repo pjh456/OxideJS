@@ -58,6 +58,9 @@ pub(crate) struct GcState {
     /// 门控未过（挂起态持有 for-in）后的重扫锚：包络再增长一个阈值才重扫
     /// 三型状态盒（O(对象数) 扫描），避免持挂起 for-in 的 run 每指令边界重扫。
     pub(crate) gc_gate_retry_alloc: usize,
+    /// 宿主强制收集旗标（`$262.gc()`）：native 重入中置位，由下一个顶层
+    /// 指令边界（移动式 sweep 的唯一安全点）消费并执行完整收集。
+    pub(crate) pending_forced_collect: bool,
     pub(crate) forwarding: HashMap<*mut JsObject, *mut JsObject, FxBuildHasher>,
 }
 

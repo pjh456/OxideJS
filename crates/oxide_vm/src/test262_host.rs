@@ -69,14 +69,20 @@ pub fn create_realm(vm: &mut Vm, _args: &[u8]) -> NativeResult {
     not_supported(vm, "createRealm")
 }
 
-/// `$262.gc()`：请求一次 session 全量回收（不计返回值）。
+/// `$262.gc()`：请求一次 session 全量强制收集，返回 undefined。
+///
+/// 收集延迟到下一个顶层指令边界执行，不在 native 重入点就地跑：重入期间
+/// dispatch 调用链上的调用方寄存器窗口副本与 callee 引用是 Rust 局部值
+/// （非 GC 根），移动式 sweep 就地搬移会使它们悬垂，返回后恢复动作还会
+/// 把陈旧指针写回 `regs[254]`。顶层指令边界是无在途局部值的安全点，
+/// 收集经既有完整收集入口（与引擎正常触发路径同一函数）执行。
+/// 对 JS 可观察语义等价于同步：收集在下一条指令求值前完成。
 ///
 /// # 副作用
-/// - 执行 mark-sweep 搬移存活对象并释放不可达对象，会重写 session 对象指针。
+/// - 置强制收集旗标；下一个顶层指令边界执行 mark + 移动式 sweep +
+///   字符串/BigInt 清扫，重写 session 对象指针。
 pub fn gc(vm: &mut Vm, _args: &[u8]) -> NativeResult {
-    let mut session_gc = std::mem::take(&mut vm.gc_state.session_gc);
-    session_gc.sweep(vm);
-    vm.gc_state.session_gc = session_gc;
+    vm.gc_state.pending_forced_collect = true;
     NativeResult::Ok(JsValue::undefined())
 }
 
