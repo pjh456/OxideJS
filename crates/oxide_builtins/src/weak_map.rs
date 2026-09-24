@@ -4,9 +4,14 @@
 //! 值为强引用（值边进 mark 边扫描与晋升改写）。存储盒经 `Box::into_raw` 挂
 //! `JsObject.native_data`，GC 六站点（mark 边 / 移动式 sweep / 晋升克隆 /
 //! 原地晋升 / drop / 字节账目）经本模块五函数族接线，口径与 Map/Set 同形。
+//! 构造体（iterable 协议）与 set/get/has/delete 四方法的品牌三分枝守卫
+//! （set/delete 对非 WeakMap this 抛 TypeError，get/has 静默返 undefined/false）
+//! 也在本模块。
 
 use std::collections::HashMap;
 
+use oxide_kernel::shape_forge::EMPTY_SHAPE_ID;
+use oxide_runtime_api::{NativeResult, VmHost};
 use oxide_types::object::JsObject;
 use oxide_types::value::JsValue;
 
@@ -57,6 +62,11 @@ impl WeakMapInner {
 
     pub(crate) fn insert(&mut self, key: WeakKey, value: JsValue) {
         self.entries.insert(key, value);
+    }
+
+    /// 删除条目：命中返回 true，缺失静默（规范 delete 面返 false）。
+    pub(crate) fn remove(&mut self, key: &WeakKey) -> bool {
+        self.entries.remove(key).is_some()
     }
 
     pub(crate) fn iter(&self) -> impl Iterator<Item = (WeakKey, JsValue)> + '_ {
@@ -235,7 +245,7 @@ pub fn weak_map_entry_count(obj: &JsObject) -> usize {
 }
 
 /// 读给定弱键对应的值（测试探针）：非 WeakMap / 盒缺失 / 键缺失返回 undefined。
-pub fn weak_map_get(obj: &JsObject, key: JsValue) -> JsValue {
+pub fn weak_map_probe_get(obj: &JsObject, key: JsValue) -> JsValue {
     if !obj.is_weak_map_obj() {
         return JsValue::undefined();
     }
@@ -268,4 +278,233 @@ pub fn weak_map_insert(obj: &mut JsObject, key: JsValue, value: JsValue) {
     }
     // SAFETY: 单测在盒写入前对象独占，指针指向有效盒。
     unsafe { (*inner).insert(key, value) }
+}
+
+/// 读出 %WeakMap.prototype% 原型对象指针：经全局 `WeakMap` 构造器的
+/// `prototype` 槽现值读取（弱族不占 BuiltinWorld 槽，重绑原位更新全局槽，
+/// 经全局路径读恒为当前值）。
+fn weak_map_proto_ptr<H: VmHost>(vm: &mut H) -> Result<*const JsObject, JsValue> {
+    let global_ptr = vm.session().global_object().as_ptr();
+    // SAFETY: 全局对象为 session 级根，本调用内有效。
+    let global = unsafe { &*global_ptr };
+    let global_val = JsValue::from_js_object(global_ptr as *mut JsObject);
+    let si_weakmap = vm.kernel_core().perm_interner().intern("WeakMap").0;
+    let ctor_val = vm
+        .ordinary_get(global, si_weakmap, global_val)
+        .map_err(|e| crate::iterator::engine_error(vm, &e))?;
+    let ctor_ptr = ctor_val.as_js_object_ptr();
+    if ctor_ptr.is_null() {
+        return Err(crate::error::create_type_error(vm, "WeakMap constructor unavailable"));
+    }
+    let si_prototype = vm.kernel_core().perm_interner().intern("prototype").0;
+    let proto_val = vm
+        .ordinary_get(unsafe { &*ctor_ptr }, si_prototype, ctor_val)
+        .map_err(|e| crate::iterator::engine_error(vm, &e))?;
+    let proto_ptr = proto_val.as_js_object_ptr();
+    if proto_ptr.is_null() {
+        return Err(crate::error::create_type_error(vm, "WeakMap prototype unavailable"));
+    }
+    Ok(proto_ptr as *const JsObject)
+}
+
+/// NewTarget 判定：`this` 的原型链（深度上限 16）命中 %WeakMap.prototype%——
+/// `new WeakMap()` 直接命中，子类 `super()` 经子类 prototype 链命中；普通
+/// 调用（global/undefined）不命中。
+fn is_new_target_this(this_val: JsValue, proto_ptr: *const JsObject) -> bool {
+    if !this_val.is_object() {
+        return false;
+    }
+    let this_ptr = this_val.as_js_object_ptr();
+    if this_ptr.is_null() {
+        return false;
+    }
+    // SAFETY: this 为执行核心产出的对象值，指针在本调用内有效。
+    let mut proto = unsafe { &*this_ptr }.proto();
+    for _ in 0..16 {
+        if !proto.is_object() {
+            return false;
+        }
+        let proto_obj_ptr = proto.as_js_object_ptr();
+        if proto_obj_ptr.is_null() {
+            return false;
+        }
+        if std::ptr::eq(proto_obj_ptr, proto_ptr) {
+            return true;
+        }
+        // SAFETY: 原型链为执行核心产出的有效对象链。
+        proto = unsafe { &*proto_obj_ptr }.proto();
+    }
+    false
+}
+
+/// `WeakMap` 构造器：NewTarget 校验（`this` 原型链命中 %WeakMap.prototype%）
+/// 后建带空条目表的对象；提供可迭代实参时逐元素取 `[0]`/`[1]` 作键值，
+/// 经原型链读出的 `set` 方法逐项调用（set 抛面即品牌三分枝抛面）。
+///
+/// # 步骤
+/// 1. 经全局构造器 `prototype` 槽读 %WeakMap.prototype%。
+/// 2. 校验 NewTarget：`this` 原型链须命中该原型（普通调用 `WeakMap()` 抛
+///    TypeError）。
+/// 3. 创建空 WeakMap（proto = %WeakMap.prototype%，带空条目盒）。
+/// 4. 取 adder = Get(map, "set")，要求可调用（否则 TypeError）；对可迭代实参
+///    逐元素：元素须为对象（否则 TypeError），读 `0`/`1` 后调用 adder。
+///
+/// # 边界与前提
+/// - 无实参或实参为 null/undefined 时返回空 WeakMap，不触碰 adder。
+/// - 空可迭代不调用 adder（原型 set 覆写探针口径）。
+/// - 任一环节抛错先 IteratorClose 再透传原异常。
+pub fn weak_map_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let proto_ptr = match weak_map_proto_ptr(vm) {
+        Ok(ptr) => ptr,
+        Err(exc) => return NativeResult::Err(exc),
+    };
+
+    let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
+    if !is_new_target_this(this_val, proto_ptr) {
+        return NativeResult::Err(crate::error::create_type_error(vm, "WeakMap constructor requires 'new'"));
+    }
+
+    let mut obj = JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(proto_ptr as *mut JsObject));
+    obj.type_tag = JsObject::OBJ_TYPE_WEAK_MAP;
+    obj.set_native_data(Box::into_raw(Box::new(WeakMapInner::new())) as *mut u8);
+    let map_obj = vm.alloc_object(obj);
+    let map_val = JsValue::from_js_object(map_obj);
+
+    if args.len() > 1 {
+        let iterable = vm.reg(args[1]);
+        if !iterable.is_undefined() && !iterable.is_null() {
+            let map_ref = unsafe { &*map_obj };
+            let set_si = vm.kernel_core().perm_interner().intern("set").0;
+            let adder = match vm.ordinary_get(map_ref, set_si, map_val) {
+                Ok(v) => v,
+                Err(err) => return NativeResult::Err(crate::iterator::engine_error(vm, &err)),
+            };
+            if !crate::iterator::is_callable(adder) {
+                return NativeResult::Err(crate::error::create_type_error(vm, "WeakMap.set is not callable"));
+            }
+            // entry 读取键按 ToPropertyKey 规范化：数组 entry 的元素区与对象
+            // entry 的 shape 链都走整数键，`[k,v]` 与 `{0:k,1:v}` 两形态都命中。
+            let key_si = vm.property_key_si(JsValue::int(0));
+            let value_si = vm.property_key_si(JsValue::int(1));
+            if let Err(err) = crate::iterator::iterate_elements(vm, iterable, |vm, item| {
+                if !item.is_object() {
+                    return Err(crate::error::create_type_error(vm, "iterator value is not an entry object"));
+                }
+                let item_obj = unsafe { &*item.as_js_object_ptr() };
+                let k = match vm.ordinary_get(item_obj, key_si, item) {
+                    Ok(v) => v,
+                    Err(err) => return Err(crate::iterator::engine_error(vm, &err)),
+                };
+                let v = match vm.ordinary_get(item_obj, value_si, item) {
+                    Ok(v) => v,
+                    Err(err) => return Err(crate::iterator::engine_error(vm, &err)),
+                };
+                match vm.call_function_sync(adder, map_val, &[k, v]) {
+                    Ok(_) => Ok(()),
+                    Err(err) => Err(crate::iterator::engine_error(vm, &err)),
+                }
+            }) {
+                return NativeResult::Err(err);
+            }
+        }
+    }
+
+    NativeResult::Ok(map_val)
+}
+
+/// 品牌守卫只读核：receiver 为带条目盒的 WeakMap 时返回盒指针，其余形态
+/// （非对象 / 无 [[WeakMapData]] 内部槽 / 盒缺失）返回 `None`，四方法一律
+/// 按 `RequireInternalSlot` 抛 TypeError（仅键类型检查存在抛静差异）。
+fn weak_map_brand_inner(this_val: JsValue) -> Option<*mut WeakMapInner> {
+    if !this_val.is_object() {
+        return None;
+    }
+    let ptr = this_val.as_js_object_ptr();
+    if ptr.is_null() {
+        return None;
+    }
+    // SAFETY: receiver 为调用方传入的值，native 执行期间有效。
+    let obj = unsafe { &*ptr };
+    if !obj.is_weak_map_obj() {
+        return None;
+    }
+    let inner = obj.native_data() as *mut WeakMapInner;
+    if inner.is_null() {
+        return None;
+    }
+    Some(inner)
+}
+
+/// `WeakMap.prototype.set(key, value)`：键不可弱持（非对象非 symbol、HTML
+/// DDA）抛 TypeError，receiver 非 WeakMap 抛 TypeError；成功后返回 this。
+pub fn weak_map_set<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
+    let Some(inner) = weak_map_brand_inner(this_val) else {
+        return NativeResult::Err(crate::error::create_type_error(
+            vm,
+            "WeakMap.prototype.set called on non-WeakMap object",
+        ));
+    };
+    let key = vm.reg(if args.len() > 1 { args[1] } else { 0 });
+    let value = vm.reg(if args.len() > 2 { args[2] } else { 0 });
+    let Some(key) = weak_key_of(key) else {
+        return NativeResult::Err(crate::error::create_type_error(vm, "WeakMap key must be an object"));
+    };
+    // SAFETY: 盒指针由构造路径写入，本调用内独占。
+    unsafe { (*inner).insert(key, value) };
+    NativeResult::Ok(this_val)
+}
+
+/// `WeakMap.prototype.get(key)`：receiver 非 WeakMap（非对象 / 无内部槽）抛
+/// TypeError；键不可弱持静默返 undefined；命中返存储值，未命中返 undefined。
+pub fn weak_map_get<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
+    let Some(inner) = weak_map_brand_inner(this_val) else {
+        return NativeResult::Err(crate::error::create_type_error(
+            vm,
+            "WeakMap.prototype.get called on non-WeakMap object",
+        ));
+    };
+    let key = vm.reg(if args.len() > 1 { args[1] } else { 0 });
+    let Some(key) = weak_key_of(key) else {
+        return NativeResult::Ok(JsValue::undefined());
+    };
+    // SAFETY: 盒指针由构造路径写入，本调用内独占。
+    unsafe { NativeResult::Ok((*inner).get(&key).unwrap_or(JsValue::undefined())) }
+}
+
+/// `WeakMap.prototype.has(key)`：receiver 非 WeakMap（非对象 / 无内部槽）抛
+/// TypeError；键不可弱持静默返 false；命中返 true。
+pub fn weak_map_has<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
+    let Some(inner) = weak_map_brand_inner(this_val) else {
+        return NativeResult::Err(crate::error::create_type_error(
+            vm,
+            "WeakMap.prototype.has called on non-WeakMap object",
+        ));
+    };
+    let key = vm.reg(if args.len() > 1 { args[1] } else { 0 });
+    let Some(key) = weak_key_of(key) else {
+        return NativeResult::Ok(JsValue::bool(false));
+    };
+    // SAFETY: 盒指针由构造路径写入，本调用内独占。
+    unsafe { NativeResult::Ok(JsValue::bool((*inner).get(&key).is_some())) }
+}
+
+/// `WeakMap.prototype.delete(key)`：receiver 非 WeakMap 抛 TypeError；键不可
+/// 弱持静默返 false；命中删除返 true。
+pub fn weak_map_delete<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
+    let Some(inner) = weak_map_brand_inner(this_val) else {
+        return NativeResult::Err(crate::error::create_type_error(
+            vm,
+            "WeakMap.prototype.delete called on non-WeakMap object",
+        ));
+    };
+    let key = vm.reg(if args.len() > 1 { args[1] } else { 0 });
+    let Some(key) = weak_key_of(key) else {
+        return NativeResult::Ok(JsValue::bool(false));
+    };
+    // SAFETY: 盒指针由构造路径写入，本调用内独占。
+    unsafe { NativeResult::Ok(JsValue::bool((*inner).remove(&key))) }
 }

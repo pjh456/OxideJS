@@ -9,10 +9,6 @@ fn stub_error<H: VmHost>(vm: &mut H, name: &str) -> NativeResult {
 pub fn proxy_stub<H: VmHost>(vm: &mut H, _args: &[u8]) -> NativeResult {
     stub_error(vm, "Proxy")
 }
-/// `WeakMap` 全局占位：始终抛 TypeError。WeakMap 按设计延后实现。
-pub fn weakmap_stub<H: VmHost>(vm: &mut H, _args: &[u8]) -> NativeResult {
-    stub_error(vm, "WeakMap")
-}
 /// `WeakSet` 全局占位：始终抛 TypeError。WeakSet 按设计延后实现。
 pub fn weakset_stub<H: VmHost>(vm: &mut H, _args: &[u8]) -> NativeResult {
     stub_error(vm, "WeakSet")

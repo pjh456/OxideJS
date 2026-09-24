@@ -11,18 +11,12 @@ use crate::bindings::{bind_global_value, configure_native_constructor};
 /// 未实现内置的 stub 表：（全局名、native 函数项指针、形参个数、
 /// 原型 @@toStringTag、是否安装原型对象）。
 ///
-/// `tag` 为 `None` 的条目（Proxy）原型对象不设 @@toStringTag；四弱族各取族名。
+/// `tag` 为 `None` 的条目（Proxy）原型对象不设 @@toStringTag；弱族 stub
+/// （WeakSet/WeakRef/FinalizationRegistry）各取族名。
 /// 规范 25.1 的 %Proxy% 无 prototype 属性（`has_prototype` = false），
-/// 四弱族各装带 constructor 回指的原型对象。
-const STUBS: [(&str, *const (), u8, Option<&str>, bool); 5] = [
+/// 弱族 stub 各装带 constructor 回指的原型对象。
+const STUBS: [(&str, *const (), u8, Option<&str>, bool); 4] = [
     ("Proxy", oxide_builtins::stubs::proxy_stub::<crate::vm::Vm> as *const (), 2, None, false),
-    (
-        "WeakMap",
-        oxide_builtins::stubs::weakmap_stub::<crate::vm::Vm> as *const (),
-        0,
-        Some("WeakMap"),
-        true,
-    ),
     (
         "WeakSet",
         oxide_builtins::stubs::weakset_stub::<crate::vm::Vm> as *const (),
@@ -56,11 +50,12 @@ fn set_data_property(core: &Arc<KernelCore>, obj: &mut JsObject, si: u32, value:
     obj.bump_generation();
 }
 
-/// 把未实现内置（Proxy/WeakMap/WeakSet/WeakRef/FinalizationRegistry）的 stub 构造器
-/// 绑定到 global，并登记到 `stub_objects` 供快照跟踪。
+/// 把未实现内置（Proxy/WeakSet/WeakRef/FinalizationRegistry）的 stub 构造器
+/// 绑定到 global，并登记到 `stub_objects` 供快照跟踪。WeakMap 已落地真构造器，
+/// 走 `bind_weak` 绑定面，不在此表。
 ///
 /// # 副作用
-/// 每个 stub 按规范补装构造器面属性：`length`、`name`（五族全装）；四弱族
+/// 每个 stub 按规范补装构造器面属性：`length`、`name`（四族全装）；弱族 stub
 /// 另装 `prototype`（新建 plain 对象，原型链落 Object.prototype，其上带指回
 /// stub 的 `constructor` 与 @@toStringTag）——规范 25.1 的 %Proxy% 无
 /// prototype 属性，不装；描述符均不可枚举，`prototype` 另不可写、不可配置。
@@ -81,7 +76,7 @@ pub fn bind_stubs(core: &Arc<KernelCore>, session: &mut KernelSession, global: &
         let stub = P::new(stub);
         let stub_ptr = stub.as_ptr() as *mut JsObject;
 
-        // 构造器面属性：length / name 五族全装；prototype 仅四弱族（%Proxy% 无）。
+        // 构造器面属性：length / name 四族全装；prototype 仅弱族 stub（%Proxy% 无）。
         // SAFETY: stub 尚未发布到 global，局部 Arc 为唯一持有者，可变访问无读者冲突。
         let stub_obj = unsafe { &mut *stub_ptr };
         if has_prototype {

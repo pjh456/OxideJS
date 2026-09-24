@@ -76,41 +76,45 @@ fn weak_family_proto_to_string_tag() {
     assert!(result.as_bool());
 }
 
-/// 原型成员读不抛钉：缺失方法读返 undefined（非对象 receiver 抛错形态消除）；
-/// %Proxy% 无 prototype 属性，钉其缺失。
+/// 原型成员读不抛钉：WeakMap 四方法已装为函数；其余弱族 stub 缺失方法
+/// 读返 undefined（非对象 receiver 抛错形态消除）；%Proxy% 无 prototype
+/// 属性，钉其缺失。
 #[test]
 fn stub_proto_member_read_returns_undefined() {
     let mut vm = Vm::new();
     let result = eval(
         &mut vm,
         "(function () { \
-          return typeof WeakMap.prototype.get === 'undefined' \
-             && typeof WeakSet.prototype.add === 'undefined' \
-             && typeof WeakRef.prototype.deref === 'undefined' \
-             && typeof FinalizationRegistry.prototype.register === 'undefined' \
-             && Proxy.prototype === undefined; })()",
+           return typeof WeakMap.prototype.get === 'function' \
+              && typeof WeakMap.prototype.set === 'function' \
+              && typeof WeakMap.prototype.has === 'function' \
+              && typeof WeakMap.prototype.delete === 'function' \
+              && typeof WeakSet.prototype.add === 'undefined' \
+              && typeof WeakRef.prototype.deref === 'undefined' \
+              && typeof FinalizationRegistry.prototype.register === 'undefined' \
+              && Proxy.prototype === undefined; })()",
     )
     .unwrap();
     assert!(result.as_bool());
 }
 
-/// 构造体不回归钉：五 stub 构造调用仍抛 TypeError（消息含 "… is not implemented"）。
+/// 构造体不回归钉：四 stub 构造调用仍抛 TypeError（消息含 "… is not
+/// implemented"）；WeakMap 已落地真构造器，不在此列。
 #[test]
 fn stub_ctor_call_still_throws_not_implemented() {
     let mut vm = Vm::new();
     let result = eval(
         &mut vm,
         "(function () { \
-         function probe(ctor, args, name) { \
-            try { Reflect.construct(ctor, args, ctor); } \
-            catch (e) { return e instanceof TypeError && e.message.indexOf(name + ' is not implemented') === 0; } \
-            return false; \
-         } \
-         return probe(WeakMap, [], 'WeakMap') \
-            && probe(WeakSet, [], 'WeakSet') \
-            && probe(WeakRef, [{}], 'WeakRef') \
-            && probe(FinalizationRegistry, [function () {}], 'FinalizationRegistry') \
-            && probe(Proxy, [ {}, {} ], 'Proxy'); })()",
+           function probe(ctor, args, name) { \
+              try { Reflect.construct(ctor, args, ctor); } \
+              catch (e) { return e instanceof TypeError && e.message.indexOf(name + ' is not implemented') === 0; } \
+              return false; \
+           } \
+           return probe(WeakSet, [], 'WeakSet') \
+              && probe(WeakRef, [{}], 'WeakRef') \
+              && probe(FinalizationRegistry, [function () {}], 'FinalizationRegistry') \
+              && probe(Proxy, [ {}, {} ], 'Proxy'); })()",
     )
     .unwrap();
     assert!(result.as_bool());

@@ -58,6 +58,8 @@ pub mod bind_symbol;
 pub mod bind_temporal;
 /// 各 TypedArray 构造器与共享原型的 native 方法绑定。
 pub mod bind_typed_array;
+/// WeakMap 构造器与原型四方法的 native 绑定（弱族不占 BuiltinWorld 槽）。
+pub mod bind_weak;
 
 use std::sync::Arc;
 
@@ -880,9 +882,10 @@ fn bind_iterator_global(core: &Arc<KernelCore>, session: &KernelSession, global:
 }
 
 fn bind_stub_globals(core: &Arc<KernelCore>, session: &KernelSession, global: &mut JsObject) {
+    // 索引 4 = WeakMap 真构造器（bind_weak 留存 stub_objects 末位），global
+    // 重建时原位重绑；四 stub 族索引 0-3 紧随其后。
     for (index, (name, native_fn, arg_count)) in [
         ("Proxy", oxide_builtins::stubs::proxy_stub::<crate::vm::Vm> as *const (), 2),
-        ("WeakMap", oxide_builtins::stubs::weakmap_stub::<crate::vm::Vm> as *const (), 0),
         ("WeakSet", oxide_builtins::stubs::weakset_stub::<crate::vm::Vm> as *const (), 0),
         ("WeakRef", oxide_builtins::stubs::weakref_stub::<crate::vm::Vm> as *const (), 1),
         (
@@ -890,6 +893,7 @@ fn bind_stub_globals(core: &Arc<KernelCore>, session: &KernelSession, global: &m
             oxide_builtins::stubs::finalization_registry_stub::<crate::vm::Vm> as *const (),
             1,
         ),
+        ("WeakMap", oxide_builtins::weak_map::weak_map_constructor::<crate::vm::Vm> as *const (), 0),
     ]
     .into_iter()
     .enumerate()
@@ -1223,6 +1227,9 @@ pub fn rebind_dirty_builtins(core: &Arc<KernelCore>, session: &mut KernelSession
     }
     if dirty.map_or(true, |d| d.stubs) {
         bind_stubs::bind_stubs(core, session, global);
+        // WeakMap 真构造器面与 stub 族同脏位：原型对象经 leaked 登记表迁移，
+        // 重绑时全局槽原位更新，不占 BuiltinWorld 槽。
+        bind_weak::bind_weak_map(core, session, global);
     }
     if dirty.map_or(true, |d| d.stubs) {
         bind_bigint::bind_bigint(core, session, global);

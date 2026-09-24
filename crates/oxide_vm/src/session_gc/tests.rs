@@ -544,7 +544,8 @@ fn weak_map_entry_survives_promotion_with_live_key() {
     vm.regs[0] = JsValue::from_js_object(wm_session);
     vm.regs[1] = JsValue::from_js_object(key);
     // 值的强根取晋升克隆（表内读回）：原件随 epoch 出局。
-    let value_root = oxide_builtins::weak_map::weak_map_get(unsafe { &*wm_session }, JsValue::from_js_object(key));
+    let value_root =
+        oxide_builtins::weak_map::weak_map_probe_get(unsafe { &*wm_session }, JsValue::from_js_object(key));
     vm.regs[2] = value_root;
     let mut gc = std::mem::take(&mut vm.gc_state.session_gc);
     gc.collect(&mut vm);
@@ -552,7 +553,7 @@ fn weak_map_entry_survives_promotion_with_live_key() {
 
     let live_wm = unsafe { &*vm.regs[0].as_js_object_ptr() };
     assert_eq!(oxide_builtins::weak_map::weak_map_entry_count(live_wm), 1, "强可达键的条目须在收集后存活");
-    let stored = oxide_builtins::weak_map::weak_map_get(live_wm, JsValue::from_js_object(key));
+    let stored = oxide_builtins::weak_map::weak_map_probe_get(live_wm, JsValue::from_js_object(key));
     assert_eq!(stored, vm.regs[2], "值须按原键读回同一克隆体");
     assert!(!std::ptr::eq(stored.as_js_object_ptr(), value), "值边须改写到晋升克隆");
 }
@@ -616,7 +617,7 @@ fn weak_map_value_edge_keeps_value_alive() {
     vm.gc_state.session_gc = gc;
 
     let live_wm = unsafe { &*vm.regs[0].as_js_object_ptr() };
-    let stored = oxide_builtins::weak_map::weak_map_get(live_wm, JsValue::from_js_object(key));
+    let stored = oxide_builtins::weak_map::weak_map_probe_get(live_wm, JsValue::from_js_object(key));
     assert!(stored.is_object(), "唯一经值边引用的值须存活");
     assert!(!std::ptr::eq(stored.as_js_object_ptr(), value_session), "值边须在搬移后改写到新址");
     assert!(vm.is_session_ptr(stored.as_js_object_ptr()));
