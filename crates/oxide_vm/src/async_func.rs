@@ -399,28 +399,42 @@ pub(crate) fn init_async_intrinsics(vm: &mut Vm) {
     let sh = vm.kernel_core.shape_forge().as_ref();
     let fn_proto_val = vm.session.builtin_world().fn_proto_val();
 
-    // %AsyncFunction% 占位构造器：proto = Function.prototype，调用抛错（动态
-    // 创建未实现）。选择性重建复用：前轮占位构造器按键迁移（prototype 槽在
-    // 下方 P 槽换入后重指新原型），不再每轮新建对象。
+    // %AsyncFunction% 构造器：proto = Function.prototype，动态编译异步函数。
+    // 选择性重建复用：前轮构造器按键迁移（prototype 槽在下方 P 槽换入后重指
+    // 新原型），不再每轮新建对象。
     let af_ctor_label = sf.intern("AsyncFunctionCtor").0;
     let af_reuse_key = oxide_kernel::builtin::FnWrapperKey::new(0, af_ctor_label, 0, 0);
-    // SAFETY: async_function_stub 是 NativeFn 函数项。
-    let af_stub_ptr = unsafe { NativeFnPtr::from_raw(async_function_stub as *const ()) };
-    let (af_ctor_ptr, af_ctor_is_new) = match vm.session.builtin_world().find_fn_wrapper(af_reuse_key, af_stub_ptr, 1) {
+    // SAFETY: async_function_constructor 是 NativeFn 函数项。
+    let af_ctor_fn_ptr = unsafe {
+        NativeFnPtr::from_raw(oxide_builtins::function::async_function_constructor::<Vm> as *const ())
+    };
+    let (af_ctor_ptr, af_ctor_is_new) = match vm.session.builtin_world().find_fn_wrapper(af_reuse_key, af_ctor_fn_ptr, 1) {
         Some(ptr) => (ptr, false),
         None => {
-            let mut af_ctor = Box::new(JsObject::new_empty(EMPTY_SHAPE_ID, fn_proto_val));
+            // [[Prototype]] = Function 构造器本体（与 Function 构造器同链，
+            // `Object.getPrototypeOf(AsyncFunction) === Function` 语义）。
+            let fn_ctor_val =
+                JsValue::from_js_object(vm.session.builtin_world().function_constructor.as_ptr() as *mut JsObject);
+            let mut af_ctor = Box::new(JsObject::new_empty(EMPTY_SHAPE_ID, fn_ctor_val));
             af_ctor.set_function(true);
             af_ctor.set_native_arg_count(1);
-            af_ctor.set_native_fn(Some(af_stub_ptr));
+            af_ctor.set_native_fn(Some(af_ctor_fn_ptr));
+            // 构造器 tag：IsConstructor 判定与 new 表达式派发据此放行。
+            af_ctor.type_tag = JsObject::OBJ_TYPE_CONSTRUCTOR;
+            // 自身属性序：length、name、prototype、@@toStringTag（CreateBuiltinFunction 序）。
+            let length_si = sf.intern("length").0;
+            let length_shape = sh.make_shape(EMPTY_SHAPE_ID, length_si);
+            af_ctor.set_shape_id(length_shape);
             let name_si = sf.intern("name").0;
-            let ctor_shape = sh.make_shape(af_ctor.shape_id(), name_si);
-            af_ctor.set_shape_id(ctor_shape);
-            let npos = af_ctor.push_prop(JsValue::perm_string(sf.string_ptr(sf.intern("AsyncFunction").0)));
-            af_ctor.set_data_meta(npos, PropAttributes::new(false, false, true));
+            let name_shape = sh.make_shape(af_ctor.shape_id(), name_si);
+            af_ctor.set_shape_id(name_shape);
             let proto_si = sf.intern("prototype").0;
-            let ctor_shape2 = sh.make_shape(af_ctor.shape_id(), proto_si);
-            af_ctor.set_shape_id(ctor_shape2);
+            let proto_shape = sh.make_shape(af_ctor.shape_id(), proto_si);
+            af_ctor.set_shape_id(proto_shape);
+            let tag_key =
+                oxide_types::private_key::make_well_known_symbol_key(oxide_types::private_key::WELL_KNOWN_SYMBOL_TO_STRING_TAG);
+            let tag_shape = sh.make_shape(af_ctor.shape_id(), tag_key);
+            af_ctor.set_shape_id(tag_shape);
             let af_ctor_ptr = Box::into_raw(af_ctor);
             // 登记进 world 释放表（带复用键）：session 收尾统一释放构造器本体与属性区。
             vm.session.builtin_world().track_fn_wrapper(af_ctor_ptr, af_reuse_key);
@@ -445,26 +459,33 @@ pub(crate) fn init_async_intrinsics(vm: &mut Vm) {
     af_proto.set_data_meta(tag_pos, PropAttributes::new(false, false, true));
 
     // proto 本体只存在于 P 槽（Arc 副本，原 Box 随函数结束释放）：装入 P 槽后再把
-    // 构造器 prototype 属性指向 P 槽实例，使其与动态异步函数使用的 [[Prototype]]
-    // 同一对象，保证 `AsyncFunction.prototype === (async () => {}).__proto__`。
+    // 构造器 length/name/prototype/@@toStringTag 属性（按形状序）指向 P 槽实例，
+    // 使其与动态异步函数使用的 [[Prototype]] 同一对象，保证
+    // `AsyncFunction.prototype === (async () => {}).__proto__`。
     // 复用构造器 prototype 槽原位改指新 P 原型（旧原型已随 P 换出释放）。
     Vm::swap_intrinsic_proto(&mut vm.async_function_proto, *af_proto);
     // SAFETY: af_ctor_ptr 为 Box 原分配（已登记释放表、生命周期覆盖 session），本 Vm 独占。
     unsafe {
         let ctor_mut = &mut *af_ctor_ptr;
         let proto_val = JsValue::from_js_object(vm.async_function_proto.as_ptr() as *mut JsObject);
+        let name_val = JsValue::perm_string(sf.string_ptr(sf.intern("AsyncFunction").0));
         if af_ctor_is_new {
+            let lpos = ctor_mut.push_prop(JsValue::int(1));
+            ctor_mut.set_data_meta(lpos, PropAttributes::new(false, false, true));
+            let npos = ctor_mut.push_prop(name_val);
+            ctor_mut.set_data_meta(npos, PropAttributes::new(false, false, true));
             let ppos = ctor_mut.push_prop(proto_val);
             ctor_mut.set_data_meta(ppos, PropAttributes::new(false, false, false));
+            let tag_val = JsValue::perm_string(sf.string_ptr(sf.intern("Function").0));
+            let tpos = ctor_mut.push_prop(tag_val);
+            ctor_mut.set_data_meta(tpos, PropAttributes::new(false, false, true));
         } else if let Some(pos) = sh.lookup_position(ctor_mut.shape_id(), sf.intern("prototype").0) {
             ctor_mut.set_prop_at(pos, proto_val);
         }
     }
-}
 
-/// `%AsyncFunction%` 占位：动态异步函数创建未实现，调用抛错。
-fn async_function_stub(vm: &mut Vm, _args: &[u8]) -> NativeResult {
-    NativeResult::Err(oxide_builtins::error::create_type_error(vm, "AsyncFunction constructor is not supported"))
+    // 绑定 global：按规范 AsyncFunction 不是全局绑定（is-not-a-global 语义），
+    // 仅经 `async function` 实例的 constructor 链可达。
 }
 
 // ── session GC 支撑：状态快照中的 JsValues 作为异步上下文对象边追踪 ──

@@ -781,8 +781,9 @@ impl Vm {
             + crate::session_gc::SessionGc::object_heap_data_bytes(unsafe { &*obj_ptr }) as usize;
         let func_val = JsValue::object(obj_ptr as *mut u8);
 
-        if !is_arrow {
+        if !is_arrow && !(is_async && !is_generator) {
             // 原型对象自身的 [[Prototype]]：生成器为 %GeneratorPrototype%，普通函数为 Object.prototype。
+            // 纯异步函数（非生成器）无 `prototype` 属性：规范不为其建 prototype 子对象。
             let proto_of_proto = if is_async_generator {
                 JsValue::from_js_object(self.async_generator_proto.as_ptr() as *mut JsObject)
             } else if is_generator {

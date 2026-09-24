@@ -224,6 +224,9 @@ pub trait VmHost {
     /// 函数对象是否为严格模式函数（经子模块 `is_strict` 判定）；native 函数
     /// （无子模块）视为严格。供 caller/arguments 受限访问器按严格性分流抛错。
     fn function_is_strict(&self, obj: &JsObject) -> bool;
+    /// caller/arguments 访问是否受限：严格函数对象，或生成器 / 异步 /
+    /// 异步生成器函数对象（[[Prototype]] 为三个动态函数原型之一）。
+    fn function_is_restricted(&self, obj: &JsObject) -> bool;
     fn promote_if_needed_for_write_ptr(&mut self, target_ptr: *mut JsObject, value: JsValue) -> JsValue;
     fn step_rng(&mut self);
     fn math_rng_value(&self) -> f64;
@@ -234,9 +237,15 @@ pub trait VmHost {
     /// - 仅在同一 VM 世代的字节码帧执行期读取：native 调用不压 `cell_stack`，故
     ///   builtin 内读到的是调用方模块帧；`cell_idx` 越界或槽为空返回 `None`。
     fn module_frame_cell(&self, cell_idx: u32) -> Option<*mut Cell>;
-    /// 动态编译一个函数体（`Function` 构造器用）：把参数列表与函数体编译为可调用
-    /// 函数对象。编译或解析失败返回 `Err`，由调用方转为 `SyntaxError`。
-    fn create_dynamic_function(&mut self, params: &[String], body: &str) -> Result<JsValue, String>;
+    /// 动态编译一个函数体（`Function` / `GeneratorFunction` / `AsyncFunction` /
+    /// `AsyncGeneratorFunction` 构造器用）：把参数列表与函数体编译为可调用
+    /// 函数对象。`is_generator` / `is_async` 决定 wrap 源码的函数形态
+    /// （`function` / `function*` / `async function` / `async function*`），
+    /// 函数对象原型与 `prototype` 属性面按编译标志自动分流。
+    /// 编译或解析失败返回 `Err`，由调用方转为 `SyntaxError`。
+    fn create_dynamic_function(
+        &mut self, params: &[String], body: &str, is_generator: bool, is_async: bool,
+    ) -> Result<JsValue, String>;
     /// 动态编译脚本（`eval` 字符串模式）：按脚本模式编译，var/函数声明落全局对象。
     /// 编译或解析失败返回 `Err`，由调用方转为 `SyntaxError`。
     fn create_dynamic_script(&mut self, code: &str) -> Result<JsValue, String>;

@@ -19,7 +19,9 @@ impl Vm {
     /// 原样透传。
     ///
     /// # 步骤
-    /// 1. wrap 源码 `function anonymous(p...) { body }`，parse + compile。
+    /// 1. wrap 源码 `{prefix} anonymous(p...) { body }`（prefix 按生成器 /
+    ///    异步标志取 `function` / `function*` / `async function` /
+    ///    `async function*`），parse + compile。
     /// 2. 取 `sub_modules[0]`（匿名函数模块），把其子树 flat_id 重编号到平表末尾
     ///    并重写子树内每条 `CREATE_CLOSURE` 的 imm16。
     /// 3. 同步扩容当前代际的常量缓存，建函数对象并设置 name/length。
@@ -33,12 +35,23 @@ impl Vm {
     ///
     /// # 副作用
     /// - 扩展当前代际平表（`tables[current_gen]`）与常量缓存。
-    pub fn create_dynamic_function(&mut self, params: &[String], body: &str) -> Result<JsValue, String> {
+    pub fn create_dynamic_function(
+        &mut self, params: &[String], body: &str, is_generator: bool, is_async: bool,
+    ) -> Result<JsValue, String> {
         // wrap 源码：body 两端换行防止以行注释结尾吞掉右花括号；形参串后补
         // 换行，使形参以 HTML 注释（`<!--`/`-->`）结尾时注释在行末终止、
         // 右括号不被吞（规范按形参串与体串各自独立解析，此处以换行等价）。
+        // 函数形态按生成器 / 异步标志分流，编译标志（is_generator / is_async）
+        // 由 emit 层从 AST 读回，函数对象原型与 prototype 属性面随之自动分流。
+        let prefix = if is_async {
+            if is_generator { "async function*" } else { "async function" }
+        } else if is_generator {
+            "function*"
+        } else {
+            "function"
+        };
         let params_str = params.join(", ");
-        let source = format!("function anonymous({params_str}\n) {{\n{body}\n}}");
+        let source = format!("{prefix} anonymous({params_str}\n) {{\n{body}\n}}");
 
         let allocator = oxide_parser::Allocator::default();
         let program = oxide_parser::parse(&allocator, &source)

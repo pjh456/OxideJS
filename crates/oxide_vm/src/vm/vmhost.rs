@@ -179,6 +179,21 @@ impl oxide_runtime_api::VmHost for Vm {
         // 按严格处理（受限访问器对其抛错）。
         self.callee_module(obj).map(|m| m.is_strict).unwrap_or(true)
     }
+    fn function_is_restricted(&self, obj: &JsObject) -> bool {
+        // 严格函数对象，或 [[Prototype]] 为三个动态函数原型之一（生成器 /
+        // 异步 / 异步生成器函数）：caller/arguments 访问一律受限。
+        if self.function_is_strict(obj) {
+            return true;
+        }
+        let proto = obj.proto();
+        if !proto.is_object() {
+            return false;
+        }
+        let p = proto.as_js_object_ptr();
+        p == self.generator_function_proto.as_ptr() as *mut JsObject
+            || p == self.async_function_proto.as_ptr() as *mut JsObject
+            || p == self.async_generator_function_proto.as_ptr() as *mut JsObject
+    }
     fn promote_if_needed_for_write_ptr(&mut self, target_ptr: *mut JsObject, value: JsValue) -> JsValue {
         self.promote_if_needed_for_write_ptr(target_ptr, value)
     }
@@ -201,8 +216,10 @@ impl oxide_runtime_api::VmHost for Vm {
             .and_then(|cells| cells.get(cell_idx as usize).copied())
             .filter(|p| !p.is_null())
     }
-    fn create_dynamic_function(&mut self, params: &[String], body: &str) -> Result<JsValue, String> {
-        self.create_dynamic_function(params, body)
+    fn create_dynamic_function(
+        &mut self, params: &[String], body: &str, is_generator: bool, is_async: bool,
+    ) -> Result<JsValue, String> {
+        self.create_dynamic_function(params, body, is_generator, is_async)
     }
     fn create_dynamic_script(&mut self, code: &str) -> Result<JsValue, String> {
         self.create_dynamic_script(code)

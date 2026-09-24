@@ -19,7 +19,34 @@ fn invoke_target<H: VmHost>(vm: &mut H, target_val: JsValue, this_val: JsValue, 
 /// 实参转单元序列后经 `source_escape` 源码域转义再动态编译。
 /// 编译成功返回函数对象，语法错误抛 SyntaxError，实参 ToPrimitive 失败抛 TypeError。
 pub fn function_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
-    let arg_regs = &args[1..];
+    dynamic_function_core(vm, &args[1..], false, false)
+}
+
+/// `GeneratorFunction(...)` / `new GeneratorFunction(...)` 构造器：动态编译
+/// 一个匿名生成器函数（`function*` 形态）。
+pub fn generator_function_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    dynamic_function_core(vm, &args[1..], true, false)
+}
+
+/// `AsyncFunction(...)` / `new AsyncFunction(...)` 构造器：动态编译一个匿名
+/// 异步函数（`async function` 形态）。
+pub fn async_function_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    dynamic_function_core(vm, &args[1..], false, true)
+}
+
+/// `AsyncGeneratorFunction(...)` / `new AsyncGeneratorFunction(...)` 构造器：
+/// 动态编译一个匿名异步生成器函数（`async function*` 形态）。
+pub fn async_generator_function_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    dynamic_function_core(vm, &args[1..], true, true)
+}
+
+/// 四个动态函数构造器的公共体：除最后一个实参为函数体外，其余实参为形参名；
+/// 无实参时函数体为空串。实参转单元序列后经 `source_escape` 源码域转义再
+/// 动态编译（`is_generator` / `is_async` 决定 wrap 源码函数形态）。
+/// 编译成功返回函数对象，语法错误抛 SyntaxError，实参 ToPrimitive 失败抛 TypeError。
+fn dynamic_function_core<H: VmHost>(
+    vm: &mut H, arg_regs: &[u8], is_generator: bool, is_async: bool,
+) -> NativeResult {
     let (param_regs, body_reg) = if arg_regs.is_empty() {
         (vec![], None)
     } else {
@@ -44,7 +71,7 @@ pub fn function_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult 
         None => String::new(),
     };
 
-    match vm.create_dynamic_function(&params, &body) {
+    match vm.create_dynamic_function(&params, &body, is_generator, is_async) {
         Ok(func) => NativeResult::Ok(func),
         Err(msg) => NativeResult::Err(crate::error::create_syntax_error(vm, &msg)),
     }
@@ -344,9 +371,9 @@ fn bound_restricted_thrower<H: VmHost>(vm: &mut H, _args: &[u8]) -> NativeResult
 
 /// %ThrowTypeError%：Function.prototype 的 caller/arguments 受限访问器共用。
 ///
-/// 按接收者严格性分流：严格函数对象与 native 函数（含 Function.prototype 本身）
-/// 的 get/set 一律抛 TypeError；非严格函数对象读不抛、返回 undefined（写不抛、
-/// 丢弃写入），与规范"非严格函数 caller 可读"的残面一致。
+/// 按接收者受限性分流：严格函数对象与生成器 / 异步 / 异步生成器函数对象
+/// 的 get/set 一律抛 TypeError；非严格普通函数对象读不抛、返回 undefined
+/// （写不抛、丢弃写入），与规范"非严格函数 caller 可读"的残面一致。
 pub fn function_restricted_thrower<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
     let obj = match vm.checked_object_ptr(this_val, "restricted property access") {
@@ -354,7 +381,7 @@ pub fn function_restricted_thrower<H: VmHost>(vm: &mut H, args: &[u8]) -> Native
         Ok(None) => return NativeResult::Err(crate::error::create_type_error(vm, "restricted property access")),
         Err(e) => return NativeResult::Err(crate::error::create_type_error(vm, &e)),
     };
-    if !vm.function_is_strict(unsafe { &*obj }) {
+    if !vm.function_is_restricted(unsafe { &*obj }) {
         return NativeResult::Ok(JsValue::undefined());
     }
     NativeResult::Err(crate::error::create_type_error(vm, "restricted property access"))

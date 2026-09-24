@@ -766,27 +766,40 @@ pub(crate) fn init_generator_intrinsics(vm: &mut Vm) {
 
     // %GeneratorFunction.prototype%：proto = Function.prototype，constructor = %GeneratorFunction%。
     let mut gf_proto = Box::new(JsObject::new_empty(EMPTY_SHAPE_ID, fn_proto_val));
-    // %GeneratorFunction% 占位构造器：动态生成器函数创建未实现，调用抛
-    // TypeError。选择性重建复用：前轮占位构造器按键迁移（prototype 槽在
-    // 下方 P 槽换入后重指新原型），不再每轮新建对象。
+    // %GeneratorFunction% 构造器：proto = Function.prototype，动态编译生成器
+    // 函数。选择性重建复用：前轮构造器按键迁移（prototype 槽在下方 P 槽换入后
+    // 重指新原型），不再每轮新建对象。
     let gf_ctor_label = sf.intern("GeneratorFunctionCtor").0;
     let gf_reuse_key = oxide_kernel::builtin::FnWrapperKey::new(0, gf_ctor_label, 0, 0);
-    // SAFETY: generator_function_stub 是 NativeFn 函数项。
-    let gf_stub_ptr = unsafe { NativeFnPtr::from_raw(generator_function_stub as *const ()) };
-    let (gf_ctor_ptr, gf_ctor_is_new) = match world.find_fn_wrapper(gf_reuse_key, gf_stub_ptr, 1) {
+    // SAFETY: generator_function_constructor 是 NativeFn 函数项。
+    let gf_ctor_fn_ptr = unsafe {
+        NativeFnPtr::from_raw(
+            oxide_builtins::function::generator_function_constructor::<Vm> as *const (),
+        )
+    };
+    let (gf_ctor_ptr, gf_ctor_is_new) = match world.find_fn_wrapper(gf_reuse_key, gf_ctor_fn_ptr, 1) {
         Some(ptr) => (ptr, false),
         None => {
             let mut gf_ctor = Box::new(JsObject::new_empty(EMPTY_SHAPE_ID, fn_proto_val));
             gf_ctor.set_function(true);
             gf_ctor.set_native_arg_count(1);
-            gf_ctor.set_native_fn(Some(gf_stub_ptr));
-            // prototype/name 属性（构造器形状 [prototype, name]）。
-            let proto_si = sf.intern("prototype").0;
-            let ctor_shape = sh.make_shape(EMPTY_SHAPE_ID, proto_si);
-            gf_ctor.set_shape_id(ctor_shape);
+            gf_ctor.set_native_fn(Some(gf_ctor_fn_ptr));
+            // 构造器 tag：IsConstructor 判定与 new 表达式派发据此放行。
+            gf_ctor.type_tag = JsObject::OBJ_TYPE_CONSTRUCTOR;
+            // 自身属性序：length、name、prototype、@@toStringTag（CreateBuiltinFunction 序）。
+            let length_si = sf.intern("length").0;
+            let length_shape = sh.make_shape(EMPTY_SHAPE_ID, length_si);
+            gf_ctor.set_shape_id(length_shape);
             let name_si = sf.intern("name").0;
             let name_shape = sh.make_shape(gf_ctor.shape_id(), name_si);
             gf_ctor.set_shape_id(name_shape);
+            let proto_si = sf.intern("prototype").0;
+            let proto_shape = sh.make_shape(gf_ctor.shape_id(), proto_si);
+            gf_ctor.set_shape_id(proto_shape);
+            let tag_key =
+                oxide_types::private_key::make_well_known_symbol_key(oxide_types::private_key::WELL_KNOWN_SYMBOL_TO_STRING_TAG);
+            let tag_shape = sh.make_shape(gf_ctor.shape_id(), tag_key);
+            gf_ctor.set_shape_id(tag_shape);
             let gf_ctor_ptr = Box::into_raw(gf_ctor);
             // 登记进 world 释放表（带复用键）：session 收尾统一释放构造器本体与属性区。
             world.track_fn_wrapper(gf_ctor_ptr, gf_reuse_key);
@@ -804,7 +817,7 @@ pub(crate) fn init_generator_intrinsics(vm: &mut Vm) {
     let proto2_shape = sh.make_shape(gf_proto.shape_id(), proto2_si);
     gf_proto.set_shape_id(proto2_shape);
     let ppos2 = gf_proto.push_prop(JsValue::from_js_object(vm.generator_proto.as_ptr() as *mut JsObject));
-    gf_proto.set_data_meta(ppos2, oxide_types::object::PropAttributes::new(false, false, false));
+    gf_proto.set_data_meta(ppos2, oxide_types::object::PropAttributes::new(false, false, true));
     // gf_proto[Symbol.toStringTag] = "GeneratorFunction"（数据属性，w/e/c = false/false/true）。
     let tag2_key =
         oxide_types::private_key::make_well_known_symbol_key(oxide_types::private_key::WELL_KNOWN_SYMBOL_TO_STRING_TAG);
@@ -814,9 +827,9 @@ pub(crate) fn init_generator_intrinsics(vm: &mut Vm) {
     gf_proto.set_data_meta(tag2_pos, oxide_types::object::PropAttributes::new(false, false, true));
 
     // proto 本体只存在于 P 槽（Arc 副本，原 Box 随函数结束释放）：装入 P 槽后再写
-    // 构造器 prototype/name 属性（按模板序 prototype 在前），prototype 指向 P 槽实例，
-    // 使其与动态生成器函数使用的 [[Prototype]] 同一对象。复用构造器槽位已填充，
-    // prototype 原位改指新 P 原型（旧原型已随 P 换出释放）。
+    // 构造器 length/name/prototype/@@toStringTag 属性（按形状序），prototype 指向
+    // P 槽实例，使其与动态生成器函数使用的 [[Prototype]] 同一对象。复用构造器槽位
+    // 已填充，prototype 原位改指新 P 原型（旧原型已随 P 换出释放）。
     Vm::swap_intrinsic_proto(&mut vm.generator_function_proto, *gf_proto);
     // SAFETY: gf_ctor_ptr 为 Box 原分配（已登记释放表、生命周期覆盖 session），本 Vm 独占。
     unsafe {
@@ -824,10 +837,15 @@ pub(crate) fn init_generator_intrinsics(vm: &mut Vm) {
         let proto_val = JsValue::from_js_object(vm.generator_function_proto.as_ptr() as *mut JsObject);
         let name_val = JsValue::perm_string(sf.string_ptr(sf.intern("GeneratorFunction").0));
         if gf_ctor_is_new {
-            let ppos = ctor_mut.push_prop(proto_val);
-            ctor_mut.set_data_meta(ppos, oxide_types::object::PropAttributes::new(false, false, false));
+            let lpos = ctor_mut.push_prop(JsValue::int(1));
+            ctor_mut.set_data_meta(lpos, oxide_types::object::PropAttributes::new(false, false, true));
             let npos = ctor_mut.push_prop(name_val);
             ctor_mut.set_data_meta(npos, oxide_types::object::PropAttributes::new(false, false, true));
+            let ppos = ctor_mut.push_prop(proto_val);
+            ctor_mut.set_data_meta(ppos, oxide_types::object::PropAttributes::new(false, false, false));
+            let tag_val = JsValue::perm_string(sf.string_ptr(sf.intern("Function").0));
+            let tpos = ctor_mut.push_prop(tag_val);
+            ctor_mut.set_data_meta(tpos, oxide_types::object::PropAttributes::new(false, false, true));
         } else {
             let si_prototype = sf.intern("prototype").0;
             if let Some(pos) = sh.lookup_position(ctor_mut.shape_id(), si_prototype) {
@@ -839,14 +857,25 @@ pub(crate) fn init_generator_intrinsics(vm: &mut Vm) {
             }
         }
     }
-}
 
-/// `%GeneratorFunction%` 占位：动态生成器函数创建未实现，调用抛错。
-fn generator_function_stub(vm: &mut Vm, _args: &[u8]) -> NativeResult {
-    NativeResult::Err(oxide_builtins::error::create_type_error(
-        vm,
-        "GeneratorFunction constructor is not supported",
-    ))
+    // 绑定 global：GeneratorFunction 槽已存在则原位更新（full_reset 未重建 global
+    // 时旧槽指向已弃 ctor），不存在则开新槽。
+    let global_ptr = vm.session.global_object().as_ptr() as *mut JsObject;
+    // SAFETY: global 由 session 持有存活整个 session；本函数内只改其 shape/属性区，
+    // 期间无 reset 或对象搬移。
+    let global = unsafe { &mut *global_ptr };
+    let si = sf.intern("GeneratorFunction").0;
+    let ctor_val = JsValue::from_js_object(gf_ctor_ptr);
+    if let Some(pos) = sh.lookup_position(global.shape_id(), si) {
+        global.set_prop_at(pos, ctor_val);
+    } else {
+        let shape = sh.make_shape(global.shape_id(), si);
+        global.set_shape_id(shape);
+        let pos = global.push_prop(ctor_val);
+        // global 数据属性：writable:true、enumerable:false、configurable:true。
+        global.set_data_meta(pos, oxide_types::object::PropAttributes::new(true, false, true));
+        global.bump_generation();
+    }
 }
 
 // ── session GC 支撑：状态快照中的 JsValues 作为生成器对象边追踪 ──
