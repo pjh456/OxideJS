@@ -236,38 +236,30 @@ impl Emitter {
             }
             ForStatementLeft::AssignmentTargetIdentifier(id_ref) => {
                 let name = id_ref.name.as_str();
-                let var_reg = ctx.lookup_or_global(name);
                 // 写仅在本迭代实际产生键后发生（for-in NEXT 之后），空集合不抛。
-                if ctx.targets_readonly_builtin(name, var_reg) {
-                    // 全局不可写内置：sloppy 静默跳过写（槽保留入口预载原值）；
-                    // strict 在本迭代抛 TypeError（put 失败）。
-                    if ctx.is_strict {
-                        self.emit_throw_error("TypeError", "cannot assign to read-only property", ctx)?;
+                // 目标若是 upvalue 引用，走 STORE_UPVALUE（与表达式赋值写点同臂序）；
+                // 目标若是被捕获 cell 且名字当前可解析为真实词法绑定，走 CELL_SET；
+                // 否则落全局槽写（未声明名不建隐式全局登记）。
+                if let Some(uv_idx) = ctx.current_upvalue_captures.iter().position(|u| u.name == name) {
+                    ctx.inst(Inst::new(
+                        OpCode::STORE_UPVALUE,
+                        Operand::Imm(0),
+                        Operand::Reg(key_reg),
+                        Operand::Imm(uv_idx as u16),
+                    ));
+                } else if let Some(&cell_idx) = ctx.captured_bindings.get(name) {
+                    if ctx.visible_binding_reg(name).is_some() {
+                        ctx.inst(Inst::new(
+                            OpCode::CELL_SET,
+                            Operand::None,
+                            Operand::Reg(key_reg),
+                            Operand::Imm(cell_idx as u16),
+                        ));
+                    } else {
+                        self.emit_for_in_assignment_target_write(name, key_reg, ctx)?;
                     }
                 } else {
-                    let is_tier = self.is_global_tier_name(ctx, name);
-                    let is_implicit = ctx.is_implicit_global_reg(var_reg);
-                    if is_implicit && ctx.is_strict {
-                        // 严格模式未声明写：抛 ReferenceError，跳过寄存器写（值无关）。
-                        self.emit_strict_undeclared_write(name, ctx)?;
-                    } else if is_tier {
-                        // 顶层 for-in 赋值头：迭代值写入全局对象属性——顶层 var 值的唯一存储是全局对象属性，引擎侧不另存副本。
-                        // 同上：只读三常量已在拦截臂跳过，其余内置名属性可写。
-                        self.emit_tier_global_write(name, key_reg, ctx);
-                    } else {
-                        ctx.inst(Inst::new(
-                            OpCode::STORE_VAR,
-                            Operand::Reg(var_reg),
-                            Operand::Reg(key_reg),
-                            Operand::None,
-                        ));
-                        if is_implicit {
-                            self.emit_implicit_global_write(name, var_reg, ctx);
-                        } else if ctx.targets_writable_builtin(name, var_reg) {
-                            // 可写内置名：迭代键同步落全局对象属性。
-                            self.emit_global_put_write(name, var_reg, ctx);
-                        }
-                    }
+                    self.emit_for_in_assignment_target_write(name, key_reg, ctx)?;
                 }
             }
             _ => return Err("unsupported for-in left-hand side".into()),
@@ -289,5 +281,48 @@ impl Emitter {
             None => self.emit_undefined(ctx),
         };
         Ok(Some(result))
+    }
+
+    /// for-in 赋值头全局槽写：readonly 内置 / strict 未声明 / 顶层 tier / 普通槽
+    /// 四分支（与表达式赋值写点同臂序）。
+    ///
+    /// # 副作用
+    /// - 发射写指令；strict 未声明写抛 ReferenceError，readonly 内置 strict 抛 TypeError。
+    fn emit_for_in_assignment_target_write(
+        &self, name: &str, key_reg: u32, ctx: &mut CompileCtx,
+    ) -> Result<(), String> {
+        let var_reg = ctx.lookup_or_global(name);
+        if ctx.targets_readonly_builtin(name, var_reg) {
+            // 全局不可写内置：sloppy 静默跳过写（槽保留入口预载原值）；
+            // strict 在本迭代抛 TypeError（put 失败）。
+            if ctx.is_strict {
+                self.emit_throw_error("TypeError", "cannot assign to read-only property", ctx)?;
+            }
+        } else {
+            let is_tier = self.is_global_tier_name(ctx, name);
+            let is_implicit = ctx.is_implicit_global_reg(var_reg);
+            if is_implicit && ctx.is_strict {
+                // 严格模式未声明写：抛 ReferenceError，跳过寄存器写（值无关）。
+                self.emit_strict_undeclared_write(name, ctx)?;
+            } else if is_tier {
+                // 顶层 for-in 赋值头：迭代值写入全局对象属性——顶层 var 值的唯一存储是全局对象属性，引擎侧不另存副本。
+                // 同上：只读三常量已在拦截臂跳过，其余内置名属性可写。
+                self.emit_tier_global_write(name, key_reg, ctx);
+            } else {
+                ctx.inst(Inst::new(
+                    OpCode::STORE_VAR,
+                    Operand::Reg(var_reg),
+                    Operand::Reg(key_reg),
+                    Operand::None,
+                ));
+                if is_implicit {
+                    self.emit_implicit_global_write(name, var_reg, ctx);
+                } else if ctx.targets_writable_builtin(name, var_reg) {
+                    // 可写内置名：迭代键同步落全局对象属性。
+                    self.emit_global_put_write(name, var_reg, ctx);
+                }
+            }
+        }
+        Ok(())
     }
 }

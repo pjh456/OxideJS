@@ -104,6 +104,9 @@ pub(crate) fn collect_capture_names_stmt(
                 for d in &vd.declarations {
                     collect_capture_names_binding_keys(&d.id, ref_set, shadow, out);
                 }
+            } else {
+                // 赋值头是既有绑定引用：头名与默认值表达式须纳入捕获判定。
+                collect_capture_names_for_left(&fi.left, ref_set, shadow, out);
             }
             collect_capture_names_shadowed(std::slice::from_ref(&fi.body), ref_set, &for_shadow, out);
         }
@@ -115,6 +118,8 @@ pub(crate) fn collect_capture_names_stmt(
                 for d in &vd.declarations {
                     collect_capture_names_binding_keys(&d.id, ref_set, shadow, out);
                 }
+            } else {
+                collect_capture_names_for_left(&fo.left, ref_set, shadow, out);
             }
             collect_capture_names_shadowed(std::slice::from_ref(&fo.body), ref_set, &for_shadow, out);
         }
@@ -335,32 +340,71 @@ pub(crate) fn collect_capture_names_assign_target(
             collect_capture_names_expr(&m.expression, ref_set, shadow, out);
         }
         oxide_parser::AssignmentTarget::ArrayAssignmentTarget(a) => {
-            for e in a.elements.iter().flatten() {
-                collect_capture_names_maybe_default_target(e, ref_set, shadow, out);
-            }
-            if let Some(rest) = &a.rest {
-                collect_capture_names_assign_target(&rest.target, ref_set, shadow, out);
-            }
+            collect_capture_names_array_target(a, ref_set, shadow, out);
         }
         oxide_parser::AssignmentTarget::ObjectAssignmentTarget(o) => {
-            for prop in &o.properties {
-                if let oxide_parser::AssignmentTargetProperty::AssignmentTargetPropertyIdentifier(id) = prop {
-                    if ref_set.contains(id.binding.name.as_str()) && !shadow.contains(id.binding.name.as_str()) {
-                        out.insert(id.binding.name.to_string());
-                    }
-                    if let Some(init) = &id.init {
-                        collect_capture_names_expr(init, ref_set, shadow, out);
-                    }
-                } else if let oxide_parser::AssignmentTargetProperty::AssignmentTargetPropertyProperty(p) = prop {
-                    if let Some(name_expr) = p.name.as_expression() {
-                        collect_capture_names_expr(name_expr, ref_set, shadow, out);
-                    }
-                    collect_capture_names_maybe_default_target(&p.binding, ref_set, shadow, out);
-                }
+            collect_capture_names_object_target(o, ref_set, shadow, out);
+        }
+        _ => {}
+    }
+}
+
+/// 数组赋值目标：元素递归（含默认值），rest 目标递归。
+fn collect_capture_names_array_target(
+    a: &oxide_parser::ArrayAssignmentTarget, ref_set: &HashSet<String>, shadow: &HashSet<String>,
+    out: &mut HashSet<String>,
+) {
+    for e in a.elements.iter().flatten() {
+        collect_capture_names_maybe_default_target(e, ref_set, shadow, out);
+    }
+    if let Some(rest) = &a.rest {
+        collect_capture_names_assign_target(&rest.target, ref_set, shadow, out);
+    }
+}
+
+/// 对象赋值目标：属性标识符写名/默认值/计算键，rest 目标递归。
+fn collect_capture_names_object_target(
+    o: &oxide_parser::ObjectAssignmentTarget, ref_set: &HashSet<String>, shadow: &HashSet<String>,
+    out: &mut HashSet<String>,
+) {
+    for prop in &o.properties {
+        if let oxide_parser::AssignmentTargetProperty::AssignmentTargetPropertyIdentifier(id) = prop {
+            if ref_set.contains(id.binding.name.as_str()) && !shadow.contains(id.binding.name.as_str()) {
+                out.insert(id.binding.name.to_string());
             }
-            if let Some(rest) = &o.rest {
-                collect_capture_names_assign_target(&rest.target, ref_set, shadow, out);
+            if let Some(init) = &id.init {
+                collect_capture_names_expr(init, ref_set, shadow, out);
             }
+        } else if let oxide_parser::AssignmentTargetProperty::AssignmentTargetPropertyProperty(p) = prop {
+            if let Some(name_expr) = p.name.as_expression() {
+                collect_capture_names_expr(name_expr, ref_set, shadow, out);
+            }
+            collect_capture_names_maybe_default_target(&p.binding, ref_set, shadow, out);
+        }
+    }
+    if let Some(rest) = &o.rest {
+        collect_capture_names_assign_target(&rest.target, ref_set, shadow, out);
+    }
+}
+
+/// 扫描 for-in/for-of 赋值头：标识符写名、数组/对象解构元素（含默认值）与 rest。
+/// 声明头是新绑定无引用语义，不扫。
+pub(crate) fn collect_capture_names_for_left(
+    left: &oxide_parser::ForStatementLeft, ref_set: &HashSet<String>, shadow: &HashSet<String>,
+    out: &mut HashSet<String>,
+) {
+    match left {
+        oxide_parser::ForStatementLeft::AssignmentTargetIdentifier(id) => {
+            let name = id.name.as_str();
+            if ref_set.contains(name) && !shadow.contains(name) {
+                out.insert(name.to_string());
+            }
+        }
+        oxide_parser::ForStatementLeft::ArrayAssignmentTarget(a) => {
+            collect_capture_names_array_target(a, ref_set, shadow, out);
+        }
+        oxide_parser::ForStatementLeft::ObjectAssignmentTarget(o) => {
+            collect_capture_names_object_target(o, ref_set, shadow, out);
         }
         _ => {}
     }

@@ -8,7 +8,10 @@ use oxide_parser::{Declaration, ExportDefaultDeclarationKind, Expression, Statem
 
 use super::collect_fn_param_names;
 use super::names::collect_own_binding_names;
-use super::scanner::{collect_capture_names_expr, collect_capture_names_shadowed, collect_class_capture_names};
+use super::scanner::{
+    collect_capture_names_expr, collect_capture_names_for_left, collect_capture_names_shadowed,
+    collect_class_capture_names,
+};
 
 /// 分析本函数：哪些绑定被任意深度嵌套函数捕获 → captured_bindings。
 ///
@@ -215,6 +218,10 @@ pub(crate) fn collect_captured_stmt(stmt: &Statement, own: &HashSet<String>, out
                 for d in &vd.declarations {
                     collect_captured_binding_keys(&d.id, own, out);
                 }
+            } else {
+                // 赋值头是既有绑定引用：头名与默认值表达式须纳入捕获判定。
+                let empty_shadow = HashSet::new();
+                collect_capture_names_for_left(&fi.left, own, &empty_shadow, out);
             }
             collect_captured_stmt(&fi.body, own, out);
         }
@@ -224,6 +231,9 @@ pub(crate) fn collect_captured_stmt(stmt: &Statement, own: &HashSet<String>, out
                 for d in &vd.declarations {
                     collect_captured_binding_keys(&d.id, own, out);
                 }
+            } else {
+                let empty_shadow = HashSet::new();
+                collect_capture_names_for_left(&fo.left, own, &empty_shadow, out);
             }
             collect_captured_stmt(&fo.body, own, out);
         }

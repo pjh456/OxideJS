@@ -142,8 +142,31 @@ impl Emitter {
             }
             ForStatementLeft::AssignmentTargetIdentifier(id_ref) => {
                 let name = id_ref.name.as_str();
-                let var_reg = ctx.lookup_or_global(name);
                 // 写仅在本迭代实际产生值后发生（for-of NEXT 之后），空集合不抛。
+                // 目标若是 upvalue 引用，走 STORE_UPVALUE（与表达式赋值写点同臂序）。
+                if let Some(uv_idx) = ctx.current_upvalue_captures.iter().position(|u| u.name == name) {
+                    ctx.inst(Inst::new(
+                        OpCode::STORE_UPVALUE,
+                        Operand::Imm(0),
+                        Operand::Reg(val_reg),
+                        Operand::Imm(uv_idx as u16),
+                    ));
+                    return Ok(());
+                }
+                // 目标若是被捕获 cell，走 CELL_SET；仅当名字当前可解析为真实词法绑定时才写
+                // cell，否则落下方全局解析（未声明名不建隐式全局登记）。
+                if let Some(&cell_idx) = ctx.captured_bindings.get(name) {
+                    if ctx.visible_binding_reg(name).is_some() {
+                        ctx.inst(Inst::new(
+                            OpCode::CELL_SET,
+                            Operand::None,
+                            Operand::Reg(val_reg),
+                            Operand::Imm(cell_idx as u16),
+                        ));
+                        return Ok(());
+                    }
+                }
+                let var_reg = ctx.lookup_or_global(name);
                 if ctx.targets_readonly_builtin(name, var_reg) {
                     // 全局不可写内置：sloppy 静默跳过写（槽保留入口预载原值）；
                     // strict 在本迭代抛 TypeError（put 失败）。
@@ -151,10 +174,14 @@ impl Emitter {
                         self.emit_throw_error("TypeError", "cannot assign to read-only property", ctx)?;
                     }
                 } else {
+                    let is_tier = self.is_global_tier_name(ctx, name);
                     let is_implicit = ctx.is_implicit_global_reg(var_reg);
                     if is_implicit && ctx.is_strict {
                         // 严格模式未声明写：抛 ReferenceError，跳过寄存器写（值无关）。
                         self.emit_strict_undeclared_write(name, ctx)?;
+                    } else if is_tier {
+                        // 顶层 for-of 赋值头：迭代值写入全局对象属性（顶层 var 的唯一存储）。
+                        self.emit_tier_global_write(name, val_reg, ctx);
                     } else {
                         ctx.inst(Inst::new(
                             OpCode::STORE_VAR,

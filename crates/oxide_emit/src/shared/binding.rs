@@ -146,6 +146,31 @@ impl Emitter {
                 // 解构赋值目标：TDZ 写抛 ReferenceError，const 写抛 TypeError（编译期拦截）。
                 self.emit_identifier_tdz_guard(name, ctx)?;
                 self.emit_const_write_guard(name, ctx)?;
+                // 目标若是 upvalue 引用，走 STORE_UPVALUE（与表达式赋值写点同臂序）。
+                if let Some(uv_idx) = ctx.current_upvalue_captures.iter().position(|u| u.name == name) {
+                    ctx.inst(Inst::new(
+                        OpCode::STORE_UPVALUE,
+                        Operand::Imm(0),
+                        Operand::Reg(src_reg),
+                        Operand::Imm(uv_idx as u16),
+                    ));
+                    self.emit_module_write_through(name, src_reg, ctx)?;
+                    return Ok(());
+                }
+                // 目标若是被捕获 cell，走 CELL_SET；仅当名字当前可解析为真实词法绑定时才写
+                // cell，否则落下方全局解析（未声明名不建隐式全局登记）。
+                if let Some(&cell_idx) = ctx.captured_bindings.get(name) {
+                    if ctx.visible_binding_reg(name).is_some() {
+                        ctx.inst(Inst::new(
+                            OpCode::CELL_SET,
+                            Operand::None,
+                            Operand::Reg(src_reg),
+                            Operand::Imm(cell_idx as u16),
+                        ));
+                        self.emit_module_write_through(name, src_reg, ctx)?;
+                        return Ok(());
+                    }
+                }
                 let var_reg = ctx.lookup_or_global(name);
                 if ctx.targets_readonly_builtin(name, var_reg) {
                     // 全局不可写内置：sloppy 静默跳过写（槽保留入口预载原值）；
@@ -359,6 +384,31 @@ impl Emitter {
                 // 解构赋值目标：TDZ 写抛 ReferenceError，const 写抛 TypeError（编译期拦截）。
                 self.emit_identifier_tdz_guard(name, ctx)?;
                 self.emit_const_write_guard(name, ctx)?;
+                // 目标若是 upvalue 引用，走 STORE_UPVALUE（与表达式赋值写点同臂序）。
+                if let Some(uv_idx) = ctx.current_upvalue_captures.iter().position(|u| u.name == name) {
+                    ctx.inst(Inst::new(
+                        OpCode::STORE_UPVALUE,
+                        Operand::Imm(0),
+                        Operand::Reg(src_reg),
+                        Operand::Imm(uv_idx as u16),
+                    ));
+                    self.emit_module_write_through(name, src_reg, ctx)?;
+                    return Ok(());
+                }
+                // 目标若是被捕获 cell，走 CELL_SET；仅当名字当前可解析为真实词法绑定时才写
+                // cell，否则落下方全局解析（未声明名不建隐式全局登记）。
+                if let Some(&cell_idx) = ctx.captured_bindings.get(name) {
+                    if ctx.visible_binding_reg(name).is_some() {
+                        ctx.inst(Inst::new(
+                            OpCode::CELL_SET,
+                            Operand::None,
+                            Operand::Reg(src_reg),
+                            Operand::Imm(cell_idx as u16),
+                        ));
+                        self.emit_module_write_through(name, src_reg, ctx)?;
+                        return Ok(());
+                    }
+                }
                 let var_reg = ctx.lookup_or_global(name);
                 if ctx.targets_readonly_builtin(name, var_reg) {
                     // 全局不可写内置：sloppy 静默跳过写（槽保留入口预载原值）；
@@ -454,6 +504,31 @@ impl Emitter {
                     // 解构赋值目标：TDZ 写抛 ReferenceError，const 写抛 TypeError（编译期拦截）。
                     self.emit_identifier_tdz_guard(name, ctx)?;
                     self.emit_const_write_guard(name, ctx)?;
+                    // 目标若是 upvalue 引用，走 STORE_UPVALUE（与表达式赋值写点同臂序）。
+                    if let Some(uv_idx) = ctx.current_upvalue_captures.iter().position(|u| u.name == name) {
+                        ctx.inst(Inst::new(
+                            OpCode::STORE_UPVALUE,
+                            Operand::Imm(0),
+                            Operand::Reg(prop_reg),
+                            Operand::Imm(uv_idx as u16),
+                        ));
+                        self.emit_module_write_through(name, prop_reg, ctx)?;
+                        continue;
+                    }
+                    // 目标若是被捕获 cell，走 CELL_SET；仅当名字当前可解析为真实词法绑定时才写
+                    // cell，否则落下方全局解析（未声明名不建隐式全局登记）。
+                    if let Some(&cell_idx) = ctx.captured_bindings.get(name) {
+                        if ctx.visible_binding_reg(name).is_some() {
+                            ctx.inst(Inst::new(
+                                OpCode::CELL_SET,
+                                Operand::None,
+                                Operand::Reg(prop_reg),
+                                Operand::Imm(cell_idx as u16),
+                            ));
+                            self.emit_module_write_through(name, prop_reg, ctx)?;
+                            continue;
+                        }
+                    }
                     let var_reg = ctx.lookup_or_global(name);
                     if ctx.targets_readonly_builtin(name, var_reg) {
                         // 全局不可写内置：sloppy 静默跳过该属性写（其余属性继续赋值）；
