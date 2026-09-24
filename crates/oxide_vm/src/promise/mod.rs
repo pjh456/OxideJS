@@ -106,6 +106,8 @@ const AGG_ALREADY_PROP: &str = "__oxide_agg_already__";
 const AGG_REMAINING_PROP: &str = "__oxide_agg_remaining__";
 /// 记录对象上存结果数组（all 的 values，any 的 errors）。
 const AGG_VALUES_PROP: &str = "__oxide_agg_values__";
+/// 记录对象上存结果键平行数组（keyed 族：JS 键值序列，与 values 按下标对齐）。
+const AGG_KEYS_PROP: &str = "__oxide_agg_keys__";
 /// 记录对象上存能力 resolve 闭包。
 const AGG_RESOLVE_PROP: &str = "__oxide_agg_resolve__";
 /// 记录对象上存能力 reject 闭包。

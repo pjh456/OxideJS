@@ -813,7 +813,10 @@ impl Vm {
                 prototype.bump_generation();
             }
 
-            // 函数自身 `prototype` 属性：生成器 writable:true / enumerable:false / configurable:false。
+            // 函数自身 `prototype` 属性：生成器 writable:true / enumerable:false /
+            // configurable:false；普通函数与构造器 writable:true / enumerable:false /
+            // configurable:true。显式落元数据——缺元数据按默认描述符（可枚举）
+            // 判定，`prototype` 会泄漏进 keys / for-in / 聚合枚举。
             let prototype_si = self.kernel_core.perm_interner().intern("prototype").0;
             let func = unsafe { &mut *obj_ptr };
             let prototype_shape = self.kernel_core.shape_forge().make_shape(func.shape_id(), prototype_si);
@@ -821,6 +824,8 @@ impl Vm {
             let prototype_pos = func.push_prop(prototype_val);
             if is_generator || is_async_generator {
                 func.set_data_meta(prototype_pos, PropAttributes::new(true, false, false));
+            } else {
+                func.set_data_meta(prototype_pos, PropAttributes::new(true, false, true));
             }
             func.bump_generation();
         }

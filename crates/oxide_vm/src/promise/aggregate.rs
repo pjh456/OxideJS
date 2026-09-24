@@ -1,21 +1,27 @@
-//! Promise 静态聚合方法（all/race/allSettled/any/withResolvers）与
+//! Promise 静态聚合方法（all/race/allSettled/any/allKeyed 族/withResolvers）与
 //! AggregateError 内建初始化。
 //!
 //! 元素处理器共享结算计数记录（剩余计数 / 结果数组 / 能力闭包）；
 //! 计数从 1 起步，尾部哨兵计入整趟迭代。
+//! keyed 族（allKeyed / allSettledKeyed）与 all 族共用能力 / 元素函数 /
+//! 结算路径，差异仅在元素来源（own keys 枚举替代迭代器）与结果承载
+//! （null 原型键控对象替代数组）。
 
 use oxide_kernel::shape_forge::EMPTY_SHAPE_ID;
 use oxide_runtime_api::NativeResult;
 use oxide_types::object::{JsObject, NativeFnPtr, PropAttributes};
-use oxide_types::private_key::make_int_key;
+use oxide_types::private_key::{
+    is_symbol_key, make_int_key, make_symbol_key, make_well_known_symbol_key, symbol_index_from_key,
+    well_known_symbol_id_from_key, WELL_KNOWN_SYMBOL_COUNT,
+};
 use oxide_types::value::JsValue;
 
 use crate::native::NativeFn;
 use crate::vm::Vm;
 
 use super::{
-    AggregateKind, AGG_ALREADY_PROP, AGG_INDEX_PROP, AGG_RECORD_PROP, AGG_REJECT_PROP, AGG_REMAINING_PROP,
-    AGG_RESOLVE_PROP, AGG_VALUES_PROP, TRY_ARGS_PROP, TRY_EXECUTOR_PROP,
+    AggregateKind, AGG_ALREADY_PROP, AGG_INDEX_PROP, AGG_KEYS_PROP, AGG_RECORD_PROP, AGG_REJECT_PROP,
+    AGG_REMAINING_PROP, AGG_RESOLVE_PROP, AGG_VALUES_PROP, TRY_ARGS_PROP, TRY_EXECUTOR_PROP,
 };
 
 impl Vm {
@@ -30,6 +36,26 @@ impl Vm {
         self.set_or_create_prop_value(obj, rem_si, JsValue::int(1));
         let val_si = self.kernel_core.perm_interner().intern(AGG_VALUES_PROP).0;
         self.set_or_create_prop_value(obj, val_si, values);
+        let res_si = self.kernel_core.perm_interner().intern(AGG_RESOLVE_PROP).0;
+        self.set_or_create_prop_value(obj, res_si, resolve);
+        let rej_si = self.kernel_core.perm_interner().intern(AGG_REJECT_PROP).0;
+        self.set_or_create_prop_value(obj, rej_si, reject);
+        JsValue::from_js_object(ptr)
+    }
+
+    /// 创建 keyed 聚合静态方法的共享记录对象：剩余计数（初始 1）、结果平行数组、
+    /// 键平行数组与能力 resolve/reject 闭包存为自身属性。
+    fn make_agg_record_keyed(&mut self, values: JsValue, keys: JsValue, resolve: JsValue, reject: JsValue) -> JsValue {
+        let proto_val = JsValue::from_js_object(self.session.builtin_world().object_proto.as_ptr() as *mut JsObject);
+        let ptr = self.alloc_object(JsObject::new_empty(EMPTY_SHAPE_ID, proto_val));
+        // SAFETY: ptr 由 alloc_object 新建，返回非空 arena 指针；本次 native 调用内不搬移，借出期间无别名。
+        let obj = unsafe { &mut *ptr };
+        let rem_si = self.kernel_core.perm_interner().intern(AGG_REMAINING_PROP).0;
+        self.set_or_create_prop_value(obj, rem_si, JsValue::int(1));
+        let val_si = self.kernel_core.perm_interner().intern(AGG_VALUES_PROP).0;
+        self.set_or_create_prop_value(obj, val_si, values);
+        let key_si = self.kernel_core.perm_interner().intern(AGG_KEYS_PROP).0;
+        self.set_or_create_prop_value(obj, key_si, keys);
         let res_si = self.kernel_core.perm_interner().intern(AGG_RESOLVE_PROP).0;
         self.set_or_create_prop_value(obj, res_si, resolve);
         let rej_si = self.kernel_core.perm_interner().intern(AGG_REJECT_PROP).0;
@@ -370,6 +396,17 @@ pub(super) fn promise_static_any(vm: &mut Vm, args: &[u8]) -> NativeResult {
     }
 }
 
+/// `Promise.allKeyed(object)`：输入自身可枚举键的元素全部结算后以 null 原型
+/// 键控结果对象完成，任一元素拒绝则拒绝。
+pub(super) fn promise_static_all_keyed(vm: &mut Vm, args: &[u8]) -> NativeResult {
+    let ctor = vm.reg(if args.is_empty() { 0 } else { args[0] });
+    let promises = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
+    match perform_promise_combine_keyed(vm, ctor, promises, KeyedVariant::All) {
+        Ok(promise) => NativeResult::Ok(promise),
+        Err(err) => NativeResult::Err(err),
+    }
+}
+
 /// 聚合静态方法的共享核心：迭代可迭代输入，逐元素调 `C.resolve` 建 promise 并注册反应，
 /// 按模式在全部/任一结算后交付能力 promise。
 ///
@@ -534,6 +571,200 @@ fn perform_promise_combine(
         }
     }
     Ok(promise)
+}
+
+/// keyed 聚合族的语义模式：决定元素处理器形态（all 拒绝侧直拒 /
+/// allSettled 双侧记录）。
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum KeyedVariant {
+    All,
+    // allSettledKeyed 入口尚未挂入构造器静态表，核心实现先行备齐。
+    #[expect(dead_code)]
+    AllSettled,
+}
+
+/// keyed 聚合静态方法（allKeyed / allSettledKeyed）共享核心：按 own keys 序
+/// 枚举输入对象的可枚举自身键，逐元素包装 promise 并注册反应，全部结算后
+/// 以 null 原型键控结果对象交付能力 promise。
+///
+/// # 步骤
+/// 1. 建能力（NewPromiseCapability(C) 抛错同步上抛）；取 C.resolve
+///    （读错 / 不可调用 → 拒绝）。
+/// 2. 非对象输入 → 异步以新 TypeError 拒绝（键枚举之前）。
+/// 3. 按 OwnKeys 序枚举（整数键升序、字符串键与符号键插入序）：可枚举键
+///    经完整 Get 取值，`Call(C.resolve, C, «value»)` 包装，注册元素处理器
+///    （剩余计数先 +1 再注册）。
+/// 4. 循环尾部哨兵计数递减，归 0 时建结果对象并结算。
+///
+/// # 边界与前提
+/// - Get / resolve 调用 / then 注册抛错均异步拒绝能力 promise
+///   （IfAbruptRejectPromise），不同步抛出；仅 NewPromiseCapability 同步传播。
+/// - ownKeys 枚举在非 Proxy 对象上无抛点（本引擎无 Proxy）；描述符读取与
+///   Get 同走现件路径。
+fn perform_promise_combine_keyed(
+    vm: &mut Vm, ctor: JsValue, promises: JsValue, variant: KeyedVariant,
+) -> Result<JsValue, JsValue> {
+    // NewPromiseCapability(C)：本函数唯一同步传播臂。
+    let (promise, resolve, reject) = vm.new_promise_capability_with_ctor(ctor)?;
+
+    // GetPromiseResolve(C)：读取抛错或不可调用 → 以原抛出值拒绝。
+    let resolve_si = vm.kernel_core.perm_interner().intern("resolve").0;
+    let promise_resolve = if ctor.is_object() {
+        // SAFETY: ctor 是存活对象。
+        let ctor_obj = unsafe { &*ctor.as_js_object_ptr() };
+        match vm.ordinary_get(ctor_obj, resolve_si, ctor) {
+            Ok(v) => v,
+            Err(e) => {
+                let exc = agg_engine_error(vm, &e);
+                let _ = vm.call_function_sync(reject, JsValue::undefined(), &[exc]);
+                return Ok(promise);
+            }
+        }
+    } else {
+        JsValue::undefined()
+    };
+    if !oxide_builtins::iterator::is_callable(promise_resolve) {
+        let exc = oxide_builtins::error::create_type_error(vm, "resolve is not a function");
+        let _ = vm.call_function_sync(reject, JsValue::undefined(), &[exc]);
+        return Ok(promise);
+    }
+
+    // 非对象输入：能力已建、键枚举之前，异步以新 TypeError 拒绝。
+    if !promises.is_object() {
+        let exc = oxide_builtins::error::create_type_error(vm, "promises argument is not an object");
+        let _ = vm.call_function_sync(reject, JsValue::undefined(), &[exc]);
+        return Ok(promise);
+    }
+
+    // 平行承载：values 结果数组与 keys 键值数组同下标对齐，记录对象持有两者。
+    // SAFETY: promises 是存活对象。
+    let promises_obj = unsafe { &*promises.as_js_object_ptr() };
+    let values = vm.make_plain_array(Vec::new());
+    let keys = vm.make_plain_array(Vec::new());
+    let record = vm.make_agg_record_keyed(values, keys, resolve, reject);
+
+    // OwnKeys 序：整数键升序、字符串键插入序；符号键按插入序追加（shape 位置
+    // 换算绝对存储下标，与 walk_own_keys 口径一致）。
+    let mut all_keys = oxide_builtins::object::walk_own_keys(vm, promises_obj);
+    for sym in oxide_builtins::object::own_symbol_key_values(vm, promises_obj) {
+        let idx = sym.as_symbol_index();
+        let si = if idx < WELL_KNOWN_SYMBOL_COUNT {
+            make_well_known_symbol_key(idx)
+        } else {
+            make_symbol_key(idx)
+        };
+        if let Some(pos) = vm.kernel_core.shape_forge().lookup_position(promises_obj.shape_id(), si) {
+            let store = if promises_obj.is_array() { promises_obj.array_prop_count + pos } else { pos };
+            all_keys.push((si, store));
+        }
+    }
+
+    let mut index: i32 = 0;
+    for (si, store) in all_keys {
+        // 可枚举性：TA 元素键（哨兵存储下标）恒在场且可枚举；其余查元数据区
+        // （无元数据 = 默认数据描述符，可枚举）。
+        let enumerable = if store == u32::MAX {
+            true
+        } else {
+            promises_obj
+                .prop_meta_at(store)
+                .map_or(true, |m| !m.is_hole() && m.attributes.enumerable())
+        };
+        if !enumerable {
+            continue;
+        }
+
+        // Get：完整读（走原型链，访问器触发）；抛错异步拒绝。
+        let value = match vm.ordinary_get(promises_obj, si, promises) {
+            Ok(v) => v,
+            Err(e) => {
+                let exc = agg_engine_error(vm, &e);
+                let _ = vm.call_function_sync(reject, JsValue::undefined(), &[exc]);
+                return Ok(promise);
+            }
+        };
+
+        // 键值物化进 keys 数组（与 values 下标平行）。
+        let key_value = key_si_to_key_value(vm, si);
+        // SAFETY: keys 是本函数新建的存活数组对象；元素区直写不触发数组 setter。
+        vm.set_or_create_prop_value(unsafe { &mut *keys.as_js_object_ptr() }, make_int_key(index as u32), key_value);
+
+        // nextPromise = Call(C.resolve, C, «value»）；抛错异步拒绝。
+        let next_promise = match vm.call_function_sync(promise_resolve, ctor, &[value]) {
+            Ok(p) => p,
+            Err(e) => {
+                let exc = agg_engine_error(vm, &e);
+                let _ = vm.call_function_sync(reject, JsValue::undefined(), &[exc]);
+                return Ok(promise);
+            }
+        };
+
+        // 剩余计数先 +1 再注册：thenable 同步结算时 handler 依赖计数已含自身。
+        let cur = agg_read_remaining(vm, record);
+        agg_write_remaining(vm, record, cur + 1);
+
+        // 元素处理器按模式注册：all 变体拒绝侧直挂能力 reject，
+        // allSettled 变体双侧用记录元素函数。
+        let outcome = match variant {
+            KeyedVariant::All => {
+                let re = vm.make_agg_element_fn(promise_keyed_resolve_element, record, index);
+                vm.invoke_then(next_promise, &[re, reject])
+            }
+            KeyedVariant::AllSettled => {
+                let re = vm.make_agg_element_fn(promise_keyed_settled_resolve_element, record, index);
+                let rj = vm.make_agg_element_fn(promise_keyed_settled_reject_element, record, index);
+                vm.invoke_then(next_promise, &[re, rj])
+            }
+        };
+        if let Err(exc) = outcome {
+            let _ = vm.call_function_sync(reject, JsValue::undefined(), &[exc]);
+            return Ok(promise);
+        }
+        index += 1;
+    }
+
+    // 尾部哨兵递减；归 0 时结算（键非空时 thenable 同步结算亦可发生）。
+    let remaining = agg_read_remaining(vm, record) - 1;
+    agg_write_remaining(vm, record, remaining);
+    if remaining == 0 {
+        settle_keyed_aggregate(vm, record);
+    }
+    Ok(promise)
+}
+
+/// 键 si 物化为 JS 可见键值：字符串 / 数字串经文本还原，符号键还原为符号值。
+fn key_si_to_key_value(vm: &mut Vm, si: u32) -> JsValue {
+    if is_symbol_key(si) {
+        if let Some(id) = well_known_symbol_id_from_key(si) {
+            return JsValue::symbol(id);
+        }
+        return JsValue::symbol(symbol_index_from_key(si));
+    }
+    oxide_builtins::object::key_si_to_js_value(vm, si)
+}
+
+/// 结算 keyed 聚合：按 keys/values 平行数组建 null 原型结果对象（键序 =
+/// 输入 OwnKeys 序），经能力 resolve 交付；结算抛错降级为拒绝。
+fn settle_keyed_aggregate(vm: &mut Vm, record: JsValue) {
+    let keys = agg_record_val(vm, record, AGG_KEYS_PROP);
+    let values = agg_record_val(vm, record, AGG_VALUES_PROP);
+    let ptr = vm.alloc_object(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()));
+    // SAFETY: ptr 由 alloc_object 新建，返回非空 arena 指针；结算循环内属性写入不搬移对象，借出期间无别名。
+    let obj = unsafe { &mut *ptr };
+    if keys.is_object() && values.is_object() {
+        // SAFETY: keys/values 是本次调用新建的存活平行数组；元素区读写不搬移对象。
+        let keys_obj = unsafe { &*keys.as_js_object_ptr() };
+        let values_obj = unsafe { &*values.as_js_object_ptr() };
+        for i in 0..keys_obj.prop_count() {
+            let key_val = keys_obj.get_prop_at(i);
+            let si = match vm.property_key_si(key_val) {
+                Ok(si) => si,
+                Err(_) => continue,
+            };
+            vm.set_or_create_prop_value(obj, si, values_obj.get_prop_at(i));
+        }
+    }
+    agg_call_resolve(vm, record, JsValue::from_js_object(ptr));
 }
 
 /// 聚合元素处理器的公共 prologue：取共享记录与下标；`already` 已置位返回 None
@@ -715,6 +946,71 @@ fn promise_any_reject_element(vm: &mut Vm, args: &[u8]) -> NativeResult {
         let agg = vm.make_aggregate_error(errors, JsValue::undefined());
         let reject = agg_record_val(vm, record, AGG_REJECT_PROP);
         let _ = vm.call_function_sync(reject, JsValue::undefined(), &[agg]);
+    }
+    NativeResult::Ok(JsValue::undefined())
+}
+
+/// `Promise.allKeyed` resolve 元素：写 `values[index]`，剩余计数归零时建
+/// null 原型结果对象并完成。
+fn promise_keyed_resolve_element(vm: &mut Vm, args: &[u8]) -> NativeResult {
+    let Some((record, index)) = agg_element_state(vm) else {
+        return NativeResult::Ok(JsValue::undefined());
+    };
+    let value = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
+    let values = agg_record_val(vm, record, AGG_VALUES_PROP);
+    if values.is_object() {
+        let key_si = make_int_key(index as u32);
+        // SAFETY: values 是存活数组对象；直写元素区不触发数组 setter。
+        vm.set_or_create_prop_value(unsafe { &mut *values.as_js_object_ptr() }, key_si, value);
+    }
+    let remaining = agg_read_remaining(vm, record) - 1;
+    agg_write_remaining(vm, record, remaining);
+    if remaining == 0 {
+        settle_keyed_aggregate(vm, record);
+    }
+    NativeResult::Ok(JsValue::undefined())
+}
+
+/// `Promise.allSettledKeyed` resolve 元素：写 `{status:'fulfilled', value}`
+/// 记录，剩余计数归零时建结果对象并完成。
+fn promise_keyed_settled_resolve_element(vm: &mut Vm, args: &[u8]) -> NativeResult {
+    let Some((record, index)) = agg_element_state(vm) else {
+        return NativeResult::Ok(JsValue::undefined());
+    };
+    let value = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
+    let values = agg_record_val(vm, record, AGG_VALUES_PROP);
+    if values.is_object() {
+        let settled = vm.make_settled_record("fulfilled", "value", value);
+        let key_si = make_int_key(index as u32);
+        // SAFETY: values 是存活数组对象。
+        vm.set_or_create_prop_value(unsafe { &mut *values.as_js_object_ptr() }, key_si, settled);
+    }
+    let remaining = agg_read_remaining(vm, record) - 1;
+    agg_write_remaining(vm, record, remaining);
+    if remaining == 0 {
+        settle_keyed_aggregate(vm, record);
+    }
+    NativeResult::Ok(JsValue::undefined())
+}
+
+/// `Promise.allSettledKeyed` reject 元素：写 `{status:'rejected', reason}`
+/// 记录，剩余计数归零时建结果对象并完成。
+fn promise_keyed_settled_reject_element(vm: &mut Vm, args: &[u8]) -> NativeResult {
+    let Some((record, index)) = agg_element_state(vm) else {
+        return NativeResult::Ok(JsValue::undefined());
+    };
+    let reason = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
+    let values = agg_record_val(vm, record, AGG_VALUES_PROP);
+    if values.is_object() {
+        let settled = vm.make_settled_record("rejected", "reason", reason);
+        let key_si = make_int_key(index as u32);
+        // SAFETY: values 是存活数组对象。
+        vm.set_or_create_prop_value(unsafe { &mut *values.as_js_object_ptr() }, key_si, settled);
+    }
+    let remaining = agg_read_remaining(vm, record) - 1;
+    agg_write_remaining(vm, record, remaining);
+    if remaining == 0 {
+        settle_keyed_aggregate(vm, record);
     }
     NativeResult::Ok(JsValue::undefined())
 }
