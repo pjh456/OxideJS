@@ -40,18 +40,21 @@ fn range_error<H: VmHost>(vm: &mut H, msg: &str) -> JsValue {
     crate::error::create_range_error(vm, msg)
 }
 
+/// ToIndex（spec 7.1.24）：ToNumber 传播式（Symbol 抛 TypeError、BigInt
+/// 走 lossy 数值、对象经 ToPrimitive）；NaN → +0、向零截断；负值与
+/// ≥ 2^53（含 +Infinity）→ RangeError。
 fn to_index<H: VmHost>(vm: &mut H, value: JsValue, msg: &str) -> Result<usize, JsValue> {
-    let n = match vm.coerce_number_bounded(value) {
+    let n = match oxide_runtime_api::to_number_full(value, vm) {
         Ok(n) => n,
         Err(e) => return Err(crate::iterator::engine_error(vm, &e)),
     };
-    if n.is_nan() {
-        return Ok(0);
-    }
-    if !n.is_finite() || n < 0.0 {
+    // ToIntegerOrInfinity：NaN → +0，±Infinity 原样，有限值向零截断。
+    let integer = if n.is_nan() { 0.0 } else { n.trunc() };
+    // 合法域 [0, 2^53)：负值与 ≥ 2^53（含 +Infinity）→ RangeError。
+    if !(0.0..9_007_199_254_740_992.0_f64).contains(&integer) {
         return Err(range_error(vm, msg));
     }
-    Ok(n.trunc() as usize)
+    Ok(integer as usize)
 }
 
 fn typed_array_proto_ptr<H: VmHost>(vm: &mut H, kind: TypedArrayKind) -> *mut JsObject {
@@ -73,6 +76,29 @@ fn typed_array_proto_ptr<H: VmHost>(vm: &mut H, kind: TypedArrayKind) -> *mut Js
 
 /// 取指定类型的内建构造器值（`[[TypedArrayName]]` → world 槽），species 默认臂
 /// 的构造目标。
+/// GetPrototypeFromConstructor(newTarget, 该 kind 内建原型)：经 ordinary_get
+/// 传播式读 newTarget 的 "prototype"（访问器副作用与异常原值传播）；
+/// newTarget 非对象、或读取结果非对象时回落该 kind 的内建原型。
+///
+/// # 边界与前提
+/// - 仅读寄存器 255（new.target），构造帧内由 NEW/SUPER 机制置位；普通调用
+///   入口经构造守卫拦截，不到达本函数。
+fn ta_gpf_proto<H: VmHost>(vm: &mut H, kind: TypedArrayKind) -> Result<JsValue, JsValue> {
+    let default_proto = JsValue::from_js_object(typed_array_proto_ptr(vm, kind));
+    let new_target = vm.reg(255);
+    if !new_target.is_object() {
+        return Ok(default_proto);
+    }
+    let nt_ptr = new_target.as_js_object_ptr();
+    // SAFETY: is_object 保证指针非空且对象本 session 存活。
+    let nt_obj = unsafe { &*nt_ptr };
+    let proto_si = vm.kernel_core().perm_interner().intern("prototype").0;
+    match vm.ordinary_get(nt_obj, proto_si, new_target) {
+        Ok(v) => Ok(if v.is_object() { v } else { default_proto }),
+        Err(err) => Err(crate::iterator::engine_error(vm, &err)),
+    }
+}
+
 fn typed_array_ctor_value<H: VmHost>(vm: &mut H, kind: TypedArrayKind) -> JsValue {
     let world = vm.session().builtin_world();
     let ctor = match kind {
@@ -114,9 +140,9 @@ fn materialize_typed_array(
 
 fn create_typed_array<H: VmHost>(
     vm: &mut H, kind: TypedArrayKind, buffer: JsValue, byte_offset: usize, length: usize, auto_length: bool,
+    proto: JsValue,
 ) -> *mut JsObject {
-    let proto = typed_array_proto_ptr(vm, kind);
-    let mut obj = JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(proto));
+    let mut obj = JsObject::new_empty(EMPTY_SHAPE_ID, proto);
     materialize_typed_array(&mut obj, kind, buffer, byte_offset, length, auto_length);
     vm.alloc_object(obj)
 }
@@ -128,7 +154,8 @@ fn create_same_type_typed_array<H: VmHost>(vm: &mut H, kind: TypedArrayKind, len
     let bpe = kind.bytes_per_element();
     let buffer =
         JsValue::from_js_object(new_array_buffer(vm, vec![0; length * bpe], 0, default_array_buffer_proto(vm)));
-    create_typed_array(vm, kind, buffer, 0, length, false)
+    let proto = JsValue::from_js_object(typed_array_proto_ptr(vm, kind));
+    create_typed_array(vm, kind, buffer, 0, length, false, proto)
 }
 
 fn typed_array_data_ptr(obj: &JsObject) -> Option<*mut TypedArrayData> {
@@ -769,8 +796,13 @@ pub(crate) fn write_element<H: VmHost>(
 ///    （含用户自定义迭代器）；否则按 array-like 读 `length` 逐索引取值。
 ///
 /// # 边界
-/// 源须为对象，否则抛 TypeError。
-fn collect_array_like<H: VmHost>(vm: &mut H, value: JsValue, consult_iterator: bool) -> Result<Vec<JsValue>, JsValue> {
+/// - 源须为对象，否则抛 TypeError。
+/// - `max_elements` 为 AllocateTypedArrayBuffer 上界（元素数 = 引擎缓冲上限
+///   ÷ 元素大小）：ToLength(length) 值超出时抛 RangeError，先于密集上限截断；
+///   None 表示入口无上界（非构造器路径）。
+fn collect_array_like<H: VmHost>(
+    vm: &mut H, value: JsValue, consult_iterator: bool, max_elements: Option<usize>,
+) -> Result<Vec<JsValue>, JsValue> {
     if !value.is_object() {
         return Err(type_error(vm, "TypedArray source must be array-like or iterable"));
     }
@@ -825,6 +857,13 @@ fn collect_array_like<H: VmHost>(vm: &mut H, value: JsValue, consult_iterator: b
         .ordinary_get(obj, length_si, value)
         .map_err(|e| crate::iterator::engine_error(vm, &e))?;
     let n = oxide_runtime_api::to_number_full(len_val, vm).map_err(|e| crate::iterator::engine_error(vm, &e))?;
+    // AllocateTypedArrayBuffer 上界：ToLength 值超元素数上界即抛，先于
+    // 密集上限截断（截断后的长度永不可触上界，检点必须在此）。
+    if let Some(max_elements) = max_elements {
+        if to_length(n) > max_elements as u64 {
+            return Err(range_error(vm, "invalid TypedArray length"));
+        }
+    }
     let len = to_collect_len(n);
     let mut values = Vec::with_capacity(len);
     for i in 0..len {
@@ -838,29 +877,40 @@ fn collect_array_like<H: VmHost>(vm: &mut H, value: JsValue, consult_iterator: b
     Ok(values)
 }
 
-/// 按 ToLength 语义把 length 数值夹到收集上限：NaN/非正取 0，超出密集上限截断。
-fn to_collect_len(n: f64) -> usize {
+/// ToLength（spec 7.1.20）：NaN/非正取 0，+Infinity 夹取 2^53−1，
+/// 有限值向零截断。
+fn to_length(n: f64) -> u64 {
     if n.is_nan() || n <= 0.0 {
         0
     } else {
-        (n.min(9_007_199_254_740_991.0).trunc() as u64).min(oxide_types::object::MAX_DENSE_PROPS as u64) as usize
+        n.min(9_007_199_254_740_991.0).trunc() as u64
     }
 }
 
+/// 按 ToLength 语义把 length 数值夹到收集上限：NaN/非正取 0，超出密集上限截断。
+fn to_collect_len(n: f64) -> usize {
+    to_length(n).min(oxide_types::object::MAX_DENSE_PROPS as u64) as usize
+}
+
 fn typed_array_new<H: VmHost>(vm: &mut H, args: &[u8], kind: TypedArrayKind) -> NativeResult {
+    // spec 步 1：NewTarget 缺失（普通调用）→ TypeError，先于一切参数求值。
+    if !vm.constructing_native() {
+        return NativeResult::Err(type_error(vm, "TypedArray constructor requires new"));
+    }
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
     // 调用形态取构造入口标记（NEW/SUPER native 臂与 construct_with 三入口调用前
     // 置位、普通调用入口调用前清零），不推断 new.target 寄存器：native 调用与
     // 调用方共享寄存器文件，类构造器帧内 new.target 槽残留类构造器对象，按
     // 寄存器推断会把成员式普通调用误判为构造（双物化 receiver、旧数据盒泄漏）。
-    // 构造形态下视图数据物化到 receiver（其原型 = new.target.prototype，派生类
-    // super() 与 species 构造由此拿到子类实例）；普通形态按规范 TypedArrayCreate
-    // 忽略 this、自建新对象。
-    let in_construct = vm.constructing_native() && this_val.is_object();
+    // 构造形态下视图数据物化到 receiver（派生类 super() 与 species 构造由此
+    // 拿到子类实例）；普通形态按规范 TypedArrayCreate 忽略 this、自建新对象。
+    let in_construct = this_val.is_object();
     let first = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::int(0) };
     let bpe = kind.bytes_per_element();
 
-    let (buffer, byte_offset, length, auto_length) = if first.is_object() {
+    let (buffer, byte_offset, length, auto_length, proto) = if first.is_object() {
+        // GpFC 先于本臂一切参数转换：newTarget 原型读异常原值上抛。
+        let proto = native_try!(ta_gpf_proto(vm, kind));
         let first_ptr = first.as_js_object_ptr();
         let first_obj = unsafe { &*first_ptr };
         // ArrayBuffer/SharedArrayBuffer 双认：长度/偏移/长度校验与定长臂同构；
@@ -869,41 +919,59 @@ fn typed_array_new<H: VmHost>(vm: &mut H, args: &[u8], kind: TypedArrayKind) -> 
             let Some(payload_ptr) = buffer_payload_ptr(first_obj) else {
                 return NativeResult::Err(crate::error::create_type_error(vm, "ArrayBuffer internal state invalid"));
             };
-            // SAFETY: payload_ptr 经 buffer_payload_ptr 校验为合法缓冲区载荷。
-            let Some(data) = unsafe { &*payload_ptr }.data.as_ref() else {
-                // 首参 buffer 载荷缺失（AB 已 detach；SAB 为防御背板）：按规范的
-                // ArrayBuffer 校验步抛 TypeError（构造器入口的 detach 守卫即本臂）。
-                return NativeResult::Err(crate::error::create_type_error(vm, "ArrayBuffer internal state invalid"));
-            };
-            let buffer_len = data.len();
+            // spec 步序：ToIndex(offset) → offset 模校验 → ToIndex(length) →
+            // 重读载荷 detach 检 → 剩余长度/模校验；转换窗口内的 detach
+            // 在 IsDetached 步抛 TypeError。
             let byte_offset = if args.len() > 2 {
                 native_try!(to_index(vm, vm.reg(args[2]), "TypedArray byteOffset out of bounds"))
             } else {
                 0
             };
-            if byte_offset > buffer_len || byte_offset % bpe != 0 {
+            if byte_offset % bpe != 0 {
                 return NativeResult::Err(range_error(vm, "TypedArray byteOffset out of bounds"));
             }
-            let remaining = buffer_len - byte_offset;
             // 规范以 "length is not undefined" 分支：显式 undefined 与省略同义，
             // 取整缓冲剩余长度（live 全长），不落入 ToIndex(undefined)=0。
             // auto 口径：省略/显式 undefined → 长度随 buffer 伸缩；显式给定
             // 定死。
             let auto_length = args.len() <= 3 || vm.reg(args[3]).is_undefined();
-            let length = if auto_length {
-                remaining / bpe
+            let mut length = if auto_length {
+                0
             } else {
                 native_try!(to_index(vm, vm.reg(args[3]), "TypedArray length out of bounds"))
             };
-            let Some(byte_length) = length.checked_mul(bpe) else {
-                return NativeResult::Err(range_error(vm, "TypedArray length out of bounds"));
+            // SAFETY: payload_ptr 经 buffer_payload_ptr 校验为合法缓冲区载荷。
+            let payload = unsafe { &*payload_ptr };
+            let Some(data) = payload.data.as_ref() else {
+                // 首参 buffer 载荷缺失（AB 转换窗口内已 detach；SAB 为防御背板）：
+                // 按规范的 IsDetached 步抛 TypeError。
+                return NativeResult::Err(type_error(vm, "ArrayBuffer internal state invalid"));
             };
-            if byte_length > remaining {
-                return NativeResult::Err(range_error(vm, "TypedArray length out of bounds"));
+            let buffer_len = data.len();
+            if byte_offset > buffer_len {
+                return NativeResult::Err(range_error(vm, "TypedArray byteOffset out of bounds"));
             }
-            (first, byte_offset, length, auto_length)
+            let remaining = buffer_len - byte_offset;
+            if auto_length {
+                // 定长 + 省略 length：剩余字节须被元素大小整除（max_byte_length
+                // 存储态 0 = 定长，AB/SAB 同编码）；可增缓冲无此模校验。
+                if payload.max_byte_length == 0 && remaining % bpe != 0 {
+                    return NativeResult::Err(range_error(vm, "TypedArray length out of bounds"));
+                }
+                length = remaining / bpe;
+            } else {
+                let Some(byte_length) = length.checked_mul(bpe) else {
+                    return NativeResult::Err(range_error(vm, "TypedArray length out of bounds"));
+                };
+                if byte_length > remaining {
+                    return NativeResult::Err(range_error(vm, "TypedArray length out of bounds"));
+                }
+            }
+            (first, byte_offset, length, auto_length, proto)
         } else {
-            let values = native_try!(collect_array_like(vm, first, true));
+            // AllocateTypedArrayBuffer 上界先于密集上限截断：ToLength 值 ×
+            // 元素大小超引擎缓冲上限 → RangeError。
+            let values = native_try!(collect_array_like(vm, first, true, Some(MAX_ARRAY_BUFFER_LENGTH / bpe)));
             let byte_len = values.len().saturating_mul(bpe);
             let buffer =
                 JsValue::from_js_object(new_array_buffer(vm, vec![0; byte_len], 0, default_array_buffer_proto(vm)));
@@ -917,15 +985,18 @@ fn typed_array_new<H: VmHost>(vm: &mut H, args: &[u8], kind: TypedArrayKind) -> 
                 let elem = native_try!(ta_element_value(vm, kind, value));
                 write_element(vm, kind, buffer_ref, idx * bpe, elem);
             }
-            (buffer, 0, byte_len / bpe, false)
+            (buffer, 0, byte_len / bpe, false, proto)
         }
     } else {
         // 非对象第一参数统一按 ToIndex 语义处理（bool→0/1、null→0、BigInt→数值、
-        // 字符串→解析、undefined→0）；Symbol 按规范抛 TypeError。
+        // 字符串→解析、undefined→0）；Symbol 按规范抛 TypeError，先于 GpFC 读。
         if first.is_symbol() {
             return NativeResult::Err(type_error(vm, "invalid TypedArray length"));
         }
         let len = native_try!(to_index(vm, first, "invalid TypedArray length"));
+        // GpFC 在 ToIndex 之后（spec 步序：非对象臂 AllocateTypedArray 在
+        // ToIndex 之后）；转换异常与原型读异常不组合钉序，符号守卫已在先。
+        let proto = native_try!(ta_gpf_proto(vm, kind));
         let Some(byte_len) = len.checked_mul(bpe) else {
             return NativeResult::Err(range_error(vm, "invalid TypedArray length"));
         };
@@ -934,13 +1005,18 @@ fn typed_array_new<H: VmHost>(vm: &mut H, args: &[u8], kind: TypedArrayKind) -> 
         }
         let buffer =
             JsValue::from_js_object(new_array_buffer(vm, vec![0; byte_len], 0, default_array_buffer_proto(vm)));
-        (buffer, 0, len, false)
+        (buffer, 0, len, false, proto)
     };
 
     if in_construct {
         // SAFETY: receiver 是构造帧分配的 this（本 session 存活），此处只写
         // type_tag 与 native_fn 两个槽位，与调用方无别名。
         let obj = unsafe { &mut *this_val.as_js_object_ptr() };
+        // 通用构造机制的原型读吞访问器异常且非对象回落 Object.prototype；
+        // 按 spec 结果重设（派生类 super() 的恒等重设是 no-op，无漂移）。
+        if let Err(msg) = obj.set_proto(proto) {
+            return NativeResult::Err(type_error(vm, msg));
+        }
         materialize_typed_array(obj, kind, buffer, byte_offset, length, auto_length);
         NativeResult::Ok(this_val)
     } else {
@@ -951,6 +1027,7 @@ fn typed_array_new<H: VmHost>(vm: &mut H, args: &[u8], kind: TypedArrayKind) -> 
             byte_offset,
             length,
             auto_length,
+            proto,
         )))
     }
 }
@@ -2678,6 +2755,7 @@ pub fn uint8array_from_base64<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResul
     native_try!(ta_decode_base64(vm, string, options, None, &mut |_, b| bytes.push(b)));
     let len = bytes.len();
     let buffer = JsValue::from_js_object(new_array_buffer(vm, bytes, 0, default_array_buffer_proto(vm)));
+    let proto = JsValue::from_js_object(typed_array_proto_ptr(vm, TypedArrayKind::Uint8));
     NativeResult::Ok(JsValue::from_js_object(create_typed_array(
         vm,
         TypedArrayKind::Uint8,
@@ -2685,6 +2763,7 @@ pub fn uint8array_from_base64<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResul
         0,
         len,
         false,
+        proto,
     )))
 }
 
@@ -2702,6 +2781,7 @@ pub fn uint8array_from_hex<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     }
     let len = bytes.len();
     let buffer = JsValue::from_js_object(new_array_buffer(vm, bytes, 0, default_array_buffer_proto(vm)));
+    let proto = JsValue::from_js_object(typed_array_proto_ptr(vm, TypedArrayKind::Uint8));
     NativeResult::Ok(JsValue::from_js_object(create_typed_array(
         vm,
         TypedArrayKind::Uint8,
@@ -2709,6 +2789,7 @@ pub fn uint8array_from_hex<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         0,
         len,
         false,
+        proto,
     )))
 }
 

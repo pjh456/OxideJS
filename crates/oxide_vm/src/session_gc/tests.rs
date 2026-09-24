@@ -749,7 +749,11 @@ fn session_gc_keeps_shared_array_buffer_alive_through_view_native_edges() {
     vm.constructing_native = false;
 
     vm.regs[1] = buffer;
+    // 同 AB 臂：TA 构造器普通调用按规范抛 TypeError，直调须夹持 NEW 标记
+    // （reg(0) 未置 this，走自建对象臂）。
+    vm.constructing_native = true;
     let typed = native_ok(typed_array::int32array_constructor(&mut vm, &[0, 1]));
+    vm.constructing_native = false;
 
     vm.regs[1] = buffer;
     data_view_this(&mut vm, 0);

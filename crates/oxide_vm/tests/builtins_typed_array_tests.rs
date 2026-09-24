@@ -317,13 +317,13 @@ fn typed_array_numeric_write_bigint_throws() {
 #[test]
 fn typed_array_constructor_bigint_length() {
     let mut vm = Vm::new();
-    // 长度参数走 ToIndex：BigInt 实参在 ToNumber 步抛 TypeError，不截断建数组；
+    // 长度参数走 ToIndex：BigInt 经 ToNumber 取 lossy 数值（spec ToIndex(5n)=5），
     // 布尔/null 等原语按数值转换语义建数组。
     let result = eval(
         &mut vm,
-        "(function () { var t = false; \
-         try { new BigInt64Array(5n); } catch (e) { t = e instanceof TypeError; } \
-         return t && new Int8Array(true).length === 1 && new Int8Array(null).length === 0; })()",
+        "(function () { \
+         return new BigInt64Array(5n).length === 5 && \
+         new Int8Array(true).length === 1 && new Int8Array(null).length === 0; })()",
     )
     .unwrap();
     assert!(result.as_bool());
@@ -707,15 +707,17 @@ fn typed_array_same_type_immutable_methods_ignore_species() {
 }
 
 #[test]
-fn typed_array_plain_call_and_construct_zero_drift() {
-    // 普通调用（无 new）与构造调用双路径零漂移：结果均为内建实例；
-    // 派生类显式构造器 super() 后可继续扩展属性。
+fn typed_array_plain_call_throws_construct_ok() {
+    // 普通调用（无 new、NewTarget 缺失）按规范步 1 抛 TypeError；构造调用
+    // 正常出内建实例；派生类显式构造器 super() 后可继续扩展属性。
     let mut vm = Vm::new();
     let result = eval(
         &mut vm,
-        "(function () { var plain = Uint8Array(2); var constructed = new Uint8Array(2); \
-         if (!(plain instanceof Uint8Array && constructed instanceof Uint8Array)) return false; \
-         if (plain.length !== 2 || constructed.length !== 2) return false; \
+        "(function () { var t = false; \
+         try { Uint8Array(2); } catch (e) { t = e instanceof TypeError; } \
+         var constructed = new Uint8Array(2); \
+         if (!(t && constructed instanceof Uint8Array)) return false; \
+         if (constructed.length !== 2) return false; \
          class S extends Uint8Array { constructor(len) { super(len); this.marked = true; } } \
          var s = new S(2); var f = S.from([7, 8]); \
          return s instanceof S && s.marked === true && f instanceof S && \
@@ -766,19 +768,23 @@ fn typed_array_detached_entry_validate_before_callback_check() {
 
 #[test]
 fn typed_array_plain_member_call_in_class_ctor_not_construct() {
-    // 类构造器帧内对 TA 构造器的成员式普通调用是普通形态：返回全新 TA，
-    // receiver 不物化（长度与 buffer 不动），receiver 为普通对象时亦不改建。
+    // 类构造器帧内对 TA 构造器的成员式普通调用是普通形态（NewTarget 缺失）：
+    // 按规范步 1 抛 TypeError，receiver 不物化（长度与 buffer 不动），
+    // receiver 为普通对象时亦不改建。
     let mut vm = Vm::new();
     let result = eval(
         &mut vm,
         "(function () { class Sub extends Uint8Array { constructor() { \
-          super(4); this.f = Uint8Array; var r = this.f(2); this.r = r; this.len = this.length; \
-          var o = {}; o.f = Uint8Array; var p = o.f(2); this.p = p; this.o = o; } } \
+          super(4); this.f = Uint8Array; \
+          var o = {}; o.f = Uint8Array; \
+          var t1, t2; \
+          try { this.f(2); } catch (e) { t1 = e instanceof TypeError; } \
+          try { o.f(2); } catch (e) { t2 = e instanceof TypeError; } \
+          this.t1 = t1; this.t2 = t2; this.o = o; } } \
           var s = new Sub(); \
-          return s.r !== s && s.r instanceof Uint8Array && \
-          Object.getPrototypeOf(s.r) === Uint8Array.prototype && s.r.length === 2 && \
-          s.len === 4 && s.length === 4 && s.buffer.byteLength === 4 && \
-          s.p !== s.o && s.p.length === 2 && typeof s.o.length === 'undefined'; })()",
+          return s.t1 === true && s.t2 === true && \
+          s.length === 4 && s.buffer.byteLength === 4 && \
+          typeof s.o.length === 'undefined'; })()",
     )
     .unwrap();
     assert!(result.as_bool());
@@ -2270,6 +2276,124 @@ fn ta_sab_base64() {
            var r = ta.setFromBase64('////'); \
            return ok && r.read === 4 && r.written === 3 \
               && ta[0] === 0xff && ta[1] === 0xff && ta[2] === 0xff && ta[3] === 0; })()",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
+#[test]
+fn typed_array_ctor_plain_call_all_forms_throw() {
+    // NewTarget 缺失守卫（spec 步 1）：buffer/length/对象/TA 源/无参五形
+    // 普通调用全抛 TypeError，先于一切参数求值。
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "(function () { var ab = new ArrayBuffer(4); var t = true; \
+         try { Int8Array(ab); } catch (e) { t = t && e instanceof TypeError; } \
+         try { Int8Array(2); } catch (e) { t = t && e instanceof TypeError; } \
+         try { Int8Array([1, 2]); } catch (e) { t = t && e instanceof TypeError; } \
+         try { Int8Array(new Int8Array(2)); } catch (e) { t = t && e instanceof TypeError; } \
+         try { Int8Array(); } catch (e) { t = t && e instanceof TypeError; } \
+         return t; })()",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
+#[test]
+fn typed_array_ctor_gpf_getter_throws_propagates() {
+    // newTarget.prototype 访问器抛值原值传播（buffer 形 + length 形）：
+    // 构造器体内 GpFC 自重读，不依赖通用构造机制的原型读。
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "(function () { var nt = function () {}; \
+         Object.defineProperty(nt, 'prototype', { \
+           get: function () { throw new RangeError('gpf'); } }); \
+         var ab = new ArrayBuffer(4); var t1, t2; \
+         try { Reflect.construct(Int8Array, [ab], nt); } \
+         catch (e) { t1 = e instanceof RangeError && e.message === 'gpf'; } \
+         try { Reflect.construct(Int8Array, [2], nt); } \
+         catch (e) { t2 = e instanceof RangeError && e.message === 'gpf'; } \
+         return t1 && t2; })()",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
+#[test]
+fn typed_array_ctor_gpf_proto_fallback_and_respect() {
+    // GpFC 交付：newTarget.prototype 非对象回落该 kind 内建原型（构造形），
+    // 自定义对象原型被尊重；回落实例的 constructor/原型断言同源。
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "(function () { var nt = function () {}; nt.prototype = null; \
+         var c = Reflect.construct(Int8Array, [2], nt); \
+         var o = { p: 1 }; var nt2 = function () {}; nt2.prototype = o; \
+         var d = Reflect.construct(Int8Array, [2], nt2); \
+         return Object.getPrototypeOf(c) === Int8Array.prototype && \
+         c.constructor === Int8Array && c.length === 2 && \
+         Object.getPrototypeOf(d) === o; })()",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
+#[test]
+fn typed_array_ctor_to_index_truncation_and_bounds() {
+    // ToIndex 语义：向零截断（-0.1→0、8.9→8）、true→1、BigInt lossy（2n→2）；
+    // 负整数与 ≥2^53 → RangeError；Symbol → TypeError。
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "(function () { var t = new Int8Array(-0.1).length === 0 && \
+         new Int8Array(8.9).length === 8 && \
+         new Int8Array(true).length === 1 && new Int8Array(2n).length === 2; \
+         try { new Int8Array(-5); } catch (e) { t = t && e instanceof RangeError; } \
+         try { new Int8Array(9007199254740992); } catch (e) { t = t && e instanceof RangeError; } \
+         try { new Int8Array(Symbol()); } catch (e) { t = t && e instanceof TypeError; } \
+         return t; })()",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
+#[test]
+fn typed_array_ctor_fixed_missing_length_modulo() {
+    // 定长缓冲 + 省略 length：剩余字节 % bpe ≠ 0 → RangeError（AB/SAB 同形）；
+    // 可增 SAB 无模校验，auto 短视图（1 字节 / bpe=8 → 长度 0）。
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "(function () { var t = true; \
+         try { new Float64Array(new ArrayBuffer(1)); } \
+         catch (e) { t = t && e instanceof RangeError; } \
+         try { new Float64Array(new SharedArrayBuffer(1)); } \
+         catch (e) { t = t && e instanceof RangeError; } \
+         var sab = new SharedArrayBuffer(1, { maxByteLength: 8 }); \
+         var v = new Float64Array(sab); \
+         return t && v.length === 0; })()",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
+#[test]
+fn typed_array_ctor_object_arg_excessive_length() {
+    // 对象臂 AllocateTypedArrayBuffer 上界：ToLength(length)×bpe 超引擎缓冲
+    // 上限 → RangeError（BigInt 源不再误抛 TypeError）；上界下正常成对象，
+    // 长度按密集上限截断。
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "(function () { var t = true; \
+         try { new Int8Array({ length: 9007199254740992 }); } \
+         catch (e) { t = t && e instanceof RangeError; } \
+         try { new BigInt64Array({ length: 9007199254740992 }); } \
+         catch (e) { t = t && e instanceof RangeError; } \
+         var ok = new Int8Array({ length: 268435456 }); \
+         return t && ok.length === 1000000; })()",
     )
     .unwrap();
     assert!(result.as_bool());
