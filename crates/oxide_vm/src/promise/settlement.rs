@@ -152,30 +152,6 @@ impl Vm {
         }
     }
 
-    /// 校验值的原型链含 `%Promise.prototype%`（`new Promise` 构造出的实例特征）。
-    pub(super) fn has_promise_proto(&self, v: JsValue) -> bool {
-        if !v.is_object() {
-            return false;
-        }
-        let target = self.promise_proto.as_ptr() as *mut JsObject;
-        let mut cursor = v;
-        for _ in 0..crate::vm::MAX_PROTO_CHAIN_DEPTH {
-            if !cursor.is_object() {
-                return false;
-            }
-            let ptr = cursor.as_js_object_ptr();
-            if ptr.is_null() {
-                return false;
-            }
-            if std::ptr::eq(ptr, target) {
-                return true;
-            }
-            // SAFETY: 循环内 `is_object` 与 `ptr` 非空守卫保证可解引用；只读 proto()，链深受深度上限约束。
-            cursor = unsafe { &*ptr }.proto();
-        }
-        false
-    }
-
     /// 入队一条微任务（追加到队尾，保证 FIFO）。
     pub(super) fn enqueue(&mut self, job: Microtask) {
         self.job_queue.push_back(job);

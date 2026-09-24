@@ -344,7 +344,7 @@ impl Vm {
 /// 2. executor 可读性检查（步序先于 GpFC 原型读）。
 /// 3. GetPrototypeFromConstructor：传播式读 new.target 的 "prototype"
 ///    （访问器副作用与异常原值传播）；非对象结果回落 %Promise.prototype%。
-/// 4. 物化 receiver（原型重设 + type_tag + 状态盒）后经原型链检放行。
+/// 4. 物化 receiver（原型重设 + type_tag + 状态盒）。
 fn promise_constructor(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
     // NewTarget 缺失 = 非构造形态：构造入口置位、普通调用入口清零，据此拒绝。
@@ -397,10 +397,6 @@ fn promise_constructor(vm: &mut Vm, args: &[u8]) -> NativeResult {
         promoted_clone: std::ptr::null_mut(),
     });
     obj.set_native_data(Box::into_raw(state) as *mut u8);
-    // 物化后的 receiver 原型链须含 %Promise.prototype%（构造面放行兜底）。
-    if !vm.has_promise_proto(this_val) {
-        return NativeResult::Err(oxide_builtins::error::create_type_error(vm, "Promise must be called with new"));
-    }
     match vm.call_function_sync(executor, JsValue::undefined(), &[resolve, reject]) {
         Ok(_) => NativeResult::Ok(this_val),
         Err(e) => {
