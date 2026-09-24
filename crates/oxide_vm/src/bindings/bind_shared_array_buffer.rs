@@ -18,16 +18,24 @@ pub fn bind_shared_array_buffer(core: &Arc<KernelCore>, session: &KernelSession,
         1,
     );
 
-    // grow 方法（slice 归后续面）：growable 缓冲区原地增长，只增不缩。
+    // grow/slice 方法：grow 原地增长（只增不缩）；slice 复制字节区间生成
+    // 新 SAB。
     apply_binding_table(
         session.builtin_world(),
         proto,
         core,
-        &[(
-            "grow",
-            oxide_builtins::array_buffer::shared_array_buffer_grow::<crate::vm::Vm> as *const (),
-            1,
-        )],
+        &[
+            (
+                "grow",
+                oxide_builtins::array_buffer::shared_array_buffer_grow::<crate::vm::Vm> as *const (),
+                1,
+            ),
+            (
+                "slice",
+                oxide_builtins::array_buffer::shared_array_buffer_slice::<crate::vm::Vm> as *const (),
+                2,
+            ),
+        ],
     );
 
     // byteLength/maxByteLength 两枚访问器（set 恒 undefined）读载荷字节数 /

@@ -1486,10 +1486,200 @@ fn sab_stubs_shrunk_five_remain() {
          for (var i = 0; i < names.length; i++) { \
             if (typeof globalThis[names[i]] !== 'function') { return false; } \
          } \
-         if (typeof globalThis.Atomics !== 'object') { return false; } \
+          if (typeof globalThis.Atomics !== 'object') { return false; } \
+          var threw = false; \
+          try { globalThis.Atomics(); } catch (e) { threw = e instanceof TypeError; } \
+          return threw; })()",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
+/// SAB slice 窗口钉：全窗/前缀/后缀/负 start/负 end/start 越界/end 越界/
+/// start 超 end/空窗九形长度，产物恒 SAB 品牌且定长。
+#[test]
+fn sab_slice_window_pins() {
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "(function () { var sab = new SharedArrayBuffer(8); \
+         var chk = function (s) { var r = sab.slice(s[0], s[1]); \
+           return r instanceof SharedArrayBuffer && r.growable === false ? r.byteLength : -1; }; \
+         return chk([undefined, undefined]) === 8 && chk([0, 3]) === 3 && chk([6, undefined]) === 2 \
+         && chk([-2]) === 2 && chk([0, -2]) === 6 && chk([20]) === 0 \
+         && chk([2, 20]) === 6 && chk([5, 2]) === 0 && chk([3, 3]) === 0 })()",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
+/// SAB slice 内容钉：[1..8] 源 slice(2,6) → [3,4,5,6]，产物独立于源。
+#[test]
+fn sab_slice_content_copy() {
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "(function () { var sab = new SharedArrayBuffer(8); \
+         var v = new Uint8Array(sab); \
+         for (var i = 0; i < 8; i++) v[i] = i + 1; \
+         var d = new Uint8Array(sab.slice(2, 6)); \
+         return d.length === 4 && d[0] === 3 && d[1] === 4 && d[2] === 5 && d[3] === 6 \
+         && v[0] === 1 })()",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
+/// SAB slice 物种回落三形钉：constructor undefined / species undefined /
+/// species null → 默认构造器 %SharedArrayBuffer%（proto === SAB.prototype）
+/// 且内容正确。
+#[test]
+fn sab_slice_species_default_fallbacks() {
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "(function () { \
+         var s1 = new SharedArrayBuffer(8); s1.constructor = undefined; \
+         var r1 = s1.slice(); \
+         var c2 = {}; var s2 = new SharedArrayBuffer(8); s2.constructor = c2; \
+         var r2 = s2.slice(); \
+         var c3 = {}; c3[Symbol.species] = null; \
+         var s3 = new SharedArrayBuffer(8); s3.constructor = c3; \
+         var r3 = s3.slice(); \
+         var v = new Uint8Array(s1); v[0] = 7; \
+         var d = new Uint8Array(s1.slice()); \
+         return Object.getPrototypeOf(r1) === SharedArrayBuffer.prototype && r1.byteLength === 8 \
+         && Object.getPrototypeOf(r2) === SharedArrayBuffer.prototype \
+         && Object.getPrototypeOf(r3) === SharedArrayBuffer.prototype \
+         && d[0] === 7 })()",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
+/// SAB slice 物种交付钉：构造器实参 «8» 捕获、返回自建 SAB → 交付原值（同一
+/// 对象）且内容拷贝入产物。
+#[test]
+fn sab_slice_species_custom_returns() {
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "(function () { var calls = []; var made = null; var c = {}; \
+         c[Symbol.species] = function (len) { calls.push(len); made = new SharedArrayBuffer(8); return made; }; \
+         var sab = new SharedArrayBuffer(8); \
+         var v = new Uint8Array(sab); \
+         for (var i = 0; i < 8; i++) v[i] = i + 1; \
+         sab.constructor = c; \
+         var r = sab.slice(); \
+         var d = new Uint8Array(r); \
+         return r === made && r.byteLength === 8 && calls.join(',') === '8' \
+         && d[0] === 1 && d[7] === 8 })()",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
+/// SAB slice 物种 TypeError 五形钉：constructor null/true/\"\"、species
+/// 对象/Function.prototype 均 TypeError。
+#[test]
+fn sab_slice_species_type_error_family() {
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "(function () { function ty(fn) { try { fn(); return false; } catch (e) { return e instanceof TypeError; } } \
+         var sab = new SharedArrayBuffer(8); \
+         sab.constructor = null; var t1 = ty(function () { sab.slice(); }); \
+         sab.constructor = true; var t2 = ty(function () { sab.slice(); }); \
+         sab.constructor = ''; var t3 = ty(function () { sab.slice(); }); \
+         var c = {}; sab.constructor = c; \
+         c[Symbol.species] = {}; var t4 = ty(function () { sab.slice(); }); \
+         c[Symbol.species] = Function.prototype; var t5 = ty(function () { sab.slice(); }); \
+         return t1 && t2 && t3 && t4 && t5 })()",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
+/// SAB slice 结果三检前四形钉：物种返回非 SAB / 返回源自身 / 返回短 SAB →
+/// TypeError；返回长 SAB → 交付（内容只填前缀）。
+#[test]
+fn sab_slice_species_result_checks() {
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "(function () { function ty(fn) { try { fn(); return false; } catch (e) { return e instanceof TypeError; } } \
+         var a1 = new SharedArrayBuffer(8); var c1 = {}; \
+         c1[Symbol.species] = function () { return {}; }; a1.constructor = c1; \
+         var t1 = ty(function () { a1.slice(); }); \
+         var a2 = new SharedArrayBuffer(8); var c2 = {}; \
+         c2[Symbol.species] = function () { return a2; }; a2.constructor = c2; \
+         var t2 = ty(function () { a2.slice(); }); \
+         var a3 = new SharedArrayBuffer(8); var c3 = {}; \
+         c3[Symbol.species] = function () { return new SharedArrayBuffer(4); }; a3.constructor = c3; \
+         var t3 = ty(function () { a3.slice(); }); \
+         var a4 = new SharedArrayBuffer(8); var v = new Uint8Array(a4); v[0] = 5; \
+         var c4 = {}; c4[Symbol.species] = function () { return new SharedArrayBuffer(10); }; a4.constructor = c4; \
+         var r4 = a4.slice(); var d4 = new Uint8Array(r4); \
+         return t1 && t2 && t3 && r4.byteLength === 10 && d4[0] === 5 && d4[8] === 0 })()",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
+/// SAB slice growable 源窗钉：窗取活长非上限（slice(0,6) 活长 4 → 4）；
+/// grow 后 end 缺省按新活长（slice(6) → 2）；构造窗内 grow 不改变已定窗
+/// （结果长 = newLen）。
+#[test]
+fn sab_slice_growable_source_window() {
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "(function () { \
+         var g = new SharedArrayBuffer(4, { maxByteLength: 8 }); \
+         if (g.slice(0, 6).byteLength !== 4) { return false; } \
+         g.grow(8); \
+         if (g.slice(6).byteLength !== 2) { return false; } \
+         var src = new SharedArrayBuffer(4, { maxByteLength: 8 }); \
+         var c = {}; \
+         c[Symbol.species] = function (len) { src.grow(8); return new SharedArrayBuffer(len); }; \
+         src.constructor = c; \
+         return src.slice().byteLength === 4 })()",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
+/// SAB slice 品牌两臂钉：slice.call(undefined) / call({}) /
+/// call(ArrayBuffer) 均 TypeError（AB 标签非 SAB）。
+#[test]
+fn sab_slice_brand_family() {
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "(function () { function ty(fn) { try { fn(); return false; } catch (e) { return e instanceof TypeError; } } \
+         var t1 = ty(function () { SharedArrayBuffer.prototype.slice.call(undefined); }); \
+         var t2 = ty(function () { SharedArrayBuffer.prototype.slice.call({}); }); \
+         var t3 = ty(function () { SharedArrayBuffer.prototype.slice.call(new ArrayBuffer(8)); }); \
+         return t1 && t2 && t3 })()",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+}
+
+/// SAB slice meta 钉：描述符 {w:1,e:0,c:1}、length 2、name 'slice'、
+/// nonconstructor（new 形态 TypeError）。
+#[test]
+fn sab_slice_meta_pins() {
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "(function () { var d = Object.getOwnPropertyDescriptor(SharedArrayBuffer.prototype, 'slice'); \
+         if (!(typeof d.value === 'function' && d.writable === true \
+             && d.enumerable === false && d.configurable === true)) { return false; } \
+         if (d.value.length !== 2 || d.value.name !== 'slice') { return false; } \
          var threw = false; \
-         try { globalThis.Atomics(); } catch (e) { threw = e instanceof TypeError; } \
-         return threw; })()",
+         try { new SharedArrayBuffer.prototype.slice(); } catch (e) { threw = e instanceof TypeError; } \
+         return threw })()",
     )
     .unwrap();
     assert!(result.as_bool());

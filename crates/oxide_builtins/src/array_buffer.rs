@@ -471,6 +471,97 @@ pub fn shared_array_buffer_grow<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeRes
     NativeResult::Ok(JsValue::undefined())
 }
 
+/// `SharedArrayBuffer.prototype.slice(start, end)`：复制字节区间生成新
+/// SharedArrayBuffer。
+///
+/// # 步骤
+/// 1. this 品牌校验（非对象/非 SAB → TypeError）；len = 活字节长快照
+///    （growable 源取当前长非上限）。
+/// 2. ResolveBounds（start undefined/缺省 → 0、end undefined/缺省 → len，
+///    不调强转）→ newLen = max(final - first, 0)。
+/// 3. SpeciesConstructor(O, %SharedArrayBuffer%)（构造器/@@species 完整 Get，
+///    异常传播；undefined 臂回落 %SharedArrayBuffer%；非对象/非构造器
+///    TypeError）。
+/// 4. Construct(ctor, «newLen») 经 vm.construct_ctor（native 值传递 / bytecode
+///    压构造帧，含 derived 构造器 super() 语义；构造器抛出值原样上抛）。
+/// 5. 构造窗口后重取源寄存器与载荷（窗口内晋升使旧指针悬垂；SAB 无 detach
+///    生产路径，无重检臂）。
+/// 6. 结果三检：SAB 品牌槽 → SameValue(new, O) → 活长 ≥ newLen，均
+///    TypeError（SAB 无 detached/immutable 检项）。
+/// 7. 直拷 newLen 字节入结果前区。
+///
+/// # 边界与前提
+/// - SAB grow-only（grow 只增不缩）：步 1 快照长 ≤ 拷贝时活长，
+///   first..first+newLen 恒在界，直拷无需活长夹取。
+/// - 源对象经寄存器根保活；每次 JS 调用窗口后重新读接收者寄存器与载荷指针。
+pub fn shared_array_buffer_slice<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let this_reg = if args.is_empty() { 0 } else { args[0] };
+    let this_val = vm.reg(this_reg);
+    let payload_ptr = native_try!(shared_array_buffer_payload(vm, this_val));
+    // SAFETY: payload_ptr 经 shared_array_buffer_payload 校验为合法 SAB 载荷；
+    // 标量拷出后借用即结束，不跨 JS 调用窗口。
+    let len = unsafe { &*payload_ptr }.data.as_ref().map_or(0, |d| d.len());
+    let start = if args.len() > 1 { Some(vm.reg(args[1])) } else { None };
+    let end = if args.len() > 2 { Some(vm.reg(args[2])) } else { None };
+    let (first, final_) = native_try!(ab_resolve_bounds(vm, len, start, end));
+    let new_len = final_.saturating_sub(first);
+
+    // 物种读与构造各是 JS 调用窗口：getter/构造器可晋升源。
+    let default_ctor =
+        JsValue::from_js_object(vm.session().builtin_world().shared_array_buffer_constructor.as_ptr() as *mut JsObject);
+    let ctor = native_try!(ab_species_constructor(vm, this_val, default_ctor));
+    let new_val = match vm.construct_ctor(ctor, &[JsValue::int(new_len as i32)]) {
+        Ok(v) => v,
+        Err(err) => return NativeResult::Err(err),
+    };
+
+    // 构造窗口后重取接收者与载荷（源对象可被晋升进 session，旧指针悬垂）。
+    let this_val = vm.reg(this_reg);
+    let payload_ptr = native_try!(shared_array_buffer_payload(vm, this_val));
+    // SAFETY: 重取的 payload_ptr 指向存活载荷盒；字节借出止于拷贝语句。
+    let data = unsafe { &*payload_ptr }.data.as_ref();
+    // 结果三检：SAB 品牌槽 → SameValue → 活长。
+    if !new_val.is_object() {
+        return NativeResult::Err(crate::error::create_type_error(
+            vm,
+            "SharedArrayBuffer slice result is not a SharedArrayBuffer",
+        ));
+    }
+    // SAFETY: new_val 为对象且指针非空，对象本 session 存活。
+    let Some(new_payload) = shared_array_buffer_payload_ptr(unsafe { &*new_val.as_js_object_ptr() }) else {
+        return NativeResult::Err(crate::error::create_type_error(
+            vm,
+            "SharedArrayBuffer slice result is not a SharedArrayBuffer",
+        ));
+    };
+    if new_payload.is_null() {
+        return NativeResult::Err(crate::error::create_type_error(
+            vm,
+            "SharedArrayBuffer slice result is not a SharedArrayBuffer",
+        ));
+    }
+    if new_val == this_val {
+        return NativeResult::Err(crate::error::create_type_error(
+            vm,
+            "SharedArrayBuffer slice result must not be the source buffer",
+        ));
+    }
+    // SAFETY: new_payload 经 shared_array_buffer_payload_ptr 校验为 SAB 载荷盒。
+    if unsafe { &*new_payload }.data.as_ref().map_or(0, |d| d.len()) < new_len {
+        return NativeResult::Err(crate::error::create_type_error(vm, "SharedArrayBuffer slice result is too small"));
+    }
+    let Some(data) = data else {
+        return NativeResult::Err(crate::error::create_type_error(vm, "SharedArrayBuffer internal state invalid"));
+    };
+    // 直拷 newLen 字节（grow-only 恒在界，见 边界与前提）。
+    // SAFETY: new_payload 经 shared_array_buffer_payload_ptr 校验；SAB 无
+    // detach 臂，data 必为 Some，可变借用止于本语句。
+    if let Some(dest) = unsafe { (*new_payload).data.as_mut() } {
+        dest[..new_len].copy_from_slice(&data[first..first + new_len]);
+    }
+    NativeResult::Ok(new_val)
+}
+
 /// 读入口：校验 receiver 为 ArrayBuffer 并取载荷指针。detach（载荷 `data` 为
 /// `None`）不在此分叉，由消费方现读 `data` 时按既有错误形态处理。
 pub(crate) fn array_buffer_payload<H: VmHost>(
@@ -739,24 +830,22 @@ fn ab_resolve_bounds<H: VmHost>(
     Ok((first, final_))
 }
 
-/// SpeciesConstructor(O, %ArrayBuffer%)：完整 Get O.constructor（访问器/异常
-/// 传播）；undefined 回落 %ArrayBuffer%，其余非对象抛 TypeError；完整 Get
-/// C[Symbol.species]（null 归一为 undefined）；undefined 回落 %ArrayBuffer%，
-/// 非构造器抛 TypeError。
-fn ab_species_constructor<H: VmHost>(vm: &mut H, o_val: JsValue) -> Result<JsValue, JsValue> {
+/// SpeciesConstructor(O, default_ctor)：完整 Get O.constructor（访问器/异常
+/// 传播）；undefined 回落调用方给定的默认构造器，其余非对象抛 TypeError；
+/// 完整 Get C[Symbol.species]（null 归一为 undefined）；undefined 回落默认
+/// 构造器，非构造器抛 TypeError。
+fn ab_species_constructor<H: VmHost>(vm: &mut H, o_val: JsValue, default_ctor: JsValue) -> Result<JsValue, JsValue> {
     let o_obj = unsafe { &*o_val.as_js_object_ptr() };
     let ctor_key = vm.kernel_core().perm_interner().intern("constructor").0;
     let c = match vm.ordinary_get(o_obj, ctor_key, o_val) {
         Ok(v) => v,
         Err(msg) => return Err(crate::iterator::engine_error(vm, &msg)),
     };
-    let default_ctor =
-        JsValue::from_js_object(vm.session().builtin_world().array_buffer_constructor.as_ptr() as *mut JsObject);
     if c.is_undefined() {
         return Ok(default_ctor);
     }
     if !c.is_object() {
-        return Err(crate::error::create_type_error(vm, "ArrayBuffer constructor is not an object"));
+        return Err(crate::error::create_type_error(vm, "buffer constructor is not an object"));
     }
     let species_key = make_well_known_symbol_key(WELL_KNOWN_SYMBOL_SPECIES);
     let s = match vm.ordinary_get(unsafe { &*c.as_js_object_ptr() }, species_key, c) {
@@ -767,7 +856,7 @@ fn ab_species_constructor<H: VmHost>(vm: &mut H, o_val: JsValue) -> Result<JsVal
     if s.is_undefined() {
         Ok(default_ctor)
     } else if !crate::array::is_constructor_value(s) {
-        Err(crate::error::create_type_error(vm, "ArrayBuffer species is not a constructor"))
+        Err(crate::error::create_type_error(vm, "buffer species is not a constructor"))
     } else {
         Ok(s)
     }
@@ -809,7 +898,9 @@ pub fn array_buffer_slice<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let new_len = final_.saturating_sub(first);
 
     // 物种读与构造各是 JS 调用窗口：getter/构造器可 detach、resize、晋升源。
-    let ctor = native_try!(ab_species_constructor(vm, this_val));
+    let default_ctor =
+        JsValue::from_js_object(vm.session().builtin_world().array_buffer_constructor.as_ptr() as *mut JsObject);
+    let ctor = native_try!(ab_species_constructor(vm, this_val, default_ctor));
     let new_val = match vm.construct_ctor(ctor, &[JsValue::int(new_len as i32)]) {
         Ok(v) => v,
         Err(err) => return NativeResult::Err(err),
