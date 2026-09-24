@@ -425,7 +425,24 @@ pub fn atomics_wait_async<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     NativeResult::Ok(wait_async_result_object(vm, true, promise))
 }
 
-/// `Atomics.pause(hint)`：零参语义（不校验、不延迟），任意实参形直返 undefined。
-pub fn atomics_pause<H: VmHost>(_vm: &mut H, _args: &[u8]) -> NativeResult {
+/// `Atomics.pause(hint)`：hint 为 undefined 或整数 Number 时直返 undefined；
+/// 其余值（布尔/串/BigInt/对象/非整数 Number 等）抛 TypeError。
+pub fn atomics_pause<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let hint = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
+    if hint.is_undefined() {
+        return NativeResult::Ok(JsValue::undefined());
+    }
+    // hint 须为整数 Number：int 表示恒整数；double 表示须有限且无小数部分。
+    let is_integral_number = if hint.is_int() {
+        true
+    } else if hint.is_double() {
+        let v = hint.as_double();
+        v.is_finite() && v.fract() == 0.0
+    } else {
+        false
+    };
+    if !is_integral_number {
+        return NativeResult::Err(crate::error::create_type_error(vm, "iterationNumber must be an integer"));
+    }
     NativeResult::Ok(JsValue::undefined())
 }

@@ -2699,6 +2699,11 @@ pub fn uint8array_set_from_base64<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeR
     let string = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
     let options = if args.len() > 2 { vm.reg(args[2]) } else { JsValue::undefined() };
     let payload_ptr = native_try!(buffer_payload(vm, view.buffer));
+    // 目标缓冲不可变（immutable）：写前抛 TypeError（规范 ValidateUint8Array
+    // 后的不可变守卫步）。
+    if unsafe { (*payload_ptr).immutable } {
+        return NativeResult::Err(type_error(vm, "ArrayBuffer is immutable"));
+    }
     // SAFETY: payload_ptr 来自活动缓冲区对象（AB/SAB 双认），视图范围由构造保证界内。
     let Some(buffer) = unsafe { &mut *payload_ptr }.data.as_deref_mut() else {
         // buffer detach：按规范的视图校验步抛 TypeError；入口校验先行，
@@ -2726,6 +2731,11 @@ pub fn uint8array_set_from_hex<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResu
         return NativeResult::Err(type_error(vm, "string argument required"));
     }
     let payload_ptr = native_try!(buffer_payload(vm, view.buffer));
+    // 目标缓冲不可变（immutable）：写前抛 TypeError（规范 ValidateUint8Array
+    // 后的不可变守卫步）。
+    if unsafe { (*payload_ptr).immutable } {
+        return NativeResult::Err(type_error(vm, "ArrayBuffer is immutable"));
+    }
     // SAFETY: payload_ptr 来自活动缓冲区对象（AB/SAB 双认），视图范围由构造保证界内。
     let Some(buffer) = unsafe { &mut *payload_ptr }.data.as_deref_mut() else {
         // buffer detach：按规范的视图校验步抛 TypeError；入口校验先行，

@@ -221,6 +221,9 @@ pub trait VmHost {
     fn raise_captured(&mut self, exc: JsValue) -> Result<(), String>;
     fn error_message_text(&self, kind: &str, msg: &str) -> String;
     fn call_stack_function_names(&self) -> Vec<String>;
+    /// 函数对象是否为严格模式函数（经子模块 `is_strict` 判定）；native 函数
+    /// （无子模块）视为严格。供 caller/arguments 受限访问器按严格性分流抛错。
+    fn function_is_strict(&self, obj: &JsObject) -> bool;
     fn promote_if_needed_for_write_ptr(&mut self, target_ptr: *mut JsObject, value: JsValue) -> JsValue;
     fn step_rng(&mut self);
     fn math_rng_value(&self) -> f64;

@@ -174,6 +174,11 @@ impl oxide_runtime_api::VmHost for Vm {
             })
             .collect()
     }
+    fn function_is_strict(&self, obj: &JsObject) -> bool {
+        // native 函数（sub_module_index == 0）无子模块，callee_module 返回 None，
+        // 按严格处理（受限访问器对其抛错）。
+        self.callee_module(obj).map(|m| m.is_strict).unwrap_or(true)
+    }
     fn promote_if_needed_for_write_ptr(&mut self, target_ptr: *mut JsObject, value: JsValue) -> JsValue {
         self.promote_if_needed_for_write_ptr(target_ptr, value)
     }

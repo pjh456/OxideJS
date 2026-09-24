@@ -1,8 +1,9 @@
 use std::sync::Arc;
 
-use oxide_kernel::builtin::FunctionMethods;
+use oxide_kernel::builtin::{FnWrapperKey, FunctionMethods};
 use oxide_kernel::kernel::{KernelCore, KernelSession};
-use oxide_types::object::{JsObject, PropAttributes};
+use oxide_kernel::shape_forge::EMPTY_SHAPE_ID;
+use oxide_types::object::{JsObject, NativeFnPtr, PropAttributes};
 use oxide_types::value::JsValue;
 
 use super::bind_global_value;
@@ -57,5 +58,68 @@ pub fn bind_function(core: &Arc<KernelCore>, session: &KernelSession, global: &m
     let name_pos = proto.hash_props_vec().map_or(0, |v| v.len() as u32).saturating_sub(1);
     proto.set_data_meta(name_pos, PropAttributes::new(false, false, true));
 
+    // caller/arguments 受限访问器：两属性 get/set 共用同一 %ThrowTypeError%
+    // 函数对象，任何访问抛 TypeError（AddRestrictedFunctionProperties 语义）。
+    bind_function_proto_restricted(core, session, proto);
+
     bind_global_value(core, global, "Function", JsValue::from_js_object(function_ctor));
+}
+
+/// 在 Function.prototype 上绑定 caller/arguments 受限访问器：两属性的
+/// get/set 共用同一 %ThrowTypeError% 函数对象（name="get caller"、length=0），
+/// 描述符 { enumerable:false, configurable:true }。
+///
+/// # 副作用
+/// - 为 caller/arguments 各开 shape 槽位并写入访问器 meta；thrower 函数对象
+///   登记进 world 释放表（与 `bind_accessor_getter` 的 getter 同一生命周期）。
+fn bind_function_proto_restricted(core: &Arc<KernelCore>, session: &KernelSession, proto: &mut JsObject) {
+    let shape_forge = core.shape_forge().as_ref();
+    let string_forge = core.perm_interner().as_ref();
+    let world = session.builtin_world();
+    let family = world.wrapper_family_of(proto as *const JsObject);
+    let si_name = string_forge.intern("name").0;
+    let si_length = string_forge.intern("length").0;
+    let si_caller = string_forge.intern("caller").0;
+    let si_arguments = string_forge.intern("arguments").0;
+    let si_label = string_forge.intern("get caller").0;
+
+    // 构造单一 thrower 函数对象，供两属性 get/set 共用（选择性重建复用：
+    // 同家族同槽旧 thrower 迁移到新 proto 的访问器槽，不再新建对象）。
+    // SAFETY: thrower 函数项指针转为 *const ()。
+    let thrower_fn_ptr = unsafe {
+        NativeFnPtr::from_raw(oxide_builtins::function::function_restricted_thrower::<crate::vm::Vm> as *const ())
+    };
+    let reuse_key = FnWrapperKey::new(family, si_label, si_caller, si_name);
+    let thrower_ptr = match world.find_fn_wrapper(reuse_key, thrower_fn_ptr, 0) {
+        Some(ptr) => ptr,
+        None => {
+            let fn_proto_val = JsValue::from_js_object(world.function_proto.as_ptr() as *mut JsObject);
+            let mut thrower = Box::new(JsObject::new_empty(EMPTY_SHAPE_ID, fn_proto_val));
+            thrower.set_function(true);
+            thrower.set_native_fn(Some(thrower_fn_ptr));
+            thrower.set_native_arg_count(0);
+            let name_shape = shape_forge.make_shape(thrower.shape_id(), si_name);
+            thrower.set_shape_id(name_shape);
+            thrower.ensure_hash_props().push(JsValue::perm_string(string_forge.string_ptr(si_label)));
+            let name_pos = thrower.hash_props_vec().map_or(0, |v| v.len() as u32).saturating_sub(1);
+            thrower.set_data_meta(name_pos, PropAttributes::new(false, false, true));
+            let length_shape = shape_forge.make_shape(thrower.shape_id(), si_length);
+            thrower.set_shape_id(length_shape);
+            thrower.ensure_hash_props().push(JsValue::int(0));
+            let length_pos = thrower.hash_props_vec().map_or(0, |v| v.len() as u32).saturating_sub(1);
+            thrower.set_data_meta(length_pos, PropAttributes::new(false, false, true));
+            let ptr = Box::into_raw(thrower);
+            world.track_fn_wrapper(ptr, reuse_key);
+            ptr
+        }
+    };
+    let thrower_val = JsValue::from_js_object(thrower_ptr);
+    let attrs = PropAttributes::new(false, false, true);
+    for key in [si_caller, si_arguments] {
+        let new_shape = shape_forge.make_shape(proto.shape_id(), key);
+        proto.set_shape_id(new_shape);
+        let pos = proto.push_prop(JsValue::undefined());
+        proto.set_accessor_meta(pos, thrower_val, thrower_val, attrs);
+        proto.bump_generation();
+    }
 }

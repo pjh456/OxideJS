@@ -34,9 +34,11 @@ impl Vm {
     /// # 副作用
     /// - 扩展当前代际平表（`tables[current_gen]`）与常量缓存。
     pub fn create_dynamic_function(&mut self, params: &[String], body: &str) -> Result<JsValue, String> {
-        // wrap 源码：末尾换行防止 body 以行注释结尾吞掉右花括号。
+        // wrap 源码：body 两端换行防止以行注释结尾吞掉右花括号；形参串后补
+        // 换行，使形参以 HTML 注释（`<!--`/`-->`）结尾时注释在行末终止、
+        // 右括号不被吞（规范按形参串与体串各自独立解析，此处以换行等价）。
         let params_str = params.join(", ");
-        let source = format!("function anonymous({params_str}) {{\n{body}\n}}");
+        let source = format!("function anonymous({params_str}\n) {{\n{body}\n}}");
 
         let allocator = oxide_parser::Allocator::default();
         let program = oxide_parser::parse(&allocator, &source)

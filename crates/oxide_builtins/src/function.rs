@@ -342,6 +342,24 @@ fn bound_restricted_thrower<H: VmHost>(vm: &mut H, _args: &[u8]) -> NativeResult
     ))
 }
 
+/// %ThrowTypeError%：Function.prototype 的 caller/arguments 受限访问器共用。
+///
+/// 按接收者严格性分流：严格函数对象与 native 函数（含 Function.prototype 本身）
+/// 的 get/set 一律抛 TypeError；非严格函数对象读不抛、返回 undefined（写不抛、
+/// 丢弃写入），与规范"非严格函数 caller 可读"的残面一致。
+pub fn function_restricted_thrower<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
+    let obj = match vm.checked_object_ptr(this_val, "restricted property access") {
+        Ok(Some(obj)) => obj,
+        Ok(None) => return NativeResult::Err(crate::error::create_type_error(vm, "restricted property access")),
+        Err(e) => return NativeResult::Err(crate::error::create_type_error(vm, &e)),
+    };
+    if !vm.function_is_strict(unsafe { &*obj }) {
+        return NativeResult::Ok(JsValue::undefined());
+    }
+    NativeResult::Err(crate::error::create_type_error(vm, "restricted property access"))
+}
+
 /// `Function.prototype.toString`：返回 `function name() { [native code] }`
 /// 或 `[bytecode]` 形式；函数名取自 `name` 属性或字节码子模块名。
 pub fn function_to_string<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {

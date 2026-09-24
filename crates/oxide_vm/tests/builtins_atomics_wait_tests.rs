@@ -363,15 +363,22 @@ fn eval_pause_returns_undefined() {
     );
 }
 
-/// pause：零参语义不校验（true/小数/NaN/串 均不抛）。
+/// pause：非整数 iterationNumber（true/小数/NaN/串/对象）→ TypeError（零参与
+/// 整数不受影响，见 eval_pause_returns_undefined）。
 #[test]
-fn eval_pause_no_validation() {
+fn eval_pause_non_integral_throws() {
     let mut vm = Vm::new();
     truthy(
         &mut vm,
-        "Atomics.pause(true) === undefined && Atomics.pause(42.42) === undefined \
-         && Atomics.pause(NaN) === undefined && Atomics.pause('42') === undefined \
-         && Atomics.pause({}) === undefined",
+        &format!(
+            "(function () {{ \
+             return {} && {} && {} && {} && {}; }})()",
+            throws("Atomics.pause(true)", "TypeError"),
+            throws("Atomics.pause(42.42)", "TypeError"),
+            throws("Atomics.pause(NaN)", "TypeError"),
+            throws("Atomics.pause('42')", "TypeError"),
+            throws("Atomics.pause({})", "TypeError"),
+        ),
     );
 }
 
