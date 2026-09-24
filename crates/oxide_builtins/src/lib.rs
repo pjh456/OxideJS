@@ -68,3 +68,5 @@ pub mod ta_codec;
 pub mod temporal;
 /// TypedArray 内置对象实现（元素访问、fill/slice/subarray/set 等）。
 pub mod typed_array;
+/// WeakMap 条目表实现（弱键 → 强值盒与 GC 六站点接线函数族）。
+pub mod weak_map;

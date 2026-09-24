@@ -510,6 +510,119 @@ fn session_gc_traces_set_object_key() {
     assert_eq!(vm.gc_state.session_object_ptrs.len(), 2);
 }
 
+/// 造带条目盒的 WeakMap 形 epoch 对象（构造体落地前的单测代用形态）。
+fn weak_map_object(vm: &mut Vm) -> *mut JsObject {
+    let mut obj = JsObject::new_empty(oxide_kernel::shape_forge::EMPTY_SHAPE_ID, JsValue::undefined());
+    obj.type_tag = JsObject::OBJ_TYPE_WEAK_MAP;
+    obj.set_native_data(oxide_builtins::weak_map::weak_map_alloc_box());
+    let ptr = vm.epoch.alloc(obj);
+    // 测试辅助函数绕过 alloc_object，需手动置位 EPOCH_BIT。
+    unsafe { (*ptr).set_is_epoch(true) };
+    ptr
+}
+
+/// 弱键不产 mark 边：强可达键跨晋升 + 完整收集保留，条目完整、值边改写后
+/// 按原键读回同一克隆体。
+#[test]
+fn weak_map_entry_survives_promotion_with_live_key() {
+    let mut vm = vm_with_low_threshold();
+    let key = plain_object(&mut vm);
+    let value = plain_object(&mut vm);
+    let wm = weak_map_object(&mut vm);
+    unsafe {
+        oxide_builtins::weak_map::weak_map_insert(
+            &mut *wm,
+            JsValue::from_js_object(key),
+            JsValue::from_js_object(value),
+        );
+    }
+    vm.regs[0] = JsValue::from_js_object(wm);
+    vm.regs[1] = JsValue::from_js_object(key);
+    vm.regs[2] = JsValue::from_js_object(value);
+    let wm_session = vm.promote_object(wm);
+    vm.regs.fill(JsValue::undefined());
+    vm.regs[0] = JsValue::from_js_object(wm_session);
+    vm.regs[1] = JsValue::from_js_object(key);
+    // 值的强根取晋升克隆（表内读回）：原件随 epoch 出局。
+    let value_root = oxide_builtins::weak_map::weak_map_get(unsafe { &*wm_session }, JsValue::from_js_object(key));
+    vm.regs[2] = value_root;
+    let mut gc = std::mem::take(&mut vm.gc_state.session_gc);
+    gc.collect(&mut vm);
+    vm.gc_state.session_gc = gc;
+
+    let live_wm = unsafe { &*vm.regs[0].as_js_object_ptr() };
+    assert_eq!(oxide_builtins::weak_map::weak_map_entry_count(live_wm), 1, "强可达键的条目须在收集后存活");
+    let stored = oxide_builtins::weak_map::weak_map_get(live_wm, JsValue::from_js_object(key));
+    assert_eq!(stored, vm.regs[2], "值须按原键读回同一克隆体");
+    assert!(!std::ptr::eq(stored.as_js_object_ptr(), value), "值边须改写到晋升克隆");
+}
+
+/// 弱键强不可达 = 死键：收集按转发表判定丢条目，表不留死键残影。
+#[test]
+fn weak_map_entry_dropped_when_key_unrooted() {
+    let mut vm = vm_with_low_threshold();
+    let value = plain_object(&mut vm);
+    let wm = weak_map_object(&mut vm);
+    // 键仅由表内弱边引用：无强根。
+    let key = plain_object(&mut vm);
+    unsafe {
+        oxide_builtins::weak_map::weak_map_insert(
+            &mut *wm,
+            JsValue::from_js_object(key),
+            JsValue::from_js_object(value),
+        );
+    }
+    vm.regs[0] = JsValue::from_js_object(wm);
+    vm.regs[2] = JsValue::from_js_object(value);
+    let wm_session = vm.promote_object(wm);
+    vm.regs.fill(JsValue::undefined());
+    vm.regs[0] = JsValue::from_js_object(wm_session);
+    vm.regs[2] = JsValue::from_js_object(value);
+    let mut gc = std::mem::take(&mut vm.gc_state.session_gc);
+    gc.collect(&mut vm);
+    vm.gc_state.session_gc = gc;
+
+    let live_wm = unsafe { &*vm.regs[0].as_js_object_ptr() };
+    assert_eq!(oxide_builtins::weak_map::weak_map_entry_count(live_wm), 0, "死键条目须在收集时丢弃");
+}
+
+/// 值边为强边：值对象唯一引用仅来自值边时仍入存活集，搬移后条目按转发表
+/// 改写指到新址。
+#[test]
+fn weak_map_value_edge_keeps_value_alive() {
+    let mut vm = vm_with_low_threshold();
+    let key = plain_object(&mut vm);
+    let value = plain_object(&mut vm);
+    let wm = weak_map_object(&mut vm);
+    unsafe {
+        oxide_builtins::weak_map::weak_map_insert(
+            &mut *wm,
+            JsValue::from_js_object(key),
+            JsValue::from_js_object(value),
+        );
+    }
+    // 值先晋升进 session：其独立根随后撤销，存活仅靠弱表值边。
+    vm.regs[2] = JsValue::from_js_object(value);
+    let value_session = vm.promote_object(value);
+    vm.regs[2] = JsValue::from_js_object(value_session);
+    vm.regs[0] = JsValue::from_js_object(wm);
+    vm.regs[1] = JsValue::from_js_object(key);
+    let wm_session = vm.promote_object(wm);
+    vm.regs.fill(JsValue::undefined());
+    vm.regs[0] = JsValue::from_js_object(wm_session);
+    vm.regs[1] = JsValue::from_js_object(key);
+    let mut gc = std::mem::take(&mut vm.gc_state.session_gc);
+    gc.collect(&mut vm);
+    vm.gc_state.session_gc = gc;
+
+    let live_wm = unsafe { &*vm.regs[0].as_js_object_ptr() };
+    let stored = oxide_builtins::weak_map::weak_map_get(live_wm, JsValue::from_js_object(key));
+    assert!(stored.is_object(), "唯一经值边引用的值须存活");
+    assert!(!std::ptr::eq(stored.as_js_object_ptr(), value_session), "值边须在搬移后改写到新址");
+    assert!(vm.is_session_ptr(stored.as_js_object_ptr()));
+    assert_eq!(vm.gc_state.session_object_ptrs.len(), 2);
+}
+
 /// 盒持唯一引用的 session 串与 BigInt 经 Map native 边进入存活集：
 /// 清寄存器仅留 Map 根后完整收集，两值仍登记在 session 表。
 #[test]

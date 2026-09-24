@@ -213,6 +213,9 @@ impl JsObject {
     /// 语义面；接收者品牌守卫按本 tag 拒绝，ArrayBuffer 方法族对其抛
     /// TypeError。释放与深拷贝守卫同 ArrayBuffer。
     pub const OBJ_TYPE_SHARED_ARRAY_BUFFER: u8 = 30;
+    /// WeakMap 对象：条目表（弱键 → 强值）存于 `native_data`。键为弱边
+    /// （GC mark 不产边），值为强边。
+    pub const OBJ_TYPE_WEAK_MAP: u8 = 31;
     /// `is_session_epoch` 字段中的 session 标记位。
     pub const SESSION_EPOCH_BIT: u8 = 0x01;
     /// `is_session_epoch` 字段中的 GC 标记位。
@@ -277,6 +280,11 @@ impl JsObject {
     #[inline]
     pub fn is_shared_array_buffer_obj(&self) -> bool {
         self.type_tag == Self::OBJ_TYPE_SHARED_ARRAY_BUFFER
+    }
+    /// 是否 WeakMap 对象（条目表存于 `native_data`）。
+    #[inline]
+    pub fn is_weak_map_obj(&self) -> bool {
+        self.type_tag == Self::OBJ_TYPE_WEAK_MAP
     }
     /// 是否 DataView 对象。
     #[inline]

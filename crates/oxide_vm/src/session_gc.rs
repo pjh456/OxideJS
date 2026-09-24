@@ -8,7 +8,7 @@ use oxide_types::value::JsValue;
 use rustc_hash::FxBuildHasher;
 
 use crate::vm::Vm;
-use oxide_builtins::{array_buffer, data_view, disposable_stack, map, module, regexp, set, typed_array};
+use oxide_builtins::{array_buffer, data_view, disposable_stack, map, module, regexp, set, typed_array, weak_map};
 
 /// session 级 mark-sweep GC 的状态与统计。
 ///
@@ -124,6 +124,7 @@ impl SessionGc {
         bytes += crate::promise::promise_native_size(obj);
         bytes += crate::async_func::async_native_size(obj);
         bytes += crate::async_generator::async_generator_native_size(obj);
+        bytes += weak_map::weak_map_native_size(obj);
 
         bytes
     }
@@ -171,6 +172,12 @@ impl SessionGc {
         }
         if obj.is_set() {
             for value in set::set_native_edges(obj) {
+                Self::process_edge(value, vm, stack, live_strings, live_bigints);
+            }
+        }
+        if obj.is_weak_map_obj() {
+            // 仅值边进 mark（强边）；键为弱边，不入栈不置位。
+            for value in weak_map::weak_map_native_edges(obj) {
                 Self::process_edge(value, vm, stack, live_strings, live_bigints);
             }
         }
@@ -546,6 +553,7 @@ impl SessionGc {
             freed_bytes += crate::promise::drop_promise_native(obj);
             freed_bytes += crate::async_func::drop_async_native(obj);
             freed_bytes += crate::async_generator::drop_async_generator_native(obj);
+            freed_bytes += weak_map::drop_weak_map_native(obj);
 
             freed_bytes
         }
@@ -623,6 +631,10 @@ impl SessionGc {
                     map::clone_map_native_with_rewrite(old_ref, new_ref, |value| value);
                 } else if old_ref.is_set() {
                     set::clone_set_native_with_rewrite(old_ref, new_ref, |value| value);
+                } else if old_ref.is_weak_map_obj() {
+                    // 弱键原样搬运：键生死按转发表收敛后的判定（phase 2 与
+                    // 晋升定夺路径同判据），此处只深拷贝盒与改写值边。
+                    weak_map::clone_weak_map_native_with_rewrite(old_ref, new_ref, |value| value);
                 } else if old_ref.is_disposable_stack_obj() || old_ref.is_async_disposable_stack_obj() {
                     disposable_stack::clone_dispose_native_with_rewrite(old_ref, new_ref, |value| value);
                 } else if old_ref.is_array_buffer_obj() {
@@ -672,6 +684,13 @@ impl SessionGc {
                 map::rewrite_map_native(obj, |value| rewrite_forwarded_value(value, &forwarding));
             } else if obj.is_set() {
                 set::rewrite_set_native(obj, |value| rewrite_forwarded_value(value, &forwarding));
+            } else if obj.is_weak_map_obj() {
+                // 键按转发表 + mark 位定生死（死键条目丢弃），值走强边转发改写。
+                weak_map::rewrite_weak_map_native(
+                    obj,
+                    |key| resolve_weak_key_sweep(key, &forwarding),
+                    |value| rewrite_forwarded_value(value, &forwarding),
+                );
             } else if obj.is_disposable_stack_obj() || obj.is_async_disposable_stack_obj() {
                 disposable_stack::rewrite_dispose_native(obj, |value| rewrite_forwarded_value(value, &forwarding));
             } else if obj.is_typed_array_obj() {
@@ -1047,6 +1066,8 @@ impl SessionGc {
             .filter(|&ptr| !ptr.is_null() && unsafe { (*ptr).is_gc_marked() })
             .collect();
         vm.rewrite_session_epoch_refs(&marked_session, &mut forwarding);
+        // 弱表键定夺：主改写只走强边，epoch 键按收敛后的转发表定生死。
+        vm.rewrite_weak_map_keys_after_promotion(&marked_session, &mut forwarding);
         forwarding.clear();
         vm.gc_state.forwarding = forwarding;
 
@@ -1228,6 +1249,59 @@ fn rewrite_forwarded_value(
         .get(&value.as_js_object_ptr())
         .map(|&ptr| JsValue::from_js_object(ptr))
         .unwrap_or(value)
+}
+
+/// 移动式 sweep 改写期的弱键判定：转发表内键改指新址；未入表的 session/
+/// epoch 键按 mark 位定生死（已标 = 强可达、随后晋升或原地存活，未标 =
+/// 死键丢弃）；P 键不可死，恒保留。
+///
+/// # 边界与前提
+/// - 未入表键读归属位与 mark 位须解引用旧指针：调用点（sweep 改写相）
+///   旧 arena 尚未归还、清位发生在改写相之后，对象头位域可读。
+/// - 死键指针只作哈希键与位域读取，不 deref 其已释放的堆数据。
+pub(crate) fn resolve_weak_key_sweep(
+    key: weak_map::WeakKey, forwarding: &HashMap<*mut JsObject, *mut JsObject, FxBuildHasher>,
+) -> Option<weak_map::WeakKey> {
+    let weak_map::WeakKey::Obj(ptr) = key else {
+        return Some(key);
+    };
+    let mut_ptr = ptr as *mut JsObject;
+    if let Some(&new) = forwarding.get(&mut_ptr) {
+        return Some(weak_map::WeakKey::Obj(new as *const JsObject));
+    }
+    // SAFETY: 见函数边界与前提——sweep 改写相旧 arena 存活，对象头位域可读。
+    let old = unsafe { &*mut_ptr };
+    if (old.is_session_epoch() || old.is_epoch()) && !old.is_gc_marked() {
+        return None;
+    }
+    Some(key)
+}
+
+/// 晋升收敛后的弱键定夺：转发表内键改指新址；未入表 epoch 键 = 本轮晋升
+/// 未覆盖 = 死键丢弃；session 键不搬移、原样保留（惰性判定交下一轮 sweep）；
+/// P 键不可死，恒保留。
+///
+/// # 边界与前提
+/// - 晋升定夺路径（原地晋升 / in-run 晋升档）的转发表已收敛为最终强可达集，
+///   判据不含 mark 位（reset 边界路径此前已清位）。
+/// - 解引用仅限未入表键的归属位读取，调用点旧 arena 存活（epoch 释放 /
+///   清表发生在定夺之后）。
+pub(crate) fn resolve_weak_key_after_promotion(
+    key: weak_map::WeakKey, forwarding: &HashMap<*mut JsObject, *mut JsObject, FxBuildHasher>,
+) -> Option<weak_map::WeakKey> {
+    let weak_map::WeakKey::Obj(ptr) = key else {
+        return Some(key);
+    };
+    let mut_ptr = ptr as *mut JsObject;
+    if let Some(&new) = forwarding.get(&mut_ptr) {
+        return Some(weak_map::WeakKey::Obj(new as *const JsObject));
+    }
+    // SAFETY: 见函数边界与前提——定夺点旧 arena 存活，对象头位域可读。
+    let old = unsafe { &*mut_ptr };
+    if old.is_epoch() {
+        return None;
+    }
+    Some(key)
 }
 
 /// 按 forwarding 表把全部 VM 根引用重写到搬移后的新地址。与 `for_each_value`

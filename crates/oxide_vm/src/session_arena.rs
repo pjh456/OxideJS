@@ -6,7 +6,7 @@ use oxide_types::value::JsValue;
 use rustc_hash::FxBuildHasher;
 
 use crate::vm::Vm;
-use oxide_builtins::{array_buffer, data_view, disposable_stack, map, module, regexp, set, typed_array};
+use oxide_builtins::{array_buffer, data_view, disposable_stack, map, module, regexp, set, typed_array, weak_map};
 
 impl Vm {
     /// 单对象晋升测试入口：取/清共享转发表后调 `promote_object_inner`。
@@ -49,6 +49,12 @@ impl Vm {
             });
         } else if src_ref.is_set() {
             set::clone_set_native_with_rewrite(src_ref, dst_ref, |value| {
+                self.promote_value_if_epoch_object(value, forwarding)
+            });
+        } else if src_ref.is_weak_map_obj() {
+            // 值边随克隆晋升（强边）；弱键原样搬运，生死交晋升收敛后的
+            // 弱键定夺路径按同一转发表判定。
+            weak_map::clone_weak_map_native_with_rewrite(src_ref, dst_ref, |value| {
                 self.promote_value_if_epoch_object(value, forwarding)
             });
         } else if src_ref.is_disposable_stack_obj() || src_ref.is_async_disposable_stack_obj() {
@@ -150,6 +156,8 @@ impl Vm {
         let objects = std::mem::take(&mut self.gc_state.session_object_ptrs);
         let mut forwarding = std::mem::take(&mut self.gc_state.forwarding);
         self.rewrite_session_epoch_refs(&objects, &mut forwarding);
+        // 弱键按收敛后的转发表定生死：未入表 epoch 键随 epoch 释放而亡。
+        self.rewrite_weak_map_keys_after_promotion(&objects, &mut forwarding);
         forwarding.clear();
         self.gc_state.forwarding = forwarding;
         // 改写期新克隆已随晋升推入 gc_state 侧的表（此刻仅含克隆体），把取出的
@@ -184,6 +192,12 @@ impl Vm {
                     map::rewrite_map_native(obj, |value| self.promote_value_if_epoch_object(value, forwarding));
                 } else if obj.is_set() {
                     set::rewrite_set_native(obj, |value| self.promote_value_if_epoch_object(value, forwarding));
+                } else if obj.is_weak_map_obj() {
+                    // 值边同强边改写；弱键留给转发表收敛后的定夺路径，
+                    // 提前改写会引入晋升序依赖（键的强可达根尚未遍历完）。
+                    weak_map::rewrite_weak_map_native_values(obj, |value| {
+                        self.promote_value_if_epoch_object(value, forwarding)
+                    });
                 } else if obj.is_disposable_stack_obj() || obj.is_async_disposable_stack_obj() {
                     disposable_stack::rewrite_dispose_native(obj, |value| {
                         self.promote_value_if_epoch_object(value, forwarding)
@@ -229,6 +243,51 @@ impl Vm {
         }
     }
 
+    /// 晋升收敛后的弱键定夺：对候选集（session 对象列表 + 已晋升克隆）中的
+    /// 每个弱表按转发表判定弱键——表内键改指新址，未入表 epoch 键为死键丢
+    /// 条目，session/P 键保留。
+    ///
+    /// # 副作用
+    /// - 每个弱表原位重建条目表；无死键时条目与容量口径不变。
+    ///
+    /// # 边界与前提
+    /// - 须在主改写路径（JS 边 + 值边）对转发表收敛完成后调用；转发表届时
+    ///   即最终强可达集。调用方负责其后的清表。
+    /// - global 上的弱表经其晋升克隆进入转发表值集，候选集无需单列 global。
+    pub(crate) fn rewrite_weak_map_keys_after_promotion(
+        &mut self, objects: &[*mut JsObject], forwarding: &mut HashMap<*mut JsObject, *mut JsObject, FxBuildHasher>,
+    ) {
+        for &ptr in objects {
+            if ptr.is_null() {
+                continue;
+            }
+            // SAFETY: session 对象在 arena 存活期内有效。
+            unsafe {
+                let obj = &mut *ptr;
+                if obj.is_weak_map_obj() {
+                    weak_map::rewrite_weak_map_native(
+                        obj,
+                        |key| crate::session_gc::resolve_weak_key_after_promotion(key, forwarding),
+                        |value| value,
+                    );
+                }
+            }
+        }
+        for &new_ptr in forwarding.values() {
+            // SAFETY: 晋升克隆分配于 session arena，存活期内有效。
+            unsafe {
+                let obj = &mut *new_ptr;
+                if obj.is_weak_map_obj() {
+                    weak_map::rewrite_weak_map_native(
+                        obj,
+                        |key| crate::session_gc::resolve_weak_key_after_promotion(key, forwarding),
+                        |value| value,
+                    );
+                }
+            }
+        }
+    }
+
     /// 把根直接持有的 epoch 对象（顶层 var 寄存器、挂起句柄等）晋升进 session，
     /// 并把根引用改写到克隆体。
     ///
@@ -262,6 +321,8 @@ impl Vm {
             self.promote_object_inner(ptr, &mut forwarding);
         }
         crate::session_gc::rewrite_vm_roots(self, &forwarding);
+        // 弱表键定夺：根直接持有的弱表克隆其弱键按转发表判生死。
+        self.rewrite_weak_map_keys_after_promotion(&[], &mut forwarding);
         forwarding.clear();
         self.gc_state.forwarding = forwarding;
     }
