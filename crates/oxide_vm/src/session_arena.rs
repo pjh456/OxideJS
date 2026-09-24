@@ -303,6 +303,12 @@ impl Vm {
     ///   session 可见，后续完整 GC 的留存账目不再漏"仅驻留 epoch arena 的对象"。
     /// - 与 `promote_session_epoch_refs` 互补：本方法处理根直接持有的 epoch 对象，
     ///   后者处理 session 对象持有的 epoch 子引用（闭包捕获等绕过写屏障的来源）。
+    /// - 弱键定夺（`rewrite_weak_map_keys_after_promotion`）只按根直接子树的
+    ///   转发表为判据：经 session 对象（非根）强持的 epoch 键不在表内会被判死
+    ///   丢条目，而本调用不释放 epoch——键强存活时条目即消失。配对调用
+    ///   （随后 `promote_session_epoch_refs`）由第二趟收敛转发表，但第一趟已丢
+    ///   条目不可复原；独立调用须根直接子树已覆盖全部强可达 epoch 对象
+    ///   （即不存在经 session 对象强持的弱键）方为合法时机。
     pub fn promote_rooted_epoch_objects(&mut self) {
         let mut epoch_roots = Vec::new();
         self.for_each_root(|value| {

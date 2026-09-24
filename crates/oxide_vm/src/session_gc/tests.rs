@@ -624,6 +624,79 @@ fn weak_map_value_edge_keeps_value_alive() {
     assert_eq!(vm.gc_state.session_object_ptrs.len(), 2);
 }
 
+/// in-run 晋升定夺·死键面：无强根的 epoch 键经收敛后转发表判死丢条目；
+/// P 键不可死，条目保留且按原键读回。
+#[test]
+fn weak_map_dead_epoch_key_dropped_by_in_run_promotion() {
+    let mut vm = vm_with_threshold(65536);
+    let value = plain_object(&mut vm);
+    let wm = weak_map_object(&mut vm);
+    // 键无强根：仅表内弱边引用。
+    let key = plain_object(&mut vm);
+    // P 键（builtin 原型，不可死）：对照条目须保留。
+    let p_key = JsValue::from_js_object(vm.session.builtin_world().object_proto.as_ptr() as *mut JsObject);
+    unsafe {
+        oxide_builtins::weak_map::weak_map_insert(
+            &mut *wm,
+            JsValue::from_js_object(key),
+            JsValue::from_js_object(value),
+        );
+        oxide_builtins::weak_map::weak_map_insert(&mut *wm, p_key, JsValue::int(7));
+    }
+    // 探针对象绕过 alloc_object，手动登记 epoch 表（in-run 档按表晋升与释放）。
+    vm.gc_state.epoch_object_ptrs.push(wm);
+    vm.gc_state.epoch_object_ptrs.push(key);
+    vm.gc_state.epoch_object_ptrs.push(value);
+    vm.regs[0] = JsValue::from_js_object(wm);
+    vm.regs[2] = JsValue::from_js_object(value);
+    vm.maybe_collect_in_run();
+
+    assert_eq!(vm.session_gc_stats().total_collections, 1, "in-run 收集应跑一轮");
+    let live_wm = unsafe { &*vm.regs[0].as_js_object_ptr() };
+    assert_eq!(oxide_builtins::weak_map::weak_map_entry_count(live_wm), 1, "死键条目须丢、P 键条目须留");
+    assert_eq!(
+        oxide_builtins::weak_map::weak_map_probe_get(live_wm, p_key),
+        JsValue::int(7),
+        "P 键条目须按原键读回"
+    );
+}
+
+/// in-run 晋升定夺·活键面：强可达 epoch 键入收敛后转发表，条目键改指克隆、
+/// 值边改指后按新键读回同一克隆。
+#[test]
+fn weak_map_live_epoch_key_repointed_by_in_run_promotion() {
+    let mut vm = vm_with_threshold(65536);
+    let key = plain_object(&mut vm);
+    let value = plain_object(&mut vm);
+    let wm = weak_map_object(&mut vm);
+    unsafe {
+        oxide_builtins::weak_map::weak_map_insert(
+            &mut *wm,
+            JsValue::from_js_object(key),
+            JsValue::from_js_object(value),
+        );
+    }
+    // 探针对象绕过 alloc_object，手动登记 epoch 表（in-run 档按表晋升与释放）。
+    vm.gc_state.epoch_object_ptrs.push(wm);
+    vm.gc_state.epoch_object_ptrs.push(key);
+    vm.gc_state.epoch_object_ptrs.push(value);
+    vm.regs[0] = JsValue::from_js_object(wm);
+    vm.regs[1] = JsValue::from_js_object(key);
+    vm.regs[2] = JsValue::from_js_object(value);
+    vm.maybe_collect_in_run();
+
+    let live_wm = unsafe { &*vm.regs[0].as_js_object_ptr() };
+    assert!(live_wm.is_session_epoch(), "in-run 收集后弱表应晋升 session");
+    assert_eq!(
+        oxide_builtins::weak_map::weak_map_entry_count(live_wm),
+        1,
+        "强可达键的条目须在 in-run 定夺后存活"
+    );
+    let stored = oxide_builtins::weak_map::weak_map_probe_get(live_wm, vm.regs[1]);
+    assert_eq!(stored, vm.regs[2], "值须按改指后的键读回同一克隆");
+    assert!(vm.is_session_ptr(stored.as_js_object_ptr()), "值边须改指 session 克隆");
+}
+
 /// 盒持唯一引用的 session 串与 BigInt 经 Map native 边进入存活集：
 /// 清寄存器仅留 Map 根后完整收集，两值仍登记在 session 表。
 #[test]

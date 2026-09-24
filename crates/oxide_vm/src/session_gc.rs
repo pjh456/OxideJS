@@ -370,6 +370,13 @@ impl SessionGc {
                 }
             }
         }
+        if obj.is_weak_map_obj() {
+            for value in weak_map::weak_map_native_edges(obj) {
+                if value.is_string() {
+                    Self::mark_string_live(live, value.as_string_ptr_mut());
+                }
+            }
+        }
         if obj.is_module_namespace() {
             for value in module::module_ns_native_edges(obj) {
                 if value.is_string() {
