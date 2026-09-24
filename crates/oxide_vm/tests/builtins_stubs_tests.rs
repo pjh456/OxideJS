@@ -12,15 +12,15 @@ fn eval(vm: &mut Vm, source: &str) -> Result<JsValue, String> {
     vm.run(&Arc::new(module))
 }
 
-/// 五 stub 构造器原型链钉：prototype 为对象、原型链落 Object.prototype、
-/// constructor 回指构造器本体。
+/// 四弱族 stub 构造器原型链钉：prototype 为对象、原型链落 Object.prototype、
+/// constructor 回指构造器本体；规范 25.1 的 %Proxy% 无 prototype 属性，不在名表。
 #[test]
-fn stub_ctor_prototype_chain_all_five() {
+fn stub_ctor_prototype_chain_weak_family() {
     let mut vm = Vm::new();
     let result = eval(
         &mut vm,
         "(function () { \
-         var names = ['Proxy', 'WeakMap', 'WeakSet', 'WeakRef', 'FinalizationRegistry']; \
+          var names = ['WeakMap', 'WeakSet', 'WeakRef', 'FinalizationRegistry']; \
          for (var i = 0; i < names.length; i++) { \
             var x = globalThis[names[i]]; \
             if (typeof x.prototype !== 'object') { return false; } \
@@ -33,27 +33,27 @@ fn stub_ctor_prototype_chain_all_five() {
     assert!(result.as_bool());
 }
 
-/// 五 stub 构造器 length/name 值钉 + 非枚举钉：构造器面三属性与原型对象自身
-/// 属性均不泄漏进 Object.keys。
+/// 五 stub 构造器 length/name 值钉 + 非枚举钉：构造器面属性（length/name 五族、
+/// prototype 四弱族）与原型对象自身属性均不泄漏进 Object.keys。
 #[test]
 fn stub_ctor_length_name_identity_non_enumerable() {
     let mut vm = Vm::new();
     let result = eval(
         &mut vm,
         "(function () { \
-         var names = ['Proxy', 'WeakMap', 'WeakSet', 'WeakRef', 'FinalizationRegistry']; \
-         var expect = { Proxy: 2, WeakMap: 0, WeakSet: 0, WeakRef: 1, FinalizationRegistry: 1 }; \
-         for (var i = 0; i < names.length; i++) { \
-            var name = names[i]; \
-            var x = globalThis[name]; \
-            if (x.length !== expect[name] || x.name !== name) { return false; } \
-            var keys = Object.keys(x); \
-            for (var k = 0; k < keys.length; k++) { \
-               if (keys[k] === 'length' || keys[k] === 'name' || keys[k] === 'prototype') { return false; } \
-            } \
-            if (Object.keys(x.prototype).length !== 0) { return false; } \
-         } \
-         return true; })()",
+          var names = ['Proxy', 'WeakMap', 'WeakSet', 'WeakRef', 'FinalizationRegistry']; \
+          var expect = { Proxy: 2, WeakMap: 0, WeakSet: 0, WeakRef: 1, FinalizationRegistry: 1 }; \
+          for (var i = 0; i < names.length; i++) { \
+             var name = names[i]; \
+             var x = globalThis[name]; \
+             if (x.length !== expect[name] || x.name !== name) { return false; } \
+             var keys = Object.keys(x); \
+             for (var k = 0; k < keys.length; k++) { \
+                if (keys[k] === 'length' || keys[k] === 'name' || keys[k] === 'prototype') { return false; } \
+             } \
+             if (x.prototype !== undefined && Object.keys(x.prototype).length !== 0) { return false; } \
+          } \
+          return true; })()",
     )
     .unwrap();
     assert!(result.as_bool());
@@ -76,18 +76,19 @@ fn weak_family_proto_to_string_tag() {
     assert!(result.as_bool());
 }
 
-/// 原型成员读不抛钉：缺失方法读返 undefined（非对象 receiver 抛错形态消除）。
+/// 原型成员读不抛钉：缺失方法读返 undefined（非对象 receiver 抛错形态消除）；
+/// %Proxy% 无 prototype 属性，钉其缺失。
 #[test]
 fn stub_proto_member_read_returns_undefined() {
     let mut vm = Vm::new();
     let result = eval(
         &mut vm,
         "(function () { \
-         return typeof WeakMap.prototype.get === 'undefined' \
-            && typeof WeakSet.prototype.add === 'undefined' \
-            && typeof WeakRef.prototype.deref === 'undefined' \
-            && typeof FinalizationRegistry.prototype.register === 'undefined' \
-            && typeof Proxy.prototype.nonexistent === 'undefined'; })()",
+          return typeof WeakMap.prototype.get === 'undefined' \
+             && typeof WeakSet.prototype.add === 'undefined' \
+             && typeof WeakRef.prototype.deref === 'undefined' \
+             && typeof FinalizationRegistry.prototype.register === 'undefined' \
+             && Proxy.prototype === undefined; })()",
     )
     .unwrap();
     assert!(result.as_bool());
