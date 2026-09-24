@@ -36,14 +36,7 @@ pub(crate) fn is_skipped(meta: &TestMeta) -> Option<String> {
     // 保持大范围已实现 feature tag 可运行；只排除真正未实现的子特性。
     // 其余一切让测试实际运行，依赖运行时跳过逻辑
     // （"too many registers"、"not yet implemented" 等）判定失败。
-    let excluded_features = [
-        "Proxy",
-        "Intl",
-        "Atomics",
-        "cross-realm",
-        // await-dictionary（Promise.allKeyed/allSettledKeyed）是 2025 proposal，未实现。
-        "await-dictionary",
-    ];
+    let excluded_features = ["Proxy", "Intl", "Atomics", "cross-realm"];
 
     for feat in &meta.features {
         if excluded_features.contains(&feat.as_str()) || feat.starts_with("Intl") {

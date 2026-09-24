@@ -407,6 +407,17 @@ pub(super) fn promise_static_all_keyed(vm: &mut Vm, args: &[u8]) -> NativeResult
     }
 }
 
+/// `Promise.allSettledKeyed(object)`：输入自身可枚举键的元素全部结算后以
+/// null 原型键控结果对象完成，每元素记 `{status, value|reason}` 记录。
+pub(super) fn promise_static_all_settled_keyed(vm: &mut Vm, args: &[u8]) -> NativeResult {
+    let ctor = vm.reg(if args.is_empty() { 0 } else { args[0] });
+    let promises = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
+    match perform_promise_combine_keyed(vm, ctor, promises, KeyedVariant::AllSettled) {
+        Ok(promise) => NativeResult::Ok(promise),
+        Err(err) => NativeResult::Err(err),
+    }
+}
+
 /// 聚合静态方法的共享核心：迭代可迭代输入，逐元素调 `C.resolve` 建 promise 并注册反应，
 /// 按模式在全部/任一结算后交付能力 promise。
 ///
@@ -578,8 +589,6 @@ fn perform_promise_combine(
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum KeyedVariant {
     All,
-    // allSettledKeyed 入口尚未挂入构造器静态表，核心实现先行备齐。
-    #[expect(dead_code)]
     AllSettled,
 }
 
