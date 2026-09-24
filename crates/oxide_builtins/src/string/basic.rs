@@ -763,3 +763,144 @@ pub fn string_ends_with<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let result = if search.is_empty() { true } else { s[..end_pos].ends_with(&search) };
     NativeResult::Ok(JsValue::bool(result))
 }
+
+// ── Annex B HTML 方法族 ─────────────────────────────────────────────────
+//
+// 13 个 HTML 包装方法共用 CreateHTML 语义：this 经 RequireObjectCoercible +
+// ToString 后拼 `<tag attr="值">串</tag>`；attr 为空串则无属性段，属性值
+// 经完整 ToString（缺参得 "undefined"），值内 0x0022（双引号）替换为
+// `&quot;`，其余单元原样保留。
+
+/// CreateHTML 语义拼接：`<tag attr="值">串</tag>` 片段；attr 为空则无属性段，
+/// 属性值内 0x0022 替换为 `&quot;`。
+fn create_html(s: &[u16], tag: &str, attr: &str, attr_value: &[u16]) -> Vec<u16> {
+    let mut out = Vec::with_capacity(s.len() + tag.len() * 2 + attr.len() + attr_value.len() * 2 + 8);
+    out.push(b'<' as u16);
+    out.extend(tag.encode_utf16());
+    if !attr.is_empty() {
+        out.push(b' ' as u16);
+        out.extend(attr.encode_utf16());
+        out.push(b'=' as u16);
+        out.push(b'"' as u16);
+        for &u in attr_value {
+            if u == 0x0022 {
+                out.extend(b"&quot;".iter().map(|&b| b as u16));
+            } else {
+                out.push(u);
+            }
+        }
+        out.push(b'"' as u16);
+    }
+    out.push(b'>' as u16);
+    out.extend_from_slice(s);
+    out.push(b'<' as u16);
+    out.push(b'/' as u16);
+    out.extend(tag.encode_utf16());
+    out.push(b'>' as u16);
+    out
+}
+
+/// `String.prototype.anchor(name)`：返回 `<a name="值">串</a>` 形 HTML 片段；
+/// 属性值经完整 ToString（缺参得 "undefined"），值内双引号替换为 `&quot;`。
+pub fn string_anchor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    builtins_debug!("String.prototype.anchor called with {} args", args.len());
+    let s: Vec<u16> = try_string!(this_units(vm, args)).into_owned();
+    let val = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
+    let v: Vec<u16> = try_string!(as_units(vm, val)).into_owned();
+    NativeResult::Ok(vm.new_string_units_owned(create_html(&s, "a", "name", &v)))
+}
+
+/// `String.prototype.big()`：返回 `<big>串</big>` 形 HTML 片段。
+pub fn string_big<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    builtins_debug!("String.prototype.big called with {} args", args.len());
+    let s: Vec<u16> = try_string!(this_units(vm, args)).into_owned();
+    NativeResult::Ok(vm.new_string_units_owned(create_html(&s, "big", "", &[])))
+}
+
+/// `String.prototype.blink()`：返回 `<blink>串</blink>` 形 HTML 片段。
+pub fn string_blink<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    builtins_debug!("String.prototype.blink called with {} args", args.len());
+    let s: Vec<u16> = try_string!(this_units(vm, args)).into_owned();
+    NativeResult::Ok(vm.new_string_units_owned(create_html(&s, "blink", "", &[])))
+}
+
+/// `String.prototype.bold()`：返回 `<b>串</b>` 形 HTML 片段。
+pub fn string_bold<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    builtins_debug!("String.prototype.bold called with {} args", args.len());
+    let s: Vec<u16> = try_string!(this_units(vm, args)).into_owned();
+    NativeResult::Ok(vm.new_string_units_owned(create_html(&s, "b", "", &[])))
+}
+
+/// `String.prototype.fixed()`：返回 `<tt>串</tt>` 形 HTML 片段。
+pub fn string_fixed<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    builtins_debug!("String.prototype.fixed called with {} args", args.len());
+    let s: Vec<u16> = try_string!(this_units(vm, args)).into_owned();
+    NativeResult::Ok(vm.new_string_units_owned(create_html(&s, "tt", "", &[])))
+}
+
+/// `String.prototype.fontcolor(colour)`：返回 `<font color="值">串</font>` 形
+/// HTML 片段；属性值经完整 ToString（缺参得 "undefined"），值内双引号替换为
+/// `&quot;`。
+pub fn string_fontcolor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    builtins_debug!("String.prototype.fontcolor called with {} args", args.len());
+    let s: Vec<u16> = try_string!(this_units(vm, args)).into_owned();
+    let val = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
+    let v: Vec<u16> = try_string!(as_units(vm, val)).into_owned();
+    NativeResult::Ok(vm.new_string_units_owned(create_html(&s, "font", "color", &v)))
+}
+
+/// `String.prototype.fontsize(size)`：返回 `<font size="值">串</font>` 形
+/// HTML 片段；属性值经完整 ToString（缺参得 "undefined"），值内双引号替换为
+/// `&quot;`。
+pub fn string_fontsize<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    builtins_debug!("String.prototype.fontsize called with {} args", args.len());
+    let s: Vec<u16> = try_string!(this_units(vm, args)).into_owned();
+    let val = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
+    let v: Vec<u16> = try_string!(as_units(vm, val)).into_owned();
+    NativeResult::Ok(vm.new_string_units_owned(create_html(&s, "font", "size", &v)))
+}
+
+/// `String.prototype.italics()`：返回 `<i>串</i>` 形 HTML 片段。
+pub fn string_italics<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    builtins_debug!("String.prototype.italics called with {} args", args.len());
+    let s: Vec<u16> = try_string!(this_units(vm, args)).into_owned();
+    NativeResult::Ok(vm.new_string_units_owned(create_html(&s, "i", "", &[])))
+}
+
+/// `String.prototype.link(url)`：返回 `<a href="值">串</a>` 形 HTML 片段；
+/// 属性值经完整 ToString（缺参得 "undefined"），值内双引号替换为 `&quot;`。
+pub fn string_link<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    builtins_debug!("String.prototype.link called with {} args", args.len());
+    let s: Vec<u16> = try_string!(this_units(vm, args)).into_owned();
+    let val = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
+    let v: Vec<u16> = try_string!(as_units(vm, val)).into_owned();
+    NativeResult::Ok(vm.new_string_units_owned(create_html(&s, "a", "href", &v)))
+}
+
+/// `String.prototype.small()`：返回 `<small>串</small>` 形 HTML 片段。
+pub fn string_small<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    builtins_debug!("String.prototype.small called with {} args", args.len());
+    let s: Vec<u16> = try_string!(this_units(vm, args)).into_owned();
+    NativeResult::Ok(vm.new_string_units_owned(create_html(&s, "small", "", &[])))
+}
+
+/// `String.prototype.strike()`：返回 `<strike>串</strike>` 形 HTML 片段。
+pub fn string_strike<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    builtins_debug!("String.prototype.strike called with {} args", args.len());
+    let s: Vec<u16> = try_string!(this_units(vm, args)).into_owned();
+    NativeResult::Ok(vm.new_string_units_owned(create_html(&s, "strike", "", &[])))
+}
+
+/// `String.prototype.sub()`：返回 `<sub>串</sub>` 形 HTML 片段。
+pub fn string_sub<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    builtins_debug!("String.prototype.sub called with {} args", args.len());
+    let s: Vec<u16> = try_string!(this_units(vm, args)).into_owned();
+    NativeResult::Ok(vm.new_string_units_owned(create_html(&s, "sub", "", &[])))
+}
+
+/// `String.prototype.sup()`：返回 `<sup>串</sup>` 形 HTML 片段。
+pub fn string_sup<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    builtins_debug!("String.prototype.sup called with {} args", args.len());
+    let s: Vec<u16> = try_string!(this_units(vm, args)).into_owned();
+    NativeResult::Ok(vm.new_string_units_owned(create_html(&s, "sup", "", &[])))
+}

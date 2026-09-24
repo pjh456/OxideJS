@@ -126,6 +126,19 @@ pub struct StringMethods {
     pub to_locale_lower_case: *const (),
     pub to_locale_upper_case: *const (),
     pub locale_compare: *const (),
+    pub anchor: *const (),
+    pub big: *const (),
+    pub blink: *const (),
+    pub bold: *const (),
+    pub fixed: *const (),
+    pub fontcolor: *const (),
+    pub fontsize: *const (),
+    pub italics: *const (),
+    pub link: *const (),
+    pub small: *const (),
+    pub strike: *const (),
+    pub sub: *const (),
+    pub sup: *const (),
 }
 
 /// RegExp 原型方法的 native 函数指针集合。

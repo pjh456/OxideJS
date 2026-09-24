@@ -281,6 +281,19 @@ impl BuiltinWorld {
             ("lastIndexOf", methods.last_index_of, 1),
             ("isWellFormed", methods.is_well_formed, 0),
             ("toWellFormed", methods.to_well_formed, 0),
+            ("anchor", methods.anchor, 1),
+            ("big", methods.big, 0),
+            ("blink", methods.blink, 0),
+            ("bold", methods.bold, 0),
+            ("fixed", methods.fixed, 0),
+            ("fontcolor", methods.fontcolor, 1),
+            ("fontsize", methods.fontsize, 1),
+            ("italics", methods.italics, 0),
+            ("link", methods.link, 1),
+            ("small", methods.small, 0),
+            ("strike", methods.strike, 0),
+            ("sub", methods.sub, 0),
+            ("sup", methods.sup, 0),
         );
     }
 
