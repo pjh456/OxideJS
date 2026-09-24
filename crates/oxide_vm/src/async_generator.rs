@@ -16,7 +16,7 @@ use std::collections::VecDeque;
 
 use oxide_builtins::iterator::make_iter_result;
 use oxide_kernel::shape_forge::EMPTY_SHAPE_ID;
-use oxide_runtime_api::NativeResult;
+use oxide_runtime_api::{NativeResult, VmHost};
 use oxide_types::object::{JsObject, NativeFnPtr, PropAttributes};
 use oxide_types::value::JsValue;
 
@@ -731,6 +731,150 @@ pub(crate) fn async_generator_symbol_async_iterator(vm: &mut Vm, args: &[u8]) ->
     NativeResult::Ok(this_val)
 }
 
+/// `@@asyncDispose` 结算闭包上存目标能力 promise 的属性名。
+const AD_SETTLE_PROMISE_PROP: &str = "__oxide_async_dispose_promise__";
+/// `@@asyncDispose` 结算闭包上区分 fulfill/reject 角色的属性名。
+const AD_SETTLE_ROLE_PROP: &str = "__oxide_async_dispose_role__";
+
+/// `%AsyncIteratorPrototype%[@@asyncDispose]`：新建能力，取 `this` 的 `return`
+/// 方法调用后，把结果经 PromiseResolve 展开、以 undefined 结算能力。
+///
+/// # 步骤
+/// 1. GetMethod(this, "return")：非对象接收者或方法缺失/非对象时按无方法处理。
+/// 2. 无方法：能力以 undefined resolve 后立即返回。
+/// 3. Call(return, this, « undefined »)：调用失败以原异常 reject 能力。
+/// 4. 结果为 promise 时注册 unwrap 反应（最终值恒 undefined）；非 promise 直接
+///    以 undefined resolve 能力。
+///
+/// # 边界与前提
+/// - 本方法返回的 promise 永不同步抛错：所有异常路径都转为能力 reject。
+///
+/// # 副作用
+/// - 新建能力 promise 与两个结算闭包（登记进 session GC 根）。
+/// - 调用用户 `return` 方法（可能执行任意用户代码）。
+pub(crate) fn async_iterator_async_dispose(vm: &mut Vm, args: &[u8]) -> NativeResult {
+    let o = vm.reg(if args.is_empty() { 0 } else { args[0] });
+    let (promise, _, _) = vm.new_promise_capability();
+
+    // GetMethod(O, "return")：完整 [[Get]]（触发 getter，getter 抛错经
+    // IfAbruptRejectPromise 转能力 reject）。
+    let ret = if o.is_object() {
+        let si = vm.kernel_core.perm_interner().intern("return").0;
+        let obj = unsafe { &*o.as_js_object_ptr() };
+        match vm.ordinary_get(obj, si, o) {
+            Ok(r) => Some(r),
+            Err(_) => {
+                let exc = vm
+                    .take_uncaught_value()
+                    .unwrap_or_else(|| oxide_builtins::error::create_from_text(vm, "AsyncIterator return getter failed"));
+                let _ = vm.reject_promise(promise, exc);
+                return NativeResult::Ok(promise);
+            }
+        }
+    } else {
+        None
+    };
+    let ret = match ret {
+        Some(r) if r.is_object() => r,
+        _ => {
+            let _ = vm.resolve_promise(promise, JsValue::undefined());
+            return NativeResult::Ok(promise);
+        }
+    };
+
+    // Call(return, O, « undefined »)：调用失败以原异常 reject 能力。
+    let result = match vm.call_function_sync(ret, o, &[JsValue::undefined()]) {
+        Ok(r) => r,
+        Err(_) => {
+            let exc = vm
+                .take_uncaught_value()
+                .unwrap_or_else(|| oxide_builtins::error::create_from_text(vm, "AsyncIterator return method call failed"));
+            let _ = vm.reject_promise(promise, exc);
+            return NativeResult::Ok(promise);
+        }
+    };
+
+    // PromiseResolve + PerformPromiseThen(resultWrapper, unwrap, undefined, capability)：
+    // unwrap 闭包恒返回 undefined，故能力最终值恒为 undefined。
+    if vm.is_promise_value(result) {
+        let unwrap = vm.make_async_dispose_unwrap_fn();
+        let derived = match vm.perform_promise_then(result, unwrap, JsValue::undefined()) {
+            Ok(d) => d,
+            Err(exc) => {
+                let _ = vm.reject_promise(promise, exc);
+                return NativeResult::Ok(promise);
+            }
+        };
+        let on_fulfilled = vm.make_async_dispose_settle_fn(promise, false);
+        let on_rejected = vm.make_async_dispose_settle_fn(promise, true);
+        let _ = vm.perform_promise_then(derived, on_fulfilled, on_rejected);
+    } else {
+        let _ = vm.resolve_promise(promise, JsValue::undefined());
+    }
+    NativeResult::Ok(promise)
+}
+
+/// unwrap 闭包：忽略反应值，恒返回 undefined（规范 CreateBuiltinFunction(unwrap, 1, "", « »)）。
+fn async_dispose_unwrap_closure(_vm: &mut Vm, _args: &[u8]) -> NativeResult {
+    NativeResult::Ok(JsValue::undefined())
+}
+
+/// 结算闭包：以反应值结算自身 prop 携带的能力 promise（角色 prop 区分 fulfill/reject）。
+fn async_dispose_settle_closure(vm: &mut Vm, args: &[u8]) -> NativeResult {
+    let callee = vm.reg(254);
+    if !callee.is_object() {
+        return NativeResult::Err(oxide_builtins::error::create_type_error(vm, "settle handler is invalid"));
+    }
+    let callee_obj = unsafe { &*callee.as_js_object_ptr() };
+    let prom_si = vm.kernel_core.perm_interner().intern(AD_SETTLE_PROMISE_PROP).0;
+    let promise = vm.resolve_property(callee_obj, prom_si).unwrap_or(JsValue::undefined());
+    let role_si = vm.kernel_core.perm_interner().intern(AD_SETTLE_ROLE_PROP).0;
+    let is_reject = vm
+        .resolve_property(callee_obj, role_si)
+        .is_some_and(oxide_runtime_api::to_boolean);
+    let value = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
+    if is_reject {
+        let _ = vm.reject_promise(promise, value);
+    } else {
+        let _ = vm.resolve_promise(promise, value);
+    }
+    NativeResult::Ok(JsValue::undefined())
+}
+
+impl Vm {
+    /// 构造 `@@asyncDispose` 的 unwrap 闭包（无捕获状态，恒返回 undefined）。
+    fn make_async_dispose_unwrap_fn(&mut self) -> JsValue {
+        let fn_proto = self.session.builtin_world().fn_proto_val();
+        let mut func = JsObject::new_empty(EMPTY_SHAPE_ID, fn_proto);
+        func.set_function(true);
+        // SAFETY: async_dispose_unwrap_closure 是 NativeFn 函数项。
+        func.set_native_fn(Some(unsafe { NativeFnPtr::from_raw(async_dispose_unwrap_closure as *const ()) }));
+        func.set_native_arg_count(1);
+        let ptr = self.alloc_object(func);
+        self.add_fn_name_length(unsafe { &mut *ptr }, "", 1);
+        JsValue::from_js_object(ptr)
+    }
+
+    /// 构造 `@@asyncDispose` 结算闭包：捕获能力 promise 与结算角色，
+    /// 反应触发时以反应值结算能力 promise。
+    fn make_async_dispose_settle_fn(&mut self, promise: JsValue, reject_role: bool) -> JsValue {
+        let fn_proto = self.session.builtin_world().fn_proto_val();
+        let mut func = JsObject::new_empty(EMPTY_SHAPE_ID, fn_proto);
+        func.set_function(true);
+        // SAFETY: async_dispose_settle_closure 是 NativeFn 函数项。
+        func.set_native_fn(Some(unsafe { NativeFnPtr::from_raw(async_dispose_settle_closure as *const ()) }));
+        func.set_native_arg_count(1);
+        let ptr = self.alloc_object(func);
+        let obj = unsafe { &mut *ptr };
+        let prom_si = self.kernel_core.perm_interner().intern(AD_SETTLE_PROMISE_PROP).0;
+        self.set_or_create_prop_value(obj, prom_si, promise);
+        let role_si = self.kernel_core.perm_interner().intern(AD_SETTLE_ROLE_PROP).0;
+        self.set_or_create_prop_value(obj, role_si, JsValue::bool(reject_role));
+        self.add_fn_name_length(obj, "", 1);
+        JsValue::from_js_object(ptr)
+    }
+}
+
 /// 初始化/重建异步生成器内建对象：`%AsyncGeneratorPrototype%`、
 /// `%AsyncGeneratorFunction.prototype%` 与占位 `%AsyncGeneratorFunction%`。
 ///
@@ -740,10 +884,13 @@ pub(crate) fn init_async_generator_intrinsics(vm: &mut Vm) {
     let sh = vm.kernel_core.shape_forge().as_ref();
     let fn_proto_val = vm.session.builtin_world().fn_proto_val();
     let world = vm.session.builtin_world();
-    let object_proto_val = JsValue::from_js_object(vm.session.builtin_world().object_proto.as_ptr() as *mut JsObject);
+    // %AsyncGeneratorPrototype% 链到 %AsyncIteratorPrototype%（规范原型链），
+    // 方法 next/return/throw 挂其自身。
+    let async_iterator_proto_val =
+        JsValue::from_js_object(world.async_iterator_proto.as_ptr() as *mut JsObject);
 
-    // %AsyncGeneratorPrototype%：proto = Object.prototype，方法 next/return/throw。
-    let mut ag_proto = Box::new(JsObject::new_empty(EMPTY_SHAPE_ID, object_proto_val));
+    // %AsyncGeneratorPrototype%：proto = %AsyncIteratorPrototype%。
+    let mut ag_proto = Box::new(JsObject::new_empty(EMPTY_SHAPE_ID, async_iterator_proto_val));
     // 站点标签：与 Generator 原型的同名方法槽（next/return/throw）区分复用键。
     let ag_label = sf.intern("AsyncGeneratorPrototype").0;
     oxide_kernel::bind_methods_static!(

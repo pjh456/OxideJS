@@ -567,6 +567,37 @@ fn bind_iterator_protos(core: &Arc<KernelCore>, session: &KernelSession) {
         );
     }
 
+    // %AsyncIteratorPrototype%：@@asyncIterator（返回 this）与 @@asyncDispose
+    // （经 return 方法关闭迭代器）。幂等：键槽已存在时跳过。
+    let aiter_proto_ptr = world.async_iterator_proto.as_ptr() as *mut JsObject;
+    let aiter_proto = unsafe { &mut *aiter_proto_ptr };
+    let sym_aiter =
+        oxide_types::private_key::make_well_known_symbol_key(oxide_types::private_key::WELL_KNOWN_SYMBOL_ASYNC_ITERATOR);
+    if core.shape_forge().lookup_position(aiter_proto.shape_id(), sym_aiter).is_none() {
+        bind_well_known_method(
+            world,
+            core,
+            aiter_proto,
+            oxide_types::private_key::WELL_KNOWN_SYMBOL_ASYNC_ITERATOR,
+            "[Symbol.asyncIterator]",
+            crate::async_generator::async_generator_symbol_async_iterator as *const (),
+            0,
+        );
+    }
+    let sym_adispose =
+        oxide_types::private_key::make_well_known_symbol_key(oxide_types::private_key::WELL_KNOWN_SYMBOL_ASYNC_DISPOSE);
+    if core.shape_forge().lookup_position(aiter_proto.shape_id(), sym_adispose).is_none() {
+        bind_well_known_method(
+            world,
+            core,
+            aiter_proto,
+            oxide_types::private_key::WELL_KNOWN_SYMBOL_ASYNC_DISPOSE,
+            "[Symbol.asyncDispose]",
+            crate::async_generator::async_iterator_async_dispose as *const (),
+            0,
+        );
+    }
+
     // %IteratorHelperPrototype%：wrapper 结果对象的共享原型（链到
     // %IteratorPrototype%），绑 next/return/throw 三方法（throw length=1，
     // next/return 为 0）+ @@toStringTag 数据属性 "Iterator Helper"。

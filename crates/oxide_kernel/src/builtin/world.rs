@@ -134,6 +134,9 @@ pub struct BuiltinWorld {
     pub string_default_iterator: std::cell::Cell<*const JsObject>,
     /// `%RegExpStringIteratorPrototype%`：matchAll 返回的迭代器。
     pub regexp_string_iterator_proto: P<JsObject>,
+    /// `%AsyncIteratorPrototype%`：异步迭代器原型（链到 Object.prototype），
+    /// 持有 `@@asyncIterator`/`@@asyncDispose`；`%AsyncGeneratorPrototype%` 链到它。
+    pub async_iterator_proto: P<JsObject>,
     /// `%IteratorHelperPrototype%`：Iterator helpers 结果对象的共享原型，链到 %IteratorPrototype%。
     pub iterator_helper_proto: P<JsObject>,
     /// `DisposableStack.prototype`：同步资源栈原型（链到 Object.prototype），
@@ -350,7 +353,7 @@ impl BuiltinWorld {
     /// session 收尾（`teardown_heap_data`）与选择性重建收尾（`retire_replaced`）
     /// 的 P 字段枚举唯一入口：`BuiltinWorld` 新增 P 字段须在此同步补一行，否则
     /// 收尾时该字段属性区无法释放、重建原型槽改写/释放漏掉该字段。
-    pub(crate) fn all_p_fields(&self) -> [&P<JsObject>; 107] {
+    pub(crate) fn all_p_fields(&self) -> [&P<JsObject>; 108] {
         [
             &self.object_proto,
             &self.array_proto,
@@ -455,6 +458,7 @@ impl BuiltinWorld {
             &self.set_iterator_proto,
             &self.string_iterator_proto,
             &self.regexp_string_iterator_proto,
+            &self.async_iterator_proto,
             &self.iterator_helper_proto,
             &self.disposable_stack_proto,
             &self.async_disposable_stack_proto,
@@ -604,6 +608,7 @@ impl BuiltinWorld {
             BuiltinId::BigIntConstructor => &self.bigint_constructor,
             BuiltinId::BigIntProto => &self.bigint_proto,
             BuiltinId::Console => &self.console_object,
+            BuiltinId::AsyncIteratorProto => &self.async_iterator_proto,
         }
     }
 }

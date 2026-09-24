@@ -59,6 +59,14 @@ fn string_arg<H: VmHost>(vm: &mut H, args: &[u8]) -> String {
     }
 }
 
+/// 解析两位十六进制单元为字节：逐位严格匹配十六进制数字，不带符号位
+/// （`from_str_radix` 会接受 `+1`/`-1`，`%+1` 这类序列按规范须判非法）。
 fn parse_hex_u8(slice: &[u8]) -> Option<u8> {
-    std::str::from_utf8(slice).ok().and_then(|s| u8::from_str_radix(s, 16).ok())
+    let digit = |c: u8| match c {
+        b'0'..=b'9' => Some(c - b'0'),
+        b'a'..=b'f' => Some(c - b'a' + 10),
+        b'A'..=b'F' => Some(c - b'A' + 10),
+        _ => None,
+    };
+    Some(digit(slice[0])? * 16 + digit(slice[1])?)
 }

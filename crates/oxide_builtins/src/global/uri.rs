@@ -6,20 +6,56 @@ const URI_RESERVED: &str = ";/?:@&=+$,#";
 const URI_SAFE: &str = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_.!~*'();/?:@&=+$,#";
 const URI_ERROR_MESSAGE: &str = "malformed URI sequence";
 
-fn encode_uri_string(input: &str, safe: &str) -> String {
-    let mut out = String::with_capacity(input.len());
-    for ch in input.chars() {
-        if ch.is_ascii() && safe.contains(ch) {
-            out.push(ch);
+/// 单元口径的 `encodeURI`/`encodeURIComponent` 共享循环：未转义字符原样
+/// 透传，其余按 UTF-8 字节转成 `%XX`；良配 surrogate 对先合成码点再编码，
+/// 孤立 surrogate 单元（0xD800-0xDFFF）无良形 UTF-8 编码，按规范抛 URIError
+/// （以 `Err(())` 返回）。
+fn encode_uri_units(input: &[u16], safe: &str) -> Result<String, ()> {
+    let mut out = String::with_capacity(input.len() * 3);
+    let mut i = 0;
+    while i < input.len() {
+        let unit = input[i];
+
+        // 高 surrogate 须紧跟低 surrogate：合成超平面码点后按 UTF-8 编码。
+        if (0xD800..=0xDBFF).contains(&unit) {
+            let next = *input.get(i + 1).ok_or(())?;
+            if !(0xDC00..=0xDFFF).contains(&next) {
+                return Err(());
+            }
+            let cp = 0x10000 + ((unit as u32 - 0xD800) << 10) + (next as u32 - 0xDC00);
+            let mut buf = [0u8; 4];
+            for byte in char::from_u32(cp).expect("合成码点必在超平面区间内").encode_utf8(&mut buf).as_bytes() {
+                out.push_str(&format!("%{byte:02X}"));
+            }
+            i += 2;
             continue;
         }
 
+        // 孤立低 surrogate（及任何未配对的 surrogate 单元）：无良形编码。
+        if (0xD800..=0xDFFF).contains(&unit) {
+            return Err(());
+        }
+
+        if unit < 0x80 {
+            let ch = unit as u8 as char;
+            if safe.contains(ch) {
+                out.push(ch);
+            } else {
+                out.push_str(&format!("%{unit:02X}"));
+            }
+            i += 1;
+            continue;
+        }
+
+        // 非 surrogate 单元即良形 BMP 码点（surrogate 臂已先行处理）。
         let mut buf = [0u8; 4];
+        let ch = char::from_u32(unit as u32).expect("非 surrogate 单元必为良形码点");
         for byte in ch.encode_utf8(&mut buf).as_bytes() {
             out.push_str(&format!("%{byte:02X}"));
         }
+        i += 1;
     }
-    out
+    Ok(out)
 }
 
 /// 从单元序列的 `%` 位置读一个 `%XX` 字节（hex 两位须为 ASCII 十六进制单元）。
@@ -103,27 +139,45 @@ fn uri_error<H: VmHost>(vm: &mut H) -> NativeResult {
 }
 
 /// 取 URI 函数实参的单元序列（单元口径，不 lossy）：无实参等价于处理
-/// `"undefined"`。ToPrimitive 抛错（Symbol 等）原样返回异常值。
+/// `"undefined"`。对象经 ToPrimitive 转换，用户 valueOf/toString 抛出的原值
+/// 优先于格式化文本传播（S15.1.3.x A6 族按原值比对）。
 fn string_arg_units<H: VmHost>(vm: &mut H, args: &[u8]) -> Result<Vec<u16>, NativeResult> {
     let val = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
     match oxide_runtime_api::to_units_full(val, vm) {
         Ok(u) => Ok(u),
-        Err(e) => Err(NativeResult::Err(crate::error::create_from_text(vm, &e))),
+        Err(e) => {
+            if let Some(exc) = vm.take_uncaught_value() {
+                return Err(NativeResult::Err(exc));
+            }
+            Err(NativeResult::Err(crate::error::create_from_text(vm, &e)))
+        }
     }
 }
 
 /// `encodeURI`：编码输入为 URI，保留未转义字符与保留字符 `;/?:@&=+$,#`，
-/// 其余按 UTF-8 字节转成 `%XX`。
+/// 其余按 UTF-8 字节转成 `%XX`；孤立 surrogate 单元抛 URIError。
 pub fn encode_uri<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
-    let input = super::string_arg(vm, args);
-    NativeResult::Ok(vm.new_string(&encode_uri_string(&input, URI_SAFE)))
+    let input = match string_arg_units(vm, args) {
+        Ok(u) => u,
+        Err(e) => return e,
+    };
+    match encode_uri_units(&input, URI_SAFE) {
+        Ok(s) => NativeResult::Ok(vm.new_string_owned(s)),
+        Err(()) => uri_error(vm),
+    }
 }
 
 /// `encodeURIComponent`：编码输入为 URI component，仅保留未转义字符，
-/// 保留字符（如 `=&`）也会被转成 `%XX`。
+/// 保留字符（如 `=&`）也会被转成 `%XX`；孤立 surrogate 单元抛 URIError。
 pub fn encode_uri_component<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
-    let input = super::string_arg(vm, args);
-    NativeResult::Ok(vm.new_string(&encode_uri_string(&input, URI_UNESCAPED)))
+    let input = match string_arg_units(vm, args) {
+        Ok(u) => u,
+        Err(e) => return e,
+    };
+    match encode_uri_units(&input, URI_UNESCAPED) {
+        Ok(s) => NativeResult::Ok(vm.new_string_owned(s)),
+        Err(()) => uri_error(vm),
+    }
 }
 
 /// `decodeURI`：解码 `%XX` 序列，但保留字符的转义形式原样保留（不还原），
@@ -155,7 +209,7 @@ pub fn decode_uri_component<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult 
 
 #[cfg(test)]
 mod tests {
-    use super::{decode_uri_units, encode_uri_string, URI_UNESCAPED};
+    use super::{decode_uri_units, encode_uri_units, URI_UNESCAPED};
 
     fn units(s: &str) -> Vec<u16> {
         s.encode_utf16().collect()
@@ -164,14 +218,25 @@ mod tests {
     #[test]
     fn encode_uri_keeps_reserved_and_encodes_space() {
         assert_eq!(
-            encode_uri_string("https://example.com/path?q=hello world", super::URI_SAFE),
+            encode_uri_units(&units("https://example.com/path?q=hello world"), super::URI_SAFE).unwrap(),
             "https://example.com/path?q=hello%20world"
         );
     }
 
     #[test]
     fn encode_uri_component_encodes_reserved() {
-        assert_eq!(encode_uri_string("a=1&b=2", URI_UNESCAPED), "a%3D1%26b%3D2");
+        assert_eq!(encode_uri_units(&units("a=1&b=2"), URI_UNESCAPED).unwrap(), "a%3D1%26b%3D2");
+    }
+
+    /// 孤立 surrogate 单元（0xD800-0xDFFF 全量遍历）必须抛 URIError，
+    /// 良配 surrogate 对按码点 UTF-8 编码。
+    #[test]
+    fn encode_uri_units_rejects_lone_surrogates() {
+        for u in 0xD800u16..=0xDFFF {
+            assert!(encode_uri_units(&[u], super::URI_SAFE).is_err());
+            assert!(encode_uri_units(&[0x61, u], URI_UNESCAPED).is_err());
+        }
+        assert_eq!(encode_uri_units(&[0xD83D, 0xDE00], URI_UNESCAPED).unwrap(), "%F0%9F%98%80");
     }
 
     #[test]

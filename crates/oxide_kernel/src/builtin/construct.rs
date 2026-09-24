@@ -371,7 +371,7 @@ pub(crate) fn wire_builtin_world_links(world: &BuiltinWorld) {
     }
 
     let obj_proto_val = JsValue::from_js_object(world.object_proto.as_ptr() as *mut JsObject);
-    let non_object_protos: [&P<JsObject>; 27] = [
+    let non_object_protos: [&P<JsObject>; 28] = [
         &world.array_proto,
         &world.function_proto,
         &world.string_proto,
@@ -399,6 +399,7 @@ pub(crate) fn wire_builtin_world_links(world: &BuiltinWorld) {
         &world.bigint_proto,
         &world.disposable_stack_proto,
         &world.async_disposable_stack_proto,
+        &world.async_iterator_proto,
     ];
     for proto in &non_object_protos {
         set_proto_if_changed(proto, obj_proto_val);
@@ -553,6 +554,7 @@ impl BuiltinWorld {
         let set_iterator_proto = P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()));
         let string_iterator_proto = P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()));
         let regexp_string_iterator_proto = P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()));
+        let async_iterator_proto = P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()));
         let iterator_helper_proto = P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()));
         let disposable_stack_proto = P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()));
         let async_disposable_stack_proto = P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()));
@@ -664,6 +666,7 @@ impl BuiltinWorld {
             set_iterator_proto,
             string_iterator_proto,
             regexp_string_iterator_proto,
+            async_iterator_proto,
             iterator_helper_proto,
             disposable_stack_proto,
             async_disposable_stack_proto,

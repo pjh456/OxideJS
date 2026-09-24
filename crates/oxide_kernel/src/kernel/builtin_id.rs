@@ -1,4 +1,4 @@
-//! 内置对象 id 枚举（`BuiltinId` 96 变体 + `ALL` 顺序钉表）、世代快照
+//! 内置对象 id 枚举（`BuiltinId` 98 变体 + `ALL` 顺序钉表）、世代快照
 //! （`BuiltinSnapshot`）与按家族划分的脏标记位集（`BuiltinDirtySet`）；
 //! `NUM_BUILTINS` 文档承载"新增 BuiltinWorld 字段须同步"四处约束注记。
 
@@ -11,7 +11,7 @@ use crate::builtin::BuiltinWorld;
 /// 维护注意：每个新增的 `BuiltinWorld` 对象字段都必须加到这里以及
 /// `KernelSession::dirty_since_snapshot()`，以便选择性重置重建正确的
 /// builtin 家族。
-pub const NUM_BUILTINS: usize = 97;
+pub const NUM_BUILTINS: usize = 98;
 
 /// 内置对象枚举 id，与 `BuiltinWorld` 中的存储槽一一对应。
 ///
@@ -118,6 +118,7 @@ pub enum BuiltinId {
     SharedArrayBufferProto = 94,
     SharedArrayBufferConstructor = 95,
     AtomicsObject = 96,
+    AsyncIteratorProto = 97,
 }
 
 impl BuiltinId {
@@ -222,6 +223,7 @@ impl BuiltinId {
         BuiltinId::SharedArrayBufferProto,
         BuiltinId::SharedArrayBufferConstructor,
         BuiltinId::AtomicsObject,
+        BuiltinId::AsyncIteratorProto,
     ];
 }
 
@@ -369,19 +371,20 @@ impl BuiltinDirtySet {
 mod tests {
     use super::*;
 
-    /// 槽对齐面：表尾追加 Atomics 单例后总槽数 97，既有 96 个判别值零位移，
-    /// 快照数组随 NUM_BUILTINS 自动扩维、逐槽对齐。
+    /// 槽对齐面：表尾追加 AsyncIteratorPrototype 后总槽数 98，既有 97 个
+    /// 判别值零位移，快照数组随 NUM_BUILTINS 自动扩维、逐槽对齐。
     #[test]
     fn builtin_snapshot_all_slots_aligned() {
-        assert_eq!(NUM_BUILTINS, 97);
+        assert_eq!(NUM_BUILTINS, 98);
         assert_eq!(BuiltinId::ALL.len(), NUM_BUILTINS);
-        // 前 96 项判别值 0-95 逐项不变（尾追加零位移）。
-        for i in 0..96usize {
+        // 前 97 项判别值 0-96 逐项不变（尾追加零位移）。
+        for i in 0..97usize {
             assert_eq!(BuiltinId::ALL[i] as usize, i);
         }
         assert_eq!(BuiltinId::ALL[94], BuiltinId::SharedArrayBufferProto);
         assert_eq!(BuiltinId::ALL[95], BuiltinId::SharedArrayBufferConstructor);
         assert_eq!(BuiltinId::ALL[96], BuiltinId::AtomicsObject);
+        assert_eq!(BuiltinId::ALL[97], BuiltinId::AsyncIteratorProto);
 
         // 快照经 session 全量构造路径采集，generations 数组维度 = 槽数。
         use crate::kernel::{KernelConfig, KernelCore, KernelSession};
