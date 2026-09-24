@@ -102,9 +102,19 @@ fn test_to_int32_and_to_uint32() {
 }
 
 #[test]
-fn primitive_property_write_throws_clean_type_error() {
+fn primitive_property_write_sloppy_auto_boxes() {
+    // sloppy 模式：原始值接收者 auto-box，写盒后丢弃盒，不抛 TypeError。
     for source in ["'abc'.x = 1", "(5).foo = 1", "true.foo = 1"] {
-        let err = eval(source);
+        let result = eval(source);
+        assert_eq!(result, "1", "sloppy auto-box should return 1 for {source}, got {result}");
+    }
+}
+
+#[test]
+fn primitive_property_write_strict_throws_clean_type_error() {
+    // strict 模式：原始值接收者抛 clean TypeError（非内部 opcode 消息）。
+    for source in ["'abc'.x = 1", "(5).foo = 1", "true.foo = 1"] {
+        let err = eval(&format!("\"use strict\"; {source}"));
         assert!(err.contains("TypeError"), "expected TypeError for {source}, got {err}");
         assert!(
             !err.contains("IC_SET_PROP on non-object")

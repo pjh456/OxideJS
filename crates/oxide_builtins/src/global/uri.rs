@@ -24,7 +24,11 @@ fn encode_uri_units(input: &[u16], safe: &str) -> Result<String, ()> {
             }
             let cp = 0x10000 + ((unit as u32 - 0xD800) << 10) + (next as u32 - 0xDC00);
             let mut buf = [0u8; 4];
-            for byte in char::from_u32(cp).expect("合成码点必在超平面区间内").encode_utf8(&mut buf).as_bytes() {
+            for byte in char::from_u32(cp)
+                .expect("合成码点必在超平面区间内")
+                .encode_utf8(&mut buf)
+                .as_bytes()
+            {
                 out.push_str(&format!("%{byte:02X}"));
             }
             i += 2;

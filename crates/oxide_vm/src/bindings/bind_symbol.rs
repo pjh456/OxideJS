@@ -1,6 +1,8 @@
 use std::sync::Arc;
 
-use crate::bindings::{apply_binding_table, bind_accessor_getter, bind_well_known_method, configure_native_constructor};
+use crate::bindings::{
+    apply_binding_table, bind_accessor_getter, bind_well_known_method, configure_native_constructor,
+};
 use oxide_kernel::kernel::{KernelCore, KernelSession};
 use oxide_types::object::{JsObject, PropAttributes};
 use oxide_types::private_key::{make_well_known_symbol_key, WELL_KNOWN_SYMBOL_TO_PRIMITIVE};

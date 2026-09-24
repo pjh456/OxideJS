@@ -309,12 +309,7 @@ impl Emitter {
                 // 同上：只读三常量已在拦截臂跳过，其余内置名属性可写。
                 self.emit_tier_global_write(name, key_reg, ctx);
             } else {
-                ctx.inst(Inst::new(
-                    OpCode::STORE_VAR,
-                    Operand::Reg(var_reg),
-                    Operand::Reg(key_reg),
-                    Operand::None,
-                ));
+                ctx.inst(Inst::new(OpCode::STORE_VAR, Operand::Reg(var_reg), Operand::Reg(key_reg), Operand::None));
                 if is_implicit {
                     self.emit_implicit_global_write(name, var_reg, ctx);
                 } else if ctx.targets_writable_builtin(name, var_reg) {

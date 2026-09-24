@@ -427,9 +427,9 @@ fn error_to_string_tag_is_error() {
     )
     .unwrap();
     assert_eq!(vm.lookup_str(r), Some("[object Error]".to_string()));
-    // Error.prototype 自身同样判定为 Error。
+    // Error.prototype 本体无 OBJ_TYPE_ERROR 标（普通对象），按规范品牌为 Object。
     let r = eval_in(&mut vm, "Object.prototype.toString.call(Error.prototype)").unwrap();
-    assert_eq!(vm.lookup_str(r), Some("[object Error]".to_string()));
+    assert_eq!(vm.lookup_str(r), Some("[object Object]".to_string()));
 }
 
 #[test]
@@ -573,9 +573,10 @@ fn suppressed_error_call_without_new_creates_object() {
 #[test]
 fn suppressed_error_prototype_chain_and_shape() {
     let mut vm = make_vm();
-    // 原型仅挂 constructor/name（name 与既有子类型一致排在 constructor 前），无 error/suppressed。
+    // 原型挂 name/message/constructor（name 与既有子类型一致排在 constructor 前，
+    // message 为规范空串自身属性），无 error/suppressed。
     let r = eval_in(&mut vm, "Object.getOwnPropertyNames(SuppressedError.prototype).join(',')").unwrap();
-    assert_eq!(vm.lookup_str(r), Some("name,constructor".to_string()));
+    assert_eq!(vm.lookup_str(r), Some("name,message,constructor".to_string()));
     // instanceof Error 走原型链，原型 [[Prototype]] = Error.prototype。
     assert_eq!(
         format!("{}", eval_in(&mut vm, "new SuppressedError('e','s') instanceof Error").unwrap()),

@@ -31,12 +31,23 @@ impl Vm {
         }
     }
 
-    /// SET 路径的接收者解析：对象直取；非对象经 ToObject 自动装箱
-    /// （null/undefined 抛 TypeError，其余原始值写盒后丢弃盒，与规范
-    /// OrdinarySetWithOwnDescriptor 的 ToObject 基语义一致）。
+    /// SET 路径的接收者解析：对象直取；非对象按严格性分流——strict 抛
+    /// TypeError（规范 OrdinarySetWithOwnDescriptor 的 ToObject 基语义在
+    /// strict 下不 auto-box），sloppy 经 ToObject 自动装箱（null/undefined
+    /// 抛 TypeError，其余原始值写盒后丢弃盒）。
     fn set_prop_base(&mut self, receiver: JsValue) -> Result<Option<*mut JsObject>, String> {
         if receiver.is_object() {
             return self.checked_object_ptr(receiver, "Cannot create property on non-object");
+        }
+        if self.current_strict() {
+            self.raise_type_error("Cannot create property on a primitive value")?;
+            return Ok(None);
+        }
+        // null/undefined：ToObject 抛可捕获 TypeError（经 raise 走 JS 异常，
+        // 非 Rust Err 传播，try/catch 可接）。
+        if receiver.is_null() || receiver.is_undefined() {
+            self.raise_type_error("Cannot convert null or undefined to object")?;
+            return Ok(None);
         }
         let boxed = coercion::to_object(receiver, self)?;
         Ok(Some(boxed.as_js_object_ptr()))

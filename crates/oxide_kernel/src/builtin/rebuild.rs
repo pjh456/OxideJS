@@ -8,8 +8,7 @@ use oxide_types::value::JsValue;
 
 use super::construct::{
     builtin_labels, make_error_subtypes, make_named_pair, make_typed_array_family, tag_boolean_proto, tag_number_proto,
-    tag_string_proto,
-    wire_builtin_world_links, ErrorSubtypeProtos, TypedArrayFamily,
+    tag_string_proto, wire_builtin_world_links, ErrorSubtypeProtos, TypedArrayFamily,
 };
 use super::BuiltinWorld;
 use crate::kernel::BuiltinDirtySet;

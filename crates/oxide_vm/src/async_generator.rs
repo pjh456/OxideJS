@@ -764,9 +764,9 @@ pub(crate) fn async_iterator_async_dispose(vm: &mut Vm, args: &[u8]) -> NativeRe
         match vm.ordinary_get(obj, si, o) {
             Ok(r) => Some(r),
             Err(_) => {
-                let exc = vm
-                    .take_uncaught_value()
-                    .unwrap_or_else(|| oxide_builtins::error::create_from_text(vm, "AsyncIterator return getter failed"));
+                let exc = vm.take_uncaught_value().unwrap_or_else(|| {
+                    oxide_builtins::error::create_from_text(vm, "AsyncIterator return getter failed")
+                });
                 let _ = vm.reject_promise(promise, exc);
                 return NativeResult::Ok(promise);
             }
@@ -786,9 +786,9 @@ pub(crate) fn async_iterator_async_dispose(vm: &mut Vm, args: &[u8]) -> NativeRe
     let result = match vm.call_function_sync(ret, o, &[JsValue::undefined()]) {
         Ok(r) => r,
         Err(_) => {
-            let exc = vm
-                .take_uncaught_value()
-                .unwrap_or_else(|| oxide_builtins::error::create_from_text(vm, "AsyncIterator return method call failed"));
+            let exc = vm.take_uncaught_value().unwrap_or_else(|| {
+                oxide_builtins::error::create_from_text(vm, "AsyncIterator return method call failed")
+            });
             let _ = vm.reject_promise(promise, exc);
             return NativeResult::Ok(promise);
         }
@@ -886,8 +886,7 @@ pub(crate) fn init_async_generator_intrinsics(vm: &mut Vm) {
     let world = vm.session.builtin_world();
     // %AsyncGeneratorPrototype% 链到 %AsyncIteratorPrototype%（规范原型链），
     // 方法 next/return/throw 挂其自身。
-    let async_iterator_proto_val =
-        JsValue::from_js_object(world.async_iterator_proto.as_ptr() as *mut JsObject);
+    let async_iterator_proto_val = JsValue::from_js_object(world.async_iterator_proto.as_ptr() as *mut JsObject);
 
     // %AsyncGeneratorPrototype%：proto = %AsyncIteratorPrototype%。
     let mut ag_proto = Box::new(JsObject::new_empty(EMPTY_SHAPE_ID, async_iterator_proto_val));

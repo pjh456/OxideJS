@@ -571,8 +571,9 @@ fn bind_iterator_protos(core: &Arc<KernelCore>, session: &KernelSession) {
     // （经 return 方法关闭迭代器）。幂等：键槽已存在时跳过。
     let aiter_proto_ptr = world.async_iterator_proto.as_ptr() as *mut JsObject;
     let aiter_proto = unsafe { &mut *aiter_proto_ptr };
-    let sym_aiter =
-        oxide_types::private_key::make_well_known_symbol_key(oxide_types::private_key::WELL_KNOWN_SYMBOL_ASYNC_ITERATOR);
+    let sym_aiter = oxide_types::private_key::make_well_known_symbol_key(
+        oxide_types::private_key::WELL_KNOWN_SYMBOL_ASYNC_ITERATOR,
+    );
     if core.shape_forge().lookup_position(aiter_proto.shape_id(), sym_aiter).is_none() {
         bind_well_known_method(
             world,
@@ -586,7 +587,11 @@ fn bind_iterator_protos(core: &Arc<KernelCore>, session: &KernelSession) {
     }
     let sym_adispose =
         oxide_types::private_key::make_well_known_symbol_key(oxide_types::private_key::WELL_KNOWN_SYMBOL_ASYNC_DISPOSE);
-    if core.shape_forge().lookup_position(aiter_proto.shape_id(), sym_adispose).is_none() {
+    if core
+        .shape_forge()
+        .lookup_position(aiter_proto.shape_id(), sym_adispose)
+        .is_none()
+    {
         bind_well_known_method(
             world,
             core,
