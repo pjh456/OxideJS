@@ -219,9 +219,13 @@ pub(crate) fn take_code_points(units: &[u16], count: usize) -> &[u16] {
     &units[..i]
 }
 
-/// ES 白空格判定的单元口径：Rust 空白表与 White_Space+LineTerminator 等价；
+/// ES 白空格判定的单元口径：Rust 空白表与 White_Space+LineTerminator 等价，
+/// 另补 U+FEFF（ES White_Space 含 BOM，Unicode White_Space 不含）；
 /// 孤立 surrogate 非白空格。
 pub(crate) fn is_trim_unit(u: u16) -> bool {
+    if u == 0xFEFF {
+        return true;
+    }
     if u < 0x80 {
         return matches!(u, 0x09..=0x0D | 0x20);
     }

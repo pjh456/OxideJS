@@ -10,21 +10,43 @@ pub use annex_b::{js_escape, js_unescape};
 pub use uri::{decode_uri, decode_uri_component, encode_uri, encode_uri_component};
 
 /// `isNaN(x)`：ToNumber 后检查是否为 NaN（隐式类型转换）。
+///
+/// ToNumber 可抛：Symbol 抛 TypeError，对象 ToPrimitive 触发 valueOf/toString
+/// 抛出的原生异常原样传播。
 pub fn global_is_nan<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let n = if args.len() < 2 {
         f64::NAN
     } else {
-        oxide_runtime_api::to_number(vm.reg(args[1]))
+        match oxide_runtime_api::to_number_full(vm.reg(args[1]), vm) {
+            Ok(n) => n,
+            Err(_) => {
+                if let Some(exc) = vm.take_uncaught_value() {
+                    return NativeResult::Err(exc);
+                }
+                return NativeResult::Err(crate::error::create_type_error(vm, "Cannot convert value to a number"));
+            }
+        }
     };
     NativeResult::Ok(JsValue::bool(n.is_nan()))
 }
 
 /// `isFinite(x)`：ToNumber 后检查是否为有限数（隐式类型转换）。
+///
+/// ToNumber 可抛：Symbol 抛 TypeError，对象 ToPrimitive 触发 valueOf/toString
+/// 抛出的原生异常原样传播。
 pub fn global_is_finite<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let n = if args.len() < 2 {
         f64::NAN
     } else {
-        oxide_runtime_api::to_number(vm.reg(args[1]))
+        match oxide_runtime_api::to_number_full(vm.reg(args[1]), vm) {
+            Ok(n) => n,
+            Err(_) => {
+                if let Some(exc) = vm.take_uncaught_value() {
+                    return NativeResult::Err(exc);
+                }
+                return NativeResult::Err(crate::error::create_type_error(vm, "Cannot convert value to a number"));
+            }
+        }
     };
     NativeResult::Ok(JsValue::bool(n.is_finite()))
 }

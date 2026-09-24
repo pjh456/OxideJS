@@ -14,14 +14,39 @@ use super::{
 
 // ── 静态方法 / 构造 ─────────────────────────────────────────────────────
 
-/// `String.fromCharCode(...codes)`：把各参数按 ToUint32 低 16 位转为单元拼接
+/// `String.fromCharCode(...codes)`：各参数经 ToUint16(ToNumber) 转单元拼接
 /// 为字符串（surrogate 区间合法产出孤立 surrogate 单元）。
+///
+/// ToNumber 可抛：Symbol 抛 TypeError，BigInt 抛 TypeError，对象 ToPrimitive
+/// 触发 valueOf/toString 抛出的原生异常原样传播。
 pub fn string_from_char_code<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("String.prototype.fromCharCode called with {} args", args.len());
     let mut units: Vec<u16> = Vec::new();
-    for &arg_reg in args.iter().skip(1) {
-        let code = oxide_runtime_api::to_uint32(vm.reg(arg_reg)) & 0xFFFF;
-        units.push(code as u16);
+    // 经 native_arg_count/native_arg_at 读取：大实参集在寄存器窗口外走 spill
+    // 溢出区，小实参集与既有寄存器路径一致。
+    for i in 0..vm.native_arg_count(args) {
+        let arg_val = vm.native_arg_at(args, i);
+        // ToNumber(BigInt) 按规范抛 TypeError；to_number_full 的 BigInt 快路径
+        // 静默转换，须在此显式拦截。
+        if arg_val.is_bigint() {
+            return NativeResult::Err(crate::error::create_type_error(vm, "Cannot convert a BigInt value to a number"));
+        }
+        let n = match oxide_runtime_api::to_number_full(arg_val, vm) {
+            Ok(n) => n,
+            Err(_) => {
+                if let Some(exc) = vm.take_uncaught_value() {
+                    return NativeResult::Err(exc);
+                }
+                return NativeResult::Err(crate::error::create_type_error(vm, "Cannot convert value to a number"));
+            }
+        };
+        // ToUint16：floorMod(n, 2^16)；NaN/±0/±Infinity 归零。
+        let code = if n == 0.0 || !n.is_finite() {
+            0
+        } else {
+            n.trunc().rem_euclid(65536.0) as u16
+        };
+        units.push(code);
     }
     NativeResult::Ok(vm.new_string_units_owned(units))
 }

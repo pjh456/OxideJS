@@ -28,7 +28,8 @@ pub fn bind_number(core: &Arc<KernelCore>, session: &KernelSession, global: &mut
                 oxide_builtins::number::number_is_safe_integer::<crate::vm::Vm> as *const (),
                 1,
             ),
-            ("parseInt", oxide_builtins::number::number_parse_int::<crate::vm::Vm> as *const (), 1),
+            // parseInt 形式参数为 (string, radix)，length 按规范取 2。
+            ("parseInt", oxide_builtins::number::number_parse_int::<crate::vm::Vm> as *const (), 2),
             ("parseFloat", oxide_builtins::number::number_parse_float::<crate::vm::Vm> as *const (), 1),
         ],
     );
@@ -86,7 +87,8 @@ pub fn bind_number(core: &Arc<KernelCore>, session: &KernelSession, global: &mut
         global,
         core,
         &[
-            ("parseInt", oxide_builtins::number::number_parse_int::<crate::vm::Vm> as *const (), 1),
+            // parseInt 形式参数为 (string, radix)，length 按规范取 2。
+            ("parseInt", oxide_builtins::number::number_parse_int::<crate::vm::Vm> as *const (), 2),
             ("parseFloat", oxide_builtins::number::number_parse_float::<crate::vm::Vm> as *const (), 1),
             ("isNaN", oxide_builtins::global::global_is_nan::<crate::vm::Vm> as *const (), 1),
             ("isFinite", oxide_builtins::global::global_is_finite::<crate::vm::Vm> as *const (), 1),

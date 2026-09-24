@@ -87,6 +87,17 @@ pub(crate) fn tag_number_proto(proto: &P<JsObject>) {
     obj.set_boxed_value(JsValue::int(0));
 }
 
+/// 把 Boolean.prototype 标成 Boolean 对象本体：规范 20.7.3 规定其是
+/// [[BooleanData]] = false 的 Boolean object。type_tag 是品牌表判据
+/// （置位后报 "[object Boolean]"），boxed 值供 valueOf/toString 的通用分支读取。
+pub(crate) fn tag_boolean_proto(proto: &P<JsObject>) {
+    let ptr = proto.as_ptr() as *mut JsObject;
+    // SAFETY: proto 是 make_named_pair 刚建的本进程对象，P 引用与裸指针同址。
+    let obj = unsafe { &mut *ptr };
+    obj.type_tag = JsObject::OBJ_TYPE_BOOLEAN_OBJ;
+    obj.set_boxed_value(JsValue::bool(false));
+}
+
 /// 把 String.prototype 标成 String 对象本体：规范 22.7.3 规定其是
 /// [[StringData]] = 空串的 String object。type_tag 是品牌表判据，boxed 值
 /// 供 thisStringValue/valueOf 的通用分支读取；length 自身属性按构造期
@@ -476,6 +487,7 @@ impl BuiltinWorld {
         let (number_proto, number_constructor) = make_named_pair(string_forge, shape_forge, labels, "Number");
         tag_number_proto(&number_proto);
         let (boolean_proto, boolean_constructor) = make_named_pair(string_forge, shape_forge, labels, "Boolean");
+        tag_boolean_proto(&boolean_proto);
         let (error_proto, error_constructor) = make_named_pair(string_forge, shape_forge, labels, "Error");
         let (symbol_proto, symbol_constructor) = make_named_pair(string_forge, shape_forge, labels, "Symbol");
 

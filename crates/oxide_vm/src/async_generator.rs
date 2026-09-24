@@ -191,21 +191,29 @@ impl Vm {
 
     /// 入队一个请求；生成器处于可恢复状态（New/YieldSuspended/Completed）时立即
     /// 启动处理，正在执行 / await 挂起时留待当前请求结算后再处理。
+    ///
+    /// 坏 receiver（非对象或非异步生成器对象）按规范不同步抛错，而是返回
+    /// 携带 TypeError 的 rejected Promise。
     pub(crate) fn async_generator_enqueue(
         &mut self, gen_val: JsValue, mode: GeneratorResumeMode,
     ) -> Result<JsValue, JsValue> {
-        if !gen_val.is_object() {
-            return Err(oxide_builtins::error::create_type_error(
+        let is_gen = if gen_val.is_object() {
+            unsafe { &*gen_val.as_js_object_ptr() }.is_async_generator_obj()
+        } else {
+            false
+        };
+        if !is_gen {
+            let (promise, _, _) = self.new_promise_capability();
+            let exc = oxide_builtins::error::create_type_error(
                 self,
-                "AsyncGenerator methods called on non-object",
-            ));
-        }
-        let obj = unsafe { &*gen_val.as_js_object_ptr() };
-        if !obj.is_async_generator_obj() {
-            return Err(oxide_builtins::error::create_type_error(
-                self,
-                "AsyncGenerator methods called on incompatible receiver",
-            ));
+                if gen_val.is_object() {
+                    "AsyncGenerator methods called on incompatible receiver"
+                } else {
+                    "AsyncGenerator methods called on non-object"
+                },
+            );
+            let _ = self.reject_promise(promise, exc);
+            return Ok(promise);
         }
         let (promise, resolve, reject) = self.new_promise_capability();
         let state_ptr = self.async_gen_state_ptr(gen_val);
