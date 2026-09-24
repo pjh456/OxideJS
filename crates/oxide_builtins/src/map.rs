@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use oxide_kernel::shape_forge::EMPTY_SHAPE_ID;
 use oxide_types::object::JsObject;
 use oxide_types::value::JsValue;
@@ -17,15 +19,103 @@ macro_rules! native_try {
     };
 }
 
-pub(crate) type MapInner = indexmap::IndexMap<SetKey, JsValue>;
+/// Map 内部槽表：`slots` 按插入序存放槽（`None` = 空槽，键已删除且未重加），
+/// `index` 是活键到槽下标的辅助索引（只索引活槽）。
+///
+/// 语义对齐规范 `[[MapData]]` List + `~empty~` 空槽：删除原位留洞、后续槽
+/// 不左移，重加/新增键追加 List 末尾。活扫（forEach、迭代器）跳空槽且每轮
+/// 重读总槽数，故"删当前键后重加"在末尾再访问、"删未来键"跳过、"新增键"
+/// 在末尾被访问。
+///
+/// 不变式：`index` 与 `slots` 活槽一一对应，remove/clear 同步除名。
+pub(crate) struct MapInner {
+    slots: Vec<Option<(SetKey, JsValue)>>,
+    index: HashMap<SetKey, usize>,
+}
 
-/// 取出 Map 对象 native-data 槽中存储的 `IndexMap` 指针。
+impl MapInner {
+    pub(crate) fn new() -> Self {
+        Self {
+            slots: Vec::new(),
+            index: HashMap::new(),
+        }
+    }
+
+    pub(crate) fn with_capacity(capacity: usize) -> Self {
+        Self {
+            slots: Vec::with_capacity(capacity),
+            index: HashMap::with_capacity(capacity),
+        }
+    }
+
+    /// 活表条目数（规范 SetDataSize 口径，空槽不计）。
+    pub(crate) fn len(&self) -> usize {
+        self.index.len()
+    }
+
+    /// 总槽数（含空槽）：活扫的重读口径，每轮重读以捕获迭代期追加。
+    pub(crate) fn slot_count(&self) -> usize {
+        self.slots.len()
+    }
+
+    /// 读槽：`None` 为空槽，`Some` 为活条目。
+    pub(crate) fn slot(&self, i: usize) -> Option<(SetKey, JsValue)> {
+        self.slots.get(i).copied().flatten()
+    }
+
+    /// 活条目按插入序迭代（空槽不产边、不入枚举）。
+    pub(crate) fn iter(&self) -> impl Iterator<Item = (SetKey, JsValue)> + '_ {
+        self.slots.iter().filter_map(|slot| *slot)
+    }
+
+    pub(crate) fn get(&self, key: &SetKey) -> Option<JsValue> {
+        self.index
+            .get(key)
+            .map(|&i| self.slots[i].as_ref().expect("辅助索引指向活槽").1)
+    }
+
+    pub(crate) fn get_mut(&mut self, key: &SetKey) -> Option<&mut JsValue> {
+        let i = *self.index.get(key)?;
+        self.slots[i].as_mut().map(|entry| &mut entry.1)
+    }
+
+    /// 活槽原位更值（保留原键位，如 -0/+0 区分不丢）；缺失末尾追加。
+    pub(crate) fn insert(&mut self, key: SetKey, value: JsValue) {
+        match self.index.get(&key) {
+            Some(&i) => self.slots[i].as_mut().expect("辅助索引指向活槽").1 = value,
+            None => {
+                self.index.insert(key, self.slots.len());
+                self.slots.push(Some((key, value)));
+            }
+        }
+    }
+
+    /// 删除 = 置洞：槽原位留空槽（不左移），辅助索引同步除名。
+    pub(crate) fn remove(&mut self, key: &SetKey) -> bool {
+        let Some(i) = self.index.remove(key) else {
+            return false;
+        };
+        self.slots[i] = None;
+        true
+    }
+
+    pub(crate) fn contains(&self, key: &SetKey) -> bool {
+        self.index.contains_key(key)
+    }
+
+    pub(crate) fn clear(&mut self) {
+        self.slots.clear();
+        self.index.clear();
+    }
+}
+
+/// 取出 Map 对象 native-data 槽中存储的 `MapInner` 指针。
 ///
 /// # 调用方维护的安全性契约
 ///
 /// 指针在 Map `JsObject` 存活期间有效：`JsObject` 分配于当前 `Epoch` arena，
 /// native builtin 执行期间不会调用 `Epoch::reset()`。持有分配的
-/// `Box<IndexMap>` 由 `new_map_inner()` 创建，进程退出前不释放（生命周期与
+/// `Box<MapInner>` 由 `new_map_inner()` 创建，进程退出前不释放（生命周期与
 /// epoch 绑定，属有意为之）。native 调用为单线程，同一 Map 对象同时至多
 /// 存在一个活 `*mut` 别名。
 fn get_map_inner<H: VmHost>(vm: &mut H, this_val: JsValue) -> Result<*mut MapInner, JsValue> {
@@ -46,7 +136,7 @@ fn get_map_inner<H: VmHost>(vm: &mut H, this_val: JsValue) -> Result<*mut MapInn
         ));
     }
     // SAFETY: native_data 持有 `alloc_map` 写入的裸指针，即有效的
-    // 堆分配 `Box<IndexMap<SetKey, JsValue>>`；IndexMap 至多要求 8 字节对齐，
+    // 堆分配 `Box<MapInner>`；MapInner 至多要求 8 字节对齐，
     // 全局分配器满足该要求。
     let inner_ptr = map_obj.native_data() as *mut MapInner;
     if inner_ptr.is_null() {
@@ -78,7 +168,7 @@ pub fn map_native_edges(obj: &JsObject) -> Vec<JsValue> {
     if inner.is_null() {
         return Vec::new();
     }
-    unsafe { (*inner).iter().flat_map(|(key, value)| [key.0, *value]).collect() }
+    unsafe { (*inner).iter().flat_map(|(key, value)| [key.0, value]).collect() }
 }
 
 /// 克隆 Map 的 native 数据到新对象，用 `rewrite` 改写其中的对象引用
@@ -98,8 +188,8 @@ where
     let mut cloned = MapInner::new();
     unsafe {
         for (key, value) in (*inner).iter() {
-            let new_key = if key.0.is_object() { SetKey(rewrite(key.0)) } else { *key };
-            let new_value = if value.is_object() { rewrite(*value) } else { *value };
+            let new_key = if key.0.is_object() { SetKey(rewrite(key.0)) } else { key };
+            let new_value = if value.is_object() { rewrite(value) } else { value };
             cloned.insert(new_key, new_value);
         }
     }
@@ -121,8 +211,8 @@ where
     unsafe {
         let mut rewritten = MapInner::with_capacity((*inner).len());
         for (key, value) in (*inner).iter() {
-            let new_key = if key.0.is_object() { SetKey(rewrite(key.0)) } else { *key };
-            let new_value = if value.is_object() { rewrite(*value) } else { *value };
+            let new_key = if key.0.is_object() { SetKey(rewrite(key.0)) } else { key };
+            let new_value = if value.is_object() { rewrite(value) } else { value };
             rewritten.insert(new_key, new_value);
         }
         *inner = rewritten;
@@ -130,7 +220,8 @@ where
 }
 
 /// 只读核算 Map 的 native 数据字节（不释放）。
-/// 与 `drop_map_native` 释放口径一致（capacity），供 GC 账目核算。
+/// 槽表与辅助索引均按 capacity 核算，与 `drop_map_native` 释放口径一致，
+/// 供 GC 账目核算。
 pub fn map_native_size(obj: &JsObject) -> u64 {
     if !obj.is_map() {
         return 0;
@@ -139,7 +230,12 @@ pub fn map_native_size(obj: &JsObject) -> u64 {
     if inner.is_null() {
         return 0;
     }
-    unsafe { (std::mem::size_of::<MapInner>() + (*inner).capacity() * std::mem::size_of::<(SetKey, JsValue)>()) as u64 }
+    unsafe {
+        let inner = &*inner;
+        (std::mem::size_of::<MapInner>()
+            + inner.slots.capacity() * std::mem::size_of::<Option<(SetKey, JsValue)>>()
+            + inner.index.capacity() * std::mem::size_of::<(SetKey, usize)>()) as u64
+    }
 }
 
 /// 释放 Map 的 native 数据（IndexMap），返回释放的字节数供泄漏统计。
@@ -264,7 +360,7 @@ pub fn map_get<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
     let inner = native_try!(get_map_inner(vm, this_val));
     let key = vm.reg(if args.len() > 1 { args[1] } else { 0 });
-    let found = unsafe { (*inner).get(&SetKey(key)).copied() };
+    let found = unsafe { (*inner).get(&SetKey(key)) };
     NativeResult::Ok(found.unwrap_or(JsValue::undefined()))
 }
 
@@ -279,7 +375,7 @@ pub fn map_get_or_insert<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let inner = native_try!(get_map_inner(vm, this_val));
     let key = vm.reg(if args.len() > 1 { args[1] } else { 0 });
     let val = vm.reg(if args.len() > 2 { args[2] } else { 0 });
-    let found = unsafe { (*inner).get(&SetKey(key)).copied() };
+    let found = unsafe { (*inner).get(&SetKey(key)) };
     if let Some(existing) = found {
         return NativeResult::Ok(existing);
     }
@@ -324,7 +420,7 @@ pub fn map_get_or_insert_computed<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeR
     } else {
         key
     };
-    let found = unsafe { (*inner).get(&SetKey(key)).copied() };
+    let found = unsafe { (*inner).get(&SetKey(key)) };
     if let Some(existing) = found {
         return NativeResult::Ok(existing);
     }
@@ -352,7 +448,7 @@ pub fn map_has<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
     let inner = native_try!(get_map_inner(vm, this_val));
     let key = vm.reg(if args.len() > 1 { args[1] } else { 0 });
-    let found = unsafe { (*inner).contains_key(&SetKey(key)) };
+    let found = unsafe { (*inner).contains(&SetKey(key)) };
     NativeResult::Ok(JsValue::bool(found))
 }
 
@@ -361,8 +457,8 @@ pub fn map_delete<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
     let inner = native_try!(get_map_inner(vm, this_val));
     let key = vm.reg(if args.len() > 1 { args[1] } else { 0 });
-    let removed = unsafe { (*inner).shift_remove(&SetKey(key)) };
-    NativeResult::Ok(JsValue::bool(removed.is_some()))
+    let removed = unsafe { (*inner).remove(&SetKey(key)) };
+    NativeResult::Ok(JsValue::bool(removed))
 }
 
 /// `Map.prototype.clear()`：清空全部键值对，返回 undefined。
@@ -376,7 +472,8 @@ pub fn map_clear<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 }
 
 /// `Map.prototype.forEach(callbackfn, thisArg)`：按插入序对每个键值对调用回调，
-/// 回调参数为 `(value, key, map)`。迭代期间新增的键值对也会被访问。
+/// 回调参数为 `(value, key, map)`。活表扫描：空槽跳过，迭代期间新增键值对被访问，
+/// 访问后删除且完成前重加的键再访问。
 pub fn map_for_each<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
     let inner = native_try!(get_map_inner(vm, this_val));
@@ -385,13 +482,17 @@ pub fn map_for_each<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         return NativeResult::Err(crate::error::create_type_error(vm, "callback is not a function"));
     }
     let this_arg = if args.len() > 2 { vm.reg(args[2]) } else { JsValue::undefined() };
-    // 按下标迭代：每次回调后重新读当前下标（支持迭代期间插入）。
+    // 活扫槽：每轮重读总槽数（捕获迭代期追加），空槽不回调直接推进；
+    // 下标口径恒为"下一待检槽"，重加条目落在末尾槽由后续步进访问。
     let mut index = 0usize;
     loop {
-        let entry = unsafe { (*inner).get_index(index).map(|(key, value)| (key.0, *value)) };
-        let Some((key, value)) = entry else { break };
+        if index >= unsafe { (*inner).slot_count() } {
+            break;
+        }
+        let entry = unsafe { (*inner).slot(index) };
         index += 1;
-        if let Err(err) = vm.call_function_sync(callback, this_arg, &[value, key, this_val]) {
+        let Some((key, value)) = entry else { continue };
+        if let Err(err) = vm.call_function_sync(callback, this_arg, &[value, key.0, this_val]) {
             return NativeResult::Err(crate::iterator::engine_error(vm, &err));
         }
     }

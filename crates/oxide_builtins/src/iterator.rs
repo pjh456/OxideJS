@@ -2000,37 +2000,57 @@ impl MapSetMode {
 }
 
 /// 把 Map/Set 迭代器包装器推进一步，按指定模式产出 `{value, done}` 结果。
-/// 条目存放在集合 native-data 槽的 indexmap 中；(a, b) 对在任意分配之前拷出，
-/// 使对 native 集合的借用不会跨越 `vm` 调用保持。
+/// 条目存放在集合 native-data 槽中（Map 为槽表：空槽跳过、下标口径为"下一待检槽"；
+/// Set 为插入序表）；(a, b) 对在任意分配之前拷出，使对 native 集合的借用不会
+/// 跨越 `vm` 调用保持。
 fn map_set_step<H: VmHost>(
     vm: &mut H, wrapper: &mut JsObject, inner: JsValue, index_si: u32, mode: MapSetMode,
 ) -> JsValue {
     let index = current_index(vm, wrapper, index_si);
     let is_map = matches!(mode, MapSetMode::MapEntries | MapSetMode::MapValues | MapSetMode::MapKeys);
-    let entry: Option<(JsValue, JsValue)> = unsafe {
+    let (entry, next_index): (Option<(JsValue, JsValue)>, usize) = unsafe {
         let obj_ptr = inner.as_js_object_ptr();
         if obj_ptr.is_null() {
-            None
+            (None, 0)
         } else if is_map {
             let p = (*obj_ptr).native_data() as *const crate::map::MapInner;
             if p.is_null() {
-                None
+                (None, 0)
             } else {
-                (*p).get_index(index).map(|(key, value)| (key.0, *value))
+                // 从当前下标起扫首个活槽；命中的写回值为"下一待检槽"，
+                // 耗尽（含 done 哨兵后的下标）恒 done。
+                let mut found = None;
+                let mut i = index;
+                while i < (*p).slot_count() {
+                    match (*p).slot(i) {
+                        Some((key, value)) => {
+                            found = Some((key.0, value));
+                            break;
+                        }
+                        None => i += 1,
+                    }
+                }
+                match found {
+                    Some(e) => (Some(e), i + 1),
+                    None => (None, 0),
+                }
             }
         } else {
             let p = (*obj_ptr).native_data() as *const crate::set::SetInner;
             if p.is_null() {
-                None
+                (None, 0)
             } else {
-                (*p).get_index(index).map(|elem| (elem.0, elem.0))
+                match (*p).get_index(index) {
+                    Some(elem) => (Some((elem.0, elem.0)), index + 1),
+                    None => (None, 0),
+                }
             }
         }
     };
 
     match entry {
         Some((a, b)) => {
-            vm.set_or_create_prop_value(wrapper, index_si, JsValue::int((index + 1) as i32));
+            vm.set_or_create_prop_value(wrapper, index_si, JsValue::int(next_index as i32));
             let value = match mode {
                 MapSetMode::MapEntries | MapSetMode::SetEntries => make_map_set_pair(vm, a, b),
                 MapSetMode::MapValues => b,

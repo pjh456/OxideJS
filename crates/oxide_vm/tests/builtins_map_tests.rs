@@ -399,3 +399,119 @@ fn map_get_or_insert_computed_length_name_and_descriptor() {
     .unwrap();
     assert!(r.as_bool());
 }
+
+// ── 活表序位语义：删除留洞、重加/新增末尾追加、空槽跳过、每轮重读槽数 ──
+
+#[test]
+fn map_for_each_delete_current_and_readd_visits_tail() {
+    // 删当前键+重加：原槽留洞跳过、重加条目末尾再访问，count=3、size 不变。
+    let mut vm = Vm::new();
+    let r = eval(
+        &mut vm,
+        "var m = new Map(); m.set('a', 0); m.set('b', 1); var r = []; \
+         m.forEach(function (v, k) { if (r.length === 0) { m.delete('a'); m.set('a', 'x'); } r.push(k + '=' + v); }); \
+         r.join('|') + '|' + r.length + '|' + m.size",
+    )
+    .unwrap();
+    assert_eq!(str_val(&vm, r), "a=0|b=1|a=x|3|2");
+}
+
+#[test]
+fn map_for_each_delete_future_key_skips() {
+    // 删未来键不重加：该键不访问，其后的键不被连带跳过。
+    let mut vm = Vm::new();
+    let r = eval(
+        &mut vm,
+        "var m = new Map(); m.set('a', 0); m.set('b', 1); m.set('c', 2); var r = []; \
+         m.forEach(function (v, k) { if (k === 'a') m.delete('b'); r.push(k); }); \
+         r.join(',')",
+    )
+    .unwrap();
+    assert_eq!(str_val(&vm, r), "a,c");
+}
+
+#[test]
+fn map_for_each_new_key_during_iteration_visited() {
+    // 迭代期新增键：末尾追加并被访问，count=初始+1。
+    let mut vm = Vm::new();
+    let r = eval(
+        &mut vm,
+        "var m = new Map(); m.set('a', 0); m.set('b', 1); var r = []; \
+         m.forEach(function (v, k) { if (k === 'b') m.set('c', 2); r.push(k); }); \
+         r.join(',') + '|' + m.size",
+    )
+    .unwrap();
+    assert_eq!(str_val(&vm, r), "a,b,c|3");
+}
+
+#[test]
+fn map_for_each_delete_after_visit_readd_visits_again() {
+    // 访问后删+完成前重加：再访问（a, b, c, a′ 形），size 不变。
+    let mut vm = Vm::new();
+    let r = eval(
+        &mut vm,
+        "var m = new Map(); m.set('a', 0); m.set('b', 1); m.set('c', 2); var r = []; \
+         m.forEach(function (v, k) { if (k === 'a' && v === 0) { m.delete('a'); m.set('a', 'x'); } r.push(k + '=' + v); }); \
+         r.join('|') + '|' + m.size",
+    )
+    .unwrap();
+    assert_eq!(str_val(&vm, r), "a=0|b=1|c=2|a=x|3");
+}
+
+#[test]
+fn map_for_of_delete_and_readd_visits_readded() {
+    // for..of 迭代期 delete(2)+set(2)：重加条目末尾再访问，键序 1,2,3,2。
+    let mut vm = Vm::new();
+    let r = eval(
+        &mut vm,
+        "var m = new Map(); m.set(1, 10); m.set(2, 20); m.set(3, 30); var r = []; \
+         for (var e of m) { if (e[0] === 2 && e[1] === 20) { m.delete(2); m.set(2, 'x'); } r.push(e[0]); } \
+         r.join(',')",
+    )
+    .unwrap();
+    assert_eq!(str_val(&vm, r), "1,2,3,2");
+}
+
+#[test]
+fn map_entries_exhausted_then_set_stays_done() {
+    // entries 迭代器耗尽后 set 新键不复活：后续 next() 恒 done。
+    let mut vm = Vm::new();
+    let r = eval(
+        &mut vm,
+        "var m = new Map(); m.set(1, 1); m.set(2, 2); var it = m.entries(); \
+         var a = it.next(); var b = it.next(); var c = it.next(); \
+         m.set(3, 3); var d = it.next(); \
+         a.value[0] + ',' + b.value[0] + ',' + c.done + ',' + d.done",
+    )
+    .unwrap();
+    assert_eq!(str_val(&vm, r), "1,2,true,true");
+}
+
+#[test]
+fn map_get_or_insert_computed_second_scan_keeps_order() {
+    // 二扫原位覆盖保序位：键值更新不移动序位，forEach 序不变、size 不变。
+    let mut vm = Vm::new();
+    let r = eval(
+        &mut vm,
+        "var m = new Map(); m.set('first', 'f'); \
+         var v = m.getOrInsertComputed('k', function () { m.set('k', 0); return 3; }); \
+         var ord = []; m.forEach(function (val, key) { ord.push(key); }); \
+         v + '/' + m.get('k') + '/' + m.size + '/' + ord.join(',')",
+    )
+    .unwrap();
+    assert_eq!(str_val(&vm, r), "3/3/2/first,k");
+}
+
+#[test]
+fn map_delete_then_set_same_key_moves_to_tail() {
+    // delete 后 set 同键：原槽留洞、重加条目末尾追加，forEach 序 [1, 3, 2]。
+    let mut vm = Vm::new();
+    let r = eval(
+        &mut vm,
+        "var m = new Map(); m.set(1, 1); m.set(2, 2); m.set(3, 3); \
+         m.delete(2); m.set(2, 'x'); var r = []; \
+         m.forEach(function (v, k) { r.push(k + ':' + v); }); r.join(',')",
+    )
+    .unwrap();
+    assert_eq!(str_val(&vm, r), "1:1,3:3,2:x");
+}
