@@ -21,6 +21,7 @@ chrono.workspace = true
 unicode-normalization.workspace = true
 indexmap.workspace = true
 num-bigint = "0.4"
+num-integer = "0.1"
 num-traits = "0.2"
 
 [dev-dependencies]

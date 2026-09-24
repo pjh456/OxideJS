@@ -1102,6 +1102,7 @@ dependencies = [
  "indexmap",
  "memchr",
  "num-bigint",
+ "num-integer",
  "num-traits",
  "oxide_compiler",
  "oxide_kernel",

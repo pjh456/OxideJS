@@ -1,4 +1,5 @@
 use num_bigint::BigInt;
+use num_integer::Integer;
 use num_traits::{FromPrimitive, One, Signed, ToPrimitive, Zero};
 use oxide_types::value::JsValue;
 
@@ -81,15 +82,15 @@ pub fn math_atan2<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 /// # 步骤
 /// 1. NaN → NaN；±∞ → 原值。
 /// 2. |x| ≥ 2^52 时 x 已是整数，恒等返回（免浮点加 0.5 在指数区丢精度）。
-/// 3. 其余 |x| < 2^52：`floor(x + 0.5)`（该区间 x+0.5 精确可表示），
-///    结果为 0 且 x 带负号时返回 -0（规范 -0.5 与 -0 臂）。
+/// 3. 其余 |x| < 2^52：`floor(x + 0.5)` 按精确实数算术计算（IEEE 加法会
+///    对和舍入），结果为 0 且 x 带负号时返回 -0（规范 -0.5 与 -0 臂）。
 pub fn math_round<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let x = arg1(vm, args);
     NativeResult::Ok(JsValue::float(round_f64(x)))
 }
 
-/// 规范 `Math.round` 数值核心（21.1.3.25）：|x| ≥ 2^52 恒等，其余 `floor(x+0.5)`，
-/// 零结果按 x 符号定 ±0。
+/// 规范 `Math.round` 数值核心（21.1.3.25）：|x| ≥ 2^52 恒等，其余
+/// `floor(x+0.5)` 按精确实数算术计算，零结果按 x 符号定 ±0。
 fn round_f64(x: f64) -> f64 {
     if x.is_nan() {
         return f64::NAN;
@@ -102,11 +103,15 @@ fn round_f64(x: f64) -> f64 {
     if x >= TWO_POW_52 || x <= -TWO_POW_52 {
         return x;
     }
-    let r = (x + 0.5).floor();
-    if r == 0.0 && x.is_sign_negative() {
+    // 精确实数算术：floor(x + 0.5) = floor((x·2^1074 + 2^1073)·2^-1074)；
+    // x·2^1074 为精确整数，求和与向下取整均无舍入。
+    let s = finite_to_bigint(x) + &(BigInt::one() << 1073i32);
+    let n = s.div_floor(&(BigInt::one() << 1074i32));
+    let r = n.to_i64().expect("round 结果恒在 ±2^52 内");
+    if r == 0 && x.is_sign_negative() {
         return -0.0;
     }
-    r
+    r as f64
 }
 
 /// `Math.sign`：返回 1 / -1 / 0 / -0 / NaN。
@@ -123,16 +128,13 @@ pub fn math_sign<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     }
 }
 
-/// 规范 ToUint32（§7.1.10）：NaN/±∞ → 0，其余按 2^32 取模归入 [0, 2^32)。
+/// 规范 ToUint32（§7.1.10）：NaN/±∞ → 0，其余先向零截断为整数
+/// （ToInteger）再按 2^32 取模归入 [0, 2^32)。
 fn to_uint32(x: f64) -> u32 {
     if x.is_nan() || x.is_infinite() {
         return 0;
     }
-    let mut n = x % 4_294_967_296.0;
-    if n < 0.0 {
-        n += 4_294_967_296.0;
-    }
-    n as u32
+    x.trunc().rem_euclid(4_294_967_296.0) as u32
 }
 
 /// `Math.clz32`：返回 ToUint32(x) 的 32 位无符号表示的前导零个数。
@@ -315,34 +317,91 @@ pub fn math_pow<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     NativeResult::Ok(JsValue::float(pow_f64(a, b)))
 }
 
-/// 规范 `Math.pow` 数值核心（Applying the `**` operator）：特殊值
-/// （NaN/±∞/±0/±1）按规范臂判定，一般情形委托 IEEE 幂运算。
+/// 规范 `Math.pow` 数值核心（Applying the `**` operator）：按规范特例表
+/// 臂序判定（指数面先于基面，±∞/±0 基的奇整数奇偶臂各自独立），
+/// 一般情形委托 IEEE 幂运算（规范注记结果与 IEEE 754 幂一致）。
 fn pow_f64(a: f64, b: f64) -> f64 {
-    if b.is_nan() || a.is_nan() {
+    // 指数为 NaN → NaN。
+    if b.is_nan() {
         return f64::NAN;
     }
-    if a.is_infinite() {
-        return if b == 0.0 { 1.0 } else if b > 0.0 { f64::INFINITY } else { 0.0 };
+
+    // 指数为 ±0 → 1，先于基的 NaN 判定。
+    if b == 0.0 {
+        return 1.0;
     }
+
+    // 基为 NaN → NaN。
+    if a.is_nan() {
+        return f64::NAN;
+    }
+
+    // 基为 +∞。
+    if a == f64::INFINITY {
+        return if b > 0.0 { f64::INFINITY } else { 0.0 };
+    }
+
+    // 基为 −∞：奇整数指数保负号。
+    if a == f64::NEG_INFINITY {
+        if b > 0.0 {
+            if b.fract() == 0.0 && b % 2.0 != 0.0 {
+                return f64::NEG_INFINITY;
+            }
+            return f64::INFINITY;
+        }
+        if b.fract() == 0.0 && b % 2.0 != 0.0 {
+            return -0.0;
+        }
+        return 0.0;
+    }
+
+    // 基为 +0。
+    if a == 0.0 && !a.is_sign_negative() {
+        return if b > 0.0 { 0.0 } else { f64::INFINITY };
+    }
+
+    // 基为 −0：奇整数指数保负号。
     if a == 0.0 {
-        // 保 a 的符号：+0^+b → +0，-0^+b → -0。
-        return if b > 0.0 { a } else if b < 0.0 { f64::INFINITY } else { 1.0 };
+        if b > 0.0 {
+            if b.fract() == 0.0 && b % 2.0 != 0.0 {
+                return -0.0;
+            }
+            return 0.0;
+        }
+        if b.fract() == 0.0 && b % 2.0 != 0.0 {
+            return f64::NEG_INFINITY;
+        }
+        return f64::INFINITY;
     }
-    if a == 1.0 {
-        return if b.is_infinite() { f64::NAN } else { 1.0 };
-    }
-    if a == -1.0 {
-        if b.is_infinite() {
+
+    // 指数为 +∞：|base| > 1 → +∞，base = ±1 → NaN，|base| < 1 → +0。
+    if b == f64::INFINITY {
+        if !(-1.0..=1.0).contains(&a) {
+            return f64::INFINITY;
+        }
+        if a == -1.0 || a == 1.0 {
             return f64::NAN;
         }
-        if b.fract() == 0.0 {
-            return if b % 2.0 == 0.0 { 1.0 } else { -1.0 };
+        return 0.0;
+    }
+
+    // 指数为 −∞：|base| > 1 → +0，base = ±1 → NaN，|base| < 1 → +∞。
+    if b == f64::NEG_INFINITY {
+        if !(-1.0..=1.0).contains(&a) {
+            return 0.0;
         }
+        if a == -1.0 || a == 1.0 {
+            return f64::NAN;
+        }
+        return f64::INFINITY;
+    }
+
+    // 基为负有限值且指数非整数 → NaN。
+    if a < 0.0 && b.fract() != 0.0 {
         return f64::NAN;
     }
-    if a < 0.0 {
-        return if b.fract() == 0.0 { a.powf(b) } else { f64::NAN };
-    }
+
+    // 一般情形委托 IEEE 幂。
     a.powf(b)
 }
 
@@ -621,6 +680,68 @@ pub fn math_sum_precise<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pow_special_cases() {
+        // 零指数臂先于基的 NaN 臂。
+        assert_eq!(pow_f64(f64::NAN, 0.0), 1.0);
+        assert_eq!(pow_f64(f64::NAN, -0.0), 1.0);
+        // −∞ 基的奇整数奇偶臂。
+        assert_eq!(pow_f64(f64::NEG_INFINITY, 1.0), f64::NEG_INFINITY);
+        assert_eq!(pow_f64(f64::NEG_INFINITY, 111.0), f64::NEG_INFINITY);
+        assert_eq!(pow_f64(f64::NEG_INFINITY, 2.0), f64::INFINITY);
+        let r = pow_f64(f64::NEG_INFINITY, -1.0);
+        assert_eq!(r, 0.0);
+        assert!(r.is_sign_negative());
+        assert_eq!(pow_f64(f64::NEG_INFINITY, -2.0), 0.0);
+        // −0 基的奇整数奇偶臂。
+        let r = pow_f64(-0.0, 2.0);
+        assert_eq!(r, 0.0);
+        assert!(!r.is_sign_negative());
+        let r = pow_f64(-0.0, 3.0);
+        assert_eq!(r, 0.0);
+        assert!(r.is_sign_negative());
+        assert_eq!(pow_f64(-0.0, std::f64::consts::PI), 0.0);
+        assert_eq!(pow_f64(-0.0, -1.0), f64::NEG_INFINITY);
+        assert_eq!(pow_f64(-0.0, -2.0), f64::INFINITY);
+        // 有限负基的 ±∞ 指数按 |base| 面判定。
+        assert_eq!(pow_f64(-1.000000000000001, f64::INFINITY), f64::INFINITY);
+        assert_eq!(pow_f64(-1.000000000000001, f64::NEG_INFINITY), 0.0);
+        // ±1 基的 ±∞ 指数 → NaN。
+        assert!(pow_f64(1.0, f64::INFINITY).is_nan());
+        assert!(pow_f64(-1.0, f64::NEG_INFINITY).is_nan());
+        // 一般情形与 IEEE 幂一致。
+        assert_eq!(pow_f64(2.0, 0.5), 2.0f64.sqrt());
+        assert_eq!(pow_f64(-4.0, 2.0), 16.0);
+        assert!(pow_f64(-4.0, 0.5).is_nan());
+    }
+
+    #[test]
+    fn to_uint32_negative_non_integer() {
+        // ToInteger 向零截断后 floorMod：−1.5 → −1 → 2^32 − 1。
+        assert_eq!(to_uint32(-1.5), 0xFFFF_FFFF);
+        assert_eq!(to_uint32(-1.0), 0xFFFF_FFFF);
+        assert_eq!(to_uint32(1.5), 1);
+        assert_eq!(to_uint32(-4_294_967_297.0), 0xFFFF_FFFF);
+        assert_eq!(to_uint32(f64::NAN), 0);
+        assert_eq!(to_uint32(f64::INFINITY), 0);
+    }
+
+    #[test]
+    fn round_exact_real_arithmetic() {
+        // 0.5 − 2^-54：精确实数和为 1 − 2^-54，floor 为 0（IEEE 加法会舍入到 1.0）。
+        assert_eq!(round_f64(0.5 - f64::EPSILON / 4.0), 0.0);
+        // 0.5 + 2^-54 → 1。
+        assert_eq!(round_f64(0.5 + f64::EPSILON / 4.0), 1.0);
+        // 半值向 +∞ 取整，−0 臂。
+        assert_eq!(round_f64(0.5), 1.0);
+        assert_eq!(round_f64(-0.5), -0.0);
+        assert_eq!(round_f64(-1.5), -1.0);
+        assert_eq!(round_f64(1.5), 2.0);
+        // |x| ≥ 2^52 恒等。
+        assert_eq!(round_f64(4_503_599_627_370_496.0), 4_503_599_627_370_496.0);
+        assert_eq!(round_f64(-4_503_599_627_370_496.0), -4_503_599_627_370_496.0);
+    }
 
     #[test]
     fn finite_to_bigint_roundtrip() {
