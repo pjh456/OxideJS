@@ -1,20 +1,30 @@
 use std::sync::Arc;
 
 use oxide_kernel::shape_forge::EMPTY_SHAPE_ID;
-use oxide_runtime_api::{to_string, to_string_full, NativeResult, VmHost};
+use oxide_runtime_api::{to_string_full, NativeResult, VmHost};
 use oxide_types::mem::P;
 use oxide_types::object::{JsObject, PropAttributes};
 use oxide_types::value::JsValue;
 
-fn set_own_message<H: VmHost>(host: &mut H, this: *mut JsObject, args: &[u8]) {
+fn set_own_message<H: VmHost>(host: &mut H, this: *mut JsObject, args: &[u8]) -> NativeResult {
     if args.len() <= 1 {
-        return;
+        return NativeResult::Ok(JsValue::undefined());
     }
     let msg_val = host.reg(args[1]);
     if msg_val.is_undefined() {
-        return;
+        return NativeResult::Ok(JsValue::undefined());
     }
-    let msg_str = to_string(msg_val);
+    // 完整 ToString：对象经 ToPrimitive（string hint），Symbol 抛 TypeError，
+    // 用户转换方法抛出的异常原样传播。
+    let msg_str = match to_string_full(msg_val, host) {
+        Ok(s) => s,
+        Err(_) => {
+            if let Some(exc) = host.take_uncaught_value() {
+                return NativeResult::Err(exc);
+            }
+            return NativeResult::Err(create_type_error(host, "Cannot convert value to a string"));
+        }
+    };
     let sf = Arc::clone(host.kernel_core().perm_interner());
     let sh = Arc::clone(host.kernel_core().shape_forge());
     let si = sf.intern("message").0;
@@ -26,6 +36,7 @@ fn set_own_message<H: VmHost>(host: &mut H, this: *mut JsObject, args: &[u8]) {
         // message 按规范为非枚举数据属性（CreateNonEnumerableDataPropertyOrThrow）。
         (*this).set_data_meta(pos, PropAttributes::new(true, false, true));
     }
+    NativeResult::Ok(JsValue::undefined())
 }
 
 /// 按错误类型名创建对应 Error 对象（message 非空时写为自身属性）。
@@ -170,7 +181,14 @@ macro_rules! error_ctor {
             unsafe {
                 (*this).type_tag = JsObject::OBJ_TYPE_ERROR;
             }
-            set_own_message(host, this, args);
+            if let NativeResult::Err(e) = set_own_message(host, this, args) {
+                return NativeResult::Err(e);
+            }
+            // InstallErrorCause：message 转换之后、构造收尾之前。
+            let options = if args.len() > 2 { host.reg(args[2]) } else { JsValue::undefined() };
+            if let NativeResult::Err(e) = install_error_cause(host, this, options) {
+                return NativeResult::Err(e);
+            }
             NativeResult::Ok(JsValue::from_js_object(this))
         }
     };
@@ -196,6 +214,30 @@ fn set_own_data_prop<H: VmHost>(host: &mut H, obj: *mut JsObject, key: &str, val
         let pos = (*obj).push_prop(val);
         (*obj).set_data_meta(pos, PropAttributes::new(true, false, true));
     }
+}
+
+/// InstallErrorCause：options 为 Object 且 HasProperty(options, "cause") 时，
+/// Get(options, "cause") 并写入 O 的非枚举数据属性。
+///
+/// # 边界与前提
+/// - options 非对象或无 "cause" 属性（含链上）→ 不写属性；
+/// - "cause" 访问器 getter 抛出的异常原样传播。
+pub fn install_error_cause<H: VmHost>(host: &mut H, obj: *mut JsObject, options: JsValue) -> NativeResult {
+    if !options.is_object() {
+        return NativeResult::Ok(JsValue::undefined());
+    }
+    // SAFETY: is_object 保证指针非空且对象本 session 存活。
+    let opts = unsafe { &*options.as_js_object_ptr() };
+    let si = host.kernel_core().perm_interner().intern("cause").0;
+    if host.resolve_property(opts, si).is_none() {
+        return NativeResult::Ok(JsValue::undefined());
+    }
+    let cause = match host.ordinary_get(opts, si, options) {
+        Ok(v) => v,
+        Err(e) => return NativeResult::Err(crate::iterator::engine_error(host, &e)),
+    };
+    set_own_data_prop(host, obj, "cause", cause);
+    NativeResult::Ok(JsValue::undefined())
 }
 
 /// `SuppressedError(error, suppressed, message)` 构造器：三参，length=3。

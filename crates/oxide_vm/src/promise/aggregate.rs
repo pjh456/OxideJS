@@ -191,7 +191,6 @@ impl Vm {
     pub(crate) fn init_aggregate_error_intrinsics(&mut self) {
         let sf = self.kernel_core.perm_interner().as_ref();
         let sh = self.kernel_core.shape_forge().as_ref();
-        let fn_proto_val = self.session.builtin_world().fn_proto_val();
         let error_proto_val =
             JsValue::from_js_object(self.session.builtin_world().error_proto.as_ptr() as *mut JsObject);
 
@@ -213,8 +212,10 @@ impl Vm {
         let msg_pos = proto.push_prop(JsValue::perm_string(sf.string_ptr(sf.intern("").0)));
         proto.set_data_meta(msg_pos, PropAttributes::new(true, false, true));
 
-        // %AggregateError% 构造器：proto = %Function.prototype%，length 2。
-        let mut ctor = Box::new(JsObject::new_empty(EMPTY_SHAPE_ID, fn_proto_val));
+        // %AggregateError% 构造器：proto = %Error%（NativeError 构造器继承 Error 构造器），length 2。
+        let error_ctor_val =
+            JsValue::from_js_object(self.session.builtin_world().error_constructor.as_ptr() as *mut JsObject);
+        let mut ctor = Box::new(JsObject::new_empty(EMPTY_SHAPE_ID, error_ctor_val));
         ctor.set_function(true);
         ctor.type_tag = JsObject::OBJ_TYPE_CONSTRUCTOR;
         // SAFETY: aggregate_error_constructor 是 NativeFn 函数项。
@@ -1070,6 +1071,11 @@ fn aggregate_error_constructor(vm: &mut Vm, args: &[u8]) -> NativeResult {
         let msg_val = vm.new_string(&msg_str);
         // SAFETY: this 是本次构造的存活对象。
         let _ = vm.define_data_property(unsafe { &mut *this }, msg_si, msg_val, PropAttributes::new(true, false, true));
+    }
+    // InstallErrorCause：options 为第三实参（args[3]），message 之后、errors 收集之前。
+    let options = if args.len() > 3 { vm.reg(args[3]) } else { JsValue::undefined() };
+    if let NativeResult::Err(e) = oxide_builtins::error::install_error_cause(vm, this, options) {
+        return NativeResult::Err(e);
     }
     let errors_list = match vm.aggregate_errors_to_list(errors) {
         Ok(list) => list,

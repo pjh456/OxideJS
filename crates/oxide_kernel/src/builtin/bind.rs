@@ -216,6 +216,14 @@ impl BuiltinWorld {
         let name_pos = proto.push_prop(name_val);
         // 子类型原型上的 name 同 Error.prototype.name：非枚举数据属性。
         proto.set_data_meta(name_pos, oxide_types::object::PropAttributes::new(true, false, true));
+        // 子类型原型上的 message 初始值为空串，描述符同 name。
+        let si_message = string_forge.intern("message").0;
+        let empty_si = string_forge.intern("").0;
+        let empty_val = JsValue::perm_string(string_forge.string_ptr(empty_si));
+        let msg_shape = shape_forge.make_shape(proto.shape_id(), si_message);
+        proto.set_shape_id(msg_shape);
+        let msg_pos = proto.push_prop(empty_val);
+        proto.set_data_meta(msg_pos, oxide_types::object::PropAttributes::new(true, false, true));
     }
 
     /// 把 String 家族方法安装到 String 构造器与原型上。

@@ -1845,23 +1845,13 @@ pub fn object_proto_lookup_setter<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeR
     lookup_accessor_field(vm, args, false)
 }
 
-/// 沿原型链判断是否为 Error 家族对象：对象自身带 `OBJ_TYPE_ERROR` 标签，或原型链上
-/// 含 Error.prototype（等价 [[ErrorData]] 内部槽语义，覆盖 Error 用户子类）。
-fn is_error_family<H: VmHost>(vm: &H, ptr: *mut JsObject) -> bool {
-    let error_proto_ptr = vm.session().builtin_world().error_proto.as_ptr() as *mut JsObject;
-    let mut cur = ptr;
-    while !cur.is_null() {
-        if std::ptr::eq(cur, error_proto_ptr) {
-            return true;
-        }
-        // SAFETY: cur 沿原型链遍历，链上每个节点都是合法 JsObject（proto 非对象时为空指针终止）。
-        let o = unsafe { &*cur };
-        if o.is_error_obj() {
-            return true;
-        }
-        cur = o.proto().as_js_object_ptr();
-    }
-    false
+/// 判断是否为 Error 家族对象：只看对象自身的 `OBJ_TYPE_ERROR` 标签（等价
+/// [[ErrorData]] 内部槽语义）。原型本体与 `Object.create(Error.prototype)`
+/// 伪错误无标签，均按普通对象品牌。
+fn is_error_family(ptr: *mut JsObject) -> bool {
+    // SAFETY: 调用方保证 ptr 为本 session 存活对象。
+    let o = unsafe { &*ptr };
+    o.is_error_obj()
 }
 
 /// `Object.prototype.toString`：返回 `[object Tag]`。
@@ -1911,7 +1901,7 @@ pub fn object_proto_to_string<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResul
         "TypedArray"
     } else if obj.is_arguments_obj() {
         "Arguments"
-    } else if is_error_family(vm, obj_val.as_js_object_ptr()) {
+    } else if is_error_family(obj_val.as_js_object_ptr()) {
         "Error"
     } else {
         "Object"

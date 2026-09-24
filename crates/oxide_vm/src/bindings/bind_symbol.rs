@@ -1,8 +1,9 @@
 use std::sync::Arc;
 
-use crate::bindings::{apply_binding_table, bind_accessor_getter, configure_native_constructor};
+use crate::bindings::{apply_binding_table, bind_accessor_getter, bind_well_known_method, configure_native_constructor};
 use oxide_kernel::kernel::{KernelCore, KernelSession};
-use oxide_types::object::JsObject;
+use oxide_types::object::{JsObject, PropAttributes};
+use oxide_types::private_key::{make_well_known_symbol_key, WELL_KNOWN_SYMBOL_TO_PRIMITIVE};
 use oxide_types::value::JsValue;
 
 use crate::bind_constructor;
@@ -45,6 +46,22 @@ pub fn bind_symbol(core: &Arc<KernelCore>, session: &KernelSession, global: &mut
         oxide_builtins::symbol::symbol_description_getter::<crate::vm::Vm> as *const (),
     );
 
+    // [Symbol.toPrimitive] 方法：bind 默认描述符可写，规范为不可写，绑定后改 meta。
+    bind_well_known_method(
+        session.builtin_world(),
+        core,
+        proto,
+        WELL_KNOWN_SYMBOL_TO_PRIMITIVE,
+        "[Symbol.toPrimitive]",
+        oxide_builtins::symbol::symbol_to_primitive::<crate::vm::Vm> as *const (),
+        1,
+    );
+    let to_prim_key = make_well_known_symbol_key(WELL_KNOWN_SYMBOL_TO_PRIMITIVE);
+    if let Some(pos) = core.shape_forge().lookup_position(proto.shape_id(), to_prim_key) {
+        proto.set_data_meta(pos, PropAttributes::new(false, false, true));
+        proto.bump_generation();
+    }
+
     // well-known symbol 以符号原语绑定，下标与内建符号表（0..WELL_KNOWN_SYMBOL_COUNT）
     // 一一对应；名称表是 id/名映射的唯一来源，属性名去掉 `Symbol.` 前缀。
     for (id, full_name) in oxide_types::private_key::WELL_KNOWN_SYMBOL_NAMES.iter().enumerate() {
@@ -60,5 +77,8 @@ fn bind_well_known_symbol(core: &Arc<KernelCore>, ctor: &mut JsObject, name: &st
     let shape_id = core.shape_forge().make_shape(ctor.shape_id(), si);
     ctor.set_shape_id(shape_id);
     ctor.ensure_hash_props().push(val);
+    // well-known symbol 属性按规范 { writable:false, enumerable:false, configurable:false }。
+    let pos = ctor.hash_props_vec().map_or(0, |v| v.len() as u32).saturating_sub(1);
+    ctor.set_data_meta(pos, PropAttributes::new(false, false, false));
     ctor.bump_generation();
 }

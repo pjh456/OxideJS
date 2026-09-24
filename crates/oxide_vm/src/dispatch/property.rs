@@ -31,6 +31,17 @@ impl Vm {
         }
     }
 
+    /// SET 路径的接收者解析：对象直取；非对象经 ToObject 自动装箱
+    /// （null/undefined 抛 TypeError，其余原始值写盒后丢弃盒，与规范
+    /// OrdinarySetWithOwnDescriptor 的 ToObject 基语义一致）。
+    fn set_prop_base(&mut self, receiver: JsValue) -> Result<Option<*mut JsObject>, String> {
+        if receiver.is_object() {
+            return self.checked_object_ptr(receiver, "Cannot create property on non-object");
+        }
+        let boxed = coercion::to_object(receiver, self)?;
+        Ok(Some(boxed.as_js_object_ptr()))
+    }
+
     fn private_key_from_reg(&self, reg: usize) -> u32 {
         let value = self.regs[reg];
         let local_id = if value.is_int() {
@@ -401,7 +412,7 @@ impl Vm {
     }
 
     fn dispatch_ic_set_prop(&mut self, rd: usize, a: usize, b: usize) -> Result<(), String> {
-        let Some(obj_ptr) = self.checked_object_ptr(self.regs[rd], "Cannot create property on non-object")? else {
+        let Some(obj_ptr) = self.set_prop_base(self.regs[rd])? else {
             return Ok(());
         };
 
@@ -484,7 +495,7 @@ impl Vm {
 
     fn dispatch_set_prop(&mut self, rd: usize, a: usize, b: usize) -> Result<(), String> {
         vm_trace!("SET_PROP rd={} a={} b={}", rd, a, b);
-        let Some(obj_ptr) = self.checked_object_ptr(self.regs[rd], "Cannot create property on non-object")? else {
+        let Some(obj_ptr) = self.set_prop_base(self.regs[rd])? else {
             return Ok(());
         };
         let prop_name_si = self.property_key_si(self.regs[b])?;
@@ -560,7 +571,7 @@ impl Vm {
 
     fn dispatch_set_prop_dynamic(&mut self, rd: usize, a: usize, b: usize) -> Result<(), String> {
         vm_trace!("SET_PROP_DYNAMIC rd={} a={} b={}", rd, a, b);
-        let Some(obj_ptr) = self.checked_object_ptr(self.regs[rd], "Cannot create property on non-object")? else {
+        let Some(obj_ptr) = self.set_prop_base(self.regs[rd])? else {
             return Ok(());
         };
         let prop_name_si = self.property_key_si(self.regs[a])?;

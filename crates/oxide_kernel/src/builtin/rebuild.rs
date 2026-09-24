@@ -7,7 +7,8 @@ use oxide_types::object::JsObject;
 use oxide_types::value::JsValue;
 
 use super::construct::{
-    builtin_labels, make_error_subtypes, make_named_pair, make_typed_array_family, tag_number_proto, tag_string_proto,
+    builtin_labels, make_error_subtypes, make_named_pair, make_typed_array_family, tag_boolean_proto, tag_number_proto,
+    tag_string_proto,
     wire_builtin_world_links, ErrorSubtypeProtos, TypedArrayFamily,
 };
 use super::BuiltinWorld;
@@ -196,7 +197,11 @@ impl BuiltinWorld {
             (current.number_proto.clone(), current.number_constructor.clone())
         };
         let (boolean_proto, boolean_constructor) = if dirty.boolean {
-            make_named_pair(string_forge, shape_forge, labels, "Boolean")
+            // 脏重建与全量构造同形：原型本体须带 Boolean 对象 tag 与 false 包值，
+            // 漏此分支 full_reset 后 tag 翻回 "Object"。
+            let (proto, ctor) = make_named_pair(string_forge, shape_forge, labels, "Boolean");
+            tag_boolean_proto(&proto);
+            (proto, ctor)
         } else {
             (current.boolean_proto.clone(), current.boolean_constructor.clone())
         };

@@ -95,6 +95,44 @@ pub fn symbol_to_string<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     NativeResult::Ok(vm.new_string_owned(result))
 }
 
+/// `Symbol.prototype[Symbol.toPrimitive](hint)`：thisSymbolValue 校验后按
+/// hint 返回 Symbol 或其描述串。
+///
+/// # 步骤
+/// 1. this 非 Symbol 或 Symbol 包装对象 → TypeError。
+/// 2. hint 缺省 → 返回 Symbol。
+/// 3. hint 做完整 ToString（异常传播）；结果串为 "string" → 返回
+///    `Symbol(description)` 描述串，其余值（含 "number"）→ 返回 Symbol。
+pub fn symbol_to_primitive<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let this_val = vm.reg(args[0]);
+    let sym = match this_symbol_value(vm, this_val) {
+        Ok(v) => v,
+        Err(e) => return NativeResult::Err(e),
+    };
+    if args.len() <= 1 {
+        return NativeResult::Ok(sym);
+    }
+    let hint = vm.reg(args[1]);
+    if hint.is_undefined() {
+        return NativeResult::Ok(sym);
+    }
+    let hint_str = match oxide_runtime_api::to_string_full(hint, vm) {
+        Ok(s) => s,
+        Err(_) => {
+            if let Some(exc) = vm.take_uncaught_value() {
+                return NativeResult::Err(exc);
+            }
+            return NativeResult::Err(crate::error::create_type_error(vm, "Cannot convert value to a string"));
+        }
+    };
+    if hint_str == "string" {
+        let idx = sym.as_symbol_index();
+        let desc = vm.symbol_description(idx).unwrap_or("").to_string();
+        return NativeResult::Ok(vm.new_string_owned(format!("Symbol({})", desc)));
+    }
+    NativeResult::Ok(sym)
+}
+
 /// `Symbol.prototype.valueOf`：Symbol 原样返回；包装对象解盒返回其原始 Symbol。
 pub fn symbol_value_of<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     match this_symbol_value(vm, vm.reg(args[0])) {

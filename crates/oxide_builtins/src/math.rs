@@ -2,7 +2,7 @@ use num_bigint::BigInt;
 use num_traits::{FromPrimitive, One, Signed, ToPrimitive, Zero};
 use oxide_types::value::JsValue;
 
-use oxide_runtime_api::{NativeResult, VmHost};
+use oxide_runtime_api::{to_number_full, NativeResult, VmHost};
 
 fn num<H: VmHost>(vm: &mut H, reg: u8) -> f64 {
     vm.coerce_number_bounded(vm.reg(reg)).unwrap_or(f64::NAN)
@@ -76,11 +76,37 @@ pub fn math_atan2<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     NativeResult::Ok(JsValue::float(a.atan2(b)))
 }
 
-/// `Math.round`：四舍五入到最接近的整数，.5 时向正无穷取整（JS 语义）。
+/// `Math.round`：舍入到最接近的整数，.5 时向正无穷取整。
+///
+/// # 步骤
+/// 1. NaN → NaN；±∞ → 原值。
+/// 2. |x| ≥ 2^52 时 x 已是整数，恒等返回（免浮点加 0.5 在指数区丢精度）。
+/// 3. 其余 |x| < 2^52：`floor(x + 0.5)`（该区间 x+0.5 精确可表示），
+///    结果为 0 且 x 带负号时返回 -0（规范 -0.5 与 -0 臂）。
 pub fn math_round<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let x = arg1(vm, args);
-    let r = if x < 0.0 { (x - 0.5).ceil() } else { (x + 0.5).floor() };
-    NativeResult::Ok(JsValue::float(r))
+    NativeResult::Ok(JsValue::float(round_f64(x)))
+}
+
+/// 规范 `Math.round` 数值核心（21.1.3.25）：|x| ≥ 2^52 恒等，其余 `floor(x+0.5)`，
+/// 零结果按 x 符号定 ±0。
+fn round_f64(x: f64) -> f64 {
+    if x.is_nan() {
+        return f64::NAN;
+    }
+    if x.is_infinite() {
+        return x;
+    }
+    // 2^52：该界上 x 必为整数，round 即恒等。
+    const TWO_POW_52: f64 = 4_503_599_627_370_496.0;
+    if x >= TWO_POW_52 || x <= -TWO_POW_52 {
+        return x;
+    }
+    let r = (x + 0.5).floor();
+    if r == 0.0 && x.is_sign_negative() {
+        return -0.0;
+    }
+    r
 }
 
 /// `Math.sign`：返回 1 / -1 / 0 / -0 / NaN。
@@ -97,9 +123,21 @@ pub fn math_sign<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     }
 }
 
-/// `Math.clz32`：返回 32 位无符号整数表示的前导零个数。
+/// 规范 ToUint32（§7.1.10）：NaN/±∞ → 0，其余按 2^32 取模归入 [0, 2^32)。
+fn to_uint32(x: f64) -> u32 {
+    if x.is_nan() || x.is_infinite() {
+        return 0;
+    }
+    let mut n = x % 4_294_967_296.0;
+    if n < 0.0 {
+        n += 4_294_967_296.0;
+    }
+    n as u32
+}
+
+/// `Math.clz32`：返回 ToUint32(x) 的 32 位无符号表示的前导零个数。
 pub fn math_clz32<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
-    let n = arg1(vm, args) as u32;
+    let n = to_uint32(arg1(vm, args));
     NativeResult::Ok(JsValue::int(n.leading_zeros() as i32))
 }
 
@@ -212,56 +250,179 @@ pub fn math_f16round<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     NativeResult::Ok(JsValue::float(f16_bits_to_f64(f64_to_f16_bits(arg1(vm, args)))))
 }
 
-/// `Math.hypot`：返回 sqrt(a²+b²)（当前仅支持两个参数）。
+/// `Math.hypot`：返回实参平方和的平方根（sqrt(Σx²)），Kahan 求和免溢出/下溢。
+///
+/// # 步骤
+/// 1. 逐实参 ToNumber（传播异常；首个错误即停，后续实参不再求值）。
+/// 2. 无实参 → +0；任一 ±∞ → +∞（先于 NaN 判定）；任一 NaN → NaN。
+/// 3. 按 max(|x|) 缩放后 Kahan 累加平方，全零 → +0。
 pub fn math_hypot<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
-    let (a, b) = arg2(vm, args);
-    NativeResult::Ok(JsValue::float(a.hypot(b)))
+    let n = vm.native_arg_count(args);
+    let mut vals: Vec<f64> = Vec::with_capacity(n);
+    for i in 0..n {
+        let v = vm.native_arg_at(args, i);
+        match to_number_full(v, vm) {
+            Ok(x) => vals.push(x),
+            Err(e) => return NativeResult::Err(crate::iterator::engine_error(vm, &e)),
+        }
+    }
+    if vals.is_empty() {
+        return NativeResult::Ok(JsValue::float(0.0));
+    }
+    let mut max = 0.0f64;
+    let mut has_nan = false;
+    for &x in &vals {
+        if x.is_infinite() {
+            return NativeResult::Ok(JsValue::float(f64::INFINITY));
+        }
+        if x.is_nan() {
+            has_nan = true;
+        }
+        let a = x.abs();
+        if a > max {
+            max = a;
+        }
+    }
+    if has_nan {
+        return NativeResult::Ok(JsValue::float(f64::NAN));
+    }
+    if max == 0.0 {
+        return NativeResult::Ok(JsValue::float(0.0));
+    }
+    // Kahan 求和：补偿平方和的舍入误差。
+    let mut sum = 0.0f64;
+    let mut comp = 0.0f64;
+    for &x in &vals {
+        let n = x / max;
+        let y = n * n - comp;
+        let t = sum + y;
+        comp = (t - sum) - y;
+        sum = t;
+    }
+    NativeResult::Ok(JsValue::float(sum.sqrt() * max))
 }
 
 /// `Math.imul`：按 32 位整数做 wrap-around 乘法。
 pub fn math_imul<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let (a, b) = arg2(vm, args);
-    NativeResult::Ok(JsValue::int((a as i32).wrapping_mul(b as i32)))
+    let product = (to_uint32(a) as u64).wrapping_mul(to_uint32(b) as u64) & 0xFFFF_FFFF;
+    NativeResult::Ok(JsValue::int(product as i32))
 }
 
 /// `Math.pow(base, exp)`：返回幂运算结果。
 pub fn math_pow<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let (a, b) = arg2(vm, args);
-    NativeResult::Ok(JsValue::float(a.powf(b)))
+    NativeResult::Ok(JsValue::float(pow_f64(a, b)))
 }
 
-/// `Math.max`：返回参数中的最大值；任一无参时返回 -Infinity，任一 NaN 时返回 NaN。
+/// 规范 `Math.pow` 数值核心（Applying the `**` operator）：特殊值
+/// （NaN/±∞/±0/±1）按规范臂判定，一般情形委托 IEEE 幂运算。
+fn pow_f64(a: f64, b: f64) -> f64 {
+    if b.is_nan() || a.is_nan() {
+        return f64::NAN;
+    }
+    if a.is_infinite() {
+        return if b == 0.0 { 1.0 } else if b > 0.0 { f64::INFINITY } else { 0.0 };
+    }
+    if a == 0.0 {
+        // 保 a 的符号：+0^+b → +0，-0^+b → -0。
+        return if b > 0.0 { a } else if b < 0.0 { f64::INFINITY } else { 1.0 };
+    }
+    if a == 1.0 {
+        return if b.is_infinite() { f64::NAN } else { 1.0 };
+    }
+    if a == -1.0 {
+        if b.is_infinite() {
+            return f64::NAN;
+        }
+        if b.fract() == 0.0 {
+            return if b % 2.0 == 0.0 { 1.0 } else { -1.0 };
+        }
+        return f64::NAN;
+    }
+    if a < 0.0 {
+        return if b.fract() == 0.0 { a.powf(b) } else { f64::NAN };
+    }
+    a.powf(b)
+}
+
+/// 变长实参 Math 函数（max/min）的公共前段：逐实参 ToNumber 成列表
+/// （传播异常，全部元素先转换再比较）。
+fn to_number_all<H: VmHost>(vm: &mut H, args: &[u8]) -> Result<Vec<f64>, JsValue> {
+    let n = vm.native_arg_count(args);
+    let mut vals: Vec<f64> = Vec::with_capacity(n);
+    for i in 0..n {
+        let v = vm.native_arg_at(args, i);
+        match to_number_full(v, vm) {
+            Ok(x) => vals.push(x),
+            Err(e) => return Err(crate::iterator::engine_error(vm, &e)),
+        }
+    }
+    Ok(vals)
+}
+
+/// `Math.max`：返回实参中的最大值；无实参返回 -Infinity，任一 NaN 返回 NaN。
+///
+/// # 步骤
+/// 1. 全部实参 ToNumber（传播异常）。
+/// 2. 任一 NaN → NaN。
+/// 3. +0 视为大于 -0：结果为 0 且出现过 +0 时返回 +0。
 pub fn math_max<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
-    if args.len() < 2 {
+    let vals = match to_number_all(vm, args) {
+        Ok(v) => v,
+        Err(e) => return NativeResult::Err(e),
+    };
+    if vals.is_empty() {
         return NativeResult::Ok(JsValue::float(f64::NEG_INFINITY));
     }
     let mut m = f64::NEG_INFINITY;
-    for &r in args.iter().skip(1) {
-        let x = num(vm, r);
+    let mut has_plus_zero = false;
+    for &x in &vals {
         if x.is_nan() {
             return NativeResult::Ok(JsValue::float(f64::NAN));
+        }
+        if x == 0.0 && !x.is_sign_negative() {
+            has_plus_zero = true;
         }
         if x > m {
             m = x;
         }
     }
+    if m == 0.0 && has_plus_zero {
+        m = 0.0;
+    }
     NativeResult::Ok(JsValue::float(m))
 }
 
-/// `Math.min`：返回参数中的最小值；无参时返回 Infinity，任一 NaN 时返回 NaN。
+/// `Math.min`：返回实参中的最小值；无实参返回 Infinity，任一 NaN 返回 NaN。
+///
+/// # 步骤
+/// 1. 全部实参 ToNumber（传播异常）。
+/// 2. 任一 NaN → NaN。
+/// 3. +0 视为大于 -0：结果为 0 且出现过 -0 时返回 -0。
 pub fn math_min<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
-    if args.len() < 2 {
+    let vals = match to_number_all(vm, args) {
+        Ok(v) => v,
+        Err(e) => return NativeResult::Err(e),
+    };
+    if vals.is_empty() {
         return NativeResult::Ok(JsValue::float(f64::INFINITY));
     }
     let mut m = f64::INFINITY;
-    for &r in args.iter().skip(1) {
-        let x = num(vm, r);
+    let mut has_minus_zero = false;
+    for &x in &vals {
         if x.is_nan() {
             return NativeResult::Ok(JsValue::float(f64::NAN));
+        }
+        if x == 0.0 && x.is_sign_negative() {
+            has_minus_zero = true;
         }
         if x < m {
             m = x;
         }
+    }
+    if m == 0.0 && has_minus_zero {
+        m = -0.0;
     }
     NativeResult::Ok(JsValue::float(m))
 }
