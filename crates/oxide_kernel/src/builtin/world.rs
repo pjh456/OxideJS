@@ -234,11 +234,34 @@ impl BuiltinWorld {
     /// 登记一个可复用 native 函数 wrapper（带复用键），随登记表在 session
     /// 收尾统一释放。
     ///
+    /// # 边界与前提
+    /// 登记表已有同键旧槽且其 native 函数指针与新 wrapper 不同时，视为
+    /// wrapper 函数指针变更（如构造器由占位实现换为真身）：旧 wrapper
+    /// 不可再复用，清其复用键。
+    ///
+    /// # 副作用
+    /// - 登记表追加新条目。
+    /// - 同键旧槽函数指针不同时，清空其复用键。
+    ///
     /// # 注意事项
-    /// 同键重复登记意味着复用键设计缺陷（同家族槽位对应两个不同 wrapper
-    /// 对象）——debug 断言立即失败。
+    /// 同键且同函数指针的重复登记意味着复用键设计缺陷（同家族槽位对应
+    /// 两个不同 wrapper 对象）——debug 断言立即失败。
     #[expect(clippy::not_unsafe_ptr_arg_deref)] // 指针由绑定层保证存活，此函数仅读世代、不转移所有权
     pub fn track_fn_wrapper(&self, obj_ptr: *mut JsObject, key: FnWrapperKey) {
+        // SAFETY: obj_ptr 是刚装好 length/name 的存活 wrapper，读取其 native 函数指针。
+        let new_fn_ptr = unsafe { (*obj_ptr).native_fn().map(|p| p.0) };
+        // 同键旧槽函数指针不同：wrapper 函数指针已变更，旧 wrapper 不再
+        // 参与复用，清键后本体滞留至 session 收尾统一释放（与失效语义一致）。
+        for slot in self.leaked_objects.borrow_mut().iter_mut() {
+            if slot.key != Some(key) {
+                continue;
+            }
+            // SAFETY: 登记表指针 session 存活期内有效。
+            let old_fn_ptr = unsafe { (*slot.ptr).native_fn().map(|p| p.0) };
+            if old_fn_ptr != new_fn_ptr {
+                slot.key = None;
+            }
+        }
         debug_assert!(
             !self.leaked_objects.borrow().iter().any(|s| s.key == Some(key)),
             "同键 native 函数 wrapper 重复登记"
