@@ -87,7 +87,7 @@ impl Vm {
                     JsValue::from_js_object(self.session.builtin_world().data_view_proto.as_ptr() as *mut JsObject);
                 JsValue::from_js_object(self.alloc_object(JsObject::new_empty(EMPTY_SHAPE_ID, data_view_proto_val)))
             } else {
-                let this_ptr = self.alloc_ctor_this(nt_obj)?;
+                let this_ptr = self.alloc_ctor_this(nt_obj, ctor_obj, new_target)?;
                 JsValue::from_js_object(this_ptr)
             };
             // newTarget 经 reg(255) 暴露给 native 构造器（快照/恢复：call 窗口
@@ -111,12 +111,47 @@ impl Vm {
         self.call_constructor_bytecode_inline(ctor, ctor_obj, nt_obj, new_target, args)
     }
 
-    /// 分配构造 this：proto = ctor.prototype（缺省 Object.prototype）。
-    fn alloc_ctor_this(&mut self, ctor_obj: &JsObject) -> Result<*mut JsObject, JsValue> {
+    /// 分配构造 this：proto = newTarget.prototype（缺省 Object.prototype）。
+    ///
+    /// 按**构造器**（非 newTarget）种类分读形：native 构造器保持裸存储读
+    /// （占位 receiver 的原型不可观测，可观测面由各构造体自重读覆盖，native
+    /// 面的 getter 触发权归构造体的规范步序位）；字节码构造器走传播读
+    /// （Ordinary [[Construct]] 的 GpFC 先于函数体求值且读体是唯一读点，
+    /// 访问器 getter 的异常须原值上抛，非对象结果回落 Object.prototype）。
+    fn alloc_ctor_this(
+        &mut self, nt_obj: &JsObject, ctor_obj: &JsObject, nt_val: JsValue,
+    ) -> Result<*mut JsObject, JsValue> {
         let proto_si = self.kernel_core.perm_interner().intern("prototype").0;
-        let proto_val = match self.resolve_property(ctor_obj, proto_si) {
-            Some(p) if p.is_object() => p,
-            _ => JsValue::from_js_object(self.session.builtin_world().object_proto.as_ptr() as *mut JsObject),
+        let object_proto = JsValue::from_js_object(self.session.builtin_world().object_proto.as_ptr() as *mut JsObject);
+        let is_native_ctor = ctor_obj.native_fn().is_some() && ctor_obj.type_tag == JsObject::OBJ_TYPE_CONSTRUCTOR;
+        let proto_val = if is_native_ctor {
+            match self.resolve_property(nt_obj, proto_si) {
+                Some(p) if p.is_object() => p,
+                _ => object_proto,
+            }
+        } else {
+            let pc_before = self.pc;
+            match self.ordinary_get(nt_obj, proto_si, nt_val) {
+                Ok(v) if self.pc == pc_before => {
+                    if v.is_object() {
+                        v
+                    } else {
+                        object_proto
+                    }
+                }
+                Ok(_) => {
+                    // depth-0 getter 抛已就地展开跳走（构造入口恒在 native 上下文，
+                    // 结构性不可达）：停掉构造流，不续行。
+                    return Err(JsValue::undefined());
+                }
+                Err(err) => {
+                    // 重入路径：恢复原始异常值，按 construct_with 契约携带原值。
+                    return Err(self
+                        .last_uncaught_value
+                        .take()
+                        .unwrap_or_else(|| oxide_builtins::error::create_from_text(self, &err)));
+                }
+            }
         };
         Ok(self.alloc_object(JsObject::new_empty(EMPTY_SHAPE_ID, proto_val)))
     }
@@ -144,7 +179,7 @@ impl Vm {
         }
         // 先拷出寄存器数，释放对代际表的借用后再进入可变借用区。
         let callee_reg_count = callee_module.n_registers;
-        let new_obj_ptr = self.alloc_ctor_this(nt_obj)?;
+        let new_obj_ptr = self.alloc_ctor_this(nt_obj, ctor_obj, new_target)?;
         let new_obj_val = JsValue::from_js_object(new_obj_ptr);
         // derived 构造器 super() 前 this 为 undefined，基类 this = 新对象。
         let this_value = if ctor_obj.is_derived_constructor() {
@@ -303,15 +338,52 @@ impl Vm {
 }
 
 /// `Promise` 构造器：设置状态盒并同步调用 executor(resolve, reject)。
+///
+/// # 步骤
+/// 1. NewTarget 缺失形态（普通调用 / .call 入口）→ TypeError。
+/// 2. executor 可读性检查（步序先于 GpFC 原型读）。
+/// 3. GetPrototypeFromConstructor：传播式读 new.target 的 "prototype"
+///    （访问器副作用与异常原值传播）；非对象结果回落 %Promise.prototype%。
+/// 4. 物化 receiver（原型重设 + type_tag + 状态盒）后经原型链检放行。
 fn promise_constructor(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
-    // `new` 调用时 this 是 proto 链含 %Promise.prototype% 的新对象；裸调用拒绝。
-    if !vm.has_promise_proto(this_val) {
+    // NewTarget 缺失 = 非构造形态：构造入口置位、普通调用入口清零，据此拒绝。
+    if !vm.constructing_native {
         return NativeResult::Err(oxide_builtins::error::create_type_error(vm, "Promise must be called with new"));
     }
-    // SAFETY: `has_promise_proto` 已校验 this 为存活对象且原型链含 %Promise.prototype%；
-    // 此处写 type_tag 后即新建状态盒，无别名。
+    let executor = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
+    if !oxide_builtins::iterator::is_callable(executor) {
+        return NativeResult::Err(oxide_builtins::error::create_type_error(vm, "Promise executor is not a function"));
+    }
+    // GetPrototypeFromConstructor：异常原值上抛；非对象结果回落内建原型。
+    let promise_proto_val = JsValue::from_js_object(vm.promise_proto.as_ptr() as *mut JsObject);
+    let new_target = vm.reg(255);
+    let proto = if new_target.is_object() {
+        let nt_ptr = new_target.as_js_object_ptr();
+        // SAFETY: is_object 保证指针非空且对象本 session 存活。
+        let nt_obj = unsafe { &*nt_ptr };
+        let proto_si = vm.kernel_core.perm_interner().intern("prototype").0;
+        match vm.ordinary_get(nt_obj, proto_si, new_target) {
+            Ok(v) if v.is_object() => v,
+            Ok(_) => promise_proto_val,
+            Err(err) => {
+                return NativeResult::Err(
+                    vm.last_uncaught_value
+                        .take()
+                        .unwrap_or_else(|| oxide_builtins::error::create_from_text(vm, &err)),
+                );
+            }
+        }
+    } else {
+        promise_proto_val
+    };
+    // receiver 原型重设为 GpFC 结果（恒等重设是 no-op，非对象回落重设是语义修正），
+    // 随后物化状态盒。
+    // SAFETY: this 为构造帧分配的存活对象；此处写 type_tag 后即新建状态盒，无别名。
     let obj = unsafe { &mut *this_val.as_js_object_ptr() };
+    if let Err(msg) = obj.set_proto(proto) {
+        return NativeResult::Err(oxide_builtins::error::create_type_error(vm, msg));
+    }
     obj.type_tag = JsObject::OBJ_TYPE_PROMISE;
     let resolve = vm.make_resolve_reject_fn(this_val, false, false);
     let reject = vm.make_resolve_reject_fn(this_val, true, false);
@@ -325,9 +397,9 @@ fn promise_constructor(vm: &mut Vm, args: &[u8]) -> NativeResult {
         promoted_clone: std::ptr::null_mut(),
     });
     obj.set_native_data(Box::into_raw(state) as *mut u8);
-    let executor = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
-    if !oxide_builtins::iterator::is_callable(executor) {
-        return NativeResult::Err(oxide_builtins::error::create_type_error(vm, "Promise executor is not a function"));
+    // 物化后的 receiver 原型链须含 %Promise.prototype%（构造面放行兜底）。
+    if !vm.has_promise_proto(this_val) {
+        return NativeResult::Err(oxide_builtins::error::create_type_error(vm, "Promise must be called with new"));
     }
     match vm.call_function_sync(executor, JsValue::undefined(), &[resolve, reject]) {
         Ok(_) => NativeResult::Ok(this_val),

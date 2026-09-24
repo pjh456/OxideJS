@@ -145,3 +145,172 @@ fn native_construct_keeps_instance_semantics() {
     let result = eval(&mut vm, "(function(){ var d = new Date(0); return d instanceof Date; })()").unwrap();
     assert_bool(result, true);
 }
+
+// ── GpFC 通用构造面（读体按构造器种类分支 + 构造体自重读）回归钉 ──
+
+fn throwing_proto_ctor(source_tail: &str) -> String {
+    format!(
+        "var bound = (function(){{}}).bind(); \
+         Object.defineProperty(bound, 'prototype', {{ get: function() {{ \
+         calls++; throw new Error('boom'); }} }}); \
+         var calls = 0; {source_tail}"
+    )
+}
+
+#[test]
+fn gpfc_new_expression_bytecode_ctor_propagates_getter_throw() {
+    // 字节码构造器 prototype 为访问器且 getter 抛错：new 表达式须原值上抛（getter 触发）。
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "var F = function(){}; var calls = 0; \
+         Object.defineProperty(F, 'prototype', { configurable: true, \
+         get: function() { calls++; throw new Error('boom'); } }); \
+         try { new F(); } catch (e) { e.message + ':' + calls }",
+    )
+    .unwrap();
+    assert_eq!(vm.lookup_str(result).unwrap(), "boom:1");
+}
+
+#[test]
+fn gpfc_new_expression_spread_bytecode_ctor_propagates_getter_throw() {
+    // spread 构造变体同形：getter 抛原值上抛且恰触发一次。
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "var F = function(){}; var calls = 0; \
+         Object.defineProperty(F, 'prototype', { configurable: true, \
+         get: function() { calls++; throw new Error('boom'); } }); \
+         try { new F(...[]); } catch (e) { e.message + ':' + calls }",
+    )
+    .unwrap();
+    assert_eq!(vm.lookup_str(result).unwrap(), "boom:1");
+}
+
+#[test]
+fn gpfc_reflect_construct_bytecode_ctor_bound_nt_propagates_getter_throw() {
+    // Reflect.construct(JS 构造器, 实参, bound NT)：bound 自身 prototype 访问器
+    // getter 抛错须原值上抛（读体对字节码构造器为唯一 GpFC 读点）。
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        &throwing_proto_ctor("try { Reflect.construct(function(){}, [], bound); } catch (e) { e.message }"),
+    )
+    .unwrap();
+    assert_eq!(vm.lookup_str(result).unwrap(), "boom");
+}
+
+#[test]
+fn gpfc_promise_executor_check_precedes_proto_read() {
+    // Promise 体步序：executor 可读性检查先于 GpFC 原型读（非 callable executor
+    // + 抛 getter 的 NT → TypeError 胜 Test262Error 形）。
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        &throwing_proto_ctor("try { Reflect.construct(Promise, [], bound); } catch (e) { e.constructor.name }"),
+    )
+    .unwrap();
+    assert_eq!(vm.lookup_str(result).unwrap(), "TypeError");
+}
+
+#[test]
+fn gpfc_promise_abrupt_proto_read_propagates() {
+    // Promise 体 GpFC 自重读：executor callable 时 getter 抛原值上抛。
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        &throwing_proto_ctor("try { Reflect.construct(Promise, [function(){}], bound); } catch (e) { e.message }"),
+    )
+    .unwrap();
+    assert_eq!(vm.lookup_str(result).unwrap(), "boom");
+}
+
+#[test]
+fn promise_plain_call_rejected_by_construct_guard() {
+    // NewTarget 缺失形态：普通调用与 .call 入口一律 TypeError（含 receiver 为
+    // 真实 Promise 实例的 .call 面）。
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "var r = []; \
+         try { Promise(function(){}); } catch (e) { r.push(e.constructor.name); } \
+         try { Promise.call(null, function(){}); } catch (e) { r.push(e.constructor.name); } \
+         var p = new Promise(function(){}); \
+         try { Promise.call(p, function(){}); } catch (e) { r.push(e.constructor.name); } \
+         r.join(',')",
+    )
+    .unwrap();
+    assert_eq!(vm.lookup_str(result).unwrap(), "TypeError,TypeError,TypeError");
+}
+
+#[test]
+fn gpfc_disposable_stack_newtarget_proto_forms() {
+    // DS 体 GpFC 自重读三形：custom NT → NT.prototype 直用；非对象 NT.prototype
+    // → 回落 %DisposableStack.prototype%；抛 getter → 原值上抛且恰一次。
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "var s = Reflect.construct(DisposableStack, [], Object); \
+         var a = Object.getPrototypeOf(s) === Object.prototype; \
+         function nt() {} nt.prototype = undefined; \
+         var s2 = Reflect.construct(DisposableStack, [], nt); \
+         var b = Object.getPrototypeOf(s2) === DisposableStack.prototype; \
+         a + ':' + b",
+    )
+    .unwrap();
+    assert_eq!(vm.lookup_str(result).unwrap(), "true:true");
+
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        &throwing_proto_ctor(
+            "try { Reflect.construct(DisposableStack, [], bound); } catch (e) { e.message + ':' + calls }",
+        ),
+    )
+    .unwrap();
+    assert_eq!(vm.lookup_str(result).unwrap(), "boom:1");
+}
+
+#[test]
+fn gpfc_async_disposable_stack_newtarget_proto_forms() {
+    // ADS 同形三钉：custom NT 直用 / 非对象回落内建原型 / 抛 getter 原值一次。
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "var s = Reflect.construct(AsyncDisposableStack, [], Object); \
+         var a = Object.getPrototypeOf(s) === Object.prototype; \
+         function nt() {} nt.prototype = null; \
+         var s2 = Reflect.construct(AsyncDisposableStack, [], nt); \
+         var b = Object.getPrototypeOf(s2) === AsyncDisposableStack.prototype; \
+         a + ':' + b",
+    )
+    .unwrap();
+    assert_eq!(vm.lookup_str(result).unwrap(), "true:true");
+
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        &throwing_proto_ctor(
+            "try { Reflect.construct(AsyncDisposableStack, [], bound); } catch (e) { e.message + ':' + calls }",
+        ),
+    )
+    .unwrap();
+    assert_eq!(vm.lookup_str(result).unwrap(), "boom:1");
+}
+
+#[test]
+fn gpfc_native_ctor_raw_read_unchanged() {
+    // native 构造器臂回归：new Map()/new Set() 实例原型不变；Reflect.construct
+    // 以数据属性 prototype 的 NT 构造 Map 时原型直用（native 臂保持裸读）。
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "var a = Object.getPrototypeOf(new Map()) === Map.prototype; \
+         var b = Object.getPrototypeOf(new Set()) === Set.prototype; \
+         function nt() {} nt.prototype = Map.prototype; \
+         var c = Object.getPrototypeOf(Reflect.construct(Map, [], nt)) === Map.prototype; \
+         a + ':' + b + ':' + c",
+    )
+    .unwrap();
+    assert_eq!(vm.lookup_str(result).unwrap(), "true:true:true");
+}

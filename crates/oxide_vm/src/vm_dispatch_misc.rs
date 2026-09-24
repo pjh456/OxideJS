@@ -69,11 +69,38 @@ impl Vm {
             JsValue::from_js_object(proto_ptr),
         ));
 
+        // GpFC 按构造器种类分读形：native 构造器体（native_fn + CONSTRUCTOR
+        // tag）保持裸存储读（占位 receiver 的原型不可观测，可观测面由构造体
+        // 自重读覆盖）；字节码构造器走传播读（Ordinary [[Construct]] 的 GpFC
+        // 先于函数体求值，访问器 getter 的异常须原值上抛，非对象结果回落
+        // Object.prototype）。bound 包装已在上方转发臂返回，不到达此处。
         let proto_si = self.kernel_core.perm_interner().intern("prototype").0;
-        if let Some(proto_val) = self.resolve_property(ctor_obj, proto_si) {
-            if proto_val.is_object() {
+        let proto_val = if ctor_obj.native_fn().is_some() {
+            self.resolve_property(ctor_obj, proto_si)
+        } else {
+            let pc_before = self.pc;
+            match self.ordinary_get(ctor_obj, proto_si, constructor) {
+                Ok(v) if self.pc == pc_before => Some(v),
+                Ok(_) => {
+                    // getter 抛且已有 catch/finally 接手：展开已跳到落点，停构造流。
+                    return Ok(true);
+                }
+                Err(err) => {
+                    // 无处理器（或重入在途异常）：恢复原值走异常通道。
+                    let exc = self
+                        .last_uncaught_value
+                        .take()
+                        .unwrap_or_else(|| oxide_builtins::error::create_from_text(self, &err));
+                    self.exception_value = Some(exc);
+                    self.pending_error_kind = Some(self.thrown_error_kind(exc));
+                    return self.unwind().map(|_| true);
+                }
+            }
+        };
+        if let Some(v) = proto_val {
+            if v.is_object() {
                 let new_obj_mut = unsafe { &mut *new_obj };
-                let proto_obj_ptr = proto_val.as_js_object_ptr();
+                let proto_obj_ptr = v.as_js_object_ptr();
                 let _ = new_obj_mut.set_proto(JsValue::from_js_object(proto_obj_ptr));
             }
         }
@@ -224,11 +251,33 @@ impl Vm {
         }
 
         // 新对象原型取最内层 target 的 prototype（bound 包装自身无 prototype）。
+        // 读形与 NEW 读体同构：native target 裸读，字节码 target 传播读
+        // （getter 异常原值上抛，非对象回落 Object.prototype）。
         let proto_si = self.kernel_core.perm_interner().intern("prototype").0;
-        if let Some(proto_val) = self.resolve_property(target_obj, proto_si) {
-            if proto_val.is_object() {
+        let proto_val = if target_obj.native_fn().is_some() {
+            self.resolve_property(target_obj, proto_si)
+        } else {
+            let pc_before = self.pc;
+            match self.ordinary_get(target_obj, proto_si, target_val) {
+                Ok(v) if self.pc == pc_before => Some(v),
+                Ok(_) => {
+                    return Ok(true);
+                }
+                Err(err) => {
+                    let exc = self
+                        .last_uncaught_value
+                        .take()
+                        .unwrap_or_else(|| oxide_builtins::error::create_from_text(self, &err));
+                    self.exception_value = Some(exc);
+                    self.pending_error_kind = Some(self.thrown_error_kind(exc));
+                    return self.unwind().map(|_| true);
+                }
+            }
+        };
+        if let Some(v) = proto_val {
+            if v.is_object() {
                 let new_obj_mut = unsafe { &mut *new_obj };
-                let proto_obj_ptr = proto_val.as_js_object_ptr();
+                let proto_obj_ptr = v.as_js_object_ptr();
                 let _ = new_obj_mut.set_proto(JsValue::from_js_object(proto_obj_ptr));
             }
         }

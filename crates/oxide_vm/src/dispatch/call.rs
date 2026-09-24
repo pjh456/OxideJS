@@ -985,11 +985,36 @@ impl Vm {
             oxide_kernel::shape_forge::EMPTY_SHAPE_ID,
             JsValue::from_js_object(proto_ptr),
         ));
+        // GpFC 按构造器种类分读形：native 构造器保持裸存储读（占位 receiver
+        // 不可观测，构造体自重读覆盖可观测面）；字节码构造器走传播读（getter
+        // 异常原值上抛，非对象结果回落 Object.prototype）。
         let proto_si = self.kernel_core.perm_interner().intern("prototype").0;
-        if let Some(proto_val) = self.resolve_property(ctor_obj, proto_si) {
-            if proto_val.is_object() {
+        let proto_val = if ctor_obj.native_fn().is_some() {
+            self.resolve_property(ctor_obj, proto_si)
+        } else {
+            let pc_before = self.pc;
+            match self.ordinary_get(ctor_obj, proto_si, constructor) {
+                Ok(v) if self.pc == pc_before => Some(v),
+                Ok(_) => {
+                    // getter 抛且已有 catch/finally 接手：展开已跳到落点，停构造流。
+                    return Ok(true);
+                }
+                Err(err) => {
+                    // 无处理器（或重入在途异常）：恢复原值走异常通道。
+                    let exc = self
+                        .last_uncaught_value
+                        .take()
+                        .unwrap_or_else(|| oxide_builtins::error::create_from_text(self, &err));
+                    self.exception_value = Some(exc);
+                    self.pending_error_kind = Some(self.thrown_error_kind(exc));
+                    return self.unwind().map(|_| true);
+                }
+            }
+        };
+        if let Some(v) = proto_val {
+            if v.is_object() {
                 let new_obj_mut = unsafe { &mut *new_obj };
-                let proto_obj_ptr = proto_val.as_js_object_ptr();
+                let proto_obj_ptr = v.as_js_object_ptr();
                 let _ = new_obj_mut.set_proto(JsValue::from_js_object(proto_obj_ptr));
             }
         }

@@ -73,43 +73,68 @@ fn disposed_reference_error<H: VmHost>(vm: &mut H) -> JsValue {
     crate::error::create_reference_error(vm, "DisposableStack has been disposed")
 }
 
-/// 资源栈构造器公共实现：校验 NewTarget 原型链后建带空状态盒的栈对象。
+/// 接收者原型链是否命中对应栈类型内建原型（上限 16 层，普通调用接收者不命中）。
+fn receiver_intrinsic_proto(this_val: JsValue, stack_proto_val: JsValue) -> bool {
+    if !this_val.is_object() {
+        return false;
+    }
+    let this_ptr = this_val.as_js_object_ptr();
+    if this_ptr.is_null() {
+        return false;
+    }
+    let stack_proto = stack_proto_val.as_js_object_ptr();
+    // SAFETY: this_ptr 是 is_object 校验过的当前 session 存活对象指针。
+    let mut proto = unsafe { &*this_ptr }.proto();
+    for _ in 0..16 {
+        if !proto.is_object() {
+            return false;
+        }
+        let proto_ptr = proto.as_js_object_ptr();
+        if proto_ptr.is_null() {
+            return false;
+        }
+        if std::ptr::eq(proto_ptr, stack_proto) {
+            return true;
+        }
+        // SAFETY: 同上，proto 链指针本 session 存活。
+        proto = unsafe { &*proto_ptr }.proto();
+    }
+    false
+}
+
+/// 资源栈构造器公共实现：构造形态校验后经 GpFC 推导原型，建带空状态盒的栈对象。
 ///
 /// # 步骤
-/// 1. 校验 NewTarget：`this` 的原型链须命中对应栈的 prototype
-///    （`new X()` 直接命中，子类 `super()` 经子类原型链命中；普通调用抛 TypeError）。
-/// 2. 建空状态盒对象，proto 与 type_tag 按栈类型传入。
+/// 1. 非构造形态 → TypeError。构造形态标记由 NEW/SUPER/construct_with 三入口置位、
+///    普通调用入口清零；标记未置位的直接 native 调用形态以接收者原型链命中
+///    对应内建原型视同构造形态。
+/// 2. GetPrototypeFromConstructor：传播式读 new.target 的 "prototype"（访问器
+///    副作用与异常原值传播）；非对象结果回落本栈类型内建原型。
+/// 3. 建空状态盒对象，proto 与 type_tag 按栈类型传入。
 fn stack_constructor_impl<H: VmHost>(vm: &mut H, args: &[u8], proto_val: JsValue, type_tag: u8) -> NativeResult {
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
-    let is_new_call = this_val.is_object() && {
-        let stack_proto = proto_val.as_js_object_ptr();
-        let this_ptr = this_val.as_js_object_ptr();
-        if this_ptr.is_null() {
-            false
-        } else {
-            let mut proto = unsafe { &*this_ptr }.proto();
-            let mut found = false;
-            for _ in 0..16 {
-                if !proto.is_object() {
-                    break;
-                }
-                let proto_ptr = proto.as_js_object_ptr();
-                if proto_ptr.is_null() {
-                    break;
-                }
-                if std::ptr::eq(proto_ptr, stack_proto) {
-                    found = true;
-                    break;
-                }
-                proto = unsafe { &*proto_ptr }.proto();
-            }
-            found
-        }
-    };
-    if !is_new_call {
+    if !vm.constructing_native() && !receiver_intrinsic_proto(this_val, proto_val) {
         return NativeResult::Err(crate::error::create_type_error(vm, "DisposableStack must be called with new"));
     }
-    let stack = alloc_disposable_stack(vm, proto_val, type_tag);
+    let new_target = vm.reg(255);
+    let gpf_proto = if new_target.is_object() {
+        let nt_ptr = new_target.as_js_object_ptr();
+        // SAFETY: is_object 保证指针非空且对象本 session 存活。
+        let nt_obj = unsafe { &*nt_ptr };
+        let proto_si = vm.kernel_core().perm_interner().intern("prototype").0;
+        let proto = match vm.ordinary_get(nt_obj, proto_si, new_target) {
+            Ok(v) => v,
+            Err(err) => return NativeResult::Err(crate::iterator::engine_error(vm, &err)),
+        };
+        if proto.is_object() {
+            proto
+        } else {
+            proto_val
+        }
+    } else {
+        proto_val
+    };
+    let stack = alloc_disposable_stack(vm, gpf_proto, type_tag);
     NativeResult::Ok(JsValue::from_js_object(stack))
 }
 
