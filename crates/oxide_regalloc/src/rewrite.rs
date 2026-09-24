@@ -238,9 +238,9 @@ fn rewrite_inst(
             }
             ext
         }
-        // DEFINE_ACCESSOR_DYNAMIC：ext[0] 是 key 寄存器（高位标记 `0x8000_0000 | vreg`），
+        // 计算键访问器：ext[0] 是 key 寄存器（高位标记 `0x8000_0000 | vreg`），
         // 低 31 位重映射后保留高位标记。
-        OpCode::DEFINE_ACCESSOR_DYNAMIC => {
+        OpCode::DEFINE_ACCESSOR_DYNAMIC | OpCode::DEFINE_ACCESSOR_ATTRS_DYNAMIC => {
             let mut ext = inst.ext.clone();
             if let Some(word) = ext.first_mut() {
                 let nr = remap_ext_reg(*word & 0x7FFF_FFFF, slot_color, map);

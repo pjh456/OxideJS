@@ -79,6 +79,14 @@ fn single_ext_word_instructions() {
     assert_eq!(dyn_accessor.a, Operand::Reg(1));
     assert_eq!(dyn_accessor.b, Operand::Reg(2));
 
+    // 计算键访问器带描述符：ext = [key 寄存器高位标记, attrs] 两字。
+    let attrs_dyn = Inst::define_accessor_attrs_dynamic(Operand::Reg(0), Operand::Reg(1), Operand::Reg(2), 7, 0b101);
+    assert_eq!(attrs_dyn.op, OpCode::DEFINE_ACCESSOR_ATTRS_DYNAMIC);
+    assert_eq!(attrs_dyn.ext.as_slice(), &[0x8000_0000 | 7, 0b101]);
+    assert_eq!(attrs_dyn.rd, Operand::Reg(0));
+    assert_eq!(attrs_dyn.a, Operand::Reg(1));
+    assert_eq!(attrs_dyn.b, Operand::Reg(2));
+
     let rest = Inst::rest_object(Operand::Reg(0), Operand::Reg(1), 7, None);
     assert_eq!(rest.ext.as_slice(), &[7]);
 

@@ -72,7 +72,11 @@ fn ext_word_count(bytecode: &[Instr], pc: usize) -> usize {
         | OpCode::DELETE_PROP_STATIC
         | OpCode::REST_OBJECT
         | OpCode::INIT_PRIVATE => 1,
-        OpCode::DEFINE_ACCESSOR_ATTRS | OpCode::GET_PRIVATE | OpCode::SET_PRIVATE | OpCode::PRIVATE_BRAND_IN => 2,
+        OpCode::DEFINE_ACCESSOR_ATTRS
+        | OpCode::DEFINE_ACCESSOR_ATTRS_DYNAMIC
+        | OpCode::GET_PRIVATE
+        | OpCode::SET_PRIVATE
+        | OpCode::PRIVATE_BRAND_IN => 2,
         // 逃出计数 ext：BREAK/CONTINUE/RETURN 恒带 1 个 pack_escape_counts 字
         // （for-of/for-in 逃出层数打包）；lower 对这三条无条件落 ext 字，
         // dispatch 经 read_escape_counts 消费，扫描必须同步跳过以免错位。

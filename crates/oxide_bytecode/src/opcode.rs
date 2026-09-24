@@ -586,6 +586,12 @@ define_opcodes! {
     DEFINE_GLOBAL_FUNC_BIND = 0x9E => "DEFINE_GLOBAL_FUNC_BIND",
         def = None, uses = [SlotSpec::Slot(Slot::Rd), SlotSpec::Slot(Slot::A), SlotSpec::Slot(Slot::B)],
         pure = false, jump = false, term = false, ic = false,
+    // 计算键访问器并指定描述符：同形 DEFINE_ACCESSOR_ATTRS，但 ext[0] 为高位标记
+    // 键寄存器（`0x8000_0000 | key_reg`，键值运行期从寄存器读取）、ext[1] = attrs。
+    // 发射方仅 class 体计算 get/set（规范 DefineMethod，enumerable=false）。
+    DEFINE_ACCESSOR_ATTRS_DYNAMIC = 0x9F => "DEFINE_ACCESSOR_ATTRS_DYNAMIC",
+        def = None, uses = [SlotSpec::Slot(Slot::Rd), SlotSpec::Slot(Slot::A), SlotSpec::Slot(Slot::B), SlotSpec::ExtReg],
+        pure = false, jump = false, term = false, ic = false,
 
     // ── 成员复合赋值：位/移位 (0x64-0x69) ──
     COMPOUND_MEMBER_BIT_AND = 0x64 => "COMPOUND_MEMBER_BIT_AND",
@@ -860,6 +866,7 @@ mod tests {
         assert_eq!(OpCode::DEFINE_ACCESSOR_DYNAMIC as u8, 0x7F);
         assert_eq!(OpCode::SET_PROP_BATCH as u8, 0x92);
         assert_eq!(OpCode::CONCAT_N as u8, 0x93);
+        assert_eq!(OpCode::DEFINE_ACCESSOR_ATTRS_DYNAMIC as u8, 0x9F);
         assert_eq!(OpCode::ADD.to_string(), "ADD");
         assert_eq!(OpCode::COMPOUND_MEMBER_EXP.to_string(), "COMPOUND_MEMBER_EXP");
         assert_eq!(OpCode::MOV.to_string(), "MOV");

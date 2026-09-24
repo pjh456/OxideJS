@@ -701,6 +701,7 @@ fn scan_opcodes(module: &CompiledModule) -> Vec<OpCode> {
                 | OpCode::REST_OBJECT
                 | OpCode::INIT_PRIVATE => 1,
                 OpCode::DEFINE_ACCESSOR_ATTRS
+                | OpCode::DEFINE_ACCESSOR_ATTRS_DYNAMIC
                 | OpCode::GET_PRIVATE
                 | OpCode::SET_PRIVATE
                 | OpCode::PRIVATE_BRAND_IN => 2,

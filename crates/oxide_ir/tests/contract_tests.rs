@@ -415,6 +415,9 @@ fn canonical_inst(op: OpCode) -> Inst {
         OpCode::DEFINE_ACCESSOR_DYNAMIC => {
             Inst::define_accessor_dynamic(Operand::Reg(1), Operand::Reg(2), Operand::Reg(3), 7)
         }
+        OpCode::DEFINE_ACCESSOR_ATTRS_DYNAMIC => {
+            Inst::define_accessor_attrs_dynamic(Operand::Reg(1), Operand::Reg(2), Operand::Reg(3), 7, 0b101)
+        }
         OpCode::DELETE_PROP_STATIC => Inst::delete_prop_static(Operand::Reg(1), 9),
         _ => Inst::new(op, Operand::Reg(1), Operand::Reg(2), Operand::Reg(3)),
     }
@@ -598,6 +601,7 @@ fn opcode_semantics_golden_table() {
     assert_contract(OpCode::SET_HOME_OBJECT, None, &[1, 2], false);
     assert_contract(OpCode::DEFINE_ACCESSOR, None, &[1, 2, 3], false);
     assert_contract(OpCode::DEFINE_ACCESSOR_DYNAMIC, None, &[1, 2, 3, 7], false);
+    assert_contract(OpCode::DEFINE_ACCESSOR_ATTRS_DYNAMIC, None, &[1, 2, 3, 7], false);
     // Object Property：GET_PROP 写 a 槽、DYNAMIC 写 b 槽
     assert_contract(OpCode::GET_PROP, Some(2), &[1, 3], false);
     assert_contract(OpCode::GET_PROP_DYNAMIC, Some(3), &[1, 2], false);

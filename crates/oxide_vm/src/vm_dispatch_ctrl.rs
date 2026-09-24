@@ -153,7 +153,8 @@ impl Vm {
         } else {
             self.property_key_si(key_val)?
         };
-        self.dispatch_define_accessor_common(rd, a, b, prop_name_si)
+        // 对象字面量访问器：可枚举数据语义（DEFAULT_DATA）。
+        self.dispatch_define_accessor_common(rd, a, b, prop_name_si, PropAttributes::DEFAULT_DATA)
     }
 
     /// 计算键访问器：ext[0] 高位标记 `0x8000_0000 | key_reg`，键值运行时从寄存器读取。
@@ -163,12 +164,26 @@ impl Vm {
         self.pc += 1;
         let key_reg = (key_word & 0x7FFF_FFFF) as usize;
         let prop_name_si = self.property_key_si(self.regs[key_reg])?;
-        self.dispatch_define_accessor_common(rd, a, b, prop_name_si)
+        // 对象字面量访问器：可枚举数据语义（DEFAULT_DATA）。
+        self.dispatch_define_accessor_common(rd, a, b, prop_name_si, PropAttributes::DEFAULT_DATA)
     }
 
-    /// 访问器定义公共路径：读 get/set 槽、合并已有访问器、写属性。
+    /// 计算键访问器并指定描述符：ext = [key 寄存器（高位标记 `0x8000_0000 | key_reg`）,
+    /// attrs]，attrs 位同 DEFINE_PROP_ATTRS（bit0=writable, bit1=enumerable,
+    /// bit2=configurable）。发射方仅 class 体计算 get/set（规范 DefineMethod，
+    /// enumerable=false）。
+    pub(crate) fn dispatch_define_accessor_attrs_dynamic(
+        &mut self, rd: usize, a: usize, b: usize, key_word: u32, attrs: u8,
+    ) -> Result<(), String> {
+        vm_trace!("DEFINE_ACCESSOR_ATTRS_DYNAMIC rd={} getter={} setter={} attrs={:#04b}", rd, a, b, attrs);
+        let key_reg = (key_word & 0x7FFF_FFFF) as usize;
+        let prop_name_si = self.property_key_si(self.regs[key_reg])?;
+        self.dispatch_define_accessor_common(rd, a, b, prop_name_si, PropAttributes(attrs))
+    }
+
+    /// 访问器定义公共路径：读 get/set 槽、合并已有访问器、按 `attrs` 写属性。
     fn dispatch_define_accessor_common(
-        &mut self, rd: usize, a: usize, b: usize, prop_name_si: u32,
+        &mut self, rd: usize, a: usize, b: usize, prop_name_si: u32, attrs: PropAttributes,
     ) -> Result<(), String> {
         let obj_val = self.regs[rd];
         if !obj_val.is_object() {
@@ -191,7 +206,7 @@ impl Vm {
         } else {
             setter
         };
-        match self.define_accessor_property(obj, prop_name_si, get, set, PropAttributes::DEFAULT_DATA) {
+        match self.define_accessor_property(obj, prop_name_si, get, set, attrs) {
             Ok(()) => Ok(()),
             Err(msg) => self.raise_error_kind("TypeError", &msg),
         }

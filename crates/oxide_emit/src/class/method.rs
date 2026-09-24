@@ -65,24 +65,33 @@ impl Emitter {
                         ));
                     }
                     MethodDefinitionKind::Get | MethodDefinitionKind::Set => {
-                        if method.computed {
-                            return Err("computed class accessors not yet supported".into());
-                        }
                         let undef_reg = self.emit_undefined(ctx);
                         let (get_reg, set_reg) = if method.kind == MethodDefinitionKind::Get {
                             (accessor_reg, undef_reg)
                         } else {
                             (undef_reg, accessor_reg)
                         };
-                        let key_name = crate::shared::string_pool::pool_key_property(&method.key)?;
-                        let key_idx = ctx.add_constant(Constant::String(key_name));
-                        ctx.inst(Inst::define_accessor_attrs(
-                            Operand::Reg(home_reg),
-                            Operand::Reg(get_reg),
-                            Operand::Reg(set_reg),
-                            key_idx as u32,
-                            CLASS_METHOD_ATTRS,
-                        ));
+                        if method.computed {
+                            // 计算键：键值在类定义期已入键数组，此处取 slot 键寄存器，
+                            // 发运行期取键的动态指令（描述符同静态臂）。
+                            ctx.inst(Inst::define_accessor_attrs_dynamic(
+                                Operand::Reg(home_reg),
+                                Operand::Reg(get_reg),
+                                Operand::Reg(set_reg),
+                                key_reg,
+                                CLASS_METHOD_ATTRS,
+                            ));
+                        } else {
+                            let key_name = crate::shared::string_pool::pool_key_property(&method.key)?;
+                            let key_idx = ctx.add_constant(Constant::String(key_name));
+                            ctx.inst(Inst::define_accessor_attrs(
+                                Operand::Reg(home_reg),
+                                Operand::Reg(get_reg),
+                                Operand::Reg(set_reg),
+                                key_idx as u32,
+                                CLASS_METHOD_ATTRS,
+                            ));
+                        }
                     }
                     MethodDefinitionKind::Constructor => continue,
                 }

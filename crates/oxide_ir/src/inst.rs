@@ -206,6 +206,12 @@ impl Inst {
     pub fn define_accessor_attrs(home: Operand, get: Operand, set: Operand, key_idx: u32, attrs: u32) -> Self {
         Self::with_ext(OpCode::DEFINE_ACCESSOR_ATTRS, home, get, set, &[key_idx, attrs])
     }
+
+    /// 定义计算键访问器属性并指定描述符：ext = [key 寄存器（高位标记 `0x8000_0000 | key_reg`）,
+    /// attrs]（attrs 位同 DEFINE_PROP_ATTRS），键值运行期从寄存器读取。
+    pub fn define_accessor_attrs_dynamic(home: Operand, get: Operand, set: Operand, key_reg: u32, attrs: u32) -> Self {
+        Self::with_ext(OpCode::DEFINE_ACCESSOR_ATTRS_DYNAMIC, home, get, set, &[0x8000_0000 | key_reg, attrs])
+    }
     /// 定义访问器属性（运行时计算键）：home 为宿主对象，get/set 为访问器函数寄存器，
     /// key_reg 为键值寄存器（编码进 ext[0]，高位标记 `0x8000_0000 | key_reg`）。
     pub fn define_accessor_dynamic(home: Operand, get: Operand, set: Operand, key_reg: u32) -> Self {

@@ -933,3 +933,114 @@ fn delete_super_property_uninitialized_this_key_not_evaluated_throws() {
     assert!(err.contains("ReferenceError"), "expected ReferenceError, got: {err}");
     assert!(!err.contains("base constructor called"), "base constructor must not run: {err}");
 }
+
+// ── 计算键访问器（get/set [dyn]）：类定义期键数组取键 + 运行期取键定义 ──
+
+// 计算键实例访问器对：string 键读写。
+#[test]
+fn computed_instance_accessor_pair() {
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "var k = 'p'; class A { get [k]() { return this.v + 1; } set [k](x) { this.v = x; } } var a = new A(); a.p = 41; a.p",
+    )
+    .unwrap();
+    assert_num(result, 42.0);
+}
+
+// 计算键静态访问器：Symbol.species 键（Promise 同形）。
+#[test]
+fn computed_static_accessor_symbol_species_key() {
+    let mut vm = Vm::new();
+    let result = eval(&mut vm, "class A { static get [Symbol.species]() { return 7; } } A[Symbol.species]").unwrap();
+    assert_eq!(result.as_int(), 7);
+}
+
+// 半对：只有 getter，setter 边为 undefined。
+#[test]
+fn computed_accessor_get_only_set_undefined() {
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "var k = 'g'; class A { get [k]() { return 3; } } Object.getOwnPropertyDescriptor(Object.getPrototypeOf(new A()), 'g').set === undefined",
+    )
+    .unwrap();
+    assert!(result.is_bool() && result.as_bool(), "set should be undefined");
+}
+
+// 半对：只有 setter，getter 边为 undefined。
+#[test]
+fn computed_accessor_set_only_get_undefined() {
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "var k = 's'; class A { set [k](v) { this._v = v; } } Object.getOwnPropertyDescriptor(Object.getPrototypeOf(new A()), 's').get === undefined",
+    )
+    .unwrap();
+    assert!(result.is_bool() && result.as_bool(), "get should be undefined");
+}
+
+// 与既有访问器对合并：静态 get b 后被计算键 get ['b'] 覆盖，getter 替换、setter 保留。
+#[test]
+fn computed_accessor_merges_existing_pair() {
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "var k = 'b'; class A { get b() { return 1; } set b(v) { this._v = v; } get [k]() { return 9; } } var a = new A(); a.b = 5; a.b * 10 + a._v",
+    )
+    .unwrap();
+    assert_num(result, 95.0);
+}
+
+// 描述符核：enumerable=false、configurable=true（规范 DefineMethod，区别于对象
+// 字面量访问器的可枚举）。
+#[test]
+fn computed_accessor_descriptor_non_enumerable_configurable() {
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "var k = 'd'; class A { get [k]() { return 1; } } var d = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(new A()), 'd'); (d.enumerable === false) * 10 + (d.configurable === true)",
+    )
+    .unwrap();
+    assert_num(result, 11.0);
+}
+
+// 计算键 'constructor'：覆写原型 constructor 数据属性为访问器。
+#[test]
+fn computed_accessor_constructor_key_overrides_prototype() {
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "class A { get ['constructor']() { return 6; } } var a = new A(); Object.getOwnPropertyDescriptor(Object.getPrototypeOf(a), 'constructor').get !== undefined ? a.constructor : -1",
+    )
+    .unwrap();
+    assert_num(result, 6.0);
+}
+
+// static get ['prototype'] 抛 TypeError（prototype 属性不可配置，定义被拒）。
+#[test]
+fn computed_static_accessor_prototype_key_throws() {
+    let mut vm = Vm::new();
+    let err = eval(&mut vm, "class A { static get ['prototype']() { return 1; } }").unwrap_err();
+    assert!(err.contains("TypeError"), "expected TypeError, got: {err}");
+}
+
+// 键表达式副作用恰执行一次（类定义期键数组构建，方法发射不重求值）。
+#[test]
+fn computed_accessor_key_evaluated_once() {
+    let mut vm = Vm::new();
+    let result = eval(&mut vm, "var n = 0; class A { get [(n++, 'z')]() { return 1; } } new A().z; n").unwrap();
+    assert_eq!(result.as_int(), 1);
+}
+
+// 命名 symbol 计算键：运行期键走 symbol 键面读写。
+#[test]
+fn computed_accessor_symbol_key() {
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "var s = Symbol('tag'); class A { get [s]() { return 4; } set [s](v) { this._v = v; } } var a = new A(); a[s] = 3; a[s] * 10 + a._v",
+    )
+    .unwrap();
+    assert_num(result, 43.0);
+}
