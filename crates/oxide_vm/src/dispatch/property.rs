@@ -73,6 +73,21 @@ impl Vm {
                 let len = unsafe { (*val.as_string_ptr()).utf16_len() };
                 return Ok(Some(JsValue::int(len as i32)));
             }
+            // 整数索引键：规范 String exotic [[Get]] 界内返码元子串（码元口径非码点），
+            // 越界返 undefined——必须 Some(undefined) 而非 None，None 会被调用点当
+            // "非原始值属性"回落对象臂抛 TypeError。
+            if is_int_key(prop_name_si) {
+                // SAFETY: val 是字符串值。
+                let s = unsafe { &*val.as_string_ptr() };
+                let len = s.utf16_len();
+                let idx = int_key_value(prop_name_si);
+                if idx < len {
+                    // 码元读取：ASCII 命中共享 perm 串零分配，非 ASCII 物化 1 单元会话串。
+                    let units = s.units();
+                    return Ok(Some(self.unit_char_value(units[idx as usize])));
+                }
+                return Ok(Some(JsValue::undefined()));
+            }
             let proto_ptr = self.session.builtin_world().string_proto.as_ptr() as *mut JsObject;
             let proto = unsafe { &*proto_ptr };
             return self.ordinary_get(proto, prop_name_si, val).map(Some);

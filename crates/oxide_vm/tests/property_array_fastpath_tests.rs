@@ -132,11 +132,43 @@ fn plain_object_int_key_unaffected() {
     assert_eq!(eval_str("var o={}; o[0]=\"y\"; o[0]").unwrap(), "y");
 }
 
-// 非对象 receiver（`"abc"[0]`）：is_object 快检先行，不 raise、返回 undefined。
+// 字符串原始值 receiver 的整数索引读：界内返码元子串（规范 String exotic [[Get]]）。
 #[test]
-fn primitive_string_index_does_not_raise() {
-    assert_eq!(eval_str("\"abc\"[0]").unwrap(), "undefined");
-    assert_eq!(eval_str("var a=\"abc\"; a[0]").unwrap(), "undefined");
+fn primitive_string_index_returns_code_unit() {
+    assert_eq!(eval_str("\"abc\"[0]").unwrap(), "a");
+    assert_eq!(eval_str("\"abc\"[1]").unwrap(), "b");
+    assert_eq!(eval_str("\"abc\"[2]").unwrap(), "c");
+    assert_eq!(eval_str("var a=\"abc\"; a[0]").unwrap(), "a");
+}
+
+// 越界 / 负索引 / 非整数键读字符串原始值返 undefined（不 raise）。
+#[test]
+fn primitive_string_index_oob_and_non_integral_undefined() {
+    assert_eq!(eval_str("\"abc\"[3]").unwrap(), "undefined");
+    assert_eq!(eval_str("\"abc\"[-1]").unwrap(), "undefined");
+    assert_eq!(eval_str("\"abc\"[1.5]").unwrap(), "undefined");
+}
+
+// 非 ASCII 码元口径：界内整数索引返单码元子串（码元口径非码点），
+// 孤立 surrogate 按 1 单元交付（lossy 显示为 U+FFFD）。
+#[test]
+fn primitive_string_index_non_ascii_code_unit() {
+    assert_eq!(eval_str("\"é\"[0]").unwrap(), "é");
+    assert_eq!(eval_str("\"😀a\"[0]").unwrap().chars().count(), 1, "孤立 surrogate 应恰为 1 单元");
+    assert_eq!(eval_str("\"😀a\"[2]").unwrap(), "a");
+    assert_eq!(eval_str("\"😀a\"[3]").unwrap(), "undefined");
+}
+
+// 链式读：界内索引返字符串后 .length 可继续（不 raise）。
+#[test]
+fn primitive_string_index_chained_length() {
+    assert_eq!(eval_str("\"abc\"[0].length").unwrap(), "1");
+}
+
+// 写面不变：sloppy 下 s[0]="x" 装箱即弃 no-op。
+#[test]
+fn primitive_string_index_write_noop() {
+    assert_eq!(eval_str("var s=\"abc\"; s[0]=\"x\"; s").unwrap(), "abc");
 }
 
 // push 构造的数组 fast path 读写与 length 一致。
