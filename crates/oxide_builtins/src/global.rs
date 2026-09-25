@@ -51,11 +51,23 @@ pub fn global_is_finite<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     NativeResult::Ok(JsValue::bool(n.is_finite()))
 }
 
-fn string_arg<H: VmHost>(vm: &mut H, args: &[u8]) -> String {
+/// `escape`/`unescape` 的字符串参数：按规范 `? ToString` 完整转换。
+///
+/// 对象经 ToPrimitive(string hint) 强制转换，Symbol 抛 TypeError，对象方法
+/// 抛出的原生异常原样传播；缺省参数按 "undefined" 处理。
+fn string_arg_full<H: VmHost>(vm: &mut H, args: &[u8]) -> Result<String, JsValue> {
     if args.len() > 1 {
-        oxide_runtime_api::to_string(vm.reg(args[1]))
+        match oxide_runtime_api::to_string_full(vm.reg(args[1]), vm) {
+            Ok(s) => Ok(s),
+            Err(_) => {
+                if let Some(exc) = vm.take_uncaught_value() {
+                    return Err(exc);
+                }
+                Err(crate::error::create_type_error(vm, "Cannot convert value to a string"))
+            }
+        }
     } else {
-        "undefined".to_string()
+        Ok("undefined".to_string())
     }
 }
 
