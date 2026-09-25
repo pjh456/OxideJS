@@ -60,7 +60,8 @@ fn is_regexp_obj<H: VmHost>(val: JsValue, vm: &H) -> bool {
 
 /// IsRegExp 口径判定：非对象 false；对象一律 Get(@@match) 后 ToBoolean
 /// （真 RegExp 亦读，getter 副作用可观测；getter 抛错恢复原异常上抛）。
-fn is_regexp_live<H: VmHost>(vm: &mut H, val: JsValue) -> Result<bool, JsValue> {
+/// 供正则匹配族与 includes/startsWith/endsWith 的 IsRegExp 前置判共用。
+pub(crate) fn is_regexp_live<H: VmHost>(vm: &mut H, val: JsValue) -> Result<bool, JsValue> {
     if !val.is_object() {
         return Ok(false);
     }

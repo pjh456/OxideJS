@@ -7,10 +7,7 @@ use crate::builtins_debug;
 use crate::builtins_error;
 
 use super::common::try_string;
-use super::{
-    as_units, code_point_count, find_units, is_trim_unit, map_well_formed_segments, rfind_units, take_code_points,
-    this_units,
-};
+use super::{as_units, find_units, is_trim_unit, map_well_formed_segments, rfind_units, this_units};
 
 // ── 静态方法 / 构造 ─────────────────────────────────────────────────────
 
@@ -216,12 +213,24 @@ pub fn string_index_of<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     NativeResult::Ok(JsValue::int(-1))
 }
 
-/// `String.prototype.includes(searchString, position)`：是否包含子串。
+/// `String.prototype.includes(searchString, position)`：是否包含子串；search 为
+/// RegExp 抛 TypeError（普通对象带抛错 @@match getter 时传播原异常）。
 pub fn string_includes<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("String.prototype.includes called with {} args", args.len());
     // 参数转换先行（&mut 路径）：search 缺省为 undefined（经 ToString 得 "undefined"）。
     let search_val = if args.len() >= 2 { vm.reg(args[1]) } else { JsValue::undefined() };
     let search: Vec<u16> = try_string!(as_units(vm, search_val)).into_owned();
+    // IsRegExp 前置判：RegExp search 抛 TypeError；getter 抛错恢复原异常上抛。
+    let is_regexp = match super::is_regexp_live(vm, search_val) {
+        Ok(b) => b,
+        Err(e) => return NativeResult::Err(e),
+    };
+    if is_regexp {
+        return NativeResult::Err(crate::error::create_type_error(
+            vm,
+            "First argument to String.prototype.includes must not be a regular expression",
+        ));
+    }
     let s: Vec<u16> = try_string!(this_units(vm, args)).into_owned();
     // position：ToIntegerOrInfinity 传播式，负值归 0、+Inf 归 len。
     let pos = if args.len() > 2 {
@@ -337,14 +346,18 @@ pub fn string_last_index_of<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult 
     let search: Vec<u16> = try_string!(as_units(vm, search_val)).into_owned();
     let s: Vec<u16> = try_string!(this_units(vm, args)).into_owned();
     let n = s.len();
-    // position：ToIntegerOrInfinity 传播式（NaN → 0），负值归 0、+Inf 归 len；
-    // 缺参 → len。
+    // position：ToIntegerOrInfinity 传播式（NaN → 全长，legacy 位置窗口），
+    // 负值归 0、+Inf 归 len；缺参 → len。
     let pos = if args.len() > 2 {
-        let p = match to_integer_or_infinity_bounded(vm, vm.reg(args[2])) {
+        let p = match vm.coerce_number_bounded(vm.reg(args[2])) {
             Ok(p) => p,
-            Err(exc) => return NativeResult::Err(exc),
+            Err(msg) => return NativeResult::Err(crate::array::from_engine_error(vm, &msg)),
         };
-        (p.max(0.0).min(n as f64)) as usize
+        if p.is_nan() {
+            n
+        } else {
+            (p.max(0.0).min(n as f64)) as usize
+        }
     } else {
         n
     };
@@ -352,8 +365,8 @@ pub fn string_last_index_of<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult 
     if search.is_empty() {
         return NativeResult::Ok(JsValue::int(pos as i32));
     }
-    // 窗口 = 前 pos+1 个码元：起始位置 ≤ pos 的末次出现。
-    let window = (pos + 1).min(n);
+    // 窗口 = 前 pos+searchLen 个码元：起始位置 ≤ pos 的末次出现。
+    let window = (pos + search.len()).min(n);
     if let Some(idx) = rfind_units(&s, &search, window) {
         return NativeResult::Ok(JsValue::int(idx as i32));
     }
@@ -430,7 +443,8 @@ pub fn string_slice<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     NativeResult::Ok(vm.new_string_units_owned(out))
 }
 
-/// `String.prototype.substring(start, end)`：取子串，start/end 自动对调且取非负。
+/// `String.prototype.substring(start, end)`：取子串，start/end 自动对调且取非负；
+/// 显式 undefined 端视缺参（end → len，node 口径）。
 pub fn string_substring<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("String.prototype.substring called with {} args", args.len());
     // 寄存器取值先行（纯函数），后借 this 取子串。
@@ -452,7 +466,10 @@ pub fn string_substring<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         }
         None => 0.0,
     };
+    // 显式 undefined 端视缺参（node 口径：end → len），其余 ToIntegerOrInfinity
+    // 传播式：NaN/负 → 0、+Inf → len，取 min。
     let mut end = match end_arg {
+        Some(v) if v.is_undefined() => s.len() as f64,
         Some(v) => {
             let p = match to_integer_or_infinity_bounded(vm, v) {
                 Ok(p) => p,
@@ -621,46 +638,51 @@ pub fn string_repeat<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 }
 
 /// `String.prototype.padStart(targetLength, padString)`：在头部补足 padString
-/// 到目标码点数。
+/// 到目标码元数。
 pub fn string_pad_start<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("String.prototype.padStart called with {} args", args.len());
-    // 参数转换先行（&mut 路径）：targetLength 与 padString 均可能触发对象转换。
+    // 可观察操作序由规范钉死：receiver ToString 先行，后 targetLength 转换，
+    // 再 padString ToString。
+    let s: Vec<u16> = try_string!(this_units(vm, args)).into_owned();
     // targetLength：ToIntegerOrInfinity 传播式，负值归 0；+Inf 经既有 10000
     // 上限检查自然落 RangeError。
-    let target_arg = if args.len() > 1 {
+    let target = if args.len() > 1 {
         let p = match to_integer_or_infinity_bounded(vm, vm.reg(args[1])) {
             Ok(p) => p,
             Err(exc) => return NativeResult::Err(exc),
         };
-        Some(p.max(0.0))
+        p.max(0.0)
     } else {
-        None
+        s.len() as f64
     };
-    let pad_val = if args.len() > 2 { vm.reg(args[2]) } else { JsValue::undefined() };
     // 规范口径：padString 为 undefined（含显式传入）回落空格填充。
+    let pad_val = if args.len() > 2 { vm.reg(args[2]) } else { JsValue::undefined() };
     let pad: Vec<u16> = if pad_val.is_undefined() {
         vec![0x20]
     } else {
         try_string!(as_units(vm, pad_val)).into_owned()
     };
-    let s: Vec<u16> = try_string!(this_units(vm, args)).into_owned();
-    let s_len = code_point_count(&s);
-    let target = target_arg.map(|p| p as usize).unwrap_or(s_len);
+    // 目标长度按码元（非码点）口径：pad 亦按码元截断。
+    let s_len = s.len();
+    let target = target as usize;
+    if s_len >= target {
+        return NativeResult::Ok(vm.new_string_units_owned(s));
+    }
     if target > 10000 {
         builtins_error!("String.prototype.padStart: invalid receiver");
         return NativeResult::Err(crate::error::create_range_error(vm, "Invalid string length"));
     }
-    if s_len >= target || pad.is_empty() {
-        return NativeResult::Ok(vm.new_string_units_owned(s.to_vec()));
+    if pad.is_empty() {
+        return NativeResult::Ok(vm.new_string_units_owned(s));
     }
     let needed = target - s_len;
-    let pad_len = code_point_count(&pad).max(1);
+    let pad_len = pad.len();
     let reps = needed.div_ceil(pad_len);
     let mut pad_rep = Vec::with_capacity(pad.len() * reps);
     for _ in 0..reps {
         pad_rep.extend_from_slice(&pad);
     }
-    let prefix = take_code_points(&pad_rep, needed);
+    let prefix = &pad_rep[..needed];
     let mut out = Vec::with_capacity(prefix.len() + s.len());
     out.extend_from_slice(prefix);
     out.extend_from_slice(&s);
@@ -668,46 +690,51 @@ pub fn string_pad_start<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 }
 
 /// `String.prototype.padEnd(targetLength, padString)`：在尾部补足 padString
-/// 到目标码点数。
+/// 到目标码元数。
 pub fn string_pad_end<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("String.prototype.padEnd called with {} args", args.len());
-    // 参数转换先行（&mut 路径）：targetLength 与 padString 均可能触发对象转换。
+    // 可观察操作序由规范钉死：receiver ToString 先行，后 targetLength 转换，
+    // 再 padString ToString。
+    let s: Vec<u16> = try_string!(this_units(vm, args)).into_owned();
     // targetLength：ToIntegerOrInfinity 传播式，负值归 0；+Inf 经既有 10000
     // 上限检查自然落 RangeError。
-    let target_arg = if args.len() > 1 {
+    let target = if args.len() > 1 {
         let p = match to_integer_or_infinity_bounded(vm, vm.reg(args[1])) {
             Ok(p) => p,
             Err(exc) => return NativeResult::Err(exc),
         };
-        Some(p.max(0.0))
+        p.max(0.0)
     } else {
-        None
+        s.len() as f64
     };
-    let pad_val = if args.len() > 2 { vm.reg(args[2]) } else { JsValue::undefined() };
     // 规范口径：padString 为 undefined（含显式传入）回落空格填充。
+    let pad_val = if args.len() > 2 { vm.reg(args[2]) } else { JsValue::undefined() };
     let pad: Vec<u16> = if pad_val.is_undefined() {
         vec![0x20]
     } else {
         try_string!(as_units(vm, pad_val)).into_owned()
     };
-    let s: Vec<u16> = try_string!(this_units(vm, args)).into_owned();
-    let s_len = code_point_count(&s);
-    let target = target_arg.map(|p| p as usize).unwrap_or(s_len);
+    // 目标长度按码元（非码点）口径：pad 亦按码元截断。
+    let s_len = s.len();
+    let target = target as usize;
+    if s_len >= target {
+        return NativeResult::Ok(vm.new_string_units_owned(s));
+    }
     if target > 10000 {
         builtins_error!("String.prototype.padEnd: invalid receiver");
         return NativeResult::Err(crate::error::create_range_error(vm, "Invalid string length"));
     }
-    if s_len >= target || pad.is_empty() {
-        return NativeResult::Ok(vm.new_string_units_owned(s.to_vec()));
+    if pad.is_empty() {
+        return NativeResult::Ok(vm.new_string_units_owned(s));
     }
     let needed = target - s_len;
-    let pad_len = code_point_count(&pad).max(1);
+    let pad_len = pad.len();
     let reps = needed.div_ceil(pad_len);
     let mut pad_rep = Vec::with_capacity(pad.len() * reps);
     for _ in 0..reps {
         pad_rep.extend_from_slice(&pad);
     }
-    let suffix = take_code_points(&pad_rep, needed);
+    let suffix = &pad_rep[..needed];
     let mut out = Vec::with_capacity(s.len() + suffix.len());
     out.extend_from_slice(&s);
     out.extend_from_slice(suffix);
@@ -715,12 +742,24 @@ pub fn string_pad_end<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 }
 
 /// `String.prototype.startsWith(searchString, position)`：是否以指定子串开头
-/// （position 起的前缀码元比较，不做字符边界吸附——规格口径）。
+/// （position 起的前缀码元比较，不做字符边界吸附——规格口径）；search 为
+/// RegExp 抛 TypeError（普通对象带抛错 @@match getter 时传播原异常）。
 pub fn string_starts_with<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("String.prototype.startsWith called with {} args", args.len());
     // 参数转换先行（&mut 路径）：search 缺省为 undefined（经 ToString 得 "undefined"）。
     let search_val = if args.len() >= 2 { vm.reg(args[1]) } else { JsValue::undefined() };
     let search: Vec<u16> = try_string!(as_units(vm, search_val)).into_owned();
+    // IsRegExp 前置判：RegExp search 抛 TypeError；getter 抛错恢复原异常上抛。
+    let is_regexp = match super::is_regexp_live(vm, search_val) {
+        Ok(b) => b,
+        Err(e) => return NativeResult::Err(e),
+    };
+    if is_regexp {
+        return NativeResult::Err(crate::error::create_type_error(
+            vm,
+            "First argument to String.prototype.startsWith must not be a regular expression",
+        ));
+    }
     let s: Vec<u16> = try_string!(this_units(vm, args)).into_owned();
     // position：ToIntegerOrInfinity 传播式，负值归 0、+Inf 归 len。
     let pos = if args.len() > 2 {
@@ -737,12 +776,24 @@ pub fn string_starts_with<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 }
 
 /// `String.prototype.endsWith(searchString, endPosition)`：是否以指定子串结尾
-/// （截断至 endPosition 的后缀码元比较，不做字符边界吸附——规格口径）。
+/// （截断至 endPosition 的后缀码元比较，不做字符边界吸附——规格口径）；search
+/// 为 RegExp 抛 TypeError（普通对象带抛错 @@match getter 时传播原异常）。
 pub fn string_ends_with<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("String.prototype.endsWith called with {} args", args.len());
     // 参数转换先行（&mut 路径）：search 缺省为 undefined（经 ToString 得 "undefined"）。
     let search_val = if args.len() >= 2 { vm.reg(args[1]) } else { JsValue::undefined() };
     let search: Vec<u16> = try_string!(as_units(vm, search_val)).into_owned();
+    // IsRegExp 前置判：RegExp search 抛 TypeError；getter 抛错恢复原异常上抛。
+    let is_regexp = match super::is_regexp_live(vm, search_val) {
+        Ok(b) => b,
+        Err(e) => return NativeResult::Err(e),
+    };
+    if is_regexp {
+        return NativeResult::Err(crate::error::create_type_error(
+            vm,
+            "First argument to String.prototype.endsWith must not be a regular expression",
+        ));
+    }
     let s: Vec<u16> = try_string!(this_units(vm, args)).into_owned();
     // endPosition：缺参/显式 undefined → len（规范步），其余 ToIntegerOrInfinity
     // 传播式折叠，负值归 0、+Inf 归 len。

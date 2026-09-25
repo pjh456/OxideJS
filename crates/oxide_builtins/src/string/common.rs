@@ -189,36 +189,6 @@ fn well_formed_segment_end(units: &[u16], start: usize) -> usize {
     i
 }
 
-/// 码点数（代理对计 1，孤立 surrogate 计 1）——pad 族的目标长度口径。
-pub(crate) fn code_point_count(units: &[u16]) -> usize {
-    let mut n = 0;
-    let mut i = 0;
-    while i < units.len() {
-        if (0xD800..=0xDBFF).contains(&units[i]) && i + 1 < units.len() && (0xDC00..=0xDFFF).contains(&units[i + 1]) {
-            i += 2;
-        } else {
-            i += 1;
-        }
-        n += 1;
-    }
-    n
-}
-
-/// 取序列头 count 个码点对应的单元前缀。
-pub(crate) fn take_code_points(units: &[u16], count: usize) -> &[u16] {
-    let mut n = 0;
-    let mut i = 0;
-    while i < units.len() && n < count {
-        if (0xD800..=0xDBFF).contains(&units[i]) && i + 1 < units.len() && (0xDC00..=0xDFFF).contains(&units[i + 1]) {
-            i += 2;
-        } else {
-            i += 1;
-        }
-        n += 1;
-    }
-    &units[..i]
-}
-
 /// ES 白空格判定的单元口径：Rust 空白表与 White_Space+LineTerminator 等价，
 /// 另补 U+FEFF（ES White_Space 含 BOM，Unicode White_Space 不含）；
 /// 孤立 surrogate 非白空格。
