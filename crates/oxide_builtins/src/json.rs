@@ -168,9 +168,15 @@ struct JsonNode {
 ///
 /// # 边界与前提
 /// - 前导零数字、尾随逗号、溢出（1e400）、孤立 surrogate 均报 SyntaxError。
+/// - 嵌套 object/array 深度上限 `MAX_JSON_DEPTH` 层，超限报 SyntaxError
+///   （进入时先计入再判定，防深嵌套在递归展开前耗尽栈）。
 /// - 重复对象键：末写胜（键序由 build_js_value 统一）。
 fn parse_json(text: &str) -> Result<JsonNode, String> {
-    let mut p = JsonParser { text, pos: 0 };
+    let mut p = JsonParser {
+        text,
+        pos: 0,
+        depth: 0,
+    };
     p.skip_ws();
     let node = p.parse_value()?;
     p.skip_ws();
@@ -180,9 +186,13 @@ fn parse_json(text: &str) -> Result<JsonNode, String> {
     Ok(node)
 }
 
+/// 嵌套容器深度上限：object/array 进入时计入，超限报 SyntaxError。
+const MAX_JSON_DEPTH: usize = 128;
+
 struct JsonParser<'a> {
     text: &'a str,
     pos: usize,
+    depth: usize,
 }
 
 impl<'a> JsonParser<'a> {
@@ -243,14 +253,27 @@ impl<'a> JsonParser<'a> {
                 Ok(self.prim(JsonKind::String(s), start))
             }
             b'[' => {
+                // 深度计数：进入时先 +1 再判上限，超限在递归展开前拒绝。
+                self.depth += 1;
+                if self.depth > MAX_JSON_DEPTH {
+                    self.depth -= 1;
+                    return Err("recursion limit exceeded".into());
+                }
                 let items = self.parse_array()?;
+                self.depth -= 1;
                 Ok(JsonNode {
                     kind: JsonKind::Array(items),
                     source: None,
                 })
             }
             b'{' => {
+                self.depth += 1;
+                if self.depth > MAX_JSON_DEPTH {
+                    self.depth -= 1;
+                    return Err("recursion limit exceeded".into());
+                }
                 let entries = self.parse_object()?;
+                self.depth -= 1;
                 Ok(JsonNode {
                     kind: JsonKind::Object(entries),
                     source: None,

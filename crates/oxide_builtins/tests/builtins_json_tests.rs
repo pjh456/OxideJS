@@ -740,6 +740,42 @@ fn replacer_whitelist_undefined_value_skipped() {
     assert_eq!(out, r#"{"a":1}"#);
 }
 
+// --- 嵌套深度上限（递归限制）---
+
+// 深度 128 层恰好过：128 层嵌套数组正常解析。
+#[test]
+fn parse_depth_128_ok() {
+    let out = eval_str(
+        "(() => { const v = JSON.parse('['.repeat(128) + ']'.repeat(128)); \
+         return String(Array.isArray(v) && v.length === 1); })()",
+    )
+    .unwrap();
+    assert_eq!(out, "true");
+}
+
+// 深度 129 层超限：抛 SyntaxError（递归限制），而非进程 abort。
+#[test]
+fn parse_depth_129_throws() {
+    let out = eval_str(
+        "(() => { try { JSON.parse('['.repeat(129) + ']'.repeat(129)); return 'no-throw'; } \
+         catch (e) { return e.constructor.name + '|' + e.message; } })()",
+    )
+    .unwrap();
+    assert_eq!(out, "SyntaxError|recursion limit exceeded");
+}
+
+// 深度计数复位：深嵌套解析超限失败后，随后普通嵌套解析不受残留计数影响。
+#[test]
+fn parse_depth_count_resets() {
+    let out = eval_str(
+        "(() => { try { JSON.parse('['.repeat(129) + ']'.repeat(129)); } catch (e) {} \
+         const v = JSON.parse('{\"a\":{\"b\":[1]}}'); \
+         return String(v.a.b[0]); })()",
+    )
+    .unwrap();
+    assert_eq!(out, "1");
+}
+
 fn eval_str(source: &str) -> Result<String, String> {
     let (vm, result) = eval(source)?;
     vm.lookup_str(result)
