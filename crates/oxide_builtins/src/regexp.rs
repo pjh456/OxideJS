@@ -1094,14 +1094,14 @@ pub(crate) fn replacement_units<H: VmHost>(vm: &mut H, val: JsValue) -> Result<V
 ///
 /// # 步骤
 /// 1. this 仅需对象（IsObject 门禁）。
-/// 2. S = ToString(string)；flags/global/unicode 经 Get live 直读（unicode 读
-///    无条件先于非 global 返回，读序与规范一致）。
+/// 2. S = ToString(string)；flags/global/unicode/unicodeSets 经 Get live 直读
+///    （unicode 读无条件先于非 global 返回，读序与规范一致）。
 /// 3. 非 global：返回共享 exec（GetMethod + Call）结果原值。
 /// 4. global：ToIntegerOrInfinity(Get "lastIndex") 副作用读后 Set 0，再经共享
 ///    exec 循环逐匹配收集；零宽匹配按 fullUnicode 口径推进 lastIndex。
 ///
 /// # 边界与前提
-/// - 各属性读（flags/global/unicode/lastIndex/结果属性）均传播原异常。
+/// - 各属性读（flags/global/unicode/unicodeSets/lastIndex/结果属性）均传播原异常。
 /// - exec 结果须为 null 或对象，否则 TypeError。
 ///
 /// # 副作用
@@ -1128,10 +1128,17 @@ pub fn regexp_symbol_match<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         Ok(g) => g,
         Err(err) => return NativeResult::Err(err),
     };
+    // fullUnicode = u 或 v 标志任一为真（规范 "If flags contains 'u' or flags
+    // contains 'v'"），两属性 live 读取后或。
     let full_unicode = match rx_get_bool_prop(vm, re_ptr, "unicode", this_val) {
         Ok(u) => u,
         Err(err) => return NativeResult::Err(err),
     };
+    let full_unicode = full_unicode
+        || match rx_get_bool_prop(vm, re_ptr, "unicodeSets", this_val) {
+            Ok(v) => v,
+            Err(err) => return NativeResult::Err(err),
+        };
 
     if !is_global {
         let result = match regexp_exec_call(vm, re_ptr, this_val, s_val) {
@@ -1203,7 +1210,7 @@ pub fn regexp_symbol_match<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 /// # 步骤
 /// 1. this 仅需对象（IsObject 门禁）；S = ToString(string)。
 /// 2. 非函数分支先 ToString(replacement)（Symbol 抛 TypeError）。
-/// 3. flags/global/unicode 经 Get live 直读；global 时
+/// 3. flags/global/unicode/unicodeSets 经 Get live 直读；global 时
 ///    ToIntegerOrInfinity(Get "lastIndex") 副作用读后 Set 0。
 /// 4. 替换体（regexp_replace_results）：exec 循环收集结果（零宽匹配按
 ///    fullUnicode 口径推进 lastIndex），按结果属性逐条展开
@@ -1211,7 +1218,7 @@ pub fn regexp_symbol_match<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 ///    position 越上界钳到串长，乱序（position 回退）的替换被忽略。
 ///
 /// # 边界与前提
-/// - 各属性读（flags/global/unicode/lastIndex/结果属性）均传播原异常。
+/// - 各属性读（flags/global/unicode/unicodeSets/lastIndex/结果属性）均传播原异常。
 /// - exec 结果须为 null 或对象，否则 TypeError。
 ///
 /// # 副作用
@@ -1290,7 +1297,10 @@ pub(crate) fn regexp_replace_results<H: VmHost>(
     is_global: bool,
 ) -> Result<Vec<u16>, JsValue> {
     let length_s = units.len();
-    let full_unicode = rx_get_bool_prop(vm, re_ptr, "unicode", this_val)?;
+    // fullUnicode = u 或 v 标志任一为真（规范 "If flags contains 'u' or flags
+    // contains 'v'"），两属性 live 读取后或。
+    let full_unicode =
+        rx_get_bool_prop(vm, re_ptr, "unicode", this_val)? || rx_get_bool_prop(vm, re_ptr, "unicodeSets", this_val)?;
 
     // exec 循环：global 收集到 null 为止，非 global 至多一条。
     let mut results: Vec<JsValue> = Vec::new();
@@ -1647,7 +1657,7 @@ pub fn regexp_symbol_split<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         Ok(f) => f,
         Err(err) => return NativeResult::Err(err),
     };
-    let unicode_matching = flags.contains('u');
+    let unicode_matching = flags.contains('u') || flags.contains('v');
     let new_flags = if flags.contains('y') { flags } else { format!("{flags}y") };
     let new_flags_val = vm.new_string_owned(new_flags);
     let splitter_val = match vm.construct_ctor(c, &[this_val, new_flags_val]) {

@@ -1168,3 +1168,23 @@ fn regexp_replace_results_groups_to_object_and_receiver() {
     .unwrap();
     assert_eq!(to_str(&vm, result), "E");
 }
+
+#[test]
+fn regexp_v_flag_zero_width_surrogate_pair_match_returns() {
+    // 回归钉：v 标志零宽正则对含代理对串必须返回匹配（零宽推进按码点口径，
+    // 与 exec 起点钳制自洽），不无限循环；replace/split 同族同口径。
+    let mut vm = Vm::new();
+    let result = eval(&mut vm, "var m = '𠮷a'.match(/(?:)/gv); m.length + ':' + m.join('|')").unwrap();
+    assert_eq!(to_str(&vm, result), "3:||");
+    let result = eval(&mut vm, "'𠮷a'.replace(/(?:)/gv, 'x')").unwrap();
+    assert_eq!(to_str(&vm, result), "x𠮷xax");
+    let result = eval(&mut vm, "var m = '𠮷a'.split(/(?:)/gv); m.length + ':' + m.join('|')").unwrap();
+    assert_eq!(to_str(&vm, result), "2:𠮷|a");
+    let result = eval(&mut vm, "var m = /(?:)/gv.exec('𠮷a'); m.length + ':' + m[0].length").unwrap();
+    assert_eq!(to_str(&vm, result), "1:0");
+    // u 标志与无标志面零回归（同串同零宽模式）。
+    let result = eval(&mut vm, "var m = '𠮷a'.match(/(?:)/gu); m.length + ':' + m.join('|')").unwrap();
+    assert_eq!(to_str(&vm, result), "3:||");
+    let result = eval(&mut vm, "var m = '𠮷a'.match(/(?:)/g); m.length + ':' + m.join('|')").unwrap();
+    assert_eq!(to_str(&vm, result), "4:|||");
+}
