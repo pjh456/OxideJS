@@ -614,7 +614,7 @@ pub fn string_trim_end<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     NativeResult::Ok(vm.new_string_units_owned(s[..end].to_vec()))
 }
 
-/// `String.prototype.repeat(count)`：重复字符串 count 次（当前上限 10000 防滥用）。
+/// `String.prototype.repeat(count)`：重复字符串 count 次。
 pub fn string_repeat<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("String.prototype.repeat called with {} args", args.len());
     // count 转换先行（&mut 路径）：ToIntegerOrInfinity 传播式，负值与 +Inf
@@ -627,11 +627,20 @@ pub fn string_repeat<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         if p < 0.0 || p.is_infinite() {
             return NativeResult::Err(crate::error::create_range_error(vm, "Invalid count argument"));
         }
-        (p as usize).min(10000)
+        p
     } else {
-        1
+        1.0
     };
     let s = try_string!(this_units(vm, args));
+    // 空串或 0 次直接返回空串（规范步 7），免大 count 下空循环。
+    if s.is_empty() || n == 0.0 {
+        return NativeResult::Ok(vm.new_string_units_owned(Vec::new()));
+    }
+    // 重复后总长超 2^53-1 规范上限抛 RangeError（规范步 9）。
+    if (s.len() as f64) * n > 9007199254740991.0 {
+        return NativeResult::Err(crate::error::create_range_error(vm, "Invalid string length"));
+    }
+    let n = n as usize;
     let mut out = Vec::with_capacity(s.len() * n);
     for _ in 0..n {
         out.extend_from_slice(&s);
