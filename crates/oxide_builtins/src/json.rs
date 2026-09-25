@@ -683,9 +683,10 @@ fn create_wrapper<H: VmHost>(vm: &mut H, value: JsValue) -> JsValue {
     JsValue::from_js_object(obj_ptr)
 }
 
-/// space 参数文本化（Stringify 步 5）：数字经 ToIntegerOrInfinity 钳 10，
-/// 字符串取前 10 字符；装箱 String 走完整 ToString（步 4c 同款语义，
-/// 抛出值原样上抛），其余形态维持占位行为。
+/// space 参数文本化（Stringify 步 5）：数字与装箱 Number 经 ToNumber →
+/// ToIntegerOrInfinity 钳 10；字符串与装箱 String 取前 10 字符（装箱 String
+/// 走完整 ToString，步 4c 同款语义，抛出值原样上抛）；其余形态（装箱 Boolean、
+/// 普通对象、Symbol 等）gap 为空串。
 fn process_space<H: VmHost>(vm: &mut H, val: JsValue) -> Result<String, JsValue> {
     if val.is_int() || val.is_double() {
         let n = oxide_runtime_api::to_integer_or_infinity(val);
@@ -701,21 +702,42 @@ fn process_space<H: VmHost>(vm: &mut H, val: JsValue) -> Result<String, JsValue>
     }
     if val.is_object() {
         let ptr = val.as_js_object_ptr();
-        if !ptr.is_null() && unsafe { (*ptr).is_string_obj() } {
-            let s = match oxide_runtime_api::to_string_value_full(val, vm) {
-                Ok(s) => s,
-                Err(msg) => {
-                    return Err(vm
-                        .take_uncaught_value()
-                        .unwrap_or_else(|| crate::error::create_type_error(vm, &msg)));
+        if !ptr.is_null() {
+            let obj = unsafe { &*ptr };
+            // [[NumberData]]：ToNumber（ToPrimitive number hint，用户方法可触发）
+            // 后 ToIntegerOrInfinity。
+            if obj.is_number_obj() {
+                let n = match oxide_runtime_api::to_number_full(val, vm) {
+                    Ok(n) => n,
+                    Err(msg) => {
+                        return Err(vm
+                            .take_uncaught_value()
+                            .unwrap_or_else(|| crate::error::create_type_error(vm, &msg)));
+                    }
+                };
+                let n = oxide_runtime_api::to_integer_or_infinity(JsValue::float(n));
+                if n.is_nan() || n.is_infinite() || n <= 0.0 {
+                    return Ok(String::new());
                 }
-            };
-            let s = unsafe { (*s.as_string_ptr()).to_owned_string() };
-            return Ok(s.chars().take(10).collect());
+                let clamped = (n as usize).min(10);
+                return Ok(" ".repeat(clamped));
+            }
+            // [[StringData]]：完整 ToString。
+            if obj.is_string_obj() {
+                let s = match oxide_runtime_api::to_string_value_full(val, vm) {
+                    Ok(s) => s,
+                    Err(msg) => {
+                        return Err(vm
+                            .take_uncaught_value()
+                            .unwrap_or_else(|| crate::error::create_type_error(vm, &msg)));
+                    }
+                };
+                let s = unsafe { (*s.as_string_ptr()).to_owned_string() };
+                return Ok(s.chars().take(10).collect());
+            }
         }
     }
-    let s = oxide_runtime_api::to_string(val);
-    Ok(s.chars().take(10).collect())
+    Ok(String::new())
 }
 
 /// 键 si 物化为单元序列：整数键 → ASCII 数字串，字符串键 → 码表键经 `decode_key`
@@ -926,6 +948,15 @@ pub fn json_stringify<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         value
     };
 
+    // 顶层省略值：undefined、函数、Symbol 一律返回 undefined（非空串）。
+    let top_is_fn = value.is_object() && {
+        let p = value.as_js_object_ptr();
+        !p.is_null() && unsafe { (*p).is_function() }
+    };
+    if value.is_undefined() || value.is_symbol() || top_is_fn {
+        return NativeResult::Ok(JsValue::undefined());
+    }
+
     let mut visited = HashSet::new();
     let mut output = String::new();
     let indent_level: usize = 0;
@@ -956,6 +987,8 @@ fn jsvalue_to_json<H: VmHost>(
     if val.is_null() {
         out.push_str("null");
     } else if val.is_undefined() {
+    } else if val.is_symbol() {
+        out.push_str("null");
     } else if val.is_bool() {
         out.push_str(if val.as_bool() { "true" } else { "false" });
     } else if val.is_int() {
@@ -999,6 +1032,33 @@ fn jsvalue_to_json<H: VmHost>(
         }
 
         let obj = unsafe { &*obj_ptr };
+        // 步 4a：装箱 Number → ToNumber（用户方法可触发），非有限值 → null。
+        if obj.is_number_obj() {
+            let n = match oxide_runtime_api::to_number_full(val, vm) {
+                Ok(n) => n,
+                Err(msg) => {
+                    let exc = vm
+                        .take_uncaught_value()
+                        .unwrap_or_else(|| crate::error::create_type_error(vm, &msg));
+                    visited.remove(&(obj_ptr as *const JsObject));
+                    return Err(exc);
+                }
+            };
+            if n.is_finite() {
+                oxide_runtime_api::write_number_into(n, out);
+            } else {
+                out.push_str("null");
+            }
+            visited.remove(&(obj_ptr as *const JsObject));
+            return Ok(());
+        }
+        // 步 4b：装箱 Boolean → [[BooleanData]]。
+        if obj.is_boolean_obj() {
+            let b = obj.boxed_value();
+            out.push_str(if b.is_bool() && b.as_bool() { "true" } else { "false" });
+            visited.remove(&(obj_ptr as *const JsObject));
+            return Ok(());
+        }
         // 步 4d：装箱 BigInt 无条件解包 [[BigIntData]]，后续步 10 抛 TypeError。
         if obj.boxed_value().is_bigint() {
             return Err(crate::error::create_type_error(vm, "Do not know how to serialize a BigInt"));
@@ -1050,6 +1110,8 @@ fn stringify_string_units(units: &[u16], out: &mut String) {
         match u {
             0x22 => out.push_str("\\\""),
             0x5C => out.push_str("\\\\"),
+            0x08 => out.push_str("\\b"),
+            0x0C => out.push_str("\\f"),
             0x0A => out.push_str("\\n"),
             0x0D => out.push_str("\\r"),
             0x09 => out.push_str("\\t"),
@@ -1136,18 +1198,17 @@ fn stringify_object<H: VmHost>(
             let ptr = val.as_js_object_ptr();
             !ptr.is_null() && unsafe { (*ptr).is_function() }
         };
-        if val.is_undefined() || is_function {
+        if val.is_undefined() || val.is_symbol() || is_function {
             continue;
         }
 
-        if !first && !has_space {
+        if !first {
             out.push(',');
-        } else if !first {
-            out.push_str(",\n");
         }
         first = false;
 
         if has_space {
+            out.push('\n');
             for _ in 0..indent_level + 1 {
                 out.push_str(space);
             }
@@ -1183,10 +1244,8 @@ fn stringify_array<H: VmHost>(
     let obj_val = JsValue::from_js_object(obj as *const JsObject as *mut JsObject);
     let len = obj.prop_count() as usize;
     for i in 0..len {
-        if i > 0 && !has_space {
+        if i > 0 {
             out.push(',');
-        } else if i > 0 {
-            out.push_str(",\n");
         }
 
         if has_space {
@@ -1318,18 +1377,17 @@ fn stringify_typed_array<H: VmHost>(
             let ptr = val.as_js_object_ptr();
             !ptr.is_null() && unsafe { (*ptr).is_function() }
         };
-        if val.is_undefined() || is_function {
+        if val.is_undefined() || val.is_symbol() || is_function {
             continue;
         }
 
-        if !first && !has_space {
+        if !first {
             out.push(',');
-        } else if !first {
-            out.push_str(",\n");
         }
         first = false;
 
         if has_space {
+            out.push('\n');
             for _ in 0..indent_level + 1 {
                 out.push_str(space);
             }
