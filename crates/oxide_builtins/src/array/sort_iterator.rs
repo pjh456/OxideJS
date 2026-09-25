@@ -189,6 +189,11 @@ pub fn array_iterator_next<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let target_si = vm.kernel_core().perm_interner().intern(ARRAY_ITER_TARGET_PROP).0;
     let index_si = vm.kernel_core().perm_interner().intern(ARRAY_ITER_INDEX_PROP).0;
     let kind_si = vm.kernel_core().perm_interner().intern(ARRAY_ITER_KIND_PROP).0;
+    // 内部槽守卫：无 own __target__ 槽的对象（如 Object.create 产物）不是数组
+    // 迭代器，不得沿原型链读底层迭代器的槽；三槽同批写入，查一槽即全查。
+    if vm.get_own_property_slot(&*iter, target_si).is_none() {
+        return NativeResult::Err(array_type_error(vm, "Array Iterator next called on non-iterator"));
+    }
     let target = match vm.ordinary_get(iter, target_si, this_val) {
         Ok(v) if v.is_undefined() => {
             return NativeResult::Ok(crate::iterator::make_iter_result(vm, JsValue::undefined(), true));
