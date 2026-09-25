@@ -295,6 +295,20 @@ impl BuiltinWorld {
             ("sub", methods.sub, 0),
             ("sup", methods.sup, 0),
         );
+        // trimLeft/trimRight 是 trimStart/trimEnd 的别名：规范上必须是同一函数
+        // 对象（name 分别为 "trimStart"/"trimEnd"），不得新建 wrapper。
+        for (source, alias) in [("trimStart", "trimLeft"), ("trimEnd", "trimRight")] {
+            let src_si = string_forge.intern(source).0;
+            if let Some(pos) = shape_forge.lookup_position(proto.shape_id(), src_si) {
+                let value = proto.get_prop_at(pos);
+                let alias_si = string_forge.intern(alias).0;
+                let new_shape = shape_forge.make_shape(proto.shape_id(), alias_si);
+                proto.set_shape_id(new_shape);
+                let alias_pos = proto.push_prop(value);
+                proto.set_data_meta(alias_pos, PropAttributes::new(true, false, true));
+                proto.bump_generation();
+            }
+        }
     }
 
     /// 把 Function 原型方法安装到 Function.prototype 上。
