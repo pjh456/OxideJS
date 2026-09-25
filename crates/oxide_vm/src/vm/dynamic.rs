@@ -44,7 +44,11 @@ impl Vm {
         // 函数形态按生成器 / 异步标志分流，编译标志（is_generator / is_async）
         // 由 emit 层从 AST 读回，函数对象原型与 prototype 属性面随之自动分流。
         let prefix = if is_async {
-            if is_generator { "async function*" } else { "async function" }
+            if is_generator {
+                "async function*"
+            } else {
+                "async function"
+            }
         } else if is_generator {
             "function*"
         } else {

@@ -172,11 +172,7 @@ struct JsonNode {
 ///   （进入时先计入再判定，防深嵌套在递归展开前耗尽栈）。
 /// - 重复对象键：末写胜（键序由 build_js_value 统一）。
 fn parse_json(text: &str) -> Result<JsonNode, String> {
-    let mut p = JsonParser {
-        text,
-        pos: 0,
-        depth: 0,
-    };
+    let mut p = JsonParser { text, pos: 0, depth: 0 };
     p.skip_ws();
     let node = p.parse_value()?;
     p.skip_ws();

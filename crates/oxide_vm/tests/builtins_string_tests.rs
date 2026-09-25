@@ -1111,8 +1111,9 @@ fn string_slice_astral_character_indices() {
     )
     .unwrap();
     assert!(r.as_bool());
+    // padStart 按码元口径：😀 占 2 单元，距目标 3 仅差 1 单元，补 1 个 x。
     let s = eval(&mut vm, "'\\u{1F600}'.padStart(3, 'x')").unwrap();
-    assert_eq!(to_str(&vm, s), "xx\u{1F600}");
+    assert_eq!(to_str(&vm, s), "x\u{1F600}");
 }
 
 #[test]

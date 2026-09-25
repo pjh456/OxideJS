@@ -405,42 +405,43 @@ pub(crate) fn init_async_intrinsics(vm: &mut Vm) {
     let af_ctor_label = sf.intern("AsyncFunctionCtor").0;
     let af_reuse_key = oxide_kernel::builtin::FnWrapperKey::new(0, af_ctor_label, 0, 0);
     // SAFETY: async_function_constructor 是 NativeFn 函数项。
-    let af_ctor_fn_ptr = unsafe {
-        NativeFnPtr::from_raw(oxide_builtins::function::async_function_constructor::<Vm> as *const ())
-    };
-    let (af_ctor_ptr, af_ctor_is_new) = match vm.session.builtin_world().find_fn_wrapper(af_reuse_key, af_ctor_fn_ptr, 1) {
-        Some(ptr) => (ptr, false),
-        None => {
-            // [[Prototype]] = Function 构造器本体（与 Function 构造器同链，
-            // `Object.getPrototypeOf(AsyncFunction) === Function` 语义）。
-            let fn_ctor_val =
-                JsValue::from_js_object(vm.session.builtin_world().function_constructor.as_ptr() as *mut JsObject);
-            let mut af_ctor = Box::new(JsObject::new_empty(EMPTY_SHAPE_ID, fn_ctor_val));
-            af_ctor.set_function(true);
-            af_ctor.set_native_arg_count(1);
-            af_ctor.set_native_fn(Some(af_ctor_fn_ptr));
-            // 构造器 tag：IsConstructor 判定与 new 表达式派发据此放行。
-            af_ctor.type_tag = JsObject::OBJ_TYPE_CONSTRUCTOR;
-            // 自身属性序：length、name、prototype、@@toStringTag（CreateBuiltinFunction 序）。
-            let length_si = sf.intern("length").0;
-            let length_shape = sh.make_shape(EMPTY_SHAPE_ID, length_si);
-            af_ctor.set_shape_id(length_shape);
-            let name_si = sf.intern("name").0;
-            let name_shape = sh.make_shape(af_ctor.shape_id(), name_si);
-            af_ctor.set_shape_id(name_shape);
-            let proto_si = sf.intern("prototype").0;
-            let proto_shape = sh.make_shape(af_ctor.shape_id(), proto_si);
-            af_ctor.set_shape_id(proto_shape);
-            let tag_key =
-                oxide_types::private_key::make_well_known_symbol_key(oxide_types::private_key::WELL_KNOWN_SYMBOL_TO_STRING_TAG);
-            let tag_shape = sh.make_shape(af_ctor.shape_id(), tag_key);
-            af_ctor.set_shape_id(tag_shape);
-            let af_ctor_ptr = Box::into_raw(af_ctor);
-            // 登记进 world 释放表（带复用键）：session 收尾统一释放构造器本体与属性区。
-            vm.session.builtin_world().track_fn_wrapper(af_ctor_ptr, af_reuse_key);
-            (af_ctor_ptr, true)
-        }
-    };
+    let af_ctor_fn_ptr =
+        unsafe { NativeFnPtr::from_raw(oxide_builtins::function::async_function_constructor::<Vm> as *const ()) };
+    let (af_ctor_ptr, af_ctor_is_new) =
+        match vm.session.builtin_world().find_fn_wrapper(af_reuse_key, af_ctor_fn_ptr, 1) {
+            Some(ptr) => (ptr, false),
+            None => {
+                // [[Prototype]] = Function 构造器本体（与 Function 构造器同链，
+                // `Object.getPrototypeOf(AsyncFunction) === Function` 语义）。
+                let fn_ctor_val =
+                    JsValue::from_js_object(vm.session.builtin_world().function_constructor.as_ptr() as *mut JsObject);
+                let mut af_ctor = Box::new(JsObject::new_empty(EMPTY_SHAPE_ID, fn_ctor_val));
+                af_ctor.set_function(true);
+                af_ctor.set_native_arg_count(1);
+                af_ctor.set_native_fn(Some(af_ctor_fn_ptr));
+                // 构造器 tag：IsConstructor 判定与 new 表达式派发据此放行。
+                af_ctor.type_tag = JsObject::OBJ_TYPE_CONSTRUCTOR;
+                // 自身属性序：length、name、prototype、@@toStringTag（CreateBuiltinFunction 序）。
+                let length_si = sf.intern("length").0;
+                let length_shape = sh.make_shape(EMPTY_SHAPE_ID, length_si);
+                af_ctor.set_shape_id(length_shape);
+                let name_si = sf.intern("name").0;
+                let name_shape = sh.make_shape(af_ctor.shape_id(), name_si);
+                af_ctor.set_shape_id(name_shape);
+                let proto_si = sf.intern("prototype").0;
+                let proto_shape = sh.make_shape(af_ctor.shape_id(), proto_si);
+                af_ctor.set_shape_id(proto_shape);
+                let tag_key = oxide_types::private_key::make_well_known_symbol_key(
+                    oxide_types::private_key::WELL_KNOWN_SYMBOL_TO_STRING_TAG,
+                );
+                let tag_shape = sh.make_shape(af_ctor.shape_id(), tag_key);
+                af_ctor.set_shape_id(tag_shape);
+                let af_ctor_ptr = Box::into_raw(af_ctor);
+                // 登记进 world 释放表（带复用键）：session 收尾统一释放构造器本体与属性区。
+                vm.session.builtin_world().track_fn_wrapper(af_ctor_ptr, af_reuse_key);
+                (af_ctor_ptr, true)
+            }
+        };
 
     // %AsyncFunction.prototype%：proto = Function.prototype，constructor = %AsyncFunction%。
     let mut af_proto = Box::new(JsObject::new_empty(EMPTY_SHAPE_ID, fn_proto_val));

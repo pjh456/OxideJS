@@ -44,9 +44,7 @@ pub fn async_generator_function_constructor<H: VmHost>(vm: &mut H, args: &[u8]) 
 /// 无实参时函数体为空串。实参转单元序列后经 `source_escape` 源码域转义再
 /// 动态编译（`is_generator` / `is_async` 决定 wrap 源码函数形态）。
 /// 编译成功返回函数对象，语法错误抛 SyntaxError，实参 ToPrimitive 失败抛 TypeError。
-fn dynamic_function_core<H: VmHost>(
-    vm: &mut H, arg_regs: &[u8], is_generator: bool, is_async: bool,
-) -> NativeResult {
+fn dynamic_function_core<H: VmHost>(vm: &mut H, arg_regs: &[u8], is_generator: bool, is_async: bool) -> NativeResult {
     let (param_regs, body_reg) = if arg_regs.is_empty() {
         (vec![], None)
     } else {

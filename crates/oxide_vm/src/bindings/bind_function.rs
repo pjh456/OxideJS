@@ -100,7 +100,9 @@ fn bind_function_proto_restricted(core: &Arc<KernelCore>, session: &KernelSessio
             thrower.set_native_arg_count(0);
             let name_shape = shape_forge.make_shape(thrower.shape_id(), si_name);
             thrower.set_shape_id(name_shape);
-            thrower.ensure_hash_props().push(JsValue::perm_string(string_forge.string_ptr(si_label)));
+            thrower
+                .ensure_hash_props()
+                .push(JsValue::perm_string(string_forge.string_ptr(si_label)));
             let name_pos = thrower.hash_props_vec().map_or(0, |v| v.len() as u32).saturating_sub(1);
             thrower.set_data_meta(name_pos, PropAttributes::new(false, false, true));
             let length_shape = shape_forge.make_shape(thrower.shape_id(), si_length);

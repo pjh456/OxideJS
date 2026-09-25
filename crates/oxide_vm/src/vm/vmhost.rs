@@ -189,10 +189,10 @@ impl oxide_runtime_api::VmHost for Vm {
         if !proto.is_object() {
             return false;
         }
-        let p = proto.as_js_object_ptr();
-        p == self.generator_function_proto.as_ptr() as *mut JsObject
-            || p == self.async_function_proto.as_ptr() as *mut JsObject
-            || p == self.async_generator_function_proto.as_ptr() as *mut JsObject
+        let p = proto.as_js_object_ptr() as *const JsObject;
+        std::ptr::eq(p, self.generator_function_proto.as_ptr())
+            || std::ptr::eq(p, self.async_function_proto.as_ptr())
+            || std::ptr::eq(p, self.async_generator_function_proto.as_ptr())
     }
     fn promote_if_needed_for_write_ptr(&mut self, target_ptr: *mut JsObject, value: JsValue) -> JsValue {
         self.promote_if_needed_for_write_ptr(target_ptr, value)

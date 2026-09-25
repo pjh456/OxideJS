@@ -932,9 +932,7 @@ pub(crate) fn init_async_generator_intrinsics(vm: &mut Vm) {
     let agf_reuse_key = oxide_kernel::builtin::FnWrapperKey::new(0, agf_ctor_label, 0, 0);
     // SAFETY: async_generator_function_constructor 是 NativeFn 函数项。
     let agf_ctor_fn_ptr = unsafe {
-        NativeFnPtr::from_raw(
-            oxide_builtins::function::async_generator_function_constructor::<Vm> as *const (),
-        )
+        NativeFnPtr::from_raw(oxide_builtins::function::async_generator_function_constructor::<Vm> as *const ())
     };
     let (agf_ctor_ptr, agf_ctor_is_new) = match world.find_fn_wrapper(agf_reuse_key, agf_ctor_fn_ptr, 1) {
         Some(ptr) => (ptr, false),
@@ -955,8 +953,9 @@ pub(crate) fn init_async_generator_intrinsics(vm: &mut Vm) {
             let proto_si = sf.intern("prototype").0;
             let proto_shape = sh.make_shape(agf_ctor.shape_id(), proto_si);
             agf_ctor.set_shape_id(proto_shape);
-            let tag_key =
-                oxide_types::private_key::make_well_known_symbol_key(oxide_types::private_key::WELL_KNOWN_SYMBOL_TO_STRING_TAG);
+            let tag_key = oxide_types::private_key::make_well_known_symbol_key(
+                oxide_types::private_key::WELL_KNOWN_SYMBOL_TO_STRING_TAG,
+            );
             let tag_shape = sh.make_shape(agf_ctor.shape_id(), tag_key);
             agf_ctor.set_shape_id(tag_shape);
             let agf_ctor_ptr = Box::into_raw(agf_ctor);
