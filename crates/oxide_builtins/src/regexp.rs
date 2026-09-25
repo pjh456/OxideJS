@@ -634,8 +634,10 @@ fn rx_search<H: VmHost>(
         }
     };
 
-    // 搜索起点：global/sticky 自 lastIndex 起，其余自 0。
+    // 搜索起点：global/sticky 自 lastIndex 起，其余自 0。u/v 标志下起点须
+    // 落在码点边界（低 surrogate 位钳回代理对起点，u 标志匹配只起于码点边界）。
     let start = if tracks_last_index { last_index } else { 0 };
+    let start = text.advance_start(regex, start);
 
     // 越界短路：lastIndex 超出串长必不匹配，规范先 Set 0 再空结果。
     if start > text.len_units() {
@@ -646,7 +648,7 @@ fn rx_search<H: VmHost>(
     }
 
     // 匹配范围取臂原生命径（Str 臂字节、Units 臂码元）；sticky 加后置锚定
-    // 过滤——底层引擎对 y 不原生锚定，命中起点须恰在 lastIndex 才算有效。
+    // 过滤——底层引擎对 y 不原生锚定，命中起点须恰在推进后的 lastIndex 才算有效。
     let match_result = text.find_from_units(regex, start);
     let anchored = if is_sticky {
         match_result.filter(|m| text.unit_pos(m.range().start) == start)

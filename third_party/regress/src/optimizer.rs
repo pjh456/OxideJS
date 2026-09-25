@@ -521,23 +521,91 @@ fn simplify_brackets(n: &mut Node, _walk: &Walk) -> PassAction {
     }
 }
 
+/// 非 BMP 码点 → (高 surrogate, 低 surrogate)。
+fn surrogate_pair(c: u32) -> (u32, u32) {
+    (0xD800 + ((c - 0x10000) >> 10), 0xDC00 + ((c - 0x10000) & 0x3FF))
+}
+
+/// 非 BMP 码点字面量拆为高+低 surrogate 对（仅码元向 IR 需要）。
+///
+/// 字节指令无法在单元输入（UTF-16/UCS-2）上执行，单元向 IR 的字符字面量是
+/// 单码元元素：码元向输入（UCS-2）中每个 u16 是独立元素，非 BMP 码点（> 0xFFFF）
+/// 须拆成连续两个 surrogate 码元才能命中输入中的代理对。码点向输入（UTF-16）
+/// 把代理对视作单码点元素，不得拆分。
+fn decompose_nonbmp_chars(n: &mut Node, _w: &Walk) -> PassAction {
+    match n {
+        Node::Char { c, icase } if *c > 0xFFFF => {
+            let (high, low) = surrogate_pair(*c);
+            PassAction::Replace(Node::Cat(vec![
+                Node::Char { c: high, icase: *icase },
+                Node::Char { c: low, icase: *icase },
+            ]))
+        }
+        Node::CharSet(chars) if chars.iter().any(|&c| c > 0xFFFF) => {
+            // BMP 码点保持单码元集合，非 BMP 码点各拆为高+低 surrogate 序列，
+            // 两侧以 Alt 合并（单元素集合直接降为 Char）。
+            let bmp: Vec<u32> = chars.iter().copied().filter(|&c| c <= 0xFFFF).collect();
+            let nonbmp: Vec<u32> = chars.iter().copied().filter(|&c| c > 0xFFFF).collect();
+            let bmp_node = match bmp.len() {
+                0 => None,
+                1 => Some(Node::Char { c: bmp[0], icase: false }),
+                _ => Some(Node::CharSet(bmp)),
+            };
+            let mut seqs: Vec<Node> = nonbmp
+                .iter()
+                .map(|&c| {
+                    let (high, low) = surrogate_pair(c);
+                    Node::Cat(vec![
+                        Node::Char { c: high, icase: false },
+                        Node::Char { c: low, icase: false },
+                    ])
+                })
+                .collect();
+            let nonbmp_node = if seqs.is_empty() {
+                None
+            } else {
+                let mut acc = seqs.pop().unwrap();
+                for s in seqs.into_iter().rev() {
+                    acc = Node::Alt(Box::new(s), Box::new(acc));
+                }
+                Some(acc)
+            };
+            match (bmp_node, nonbmp_node) {
+                (Some(b), Some(nb)) => PassAction::Replace(Node::Alt(Box::new(b), Box::new(nb))),
+                (b, nb) => PassAction::Replace(b.or(nb).unwrap()),
+            }
+        }
+        _ => PassAction::Keep,
+    }
+}
+
 /// 编译主入口：字节字面量 pass 恒开，编译产物与旧的全局 feature 门控形态逐位一致。
 pub fn optimize(r: &mut Regex) {
-    optimize_with_byte_literals(r, true)
+    optimize_with_byte_literals(r, true, false)
 }
 
 /// 与 `optimize` 同一条定点 pass 链，仅字节字面量 pass
-/// （Char → ByteSequence、ASCII 集合 → ByteSet）由 `byte_literals` 控制。
+/// （Char → ByteSequence、ASCII 集合 → ByteSet）由 `byte_literals` 控制，
+/// 非 BMP 码点字面量拆分由 `decompose_nonbmp` 控制。
 ///
 /// 字节指令无法在单元输入（UTF-16/UCS-2）上执行：面向单元输入的 IR 必须以
-/// `false` 编译，字节输入（UTF-8）IR 以 `true` 编译保持编译与执行策略不变。
-pub fn optimize_with_byte_literals(r: &mut Regex, byte_literals: bool) {
+/// `byte_literals = false` 编译，字节输入（UTF-8）IR 以 `true` 编译保持编译
+/// 与执行策略不变。非 BMP 码点字面量拆分仅码元向 IR 需要（`decompose_nonbmp`
+/// 传 `true`）：码元输入中每个 u16 是独立元素，非 BMP 码点须拆成连续两个
+/// surrogate 码元才能命中；码点向输入（UTF-16）把代理对视作单码点元素，
+/// 不得拆分。
+pub fn optimize_with_byte_literals(r: &mut Regex, byte_literals: bool, decompose_nonbmp: bool) {
     run_pass(r, &mut simplify_brackets);
     loop {
         let mut changed = false;
         changed |= run_pass(r, &mut decat);
         if r.flags.icase {
             changed |= run_pass(r, &mut unfold_icase_chars);
+        }
+        // 码元向 IR：非 BMP 码点字面量拆为 surrogate 对，须先于 unroll/promote
+        // （否则非 BMP 字符会被提升进 1 字符循环而逃过拆分）。
+        if !byte_literals && decompose_nonbmp {
+            changed |= run_pass(r, &mut decompose_nonbmp_chars);
         }
         changed |= run_pass(r, &mut unroll_loops);
         changed |= run_pass(r, &mut promote_1char_loops);

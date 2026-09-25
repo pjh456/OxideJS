@@ -381,8 +381,12 @@ pub struct Regex {
     pattern: Option<Vec<u32>>,
 
     // 单元向编译产物（未跑字节字面量 pass），首次单元输入入口时惰性物化。
+    // 两路缓存：码点向入口（`find_from_utf16`）不拆非 BMP 码点字面量；
+    // 码元向入口（`find_from_ucs2`）拆为 surrogate 对。两 IR 不得共用。
     #[cfg_attr(not(feature = "utf16"), allow(dead_code))]
     units_cr: OnceLock<CompiledRegex>,
+    #[cfg_attr(not(feature = "utf16"), allow(dead_code))]
+    units_cr_ucs2: OnceLock<CompiledRegex>,
 }
 
 impl From<CompiledRegex> for Regex {
@@ -391,6 +395,7 @@ impl From<CompiledRegex> for Regex {
             cr,
             pattern: None,
             units_cr: OnceLock::new(),
+            units_cr_ucs2: OnceLock::new(),
         }
     }
 }
@@ -441,27 +446,47 @@ impl Regex {
             cr,
             pattern: Some(pattern),
             units_cr: OnceLock::new(),
+            units_cr_ucs2: OnceLock::new(),
         })
     }
 
-    /// 单元向编译产物：首次使用时按同源码同 flags 重解析、关字节字面量 pass
-    /// 重新优化并 emit，得到可在 UTF-16/UCS-2 单元输入上执行的 IR。
+    /// 编译本正则所用的 flags（u/v 标志决定码点语义，供调用方选择
+    /// 码点向或码元向的单元输入入口）。
+    pub fn flags(&self) -> &Flags {
+        &self.cr.flags
+    }
+
+    /// 单元向编译产物（码点向）：首次使用时按同源码同 flags 重解析、关字节
+    /// 字面量 pass 重新优化并 emit，得到可在 UTF-16 单元输入上执行的 IR。
+    /// 非 BMP 码点字面量保持单码点元素（码点向输入把代理对视作单码点）。
     /// 无源码构造（`From<CompiledRegex>`）无重解析来源，回退复用既有产物。
     #[cfg(feature = "utf16")]
     fn units_cr(&self) -> &CompiledRegex {
-        self.units_cr.get_or_init(|| {
-            let Some(pattern) = &self.pattern else {
-                return self.cr.clone();
-            };
+        self.units_cr.get_or_init(|| self.compile_units(false))
+    }
 
-            // 同源码同 flags 在构造期已成功解析编译，重解析不可能失败。
-            let mut ire =
-                parse::try_parse(pattern.iter().copied(), self.cr.flags).expect("构造期已成功解析的模式重解析失败");
-            if !self.cr.flags.no_opt {
-                optimizer::optimize_with_byte_literals(&mut ire, false);
-            }
-            emit::emit(&ire)
-        })
+    /// 单元向编译产物（码元向）：同 `units_cr`，但非 BMP 码点字面量拆为
+    /// 高+低 surrogate 码元，使码元向输入（UCS-2，每单元独立元素）可命中。
+    #[cfg(feature = "utf16")]
+    fn units_cr_ucs2(&self) -> &CompiledRegex {
+        self.units_cr_ucs2.get_or_init(|| self.compile_units(true))
+    }
+
+    /// 两路单元向缓存共用的惰性编译体：`decompose` 决定非 BMP 码点字面量
+    /// 是否拆为 surrogate 对。
+    #[cfg(feature = "utf16")]
+    fn compile_units(&self, decompose: bool) -> CompiledRegex {
+        let Some(pattern) = &self.pattern else {
+            return self.cr.clone();
+        };
+
+        // 同源码同 flags 在构造期已成功解析编译，重解析不可能失败。
+        let mut ire =
+            parse::try_parse(pattern.iter().copied(), self.cr.flags).expect("构造期已成功解析的模式重解析失败");
+        if !self.cr.flags.no_opt {
+            optimizer::optimize_with_byte_literals(&mut ire, false, decompose);
+        }
+        emit::emit(&ire)
     }
 
     /// Searches `text` to find the first match.
@@ -528,7 +553,7 @@ impl Regex {
         start: usize,
     ) -> exec::Matches<super::classicalbacktrack::BacktrackExecutor<'r, indexing::Utf16Input<'t>>>
     {
-        // 单元向 IR 无字节指令，UTF-16 单元输入可执行。
+        // 码点向 IR 无字节指令，UTF-16 单元输入可执行；代理对按单码点匹配。
         let cr = self.units_cr();
         let input = Utf16Input::new(text, cr.flags.unicode);
         exec::Matches::new(
@@ -548,9 +573,9 @@ impl Regex {
         start: usize,
     ) -> exec::Matches<super::classicalbacktrack::BacktrackExecutor<'r, indexing::Ucs2Input<'t>>>
     {
-        // 与 `find_from_utf16` 共用单元向 IR：UCS-2 同为单元输入，
-        // str IR 的字节指令在单元索引器上不可执行。
-        let cr = self.units_cr();
+        // 码元向 IR：UCS-2 同为单元输入（str IR 的字节指令在单元索引器上
+        // 不可执行），且非 BMP 码点字面量须拆为 surrogate 对以命中码元。
+        let cr = self.units_cr_ucs2();
         let input = Ucs2Input::new(text, cr.flags.unicode);
         exec::Matches::new(
             super::classicalbacktrack::BacktrackExecutor::new(

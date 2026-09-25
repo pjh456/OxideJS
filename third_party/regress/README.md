@@ -77,16 +77,19 @@ upstream 0.11.1, other than this note; upstream repo-only files —
    `utf16` feature) to a per-compilation runtime flag, so enabling `utf16`
    no longer disables the byte passes on the str path:
    - `src/optimizer.rs` — the literal-byte pass is gated by the new
-     `optimize_with_byte_literals(ire, byte_literals)` entry; `optimize`
-     keeps the previous behavior as its wrapper.
+     `optimize_with_byte_literals(ire, byte_literals, decompose_nonbmp)`
+     entry; `optimize` keeps the previous behavior as its wrapper. The
+     `decompose_nonbmp` flag splits non-BMP codepoint literals into
+     surrogate pairs for the code-unit (UCS-2) unit IR only.
    - `src/classicalbacktrack.rs` — the start-predicate dispatch in the
      matcher's next-match loop switches on input encoding at runtime: byte
      inputs (UTF-8/ASCII) keep the anchored/byte-positioning fast paths,
      unit inputs (UTF-16/UCS-2) fall back to position-by-position tries.
    - `src/api.rs` — `Regex` retains the pattern's source code-point
-     sequence plus a lazily materialized unit-side IR (`OnceLock`),
-     re-parsed with the byte-literal pass disabled on first unit-input
-     entry; the unit entry points compile through that IR.
+     sequence plus lazily materialized unit-side IRs (two `OnceLock`s:
+     code-point-oriented and code-unit-oriented), re-parsed with the
+     byte-literal pass disabled on first unit-input entry; the unit entry
+     points compile through those IRs.
 3. `Cargo.toml` — the upstream workspace-members table (for the repo's
    `regress-tool`/`gen-unicode` subdirectories, not vendored here) is
    replaced by a standalone empty `[workspace]` table, and the `utf16`

@@ -73,52 +73,135 @@ impl<'a> MatchText<'a> {
         }
     }
 
-    /// 从码元位置开始的首个匹配（Str 臂内部换算为字节位置）。
+    /// 从码元位置开始的首个匹配。
+    ///
+    /// # 边界与前提
+    /// - Str 臂仅 ASCII 走字节路径（字节==码元，u 与非-u 均正确）；非 ASCII
+    ///   编码为单元后按正则 flags 分派：u/v 码点语义、其余码元语义。
     pub(crate) fn find_from_units(&self, regex: &regress::Regex, start_units: usize) -> Option<regress::Match> {
         match self {
-            MatchText::Str(s) => regex.find_from(s, unit_to_byte(s, start_units)).next(),
-            MatchText::Units(u) => regex.find_from_utf16(u, start_units).next(),
+            MatchText::Str(s) => {
+                if s.is_ascii() {
+                    return regex.find_from(s, start_units).next();
+                }
+                first_match_units(regex, &self.units(), start_units)
+            }
+            MatchText::Units(u) => first_match_units(regex, u, start_units),
         }
     }
 
     /// 按序消费全部非重叠匹配（自码元 0 起）。
+    ///
+    /// # 边界与前提
+    /// - Str 臂仅 ASCII 走字节路径（字节==码元，u 与非-u 均正确）；非 ASCII
+    ///   编码为单元后按正则 flags 分派：u/v 码点语义、其余码元语义。
     pub(crate) fn for_each_match(&self, regex: &regress::Regex, mut f: impl FnMut(&regress::Match)) {
         match self {
             MatchText::Str(s) => {
-                for m in regex.find_iter(s) {
-                    f(&m);
+                if s.is_ascii() {
+                    for m in regex.find_iter(s) {
+                        f(&m);
+                    }
+                    return;
+                }
+                let u = self.units();
+                if regex.flags().unicode || regex.flags().unicode_sets {
+                    for m in regex.find_from_utf16(&u, 0) {
+                        f(&m);
+                    }
+                } else {
+                    for m in regex.find_from_ucs2(&u, 0) {
+                        f(&m);
+                    }
                 }
             }
             MatchText::Units(u) => {
-                for m in regex.find_from_utf16(u, 0) {
-                    f(&m);
+                if regex.flags().unicode || regex.flags().unicode_sets {
+                    for m in regex.find_from_utf16(u, 0) {
+                        f(&m);
+                    }
+                } else {
+                    for m in regex.find_from_ucs2(u, 0) {
+                        f(&m);
+                    }
                 }
             }
         }
     }
 
-    /// 匹配片段为单元序列（start/end 取臂自身匹配范围口径：Str 臂字节、
-    /// Units 臂码元——臂由文本通道钉死，调用方直接传 `m.range()`）。
+    /// 匹配片段为单元序列（start/end 取臂自身匹配范围口径：Str 臂 ASCII
+    /// 字节==码元、非 ASCII 即码元，Units 臂码元——调用方直接传 `m.range()`）。
     pub(crate) fn slice(&self, start: usize, end: usize) -> Cow<'a, [u16]> {
         match self {
             MatchText::Str(s) => {
-                let sub = &s[start..end];
-                Cow::Owned(if sub.is_ascii() {
-                    sub.as_bytes().iter().map(|&b| b as u16).collect()
-                } else {
-                    sub.encode_utf16().collect()
-                })
+                if s.is_ascii() {
+                    return Cow::Owned(s.as_bytes()[start..end].iter().map(|&b| b as u16).collect());
+                }
+                let u = self.units();
+                Cow::Owned(u[start..end].to_vec())
             }
             MatchText::Units(u) => Cow::Owned(u[start..end].to_vec()),
         }
     }
 
-    /// 匹配范围端点换算到码元口径（Str 臂范围是字节口径，Units 臂即码元）。
+    /// 匹配范围端点换算到码元口径：两臂匹配范围均已是码元口径
+    /// （Str 臂 ASCII 字节==码元、非 ASCII 走单元入口），恒等返回。
     pub(crate) fn unit_pos(&self, pos: usize) -> usize {
-        match self {
-            MatchText::Str(s) => byte_to_unit(s, pos),
-            MatchText::Units(_) => pos,
+        pos
+    }
+
+    /// 匹配起点按码点边界钳制：u/v 标志下起点须落在码点边界上（低
+    /// surrogate 位钳回代理对起点，u 标志匹配只起于码点边界），其余标志
+    /// 恒等。ASCII 文本字节==码元，一切位置皆边界。
+    pub(crate) fn advance_start(&self, regex: &regress::Regex, start: usize) -> usize {
+        if !(regex.flags().unicode || regex.flags().unicode_sets) {
+            return start;
         }
+        match self {
+            MatchText::Str(s) if s.is_ascii() => start,
+            _ => clamp_code_point_start(&self.units(), start),
+        }
+    }
+}
+
+/// 码点起点钳制：低 surrogate 位（前一单元为高 surrogate）非码点起点，
+/// 钳回代理对起点；其余位置（含串尾）恒等。
+fn clamp_code_point_start(u: &[u16], idx: usize) -> usize {
+    if idx > 0 && idx < u.len() && is_low_surrogate(u[idx]) && is_high_surrogate(u[idx - 1]) {
+        idx - 1
+    } else {
+        idx
+    }
+}
+
+/// 给定码元位置之后的下一个码点边界（空匹配游标推进用）：跳过低 surrogate
+/// 位到下一码点起点；位置在串尾时返回串长+1（触发耗尽守卫）。
+pub(crate) fn next_code_point_boundary(u: &[u16], idx: usize) -> usize {
+    let mut j = idx + 1;
+    while j < u.len() && is_low_surrogate(u[j]) && is_high_surrogate(u[j - 1]) {
+        j += 1;
+    }
+    j
+}
+
+#[inline]
+fn is_low_surrogate(u: u16) -> bool {
+    (0xDC00..=0xDFFF).contains(&u)
+}
+
+#[inline]
+fn is_high_surrogate(u: u16) -> bool {
+    (0xD800..=0xDBFF).contains(&u)
+}
+
+/// 单元序列上的首个匹配：u/v 标志走码点入口（UTF-16 单元按码点分组），
+/// 其余走码元入口（每单元独立元素）。码点入口的起点须落在码点边界上：
+/// 低 surrogate 位的起点钳回代理对起点（u 标志匹配只起于码点边界）。
+pub(crate) fn first_match_units(regex: &regress::Regex, u: &[u16], start: usize) -> Option<regress::Match> {
+    if regex.flags().unicode || regex.flags().unicode_sets {
+        regex.find_from_utf16(u, clamp_code_point_start(u, start)).next()
+    } else {
+        regex.find_from_ucs2(u, start).next()
     }
 }
 
@@ -203,30 +286,6 @@ pub(crate) fn is_trim_unit(u: u16) -> bool {
         return c.is_whitespace();
     }
     false
-}
-
-/// 良形文本的字节偏移 → 码元数（Str 臂匹配范围/index 的码元换算入口）。
-pub(crate) fn byte_to_unit(s: &str, byte: usize) -> usize {
-    if s.is_ascii() {
-        byte
-    } else {
-        s[..byte].encode_utf16().count()
-    }
-}
-
-/// 良形文本的码元位置 → 字节偏移（位置须落在字符边界：匹配游标恒对齐）。
-pub(crate) fn unit_to_byte(s: &str, unit: usize) -> usize {
-    if s.is_ascii() {
-        return unit.min(s.len());
-    }
-    let mut acc = 0usize;
-    for (byte, ch) in s.char_indices() {
-        if unit == acc {
-            return byte;
-        }
-        acc += ch.len_utf16();
-    }
-    s.len()
 }
 
 /// 大小写/规范化按"良形段"分段映射：整段经 UTF-8 往返调用映射函数，孤立

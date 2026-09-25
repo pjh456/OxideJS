@@ -10,8 +10,8 @@ use crate::regexp::build_groups_object;
 
 use super::common::{try_string, MatchText};
 use super::{
-    as_units, byte_to_unit, find_units, make_string_array_values, make_units_array, map_well_formed_segments,
-    split_limit_to_uint32, this_text, this_units, unit_to_byte,
+    as_units, find_units, first_match_units, make_string_array_values, make_units_array, map_well_formed_segments,
+    next_code_point_boundary, split_limit_to_uint32, this_text, this_units,
 };
 
 // ── 正则替换（单元口径） ────────────────────────────────────────────────
@@ -1050,8 +1050,9 @@ pub fn string_match_all_next<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult
     // d 标志门控 indices 产出（flags 串实例字段直读，与 exec 同口径）。
     let has_indices = crate::regexp::regexp_has_flag(vm, re_obj, 'd');
 
-    // 按 input 载荷形态分臂：Flat 走字节通道（游标经码元↔字节换算），
-    // 其余走单元通道（游标即码元）。
+    // 按 input 载荷形态分臂：ASCII Flat 走字节通道（字节==码元，游标与匹配
+    // 范围同口径，无需换算）；非 ASCII Flat 与其余载荷走单元通道，按标志
+    // 分派（u/v 码点、其余码元，见 first_match_units）。
     // SAFETY: input_val 已校验为字符串值，裸指针借用压缩到单个表达式。
     let sp = unsafe { &*input_val.as_string_ptr() };
     // 耗尽守卫：空匹配正则（如 /(?:)/g、/a*/g）在串尾会反复命中同一末端空
@@ -1061,9 +1062,11 @@ pub fn string_match_all_next<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult
         return make_match_done_result(vm, JsValue::undefined());
     }
     // 元素按值混排：匹配片段物化字符串值，未匹配捕获组为 undefined。
-    let (match_start, next_idx, parts, m_opt): (usize, usize, Vec<JsValue>, Option<regress::Match>) = if sp.is_flat() {
+    let (match_start, next_idx, parts, m_opt): (usize, usize, Vec<JsValue>, Option<regress::Match>) = if sp.is_flat()
+        && sp.as_str().is_ascii()
+    {
         let s = sp.as_str();
-        match regex.find_from(s, unit_to_byte(s, idx)).next() {
+        match regex.find_from(s, idx).next() {
             Some(m) => {
                 let range = m.range();
                 let mut parts = Vec::with_capacity(m.captures.len() + 1);
@@ -1076,16 +1079,15 @@ pub fn string_match_all_next<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult
                 }
                 // 空匹配（range 无推进）须推进至少一个码元，否则同一位置反复
                 // 空匹配死循环；非空匹配游标落匹配末尾（码元口径）。
-                let start_units = byte_to_unit(s, range.start);
-                let end_units = byte_to_unit(s, range.end);
-                let next_idx = if range.end > range.start { end_units } else { end_units + 1 };
-                (start_units, next_idx, parts, Some(m))
+                let next_idx = if range.end > range.start { range.end } else { range.end + 1 };
+                (range.start, next_idx, parts, Some(m))
             }
             None => (0, 0, Vec::new(), None),
         }
     } else {
         let u = sp.units();
-        match regex.find_from_utf16(&u, idx).next() {
+        let is_code_point = regex.flags().unicode || regex.flags().unicode_sets;
+        match first_match_units(regex, &u, idx) {
             Some(m) => {
                 let range = m.range();
                 let mut parts = Vec::with_capacity(m.captures.len() + 1);
@@ -1096,7 +1098,15 @@ pub fn string_match_all_next<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult
                         None => parts.push(JsValue::undefined()),
                     }
                 }
-                let next_idx = if range.end > range.start { range.end } else { range.end + 1 };
+                // 非空匹配游标落匹配末尾；空匹配推进到下一码点边界（u/v
+                // 标志）或下一码元（其余），串尾空匹配推进到串长+1 触发耗尽。
+                let next_idx = if range.end > range.start {
+                    range.end
+                } else if is_code_point {
+                    next_code_point_boundary(&u, range.end)
+                } else {
+                    range.end + 1
+                };
                 (range.start, next_idx, parts, Some(m))
             }
             None => (0, 0, Vec::new(), None),
