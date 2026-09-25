@@ -3,7 +3,7 @@ use crate::{vm_error, vm_trace};
 use oxide_bytecode::opcode;
 use oxide_kernel::shape_forge::EMPTY_SHAPE_ID;
 use oxide_types::object::{JsObject, PropAttributes};
-use oxide_types::private_key::make_int_key;
+use oxide_types::private_key::{make_int_key, make_well_known_symbol_key};
 use oxide_types::value::{JsType, JsValue};
 
 impl Vm {
@@ -264,7 +264,8 @@ impl Vm {
     }
 
     /// 创建 arguments 对象：索引属性取当前帧（或 inline 同步调用）的完整实参，
-    /// 附 length / callee 属性。第一版为 unmapped（非严格）语义，索引与形参不同步。
+    /// 附 length / callee / @@iterator 属性。第一版为 unmapped（非严格）语义，
+    /// 索引与形参不同步。
     ///
     /// # 边界与前提
     /// - 实参区由统一压帧入口 `push_bytecode_frame` 在推帧时写入 spill 栈；
@@ -303,6 +304,21 @@ impl Vm {
         let callee_si = self.kernel_core.perm_interner().intern("callee").0;
         let callee = self.current_callee().unwrap_or(JsValue::undefined());
         if let Err(msg) = self.define_data_property(obj, callee_si, callee, PropAttributes::new(true, false, true)) {
+            return self.raise_error_kind("TypeError", &msg);
+        }
+
+        // @@iterator：与 Array.prototype[Symbol.iterator] 共享同一函数对象，
+        // 使 arguments 对象可迭代（可写、不可枚举、可配置）。
+        let sym_iter_si = make_well_known_symbol_key(0);
+        // SAFETY: array_proto 是 perm 层内置对象（BuiltinWorld 持有），地址稳定且
+        // 跨 epoch/session 存活，本调用期间无 GC 搬移。
+        let array_proto = self.session.builtin_world().array_proto.as_ptr();
+        let iter_val = match self.ordinary_get(unsafe { &*array_proto }, sym_iter_si, JsValue::undefined()) {
+            Ok(v) => v,
+            Err(msg) => return self.raise_error_kind("TypeError", &msg),
+        };
+        if let Err(msg) = self.define_data_property(obj, sym_iter_si, iter_val, PropAttributes::new(true, false, true))
+        {
             return self.raise_error_kind("TypeError", &msg);
         }
 
