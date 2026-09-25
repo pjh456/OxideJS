@@ -1,3 +1,4 @@
+use num_traits::Zero;
 use oxide_types::object::JsObject;
 use oxide_types::value::JsValue;
 
@@ -21,7 +22,13 @@ pub fn boolean_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         } else if arg.is_int() {
             arg.as_int() != 0
         } else if arg.is_double() {
-            arg.as_double() != 0.0
+            // NaN 按规范为 falsy（isNaN 与 != 0.0 的判定顺序即 ToBoolean 语义）。
+            !arg.as_double().is_nan() && arg.as_double() != 0.0
+        } else if arg.is_symbol() {
+            true
+        } else if arg.is_bigint() {
+            // SAFETY: arg 已确认是 BigInt 值，其 box 存活至 full_reset。
+            !unsafe { oxide_runtime_api::bigint_data(arg) }.is_zero()
         } else {
             false
         }
