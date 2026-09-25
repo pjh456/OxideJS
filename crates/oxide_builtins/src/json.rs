@@ -10,8 +10,9 @@ use crate::object::walk_own_keys;
 
 use oxide_runtime_api::{NativeResult, VmHost};
 
-/// `JSON.parse(text, reviver)`：解析 JSON 文本为 JS 值（经 serde_json）。
-/// 提供 reviver 时以后序遍历逐属性调用 reviver 重建值。
+/// `JSON.parse(text, reviver)`：解析 JSON 文本为 JS 值（递归下降解析器，
+/// 逐原始值记录精确源文本切片）。提供 reviver 时以后序遍历逐属性调用
+/// reviver 重建值，第三参 context 对象携带 `source` 属性。
 ///
 /// `text` 经 `? ToString` 强转：对象走 ToPrimitive（string hint），Symbol
 /// 抛 TypeError，强转期用户异常原值传播。
@@ -34,12 +35,12 @@ pub fn json_parse<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         unsafe { (*text_val.as_string_ptr()).to_owned_string() }
     };
 
-    let parsed: serde_json::Value = match serde_json::from_str(&text) {
+    let parsed = match parse_json(&text) {
         Ok(v) => v,
-        Err(e) => return NativeResult::Err(crate::error::create_syntax_error(vm, &format!("{}", e))),
+        Err(msg) => return NativeResult::Err(crate::error::create_syntax_error(vm, &msg)),
     };
 
-    let mut result = value_to_jsvalue(vm, &parsed);
+    let mut result = build_js_value(vm, &parsed);
 
     // reviver 遍历以 holder 包装对象为根：解析得到的根值存于空串键槽，
     // 后序遍历自该槽展开。返回值 = 根级 reviver 返回值原样（wrapper 的
@@ -52,7 +53,7 @@ pub fn json_parse<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
                 let empty_si = vm.kernel_core().perm_interner().intern("").0;
                 let holder = create_wrapper(vm, result);
                 let holder_ptr = holder.as_js_object_ptr();
-                result = match walk_reviver(vm, holder_ptr, empty_si, reviver_val) {
+                result = match walk_reviver(vm, holder_ptr, empty_si, reviver_val, Some(&parsed)) {
                     Ok(new_val) => new_val,
                     Err(e) => return NativeResult::Err(e),
                 };
@@ -105,14 +106,17 @@ pub fn json_raw_json<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         return NativeResult::Err(crate::error::create_syntax_error(vm, "Invalid JSON text"));
     }
 
-    // 合法性校验：serde_json 解析失败即非合法 JSON 文本；最外层
+    // 合法性校验：解析失败即非合法 JSON 文本；最外层
     // object/array 不满足 raw JSON 语义。
-    match serde_json::from_str::<serde_json::Value>(&text) {
-        Ok(serde_json::Value::Object(_)) | Ok(serde_json::Value::Array(_)) => {
+    match parse_json(&text) {
+        Ok(JsonNode {
+            kind: JsonKind::Object(_) | JsonKind::Array(_),
+            ..
+        }) => {
             return NativeResult::Err(crate::error::create_syntax_error(vm, "Invalid JSON text"));
         }
         Ok(_) => {}
-        Err(e) => return NativeResult::Err(crate::error::create_syntax_error(vm, &format!("{}", e))),
+        Err(msg) => return NativeResult::Err(crate::error::create_syntax_error(vm, &msg)),
     }
 
     // 建 null 原型对象：rawJSON 属性为唯一自身属性，frozen 形态收尾。
@@ -142,12 +146,334 @@ pub fn json_is_raw_json<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     NativeResult::Ok(JsValue::bool(is_raw))
 }
 
+/// 解析后的 JSON 节点：值 + 精确源文本切片（仅原始值携带）。
+/// 切片供 reviver context 的 `source` 属性与 SameValue-as 判定使用。
+enum JsonKind {
+    Null,
+    Bool(bool),
+    Number(f64),
+    String(String),
+    Array(Vec<JsonNode>),
+    Object(Vec<(String, JsonNode)>),
+}
+
+struct JsonNode {
+    kind: JsonKind,
+    /// 精确源文本切片（数字不规范化、字符串含引号）；array/object 为 `None`。
+    source: Option<String>,
+}
+
+/// 递归下降 JSON 解析器：接受 JSON 文本语法（空白限 TAB/LF/CR/SPACE），
+/// 逐原始值记录精确源文本切片。
+///
+/// # 边界与前提
+/// - 前导零数字、尾随逗号、溢出（1e400）、孤立 surrogate 均报 SyntaxError。
+/// - 重复对象键：末写胜（键序由 build_js_value 统一）。
+fn parse_json(text: &str) -> Result<JsonNode, String> {
+    let mut p = JsonParser { text, pos: 0 };
+    p.skip_ws();
+    let node = p.parse_value()?;
+    p.skip_ws();
+    if p.pos != text.len() {
+        return Err("trailing characters".into());
+    }
+    Ok(node)
+}
+
+struct JsonParser<'a> {
+    text: &'a str,
+    pos: usize,
+}
+
+impl<'a> JsonParser<'a> {
+    fn skip_ws(&mut self) {
+        while self.pos < self.text.len() {
+            match self.text.as_bytes()[self.pos] {
+                b' ' | b'\t' | b'\n' | b'\r' => self.pos += 1,
+                _ => break,
+            }
+        }
+    }
+
+    fn peek(&self) -> Option<u8> {
+        self.text.as_bytes().get(self.pos).copied()
+    }
+
+    fn peek_char(&self) -> Option<char> {
+        self.text.get(self.pos..).and_then(|s| s.chars().next())
+    }
+
+    /// 以当前游标为终点物化原始值节点（源切片 = `start..pos`）。
+    fn prim(&self, kind: JsonKind, start: usize) -> JsonNode {
+        JsonNode {
+            kind,
+            source: Some(self.text[start..self.pos].to_string()),
+        }
+    }
+
+    fn expect_word(&mut self, word: &str) -> Result<(), String> {
+        let end = self.pos + word.len();
+        if self.text.get(self.pos..end) == Some(word) {
+            self.pos = end;
+            Ok(())
+        } else {
+            Err("invalid literal".into())
+        }
+    }
+
+    fn parse_value(&mut self) -> Result<JsonNode, String> {
+        self.skip_ws();
+        let start = self.pos;
+        let c = self.peek().ok_or_else(|| "unexpected end of input".to_string())?;
+        match c {
+            b'n' => {
+                self.expect_word("null")?;
+                Ok(self.prim(JsonKind::Null, start))
+            }
+            b't' => {
+                self.expect_word("true")?;
+                Ok(self.prim(JsonKind::Bool(true), start))
+            }
+            b'f' => {
+                self.expect_word("false")?;
+                Ok(self.prim(JsonKind::Bool(false), start))
+            }
+            b'"' => {
+                let s = self.parse_string()?;
+                Ok(self.prim(JsonKind::String(s), start))
+            }
+            b'[' => {
+                let items = self.parse_array()?;
+                Ok(JsonNode {
+                    kind: JsonKind::Array(items),
+                    source: None,
+                })
+            }
+            b'{' => {
+                let entries = self.parse_object()?;
+                Ok(JsonNode {
+                    kind: JsonKind::Object(entries),
+                    source: None,
+                })
+            }
+            b'-' | b'0'..=b'9' => {
+                let n = self.parse_number()?;
+                Ok(self.prim(JsonKind::Number(n), start))
+            }
+            _ => Err("expected value".into()),
+        }
+    }
+
+    fn parse_array(&mut self) -> Result<Vec<JsonNode>, String> {
+        // 当前字节为 '['。
+        self.pos += 1;
+        let mut items = Vec::new();
+        self.skip_ws();
+        if self.peek() == Some(b']') {
+            self.pos += 1;
+            return Ok(items);
+        }
+        loop {
+            let item = self.parse_value()?;
+            items.push(item);
+            self.skip_ws();
+            match self.peek() {
+                Some(b',') => {
+                    self.pos += 1;
+                    self.skip_ws();
+                    // 尾随逗号：',' 后必须跟值。
+                    if self.peek() == Some(b']') {
+                        return Err("trailing comma".into());
+                    }
+                }
+                Some(b']') => {
+                    self.pos += 1;
+                    return Ok(items);
+                }
+                _ => return Err("expected ',' or ']'".into()),
+            }
+        }
+    }
+
+    fn parse_object(&mut self) -> Result<Vec<(String, JsonNode)>, String> {
+        // 当前字节为 '{'。
+        self.pos += 1;
+        let mut entries = Vec::new();
+        self.skip_ws();
+        if self.peek() == Some(b'}') {
+            self.pos += 1;
+            return Ok(entries);
+        }
+        loop {
+            self.skip_ws();
+            let key = match self.peek() {
+                Some(b'"') => self.parse_string()?,
+                _ => return Err("expected property name".into()),
+            };
+            self.skip_ws();
+            if self.peek() != Some(b':') {
+                return Err("expected ':'".into());
+            }
+            self.pos += 1;
+            let val = self.parse_value()?;
+            entries.push((key, val));
+            self.skip_ws();
+            match self.peek() {
+                Some(b',') => {
+                    self.pos += 1;
+                    self.skip_ws();
+                    // 尾随逗号：',' 后必须跟键。
+                    if self.peek() == Some(b'}') {
+                        return Err("trailing comma".into());
+                    }
+                }
+                Some(b'}') => {
+                    self.pos += 1;
+                    return Ok(entries);
+                }
+                _ => return Err("expected ',' or '}'".into()),
+            }
+        }
+    }
+
+    /// JSON 数字文法：`-?(0|[1-9]digits)(.digits)?([eE][+-]?digits)?`；
+    /// 溢出（1e400）报范围错误，下溢（1e-400）归零。
+    fn parse_number(&mut self) -> Result<f64, String> {
+        let start = self.pos;
+        if self.peek() == Some(b'-') {
+            self.pos += 1;
+        }
+        match self.peek() {
+            Some(b'0') => self.pos += 1,
+            Some(b'1'..=b'9') => {
+                while self.peek().is_some_and(|c| c.is_ascii_digit()) {
+                    self.pos += 1;
+                }
+            }
+            _ => return Err("invalid number".into()),
+        }
+        if self.peek() == Some(b'.') {
+            self.pos += 1;
+            if !self.peek().is_some_and(|c| c.is_ascii_digit()) {
+                return Err("invalid number".into());
+            }
+            while self.peek().is_some_and(|c| c.is_ascii_digit()) {
+                self.pos += 1;
+            }
+        }
+        if let Some(c) = self.peek() {
+            if c == b'e' || c == b'E' {
+                self.pos += 1;
+                if let Some(s) = self.peek() {
+                    if s == b'+' || s == b'-' {
+                        self.pos += 1;
+                    }
+                }
+                if !self.peek().is_some_and(|c| c.is_ascii_digit()) {
+                    return Err("invalid number".into());
+                }
+                while self.peek().is_some_and(|c| c.is_ascii_digit()) {
+                    self.pos += 1;
+                }
+            }
+        }
+        let slice = &self.text[start..self.pos];
+        let n = slice.parse::<f64>().map_err(|_| "invalid number".to_string())?;
+        if !n.is_finite() {
+            return Err("number out of range".into());
+        }
+        Ok(n)
+    }
+
+    fn parse_string(&mut self) -> Result<String, String> {
+        // 当前字节为开引号。
+        self.pos += 1;
+        let mut units: Vec<u16> = Vec::new();
+        loop {
+            let c = self.peek_char().ok_or_else(|| "unterminated string".to_string())?;
+            match c {
+                '"' => {
+                    self.pos += 1;
+                    // 解析期已拒绝孤立 surrogate，单元序列恒为良形 UTF-16。
+                    return Ok(String::from_utf16(&units).expect("no lone surrogate survives parse"));
+                }
+                '\\' => {
+                    self.pos += 1;
+                    let e = self.peek_char().ok_or_else(|| "unterminated escape".to_string())?;
+                    self.pos += 1;
+                    let u = match e {
+                        '"' => 0x22,
+                        '\\' => 0x5C,
+                        '/' => 0x2F,
+                        'b' => 0x08,
+                        'f' => 0x0C,
+                        'n' => 0x0A,
+                        'r' => 0x0D,
+                        't' => 0x09,
+                        'u' => self.parse_unicode_escape()?,
+                        _ => return Err("invalid escape".into()),
+                    };
+                    units.push(u as u16);
+                }
+                c => {
+                    if (c as u32) <= 0x1F {
+                        return Err("unescaped control character in string".into());
+                    }
+                    // 码元编码（含 astral 字符双单元）。
+                    let mut buf = [0u16; 2];
+                    let written = c.encode_utf16(&mut buf);
+                    units.extend_from_slice(written);
+                    self.pos += c.len_utf8();
+                }
+            }
+        }
+    }
+
+    fn parse_unicode_escape(&mut self) -> Result<u32, String> {
+        let hi = self.parse_hex4()?;
+        if (0xD800..=0xDBFF).contains(&hi) {
+            // 代理对：高 surrogate 必须紧跟 \uXXXX 低 surrogate。
+            if self.text.get(self.pos..).is_some_and(|s| s.starts_with("\\u")) {
+                self.pos += 2;
+                let lo = self.parse_hex4()?;
+                if (0xDC00..=0xDFFF).contains(&lo) {
+                    return Ok(0x10000 + ((u32::from(hi) - 0xD800) << 10) + (u32::from(lo) - 0xDC00));
+                }
+                return Err("invalid surrogate pair".into());
+            }
+            return Err("lone leading surrogate in hex escape".into());
+        }
+        if (0xDC00..=0xDFFF).contains(&hi) {
+            return Err("lone leading surrogate in hex escape".into());
+        }
+        Ok(u32::from(hi))
+    }
+
+    fn parse_hex4(&mut self) -> Result<u16, String> {
+        let mut v: u16 = 0;
+        for _ in 0..4 {
+            let c = self.peek_char().ok_or_else(|| "unexpected end of hex escape".to_string())?;
+            let d = c
+                .to_digit(16)
+                .map(|d| d as u16)
+                .ok_or_else(|| "invalid hex digit".to_string())?;
+            v = v * 16 + d;
+            self.pos += 1;
+        }
+        Ok(v)
+    }
+}
+
 /// InternalizeJSONProperty 后序遍历：Get 读当前值 → 递归子节点并把每子返回值
 /// 施加于容器（undefined → [[Delete]]，否则 CreateDataProperty，两失败路径
-/// 静默）→ 调用 reviver。返回值 = 本级 reviver 返回值原样，由父级循环施加
-/// （根级由 json_parse 直接作 parse 结果）。
+/// 静默）→ 构造 context 对象 → 调用 reviver。返回值 = 本级 reviver 返回值
+/// 原样，由父级循环施加（根级由 json_parse 直接作 parse 结果）。
+///
+/// `node` 是本级对应的解析节点（可缺）：子集恒按当前值（容器可被 reviver
+/// 前向改写，键集与解析节点不再重合）；节点仅作子节点映射与 context 的
+/// `source` 属性来源，无节点处按空 context 处理。
 fn walk_reviver<H: VmHost>(
-    vm: &mut H, holder_ptr: *mut JsObject, key_si: u32, reviver: JsValue,
+    vm: &mut H, holder_ptr: *mut JsObject, key_si: u32, reviver: JsValue, node: Option<&JsonNode>,
 ) -> Result<JsValue, JsValue> {
     let holder_val = JsValue::from_js_object(holder_ptr);
 
@@ -170,25 +496,52 @@ fn walk_reviver<H: VmHost>(
                 let len = unsafe { (*obj_ptr).prop_count() } as usize;
                 for i in 0..len {
                     let child_si = make_int_key(i as u32);
-                    let new_val = walk_reviver(vm, obj_ptr, child_si, reviver)?;
+                    let child_node = node.and_then(|n| match &n.kind {
+                        JsonKind::Array(items) => items.get(i),
+                        _ => None,
+                    });
+                    let new_val = walk_reviver(vm, obj_ptr, child_si, reviver, child_node)?;
                     apply_child_result(vm, obj_ptr, child_si, new_val);
                 }
             } else {
+                // 对象臂：节点键经同一键规范化映射 si（重复键末写胜，
+                // 与 build_js_value 一致），容器键逐一按 si 定位节点。
+                let child_nodes = match node {
+                    Some(JsonNode {
+                        kind: JsonKind::Object(entries),
+                        ..
+                    }) => {
+                        let mut seen: Vec<(u32, &JsonNode)> = Vec::new();
+                        for (key, val) in entries {
+                            let si = vm.string_key_si(key);
+                            match seen.iter_mut().find(|(s, _)| *s == si) {
+                                Some(slot) => slot.1 = val,
+                                None => seen.push((si, val)),
+                            }
+                        }
+                        seen
+                    }
+                    _ => Vec::new(),
+                };
                 let keys = {
                     let obj = unsafe { &*obj_ptr };
                     walk_own_keys(vm, obj)
                 };
                 for (child_si, _child_pos) in keys {
-                    let new_val = walk_reviver(vm, obj_ptr, child_si, reviver)?;
+                    let child_node = child_nodes.iter().find(|(s, _)| *s == child_si).map(|(_, n)| *n);
+                    let new_val = walk_reviver(vm, obj_ptr, child_si, reviver, child_node)?;
                     apply_child_result(vm, obj_ptr, child_si, new_val);
                 }
             }
         }
     }
 
+    // context 对象：仅当当前值与解析时值 SameValue-as 时携带 source。
+    let context = build_context(vm, val, node);
+
     // 对当前值调用 reviver，返回值上抛由父级施加。
     let key_val = crate::object::key_si_to_js_value(vm, key_si);
-    match vm.call_function_sync(reviver, holder_val, &[key_val, val]) {
+    match vm.call_function_sync(reviver, holder_val, &[key_val, val, context]) {
         Ok(new_val) => Ok(new_val),
         Err(msg) => {
             // reviver 内抛出的原始值原样传播（不折叠为 TypeError 文本）。
@@ -197,6 +550,57 @@ fn walk_reviver<H: VmHost>(
                 .unwrap_or_else(|| crate::error::create_type_error(vm, &msg));
             Err(exc)
         }
+    }
+}
+
+/// 构造 reviver 的 context 对象：普通对象（proto = Object.prototype）。
+/// 仅当节点带源切片且 `val` 与解析时值 SameValue-as 时注入 own `source`
+/// 属性（w/e/c 全 true）——被 reviver 前向替换的值、array/object 节点
+/// 与无节点处一律空 context。
+fn build_context<H: VmHost>(vm: &mut H, val: JsValue, node: Option<&JsonNode>) -> JsValue {
+    let object_proto = vm.session().builtin_world().object_proto.as_ptr() as *mut JsObject;
+    let mut obj = JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(object_proto));
+    if let Some(n) = node {
+        if let Some(src) = n.source.as_ref() {
+            if same_value_as(vm, val, n) {
+                let source_si = vm.kernel_core().perm_interner().intern("source").0;
+                let new_shape = vm.kernel_core().shape_forge().make_shape(obj.shape_id(), source_si);
+                obj.set_shape_id(new_shape);
+                obj.ensure_hash_props().push(vm.new_string(src));
+            }
+        }
+    }
+    let obj_ptr = vm.alloc_object(obj);
+    JsValue::from_js_object(obj_ptr)
+}
+
+/// SameValue-as 判定（当前值 vs 解析时值）：数字区分 +0/-0、NaN 自反；
+/// 字符串按内容比；布尔/null 按值。
+fn same_value_as<H: VmHost>(vm: &H, val: JsValue, node: &JsonNode) -> bool {
+    match &node.kind {
+        JsonKind::Null => val.is_null(),
+        JsonKind::Bool(b) => val.is_bool() && val.as_bool() == *b,
+        JsonKind::Number(n) => val.is_double() && same_value_number(val.as_double(), *n),
+        JsonKind::String(s) => {
+            if !val.is_string() {
+                return false;
+            }
+            let parsed: Vec<u16> = s.encode_utf16().collect();
+            vm.string_units(val).as_ref() == parsed.as_slice()
+        }
+        _ => false,
+    }
+}
+
+fn same_value_number(a: f64, b: f64) -> bool {
+    if a.is_nan() {
+        return b.is_nan();
+    }
+    if a == b {
+        // SameValue：+0 与 -0 不相等。
+        a != 0.0 || a.is_sign_positive() == b.is_sign_positive()
+    } else {
+        false
     }
 }
 
@@ -216,42 +620,48 @@ fn apply_child_result<H: VmHost>(vm: &mut H, child_ptr: *mut JsObject, child_si:
     }
 }
 
-fn value_to_jsvalue<H: VmHost>(vm: &mut H, val: &serde_json::Value) -> JsValue {
-    match val {
-        serde_json::Value::Null => JsValue::null(),
-        serde_json::Value::Bool(b) => JsValue::bool(*b),
-        serde_json::Value::Number(n) => {
-            if let Some(f) = n.as_f64() {
-                JsValue::float(f)
-            } else {
-                JsValue::float(0.0)
-            }
-        }
-        serde_json::Value::String(s) => vm.new_string(s),
-        serde_json::Value::Array(arr) => {
+/// 解析节点树 → JS 值树。对象键经同一字符串规范化（规范数字串映射整数键），
+/// 重复键末写胜、键序字典序（与旧解析器语义一致）。
+fn build_js_value<H: VmHost>(vm: &mut H, node: &JsonNode) -> JsValue {
+    match &node.kind {
+        JsonKind::Null => JsValue::null(),
+        JsonKind::Bool(b) => JsValue::bool(*b),
+        JsonKind::Number(n) => JsValue::float(*n),
+        JsonKind::String(s) => vm.new_string(s),
+        JsonKind::Array(items) => {
             let array_proto = vm.session().builtin_world().array_proto.as_ptr() as *mut JsObject;
-            let n = arr.len();
+            let n = items.len();
             let array_obj = vm.alloc_object(JsObject::new_array(
                 EMPTY_SHAPE_ID,
                 JsValue::from_js_object(array_proto),
                 n,
                 vm.epoch().bump(),
             ));
-            for (i, v) in arr.iter().enumerate() {
-                let jsv = value_to_jsvalue(vm, v);
+            for (i, item) in items.iter().enumerate() {
+                let jsv = build_js_value(vm, item);
                 unsafe {
                     (*array_obj).set_prop_at(i, jsv);
                 }
             }
             JsValue::from_js_object(array_obj)
         }
-        serde_json::Value::Object(map) => {
+        JsonKind::Object(entries) => {
+            // 重复键末写胜；键序字典序（与旧解析器语义一致）。
+            let mut unique: Vec<(&String, &JsonNode)> = Vec::new();
+            for (key, val) in entries {
+                match unique.iter_mut().find(|(k, _)| *k == key.as_str()) {
+                    Some(slot) => slot.1 = val,
+                    None => unique.push((key, val)),
+                }
+            }
+            unique.sort_by(|a, b| a.0.cmp(b.0));
+
             let object_proto = vm.session().builtin_world().object_proto.as_ptr() as *mut JsObject;
             let mut obj = JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(object_proto));
-            for (key, val) in map {
+            for (key, val) in unique {
                 // 键经字符串规范化：规范数字串（"0"/"5"）映射整数键，与属性访问统一。
                 let si = vm.string_key_si(key);
-                let jsv = value_to_jsvalue(vm, val);
+                let jsv = build_js_value(vm, val);
                 let new_shape = vm.kernel_core().shape_forge().make_shape(obj.shape_id(), si);
                 obj.set_shape_id(new_shape);
                 obj.ensure_hash_props().push(jsv);
