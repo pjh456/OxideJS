@@ -702,8 +702,8 @@ fn symbol_entries_accept_plain_object_this() {
         "(() => { var o = { exec: function() { return { index: 2 }; } }; return RegExp.prototype[Symbol.search].call(o, 'abcd'); })()",
     )
     .unwrap();
-    // ToNumber 结果为浮点形态（2.0）。
-    assert_eq!(result.as_double(), 2.0);
+    // 匹配位置为整数形态（与无匹配臂的 -1 同口径）。
+    assert_eq!(result.as_int(), 2);
 }
 
 #[test]

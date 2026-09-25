@@ -380,6 +380,18 @@ fn set_prop_by_si<H: VmHost>(obj: &mut JsObject, prop_name_si: u32, val: JsValue
     obj.ensure_hash_props().push(val);
 }
 
+/// 规范化 flags 顺序为规范序（d g i m s u v y）：同一组 flag 不论书写顺序
+/// 恒得同一串，保证 `flags`/`toString` 输出与 V8 一致。
+fn normalize_flags(flags: &str) -> String {
+    let mut out = String::new();
+    for c in ['d', 'g', 'i', 'm', 's', 'u', 'v', 'y'] {
+        if flags.contains(c) {
+            out.push(c);
+        }
+    }
+    out
+}
+
 /// `RegExp(pattern, flags)` 构造逻辑：用 regress 引擎编译模式（ECMAScript 语法，
 /// 支持 backreference/lookaround/命名组/v-flag）；非法模式抛 SyntaxError。
 /// 编译结果存于对象的 native_fn 槽。
@@ -436,7 +448,8 @@ pub fn regexp_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         (Vec::<u16>::new(), Vec::<u16>::new())
     };
     let pattern = String::from_utf16_lossy(&pattern_units);
-    let flags = String::from_utf16_lossy(&flags_units);
+    let flags = normalize_flags(&String::from_utf16_lossy(&flags_units));
+    let flags_units = flags.encode_utf16().collect::<Vec<u16>>();
 
     // u 与 v 互斥（regress 不校验此约束）：编译前置抛 SyntaxError。
     if flags.contains('u') && flags.contains('v') {
@@ -1528,7 +1541,8 @@ pub fn regexp_symbol_search<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult 
         Ok(n) => n,
         Err(_) => return NativeResult::Err(crate::iterator::engine_error(vm, "cannot convert index")),
     };
-    NativeResult::Ok(JsValue::float(n))
+    // 匹配位置恒为非负整数，与无匹配臂的 -1（int）同口径。
+    NativeResult::Ok(JsValue::int(n as i32))
 }
 
 /// SameValue(val, +0)：严格口径，-0 与 +0 不同（规范步骤用 SameValue 非

@@ -524,10 +524,27 @@ pub fn string_match_fn<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
             Err(e) => NativeResult::Err(crate::iterator::engine_error(vm, &e)),
         };
     }
-    // 非正则模式：Construct %RegExp%（undefined → 空模式、其余经 ToString），
-    // 再 GetMethod(rx, @@match) + Invoke；转换抛错（含 Symbol）原样传播。
+    // string 值物化一次（text 借用至此结束），供下方两臂共用。
     let s_units = text.units().into_owned();
     let s_val = vm.new_string_units_owned(s_units);
+    // 对象模式：GetMethod(pattern, @@match) 先于构造（规范序）；matcher 非
+    // undefined 则 Call(matcher, pattern, «string») 原值返回（自定义对象与
+    // 自置 @@match 的载体均走此臂）。
+    if pattern_val.is_object() {
+        let matcher = match rx_get_match_method_opt(vm, pattern_val.as_js_object_ptr(), pattern_val) {
+            Ok(m) => m,
+            Err(e) => return NativeResult::Err(e),
+        };
+        if let Some(matcher) = matcher {
+            return match vm.call_function_sync(matcher, pattern_val, &[s_val]) {
+                Ok(r) => NativeResult::Ok(r),
+                Err(e) => NativeResult::Err(crate::iterator::engine_error(vm, &e)),
+            };
+        }
+    }
+    // 非对象 / matcher undefined：Construct %RegExp%（undefined → 空模式、其余
+    // 经 ToString），再 GetMethod(rx, @@match) + Invoke；转换抛错（含 Symbol）
+    // 原样传播。
     let regexp_ctor = vm.session().builtin_world().regexp_constructor.as_ptr() as *mut JsObject;
     let rx_val = match vm.construct_ctor(JsValue::from_js_object(regexp_ctor), &[pattern_val]) {
         Ok(v) => v,
@@ -563,46 +580,104 @@ fn rx_get_match_method<H: VmHost>(vm: &mut H, rx: *mut JsObject, this_val: JsVal
     Ok(matcher)
 }
 
+/// GetMethod(rx, @@match) 的 Option 形态：undefined/null 返回 None（落构造
+/// 路径），不可调用抛 TypeError，属性读抛错恢复原异常值。
+fn rx_get_match_method_opt<H: VmHost>(
+    vm: &mut H, rx: *mut JsObject, this_val: JsValue,
+) -> Result<Option<JsValue>, JsValue> {
+    let match_key = oxide_types::private_key::make_well_known_symbol_key(1);
+    let func = match vm.ordinary_get(unsafe { &*rx }, match_key, this_val) {
+        Ok(v) => v,
+        Err(e) => return Err(crate::iterator::engine_error(vm, &e)),
+    };
+    if func.is_undefined() || func.is_null() {
+        return Ok(None);
+    }
+    if !crate::iterator::is_callable(func) {
+        return Err(crate::error::create_type_error(vm, "Symbol.match is not callable"));
+    }
+    Ok(Some(func))
+}
+
+/// GetMethod(rx, @@search)：undefined/null 返回 None（落构造路径），不可调用
+/// 抛 TypeError，属性读抛错恢复原异常值。
+fn rx_get_search_method<H: VmHost>(
+    vm: &mut H, rx: *mut JsObject, this_val: JsValue,
+) -> Result<Option<JsValue>, JsValue> {
+    let search_key = oxide_types::private_key::make_well_known_symbol_key(3);
+    let func = match vm.ordinary_get(unsafe { &*rx }, search_key, this_val) {
+        Ok(v) => v,
+        Err(e) => return Err(crate::iterator::engine_error(vm, &e)),
+    };
+    if func.is_undefined() || func.is_null() {
+        return Ok(None);
+    }
+    if !crate::iterator::is_callable(func) {
+        return Err(crate::error::create_type_error(vm, "Symbol.search is not callable"));
+    }
+    Ok(Some(func))
+}
+
 /// `String.prototype.search(pattern)`：返回首个匹配位置（码元），无匹配返回 -1。
+///
+/// # 步骤
+/// 1. string = ToString(this)（转换异常传播）。
+/// 2. pattern 为对象时：GetMethod(pattern, @@search)，searcher 非 undefined 则
+///    Call(searcher, pattern, «string») 原值返回（真 RegExp 默认 @@search 与
+///    自定义对象均走此臂）。
+/// 3. Construct %RegExp%（null/undefined 映射对应文本，其余经 ToString）→
+///    GetMethod(rx, @@search) + Invoke(rx, «string»）。
+///
+/// # 边界与前提
+/// - 无参 / null 模式走构造路径：空模式命中串头返回 0。
+/// - 构造路径不预转换 pattern：构造器内部完成 ToString（异常原样传播）。
 pub fn string_search<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("String.prototype.search called with {} args", args.len());
-    // 参数读取守卫先行：无参调用缺省 searchString 为 undefined（args 仅含 this 槽）。
     let pattern_val = if args.len() >= 2 { vm.reg(args[1]) } else { JsValue::undefined() };
-
-    // 正则判定与参数转换先行（&mut 路径），后借 this 扫描。
-    let is_re = args.len() >= 2 && is_regexp_obj(pattern_val, vm);
-    let pattern: Vec<u16> = if args.len() >= 2 && !is_re {
-        try_string!(as_units(vm, pattern_val)).into_owned()
-    } else {
-        Vec::new()
-    };
     let text = try_string!(this_text(vm, args));
-    if args.len() < 2 {
-        return NativeResult::Ok(JsValue::int(-1));
-    }
-    if is_re {
-        let re_ptr = pattern_val.as_js_object_ptr();
-        let re = unsafe { &*re_ptr };
-        let fn_ptr = match re.native_fn() {
-            Some(p) => p,
-            None => return NativeResult::Ok(JsValue::int(-1)),
+    // string 值物化（text 借用结束），供下方两臂共用。
+    let s_units = text.units().into_owned();
+    let s_val = vm.new_string_units_owned(s_units);
+
+    // 对象模式：GetMethod(pattern, @@search) 先于构造（规范序）；searcher 非
+    // undefined 则 Call(searcher, pattern, «string») 原值返回。
+    if pattern_val.is_object() {
+        let searcher = match rx_get_search_method(vm, pattern_val.as_js_object_ptr(), pattern_val) {
+            Ok(m) => m,
+            Err(e) => return NativeResult::Err(e),
         };
-        // SAFETY: fn_ptr 持有 regexp_constructor 存放的 `Box<regress::Regex>` 指针。
-        let regex = unsafe { &*(fn_ptr.as_ptr() as *const regress::Regex) };
-        if let Some(m) = text.find_from_units(regex, 0) {
-            return NativeResult::Ok(JsValue::int(text.unit_pos(m.range().start) as i32));
+        if let Some(searcher) = searcher {
+            return match vm.call_function_sync(searcher, pattern_val, &[s_val]) {
+                Ok(r) => NativeResult::Ok(r),
+                Err(e) => NativeResult::Err(crate::iterator::engine_error(vm, &e)),
+            };
         }
-        return NativeResult::Ok(JsValue::int(-1));
     }
-    // 空模式命中串头（规格口径）。
-    if pattern.is_empty() {
-        return NativeResult::Ok(JsValue::int(0));
+
+    // 非对象 / searcher undefined：Construct %RegExp% + GetMethod(rx, @@search)
+    // + Invoke(rx, «string»）；转换抛错（含 Symbol）原样传播。
+    let regexp_ctor = vm.session().builtin_world().regexp_constructor.as_ptr() as *mut JsObject;
+    let rx_val = match vm.construct_ctor(JsValue::from_js_object(regexp_ctor), &[pattern_val]) {
+        Ok(v) => v,
+        Err(e) => return NativeResult::Err(e),
+    };
+    if !rx_val.is_object() {
+        return NativeResult::Err(crate::error::create_type_error(
+            vm,
+            "search pattern constructor must return an object",
+        ));
     }
-    let s = text.units();
-    if let Some(pos) = find_units(&s, &pattern, 0) {
-        return NativeResult::Ok(JsValue::int(pos as i32));
+    let searcher = match rx_get_search_method(vm, rx_val.as_js_object_ptr(), rx_val) {
+        Ok(m) => m,
+        Err(e) => return NativeResult::Err(e),
+    };
+    match searcher {
+        Some(searcher) => match vm.call_function_sync(searcher, rx_val, &[s_val]) {
+            Ok(r) => NativeResult::Ok(r),
+            Err(e) => NativeResult::Err(crate::iterator::engine_error(vm, &e)),
+        },
+        None => NativeResult::Err(crate::error::create_type_error(vm, "RegExp @@search is not callable")),
     }
-    NativeResult::Ok(JsValue::int(-1))
 }
 
 /// `String.prototype.isWellFormed()`：字符串无孤立 surrogate（每个码元要么是
@@ -659,14 +734,22 @@ pub fn string_to_well_formed<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult
 pub fn string_normalize<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("String.prototype.normalize called with {} args", args.len());
     use unicode_normalization::UnicodeNormalization;
-    let form = if args.len() > 1 {
-        try_string!(as_units(vm, vm.reg(args[1]))).into_owned()
-    } else {
+    // form 缺省或 undefined 按 "NFC" 处理（规范第 3 步），其余经 ToString。
+    let form_val = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
+    let form = if form_val.is_undefined() {
         "NFC".encode_utf16().collect()
+    } else {
+        try_string!(as_units(vm, form_val)).into_owned()
     };
     // 规范化形式名按良形文本比对（NFC 等名无孤立 surrogate）。
     let form_name = String::from_utf16_lossy(&form);
+    // this 转换先于 form 校验（规范第 2 步先于第 4 步）。
     let s = try_string!(this_units(vm, args));
+    // form 非四合法值抛 RangeError。
+    match form_name.as_str() {
+        "NFC" | "NFD" | "NFKC" | "NFKD" => {}
+        _ => return NativeResult::Err(crate::error::create_range_error(vm, "normalize form is not valid")),
+    }
     let out = map_well_formed_segments(&s, |seg| match form_name.as_str() {
         "NFD" => seg.nfd().collect(),
         "NFKC" => seg.nfkc().collect(),

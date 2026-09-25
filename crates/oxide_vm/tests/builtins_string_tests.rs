@@ -202,19 +202,19 @@ fn string_search_not_found() {
 }
 
 #[test]
-fn string_search_no_args_returns_minus_one() {
-    // 无参调用缺省 searchString：args 仅含 this 槽，守卫返回 -1，不越界 panic。
+fn string_search_no_args_returns_zero() {
+    // 无参调用缺省 searchString 为 undefined：空模式命中串头返回 0。
     let mut vm = Vm::new();
     let result = eval(&mut vm, "'abc'.search()").unwrap();
-    assert_eq!(result.as_int(), -1);
+    assert_eq!(result.as_int(), 0);
 }
 
 #[test]
-fn string_search_undefined_arg_returns_minus_one() {
-    // 显式 undefined 参数：ToString(undefined)="undefined"，在 "abc" 中无匹配返回 -1。
+fn string_search_undefined_arg_returns_zero() {
+    // 显式 undefined 参数：空模式命中串头返回 0。
     let mut vm = Vm::new();
     let result = eval(&mut vm, "'abc'.search(undefined)").unwrap();
-    assert_eq!(result.as_int(), -1);
+    assert_eq!(result.as_int(), 0);
 }
 
 #[test]
@@ -227,13 +227,13 @@ fn string_search_empty_pattern_returns_zero() {
 
 #[test]
 fn string_no_arg_guard_family_consistent() {
-    // 缺参时 searchString 按 ToString(undefined)="undefined" 参与查找——'abc'
-    // 不含 "undefined"，indexOf 得 -1、includes/startsWith/endsWith 得 false
-    // （"undefined" 命中的判别断言见 string_missing_arg_searches_undefined）；
-    // search 缺参仍走旧守卫返回 -1。
+    // 缺参时 search 按空模式命中串头得 0；indexOf 按 ToString(undefined)=
+    // "undefined" 参与查找——'abc' 不含 "undefined" 得 -1、includes/startsWith/
+    // endsWith 得 false（"undefined" 命中的判别断言见
+    // string_missing_arg_searches_undefined）。
     let mut vm = Vm::new();
     let result = eval(&mut vm, "'abc'.search()").unwrap();
-    assert_eq!(result.as_int(), -1);
+    assert_eq!(result.as_int(), 0);
     let result = eval(&mut vm, "'abc'.indexOf()").unwrap();
     assert_eq!(result.as_int(), -1);
     let result = eval(&mut vm, "'abc'.includes()").unwrap();
