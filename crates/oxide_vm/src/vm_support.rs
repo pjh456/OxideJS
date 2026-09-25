@@ -504,7 +504,7 @@ impl Vm {
     pub(crate) fn clear_execution_state(&mut self) {
         // 重置契约：
         // - 清空寄存器文件、pc、帧/迭代器栈、保存的执行栈、try 处理器、
-        //   待处理异常与 native 调用深度。
+        //   待处理异常、native 调用深度与 IC 命中/未命中计数。
         // - 保留 kernel 共享状态不变。
         // - `reset()` 额外清空 bytecode/constants 并重置 epoch 归属。
         self.regs = [JsValue::undefined(); 256];
@@ -550,6 +550,10 @@ impl Vm {
         self.job_queue.clear();
         // Atomics waiter 表同属执行期状态：未结算 promise 清位后无强根。
         self.atomics_waiters.clear();
+        // IC 命中/未命中计数是执行期状态：池化 Vm 跨 run 复用，不清零则
+        // per-run 指标（ic_hit_rate）跨文件累积，报告失真。
+        self.profiling.ic_hits.set(0);
+        self.profiling.ic_misses.set(0);
     }
 
     /// 轻量重置：清空执行状态并回收 epoch 内存，但保留 session 字符串与 builtin。
