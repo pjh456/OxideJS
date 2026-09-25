@@ -51,9 +51,11 @@ fn for_in_null_does_not_throw() {
 }
 
 #[test]
-fn for_in_number_primitive_currently_throws() {
-    // 过渡行为：非 null/undefined 基本类型的 ToObject 强转尚未实现，
-    // 因此数字右侧仍抛 TypeError。ToObject 落地后它应变成空循环，届时本断言需变更。
-    let out = eval("for(var k in 42){}");
-    assert!(out.contains("TypeError"), "expected TypeError for number primitive, got: {out}");
+fn for_in_number_primitive_empty_loop() {
+    // 右值经 ToObject 装箱：数字盒无自身可枚举属性，空循环。
+    assert_eq!(
+        eval("var r=0;for(var k in 42){r=r+1;}r"),
+        "0",
+        "for-in number primitive iterates zero times"
+    );
 }

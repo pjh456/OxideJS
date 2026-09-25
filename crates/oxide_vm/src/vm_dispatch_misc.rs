@@ -461,7 +461,7 @@ impl Vm {
 
     pub(crate) fn dispatch_for_in_init(&mut self, a: usize) -> Result<(), String> {
         vm_trace!("FOR_IN_INIT r{}={:?}", a, self.regs[a]);
-        let obj_val = self.regs[a];
+        let mut obj_val = self.regs[a];
         if obj_val.is_null() || obj_val.is_undefined() {
             // null/undefined 枚举不到任何键——是空 for-in，而非 TypeError。
             let keys_vec: bumpalo::collections::Vec<(JsValue, u32)> =
@@ -471,8 +471,8 @@ impl Vm {
             return Ok(());
         }
         if !obj_val.is_object() {
-            // 未支持：其它基本类型的 ToObject 强转尚未实现，在此之前抛 TypeError 是正确行为。
-            return self.raise_type_error("for-in right-hand side is not an object");
+            // ToObject：字符串盒构造期已物化索引属性面，其余原始值盒无自身可枚举属性。
+            obj_val = oxide_runtime_api::to_object(obj_val, self)?;
         }
 
         let mut keys_vec: Vec<(JsValue, u32)> = Vec::new();

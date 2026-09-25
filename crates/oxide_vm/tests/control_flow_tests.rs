@@ -177,9 +177,9 @@ fn eval_for_in_empty_object() {
 }
 
 #[test]
-fn eval_for_in_non_object_throws() {
-    let result = eval("for (k in 42) {}");
-    assert!(result.contains("TypeError"), "expected TypeError, got: {result}");
+fn eval_for_in_primitive_number() {
+    // 右值经 ToObject 装箱后枚举：数字盒无自身可枚举属性，空枚举。
+    assert_eq!(eval("var n=0; for (k in 42) { n=n+1; } n"), "0");
 }
 
 #[test]

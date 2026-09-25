@@ -1,8 +1,9 @@
 //! 字符串盒（String exotic）构造期物化钉测：`boxed_value` 专属载荷与字符索引/
 //! length 固有属性面。覆盖 test262 盒面红转绿的语义面——索引/length 读、in/
-//! 枚举、描述符、seal/freeze、defineProperty 同值改写放行/异值与属性面变更
-//! 拒绝、写保护（strict/sloppy）、delete 返 false、Object.assign/解构消费面、
-//! %StringPrototype% 自身盒面、迭代器/Array.from 载荷读、@@toStringTag 覆盖。
+//! 枚举、for-in 原始值右值装箱、描述符、seal/freeze、defineProperty 同值改写
+//! 放行/异值与属性面变更拒绝、写保护（strict/sloppy）、delete 返 false、
+//! Object.assign/解构消费面、%StringPrototype% 自身盒面、迭代器/Array.from 载荷读、
+//! @@toStringTag 覆盖。
 //!
 //! 语义对齐规范 String exotic：索引属性 writable:false / enumerable:true /
 //! configurable:false，length writable:false / enumerable:false /
@@ -62,6 +63,28 @@ fn forin_enumerates_indexes_only() {
     let r = eval(
         &mut vm,
         "(function(){ const s = new String('ab'); const keys = []; for (const k in s) keys.push(k); return keys.length === 2 && keys[0] === '0' && keys[1] === '1'; })()",
+    )
+    .unwrap();
+    assert!(r.as_bool());
+}
+
+#[test]
+fn forin_primitive_string() {
+    let mut vm = Vm::new();
+    let r = eval(
+        &mut vm,
+        "(function(){ const keys = []; for (const k in 'ab') keys.push(k); return keys.length === 2 && keys[0] === '0' && keys[1] === '1'; })()",
+    )
+    .unwrap();
+    assert!(r.as_bool());
+}
+
+#[test]
+fn forin_primitive_no_keys() {
+    let mut vm = Vm::new();
+    let r = eval(
+        &mut vm,
+        "(function(){ const a = []; for (const k in 5) a.push(k); const b = []; for (const k in true) b.push(k); const c = []; for (const k in '') c.push(k); return a.length === 0 && b.length === 0 && c.length === 0; })()",
     )
     .unwrap();
     assert!(r.as_bool());
