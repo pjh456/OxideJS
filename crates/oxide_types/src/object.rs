@@ -216,6 +216,9 @@ impl JsObject {
     /// WeakMap 对象：条目表（弱键 → 强值）存于 `native_data`。键为弱边
     /// （GC mark 不产边），值为强边。
     pub const OBJ_TYPE_WEAK_MAP: u8 = 31;
+    /// Raw JSON 对象（`JSON.rawJSON` 产物）：null 原型、frozen，唯一自身属性
+    /// `rawJSON` 存原始 JSON 文本（不可写、不可配置）；无原生载荷盒。
+    pub const OBJ_TYPE_RAW_JSON: u8 = 32;
     /// `is_session_epoch` 字段中的 session 标记位。
     pub const SESSION_EPOCH_BIT: u8 = 0x01;
     /// `is_session_epoch` 字段中的 GC 标记位。
@@ -285,6 +288,11 @@ impl JsObject {
     #[inline]
     pub fn is_weak_map_obj(&self) -> bool {
         self.type_tag == Self::OBJ_TYPE_WEAK_MAP
+    }
+    /// 是否 Raw JSON 对象（`JSON.rawJSON` 产物，序列化时直接输出原始文本）。
+    #[inline]
+    pub fn is_raw_json_obj(&self) -> bool {
+        self.type_tag == Self::OBJ_TYPE_RAW_JSON
     }
     /// 是否 DataView 对象。
     #[inline]

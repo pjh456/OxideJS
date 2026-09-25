@@ -12,17 +12,26 @@ use oxide_runtime_api::{NativeResult, VmHost};
 
 /// `JSON.parse(text, reviver)`：解析 JSON 文本为 JS 值（经 serde_json）。
 /// 提供 reviver 时以后序遍历逐属性调用 reviver 重建值。
+///
+/// `text` 经 `? ToString` 强转：对象走 ToPrimitive（string hint），Symbol
+/// 抛 TypeError，强转期用户异常原值传播。
 pub fn json_parse<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     if args.len() < 2 {
         return NativeResult::Err(crate::error::create_syntax_error(vm, "JSON.parse requires 1 argument"));
     }
-    let val = vm.reg(args[1]);
-    if !val.is_string() {
-        return NativeResult::Err(crate::error::create_syntax_error(vm, "JSON.parse: argument is not a string"));
-    }
+    let text_val = match oxide_runtime_api::to_string_value_full(vm.reg(args[1]), vm) {
+        Ok(v) => v,
+        Err(_) => {
+            // 强转期用户异常原值重抛；Symbol 无在途异常，按规范构造 TypeError。
+            if let Some(exc) = vm.take_uncaught_value() {
+                return NativeResult::Err(exc);
+            }
+            return NativeResult::Err(crate::error::create_type_error(vm, "Cannot convert a Symbol value to a string"));
+        }
+    };
     let text = {
-        // SAFETY: val 已确认是字符串值。
-        unsafe { (*val.as_string_ptr()).to_owned_string() }
+        // SAFETY: text_val 已确认是字符串值。
+        unsafe { (*text_val.as_string_ptr()).to_owned_string() }
     };
 
     let parsed: serde_json::Value = match serde_json::from_str(&text) {
@@ -52,6 +61,85 @@ pub fn json_parse<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     }
 
     NativeResult::Ok(result)
+}
+
+/// rawJSON 对象禁止的首/末 code unit 集：TAB/LF/CR/SPACE。
+const RAW_JSON_FORBIDDEN_EDGE_UNITS: [u16; 4] = [0x09, 0x0A, 0x0D, 0x20];
+
+/// `JSON.rawJSON(text)`：把合法 JSON 文本包装为 raw JSON 对象。
+///
+/// # 步骤
+/// 1. `? ToString(text)`（Symbol 抛 TypeError，对象经 ToPrimitive，用户异常原值传播）。
+/// 2. 空串或首/末 code unit 为 TAB/LF/CR/SPACE 抛 SyntaxError。
+/// 3. 须为合法 JSON 文本且最外层非 object/array，否则 SyntaxError。
+/// 4. 建 null 原型 frozen 对象，唯一自身属性 `rawJSON` = 文本
+///    （writable:false、enumerable:true、configurable:false）。
+///
+/// # 副作用
+/// - 分配一个 session/epoch 对象与其字符串属性值。
+pub fn json_raw_json<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let text_val = match oxide_runtime_api::to_string_value_full(
+        if args.len() >= 2 { vm.reg(args[1]) } else { JsValue::undefined() },
+        vm,
+    ) {
+        Ok(v) => v,
+        Err(_) => {
+            // 强转期用户异常原值重抛；Symbol 无在途异常，按规范构造 TypeError。
+            if let Some(exc) = vm.take_uncaught_value() {
+                return NativeResult::Err(exc);
+            }
+            return NativeResult::Err(crate::error::create_type_error(vm, "Cannot convert a Symbol value to a string"));
+        }
+    };
+    let text = {
+        // SAFETY: text_val 已确认是字符串值。
+        unsafe { (*text_val.as_string_ptr()).to_owned_string() }
+    };
+
+    // 边界字符校验：空串或首/末 code unit 属空白四元之一。
+    let units: Vec<u16> = text.encode_utf16().collect();
+    if units.is_empty()
+        || RAW_JSON_FORBIDDEN_EDGE_UNITS.contains(&units[0])
+        || RAW_JSON_FORBIDDEN_EDGE_UNITS.contains(&units[units.len() - 1])
+    {
+        return NativeResult::Err(crate::error::create_syntax_error(vm, "Invalid JSON text"));
+    }
+
+    // 合法性校验：serde_json 解析失败即非合法 JSON 文本；最外层
+    // object/array 不满足 raw JSON 语义。
+    match serde_json::from_str::<serde_json::Value>(&text) {
+        Ok(serde_json::Value::Object(_)) | Ok(serde_json::Value::Array(_)) => {
+            return NativeResult::Err(crate::error::create_syntax_error(vm, "Invalid JSON text"));
+        }
+        Ok(_) => {}
+        Err(e) => return NativeResult::Err(crate::error::create_syntax_error(vm, &format!("{}", e))),
+    }
+
+    // 建 null 原型对象：rawJSON 属性为唯一自身属性，frozen 形态收尾。
+    let mut obj = JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null());
+    obj.type_tag = JsObject::OBJ_TYPE_RAW_JSON;
+    let raw_si = vm.kernel_core().perm_interner().intern("rawJSON").0;
+    let new_shape = vm.kernel_core().shape_forge().make_shape(obj.shape_id(), raw_si);
+    obj.set_shape_id(new_shape);
+    obj.ensure_hash_props().push(text_val);
+    let obj_ptr = vm.alloc_object(obj);
+    {
+        let obj = unsafe { &mut *obj_ptr };
+        obj.set_data_meta(0, PropAttributes::new(false, true, false));
+        obj.set_frozen(true);
+        obj.set_extensible(false);
+    }
+    NativeResult::Ok(JsValue::from_js_object(obj_ptr))
+}
+
+/// `JSON.isRawJSON(value)`：value 带 raw JSON 类型标签时返回 true，其余一律 false。
+pub fn json_is_raw_json<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let val = if args.len() >= 2 { vm.reg(args[1]) } else { JsValue::undefined() };
+    let is_raw = val.is_object() && {
+        let p = val.as_js_object_ptr();
+        !p.is_null() && unsafe { (*p).is_raw_json_obj() }
+    };
+    NativeResult::Ok(JsValue::bool(is_raw))
 }
 
 /// InternalizeJSONProperty 后序遍历：Get 读当前值 → 递归子节点并把每子返回值
@@ -481,6 +569,19 @@ fn jsvalue_to_json<H: VmHost>(
         if obj_ptr.is_null() {
             out.push_str("null");
             return Ok(());
+        }
+
+        // SerializeJSONProperty 步 1a：raw JSON 对象直接输出原始文本（先于
+        // toJSON 查找；该对象仅一个字符串属性，不可能参与环，免环检）。
+        {
+            let obj = unsafe { &*obj_ptr };
+            if obj.is_raw_json_obj() {
+                let raw_val = obj.get_prop_at(0);
+                // SAFETY: rawJSON 属性构造期即写入字符串值。
+                let raw_text = unsafe { (*raw_val.as_string_ptr()).to_owned_string() };
+                out.push_str(&raw_text);
+                return Ok(());
+            }
         }
 
         if !visited.insert(obj_ptr as *const JsObject) {
