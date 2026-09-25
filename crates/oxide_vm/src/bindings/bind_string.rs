@@ -85,13 +85,14 @@ pub fn bind_string(core: &Arc<KernelCore>, session: &KernelSession, global: &mut
         core,
         &[("toString", oxide_builtins::string::string_to_string::<crate::vm::Vm> as *const (), 0)],
     );
-    // String.prototype[@@iterator]：逐 code point 迭代字符。
+    // String.prototype[@@iterator]：逐 code point 迭代字符；name 属性按规范
+    // 落 "[Symbol.iterator]"。
     super::bind_well_known_method(
         session.builtin_world(),
         core,
         proto,
         0,
-        "iterator",
+        "[Symbol.iterator]",
         oxide_builtins::string::string_symbol_iterator::<crate::vm::Vm> as *const (),
         0,
     );

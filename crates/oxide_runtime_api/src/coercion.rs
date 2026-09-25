@@ -977,8 +977,10 @@ fn string_to_bigint_full<H: VmHost>(host: &mut H, s: &str) -> Result<JsValue, St
     Ok(host.new_bigint(if neg { -m } else { m }))
 }
 
-/// `String()` 构造器的字符串转换（§21.1.1.1）：Symbol 值（及本引擎以空对象表示的
-/// well-known symbol）返回描述串 `Symbol(desc)`；其余走完整 ToString。
+/// `String()` 构造器的字符串转换（§21.1.1.1）：原始 Symbol 值（及本引擎以空对象
+/// 表示的 well-known symbol）返回描述串 `Symbol(desc)`（步骤 2a）；其余走完整
+/// ToString（步骤 3）——装箱 Symbol 的 ToPrimitive 返回 Symbol 本体，ToString 抛
+/// TypeError。
 pub fn to_string_for_string_constructor<H: VmHost>(val: JsValue, host: &mut H) -> Result<String, String> {
     if val.is_object() {
         if let Some(id) = well_known_symbol_id(host, val.as_js_object_ptr()) {
@@ -987,10 +989,15 @@ pub fn to_string_for_string_constructor<H: VmHost>(val: JsValue, host: &mut H) -
             }
         }
     }
+    // 原始 Symbol：步骤 2a，SymbolDescriptiveString（不经 ToString）。
+    if val.is_symbol() {
+        let desc = host.symbol_description(val.as_symbol_index()).unwrap_or("");
+        return Ok(format!("Symbol({desc})"));
+    }
+    // 步骤 3：ToString。装箱 Symbol 经 ToPrimitive 得 Symbol 本体，ToString 抛 TypeError。
     let primitive = to_primitive(val, ToPrimitiveHint::String, host)?;
     if primitive.is_symbol() {
-        let desc = host.symbol_description(primitive.as_symbol_index()).unwrap_or("");
-        return Ok(format!("Symbol({desc})"));
+        return Err(host.error_message_text("TypeError", "Cannot convert a Symbol value to a string"));
     }
     Ok(to_string(primitive))
 }

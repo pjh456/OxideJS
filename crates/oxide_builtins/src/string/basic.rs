@@ -137,12 +137,14 @@ pub fn string_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         let v = oxide_runtime_api::to_string_for_string_constructor(v, vm);
         match v {
             Ok(s) => vm.new_string_owned(s),
-            Err(_) => {
+            Err(msg) => {
                 // ToString on an object may throw via toString/valueOf; propagate the original exception.
                 if let Some(exc) = vm.take_uncaught_value() {
                     return NativeResult::Err(exc);
                 }
-                return NativeResult::Err(crate::error::create_type_error(vm, "Cannot convert value to a string"));
+                // 无在途异常时按格式化文本恢复 kind 与消息（装箱 Symbol 走 ToString
+                // 抛 TypeError，消息须与原始异常一致）。
+                return NativeResult::Err(crate::error::create_from_text(vm, &msg));
             }
         }
     } else {
