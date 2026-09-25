@@ -1,11 +1,14 @@
 use oxide_kernel::shape_forge::EMPTY_SHAPE_ID;
-use oxide_types::object::JsObject;
+use oxide_types::object::{JsObject, PropMetaEntry};
 use oxide_types::value::JsValue;
 
 use crate::array::{arraylike_get, from_engine_error, is_constructor_value};
 use crate::object::{delete_own_property, key_si_to_js_value, own_symbol_key_values, walk_own_keys};
 
 use oxide_runtime_api::{to_length, NativeResult, VmHost};
+
+/// 原型链深度上限（与引擎原型链深度上限同值）。
+const MAX_PROTO_CHAIN_DEPTH: usize = 1024;
 
 /// `Reflect.apply(target, thisArgument, argumentsList)`：以指定 this 与参数数组调用函数。
 pub fn reflect_apply<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
@@ -250,13 +253,32 @@ pub fn reflect_prevent_extensions<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeR
     NativeResult::Ok(JsValue::bool(true))
 }
 
-/// `Reflect.set(target, key, value, receiver)`：写入属性；
-/// 不可扩展且属性不存在时返回 false。
+/// `Reflect.set(target, key, value, receiver)`：按 OrdinarySetWithReceiver 语义写入属性。
+///
+/// # 步骤
+/// 1. target 非对象 → TypeError；键转换（ToPropertyKey）异常原值传播。
+/// 2. receiver 缺省为 target；receiver == target（指针判等）或 target 为
+///    TypedArray → 普通写路径（可扩展性 / setter / 只读判定内部完成）。
+/// 3. receiver ≠ target 且 target 为普通对象：target 自身 accessor → 调 setter
+///    （无 setter → false）；自身数据不可写 → false；自身数据可写 → 写 receiver；
+///    无自身 → 原型链首命中同口径，链无命中 → receiver 上新建数据属性。
+///
+/// # 副作用
+/// - 可能写 target/receiver 属性存储；可能执行用户 setter 代码。
+///
+/// # 注意事项
+/// - setter 抛出原值重抛（专用槽）；纯写失败（只读 / 不可扩展 / 非对象
+///   receiver）投影为 false。
+/// - TypedArray target 走 exotic [[Set]]（数值键门已含 receiver≠target 臂），
+///   普通 receiver 语义仅适用于普通对象。
 pub fn reflect_set<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let target_val = arg(vm, args, 1);
     let Some(target_ptr) = object_ptr(target_val) else {
         return type_error(vm, "Reflect.set target is not an object");
     };
+    // 入口清空 uncaught 槽：先前操作的残留值不得被误消费为本次原值
+    // （与 define 通道同纪律）。
+    vm.clear_uncaught_value();
     // 键转换异常原值传播（ToPropertyKey 步先于 Set）。
     let key_si = match vm.to_property_key_si(arg(vm, args, 2)) {
         Ok(si) => si,
@@ -264,11 +286,133 @@ pub fn reflect_set<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     };
     let value = arg(vm, args, 3);
     let receiver = if args.len() > 4 { vm.reg(args[4]) } else { target_val };
-    let target = unsafe { &mut *target_ptr };
-    if !target.is_extensible() && vm.get_own_property_slot(target, key_si).is_none() {
+
+    // SAFETY: object_ptr 保证指针非空且指向存活对象。
+    let target = unsafe { &*target_ptr };
+    // receiver == target（指针判等）走普通写路径：可扩展性检查、setter 与
+    // 只读判定内部完成；TypedArray target 走 exotic [[Set]]（数值键门已含
+    // receiver≠target 臂）。
+    if receiver == target_val || target.is_typed_array_obj() {
+        match vm.ordinary_set(unsafe { &mut *target_ptr }, key_si, value, receiver, true) {
+            Ok(()) => NativeResult::Ok(JsValue::bool(true)),
+            Err(_) => ordinary_set_failure(vm),
+        }
+    } else {
+        set_with_receiver(vm, target, key_si, value, receiver)
+    }
+}
+
+/// 普通写路径失败投影：setter 抛出的原值存于 uncaught 槽（原值重抛）；
+/// 纯写失败（只读 / 不可扩展 / 无 setter）无原值，投影为 false。
+fn ordinary_set_failure<H: VmHost>(vm: &mut H) -> NativeResult {
+    match vm.take_uncaught_value() {
+        Some(exc) => NativeResult::Err(exc),
+        None => NativeResult::Ok(JsValue::bool(false)),
+    }
+}
+
+/// OrdinarySetWithReceiver：target 为普通对象且 receiver ≠ target。
+///
+/// # 步骤
+/// 1. target 自身臂：accessor（无 setter → false / 有 setter → 调用）、
+///    数据不可写 → false、数据可写 → 写 receiver。
+/// 2. 无自身：原型链首命中——accessor（无 setter → false / 有 setter →
+///    调用）、数据不可写 → false、其余 → 写 receiver。
+/// 3. 链无命中（链尾 null）：receiver 上新建数据属性。
+///
+/// # 副作用
+/// - 可能写 receiver 属性存储；可能执行用户 setter 代码。
+fn set_with_receiver<H: VmHost>(
+    vm: &mut H, target: &JsObject, key_si: u32, value: JsValue, receiver: JsValue,
+) -> NativeResult {
+    // target 自身臂。
+    if let Some(pos) = vm.get_own_property_slot(target, key_si) {
+        if let Some(meta) = target.prop_meta_at(pos) {
+            if meta.is_accessor {
+                if meta.set.is_undefined() {
+                    return NativeResult::Ok(JsValue::bool(false));
+                }
+                return call_setter(vm, meta.set, receiver, value);
+            }
+            if !meta.attributes.writable() {
+                return NativeResult::Ok(JsValue::bool(false));
+            }
+        }
+        return set_on_receiver(vm, receiver, key_si, value);
+    }
+    // 无自身：原型链首命中。
+    if let Some(meta) = inherited_meta(vm, target, key_si) {
+        if meta.is_accessor {
+            if meta.set.is_undefined() {
+                return NativeResult::Ok(JsValue::bool(false));
+            }
+            return call_setter(vm, meta.set, receiver, value);
+        }
+        if !meta.attributes.writable() {
+            return NativeResult::Ok(JsValue::bool(false));
+        }
+    }
+    // 链无命中（链尾 null）：receiver 上新建数据属性。
+    set_on_receiver(vm, receiver, key_si, value)
+}
+
+/// Call(setter, Receiver, « V »）：以 receiver 为 this、单参调用 setter。
+///
+/// # 副作用
+/// - 执行用户代码；setter 抛出原值重抛（uncaught 槽）。
+fn call_setter<H: VmHost>(vm: &mut H, setter: JsValue, receiver: JsValue, value: JsValue) -> NativeResult {
+    match vm.call_function_sync(setter, receiver, &[value]) {
+        Ok(_) => NativeResult::Ok(JsValue::bool(true)),
+        Err(err) => NativeResult::Err(from_engine_error(vm, &err)),
+    }
+}
+
+/// 写 receiver：自身 accessor / 不可写数据 → false；无自身且不可扩展 →
+/// false；其余直写（既有槽保留原属性，新属性 w/e/c 全开）。
+///
+/// # 副作用
+/// - 可能写 receiver 属性存储 / 形状。
+fn set_on_receiver<H: VmHost>(vm: &mut H, receiver: JsValue, key_si: u32, value: JsValue) -> NativeResult {
+    let receiver_ptr = receiver.as_js_object_ptr();
+    if receiver_ptr.is_null() {
+        // 非对象 receiver：数据臂写失败。
         return NativeResult::Ok(JsValue::bool(false));
     }
-    NativeResult::Ok(JsValue::bool(vm.ordinary_set(target, key_si, value, receiver, true).is_ok()))
+    // SAFETY: receiver_ptr 为 receiver 值携带的非空对象指针，对象在会话内
+    // 存活；写路径不移动对象。
+    let receiver_obj = unsafe { &*receiver_ptr };
+    if let Some(pos) = vm.get_own_property_slot(receiver_obj, key_si) {
+        if let Some(meta) = receiver_obj.prop_meta_at(pos) {
+            if meta.is_accessor || !meta.attributes.writable() {
+                return NativeResult::Ok(JsValue::bool(false));
+            }
+        }
+        let val = vm.promote_if_needed_for_write_ptr(receiver_ptr, value);
+        vm.set_or_create_prop_value(unsafe { &mut *receiver_ptr }, key_si, val);
+        return NativeResult::Ok(JsValue::bool(true));
+    }
+    if !receiver_obj.is_extensible() {
+        return NativeResult::Ok(JsValue::bool(false));
+    }
+    let val = vm.promote_if_needed_for_write_ptr(receiver_ptr, value);
+    vm.set_or_create_prop_value(unsafe { &mut *receiver_ptr }, key_si, val);
+    NativeResult::Ok(JsValue::bool(true))
+}
+
+/// 原型链首命中：逐级取自身属性元数据，深度封顶；无命中返回 `None`。
+fn inherited_meta<H: VmHost>(vm: &H, target: &JsObject, key_si: u32) -> Option<PropMetaEntry> {
+    let mut proto = target.proto();
+    let mut depth = 0usize;
+    while proto.is_object() && depth < MAX_PROTO_CHAIN_DEPTH {
+        depth += 1;
+        // SAFETY: proto 为链上值携带的非空对象指针，对象在会话内存活。
+        let proto_obj = unsafe { &*proto.as_js_object_ptr() };
+        if let Some(pos) = vm.get_own_property_slot(proto_obj, key_si) {
+            return proto_obj.prop_meta_at(pos);
+        }
+        proto = proto_obj.proto();
+    }
+    None
 }
 
 /// `Reflect.setPrototypeOf(target, proto)`：设置 prototype（对象或 null）。
