@@ -158,6 +158,7 @@ impl Vm {
             saved_flat_id_stack: Vec::new(),
             saved_table_gen_stack: Vec::new(),
             trace_instructions: false,
+            pc_watch: None,
         };
         vm.init_generator_intrinsics();
         vm.init_promise_intrinsics();
@@ -293,6 +294,7 @@ impl Vm {
             saved_flat_id_stack: Vec::new(),
             saved_table_gen_stack: Vec::new(),
             trace_instructions: false,
+            pc_watch: None,
         };
         vm.init_generator_intrinsics();
         vm.init_promise_intrinsics();

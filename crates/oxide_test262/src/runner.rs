@@ -15,12 +15,23 @@ use oxide_kernel::kernel::{KernelConfig, KernelCore};
 use oxide_types::value::JsValue;
 use oxide_vm::vm::Vm;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, OnceLock, RwLock};
 
 // 记录当前正在执行的测试路径（thread-local）；每个测试执行前写入，
 // panic hook 据此定位崩溃所在的测试文件。
 std::thread_local! {
     pub(crate) static CURRENT_TEST_PATH: std::cell::RefCell<String> = const { std::cell::RefCell::new(String::new()) };
+}
+
+/// 监督者经环境变量注入的 last-pc 现场文件路径（子进程单实例，每进程读一次）：
+/// 子进程运行期向该文件定频写现场行，监督者超时/崩溃杀子进程后读回末行。
+static PC_WATCH_PATH: OnceLock<Option<PathBuf>> = OnceLock::new();
+
+/// 读取监督者注入的 last-pc 现场文件路径（未注入返回 None）。
+fn pc_watch_path() -> Option<&'static PathBuf> {
+    PC_WATCH_PATH
+        .get_or_init(|| std::env::var_os("OXIDE_TEST262_PC_WATCH").map(PathBuf::from))
+        .as_ref()
 }
 
 /// 在 catch_unwind 保护下运行单个测试，把引擎 panic 记为失败。
@@ -160,6 +171,10 @@ fn run_test_inner(
     };
 
     let mut vm = Vm::with_kernel_core(Arc::clone(kernel));
+    // 监督者注入现场文件路径时开启 VM 的 last-pc 定频写（未注入时零开销）。
+    if let Some(watch) = pc_watch_path() {
+        vm.set_pc_watch(Some(watch.clone()));
+    }
     let run_result = vm.run(&Arc::new(module));
     let dur = start.elapsed().as_millis() as u64;
 

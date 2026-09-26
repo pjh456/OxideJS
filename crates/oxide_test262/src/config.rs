@@ -102,6 +102,7 @@ impl RunConfig {
           \x20  OXIDE_TEST262_SUPERVISORS          concurrent supervised windows (default 16)\n\
           \x20  OXIDE_TEST262_RUNNING_LOG            log every test as it starts (any value)\n\
           \x20  OXIDE_TEST262_HEARTBEAT              heartbeat file path (supervised/chunked)\n\
+          \x20  OXIDE_TEST262_PC_WATCH              last-pc scene file path (supervised child appends pc/opcode/frames every 65536 instructions)\n\
           \x20  OXIDE_TEST262_CHUNK_SIZE             tests per child in chunked mode\n\
           \x20  OXIDE_TEST262_CHILD_CHUNK            marks a spawned child as chunk worker (any value)\n\
           \x20  OXIDE_TEST262_ALLOW_FAIL_EXIT        child may exit 1 on fail (any value)\n\

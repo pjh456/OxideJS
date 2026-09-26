@@ -1,6 +1,8 @@
 //! dispatch 主循环：逐指令解码与 OpCode 臂分派、执行期 GC 安全点、
 //! 步数/分配上限采样与二元运算宏 `binary_arith!`。
 
+use std::io::Write;
+
 use num_traits::Zero;
 use oxide_bytecode::opcode::{self, OpCode};
 use oxide_runtime_api as coercion;
@@ -214,6 +216,21 @@ impl Vm {
             // pc 为字节码 word 序号，与反汇编 offset 列同单位。
             if self.trace_instructions {
                 eprintln!("pc={pc:4} {op:>16} rd={rd} a={a} b={b}");
+            }
+
+            // last-pc 现场：开启时每 2^16 指令追加写一行 pc/opcode/flat_id/frames，
+            // 供监督者超时/崩溃杀子进程后读回挂死点（精度 = 距挂死点 2^16 指令内）；
+            // 关闭时零输出零分配。
+            if let Some(watch) = self.pc_watch.as_ref() {
+                if (steps & 0xFFFF) == 0 {
+                    let line =
+                        format!("pc={pc} op={op} flat_id={} frames={}\n", self.active_flat_id, self.frames.len());
+                    let _ = std::fs::OpenOptions::new()
+                        .create(true)
+                        .append(true)
+                        .open(watch)
+                        .and_then(|mut f| f.write_all(line.as_bytes()));
+                }
             }
 
             match op {

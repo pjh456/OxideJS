@@ -26,8 +26,10 @@ pub(crate) struct RunStats {
     pub(crate) spawn_errors: usize,
     pub(crate) wait_errors: usize,
     pub(crate) hb_write_errors: usize,
-    /// 超时/崩溃清单：(index, elapsed_ms)；elapsed_ms=0 表示非超时崩溃。
-    pub(crate) timeout_crashes: Vec<(usize, u64)>,
+    /// 超时/崩溃清单：(index, elapsed_ms, scene)；elapsed_ms=0 表示非超时崩溃，
+    /// scene 为挂死点的 last-pc 现场行（pc/opcode/flat_id/frames），缺文件/
+    /// 解析失败为 None。
+    pub(crate) timeout_crashes: Vec<(usize, u64, Option<String>)>,
 }
 
 impl RunStats {
@@ -159,27 +161,30 @@ mod tests {
         assert_eq!(a.fail_record_bytes, a.fail_records.iter().map(|r| r.message.len()).sum::<usize>());
     }
 
-    /// merge 合并异常计数器：spawn/wait/hb 求和、timeout_crashes 拼接。
+    /// merge 合并异常计数器：spawn/wait/hb 求和、timeout_crashes 拼接（含 scene）。
     #[test]
     fn runstats_merge_sums_error_counters() {
         let mut a = RunStats {
             spawn_errors: 1,
             wait_errors: 2,
             hb_write_errors: 3,
-            timeout_crashes: vec![(0, 100)],
+            timeout_crashes: vec![(0, 100, None)],
             ..RunStats::default()
         };
         let b = RunStats {
             spawn_errors: 4,
             wait_errors: 5,
             hb_write_errors: 6,
-            timeout_crashes: vec![(1, 200)],
+            timeout_crashes: vec![(1, 200, Some("pc=9 op=ADD flat_id=0 frames=1".to_string()))],
             ..RunStats::default()
         };
         a.merge(b);
         assert_eq!(a.spawn_errors, 5);
         assert_eq!(a.wait_errors, 7);
         assert_eq!(a.hb_write_errors, 9);
-        assert_eq!(a.timeout_crashes, vec![(0, 100), (1, 200)]);
+        assert_eq!(
+            a.timeout_crashes,
+            vec![(0, 100, None), (1, 200, Some("pc=9 op=ADD flat_id=0 frames=1".to_string()))]
+        );
     }
 }

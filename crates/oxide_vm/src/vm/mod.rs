@@ -4,6 +4,7 @@
 #![allow(clippy::arc_with_non_send_sync)]
 
 use std::collections::{HashMap, VecDeque};
+use std::path::PathBuf;
 use std::sync::Arc;
 #[cfg(test)]
 use std::sync::OnceLock;
@@ -354,6 +355,10 @@ pub struct Vm {
     /// `pc + opcode + 操作数`。运行时开关，旁路 tracing 级别上限（release
     /// 构建可用）；默认关闭，关闭时热路径仅一次 bool 比较，零输出零分配。
     pub trace_instructions: bool,
+    /// last-pc 现场文件路径：开启时 dispatch 主循环每 2^16 指令追加写一行
+    /// `pc/opcode/flat_id/frames`，供监督者超时/崩溃杀子进程后读回挂死点；
+    /// 默认 None（零输出零分配）。
+    pub(crate) pc_watch: Option<PathBuf>,
 }
 
 impl Drop for Vm {
@@ -421,6 +426,13 @@ impl Vm {
     /// `pc + opcode + 操作数` 行，pc 为字节码 word 序号，与反汇编 offset 同单位）。
     pub fn set_instruction_trace(&mut self, on: bool) {
         self.trace_instructions = on;
+    }
+
+    /// 设置 last-pc 现场文件路径（开启后 dispatch 主循环每 2^16 指令追加写一行
+    /// `pc/opcode/flat_id/frames`，供监督者超时/崩溃杀子进程后读回挂死点）；
+    /// None 清除。
+    pub fn set_pc_watch(&mut self, path: Option<PathBuf>) {
+        self.pc_watch = path;
     }
 
     /// 只读访问 VM 的 epoch arena。

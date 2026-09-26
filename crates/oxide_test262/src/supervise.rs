@@ -35,20 +35,33 @@ fn merge_fail_log(stats: &mut RunStats, hb_path: &Path, consumed: &mut usize) {
     }
 }
 
+/// 读子进程被杀前留下的 last-pc 现场行：取文件末行，须含 pc/op/frames 三字段
+/// 才接受（缺文件 / 空文件 / 残行均返回 None）。
+fn read_pc_scene(path: &Path) -> Option<String> {
+    let content = std::fs::read_to_string(path).ok()?;
+    let last = content.lines().last()?.trim();
+    if last.starts_with("pc=") && last.contains(" op=") && last.contains(" frames=") {
+        Some(last.to_string())
+    } else {
+        None
+    }
+}
+
 /// 记一笔超时/崩溃结果：默认计入 skip，`--no-skip` 下计入 fail（归入
 /// `timeout/crash` 类别，父进程无法进一步拆分根因）。
 ///
 /// # 副作用
-/// - 把 `(index, elapsed_ms)` 追加进 timeout_crashes 清单（elapsed_ms=0 表示
-///   非超时崩溃：spawn 失败 / 中途退出 / waiterr / 无心跳），供收尾逐路径报告。
-fn record_timeout_or_crash(stats: &mut RunStats, no_skip: bool, index: usize, elapsed_ms: u64) {
+/// - 把 `(index, elapsed_ms, scene)` 追加进 timeout_crashes 清单（elapsed_ms=0
+///   表示非超时崩溃：spawn 失败 / 中途退出 / waiterr / 无心跳；scene 为挂死点
+///   的 last-pc 现场行，缺文件/解析失败为 None），供收尾逐路径报告。
+fn record_timeout_or_crash(stats: &mut RunStats, no_skip: bool, index: usize, elapsed_ms: u64, scene: Option<&str>) {
     if no_skip {
         stats.fail += 1;
         *stats.fail_categories.entry("timeout/crash".into()).or_insert(0) += 1;
     } else {
         stats.skip += 1;
     }
-    stats.timeout_crashes.push((index, elapsed_ms));
+    stats.timeout_crashes.push((index, elapsed_ms, scene.map(str::to_string)));
 }
 
 /// 在监督下运行一个窗口 `[wstart, wend)`，返回经过多次子进程重启
@@ -69,6 +82,8 @@ fn supervise_window(
     // 旁路失败行已消费字节偏移：跨重启只并入新增段（见 merge_fail_log）。
     let mut fails_consumed: usize = 0;
     let hb_path = std::env::temp_dir().join(format!("oxide_t262_hb_{}_{}.txt", std::process::id(), window_id));
+    // last-pc 现场文件：子进程运行期定频追加写，监督者杀子进程后读回末行。
+    let pc_path = std::env::temp_dir().join(format!("oxide_t262_pc_{}_{}.txt", std::process::id(), window_id));
 
     let describe = |idx: usize| -> String {
         paths
@@ -85,6 +100,7 @@ fn supervise_window(
         // 新行是真实新事件而非重复并入。
         let _ = std::fs::remove_file(&hb_path);
         let _ = std::fs::remove_file(format!("{}.tmp", hb_path.display()));
+        let _ = std::fs::remove_file(&pc_path);
         let max_tests = wend - cur;
 
         let mut child = match Command::new(exe)
@@ -93,6 +109,7 @@ fn supervise_window(
             .env("OXIDE_MAX_TESTS", max_tests.to_string())
             .env("OXIDE_TEST262_WORKERS", "1")
             .env("OXIDE_TEST262_HEARTBEAT", &hb_path)
+            .env("OXIDE_TEST262_PC_WATCH", &pc_path)
             .env("OXIDE_TEST262_CHILD_CHUNK", "1")
             .env("OXIDE_TEST262_ALLOW_FAIL_EXIT", "1")
             .env_remove("OXIDE_TEST262_CHUNK_SIZE")
@@ -104,7 +121,7 @@ fn supervise_window(
             Err(err) => {
                 eprintln!("  window {window_id}: failed to spawn child at index {cur}: {err}");
                 stats.spawn_errors += 1;
-                record_timeout_or_crash(&mut stats, no_skip, cur, 0);
+                record_timeout_or_crash(&mut stats, no_skip, cur, 0, None);
                 cur += 1;
                 continue;
             }
@@ -127,12 +144,13 @@ fn supervise_window(
                             merge_heartbeat(&mut stats, &hb);
                             let culprit = hb.index + 1;
                             merge_fail_log(&mut stats, &hb_path, &mut fails_consumed);
+                            let scene = read_pc_scene(&pc_path);
                             eprintln!(
                                 "  [warn] window {window_id}: child exited ({status}) mid-test #{}: {}",
                                 culprit,
                                 describe(culprit)
                             );
-                            record_timeout_or_crash(&mut stats, no_skip, culprit, 0);
+                            record_timeout_or_crash(&mut stats, no_skip, culprit, 0, scene.as_deref());
                             cur = culprit;
                         }
                         None => {
@@ -140,7 +158,8 @@ fn supervise_window(
                                 "  [warn] window {window_id}: child exited ({status}) with no heartbeat at index {cur}; skipping one"
                             );
                             merge_fail_log(&mut stats, &hb_path, &mut fails_consumed);
-                            record_timeout_or_crash(&mut stats, no_skip, cur, 0);
+                            let scene = read_pc_scene(&pc_path);
+                            record_timeout_or_crash(&mut stats, no_skip, cur, 0, scene.as_deref());
                             cur += 1;
                         }
                     }
@@ -153,7 +172,8 @@ fn supervise_window(
                     let _ = child.kill();
                     let _ = child.wait();
                     merge_fail_log(&mut stats, &hb_path, &mut fails_consumed);
-                    record_timeout_or_crash(&mut stats, no_skip, cur, 0);
+                    let scene = read_pc_scene(&pc_path);
+                    record_timeout_or_crash(&mut stats, no_skip, cur, 0, scene.as_deref());
                     cur += 1;
                     break;
                 }
@@ -173,7 +193,7 @@ fn supervise_window(
             };
 
             if elapsed > deadline {
-                // 先杀再读：心跳与旁路失败行都须在子进程死亡后取最终状态。
+                // 先杀再读：心跳、旁路失败行与 last-pc 现场都须在子进程死亡后取最终状态。
                 let _ = child.kill();
                 let _ = child.wait();
                 let hb = read_heartbeat(&hb_path);
@@ -182,12 +202,14 @@ fn supervise_window(
                     merge_heartbeat(&mut stats, h);
                 }
                 merge_fail_log(&mut stats, &hb_path, &mut fails_consumed);
+                let scene = read_pc_scene(&pc_path);
                 eprintln!(
-                    "  [timeout] window {window_id}: TIMEOUT ({}s) on test #{culprit}: {}",
+                    "  [timeout] window {window_id}: TIMEOUT ({}s) on test #{culprit}: {}{}",
                     deadline.as_secs(),
-                    describe(culprit)
+                    describe(culprit),
+                    scene.as_deref().map(|s| format!("  [{s}]")).unwrap_or_default()
                 );
-                record_timeout_or_crash(&mut stats, no_skip, culprit, elapsed.as_millis() as u64);
+                record_timeout_or_crash(&mut stats, no_skip, culprit, elapsed.as_millis() as u64, scene.as_deref());
                 cur = culprit + 1;
                 break;
             }
@@ -198,6 +220,7 @@ fn supervise_window(
 
     let _ = std::fs::remove_file(&hb_path);
     let _ = std::fs::remove_file(format!("{}.tmp", hb_path.display()));
+    let _ = std::fs::remove_file(&pc_path);
     // 旁路失败行归档而非删除：统计已由心跳合并入父进程，此文件是收尾逐文件
     // 差分的终态依据（删除即永久丢记录）。
     let _ = std::fs::rename(hb_path.with_extension("fails"), hb_path.with_extension("fails.done"));
@@ -342,12 +365,15 @@ pub(crate) fn run_supervised(
     }
     if !stats.timeout_crashes.is_empty() {
         println!("  --- TIMEOUT/CRASH list ({}) ---", stats.timeout_crashes.len());
-        for (idx, elapsed_ms) in &stats.timeout_crashes {
+        for (idx, elapsed_ms, scene) in &stats.timeout_crashes {
             let path = paths
                 .get(*idx)
                 .map(|p| p.display().to_string())
                 .unwrap_or_else(|| format!("#{idx}"));
-            println!("    {idx}  {elapsed_ms}ms  {path}");
+            match scene {
+                Some(s) => println!("    {idx}  {elapsed_ms}ms  {path}  [{s}]"),
+                None => println!("    {idx}  {elapsed_ms}ms  {path}"),
+            }
         }
     }
     println!("═══════════════════════════════════════");
@@ -360,17 +386,38 @@ mod tests {
     use super::*;
     use crate::report::append_fail_log;
 
-    /// 超时/崩溃记账：计数（no_skip 转 fail）与 timeout_crashes 入列。
+    /// 超时/崩溃记账：计数（no_skip 转 fail）与 timeout_crashes 入列（scene 原样
+    /// 存串，缺现场为 None）。
     #[test]
     fn record_timeout_or_crash_records_index_elapsed() {
         let mut stats = RunStats::default();
-        record_timeout_or_crash(&mut stats, true, 3, 2500);
+        record_timeout_or_crash(&mut stats, true, 3, 2500, Some("pc=1 op=ADD flat_id=0 frames=1"));
         assert_eq!(stats.fail, 1);
         assert_eq!(stats.fail_categories.get("timeout/crash"), Some(&1));
-        assert_eq!(stats.timeout_crashes, vec![(3, 2500)]);
-        record_timeout_or_crash(&mut stats, false, 4, 0);
+        assert_eq!(stats.timeout_crashes, vec![(3, 2500, Some("pc=1 op=ADD flat_id=0 frames=1".to_string()))]);
+        record_timeout_or_crash(&mut stats, false, 4, 0, None);
         assert_eq!(stats.skip, 1);
-        assert_eq!(stats.timeout_crashes, vec![(3, 2500), (4, 0)]);
+        assert_eq!(
+            stats.timeout_crashes,
+            vec![(3, 2500, Some("pc=1 op=ADD flat_id=0 frames=1".to_string())), (4, 0, None)]
+        );
+    }
+
+    /// read_pc_scene 防御解析：缺文件 / 空文件 / 残行（缺 frames 字段）均 None，
+    /// 末行完整时接受（忽略中间行）。
+    #[test]
+    fn read_pc_scene_defensive_parse() {
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!("oxide_t262_pc_test_{}.txt", std::process::id()));
+        assert_eq!(read_pc_scene(&path), None, "缺文件返回 None");
+        std::fs::write(&path, "").expect("写失败");
+        assert_eq!(read_pc_scene(&path), None, "空文件返回 None");
+        std::fs::write(&path, "pc=1 op=ADD flat_id=0 frames=1\npc=2 op=ADD flat_id=0 frames=1\n").expect("写失败");
+        assert_eq!(read_pc_scene(&path), Some("pc=2 op=ADD flat_id=0 frames=1".to_string()));
+        // 残行：末行缺 frames 字段，返回 None。
+        std::fs::write(&path, "pc=1 op=ADD flat_id=0 frames=1\npc=2 op=AD").expect("写失败");
+        assert_eq!(read_pc_scene(&path), None, "残行返回 None");
+        let _ = std::fs::remove_file(&path);
     }
 
     /// merge_fail_log 重建 fail_records：类别经 id 表重映射、消息 cap；
