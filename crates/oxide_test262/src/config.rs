@@ -80,12 +80,13 @@ impl RunConfig {
 
     /// 打印用法说明。
     pub(crate) fn usage() -> String {
-        "usage: test262-runner [--no-skip] [--no-regalloc] [--verbose] [--supervise] [--leak-check] [--leak-check-interval=N] [test262-root] [path-filter]\n\
+        "usage: test262-runner [--no-skip] [--no-regalloc] [--verbose] [--supervise] [--leak-check] [--leak-check-interval=N] [--version] [test262-root] [path-filter]\n\
           \n\
           --no-skip    Run capability-excluded tests and count unsupported compile/runtime results as failures.\n\
           --no-regalloc  Disable the liveness/precise-DCE/RegAlloc compiler chain (vregs stay as physical numbers).\n\
           --verbose    Print one PASS/FAIL/SKIP line per test (for on/off result-set comparison).\n\
           --no-fail-list  Do not print the per-path FAIL list at the end of the run.\n\
+          --version    Print the binary version with the build-time git short hash (freshness self-check), then exit.\n\
           --supervise  Run the suite as single-worker child-process windows with a hard per-test timeout and\n\
           \x20            automatic resume past any hanging/crashing test. A hang or crash is reported by path.\n\
           \x20            Combines with [path-filter]: the filter is applied per-test inside each child window.\n\

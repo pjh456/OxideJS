@@ -25,7 +25,12 @@ use oxide_vm::JsValue;
 mod bench;
 
 #[derive(Parser)]
-#[command(name = "oxide", version, about = "OxideJS - Rust JavaScript engine")]
+#[command(
+    name = "oxide",
+    // 版本号后附构建期 git 短哈希，`--version` 自报即新鲜度自证锚点。
+    version = concat!(env!("CARGO_PKG_VERSION"), " (", env!("GIT_COMMIT"), ")"),
+    about = "OxideJS - Rust JavaScript engine"
+)]
 struct Cli {
     #[command(subcommand)]
     command: Option<Commands>,

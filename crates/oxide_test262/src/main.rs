@@ -74,6 +74,11 @@ fn run_tests() -> bool {
         println!("{}", RunConfig::usage());
         return true;
     }
+    // 版本自报走 stdout 并成功退出；哈希由构建期注入，无 git 环境缺省 "unknown"。
+    if args.iter().any(|a| a == "--version") {
+        println!("test262-runner {} ({})", env!("CARGO_PKG_VERSION"), env!("GIT_COMMIT"));
+        return true;
+    }
     let config = match RunConfig::parse(&args) {
         Ok(config) => config,
         Err(msg) => {
