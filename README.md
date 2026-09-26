@@ -128,19 +128,28 @@ project-root/
     └── test262/           # 本地 test262 测试套件
 ```
 
-## 5. 构建
+## 5. 构建与日常验证
 
 ### 构建全部 crate
 
 ```bash
-cargo build --release
+cargo build --workspace
 ```
 
-### 运行单元测试
+### 按 crate 运行单元测试
 
 ```bash
-cargo test
+cargo test -p <crate>
 ```
+
+### 格式与 lint 自查
+
+```bash
+cargo fmt --all -- --check
+cargo clippy --all-targets
+```
+
+验收口径：构建通过、单测通过、零新增 clippy 告警。test262 子集回测与全量回测命令见第 7 节。
 
 ## 6. CLI 使用
 
@@ -170,17 +179,28 @@ cargo run --release -p oxide_cli
 
 ## 7. test262 兼容性测试
 
-OxideJS 包含独立的 test262 runner：
+OxideJS 包含独立的 test262 runner，套件位于 `tests/test262`（git 子模块）。
+
+### 运行子集（日常）
 
 ```bash
-cargo run --release -p oxide_test262
+# 按目录筛选
+cargo run -p oxide_test262 -- tests/test262/test/language/expressions/addition
+
+# 按路径关键词筛选
+cargo run -p oxide_test262 -- tests/test262/test "literals/string"
 ```
 
-运行指定子目录：
+### 全量运行（监督式）
 
 ```bash
-cargo run --release -p oxide_test262 -- tests/test262/test language/expressions
+OXIDE_TEST262_SUPERVISORS=16 OXIDE_TEST262_WINDOW=3300 \
+  cargo run -p oxide_test262 -- --supervise tests/test262/test
 ```
+
+- `--supervise` 为单 worker 子进程窗口模式，带单测超时与断点续跑；并发窗口数缺省 16（`OXIDE_TEST262_SUPERVISORS`）；
+- `--supervise` 可与位置参数路径筛选组合（筛选在子进程窗口内逐测试生效）；
+- 含 `built-ins/` 的回测必须加 `--supervise`：非监督模式无单测超时，单个测试可无界增长拖死宿主。
 
 runner 会输出：
 
@@ -189,7 +209,6 @@ runner 会输出：
 - 全量通过率；
 - 实际执行样本通过率；
 - 失败类别统计与 FAIL 清单（按测试文件路径）；
-- 监督式窗口运行（`--supervise`）：心跳文件断点续跑、单测超时判定；
 - 按目录拆分的结果（取决于 runner 版本）。
 
 兼容性数字属于开发过程指标。发布正式 benchmark 或兼容性结论前，应基于当前 checkout 的 test262 版本重新生成结果。
