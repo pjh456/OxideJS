@@ -10,7 +10,7 @@ use std::sync::Arc;
 use oxide_kernel::kernel::{KernelCore, KernelSession};
 use oxide_kernel::shape_forge::EMPTY_SHAPE_ID;
 use oxide_runtime_api::{to_units_full, NativeResult};
-use oxide_types::object::JsObject;
+use oxide_types::object::{JsObject, NativeFnPtr};
 use oxide_types::value::JsValue;
 
 use crate::bindings::{apply_binding_table, bind_global_value};
@@ -91,12 +91,21 @@ pub fn agent(vm: &mut Vm, _args: &[u8]) -> NativeResult {
     not_supported(vm, "agent")
 }
 
+/// `$262.IsHTMLDDA(...)`：B.3.4 宿主对象本体，被调用时返回 null。
+///
+/// 规范定义无参或首参空串时返回 null（String 方法、迭代器协议经 GetMethod
+/// 读得后按可调用值调用即得 null）；其余调用形态行为未定义，统一返回 null。
+pub fn is_html_dda_call(_vm: &mut Vm, _args: &[u8]) -> NativeResult {
+    NativeResult::Ok(JsValue::null())
+}
+
 /// 把 `$262` 宿主对象绑定到 global：对象本体 + 标准方法 + `global` 数据属性。
 ///
 /// # 步骤
 /// 1. 建 `$262` 普通对象（Object.prototype）。
 /// 2. 绑定 evalScript/detachArrayBuffer/createRealm/gc/agent 方法。
 /// 3. `global` 数据属性指向当前 session global；`$262` 本体挂到 global。
+/// 4. `IsHTMLDDA` 宿主对象挂到 `$262`（可调用，被调用时返回 null）。
 ///
 /// # 注意事项
 /// - 宿主对象登记进 world 释放表，session 收尾时统一释放（与 Reflect/Iterator
@@ -119,10 +128,13 @@ pub fn bind_test262_host(core: &Arc<KernelCore>, session: &KernelSession, global
     );
     let global_this = JsValue::from_js_object(global as *mut JsObject);
     bind_global_value(core, &mut host, "global", global_this);
-    // [[IsHTMLDDA]] 宿主值（B.3.4）：ToBoolean/typeof/宽松相等按 undefined 处理，
-    // Type 与其余强制转换按普通对象处理。无额外内部载荷，挂 Object.prototype。
+    // [[IsHTMLDDA]] 宿主值（B.3.4）：可调用（被调用时返回 null），
+    // ToBoolean/typeof/宽松相等按 undefined 处理，Type 与其余强制转换按普通对象处理。
     let mut dda = JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(object_proto));
     dda.type_tag = JsObject::OBJ_TYPE_HTML_DDA;
+    dda.set_function(true);
+    dda.set_native_fn(Some(unsafe { NativeFnPtr::from_raw(is_html_dda_call as *const ()) }));
+    dda.set_native_arg_count(0);
     let dda_ptr = Box::into_raw(Box::new(dda));
     session.builtin_world().track_leaked_object(dda_ptr);
     bind_global_value(core, &mut host, "IsHTMLDDA", JsValue::from_js_object(dda_ptr));
