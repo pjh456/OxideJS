@@ -14,7 +14,7 @@
 //! - 命中路径零写：只读扩展字 + Cell 计数，不触发 bytecode COW。
 
 use crate::vm_trace;
-use oxide_bytecode::opcode::{self, Instr, OpCode, IC_EXT_WORDS, IC_SLOTS};
+use oxide_bytecode::opcode::{self, ext_word_count, Instr, IC_EXT_WORDS, IC_SLOTS};
 use oxide_types::object::JsObject;
 use oxide_types::value::JsValue;
 
@@ -43,63 +43,6 @@ pub(crate) fn write_ic_back(bytecode: &mut [Instr], pc: usize, shape_id: u32, sl
         new_words[i * 2..(i + 1) * 2].copy_from_slice(&old[(i - 1) * 2..i * 2]);
     }
     bytecode[base..pc].copy_from_slice(&new_words);
-}
-
-/// 计算 `pc` 处指令之后的扩展字个数（按 opcode 语义推进，逐指令字节序一致）。
-///
-/// 定长族返回固定字数；变长族依指令内容：spread 调用从首字读 nstatic|nspread、
-/// TEMPLATE_STR 从首字读 segment_count、NEW_OBJECT 从 a 槽读属性数（键表）。
-/// `clear_ic_caches` 依赖此函数逐指令定位，任何新增变长 ext opcode 必须在此登记。
-fn ext_word_count(bytecode: &[Instr], pc: usize) -> usize {
-    let op = opcode::opcode(bytecode[pc]);
-    // IC 系固定 IC_EXT_WORDS 扩展字（多态槽组）。
-    if op.has_ic_ext_words() {
-        return IC_EXT_WORDS;
-    }
-    match op {
-        OpCode::SPILL
-        | OpCode::UNSPILL
-        | OpCode::CALL
-        | OpCode::CALL_NATIVE
-        | OpCode::NEW_EXPRESSION
-        | OpCode::SUPER_CALL
-        | OpCode::DEFINE_ACCESSOR
-        | OpCode::DEFINE_ACCESSOR_DYNAMIC
-        | OpCode::DEFINE_PROP_ATTRS
-        | OpCode::DEFINE_GLOBAL_PROP_C
-        | OpCode::DEFINE_GLOBAL_PROP_C_IF_ABSENT
-        | OpCode::DELETE_GLOBAL_PROP_C
-        | OpCode::DELETE_PROP_STATIC
-        | OpCode::REST_OBJECT
-        | OpCode::INIT_PRIVATE => 1,
-        OpCode::DEFINE_ACCESSOR_ATTRS
-        | OpCode::DEFINE_ACCESSOR_ATTRS_DYNAMIC
-        | OpCode::GET_PRIVATE
-        | OpCode::SET_PRIVATE
-        | OpCode::PRIVATE_BRAND_IN => 2,
-        // 逃出计数 ext：BREAK/CONTINUE/RETURN 恒带 1 个 pack_escape_counts 字
-        // （for-of/for-in 逃出层数打包）；lower 对这三条无条件落 ext 字，
-        // dispatch 经 read_escape_counts 消费，扫描必须同步跳过以免错位。
-        OpCode::BREAK | OpCode::CONTINUE | OpCode::RETURN => 1,
-        OpCode::CALL_SPREAD | OpCode::NEW_EXPRESSION_SPREAD | OpCode::SUPER_CALL_SPREAD => {
-            let header = bytecode.get(pc + 1).copied().unwrap_or(0);
-            1 + (header & 0xFF) as usize + ((header >> 8) & 0xFF) as usize
-        }
-        OpCode::TEMPLATE_STR => {
-            let header = bytecode.get(pc + 1).copied().unwrap_or(0);
-            1 + ((header >> 16) & 0xFFFF) as usize
-        }
-        // GET_TEMPLATE_OBJECT：ext[0]=quasis 段数 n，随后 2n 个交错 cooked/raw 字，
-        // 末尾 1 个 site 序号——总 ext 字数 = 2+2n，与 dispatch 逐字消费一致。
-        OpCode::GET_TEMPLATE_OBJECT => {
-            let n = bytecode.get(pc + 1).copied().unwrap_or(0) as usize;
-            2 + 2 * n
-        }
-        // CONCAT_N：ext[0]=n=操作数总数，ext 字数 = 1+(n-1) = n。
-        OpCode::CONCAT_N => bytecode.get(pc + 1).copied().unwrap_or(0) as usize,
-        OpCode::NEW_OBJECT => opcode::a(bytecode[pc]) as usize,
-        _ => 0,
-    }
 }
 
 /// 把流中所有 IC 扩展字清零，使全部缓存 shape 失效。
@@ -310,6 +253,7 @@ fn ic_set_hit_own_poly(obj: &mut JsObject, bytecode: &[Instr], ext_pc: usize, va
 #[cfg(test)]
 mod tests {
     use super::*;
+    use oxide_bytecode::opcode::OpCode;
 
     #[test]
     fn concat_n_ext_word_count_advances_by_n() {

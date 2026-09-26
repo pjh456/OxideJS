@@ -2,7 +2,9 @@
 //!
 //! [`CompiledModule`] 是编译器输出的字节码函数单元：指令序列、常量池、
 //! 寄存器布局元信息、子函数（嵌套函数）与 upvalue 捕获描述；随 VM 解释执行
-//! 或由其它模块克隆复制。`Display` 输出可读的反汇编文本，供调试用。
+//! 或由其它模块克隆复制。`Display` 输出可读的反汇编文本，供调试用：
+//! 扩展字并入其指令行不单独成行，offset 列为字序号（与 VM 的 pc 同单位），
+//! 子模块（嵌套函数体）递归渲染。
 
 use std::fmt;
 use std::sync::Arc;
@@ -151,39 +153,271 @@ impl Clone for CompiledModule {
 
 impl fmt::Display for CompiledModule {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        writeln!(f, "; n_registers = {}", self.n_registers)?;
-        writeln!(f, "; constants:")?;
-        for (i, c) in self.constants.iter().enumerate() {
-            writeln!(f, ";   [{i}] = {c:?}")?;
+        Self::render(f, self, 0, None)
+    }
+}
+
+impl CompiledModule {
+    /// 渲染一个模块单元：头部元信息 + 指令行 + 递归子模块。
+    ///
+    /// `depth` 控制指令行缩进（顶层 0，每层 +2 空格）；`sub_index` 为子模块序号
+    /// （顶层 None）。指令行按 `1 + ext_word_count` 推进 offset，扩展字并入其
+    /// 指令行，不单独成行；offset 列即字序号（与 VM 的 pc 同单位）。
+    fn render(
+        f: &mut fmt::Formatter<'_>, module: &CompiledModule, depth: usize, sub_index: Option<usize>,
+    ) -> fmt::Result {
+        // 子模块头：序号 + 全局 flat_id + 函数名（嵌套函数体调试入口）。
+        if let Some(i) = sub_index {
+            let name = module.function_name.as_deref().unwrap_or("");
+            writeln!(f, "\n; sub_module[{i}] (flat_id={flat_id}, \"{name}\"):", flat_id = module.flat_id)?;
+        }
+        // 头部元信息（顶层 2 空格缩进，子模块 4 空格）。
+        let p1 = if depth == 0 { "; " } else { ";   " };
+        let p2 = if depth == 0 { ";   " } else { ";     " };
+        writeln!(f, "{p1}n_registers = {}", module.n_registers)?;
+        writeln!(f, "{p1}constants:")?;
+        for (i, c) in module.constants.iter().enumerate() {
+            writeln!(f, "{p2}[{i}] = {c:?}")?;
         }
         writeln!(f)?;
-        writeln!(f, "; upvalue_captures: {:?}", self.upvalue_captures)?;
+        writeln!(f, "{p1}upvalue_captures: {:?}", module.upvalue_captures)?;
         writeln!(f)?;
-        for (offset, &instr) in self.bytecode.iter().enumerate() {
+        // 指令行：逐指令按 ext 字数推进，扩展字并入本行。
+        let indent = "  ".repeat(depth + 1);
+        let mut offset = 0usize;
+        while offset < module.bytecode.len() {
+            let instr = module.bytecode[offset];
             let op = opcode::opcode(instr);
-            let rd = opcode::rd(instr);
-            let a = opcode::a(instr);
-            let b = opcode::b(instr);
-            write!(f, "  {offset:04}  {op}")?;
-            match op {
-                OpCode::LOAD_CONST => {
-                    write!(f, " r{rd}, const[{}]", opcode::imm16(instr))?;
-                }
-                OpCode::JMP | OpCode::JMP_IF_FALSE | OpCode::JMP_IF_TRUE => {
-                    write!(f, " r{rd}, {offset:+}", offset = opcode::offset16(instr))?;
-                }
-                OpCode::RETURN | OpCode::HALT | OpCode::NOP => {
-                    write!(f, " r{rd}")?;
-                }
-                OpCode::NEG => {
-                    write!(f, " r{rd}, r{a}")?;
-                }
-                _ => {
-                    write!(f, " r{rd}, r{a}, r{b}")?;
-                }
-            }
+            write!(f, "{indent}{offset:04}  {op}")?;
+            render_operands(f, op, instr, &module.bytecode, offset)?;
             writeln!(f)?;
+            offset += 1 + opcode::ext_word_count(&module.bytecode, offset);
+        }
+        // 递归渲染子模块（嵌套函数体）。
+        for (i, sub) in module.sub_modules.iter().enumerate() {
+            Self::render(f, sub, depth + 1, Some(i))?;
         }
         Ok(())
+    }
+}
+
+/// 指令操作数渲染：按 opcode 语义把 rd/a/b/imm16/ext 字渲染为可读文本。
+///
+/// 常量池下标族渲染 `const[N]`，upvalue 下标族 `uv[N]`，闭包模块下标
+/// `module[N]`，跳转族渲染相对偏移（单位 = 指令字，含 ext 字）；ext 字并入
+/// 本行。ext 字越界回退 0（Display 面不 panic）。
+fn render_operands(
+    f: &mut fmt::Formatter<'_>, op: OpCode, instr: opcode::Instr, bytecode: &[opcode::Instr], offset: usize,
+) -> fmt::Result {
+    let rd = opcode::rd(instr);
+    let a = opcode::a(instr);
+    let b = opcode::b(instr);
+    // ext 字安全读取（越界回退 0）。
+    let ext = |i: usize| bytecode.get(offset + 1 + i).copied().unwrap_or(0);
+    match op {
+        // 跳转族：offset16 相对偏移（单位 = 指令字，含 ext 字）。
+        OpCode::JMP | OpCode::TRY_BEGIN | OpCode::TRY_FINALLY_BEGIN => {
+            write!(f, " +{} (rel)", opcode::offset16(instr))
+        }
+        OpCode::JMP_IF_FALSE | OpCode::JMP_IF_TRUE | OpCode::JMP_IF_NULLISH | OpCode::BREAK | OpCode::CONTINUE => {
+            write!(f, " r{rd}, +{} (rel)", opcode::offset16(instr))
+        }
+        // imm16 常量池/下标族。
+        OpCode::LOAD_CONST | OpCode::LOAD_GLOBAL | OpCode::LOAD_GLOBAL_TYPEOF => {
+            write!(f, " r{rd}, const[{}]", opcode::imm16(instr))
+        }
+        OpCode::LOAD_UPVALUE => write!(f, " r{rd}, uv[{}]", opcode::imm16(instr)),
+        OpCode::CREATE_CLOSURE => write!(f, " r{rd}, module[{}]", opcode::imm16(instr)),
+        OpCode::STORE_UPVALUE => write!(f, " r{a}, uv[{b}]"),
+        // 单 ext 字族。
+        OpCode::SPILL | OpCode::UNSPILL => write!(f, " r{rd}, slot[{}]", ext(0)),
+        OpCode::CALL | OpCode::CALL_NATIVE | OpCode::NEW_EXPRESSION => {
+            write!(f, " r{rd}, r{a}, r{b}, nargs={}", ext(0) & 0xFF)
+        }
+        OpCode::SUPER_CALL => write!(f, " r{rd}, r{a}, nargs={}", ext(0) & 0xFF),
+        OpCode::DEFINE_ACCESSOR => write!(f, " r{rd}, r{a}, r{b}, const[{}]", ext(0)),
+        OpCode::DEFINE_ACCESSOR_DYNAMIC => write!(f, " r{rd}, r{a}, r{b}, key=r{}", ext(0) & 0x7FFF_FFFF),
+        OpCode::DEFINE_PROP_ATTRS => write!(f, " r{rd}, r{a}, r{b}, attrs={:#x}", ext(0)),
+        OpCode::DEFINE_GLOBAL_PROP_C | OpCode::DEFINE_GLOBAL_PROP_C_IF_ABSENT => {
+            write!(f, " r{a}, const[{}]", ext(0))
+        }
+        OpCode::DELETE_GLOBAL_PROP_C => write!(f, " r{rd}, r{a}, const[{}]", ext(0)),
+        OpCode::DELETE_PROP_STATIC => write!(f, " r{rd}, r{a}, const[{}]", ext(0)),
+        OpCode::REST_OBJECT => write!(f, " r{rd}, r{a}, r{b}, excl=const[{}]", ext(0)),
+        OpCode::INIT_PRIVATE => write!(f, " r{rd}, r{a}, r{b}, method={}", ext(0)),
+        // 双 ext 字族。
+        OpCode::DEFINE_ACCESSOR_ATTRS => {
+            write!(f, " r{rd}, r{a}, r{b}, const[{}], attrs={:#x}", ext(0), ext(1))
+        }
+        OpCode::DEFINE_ACCESSOR_ATTRS_DYNAMIC => {
+            write!(f, " r{rd}, r{a}, r{b}, key=r{}, attrs={:#x}", ext(0) & 0x7FFF_FFFF, ext(1))
+        }
+        OpCode::GET_PRIVATE | OpCode::SET_PRIVATE | OpCode::PRIVATE_BRAND_IN => {
+            write!(f, " r{rd}, r{a}, r{b}, brand=r{}, id={}", ext(0), ext(1))
+        }
+        // IC 族：8 个多态槽扩展字。
+        _ if op.has_ic_ext_words() => write!(f, " r{rd}, r{a}, r{b}, ic x{}", opcode::IC_EXT_WORDS),
+        // 变长 ext 族。
+        OpCode::CALL_SPREAD | OpCode::NEW_EXPRESSION_SPREAD | OpCode::SUPER_CALL_SPREAD => {
+            // 首字 = nstatic | (nspread<<8)；实参字：静态 = 寄存器号，spread 源带高位标记。
+            let header = ext(0);
+            let n = ((header & 0xFF) + ((header >> 8) & 0xFF)) as usize;
+            write!(f, " r{rd}, r{a}, r{b}, args=[")?;
+            for i in 0..n {
+                if i > 0 {
+                    write!(f, ", ")?;
+                }
+                let w = ext(i + 1);
+                if w & 0x8000_0000 != 0 {
+                    write!(f, "...r{}", w & 0x7FFF_FFFF)?;
+                } else {
+                    write!(f, "r{}", w)?;
+                }
+            }
+            write!(f, "]")
+        }
+        OpCode::TEMPLATE_STR => {
+            // 首字 = (segment_count<<16) | len_hint；段字：高位标记 = 表达式寄存器，
+            // 否则常量池下标。
+            let header = ext(0);
+            let n = ((header >> 16) & 0xFFFF) as usize;
+            write!(f, " r{rd}, segs=[")?;
+            for i in 0..n {
+                if i > 0 {
+                    write!(f, ", ")?;
+                }
+                let w = ext(i + 1);
+                if w & 0x8000_0000 != 0 {
+                    write!(f, "r{}", w & 0x7FFF_FFFF)?;
+                } else {
+                    write!(f, "c{}", w & 0x7FFF_FFFF)?;
+                }
+            }
+            write!(f, "]")
+        }
+        OpCode::GET_TEMPLATE_OBJECT => {
+            // ext[0]=quasis 段数 n，随后 2n 个交错 cooked/raw 字，末尾 site 序号。
+            let n = ext(0) as usize;
+            write!(f, " r{rd}, {n} quasis, site={}", ext(1 + 2 * n))
+        }
+        OpCode::CONCAT_N => {
+            // ext[0]=n=操作数总数，其余 n-1 字为操作数寄存器。
+            let n = ext(0) as usize;
+            write!(f, " r{rd}, r{a}, ops=[")?;
+            for i in 0..n.saturating_sub(1) {
+                if i > 0 {
+                    write!(f, ", ")?;
+                }
+                write!(f, "r{}", ext(i + 1) & 0x7FFF_FFFF)?;
+            }
+            write!(f, "]")
+        }
+        OpCode::NEW_OBJECT => {
+            // a 槽 = 属性数，ext = 每键常量池下标。
+            let n = a as usize;
+            write!(f, " r{rd}, {n} keys [")?;
+            for i in 0..n {
+                if i > 0 {
+                    write!(f, ", ")?;
+                }
+                write!(f, "const[{}]", ext(i))?;
+            }
+            write!(f, "]")
+        }
+        // 单操作数族。
+        OpCode::NEG => write!(f, " r{rd}, r{a}"),
+        OpCode::RETURN | OpCode::HALT | OpCode::NOP => write!(f, " r{rd}"),
+        _ => write!(f, " r{rd}, r{a}, r{b}"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 手工构造反汇编夹具：顶层 5 条指令（NEW_OBJECT 1 字键表、CALL 1 ext 字、
+    /// IC_GET_PROP 8 ext 字），子模块 1 个（3 条指令，RETURN 带 1 个逃出计数 ext 字）。
+    fn fixture() -> CompiledModule {
+        let sub = CompiledModule {
+            function_name: Some("f".into()),
+            flat_id: 1,
+            n_registers: 2,
+            constants: vec![Constant::Int(42)],
+            bytecode: Arc::from([
+                opcode::encode(OpCode::LOAD_CONST, 1, 0, 0),
+                opcode::encode(OpCode::RETURN, 1, 0, 0),
+                0, // RETURN 逃出计数 ext 字
+                opcode::encode(OpCode::HALT, 0, 0, 0),
+            ]),
+            ..Default::default()
+        };
+        let mut m = CompiledModule::new();
+        m.n_registers = 4;
+        m.constants = vec![Constant::Int(1), Constant::String("a".into())];
+        m.bytecode = Arc::from([
+            opcode::encode(OpCode::LOAD_CONST, 1, 0, 0),
+            opcode::encode(OpCode::NEW_OBJECT, 2, 1, 0),
+            1, // NEW_OBJECT 键表：const[1]
+            opcode::encode(OpCode::CALL, 3, 0, 1),
+            1, // CALL ext：nargs=1
+            opcode::encode(OpCode::IC_GET_PROP, 0, 2, 3),
+            0xAAAA_AAAA,
+            0xBBBB_BBBB,
+            0xCCCC_CCCC,
+            0xDDDD_DDDD,
+            0xEEEE_EEEE,
+            0xFFFF_FFFF,
+            0x1111_1111,
+            0x2222_2222,
+            opcode::encode(OpCode::HALT, 0, 0, 0),
+        ]);
+        m.sub_modules = vec![Arc::new(sub)];
+        m
+    }
+
+    #[test]
+    fn disassembly_ext_words_merge_into_instruction_lines() {
+        let text = fixture().to_string();
+        let lines: Vec<&str> = text.lines().collect();
+        // 指令行数 = 真实指令数（顶层 5 + 子模块 3），ext 字不单独成行。
+        let instr_lines = lines
+            .iter()
+            .filter(|l| l.trim_start().chars().next().is_some_and(|c| c.is_ascii_digit()));
+        assert_eq!(instr_lines.count(), 8, "指令行数 = 真实指令数\n{text}");
+        // 逐行形态：offset 列 = 字序号（与 VM pc 同单位），操作数按语义渲染。
+        let expected = [
+            "  0000  LOAD_CONST r1, const[0]",
+            "  0001  NEW_OBJECT r2, 1 keys [const[1]]",
+            "  0003  CALL r3, r0, r1, nargs=1",
+            "  0005  IC_GET_PROP r0, r2, r3, ic x8",
+            "  0014  HALT r0",
+            "    0000  LOAD_CONST r1, const[0]",
+            "    0001  RETURN r1",
+            "    0003  HALT r0",
+        ];
+        for line in &expected {
+            assert!(lines.contains(line), "missing line: {line}\n{text}");
+        }
+        // 子模块头：序号 + flat_id + 函数名。
+        assert!(lines.contains(&"; sub_module[0] (flat_id=1, \"f\"):"));
+    }
+
+    #[test]
+    fn disassembly_imm16_and_ext_operand_rendering() {
+        let mut m = CompiledModule::new();
+        m.constants = vec![Constant::String("x".into())];
+        m.bytecode = Arc::from([
+            opcode::encode(OpCode::LOAD_GLOBAL, 1, 0, 0),
+            opcode::encode(OpCode::CREATE_CLOSURE, 2, 0, 0),
+            opcode::encode(OpCode::DEFINE_GLOBAL_PROP_C, 0, 1, 0),
+            3, // ext：键常量池下标
+            opcode::encode(OpCode::JMP_IF_FALSE, 1, 12, 0),
+        ]);
+        let text = m.to_string();
+        let lines: Vec<&str> = text.lines().collect();
+        assert!(lines.contains(&"  0000  LOAD_GLOBAL r1, const[0]"));
+        assert!(lines.contains(&"  0001  CREATE_CLOSURE r2, module[0]"));
+        assert!(lines.contains(&"  0002  DEFINE_GLOBAL_PROP_C r1, const[3]"));
+        assert!(lines.contains(&"  0004  JMP_IF_FALSE r1, +12 (rel)"));
     }
 }

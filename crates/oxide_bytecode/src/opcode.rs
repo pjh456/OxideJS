@@ -773,6 +773,64 @@ pub fn offset16(instr: Instr) -> i16 {
     ((instr >> 16) & 0xFFFF) as i16
 }
 
+/// 计算 `pc` 处指令之后的扩展字个数（按 opcode 语义推进，逐指令字节序一致）。
+///
+/// 定长族返回固定字数；变长族依指令内容：spread 调用从首字读 nstatic|nspread、
+/// TEMPLATE_STR 从首字读 segment_count、GET_TEMPLATE_OBJECT 从首字读 quasis 段数、
+/// CONCAT_N 从首字读操作数总数、NEW_OBJECT 从 a 槽读属性数（键表）。
+/// 反汇编 Display 与 IC 清零扫描共用此表，任何新增变长 ext opcode 必须在此登记。
+pub fn ext_word_count(bytecode: &[Instr], pc: usize) -> usize {
+    let op = opcode(bytecode[pc]);
+    // IC 系固定 IC_EXT_WORDS 扩展字（多态槽组）。
+    if op.has_ic_ext_words() {
+        return IC_EXT_WORDS;
+    }
+    match op {
+        OpCode::SPILL
+        | OpCode::UNSPILL
+        | OpCode::CALL
+        | OpCode::CALL_NATIVE
+        | OpCode::NEW_EXPRESSION
+        | OpCode::SUPER_CALL
+        | OpCode::DEFINE_ACCESSOR
+        | OpCode::DEFINE_ACCESSOR_DYNAMIC
+        | OpCode::DEFINE_PROP_ATTRS
+        | OpCode::DEFINE_GLOBAL_PROP_C
+        | OpCode::DEFINE_GLOBAL_PROP_C_IF_ABSENT
+        | OpCode::DELETE_GLOBAL_PROP_C
+        | OpCode::DELETE_PROP_STATIC
+        | OpCode::REST_OBJECT
+        | OpCode::INIT_PRIVATE => 1,
+        OpCode::DEFINE_ACCESSOR_ATTRS
+        | OpCode::DEFINE_ACCESSOR_ATTRS_DYNAMIC
+        | OpCode::GET_PRIVATE
+        | OpCode::SET_PRIVATE
+        | OpCode::PRIVATE_BRAND_IN => 2,
+        // 逃出计数 ext：BREAK/CONTINUE/RETURN 恒带 1 个 pack_escape_counts 字
+        // （for-of/for-in 逃出层数打包）；lower 对这三条无条件落 ext 字，
+        // dispatch 经 read_escape_counts 消费，扫描必须同步跳过以免错位。
+        OpCode::BREAK | OpCode::CONTINUE | OpCode::RETURN => 1,
+        OpCode::CALL_SPREAD | OpCode::NEW_EXPRESSION_SPREAD | OpCode::SUPER_CALL_SPREAD => {
+            let header = bytecode.get(pc + 1).copied().unwrap_or(0);
+            1 + (header & 0xFF) as usize + ((header >> 8) & 0xFF) as usize
+        }
+        OpCode::TEMPLATE_STR => {
+            let header = bytecode.get(pc + 1).copied().unwrap_or(0);
+            1 + ((header >> 16) & 0xFFFF) as usize
+        }
+        // GET_TEMPLATE_OBJECT：ext[0]=quasis 段数 n，随后 2n 个交错 cooked/raw 字，
+        // 末尾 1 个 site 序号——总 ext 字数 = 2+2n，与 dispatch 逐字消费一致。
+        OpCode::GET_TEMPLATE_OBJECT => {
+            let n = bytecode.get(pc + 1).copied().unwrap_or(0) as usize;
+            2 + 2 * n
+        }
+        // CONCAT_N：ext[0]=n=操作数总数，ext 字数 = 1+(n-1) = n。
+        OpCode::CONCAT_N => bytecode.get(pc + 1).copied().unwrap_or(0) as usize,
+        OpCode::NEW_OBJECT => a(bytecode[pc]) as usize,
+        _ => 0,
+    }
+}
+
 /// 发射无条件跳转指令（`JMP`，偏移以 16 位补码编码）。
 pub fn encode_jmp(offset: i16) -> Instr {
     let lo = (offset as u16 & 0xFF) as u8;
@@ -888,5 +946,28 @@ mod tests {
         ];
         let tbl: Vec<u8> = all_opcodes().filter(|op| op.has_ic_ext_words()).map(|op| op as u8).collect();
         assert_eq!(tbl, legacy);
+    }
+
+    /// ext 字数表与 dispatch 逐字消费布局对齐（定长族 / 双字族 / 变长族）。
+    #[test]
+    fn ext_word_count_matches_dispatch_layout() {
+        // IC 族固定 8 字。
+        let ic = [encode(OpCode::IC_GET_PROP, 0, 0, 0); IC_EXT_WORDS + 1];
+        assert_eq!(ext_word_count(&ic, 0), IC_EXT_WORDS);
+        // 1 字族（含 BREAK/CONTINUE/RETURN 逃出计数）。
+        assert_eq!(ext_word_count(&[encode(OpCode::CALL, 0, 0, 0), 3], 0), 1);
+        assert_eq!(ext_word_count(&[encode(OpCode::BREAK, 0, 0, 0), 1], 0), 1);
+        assert_eq!(ext_word_count(&[encode(OpCode::RETURN, 0, 0, 0), 1], 0), 1);
+        // 2 字族。
+        assert_eq!(ext_word_count(&[encode(OpCode::GET_PRIVATE, 0, 0, 0), 1, 2], 0), 2);
+        // 变长族：spread 首字 nstatic|nspread、TEMPLATE_STR 段数、GET_TEMPLATE_OBJECT 2+2n、
+        // CONCAT_N=n、NEW_OBJECT=a 槽属性数。
+        assert_eq!(ext_word_count(&[encode(OpCode::CALL_SPREAD, 0, 0, 0), 0x0201, 5, 6, 7], 0), 4);
+        assert_eq!(ext_word_count(&[encode(OpCode::TEMPLATE_STR, 0, 0, 0), 0x0002_0000, 1, 2], 0), 3);
+        assert_eq!(ext_word_count(&[encode(OpCode::GET_TEMPLATE_OBJECT, 0, 0, 0), 1, 2, 3, 4], 0), 4);
+        assert_eq!(ext_word_count(&[encode(OpCode::CONCAT_N, 0, 0, 0), 3, 1, 2], 0), 3);
+        assert_eq!(ext_word_count(&[encode(OpCode::NEW_OBJECT, 0, 2, 0), 7, 8], 0), 2);
+        // 无 ext 字。
+        assert_eq!(ext_word_count(&[encode(OpCode::ADD, 0, 0, 0)], 0), 0);
     }
 }
