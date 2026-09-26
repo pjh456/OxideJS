@@ -1,4 +1,4 @@
-//! dispatch 主循环：逐指令解码与 156 个 OpCode 臂分派、执行期 GC 安全点、
+//! dispatch 主循环：逐指令解码与 OpCode 臂分派、执行期 GC 安全点、
 //! 步数/分配上限采样与二元运算宏 `binary_arith!`。
 
 use num_traits::Zero;
@@ -834,10 +834,6 @@ impl Vm {
                     self.dispatch_await(rd)?;
                     self.profiling.set_instruction_count(steps);
                     return Ok(JsValue::undefined());
-                }
-
-                _ => {
-                    return Err(format!("opcode {op} not yet implemented"));
                 }
             }
         }

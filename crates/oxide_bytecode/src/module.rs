@@ -172,10 +172,6 @@ impl fmt::Display for CompiledModule {
                 OpCode::JMP | OpCode::JMP_IF_FALSE | OpCode::JMP_IF_TRUE => {
                     write!(f, " r{rd}, {offset:+}", offset = opcode::offset16(instr))?;
                 }
-                OpCode::SWITCH_TABLE => {
-                    let n_cases = rd as u16 | ((b as u16) << 8);
-                    write!(f, " r{disc_reg}={a}, {n_cases} cases", disc_reg = a)?;
-                }
                 OpCode::RETURN | OpCode::HALT | OpCode::NOP => {
                     write!(f, " r{rd}")?;
                 }

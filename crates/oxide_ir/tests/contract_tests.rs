@@ -337,8 +337,6 @@ fn impure_ops_are_not_deletable() {
     // RegAlloc 辅助：SPILL/UNSPILL 有副作用（删 SPILL 后 UNSPILL 读陈旧值）
     assert!(!Inst::inst_spill(Operand::Reg(5), 42).is_pure(&f));
     assert!(!Inst::inst_unspill(Operand::Reg(9), 42).is_pure(&f));
-    // 占位 opcode 防御性有副作用
-    assert!(!Inst::new(OpCode::SWITCH_TABLE, Operand::None, Operand::None, Operand::None).is_pure(&f));
 }
 
 #[test]
@@ -547,20 +545,6 @@ fn opcode_semantics_golden_table() {
         &[OpCode::INC_PRE, OpCode::INC_POST, OpCode::DEC_PRE, OpCode::DEC_POST],
         Some(1),
         &[1],
-        false,
-    );
-    // 占位 opcode：def=rd 保守，不可删
-    assert_group(
-        &[
-            OpCode::SWITCH_TABLE,
-            OpCode::PROFILE_SHAPE,
-            OpCode::PROFILE_BRANCH,
-            OpCode::PROFILE_CALL,
-            OpCode::FORK,
-            OpCode::JOIN,
-        ],
-        Some(1),
-        &[],
         false,
     );
     // 异常 / 返回 / 停机

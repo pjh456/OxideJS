@@ -297,9 +297,6 @@ define_opcodes! {
     FOR_IN_DONE = 0x2B => "FOR_IN_DONE",
         def = Some(SlotSpec::Slot(Slot::Rd)), uses = [],
         pure = false, jump = false, term = false, ic = false,
-    SWITCH_TABLE = 0x2C => "SWITCH_TABLE", // 占位：emit 不产，按 catch-all 保守 def
-        def = Some(SlotSpec::Slot(Slot::Rd)), uses = [],
-        pure = false, jump = false, term = false, ic = false,
     FOR_IN_CLEANUP = 0x2D => "FOR_IN_CLEANUP",
         def = None, uses = [],
         pure = false, jump = false, term = false, ic = false,
@@ -613,24 +610,7 @@ define_opcodes! {
         def = Some(SlotSpec::Slot(Slot::A)), uses = [SlotSpec::Slot(Slot::Rd), SlotSpec::Slot(Slot::A), SlotSpec::Slot(Slot::B)],
         pure = false, jump = false, term = false, ic = true,
 
-    // ── Profiling — 占位符 (0x6A-0x6F) ──
-    PROFILE_SHAPE = 0x6A => "PROFILE_SHAPE", // 占位：catch-all 保守 def
-        def = Some(SlotSpec::Slot(Slot::Rd)), uses = [],
-        pure = false, jump = false, term = false, ic = false,
-    PROFILE_BRANCH = 0x6B => "PROFILE_BRANCH",
-        def = Some(SlotSpec::Slot(Slot::Rd)), uses = [],
-        pure = false, jump = false, term = false, ic = false,
-    PROFILE_CALL = 0x6C => "PROFILE_CALL",
-        def = Some(SlotSpec::Slot(Slot::Rd)), uses = [],
-        pure = false, jump = false, term = false, ic = false,
-
-    // ── 并行 — 占位符 (0x70-0x75) ──
-    FORK = 0x70 => "FORK",
-        def = Some(SlotSpec::Slot(Slot::Rd)), uses = [],
-        pure = false, jump = false, term = false, ic = false,
-    JOIN = 0x71 => "JOIN",
-        def = Some(SlotSpec::Slot(Slot::Rd)), uses = [],
-        pure = false, jump = false, term = false, ic = false,
+    // ── 私有 (0x72-0x75) ──
     GET_PRIVATE = 0x72 => "GET_PRIVATE", // ext[0]=brand_reg，非 0 才产生 use
         def = Some(SlotSpec::Slot(Slot::Rd)), uses = [SlotSpec::Slot(Slot::A), SlotSpec::Slot(Slot::B), SlotSpec::BrandReg],
         pure = false, jump = false, term = false, ic = false,
