@@ -46,11 +46,17 @@ struct Cli {
 enum Commands {
     Eval {
         code: String,
+        /// 逐指令 trace：每条指令向 stderr 写一行 pc + opcode + 操作数。
+        #[arg(long)]
+        trace: bool,
     },
     Run {
         file: String,
         #[arg(long, default_value = "1")]
         repeat: u64,
+        /// 逐指令 trace：每条指令向 stderr 写一行 pc + opcode + 操作数。
+        #[arg(long)]
+        trace: bool,
     },
     Compile {
         #[arg(short = 'e')]
@@ -87,16 +93,16 @@ fn main() -> ExitCode {
     let cli = Cli::parse();
 
     match cli.command {
-        Some(Commands::Eval { code }) => {
+        Some(Commands::Eval { code, trace }) => {
             let kernel = make_kernel(cli.verbose, cli.quiet);
             let pool = make_pool(&kernel);
-            eval(&code, &kernel, &pool)
+            eval(&code, &kernel, &pool, trace)
         }
-        Some(Commands::Run { file, repeat }) => {
+        Some(Commands::Run { file, repeat, trace }) => {
             let kernel = make_kernel(cli.verbose, cli.quiet);
             let pool = make_pool(&kernel);
             for n in 0..repeat {
-                let code = run(&file, &kernel, &pool);
+                let code = run(&file, &kernel, &pool, trace);
                 if code != ExitCode::SUCCESS && code != ExitCode::FAILURE {
                     return code;
                 }
@@ -155,7 +161,7 @@ fn make_pool(kernel: &Arc<KernelCore>) -> Arc<VmPool> {
     VmPool::new(Arc::clone(kernel), kernel.config.min_pool_size, kernel.config.max_pool_size)
 }
 
-fn eval(code: &str, kernel: &Arc<KernelCore>, pool: &Arc<VmPool>) -> ExitCode {
+fn eval(code: &str, kernel: &Arc<KernelCore>, pool: &Arc<VmPool>, trace: bool) -> ExitCode {
     let allocator = Allocator::default();
     let program = match oxide_parser::parse(&allocator, code) {
         Ok(p) => p,
@@ -180,6 +186,7 @@ fn eval(code: &str, kernel: &Arc<KernelCore>, pool: &Arc<VmPool>) -> ExitCode {
     };
 
     let mut guard = pool.spawn();
+    guard.vm_mut().set_instruction_trace(trace);
     match guard.vm_mut().run(&module) {
         Ok(result) => {
             format_result(guard.vm(), kernel.perm_interner().as_ref(), kernel.shape_forge().as_ref(), result);
@@ -284,9 +291,9 @@ fn format_array(
     format!("[{}]", items.join(", "))
 }
 
-fn run(file: &str, kernel: &Arc<KernelCore>, pool: &Arc<VmPool>) -> ExitCode {
+fn run(file: &str, kernel: &Arc<KernelCore>, pool: &Arc<VmPool>, trace: bool) -> ExitCode {
     match fs::read_to_string(file) {
-        Ok(source) => eval(&source, kernel, pool),
+        Ok(source) => eval(&source, kernel, pool, trace),
         Err(err) => {
             kernel_error!("cannot read {}: {}", file, err);
             eprintln!("{}", Red.paint(format!("Cannot read {file}: {err}")));

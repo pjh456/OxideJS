@@ -350,6 +350,10 @@ pub struct Vm {
     pub(crate) saved_flat_id_stack: Vec<u32>,
     /// 帧切换时暂存调用方表代际的栈（与 saved_flat_id_stack 同步 push/pop）。
     pub(crate) saved_table_gen_stack: Vec<u32>,
+    /// 逐指令 trace 开关：开启时 dispatch 主循环对每条指令向 stderr 写一行
+    /// `pc + opcode + 操作数`。运行时开关，旁路 tracing 级别上限（release
+    /// 构建可用）；默认关闭，关闭时热路径仅一次 bool 比较，零输出零分配。
+    pub trace_instructions: bool,
 }
 
 impl Drop for Vm {
@@ -411,6 +415,12 @@ impl Vm {
     /// 写入寄存器 `idx` 的值。
     pub fn set_reg(&mut self, idx: u8, val: JsValue) {
         self.regs[idx as usize] = val;
+    }
+
+    /// 设置逐指令 trace 开关（开启后 dispatch 主循环逐指令向 stderr 写
+    /// `pc + opcode + 操作数` 行，pc 为字节码 word 序号，与反汇编 offset 同单位）。
+    pub fn set_instruction_trace(&mut self, on: bool) {
+        self.trace_instructions = on;
     }
 
     /// 只读访问 VM 的 epoch arena。

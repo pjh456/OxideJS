@@ -202,12 +202,19 @@ impl Vm {
                 return Err("program counter out of bounds".into());
             }
 
-            let instr = self.bytecode[self.pc];
+            let pc = self.pc;
+            let instr = self.bytecode[pc];
             let op = opcode::opcode(instr);
             let rd = opcode::rd(instr) as usize;
             let a = opcode::a(instr) as usize;
             let b = opcode::b(instr) as usize;
-            self.pc += 1;
+            self.pc = pc + 1;
+
+            // 逐指令 trace：运行时开关短路（默认关闭，零输出零分配）；
+            // pc 为字节码 word 序号，与反汇编 offset 列同单位。
+            if self.trace_instructions {
+                eprintln!("pc={pc:4} {op:>16} rd={rd} a={a} b={b}");
+            }
 
             match op {
                 OpCode::NOP => {}
