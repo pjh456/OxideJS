@@ -248,11 +248,12 @@ pub(crate) fn run_supervised(
         id += 1;
     }
 
+    // 缺省 16：全量复测验证过的安全并发；未经复测不得抬高。
     let supervisors = std::env::var("OXIDE_TEST262_SUPERVISORS")
         .ok()
         .and_then(|s| s.parse::<usize>().ok())
         .filter(|&n| n > 0)
-        .unwrap_or_else(|| std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4))
+        .unwrap_or(16)
         .min(windows.len().max(1));
 
     eprintln!(

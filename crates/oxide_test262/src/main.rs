@@ -69,6 +69,11 @@ fn print_fail_categories(stats: &RunStats, paths: &[PathBuf]) {
 /// 汇总并打印统计；任何失败使返回值为 false（进程退出码 1）。
 fn run_tests() -> bool {
     let args: Vec<String> = std::env::args().collect();
+    // 帮助走 stdout 并成功退出，与错误路径（stderr + 退出码 1）分离。
+    if args.iter().any(|a| a == "--help" || a == "-h") {
+        println!("{}", RunConfig::usage());
+        return true;
+    }
     let config = match RunConfig::parse(&args) {
         Ok(config) => config,
         Err(msg) => {
@@ -147,9 +152,6 @@ fn run_tests() -> bool {
     let log_running_tests = std::env::var_os("OXIDE_TEST262_RUNNING_LOG").is_some();
     let heartbeat_path: Option<PathBuf> = std::env::var_os("OXIDE_TEST262_HEARTBEAT").map(PathBuf::from);
 
-    test262_info!("running on {} worker thread(s)", workers);
-    eprintln!("running on {workers} worker thread(s)");
-
     let skip_until = std::env::var("OXIDE_SKIP_UNTIL")
         .ok()
         .and_then(|s| s.parse::<usize>().ok())
@@ -173,7 +175,7 @@ fn run_tests() -> bool {
     let is_chunk_child = std::env::var_os("OXIDE_TEST262_CHILD_CHUNK").is_some();
     let allow_fail_exit = std::env::var_os("OXIDE_TEST262_ALLOW_FAIL_EXIT").is_some();
 
-    if config.supervise && !is_chunk_child && filter.is_none() {
+    if config.supervised(is_chunk_child) {
         test262_info!("supervised mode enabled");
         eprintln!("supervised mode enabled: child-window execution with per-test timeout + auto-resume");
         return run_supervised(&args, skip_until, end_index, config.no_skip, &paths);
@@ -186,6 +188,9 @@ fn run_tests() -> bool {
             return run_chunked(&args, skip_until, end_index, chunk_size);
         }
     }
+    // 并行模式专属：监督/分块模式在此前已返回，不派生 worker 线程。
+    test262_info!("running on {} worker thread(s)", workers);
+    eprintln!("running on {workers} worker thread(s)");
     test262_info!("kernel reset batch: {} test(s)", kernel_batch);
     eprintln!("kernel reset batch: {kernel_batch} test(s)");
     let cursor = AtomicUsize::new(skip_until);

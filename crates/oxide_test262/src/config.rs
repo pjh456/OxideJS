@@ -36,6 +36,12 @@ impl RunConfig {
         }
     }
 
+    /// 监督模式判定：`--supervise` 且非监督派生的子进程（子进程不重入监督）。
+    /// 路径 filter 不参与判定——filter 在子进程内逐测试应用，不构成监督屏障。
+    pub(crate) fn supervised(&self, is_chunk_child: bool) -> bool {
+        self.supervise && !is_chunk_child
+    }
+
     /// 解析命令行参数为运行配置；未知选项或参数过多返回错误。
     pub(crate) fn parse(args: &[String]) -> Result<Self, String> {
         let mut config = Self::new();
@@ -82,14 +88,26 @@ impl RunConfig {
           --no-fail-list  Do not print the per-path FAIL list at the end of the run.\n\
           --supervise  Run the suite as single-worker child-process windows with a hard per-test timeout and\n\
           \x20            automatic resume past any hanging/crashing test. A hang or crash is reported by path.\n\
+          \x20            Combines with [path-filter]: the filter is applied per-test inside each child window.\n\
           --leak-check Monitor session_object_ptrs, session_bytes, code_forge.len(), symbol_registry.len() every\n\
           \x20            --leak-check-interval tests (default 1000). Flags sustained linear growth (R^2>0.9).\n\
           \n\
-          supervised-mode env tunables:\n\
-          \x20  OXIDE_TEST262_TIMEOUT_SECS        per-test wall-clock timeout (default 10)\n\
-          \x20  OXIDE_TEST262_WINDOW              tests per window (default 5000)\n\
-          \x20  OXIDE_TEST262_SUPERVISORS         concurrent windows (default = available parallelism)\n\
-          \x20  OXIDE_TEST262_STARTUP_GRACE_SECS  grace for a child's first heartbeat (default 60)"
+          env tunables (all optional):\n\
+          \x20  OXIDE_LOG                          per-subsystem log levels (default off)\n\
+          \x20  OXIDE_TEST262_WORKERS              worker threads in parallel mode (default = available parallelism, 4 under --no-skip)\n\
+          \x20  OXIDE_TEST262_WINDOW                 supervised tests per child window (default 5000)\n\
+          \x20  OXIDE_TEST262_TIMEOUT_SECS          per-test wall-clock timeout in supervised mode (default 10)\n\
+          \x20  OXIDE_TEST262_STARTUP_GRACE_SECS    grace for a child's first heartbeat (default 60)\n\
+          \x20  OXIDE_TEST262_SUPERVISORS          concurrent supervised windows (default 16)\n\
+          \x20  OXIDE_TEST262_RUNNING_LOG            log every test as it starts (any value)\n\
+          \x20  OXIDE_TEST262_HEARTBEAT              heartbeat file path (supervised/chunked)\n\
+          \x20  OXIDE_TEST262_CHUNK_SIZE             tests per child in chunked mode\n\
+          \x20  OXIDE_TEST262_CHILD_CHUNK            marks a spawned child as chunk worker (any value)\n\
+          \x20  OXIDE_TEST262_ALLOW_FAIL_EXIT        child may exit 1 on fail (any value)\n\
+          \x20  OXIDE_TEST262_KERNEL_BATCH           kernel rebuilds every N tests (default 5000, 1000 under --no-skip)\n\
+          \x20  OXIDE_TEST262_LOG_LEVEL              runner log level (default info)\n\
+          \x20  OXIDE_SKIP_UNTIL                      skip test indexes below N (chunking/supervise resume)\n\
+          \x20  OXIDE_MAX_TESTS                       run at most N tests after skip point"
              .into()
     }
 }
@@ -140,6 +158,18 @@ mod tests {
 
         let help = RunConfig::parse(&args(&["--help"])).expect_err("--help must error");
         assert_eq!(help, RunConfig::usage());
+    }
+
+    /// 监督判定三态：开启时 filter 不否决、子进程不重入、未开启恒 false。
+    #[test]
+    fn supervised_predicate_ignores_filter() {
+        let mut cfg = RunConfig::new();
+        cfg.supervise = true;
+        cfg.filter = Some("language".to_string());
+        assert!(cfg.supervised(false), "filter 不得否决监督");
+        assert!(!cfg.supervised(true), "子进程不得重入监督");
+        let off = RunConfig::new();
+        assert!(!off.supervised(false));
     }
 
     /// interval 非数字回落缺省 1000；位置参数超过 2 个返回错误。
