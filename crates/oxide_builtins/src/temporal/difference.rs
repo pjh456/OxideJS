@@ -77,6 +77,41 @@ pub(crate) const DAY_NS: i128 = 86_400_000_000_000;
 
 pub(crate) const MAX_ISO_DAY: i128 = 100_000_000;
 
+/// 时间单位长度表（时到纳秒，下标 = 单位索引 - 4）。
+pub(crate) const TIME_UNIT_NS: [i128; 6] = [3_600_000_000_000, 60_000_000_000, 1_000_000_000, 1_000_000, 1_000, 1];
+
+/// 内部时长记录：日期部分（年/月/周/日）加时间部分（纳秒，不含日分量）。
+pub(crate) struct InternalDuration {
+    pub(crate) date: [f64; 4],
+    pub(crate) time_ns: i128,
+}
+
+impl InternalDuration {
+    /// 转十分量数组：时间部分按向零截断分解为时/分/秒/毫秒/微秒/纳秒（与时长同号）。
+    pub(crate) fn to_values(&self) -> [f64; 10] {
+        let mut values = [0.0; 10];
+        values[0..4].copy_from_slice(&self.date);
+        let time = plain_time_components_signed(self.time_ns);
+        for index in 0..6 {
+            values[4 + index] = time[index] as f64;
+        }
+        values
+    }
+}
+
+/// InternalDurationSign（规范 7.5.15）：日期部分符号优先，其次时间部分符号。
+pub(crate) fn internal_duration_sign(values: &[f64; 10]) -> i128 {
+    let date_sign = date_duration_sign(values);
+    if date_sign != 0 {
+        return date_sign;
+    }
+    match super::duration::duration_time_only_nanoseconds(values) {
+        Some(time_ns) if time_ns < 0 => -1,
+        Some(time_ns) if time_ns > 0 => 1,
+        _ => 0,
+    }
+}
+
 /// 比较两个 ISO 日期，返回 -1/0/+1。
 pub(crate) fn compare_iso_date(a: (i128, i128, i128), b: (i128, i128, i128)) -> i128 {
     if a.0 != b.0 {
@@ -345,13 +380,25 @@ pub(crate) fn nudge_window(
     (r1, r2, start, end)
 }
 
+/// NudgeToCalendarUnit 结果：取整后时长、取整后纪元、窗口是否扩窗（或取整到上界），
+/// 以及以取整单位计的分数总量（窗口端点间的相对位置）。
+pub(crate) struct NudgeCalendarResult {
+    pub(crate) duration: [f64; 10],
+    pub(crate) nudged_epoch: i128,
+    pub(crate) did_expand: bool,
+    pub(crate) total: f64,
+}
+
 /// 对年/月/周单位的差值取整：把候选窗口端点换算成纪元纳秒，按目标时刻在窗口
 /// 中的相对位置决定取整方向（NudgeToCalendarUnit 语义）。
+///
+/// `epoch_of_date` 是窗口端点日期的纪元换算闭包：plain 面传墙钟换算（行为逐字节
+/// 不变），zoned 面传 GetEpochNanosecondsFor(compatible) 换算。
 #[allow(clippy::too_many_arguments)]
-fn nudge_to_calendar_unit(
-    sign: i128, values: &[f64; 10], origin_epoch: i128, dest_epoch: i128, date1: (i128, i128, i128), time1_ns: i128,
-    increment: i128, unit: usize, mode: InstantRoundingMode,
-) -> Result<([f64; 10], i128, bool), ()> {
+pub(crate) fn nudge_to_calendar_unit(
+    sign: i128, values: &[f64; 10], origin_epoch: i128, dest_epoch: i128, date1: (i128, i128, i128), increment: i128,
+    unit: usize, mode: InstantRoundingMode, epoch_of_date: &dyn Fn((i128, i128, i128)) -> Result<i128, ()>,
+) -> Result<NudgeCalendarResult, ()> {
     let epoch_of = |dur: &[f64; 10]| -> Result<i128, ()> {
         if date_duration_sign(dur) == 0 {
             return Ok(origin_epoch);
@@ -361,7 +408,7 @@ fn nudge_to_calendar_unit(
         if days.abs() > MAX_ISO_DAY {
             return Err(());
         }
-        Ok(days * DAY_NS + time1_ns)
+        epoch_of_date(date)
     };
     let mut did_expand = false;
     let (mut r1, mut r2, mut start_dur, mut end_dur) = nudge_window(sign, values, date1, increment, unit, false);
@@ -400,14 +447,24 @@ fn nudge_to_calendar_unit(
     did_expand = did_expand || rounded_unit == r2.abs();
     let duration = if rounded_unit == r2.abs() { end_dur } else { start_dur };
     let nudged = if did_expand { end_epoch } else { start_epoch };
-    Ok((duration, nudged, did_expand))
+    // 分数总量：r1 加窗口内相对位置（increment 为 1 时即规范 [[Total]]）。
+    let total = (denominator as f64 * r1 as f64 + numerator as f64 * sign as f64) / denominator as f64;
+    Ok(NudgeCalendarResult {
+        duration,
+        nudged_epoch: nudged,
+        did_expand,
+        total,
+    })
 }
 
 /// 舍入结果越过小单位边界时向更大的单位逐级进位，并把被进位单位的低位分量
 /// 清零，最多进位到 largest 指定的单位（BubbleRelativeDuration 语义）。
-fn bubble_relative_duration(
-    sign: i128, mut values: [f64; 10], nudged_epoch: i128, date1: (i128, i128, i128), time1_ns: i128, largest: usize,
-    start_unit: usize,
+///
+/// `epoch_of_date` 是进位候选日期的纪元换算闭包：plain 面传墙钟换算（行为逐字节
+/// 不变），zoned 面传 GetEpochNanosecondsFor(compatible) 换算。
+pub(crate) fn bubble_relative_duration(
+    sign: i128, mut values: [f64; 10], nudged_epoch: i128, date1: (i128, i128, i128), largest: usize,
+    start_unit: usize, epoch_of_date: &dyn Fn((i128, i128, i128)) -> Result<i128, ()>,
 ) -> Result<[f64; 10], ()> {
     if start_unit == 0 {
         return Ok(values);
@@ -446,7 +503,7 @@ fn bubble_relative_duration(
             let end_date = add_date_duration(date1, &end_dur);
             // 进位候选边界可能越出 ISO 日期范围，仅用于换算比较用的纪元纳秒并判断
             // 是否进位，因此这里不做范围校验。
-            let end_epoch = days_from_civil(end_date.0, end_date.1, end_date.2) * DAY_NS + time1_ns;
+            let end_epoch = epoch_of_date(end_date)?;
             let reached_end = if sign > 0 { nudged_epoch >= end_epoch } else { nudged_epoch <= end_epoch };
             if reached_end {
                 values = end_dur;
@@ -742,6 +799,10 @@ pub(crate) fn nudge_iso_difference<H: VmHost>(
 
     let date1 = start;
     let time1_ns = start_time_ns;
+    // plain 面纪元换算闭包：墙钟（日 × 24h + 时间），行为与旧内联算法逐字节一致。
+    let epoch_of_date = |date: (i128, i128, i128)| -> Result<i128, ()> {
+        Ok(days_from_civil(date.0, date.1, date.2) * DAY_NS + time1_ns)
+    };
     let mut date2 = end;
     let mut time_ns = end_time_ns - time1_ns;
     let time_sign = if time_ns > 0 {
@@ -830,7 +891,7 @@ pub(crate) fn nudge_iso_difference<H: VmHost>(
         }
         if did_expand_days {
             let nudged = dest_epoch + (rounded_ns - total_ns);
-            match bubble_relative_duration(sign, values, nudged, date1, time1_ns, largest_index, 3) {
+            match bubble_relative_duration(sign, values, nudged, date1, largest_index, 3, &epoch_of_date) {
                 Ok(bubbled) => values = bubbled,
                 Err(()) => return Err(crate::error::create_range_error(vm, "difference is out of range")),
             }
@@ -839,22 +900,33 @@ pub(crate) fn nudge_iso_difference<H: VmHost>(
     } else {
         // year/month/week 长度随日历变化，无法折算成固定纳秒：改用纪元纳秒窗口
         // 取整，按目标时刻落在候选窗口内的相对位置决定取整方向（NudgeToCalendarUnit 语义）。
-        let (mut values, nudged_epoch, did_expand) = match nudge_to_calendar_unit(
+        let outcome = match nudge_to_calendar_unit(
             sign,
             &date_values,
             origin_epoch,
             dest_epoch,
             date1,
-            time1_ns,
             increment,
             smallest_index,
             mode,
+            &epoch_of_date,
         ) {
             Ok(result) => result,
             Err(()) => return Err(crate::error::create_range_error(vm, "difference is out of range")),
         };
+        let mut values = outcome.duration;
+        let nudged_epoch = outcome.nudged_epoch;
+        let did_expand = outcome.did_expand;
         if did_expand && smallest_index != 2 {
-            match bubble_relative_duration(sign, values, nudged_epoch, date1, time1_ns, largest_index, smallest_index) {
+            match bubble_relative_duration(
+                sign,
+                values,
+                nudged_epoch,
+                date1,
+                largest_index,
+                smallest_index,
+                &epoch_of_date,
+            ) {
                 Ok(bubbled) => values = bubbled,
                 Err(()) => return Err(crate::error::create_range_error(vm, "difference is out of range")),
             }

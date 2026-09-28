@@ -13,12 +13,14 @@ use super::common::{
     zoned_date_time_plain_parts,
 };
 use super::difference::{
-    add_date_duration, add_days_iso, compare_iso_date, date_duration_sign, date_until_iso, nudge_iso_difference,
-    nudge_window, plain_date_time_unit_index, round_instant_difference, DifferenceSettings, DAY_NS, MAX_ISO_DAY,
+    add_date_duration, add_days_iso, balance_instant_difference, compare_iso_date, date_duration_sign, date_until_iso,
+    nudge_iso_difference, nudge_window, plain_date_time_unit_index, round_instant_difference, DifferenceSettings,
+    InternalDuration, DAY_NS, MAX_ISO_DAY,
 };
 use super::instant::{instant_rounding_mode, InstantRoundingMode};
 use super::time_zone::zone_offset_seconds;
 use super::zoned_date_time::{
+    add_zoned_datetime, difference_zoned_datetime_with_rounding_vm, difference_zoned_datetime_with_total_vm,
     extract_time_zone_annotation, parse_any_offset_seconds, valid_offset_fraction, zoned_date_time_string_parts,
 };
 use super::{make_duration, parse_plain_date_time_string};
@@ -299,15 +301,13 @@ fn duration_values(obj: &JsObject) -> [f64; 10] {
 enum RelativePoint {
     Wall {
         date: (i128, i128, i128),
-        /// 本批调用方只消费日期，zoned epoch 路径消费日历。
+        /// 当前仅 iso8601 日历，zoned 路径不消费日历。
         #[allow(dead_code)]
         calendar: String,
     },
     Zoned {
         epoch_ns: i128,
         time_zone: String,
-        /// 本批调用方只消费 epoch 与时区，zoned epoch 路径消费日历。
-        #[allow(dead_code)]
         calendar: String,
     },
 }
@@ -319,8 +319,7 @@ enum RelativePoint {
 /// 2. Zoned → 区偏移（epoch 依赖查找）+ civil_from_days 反推墙历日期。
 ///
 /// # 边界与前提
-/// - Zoned 支是本批过渡路径（TODO: 69.3.4.2 切 epoch 路径），算法与旧 zoned
-///   字符串支保持逐字节一致。
+/// - Zoned 支仅用于 compare 的两支纯时间落回路径（24h 语义与规范 plain 路径一致）。
 fn relative_point_wall_date<H: VmHost>(vm: &mut H, point: &RelativePoint) -> Result<(i128, i128, i128), JsValue> {
     match point {
         RelativePoint::Wall { date, .. } => Ok(*date),
@@ -548,6 +547,15 @@ pub fn duration_total<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         Err(error) => return NativeResult::Err(error),
     };
 
+    // Zoned 载荷：AddZonedDateTime → DifferenceZonedDateTimeWithTotal（门与单位无关）。
+    if let Some(RelativePoint::Zoned { epoch_ns, time_zone, calendar }) = &relative_date {
+        let target = native_try!(add_zoned_datetime(vm, *epoch_ns, time_zone, calendar, &values, true));
+        let total = native_try!(difference_zoned_datetime_with_total_vm(
+            vm, *epoch_ns, target, time_zone, calendar, unit_index
+        ));
+        return NativeResult::Ok(JsValue::float(total));
+    }
+
     const UNIT_NS: [i128; 6] = [3_600_000_000_000, 60_000_000_000, 1_000_000_000, 1_000_000, 1_000, 1];
     if unit_index <= 2 || (unit_index == 3 && has_calendar_units) {
         // 日历单位：需要 relativeTo，用纪元纳秒窗口计算分数总量。
@@ -557,7 +565,6 @@ pub fn duration_total<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
                 &format!("a starting point is required for {} total", unit_raw),
             ));
         };
-        // Zoned 载荷暂走墙钟路径（TODO: 69.3.4.2 切 epoch 路径）。
         let rel_date = native_try!(relative_point_wall_date(vm, &point));
         let Some(time_ns_base) = duration_time_nanoseconds(&values) else {
             return NativeResult::Err(crate::error::create_range_error(vm, "duration is out of range"));
@@ -900,6 +907,52 @@ fn duration_apply_to_relative<H: VmHost>(
     Ok((end, target_time))
 }
 
+/// DefaultTemporalLargestUnit（规范 7.5.17）：首个非零分量索引（全零视为 nanosecond）。
+pub(crate) fn default_temporal_largest_unit(values: &[f64; 10]) -> usize {
+    for (index, value) in values.iter().enumerate() {
+        if *value != 0.0 {
+            return index;
+        }
+    }
+    9
+}
+
+/// TemporalDurationFromInternal（规范 7.5.8）：日期部分直传，时间部分按 largestUnit 平衡。
+///
+/// # 步骤
+/// 1. largestUnit 为日期类（day 及以上）：时间全量分解，days 折回日期部分。
+/// 2. largestUnit 为时间类：从该单位向下分解。
+pub(crate) fn internal_duration_to_values(internal: &InternalDuration, largest: usize) -> [f64; 10] {
+    let mut values = [0.0; 10];
+    values[0..4].copy_from_slice(&internal.date);
+    let sign = if internal.time_ns < 0 { -1 } else { 1 };
+    if largest <= 3 {
+        let mut remainder = internal.time_ns.unsigned_abs();
+        let hours = remainder / 3_600_000_000_000;
+        remainder %= 3_600_000_000_000;
+        let minutes = remainder / 60_000_000_000;
+        remainder %= 60_000_000_000;
+        let seconds = remainder / 1_000_000_000;
+        remainder %= 1_000_000_000;
+        let milliseconds = remainder / 1_000_000;
+        remainder %= 1_000_000;
+        let microseconds = remainder / 1_000;
+        let nanoseconds = remainder % 1_000;
+        let days = hours / 24;
+        values[3] = internal.date[3] + sign as f64 * days as f64;
+        values[4] = (hours % 24) as f64 * sign as f64;
+        values[5] = minutes as f64 * sign as f64;
+        values[6] = seconds as f64 * sign as f64;
+        values[7] = milliseconds as f64 * sign as f64;
+        values[8] = microseconds as f64 * sign as f64;
+        values[9] = nanoseconds as f64 * sign as f64;
+    } else {
+        let time_values = balance_instant_difference(internal.time_ns, largest - 4).unwrap_or([0.0; 10]);
+        values[4..10].copy_from_slice(&time_values[4..10]);
+    }
+    values
+}
+
 /// `Temporal.Duration.compare(one, two, options)`：按相对点比较两个时长。
 ///
 /// # 步骤
@@ -957,8 +1010,22 @@ pub fn duration_compare<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
             one_ns.cmp(&two_ns)
         }
         Some(point) => {
+            // Zoned 载荷且任一支最大单位为日期类：epoch 级比较（门是 OR）。
+            // 两支均纯时间时落回 24h 墙钟路径（与规范 plain 路径一致）。
+            if let RelativePoint::Zoned { epoch_ns, time_zone, calendar } = &point {
+                let largest1 = default_temporal_largest_unit(&one);
+                let largest2 = default_temporal_largest_unit(&two);
+                if largest1 <= 3 || largest2 <= 3 {
+                    let after1 = native_try!(add_zoned_datetime(vm, *epoch_ns, time_zone, calendar, &one, true));
+                    let after2 = native_try!(add_zoned_datetime(vm, *epoch_ns, time_zone, calendar, &two, true));
+                    return NativeResult::Ok(JsValue::int(match after1.cmp(&after2) {
+                        std::cmp::Ordering::Less => -1,
+                        std::cmp::Ordering::Equal => 0,
+                        std::cmp::Ordering::Greater => 1,
+                    }));
+                }
+            }
             // 有 relativeTo：各 duration 应用后先比日期再比时间。
-            // Zoned 载荷暂走墙钟路径（TODO: 69.3.4.2 切 epoch 路径）。
             let rel = native_try!(relative_point_wall_date(vm, &point));
             let (date1, time1) = native_try!(duration_apply_to_relative(vm, rel, &one));
             let (date2, time2) = native_try!(duration_apply_to_relative(vm, rel, &two));
@@ -1136,7 +1203,30 @@ pub fn duration_round<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     };
 
     // 日历单位存在或目标为日历单位时走 relativeTo 路径，否则走纯时间路径。
-    let needs_relative = values[..3].iter().any(|value| *value != 0.0) || largest < 3 || smallest_index < 3;
+    // Zoned 相对点无条件走 zoned 路径（DST 感知的日长，24h 路径失准）。
+    let needs_relative = values[..3].iter().any(|value| *value != 0.0)
+        || largest < 3
+        || smallest_index < 3
+        || matches!(&relative_date, Some(RelativePoint::Zoned { .. }));
+    // Zoned 载荷：AddZonedDateTime → DifferenceZonedDateTimeWithRounding（门与单位无关）。
+    if let Some(RelativePoint::Zoned { epoch_ns, time_zone, calendar }) = &relative_date {
+        let target = native_try!(add_zoned_datetime(vm, *epoch_ns, time_zone, calendar, &values, true));
+        let internal = native_try!(difference_zoned_datetime_with_rounding_vm(
+            vm,
+            *epoch_ns,
+            target,
+            time_zone,
+            calendar,
+            largest,
+            increment,
+            smallest_index,
+            mode,
+        ));
+        // largestUnit 为日期类时降为 hour。
+        let largest = if largest <= 3 { 4 } else { largest };
+        let result = internal_duration_to_values(&internal, largest);
+        return make_duration(vm, result);
+    }
     if !needs_relative {
         // 纯时间路径：按 24 小时/天将 days..nanoseconds 汇总为纳秒，按 smallest 舍入后平衡到 largest。
         let Some(time_ns) = duration_time_nanoseconds(&values) else {
@@ -1194,7 +1284,6 @@ pub fn duration_round<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
             "a starting point is required for rounding calendar units",
         ));
     };
-    // Zoned 载荷暂走墙钟路径（TODO: 69.3.4.2 切 epoch 路径）。
     let rel = native_try!(relative_point_wall_date(vm, &point));
     let Some(time_ns_total) = duration_time_nanoseconds(&values) else {
         return NativeResult::Err(crate::error::create_range_error(vm, "duration is out of range"));

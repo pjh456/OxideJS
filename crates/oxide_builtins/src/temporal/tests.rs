@@ -619,3 +619,108 @@ fn calendar_date_add_iso_constrain_semantics() {
     // 闰年二月：constrain 钳到 29。
     assert_eq!(calendar_date_add_iso((2024, 1, 31), 0, 1, 0, 0, true), Ok((2024, 2, 29)));
 }
+
+#[test]
+fn zoned_difference_day_correction() {
+    use super::zoned_date_time::{difference_zoned_datetime, get_epoch_nanos_for};
+
+    // 同日纯时间差：无日期部分，时间部分为纳秒差。
+    let ns1 = get_epoch_nanos_for("America/New_York", (2025, 6, 15), 43_200_000_000_000).unwrap();
+    let ns2 = get_epoch_nanos_for("America/New_York", (2025, 6, 15), 66_600_000_000_000).unwrap();
+    let d = difference_zoned_datetime(ns1, ns2, "America/New_York", "iso8601", 3).unwrap();
+    assert_eq!(d.date, [0.0, 0.0, 0.0, 0.0]);
+    assert_eq!(d.time_ns, 23_400_000_000_000);
+
+    // 跨 DST 间隙日（23 小时）：墙历时刻相同，日期部分 1 天、时间部分 0。
+    let ns1 = get_epoch_nanos_for("America/New_York", (2025, 3, 8), 43_200_000_000_000).unwrap();
+    let ns2 = get_epoch_nanos_for("America/New_York", (2025, 3, 9), 43_200_000_000_000).unwrap();
+    let d = difference_zoned_datetime(ns1, ns2, "America/New_York", "iso8601", 3).unwrap();
+    assert_eq!(d.date, [0.0, 0.0, 0.0, 1.0]);
+    assert_eq!(d.time_ns, 0);
+
+    // dayCorrection 循环推进：12 小时跨间隙日，日期部分 0、时间部分 12 小时。
+    let ns2b = get_epoch_nanos_for("America/New_York", (2025, 3, 9), 0).unwrap();
+    let d = difference_zoned_datetime(ns1, ns2b, "America/New_York", "iso8601", 3).unwrap();
+    assert_eq!(d.date, [0.0, 0.0, 0.0, 0.0]);
+    assert_eq!(d.time_ns, 43_200_000_000_000);
+
+    // 反向（sign 为正）：日期部分为负一天、时间部分 0。
+    let d = difference_zoned_datetime(ns2, ns1, "America/New_York", "iso8601", 3).unwrap();
+    assert_eq!(d.date, [0.0, 0.0, 0.0, -1.0]);
+    assert_eq!(d.time_ns, 0);
+}
+
+#[test]
+fn zoned_total_dst_fraction() {
+    use super::zoned_date_time::{difference_zoned_datetime_with_total, get_epoch_nanos_for};
+
+    // 整日差（23 小时间隙日）：总量 1。
+    let ns1 = get_epoch_nanos_for("America/New_York", (2025, 3, 8), 43_200_000_000_000).unwrap();
+    let ns2 = get_epoch_nanos_for("America/New_York", (2025, 3, 9), 43_200_000_000_000).unwrap();
+    let total = difference_zoned_datetime_with_total(ns1, ns2, "America/New_York", "iso8601", 3).unwrap();
+    assert!((total - 1.0).abs() < 1e-12);
+
+    // 12 小时跨 23 小时间隙日：总量 12/23（按实际日长折算，非 24 小时）。
+    let ns2b = get_epoch_nanos_for("America/New_York", (2025, 3, 9), 0).unwrap();
+    let total = difference_zoned_datetime_with_total(ns1, ns2b, "America/New_York", "iso8601", 3).unwrap();
+    assert!((total - 12.0 / 23.0).abs() < 1e-12);
+}
+
+#[test]
+fn zoned_round_nudge_to_zoned_time() {
+    use super::duration::internal_duration_to_values;
+    use super::instant::InstantRoundingMode;
+    use super::zoned_date_time::{
+        add_zoned_datetime_pure, difference_zoned_datetime_with_rounding, get_epoch_nanos_for,
+    };
+
+    // Apia 2011-12-30 整日跳过（24 小时间隙）：起点墙历为 12-31 00:30。
+    let origin = get_epoch_nanos_for("Pacific/Apia", (2011, 12, 30), 1_800_000_000_000).unwrap();
+
+    // P25H 按小时取整：跨间隙日不产生进位，保持 25 小时（非 1 天 1 小时）。
+    let p25h = [0.0_f64, 0.0, 0.0, 0.0, 25.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+    let target = add_zoned_datetime_pure(origin, "Pacific/Apia", "iso8601", &p25h, true).unwrap();
+    let internal = difference_zoned_datetime_with_rounding(
+        origin,
+        target,
+        "Pacific/Apia",
+        "iso8601",
+        4,
+        1,
+        4,
+        InstantRoundingMode::Trunc,
+    )
+    .unwrap();
+    let values = internal_duration_to_values(&internal, 4);
+    assert_eq!(values, [0.0, 0.0, 0.0, 0.0, 25.0, 0.0, 0.0, 0.0, 0.0, 0.0]);
+
+    // P1DT26H 按小时取整：日长 24 小时，取整后 2 天 2 小时。
+    let p1dt26h = [0.0_f64, 0.0, 0.0, 1.0, 26.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+    let target = add_zoned_datetime_pure(origin, "Pacific/Apia", "iso8601", &p1dt26h, true).unwrap();
+    let internal = difference_zoned_datetime_with_rounding(
+        origin,
+        target,
+        "Pacific/Apia",
+        "iso8601",
+        3,
+        1,
+        4,
+        InstantRoundingMode::Trunc,
+    )
+    .unwrap();
+    let values = internal_duration_to_values(&internal, 4);
+    assert_eq!(values, [0.0, 0.0, 0.0, 2.0, 2.0, 0.0, 0.0, 0.0, 0.0, 0.0]);
+}
+
+#[test]
+fn zoned_compare_pure_epoch() {
+    use super::zoned_date_time::{add_zoned_datetime_pure, get_epoch_nanos_for};
+
+    // 跨 23 小时间隙日：P1D（实际 23 小时）短于 P24H（实际 24 小时）。
+    let origin = get_epoch_nanos_for("America/New_York", (2025, 3, 8), 43_200_000_000_000).unwrap();
+    let p1d = [0.0_f64, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+    let p24h = [0.0_f64, 0.0, 0.0, 0.0, 24.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+    let after1d = add_zoned_datetime_pure(origin, "America/New_York", "iso8601", &p1d, true).unwrap();
+    let after24h = add_zoned_datetime_pure(origin, "America/New_York", "iso8601", &p24h, true).unwrap();
+    assert!(after1d < after24h);
+}

@@ -17,17 +17,19 @@ use super::common::{
     zoned_date_time_plain_parts, FractionalSecondDigitsInput, MAX_INSTANT_NS,
 };
 use super::difference::{
-    add_days_iso, date_duration_sign, difference_core, parse_difference_settings, DAY_NS, MAX_ISO_DAY,
+    add_days_iso, bubble_relative_duration, compare_iso_date, date_duration_sign, date_until_iso, difference_core,
+    internal_duration_sign, nudge_to_calendar_unit, parse_difference_settings, round_instant_difference,
+    InternalDuration, DAY_NS, MAX_ISO_DAY, TIME_UNIT_NS,
 };
 use super::instant::{
     instant_rounding_mode, instant_string_without_annotations, parse_instant_string, primitive_to_bigint,
-    round_instant_ns,
+    round_instant_ns, InstantRoundingMode,
 };
 use super::time_zone::{named_zone_possible_epoch_ns, tz_gap_offsets, zone_offset_seconds};
 use super::{
     days_in_month_iso, duration_like_values, duration_time_only_nanoseconds, is_leap_year_iso, make_duration,
-    make_plain_date, make_plain_date_time, make_plain_time, plain_time_components, plain_time_like_ns, valid_iso_date,
-    valid_plain_date_time_range,
+    make_plain_date, make_plain_date_time, make_plain_time, plain_time_components, plain_time_components_signed,
+    plain_time_like_ns, valid_iso_date, valid_plain_date_time_range,
 };
 
 /// `Temporal.ZonedDateTime` 构造器：保存纪元纳秒、固定偏移或 UTC 时区以及 ISO 日历。
@@ -1835,12 +1837,7 @@ pub(crate) fn add_zoned_datetime_pure(
         return add_instant(epoch_ns, time_ns);
     }
     // GetISODateTimeFor：墙历分量。
-    let offset_seconds = zone_offset_seconds(time_zone, epoch_ns.div_euclid(1_000_000_000) as i64)
-        .ok_or(AddZonedError::InvalidTimeZone)?;
-    let local_ns = epoch_ns + i128::from(offset_seconds) * 1_000_000_000;
-    let days = local_ns.div_euclid(DAY_NS);
-    let time_ns = local_ns.rem_euclid(DAY_NS);
-    let (year, month, day) = civil_from_days(days);
+    let ((year, month, day), time_ns) = get_iso_date_time_for(time_zone, epoch_ns)?;
     if !valid_plain_date_time_range(year as i32, month as u32, day as u32, time_ns as f64) {
         return Err(AddZonedError::OutOfDateTimeRange);
     }
@@ -1868,10 +1865,16 @@ pub(crate) fn add_zoned_datetime_pure(
 }
 
 /// AddZonedDateTime 的 VM 包装：核心错误统一转 RangeError。
-fn add_zoned_datetime<H: VmHost>(
+pub(crate) fn add_zoned_datetime<H: VmHost>(
     vm: &mut H, epoch_ns: i128, time_zone: &str, calendar: &str, values: &[f64; 10], constrain: bool,
 ) -> Result<i128, JsValue> {
-    add_zoned_datetime_pure(epoch_ns, time_zone, calendar, values, constrain).map_err(|error| match error {
+    add_zoned_datetime_pure(epoch_ns, time_zone, calendar, values, constrain)
+        .map_err(|error| map_add_zoned_error(vm, error))
+}
+
+/// AddZonedError 到 JS RangeError 的映射（各 zoned 面 VM 包装共用）。
+fn map_add_zoned_error<H: VmHost>(vm: &mut H, error: AddZonedError) -> JsValue {
+    match error {
         AddZonedError::InvalidTimeZone => crate::error::create_range_error(vm, "invalid time zone"),
         AddZonedError::OutOfDateTimeRange => crate::error::create_range_error(vm, "invalid date-time"),
         AddZonedError::OutOfInstantRange => {
@@ -1880,7 +1883,325 @@ fn add_zoned_datetime<H: VmHost>(
         AddZonedError::DayOutOfRange => crate::error::create_range_error(vm, "day out of range"),
         AddZonedError::InvalidDate => crate::error::create_range_error(vm, "invalid date"),
         AddZonedError::OutOfTimeRange => crate::error::create_range_error(vm, "duration is out of range"),
+    }
+}
+
+/// DifferenceZonedDateTimeWithRounding 的 VM 包装：错误映射为 RangeError。
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn difference_zoned_datetime_with_rounding_vm<H: VmHost>(
+    vm: &mut H, ns1: i128, ns2: i128, time_zone: &str, calendar: &str, largest_unit: usize, increment: i128,
+    smallest_unit: usize, mode: InstantRoundingMode,
+) -> Result<InternalDuration, JsValue> {
+    difference_zoned_datetime_with_rounding(ns1, ns2, time_zone, calendar, largest_unit, increment, smallest_unit, mode)
+        .map_err(|error| map_add_zoned_error(vm, error))
+}
+
+/// DifferenceZonedDateTimeWithTotal 的 VM 包装：错误映射为 RangeError。
+pub(crate) fn difference_zoned_datetime_with_total_vm<H: VmHost>(
+    vm: &mut H, ns1: i128, ns2: i128, time_zone: &str, calendar: &str, unit: usize,
+) -> Result<f64, JsValue> {
+    difference_zoned_datetime_with_total(ns1, ns2, time_zone, calendar, unit)
+        .map_err(|error| map_add_zoned_error(vm, error))
+}
+
+/// GetISODateTimeFor（规范 11.1.10）：epoch 对应的墙历日期时间。
+///
+/// # 步骤
+/// 1. 区偏移（epoch 依赖查找）加到 epoch 得墙历纳秒。
+/// 2. 拆日与时间（欧几里得除，负 epoch 同样正确）。
+///
+/// # 边界与前提
+/// - 时区名非法（不在区表且非固定偏移串）返回 InvalidTimeZone。
+pub(crate) fn get_iso_date_time_for(
+    time_zone: &str, epoch_ns: i128,
+) -> Result<((i128, i128, i128), i128), AddZonedError> {
+    let offset_seconds = zone_offset_seconds(time_zone, epoch_ns.div_euclid(1_000_000_000) as i64)
+        .ok_or(AddZonedError::InvalidTimeZone)?;
+    let local_ns = epoch_ns + i128::from(offset_seconds) * 1_000_000_000;
+    let days = local_ns.div_euclid(DAY_NS);
+    let time_ns = local_ns.rem_euclid(DAY_NS);
+    let (year, month, day) = civil_from_days(days);
+    Ok(((year, month, day), time_ns))
+}
+
+/// GetEpochNanosecondsFor（规范 11.1.11，compatible 消歧）：墙历日期时间的纪元。
+///
+/// # 步骤
+/// 1. 候选集（固定偏移区单候选；IANA 区 0/1/2 候选）。
+/// 2. compatible 消歧（重叠取早、间隙平移后取后侧）。
+///
+/// # 边界与前提
+/// - 日期年份越出 i32 表示范围视为越界（候选换算无意义）。
+/// - 候选超 Instant 范围或区表未命中返回对应错误。
+pub(crate) fn get_epoch_nanos_for(
+    time_zone: &str, date: (i128, i128, i128), time_ns: i128,
+) -> Result<i128, AddZonedError> {
+    if date.0 < i32::MIN as i128 || date.0 > i32::MAX as i128 {
+        return Err(AddZonedError::OutOfDateTimeRange);
+    }
+    let candidates = get_possible_epoch_nanoseconds(time_zone, date.0 as i32, date.1 as u32, date.2 as u32, time_ns)?;
+    disambiguate_possible_epoch_nanoseconds(time_zone, date, time_ns, "compatible", &candidates)
+}
+
+/// zoned 面纪元换算闭包工厂：候选日期 → (日期, time1) 的 GetEpochNanosecondsFor(compatible) 纪元。
+fn zoned_epoch_of_date<'a>(time_zone: &'a str, time1_ns: i128) -> impl Fn((i128, i128, i128)) -> Result<i128, ()> + 'a {
+    move |date| get_epoch_nanos_for(time_zone, date, time1_ns).map_err(|_| ())
+}
+
+/// 时间差纳秒的符号（-1/0/+1）。
+fn time_duration_sign(ns: i128) -> i128 {
+    if ns < 0 {
+        -1
+    } else if ns > 0 {
+        1
+    } else {
+        0
+    }
+}
+
+/// DifferenceZonedDateTime（规范 6.5.6）：两个 epoch 的差，平衡后结果中无大于
+/// largestUnit 的非零单位，计入日历 reckoning 与时区偏移变化。
+///
+/// # 步骤
+/// 1. 同墙历日 → 纯时间差（ZeroDateDuration + 纳秒差）。
+/// 2. dayCorrection 循环：按 sign 平移终点日期，经 GetEpochNanosecondsFor(compatible)
+///    取候选点，直到时间差符号与总差符号相反。
+/// 3. 日期部分按 CalendarDateUntil（largestUnit 与 day 取大者）分解。
+///
+/// # 边界与前提
+/// - 全程 i128 纳秒；中间点时间取起点墙历时间（规范 (intermediateDate, startDT.Time)）。
+/// - calendar 参数透传（引擎仅 iso8601 日历）。
+pub(crate) fn difference_zoned_datetime(
+    ns1: i128, ns2: i128, time_zone: &str, _calendar: &str, largest_unit: usize,
+) -> Result<InternalDuration, AddZonedError> {
+    if ns1 == ns2 {
+        return Ok(InternalDuration { date: [0.0; 4], time_ns: 0 });
+    }
+    let (start_date, start_time) = get_iso_date_time_for(time_zone, ns1)?;
+    let (end_date, end_time) = get_iso_date_time_for(time_zone, ns2)?;
+    if compare_iso_date(start_date, end_date) == 0 {
+        return Ok(InternalDuration {
+            date: [0.0; 4],
+            time_ns: ns2 - ns1,
+        });
+    }
+    let sign = if ns2 - ns1 < 0 { 1 } else { -1 };
+    let max_day_correction = if sign == -1 { 2 } else { 1 };
+    let mut day_correction = 0_i128;
+    let mut time_duration = end_time - start_time;
+    if time_duration_sign(time_duration) == sign {
+        day_correction += 1;
+    }
+    let mut success = false;
+    let mut intermediate_date = end_date;
+    while day_correction <= max_day_correction && !success {
+        intermediate_date = add_days_iso(end_date, day_correction * sign);
+        let intermediate_ns = get_epoch_nanos_for(time_zone, intermediate_date, start_time)?;
+        time_duration = ns2 - intermediate_ns;
+        if sign != time_duration_sign(time_duration) {
+            success = true;
+        }
+        day_correction += 1;
+    }
+    if !success {
+        return Err(AddZonedError::OutOfDateTimeRange);
+    }
+    let date_largest = largest_unit.min(3);
+    let date_values = date_until_iso(start_date, intermediate_date, date_largest);
+    Ok(InternalDuration {
+        date: [date_values[0], date_values[1], date_values[2], date_values[3]],
+        time_ns: time_duration,
     })
+}
+
+/// DifferenceZonedDateTimeWithRounding（规范 6.5.7）：两个 epoch 的差按设置取整。
+///
+/// # 步骤
+/// 1. largestUnit 为时间单位 → DifferenceInstant（8.5.6：纳秒差按单位取整）。
+/// 2. 否则 DifferenceZonedDateTime；smallestUnit 为 nanosecond 且 increment 为 1 时直接返回。
+/// 3. 否则 RoundRelativeDuration（zoned 路由）。
+///
+/// # 边界与前提
+/// - smallestUnit 不大于 largestUnit（调用方已校验）。
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn difference_zoned_datetime_with_rounding(
+    ns1: i128, ns2: i128, time_zone: &str, _calendar: &str, largest_unit: usize, increment: i128, smallest_unit: usize,
+    mode: InstantRoundingMode,
+) -> Result<InternalDuration, AddZonedError> {
+    if largest_unit >= 4 {
+        let quantum = TIME_UNIT_NS[smallest_unit - 4]
+            .checked_mul(increment)
+            .ok_or(AddZonedError::OutOfTimeRange)?;
+        let rounded = round_instant_difference(ns2 - ns1, quantum, mode).ok_or(AddZonedError::OutOfTimeRange)?;
+        return Ok(InternalDuration {
+            date: [0.0; 4],
+            time_ns: rounded,
+        });
+    }
+    let difference = difference_zoned_datetime(ns1, ns2, time_zone, _calendar, largest_unit)?;
+    if smallest_unit == 9 && increment == 1 {
+        return Ok(difference);
+    }
+    let (iso_date, iso_time) = get_iso_date_time_for(time_zone, ns1)?;
+    round_relative_duration_zoned(
+        difference,
+        ns1,
+        ns2,
+        (iso_date, iso_time),
+        time_zone,
+        largest_unit,
+        increment,
+        smallest_unit,
+        mode,
+    )
+}
+
+/// RoundRelativeDuration（规范 7.5.38）的 zoned 路由：日历单位（或 day）走日历
+/// 窗口取整，时间单位走 NudgeToZonedTime；扩窗后进位到 largestUnit。
+///
+/// # 步骤
+/// 1. 路由：smallestUnit 为日历单位或 day → NudgeToCalendarUnit（zoned 闭包）；
+///    否则 NudgeToZonedTime。
+/// 2. 扩窗且 smallestUnit 非 week → BubbleRelativeDuration（startUnit 取 smallestUnit 与 day 的较大者）。
+#[allow(clippy::too_many_arguments)]
+fn round_relative_duration_zoned(
+    difference: InternalDuration, origin_ns: i128, dest_ns: i128, iso: ((i128, i128, i128), i128), time_zone: &str,
+    largest_unit: usize, increment: i128, smallest_unit: usize, mode: InstantRoundingMode,
+) -> Result<InternalDuration, AddZonedError> {
+    let values = difference.to_values();
+    let sign = if internal_duration_sign(&values) < 0 { -1 } else { 1 };
+    let (iso_date, iso_time) = iso;
+    let epoch_of_date = zoned_epoch_of_date(time_zone, iso_time);
+    // zoned 面时区恒在场：irregular = smallestUnit 为日历单位或 day。
+    let irregular = smallest_unit <= 3;
+    let (mut result, nudged_epoch, did_expand) = if irregular {
+        let outcome = nudge_to_calendar_unit(
+            sign,
+            &values,
+            origin_ns,
+            dest_ns,
+            iso_date,
+            increment,
+            smallest_unit,
+            mode,
+            &epoch_of_date,
+        )
+        .map_err(|_| AddZonedError::OutOfDateTimeRange)?;
+        (outcome.duration, outcome.nudged_epoch, outcome.did_expand)
+    } else {
+        nudge_to_zoned_time(sign, &values, iso_date, iso_time, time_zone, increment, smallest_unit, mode)?
+    };
+    if did_expand && smallest_unit != 2 {
+        let start_unit = smallest_unit.min(3);
+        result =
+            bubble_relative_duration(sign, result, nudged_epoch, iso_date, largest_unit, start_unit, &epoch_of_date)
+                .map_err(|_| AddZonedError::OutOfDateTimeRange)?;
+    }
+    Ok(InternalDuration {
+        date: [result[0], result[1], result[2], result[3]],
+        time_ns: duration_time_only_nanoseconds(&result).ok_or(AddZonedError::OutOfTimeRange)?,
+    })
+}
+
+/// NudgeToZonedTime（规范 7.5.35）：相对 zoned 起点按时间单位取整，计入日长
+/// 可能非 24 小时（DST 日）的情形。
+///
+/// # 步骤
+/// 1. start = CalendarDateAdd(constrain)；end = start 加 sign 天；两端点经
+///    GetEpochNanosecondsFor(compatible) 换算，daySpan 天然含 DST 日长。
+/// 2. 时间部分按 increment × 单位长度取整；越过日边界时记一天进位并重新取整余量。
+///
+/// # 边界与前提
+/// - unit 为时间单位（时到纳秒）；day 单位走日历窗口路径，不进本函数。
+#[allow(clippy::too_many_arguments)]
+fn nudge_to_zoned_time(
+    sign: i128, values: &[f64; 10], iso_date: (i128, i128, i128), iso_time: i128, time_zone: &str, increment: i128,
+    unit: usize, mode: InstantRoundingMode,
+) -> Result<([f64; 10], i128, bool), AddZonedError> {
+    let time_ns = duration_time_only_nanoseconds(values).ok_or(AddZonedError::OutOfTimeRange)?;
+    let start = calendar_date_add_iso(
+        iso_date,
+        values[0] as i128,
+        values[1] as i128,
+        values[2] as i128,
+        values[3] as i128,
+        true,
+    )?;
+    let start_epoch = get_epoch_nanos_for(time_zone, start, iso_time)?;
+    let end_epoch = get_epoch_nanos_for(time_zone, add_days_iso(start, sign), iso_time)?;
+    let day_span = end_epoch - start_epoch;
+    let quantum = TIME_UNIT_NS[unit - 4]
+        .checked_mul(increment)
+        .ok_or(AddZonedError::OutOfTimeRange)?;
+    let mut rounded = round_instant_difference(time_ns, quantum, mode).ok_or(AddZonedError::OutOfTimeRange)?;
+    let beyond = rounded - day_span;
+    let (day_delta, nudged_epoch, did_round_beyond_day) = if time_duration_sign(beyond) != -sign {
+        rounded = round_instant_difference(beyond, quantum, mode).ok_or(AddZonedError::OutOfTimeRange)?;
+        (sign, end_epoch + rounded, true)
+    } else {
+        (0, start_epoch + rounded, false)
+    };
+    let mut result = *values;
+    result[3] = (values[3] as i128 + day_delta) as f64;
+    let time_values = plain_time_components_signed(rounded);
+    for index in 0..6 {
+        result[4 + index] = time_values[index] as f64;
+    }
+    Ok((result, nudged_epoch, did_round_beyond_day))
+}
+
+/// DifferenceZonedDateTimeWithTotal（规范 6.5.8）：两个 epoch 的差以 unit 计的总量。
+///
+/// # 步骤
+/// 1. unit 为时间单位 → TotalTimeDuration 快路径（纳秒差直接除单位长度）。
+/// 2. 否则 DifferenceZonedDateTime + TotalRelativeDuration。
+pub(crate) fn difference_zoned_datetime_with_total(
+    ns1: i128, ns2: i128, time_zone: &str, _calendar: &str, unit: usize,
+) -> Result<f64, AddZonedError> {
+    if unit >= 4 {
+        let difference = ns2 - ns1;
+        return Ok(difference as f64 / TIME_UNIT_NS[unit - 4] as f64);
+    }
+    let difference = difference_zoned_datetime(ns1, ns2, time_zone, _calendar, unit)?;
+    let (iso_date, iso_time) = get_iso_date_time_for(time_zone, ns1)?;
+    total_relative_duration(&difference, ns1, ns2, (iso_date, iso_time), time_zone, unit)
+}
+
+/// TotalRelativeDuration（规范 7.5.39）：时长以 unit 计的总量，相对起点折算。
+///
+/// # 步骤
+/// 1. unit 为日历单位或（时区在场且 unit 为 day）→ NudgeToCalendarUnit
+///    （increment = 1、trunc）取 [[Total]]。
+/// 2. 否则 TotalTimeDuration（24h 日折算，zoned 面不可达）。
+fn total_relative_duration(
+    difference: &InternalDuration, origin_ns: i128, dest_ns: i128, iso: ((i128, i128, i128), i128), time_zone: &str,
+    unit: usize,
+) -> Result<f64, AddZonedError> {
+    let values = difference.to_values();
+    // zoned 面时区恒在场：unit ≤ day 恒走日历窗口路径。
+    if unit <= 3 {
+        let sign = if internal_duration_sign(&values) < 0 { -1 } else { 1 };
+        let (iso_date, iso_time) = iso;
+        let epoch_of_date = zoned_epoch_of_date(time_zone, iso_time);
+        let outcome = nudge_to_calendar_unit(
+            sign,
+            &values,
+            origin_ns,
+            dest_ns,
+            iso_date,
+            1,
+            unit,
+            InstantRoundingMode::Trunc,
+            &epoch_of_date,
+        )
+        .map_err(|_| AddZonedError::OutOfDateTimeRange)?;
+        return Ok(outcome.total);
+    }
+    let time_ns = duration_time_only_nanoseconds(&values).ok_or(AddZonedError::OutOfTimeRange)?;
+    let with_days = time_ns
+        .checked_add((values[3] as i128) * DAY_NS)
+        .ok_or(AddZonedError::OutOfTimeRange)?;
+    Ok(with_days as f64 / TIME_UNIT_NS[unit - 4] as f64)
 }
 
 /// ZDT add/subtract 核心：读 receiver 槽后经 add_zoned_datetime 核心叠加 duration。
