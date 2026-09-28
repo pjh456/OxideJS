@@ -53,6 +53,8 @@ impl JsObject {
     }
 
     /// 设置数组元素数 / 命名属性向量长度。截断或补 undefined 扩展。
+    /// 扩展只补值区（新槽为在位 undefined）与元数据区（新槽为 `None`），不写洞标记；
+    /// 越界增长的空洞语义由增长方（`set_prop_at` / length 赋值路径）按规范写入。
     /// 数组对象只调整独立元素区（`array_elements` + `array_prop_count`），命名属性区
     /// （`hash_props`）零搬移——push 为摊销 O(1) 的 `Vec::push`。
     pub fn set_prop_count(&mut self, count: impl PropIndex) {
@@ -431,10 +433,13 @@ impl JsObject {
     }
 
     /// 设置数组元素 position 处的值（数组对象）；普通对象按绝对下标写入并自动扩容。
-    /// 数组元素写入会更新 `array_prop_count`（元素数随最高索引增长）。
+    /// 数组元素写入会更新 `array_prop_count`（元素数随最高索引增长）；写入位置超出
+    /// 当前元素数时越界增长，新建成段逐槽置为空洞标记，写入槽本身随后覆盖写并
+    /// 清除其 hole 标记。
     ///
     /// # 副作用
     /// - 递增本对象 generation：值覆盖属可观察变更，脏检测依赖世代对比。
+    /// - 越界增长时分配元素元数据向量（首次分配 O(pos) 建槽），新建成段逐槽写 hole。
     pub fn set_prop_at(&mut self, position: impl PropIndex, val: JsValue) {
         let pos = position.to_u32() as usize;
         if pos > MAX_DENSE_PROPS {
@@ -443,7 +448,16 @@ impl JsObject {
         if self.is_array() {
             // 元素写入越过元素区：只扩独立元素区，命名属性区零搬移。
             if pos >= self.array_prop_count as usize {
+                let old = self.array_prop_count as usize;
                 self.set_prop_count(pos + 1);
+                // 越界增长：规范新建成段 (old, pos) 为空洞而非在位 undefined；
+                // pos 槽随后覆盖写，hole 标记由 clear_hole_marker 清除。
+                if old < pos {
+                    let meta = self.ensure_array_elements_meta();
+                    for idx in old..pos {
+                        meta[idx] = Some(PropMetaEntry::hole());
+                    }
+                }
             }
             let vec = self.ensure_array_elements();
             vec[pos] = val;
