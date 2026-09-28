@@ -429,7 +429,7 @@ impl Emitter {
         // 预声明 body 级 `let`/`const`/`class`（未初始化 TDZ 占位），
         // 使声明点前读取可编译为运行时 ReferenceError。函数体 lexical 声明是
         // 局部绑定，不做受限全局名检查；重复声明错在 emit 期报。
-        let _ = self.predeclare_lexical_declarations(body_stmts, &mut ctx, false);
+        let _ = self.predeclare_lexical_declarations(body_stmts, &mut ctx);
 
         // 块级函数名 web-compat 外层 var 绑定（sloppy）：块内函数声明名在实例化
         // 期于函数作用域建外层 var 绑定——无同名绑定则新建 var 槽；名在抑制集

@@ -15,7 +15,7 @@ impl Emitter {
         // 命中已存在的函数绑定自然报重复声明错，不被静默覆盖破坏 TDZ。
         self.predeclare_block_function_declarations(&block.body, ctx, false);
         // 块 lexical 声明是局部绑定：不做受限全局名检查（重复声明错在 emit 期报）。
-        let _ = self.predeclare_lexical_declarations(&block.body, ctx, false);
+        let _ = self.predeclare_lexical_declarations(&block.body, ctx);
         // 块级函数声明的块入口初始化：直接子（含标签直接子体）闭包物化入预
         // 声明块槽，声明语句前读命中函数对象（sloppy 与 strict 同形）；声明
         // 点不再重编闭包，只处理外层 var 写回（见 emit_function_declaration）。

@@ -309,12 +309,8 @@ impl Emitter {
         // 预声明顶层 `var` 名，使首个 sub-pass 中提升的函数声明能解析外层 var。
         self.predeclare_var_declarations(&program.body, &mut ctx);
 
-        // 预声明顶层 `let`/`const`/`class`（未初始化 TDZ 占位）。受限全局名检查
-        // 仅对脚本代码启用：脚本声明实例化查全局对象受限自有属性名，eval 代码
-        // 声明实例化不查——门控随 is_eval_script 而非作用域标志（嵌套块内
-        // is_global_scope 仍为 true，不能作门控）。
-        let global_lexical = !ctx.is_eval_script;
-        self.predeclare_lexical_declarations(&program.body, &mut ctx, global_lexical)?;
+        // 预声明顶层 `let`/`const`/`class`（未初始化 TDZ 占位）。
+        self.predeclare_lexical_declarations(&program.body, &mut ctx)?;
 
         // 顶层块级函数名按 sloppy 模式下与浏览器/web 实现惯例兼容的行为处理
         // （块级函数声明建外层 var 绑定并求值写回；sloppy eval 代码同走

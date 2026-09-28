@@ -34,7 +34,7 @@ impl Emitter {
         ctx.push_scope();
         for case in cases.iter() {
             self.predeclare_block_function_declarations(&case.consequent, ctx, false);
-            self.predeclare_lexical_declarations(&case.consequent, ctx, false)?;
+            self.predeclare_lexical_declarations(&case.consequent, ctx)?;
         }
         // case 内函数声明的块入口初始化：同名重复声明按源序物化，末次声明成为
         // 入口值；声明点复用块槽写回外层 var（见 emit_function_declaration）。

@@ -37,7 +37,7 @@ impl Emitter {
         // 函数预声明先于 lexical：同名 let 命中已有函数绑定报重复声明错。
         self.predeclare_block_function_declarations(&ts.block.body, ctx, false);
         // try 块 lexical 声明是局部绑定：不做受限全局名检查（重复声明错在 emit 期报）。
-        let _ = self.predeclare_lexical_declarations(&ts.block.body, ctx, false);
+        let _ = self.predeclare_lexical_declarations(&ts.block.body, ctx);
         // 块级函数声明的块入口初始化：声明点前读命中函数对象，声明点复用入口槽。
         ctx.block_fn_entry_mats.push(HashMap::new());
         for s in &ts.block.body {
@@ -85,7 +85,7 @@ impl Emitter {
             // catch 块函数预声明先于 lexical，块入口物化与 try/普通块同口径。
             self.predeclare_block_function_declarations(&catch.body.body, ctx, false);
             // catch 块 lexical 声明同为局部绑定：不做受限全局名检查。
-            let _ = self.predeclare_lexical_declarations(&catch.body.body, ctx, false);
+            let _ = self.predeclare_lexical_declarations(&catch.body.body, ctx);
             ctx.block_fn_entry_mats.push(HashMap::new());
             for s in &catch.body.body {
                 self.emit_block_fn_entry_init_stmt(s, ctx)?;
@@ -123,7 +123,7 @@ impl Emitter {
             // finally 块函数预声明先于 lexical，块入口物化与 try/普通块同口径。
             self.predeclare_block_function_declarations(&ts.finalizer.as_ref().unwrap().body, ctx, false);
             // finally 块 lexical 声明同为局部绑定：不做受限全局名检查。
-            let _ = self.predeclare_lexical_declarations(&ts.finalizer.as_ref().unwrap().body, ctx, false);
+            let _ = self.predeclare_lexical_declarations(&ts.finalizer.as_ref().unwrap().body, ctx);
             ctx.block_fn_entry_mats.push(HashMap::new());
             for s in &ts.finalizer.as_ref().unwrap().body {
                 self.emit_block_fn_entry_init_stmt(s, ctx)?;

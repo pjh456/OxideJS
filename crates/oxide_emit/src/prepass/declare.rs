@@ -292,11 +292,8 @@ impl Emitter {
     ///   属 Declaration、非 Statement 子产生式，parser 按语法错误直接拒绝，这些
     ///   形状不会进入 emit）。
     /// - 跳过 for 头声明（循环作用域由 for 分支内联 declare）。
-    /// - `global_lexical` 仅脚本顶层调用点传 `!is_eval_script`，其余调用点传
-    ///   false；当前只透传不消费（死参数，待后续清理），顶层与局部的 lexical
-    ///   声明均按合法遮蔽处理。
     pub(crate) fn predeclare_lexical_declarations(
-        &self, statements: &[Statement], ctx: &mut CompileCtx, global_lexical: bool,
+        &self, statements: &[Statement], ctx: &mut CompileCtx,
     ) -> Result<(), String> {
         for statement in statements {
             match statement {
@@ -306,7 +303,7 @@ impl Emitter {
                     }
                     let is_const = matches!(decl.kind, VariableDeclarationKind::Const);
                     for d in &decl.declarations {
-                        self.predeclare_lexical_pattern(&d.id, is_const, ctx, global_lexical)?;
+                        self.predeclare_lexical_pattern(&d.id, is_const, ctx)?;
                     }
                 }
                 Statement::ClassDeclaration(cd) => {
@@ -324,7 +321,7 @@ impl Emitter {
                                 }
                                 let is_const = matches!(vd.kind, VariableDeclarationKind::Const);
                                 for d in &vd.declarations {
-                                    self.predeclare_lexical_pattern(&d.id, is_const, ctx, global_lexical)?;
+                                    self.predeclare_lexical_pattern(&d.id, is_const, ctx)?;
                                 }
                             }
                             Declaration::ClassDeclaration(cd) => {
@@ -359,11 +356,8 @@ impl Emitter {
     }
 
     /// 递归预声明绑定 pattern 内的全部标识符（含数组/对象/默认值解构）。
-    /// `global_lexical` 当前只透传不消费（死参数，待后续清理），递归调用
-    /// 必须原样下传，故仅递归使用。
-    #[allow(clippy::only_used_in_recursion)]
     fn predeclare_lexical_pattern(
-        &self, pattern: &BindingPattern, is_const: bool, ctx: &mut CompileCtx, global_lexical: bool,
+        &self, pattern: &BindingPattern, is_const: bool, ctx: &mut CompileCtx,
     ) -> Result<(), String> {
         match pattern {
             BindingPattern::BindingIdentifier(bi) => {
@@ -381,22 +375,22 @@ impl Emitter {
             }
             BindingPattern::ArrayPattern(ap) => {
                 for e in ap.elements.iter().flatten() {
-                    self.predeclare_lexical_pattern(e, is_const, ctx, global_lexical)?;
+                    self.predeclare_lexical_pattern(e, is_const, ctx)?;
                 }
                 if let Some(rest) = &ap.rest {
-                    self.predeclare_lexical_pattern(&rest.argument, is_const, ctx, global_lexical)?;
+                    self.predeclare_lexical_pattern(&rest.argument, is_const, ctx)?;
                 }
             }
             BindingPattern::ObjectPattern(op) => {
                 for prop in &op.properties {
-                    self.predeclare_lexical_pattern(&prop.value, is_const, ctx, global_lexical)?;
+                    self.predeclare_lexical_pattern(&prop.value, is_const, ctx)?;
                 }
                 if let Some(rest) = &op.rest {
-                    self.predeclare_lexical_pattern(&rest.argument, is_const, ctx, global_lexical)?;
+                    self.predeclare_lexical_pattern(&rest.argument, is_const, ctx)?;
                 }
             }
             BindingPattern::AssignmentPattern(ap) => {
-                self.predeclare_lexical_pattern(&ap.left, is_const, ctx, global_lexical)?;
+                self.predeclare_lexical_pattern(&ap.left, is_const, ctx)?;
             }
         }
         Ok(())
