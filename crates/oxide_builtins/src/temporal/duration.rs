@@ -7,9 +7,10 @@ use oxide_types::value::JsValue;
 
 use super::common::native_try;
 use super::common::{
-    canonical_time_zone, civil_from_days, days_from_civil, ensure_duration, get_double_prop, get_instant_epoch_ns,
-    initialize_temporal_receiver, is_ctor_call, local_to_epoch_ns, native_engine_error, plain_date_time_object_parts,
-    receiver_obj, temporal_option_number, temporal_option_string, temporal_option_value, zoned_date_time_plain_parts,
+    canonical_time_zone, civil_from_days, days_from_civil, ensure_duration, get_calendar_id, get_double_prop,
+    get_instant_epoch_ns, initialize_temporal_receiver, is_ctor_call, local_to_epoch_ns, native_engine_error,
+    plain_date_time_object_parts, receiver_obj, temporal_option_number, temporal_option_string, temporal_option_value,
+    zoned_date_time_plain_parts,
 };
 use super::difference::{
     add_date_duration, add_days_iso, compare_iso_date, date_duration_sign, date_until_iso, nudge_iso_difference,
@@ -210,6 +211,16 @@ pub(crate) fn duration_time_nanoseconds(values: &[f64; 10]) -> Option<i128> {
     Some(total)
 }
 
+/// 时长时间部分（时到纳秒，不含日分量）的纳秒合计。
+pub(crate) fn duration_time_only_nanoseconds(values: &[f64; 10]) -> Option<i128> {
+    const SCALES: [i128; 6] = [3_600_000_000_000, 60_000_000_000, 1_000_000_000, 1_000_000, 1_000, 1];
+    let mut total = 0_i128;
+    for (value, scale) in values[4..].iter().zip(SCALES) {
+        total = total.checked_add(duration_component_integer(*value)?.checked_mul(scale)?)?;
+    }
+    Some(total)
+}
+
 fn validate_duration_values<H: VmHost>(vm: &mut H, values: &[f64; 10]) -> Result<(), JsValue> {
     let mut sign = 0_i8;
     for value in values {
@@ -284,42 +295,79 @@ fn duration_values(obj: &JsObject) -> [f64; 10] {
     std::array::from_fn(|index| get_double_prop(obj, index))
 }
 
-/// 归一 options.relativeTo 为相对日期 `(y, m, d)`。
+/// relativeTo 归一后的相对点载荷：Wall（墙历日期）或 Zoned（epoch + 时区 + 日历）。
+enum RelativePoint {
+    Wall {
+        date: (i128, i128, i128),
+        /// 本批调用方只消费日期，zoned epoch 路径消费日历。
+        #[allow(dead_code)]
+        calendar: String,
+    },
+    Zoned {
+        epoch_ns: i128,
+        time_zone: String,
+        /// 本批调用方只消费 epoch 与时区，zoned epoch 路径消费日历。
+        #[allow(dead_code)]
+        calendar: String,
+    },
+}
+
+/// 相对点的墙历日期。
 ///
 /// # 步骤
-/// 1. string 先检测 `[tz]` 注解：含注解走 zoned 解析（offset-vs-zone 校验，reject 语义）；
-///    无注解走 plain 解析（纯日期、日期时间、带偏移的 plain 串）。
-/// 2. PlainDateTime / PlainDate 对象 → 直读 prop 0/1/2。
-/// 3. ZonedDateTime → zoned_date_time_plain_parts 取本地 (y,m,d)。
-/// 4. Instant → epoch 纳秒按 UTC 分解（div_euclid(DAY_NS) → civil_from_days）。
-/// 5. 其他对象按 property bag 解析（ToRelativeTemporalObject，constrain）。
-/// 6. undefined → None；其余原始值 → TypeError。
+/// 1. Wall → 直接返回日期。
+/// 2. Zoned → 区偏移（epoch 依赖查找）+ civil_from_days 反推墙历日期。
+///
+/// # 边界与前提
+/// - Zoned 支是本批过渡路径（TODO: 69.3.4.2 切 epoch 路径），算法与旧 zoned
+///   字符串支保持逐字节一致。
+fn relative_point_wall_date<H: VmHost>(vm: &mut H, point: &RelativePoint) -> Result<(i128, i128, i128), JsValue> {
+    match point {
+        RelativePoint::Wall { date, .. } => Ok(*date),
+        RelativePoint::Zoned { epoch_ns, time_zone, .. } => {
+            let offset_seconds = zone_offset_seconds(time_zone, epoch_ns.div_euclid(1_000_000_000) as i64)
+                .ok_or_else(|| crate::error::create_range_error(vm, "invalid time zone"))?;
+            let wall_ns = epoch_ns + i128::from(offset_seconds) * 1_000_000_000;
+            Ok(civil_from_days(wall_ns.div_euclid(DAY_NS)))
+        }
+    }
+}
+
+/// 归一 options.relativeTo 为相对点（Wall 墙历日期 / Zoned epoch+时区+日历）。
+///
+/// # 步骤
+/// 1. string 先检测 `[tz]` 注解：含注解走 zoned 解析（offset-vs-zone 校验，reject 语义）
+///    得 Zoned 载荷；无注解走 plain 解析（纯日期、日期时间、带偏移的 plain 串）得 Wall 载荷。
+/// 2. PlainDateTime / PlainDate 对象 → 直读 prop 0/1/2，Wall 载荷。
+/// 3. ZonedDateTime → Zoned 载荷（zoned_date_time_plain_parts 范围检查后直读三槽）。
+/// 4. 其他对象（含 Instant）按 property bag 解析（ToRelativeTemporalObject，constrain），Wall 载荷。
+/// 5. undefined → None；其余原始值 → TypeError。
 ///
 /// # 边界与前提
 /// - 调用方须已把 raw 从 options 取出（读序由调用方保证）。
-/// - 本函数只取日期分量；时间分量由调用方的 duration 分量另行加。
 /// - bag 支 offset 语法校验先于数值字段转换；offset-vs-zone 匹配校验在字段转换之后。
-fn duration_relative_to_date<H: VmHost>(
-    vm: &mut H, relative_raw: JsValue,
-) -> Result<Option<(i128, i128, i128)>, JsValue> {
+fn duration_relative_to_date<H: VmHost>(vm: &mut H, relative_raw: JsValue) -> Result<Option<RelativePoint>, JsValue> {
     if relative_raw.is_undefined() {
         return Ok(None);
     }
     if relative_raw.is_string() {
         let text = to_string(relative_raw);
         // 含 [tz] 注解走 zoned 路径（offset-vs-zone 校验，reject 语义）：
-        // 按 instant 解析 + 注解时区偏移（epoch 依赖查找）反推墙历日期。
+        // 按 instant 解析，时区与日历直取解析产物。
         if extract_time_zone_annotation(&text).is_some() {
             let (epoch_ns, time_zone_id, _calendar) = zoned_date_time_string_parts(vm, &text, "reject")?;
-            let offset_seconds = zone_offset_seconds(&time_zone_id, epoch_ns.div_euclid(1_000_000_000) as i64)
-                .ok_or_else(|| crate::error::create_range_error(vm, "invalid time zone"))?;
-            let wall_ns = epoch_ns + i128::from(offset_seconds) * 1_000_000_000;
-            let (year, month, day) = civil_from_days(wall_ns.div_euclid(DAY_NS));
-            return Ok(Some((year, month, day)));
+            return Ok(Some(RelativePoint::Zoned {
+                epoch_ns,
+                time_zone: time_zone_id,
+                calendar: "iso8601".to_string(),
+            }));
         }
         // 无注解走 plain 路径：纯日期、日期时间、带偏移的 plain 串（偏移不作时区标识符）。
         if let Ok((year, month, day, _time_ns)) = parse_plain_date_time_string(&text) {
-            return Ok(Some((i128::from(year), i128::from(month), i128::from(day))));
+            return Ok(Some(RelativePoint::Wall {
+                date: (i128::from(year), i128::from(month), i128::from(day)),
+                calendar: "iso8601".to_string(),
+            }));
         }
         return Err(crate::error::create_range_error(vm, "invalid relativeTo"));
     }
@@ -332,24 +380,30 @@ fn duration_relative_to_date<H: VmHost>(
     }
     let obj = unsafe { &*ptr };
     if obj.is_plain_date_time_obj() || obj.is_plain_date_obj() {
-        return Ok(Some((
-            i128::from(get_double_prop(obj, 0) as i32),
-            i128::from(get_double_prop(obj, 1) as u32),
-            i128::from(get_double_prop(obj, 2) as u32),
-        )));
+        let calendar = get_calendar_id(obj, if obj.is_plain_date_obj() { 3 } else { 4 });
+        return Ok(Some(RelativePoint::Wall {
+            date: (
+                i128::from(get_double_prop(obj, 0) as i32),
+                i128::from(get_double_prop(obj, 1) as u32),
+                i128::from(get_double_prop(obj, 2) as u32),
+            ),
+            calendar,
+        }));
     }
     if obj.is_zoned_date_time_obj() {
-        let (year, month, day, _time_ns) = zoned_date_time_plain_parts(vm, obj)?;
-        return Ok(Some((i128::from(year), i128::from(month), i128::from(day))));
-    }
-    if obj.is_instant_obj() {
+        // 保留 zoned_date_time_plain_parts 范围检查（墙历日期时间越界直接抛错）。
+        zoned_date_time_plain_parts(vm, obj)?;
         let Some(epoch_ns) = get_instant_epoch_ns(obj) else {
-            return Err(crate::error::create_range_error(vm, "invalid Instant"));
+            return Err(crate::error::create_range_error(vm, "invalid ZonedDateTime"));
         };
-        let (year, month, day) = civil_from_days(epoch_ns.div_euclid(DAY_NS));
-        return Ok(Some((year, month, day)));
+        return Ok(Some(RelativePoint::Zoned {
+            epoch_ns,
+            time_zone: to_string(obj.get_prop_at(1)),
+            calendar: get_calendar_id(obj, 2),
+        }));
     }
     // property bag：按 ToRelativeTemporalObject 依次校验 calendar/timeZone/offset 再读字段。
+    // 规范 13.19 无 Instant 分支：Instant 对象落入此处按字段解析（缺 day 抛错）。
     let calendar_raw = temporal_option_value(vm, obj, relative_raw, "calendar")?;
     if !calendar_raw.is_undefined() {
         return Err(crate::error::create_type_error(vm, "invalid relativeTo"));
@@ -379,7 +433,7 @@ fn duration_relative_to_date<H: VmHost>(
             .ok_or_else(|| crate::error::create_range_error(vm, "invalid offset"))?;
         Some(seconds)
     };
-    let (year, month, day, time_ns, _calendar) = plain_date_time_object_parts(vm, relative_raw, obj, true, false)?;
+    let (year, month, day, time_ns, calendar) = plain_date_time_object_parts(vm, relative_raw, obj, true, false)?;
     // offset-vs-zone 校验（对象支精确一致、reject 语义）：offset 与 timeZone 同时在场时，
     // 候选 epoch 点 zone 偏移须与输入偏移秒级相等。
     if let (Some(offset), Some(tz_id)) = (bag_offset_seconds, time_zone_id.as_deref()) {
@@ -391,7 +445,10 @@ fn duration_relative_to_date<H: VmHost>(
             return Err(crate::error::create_range_error(vm, "offset and time zone disagree"));
         }
     }
-    Ok(Some((i128::from(year), i128::from(month), i128::from(day))))
+    Ok(Some(RelativePoint::Wall {
+        date: (i128::from(year), i128::from(month), i128::from(day)),
+        calendar: calendar.unwrap_or_else(|| "iso8601".to_string()),
+    }))
 }
 
 fn format_duration_number(value: f64) -> String {
@@ -485,7 +542,7 @@ pub fn duration_total<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     // 含日历单位（year/month/week）时，days 及以上的 total 必须走 relativeTo 日历路径。
     let has_calendar_units = values[0] != 0.0 || values[1] != 0.0 || values[2] != 0.0;
 
-    // relativeTo：统一经 duration_relative_to_date 归一（支持 string/PD/PDT/ZDT/Instant/bag）。
+    // relativeTo：统一经 duration_relative_to_date 归一（支持 string/PD/PDT/ZDT/bag）。
     let relative_date = match duration_relative_to_date(vm, relative_raw) {
         Ok(relative) => relative,
         Err(error) => return NativeResult::Err(error),
@@ -494,12 +551,14 @@ pub fn duration_total<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     const UNIT_NS: [i128; 6] = [3_600_000_000_000, 60_000_000_000, 1_000_000_000, 1_000_000, 1_000, 1];
     if unit_index <= 2 || (unit_index == 3 && has_calendar_units) {
         // 日历单位：需要 relativeTo，用纪元纳秒窗口计算分数总量。
-        let Some(rel_date) = relative_date else {
+        let Some(point) = relative_date else {
             return NativeResult::Err(crate::error::create_range_error(
                 vm,
                 &format!("a starting point is required for {} total", unit_raw),
             ));
         };
+        // Zoned 载荷暂走墙钟路径（TODO: 69.3.4.2 切 epoch 路径）。
+        let rel_date = native_try!(relative_point_wall_date(vm, &point));
         let Some(time_ns_base) = duration_time_nanoseconds(&values) else {
             return NativeResult::Err(crate::error::create_range_error(vm, "duration is out of range"));
         };
@@ -845,7 +904,7 @@ fn duration_apply_to_relative<H: VmHost>(
 ///
 /// # 步骤
 /// 1. one/two 各自 duration_like_values 归一（读序 one → two → options）。
-/// 2. options.relativeTo 经 duration_relative_to_date 归一（含 ZDT/Instant/bag 分支）。
+/// 2. options.relativeTo 经 duration_relative_to_date 归一（含 ZDT/bag 分支）。
 /// 3. 无 relativeTo 且无日历单位：按 duration_time_nanoseconds 直接比大小（fast path）。
 /// 4. 无 relativeTo 但含日历单位：抛 RangeError，日历单位无法脱离具体相对点折算。
 /// 5. 有 relativeTo：每个 duration 应用相对点得 (date, time)，先比日期再比时间（字典序）。
@@ -897,8 +956,10 @@ pub fn duration_compare<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
                 .ok_or_else(|| { crate::error::create_range_error(vm, "duration is out of range") }));
             one_ns.cmp(&two_ns)
         }
-        Some(rel) => {
+        Some(point) => {
             // 有 relativeTo：各 duration 应用后先比日期再比时间。
+            // Zoned 载荷暂走墙钟路径（TODO: 69.3.4.2 切 epoch 路径）。
+            let rel = native_try!(relative_point_wall_date(vm, &point));
             let (date1, time1) = native_try!(duration_apply_to_relative(vm, rel, &one));
             let (date2, time2) = native_try!(duration_apply_to_relative(vm, rel, &two));
             let date_cmp = compare_iso_date(date1, date2);
@@ -1127,12 +1188,14 @@ pub fn duration_round<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     }
 
     // 日历路径：需要 relativeTo，把 duration 应用后按 nudge_iso_difference 舍入平衡。
-    let Some(rel) = relative_date else {
+    let Some(point) = relative_date else {
         return NativeResult::Err(crate::error::create_range_error(
             vm,
             "a starting point is required for rounding calendar units",
         ));
     };
+    // Zoned 载荷暂走墙钟路径（TODO: 69.3.4.2 切 epoch 路径）。
+    let rel = native_try!(relative_point_wall_date(vm, &point));
     let Some(time_ns_total) = duration_time_nanoseconds(&values) else {
         return NativeResult::Err(crate::error::create_range_error(vm, "duration is out of range"));
     };

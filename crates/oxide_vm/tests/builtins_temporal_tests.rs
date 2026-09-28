@@ -2491,14 +2491,12 @@ fn duration_compare_relative_zdt_and_instant() {
         ),
         0.0
     );
-    // Instant relativeTo（UTC 分解）同结果。
-    assert_eq!(
-        num(
-            &mut vm,
-            "Temporal.Duration.compare('P1M','P30D',{relativeTo: Temporal.Instant.fromEpochNanoseconds(7776000000000000n)})"
-        ),
-        0.0
-    );
+    // Instant relativeTo：规范 13.19 无 Instant 分支，落入 bag 支按字段解析，缺 day 抛错。
+    assert!(eval(
+        &mut vm,
+        "Temporal.Duration.compare('P1M','P30D',{relativeTo: Temporal.Instant.fromEpochNanoseconds(7776000000000000n)})"
+    )
+    .is_err());
 }
 
 #[test]

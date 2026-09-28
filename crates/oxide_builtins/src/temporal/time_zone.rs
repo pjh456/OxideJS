@@ -1164,23 +1164,100 @@ pub(crate) fn tz_canonical_name(name: &str) -> Option<&'static str> {
 /// # 边界与前提
 /// - 早于首个 transition 取 LMT；晚于末个 transition 取末偏移（`last_offset`
 ///   与末次 transition 一致，故 `partition_point` 已覆盖）。
-///
-/// # 注意事项
-/// - 只支持正向查找（epoch → 偏移）；local → epoch 的逆换算（ambiguous /
-///   nonexistent）由调用方迭代，不在本函数。
-pub(crate) fn tz_offset_seconds(zone: &str, epoch_s: i64) -> Option<i64> {
-    let z = tz_zone_data(zone)?;
+fn tz_offset_seconds_of(z: &TzifZone, epoch_s: i64) -> i64 {
     if z.transitions.is_empty() {
-        return Some(i64::from(z.last_offset));
+        return i64::from(z.last_offset);
     }
     let idx = z.transitions.partition_point(|t| t.0 <= epoch_s);
     if idx == 0 {
-        Some(i64::from(z.lmt_offset))
+        i64::from(z.lmt_offset)
     } else if idx == z.transitions.len() {
-        Some(i64::from(z.last_offset))
+        i64::from(z.last_offset)
     } else {
-        Some(i64::from(z.transitions[idx - 1].1))
+        i64::from(z.transitions[idx - 1].1)
     }
+}
+
+/// 查某区在 `epoch_s`（纪元秒）生效的 UTC 偏移（秒）。
+pub(crate) fn tz_offset_seconds(zone: &str, epoch_s: i64) -> Option<i64> {
+    tz_zone_data(zone).map(|z| tz_offset_seconds_of(z, epoch_s))
+}
+
+/// GetNamedTimeZoneEpochNanoseconds（规范 14.6.3，宿主定义）：墙历时刻的全部候选纪元。
+///
+/// # 步骤
+/// 1. 取墙历（按 UTC 解释）相邻的三个区间偏移：所在区间、下一 transition 后、
+///    上一 transition 前。
+/// 2. 对每个偏移 o 构造候选 e = wall - o；校验 e 落在 o 的区间内
+///    （offset_at(e) == o），成立才收。
+/// 3. 去重升序返回（重叠 = 2 个、间隙 = 0 个、无歧义 = 1 个）。
+///
+/// # 边界与前提
+/// - 区表未命中返回 `None`（调用方决定错误）。
+/// - 偏移量域 ±24 小时，有效候选必在墙历（按 UTC 解释）±24 小时内，
+///   三个相邻区间覆盖全部候选。
+pub(crate) fn named_zone_possible_epoch_ns(zone: &str, wall_ns: i128) -> Option<Vec<i128>> {
+    let z = tz_zone_data(zone)?;
+    let wall_s = wall_ns.div_euclid(1_000_000_000) as i64;
+    let idx = z.transitions.partition_point(|t| t.0 <= wall_s);
+    let current = if idx == 0 { z.lmt_offset } else { z.transitions[idx - 1].1 };
+    let mut candidates = Vec::with_capacity(3);
+    let mut consider = |offset: i32| {
+        let candidate = wall_ns - i128::from(offset) * 1_000_000_000;
+        if tz_offset_seconds_of(z, wall_s - i64::from(offset)) == i64::from(offset) {
+            candidates.push(candidate);
+        }
+    };
+    consider(current);
+    if idx < z.transitions.len() {
+        consider(z.transitions[idx].1);
+    }
+    if idx > 0 {
+        let previous = if idx - 1 == 0 { z.lmt_offset } else { z.transitions[idx - 2].1 };
+        consider(previous);
+    }
+    candidates.sort_unstable();
+    candidates.dedup();
+    Some(candidates)
+}
+
+/// 找 0 候选墙历所落间隙的 transition，返回间隙前后偏移（秒）。
+///
+/// # 步骤
+/// 1. 墙历（按 UTC 解释）在 transition 前区间：查下一 transition 是否正偏移跳变
+///    且墙历落间隙 (t + o_before, t + o_after)。
+/// 2. 墙历在 transition 后区间：查上一 transition 同条件。
+///
+/// # 边界与前提
+/// - 区表未命中或墙历不落在任何间隙内返回 `None`（调用方决定错误）。
+pub(crate) fn tz_gap_offsets(zone: &str, wall_ns: i128) -> Option<(i64, i64)> {
+    let z = tz_zone_data(zone)?;
+    let wall_s = wall_ns.div_euclid(1_000_000_000) as i64;
+    let idx = z.transitions.partition_point(|t| t.0 <= wall_s);
+    // 墙历在 transition 前区间：间隙由下一 transition 产生。
+    // 间隙起点（墙历 = t + o_before）候选集为空，计入间隙。
+    if idx < z.transitions.len() {
+        let (t, offset_after) = z.transitions[idx];
+        let offset_before = if idx == 0 { z.lmt_offset } else { z.transitions[idx - 1].1 };
+        if offset_after > offset_before
+            && wall_ns >= i128::from(t) * 1_000_000_000 + i128::from(offset_before) * 1_000_000_000
+            && wall_ns < i128::from(t) * 1_000_000_000 + i128::from(offset_after) * 1_000_000_000
+        {
+            return Some((i64::from(offset_before), i64::from(offset_after)));
+        }
+    }
+    // 墙历在 transition 后区间：间隙由上一 transition 产生。
+    if idx > 0 {
+        let (t, offset_after) = z.transitions[idx - 1];
+        let offset_before = if idx - 1 == 0 { z.lmt_offset } else { z.transitions[idx - 2].1 };
+        if offset_after > offset_before
+            && wall_ns >= i128::from(t) * 1_000_000_000 + i128::from(offset_before) * 1_000_000_000
+            && wall_ns < i128::from(t) * 1_000_000_000 + i128::from(offset_after) * 1_000_000_000
+        {
+            return Some((i64::from(offset_before), i64::from(offset_after)));
+        }
+    }
+    None
 }
 
 /// 统一时区偏移查找（epoch 依赖）：固定偏移区（数值偏移串）走快速路径恒返常量，

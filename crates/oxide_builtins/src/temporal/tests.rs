@@ -501,3 +501,121 @@ fn zone_aware_string_offset_vs_zone() {
     assert_eq!(extract_time_zone_annotation("2000-01-01T00:00[u-ca=iso8601]"), None);
     assert_eq!(extract_time_zone_annotation("2000-01-01T00:00[-00:44:30]"), None);
 }
+
+#[test]
+fn add_zoned_disambiguation_four_quadrants() {
+    use super::zoned_date_time::{disambiguate_possible_epoch_nanoseconds, get_possible_epoch_nanoseconds};
+
+    // NY 重叠 2025-11-02T01:30：双候选 [05:30Z, 06:30Z] 升序。
+    let cands = get_possible_epoch_nanoseconds("America/New_York", 2025, 11, 2, 5_400_000_000_000).unwrap();
+    assert_eq!(cands, vec![1_762_061_400_000_000_000, 1_762_065_000_000_000_000]);
+    let iso = (2025_i128, 11, 2);
+    let time_ns = 5_400_000_000_000;
+    assert_eq!(
+        disambiguate_possible_epoch_nanoseconds("America/New_York", iso, time_ns, "earlier", &cands),
+        Ok(1_762_061_400_000_000_000)
+    );
+    assert_eq!(
+        disambiguate_possible_epoch_nanoseconds("America/New_York", iso, time_ns, "later", &cands),
+        Ok(1_762_065_000_000_000_000)
+    );
+    assert_eq!(
+        disambiguate_possible_epoch_nanoseconds("America/New_York", iso, time_ns, "compatible", &cands),
+        Ok(1_762_061_400_000_000_000)
+    );
+    assert!(disambiguate_possible_epoch_nanoseconds("America/New_York", iso, time_ns, "reject", &cands).is_err());
+
+    // NY 间隙 2025-03-09T02:30：零候选，compatible 平移 +1h 取 07:30Z，earlier 取 06:30Z。
+    let empty = get_possible_epoch_nanoseconds("America/New_York", 2025, 3, 9, 9_000_000_000_000).unwrap();
+    assert!(empty.is_empty());
+    let iso = (2025_i128, 3, 9);
+    let time_ns = 9_000_000_000_000;
+    assert_eq!(
+        disambiguate_possible_epoch_nanoseconds("America/New_York", iso, time_ns, "compatible", &empty),
+        Ok(1_741_505_400_000_000_000)
+    );
+    assert_eq!(
+        disambiguate_possible_epoch_nanoseconds("America/New_York", iso, time_ns, "earlier", &empty),
+        Ok(1_741_501_800_000_000_000)
+    );
+    assert_eq!(
+        disambiguate_possible_epoch_nanoseconds("America/New_York", iso, time_ns, "later", &empty),
+        Ok(1_741_505_400_000_000_000)
+    );
+    assert!(disambiguate_possible_epoch_nanoseconds("America/New_York", iso, time_ns, "reject", &empty).is_err());
+
+    // NY 无歧义 2025-06-15T12:00（EDT）：单候选 16:00Z。
+    let cands = get_possible_epoch_nanoseconds("America/New_York", 2025, 6, 15, 43_200_000_000_000).unwrap();
+    assert_eq!(cands, vec![1_750_003_200_000_000_000]);
+
+    // Apia 24 小时间隙 2011-12-30T12:00：零候选，compatible 平移 +24h 取 2011-12-30T22:00Z，
+    // earlier 取 2011-12-29T22:00Z。
+    let empty = get_possible_epoch_nanoseconds("Pacific/Apia", 2011, 12, 30, 43_200_000_000_000).unwrap();
+    assert!(empty.is_empty());
+    let iso = (2011_i128, 12, 30);
+    let time_ns = 43_200_000_000_000;
+    assert_eq!(
+        disambiguate_possible_epoch_nanoseconds("Pacific/Apia", iso, time_ns, "compatible", &empty),
+        Ok(1_325_282_400_000_000_000)
+    );
+    assert_eq!(
+        disambiguate_possible_epoch_nanoseconds("Pacific/Apia", iso, time_ns, "earlier", &empty),
+        Ok(1_325_196_000_000_000_000)
+    );
+}
+
+#[test]
+fn add_zoned_datetime_pure_end_to_end() {
+    use super::common::MAX_INSTANT_NS;
+    use super::zoned_date_time::{add_zoned_datetime_pure, AddZonedError};
+
+    // 快速路径（UTC）：无日期分量，时间部分 epoch 级加。
+    let values = [0.0_f64, 0.0, 0.0, 0.0, 2.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+    assert_eq!(add_zoned_datetime_pure(0, "UTC", "iso8601", &values, true), Ok(7_200_000_000_000));
+
+    // 固定偏移区 +01:00：+1 天保持本地时刻不变（epoch 前进整日）。
+    let values = [0.0_f64, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+    assert_eq!(add_zoned_datetime_pure(0, "+01:00", "iso8601", &values, true), Ok(86_400_000_000_000));
+
+    // NY 跨 DST 结束（2024-11-02T06:00-04:00 加 1 月 → 12-02T06:00 EST，epoch 11:00Z）。
+    let values = [0.0_f64, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+    assert_eq!(
+        add_zoned_datetime_pure(1_730_541_600_000_000_000, "America/New_York", "iso8601", &values, true),
+        Ok(1_733_137_200_000_000_000)
+    );
+
+    // Apia 跨 24 小时间隙减 1 天：2011-12-31T00:00+14:00 减 1 天落间隙起点 2011-12-30T00:00，
+    // compatible 平移 +24h 回 2011-12-31T00:00，epoch 落回 transition 瞬间（与输入同刻）。
+    let values = [0.0_f64, 0.0, 0.0, -1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+    assert_eq!(
+        add_zoned_datetime_pure(1_325_239_200_000_000_000, "Pacific/Apia", "iso8601", &values, true),
+        Ok(1_325_239_200_000_000_000)
+    );
+
+    // 下边界：-MAX instant 再加 -1 天，墙历越出 PlainDateTime 范围（引擎的 instant 与
+    // plain 范围同为 10^8 天量级，ISO 日边界检查先于 instant 检查触发），与旧路径的
+    // 中间日期检查同为 RangeError「invalid date-time」。
+    let values = [0.0_f64, 0.0, 0.0, -1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+    assert_eq!(
+        add_zoned_datetime_pure(-MAX_INSTANT_NS, "UTC", "iso8601", &values, true),
+        Err(AddZonedError::OutOfDateTimeRange)
+    );
+
+    // 上边界：+MAX instant 快速路径加 1 小时溢出。
+    let values = [0.0_f64, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+    assert_eq!(
+        add_zoned_datetime_pure(MAX_INSTANT_NS, "UTC", "iso8601", &values, true),
+        Err(AddZonedError::OutOfInstantRange)
+    );
+}
+
+#[test]
+fn calendar_date_add_iso_constrain_semantics() {
+    use super::zoned_date_time::{calendar_date_add_iso, AddZonedError};
+
+    // 月末截断：constrain 钳到目标月末，reject 抛 DayOutOfRange。
+    assert_eq!(calendar_date_add_iso((2025, 1, 31), 0, 1, 0, 0, true), Ok((2025, 2, 28)));
+    assert_eq!(calendar_date_add_iso((2025, 1, 31), 0, 1, 0, 0, false), Err(AddZonedError::DayOutOfRange));
+    // 闰年二月：constrain 钳到 29。
+    assert_eq!(calendar_date_add_iso((2024, 1, 31), 0, 1, 0, 0, true), Ok((2024, 2, 29)));
+}
