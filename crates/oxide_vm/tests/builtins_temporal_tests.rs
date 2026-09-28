@@ -4028,3 +4028,38 @@ fn relativeto_bag_read_order_calendar_first_dictionary() {
         "calendar,day,hour,microsecond,millisecond,minute,month,monthCode,nanosecond,second,year"
     );
 }
+
+#[test]
+fn relativeto_bag_zoned_payload() {
+    let mut vm = Vm::new();
+    // 袋支 Zoned 载荷（timeZone 在场）：固定区 wall/option 行为 P1D 恒 24h（与 local_to_epoch_ns
+    // 数值恒等红线）；IANA 区 DST 经候选消歧——间隙日 25h 使 P1D = 23h 且
+    // P1D < P24H（epoch 级日长）、间隙墙历 compatible 平移后不抛错、重叠日 23h 使 P1D = 25h；
+    // offset 与 zone 冲突（含间隙无候选）RangeError。
+    let r = eval(
+        &mut vm,
+        "(() => {
+           const kind = (fn) => { try { return String(fn()); } catch (e) { return e.constructor.name; } };
+           const d1 = new Temporal.Duration(0, 0, 0, 1);
+           const d24 = new Temporal.Duration(0, 0, 0, 0, 24);
+           const total = (rel) => d1.total({ unit: 'hours', relativeTo: rel });
+           const cmp = (rel) => Temporal.Duration.compare(d1, d24, { relativeTo: rel });
+           return [
+             kind(() => total({ year: 2025, month: 3, day: 9, hour: 2, minute: 30, timeZone: 'UTC' })),
+             kind(() => total({ year: 2025, month: 3, day: 9, hour: 2, minute: 30, timeZone: '+05:30' })),
+             kind(() => total({ year: 2025, month: 3, day: 9, hour: 2, minute: 30, timeZone: 'UTC', offset: '+00:00' })),
+             kind(() => total({ year: 2025, month: 3, day: 9, hour: 2, minute: 30, timeZone: '+05:30', offset: '+05:30' })),
+             kind(() => total({ year: 1970, month: 1, day: 1, offset: '+00:45:00.000000000', timeZone: '+00:45' })),
+             kind(() => total({ year: 2025, month: 3, day: 9, hour: 0, minute: 30, timeZone: 'America/New_York' })),
+             kind(() => cmp({ year: 2025, month: 3, day: 9, hour: 0, minute: 30, timeZone: 'America/New_York' })),
+             kind(() => total({ year: 2025, month: 3, day: 9, hour: 2, minute: 30, timeZone: 'America/New_York' })),
+             kind(() => total({ year: 2025, month: 11, day: 2, hour: 1, minute: 30, timeZone: 'America/New_York' })),
+             kind(() => total({ year: 2025, month: 11, day: 2, hour: 1, minute: 30, timeZone: 'America/New_York', offset: '-04:00' })),
+             kind(() => total({ year: 2025, month: 3, day: 9, hour: 2, minute: 30, timeZone: 'America/New_York', offset: '-05:00' })),
+             kind(() => total({ year: 2025, month: 3, day: 9, hour: 2, timeZone: 'UTC', offset: '+05:30' })),
+           ].join('|');
+         })()",
+    )
+    .unwrap();
+    assert_eq!(str_val(&vm, r), "24|24|24|24|24|23|-1|24|25|25|RangeError|RangeError");
+}

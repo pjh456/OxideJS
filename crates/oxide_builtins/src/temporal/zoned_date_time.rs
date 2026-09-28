@@ -1873,7 +1873,7 @@ pub(crate) fn add_zoned_datetime<H: VmHost>(
 }
 
 /// AddZonedError 到 JS RangeError 的映射（各 zoned 面 VM 包装共用）。
-fn map_add_zoned_error<H: VmHost>(vm: &mut H, error: AddZonedError) -> JsValue {
+pub(crate) fn map_add_zoned_error<H: VmHost>(vm: &mut H, error: AddZonedError) -> JsValue {
     match error {
         AddZonedError::InvalidTimeZone => crate::error::create_range_error(vm, "invalid time zone"),
         AddZonedError::OutOfDateTimeRange => crate::error::create_range_error(vm, "invalid date-time"),

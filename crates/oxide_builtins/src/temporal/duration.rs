@@ -21,7 +21,8 @@ use super::instant::{instant_rounding_mode, InstantRoundingMode};
 use super::time_zone::zone_offset_seconds;
 use super::zoned_date_time::{
     add_zoned_datetime, difference_zoned_datetime_with_rounding_vm, difference_zoned_datetime_with_total_vm,
-    extract_time_zone_annotation, parse_any_offset_seconds, valid_offset_fraction, zoned_date_time_string_parts,
+    disambiguate_possible_epoch_nanoseconds, extract_time_zone_annotation, get_possible_epoch_nanoseconds,
+    map_add_zoned_error, parse_any_offset_seconds, valid_offset_fraction, zoned_date_time_string_parts,
 };
 use super::{make_duration, parse_plain_date_time_string};
 
@@ -340,13 +341,15 @@ fn relative_point_wall_date<H: VmHost>(vm: &mut H, point: &RelativePoint) -> Res
 /// 2. PlainDateTime / PlainDate 对象 → 直读 prop 0/1/2，Wall 载荷。
 /// 3. ZonedDateTime → Zoned 载荷（zoned_date_time_plain_parts 范围检查后直读三槽）。
 /// 4. 其他对象（含 Instant）按 property bag 解析：字段按规范字典序单读（calendar 先，
-///    非 iso8601 日历读 era/eraYear），逐字段 Get 后立即转换，constrain，Wall 载荷。
+///    非 iso8601 日历读 era/eraYear），逐字段 Get 后立即转换，constrain；
+///    timeZone 缺省 → Wall 载荷；在场 → InterpretISODateTimeOffset（wall/option 两行为）
+///    得 Zoned 载荷。
 /// 5. undefined → None；其余原始值 → TypeError。
 ///
 /// # 边界与前提
 /// - 调用方须已把 raw 从 options 取出（读序由调用方保证）。
 /// - bag 支 offset 语法校验在字典序位（nanosecond 后）立即完成，先于后续字段转换；
-///   offset-vs-zone 匹配校验在字段转换之后。
+///   offset-vs-zone 匹配校验在字段转换之后；timeZone 在场时经候选消歧/精确匹配产 Zoned 载荷。
 fn duration_relative_to_date<H: VmHost>(vm: &mut H, relative_raw: JsValue) -> Result<Option<RelativePoint>, JsValue> {
     if relative_raw.is_undefined() {
         return Ok(None);
@@ -487,7 +490,6 @@ fn duration_relative_to_date<H: VmHost>(vm: &mut H, relative_raw: JsValue) -> Re
     // year 与 era/eraYear 同场指向不同年 RangeError。
     let year = merge_bag_era_year(vm, year, era, era_year)?;
 
-    // 袋支尾部保持 Wall 载荷（Zoned 载荷归后续任务）。
     let (year, month, day, time_ns, calendar) = resolve_date_time_parts(
         vm,
         calendar,
@@ -506,21 +508,47 @@ fn duration_relative_to_date<H: VmHost>(vm: &mut H, relative_raw: JsValue) -> Re
         true,
         false,
     )?;
-    // offset-vs-zone 校验（对象支精确一致、reject 语义）：offset 与 timeZone 同时在场时，
-    // 候选 epoch 点 zone 偏移须与输入偏移秒级相等。
-    if let (Some(offset), Some(tz_id)) = (bag_offset_seconds, time_zone_id.as_deref()) {
-        let candidate_ns = local_to_epoch_ns(year, month, day, time_ns, 0)
-            .ok_or_else(|| crate::error::create_range_error(vm, "invalid date-time"))?;
-        let zone_offset = zone_offset_seconds(tz_id, candidate_ns.div_euclid(1_000_000_000) as i64)
+    let calendar = calendar.unwrap_or_else(|| "iso8601".to_string());
+    // timeZone 缺省：Wall 载荷（墙历路径）。
+    let Some(time_zone) = time_zone_id else {
+        return Ok(Some(RelativePoint::Wall {
+            date: (i128::from(year), i128::from(month), i128::from(day)),
+            calendar,
+        }));
+    };
+    // timeZone 在场：InterpretISODateTimeOffset（袋支恒 match-exactly）。
+    // offset 在场（~option~）：候选 epoch 点 zone 偏移与输入偏移秒级精确相等（reject 语义），
+    // 再从候选集选命中候选（candidateOffset = utcEpochNs - candidate，秒级含亚分钟）。
+    // offset 缺省（~wall~）：compatible 消歧（重叠取 earlier、间隙平移取 later 侧）。
+    // 固定偏移区退化：候选恒 1、偏移恒常量，与 local_to_epoch_ns 数值恒等。
+    let wall_ns = local_to_epoch_ns(year, month, day, time_ns, 0)
+        .ok_or_else(|| crate::error::create_range_error(vm, "invalid date-time"))?;
+    if let Some(offset) = bag_offset_seconds {
+        let zone_offset = zone_offset_seconds(&time_zone, wall_ns.div_euclid(1_000_000_000) as i64)
             .ok_or_else(|| crate::error::create_range_error(vm, "invalid time zone"))?;
         if zone_offset != offset {
             return Err(crate::error::create_range_error(vm, "offset and time zone disagree"));
         }
     }
-    Ok(Some(RelativePoint::Wall {
-        date: (i128::from(year), i128::from(month), i128::from(day)),
-        calendar: calendar.unwrap_or_else(|| "iso8601".to_string()),
-    }))
+    let candidates = get_possible_epoch_nanoseconds(&time_zone, year, month, day, time_ns as i128)
+        .map_err(|error| map_add_zoned_error(vm, error))?;
+    let epoch_ns = if let Some(offset) = bag_offset_seconds {
+        candidates
+            .iter()
+            .find(|candidate| (wall_ns - *candidate) / 1_000_000_000 == i128::from(offset))
+            .copied()
+            .ok_or_else(|| crate::error::create_range_error(vm, "offset and time zone disagree"))?
+    } else {
+        disambiguate_possible_epoch_nanoseconds(
+            &time_zone,
+            (i128::from(year), i128::from(month), i128::from(day)),
+            time_ns as i128,
+            "compatible",
+            &candidates,
+        )
+        .map_err(|error| map_add_zoned_error(vm, error))?
+    };
+    Ok(Some(RelativePoint::Zoned { epoch_ns, time_zone, calendar }))
 }
 
 /// 袋支数值字段：undefined → None，其余 ToPrimitive(Number) 截断（Symbol/BigInt TypeError）。
