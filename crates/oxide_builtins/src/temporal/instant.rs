@@ -853,7 +853,11 @@ pub fn instant_to_string<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
             return NativeResult::Err(crate::error::create_type_error(vm, "invalid time zone"));
         }
         let time_zone = to_string(time_zone_raw);
-        match zone_offset_seconds(&time_zone, epoch_ns.div_euclid(1_000_000_000) as i64) {
+        // 偏移查找只接受规范 ID，原始选项串先经规范化（datetime 串、"Z"、IANA 区名均在此接受）。
+        let Some(time_zone_id) = canonical_time_zone(&time_zone) else {
+            return NativeResult::Err(crate::error::create_range_error(vm, "invalid time zone"));
+        };
+        match zone_offset_seconds(&time_zone_id, epoch_ns.div_euclid(1_000_000_000) as i64) {
             Some(offset) => Some(offset),
             None => return NativeResult::Err(crate::error::create_range_error(vm, "invalid time zone")),
         }
