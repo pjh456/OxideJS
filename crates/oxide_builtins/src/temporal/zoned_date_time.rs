@@ -376,9 +376,10 @@ pub(crate) fn zoned_date_time_string_parts<H: VmHost>(
     let time_zone_offset = zone_offset_seconds(&time_zone_id, candidate_ns.div_euclid(1_000_000_000) as i64)
         .ok_or_else(|| crate::error::create_range_error(vm, "invalid time zone"))?;
 
-    // 按 offsetBehaviour 决策：Z → exact（墙钟 epoch）；无偏移 → wall（墙钟 + 时区偏移）；
-    // 有偏移 → 按 offset 选项在字符串偏移与时区偏移之间选择（偏移串含秒分量走精确口径，
-    // 分钟精度走舍入到分钟口径）。
+    // 按 offsetBehaviour 决策：Z → 字符串偏移的 epoch；无偏移 → 墙钟 + 时区偏移；
+    // 有偏移 → use 取字符串偏移的 epoch；ignore 与 prefer 恒取候选点（墙钟 + 时区偏移，
+    // 偏移匹配与否结果一致）；reject 要求偏移与时区偏移匹配（偏移串含秒分量走精确口径，
+    // 分钟精度走舍入到分钟口径），不匹配抛 RangeError。
     let epoch_ns = if has_utc_designator {
         epoch_from_string
     } else {
@@ -386,17 +387,10 @@ pub(crate) fn zoned_date_time_string_parts<H: VmHost>(
             None => wall_epoch(time_zone_offset),
             Some((offset, has_sub_minute)) => match offset_mode {
                 "use" => epoch_from_string,
-                "ignore" => wall_epoch(time_zone_offset),
-                "prefer" => {
-                    if offset_matches(time_zone_offset, offset, has_sub_minute) {
-                        epoch_from_string
-                    } else {
-                        wall_epoch(time_zone_offset)
-                    }
-                }
+                "ignore" | "prefer" => wall_epoch(time_zone_offset),
                 "reject" => {
                     if offset_matches(time_zone_offset, offset, has_sub_minute) {
-                        epoch_from_string
+                        wall_epoch(time_zone_offset)
                     } else {
                         return Err(crate::error::create_range_error(vm, "offset and time zone disagree"));
                     }
