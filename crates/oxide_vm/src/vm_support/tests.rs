@@ -844,6 +844,7 @@ fn reset_clears_runtime_state_like_rerun() {
         is_derived_constructor: false,
         super_called: false,
         continuation: crate::vm::FrameContinuation::None,
+        upvalues: std::ptr::slice_from_raw_parts(std::ptr::null(), 0),
     });
     vm.save_stack.push(JsValue::undefined());
     vm.iters

@@ -4,7 +4,7 @@
 use std::sync::Arc;
 
 use oxide_runtime_api::NativeResult;
-use oxide_types::object::JsObject;
+use oxide_types::object::{Cell, JsObject};
 use oxide_types::value::JsValue;
 use smallvec::SmallVec;
 
@@ -301,6 +301,9 @@ impl Vm {
             .map(|name| self.kernel_core.perm_interner().intern(name).0)
             .unwrap_or(0);
 
+        // 压帧时固化 callee 的 upvalue 表（非闭包为 null 空切片）：热路径免
+        // 每指令重查 callee 对象，指针跨 GC 恒有效（callee 是 GC 根）。
+        let up = obj.upvalues_slice() as *const [*mut Cell];
         self.frames.push(CallFrame {
             return_addr: self.pc,
             function_name,
@@ -319,9 +322,10 @@ impl Vm {
             super_called: false,
             strict: sub_is_strict,
             continuation,
+            upvalues: up,
         });
-        // 压帧后 callee 换为被调函数：失效 upvalue 切片缓存。
-        self.upvalue_cache = None;
+        // 压帧后活动镜像切到被调函数的表（非闭包为 null 空切片）。
+        self.active_upvalues = up;
 
         self.pc = 0;
         self.bytecode = sub_bytecode;

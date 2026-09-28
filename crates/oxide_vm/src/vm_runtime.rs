@@ -4,7 +4,7 @@ use oxide_bytecode::module::CompiledModule;
 
 use crate::vm::{CallFrame, FrameArgs, FrameContinuation, InlineSyncState, TableGen, Vm};
 use crate::{vm_debug, vm_info, vm_trace, vm_warn};
-use oxide_types::object::JsObject;
+use oxide_types::object::{Cell, JsObject};
 use oxide_types::value::JsValue;
 
 /// 按 `flat_id` 下标收集整棵子模块树为平表，供 `run()` 装载。
@@ -101,8 +101,8 @@ macro_rules! inline_save_field {
     ($recv:ident, $window_regs:ident, inline_callee, opt_copy) => {
         $recv.inline_callee
     };
-    ($recv:ident, $window_regs:ident, upvalue_cache, copy) => {
-        $recv.upvalue_cache
+    ($recv:ident, $window_regs:ident, active_upvalues, copy) => {
+        $recv.active_upvalues
     };
     ($recv:ident, $window_regs:ident, generator_dispatch, flag_zero) => {{
         let prev = $recv.generator_dispatch;
@@ -211,8 +211,8 @@ macro_rules! inline_restore_field {
     ($recv:ident, $saved:ident, inline_callee, opt_copy) => {
         $recv.inline_callee = $saved.inline_callee
     };
-    ($recv:ident, $saved:ident, upvalue_cache, copy) => {
-        $recv.upvalue_cache = $saved.upvalue_cache
+    ($recv:ident, $saved:ident, active_upvalues, copy) => {
+        $recv.active_upvalues = $saved.active_upvalues
     };
     ($recv:ident, $saved:ident, generator_dispatch, flag_zero) => {
         $recv.generator_dispatch = $saved.generator_dispatch
@@ -277,7 +277,7 @@ macro_rules! inline_core_fields {
             (spill_stack, move_field),            // V M
             (cell_stack, move_field),             // V M
             (inline_callee, opt_copy),            // V M
-            (upvalue_cache, copy),                // V
+            (active_upvalues, copy),              // M
             (generator_dispatch, flag_zero),      // M 调度标志：快照属主值，嵌套期间清零
             (async_dispatch, flag_zero),          // M 调度标志：快照属主值，嵌套期间清零
             (construct_dispatch, flag_zero),      // M 调度标志：快照属主值，嵌套期间清零
@@ -477,6 +477,8 @@ impl Vm {
         self.root_reg_limit = self.active_reg_limit;
         self.cell_stack.push(Vec::with_capacity(sub.cells_needed as usize));
         self.inline_callee = Some(callee);
+        // 内联无帧：活动镜像直接取被调对象表（非闭包为 null 空切片）。
+        self.active_upvalues = callee_obj.upvalues_slice() as *const [*mut Cell];
         // inline 无 CallFrame：目标函数严格模式单独记录，内联执行期间的写路径
         // strict/sloppy 判定据此分派（嵌套内联时外层值由 InlineSyncState 恢复）。
         self.inline_strict = sub.is_strict;
@@ -550,8 +552,12 @@ impl Vm {
                 callee_mut.set_prop_at(slot, JsValue::undefined());
             }
         }
-        // 弹帧后 callee 换回调用方：失效 upvalue 切片缓存。
-        self.upvalue_cache = None;
+        // 弹帧后活动镜像切回新栈顶的表（帧空即顶层空切片）。
+        self.active_upvalues = self
+            .frames
+            .last()
+            .map(|f| f.upvalues)
+            .unwrap_or(std::ptr::slice_from_raw_parts(std::ptr::null(), 0));
         if let Some(saved_bc) = self.saved_bytecode_stack.pop() {
             self.bytecode = saved_bc;
         }

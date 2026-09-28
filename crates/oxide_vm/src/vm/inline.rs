@@ -40,8 +40,9 @@ pub(crate) struct InlineSyncState {
     pub(crate) spill_stack: Vec<JsValue>,
     pub(crate) cell_stack: Vec<Vec<*mut Cell>>,
     pub(crate) inline_callee: Option<JsValue>,
-    /// upvalue 切片指针缓存（与 `inline_callee` 同生命周期，随本快照保存/恢复）。
-    pub(crate) upvalue_cache: Option<(JsValue, *const [*mut Cell])>,
+    /// 当前执行函数的 upvalue cell 表镜像（与 `inline_callee` 同生命周期，
+    /// 随本快照保存/恢复）。
+    pub(crate) active_upvalues: *const [*mut Cell],
     /// 三个内嵌 dispatch 调度标志（`Vm::generator_dispatch` / `async_dispatch` /
     /// `construct_dispatch`）的属主快照。save 时记录外层值并清零 VM 侧、restore
     /// 时写回：嵌套 state-swap 调用不得继承外层调度上下文，否则其内部构造帧

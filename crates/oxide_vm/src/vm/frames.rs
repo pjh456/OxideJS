@@ -1,6 +1,7 @@
 //! 调用帧与完成值类型：帧续行方式、压帧实参来源、调用帧、for-in 迭代游标、
 //! try/catch/finally 处理记录，以及 break/continue/return 完成值（含访问器）。
 
+use oxide_types::object::Cell;
 use oxide_types::value::JsValue;
 
 /// 调用帧被挂起后，恢复时需要继续的执行方式。
@@ -75,6 +76,13 @@ pub struct CallFrame {
     /// 属性写失败时据此分派：严格模式抛 TypeError，sloppy 静默 no-op。
     pub strict: bool,
     pub continuation: FrameContinuation,
+    /// 被调函数 upvalue cell 表（压帧时从 callee 对象固化，非闭包为 null 空切片）。
+    ///
+    /// SAFETY 前提：`callee` 是 GC 根（根遍历/重写/深拷贝三处均遍历该字段），
+    /// 其 `upvalues` Box 创建后不替换（`set_upvalues` 仅 CREATE_CLOSURE 调用一次，
+    /// 晋升克隆共享同一 Box），故指针跨 GC 恒有效；写路径经 `*mut` 转可变切片
+    /// 与 `upvalues_slice_mut` 同口径（Box 单所有权）。
+    pub upvalues: *const [*mut Cell],
 }
 
 /// 一次 `for-in` 迭代的游标：已收集的 key 列表与当前下标。

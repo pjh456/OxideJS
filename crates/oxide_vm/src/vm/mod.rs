@@ -270,11 +270,11 @@ pub struct Vm {
     /// frames 为空（inline 隔离状态）时由此取闭包 upvalues。嵌套 inline 由
     /// InlineSyncState 保存/恢复。
     pub(crate) inline_callee: Option<JsValue>,
-    /// upvalue 切片指针缓存：键 = 当前 callee 值（位级相等），值 = 该 callee 的
-    /// `upvalues` 切片指针（含空切片情形）。LOAD_UPVALUE 命中时省 `is_object` +
-    /// 对象解引用 + 切片解引用。压帧/弹帧/挂起/run 边界失效；键匹配期间指针恒
-    /// 有效——callee 对象是 GC 根，`upvalues` Box 创建后不替换。
-    pub(crate) upvalue_cache: Option<(JsValue, *const [*mut Cell])>,
+    /// 当前执行函数的 upvalue cell 表（活动镜像，与 `CallFrame.upvalues` 同型：
+    /// 胖指针，非闭包为 null 空切片）。压帧/内联/弹帧/挂起恢复四个边界置位，
+    /// run 边界清零；指针恒有效——callee 对象是 GC 根，`upvalues` Box 创建后不
+    /// 替换，LOAD/STORE_UPVALUE 热路径直接按下标取 cell。
+    pub(crate) active_upvalues: *const [*mut Cell],
     /// inline 目标函数的严格模式标志（与 `inline_callee` 同生命周期，
     /// InlineSyncState 保存/恢复）：内联执行期间帧表被隔离，写路径的
     /// strict/sloppy 判定取此值而非帧标志。

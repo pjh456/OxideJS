@@ -107,6 +107,7 @@ fn gc_roots_contains_registers_frames_and_root_roots() {
         is_derived_constructor: false,
         super_called: false,
         continuation: FrameContinuation::None,
+        upvalues: std::ptr::slice_from_raw_parts(std::ptr::null(), 0),
     });
     vm.save_stack.push(JsValue::from_js_object(frame_session));
 

@@ -101,7 +101,7 @@ impl Vm {
             inline_args_count: 0,
             accessor_frame_target_reg: None,
             inline_callee: None,
-            upvalue_cache: None,
+            active_upvalues: std::ptr::slice_from_raw_parts(std::ptr::null(), 0),
             inline_strict: false,
             inline_frames_base: 0,
             top_level_strict: false,
@@ -239,7 +239,7 @@ impl Vm {
             inline_args_count: 0,
             accessor_frame_target_reg: None,
             inline_callee: None,
-            upvalue_cache: None,
+            active_upvalues: std::ptr::slice_from_raw_parts(std::ptr::null(), 0),
             inline_strict: false,
             inline_frames_base: 0,
             top_level_strict: false,
@@ -556,9 +556,9 @@ impl Vm {
         self.reentry_hops = 0;
         // inline 窗口缓冲池内容为已废弃快照，跨 run/reset 不保留。
         self.inline_reg_pool = None;
-        // upvalue 切片缓存是执行期状态：键为 callee 值，跨 run/reset 后缓存的
-        // 切片指针失效（callee 对象可能已回收）。
-        self.upvalue_cache = None;
+        // upvalue 活动镜像是执行期状态：跨 run/reset 后指针失效（callee 对象
+        // 可能已回收），清零为 null 空切片。
+        self.active_upvalues = std::ptr::slice_from_raw_parts(std::ptr::null(), 0);
         // 微任务队列是执行期状态：跨 run 不保留。
         self.job_queue.clear();
         // Atomics waiter 表同属执行期状态：未结算 promise 清位后无强根。

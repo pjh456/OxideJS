@@ -83,9 +83,8 @@ impl SuspendedFrame {
     pub fn save_from(&mut self, vm: &mut Vm, callee: JsValue) -> Result<(), String> {
         let frame = vm.frames.pop().ok_or_else(|| "frame missing on suspend".to_string())?;
         self.frame = Some(frame);
-        // 挂起弹帧不经 restore_frame：失效 upvalue 切片缓存（值相等键已自愈，
-        // 此为双保险）。
-        vm.upvalue_cache = None;
+        // 挂起弹帧不经 restore_frame：帧已弹入状态盒，活动镜像清零（null 空切片）。
+        vm.active_upvalues = std::ptr::slice_from_raw_parts(std::ptr::null(), 0);
         *self.regs = vm.regs;
         self.pc = vm.pc;
         self.bytecode = std::mem::take(&mut vm.bytecode);
@@ -150,9 +149,16 @@ impl SuspendedFrame {
         vm.active_reg_limit = self.active_reg_limit;
         vm.root_reg_limit = self.root_reg_limit;
         vm.frames.clear();
+        // 帧弹回前取被恢复函数的表，弹回后置回活动镜像（帧空即顶层空切片）。
+        let up = self
+            .frame
+            .as_ref()
+            .map(|f| f.upvalues)
+            .unwrap_or(std::ptr::slice_from_raw_parts(std::ptr::null(), 0));
         if let Some(frame) = self.frame.take() {
             vm.frames.push(frame);
         }
+        vm.active_upvalues = up;
         vm.spill_stack = std::mem::take(&mut self.spill_stack);
         vm.save_stack = std::mem::take(&mut self.save_stack);
         vm.cell_stack = std::mem::take(&mut self.cell_stack);
@@ -350,6 +356,7 @@ impl SuspendedFrame {
                 super_called: f.super_called,
                 strict: f.strict,
                 continuation: f.continuation,
+                upvalues: f.upvalues,
             }),
             spill_stack: self.spill_stack.iter().copied().map(&mut rewrite).collect(),
             save_stack: self.save_stack.iter().copied().map(&mut rewrite).collect(),
@@ -447,6 +454,7 @@ mod tests {
             super_called: false,
             strict: false,
             continuation: FrameContinuation::None,
+            upvalues: std::ptr::slice_from_raw_parts(std::ptr::null(), 0),
         }
     }
 

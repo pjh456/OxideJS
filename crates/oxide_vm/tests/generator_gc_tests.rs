@@ -40,3 +40,16 @@ fn generator_promoted_to_global_survives_full_reset_cleanly() {
         .expect("run3");
     assert_eq!(format!("{ok}"), "9");
 }
+
+/// 闭包跨 yield 读 upvalue：生成器挂起再恢复时活动镜像必须还原为生成器自己的
+/// 表（恢复置位漏掉时，恢复体读顶层空表，upvalue 读回退惰性路径得 undefined）。
+#[test]
+fn generator_reads_upvalue_across_yield() {
+    let mut vm = Vm::new();
+    let result = vm
+        .run(&Arc::new(compile(
+            "function make() { var x = 1; function* g() { yield x; yield x; } var it = g(); it.next(); x = 2; return it.next().value; } make()",
+        )))
+        .expect("run");
+    assert_eq!(format!("{result}"), "2");
+}

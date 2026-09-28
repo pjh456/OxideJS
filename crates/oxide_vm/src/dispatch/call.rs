@@ -384,49 +384,30 @@ impl Vm {
     /// 读取当前闭包的 upvalue：命中 cell 判初始化后取值，未命中委托惰性建 cell。
     ///
     /// # 步骤
-    /// 1. 取 imm16 为 upvalue 下标；缓存命中（键 = 当前 callee 位级相等）直接
-    ///    解引用缓存切片指针，未命中从 callee 重算并填缓存。
+    /// 1. 取 imm16 为 upvalue 下标；直接索引活动镜像表（当前执行函数的表，
+    ///    非闭包为 null 空切片）。
     /// 2. 命中且非空：未初始化（TDZ）抛 ReferenceError，否则值写入 `regs[rd]`。
     /// 3. 未命中/空槽（`CREATE_CLOSURE` 早于 `MAKE_CELL`）：委托
     ///    `lazy_create_upvalue_cell` 建 cell。
     ///
     /// # 边界与前提
     /// - `uv_idx` 越界或当前无 callee 时同样走惰性路径，最终回退 undefined。
-    /// - 缓存指针在键匹配期间恒有效：callee 对象是 GC 根，`upvalues` Box
+    /// - 镜像指针跨 GC 恒有效：callee 对象是 GC 根，`upvalues` Box
     ///   创建后不替换。
     pub(crate) fn dispatch_load_upvalue(&mut self, rd: usize, instr: u32) -> Result<(), String> {
         let uv_idx = opcode::imm16(instr) as usize;
-        let callee = self.current_callee();
-        // 命中：键位级相等保证缓存切片指针对应当前 callee 对象（对象为 GC 根、
-        // Box 创建后不替换），直接解引用安全。
-        let mut upvals: Option<&[*mut Cell]> = None;
-        if let Some((key, ptr)) = self.upvalue_cache {
-            if callee == Some(key) {
-                upvals = Some(unsafe { &*ptr });
-            }
-        }
-        // 未命中：重算切片指针并填缓存（含空切片，免每次 null 判定）。
-        if upvals.is_none() {
-            if let Some(callee) = callee {
-                if callee.is_object() {
-                    let obj = unsafe { &*callee.as_js_object_ptr() };
-                    let slice = obj.upvalues_slice();
-                    self.upvalue_cache = Some((callee, slice as *const [*mut Cell]));
-                    upvals = Some(slice);
+        // 活动镜像是当前执行函数的表（压帧/内联/弹帧/挂起恢复边界置位）：
+        // 直接解引用安全（callee 是 GC 根、Box 创建后不替换）。
+        let upvals = unsafe { &*self.active_upvalues };
+        if uv_idx < upvals.len() {
+            let cell = upvals[uv_idx];
+            if !cell.is_null() {
+                let c = unsafe { &*cell };
+                if !c.is_initialized() {
+                    return self.raise_error_kind("ReferenceError", "Cannot access variable before initialization");
                 }
-            }
-        }
-        if let Some(upvals) = upvals {
-            if uv_idx < upvals.len() {
-                let cell = upvals[uv_idx];
-                if !cell.is_null() {
-                    let c = unsafe { &*cell };
-                    if !c.is_initialized() {
-                        return self.raise_error_kind("ReferenceError", "Cannot access variable before initialization");
-                    }
-                    self.regs[rd] = c.value;
-                    return Ok(());
-                }
+                self.regs[rd] = c.value;
+                return Ok(());
             }
         }
         // cell 尚未创建（hoisting 顺序：CREATE_CLOSURE 先于 MAKE_CELL），
@@ -470,7 +451,7 @@ impl Vm {
     ///
     /// # 步骤
     /// 1. b 槽为 upvalue 下标，源值为 `regs[a]`；`rd` 复用为 const 标志。
-    /// 2. 命中闭包 `upvalues` 且非空：未初始化（TDZ）抛 ReferenceError，const 标志非 0
+    /// 2. 命中活动镜像表且非空：未初始化（TDZ）抛 ReferenceError，const 标志非 0
     ///    抛 TypeError，否则写值置 initialized。
     /// 3. 槽位为空（尚未建 cell）以源值新建已初始化 cell；下标越界或无 callee 静默返回。
     ///
@@ -484,36 +465,30 @@ impl Vm {
         let const_flag = rd;
         let uv_idx = b;
         let src_val = self.regs[a];
-        if let Some(callee) = self.current_callee() {
-            if callee.is_object() {
-                let obj = unsafe { &mut *callee.as_js_object_ptr() };
-                let upvals = obj.upvalues_slice_mut();
-                if uv_idx < upvals.len() {
-                    if !upvals[uv_idx].is_null() {
-                        unsafe {
-                            let cell = &mut *upvals[uv_idx];
-                            // TDZ 写检查：cell 未初始化（捕获绑定声明点前）写抛 ReferenceError。
-                            if !cell.is_initialized() {
-                                self.raise_error_kind(
-                                    "ReferenceError",
-                                    "Cannot access variable before initialization",
-                                )?;
-                                return Ok(());
-                            }
-                            // const guard：TDZ 检查后 cell 必已初始化（存在性判定，与值无关），
-                            // const 初始值为 undefined 时再赋值同样抛。
-                            if const_flag != 0 {
-                                self.raise_error_kind("TypeError", "Assignment to constant variable")?;
-                                return Ok(());
-                            }
-                            cell.value = src_val;
-                            cell.set_initialized(true);
-                        }
-                        vm_debug!("STORE_UPVALUE len={} wrote existing", upvals.len());
-                    } else {
-                        upvals[uv_idx] = self.gc_state.alloc_cell(src_val, true);
+        // 活动镜像是当前执行函数的表（非闭包为 null 空切片）：经 *mut 转可变
+        // 切片，与 upvalues_slice_mut 同口径（callee 是 GC 根、Box 单所有权）。
+        let upvals = unsafe { &mut *(self.active_upvalues as *mut [*mut Cell]) };
+        if uv_idx < upvals.len() {
+            if !upvals[uv_idx].is_null() {
+                unsafe {
+                    let cell = &mut *upvals[uv_idx];
+                    // TDZ 写检查：cell 未初始化（捕获绑定声明点前）写抛 ReferenceError。
+                    if !cell.is_initialized() {
+                        self.raise_error_kind("ReferenceError", "Cannot access variable before initialization")?;
+                        return Ok(());
                     }
+                    // const guard：TDZ 检查后 cell 必已初始化（存在性判定，与值无关），
+                    // const 初始值为 undefined 时再赋值同样抛。
+                    if const_flag != 0 {
+                        self.raise_error_kind("TypeError", "Assignment to constant variable")?;
+                        return Ok(());
+                    }
+                    cell.value = src_val;
+                    cell.set_initialized(true);
                 }
+                vm_debug!("STORE_UPVALUE len={} wrote existing", upvals.len());
+            } else {
+                upvals[uv_idx] = self.gc_state.alloc_cell(src_val, true);
             }
         }
         Ok(())

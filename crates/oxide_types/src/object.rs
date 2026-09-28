@@ -504,6 +504,8 @@ impl JsObject {
     /// 深拷贝本对象到 session epoch：复制属性向量与元数据，标记为新 session 对象。
     ///
     /// 用于把持久对象快照进当前调用上下文，修改不反向传播到源对象。
+    /// `upvalues` 指针别名共享（非深拷）：调用帧固化的 upvalue 表跨 GC 晋升
+    /// 恒有效依赖此不变量。
     pub fn clone_for_session_epoch(&self) -> Self {
         let hash_props = self
             .hash_props_vec()
@@ -626,6 +628,9 @@ impl JsObject {
     }
 
     /// 替换 upvalue cell 列表（释放旧列表）。
+    ///
+    /// 仅闭包创建时调用一次；调用帧在压帧时固化的 upvalue 表（`CallFrame.upvalues`）
+    /// 跨 GC 恒有效以"本 Box 创建后不替换"为前提。
     pub fn set_upvalues(&mut self, v: Box<Vec<*mut Cell>>) {
         if !self.upvalues.is_null() {
             unsafe {
