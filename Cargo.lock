@@ -1142,6 +1142,7 @@ name = "oxide_cli"
 version = "0.1.0"
 dependencies = [
  "ansi_term",
+ "bumpalo",
  "clap",
  "oxide_bytecode",
  "oxide_code_cache",

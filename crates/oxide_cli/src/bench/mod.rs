@@ -1,6 +1,8 @@
 //! Benchmark 子系统：支持 JS 压力测试（`js`）、Rust 原生 bench（`rust`）
 //! 与内存泄漏检测（`leak`），并附带基线保存/回归对比功能。
 
+/// 分配成本 go/no-go 测量装置（Plan C 设计门）。
+pub mod alloc_ab;
 /// 基准持久化与回归对比。
 pub mod baseline;
 /// JS 压力测试执行。
@@ -45,6 +47,7 @@ pub fn run_benchmarks(config: BenchConfig, kernel: Arc<KernelCore>, pool: Arc<Vm
             Some("object_churn_peak") => leak_detect::run_mem_object_churn_peak(&kernel),
             Some("kernel_lifetime") => leak_detect::run_mem_kernel_lifetime(),
             Some("startup_breakdown") => leak_detect::run_mem_startup_breakdown(),
+            Some("alloc_ab") => alloc_ab::run_alloc_ab(&config, &kernel, &pool),
             _ => leak_detect::run_leak_detect(&config, &kernel, &pool),
         },
         _ => {
