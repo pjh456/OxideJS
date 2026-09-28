@@ -335,14 +335,10 @@ pub(crate) fn plain_date_time_object_parts<H: VmHost>(
             return Err(crate::error::create_type_error(vm, "monthCode must be a string"));
         }
         let code = to_string(month_code_raw);
-        // 语法（well-formed）：M 后两位数字，可选 L 后缀。
-        let digits_ok =
-            code.len() >= 3 && code.starts_with('M') && code.as_bytes()[1..3].iter().all(u8::is_ascii_digit);
-        let well_formed = digits_ok && (code.len() == 3 || (code.len() == 4 && code.ends_with('L')));
-        if !well_formed {
+        if !month_code_well_formed(&code) {
             return Err(crate::error::create_range_error(vm, "invalid monthCode"));
         }
-        Some((code.clone(), code.ends_with('L')))
+        Some(code)
     };
 
     // 数值字段类型转换：Symbol/BigInt 抛 TypeError。
@@ -365,10 +361,78 @@ pub(crate) fn plain_date_time_object_parts<H: VmHost>(
         convert_number("year", year_raw)?,
     );
 
+    resolve_date_time_parts(
+        vm,
+        calendar,
+        DateTimeParts {
+            year,
+            month,
+            month_code,
+            day,
+            hour,
+            minute,
+            second,
+            millisecond,
+            microsecond,
+            nanosecond,
+        },
+        constrain,
+        ignore_time,
+    )
+}
+
+/// monthCode 语法（well-formed）：M 后两位数字，可选 L 后缀（第 4 位）。
+pub(crate) fn month_code_well_formed(code: &str) -> bool {
+    code.len() >= 3
+        && code.starts_with('M')
+        && code.as_bytes()[1..3].iter().all(u8::is_ascii_digit)
+        && (code.len() == 3 || (code.len() == 4 && code.ends_with('L')))
+}
+
+/// 已转换的日期时间 property bag 字段值（resolve_date_time_parts 的输入）。
+pub(crate) struct DateTimeParts {
+    pub year: Option<f64>,
+    pub month: Option<f64>,
+    pub month_code: Option<String>,
+    pub day: Option<f64>,
+    pub hour: f64,
+    pub minute: f64,
+    pub second: f64,
+    pub millisecond: f64,
+    pub microsecond: f64,
+    pub nanosecond: f64,
+}
+
+/// 日期时间 property bag 校验共享核：monthCode ISO 适配 + constrain 钳制 + 范围检查。
+///
+/// # 步骤
+/// 1. monthCode ISO 适配：仅 M01-M12，L 后缀与超界拒绝，与 month 冲突拒绝（RangeError）。
+/// 2. day/year 兜底必填（调用方已保证）；全分量有限性 + 非负检查（RangeError）。
+/// 3. constrain 钳制：月 1..12、日当月末日、时 0..23、分秒 0..59、毫秒/微秒/纳秒 0..999。
+/// 4. 有界整型转换 + valid_iso_date / valid_plain_time / valid_plain_date_time_range 检查。
+///
+/// # 边界与前提
+/// - 调用方须已完成必填字段检查（year/day/month 或 monthCode）与逐字段类型转换。
+/// - 字段读序与转换由调用方负责，本核只消费已转换值。
+pub(crate) fn resolve_date_time_parts<H: VmHost>(
+    vm: &mut H, calendar: Option<String>, parts: DateTimeParts, constrain: bool, ignore_time: bool,
+) -> Result<(i32, u32, u32, f64, Option<String>), JsValue> {
+    let DateTimeParts {
+        year,
+        month,
+        month_code,
+        day,
+        hour,
+        minute,
+        second,
+        millisecond,
+        microsecond,
+        nanosecond,
+    } = parts;
     // monthCode 适配 ISO 日历：仅 M01-M12，L 后缀不支持；无效抛 RangeError。
     let month_code = match month_code {
-        Some((code, leap)) => {
-            if leap {
+        Some(code) => {
+            if code.ends_with('L') {
                 return Err(crate::error::create_range_error(vm, "monthCode is not valid for ISO calendar"));
             }
             let number = code[1..3]

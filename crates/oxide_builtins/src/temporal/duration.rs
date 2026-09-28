@@ -8,9 +8,9 @@ use oxide_types::value::JsValue;
 use super::common::native_try;
 use super::common::{
     canonical_time_zone, civil_from_days, days_from_civil, ensure_duration, get_calendar_id, get_double_prop,
-    get_instant_epoch_ns, initialize_temporal_receiver, is_ctor_call, local_to_epoch_ns, native_engine_error,
-    plain_date_time_object_parts, receiver_obj, temporal_option_number, temporal_option_string, temporal_option_value,
-    zoned_date_time_plain_parts,
+    get_instant_epoch_ns, initialize_temporal_receiver, is_ctor_call, local_to_epoch_ns, month_code_well_formed,
+    native_engine_error, receiver_obj, resolve_date_time_parts, temporal_calendar_id, temporal_option_number,
+    temporal_option_string, temporal_option_value, temporal_string_strict, zoned_date_time_plain_parts, DateTimeParts,
 };
 use super::difference::{
     add_date_duration, add_days_iso, balance_instant_difference, compare_iso_date, date_duration_sign, date_until_iso,
@@ -339,12 +339,14 @@ fn relative_point_wall_date<H: VmHost>(vm: &mut H, point: &RelativePoint) -> Res
 ///    得 Zoned 载荷；无注解走 plain 解析（纯日期、日期时间、带偏移的 plain 串）得 Wall 载荷。
 /// 2. PlainDateTime / PlainDate 对象 → 直读 prop 0/1/2，Wall 载荷。
 /// 3. ZonedDateTime → Zoned 载荷（zoned_date_time_plain_parts 范围检查后直读三槽）。
-/// 4. 其他对象（含 Instant）按 property bag 解析（ToRelativeTemporalObject，constrain），Wall 载荷。
+/// 4. 其他对象（含 Instant）按 property bag 解析：字段按规范字典序单读（calendar 先，
+///    非 iso8601 日历读 era/eraYear），逐字段 Get 后立即转换，constrain，Wall 载荷。
 /// 5. undefined → None；其余原始值 → TypeError。
 ///
 /// # 边界与前提
 /// - 调用方须已把 raw 从 options 取出（读序由调用方保证）。
-/// - bag 支 offset 语法校验先于数值字段转换；offset-vs-zone 匹配校验在字段转换之后。
+/// - bag 支 offset 语法校验在字典序位（nanosecond 后）立即完成，先于后续字段转换；
+///   offset-vs-zone 匹配校验在字段转换之后。
 fn duration_relative_to_date<H: VmHost>(vm: &mut H, relative_raw: JsValue) -> Result<Option<RelativePoint>, JsValue> {
     if relative_raw.is_undefined() {
         return Ok(None);
@@ -401,38 +403,109 @@ fn duration_relative_to_date<H: VmHost>(vm: &mut H, relative_raw: JsValue) -> Re
             calendar: get_calendar_id(obj, 2),
         }));
     }
-    // property bag：按 ToRelativeTemporalObject 依次校验 calendar/timeZone/offset 再读字段。
-    // 规范 13.19 无 Instant 分支：Instant 对象落入此处按字段解析（缺 day 抛错）。
+    // property bag：字段按规范字典序单读（calendar 先），逐字段 Get 后立即转换。
+    // calendar 经宽松版接受：白名单/ISO 串（非法 RangeError）、Temporal 实例读日历槽、其余 TypeError。
     let calendar_raw = temporal_option_value(vm, obj, relative_raw, "calendar")?;
-    if !calendar_raw.is_undefined() {
-        return Err(crate::error::create_type_error(vm, "invalid relativeTo"));
-    }
+    let calendar = temporal_calendar_id(vm, calendar_raw)?;
+    let non_iso_calendar = calendar.as_deref() != Some("iso8601");
+
+    let day_raw = temporal_option_value(vm, obj, relative_raw, "day")?;
+    let day = bag_number_field(vm, day_raw)?;
+    // era/eraYear 仅非 iso8601 日历读取（规范扩展字段）；iso8601 袋不读，读到即违反读序。
+    let era_raw = if non_iso_calendar {
+        temporal_option_value(vm, obj, relative_raw, "era")?
+    } else {
+        JsValue::undefined()
+    };
+    let era = bag_string_field(vm, era_raw)?;
+    let era_year_raw = if non_iso_calendar {
+        temporal_option_value(vm, obj, relative_raw, "eraYear")?
+    } else {
+        JsValue::undefined()
+    };
+    let era_year = bag_number_field(vm, era_year_raw)?;
+    let hour_raw = temporal_option_value(vm, obj, relative_raw, "hour")?;
+    let hour = bag_number_field(vm, hour_raw)?.unwrap_or(0.0);
+    let microsecond_raw = temporal_option_value(vm, obj, relative_raw, "microsecond")?;
+    let microsecond = bag_number_field(vm, microsecond_raw)?.unwrap_or(0.0);
+    let millisecond_raw = temporal_option_value(vm, obj, relative_raw, "millisecond")?;
+    let millisecond = bag_number_field(vm, millisecond_raw)?.unwrap_or(0.0);
+    let minute_raw = temporal_option_value(vm, obj, relative_raw, "minute")?;
+    let minute = bag_number_field(vm, minute_raw)?.unwrap_or(0.0);
+    let month_raw = temporal_option_value(vm, obj, relative_raw, "month")?;
+    let month = bag_number_field(vm, month_raw)?;
+    // monthCode 经 ToPrimitive(String)：非串 TypeError，语法不合法 RangeError。
+    let month_code_raw = temporal_option_value(vm, obj, relative_raw, "monthCode")?;
+    let month_code = if month_code_raw.is_undefined() {
+        None
+    } else {
+        let code = temporal_string_strict(vm, month_code_raw)?;
+        if !month_code_well_formed(&code) {
+            return Err(crate::error::create_range_error(vm, "invalid monthCode"));
+        }
+        Some(code)
+    };
+    let nanosecond_raw = temporal_option_value(vm, obj, relative_raw, "nanosecond")?;
+    let nanosecond = bag_number_field(vm, nanosecond_raw)?.unwrap_or(0.0);
+    // offset 经 ToPrimitive(String) 后语法校验（RangeError），先于后续字段转换。
+    let offset_raw = temporal_option_value(vm, obj, relative_raw, "offset")?;
+    let bag_offset_seconds = if offset_raw.is_undefined() {
+        None
+    } else {
+        let offset_input = temporal_string_strict(vm, offset_raw)?;
+        let (seconds, _has_sub_minute) = parse_any_offset_seconds(&offset_input)
+            .filter(|_| valid_offset_fraction(&offset_input))
+            .ok_or_else(|| crate::error::create_range_error(vm, "invalid offset"))?;
+        Some(seconds)
+    };
+    let second_raw = temporal_option_value(vm, obj, relative_raw, "second")?;
+    let second = bag_number_field(vm, second_raw)?.unwrap_or(0.0);
+    // timeZone 保持原始类型检查：非字符串（对象/符号/null/数字）→ TypeError；字符串非合法时区 → RangeError。
     let time_zone_raw = temporal_option_value(vm, obj, relative_raw, "timeZone")?;
     let time_zone_id = if time_zone_raw.is_undefined() {
         None
     } else {
-        // 非字符串（对象/符号/null/数字）→ TypeError；字符串非合法时区 → RangeError。
         if !time_zone_raw.is_string() {
             return Err(crate::error::create_type_error(vm, "invalid time zone"));
         }
         let tz_input = to_string(time_zone_raw);
         Some(canonical_time_zone(&tz_input).ok_or_else(|| crate::error::create_range_error(vm, "invalid time zone"))?)
     };
-    let offset_raw = temporal_option_value(vm, obj, relative_raw, "offset")?;
-    let bag_offset_seconds = if offset_raw.is_undefined() {
-        None
-    } else {
-        // 非字符串 → TypeError；字符串格式非法（含亚秒偏移位数超限）→ RangeError。
-        if !offset_raw.is_string() {
-            return Err(crate::error::create_type_error(vm, "invalid offset"));
-        }
-        let offset_input = to_string(offset_raw);
-        let (seconds, _has_sub_minute) = parse_any_offset_seconds(&offset_input)
-            .filter(|_| valid_offset_fraction(&offset_input))
-            .ok_or_else(|| crate::error::create_range_error(vm, "invalid offset"))?;
-        Some(seconds)
-    };
-    let (year, month, day, time_ns, calendar) = plain_date_time_object_parts(vm, relative_raw, obj, true, false)?;
+    let year_raw = temporal_option_value(vm, obj, relative_raw, "year")?;
+    let year = bag_number_field(vm, year_raw)?;
+
+    // 缺失必填字段先抛 TypeError（先于任何 RangeError 值校验）。
+    if day.is_none() {
+        return Err(crate::error::create_type_error(vm, "day is required"));
+    }
+    if month.is_none() && month_code.is_none() {
+        return Err(crate::error::create_type_error(vm, "month is required"));
+    }
+
+    // era/eraYear 合并（非 iso8601 日历，gregory 最小语义）：三者不全（仅 era 或仅 eraYear）
+    // TypeError；eraYear 0 归 1、负值换 era 续数；ad → year=eraYear、bc → year=1-eraYear；
+    // year 与 era/eraYear 同场指向不同年 RangeError。
+    let year = merge_bag_era_year(vm, year, era, era_year)?;
+
+    // 袋支尾部保持 Wall 载荷（Zoned 载荷归后续任务）。
+    let (year, month, day, time_ns, calendar) = resolve_date_time_parts(
+        vm,
+        calendar,
+        DateTimeParts {
+            year: Some(year),
+            month,
+            month_code,
+            day,
+            hour,
+            minute,
+            second,
+            millisecond,
+            microsecond,
+            nanosecond,
+        },
+        true,
+        false,
+    )?;
     // offset-vs-zone 校验（对象支精确一致、reject 语义）：offset 与 timeZone 同时在场时，
     // 候选 epoch 点 zone 偏移须与输入偏移秒级相等。
     if let (Some(offset), Some(tz_id)) = (bag_offset_seconds, time_zone_id.as_deref()) {
@@ -448,6 +521,62 @@ fn duration_relative_to_date<H: VmHost>(vm: &mut H, relative_raw: JsValue) -> Re
         date: (i128::from(year), i128::from(month), i128::from(day)),
         calendar: calendar.unwrap_or_else(|| "iso8601".to_string()),
     }))
+}
+
+/// 袋支数值字段：undefined → None，其余 ToPrimitive(Number) 截断（Symbol/BigInt TypeError）。
+fn bag_number_field<H: VmHost>(vm: &mut H, raw: JsValue) -> Result<Option<f64>, JsValue> {
+    if raw.is_undefined() {
+        Ok(None)
+    } else {
+        temporal_option_number(vm, raw).map(|number| Some(number.trunc()))
+    }
+}
+
+/// 袋支字符串字段：undefined → None，其余 ToPrimitive(String)（非串 TypeError）。
+fn bag_string_field<H: VmHost>(vm: &mut H, raw: JsValue) -> Result<Option<String>, JsValue> {
+    if raw.is_undefined() {
+        Ok(None)
+    } else {
+        temporal_string_strict(vm, raw).map(Some)
+    }
+}
+
+/// era/eraYear 合并到 year（gregory 最小语义）：
+/// 仅 era 或仅 eraYear 在场 → TypeError；era 非 ad/bc（大小写不敏感）→ RangeError；
+/// eraYear 0 归 1，负值换 era 续数（bc 的 -1 → ad 2 式）；ad → year=eraYear、bc → year=1-eraYear。
+fn merge_bag_era_year<H: VmHost>(
+    vm: &mut H, year: Option<f64>, era: Option<String>, era_year: Option<f64>,
+) -> Result<f64, JsValue> {
+    match (year, era, era_year) {
+        (Some(year), Some(era), Some(era_year)) => {
+            let merged = compute_era_year(vm, &era, era_year)?;
+            if merged != year {
+                return Err(crate::error::create_range_error(vm, "era and year disagree"));
+            }
+            Ok(merged)
+        }
+        (Some(year), None, None) => Ok(year),
+        (None, Some(era), Some(era_year)) => compute_era_year(vm, &era, era_year),
+        (None, None, None) => Err(crate::error::create_type_error(vm, "year is required")),
+        _ => Err(crate::error::create_type_error(vm, "era and eraYear must both be present")),
+    }
+}
+
+fn compute_era_year<H: VmHost>(vm: &mut H, era: &str, era_year: f64) -> Result<f64, JsValue> {
+    let era = era.to_ascii_lowercase();
+    if era != "ad" && era != "bc" {
+        return Err(crate::error::create_range_error(vm, "invalid era"));
+    }
+    let mut era_is_ad = era == "ad";
+    let mut era_year = era_year;
+    if era_year == 0.0 {
+        era_year = 1.0;
+    }
+    if era_year < 0.0 {
+        era_is_ad = !era_is_ad;
+        era_year = 1.0 - era_year;
+    }
+    Ok(if era_is_ad { era_year } else { 1.0 - era_year })
 }
 
 fn format_duration_number(value: f64) -> String {

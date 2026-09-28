@@ -3946,3 +3946,85 @@ fn plain_date_time_ctor_undefined_time_components_default() {
         "2020-01-01T00:00:00|2020-01-01T10:00:00.005|2020-01-01T00:00:00|RangeError|RangeError|RangeError"
     );
 }
+
+// -- relativeTo property bag（袋支读序 / calendar 接受面 / era 合并） --
+
+#[test]
+fn relativeto_bag_calendar_acceptance() {
+    let mut vm = Vm::new();
+    // calendar 经宽松版接受：白名单命中、ISO 日期串归一 iso8601、非法串 RangeError、
+    // 非字符串（数字/null）TypeError。
+    let r = eval(
+        &mut vm,
+        "(() => {
+           const kind = (fn) => { try { fn(); return 'ok'; } catch (e) { return e.constructor.name; } };
+           const d1 = new Temporal.Duration(1);
+           const d2 = new Temporal.Duration(0);
+           const cmp = (cal) => Temporal.Duration.compare(d1, d2, { relativeTo: { year: 2020, month: 1, day: 1, calendar: cal } });
+           return [
+             kind(() => cmp('iso8601')),
+             kind(() => cmp('gregory')),
+             kind(() => cmp('2020-01-01')),
+             kind(() => cmp('notacal')),
+             kind(() => cmp('')),
+             kind(() => cmp(1)),
+             kind(() => cmp(null)),
+           ].join('|');
+         })()",
+    )
+    .unwrap();
+    assert_eq!(str_val(&vm, r), "ok|ok|ok|RangeError|RangeError|TypeError|TypeError");
+}
+
+#[test]
+fn relativeto_bag_era_merge() {
+    let mut vm = Vm::new();
+    // era/eraYear 仅非 iso8601 日历读取，gregory 最小合并语义：ad/eraYear 正常合并、
+    // eraYear 0 归 1、bc 负年换 era 续数、year 与 era/eraYear 同场指向不同年 RangeError、
+    // eraYear Infinity RangeError、仅 era 或仅 eraYear（三者不全）TypeError。
+    let r = eval(
+        &mut vm,
+        "(() => {
+           const kind = (fn) => { try { fn(); return 'ok'; } catch (e) { return e.constructor.name; } };
+           const d = new Temporal.Duration(1, 0, 0, 0, 24);
+           const round = (rel) => d.round({ largestUnit: 'years', relativeTo: rel });
+           return [
+             kind(() => round({ month: 5, day: 2, hour: 15, calendar: 'gregory', era: 'ad', eraYear: 2020 })),
+             kind(() => round({ month: 5, day: 2, hour: 15, calendar: 'gregory', era: 'ad', eraYear: 0 })),
+             kind(() => round({ month: 5, day: 2, hour: 15, calendar: 'gregory', era: 'bc', eraYear: -1 })),
+             kind(() => round({ year: 2020, month: 5, day: 2, hour: 15, calendar: 'gregory', era: 'ad', eraYear: 2020 })),
+             kind(() => round({ year: 2020, month: 5, day: 2, hour: 15, calendar: 'gregory', era: 'ad', eraYear: 2021 })),
+             kind(() => round({ month: 5, day: 2, hour: 15, calendar: 'gregory', era: 'ad', eraYear: Infinity })),
+             kind(() => round({ year: 2020, month: 5, day: 2, hour: 15, calendar: 'gregory', era: 'ad' })),
+             kind(() => round({ year: 2020, month: 5, day: 2, hour: 15, calendar: 'gregory', eraYear: 2020 })),
+           ].join('|');
+         })()",
+    )
+    .unwrap();
+    assert_eq!(str_val(&vm, r), "ok|ok|ok|ok|RangeError|RangeError|TypeError|TypeError");
+}
+
+#[test]
+fn relativeto_bag_read_order_calendar_first_dictionary() {
+    let mut vm = Vm::new();
+    // 袋支读序：calendar 单次读（先），其余字段按规范字典序逐字段 Get。
+    // 用 getter 记录读序；calendar 只出现一次（旧实现二次读 calendar 违反读序钉）。
+    let r = eval(
+        &mut vm,
+        "(() => {
+           const order = [];
+           const values = { calendar: 'iso8601', day: 2, hour: 6, microsecond: 2, millisecond: 1, minute: 30, month: 5, monthCode: 'M05', nanosecond: 3, second: 15, year: 2020 };
+           const rel = {};
+           for (const k of Object.keys(values)) {
+             Object.defineProperty(rel, k, { get() { order.push(k); return values[k]; }, configurable: true });
+           }
+           Temporal.Duration.compare(new Temporal.Duration(1), new Temporal.Duration(0), { relativeTo: rel });
+           return order.join(',');
+         })()",
+    )
+    .unwrap();
+    assert_eq!(
+        str_val(&vm, r),
+        "calendar,day,hour,microsecond,millisecond,minute,month,monthCode,nanosecond,second,year"
+    );
+}
