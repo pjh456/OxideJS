@@ -741,6 +741,101 @@ pub fn run_mem_kernel_lifetime() -> ExitCode {
     ExitCode::SUCCESS
 }
 
+/// 进程级启动五段分解度量：专用 kernel（`KernelConfig::minimal()`，同
+/// `kernel_lifetime` 口径，不污染 bench 共享 kernel），每轮重建 kernel 与池
+/// 模拟新进程，连测五段——① `KernelCore::new`（kernel 初始化）②
+/// `VmPool::new`（池构造）③ 首次 `pool.spawn()`（首个 Vm 构造）④ 固定微源
+/// `oxide_parser::parse` 加 `Compiler::new().compile`（parse 加 compile）⑤
+/// 首次 `vm.run`（执行），打印各段毫秒加合计，三轮取中位。
+///
+/// # 边界与前提
+/// - 启动是单次事件非序列，不进 `report_series` 泄漏判据；
+/// - “首个 Vm 构造”段可与 `builtin_world_build` 用例的每 Vm 构造成本锚对照
+///   （同 debug 口径）；偏差大先查 harness 污染再疑用例。
+///
+/// # 副作用
+/// - 不改引擎执行路径；每轮 kernel 与池在轮末 drop，无跨轮状态。
+pub fn run_mem_startup_breakdown() -> ExitCode {
+    const ROUNDS: usize = 3;
+    const SOURCE: &str = "var x = 1 + 2; x * 3";
+
+    let mut rounds: Vec<[f64; 5]> = Vec::with_capacity(ROUNDS);
+    for round in 0..ROUNDS {
+        // kernel 初始化：每轮全新构造，模拟进程启动。
+        let t0 = Instant::now();
+        let config = KernelConfig::minimal();
+        let kernel = KernelCore::new(config.clone());
+        let t1 = Instant::now();
+
+        // 池构造：空池，min_size 参数当前仅作预留不预热。
+        let pool = VmPool::new(Arc::clone(&kernel), config.min_pool_size, config.max_pool_size);
+        let t2 = Instant::now();
+
+        // 首个 Vm 构造：池空，spawn 走 grow 分支全量构造。
+        let mut guard = pool.spawn();
+        let t3 = Instant::now();
+
+        // parse 加 compile：固定微源每轮重测。
+        let allocator = Allocator::default();
+        let program = match oxide_parser::parse(&allocator, SOURCE) {
+            Ok(p) => p,
+            Err(e) => {
+                eprintln!("[startup_breakdown] round {round} parse failed: {e:?}");
+                return ExitCode::FAILURE;
+            }
+        };
+        let module = match Compiler::new().compile(&program) {
+            Ok(m) => Arc::new(m),
+            Err(e) => {
+                eprintln!("[startup_breakdown] round {round} compile failed: {e}");
+                return ExitCode::FAILURE;
+            }
+        };
+        let t4 = Instant::now();
+
+        // 首次执行：微源结果必须为 9。
+        let result = match guard.vm_mut().run(&module) {
+            Ok(v) => v,
+            Err(e) => {
+                eprintln!("[startup_breakdown] round {round} run failed: {e}");
+                return ExitCode::FAILURE;
+            }
+        };
+        let t5 = Instant::now();
+        if result != JsValue::float(9.0) {
+            eprintln!("[startup_breakdown] round {round} result mismatch: {result:?}");
+            return ExitCode::FAILURE;
+        }
+
+        rounds.push([
+            t1.duration_since(t0).as_secs_f64() * 1e3,
+            t2.duration_since(t1).as_secs_f64() * 1e3,
+            t3.duration_since(t2).as_secs_f64() * 1e3,
+            t4.duration_since(t3).as_secs_f64() * 1e3,
+            t5.duration_since(t4).as_secs_f64() * 1e3,
+        ]);
+    }
+
+    // 逐轮明细 + 三轮中位：中位抗单轮噪声，明细供查 harness 污染。
+    let mut medians = [0.0f64; 5];
+    for s in 0..5 {
+        let mut values = [rounds[0][s], rounds[1][s], rounds[2][s]];
+        values.sort_by(f64::total_cmp);
+        medians[s] = values[1];
+    }
+    for (round, segs) in rounds.iter().enumerate() {
+        eprintln!(
+            "[startup_breakdown] round {round}: kernel_init={:.3} pool_new={:.3} first_vm={:.3} parse_compile={:.3} first_run={:.3} total={:.3} ms",
+            segs[0], segs[1], segs[2], segs[3], segs[4], segs.iter().sum::<f64>()
+        );
+    }
+    eprintln!(
+        "[startup_breakdown] median: kernel_init={:.3} pool_new={:.3} first_vm={:.3} parse_compile={:.3} first_run={:.3} total={:.3} ms",
+        medians[0], medians[1], medians[2], medians[3], medians[4], medians.iter().sum::<f64>()
+    );
+    ExitCode::SUCCESS
+}
+
 /// 全序列回归报告：打印首末 RSS、全序列斜率/R² 与窗口（末 20 样本）总
 /// 增量；斜率显著为正（R² > 0.9）返回失败，表示泄漏签名。
 fn report_series(case: &str, unit: &str, series: &[(usize, f64)]) -> ExitCode {
