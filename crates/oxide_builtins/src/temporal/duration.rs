@@ -8,8 +8,8 @@ use oxide_types::value::JsValue;
 use super::common::native_try;
 use super::common::{
     canonical_time_zone, civil_from_days, days_from_civil, ensure_duration, get_double_prop, get_instant_epoch_ns,
-    initialize_temporal_receiver, is_ctor_call, native_engine_error, plain_date_time_object_parts, receiver_obj,
-    temporal_option_number, temporal_option_string, temporal_option_value, zoned_date_time_plain_parts,
+    initialize_temporal_receiver, is_ctor_call, local_to_epoch_ns, native_engine_error, plain_date_time_object_parts,
+    receiver_obj, temporal_option_number, temporal_option_string, temporal_option_value, zoned_date_time_plain_parts,
 };
 use super::difference::{
     add_date_duration, add_days_iso, compare_iso_date, date_duration_sign, date_until_iso, nudge_iso_difference,
@@ -17,7 +17,9 @@ use super::difference::{
 };
 use super::instant::{instant_rounding_mode, InstantRoundingMode};
 use super::time_zone::zone_offset_seconds;
-use super::zoned_date_time::{parse_any_offset_seconds, valid_offset_fraction, zoned_date_time_string_parts};
+use super::zoned_date_time::{
+    extract_time_zone_annotation, parse_any_offset_seconds, valid_offset_fraction, zoned_date_time_string_parts,
+};
 use super::{make_duration, parse_plain_date_time_string};
 
 fn parse_duration_string(input: &str) -> Option<[f64; 10]> {
@@ -285,16 +287,18 @@ fn duration_values(obj: &JsObject) -> [f64; 10] {
 /// 归一 options.relativeTo 为相对日期 `(y, m, d)`。
 ///
 /// # 步骤
-/// 1. string → parse_plain_date_time_string，失败回退 parse_plain_date_string（PDT 优先、PD 回退）；失败 RangeError。
+/// 1. string 先检测 `[tz]` 注解：含注解走 zoned 解析（offset-vs-zone 校验，reject 语义）；
+///    无注解走 plain 解析（纯日期、日期时间、带偏移的 plain 串）。
 /// 2. PlainDateTime / PlainDate 对象 → 直读 prop 0/1/2。
 /// 3. ZonedDateTime → zoned_date_time_plain_parts 取本地 (y,m,d)。
 /// 4. Instant → epoch 纳秒按 UTC 分解（div_euclid(DAY_NS) → civil_from_days）。
-/// 5. 其他对象按 property bag 解析（ToTemporalDateTime，constrain）。
+/// 5. 其他对象按 property bag 解析（ToRelativeTemporalObject，constrain）。
 /// 6. undefined → None；其余原始值 → TypeError。
 ///
 /// # 边界与前提
 /// - 调用方须已把 raw 从 options 取出（读序由调用方保证）。
 /// - 本函数只取日期分量；时间分量由调用方的 duration 分量另行加。
+/// - bag 支 offset 语法校验先于数值字段转换；offset-vs-zone 匹配校验在字段转换之后。
 fn duration_relative_to_date<H: VmHost>(
     vm: &mut H, relative_raw: JsValue,
 ) -> Result<Option<(i128, i128, i128)>, JsValue> {
@@ -303,18 +307,21 @@ fn duration_relative_to_date<H: VmHost>(
     }
     if relative_raw.is_string() {
         let text = to_string(relative_raw);
-        // 先按 PlainDateTime/PlainDate 解析（纯日期、日期时间、带 offset/注解的 plain 串）。
+        // 含 [tz] 注解走 zoned 路径（offset-vs-zone 校验，reject 语义）：
+        // 按 instant 解析 + 注解时区偏移（epoch 依赖查找）反推墙历日期。
+        if extract_time_zone_annotation(&text).is_some() {
+            let (epoch_ns, time_zone_id, _calendar) = zoned_date_time_string_parts(vm, &text, "reject")?;
+            let offset_seconds = zone_offset_seconds(&time_zone_id, epoch_ns.div_euclid(1_000_000_000) as i64)
+                .ok_or_else(|| crate::error::create_range_error(vm, "invalid time zone"))?;
+            let wall_ns = epoch_ns + i128::from(offset_seconds) * 1_000_000_000;
+            let (year, month, day) = civil_from_days(wall_ns.div_euclid(DAY_NS));
+            return Ok(Some((year, month, day)));
+        }
+        // 无注解走 plain 路径：纯日期、日期时间、带偏移的 plain 串（偏移不作时区标识符）。
         if let Ok((year, month, day, _time_ns)) = parse_plain_date_time_string(&text) {
             return Ok(Some((i128::from(year), i128::from(month), i128::from(day))));
         }
-        // 回退支：plain 首支解析失败的串（含 Z 的串、IANA 区注解串）。
-        // 按 instant 解析 + 注解时区偏移（epoch 依赖查找）反推墙历日期。
-        let (epoch_ns, time_zone_id, _calendar) = zoned_date_time_string_parts(vm, &text, "reject")?;
-        let offset_seconds = zone_offset_seconds(&time_zone_id, epoch_ns.div_euclid(1_000_000_000) as i64)
-            .ok_or_else(|| crate::error::create_range_error(vm, "invalid time zone"))?;
-        let wall_ns = epoch_ns + i128::from(offset_seconds) * 1_000_000_000;
-        let (year, month, day) = civil_from_days(wall_ns.div_euclid(DAY_NS));
-        return Ok(Some((year, month, day)));
+        return Err(crate::error::create_range_error(vm, "invalid relativeTo"));
     }
     if !relative_raw.is_object() {
         return Err(crate::error::create_type_error(vm, "invalid relativeTo"));
@@ -348,27 +355,42 @@ fn duration_relative_to_date<H: VmHost>(
         return Err(crate::error::create_type_error(vm, "invalid relativeTo"));
     }
     let time_zone_raw = temporal_option_value(vm, obj, relative_raw, "timeZone")?;
-    if !time_zone_raw.is_undefined() {
+    let time_zone_id = if time_zone_raw.is_undefined() {
+        None
+    } else {
         // 非字符串（对象/符号/null/数字）→ TypeError；字符串非合法时区 → RangeError。
         if !time_zone_raw.is_string() {
             return Err(crate::error::create_type_error(vm, "invalid time zone"));
         }
-        if canonical_time_zone(&to_string(time_zone_raw)).is_none() {
-            return Err(crate::error::create_range_error(vm, "invalid time zone"));
-        }
-    }
+        let tz_input = to_string(time_zone_raw);
+        Some(canonical_time_zone(&tz_input).ok_or_else(|| crate::error::create_range_error(vm, "invalid time zone"))?)
+    };
     let offset_raw = temporal_option_value(vm, obj, relative_raw, "offset")?;
-    if !offset_raw.is_undefined() {
-        // 非字符串 → TypeError；字符串格式非法（含亚秒偏移）→ RangeError。
+    let bag_offset_seconds = if offset_raw.is_undefined() {
+        None
+    } else {
+        // 非字符串 → TypeError；字符串格式非法（含亚秒偏移位数超限）→ RangeError。
         if !offset_raw.is_string() {
             return Err(crate::error::create_type_error(vm, "invalid offset"));
         }
         let offset_input = to_string(offset_raw);
-        if parse_any_offset_seconds(&offset_input).is_none() || !valid_offset_fraction(&offset_input) {
-            return Err(crate::error::create_range_error(vm, "invalid offset"));
+        let (seconds, _has_sub_minute) = parse_any_offset_seconds(&offset_input)
+            .filter(|_| valid_offset_fraction(&offset_input))
+            .ok_or_else(|| crate::error::create_range_error(vm, "invalid offset"))?;
+        Some(seconds)
+    };
+    let (year, month, day, time_ns, _calendar) = plain_date_time_object_parts(vm, relative_raw, obj, true, false)?;
+    // offset-vs-zone 校验（对象支精确一致、reject 语义）：offset 与 timeZone 同时在场时，
+    // 候选 epoch 点 zone 偏移须与输入偏移秒级相等。
+    if let (Some(offset), Some(tz_id)) = (bag_offset_seconds, time_zone_id.as_deref()) {
+        let candidate_ns = local_to_epoch_ns(year, month, day, time_ns, 0)
+            .ok_or_else(|| crate::error::create_range_error(vm, "invalid date-time"))?;
+        let zone_offset = zone_offset_seconds(tz_id, candidate_ns.div_euclid(1_000_000_000) as i64)
+            .ok_or_else(|| crate::error::create_range_error(vm, "invalid time zone"))?;
+        if zone_offset != offset {
+            return Err(crate::error::create_range_error(vm, "offset and time zone disagree"));
         }
     }
-    let (year, month, day, _time_ns, _calendar) = plain_date_time_object_parts(vm, relative_raw, obj, true, false)?;
     Ok(Some((i128::from(year), i128::from(month), i128::from(day))))
 }
 

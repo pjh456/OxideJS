@@ -211,7 +211,7 @@ fn zoned_date_time_options<H: VmHost>(
 
 /// 从剥注解后的 Instant 主体提取字符串内数值偏移秒数（±HH / ±HHMM / ±HH:MM / 亚秒形式）。
 /// Z/z 结尾视为 0 秒；无偏移或偏移不可提取返回 None。
-fn extract_string_offset_seconds(body: &str) -> Option<i64> {
+fn extract_string_offset_seconds(body: &str) -> Option<(i64, bool)> {
     let time_start = body.find(['T', 't', ' '])?;
     let time = &body[time_start + 1..];
     let offset_start = time
@@ -221,8 +221,9 @@ fn extract_string_offset_seconds(body: &str) -> Option<i64> {
     parse_any_offset_seconds(&time[offset_start..])
 }
 
-/// 解析数值偏移串（±HH / ±HHMM / ±HH:MM / ±HHMMSS / ±HH:MM:SS，可带小数秒）为秒数。
-pub(crate) fn parse_any_offset_seconds(value: &str) -> Option<i64> {
+/// 解析数值偏移串（±HH / ±HHMM / ±HH:MM / ±HHMMSS / ±HH:MM:SS，可带小数秒）。
+/// 返回 (秒数, 是否含秒分量)：秒分量在场即亚分钟精度，比较口径为精确一致。
+pub(crate) fn parse_any_offset_seconds(value: &str) -> Option<(i64, bool)> {
     let bytes = value.as_bytes();
     let sign = match bytes.first() {
         Some(b'+') => 1_i64,
@@ -240,13 +241,13 @@ pub(crate) fn parse_any_offset_seconds(value: &str) -> Option<i64> {
     } else {
         0
     };
-    let second = if colon_format && bytes.get(cursor) == Some(&b':') {
+    let (second, has_seconds) = if colon_format && bytes.get(cursor) == Some(&b':') {
         cursor += 1;
-        parse_digits(bytes, &mut cursor, 2)?
+        (parse_digits(bytes, &mut cursor, 2)?, true)
     } else if !colon_format && matches!(bytes.get(cursor), Some(byte) if byte.is_ascii_digit()) {
-        parse_digits(bytes, &mut cursor, 2)?
+        (parse_digits(bytes, &mut cursor, 2)?, true)
     } else {
-        0
+        (0, false)
     };
     if matches!(bytes.get(cursor), Some(b'.' | b',')) {
         cursor += 1;
@@ -257,7 +258,28 @@ pub(crate) fn parse_any_offset_seconds(value: &str) -> Option<i64> {
     if cursor != bytes.len() || hour > 23 || minute > 59 || second > 59 {
         return None;
     }
-    Some((hour * 3600 + minute * 60 + second) as i64 * sign)
+    Some(((hour * 3600 + minute * 60 + second) as i64 * sign, has_seconds))
+}
+
+/// 偏移舍入到分钟（half-expand：半值远离零），用于分钟精度比较口径。
+/// 偏移量域 ±24h，unsigned_abs 无溢出面。
+pub(crate) fn round_offset_to_minutes(seconds: i64) -> i64 {
+    let sign = seconds.signum();
+    let magnitude = seconds.unsigned_abs() + 30;
+    (magnitude / 60 * 60) as i64 * sign
+}
+
+/// 输入偏移与 zone 偏移的一致性判定。
+///
+/// # 步骤
+/// 1. 精确口径（输入含秒分量 / 对象支）：秒级相等。
+/// 2. 分钟口径（字符串支默认）：zone 偏移舍入到分钟后与输入相等。
+pub(crate) fn offset_matches(zone_offset_seconds: i64, input_offset_seconds: i64, match_exactly: bool) -> bool {
+    if match_exactly {
+        zone_offset_seconds == input_offset_seconds
+    } else {
+        round_offset_to_minutes(zone_offset_seconds) == input_offset_seconds
+    }
 }
 
 /// 从 ZDT 对象 / ISO 字符串 / property bag 解析 (epoch_ns, time_zone_id, calendar_id) 三元组。
@@ -300,7 +322,8 @@ fn zoned_date_time_like_epoch_ns<H: VmHost>(
 /// 2. 主体剥注解后按 Z / 数值偏移 / 无偏移分路：Z 定 exact time，有偏移经 parse_instant_string
 ///    反推墙钟，无偏移直接解析墙钟。
 /// 3. 时区偏移按候选 epoch（墙钟按 UTC 解释）单次查找。
-/// 4. 按 offset 选项 use/ignore/prefer/reject 决策 epoch，并做 Instant 范围校验。
+/// 4. 按 offset 选项 use/ignore/prefer/reject 决策 epoch：偏移串含秒分量走精确一致，
+///    分钟精度走 zone 偏移舍入到分钟后一致；并做 Instant 范围校验。
 ///
 /// # 边界与前提
 /// - 字符串缺时区注解或注解无法规范化抛 RangeError；主体非法抛 RangeError。
@@ -317,15 +340,18 @@ pub(crate) fn zoned_date_time_string_parts<H: VmHost>(
         return Err(crate::error::create_range_error(vm, "invalid ISO 8601 date-time"));
     };
     let has_utc_designator = body.ends_with(['Z', 'z']);
-    let string_offset_seconds = if has_utc_designator { Some(0) } else { extract_string_offset_seconds(body) };
+    let string_offset_seconds = if has_utc_designator {
+        Some((0, false))
+    } else {
+        extract_string_offset_seconds(body)
+    };
 
     // 有偏移/Z 时经 parse_instant_string 得 epoch 并反推墙钟；否则直接解析墙钟。
     const DAY_NS: i128 = 86_400_000_000_000;
-    let (epoch_from_string, wall_parts) = if string_offset_seconds.is_some() {
+    let (epoch_from_string, wall_parts) = if let Some((offset, _has_sub_minute)) = string_offset_seconds {
         let epoch_ns = parse_instant_string(input)
             .ok_or_else(|| crate::error::create_range_error(vm, "invalid ISO 8601 date-time"))?;
-        let offset_seconds = string_offset_seconds.unwrap_or(0);
-        let wall_ns = epoch_ns + i128::from(offset_seconds) * 1_000_000_000;
+        let wall_ns = epoch_ns + i128::from(offset) * 1_000_000_000;
         let days = wall_ns.div_euclid(DAY_NS);
         let (year, month, day) = civil_from_days(days);
         (Some(epoch_ns), (year as i32, month as u32, day as u32, wall_ns.rem_euclid(DAY_NS) as f64))
@@ -349,24 +375,25 @@ pub(crate) fn zoned_date_time_string_parts<H: VmHost>(
         .ok_or_else(|| crate::error::create_range_error(vm, "invalid time zone"))?;
 
     // 按 offsetBehaviour 决策：Z → exact（墙钟 epoch）；无偏移 → wall（墙钟 + 时区偏移）；
-    // 有偏移 → 按 offset 选项在字符串偏移与时区偏移之间选择。
+    // 有偏移 → 按 offset 选项在字符串偏移与时区偏移之间选择（偏移串含秒分量走精确口径，
+    // 分钟精度走舍入到分钟口径）。
     let epoch_ns = if has_utc_designator {
         epoch_from_string
     } else {
         match string_offset_seconds {
             None => wall_epoch(time_zone_offset),
-            Some(offset) => match offset_mode {
+            Some((offset, has_sub_minute)) => match offset_mode {
                 "use" => epoch_from_string,
                 "ignore" => wall_epoch(time_zone_offset),
                 "prefer" => {
-                    if offset == time_zone_offset {
+                    if offset_matches(time_zone_offset, offset, has_sub_minute) {
                         epoch_from_string
                     } else {
                         wall_epoch(time_zone_offset)
                     }
                 }
                 "reject" => {
-                    if offset == time_zone_offset {
+                    if offset_matches(time_zone_offset, offset, has_sub_minute) {
                         epoch_from_string
                     } else {
                         return Err(crate::error::create_range_error(vm, "offset and time zone disagree"));
@@ -900,7 +927,7 @@ fn zoned_date_time_with_fields<H: VmHost>(
         None
     } else {
         let offset_input = temporal_string_strict(vm, offset_raw)?;
-        let seconds = parse_any_offset_seconds(&offset_input)
+        let (seconds, _has_sub_minute) = parse_any_offset_seconds(&offset_input)
             .ok_or_else(|| crate::error::create_range_error(vm, "invalid offset"))?;
         if !valid_offset_fraction(&offset_input) {
             return Err(crate::error::create_range_error(vm, "invalid offset"));
@@ -933,7 +960,8 @@ fn zoned_date_time_with_fields<H: VmHost>(
 /// 2. receiver 本地分量与偏移；zoned_date_time_with_fields 读字段合并。
 /// 3. options：disambiguation → offset（默认 prefer）→ overflow（逐项 Get/校验）。
 /// 4. monthCode 闰月/超界/冲突校验 + constrain/reject 钳制 + PlainDateTime 范围校验。
-/// 5. offset 选项决策 → local_to_epoch_ns → Instant 范围校验 → make_zoned_date_time。
+/// 5. 候选 epoch 点 zone 偏移与合并偏移按 offset 选项决策 → local_to_epoch_ns
+///    → Instant 范围校验 → make_zoned_date_time。
 ///
 /// # 边界与前提
 /// - 字段读取先于 options 解析：即使 options 本身类型不合法，也先读完 partial 字段，
@@ -1045,21 +1073,29 @@ pub fn zoned_date_time_with<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult 
         return NativeResult::Err(crate::error::create_range_error(vm, "date-time out of range"));
     }
 
-    // InterpretISODateTimeOffset（固定偏移简化）：按 offset 选项在 bag 偏移与时区偏移间选择。
-    let epoch_ns = match (merged.bag_offset, offset_mode.as_str()) {
-        (None, _) => local_to_epoch_ns(year, month, day, total_ns, offset_seconds),
-        (Some(offset), "use") => local_to_epoch_ns(year, month, day, total_ns, offset),
-        (Some(_), "ignore") => local_to_epoch_ns(year, month, day, total_ns, offset_seconds),
-        (Some(offset), "prefer") => {
-            if offset == offset_seconds {
-                local_to_epoch_ns(year, month, day, total_ns, offset)
+    // InterpretISODateTimeOffset：时区偏移是 epoch 的函数，候选 epoch 取墙钟按 UTC 解释的
+    // 单次查找近似，zone 偏移作 offset 选项判据与墙钟回退。
+    let candidate_ns = native_try!(local_to_epoch_ns(year, month, day, total_ns, 0)
+        .ok_or_else(|| crate::error::create_range_error(vm, "invalid date-time")));
+    let zone_offset_at_candidate =
+        native_try!(zone_offset_seconds(&time_zone_id, candidate_ns.div_euclid(1_000_000_000) as i64)
+            .ok_or_else(|| crate::error::create_range_error(vm, "invalid time zone")));
+    // 输入偏移为合并偏移（partial 的 offset 优先，缺省取 receiver 偏移）；
+    // offset 选项在输入偏移与候选 epoch 点 zone 偏移之间决策。
+    let input_offset = merged.bag_offset.unwrap_or(offset_seconds);
+    let epoch_ns = match offset_mode.as_str() {
+        "use" => local_to_epoch_ns(year, month, day, total_ns, input_offset),
+        "ignore" => local_to_epoch_ns(year, month, day, total_ns, zone_offset_at_candidate),
+        "prefer" => {
+            if input_offset == zone_offset_at_candidate {
+                local_to_epoch_ns(year, month, day, total_ns, input_offset)
             } else {
-                local_to_epoch_ns(year, month, day, total_ns, offset_seconds)
+                local_to_epoch_ns(year, month, day, total_ns, zone_offset_at_candidate)
             }
         }
-        (Some(offset), "reject") => {
-            if offset == offset_seconds {
-                local_to_epoch_ns(year, month, day, total_ns, offset)
+        "reject" => {
+            if input_offset == zone_offset_at_candidate {
+                local_to_epoch_ns(year, month, day, total_ns, input_offset)
             } else {
                 return NativeResult::Err(crate::error::create_range_error(vm, "offset and time zone disagree"));
             }

@@ -176,11 +176,14 @@ fn canonical_time_zone_4_digit_offset() {
 
 #[test]
 fn offset_seconds_representation_sub_minute() {
-    // i64 秒表示保留亚分钟偏移（±HH:MM:SS 秒位），旧分钟表示丢弃秒位。
-    assert_eq!(parse_any_offset_seconds("+00:44:30"), Some(2670));
-    assert_eq!(parse_any_offset_seconds("-00:44:30"), Some(-2670));
-    assert_eq!(parse_any_offset_seconds("+01:00:00"), Some(3600));
-    assert_eq!(parse_any_offset_seconds("-23:59:59"), Some(-(23 * 3600 + 59 * 60 + 59)));
+    // i64 秒表示保留亚分钟偏移（±HH:MM:SS 秒位），旧分钟表示丢弃秒位；
+    // 第二分量标记秒分量在场（亚分钟精度，比较口径切精确一致）。
+    assert_eq!(parse_any_offset_seconds("+00:44:30"), Some((2670, true)));
+    assert_eq!(parse_any_offset_seconds("-00:44:30"), Some((-2670, true)));
+    assert_eq!(parse_any_offset_seconds("+01:00:00"), Some((3600, true)));
+    assert_eq!(parse_any_offset_seconds("-23:59:59"), Some((-(23 * 3600 + 59 * 60 + 59), true)));
+    assert_eq!(parse_any_offset_seconds("+00:45"), Some((2700, false)));
+    assert_eq!(parse_any_offset_seconds("-00:45:00"), Some((-2700, true)));
     // 固定偏移秒值与分钟值 ×60 一致（±HH:MM 六字符形）。
     assert_eq!(canonical_time_zone("+01:00"), Some("+01:00".to_string()));
     assert_eq!(canonical_time_zone("-05:30"), Some("-05:30".to_string()));
@@ -432,4 +435,69 @@ fn sub_minute_offset_getter_branch() {
         format_instant_iso(0, Some(-2670), true, None),
         Some("1969-12-31T23:15:30-00:44:30".to_string())
     );
+}
+
+#[test]
+fn round_offset_to_minutes_half_expand() {
+    // 半值远离零：正负两侧对称，整分钟偏移不变；半分钟边界（±30 秒）向上舍入。
+    assert_eq!(round_offset_to_minutes(2700), 2700);
+    assert_eq!(round_offset_to_minutes(-2700), -2700);
+    assert_eq!(round_offset_to_minutes(2670), 2700); // +00:44:30 → +00:45
+    assert_eq!(round_offset_to_minutes(-2670), -2700); // -00:44:30 → -00:45
+    assert_eq!(round_offset_to_minutes(2640), 2640);
+    assert_eq!(round_offset_to_minutes(2669), 2640); // 差 1 秒不到半分钟，仍舍入到 +00:44
+    assert_eq!(round_offset_to_minutes(-2669), -2640);
+    assert_eq!(round_offset_to_minutes(0), 0);
+}
+
+#[test]
+fn offset_matches_exact_and_minutes() {
+    // 精确口径：秒级相等才成立。
+    assert!(offset_matches(2700, 2700, true));
+    assert!(!offset_matches(2670, 2700, true));
+    assert!(!offset_matches(2670, 2669, true));
+    // 分钟口径：zone 偏移舍入到分钟后与输入相等；精确相等是其子集。
+    assert!(offset_matches(2700, 2700, false));
+    assert!(offset_matches(2670, 2700, false)); // zone 亚分钟 -00:44:30 舍入后接受分钟输入
+    assert!(offset_matches(-2670, -2700, false));
+    assert!(!offset_matches(2670, 2640, false)); // 舍入到 2700，与 2640 不符
+    assert!(!offset_matches(0, 19800, false)); // UTC 区对 +05:30 输入
+}
+
+#[test]
+fn zone_aware_string_offset_vs_zone() {
+    // zone-aware 创建解析（纯函数层）：注解经 canonical_time_zone 得规范名，
+    // 候选 epoch 点 zone 偏移经 zone_offset_seconds 读取，offset-vs-zone 判定走 offset_matches。
+    // 固定偏移区退化情形：zone 偏移恒为常量，分钟输入精确一致。
+    let tz = canonical_time_zone("+05:30").unwrap();
+    let zone = zone_offset_seconds(&tz, 0).unwrap();
+    let (offset, has_sub) = parse_any_offset_seconds("+05:30").unwrap();
+    assert_eq!(offset, 19800);
+    assert!(!has_sub);
+    assert!(offset_matches(zone, offset, has_sub));
+    // 亚分钟输入走精确口径：zone 偏移 -00:44:30 与输入 -00:44:30 秒级相等。
+    let (offset, has_sub) = parse_any_offset_seconds("-00:44:30").unwrap();
+    assert!(has_sub);
+    assert_eq!(offset, -2670);
+    assert!(offset_matches(-2670, offset, has_sub));
+    // IANA 区亚分钟历史偏移：Monrovia 1970 年 zone 偏移 -00:44:30，
+    // 分钟输入 -00:45 经舍入口径接受，亚分钟输入 -00:44:30 精确一致、-00:44:31 精确口径拒绝。
+    let zone = zone_offset_seconds("Africa/Monrovia", 0).unwrap();
+    assert_eq!(zone, -2670);
+    let (minute_input, has_sub) = parse_any_offset_seconds("-00:45").unwrap();
+    assert!(!has_sub);
+    assert!(offset_matches(zone, minute_input, has_sub));
+    let (sub_input, has_sub) = parse_any_offset_seconds("-00:44:30").unwrap();
+    assert!(has_sub);
+    assert!(offset_matches(zone, sub_input, has_sub));
+    let (sub_input, has_sub) = parse_any_offset_seconds("-00:44:31").unwrap();
+    assert!(has_sub);
+    assert!(!offset_matches(zone, sub_input, has_sub));
+    // 注解提取：IANA 区注解命中，key 注解（u-ca）跳过，亚分钟偏移注解拒作时区标识符。
+    assert_eq!(
+        extract_time_zone_annotation("2000-01-01T00:00[Africa/Monrovia]"),
+        Some(("Africa/Monrovia".to_string(), false))
+    );
+    assert_eq!(extract_time_zone_annotation("2000-01-01T00:00[u-ca=iso8601]"), None);
+    assert_eq!(extract_time_zone_annotation("2000-01-01T00:00[-00:44:30]"), None);
 }
