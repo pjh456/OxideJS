@@ -4005,6 +4005,52 @@ fn relativeto_bag_era_merge() {
 }
 
 #[test]
+fn relativeto_bag_era_gate_calendar_default() {
+    let mut vm = Vm::new();
+    // era/eraYear 读取门：calendar 未提供（默认 iso8601）时 era/eraYear 不读不合并，
+    // 缺 year 按 iso8601 语义抛 TypeError「year is required」；同袋带 year 时 era/eraYear
+    // 被忽略取 year；calendar 为具体非 iso8601（gregory）时读取并合并。
+    let r = eval(
+        &mut vm,
+        "(() => {
+           const kind = (fn) => { try { fn(); return 'ok'; } catch (e) { return e.constructor.name + ':' + e.message; } };
+           const d = new Temporal.Duration(1, 0, 0, 0, 24);
+           const round = (rel) => d.round({ largestUnit: 'years', relativeTo: rel });
+           return [
+             kind(() => round({ month: 5, day: 2, era: 'ad', eraYear: 2020 })),
+             kind(() => round({ year: 2020, month: 5, day: 2, era: 'ad', eraYear: 2021 })),
+             kind(() => round({ month: 5, day: 2, calendar: 'gregory', era: 'ad', eraYear: 2020 })),
+             kind(() => round({ year: 2020, month: 5, day: 2, calendar: 'gregory', era: 'ad', eraYear: 2020 })),
+           ].join('|');
+         })()",
+    )
+    .unwrap();
+    assert_eq!(str_val(&vm, r), "TypeError:year is required|ok|ok|ok");
+}
+
+#[test]
+fn relativeto_bag_read_order_no_calendar_skips_era() {
+    let mut vm = Vm::new();
+    // 读序门：calendar 未提供（默认 iso8601）时 era/eraYear 不进读序，
+    // 与 iso8601 袋读序一致；若误读 era/eraYear，序中会出现 era,eraYear。
+    let r = eval(
+        &mut vm,
+        "(() => {
+           const order = [];
+           const values = { day: 2, era: 'ad', eraYear: 2020, month: 5, year: 2020 };
+           const rel = {};
+           for (const k of Object.keys(values)) {
+             Object.defineProperty(rel, k, { get() { order.push(k); return values[k]; }, configurable: true });
+           }
+           Temporal.Duration.compare(new Temporal.Duration(1), new Temporal.Duration(0), { relativeTo: rel });
+           return order.join(',');
+         })()",
+    )
+    .unwrap();
+    assert_eq!(str_val(&vm, r), "day,month,year");
+}
+
+#[test]
 fn relativeto_bag_read_order_calendar_first_dictionary() {
     let mut vm = Vm::new();
     // 袋支读序：calendar 单次读（先），其余字段按规范字典序逐字段 Get。

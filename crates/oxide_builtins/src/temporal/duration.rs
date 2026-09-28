@@ -410,7 +410,8 @@ fn duration_relative_to_date<H: VmHost>(vm: &mut H, relative_raw: JsValue) -> Re
     // calendar 经宽松版接受：白名单/ISO 串（非法 RangeError）、Temporal 实例读日历槽、其余 TypeError。
     let calendar_raw = temporal_option_value(vm, obj, relative_raw, "calendar")?;
     let calendar = temporal_calendar_id(vm, calendar_raw)?;
-    let non_iso_calendar = calendar.as_deref() != Some("iso8601");
+    // calendar 未提供（undefined）时默认 iso8601，era/eraYear 不读；仅具体非 iso8601 日历才读。
+    let non_iso_calendar = calendar.as_deref().map(|c| c != "iso8601").unwrap_or(false);
 
     let day_raw = temporal_option_value(vm, obj, relative_raw, "day")?;
     let day = bag_number_field(vm, day_raw)?;
