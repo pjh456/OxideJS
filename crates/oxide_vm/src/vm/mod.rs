@@ -266,9 +266,10 @@ pub struct Vm {
     /// 调度循环检查该标志，跳过用调用结果写 `regs[target_reg]` —— 值改由 RETURN
     /// 处理器交付。
     pub(crate) accessor_frame_target_reg: Option<u8>,
-    /// `call_bytecode_function_inline` 执行期间当前回调闭包；LOAD/STORE_UPVALUE 在
-    /// frames 为空（inline 隔离状态）时由此取闭包 upvalues。嵌套 inline 由
-    /// InlineSyncState 保存/恢复。
+    /// `call_bytecode_function_inline` 执行期间当前回调闭包（inline 同步调用语义）。
+    /// LOAD/STORE_UPVALUE 热路径直接读 `active_upvalues` 活动镜像，本字段仅经
+    /// `current_callee()` 服务冷路径：惰性建 cell 路径建 cell 时回写 callee 对象，
+    /// CREATE_CLOSURE 由此取父 upvalue 源。嵌套 inline 由 InlineSyncState 保存/恢复。
     pub(crate) inline_callee: Option<JsValue>,
     /// 当前执行函数的 upvalue cell 表（活动镜像，与 `CallFrame.upvalues` 同型：
     /// 胖指针，非闭包为 null 空切片）。压帧/内联/弹帧/挂起恢复四个边界置位，
