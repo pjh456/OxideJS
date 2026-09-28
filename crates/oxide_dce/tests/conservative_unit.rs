@@ -55,3 +55,25 @@ fn if_else_both_branches_reachable_kept() {
     assert_eq!(f.label_pos, vec![Some(3), Some(4)], "存活 label 重映射到新下标");
     assert_eq!(f.label_count, 2, "label_count 保持原值，不参与重建");
 }
+
+/// 全存活函数：含 label 与 nested 的函数过 dce 后 insts 与 label_pos 逐位不变。
+/// 零删除时 Pass C 重建为恒等变换，快速路径跳过重建后输出须与执行前逐位一致。
+#[test]
+fn all_live_function_unchanged() {
+    let mut f = IRFunction::new();
+    f.insts.push(Inst::load_const(Operand::Reg(1), 0)); // 0: label 0 目标，值被 CALL 使用
+    f.insts.push(Inst::call(Operand::Reg(2), Operand::Reg(1), Operand::Reg(3), 1)); // 1: 非纯，永不删
+    f.insts
+        .push(Inst::new(OpCode::RETURN, Operand::Reg(2), Operand::None, Operand::None)); // 2
+    f.label_pos = vec![Some(0)];
+    f.label_count = 1;
+    f.nested.push(IRFunction::new()); // nested 不递归不回收
+
+    let before_insts = f.insts.clone();
+    let before_labels = f.label_pos.clone();
+    dce(&mut f);
+    assert_eq!(f.insts, before_insts, "全存活时 insts 逐位不变");
+    assert_eq!(f.label_pos, before_labels, "全存活时 label_pos 逐位不变");
+    assert_eq!(f.label_count, 1, "label_count 保持原值");
+    assert_eq!(f.nested.len(), 1, "nested 不触碰");
+}

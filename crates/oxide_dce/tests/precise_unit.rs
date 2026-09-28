@@ -235,3 +235,32 @@ fn empty_function_unchanged() {
     dce_precise(&mut f, &live);
     assert!(f.insts.is_empty());
 }
+
+/// 零删除快速路径：live 集全活时 dce_precise 输出逐位不变。
+/// 标记后 keep 全真，Pass C 重建为恒等变换，跳过重建须与执行前逐位一致。
+#[test]
+fn all_live_precise_unchanged() {
+    let mut f = IRFunction::new();
+    f.insts.push(Inst::load_const(Operand::Reg(1), 0)); // 0: label 0 目标，r1 后续活
+    f.insts.push(Inst::new(
+        oxide_bytecode::opcode::OpCode::STORE_VAR,
+        Operand::Reg(2),
+        Operand::Reg(1),
+        Operand::Imm(0),
+    )); // 1: r2 后续活
+    f.insts.push(Inst::new(
+        oxide_bytecode::opcode::OpCode::RETURN,
+        Operand::Reg(2),
+        Operand::None,
+        Operand::None,
+    )); // 2
+    f.label_pos = vec![Some(0)];
+    f.label_count = 1;
+
+    let before_insts = f.insts.clone();
+    let before_labels = f.label_pos.clone();
+    // 全活：每个 def 寄存器都在其 live_after 中
+    run_precise(&mut f, &[&[1, 2], &[2], &[]], 5);
+    assert_eq!(f.insts, before_insts, "全活时 insts 逐位不变");
+    assert_eq!(f.label_pos, before_labels, "全活时 label_pos 逐位不变");
+}

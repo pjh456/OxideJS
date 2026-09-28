@@ -35,7 +35,10 @@ pub fn dce(f: &mut IRFunction) {
     let dead = keep.iter().filter(|k| !**k).count();
     dce_info!("DCE: removing {} dead instructions", dead);
     // Pass C：mark-sweep 一次性重建 insts + label_pos 重映射。
-    rebuild::pass_c_sweep(f, &keep);
+    // keep 全真时重建为恒等变换（新旧下标相同、label 重映射为恒等），零删除直接跳过。
+    if dead > 0 {
+        rebuild::pass_c_sweep(f, &keep);
+    }
 }
 
 /// 精确二轮：liveness 驱动的死指令 + 局部死 STORE_VAR 删除。
@@ -53,6 +56,9 @@ pub fn dce_precise(f: &mut IRFunction, live: &LiveInfo) {
     }
     let mut keep = vec![true; f.insts.len()];
     precise_sweep::pass_dead_with_liveness(f, live, &mut keep);
-    // mark-sweep 一次性重建
-    rebuild::pass_c_sweep(f, &keep);
+    // keep 全真时重建为恒等变换，零删除直接跳过；重建条件与快速路径守卫同源（仅 keep 计数）。
+    let dead = keep.iter().filter(|k| !**k).count();
+    if dead > 0 {
+        rebuild::pass_c_sweep(f, &keep);
+    }
 }
