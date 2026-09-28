@@ -34,17 +34,26 @@ pub struct VmGuard {
 }
 
 impl VmPool {
-    /// 创建空池。`min_size` 当前仅作预热预留（未使用），`max_size` 为池上限，`None` 表示不限。
-    pub fn new(kernel_core: Arc<KernelCore>, _min_size: usize, max_size: Option<usize>) -> Arc<Self> {
-        Arc::new(Self {
-            kernel_core,
+    /// 创建 VM 池并同步预热 `min_size` 个 Vm（数量受 `max_size` 钳制），
+    /// 首次 `spawn` 直接命中池。`max_size` 为池上限，`None` 表示不限。
+    pub fn new(kernel_core: Arc<KernelCore>, min_size: usize, max_size: Option<usize>) -> Arc<Self> {
+        let warm = min_size.min(max_size.unwrap_or(min_size));
+        let pool = Arc::new(Self {
+            kernel_core: Arc::clone(&kernel_core),
             inner: Mutex::new(VmPoolInner {
                 available: Vec::new(),
                 total_count: 0,
             }),
             condvar: Condvar::new(),
             max_size,
-        })
+        });
+        let mut inner = pool.inner.lock().unwrap();
+        for _ in 0..warm {
+            inner.available.push(Self::new_vm(&kernel_core));
+            inner.total_count += 1;
+        }
+        drop(inner);
+        pool
     }
 
     fn new_vm(core: &Arc<KernelCore>) -> Vm {
@@ -172,5 +181,33 @@ mod tests {
         let g2 = pool.spawn();
         drop(g1);
         drop(g2);
+    }
+
+    #[test]
+    fn test_pool_warms_min_size_on_new() {
+        let kernel = test_kernel();
+        let pool = VmPool::new(kernel, 2, None);
+        {
+            let inner = pool.inner.lock().unwrap();
+            assert_eq!(inner.available.len(), 2);
+            assert_eq!(inner.total_count, 2);
+        }
+        let g1 = pool.spawn();
+        let g2 = pool.spawn();
+        {
+            let inner = pool.inner.lock().unwrap();
+            assert_eq!(inner.total_count, 2);
+        }
+        drop(g1);
+        drop(g2);
+    }
+
+    #[test]
+    fn test_pool_warmup_clamped_by_max_size() {
+        let kernel = test_kernel();
+        let pool = VmPool::new(kernel, 2, Some(1));
+        let inner = pool.inner.lock().unwrap();
+        assert_eq!(inner.available.len(), 1);
+        assert_eq!(inner.total_count, 1);
     }
 }

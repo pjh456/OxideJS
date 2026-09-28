@@ -45,8 +45,6 @@ fn test_kernel_config_presets() {
     assert_eq!(KernelConfig::standard().max_steps, None);
     assert_eq!(KernelConfig::full().max_steps, None);
     assert_eq!(KernelConfig::minimal().log_levels, [Level::Off; SUBSYSTEM_COUNT]);
-    assert!(!KernelConfig::minimal().warmup_builtin_ic);
-    assert!(KernelConfig::full().warmup_builtin_ic);
     assert_eq!(KernelConfig::full().max_pool_size, None);
 }
 

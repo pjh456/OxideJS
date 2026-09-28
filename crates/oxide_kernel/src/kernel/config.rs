@@ -1,10 +1,10 @@
 //! kernel 运行配置：VM 池规模、步数/调用深度/单 run 分配上限、session GC 阈值、
-//! perm interner 重建阈值、日志级别与内置对象预热开关（三预设 minimal/standard/full）。
+//! perm interner 重建阈值、日志级别（三预设 minimal/standard/full）。
 
 use oxide_log::{Level, SUBSYSTEM_COUNT};
 
 /// kernel 运行配置：VM 池规模、步数/调用深度/单 run 分配上限、session GC 阈值、
-/// perm interner 重建阈值、日志级别与内置对象预热开关。由三个预设构造器
+/// perm interner 重建阈值、日志级别。由三个预设构造器
 /// （[`KernelConfig::minimal`] / [`KernelConfig::standard`] / [`KernelConfig::full`]）
 /// 或默认值创建。
 #[derive(Clone)]
@@ -26,13 +26,10 @@ pub struct KernelConfig {
     pub session_gc_threshold: usize,
     pub max_cached_modules: usize,
     pub log_levels: [Level; SUBSYSTEM_COUNT],
-    pub warmup_builtin_shapes: bool,
-    pub warmup_builtin_code: bool,
-    pub warmup_builtin_ic: bool,
 }
 
 impl KernelConfig {
-    /// 最小配置：小 VM 池、关闭 code/IC 预热，适合嵌入式或单次执行场景。
+    /// 最小配置：小 VM 池，适合嵌入式或单次执行场景。
     pub fn minimal() -> Self {
         Self {
             min_pool_size: 4,
@@ -44,13 +41,10 @@ impl KernelConfig {
             session_gc_threshold: 33_554_432,
             max_cached_modules: 512,
             log_levels: [Level::Off; SUBSYSTEM_COUNT],
-            warmup_builtin_shapes: true,
-            warmup_builtin_code: false,
-            warmup_builtin_ic: false,
         }
     }
 
-    /// 标准配置：默认 VM 池大小，开启内置对象 code 预热。
+    /// 标准配置：默认 VM 池大小。
     pub fn standard() -> Self {
         Self {
             min_pool_size: 8,
@@ -62,13 +56,10 @@ impl KernelConfig {
             session_gc_threshold: 33_554_432,
             max_cached_modules: 512,
             log_levels: [Level::Off; SUBSYSTEM_COUNT],
-            warmup_builtin_shapes: true,
-            warmup_builtin_code: true,
-            warmup_builtin_ic: false,
         }
     }
 
-    /// 全量配置：无上限 VM 池，开启 shapes/code/IC 全量预热，为性能场景服务。
+    /// 全量配置：无上限 VM 池，为性能场景服务。
     pub fn full() -> Self {
         Self {
             min_pool_size: 16,
@@ -80,9 +71,6 @@ impl KernelConfig {
             session_gc_threshold: 33_554_432,
             max_cached_modules: 512,
             log_levels: [Level::Off; SUBSYSTEM_COUNT],
-            warmup_builtin_shapes: true,
-            warmup_builtin_code: true,
-            warmup_builtin_ic: true,
         }
     }
 
