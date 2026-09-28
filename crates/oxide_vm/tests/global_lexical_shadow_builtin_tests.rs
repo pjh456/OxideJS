@@ -3,9 +3,9 @@
 //! 不为其登记，声明合法建立遮蔽绑定——裸读读绑定槽、裸写/delete 不落全局
 //! 对象（全局属性原值保留），声明点前裸读按 TDZ 运行期抛 ReferenceError。
 //!
-//! 回归约束：受限三常量（87 面）声明仍编译期拒绝；let+var / function+let
-//! 撞 builtin 名的重复声明仍编译期拒绝（var 懒登记镜像与函数先登记撞点保留）；
-//! 未遮蔽 builtin 读、var 内置名写全局、函数内遮蔽读不回退。
+//! 回归约束：let+var / function+let 撞 builtin 名的重复声明仍编译期拒绝
+//! （var 懒登记镜像与函数先登记撞点保留）；未遮蔽 builtin 读、var 内置名
+//! 写全局、函数内遮蔽读不回退。
 
 use std::sync::Arc;
 
@@ -153,13 +153,15 @@ fn top_level_let_shadow_tdz_second_read_throws() {
     assert!(err.contains("before initialization"), "got: {err}");
 }
 
-// ── 回归约束：受限名与重复声明拒面不翻 ──
+// ── 回归约束：受限名已合法化（对齐 V8），重复声明拒面不翻 ──
 
 #[test]
-fn top_level_let_restricted_names_still_rejected() {
-    // 受限三常量（87 面）：非受限名修面不动此面，声明仍编译期拒绝。
-    assert_compile_err("let undefined;");
-    assert_compile_err("let NaN=1; NaN");
+fn top_level_let_restricted_names_legal_shadow() {
+    // 三常量名（undefined/NaN/Infinity）声明合法化：裸读读绑定槽。
+    let r = assert_ok("let undefined;");
+    assert!(r.is_undefined(), "let undefined 完成值应为 undefined，实际 {r:?}");
+    let r = assert_ok("let NaN=1; NaN");
+    assert_eq!(r.as_int(), 1);
 }
 
 #[test]

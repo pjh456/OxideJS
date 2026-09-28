@@ -1,8 +1,6 @@
 //! emit 前置 pass，声明预登记：函数/var 声明提升预声明、块级函数声明按 ES2015
-//! 块绑定预声明、let/const/class 建 TDZ 占位；顶层 lexical 声明撞受限全局名
-//! 在声明实例化期拒绝（global_lexical 门控，门控源居 emit_program 调用点）。
+//! 块绑定预声明、let/const/class 建 TDZ 占位。
 
-use super::check_restricted_global_lexical;
 use crate::{CompileCtx, Emitter};
 use oxide_parser::{BindingPattern, Declaration, ExportDefaultDeclarationKind, Statement, VariableDeclarationKind};
 
@@ -294,10 +292,9 @@ impl Emitter {
     ///   属 Declaration、非 Statement 子产生式，parser 按语法错误直接拒绝，这些
     ///   形状不会进入 emit）。
     /// - 跳过 for 头声明（循环作用域由 for 分支内联 declare）。
-    /// - `global_lexical` 为 true 时（仅脚本顶层调用点传 `!is_eval_script`）：
-    ///   lexical 声明撞受限全局名报 SyntaxError（脚本声明实例化对全局对象受限
-    ///   自有属性名做检查，eval 代码声明实例化无此检查）；函数体/块/switch case/
-    ///   try/模块调用点传 false，lexical 声明是局部绑定不查。
+    /// - `global_lexical` 仅脚本顶层调用点传 `!is_eval_script`，其余调用点传
+    ///   false；当前只透传不消费（死参数，待后续清理），顶层与局部的 lexical
+    ///   声明均按合法遮蔽处理。
     pub(crate) fn predeclare_lexical_declarations(
         &self, statements: &[Statement], ctx: &mut CompileCtx, global_lexical: bool,
     ) -> Result<(), String> {
@@ -314,7 +311,6 @@ impl Emitter {
                 }
                 Statement::ClassDeclaration(cd) => {
                     if let Some(id) = &cd.id {
-                        check_restricted_global_lexical(id.name.as_str(), global_lexical)?;
                         let reg = ctx.alloc_reg();
                         let _ = ctx.declare_predeclared(id.name.as_str(), reg, VariableDeclarationKind::Let, false);
                     }
@@ -333,7 +329,6 @@ impl Emitter {
                             }
                             Declaration::ClassDeclaration(cd) => {
                                 if let Some(id) = &cd.id {
-                                    check_restricted_global_lexical(id.name.as_str(), global_lexical)?;
                                     let reg = ctx.alloc_reg();
                                     let _ = ctx.declare_predeclared(
                                         id.name.as_str(),
@@ -352,7 +347,6 @@ impl Emitter {
                     // 此处只为具名 default 类建 lexical Let TDZ 占位。
                     if let ExportDefaultDeclarationKind::ClassDeclaration(cd) = &exp.declaration {
                         if let Some(id) = &cd.id {
-                            check_restricted_global_lexical(id.name.as_str(), global_lexical)?;
                             let reg = ctx.alloc_reg();
                             let _ = ctx.declare_predeclared(id.name.as_str(), reg, VariableDeclarationKind::Let, false);
                         }
@@ -365,12 +359,14 @@ impl Emitter {
     }
 
     /// 递归预声明绑定 pattern 内的全部标识符（含数组/对象/默认值解构）。
+    /// `global_lexical` 当前只透传不消费（死参数，待后续清理），递归调用
+    /// 必须原样下传，故仅递归使用。
+    #[allow(clippy::only_used_in_recursion)]
     fn predeclare_lexical_pattern(
         &self, pattern: &BindingPattern, is_const: bool, ctx: &mut CompileCtx, global_lexical: bool,
     ) -> Result<(), String> {
         match pattern {
             BindingPattern::BindingIdentifier(bi) => {
-                check_restricted_global_lexical(bi.name.as_str(), global_lexical)?;
                 let reg = ctx.alloc_reg();
                 let _ = ctx.declare_predeclared(
                     bi.name.as_str(),

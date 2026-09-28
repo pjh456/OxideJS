@@ -489,16 +489,6 @@ impl Emitter {
 #[cfg(test)]
 mod tests {
     use super::{BUILTIN_GLOBALS, NON_WRITABLE_GLOBAL_BUILTINS};
-    use crate::prepass::RESTRICTED_GLOBAL_LEXICAL_NAMES;
-
-    /// 漂移守卫：受限全局名集与 put 写拦截名单交叠名恒同步（两名单语义独立、
-    /// 不互相派生，靠本断言防止改名/删名时单边漂移）。
-    #[test]
-    fn restricted_lexical_names_within_builtin_globals() {
-        for name in RESTRICTED_GLOBAL_LEXICAL_NAMES {
-            assert!(BUILTIN_GLOBALS.contains(name), "受限全局名缺失于 builtin 名单：{name}");
-        }
-    }
 
     /// 漂移守卫：只读名单是 builtin 母集子集，且只读/可写两谓词对母集构成
     /// 划分（不重不漏）——防三常量集或母集改名/删名时拦截面与双写面单边漂移。

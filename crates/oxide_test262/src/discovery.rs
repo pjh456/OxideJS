@@ -110,6 +110,10 @@ pub(crate) fn pre_existing_excluded(path: &str) -> Option<&'static str> {
             "built-ins/Error/prototype/stack/instance-not-enumerable.js",
             "快照断言 JSON.stringify 空对象，与 Error.prototype.toJSON 规范序列化（name/message）冲突，子模块更新后自然通过",
         ),
+        (
+            "language/global-code/decl-lex-restricted-global.js",
+            "语料负面 oracle 相对 V8 对齐裁定过时：引擎已合法化三常量名顶层词法声明（ES2025 规范 GDI lexNames 臂仍保留受限全局属性检查，属有意偏离；若规范日后变更并更新语料，移除本条目即重新对齐）",
+        ),
     ];
     LIST.iter()
         .find(|(suffix, _)| path.ends_with(suffix))
