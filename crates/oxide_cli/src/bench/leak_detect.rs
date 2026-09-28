@@ -744,14 +744,15 @@ pub fn run_mem_kernel_lifetime() -> ExitCode {
 /// 进程级启动五段分解度量：专用 kernel（`KernelConfig::minimal()`，同
 /// `kernel_lifetime` 口径，不污染 bench 共享 kernel），每轮重建 kernel 与池
 /// 模拟新进程，连测五段——① `KernelCore::new`（kernel 初始化）②
-/// `VmPool::new`（池构造）③ 首次 `pool.spawn()`（首个 Vm 构造）④ 固定微源
+/// `VmPool::new`（池构造，含同步预热 min_size 个 Vm）③ 首次 `pool.spawn()`
+///（首次 spawn，命中预热池近零成本）④ 固定微源
 /// `oxide_parser::parse` 加 `Compiler::new().compile`（parse 加 compile）⑤
 /// 首次 `vm.run`（执行），打印各段毫秒加合计，三轮取中位。
 ///
 /// # 边界与前提
 /// - 启动是单次事件非序列，不进 `report_series` 泄漏判据；
-/// - “首个 Vm 构造”段可与 `builtin_world_build` 用例的每 Vm 构造成本锚对照
-///   （同 debug 口径）；偏差大先查 harness 污染再疑用例。
+/// - 池构造段含 min_size 个 Vm 的预热成本，可与 `builtin_world_build` 用例
+///   的每 Vm 构造成本锚对照（同 debug 口径）；偏差大先查 harness 污染再疑用例。
 ///
 /// # 副作用
 /// - 不改引擎执行路径；每轮 kernel 与池在轮末 drop，无跨轮状态。
@@ -767,11 +768,11 @@ pub fn run_mem_startup_breakdown() -> ExitCode {
         let kernel = KernelCore::new(config.clone());
         let t1 = Instant::now();
 
-        // 池构造：空池，min_size 参数当前仅作预留不预热。
+        // 池构造：同步预热 min_size 个 Vm，预热成本计入本段。
         let pool = VmPool::new(Arc::clone(&kernel), config.min_pool_size, config.max_pool_size);
         let t2 = Instant::now();
 
-        // 首个 Vm 构造：池空，spawn 走 grow 分支全量构造。
+        // 首次 spawn：命中预热池，近零成本。
         let mut guard = pool.spawn();
         let t3 = Instant::now();
 

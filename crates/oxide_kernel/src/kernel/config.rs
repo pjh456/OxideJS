@@ -44,10 +44,10 @@ impl KernelConfig {
         }
     }
 
-    /// 标准配置：默认 VM 池大小。
+    /// 标准配置：默认 VM 池大小，池构造时同步预热 min_pool_size 个 Vm。
     pub fn standard() -> Self {
         Self {
-            min_pool_size: 8,
+            min_pool_size: 1,
             max_pool_size: Some(32),
             perm_interner_max_entries: None,
             max_steps: None,
