@@ -5,7 +5,8 @@
 //! 选色。fresh 染色失败 = 单点活度 ≥ k = 无可行染色 → Err（RangeError 路径，消息与
 //! lower 逐字一致）。
 //!
-//! 确定性：BTreeMap/BTreeSet + Vec 排序，禁 HashMap。
+//! 确定性：BTreeMap/BTreeSet + Vec 排序，禁 HashMap；Kemp 两集合的弹出顺序取
+//! BTreeSet 首元素即现判定（light 最小 vreg、heavy 最小 (degree, vreg)），禁动态度数递减。
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -98,38 +99,32 @@ fn use_points(f: &IRFunction, v: u32) -> Vec<usize> {
 /// Kemp 简化 + 贪心选色。返回 (vreg → 色, 无色的节点 = spill 候选)。
 fn kemp_and_select(graph: &InterferenceGraph) -> (BTreeMap<u32, u32>, Vec<u32>) {
     let k = graph.k;
-    // 工作集 = 未入栈的非预着色节点
-    let mut worklist: BTreeSet<u32> = graph
-        .nodes
-        .iter()
-        .filter(|(_, n)| n.pre_color.is_none())
-        .map(|(v, _)| *v)
-        .collect();
+    // 两集合替代单工作列表，弹出顺序是现判定的直译：light 以 vreg 为键，首元素即
+    // light 节点中最小 vreg（现 `find(degree < k)` 的命中）；heavy 以 (degree, vreg)
+    // 为键，首元素即最小 (degree, vreg)（现卡住分支的 min）。degree 取全图邻接长度，
+    // 循环中不递减；初始化分流与弹出移除必须同步，同一节点只进一个集合。
+    let mut light: BTreeSet<u32> = BTreeSet::new();
+    let mut heavy: BTreeSet<(u32, u32)> = BTreeSet::new();
+    for (v, n) in &graph.nodes {
+        if n.pre_color.is_none() {
+            if n.adj.len() < k {
+                light.insert(*v);
+            } else {
+                heavy.insert((n.adj.len() as u32, *v));
+            }
+        }
+    }
     let mut stack: Vec<u32> = Vec::new();
     let mut failed: Vec<u32> = Vec::new();
 
     loop {
-        // 找 degree < k 的非预着色节点入栈
-        let found = worklist.iter().copied().find(|v| graph.nodes[v].adj.len() < k);
-        match found {
-            Some(v) => {
-                stack.push(v);
-                worklist.remove(&v);
-            }
-            None => {
-                if worklist.is_empty() {
-                    break;
-                }
-                // 卡住：选 spill 候选（degree 最小 / vreg 号最小，确定性）
-                let cand = worklist
-                    .iter()
-                    .map(|v| (graph.nodes[v].adj.len(), *v))
-                    .min()
-                    .map(|(_, v)| v)
-                    .unwrap();
-                failed.push(cand);
-                worklist.remove(&cand);
-            }
+        if let Some(v) = light.pop_first() {
+            stack.push(v);
+        } else if let Some((_, v)) = heavy.pop_first() {
+            // 卡住：light 已空，取最小 (degree, vreg) 作 spill 候选
+            failed.push(v);
+        } else {
+            break;
         }
     }
 

@@ -154,3 +154,57 @@ fn uncolorable_returns_error() {
     assert!(result.is_err(), "单点活度 ≥ k 应报 Err");
     assert!(result.unwrap_err().contains("too many registers"), "Err 消息应含 too many registers");
 }
+
+#[test]
+fn pop_order_is_lowest_vreg_among_light_nodes() {
+    // 混合图：vreg 5 的 degree 为 2（邻 1/7）、vreg 7 的 degree 为 1（邻 5）、vreg 1 的 degree 为 1
+    // （邻 5），最小 vreg 的 degree 不是全图最小。弹出顺序是"light 节点中最小 vreg"（1, 5, 7 依次），
+    // 不是"最小 degree 优先"（后者会先弹 8/9）。两种顺序染色结果不同：现实现 5→2、7→1；
+    // 若按最小 degree 优先弹，则 5→1、7→2。断言值由现实现跑出后固化，钉死弹出顺序语义。
+    let m = color_of(
+        vec![
+            Inst::load_const(Operand::Reg(1), 0),
+            Inst::load_const(Operand::Reg(5), 0),
+            Inst::new(OpCode::ADD, Operand::Reg(8), Operand::Reg(1), Operand::Reg(5)),
+            Inst::load_const(Operand::Reg(7), 0),
+            Inst::new(OpCode::ADD, Operand::Reg(9), Operand::Reg(5), Operand::Reg(7)),
+            Inst::new(OpCode::RETURN, Operand::Reg(9), Operand::None, Operand::None),
+        ],
+        ParamLayout { base: 0, count: 0 },
+        Vec::new(),
+    )
+    .unwrap();
+    assert_eq!(m.map[&5], Alloc::Phys(2), "5 先弹、后染色，7 先占 1 号色");
+    assert_eq!(m.map[&7], Alloc::Phys(1), "7 后弹、先染色，取最低可用色 1");
+    assert_eq!(m.map[&1], Alloc::Phys(1), "1 最后染色，邻 5 已占 2 号色");
+}
+
+#[test]
+fn stuck_spill_order_is_degree_then_vreg() {
+    // 250 个未使用参数预着色 1..250（k=3）+ 六个非预着色节点全部 degree ≥ 3：
+    // 300/301/302/303 同时 live（K4），304 与 300/301/302 同时 live，305 是 303 的
+    // kill 结果（def 规则向 live_after 的 300/301/302 补边）。degree 为
+    // 304:3、305:3、303:4、300:5、301:5、302:5。全部卡住，spill 候选序按
+    // (degree, vreg) 升序：304、305、303、300、301、302（不是 vreg 号序 300..305）。
+    // slot 号记录第一轮 failed 顺序，断言其钉死卡住路径的取最小 (degree, vreg) 语义。
+    let insts = vec![
+        Inst::load_const(Operand::Reg(300), 0),
+        Inst::load_const(Operand::Reg(301), 0),
+        Inst::load_const(Operand::Reg(302), 0),
+        Inst::load_const(Operand::Reg(303), 0),
+        Inst::new(OpCode::ADD, Operand::Reg(305), Operand::Reg(303), Operand::Reg(1)),
+        Inst::load_const(Operand::Reg(304), 0),
+        Inst::new(OpCode::ADD, Operand::Reg(306), Operand::Reg(300), Operand::Reg(304)),
+        Inst::new(OpCode::ADD, Operand::Reg(307), Operand::Reg(301), Operand::Reg(302)),
+        Inst::new(OpCode::RETURN, Operand::Reg(307), Operand::None, Operand::None),
+    ];
+    let m = color_of(insts, ParamLayout { base: 1, count: 250 }, Vec::new()).unwrap();
+    assert_eq!(m.spills.len(), 6, "六个非预着色节点应全部 spill");
+    let slot = |v: u32| m.spills.iter().find(|s| s.vreg == v).map(|s| s.slot);
+    assert_eq!(slot(304), Some(0), "最小 (degree, vreg) 是 304，最先 spill");
+    assert_eq!(slot(305), Some(1));
+    assert_eq!(slot(303), Some(2));
+    assert_eq!(slot(300), Some(3));
+    assert_eq!(slot(301), Some(4));
+    assert_eq!(slot(302), Some(5));
+}
