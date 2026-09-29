@@ -253,13 +253,8 @@ impl Vm {
     pub(crate) fn dispatch_new_session_object(&mut self, rd: usize) -> Result<(), String> {
         vm_trace!("NEW_SESSION_OBJECT rd={}", rd);
         let proto_ptr = &*self.object_prototype as *const JsObject as *mut JsObject;
-        let mut obj = JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(proto_ptr));
-        obj.set_session_epoch(true);
-        let obj_ptr = self.gc_state.session_epoch.alloc(obj) as *mut JsObject;
-        self.gc_state.session_object_ptrs.push(obj_ptr);
-        // 直 session 分配计入堆账目（与 promote 同式：对象头 + 对象堆数据）。
-        self.gc_state.session_bytes_allocated += std::mem::size_of::<JsObject>()
-            + crate::session_gc::SessionGc::object_heap_data_bytes(unsafe { &*obj_ptr }) as usize;
+        let obj = JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(proto_ptr));
+        let obj_ptr = self.alloc_session_object(obj);
         self.regs[rd] = JsValue::object(obj_ptr as *mut u8);
         Ok(())
     }

@@ -1207,17 +1207,9 @@ impl Vm {
         // 免 promote 搬移——若按 epoch 分配，首次写入 session 根会把对象搬到新
         // 地址，缓存中的旧指针与新实例分叉，同一 site 两次取值将返回不同对象。
         let mut alloc_session_array = |n: usize| {
-            let mut clone =
+            let clone =
                 JsObject::new_array(oxide_kernel::shape_forge::EMPTY_SHAPE_ID, proto_val, n, self.epoch.bump());
-            // 标记 session 归属：session_epoch 分配的对象须显式置位，GC/释放路径
-            // 据 SESSION_EPOCH_BIT 判定归属（与 promote_object 的 clone 路径一致）。
-            clone.set_session_epoch(true);
-            let ptr = self.gc_state.session_epoch.alloc(clone) as *mut JsObject;
-            self.gc_state.session_object_ptrs.push(ptr);
-            // 直 session 分配计入堆账目（与 promote 同式：对象头 + 对象堆数据）。
-            self.gc_state.session_bytes_allocated += std::mem::size_of::<JsObject>()
-                + crate::session_gc::SessionGc::object_heap_data_bytes(unsafe { &*ptr }) as usize;
-            ptr
+            self.alloc_session_object(clone)
         };
         let cooked = alloc_session_array(n);
         let raw = alloc_session_array(n);

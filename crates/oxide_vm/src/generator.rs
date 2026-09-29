@@ -103,7 +103,7 @@ impl Vm {
         &mut self, callee: JsValue, this_value: JsValue, args: &[JsValue],
     ) -> Result<JsValue, String> {
         let gen_proto_val = JsValue::from_js_object(self.generator_proto.as_ptr() as *mut JsObject);
-        let obj = self.epoch.alloc(JsObject::new_empty(EMPTY_SHAPE_ID, gen_proto_val));
+        let obj = self.alloc_object(JsObject::new_empty(EMPTY_SHAPE_ID, gen_proto_val));
         let obj_ref = unsafe { &mut *obj };
         obj_ref.type_tag = JsObject::OBJ_TYPE_GENERATOR;
         let state = Box::new(GeneratorState {
@@ -115,7 +115,6 @@ impl Vm {
             suspended: crate::suspended::SuspendedFrame::new_empty(),
         });
         obj_ref.set_native_data(Box::into_raw(state) as *mut u8);
-        self.gc_state.track_epoch_object(obj);
         let gen_val = JsValue::from_js_object(obj);
         // 调用时参数初始化（含默认值/解构/arguments 创建）：副作用与异常在 `g()` 时刻生效。
         self.initialize_generator(gen_val)?;

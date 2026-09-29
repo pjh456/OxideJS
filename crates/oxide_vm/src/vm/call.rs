@@ -13,6 +13,14 @@ use super::{native_fn_ptr_to_fn, Vm};
 use crate::native::NativeFn;
 use crate::{vm_debug, vm_trace};
 
+/// 对象分配统一入口的后端：epoch arena（短命对象，晋升进 session）与
+/// session arena（长命对象，session GC mark/sweep 回收）二选一。
+#[derive(Clone, Copy)]
+enum AllocBackend {
+    Epoch,
+    Session,
+}
+
 impl Vm {
     fn pack_sync_native_call_args(
         &mut self, receiver: JsValue, callee: JsValue, args: &[JsValue],
@@ -40,11 +48,44 @@ impl Vm {
         unsafe { (*obj_ptr).is_session_epoch() }
     }
 
+    /// 按指定后端分配对象并登记追踪表与堆账目，返回裸指针。
+    ///
+    /// # 步骤
+    /// 1. Epoch 后端：epoch arena 分配并登记 `epoch_object_ptrs`。
+    /// 2. Session 后端：先置 session 归属位再分配，登记 `session_object_ptrs`，
+    ///    计入堆账目（与晋升同式：对象头 + 对象堆数据，读分配后的 arena 对象）。
+    ///
+    /// # 注意事项
+    /// Session 后端先置位后分配，置位与登记顺序在两个后端内固定；
+    /// 换后端只改本函数内的分配原语，调用点不动。
+    fn alloc_with_backend(&mut self, mut obj: JsObject, backend: AllocBackend) -> *mut JsObject {
+        match backend {
+            AllocBackend::Epoch => {
+                let ptr = self.epoch.alloc(obj);
+                self.gc_state.track_epoch_object(ptr);
+                ptr
+            }
+            AllocBackend::Session => {
+                obj.set_session_epoch(true);
+                let ptr = self.gc_state.session_epoch.alloc(obj) as *mut JsObject;
+                self.gc_state.session_object_ptrs.push(ptr);
+                // 直 session 分配计入堆账目（与 promote 同式：对象头 + 对象堆数据）。
+                self.gc_state.session_bytes_allocated += std::mem::size_of::<JsObject>()
+                    + crate::session_gc::SessionGc::object_heap_data_bytes(unsafe { &*ptr }) as usize;
+                ptr
+            }
+        }
+    }
+
     /// 在当前 epoch arena 分配对象并登记 GC 追踪表，返回裸指针。
     pub(crate) fn alloc_object(&mut self, obj: JsObject) -> *mut JsObject {
-        let ptr = self.epoch.alloc(obj);
-        self.gc_state.track_epoch_object(ptr);
-        ptr
+        self.alloc_with_backend(obj, AllocBackend::Epoch)
+    }
+
+    /// 在当前 session arena 分配对象：置 session 归属位、登记 session 对象表
+    /// 并计入堆账目，返回裸指针。
+    pub(crate) fn alloc_session_object(&mut self, obj: JsObject) -> *mut JsObject {
+        self.alloc_with_backend(obj, AllocBackend::Session)
     }
 
     /// native / 字节码函数的统一同步调用入口，返回结果或错误文本。
