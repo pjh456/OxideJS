@@ -139,10 +139,7 @@ fn alloc_strategy_microbench() -> MicroResult {
 /// 压力基准同一 harness），返回当前中位墙毫秒与基线墙毫秒（基线缺失时
 /// 为 None）。
 fn run_wall_case(
-    case: &str,
-    config: &BenchConfig,
-    kernel: &Arc<KernelCore>,
-    pool: &Arc<VmPool>,
+    case: &str, config: &BenchConfig, kernel: &Arc<KernelCore>, pool: &Arc<VmPool>,
 ) -> Result<(f64, Option<f64>), String> {
     let path = format!("tests/stress/{case}.js");
     let js = std::fs::read_to_string(&path).map_err(|e| format!("读取 {path} 失败: {e}"))?;

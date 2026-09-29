@@ -87,11 +87,7 @@ fn boxed_number_out_of_range_index_absent() {
 fn boxed_number_arraylike_push_writes_index_keeps_payload() {
     // push 经 .call 在 Number 盒上落槽 0 并置 length，读回写入值，被包基元保持。
     let mut vm = Vm::new();
-    let r = eval(
-        &mut vm,
-        "var o = Object(5); Array.prototype.push.call(o, 9); [o[0], Number(o), o.length]",
-    )
-    .unwrap();
+    let r = eval(&mut vm, "var o = Object(5); Array.prototype.push.call(o, 9); [o[0], Number(o), o.length]").unwrap();
     assert_eq!(elem(r, 0).as_int(), 9, "o[0] 应读回 push 写入值 9");
     assert_eq!(elem(r, 1).as_int(), 5, "Number(o) 应保持被包值 5");
     assert_eq!(elem(r, 2).as_int(), 1, "o.length 应为 1");
