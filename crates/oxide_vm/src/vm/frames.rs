@@ -87,11 +87,13 @@ pub struct CallFrame {
 
 /// 一次 `for-in` 迭代的游标：已收集的 key 列表与当前下标。
 ///
+/// 体是堆上 `Box`：迭代器表与挂起状态盒各独占持有体，出表/状态盒释放时
+/// 逐条释放。
 /// 每个 key 与它的 intern id 配对保存，使整型下标 key 无需重新 intern 即可排到字符串 key 之前。
-pub struct ForInIter<'bump> {
+pub struct ForInIter {
     /// 每个 key 与其字符串 intern id 配对，使 for-in 排序时整型下标 key 无需
     /// 重新 intern 即可排到字符串 key 之前。
-    pub keys: bumpalo::collections::Vec<'bump, (JsValue, u32)>,
+    pub keys: Vec<(JsValue, u32)>,
     pub index: usize,
 }
 

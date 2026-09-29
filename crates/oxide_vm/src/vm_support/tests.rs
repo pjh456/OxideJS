@@ -847,9 +847,10 @@ fn reset_clears_runtime_state_like_rerun() {
         upvalues: std::ptr::slice_from_raw_parts(std::ptr::null(), 0),
     });
     vm.save_stack.push(JsValue::undefined());
-    vm.iters
-        .for_in_iters
-        .push(std::ptr::dangling_mut::<crate::vm::ForInIter<'static>>());
+    vm.iters.for_in_iters.push(Box::into_raw(Box::new(crate::vm::ForInIter {
+        keys: Vec::new(),
+        index: 0,
+    })));
     vm.iters.for_of_iters.push(crate::vm_state::ForOfEntry {
         iterator: JsValue::undefined(),
         last_result: JsValue::undefined(),

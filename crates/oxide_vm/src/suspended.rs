@@ -30,7 +30,7 @@ pub(crate) struct SuspendedFrame {
     pub save_stack: Vec<JsValue>,
     pub cell_stack: Vec<Vec<*mut Cell>>,
     pub try_stack: Vec<TryHandler>,
-    pub for_in_iters: Vec<*mut ForInIter<'static>>,
+    pub for_in_iters: Vec<*mut ForInIter>,
     pub for_of_iters: Vec<ForOfEntry>,
     /// `yield*` 委托中的内层迭代器；异步函数恒为 None。
     pub delegated_iterator: Option<JsValue>,
@@ -235,7 +235,7 @@ impl SuspendedFrame {
             if iter.is_null() {
                 continue;
             }
-            // SAFETY: for_in_iters 存放由当前 VM epoch 拥有的存活迭代器指针。
+            // SAFETY: for_in_iters 存放堆上迭代器体，状态盒独占持有。
             for (v, _si) in unsafe { (*(*iter)).keys.iter() } {
                 f(*v);
             }
@@ -316,7 +316,7 @@ impl SuspendedFrame {
             if iter.is_null() {
                 continue;
             }
-            // SAFETY: for_in_iters 存放由当前 VM epoch 拥有的存活迭代器指针。
+            // SAFETY: for_in_iters 存放堆上迭代器体，状态盒独占持有。
             for (v, _si) in unsafe { (*(*iter)).keys.iter_mut() } {
                 *v = rewrite(*v);
             }
@@ -362,7 +362,18 @@ impl SuspendedFrame {
             save_stack: self.save_stack.iter().copied().map(&mut rewrite).collect(),
             cell_stack: self.cell_stack.clone(),
             try_stack: self.try_stack.clone(),
-            for_in_iters: self.for_in_iters.clone(),
+            for_in_iters: self.for_in_iters.iter().map(|&iter| {
+                if iter.is_null() {
+                    return iter;
+                }
+                // SAFETY: 指针是堆上迭代器体，原件状态盒独占持有；克隆新建
+                // 独立体，原件与克隆各持自有体，恰好各释放一次。
+                let body = unsafe { &*iter };
+                Box::into_raw(Box::new(ForInIter {
+                    keys: body.keys.iter().map(|(v, si)| (rewrite(*v), *si)).collect(),
+                    index: body.index,
+                }))
+            }).collect(),
             for_of_iters: self
                 .for_of_iters
                 .iter()
@@ -422,6 +433,23 @@ impl SuspendedFrame {
             + self.spill_stack.capacity() as u64 * std::mem::size_of::<JsValue>() as u64
             + self.save_stack.capacity() as u64 * std::mem::size_of::<JsValue>() as u64
             + self.for_of_iters.capacity() as u64 * std::mem::size_of::<ForOfEntry>() as u64
+    }
+}
+
+impl Drop for SuspendedFrame {
+    /// 释放状态盒持有的 for-in 迭代器体：体是堆上 `Box`，每个状态盒独占
+    /// 持有自身体，随状态盒释放逐条释放（null 跳过）。restore 已把向量
+    /// 移出时字段为空，Drop 不再触碰，无双放。
+    fn drop(&mut self) {
+        for iter in self.for_in_iters.drain(..) {
+            if iter.is_null() {
+                continue;
+            }
+            // SAFETY: 指针是堆上迭代器体，状态盒独占持有，释放恰好一次。
+            unsafe {
+                drop(Box::from_raw(iter));
+            }
+        }
     }
 }
 

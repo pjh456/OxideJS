@@ -96,7 +96,7 @@ impl Vm {
             if iter.is_null() {
                 continue;
             }
-            // SAFETY: for_in_iters 存放由当前 VM epoch 拥有的存活迭代器指针。
+            // SAFETY: for_in_iters 存放堆上迭代器体，VM 表独占持有。
             unsafe {
                 for (v, _si) in (*(*iter)).keys.iter() {
                     f(*v);
@@ -200,7 +200,7 @@ impl Vm {
             if iter.is_null() {
                 continue;
             }
-            // SAFETY: for_in_iters 存放由当前 VM epoch 拥有的存活迭代器指针。
+            // SAFETY: for_in_iters 存放堆上迭代器体，VM 表独占持有。
             unsafe {
                 for (v, _si) in (*(*iter)).keys.iter_mut() {
                     *v = rewrite(*v);
@@ -242,13 +242,13 @@ impl Vm {
     /// 门控子句二：三型状态盒（生成器/异步函数/异步生成器）的
     /// `suspended.for_in_iters` 是否非空。
     ///
-    /// ForInIter body 分配于 epoch arena，收集换新 Bump 即时失效在表迭代器；
+    /// 门控是保守门：for-in 迭代器活跃/挂起期间拦下执行期收集；
     /// 挂起帧把迭代器搬入状态盒（`vm.iters` 不可见），故须逐状态盒扫描。
     ///
     /// # 边界与前提
     /// - 扫描 epoch + session 两份对象表——挂起状态盒宿主对象可能尚未晋升；
-    /// - 挂起帧的 keys 经状态盒边收为 GC 根（被枚举对象不误释放），悬的是
-    ///   迭代器 body，故按指针扫 `for_in_iters`；
+    /// - 挂起帧的 keys 经状态盒边收为 GC 根（被枚举对象不误释放），迭代器
+    ///   体是堆上 Box，故按指针扫 `for_in_iters`；
     /// - 保守口径：死对象的状态盒同样计入（持挂起 for-in 的 run 放弃执行期
     ///   收集），正确性优先于收益；
     /// - 新增挂起态持有者须在此登记。

@@ -1040,8 +1040,8 @@ impl SessionGc {
     ///   identity 不分裂。
     ///
     /// # 边界与前提
-    /// - 调用方已完成门控（无活跃/挂起 for-in）：ForInIter body 分配于 epoch
-    ///   arena，换新 Bump 即时失效在表迭代器；
+    /// - 调用方已完成门控（无活跃/挂起 for-in）：门控是保守门，迭代器体
+    ///   是堆上 Box，收集不搬移迭代器体；
     /// - 调用点为 dispatch 安全点（`native_call_depth == 0`），无在途 builtin
     ///   局部裸指针、dispatch 未重入。
     ///

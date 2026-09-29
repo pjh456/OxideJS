@@ -1730,18 +1730,18 @@ fn in_run_collection_reclaims_dead_and_keeps_live() {
 
 /// for-in 门控双形钉住：活跃形（迭代器在 `vm.iters` 表内）与挂起形
 /// （生成器在 for-in 内 yield，迭代器搬入状态盒）都须拦下执行期收集——
-/// 换新 Bump 使 ForInIter body 即时失效；门控开后方可收集。
+/// 门控是保守门，迭代器体为堆上 Box；门控开后方可收集。
 #[test]
 fn active_and_suspended_for_in_block_in_run_collection() {
     // 活跃形：迭代器直接压在 vm.iters，O(1) 子句即拦。
     let mut vm = vm_with_threshold(65536);
     let dead = plain_object(&mut vm);
     vm.gc_state.epoch_object_ptrs.push(dead);
-    let iter = vm.epoch.alloc(crate::vm::ForInIter {
-        keys: bumpalo::collections::Vec::new_in(vm.epoch.bump()),
+    let iter = Box::into_raw(Box::new(crate::vm::ForInIter {
+        keys: Vec::new(),
         index: 0,
-    });
-    vm.iters.push_for_in(iter.cast::<crate::vm::ForInIter<'static>>());
+    }));
+    vm.iters.push_for_in(iter);
     let bump_before = vm.epoch.current_id();
 
     vm.maybe_collect_in_run();
@@ -1750,7 +1750,7 @@ fn active_and_suspended_for_in_block_in_run_collection() {
     assert!(vm.gc_state.epoch_object_ptrs.contains(&dead), "死对象仍在 epoch 表");
 
     // 迭代器出表后同一调用点即应收集。
-    vm.iters.for_in_iters.pop();
+    vm.iters.pop_for_in();
     vm.maybe_collect_in_run();
     assert_eq!(vm.session_gc_stats().total_collections, 1, "门控开：应收集");
     assert!(vm.epoch.current_id() > bump_before, "收集应换新 epoch Bump");

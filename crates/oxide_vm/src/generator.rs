@@ -965,7 +965,7 @@ fn generator_state_mut(obj: &JsObject) -> Option<&mut GeneratorState> {
 }
 
 /// 生成器挂起帧是否持有 for-in 迭代器：执行期收集门控按指针扫描
-/// （ForInIter body 分配于 epoch arena，换新 Bump 即时失效在表迭代器）。
+/// （迭代器体是堆上 Box，门控是保守门）。
 pub(crate) fn generator_holds_suspended_for_in(obj: &JsObject) -> bool {
     let Some(state) = generator_state_mut(obj) else {
         return false;

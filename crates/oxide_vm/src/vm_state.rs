@@ -175,25 +175,41 @@ pub(crate) struct ForOfEntry {
 
 /// for-in / for-of 的活跃迭代器状态。
 pub(crate) struct IterState {
-    pub(crate) for_in_iters: Vec<*mut ForInIter<'static>>,
+    pub(crate) for_in_iters: Vec<*mut ForInIter>,
     pub(crate) for_of_iters: Vec<ForOfEntry>,
 }
 
 impl IterState {
     pub(crate) fn reset(&mut self) {
-        self.for_in_iters.clear();
+        for iter in self.for_in_iters.drain(..) {
+            if iter.is_null() {
+                continue;
+            }
+            // SAFETY: 指针是堆上迭代器体，表独占持有，清表释放恰好一次。
+            unsafe {
+                drop(Box::from_raw(iter));
+            }
+        }
         self.for_of_iters.clear();
     }
 
-    pub(crate) fn push_for_in(&mut self, iter: *mut ForInIter<'static>) {
+    pub(crate) fn push_for_in(&mut self, iter: *mut ForInIter) {
         self.for_in_iters.push(iter);
     }
 
     pub(crate) fn pop_for_in(&mut self) {
-        self.for_in_iters.pop();
+        if let Some(iter) = self.for_in_iters.pop() {
+            if iter.is_null() {
+                return;
+            }
+            // SAFETY: 指针是堆上迭代器体，表独占持有，出表释放恰好一次。
+            unsafe {
+                drop(Box::from_raw(iter));
+            }
+        }
     }
 
-    pub(crate) fn last_for_in(&self) -> *mut ForInIter<'static> {
+    pub(crate) fn last_for_in(&self) -> *mut ForInIter {
         self.for_in_iters.last().copied().unwrap_or(std::ptr::null_mut())
     }
 

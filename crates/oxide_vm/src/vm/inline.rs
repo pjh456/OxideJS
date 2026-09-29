@@ -32,7 +32,7 @@ pub(crate) struct InlineSyncState {
     pub(crate) pending_exception: Option<JsValue>,
     pub(crate) pending_error_kind: Option<&'static str>,
     pub(crate) pending_completion: Option<Completion>,
-    pub(crate) for_in_iters: Vec<*mut ForInIter<'static>>,
+    pub(crate) for_in_iters: Vec<*mut ForInIter>,
     pub(crate) for_of_iters: Vec<ForOfEntry>,
     pub(crate) saved_bytecode_stack: Vec<Arc<[opcode::Instr]>>,
     pub(crate) saved_immutables_stack: Vec<*const [JsValue]>,
@@ -61,4 +61,21 @@ pub(crate) struct InlineSyncState {
     pub(crate) accessor_frame_target_reg: Option<u8>,
     pub(crate) active_flat_id: u32,
     pub(crate) active_table_gen: u32,
+}
+
+impl Drop for InlineSyncState {
+    /// 释放快照持有的 for-in 迭代器体：体是堆上 `Box`，快照独占持有自身体，
+    /// drop 时逐条释放（null 跳过）。restore 是字段直移，移出后字段为空，
+    /// Drop 不再触碰，无双放。
+    fn drop(&mut self) {
+        for iter in self.for_in_iters.drain(..) {
+            if iter.is_null() {
+                continue;
+            }
+            // SAFETY: 指针是堆上迭代器体，快照独占持有，释放恰好一次。
+            unsafe {
+                drop(Box::from_raw(iter));
+            }
+        }
+    }
 }

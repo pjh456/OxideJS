@@ -146,7 +146,7 @@ macro_rules! inline_save_field {
 macro_rules! inline_restore_field {
     ($recv:ident, $saved:ident, regs, boxed_window) => {
         $recv.regs[..$saved.regs.len()].copy_from_slice(&$saved.regs);
-        $recv.inline_reg_pool = Some($saved.regs.into_vec());
+        $recv.inline_reg_pool = Some(std::mem::take(&mut $saved.regs).into_vec());
     };
     ($recv:ident, $saved:ident, saved_this, copy) => {
         $recv.regs[254] = $saved.saved_this
@@ -158,7 +158,7 @@ macro_rules! inline_restore_field {
         $recv.pc = $saved.pc
     };
     ($recv:ident, $saved:ident, bytecode, move_field) => {
-        $recv.bytecode = $saved.bytecode
+        $recv.bytecode = std::mem::take(&mut $saved.bytecode)
     };
     ($recv:ident, $saved:ident, active_immutables, copy) => {
         $recv.active_immutables = $saved.active_immutables
@@ -170,10 +170,10 @@ macro_rules! inline_restore_field {
         $recv.root_reg_limit = $saved.root_reg_limit
     };
     ($recv:ident, $saved:ident, try_stack, move_field) => {
-        $recv.try_stack = $saved.try_stack
+        $recv.try_stack = std::mem::take(&mut $saved.try_stack)
     };
     ($recv:ident, $saved:ident, frames, frames_values) => {
-        $recv.frames = $saved.frames
+        $recv.frames = std::mem::take(&mut $saved.frames)
     };
     ($recv:ident, $saved:ident, exception_value, opt_take) => {
         $recv.exception_value = $saved.exception_value
@@ -188,25 +188,25 @@ macro_rules! inline_restore_field {
         $recv.pending_completion = $saved.pending_completion
     };
     ($recv:ident, $saved:ident, for_in_iters, for_in_keys) => {
-        $recv.iters.for_in_iters = $saved.for_in_iters
+        $recv.iters.for_in_iters = std::mem::take(&mut $saved.for_in_iters)
     };
     ($recv:ident, $saved:ident, for_of_iters, iter_take) => {
-        $recv.iters.for_of_iters = $saved.for_of_iters
+        $recv.iters.for_of_iters = std::mem::take(&mut $saved.for_of_iters)
     };
     ($recv:ident, $saved:ident, saved_bytecode_stack, move_field) => {
-        $recv.saved_bytecode_stack = $saved.saved_bytecode_stack
+        $recv.saved_bytecode_stack = std::mem::take(&mut $saved.saved_bytecode_stack)
     };
     ($recv:ident, $saved:ident, saved_immutables_stack, move_field) => {
-        $recv.saved_immutables_stack = $saved.saved_immutables_stack
+        $recv.saved_immutables_stack = std::mem::take(&mut $saved.saved_immutables_stack)
     };
     ($recv:ident, $saved:ident, save_stack, move_field) => {
-        $recv.save_stack = $saved.save_stack
+        $recv.save_stack = std::mem::take(&mut $saved.save_stack)
     };
     ($recv:ident, $saved:ident, spill_stack, move_field) => {
-        $recv.spill_stack = $saved.spill_stack
+        $recv.spill_stack = std::mem::take(&mut $saved.spill_stack)
     };
     ($recv:ident, $saved:ident, cell_stack, move_field) => {
-        $recv.cell_stack = $saved.cell_stack
+        $recv.cell_stack = std::mem::take(&mut $saved.cell_stack)
     };
     ($recv:ident, $saved:ident, inline_callee, opt_copy) => {
         $recv.inline_callee = $saved.inline_callee
@@ -336,7 +336,7 @@ impl Vm {
 
     /// 把 [`save_inline_state`] 保存的状态恢复回 VM。窗口回拷 + `regs[254]/[255]`
     /// 单回，窗口外寄存器 callee 未触碰无需恢复。
-    pub(crate) fn restore_inline_state(&mut self, saved: Box<InlineSyncState>) {
+    pub(crate) fn restore_inline_state(&mut self, mut saved: Box<InlineSyncState>) {
         vm_trace!("restore_inline_state: pc={}", saved.pc);
         // 固化不变量：内联 state-swap 边界不携带在途异步逃出（与 save 侧同）。
         debug_assert!(self.pending_async_escape.is_none());
@@ -363,8 +363,7 @@ impl Vm {
         self.active_reg_limit = 1;
         self.root_reg_limit = 1;
         self.try_stack.clear();
-        self.iters.for_in_iters.clear();
-        self.iters.for_of_iters.clear();
+        self.iters.reset();
         self.spill_stack.clear();
         self.save_stack.clear();
         self.saved_bytecode_stack.clear();

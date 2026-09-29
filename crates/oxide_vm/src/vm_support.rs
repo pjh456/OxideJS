@@ -428,6 +428,9 @@ impl Vm {
     /// 重置，本函数只释放手工管理的 Box 指针（属性向量、各原生盒、串、BigInt、cell）。
     /// 原生盒在 GC 搬移/晋升时已深拷贝为单所有权，此处恰好释放一次。
     pub(crate) fn teardown_session_heap_data(&mut self) {
+        // 迭代器体是堆上 Box：收尾路径（full_reset 与 Drop 共用）逐条释放，
+        // 防 Vm 直接 drop 时表内残留体泄漏。
+        self.iters.reset();
         // upvalue 列表先于对象表清空释放：去重枚举依赖两份对象表尚存。
         self.free_session_upvalues();
         self.free_epoch_object_heap_data();

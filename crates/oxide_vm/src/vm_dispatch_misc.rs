@@ -464,10 +464,8 @@ impl Vm {
         let mut obj_val = self.regs[a];
         if obj_val.is_null() || obj_val.is_undefined() {
             // null/undefined 枚举不到任何键——是空 for-in，而非 TypeError。
-            let keys_vec: bumpalo::collections::Vec<(JsValue, u32)> =
-                bumpalo::collections::Vec::new_in(self.epoch.bump());
-            let iter = self.epoch.alloc(ForInIter { keys: keys_vec, index: 0 });
-            self.iters.push_for_in(iter.cast::<ForInIter<'static>>());
+            let iter = Box::into_raw(Box::new(ForInIter { keys: Vec::new(), index: 0 }));
+            self.iters.push_for_in(iter);
             return Ok(());
         }
         if !obj_val.is_object() {
@@ -595,12 +593,10 @@ impl Vm {
             }
         });
 
-        // std Vec 建完后迁入 bump 区，避免枚举循环期间对 self 的 &mut 借用
-        // 与 bump 借用冲突。
-        let keys_bump: bumpalo::collections::Vec<(JsValue, u32)> =
-            bumpalo::collections::Vec::from_iter_in(keys_vec, self.epoch.bump());
-        let iter = self.epoch.alloc(ForInIter { keys: keys_bump, index: 0 });
-        self.iters.push_for_in(iter.cast::<ForInIter<'static>>());
+        // std Vec 直接作为迭代器体；体是堆上 Box，生命周期随迭代器表与
+        // 挂起状态盒，出表/状态盒释放时逐条释放。
+        let iter = Box::into_raw(Box::new(ForInIter { keys: keys_vec, index: 0 }));
+        self.iters.push_for_in(iter);
         Ok(())
     }
 
