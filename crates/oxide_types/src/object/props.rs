@@ -454,8 +454,8 @@ impl JsObject {
                 // pos 槽随后覆盖写，hole 标记由 clear_hole_marker 清除。
                 if old < pos {
                     let meta = self.ensure_array_elements_meta();
-                    for idx in old..pos {
-                        meta[idx] = Some(PropMetaEntry::hole());
+                    for entry in meta.iter_mut().take(pos).skip(old) {
+                        *entry = Some(PropMetaEntry::hole());
                     }
                 }
             }
