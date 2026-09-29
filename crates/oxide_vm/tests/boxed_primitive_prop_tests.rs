@@ -1,6 +1,7 @@
 //! 装箱基元对象（Number/Boolean/Symbol/BigInt 盒）索引写读回钉：
 //! 构造期被包基元住专属载荷字段而非属性区，后续索引/命名属性写读与
-//! 被包值互不干扰，值与 node 实测一致。
+//! arraylike 方法（push/splice/fill 等）整数键写读均与被包值互不干扰，
+//! 值与 node 实测一致。
 
 use std::sync::Arc;
 
@@ -80,6 +81,61 @@ fn boxed_number_out_of_range_index_absent() {
     assert!(v0.is_bool() && !v0.as_bool(), "1 in o 应为 false");
     let v1 = elem(r, 1);
     assert!(v1.is_bool() && !v1.as_bool(), "5 in o 应为 false");
+}
+
+#[test]
+fn boxed_number_arraylike_push_writes_index_keeps_payload() {
+    // push 经 .call 在 Number 盒上落槽 0 并置 length，读回写入值，被包基元保持。
+    let mut vm = Vm::new();
+    let r = eval(
+        &mut vm,
+        "var o = Object(5); Array.prototype.push.call(o, 9); [o[0], Number(o), o.length]",
+    )
+    .unwrap();
+    assert_eq!(elem(r, 0).as_int(), 9, "o[0] 应读回 push 写入值 9");
+    assert_eq!(elem(r, 1).as_int(), 5, "Number(o) 应保持被包值 5");
+    assert_eq!(elem(r, 2).as_int(), 1, "o.length 应为 1");
+}
+
+#[test]
+fn boxed_number_arraylike_splice_inserts_index_keeps_payload() {
+    // splice 自槽 0 插入（start=0、deleteCount=0），length 由 0 增到 1，被包基元保持。
+    let mut vm = Vm::new();
+    let r = eval(
+        &mut vm,
+        "var o = Object(5); Array.prototype.splice.call(o, 0, 0, 9); [o[0], Number(o), o.length]",
+    )
+    .unwrap();
+    assert_eq!(elem(r, 0).as_int(), 9, "o[0] 应读回 splice 插入值 9");
+    assert_eq!(elem(r, 1).as_int(), 5, "Number(o) 应保持被包值 5");
+    assert_eq!(elem(r, 2).as_int(), 1, "o.length 应为 1");
+}
+
+#[test]
+fn boxed_number_arraylike_fill_overwrites_index_keeps_payload() {
+    // fill 覆写区间：push 先置 length 后 fill 覆写槽 0，读回填充值，被包基元保持。
+    let mut vm = Vm::new();
+    let r = eval(
+        &mut vm,
+        "var o = Object(5); Array.prototype.push.call(o, 9); Array.prototype.fill.call(o, 7, 0, 1); [o[0], Number(o), o.length]",
+    )
+    .unwrap();
+    assert_eq!(elem(r, 0).as_int(), 7, "o[0] 应读回 fill 填充值 7");
+    assert_eq!(elem(r, 1).as_int(), 5, "Number(o) 应保持被包值 5");
+    assert_eq!(elem(r, 2).as_int(), 1, "o.length 应为 1");
+}
+
+#[test]
+fn boxed_number_arraylike_then_index_write_keeps_payload() {
+    // arraylike 写后二次普通写同一键：读回最新写入值，被包基元不被销毁。
+    let mut vm = Vm::new();
+    let r = eval(
+        &mut vm,
+        "var o = Object(5); Array.prototype.push.call(o, 9); o[0] = 99; [o[0], Number(o)]",
+    )
+    .unwrap();
+    assert_eq!(elem(r, 0).as_int(), 99, "o[0] 应读回 99");
+    assert_eq!(elem(r, 1).as_int(), 5, "被包值应仍为 5");
 }
 
 #[test]
