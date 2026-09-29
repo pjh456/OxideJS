@@ -27,8 +27,9 @@ pub fn array_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
             };
             let arr = vm.alloc_object(JsObject::new_array(EMPTY_SHAPE_ID, proto_val, n, vm.epoch().bump()));
             // 数值长度分支建 n 个空洞而非 present-undefined：`in`、for-in、
-            // Object.keys 按缺失处理，元素 Get 落原型链。
-            for i in 0..n {
+            // Object.keys 按缺失处理，元素 Get 落原型链。物理区以稠密上限
+            // 钳位（越界索引无物理槽，逻辑长度已覆盖）。
+            for i in 0..n.min(MAX_DENSE_PROPS) {
                 unsafe {
                     (*arr).mark_hole_at(i);
                 }

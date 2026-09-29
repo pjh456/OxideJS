@@ -307,6 +307,21 @@ impl JsObject {
         self.array_prop_count = 0;
     }
 
+    /// 清空命名属性区（值与元数据），数组元素区不动：长度截断删除命名整数键
+    /// 后重排 shape 链使用。
+    pub fn clear_named_props(&mut self) {
+        if !self.hash_props.is_null() {
+            // SAFETY: 指针归本对象所有，见字段声明。
+            let vec = unsafe { &mut *(self.hash_props as *mut Vec<JsValue>) };
+            vec.clear();
+        }
+        if !self.prop_meta.is_null() {
+            // SAFETY: 指针归本对象所有，见字段声明。
+            let meta = unsafe { &mut *(self.prop_meta as *mut Vec<Option<PropMetaEntry>>) };
+            meta.clear();
+        }
+    }
+
     /// 若 hash_props 为空则初始化，返回其可变引用。
     pub fn ensure_hash_props(&mut self) -> &mut Vec<JsValue> {
         if self.hash_props.is_null() {

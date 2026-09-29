@@ -1,6 +1,7 @@
 use crate::vm::{FrameArgs, FrameContinuation, Vm, MAX_PROTO_CHAIN_DEPTH};
 use crate::{ic_trace, vm_trace};
 use oxide_kernel::prop_forge::PropTemplate;
+use oxide_kernel::shape_forge::EMPTY_SHAPE_ID;
 use oxide_runtime_api as coercion;
 use oxide_types::object::{JsObject, PropAttributes, PropMetaEntry};
 use oxide_types::value::JsValue;
@@ -573,8 +574,8 @@ impl Vm {
         }
 
         let old_logical = obj.logical_len();
-        let target_len = Self::array_length_shrink_target(obj, new_len, old_logical);
-        Self::apply_array_length(obj, target_len);
+        let target_len = self.array_length_shrink_target(obj, new_len, old_logical);
+        self.apply_array_length(obj, target_len);
         obj.bump_generation();
 
         if target_len != new_len {
@@ -944,15 +945,27 @@ impl Vm {
         // 数组下标键写入元素区（维护 array_prop_count），不进入 shape 链。
         if obj.is_array() {
             if let Some(index) = self.array_index_from_property_key(prop_name_si) {
-                // 新元素（越界或 hole 空洞）要求对象可扩展；已有元素覆盖不受限制。
-                // 常规入口（ordinary_set）已预先拦截，此处为 REST/SPREAD/builtin
-                // 内部等直调方的兜底。
-                let is_new = index >= obj.array_prop_count || obj.prop_meta_at(index).is_some_and(|m| m.is_hole());
-                if is_new && !obj.is_extensible() {
+                if index as usize > oxide_types::object::MAX_DENSE_PROPS {
+                    // 大索引越出稠密上限：降级为命名属性（shape 链，非物化），逻辑
+                    // 长度按规范扩展（2^32-1 不扩展 length），落穿下方命名路径建槽。
+                    if index < u32::MAX {
+                        let new_len = index + 1;
+                        if new_len > obj.logical_len() {
+                            obj.set_array_len_override(new_len);
+                        }
+                    }
+                } else {
+                    // 新元素（越界或 hole 空洞）要求对象可扩展；已有元素覆盖不受限制。
+                    // 常规入口（ordinary_set）已预先拦截，此处为 REST/SPREAD/builtin
+                    // 内部等直调方的兜底。
+                    let is_new =
+                        index >= obj.array_prop_count || obj.prop_meta_at(index).is_some_and(|m| m.is_hole());
+                    if is_new && !obj.is_extensible() {
+                        return;
+                    }
+                    obj.set_prop_at(index, val);
                     return;
                 }
-                obj.set_prop_at(index, val);
-                return;
             }
         }
         if let Some(pos) = self.kernel_core.shape_forge().lookup_position(obj.shape_id(), prop_name_si) {
@@ -1013,16 +1026,31 @@ impl Vm {
         }
         if obj.is_array() {
             if let Some(index) = self.array_index_from_property_key(prop_name_si) {
-                // 数组索引属性存元素区并维护 array_prop_count（元素数随索引增长）。
-                return self.define_array_index_element(
-                    obj,
-                    index,
-                    val,
-                    attributes,
-                    false,
-                    JsValue::undefined(),
-                    JsValue::undefined(),
-                );
+                if index as usize > oxide_types::object::MAX_DENSE_PROPS {
+                    // 大索引越出稠密上限：降级为命名属性定义，逻辑长度按规范
+                    // 扩展（2^32-1 不扩展 length）；length 不可写时与元素区
+                    // 定义同口径拒绝，落穿下方通用命名属性定义路径。
+                    if index >= obj.logical_len() && !obj.is_length_writable() {
+                        return Err("cannot define property beyond non-writable length".to_string());
+                    }
+                    if index < u32::MAX {
+                        let new_len = index + 1;
+                        if new_len > obj.logical_len() {
+                            obj.set_array_len_override(new_len);
+                        }
+                    }
+                } else {
+                    // 数组索引属性存元素区并维护 array_prop_count（元素数随索引增长）。
+                    return self.define_array_index_element(
+                        obj,
+                        index,
+                        val,
+                        attributes,
+                        false,
+                        JsValue::undefined(),
+                        JsValue::undefined(),
+                    );
+                }
             }
         }
         // 数组 length 是无 shape 槽的虚拟数据属性：按 ArraySetLength 语义应用，
@@ -1118,7 +1146,22 @@ impl Vm {
         }
         if obj.is_array() {
             if let Some(index) = self.array_index_from_property_key(prop_name_si) {
-                return self.define_array_index_element(obj, index, JsValue::undefined(), attributes, true, get, set);
+                if index as usize > oxide_types::object::MAX_DENSE_PROPS {
+                    // 大索引越出稠密上限：降级为命名访问器定义，逻辑长度按规范
+                    // 扩展（2^32-1 不扩展 length）；length 不可写时与元素区
+                    // 定义同口径拒绝，落穿下方通用命名属性定义路径。
+                    if index >= obj.logical_len() && !obj.is_length_writable() {
+                        return Err("cannot define property beyond non-writable length".to_string());
+                    }
+                    if index < u32::MAX {
+                        let new_len = index + 1;
+                        if new_len > obj.logical_len() {
+                            obj.set_array_len_override(new_len);
+                        }
+                    }
+                } else {
+                    return self.define_array_index_element(obj, index, JsValue::undefined(), attributes, true, get, set);
+                }
             }
         }
         // 数组 length 当前为不可配置数据属性，禁止转为访问器属性。
@@ -1290,9 +1333,9 @@ impl Vm {
         }
 
         // 收缩按 ArraySetLength 删除循环语义求目标长度（部分截断 / 完整截断）。
-        let target_len = Self::array_length_shrink_target(obj, new_len, old_logical);
+        let target_len = self.array_length_shrink_target(obj, new_len, old_logical);
 
-        Self::apply_array_length(obj, target_len);
+        self.apply_array_length(obj, target_len);
         obj.set_length_non_writable(!attributes.writable());
         obj.bump_generation();
 
@@ -1302,14 +1345,15 @@ impl Vm {
         Ok(())
     }
 
-    /// 数组 length 收缩的目标长度：`[new_len, old_len)` 内存在不可配置元素时取
-    /// 最高阻挡索引 + 1（部分截断，其上可配置元素已删除），否则完整截断到 `new_len`。
+    /// 数组 length 收缩的目标长度：`[new_len, old_len)` 内存在不可配置自身元素
+    /// （稠密元素区或命名整数键）时取最高阻挡索引 + 1（部分截断，其上可配置
+    /// 元素已删除），否则完整截断到 `new_len`。
     ///
     /// # 边界与前提
     /// - `new_len >= old_logical` 时直接返回 `new_len`（非收缩路径）。
-    fn array_length_shrink_target(obj: &JsObject, new_len: u32, old_logical: u32) -> u32 {
+    fn array_length_shrink_target(&self, obj: &JsObject, new_len: u32, old_logical: u32) -> u32 {
         if new_len < old_logical {
-            match Self::highest_non_configurable_index(obj, new_len, old_logical) {
+            match self.highest_non_configurable_index(obj, new_len, old_logical) {
                 Some(blocker) => blocker + 1,
                 None => new_len,
             }
@@ -1318,18 +1362,117 @@ impl Vm {
         }
     }
 
-    /// 返回 `[from, old_len)` 内最高的不可配置自身元素索引；无则 `None`。
+    /// 返回 `[from, old_len)` 内最高的不可配置自身元素索引（稠密元素区与命名
+    /// 整数键）；无则 `None`。
     ///
     /// # 边界与前提
-    /// - 扫描上界取逻辑长度与稠密元素数的较小者：逻辑长度超过
-    ///   `MAX_DENSE_PROPS` 时，其上的索引不存于稠密元素区，无自身属性可阻挡。
+    /// - 稠密区扫描上界取逻辑长度与稠密元素数的较小者；命名整数键区经 shape
+    ///   链扫描，稠密上限之上的索引同样可阻挡。
     /// - hole 标记为可配置（删除成功），不计入阻挡。
-    fn highest_non_configurable_index(obj: &JsObject, from: u32, old_len: u32) -> Option<u32> {
+    fn highest_non_configurable_index(&self, obj: &JsObject, from: u32, old_len: u32) -> Option<u32> {
+        // 稠密元素区降序扫描：首个不可配置索引即最高阻挡点。
         let scan_hi = (old_len as usize).min(obj.array_prop_count as usize);
-        (from as usize..scan_hi)
-            .rev()
-            .find(|&idx| obj.prop_meta_at(idx).is_some_and(|m| !m.attributes.configurable()))
-            .map(|idx| idx as u32)
+        for idx in (from as usize..scan_hi).rev() {
+            if obj.prop_meta_at(idx).is_some_and(|m| !m.attributes.configurable()) {
+                return Some(idx as u32);
+            }
+        }
+
+        // 命名整数键区：取范围内不可配置键的最高索引。
+        let mut highest: Option<u32> = None;
+        for (index, meta) in self.named_int_keys_in_range(obj, from, old_len) {
+            if meta.is_some_and(|m| !m.attributes.configurable())
+                && (highest.is_none() || index > highest.unwrap())
+            {
+                highest = Some(index);
+            }
+        }
+        highest
+    }
+
+    /// 收集命名区（shape 链）中值落在 `[from, to)` 的数组整数键，返回
+    /// （索引，元素元数据）：长度截断阻挡扫描与命名键删除的共享来源。
+    fn named_int_keys_in_range(&self, obj: &JsObject, from: u32, to: u32) -> Vec<(u32, Option<PropMetaEntry>)> {
+        // 走 shape 链收集全部命名属性（pos 计数含符号键，与物理存储对齐）：
+        // 链首为最新属性，物理下标自根部起算，故先收集再反转。
+        let mut names: Vec<u32> = Vec::new();
+        let mut cursor = Some(obj.shape_id());
+        while let Some(id) = cursor {
+            if id == EMPTY_SHAPE_ID {
+                break;
+            }
+            let Some(shape) = self.kernel_core.shape_forge().get_shape(id) else {
+                break;
+            };
+            cursor = shape.parent;
+            if shape.property_name != u32::MAX {
+                names.push(shape.property_name);
+            }
+        }
+        names.reverse();
+        let count = obj.array_prop_count as usize;
+        names
+            .iter()
+            .enumerate()
+            .filter_map(|(pos, &name)| {
+                self.array_index_from_property_key(name)
+                    .filter(|&index| index >= from && index < to)
+                    .map(|index| (index, obj.prop_meta_at(count + pos)))
+            })
+            .collect()
+    }
+
+    /// 删除数组对象命名区（shape 链）中值落在 `[from, to)` 的整数键（length
+    /// 收缩截断的命名稀疏键）：重排 shape 链与命名属性区，保留其余命名属性
+    /// 的相对顺序。
+    fn delete_named_int_keys_in_range(&mut self, obj: &mut JsObject, from: u32, to: u32) {
+        // 走 shape 链收集全部命名属性（pos 计数含符号键，与物理存储对齐）。
+        let mut names: Vec<u32> = Vec::new();
+        let mut cursor = Some(obj.shape_id());
+        while let Some(id) = cursor {
+            if id == EMPTY_SHAPE_ID {
+                break;
+            }
+            let Some(shape) = self.kernel_core.shape_forge().get_shape(id) else {
+                break;
+            };
+            cursor = shape.parent;
+            if shape.property_name != u32::MAX {
+                names.push(shape.property_name);
+            }
+        }
+        names.reverse();
+        let in_range = |name: u32| {
+            self.array_index_from_property_key(name).is_some_and(|i| i >= from && i < to)
+        };
+        // 无命中键时零重建。
+        if !names.iter().any(|&name| in_range(name)) {
+            return;
+        }
+        let count = obj.array_prop_count as usize;
+        let retained: Vec<(u32, JsValue, Option<PropMetaEntry>)> = names
+            .iter()
+            .enumerate()
+            .filter(|&(_, &name)| !in_range(name))
+            .map(|(pos, &name)| {
+                let store = count + pos;
+                (name, obj.get_prop_at(store), obj.prop_meta_at(store))
+            })
+            .collect();
+        obj.set_shape_id(EMPTY_SHAPE_ID);
+        obj.clear_named_props();
+        for (si, value, meta) in retained {
+            let shape = self.kernel_core.shape_forge().make_shape(obj.shape_id(), si);
+            obj.set_shape_id(shape);
+            let pos = obj.push_prop(value);
+            if let Some(meta) = meta {
+                if meta.is_accessor {
+                    obj.set_accessor_meta(pos, meta.get, meta.set, meta.attributes);
+                } else {
+                    obj.set_data_meta(pos, meta.attributes);
+                }
+            }
+        }
     }
 
     /// 把数组逻辑长度与物理元素区收敛到 `final_len`：截断/补齐稠密元素并维护
@@ -1338,7 +1481,8 @@ impl Vm {
     /// # 边界与前提
     /// - 稠密物理槽以 `MAX_DENSE_PROPS` 封顶，超出部分仅记逻辑长度覆盖。
     /// - 不写 length 可写位、不 bump 世代，由调用方统一处理。
-    fn apply_array_length(obj: &mut JsObject, final_len: u32) {
+    fn apply_array_length(&mut self, obj: &mut JsObject, final_len: u32) {
+        let old_logical = obj.logical_len();
         let old_count = obj.array_prop_count as usize;
         let new_phys = (final_len as usize).min(oxide_types::object::MAX_DENSE_PROPS);
         obj.set_prop_count(new_phys);
@@ -1346,6 +1490,12 @@ impl Vm {
         // 扩出的槽是稀疏 hole：存在性检查与原型链读取须视同不存在。
         for idx in old_count..new_phys {
             obj.mark_hole_at(idx);
+        }
+
+        // 收缩：删除命名整数键 [final_len, old_logical)，防截断后稀疏键
+        // 残留被读回。
+        if final_len < old_logical {
+            self.delete_named_int_keys_in_range(obj, final_len, old_logical);
         }
 
         if final_len as usize > oxide_types::object::MAX_DENSE_PROPS {
@@ -1523,5 +1673,157 @@ mod tests {
         assert_eq!(vm.ordinary_get(obj, x_si, obj_val).expect("get"), JsValue::int(1));
         vm.ordinary_set(obj, x_si, JsValue::int(2), obj_val, true).expect("set");
         assert_eq!(vm.ordinary_get(obj, x_si, obj_val).expect("get"), JsValue::int(2));
+    }
+
+    // ===== 大索引（越稠密上限）写降级命名属性的行为钉 =====
+
+    fn new_array_val(vm: &mut Vm, n: u32) -> JsValue {
+        let proto = vm.session.builtin_world().array_proto.as_ptr() as *mut JsObject;
+        let arr = JsObject::new_array(
+            oxide_kernel::shape_forge::EMPTY_SHAPE_ID,
+            JsValue::from_js_object(proto),
+            n as usize,
+            vm.epoch.bump(),
+        );
+        JsValue::object(vm.alloc_object(arr) as *mut u8)
+    }
+
+    /// 数组下标键 si 推导，与写路径 `property_key_si` 同口径：小整数走整数键
+    /// 区间，大整数走字符串键。
+    fn array_index_si(vm: &mut Vm, index: u32) -> u32 {
+        if index < oxide_types::private_key::INT_KEY_COUNT {
+            oxide_types::private_key::make_int_key(index)
+        } else {
+            vm.kernel_core.perm_interner().intern(&index.to_string()).0
+        }
+    }
+
+    #[test]
+    fn large_index_write_extends_length_and_stays_named() {
+        let mut vm = Vm::new();
+        let a = new_array_val(&mut vm, 1);
+        unsafe {
+            (*a.as_js_object_ptr()).set_prop_at(0, JsValue::int(1));
+        }
+        let si = array_index_si(&mut vm, 2_000_000);
+        vm.ordinary_set(unsafe { &mut *a.as_js_object_ptr() }, si, JsValue::int(9), a, true).expect("set");
+
+        let obj = unsafe { &*a.as_js_object_ptr() };
+        assert_eq!(obj.logical_len(), 2_000_001, "length 扩到 index+1");
+        assert_eq!(obj.array_prop_count, 1, "物理区不物化");
+        assert_eq!(vm.ordinary_get(obj, si, a).expect("get"), JsValue::int(9));
+        assert!(vm.has_property(obj, si), "in 为 true");
+        let keys = oxide_builtins::object::walk_own_keys(&vm, obj);
+        assert!(keys.iter().any(|(k, _)| *k == si), "枚举含大索引键");
+    }
+
+    #[test]
+    fn max_uint32_index_write_is_named_and_length_unchanged() {
+        let mut vm = Vm::new();
+        let b = new_array_val(&mut vm, 0);
+        let si = array_index_si(&mut vm, u32::MAX);
+        vm.ordinary_set(unsafe { &mut *b.as_js_object_ptr() }, si, JsValue::int(9), b, true).expect("set");
+
+        let obj = unsafe { &*b.as_js_object_ptr() };
+        assert_eq!(obj.logical_len(), 0, "2^32-1 不扩展 length");
+        assert_eq!(vm.ordinary_get(obj, si, b).expect("get"), JsValue::int(9));
+        assert!(vm.has_property(obj, si));
+    }
+
+    #[test]
+    fn beyond_uint32_index_write_is_named_and_length_unchanged() {
+        let mut vm = Vm::new();
+        let c = new_array_val(&mut vm, 0);
+        // "4294967296" 非规范数组下标（u32 解析失败），走字符串键路径。
+        let si = vm.kernel_core.perm_interner().intern("4294967296").0;
+        vm.ordinary_set(unsafe { &mut *c.as_js_object_ptr() }, si, JsValue::int(1), c, true).expect("set");
+
+        let obj = unsafe { &*c.as_js_object_ptr() };
+        assert_eq!(obj.logical_len(), 0);
+        assert_eq!(vm.ordinary_get(obj, si, c).expect("get"), JsValue::int(1));
+    }
+
+    #[test]
+    fn length_shrink_deletes_named_large_index() {
+        let mut vm = Vm::new();
+        let d = new_array_val(&mut vm, 2);
+        unsafe {
+            let arr = d.as_js_object_ptr();
+            (*arr).set_prop_at(0, JsValue::int(1));
+            (*arr).set_prop_at(1, JsValue::int(2));
+        }
+        let si = array_index_si(&mut vm, 3_000_000);
+        vm.ordinary_set(unsafe { &mut *d.as_js_object_ptr() }, si, JsValue::int(7), d, true).expect("set");
+        vm.set_array_length_value(unsafe { &mut *d.as_js_object_ptr() }, JsValue::int(5), true, true)
+            .expect("length");
+
+        let obj = unsafe { &*d.as_js_object_ptr() };
+        assert_eq!(obj.logical_len(), 5);
+        assert!(!vm.has_property(obj, si), "截断后 3000000 键被删");
+        assert_eq!(vm.ordinary_get(obj, si, d).expect("get"), JsValue::undefined());
+    }
+
+    #[test]
+    fn non_configurable_named_key_blocks_length_shrink() {
+        let mut vm = Vm::new();
+        let a = new_array_val(&mut vm, 1);
+        unsafe {
+            (*a.as_js_object_ptr()).set_prop_at(0, JsValue::int(1));
+        }
+        let si = array_index_si(&mut vm, 2_000_000);
+        vm.ordinary_set(unsafe { &mut *a.as_js_object_ptr() }, si, JsValue::int(9), a, true).expect("set");
+
+        // Object.defineProperty(a, "2000000", {value: 1, configurable: false})。
+        let attrs = PropAttributes::new(true, true, false);
+        vm.define_data_property(unsafe { &mut *a.as_js_object_ptr() }, si, JsValue::int(1), attrs)
+            .expect("define");
+
+        // a.length = 1：截断被不可配置命名键阻挡，length 不变。
+        let err = vm
+            .set_array_length_value(unsafe { &mut *a.as_js_object_ptr() }, JsValue::int(1), true, true)
+            .expect_err("截断被阻挡");
+        assert!(err.starts_with("TypeError"), "阻挡截断须按 TypeError 失败，实际: {err}");
+        let obj = unsafe { &*a.as_js_object_ptr() };
+        assert_eq!(obj.logical_len(), 2_000_001, "length 不变");
+        assert_eq!(vm.ordinary_get(obj, si, a).expect("get"), JsValue::int(1));
+    }
+
+    #[test]
+    fn delete_named_large_index_succeeds_and_length_unchanged() {
+        let mut vm = Vm::new();
+        let a = new_array_val(&mut vm, 1);
+        unsafe {
+            (*a.as_js_object_ptr()).set_prop_at(0, JsValue::int(1));
+        }
+        let si = array_index_si(&mut vm, 2_000_000);
+        vm.ordinary_set(unsafe { &mut *a.as_js_object_ptr() }, si, JsValue::int(9), a, true).expect("set");
+
+        let outcome = oxide_builtins::object::delete_own_property_outcome(
+            &mut vm,
+            unsafe { &mut *a.as_js_object_ptr() },
+            si,
+        );
+        assert_eq!(outcome, oxide_builtins::object::DeleteOutcome::Deleted);
+        let obj = unsafe { &*a.as_js_object_ptr() };
+        assert_eq!(obj.logical_len(), 2_000_001, "length 不变");
+        assert!(!vm.has_property(obj, si));
+    }
+
+    #[test]
+    fn repeated_large_index_write_is_idempotent() {
+        let mut vm = Vm::new();
+        let a = new_array_val(&mut vm, 1);
+        unsafe {
+            (*a.as_js_object_ptr()).set_prop_at(0, JsValue::int(1));
+        }
+        let si = array_index_si(&mut vm, 2_000_000);
+        vm.ordinary_set(unsafe { &mut *a.as_js_object_ptr() }, si, JsValue::int(5), a, true).expect("set");
+        vm.ordinary_set(unsafe { &mut *a.as_js_object_ptr() }, si, JsValue::int(9), a, true).expect("set");
+
+        let obj = unsafe { &*a.as_js_object_ptr() };
+        assert_eq!(obj.logical_len(), 2_000_001);
+        assert_eq!(obj.array_prop_count, 1, "物理区不物化");
+        assert_eq!(obj.prop_vec_len(), 1, "命名区恰一个槽，复写不重复建槽");
+        assert_eq!(vm.ordinary_get(obj, si, a).expect("get"), JsValue::int(9));
     }
 }

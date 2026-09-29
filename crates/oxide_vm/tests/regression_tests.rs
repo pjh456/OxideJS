@@ -223,8 +223,9 @@ fn test_new_spread_deep_recursion_throws_catchable_range_error() {
 
 #[test]
 fn test_array_length_range_error() {
-    let result = eval("new Array(4294967295)");
-    assert!(result.contains("Invalid array length"), "expected invalid length, got: {result}");
+    // 2^32-1 是合法数组长度：逻辑长度记覆盖位，物理区按稠密上限钳位。
+    let result = eval("new Array(4294967295).length");
+    assert_eq!(result, "4294967295", "2^32-1 合法长度，got: {result}");
     let result = eval("new Array(-1)");
     assert!(result.contains("Invalid array length"), "expected invalid length, got: {result}");
 }

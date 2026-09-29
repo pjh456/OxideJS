@@ -319,15 +319,17 @@ pub enum DeleteOutcome {
 
 /// 删除对象自身属性并返回三态结果（字节码 delete 与 Reflect.deleteProperty 共用）。
 ///
-/// 数组下标键在元素区（shape 链外），标记为 hole（值 undefined + hole meta），
-/// length 不变；数组 length 虚拟属性与命名属性经 shape 链处理。仅对象自身属性
-/// 参与删除判定，原型链属性不影响结果。
+/// 数组下标键在元素区内时标记为 hole（值 undefined + hole meta），length 不变；
+/// 越出元素区的大索引是命名属性（shape 链），落穿 shape 链查删。数组 length
+/// 虚拟属性与命名属性经 shape 链处理。仅对象自身属性参与删除判定，原型链属性
+/// 不影响结果。
 ///
 /// # 步骤
 /// 1. TA 数值键：界内索引返回 `NonConfigurable`（元素零修改）；数字无效键
 ///    返回 `Missing`；非数字串 / symbol 键落下方普通路径
 /// 2. 数组 length 虚拟属性：不可配置，返回 `NonConfigurable`
-/// 3. 数组下标元素：检查 configurable，`mark_hole_at` 标记为 hole
+/// 3. 数组下标元素：检查 configurable，`mark_hole_at` 标记为 hole；大索引
+///    越出元素区落穿命名属性路径
 /// 4. 命名属性：walk_own_keys 定位槽位，不可配置返回 `NonConfigurable`
 /// 5. 数组先保存元素区（值 + meta），重建命名属性后恢复元素区
 ///
@@ -376,7 +378,7 @@ pub fn delete_own_property_outcome<H: VmHost>(vm: &mut H, obj: &mut JsObject, ke
                 obj.bump_generation();
                 return DeleteOutcome::Deleted;
             }
-            return DeleteOutcome::Missing;
+            // 大索引越出元素区时是命名属性（shape 链），落穿下方查删路径。
         }
         // 非下标键：length 是虚拟属性（无 shape 槽、不在元素区），但描述符声明
         // configurable:false，删除恒失败。

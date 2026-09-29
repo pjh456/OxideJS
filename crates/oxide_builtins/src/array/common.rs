@@ -282,7 +282,7 @@ pub(crate) fn check_array_create_len<H: VmHost>(vm: &mut H, n: usize) -> Result<
 
 pub(crate) fn array_length_arg<H: VmHost>(vm: &mut H, value: JsValue) -> Result<usize, JsValue> {
     let n = vm.coerce_number_bounded(value).unwrap_or(f64::NAN);
-    if !n.is_finite() || n < 0.0 || n.fract() != 0.0 || n > MAX_DENSE_PROPS as f64 {
+    if !n.is_finite() || n < 0.0 || n.fract() != 0.0 || n > u32::MAX as f64 {
         return Err(crate::error::create_range_error(vm, "Invalid array length"));
     }
     Ok(n as usize)
