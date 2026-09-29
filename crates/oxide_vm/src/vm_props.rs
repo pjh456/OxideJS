@@ -1368,26 +1368,31 @@ impl Vm {
     /// # 边界与前提
     /// - 稠密区扫描上界取逻辑长度与稠密元素数的较小者；命名整数键区经 shape
     ///   链扫描，稠密上限之上的索引同样可阻挡。
+    /// - 稠密区与命名区各自扫完取二者最大值：稠密阻挡点恒低于命名阻挡点，
+    ///   不得遮蔽命名阻挡点。
     /// - hole 标记为可配置（删除成功），不计入阻挡。
     fn highest_non_configurable_index(&self, obj: &JsObject, from: u32, old_len: u32) -> Option<u32> {
-        // 稠密元素区降序扫描：首个不可配置索引即最高阻挡点。
+        // 稠密元素区降序扫描：首个不可配置索引即稠密区阻挡点。
         let scan_hi = (old_len as usize).min(obj.array_prop_count as usize);
+        let mut dense_highest: Option<u32> = None;
         for idx in (from as usize..scan_hi).rev() {
             if obj.prop_meta_at(idx).is_some_and(|m| !m.attributes.configurable()) {
-                return Some(idx as u32);
+                dense_highest = Some(idx as u32);
+                break;
             }
         }
 
         // 命名整数键区：取范围内不可配置键的最高索引。
-        let mut highest: Option<u32> = None;
+        let mut named_highest: Option<u32> = None;
         for (index, meta) in self.named_int_keys_in_range(obj, from, old_len) {
             if meta.is_some_and(|m| !m.attributes.configurable())
-                && (highest.is_none() || index > highest.unwrap())
+                && (named_highest.is_none() || index > named_highest.unwrap())
             {
-                highest = Some(index);
+                named_highest = Some(index);
             }
         }
-        highest
+
+        dense_highest.max(named_highest)
     }
 
     /// 收集命名区（shape 链）中值落在 `[from, to)` 的数组整数键，返回
@@ -1786,6 +1791,39 @@ mod tests {
         let obj = unsafe { &*a.as_js_object_ptr() };
         assert_eq!(obj.logical_len(), 2_000_001, "length 不变");
         assert_eq!(vm.ordinary_get(obj, si, a).expect("get"), JsValue::int(1));
+    }
+
+    #[test]
+    fn dense_and_named_blockers_take_highest_on_shrink() {
+        let mut vm = Vm::new();
+        let a = new_array_val(&mut vm, 3);
+        unsafe {
+            let arr = a.as_js_object_ptr();
+            (*arr).set_prop_at(0, JsValue::int(1));
+            (*arr).set_prop_at(1, JsValue::int(2));
+            (*arr).set_prop_at(2, JsValue::int(3));
+        }
+        let attrs = PropAttributes::new(true, true, false);
+        // 稠密阻挡点 D=2：元素 2 改为不可配置。
+        let dense_si = array_index_si(&mut vm, 2);
+        vm.define_data_property(unsafe { &mut *a.as_js_object_ptr() }, dense_si, JsValue::int(3), attrs)
+            .expect("define dense");
+
+        // 命名阻挡点 N=2000000：大索引写后改为不可配置。
+        let si = array_index_si(&mut vm, 2_000_000);
+        vm.ordinary_set(unsafe { &mut *a.as_js_object_ptr() }, si, JsValue::int(9), a, true).expect("set");
+        vm.define_data_property(unsafe { &mut *a.as_js_object_ptr() }, si, JsValue::int(9), attrs)
+            .expect("define named");
+
+        // a.length = 1：截断被命名阻挡点 N 阻挡，最终长度取 N+1。
+        let err = vm
+            .set_array_length_value(unsafe { &mut *a.as_js_object_ptr() }, JsValue::int(1), true, true)
+            .expect_err("截断被阻挡");
+        assert!(err.starts_with("TypeError"), "阻挡截断须按 TypeError 失败，实际: {err}");
+        let obj = unsafe { &*a.as_js_object_ptr() };
+        assert_eq!(obj.logical_len(), 2_000_001, "length 取命名阻挡点 + 1");
+        assert_eq!(vm.ordinary_get(obj, si, a).expect("get"), JsValue::int(9), "命名不可配置键存活");
+        assert_eq!(vm.ordinary_get(obj, dense_si, a).expect("get"), JsValue::int(3), "稠密不可配置键存活");
     }
 
     #[test]
