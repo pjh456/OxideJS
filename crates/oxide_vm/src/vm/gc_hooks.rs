@@ -1,7 +1,7 @@
 //! GC 根遍历与执行期收集钩子：根统一枚举、搬移后指针重写、执行期两档
 //! 收集入口（安全点门控）与 session GC 账目统计访问器。
 
-use oxide_types::object::{Cell, JsObject};
+use oxide_types::object::{Cell, JsObject, JsString};
 use oxide_types::value::JsValue;
 
 use super::frames::Completion;
@@ -285,7 +285,7 @@ impl Vm {
     /// session 串）+ BigInt 表长 × `size_of::<BigInt>` + cell 表长 ×
     /// `size_of::<Cell>`。三分量两两不相交（BigInt 与 cell 不在手工账目内），
     /// O(1) 读，供单 run 分配上限判定。收集释放后读数回落存活集量级；
-    /// run 边界（reset/full_reset）后账目与表清零重起算。
+    /// 轻量 reset 保留账目与表（仅复位峰值与水位），full_reset 清零重起算。
     ///
     /// 注意：手工堆账目只在对象分配/字符串分配/GC 回收点更新，执行期对象
     /// 属性区（元素/属性向量扩容）增长对其不可见——上限判定须配合
@@ -296,20 +296,30 @@ impl Vm {
             + self.gc_state.session_cell_ptrs.borrow().len() * std::mem::size_of::<Cell>()
     }
 
-    /// 本 run 累计分配字节的全量重算版：base 与 [`Self::run_alloc_bytes`] 同
-    /// 一口径（手工账目 + BigInt/cell 表长），其上逐一重算已登记对象的堆数据
-    /// （属性/元素向量 + upvalue 列表 + native 状态盒）容量——重算即属性区
-    /// 扩容等账目盲区的兜底。base 的对象分量是最近分配/回收点的账目快照，
-    /// 重算取当前容量，读数偏高，上限判定偏安全侧。
+    /// 本 run 累计分配字节的全量重算版：各分量按当前值各计一次、互不相交——
+    /// 存活对象头加堆数据（属性/元素/meta 向量容量、upvalue 列表容量、native
+    /// 状态盒）+ 存活串（头加 payload）+ BigInt 表长 × 尺寸 + cell 表长 ×
+    /// 尺寸。重算即属性区扩容等账目盲区的兜底，读数为当前真实总量，零增长时
+    /// 与 [`Self::run_alloc_bytes`] 的轻层公式逐位相等。
     pub(crate) fn run_alloc_bytes_full(&self) -> u64 {
-        let mut bytes = self.run_alloc_bytes() as u64;
+        let mut bytes = 0u64;
         for &ptr in self.gc_state.session_object_ptrs.iter() {
             if ptr.is_null() {
                 continue;
             }
             // SAFETY: ptr 来自对象表登记，dispatch 安全点处仍有效。
-            bytes += SessionGc::object_heap_data_bytes(unsafe { &*ptr });
+            let obj = unsafe { &*ptr };
+            bytes += std::mem::size_of::<JsObject>() as u64 + SessionGc::object_heap_data_bytes(obj);
         }
+        for &ptr in &self.gc_state.session_string_ptrs {
+            if ptr.is_null() {
+                continue;
+            }
+            // SAFETY: ptr 在字符串表登记，收尾前有效。
+            bytes += (std::mem::size_of::<JsString>() + unsafe { (*ptr).payload_bytes() }) as u64;
+        }
+        bytes += (self.gc_state.session_bigint_ptrs.borrow().len() * std::mem::size_of::<num_bigint::BigInt>()) as u64;
+        bytes += (self.gc_state.session_cell_ptrs.borrow().len() * std::mem::size_of::<Cell>()) as u64;
         bytes
     }
 

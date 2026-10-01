@@ -1544,6 +1544,15 @@ fn run_alloc_formula_lists_bigint_and_cell_via_tables() {
     let mut vm = Vm::new();
     let obj = plain_object(&mut vm);
     vm.regs[0] = JsValue::from_js_object(obj);
+    // 带堆区对象：元素向量非空（账目含头 + 向量容量），深层等式在双计形态
+    // 下不成立，钉向量面互不相交。
+    let arr = vm.alloc_object(JsObject::new_array(
+        oxide_kernel::shape_forge::EMPTY_SHAPE_ID,
+        JsValue::from_js_object(vm.session.builtin_world().array_proto.as_ptr() as *mut JsObject),
+        2,
+        vm.epoch.bump(),
+    ));
+    vm.regs[3] = JsValue::from_js_object(arr);
     let s = vm.new_string_owned("formula".repeat(4));
     vm.regs[1] = s;
     let b = vm.new_bigint(num_bigint::BigInt::from(7_i128));
@@ -1558,16 +1567,25 @@ fn run_alloc_formula_lists_bigint_and_cell_via_tables() {
             + vm.gc_state.session_bigint_ptrs.borrow().len() * size_of::<num_bigint::BigInt>()
             + vm.gc_state.session_cell_ptrs.borrow().len() * size_of::<Cell>()
     );
-    // BigInt 不在手工账目内：账目 = 对象（头 + 堆数据，本例无堆区）+ 串。
+    // BigInt 不在手工账目内：账目 = 两对象（头 + 堆数据）+ 串，数组带元素向量。
     let string_bytes = size_of::<JsString>() + unsafe { (*s.as_string_ptr_mut()).payload_bytes() };
-    assert_eq!(vm.gc_state.session_bytes_allocated, size_of::<JsObject>() + string_bytes);
+    let arr_heap_bytes = SessionGc::object_heap_data_bytes(unsafe { &*arr });
+    assert!(arr_heap_bytes > 0, "数组元素向量应计入对象堆数据");
+    assert_eq!(
+        vm.gc_state.session_bytes_allocated,
+        2 * size_of::<JsObject>() + arr_heap_bytes as usize + string_bytes
+    );
 
     // 完整收集后：死 cell 出表、存活 BigInt 留表，账目保持对象 + 串口径。
     vm.collect_session_gc();
     assert_eq!(vm.gc_state.session_cell_ptrs.borrow().len(), 0);
     assert_eq!(vm.gc_state.session_bigint_ptrs.borrow().len(), 1);
-    assert_eq!(vm.gc_state.session_bytes_allocated, size_of::<JsObject>() + string_bytes);
-    // 深采样全量重算 = 轻层公式 + 逐对象堆数据重算（本例无堆区，两值相等）。
+    assert_eq!(
+        vm.gc_state.session_bytes_allocated,
+        2 * size_of::<JsObject>() + arr_heap_bytes as usize + string_bytes
+    );
+    // 深采样全量重算与轻层公式零增长下逐位相等：存活对象带堆区（元素向量），
+    // 双计形态下深层严格大于轻层，该断言即失守。
     assert_eq!(vm.run_alloc_bytes_full(), vm.run_alloc_bytes() as u64);
 }
 
