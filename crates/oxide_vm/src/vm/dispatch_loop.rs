@@ -123,7 +123,7 @@ impl Vm {
             // 返回顶层后检查恢复，存活值此时已回拷为执行根。账目未超水位时仅
             // 少量字段比较。
             if self.native_call_depth == 0 {
-                // 宿主 `$262.gc()` 置位的强制收集在此边界消费：移动式 sweep
+                // 宿主 `$262.gc()` 置位的强制收集在此边界消费：完整收集
                 // 唯一安全点（无在途 dispatch 局部值），与正常触发路径同一入口。
                 if self.gc_state.pending_forced_collect {
                     self.gc_state.pending_forced_collect = false;
@@ -142,8 +142,9 @@ impl Vm {
                 if bytes >= self.gc_state.string_gc_watermark {
                     self.maybe_collect_session_strings();
                 }
-                // 执行期两档收集：O(1) 包络超触发水位 → 门控（活跃/挂起 for-in）
-                // + epoch 晋升收集 + session 原地 sweep（边界契约见 maybe_collect_in_run）。
+                // 执行期原地 sweep 收集：O(1) 包络超触发水位 → 收集（无门控：
+                // 迭代器键引用经根收集标活，原地释放不搬移存活对象；
+                // 边界契约见 maybe_collect_in_run）。
                 if alloc >= self.gc_state.gc_watermark {
                     self.maybe_collect_in_run();
                 }

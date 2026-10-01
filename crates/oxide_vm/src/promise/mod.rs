@@ -19,7 +19,7 @@ mod settlement;
 
 pub(crate) use gc_edges::{
     clone_promise_native_with_rewrite, drop_promise_native, migrate_settlement_to_newest_clone, promise_native_edges,
-    promise_native_size, repoint_promise_promoted_clone, rewrite_promise_native,
+    promise_native_size, rewrite_promise_native,
 };
 pub(crate) use jobs::{for_each_job_value, rewrite_job_values};
 pub use reactions::promise_settled_value;

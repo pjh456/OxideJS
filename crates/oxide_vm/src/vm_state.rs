@@ -11,8 +11,6 @@
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 
-use rustc_hash::FxBuildHasher;
-
 use crate::session_gc::SessionGc;
 use crate::vm::ForInIter;
 use oxide_builtins::iterator::BuiltinIterKind;
@@ -35,9 +33,9 @@ pub(crate) struct GcState {
     /// mark/sweep 回收（值量少），只在 full_reset 统一释放。
     pub(crate) session_bigint_ptrs: RefCell<Vec<*mut num_bigint::BigInt>>,
     /// upvalue cell（`Box<Cell>`）追踪表。`RefCell` 使 `&self` 的分配入口也能
-    /// 登记新 box。cell 独立堆分配、地址稳定，不参与对象搬移（sweep 只重写
-    /// `cell.value` 中的对象引用）；参与 mark-sweep 回收（死 cell 随收集释放），
-    /// full_reset 为收尾兜底（表已空时 no-op）。
+    /// 登记新 box。cell 独立堆分配、地址稳定，不参与对象搬移（原地 sweep
+    /// 不触碰 cell，也不重写 `cell.value`）；参与 mark-sweep 回收（死 cell
+    /// 随收集释放），full_reset 为收尾兜底（表已空时 no-op）。
     pub(crate) session_cell_ptrs: RefCell<Vec<*mut UpvalueCell>>,
     pub(crate) session_bytes_allocated: usize,
     /// 执行期 session 堆账目的峰值高水位（`session_bytes_allocated` 的采样上界），
@@ -52,24 +50,21 @@ pub(crate) struct GcState {
     pub(crate) string_gc_watermark: usize,
     /// 缓存的 GC 阈值（从 config 读一次），热路径只做 usize 比较，免 Arc 解引用。
     pub(crate) gc_threshold_cached: usize,
-    /// 执行期两档收集（epoch 晋升 + session 原地 sweep）的触发水位：本次
-    /// 收集后的分配包络 + 阈值增量。仅当 `run_alloc_bytes` 超过水位才在指令
-    /// 边界触发——存活包络超阈值时不每指令重复触发无死对象可回收的白跑。
+    /// 执行期原地 sweep 收集的触发水位：本次收集后的分配包络 + 阈值增量。
+    /// 仅当 `run_alloc_bytes` 超过水位才在指令边界触发——存活包络超阈值时
+    /// 不每指令重复触发无死对象可回收的白跑。
     pub(crate) gc_watermark: usize,
-    /// 门控未过（挂起态持有 for-in）后的重扫锚：包络再增长一个阈值才重扫
-    /// 三型状态盒（O(对象数) 扫描），避免持挂起 for-in 的 run 每指令边界重扫。
-    pub(crate) gc_gate_retry_alloc: usize,
     /// 宿主强制收集旗标（`$262.gc()`）：native 重入中置位，由下一个顶层
-    /// 指令边界（移动式 sweep 的唯一安全点）消费并执行完整收集。
+    /// 指令边界（完整收集的唯一安全点：无在途 builtin 局部裸指针）消费。
     pub(crate) pending_forced_collect: bool,
-    pub(crate) forwarding: HashMap<*mut JsObject, *mut JsObject, FxBuildHasher>,
 }
 
 impl GcState {
     /// 分配一个 upvalue cell：独立堆分配并返回裸指针，脱离 session arena 生命周期。
     ///
-    /// cell 指针登记进 `session_cell_ptrs`，在 `full_reset` 统一释放。对象 sweep
-    /// 搬移不触碰 cell 结构体（地址稳定），只重写 `cell.value` 中的对象引用。
+    /// cell 指针登记进 `session_cell_ptrs`，在 `full_reset` 统一释放。对象
+    /// sweep 原地化不搬移对象、不触碰 cell 结构体（地址稳定），cell 的
+    /// 生死由 mark-sweep 自行裁定（死 cell 随收集释放）。
     /// `&self` 使调用方可与 `cell_stack` 等其它字段的借用并存（分字段借用）。
     pub(crate) fn alloc_cell(&self, value: JsValue, initialized: bool) -> *mut UpvalueCell {
         let ptr = Box::into_raw(Box::new(UpvalueCell::new(value, initialized)));

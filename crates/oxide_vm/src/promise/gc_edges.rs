@@ -33,11 +33,11 @@ pub(crate) fn promise_native_edges(obj: &JsObject) -> Vec<JsValue> {
     edges
 }
 
-/// 用转发函数重写状态盒中的所有 JsValue（session GC 移动式清扫 / promote 用）。
+/// 用转发函数重写状态盒中的所有 JsValue（promote 用）。
 ///
-/// 结算链指针是裸指针边、不在本函数改写面：晋升路径克隆新分配于 session
-/// arena（原件地址不变），同 arena 改写场景指针天然有效；搬移换址场景由
-/// 调用方在重写完成后经 `repoint_promise_promoted_clone` 按转发表重定位。
+/// 结算链指针是裸指针边、不在本函数改写面：晋升克隆新分配于 session arena
+/// （原件地址不变），改写场景指针天然有效；结算链接链由
+/// `migrate_settlement_to_newest_clone` 负责。
 pub(crate) fn rewrite_promise_native(obj: &JsObject, mut rewrite: impl FnMut(JsValue) -> JsValue) {
     let Some(state) = promise_state_mut(obj) else {
         return;
@@ -53,12 +53,12 @@ pub(crate) fn rewrite_promise_native(obj: &JsObject, mut rewrite: impl FnMut(JsV
     }
 }
 
-/// 深拷贝状态盒到新对象（promote / sweep 用）：新对象持独立 Box，源盒可安全释放。
+/// 深拷贝状态盒到新对象（promote 用）：新对象持独立 Box，源盒可安全释放。
 ///
 /// 源的反应**迁移**（非复制）进新对象：源盒随 epoch 释放，留在源上的反应会
 /// 永久丢失、原件侧消费者永不触发；每条反应的 JsValue 随状态盒其余字段同一
-/// pass 晋升/改写。结算链指针按原值保留（晋升场景由
-/// `migrate_settlement_to_newest_clone` 接链，搬移场景按转发表重定位）。
+/// pass 晋升/改写。结算链指针按原值保留（接链由
+/// `migrate_settlement_to_newest_clone` 负责）。
 pub(crate) fn clone_promise_native_with_rewrite(
     old: &JsObject, new: &mut JsObject, mut rewrite: impl FnMut(JsValue) -> JsValue,
 ) {
@@ -141,16 +141,6 @@ pub(crate) fn migrate_settlement_to_newest_clone(
     }
     if let Some(src) = promise_state_mut(old) {
         src.promoted_clone = new as *mut JsObject;
-    }
-}
-
-/// 按给定转发改写结算链指针（裸指针边、非 JsValue），session GC 搬移后调用。
-pub(crate) fn repoint_promise_promoted_clone(obj: &JsObject, forward: impl FnOnce(*mut JsObject) -> *mut JsObject) {
-    let Some(state) = promise_state_mut(obj) else {
-        return;
-    };
-    if !state.promoted_clone.is_null() {
-        state.promoted_clone = forward(state.promoted_clone);
     }
 }
 

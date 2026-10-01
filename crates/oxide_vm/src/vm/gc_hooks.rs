@@ -239,60 +239,17 @@ impl Vm {
         self.gc_state.session_gc = session_gc;
     }
 
-    /// 门控子句二：三型状态盒（生成器/异步函数/异步生成器）的
-    /// `suspended.for_in_iters` 是否非空。
-    ///
-    /// 门控是保守门：for-in 迭代器活跃/挂起期间拦下执行期收集；
-    /// 挂起帧把迭代器搬入状态盒（`vm.iters` 不可见），故须逐状态盒扫描。
-    ///
-    /// # 边界与前提
-    /// - 扫描 session 对象表——挂起状态盒宿主对象在表内；
-    /// - 挂起帧的 keys 经状态盒边收为 GC 根（被枚举对象不误释放），迭代器
-    ///   体是堆上 Box，故按指针扫 `for_in_iters`；
-    /// - 保守口径：死对象的状态盒同样计入（持挂起 for-in 的 run 放弃执行期
-    ///   收集），正确性优先于收益；
-    /// - 新增挂起态持有者须在此登记。
-    pub(crate) fn suspended_holds_for_in(&self) -> bool {
-        let holds = |&ptr: &*mut JsObject| {
-            if ptr.is_null() {
-                return false;
-            }
-            // SAFETY: 对象表登记的指针，存活期内有效。
-            let obj = unsafe { &*ptr };
-            match obj.type_tag {
-                JsObject::OBJ_TYPE_GENERATOR => crate::generator::generator_holds_suspended_for_in(obj),
-                JsObject::OBJ_TYPE_ASYNC => crate::async_func::async_holds_suspended_for_in(obj),
-                JsObject::OBJ_TYPE_ASYNC_GENERATOR => {
-                    crate::async_generator::async_generator_holds_suspended_for_in(obj)
-                }
-                _ => false,
-            }
-        };
-        self.gc_state.session_object_ptrs.iter().any(holds)
-    }
-
-    /// 执行期两档收集的 dispatch 安全点入口：仅在循环顶
+    /// 执行期原地 sweep 收集的 dispatch 安全点入口：仅在循环顶
     /// （`native_call_depth == 0`，无 builtin 局部裸指针、dispatch 未重入）
-    /// 由触发块调用；先门控后收集。
+    /// 由触发块在水位命中后调用，无门控直接收集。
     ///
     /// # 边界与前提
-    /// - 子句一（活跃 for-in，O(1)）未过：免费重试，不设锚；
-    /// - 子句二（状态盒扫描，O(对象数)）未过：重扫按包络增长一个阈值设锚，
-    ///   避免持挂起 for-in 的 run 每指令边界重扫；
-    /// - 门控过但无对象可回收时仍跑一轮（mark + 换新 Bump），水位同点抬高，
+    /// - for-in 迭代器体是堆上 Box：活跃形经 VM 表、挂起形经状态盒边进入
+    ///   根收集，键引用被 mark 标活，原地清扫不搬移对象、不误释放，
+    ///   无需拦截；
+    /// - 无对象可回收时仍跑一轮（mark + 原地清扫），水位同点抬高，
     ///   触发间距由包络增量控制。
     pub(crate) fn maybe_collect_in_run(&mut self) {
-        if !self.iters.for_in_iters.is_empty() {
-            return;
-        }
-        if self.gc_state.gc_gate_retry_alloc > self.run_alloc_bytes() {
-            return;
-        }
-        if self.suspended_holds_for_in() {
-            self.gc_state.gc_gate_retry_alloc =
-                self.run_alloc_bytes().saturating_add(self.gc_state.gc_threshold_cached);
-            return;
-        }
         let mut session_gc = std::mem::take(&mut self.gc_state.session_gc);
         session_gc.collect_in_run(self);
         self.gc_state.session_gc = session_gc;
@@ -373,10 +330,10 @@ impl Vm {
         bytes
     }
 
-    /// 无条件执行一次完整 session GC（mark + 移动式 sweep + 串/BigInt 清扫）。
+    /// 无条件执行一次完整 session GC（mark + 对象原地清扫 + 串/BigInt 清扫）。
     ///
     /// # 副作用
-    /// - 存活对象复制进新 session arena，全部根与原生盒按转发表重写；
+    /// - 存活对象地址不变、根与原生盒免改写；
     ///   `session_bytes_allocated` 重置为清扫后的存活字节。
     ///
     /// # 注意事项

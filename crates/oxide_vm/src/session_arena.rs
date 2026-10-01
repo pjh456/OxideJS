@@ -9,15 +9,15 @@ use crate::vm::Vm;
 use oxide_builtins::{array_buffer, data_view, disposable_stack, map, module, regexp, set, typed_array, weak_map};
 
 impl Vm {
-    /// 单对象晋升测试入口：取/清共享转发表后调 `promote_object_inner`。
-    /// 生产路径（边界修复/执行期晋升档/根晋升）各自持表管理，不经过此包装。
+    /// 单对象晋升测试入口：局部转发表下调 `promote_object_inner`。
+    /// 生产路径（边界修复/根晋升）各自持表管理，不经过此包装。
     #[cfg(test)]
     pub(crate) fn promote_object(&mut self, src: *mut JsObject) -> *mut JsObject {
         vm_debug!("promote_object: src={:p}", src);
-        let mut forwarding = std::mem::take(&mut self.gc_state.forwarding);
+        let mut forwarding = HashMap::with_hasher(FxBuildHasher);
         let result = self.promote_object_inner(src, &mut forwarding);
+        // 局部表随作用域丢弃，晋升克隆的转发改写已在其上完成。
         forwarding.clear();
-        self.gc_state.forwarding = forwarding;
         result
     }
 
@@ -53,7 +53,7 @@ impl Vm {
             });
         } else if src_ref.is_weak_map_obj() {
             // 值边随克隆晋升（强边）；弱键原样搬运，生死交晋升收敛后的
-            // 弱键定夺路径按同一转发表判定。
+            // 弱键定夺路径（现为原样保留）。
             weak_map::clone_weak_map_native_with_rewrite(src_ref, dst_ref, |value| {
                 self.promote_value_if_epoch_object(value, forwarding)
             });
@@ -145,7 +145,8 @@ impl Vm {
     /// global 对象的属性值（逃逸写直通后 epoch 值直落 global 槽，global 不入
     /// session 对象表，由 `rewrite_session_epoch_refs` 同趟改写）。
     /// `rewrite_object_values` 覆盖元素/meta/属性/proto/captured_this/home_object/
-    /// cell 值；克隆子树经 forwarding 去重，环与共享引用各克隆一次。
+    /// cell 值；克隆子树经局部转发表去重，环与共享引用各克隆一次。
+    /// 统一入口 Box 化后生产路径不产 epoch 对象，本方法为晋升族空转保留面。
     ///
     /// # 注意事项
     /// - 须在执行外的安全点调用（无在途 builtin 局部裸指针、dispatch 未重入）：
@@ -154,14 +155,12 @@ impl Vm {
     /// - session 对象表为空时 global 的 epoch 子引用仍须修复，不做空表早退。
     pub fn promote_session_epoch_refs(&mut self) {
         let objects = std::mem::take(&mut self.gc_state.session_object_ptrs);
-        let mut forwarding = std::mem::take(&mut self.gc_state.forwarding);
+        let mut forwarding = HashMap::with_hasher(FxBuildHasher);
         self.rewrite_session_epoch_refs(&objects, &mut forwarding);
-        // 弱键按收敛后的转发表定生死：未入表 epoch 键随 epoch 释放而亡。
+        // 弱键定夺退化为原样保留（定夺路径无克隆可重指，见
+        // resolve_weak_key_after_promotion）；调用保留以收口族内流程。
         self.rewrite_weak_map_keys_after_promotion(&objects, &mut forwarding);
-        forwarding.clear();
-        self.gc_state.forwarding = forwarding;
-        // 改写期新克隆已随晋升推入 gc_state 侧的表（此刻仅含克隆体），把取出的
-        // 旧对象按原相对序拼回同一表，表 = 克隆体 + 旧对象，各恰登记一次。
+        // 局部转发表随作用域丢弃：晋升新克隆已推入对象表，旧对象按原序拼回。
         self.gc_state.session_object_ptrs.extend(objects);
     }
 
@@ -173,8 +172,8 @@ impl Vm {
     /// 与列表同趟改写，无 native 盒只覆盖 JS 边。
     ///
     /// # 注意事项
-    /// - 调用方持有转发表期间不得让其它晋升路径改动 `gc_state.forwarding`；
-    ///   晋升新克隆推入的对象表由调用方决定何时拼回。
+    /// - 调用方持有局部转发表期间，晋升新克隆推入的对象表由调用方决定何时
+    ///   拼回；本方法不改表。
     /// - 死对象（不可达）的 epoch 子引用改写会把死对象一并克隆进 session——
     ///   克隆体无根，下一轮收集按死对象出表，不泄漏也不悬垂。
     pub(crate) fn rewrite_session_epoch_refs(
@@ -244,15 +243,15 @@ impl Vm {
     }
 
     /// 晋升收敛后的弱键定夺：对候选集（session 对象列表 + 已晋升克隆）中的
-    /// 每个弱表按转发表判定弱键——表内键改指新址，未入表 epoch 键为死键丢
-    /// 条目，session/P 键保留。
+    /// 每个弱表按定夺路径处理条目。统一入口 Box 化后定夺退化为原样保留
+    /// （无克隆可重指、reset 边界 mark 位无本轮可达性信息），本路径不改表项。
     ///
     /// # 副作用
-    /// - 每个弱表原位重建条目表；无死键时条目与容量口径不变。
+    /// - 每个弱表原位重建条目表（整表重建口径，条目内容不变）。
     ///
     /// # 边界与前提
     /// - 须在主改写路径（JS 边 + 值边）对转发表收敛完成后调用；转发表届时
-    ///   即最终强可达集。调用方负责其后的清表。
+    ///   即最终强可达集（统一入口树上恒空）。调用方负责其后的清表。
     /// - global 上的弱表经其晋升克隆进入转发表值集，候选集无需单列 global。
     pub(crate) fn rewrite_weak_map_keys_after_promotion(
         &mut self, objects: &[*mut JsObject], forwarding: &mut HashMap<*mut JsObject, *mut JsObject, FxBuildHasher>,
@@ -267,7 +266,7 @@ impl Vm {
                 if obj.is_weak_map_obj() {
                     weak_map::rewrite_weak_map_native(
                         obj,
-                        |key| crate::session_gc::resolve_weak_key_after_promotion(key, forwarding),
+                        |key| crate::session_gc::resolve_weak_key_after_promotion(key),
                         |value| value,
                     );
                 }
@@ -280,7 +279,7 @@ impl Vm {
                 if obj.is_weak_map_obj() {
                     weak_map::rewrite_weak_map_native(
                         obj,
-                        |key| crate::session_gc::resolve_weak_key_after_promotion(key, forwarding),
+                        |key| crate::session_gc::resolve_weak_key_after_promotion(key),
                         |value| value,
                     );
                 }
@@ -289,26 +288,19 @@ impl Vm {
     }
 
     /// 把根直接持有的 epoch 对象（顶层 var 寄存器、挂起句柄等）晋升进 session，
-    /// 并把根引用改写到克隆体。
+    /// 并把根引用改写到克隆体。统一入口 Box 化后生产路径无 epoch 对象，
+    /// 本方法为晋升族空转保留面（基准留存测量与图留存测试仍经此入口）。
     ///
     /// # 副作用
     /// - 每个根 epoch 对象深克隆进 session（含 native 状态盒，子引用递归晋升），
-    ///   账目计入克隆字节；根引用按转发表重写。
+    ///   账目计入克隆字节；根引用按局部转发表重写。
     ///
     /// # 注意事项
     /// - 须在执行外的安全点调用（无在途 builtin 局部裸指针、dispatch 未重入）：
     ///   本方法改写全部根寄存器槽，执行期调用将使 builtin 局部裸指针失效
     ///   （与 `collect_session_gc` 同前提）。
-    /// - 供 workload 后观测点（基准留存测量）使用：本方法之后存活集完全对
-    ///   session 可见，后续完整 GC 的留存账目不再漏"仅驻留 epoch arena 的对象"。
     /// - 与 `promote_session_epoch_refs` 互补：本方法处理根直接持有的 epoch 对象，
     ///   后者处理 session 对象持有的 epoch 子引用（闭包捕获等绕过写屏障的来源）。
-    /// - 弱键定夺（`rewrite_weak_map_keys_after_promotion`）只按根直接子树的
-    ///   转发表为判据：经 session 对象（非根）强持的 epoch 键不在表内会被判死
-    ///   丢条目，而本调用不释放 epoch——键强存活时条目即消失。配对调用
-    ///   （随后 `promote_session_epoch_refs`）由第二趟收敛转发表，但第一趟已丢
-    ///   条目不可复原；独立调用须根直接子树已覆盖全部强可达 epoch 对象
-    ///   （即不存在经 session 对象强持的弱键）方为合法时机。
     pub fn promote_rooted_epoch_objects(&mut self) {
         let mut epoch_roots = Vec::new();
         self.for_each_root(|value| {
@@ -322,23 +314,22 @@ impl Vm {
                 }
             }
         });
-        let mut forwarding = std::mem::take(&mut self.gc_state.forwarding);
+        // 局部转发表：晋升克隆去重共享与环，作用域结束即弃。
+        let mut forwarding = HashMap::with_hasher(FxBuildHasher);
         for ptr in epoch_roots {
             self.promote_object_inner(ptr, &mut forwarding);
         }
         crate::session_gc::rewrite_vm_roots(self, &forwarding);
-        // 弱表键定夺：根直接持有的弱表克隆其弱键按转发表判生死。
+        // 弱表键定夺退化为原样保留（定夺路径无克隆可重指，见
+        // resolve_weak_key_after_promotion）；调用保留以收口族内流程。
         self.rewrite_weak_map_keys_after_promotion(&[], &mut forwarding);
-        forwarding.clear();
-        self.gc_state.forwarding = forwarding;
     }
 
     /// 逃逸写屏障：写向全局/session 目标的对象值原样直通。
     ///
     /// session 对象持有 epoch 子引用是 GC 设计的一等存活态：epoch 边界 reset
-    /// 经 `promote_session_epoch_refs` 统一克隆晋升（转发表去重共享与环），
-    /// 执行期收集晋升档按同一转发表改写根与存活 session 对象子引用，两条
-    /// 路径覆盖全部跨界持有面；builtin 调用期内 epoch 不重置，帧局部裸指针
+    /// 经 `promote_session_epoch_refs` 统一克隆晋升（转发表去重共享与环）
+    /// 覆盖全部跨界持有面；builtin 调用期内 epoch 不重置，帧局部裸指针
     /// 全程有效。此处若克隆，同一逻辑对象分裂为原件与克隆两份，经克隆的写
     /// 对方经原件的读不可见（builtin 帧指针与逃逸目标双引用并存时即暴露）。
     pub(crate) fn promote_if_needed_for_write_ptr(&mut self, _target_ptr: *mut JsObject, value: JsValue) -> JsValue {
@@ -529,21 +520,5 @@ mod tests {
 
         assert!(!is_epoch_object(&vm, meta.get));
         assert!(!is_epoch_object(&vm, meta.set));
-    }
-
-    #[test]
-    fn promote_clears_forwarding_map() {
-        let mut vm = Vm::new();
-        let first = plain_object(&mut vm);
-        let promoted = vm.promote_object(first);
-        assert!(!promoted.is_null());
-        // 共享 forwarding 表必须在每次 promote 后清空，使后续 promote（或 GC 清扫）
-        // 永不观察到过期的 old->new 映射。
-        assert!(vm.gc_state.forwarding.is_empty());
-
-        let second = plain_object(&mut vm);
-        let promoted2 = vm.promote_object(second);
-        assert!(!promoted2.is_null());
-        assert!(vm.gc_state.forwarding.is_empty());
     }
 }

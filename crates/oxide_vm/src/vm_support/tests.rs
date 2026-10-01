@@ -225,8 +225,8 @@ fn reentry_pump_hits_alloc_cap() {
     assert!(err.contains("memory limit"), "unexpected error: {err}");
 }
 
-/// 直接恢复生成器一步：等价 `it.next()`——回归聚焦 GC 搬移后的状态盒
-/// 有效性（同 run 内恢复，不经 run 边界换表）。
+/// 直接恢复生成器一步：等价 `it.next()`——回归聚焦 GC 收集后的状态盒
+/// 有效性（原地 sweep 不搬移对象；同 run 内恢复，不经 run 边界换表）。
 fn resume_one_step(vm: &mut Vm, gen: JsValue) -> JsValue {
     match vm.resume_generator(gen, crate::generator::GeneratorResumeMode::Next(JsValue::undefined())) {
         Ok(crate::generator::GeneratorStep::Suspended { value }) => value,
@@ -248,12 +248,12 @@ fn generator_survives_object_sweep_and_resumes() {
     let mut vm = vm_with_low_threshold();
     let _ = run_source(&mut vm, "function* g(){ yield 1; yield 2; } globalThis.it = g(); globalThis.it.next(); 0");
 
-    // 直接触发完整收集（保留执行上下文）：存活生成器克隆进新 arena，
-    // 状态盒深拷贝为新 Box（走收集入口而非 run 边界：聚焦 GC 搬移本身）。
+    // 直接触发完整收集（保留执行上下文）：存活生成器原地保留、
+    // 状态盒不动（走收集入口而非 run 边界：聚焦原地收集本身）。
     vm.maybe_collect_session_gc();
     assert!(vm.session_gc_stats().total_collections > 0, "应触发对象收集");
 
-    // 从 global 取 sweep 重写后的生成器（同 run，模块表未换发，可恢复）。
+    // 从 global 取 sweep 后存活的生成器（同 run，模块表未换发，可恢复）。
     let it = global_prop(&vm, "it");
     assert_eq!(resume_one_step(&mut vm, it), JsValue::int(2), "sweep 后应恢复第二次 yield");
 }

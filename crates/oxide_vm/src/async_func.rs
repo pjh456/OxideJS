@@ -697,18 +697,9 @@ fn async_state_mut(obj: &JsObject) -> Option<&mut AsyncState> {
         None
     } else {
         // SAFETY: native_data 在 create_async_context 中由 Box::into_raw 分配，
-        // 生命周期与异步上下文对象一致；GC 路径（mark 边收集、执行期门控扫描）只读状态盒。
+        // 生命周期与异步上下文对象一致；GC 路径（mark 边收集）只读状态盒。
         Some(unsafe { &mut *ptr })
     }
-}
-
-/// 异步挂起帧是否持有 for-in 迭代器：执行期收集门控按指针扫描
-/// （迭代器体是堆上 Box，门控是保守门）。
-pub(crate) fn async_holds_suspended_for_in(obj: &JsObject) -> bool {
-    let Some(state) = async_state_mut(obj) else {
-        return false;
-    };
-    !state.suspended.for_in_iters.is_empty()
 }
 
 /// 异步状态内全部引用边的扁平列表（GC mark 边）：对象/字符串/BigInt 均产出，

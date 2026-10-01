@@ -959,18 +959,9 @@ fn generator_state_mut(obj: &JsObject) -> Option<&mut GeneratorState> {
         None
     } else {
         // SAFETY: native_data 在 create_generator_object 中由 Box::into_raw 分配，
-        // 生命周期与生成器对象一致；GC 路径（mark 边收集、执行期门控扫描）只读状态盒。
+        // 生命周期与生成器对象一致；GC 路径（mark 边收集）只读状态盒。
         Some(unsafe { &mut *ptr })
     }
-}
-
-/// 生成器挂起帧是否持有 for-in 迭代器：执行期收集门控按指针扫描
-/// （迭代器体是堆上 Box，门控是保守门）。
-pub(crate) fn generator_holds_suspended_for_in(obj: &JsObject) -> bool {
-    let Some(state) = generator_state_mut(obj) else {
-        return false;
-    };
-    !state.suspended.for_in_iters.is_empty()
 }
 
 /// 生成器状态内全部引用边的扁平列表（GC mark 边）：对象/字符串/BigInt 均产出，
@@ -1031,7 +1022,7 @@ pub(crate) fn generator_native_cell_edges(obj: &JsObject) -> Vec<*mut Cell> {
     out
 }
 
-/// 用转发函数重写状态快照中的所有 JsValue（session GC 移动式清扫 / promote 用）。
+/// 用转发函数重写状态快照中的所有 JsValue（promote 用）。
 pub(crate) fn rewrite_generator_native(obj: &JsObject, mut rewrite: impl FnMut(JsValue) -> JsValue) {
     let Some(state) = generator_state_mut(obj) else {
         return;

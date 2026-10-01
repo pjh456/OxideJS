@@ -13,10 +13,10 @@ use oxide_builtins::{array_buffer, data_view, disposable_stack, map, module, reg
 
 /// session 级 mark-sweep GC 的状态与统计。
 ///
-/// 回收 session arena 中不再可达的对象与 `Vm::new_string` 分配的 session 字符串：
-/// `mark` 从 VM roots 标记存活对象，`sweep` 将存活对象复制进新 arena（移动式）、
-/// 更新所有引用，并释放死对象；`sweep_session_strings` 按存活标记回收字符串。
-/// 所有统计字段供外部观测 GC 行为。
+/// 回收 session 对象表中不再可达的对象与 `Vm::new_string` 分配的 session 字符串：
+/// `mark` 从 VM roots 标记存活对象，`sweep` 原地清扫（存活对象带位保留、地址不变，
+/// 死对象本体、堆区与独占 upvalue 列表原地释放出表）；`sweep_session_strings`
+/// 按存活标记回收字符串。所有统计字段供外部观测 GC 行为。
 pub struct SessionGc {
     pub total_collections: u64,
     pub total_bytes_freed: u64,
@@ -51,8 +51,10 @@ impl SessionGc {
         self.clear_session_marks(vm);
     }
 
-    /// 只清 session 对象表的 mark 位。移动式 sweep 末尾的旧表对象已全释放/克隆
-    /// （克隆未标记），清位须与表重写同步执行，独立成臂供调用点按需取用。
+    /// 只清 session 对象表的 mark 位。原地 sweep 后死对象已出表、存活对象
+    /// 的位在活分支清掉，正常收集路径无残留位；此臂处理 strings-only 路径
+    /// 与收集前历史残留——残留 true 会让下一次 `mark` 的 DFS 在已标对象处
+    /// 短路，漏扫其新增引用边。
     pub(crate) fn clear_session_marks(&mut self, vm: &mut Vm) {
         for &ptr in &vm.gc_state.session_object_ptrs {
             if ptr.is_null() {
@@ -368,12 +370,13 @@ impl SessionGc {
         }
     }
 
-    /// 从 VM roots 标记存活的 session/epoch 对象、字符串与 BigInt，供 `sweep` 判定。
+    /// 从 VM roots 标记存活 session 对象、字符串与 BigInt，供 `sweep` 判定。
     ///
-    /// 对象 DFS 同时跟踪 session 与 epoch 两张表，两族 mark 位同字节，晋升收集按
-    /// “标记 ∩ epoch 表”取活集；字符串边走 rope 闭包传播（Cons 子节点与扁平化产物），
-    /// BigInt 边直接入存活集。roots 由 `Vm::for_each_root` 枚举，字段清单与
-    /// `rewrite_values` 一一对应、须同步。只置位不搬移，调用前须先 `clear_all_marks` 清位。
+    /// 对象 DFS 跟踪 session 对象单表（统一入口 Box 化后无 epoch 表）；perm
+    /// 对象不置位（其位跨收集残留会令 DFS 短路漏扫），走独立已访集防环。
+    /// 字符串边走 rope 闭包传播（Cons 子节点与扁平化产物），BigInt 边直接入
+    /// 存活集。roots 由 `Vm::for_each_root` 枚举，字段清单与 `rewrite_values`
+    /// 一一对应、须同步。只置位不搬移，调用前须先 `clear_all_marks` 清位。
     pub(crate) fn mark(&mut self, vm: &Vm) {
         vm_debug!("[GC] mark phase: {} roots", vm.gc_state.session_object_ptrs.len());
         let mut seeds = Vec::new();
@@ -464,20 +467,20 @@ impl SessionGc {
 
     /// 释放对象本体之外的堆外属性数据（元素区、元素 meta、hash 属性区、属性 meta
     /// 与各族 native 状态盒），按 capacity 经 `Box::from_raw` 各恰好释放一次，返回
-    /// 字节数。`obj_ptr` 为空时返回 0；`require_session` 为 true 时断言对象属
-    /// session epoch，epoch 原件走 false 分支。不含 upvalue 列表与对象本体，由调用方处理。
-    pub(crate) fn drop_object_heap_data(obj_ptr: *mut JsObject, require_session: bool) -> u64 {
+    /// 字节数。`obj_ptr` 为空时返回 0。不含 upvalue 列表与对象本体，由调用方处理。
+    ///
+    /// # 边界与前提
+    /// - 统一对象表内全部对象为 session 对象（统一入口 Box 化后生产路径无
+    ///   epoch 原件），本函数只服务表内对象的释放路径，不做归属断言。
+    pub(crate) fn drop_object_heap_data(obj_ptr: *mut JsObject) -> u64 {
         if obj_ptr.is_null() {
             return 0;
         }
-        // SAFETY: `obj_ptr` 在调用本辅助函数前已校验，指向 VM session arena 拥有的
-        // session 对象。只重建 JsObject::ensure_hash_props/ensure_prop_meta 分配的 Box，
+        // SAFETY: `obj_ptr` 在调用本辅助函数前已校验，指向 VM 拥有的 session 对象。
+        // 只重建 JsObject::ensure_hash_props/ensure_prop_meta 分配的 Box，
         // 且只在这里释放一次。
         unsafe {
             let obj = &mut *obj_ptr;
-            if require_session {
-                debug_assert!(obj.is_session_epoch());
-            }
             let mut freed_bytes = 0u64;
 
             let elems_ptr = obj.array_elements_raw() as *mut Vec<JsValue>;
@@ -529,19 +532,23 @@ impl SessionGc {
         }
     }
 
-    fn drop_session_object_heap_data(obj_ptr: *mut JsObject) -> u64 {
-        Self::drop_object_heap_data(obj_ptr, true)
-    }
-
     /// 释放一个死 session 对象：对象本体 + 堆数据 + upvalue 列表，返回释放字节数。
     ///
-    /// # 注意事项
-    /// 仅 sweep 死分支到达此处：只有存活对象被克隆、克隆与原件共享同一 upvalues
-    /// Box，死对象从不被克隆，其 upvalue 列表 Box 无其他持有者，在此恰好释放
-    /// 一次；存活分支绝不释放（克隆仍引用同一 Box）。释放后置空：死对象已移出
-    /// 对象表，收尾统一释放按表枚举不会再见，置空保证对象侧幂等、无陈旧指针。
-    fn drop_dead_session_object(obj_ptr: *mut JsObject) -> u64 {
-        let mut freed = Self::drop_session_object_heap_data(obj_ptr) + size_of::<JsObject>() as u64;
+    /// # 步骤
+    /// 1. 释放堆数据（元素区 / 属性区 / meta 区 / native 状态盒）。
+    /// 2. 释放 upvalue 列表 Box 并置空对象侧字段。
+    /// 3. 释放对象本体：堆载体（HEAP_BIT）经 `Box::from_raw` 释放；
+    ///    Bump 载体（晋升族克隆，仅测试形态）随旧 Bump 换新归还，不在此释放。
+    ///
+    /// # 边界与前提
+    /// - `obj_ptr` 必须非空：空指针时第 1 步返回 0，但本体字节与位域读取
+    ///   对空指针无效，调用点（sweep 死分支 / 收尾逐对象路径）先行跳过空位。
+    /// - 仅 sweep 死分支与统一收尾到达此处：死对象从不被克隆，upvalue 列表
+    ///   Box 无其他持有者，在此恰好释放一次；存活分支绝不释放（若有克隆仍
+    ///   引用同一 Box）。释放后死对象已移出对象表，收尾统一释放按表枚举
+    ///   不会再见，置空保证对象侧幂等、无陈旧指针。
+    pub(crate) fn drop_dead_session_object(obj_ptr: *mut JsObject) -> u64 {
+        let mut freed = Self::drop_object_heap_data(obj_ptr) + size_of::<JsObject>() as u64;
         // SAFETY: obj_ptr 来自 session 对象表，sweep 期间仍指向合法对象；
         // upvalues Box 仅本对象持有（死对象不克隆），保证恰好释放一次。
         unsafe {
@@ -553,8 +560,8 @@ impl SessionGc {
                 (*obj_ptr).upvalues = std::ptr::null_mut();
                 std::mem::drop(vec);
             }
-            // 释放对象本体：堆载体（HEAP_BIT）经 Box::from_raw 释放，arena 载体
-            // （克隆）随旧 arena 归还，不在此释放。
+            // 释放对象本体：堆载体（HEAP_BIT）经 Box::from_raw 释放，Bump
+            // 载体（克隆）随旧 Bump 换新归还，不在此释放。
             if (*obj_ptr).is_heap_alloc() {
                 drop(Box::from_raw(obj_ptr));
             }
@@ -576,172 +583,116 @@ impl SessionGc {
         bytes
     }
 
-    /// 移动式清扫 session 对象：存活对象复制进新 arena，死对象原地释放。
+    /// 原地清扫 session 对象：存活对象带位保留（清位并入活分支）、地址不变，
+    /// 死对象释放本体、堆区与独占 upvalue 列表并出表；弱表弱键在死对象释放前
+    /// 按 mark 位定生死（死键条目丢弃）。免转发表与根重写。
     ///
-    /// 按 GC mark 位分流：存活对象经 `clone_for_session_epoch` 复制（native 盒随族深拷）
-    /// 并登记 forwarding 旧址→新址，死对象释放本体、堆区与独占 upvalue；随后按转发表重写
-    /// 新对象的值边、native 边与 promise 结算链裸指针，转发查找使共享与环去重到同一克隆。
-    /// 最后重写全部根引用、换表并以新 Bump 接管 session epoch，旧 arena 整体归还并清 mark 位。
+    /// # 步骤
+    /// 1. 弱键定夺：对每个存活弱表按 mark 位重建条目表（此刻全部键对象
+    ///    仍分配，位域可读，见 `resolve_weak_key_sweep` 时序前提）。
+    /// 2. 分流：已标对象保留并清位（无残留位），未标对象原地释放出表。
+    /// 3. 表回写存活集，按存活重算对象口径账目，累计扫描/存活/死统计。
+    ///
+    /// # 副作用
+    /// - `session_object_ptrs` 仅剩存活对象；`session_bytes_allocated` 重算为
+    ///   存活对象字节（串/BigInt/cell 分量由各清扫路径自行补回）；
+    /// - `total_*` 与 `last_collection_*` 统计按对象口径更新（绝对赋值，
+    ///   串/BigInt/cell 清扫在其上累加）。
+    ///
+    /// # 边界与前提
+    /// - 调用前须完成 `mark`（位域为本次收集的判定依据）；
+    /// - 死对象从不被克隆，upvalue 列表 Box 无其他持有者，恰好一次释放成立。
     pub(crate) fn sweep(&mut self, vm: &mut Vm) -> u64 {
-        let old_ptrs = std::mem::take(&mut vm.gc_state.session_object_ptrs);
-        let mut forwarding = std::mem::take(&mut vm.gc_state.forwarding);
-        let new_arena = bumpalo::Bump::new();
-        let mut survivors = 0u64;
-        let mut dead = 0u64;
-        let mut freed_bytes = 0u64;
+        self.sweep_in_place(vm).2
+    }
 
-        for old_ptr in old_ptrs {
-            if old_ptr.is_null() {
+    /// 原地 sweep 核心：弱键定夺、死对象释放与出表、存活重算、统计累计。
+    /// `sweep`（完整收集）与 `collect_in_run`（执行期收集）共用，保证两条
+    /// 收集路径的弱键定夺口径一致。返回 (存活数, 死数, 释放字节)。
+    fn sweep_in_place(&mut self, vm: &mut Vm) -> (u64, u64, u64) {
+        let old_ptrs = std::mem::take(&mut vm.gc_state.session_object_ptrs);
+        let mut survivors = Vec::with_capacity(old_ptrs.len());
+
+        // 弱键定夺先于死对象释放：键对象（含死键）此刻全部仍分配，
+        // 对象头位域读取安全（时序前提见 resolve_weak_key_sweep）。
+        for &ptr in &old_ptrs {
+            if ptr.is_null() {
                 continue;
             }
-            // SAFETY: old_ptr 来自 session 对象表，sweep 运行期间仍指向合法对象。
-            let is_live = unsafe { (*old_ptr).is_gc_marked() };
-            let is_heap = unsafe { (*old_ptr).is_heap_alloc() };
-            if is_live {
-                survivors += 1;
-                let old_ref = unsafe { &*old_ptr };
-                let clone = old_ref.clone_for_session_epoch();
-                let new_ptr = new_arena.alloc(clone) as *mut JsObject;
-                let new_ref = unsafe { &mut *new_ptr };
-                if old_ref.is_map() {
-                    map::clone_map_native_with_rewrite(old_ref, new_ref, |value| value);
-                } else if old_ref.is_set() {
-                    set::clone_set_native_with_rewrite(old_ref, new_ref, |value| value);
-                } else if old_ref.is_weak_map_obj() {
-                    // 弱键原样搬运：键生死按转发表收敛后的判定（phase 2 与
-                    // 晋升定夺路径同判据），此处只深拷贝盒与改写值边。
-                    weak_map::clone_weak_map_native_with_rewrite(old_ref, new_ref, |value| value);
-                } else if old_ref.is_disposable_stack_obj() || old_ref.is_async_disposable_stack_obj() {
-                    disposable_stack::clone_dispose_native_with_rewrite(old_ref, new_ref, |value| value);
-                } else if old_ref.is_array_buffer_obj() {
-                    array_buffer::clone_array_buffer_native(old_ref, new_ref);
-                } else if old_ref.is_shared_array_buffer_obj() {
-                    array_buffer::clone_shared_array_buffer_native(old_ref, new_ref);
-                } else if old_ref.is_typed_array_obj() {
-                    typed_array::clone_typed_array_native_with_rewrite(old_ref, new_ref, |value| value);
-                } else if old_ref.is_data_view_obj() {
-                    data_view::clone_data_view_native_with_rewrite(old_ref, new_ref, |value| value);
-                } else if old_ref.is_promise_obj() {
-                    crate::promise::clone_promise_native_with_rewrite(old_ref, new_ref, |value| value);
-                } else if old_ref.is_async_obj() {
-                    crate::async_func::clone_async_native_with_rewrite(old_ref, new_ref, |value| value);
-                } else if old_ref.is_async_generator_obj() {
-                    crate::async_generator::clone_async_generator_native_with_rewrite(old_ref, new_ref, |value| value);
-                } else if old_ref.is_generator_obj() {
-                    crate::generator::clone_generator_native_with_rewrite(old_ref, new_ref, |value| value);
-                } else if old_ref.holds_compiled_regex() {
-                    // 已编译正则是 Box 深拷贝到新对象：源 Box 由 drop 释放，互不共享。
-                    regexp::clone_regexp_native(old_ref, new_ref);
-                } else if old_ref.is_module_namespace() {
-                    // 条目表深拷贝：`clone_for_session_epoch` 只浅拷贝 native_data 指针。
-                    module::clone_module_ns_native_with_rewrite(old_ref, new_ref, |value| value);
+            // SAFETY: ptr 来自 session 对象表登记，sweep 运行期间有效。
+            let obj = unsafe { &*ptr };
+            if obj.is_gc_marked() && obj.is_weak_map_obj() {
+                // SAFETY: 弱表 native 盒独占，整表重建在定夺期间无并发读者。
+                unsafe {
+                    weak_map::rewrite_weak_map_native(
+                        &mut *ptr,
+                        |key| resolve_weak_key_sweep(key),
+                        |value| value,
+                    );
                 }
-                forwarding.insert(old_ptr, new_ptr);
-                freed_bytes += Self::drop_session_object_heap_data(old_ptr);
-                // 释放原件本体：堆载体（HEAP_BIT）经 Box::from_raw 释放，arena
-                // 载体（克隆）随旧 arena 归还，不在此释放。
-                if is_heap {
-                    freed_bytes += size_of::<JsObject>() as u64;
-                    unsafe {
-                        drop(Box::from_raw(old_ptr));
-                    }
-                }
+            }
+        }
+
+        // 按 mark 位分流：存活保留清位，死对象释放本体、堆区与 upvalue 出表。
+        let mut dead = 0u64;
+        let mut freed_bytes = 0u64;
+        for &ptr in &old_ptrs {
+            if ptr.is_null() {
+                continue;
+            }
+            // SAFETY: ptr 来自 session 对象表登记，sweep 运行期间有效。
+            if unsafe { (*ptr).is_gc_marked() } {
+                // 原地 sweep 不搬移对象：存活对象带位保留，清位并入活分支
+                // （收集后无残留，残留 true 使下一次 mark DFS 短路漏标）。
+                unsafe { (*ptr).set_gc_mark(false) };
+                survivors.push(ptr);
             } else {
+                // SAFETY: 死对象从不被克隆，upvalue 列表 Box 无其他持有者。
+                freed_bytes += Self::drop_dead_session_object(ptr);
                 dead += 1;
-                freed_bytes += Self::drop_dead_session_object(old_ptr);
             }
         }
+        let live = survivors.len() as u64;
+        vm.gc_state.session_object_ptrs = survivors;
 
-        for &dst in forwarding.values() {
-            // SAFETY: forwarding 中的指针全是新分配且已初始化的对象。
-            let obj = unsafe { &mut *dst };
-            obj.rewrite_object_values(|value| {
-                if value.is_object() {
-                    let ptr = value.as_js_object_ptr();
-                    if let Some(&fwd) = forwarding.get(&ptr) {
-                        return JsValue::from_js_object(fwd);
-                    }
-                }
-                value
-            });
-            if obj.is_map() {
-                map::rewrite_map_native(obj, |value| rewrite_forwarded_value(value, &forwarding));
-            } else if obj.is_set() {
-                set::rewrite_set_native(obj, |value| rewrite_forwarded_value(value, &forwarding));
-            } else if obj.is_weak_map_obj() {
-                // 键按转发表 + mark 位定生死（死键条目丢弃），值走强边转发改写。
-                weak_map::rewrite_weak_map_native(
-                    obj,
-                    |key| resolve_weak_key_sweep(key, &forwarding),
-                    |value| rewrite_forwarded_value(value, &forwarding),
-                );
-            } else if obj.is_disposable_stack_obj() || obj.is_async_disposable_stack_obj() {
-                disposable_stack::rewrite_dispose_native(obj, |value| rewrite_forwarded_value(value, &forwarding));
-            } else if obj.is_typed_array_obj() {
-                typed_array::rewrite_typed_array_native(obj, |value| rewrite_forwarded_value(value, &forwarding));
-            } else if obj.is_data_view_obj() {
-                data_view::rewrite_data_view_native(obj, |value| rewrite_forwarded_value(value, &forwarding));
-            } else if obj.is_generator_obj() {
-                crate::generator::rewrite_generator_native(obj, |value| rewrite_forwarded_value(value, &forwarding));
-            } else if obj.is_promise_obj() {
-                crate::promise::rewrite_promise_native(obj, |value| rewrite_forwarded_value(value, &forwarding));
-                // 结算链指针是裸指针边（非 JsValue）：搬移换址后按转发表重定位，
-                // 旧克隆的结算传导仍指向后继克隆的新址。
-                crate::promise::repoint_promise_promoted_clone(obj, |ptr| {
-                    rewrite_forwarded_value(JsValue::from_js_object(ptr), &forwarding).as_js_object_ptr()
-                });
-            } else if obj.is_async_obj() {
-                crate::async_func::rewrite_async_native(obj, |value| rewrite_forwarded_value(value, &forwarding));
-            } else if obj.is_async_generator_obj() {
-                crate::async_generator::rewrite_async_generator_native(obj, |value| {
-                    rewrite_forwarded_value(value, &forwarding)
-                });
-            } else if obj.is_module_namespace() {
-                module::rewrite_module_ns_native(obj, |value| rewrite_forwarded_value(value, &forwarding));
-            }
-        }
-
-        rewrite_vm_roots(vm, &forwarding);
-
-        vm.gc_state.session_object_ptrs = forwarding.values().copied().collect();
-        forwarding.clear();
-        vm.gc_state.forwarding = forwarding;
-        vm.gc_state.session_epoch = new_arena;
+        // 对象口径重算：存活对象头 + 堆数据求和（串/BigInt/cell 分量不在此口径，
+        // 由各清扫路径按存活补回，与完整收集的最终账目一致）。
         vm.gc_state.session_bytes_allocated = vm
             .gc_state
             .session_object_ptrs
             .iter()
             .filter(|&&ptr| !ptr.is_null())
             .map(|&ptr| {
+                // SAFETY: 存活对象在 session 表中，sweep 运行期间有效。
                 let obj = unsafe { &*ptr };
                 size_of::<JsObject>() as u64 + Self::object_heap_data_bytes(obj)
             })
             .sum::<u64>() as usize;
 
-        let total_ptrs = survivors + dead;
-        if total_ptrs > 0 {
+        // 统计按对象口径累计（串/BigInt/cell 清扫在其上累加释放字节）。
+        self.total_bytes_freed = self.total_bytes_freed.saturating_add(freed_bytes);
+        self.total_objects_scanned += live + dead;
+        self.total_objects_live += live;
+        self.total_objects_dead += dead;
+        self.last_collection_objects_scanned = live + dead;
+        self.last_collection_objects_live = live;
+        self.last_collection_objects_dead = dead;
+        self.last_collection_bytes_freed = freed_bytes;
+
+        if live + dead > 0 {
             if dead == 0 {
-                vm_debug!("[GC] sweep phase -> no objects collected ({} live, {} dead)", survivors, dead);
+                vm_debug!("[GC] sweep phase -> no objects collected ({} live, {} dead)", live, dead);
             } else {
                 vm_debug!(
                     "[GC] sweep phase: {} scanned, {} live, {} dead, {} bytes",
-                    total_ptrs,
-                    survivors,
+                    live + dead,
+                    live,
                     dead,
                     freed_bytes
                 );
             }
         }
-
-        self.total_bytes_freed += freed_bytes;
-        self.total_objects_scanned += total_ptrs;
-        self.total_objects_live += survivors;
-        self.total_objects_dead += dead;
-        self.last_collection_objects_scanned = total_ptrs;
-        self.last_collection_objects_live = survivors;
-        self.last_collection_objects_dead = dead;
-        self.last_collection_bytes_freed = freed_bytes;
-        freed_bytes
+        (live, dead, freed_bytes)
     }
 
     /// 清扫 session `JsString`：保留 `mark()` 阶段记为存活的部分，其余经
@@ -884,10 +835,11 @@ impl SessionGc {
         }
     }
 
-    /// 完整收集编排：`mark` → `sweep`（对象移动式搬移）→ `sweep_session_strings` →
-    /// `sweep_session_bigints`，累加三类释放字节；字符串与 BigInt 地址稳定、无需
-    /// forwarding。更新各表、字节账目与 mark 位，累计收集次数与最近/最大/最小耗时，
-    /// 释放字节大于 0 或每满 100 次时输出统计摘要。
+    /// 完整收集编排：`mark` → `sweep`（对象原地清扫）→ `sweep_session_strings` →
+    /// `sweep_session_bigints` → `sweep_session_cells`，累加三类释放字节；
+    /// 对象与字符串、BigInt 地址均稳定、无需 forwarding。更新各表、字节账目与
+    /// mark 位，累计收集次数与最近/最大/最小耗时，释放字节大于 0 或每满 100 次
+    /// 时输出统计摘要。
     pub(crate) fn collect(&mut self, vm: &mut Vm) {
         let start = Instant::now();
 
@@ -922,9 +874,9 @@ impl SessionGc {
 
     /// 仅回收 session 字符串：完整 mark（对象只置位不搬移）→ 按存活集清扫字符串。
     ///
-    /// 刻意跳过对象 sweep 搬移——builtin/dispatch 层持有跨分配点的 session 对象
-    /// 裸指针，移动式 sweep 会使其悬垂；对象执行期回收仍只在 reset 统一进行。
-    /// 字符串每串独立 Box、地址稳定，清扫无需 forwarding 与根重写。
+    /// 刻意跳过对象清扫——轻量档只走串表释放，对象口径的回收归完整收集与
+    /// 执行期收集（dispatch 安全点）。字符串每串独立 Box、地址稳定，清扫
+    /// 无需 forwarding 与根重写。
     ///
     /// # 副作用
     /// - 清空全部对象 mark 位；按存活集释放死串；累计 `total_collections` 与时长统计；
@@ -1006,22 +958,22 @@ impl SessionGc {
         }
     }
 
-    /// 执行期收集：session 原地非移动 sweep。
+    /// 执行期收集：session 原地 sweep（与完整收集共用清扫核心）。
     ///
     /// 在 dispatch 安全点（循环顶 + `native_call_depth == 0`）回收单 run 分配
     /// 包络内的死对象：死 session 对象原地释放（堆区 + upvalue 列表 + 本体）
-    /// 并出表；存活对象不移动——地址不变、免 forwarding/rewrite，用户可观察
-    /// identity 不分裂。
+    /// 并出表，弱键按 mark 位定夺；存活对象不移动——地址不变、免转发表与
+    /// 根重写，用户可观察 identity 不分裂。
     ///
     /// # 边界与前提
-    /// - 调用方已完成门控（无活跃/挂起 for-in）：门控是保守门，迭代器体
-    ///   是堆上 Box，收集不搬移迭代器体；
+    /// - 无门控：for-in 迭代器体是堆上 Box，活跃形经 VM 表、挂起形经状态盒
+    ///   边进入根收集，键引用被 mark 标活，原地清扫不误释放；
     /// - 调用点为 dispatch 安全点（`native_call_depth == 0`），无在途 builtin
     ///   局部裸指针、dispatch 未重入。
     ///
     /// # 副作用
-    /// - `session_object_ptrs` 仅剩存活，`session_bytes_allocated` 按存活重算
-    ///   （串/BigInt 归 strings-only 路径，本路径不动，仅对象口径变化）；
+    /// - `session_object_ptrs` 仅剩存活，`session_bytes_allocated` 按存活整体
+    ///   重算（对象 + 串 + BigInt；本路径不扫串/BigInt，串 GC 归 strings-only）；
     /// - `gc_watermark` = 当前分配包络 + 阈值增量；
     /// - 累计/时长统计更新；mark 位全清（收集后无残留）。
     pub(crate) fn collect_in_run(&mut self, vm: &mut Vm) {
@@ -1033,44 +985,16 @@ impl SessionGc {
 
         self.mark(vm);
 
-        // 死 session 对象原地释放（堆区 + upvalue 列表 + 本体）并出表；存活
-        // 对象不动——地址不变，免 forwarding/rewrite。
-        let session_ptrs = std::mem::take(&mut vm.gc_state.session_object_ptrs);
-        let mut survivors = Vec::with_capacity(session_ptrs.len());
-        let mut dead_session = 0u64;
-        let mut session_freed = 0u64;
-        for &ptr in &session_ptrs {
-            if ptr.is_null() {
-                continue;
-            }
-            // SAFETY: ptr 来自 session 对象表登记，arena 存活期内有效。
-            if unsafe { (*ptr).is_gc_marked() } {
-                // 原地 sweep 不搬移对象：存活对象带位保留，清位并入活分支
-                // （收集后无残留，残留 true 使下一次 mark DFS 短路漏标）。
-                unsafe { (*ptr).set_gc_mark(false) };
-                survivors.push(ptr);
-            } else {
-                session_freed += Self::drop_dead_session_object(ptr);
-                dead_session += 1;
-            }
-        }
-        let live_session = survivors.len() as u64;
-        vm.gc_state.session_object_ptrs = survivors;
+        // 死 session 对象原地释放（堆区 + upvalue 列表 + 本体）并出表，弱键
+        // 按 mark 位定夺；存活对象不动——地址不变，免转发表与根重写。对象
+        // 口径统计由清扫核心累计，此处只补集合与账目。
+        self.sweep_in_place(vm);
 
         // 死 cell 随死对象出表：存活 cell 经 mark 种子 + 对象边入存活集，此处清扫。
         self.sweep_session_cells(vm);
 
-        // 对象口径重算：存活对象 + 存活串 + BigInt（串/BigInt 本路径不动，
-        // 随公式整体重算保持与 strings-only 口径一致）。
-        let mut object_bytes: usize = 0;
-        for &ptr in &vm.gc_state.session_object_ptrs {
-            if ptr.is_null() {
-                continue;
-            }
-            // SAFETY: 存活对象在 session 表中，arena 存活期内有效。
-            let obj = unsafe { &*ptr };
-            object_bytes += size_of::<JsObject>() + Self::object_heap_data_bytes(obj) as usize;
-        }
+        // 整体口径重算：对象分量已由清扫核心写入，此处补串与 BigInt 分量
+        // （本路径不扫串/BigInt，按当前表整体计入，与 strings-only 口径一致）。
         let mut string_bytes: usize = 0;
         for &ptr in &vm.gc_state.session_string_ptrs {
             if ptr.is_null() {
@@ -1080,30 +1004,18 @@ impl SessionGc {
             string_bytes += size_of::<JsString>() + unsafe { (*ptr).payload_bytes() };
         }
         let bigint_bytes = vm.gc_state.session_bigint_ptrs.borrow().len() * size_of::<num_bigint::BigInt>();
-        vm.gc_state.session_bytes_allocated = object_bytes + string_bytes + bigint_bytes;
+        vm.gc_state.session_bytes_allocated =
+            vm.gc_state.session_bytes_allocated.saturating_add(string_bytes).saturating_add(bigint_bytes);
 
         // 抬高下次触发水位：当前分配包络 + 阈值增量——存活包络超阈值时不每指令
         // 重复触发无死对象可回收的白跑。
         vm.gc_state.gc_watermark = vm.run_alloc_bytes().saturating_add(vm.gc_state.gc_threshold_cached);
-        vm.gc_state.gc_gate_retry_alloc = 0;
-
-        let live = live_session;
-        let dead = dead_session;
-        let freed_bytes = session_freed;
 
         let elapsed = start.elapsed();
         self.total_collections += 1;
         self.last_collection_duration_us = elapsed.as_micros() as u64;
         self.max_collection_duration_us = self.max_collection_duration_us.max(self.last_collection_duration_us);
         self.min_collection_duration_us = self.min_collection_duration_us.min(self.last_collection_duration_us);
-        self.total_bytes_freed = self.total_bytes_freed.saturating_add(freed_bytes);
-        self.total_objects_scanned += session_ptrs.len() as u64;
-        self.total_objects_live += live;
-        self.total_objects_dead += dead;
-        self.last_collection_objects_scanned = session_ptrs.len() as u64;
-        self.last_collection_objects_live = live;
-        self.last_collection_objects_dead = dead;
-        self.last_collection_bytes_freed = freed_bytes;
 
         vm_info!(
             "[GC] in-run cycle #{} end: {} scanned, {} live, {} dead, {:.1}ms, {} bytes freed",
@@ -1112,7 +1024,7 @@ impl SessionGc {
             self.last_collection_objects_live,
             self.last_collection_objects_dead,
             elapsed.as_secs_f64() * 1000.0,
-            freed_bytes,
+            self.last_collection_bytes_freed,
         );
     }
 
@@ -1165,56 +1077,38 @@ fn rewrite_forwarded_value(
         .unwrap_or(value)
 }
 
-/// 移动式 sweep 改写期的弱键判定：转发表内键改指新址；未入表的 session/
-/// epoch 键按 mark 位定生死（已标 = 强可达、随后晋升或原地存活，未标 =
-/// 死键丢弃）；P 键不可死，恒保留。
+/// 原地 sweep 的弱键判定：session 键按 mark 位定生死（已标 = 强可达保留，
+/// 未标 = 死键丢弃），非 session 键（perm 对象等）不可死、恒保留；symbol
+/// 键按值恒等、恒保留。
 ///
 /// # 边界与前提
-/// - 未入表键读归属位与 mark 位须解引用旧指针：调用点（sweep 改写相）
-///   旧 arena 尚未归还、清位发生在改写相之后，对象头位域可读。
-/// - 死键指针只作哈希键与位域读取，不 deref 其已释放的堆数据。
-pub(crate) fn resolve_weak_key_sweep(
-    key: weak_map::WeakKey, forwarding: &HashMap<*mut JsObject, *mut JsObject, FxBuildHasher>,
-) -> Option<weak_map::WeakKey> {
+/// - 时序前提：定夺须先于死对象本体释放执行——判定要读键对象本体的 mark
+///   位域，调用点（sweep 弱键定夺相）位于死对象释放相之前，全部键对象（含
+///   死键）此刻仍分配，位域读取安全；死键指针此后只作被丢弃的表项内容，
+///   不再被解引用。
+/// - 死键指针只读对象头位域，不解引用其堆数据（属性区等随释放销毁）。
+pub(crate) fn resolve_weak_key_sweep(key: weak_map::WeakKey) -> Option<weak_map::WeakKey> {
     let weak_map::WeakKey::Obj(ptr) = key else {
         return Some(key);
     };
     let mut_ptr = ptr as *mut JsObject;
-    if let Some(&new) = forwarding.get(&mut_ptr) {
-        return Some(weak_map::WeakKey::Obj(new as *const JsObject));
-    }
-    // SAFETY: 见函数边界与前提——sweep 改写相旧 arena 存活，对象头位域可读。
+    // SAFETY: 见时序前提——定夺相键对象仍分配，对象头位域可读。
     let old = unsafe { &*mut_ptr };
-    if (old.is_session_epoch() || old.is_epoch()) && !old.is_gc_marked() {
+    if old.is_session_epoch() && !old.is_gc_marked() {
         return None;
     }
     Some(key)
 }
 
-/// 晋升收敛后的弱键定夺：转发表内键改指新址；未入表 epoch 键 = 本轮晋升
-/// 未覆盖 = 死键丢弃；session 键不搬移、原样保留（惰性判定交下一轮 sweep）；
-/// P 键不可死，恒保留。
+/// 晋升收敛后的弱键定夺：统一入口 Box 化后晋升族在生产路径不产克隆
+/// （epoch 守卫恒假、无 epoch 对象），转发表恒空、无重指需求；reset 边界
+/// 的 mark 位已被前序收集清位，不携带本轮可达性信息。故定夺退化为原样
+/// 保留——弱键生死由原地 sweep 的 mark 位判定单一裁定，本路径不改表项。
 ///
 /// # 边界与前提
-/// - 晋升定夺路径（原地晋升 / in-run 晋升档）的转发表已收敛为最终强可达集，
-///   判据不含 mark 位（reset 边界路径此前已清位）。
-/// - 解引用仅限未入表键的归属位读取，调用点旧 arena 存活（epoch 释放 /
-///   清表发生在定夺之后）。
-pub(crate) fn resolve_weak_key_after_promotion(
-    key: weak_map::WeakKey, forwarding: &HashMap<*mut JsObject, *mut JsObject, FxBuildHasher>,
-) -> Option<weak_map::WeakKey> {
-    let weak_map::WeakKey::Obj(ptr) = key else {
-        return Some(key);
-    };
-    let mut_ptr = ptr as *mut JsObject;
-    if let Some(&new) = forwarding.get(&mut_ptr) {
-        return Some(weak_map::WeakKey::Obj(new as *const JsObject));
-    }
-    // SAFETY: 见函数边界与前提——定夺点旧 arena 存活，对象头位域可读。
-    let old = unsafe { &*mut_ptr };
-    if old.is_epoch() {
-        return None;
-    }
+/// - 不解引用任何对象本体（无位域读取），无定夺时序面；
+/// - 晋升族整体为死代码保留面，弱表族本体退役时一并删除。
+pub(crate) fn resolve_weak_key_after_promotion(key: weak_map::WeakKey) -> Option<weak_map::WeakKey> {
     Some(key)
 }
 

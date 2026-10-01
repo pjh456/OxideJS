@@ -134,9 +134,7 @@ impl Vm {
                 string_gc_watermark: gc_threshold,
                 gc_threshold_cached: gc_threshold,
                 gc_watermark: gc_threshold,
-                gc_gate_retry_alloc: 0,
                 pending_forced_collect: false,
-                forwarding: std::collections::HashMap::with_hasher(rustc_hash::FxBuildHasher),
             },
             symbols: SymbolState {
                 symbol_counter: 0,
@@ -271,9 +269,7 @@ impl Vm {
                 string_gc_watermark: gc_threshold,
                 gc_threshold_cached: gc_threshold,
                 gc_watermark: gc_threshold,
-                gc_gate_retry_alloc: 0,
                 pending_forced_collect: false,
-                forwarding: std::collections::HashMap::with_hasher(rustc_hash::FxBuildHasher),
             },
             symbols: SymbolState {
                 symbol_counter: 0,
@@ -408,63 +404,40 @@ impl Vm {
         self.gc_state.session_bytes_peak = 0;
         self.gc_state.run_alloc_peak = 0;
         self.gc_state.string_gc_watermark = self.kernel_core.config().session_gc_threshold;
-        // 两档收集水位与门控重扫锚同点复位（同式：阈值增量起算）。
+        // 执行期收集水位同点复位（同式：阈值增量起算）：旧 run 的存活包络
+        // 不延续到新 run 的触发判定。
         self.gc_state.gc_watermark = self.gc_state.gc_threshold_cached;
-        self.gc_state.gc_gate_retry_alloc = 0;
         self.gc_state.session_gc = crate::session_gc::SessionGc::new();
         self.symbols.reset();
         self.root_reg_limit = 0;
         self.active_reg_limit = 0;
     }
 
-    /// 释放全部 session 堆数据：session 对象堆数据 + upvalue 列表 + 对象本体
+    /// 释放全部 session 堆数据：session 对象（本体 + 堆数据 + upvalue 列表）
     /// + session 串 + BigInt box + upvalue cell box。
     ///
-    /// 供 `full_reset` 与 `Drop` 共用——堆载体对象本体（HEAP_BIT）经
-    /// `Box::from_raw` 释放，arena 载体（克隆）随调用方换新的 session Bump 归还，
-    /// 本函数不释放。原生盒在 GC 搬移/晋升时已深拷贝为单所有权，此处恰好释放一次。
+    /// 供 `full_reset` 与 `Drop` 共用——统一入口路径上对象本体全部为堆载体
+    /// （`Box::from_raw` 恰好释放一次；晋升族 Bump 克隆仅测试形态，本体随
+    /// 换新 Bump 归还），堆数据与 upvalue 列表各恰好释放一次。独占所有权
+    /// 免去重：死对象已出表不重复枚举，表内无共享 upvalue Box 的原件-克隆对
+    /// （死对象从不被克隆，生产路径不产克隆）。
     pub(crate) fn teardown_session_heap_data(&mut self) {
         // 迭代器体是堆上 Box：收尾路径（full_reset 与 Drop 共用）逐条释放，
         // 防 Vm 直接 drop 时表内残留体泄漏。
         self.iters.reset();
-        // upvalue 列表先于对象表清空释放：去重枚举依赖对象表尚存。
-        self.free_session_upvalues();
+        // 对象逐条独占释放：本体 + 堆数据 + upvalue 列表，顺序由
+        // drop_dead_session_object 收口。
         for ptr in self.gc_state.session_object_ptrs.drain(..) {
-            crate::session_gc::SessionGc::drop_object_heap_data(ptr, true);
-            // 释放对象本体：堆载体（HEAP_BIT）经 Box::from_raw 释放，arena
-            // 载体（克隆）随换新 Bump 归还，不在此释放。
-            if !ptr.is_null() && unsafe { (*ptr).is_heap_alloc() } {
-                unsafe {
-                    drop(Box::from_raw(ptr));
-                }
+            if ptr.is_null() {
+                continue;
             }
+            // SAFETY: ptr 来自 session 对象表登记，收尾时仍指向合法对象；
+            // 表独占持有，无其他释放点。
+            crate::session_gc::SessionGc::drop_dead_session_object(ptr);
         }
         self.free_session_string_heap_data();
         self.free_session_bigint_heap_data();
         self.gc_state.free_cells();
-    }
-
-    /// 集中释放 upvalue 列表（`Box<Vec<*mut Cell>>`）：原件与晋升克隆经
-    /// `clone_for_session_epoch` 共享同一 Box 分配，逐对象路径释放会双放，
-    /// 只在此处按指针去重后统一释放。须在对象表清空之前调用
-    /// （枚举仍存对象完成去重），此时对象已死、Box 无其他读者。
-    fn free_session_upvalues(&mut self) {
-        let mut seen = std::collections::HashSet::new();
-        for &ptr in self.gc_state.session_object_ptrs.iter() {
-            if ptr.is_null() {
-                continue;
-            }
-            // SAFETY: ptr 来自 session 对象表登记，收尾时仍指向合法对象。
-            let up = unsafe { (*ptr).upvalues };
-            if up.is_null() || !seen.insert(up) {
-                continue;
-            }
-            // SAFETY: up 由 set_upvalues 的 Box::into_raw 分配，去重保证恰好释放一次。
-            unsafe {
-                drop(Box::from_raw(up as *mut Vec<*mut oxide_types::object::Cell>));
-                (*ptr).upvalues = std::ptr::null_mut();
-            }
-        }
     }
 
     /// 释放 VM 内建原型 P 对象（生成器/Promise/异步族与 Object 原型）的堆外属性区。
@@ -576,8 +549,8 @@ impl Vm {
     pub fn reset(&mut self) {
         self.clear_execution_state();
         self.maybe_collect_session_gc();
-        // session 对象可持有 epoch 子引用（函数对象捕获、原生盒直插）：
-        // 把 epoch 子引用原地克隆晋升进 session，避免悬垂指针。
+        // 晋升族空转调用保留：统一入口 Box 化后生产路径不产 epoch 对象，
+        // 本调用在统一表上恒无操作（随晋升族整体退役）。
         self.promote_session_epoch_refs();
         self.bytecode = Arc::default();
         // 表代际注册表不动：存活函数对象（含挂起帧 callee）按创建期代际仍须
@@ -586,9 +559,8 @@ impl Vm {
         self.active_immutables = std::ptr::slice_from_raw_parts(std::ptr::null(), 0);
         // 单 run 分配包络按 run 边界重起算（与 run_alloc_bytes 起算口径同源）。
         self.gc_state.run_alloc_peak = 0;
-        // 两档收集水位与包络同起算：旧 run 的存活包络不延续到新 run 的触发判定。
+        // 执行期收集水位与包络同起算：旧 run 的存活包络不延续到新 run 的触发判定。
         self.gc_state.gc_watermark = self.gc_state.gc_threshold_cached;
-        self.gc_state.gc_gate_retry_alloc = 0;
         self.root_reg_limit = 0;
         self.active_reg_limit = 0;
     }

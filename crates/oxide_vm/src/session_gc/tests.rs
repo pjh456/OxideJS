@@ -224,7 +224,8 @@ fn sweep_preserves_cycle_and_collects_unreachable() {
     vm.gc_state.session_gc = gc;
 
     assert_eq!(vm.gc_state.session_object_ptrs.len(), 2);
-    assert!(!vm.gc_state.session_object_ptrs.contains(&root_session));
+    // 原地 sweep 不搬移存活对象：根与子保持原址（克隆体即原对象），死对象出表。
+    assert!(vm.gc_state.session_object_ptrs.contains(&root_session));
     assert!(!vm.gc_state.session_object_ptrs.contains(&dead_session));
     assert!(!vm
         .gc_state
@@ -262,37 +263,17 @@ fn sweep_preserves_array_elements_and_collects_dead_element_object() {
     let _ = gc.sweep(&mut vm);
     vm.gc_state.session_gc = gc;
 
-    // sweep 复制存活对象并把 VM 根改写为新 arena 指针：regs[0] 是数组的新地址，
-    // 旧指针已随旧 arena 释放，不可再用。
-    let arr_new = vm.regs[0].as_js_object_ptr();
-    let live_session = unsafe { (*arr_new).get_prop_at(0).as_js_object_ptr() };
+    // 原地 sweep 不搬移存活对象：数组保持原址、根指针不变，死元素对象
+    // 原地释放并出表，存活集合只剩数组与元素 0 的对象。
+    let arr_addr = vm.regs[0].as_js_object_ptr();
+    assert_eq!(arr_addr, arr_session, "存活数组原地保留，根指针不变");
+    let live_session = unsafe { (*arr_addr).get_prop_at(0).as_js_object_ptr() };
     assert_eq!(unsafe { (*live_session).prop_count() }, 0);
-    assert_eq!(unsafe { (*arr_new).prop_count() }, 2);
-    assert_eq!(unsafe { (*arr_new).get_prop_at(0).as_js_object_ptr() }, live_session);
-    // 元素 1 引用已断开：死元素对象被回收，存活集合只剩数组与元素 0 的对象。
-    assert_eq!(unsafe { (*arr_new).get_prop_at(1) }, JsValue::undefined());
+    assert_eq!(unsafe { (*arr_addr).prop_count() }, 2);
+    assert_eq!(unsafe { (*arr_addr).get_prop_at(0).as_js_object_ptr() }, live_session);
+    // 元素 1 引用已断开：死元素对象被回收。
+    assert_eq!(unsafe { (*arr_addr).get_prop_at(1) }, JsValue::undefined());
     assert_eq!(vm.gc_state.session_object_ptrs.len(), 2);
-}
-
-#[test]
-fn forwarding_is_cleared_after_sweep() {
-    let mut vm = Vm::new();
-    let root = plain_object(&mut vm);
-    let child = plain_object(&mut vm);
-    unsafe {
-        (*root).set_prop_at(0, JsValue::from_js_object(child));
-    }
-    let root_session = vm.promote_object(root);
-    vm.regs[0] = JsValue::from_js_object(root_session);
-    let _ = vm.promote_object(child);
-    let mut gc = std::mem::take(&mut vm.gc_state.session_gc);
-    gc.mark(&vm);
-    let _ = gc.sweep(&mut vm);
-    vm.gc_state.session_gc = gc;
-
-    // 复用的 forwarding 表必须在 sweep 后清空，否则 promote 会观察到指向已释放
-    // arena 的过期 old->new 条目。
-    assert!(vm.gc_state.forwarding.is_empty());
 }
 
 fn vm_with_low_threshold() -> Vm {
@@ -402,7 +383,7 @@ fn gc_stats_summary_includes_collection() {
 }
 
 #[test]
-fn moving_sweep_rewrites_global_root_edges() {
+fn full_collect_keeps_global_root_edges_in_place() {
     let mut vm = vm_with_low_threshold();
     let obj = plain_object(&mut vm);
     unsafe {
@@ -426,7 +407,10 @@ fn moving_sweep_rewrites_global_root_edges() {
         .expect("global slot");
     let new_value = global.get_prop_at(pos);
     assert!(new_value.is_object());
-    assert!(!std::ptr::eq(new_value.as_js_object_ptr(), old_ptr));
+    assert!(
+        std::ptr::eq(new_value.as_js_object_ptr(), old_ptr),
+        "原地 sweep 不搬移对象：global 根边原址不变"
+    );
     assert_eq!(unsafe { (*new_value.as_js_object_ptr()).get_prop_at(0) }, JsValue::int(42));
 }
 
@@ -508,8 +492,8 @@ fn weak_map_object(vm: &mut Vm) -> *mut JsObject {
     vm.alloc_object(obj)
 }
 
-/// 弱键不产 mark 边：强可达键跨完整收集保留，条目完整、键与值边改写
-/// 到搬移后新址，经改写后的根读回同一克隆体。
+/// 弱键不产 mark 边：强可达键跨完整收集保留，条目完整、键与值边原地不变，
+/// 经原键读回同一对象。
 #[test]
 fn weak_map_entry_survives_promotion_with_live_key() {
     let mut vm = vm_with_low_threshold();
@@ -540,13 +524,13 @@ fn weak_map_entry_survives_promotion_with_live_key() {
 
     let live_wm = unsafe { &*vm.regs[0].as_js_object_ptr() };
     assert_eq!(oxide_builtins::weak_map::weak_map_entry_count(live_wm), 1, "强可达键的条目须在收集后存活");
-    // 键经移动式 sweep 搬移，条目键改指克隆体：按改写后的根读回。
+    // 原地 sweep 不搬移对象：键与值边原地保留，按原键读回同一对象。
     let stored = oxide_builtins::weak_map::weak_map_probe_get(live_wm, vm.regs[1]);
-    assert_eq!(stored, vm.regs[2], "值须按改写后的键读回同一克隆体");
-    assert!(!std::ptr::eq(stored.as_js_object_ptr(), value), "值边须改写到搬移后新址");
+    assert_eq!(stored, vm.regs[2], "值须按原键读回同一对象");
+    assert!(std::ptr::eq(stored.as_js_object_ptr(), value), "值边原地不变");
 }
 
-/// 弱键强不可达 = 死键：收集按转发表判定丢条目，表不留死键残影。
+/// 弱键强不可达 = 死键：收集按 mark 位定夺丢条目，表不留死键残影。
 #[test]
 fn weak_map_entry_dropped_when_key_unrooted() {
     let mut vm = vm_with_low_threshold();
@@ -575,8 +559,7 @@ fn weak_map_entry_dropped_when_key_unrooted() {
     assert_eq!(oxide_builtins::weak_map::weak_map_entry_count(live_wm), 0, "死键条目须在收集时丢弃");
 }
 
-/// 值边为强边：值对象唯一引用仅来自值边时仍入存活集，搬移后条目按转发表
-/// 改写指到新址。
+/// 值边为强边：值对象唯一引用仅来自值边时仍入存活集，原地保留原址。
 #[test]
 fn weak_map_value_edge_keeps_value_alive() {
     let mut vm = vm_with_low_threshold();
@@ -605,19 +588,18 @@ fn weak_map_value_edge_keeps_value_alive() {
     vm.gc_state.session_gc = gc;
 
     let live_wm = unsafe { &*vm.regs[0].as_js_object_ptr() };
-    // 键经移动式 sweep 搬移，条目键改指克隆体：按改写后的根读回。
+    // 原地 sweep 不搬移对象：键与值边原地保留，按原键读回同一对象。
     let stored = oxide_builtins::weak_map::weak_map_probe_get(live_wm, vm.regs[1]);
     assert!(stored.is_object(), "唯一经值边引用的值须存活");
-    assert!(!std::ptr::eq(stored.as_js_object_ptr(), value_session), "值边须在搬移后改写到新址");
+    assert!(std::ptr::eq(stored.as_js_object_ptr(), value_session), "值边原地不变");
     assert!(vm.is_session_ptr(stored.as_js_object_ptr()));
     // key、value、wm 三对象均存活（key/value 经寄存器根、wm 经寄存器根），
-    // 搬移后各占一份克隆。
+    // 原地保留原址。
     assert_eq!(vm.gc_state.session_object_ptrs.len(), 3);
 }
 
-/// in-run 原地 sweep·死键面：无强根的 session 键在原地 sweep 判死出表；
-/// P 键不可死，条目保留且按原键读回。原地 sweep 不动弱表条目表，死键条目
-/// 的定夺交后续单 mark 位判据，此处只钉死键对象出表 + P 键条目保留。
+/// in-run 原地 sweep·死键面：无强根的 session 键在原地 sweep 按 mark 位判死，
+/// 死键条目丢弃、死键对象释放出表；P 键不可死，条目保留且按原键读回。
 #[test]
 fn weak_map_dead_key_freed_by_in_run_sweep() {
     let mut vm = vm_with_threshold(65536);
@@ -642,6 +624,11 @@ fn weak_map_dead_key_freed_by_in_run_sweep() {
     assert_eq!(vm.session_gc_stats().total_collections, 1, "in-run 收集应跑一轮");
     assert!(!vm.gc_state.session_object_ptrs.contains(&key), "死键对象须出表");
     let live_wm = unsafe { &*vm.regs[0].as_js_object_ptr() };
+    assert_eq!(
+        oxide_builtins::weak_map::weak_map_entry_count(live_wm),
+        1,
+        "死键条目须丢弃，仅 P 键条目保留"
+    );
     assert_eq!(
         oxide_builtins::weak_map::weak_map_probe_get(live_wm, p_key),
         JsValue::int(7),
@@ -1122,8 +1109,8 @@ fn global_prop_opt(vm: &Vm, name: &str) -> Option<JsValue> {
 }
 
 /// 闭包捕获变量跨对象 sweep 存活：reset 触发完整收集（session_epoch 替换）。
-/// cell 独立堆分配、不入 session arena，arena 整体回收时不连带释放——否则跨
-/// arena 存活的 cell 指针悬垂；sweep 只重写 cell.value 中的对象引用，值跨搬移保留。
+/// cell 独立堆分配、地址稳定，原地 sweep 不搬移对象、不触碰 cell 结构——
+/// 跨收集的 cell 指针与值均保留。
 #[test]
 fn closure_cell_survives_object_sweep() {
     let mut vm = vm_with_threshold(1);
@@ -1134,11 +1121,11 @@ fn closure_cell_survives_object_sweep() {
     .expect("run1");
     assert!(!vm.gc_state.session_cell_ptrs.borrow().is_empty(), "run1 应分配 upvalue cell");
 
-    // reset 触发对象 sweep：存活对象搬到新 arena，旧 arena 释放。
+    // reset 触发对象 sweep：存活对象原地保留，死对象原地释放。
     vm.reset();
     assert!(vm.session_gc_stats().total_collections > 0, "reset 应触发对象收集");
 
-    // 跨搬移后从 global 重新取 inc 函数对象：upvalue cell 指针稳定、值保留。
+    // 收集后从 global 重新取 inc 函数对象：upvalue cell 指针稳定、值保留。
     let inc_val = global_prop_opt(&vm, "inc").expect("inc 应挂在 global 上");
     let obj = unsafe { &*inc_val.as_js_object_ptr() };
     let cells = obj.upvalues_slice();
@@ -1149,8 +1136,8 @@ fn closure_cell_survives_object_sweep() {
 }
 
 /// 私有字段类的 brand cell 跨对象 sweep 存活：`@@class_brand` upvalue cell
-/// 存类 brand 对象，sweep 后其值经 forwarding 重写为搬移后的新对象地址。
-/// cell 独立堆分配，指针在周边 arena 回收后仍稳定，值不被内存复用覆盖。
+/// 存类 brand 对象，原地 sweep 后其值为原 brand 对象（地址不变）。cell 独立
+/// 堆分配、地址稳定，原地 sweep 不触碰 cell 结构体。
 #[test]
 fn private_brand_cell_survives_object_sweep() {
     let mut vm = vm_with_threshold(1);
@@ -1346,8 +1333,8 @@ impl Drop for NsCleanup {
 }
 
 /// 模块 ns cell 根：依赖模块可重赋导出挂共享 cell（条目表 `Cell` 面），ns 对象
-/// 经 global 可达；清寄存器仅留 ns 根后完整收集，cell 跨移动式 sweep 存活（深拷
-/// 表保留同一 cell 指针），`module_ns_export` 读回正确。
+/// 经 global 可达；清寄存器仅留 ns 根后完整收集，cell 跨原地 sweep 存活
+/// （ns 对象与条目表原地不变），`module_ns_export` 读回正确。
 #[test]
 fn module_ns_cell_root_survives_collect() {
     let cwd = std::env::current_dir().expect("cwd");
@@ -1385,10 +1372,10 @@ fn module_ns_cell_root_survives_collect() {
         "模块 ns cell 应跨完整收集存活"
     );
 
-    // 移动式 sweep 后 ns 晋升 session（原件出表），从 global 重取克隆读回。
+    // 原地 sweep 不搬移对象：ns 与条目表原地保留，从 global 重取读回。
     let ns_val2 = global_prop_opt(&vm, "__ns").expect("__ns 应挂在 global 上");
     let ns_obj2 = unsafe { &*ns_val2.as_js_object_ptr() };
-    assert!(module::module_ns_cell_edges(ns_obj2).contains(&cell_ptr), "克隆应共享同一 cell 指针");
+    assert!(module::module_ns_cell_edges(ns_obj2).contains(&cell_ptr), "ns 条目表应保留同一 cell 指针");
     let name_si = vm.kernel_core().perm_interner().intern("x").0;
     let query = module::module_ns_export(ns_obj2, name_si).expect("x 应可导出");
     match query {
@@ -1705,12 +1692,14 @@ fn in_run_collection_reclaims_dead_and_keeps_live() {
     assert_eq!(a, Some(JsValue::int(1)));
 }
 
-/// for-in 门控双形钉住：活跃形（迭代器在 `vm.iters` 表内）与挂起形
-/// （生成器在 for-in 内 yield，迭代器搬入状态盒）都须拦下执行期收集——
-/// 门控是保守门，迭代器体为堆上 Box；门控开后方可收集。
+/// 无门控 for-in 双形钉住：活跃形（迭代器在 `vm.iters` 表内）与挂起形
+/// （生成器在 for-in 内 yield，迭代器搬入状态盒）存在时执行期收集照常执行
+/// ——迭代器键引用经根收集标活、原地清扫不搬移对象，无门控亦不误释放，
+/// yield 值跨收集保持正确。
 #[test]
-fn active_and_suspended_for_in_block_in_run_collection() {
-    // 活跃形：迭代器直接压在 vm.iters，O(1) 子句即拦。
+fn active_and_suspended_for_in_do_not_block_in_run_collection() {
+    // 活跃形：迭代器直接压在 vm.iters，收集照常执行；死对象原地释放，
+    // 迭代器键经根收集标活。
     let mut vm = vm_with_threshold(65536);
     let dead = plain_object(&mut vm);
     let iter = Box::into_raw(Box::new(crate::vm::ForInIter {
@@ -1720,17 +1709,11 @@ fn active_and_suspended_for_in_block_in_run_collection() {
     vm.iters.push_for_in(iter);
 
     vm.maybe_collect_in_run();
-    assert_eq!(vm.session_gc_stats().total_collections, 0, "活跃 for-in：门控关闭，不收集");
-    assert!(vm.gc_state.session_object_ptrs.contains(&dead), "死对象仍在 session 表");
-
-    // 迭代器出表后同一调用点即应收集。
-    vm.iters.pop_for_in();
-    vm.maybe_collect_in_run();
-    assert_eq!(vm.session_gc_stats().total_collections, 1, "门控开：应收集");
+    assert_eq!(vm.session_gc_stats().total_collections, 1, "无门控：活跃 for-in 存在时收集照常执行");
     assert!(!vm.gc_state.session_object_ptrs.contains(&dead), "死 session 对象应被原地释放并出表");
 
-    // 挂起形（拦截）：生成器在 for-in 内 yield 后 run 结束，迭代器经
-    // 状态盒持有（vm.iters 已空）——收集点必须拦下。
+    // 挂起形：生成器在 for-in 内 yield 后 run 结束，迭代器经状态盒持有
+    // （vm.iters 已空）——键经状态盒边入根收集标活，收集照常执行。
     let mut vm = vm_with_threshold(65536);
     vm.run(&Arc::new(compile(
         "var o = { a: 1, b: 2 }; \
@@ -1739,10 +1722,9 @@ fn active_and_suspended_for_in_block_in_run_collection() {
     )))
     .expect("run1");
     assert!(vm.iters.for_in_iters.is_empty(), "挂起时迭代器已搬入状态盒");
-    assert!(vm.suspended_holds_for_in(), "生成器状态盒应持挂起 for-in 迭代器");
 
     vm.maybe_collect_in_run();
-    assert_eq!(vm.session_gc_stats().total_collections, 0, "挂起 for-in：门控关闭，不收集");
+    assert_eq!(vm.session_gc_stats().total_collections, 1, "挂起 for-in：收集照常执行");
     // 挂起生成器对象保持原址（未释放）：状态盒与迭代器一体存活。
     let gen_in_session = vm
         .gc_state
@@ -1751,9 +1733,8 @@ fn active_and_suspended_for_in_block_in_run_collection() {
         .any(|&p| !p.is_null() && unsafe { (*p).type_tag == JsObject::OBJ_TYPE_GENERATOR });
     assert!(gen_in_session, "挂起生成器应仍在 session 表");
 
-    // 挂起形（放行）：同一 run 内续跑至 for-in 结束（迭代器释放），
-    // 阈值 1 使指令边界自动触发：挂起期门控关（Bump 不换新），完成后
-    // 门控开、执行期收集放行；yield 值跨收集保持正确。
+    // 同一 run 内续跑至 for-in 结束（迭代器释放），阈值 1 使指令边界自动触发
+    // 收集：挂起期与完成期收集均照常放行，yield 值跨收集保持正确。
     let mut vm = vm_with_threshold(1);
     vm.run(&Arc::new(compile(
         "var o = { a: 1, b: 2 }; \
@@ -1764,10 +1745,9 @@ fn active_and_suspended_for_in_block_in_run_collection() {
     .expect("run2");
     assert_eq!(vm.lookup_str(global_prop_opt(&vm, "v1").expect("v1")), Some("a".to_string()));
     assert_eq!(vm.lookup_str(global_prop_opt(&vm, "v2").expect("v2")), Some("b".to_string()));
-    assert!(!vm.suspended_holds_for_in(), "for-in 结束后状态盒不应再持迭代器");
-    assert!(vm.session_gc_stats().total_collections >= 1, "完成后门控开：执行期收集应放行");
+    assert!(vm.session_gc_stats().total_collections >= 1, "执行期收集应已放行");
 
-    // 生成器对象跨收集仍为合法生成器（晋升 session 或保持 epoch 完好）。
+    // 生成器对象跨收集仍为合法生成器（session 对象原地保留）。
     let g = global_prop_opt(&vm, "g").expect("g 应挂在 global");
     assert!(unsafe { (*g.as_js_object_ptr()).is_generator_obj() }, "收集后生成器对象应完好");
 }

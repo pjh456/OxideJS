@@ -1,5 +1,5 @@
-//! 生成器 × session GC 回归：promote 后 full_reset 释放 epoch 原对象与 session 克隆
-//! 的堆数据（各单所有权），不 double-free、不悬垂，VM 继续可用。
+//! 生成器 × session GC 回归：full_reset 逐对象释放 session 生成器（本体 + 堆数据
+//! + upvalue 列表，各单所有权），不 double-free、不悬垂，VM 继续可用。
 //! sweep 变体与闭包捕获变体见 `vm_support.rs` 内部测试（需 crate 内 `resume_generator`
 //! 在模块表未重建时恢复执行，integration 层无法触达）。
 
@@ -15,8 +15,8 @@ fn compile(source: &str) -> oxide_bytecode::module::CompiledModule {
     Compiler::new().compile(&program).expect("compile")
 }
 
-/// promote + full_reset 变体：global 根持有生成器克隆，full_reset 释放 epoch 原对象
-/// 与 session 克隆的堆数据（各单所有权），不 double-free、不悬垂，VM 继续可用。
+/// full_reset 变体：global 根持有生成器，full_reset 释放其本体、堆数据与
+/// upvalue 列表（各单所有权），不 double-free、不悬垂，VM 继续可用。
 #[test]
 fn generator_promoted_to_global_survives_full_reset_cleanly() {
     let mut vm = Vm::new();
@@ -24,10 +24,9 @@ fn generator_promoted_to_global_survives_full_reset_cleanly() {
         "function* g(){ yield 1; yield 2; } globalThis.it = g(); globalThis.it.next(); 0",
     )))
     .expect("run1");
-    assert!(vm.session_object_count() > 0, "生成器挂 global 应被 promote 进 session");
+    assert!(vm.session_object_count() > 0, "生成器挂 global 应为 session 对象");
 
-    // global 含 session 对象即强制重建：旧 global 丢弃、it 槽不存在，全程无悬垂访问
-    // （修复前 epoch 原对象释放共享状态盒 → 读已释放内存）。
+    // global 含 session 对象即强制重建：旧 global 丢弃、it 槽不存在，全程无悬垂访问。
     vm.full_reset();
     assert_eq!(vm.session_object_count(), 0, "full_reset 应清空 session 对象");
 
