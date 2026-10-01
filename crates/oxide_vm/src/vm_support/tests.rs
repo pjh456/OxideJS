@@ -894,6 +894,38 @@ fn reset_clears_runtime_state_like_rerun() {
     assert!(vm.immutables().is_empty());
 }
 
+/// for-in 内抛错且被调函数无 try/catch、经内联调用路径（内置 map 回调）：
+/// unwind 只关 for-of，残留 for-in 体留在 VM 表内；restore 以快照向量整体替换
+/// 表。残留体须先逐条释放，否则堆 Box 随旧向量丢弃。本钉固化 restore 契约：
+/// 还原后 for-in 表与快照一致（顶层调用方无在途 for-in，快照为空）。
+#[test]
+fn inline_for_in_escape_restores_snapshot_and_releases_residual_body() {
+    let mut vm = Vm::new();
+    let allocator = oxide_parser::Allocator::default();
+    let program = oxide_parser::parse(
+        &allocator,
+        "var o = { a: 1 }; var hits = 0; \
+         [0].map(function () { for (var k in o) { hits = hits + 1; throw new Error('boom'); } });",
+    )
+    .expect("parse failed");
+    let module = oxide_compiler::compiler::Compiler::new()
+        .compile(&program)
+        .expect("compile failed");
+    let result = vm.run(&Arc::new(module));
+    assert!(result.is_err(), "未捕获异常应返回 Err");
+    // 回调 for-in 体经内联路径执行过一轮（hits 记 1），证明场景落在内联调用
+    // 路径且残留体确曾入表；restore 后表须还原为快照（顶层为空）。
+    assert_eq!(
+        global_prop(&vm, "hits").as_int(),
+        1,
+        "回调 for-in 体应执行过一轮"
+    );
+    assert!(
+        vm.iters.for_in_iters.is_empty(),
+        "restore 后 for-in 表应与快照一致（顶层为空）"
+    );
+}
+
 /// 既有 own 属性值覆盖须推进世代：`Array.prototype.push = 9`（P 对象既有槽、
 /// prop_meta 路径）后 full_reset 必须重建 array 家族，函数值恢复。
 #[test]

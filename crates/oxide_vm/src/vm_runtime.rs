@@ -188,6 +188,10 @@ macro_rules! inline_restore_field {
         $recv.pending_completion = $saved.pending_completion
     };
     ($recv:ident, $saved:ident, for_in_iters, for_in_keys) => {
+        // unwind 不弹 for-in 体：被调函数 for-in 异常逃出且未被接管时残留体留在
+        // 表内，快照回写是整向量替换。先逐条释放残留体再搬回快照，堆 Box 恰好
+        // 释放一次；for-of 栈随后由独立臂从快照还原，本臂顺带清位不影响终态。
+        $recv.iters.reset();
         $recv.iters.for_in_iters = std::mem::take(&mut $saved.for_in_iters)
     };
     ($recv:ident, $saved:ident, for_of_iters, iter_take) => {
