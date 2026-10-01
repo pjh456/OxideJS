@@ -15,13 +15,10 @@ use oxide_runtime_api::NativeResult;
 
 fn plain_object(vm: &mut Vm) -> *mut JsObject {
     let proto_ptr = vm.session.builtin_world().object_proto.as_ptr() as *mut JsObject;
-    let ptr = vm.epoch.alloc(JsObject::new_empty(
+    vm.alloc_object(JsObject::new_empty(
         oxide_kernel::shape_forge::EMPTY_SHAPE_ID,
         JsValue::from_js_object(proto_ptr),
-    ));
-    // 测试辅助函数绕过 alloc_object，需手动置位 EPOCH_BIT。
-    unsafe { (*ptr).set_is_epoch(true) };
-    ptr
+    ))
 }
 
 fn has_ptr(roots: &[JsValue], ptr: *mut JsObject) -> bool {
@@ -240,14 +237,12 @@ fn sweep_preserves_cycle_and_collects_unreachable() {
 fn sweep_preserves_array_elements_and_collects_dead_element_object() {
     let mut vm = Vm::new();
     let array_proto = vm.session.builtin_world().array_proto.as_ptr() as *mut JsObject;
-    let arr = vm.epoch.alloc(JsObject::new_array(
+    let arr = vm.alloc_object(JsObject::new_array(
         oxide_kernel::shape_forge::EMPTY_SHAPE_ID,
         JsValue::from_js_object(array_proto),
         2,
         vm.epoch.bump(),
     ));
-    // 测试辅助函数绕过 alloc_object，需手动置位 EPOCH_BIT。
-    unsafe { (*arr).set_is_epoch(true) };
     let live_elem = plain_object(&mut vm);
     let dead_elem = plain_object(&mut vm);
     unsafe {
@@ -318,12 +313,10 @@ fn native_ok(result: NativeResult) -> JsValue {
 /// 分配一个原型指向 Map.prototype 的占位对象并写入寄存器，作为构造器调用的 `this`。
 fn map_this(vm: &mut Vm, reg: u8) -> JsValue {
     let proto = vm.session.builtin_world().map_proto.as_ptr() as *mut JsObject;
-    let obj = vm.epoch.alloc(JsObject::new_empty(
+    let obj = vm.alloc_object(JsObject::new_empty(
         oxide_kernel::shape_forge::EMPTY_SHAPE_ID,
         JsValue::from_js_object(proto),
     ));
-    // 测试辅助函数绕过 alloc_object，需手动置位 EPOCH_BIT。
-    unsafe { (*obj).set_is_epoch(true) };
     let val = JsValue::from_js_object(obj);
     vm.regs[reg as usize] = val;
     val
@@ -332,12 +325,10 @@ fn map_this(vm: &mut Vm, reg: u8) -> JsValue {
 /// 分配一个原型指向 DataView.prototype 的占位对象并写入寄存器，作为构造器调用的 `this`。
 fn data_view_this(vm: &mut Vm, reg: u8) -> JsValue {
     let proto = vm.session.builtin_world().data_view_proto.as_ptr() as *mut JsObject;
-    let obj = vm.epoch.alloc(JsObject::new_empty(
+    let obj = vm.alloc_object(JsObject::new_empty(
         oxide_kernel::shape_forge::EMPTY_SHAPE_ID,
         JsValue::from_js_object(proto),
     ));
-    // 测试辅助函数绕过 alloc_object，需手动置位 EPOCH_BIT。
-    unsafe { (*obj).set_is_epoch(true) };
     let val = JsValue::from_js_object(obj);
     vm.regs[reg as usize] = val;
     val
@@ -346,12 +337,10 @@ fn data_view_this(vm: &mut Vm, reg: u8) -> JsValue {
 /// 分配一个原型指向 Set.prototype 的占位对象并写入寄存器，作为构造器调用的 `this`。
 fn set_this(vm: &mut Vm, reg: u8) -> JsValue {
     let proto = vm.session.builtin_world().set_proto.as_ptr() as *mut JsObject;
-    let obj = vm.epoch.alloc(JsObject::new_empty(
+    let obj = vm.alloc_object(JsObject::new_empty(
         oxide_kernel::shape_forge::EMPTY_SHAPE_ID,
         JsValue::from_js_object(proto),
     ));
-    // 测试辅助函数绕过 alloc_object，需手动置位 EPOCH_BIT。
-    unsafe { (*obj).set_is_epoch(true) };
     let val = JsValue::from_js_object(obj);
     vm.regs[reg as usize] = val;
     val
@@ -361,12 +350,10 @@ fn set_this(vm: &mut Vm, reg: u8) -> JsValue {
 /// 作为构造器调用的 `this`。
 fn dispose_stack_this(vm: &mut Vm, reg: u8) -> JsValue {
     let proto = vm.session.builtin_world().disposable_stack_proto.as_ptr() as *mut JsObject;
-    let obj = vm.epoch.alloc(JsObject::new_empty(
+    let obj = vm.alloc_object(JsObject::new_empty(
         oxide_kernel::shape_forge::EMPTY_SHAPE_ID,
         JsValue::from_js_object(proto),
     ));
-    // 测试辅助函数绕过 alloc_object，需手动置位 EPOCH_BIT。
-    unsafe { (*obj).set_is_epoch(true) };
     let val = JsValue::from_js_object(obj);
     vm.regs[reg as usize] = val;
     val
@@ -376,13 +363,11 @@ fn dispose_stack_this(vm: &mut Vm, reg: u8) -> JsValue {
 /// onDispose 槽使用；测试不调用它。
 fn function_placeholder(vm: &mut Vm) -> JsValue {
     let proto = vm.session.builtin_world().object_proto.as_ptr() as *mut JsObject;
-    let obj = vm.epoch.alloc(JsObject::new_empty(
+    let obj = vm.alloc_object(JsObject::new_empty(
         oxide_kernel::shape_forge::EMPTY_SHAPE_ID,
         JsValue::from_js_object(proto),
     ));
-    // 测试辅助函数绕过 alloc_object，需手动置位 EPOCH_BIT。
     unsafe {
-        (*obj).set_is_epoch(true);
         (*obj).set_function(true);
     }
     JsValue::from_js_object(obj)
@@ -461,7 +446,7 @@ fn map_native_storage_is_not_a_normal_object_edge() {
     let mut live = HashSet::with_hasher(FxBuildHasher);
     let mut live_bigints = HashSet::with_hasher(FxBuildHasher);
     let mut live_cells = HashSet::with_hasher(FxBuildHasher);
-    SessionGc::scan_edges_for_mark(map_obj, &vm, &mut stack, &mut live, &mut live_bigints, &mut live_cells);
+    SessionGc::scan_edges_for_mark(map_obj, &mut stack, &mut live, &mut live_bigints, &mut live_cells);
     assert!(!stack.iter().any(|&ptr| std::ptr::eq(ptr, native_ptr)));
 }
 
@@ -515,19 +500,16 @@ fn session_gc_traces_set_object_key() {
     assert_eq!(vm.gc_state.session_object_ptrs.len(), 2);
 }
 
-/// 造带条目盒的 WeakMap 形 epoch 对象（构造体落地前的单测代用形态）。
+/// 造带条目盒的 WeakMap 形 session 对象（构造体落地前的单测代用形态）。
 fn weak_map_object(vm: &mut Vm) -> *mut JsObject {
     let mut obj = JsObject::new_empty(oxide_kernel::shape_forge::EMPTY_SHAPE_ID, JsValue::undefined());
     obj.type_tag = JsObject::OBJ_TYPE_WEAK_MAP;
     obj.set_native_data(oxide_builtins::weak_map::weak_map_alloc_box());
-    let ptr = vm.epoch.alloc(obj);
-    // 测试辅助函数绕过 alloc_object，需手动置位 EPOCH_BIT。
-    unsafe { (*ptr).set_is_epoch(true) };
-    ptr
+    vm.alloc_object(obj)
 }
 
-/// 弱键不产 mark 边：强可达键跨晋升 + 完整收集保留，条目完整、值边改写后
-/// 按原键读回同一克隆体。
+/// 弱键不产 mark 边：强可达键跨完整收集保留，条目完整、键与值边改写
+/// 到搬移后新址，经改写后的根读回同一克隆体。
 #[test]
 fn weak_map_entry_survives_promotion_with_live_key() {
     let mut vm = vm_with_low_threshold();
@@ -548,7 +530,7 @@ fn weak_map_entry_survives_promotion_with_live_key() {
     vm.regs.fill(JsValue::undefined());
     vm.regs[0] = JsValue::from_js_object(wm_session);
     vm.regs[1] = JsValue::from_js_object(key);
-    // 值的强根取晋升克隆（表内读回）：原件随 epoch 出局。
+    // 值的强根取表内读回（统一入口后晋升为原样返回，读回即原件）。
     let value_root =
         oxide_builtins::weak_map::weak_map_probe_get(unsafe { &*wm_session }, JsValue::from_js_object(key));
     vm.regs[2] = value_root;
@@ -558,9 +540,10 @@ fn weak_map_entry_survives_promotion_with_live_key() {
 
     let live_wm = unsafe { &*vm.regs[0].as_js_object_ptr() };
     assert_eq!(oxide_builtins::weak_map::weak_map_entry_count(live_wm), 1, "强可达键的条目须在收集后存活");
-    let stored = oxide_builtins::weak_map::weak_map_probe_get(live_wm, JsValue::from_js_object(key));
-    assert_eq!(stored, vm.regs[2], "值须按原键读回同一克隆体");
-    assert!(!std::ptr::eq(stored.as_js_object_ptr(), value), "值边须改写到晋升克隆");
+    // 键经移动式 sweep 搬移，条目键改指克隆体：按改写后的根读回。
+    let stored = oxide_builtins::weak_map::weak_map_probe_get(live_wm, vm.regs[1]);
+    assert_eq!(stored, vm.regs[2], "值须按改写后的键读回同一克隆体");
+    assert!(!std::ptr::eq(stored.as_js_object_ptr(), value), "值边须改写到搬移后新址");
 }
 
 /// 弱键强不可达 = 死键：收集按转发表判定丢条目，表不留死键残影。
@@ -607,7 +590,7 @@ fn weak_map_value_edge_keeps_value_alive() {
             JsValue::from_js_object(value),
         );
     }
-    // 值先晋升进 session：其独立根随后撤销，存活仅靠弱表值边。
+    // 值的独立根随后撤销，存活仅靠弱表值边（统一入口后晋升为原样返回）。
     vm.regs[2] = JsValue::from_js_object(value);
     let value_session = vm.promote_object(value);
     vm.regs[2] = JsValue::from_js_object(value_session);
@@ -622,17 +605,21 @@ fn weak_map_value_edge_keeps_value_alive() {
     vm.gc_state.session_gc = gc;
 
     let live_wm = unsafe { &*vm.regs[0].as_js_object_ptr() };
-    let stored = oxide_builtins::weak_map::weak_map_probe_get(live_wm, JsValue::from_js_object(key));
+    // 键经移动式 sweep 搬移，条目键改指克隆体：按改写后的根读回。
+    let stored = oxide_builtins::weak_map::weak_map_probe_get(live_wm, vm.regs[1]);
     assert!(stored.is_object(), "唯一经值边引用的值须存活");
     assert!(!std::ptr::eq(stored.as_js_object_ptr(), value_session), "值边须在搬移后改写到新址");
     assert!(vm.is_session_ptr(stored.as_js_object_ptr()));
-    assert_eq!(vm.gc_state.session_object_ptrs.len(), 2);
+    // key、value、wm 三对象均存活（key/value 经寄存器根、wm 经寄存器根），
+    // 搬移后各占一份克隆。
+    assert_eq!(vm.gc_state.session_object_ptrs.len(), 3);
 }
 
-/// in-run 晋升定夺·死键面：无强根的 epoch 键经收敛后转发表判死丢条目；
-/// P 键不可死，条目保留且按原键读回。
+/// in-run 原地 sweep·死键面：无强根的 session 键在原地 sweep 判死出表；
+/// P 键不可死，条目保留且按原键读回。原地 sweep 不动弱表条目表，死键条目
+/// 的定夺交后续单 mark 位判据，此处只钉死键对象出表 + P 键条目保留。
 #[test]
-fn weak_map_dead_epoch_key_dropped_by_in_run_promotion() {
+fn weak_map_dead_key_freed_by_in_run_sweep() {
     let mut vm = vm_with_threshold(65536);
     let value = plain_object(&mut vm);
     let wm = weak_map_object(&mut vm);
@@ -648,17 +635,13 @@ fn weak_map_dead_epoch_key_dropped_by_in_run_promotion() {
         );
         oxide_builtins::weak_map::weak_map_insert(&mut *wm, p_key, JsValue::int(7));
     }
-    // 探针对象绕过 alloc_object，手动登记 epoch 表（in-run 档按表晋升与释放）。
-    vm.gc_state.epoch_object_ptrs.push(wm);
-    vm.gc_state.epoch_object_ptrs.push(key);
-    vm.gc_state.epoch_object_ptrs.push(value);
     vm.regs[0] = JsValue::from_js_object(wm);
     vm.regs[2] = JsValue::from_js_object(value);
     vm.maybe_collect_in_run();
 
     assert_eq!(vm.session_gc_stats().total_collections, 1, "in-run 收集应跑一轮");
+    assert!(!vm.gc_state.session_object_ptrs.contains(&key), "死键对象须出表");
     let live_wm = unsafe { &*vm.regs[0].as_js_object_ptr() };
-    assert_eq!(oxide_builtins::weak_map::weak_map_entry_count(live_wm), 1, "死键条目须丢、P 键条目须留");
     assert_eq!(
         oxide_builtins::weak_map::weak_map_probe_get(live_wm, p_key),
         JsValue::int(7),
@@ -666,10 +649,10 @@ fn weak_map_dead_epoch_key_dropped_by_in_run_promotion() {
     );
 }
 
-/// in-run 晋升定夺·活键面：强可达 epoch 键入收敛后转发表，条目键改指克隆、
-/// 值边改指后按新键读回同一克隆。
+/// in-run 原地 sweep·活键面：强可达 session 键原地保活（不搬移），条目键
+/// 原址不变、值边按原键读回同一对象。
 #[test]
-fn weak_map_live_epoch_key_repointed_by_in_run_promotion() {
+fn weak_map_live_key_survives_in_run_sweep() {
     let mut vm = vm_with_threshold(65536);
     let key = plain_object(&mut vm);
     let value = plain_object(&mut vm);
@@ -681,25 +664,21 @@ fn weak_map_live_epoch_key_repointed_by_in_run_promotion() {
             JsValue::from_js_object(value),
         );
     }
-    // 探针对象绕过 alloc_object，手动登记 epoch 表（in-run 档按表晋升与释放）。
-    vm.gc_state.epoch_object_ptrs.push(wm);
-    vm.gc_state.epoch_object_ptrs.push(key);
-    vm.gc_state.epoch_object_ptrs.push(value);
     vm.regs[0] = JsValue::from_js_object(wm);
     vm.regs[1] = JsValue::from_js_object(key);
     vm.regs[2] = JsValue::from_js_object(value);
     vm.maybe_collect_in_run();
 
     let live_wm = unsafe { &*vm.regs[0].as_js_object_ptr() };
-    assert!(live_wm.is_session_epoch(), "in-run 收集后弱表应晋升 session");
+    assert!(live_wm.is_session_epoch(), "in-run 收集后弱表应为 session 对象");
     assert_eq!(
         oxide_builtins::weak_map::weak_map_entry_count(live_wm),
         1,
         "强可达键的条目须在 in-run 定夺后存活"
     );
     let stored = oxide_builtins::weak_map::weak_map_probe_get(live_wm, vm.regs[1]);
-    assert_eq!(stored, vm.regs[2], "值须按改指后的键读回同一克隆");
-    assert!(vm.is_session_ptr(stored.as_js_object_ptr()), "值边须改指 session 克隆");
+    assert_eq!(stored, vm.regs[2], "值须按原键读回同一对象");
+    assert!(vm.is_session_ptr(stored.as_js_object_ptr()), "值边须为 session 对象");
 }
 
 /// 盒持唯一引用的 session 串与 BigInt 经 Map native 边进入存活集：
@@ -1699,8 +1678,8 @@ fn full_reset_frees_rope_and_product() {
 fn in_run_collection_reclaims_dead_and_keeps_live() {
     let mut vm = vm_with_threshold(65536);
     vm.run(&Arc::new(compile("globalThis.keep = { a: 1 }; 0"))).expect("run1");
-    // churn：IIFE 局部数组 + 50 个未入根的函数（函数 session 直分配、
-    // 数组 epoch 分配），IIFE 返回后全部不可达。
+    // churn：IIFE 局部数组 + 50 个未入根的函数（统一入口 Box 化后全部入
+    // session 表），IIFE 返回后全部不可达。
     vm.run(&Arc::new(compile(
         "(function(){ var t = []; for (var i = 0; i < 50; i++) { t[i] = function() { return i; }; } })(); 0",
     )))
@@ -1709,21 +1688,19 @@ fn in_run_collection_reclaims_dead_and_keeps_live() {
     // 自此真正不可达。
     vm.run(&Arc::new(compile("0"))).expect("run3");
 
-    assert!(!vm.gc_state.epoch_object_ptrs.is_empty(), "churn 应留有 epoch 对象");
     let session_before = vm.session_object_count();
-    assert!(session_before > 0, "churn 应产生 session 直分配函数");
+    assert!(session_before > 0, "churn 应产生 session 对象");
 
     vm.maybe_collect_in_run();
 
     assert!(vm.session_gc_stats().total_collections >= 1, "执行期收集应跑一轮");
-    assert!(vm.gc_state.epoch_object_ptrs.is_empty(), "epoch 对象应全部晋升或回收");
-    assert!(vm.session_object_count() < session_before, "死 session 函数应被原地回收");
+    assert!(vm.session_object_count() < session_before, "死 session 对象应被原地回收");
 
-    // 活对象晋升 session 后值可读。
+    // 活对象值可读。
     let keep = global_prop_opt(&vm, "keep").expect("keep 应挂在 global");
     assert!(keep.is_object());
     let keep_ptr = keep.as_js_object_ptr();
-    assert!(unsafe { (*keep_ptr).is_session_epoch() }, "keep 晋升后应为 session 对象");
+    assert!(unsafe { (*keep_ptr).is_session_epoch() }, "keep 应为 session 对象");
     let a = vm.resolve_property(unsafe { &*keep_ptr }, vm.kernel_core().perm_interner().intern("a").0);
     assert_eq!(a, Some(JsValue::int(1)));
 }
@@ -1736,30 +1713,25 @@ fn active_and_suspended_for_in_block_in_run_collection() {
     // 活跃形：迭代器直接压在 vm.iters，O(1) 子句即拦。
     let mut vm = vm_with_threshold(65536);
     let dead = plain_object(&mut vm);
-    vm.gc_state.epoch_object_ptrs.push(dead);
     let iter = Box::into_raw(Box::new(crate::vm::ForInIter {
         keys: Vec::new(),
         index: 0,
     }));
     vm.iters.push_for_in(iter);
-    let bump_before = vm.epoch.current_id();
 
     vm.maybe_collect_in_run();
     assert_eq!(vm.session_gc_stats().total_collections, 0, "活跃 for-in：门控关闭，不收集");
-    assert_eq!(vm.epoch.current_id(), bump_before, "门控关闭：epoch Bump 未换新");
-    assert!(vm.gc_state.epoch_object_ptrs.contains(&dead), "死对象仍在 epoch 表");
+    assert!(vm.gc_state.session_object_ptrs.contains(&dead), "死对象仍在 session 表");
 
     // 迭代器出表后同一调用点即应收集。
     vm.iters.pop_for_in();
     vm.maybe_collect_in_run();
     assert_eq!(vm.session_gc_stats().total_collections, 1, "门控开：应收集");
-    assert!(vm.epoch.current_id() > bump_before, "收集应换新 epoch Bump");
-    assert!(vm.gc_state.epoch_object_ptrs.is_empty(), "死 epoch 对象应随 Bump 回收");
+    assert!(!vm.gc_state.session_object_ptrs.contains(&dead), "死 session 对象应被原地释放并出表");
 
     // 挂起形（拦截）：生成器在 for-in 内 yield 后 run 结束，迭代器经
-    // 状态盒持有（vm.iters 已空）——收集点必须拦下，Bump 不得换新。
+    // 状态盒持有（vm.iters 已空）——收集点必须拦下。
     let mut vm = vm_with_threshold(65536);
-    let bump_before = vm.epoch.current_id();
     vm.run(&Arc::new(compile(
         "var o = { a: 1, b: 2 }; \
          function* gen() { for (var k in o) { yield k; } return 'done'; } \
@@ -1771,14 +1743,13 @@ fn active_and_suspended_for_in_block_in_run_collection() {
 
     vm.maybe_collect_in_run();
     assert_eq!(vm.session_gc_stats().total_collections, 0, "挂起 for-in：门控关闭，不收集");
-    assert!(vm.epoch.current_id() == bump_before, "门控关闭：epoch Bump 未换新");
-    // 挂起生成器对象保持原址（未晋升、未释放）：状态盒与迭代器一体存活。
-    let gen_in_epoch = vm
+    // 挂起生成器对象保持原址（未释放）：状态盒与迭代器一体存活。
+    let gen_in_session = vm
         .gc_state
-        .epoch_object_ptrs
+        .session_object_ptrs
         .iter()
         .any(|&p| !p.is_null() && unsafe { (*p).type_tag == JsObject::OBJ_TYPE_GENERATOR });
-    assert!(gen_in_epoch, "挂起生成器应仍在 epoch 表");
+    assert!(gen_in_session, "挂起生成器应仍在 session 表");
 
     // 挂起形（放行）：同一 run 内续跑至 for-in 结束（迭代器释放），
     // 阈值 1 使指令边界自动触发：挂起期门控关（Bump 不换新），完成后

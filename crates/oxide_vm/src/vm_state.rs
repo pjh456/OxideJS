@@ -28,7 +28,6 @@ use oxide_types::value::JsValue;
 pub(crate) struct GcState {
     pub(crate) session_epoch: bumpalo::Bump,
     pub(crate) session_gc: SessionGc,
-    pub(crate) epoch_object_ptrs: Vec<*mut JsObject>,
     pub(crate) session_object_ptrs: Vec<*mut JsObject>,
     pub(crate) session_string_ptrs: Vec<*mut JsString>,
     /// BigInt 堆 box（`Box<i128>`）追踪表。`RefCell` 使 `&self` 的
@@ -67,12 +66,6 @@ pub(crate) struct GcState {
 }
 
 impl GcState {
-    pub(crate) fn track_epoch_object(&mut self, ptr: *mut JsObject) {
-        // SAFETY: 调用方保证 ptr 是刚 alloc 的 epoch JsObject，登记期存活。
-        unsafe { (*ptr).set_is_epoch(true) };
-        self.epoch_object_ptrs.push(ptr);
-    }
-
     /// 分配一个 upvalue cell：独立堆分配并返回裸指针，脱离 session arena 生命周期。
     ///
     /// cell 指针登记进 `session_cell_ptrs`，在 `full_reset` 统一释放。对象 sweep

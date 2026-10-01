@@ -246,7 +246,7 @@ impl Vm {
     /// 挂起帧把迭代器搬入状态盒（`vm.iters` 不可见），故须逐状态盒扫描。
     ///
     /// # 边界与前提
-    /// - 扫描 epoch + session 两份对象表——挂起状态盒宿主对象可能尚未晋升；
+    /// - 扫描 session 对象表——挂起状态盒宿主对象在表内；
     /// - 挂起帧的 keys 经状态盒边收为 GC 根（被枚举对象不误释放），迭代器
     ///   体是堆上 Box，故按指针扫 `for_in_iters`；
     /// - 保守口径：死对象的状态盒同样计入（持挂起 for-in 的 run 放弃执行期
@@ -257,7 +257,7 @@ impl Vm {
             if ptr.is_null() {
                 return false;
             }
-            // SAFETY: 对象表登记的指针，arena 存活期内有效。
+            // SAFETY: 对象表登记的指针，存活期内有效。
             let obj = unsafe { &*ptr };
             match obj.type_tag {
                 JsObject::OBJ_TYPE_GENERATOR => crate::generator::generator_holds_suspended_for_in(obj),
@@ -268,7 +268,7 @@ impl Vm {
                 _ => false,
             }
         };
-        self.gc_state.epoch_object_ptrs.iter().any(holds) || self.gc_state.session_object_ptrs.iter().any(holds)
+        self.gc_state.session_object_ptrs.iter().any(holds)
     }
 
     /// 执行期两档收集的 dispatch 安全点入口：仅在循环顶
@@ -357,12 +357,7 @@ impl Vm {
     /// 扩容等账目盲区的兜底。
     pub(crate) fn run_alloc_bytes_full(&self) -> u64 {
         let mut bytes = (self.epoch.bump().allocated_bytes() + self.gc_state.session_epoch.allocated_bytes()) as u64;
-        for &ptr in self
-            .gc_state
-            .epoch_object_ptrs
-            .iter()
-            .chain(self.gc_state.session_object_ptrs.iter())
-        {
+        for &ptr in self.gc_state.session_object_ptrs.iter() {
             if ptr.is_null() {
                 continue;
             }
@@ -393,9 +388,10 @@ impl Vm {
         self.gc_state.session_gc = session_gc;
     }
 
-    /// 当前 epoch 中已分配并跟踪的对象数量（未晋升到 session 的临时对象）。
+    /// 当前 epoch 中已分配并跟踪的对象数量。对象分配统一入口 Box 化后
+    /// 全部对象入 session 表，epoch 表退役，恒返 0（采集点保留，恒零口径）。
     pub fn epoch_object_count(&self) -> usize {
-        self.gc_state.epoch_object_ptrs.len()
+        0
     }
 
     /// inline cache 命中率（0.0~1.0），用于观测 IC 预热效果。

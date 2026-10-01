@@ -226,6 +226,10 @@ impl JsObject {
     pub const GC_MARK_BIT: u8 = 0x02;
     /// `is_session_epoch` 字段中的 epoch 归属标记位。
     pub const EPOCH_BIT: u8 = 0x04;
+    /// `is_session_epoch` 字段中的堆载体标记位：对象本体经 `Box::into_raw`
+    /// 分配（统一分配入口），释放点据此 `Box::from_raw` 释放本体；arena
+    /// 载体（移动式 sweep 克隆、晋升族克隆）无此位，本体随 arena 归还。
+    pub const HEAP_BIT: u8 = 0x08;
 
     /// 是否 Date 外来对象。
     #[inline]
@@ -498,6 +502,22 @@ impl JsObject {
             self.is_session_epoch |= Self::EPOCH_BIT;
         } else {
             self.is_session_epoch &= !Self::EPOCH_BIT;
+        }
+    }
+
+    /// 是否堆载体（本体经 `Box::into_raw` 分配，释放点须 `Box::from_raw`）。
+    #[inline]
+    pub fn is_heap_alloc(&self) -> bool {
+        self.is_session_epoch & Self::HEAP_BIT != 0
+    }
+
+    /// 设置 / 清除堆载体标记。
+    #[inline]
+    pub fn set_heap_alloc(&mut self, value: bool) {
+        if value {
+            self.is_session_epoch |= Self::HEAP_BIT;
+        } else {
+            self.is_session_epoch &= !Self::HEAP_BIT;
         }
     }
 

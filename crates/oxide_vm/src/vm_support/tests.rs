@@ -63,16 +63,16 @@ fn full_reset_with_session_objects_forces_global_rebuild() {
     // 覆盖写推进 global generation，快照对比发现脏 global，full_reset 必须重建。
     let _ = run_source(&mut vm, "globalThis.Array = {}; 0");
     let written = global_prop(&vm, "Array");
-    // SAFETY: 覆盖值是本 VM 自有的 epoch 对象，本 session 内指针有效。
+    // SAFETY: 覆盖值是本 VM 自有的 session 对象，本 session 内指针有效。
     assert!(
-        unsafe { (&*written.as_js_object_ptr()).is_epoch() },
-        "覆盖值应直通留存 epoch，不克隆进 session"
+        unsafe { (&*written.as_js_object_ptr()).is_session_epoch() },
+        "覆盖值应为 session 对象（统一入口 Box 化）"
     );
     let old_global = vm.session.global_object.as_ptr();
 
     vm.full_reset();
 
-    // global 必须重建：旧 global 与其 epoch 子引用随 epoch 释放，Array 恢复内置构造器。
+    // global 必须重建：旧 global 与其 session 子引用随 session 释放，Array 恢复内置构造器。
     assert!(!std::ptr::eq(old_global, vm.session.global_object.as_ptr()));
     assert!(std::ptr::eq(
         global_prop(&vm, "Array").as_js_object_ptr(),
@@ -277,34 +277,6 @@ fn generator_captured_upvalue_survives_sweep() {
 }
 
 #[test]
-fn generator_promoted_clone_owns_independent_state_box() {
-    let mut vm = Vm::new();
-    // `(function(){ var it = g(); it.next(); return it; })()`：it 为函数局部（非顶层
-    // var，不经全局属性逃逸），保持 epoch 生成器对象（未 promote）。
-    let it = run_source(
-        &mut vm,
-        "function* g(){ yield 1; yield 2; } (function(){ var it = g(); it.next(); return it; })()",
-    );
-    assert!(it.is_object());
-    let epoch_ptr = it.as_js_object_ptr();
-    let epoch_box = unsafe { (*epoch_ptr).native_data() };
-
-    // 手动 promote：克隆应深拷贝状态盒（新 Box），与源盒互不共享。
-    let promoted = vm.promote_object(epoch_ptr);
-    assert!(!std::ptr::eq(promoted, epoch_ptr));
-    let promoted_box = unsafe { (*promoted).native_data() };
-    assert!(!std::ptr::eq(epoch_box, promoted_box), "promote 应深拷贝生成器状态盒");
-
-    // 模拟 full_reset 的 epoch 侧释放：源对象与其状态盒随 epoch 回收，
-    // 并从追踪表移除登记（克隆的后续回收仍由 VM 统一处理）。
-    let _ = crate::session_gc::SessionGc::drop_object_heap_data(epoch_ptr, false);
-    vm.gc_state.epoch_object_ptrs.retain(|&p| !std::ptr::eq(p, epoch_ptr));
-
-    // 克隆直接恢复执行：读新盒中的挂起状态，不得悬垂。
-    assert_eq!(resume_one_step(&mut vm, JsValue::from_js_object(promoted)), JsValue::int(2));
-}
-
-#[test]
 fn full_reset_clean_keeps_session_objects() {
     let mut vm = Vm::new();
     let world_ptr = Arc::as_ptr(&vm.session.builtin_world);
@@ -486,7 +458,8 @@ fn full_reset_zeroes_arena_retained() {
         &mut vm,
         "var t = 0; for (var i = 0; i < 20000; i++) { var o = { s: 'ab' + i, a: [i] }; t += o.s.length + o.a.length; } t",
     );
-    assert!(vm.epoch.bump().allocated_bytes() > 0, "重源 run 应冲高 epoch arena 水位");
+    // 统一入口 Box 化后 epoch arena 零分配，水位恒零。
+    assert_eq!(vm.epoch.bump().allocated_bytes(), 0);
 
     vm.full_reset();
 
@@ -1152,24 +1125,24 @@ fn benign_user_object_writes_do_not_dirty_leaked_objects() {
     assert!(!vm.session.is_dirty_since_snapshot());
 }
 
-/// 假阳性护栏：只写用户对象的良性运行不得误判 builtin/global 脏。
-/// 用对象/数组字面量表达式（对象分配在 epoch、非 session 直分）隔离掉
-/// full_reset 对 session 对象的既有兜底，从而验证选择性重建未因值写 bump 误触发。
+/// 假阳性护栏：只写用户对象的良性运行不得误判 builtin 脏。
+/// 对象/数组字面量临时对象经统一入口入统一表，run 末不可达，
+/// full_reset 随 session 释放；session 对象在场时防御兜底强制 bump
+/// global（保留 global 持 session 子引用会在收尾后悬垂），builtin world
+/// 不因值写误触发重建。
 #[test]
 fn benign_run_does_not_falsely_dirty_builtins() {
     let mut vm = Vm::new();
     let _ = run_source(&mut vm, "0");
     let world_ptr = Arc::as_ptr(&vm.session.builtin_world);
-    let global_ptr = vm.session.global_object.as_ptr();
 
     run_source(&mut vm, "({ x: 1 }).x + [1, 2].length");
-    assert!(vm.gc_state.session_object_ptrs.is_empty(), "良性表达式不应产生 session 直分对象");
+    assert_eq!(vm.session_object_count(), 2, "良性表达式应产生两枚临时对象（对象字面量 + 数组字面量）");
     assert!(!vm.session.is_dirty_since_snapshot(), "良性运行不应误判 builtin 脏");
 
     vm.full_reset();
 
     assert!(std::ptr::eq(world_ptr, Arc::as_ptr(&vm.session.builtin_world)), "builtin world 不应重建");
-    assert!(std::ptr::eq(global_ptr, vm.session.global_object.as_ptr()), "global 不应重建");
     assert!(!vm.session.is_dirty_since_snapshot());
 }
 

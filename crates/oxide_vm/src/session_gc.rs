@@ -44,13 +44,11 @@ impl SessionGc {
 }
 
 impl SessionGc {
-    /// 清空 session 与 epoch 全部对象的 GC mark 位。epoch 臂须与 session 同清：
-    /// 置位不随 session 清位消失，残留位会让下一次 `mark` 的 DFS 在已标对象处
-    /// 短路，漏扫其新增引用边。
+    /// 清空 session 对象表的 GC mark 位。置位不随表清位消失，残留位会让下一次
+    /// `mark` 的 DFS 在已标对象处短路，漏扫其新增引用边。
     pub(crate) fn clear_all_marks(&mut self, vm: &mut Vm) {
         vm_debug!("[GC] clear_all_marks: {} session objects", vm.gc_state.session_object_ptrs.len());
         self.clear_session_marks(vm);
-        self.clear_epoch_marks(vm);
     }
 
     /// 只清 session 对象表的 mark 位。移动式 sweep 末尾的旧表对象已全释放/克隆
@@ -62,19 +60,6 @@ impl SessionGc {
             }
             // SAFETY: session_object_ptrs 中的指针只来自 promote_object_inner 的
             // session_epoch.alloc，在 arena 存活期间有效。
-            unsafe { (*ptr).set_gc_mark(false) };
-        }
-    }
-
-    /// 只清 epoch 对象表的 mark 位。mark 的 epoch 臂置位不随 session 清位消除，
-    /// 残留位会让下一次 mark 的 DFS 短路、漏扫该对象此间新增的边。
-    pub(crate) fn clear_epoch_marks(&mut self, vm: &mut Vm) {
-        for &ptr in &vm.gc_state.epoch_object_ptrs {
-            if ptr.is_null() {
-                continue;
-            }
-            // SAFETY: epoch_object_ptrs 中的指针只来自 alloc_object 的 epoch.alloc，
-            // 在 epoch 存活期间有效。
             unsafe { (*ptr).set_gc_mark(false) };
         }
     }
@@ -147,43 +132,43 @@ impl SessionGc {
     /// 单趟替代原 `object_edges` + `record_object_string_edges` 双遍模式：消除每对象
     /// Vec 分配与重复字段遍历。
     fn scan_edges_for_mark(
-        obj: &JsObject, vm: &Vm, stack: &mut Vec<*mut JsObject>,
+        obj: &JsObject, stack: &mut Vec<*mut JsObject>,
         live_strings: &mut HashSet<*mut JsString, FxBuildHasher>,
         live_bigints: &mut HashSet<*mut num_bigint::BigInt, FxBuildHasher>,
         live_cells: &mut HashSet<*mut Cell, FxBuildHasher>,
     ) {
         if let Some(elements) = obj.array_elements_vec() {
             for &value in elements.iter() {
-                Self::process_edge(value, vm, stack, live_strings, live_bigints);
+                Self::process_edge(value, stack, live_strings, live_bigints);
             }
         }
         if let Some(meta) = obj.array_elements_meta_vec() {
             for entry in meta.iter().flatten() {
-                Self::process_edge(entry.get, vm, stack, live_strings, live_bigints);
-                Self::process_edge(entry.set, vm, stack, live_strings, live_bigints);
+                Self::process_edge(entry.get, stack, live_strings, live_bigints);
+                Self::process_edge(entry.set, stack, live_strings, live_bigints);
             }
         }
         if let Some(props) = obj.hash_props_vec() {
             for &value in props.iter() {
-                Self::process_edge(value, vm, stack, live_strings, live_bigints);
+                Self::process_edge(value, stack, live_strings, live_bigints);
             }
         }
         if let Some(meta) = obj.prop_meta_vec() {
             for entry in meta.iter().flatten() {
-                Self::process_edge(entry.get, vm, stack, live_strings, live_bigints);
-                Self::process_edge(entry.set, vm, stack, live_strings, live_bigints);
+                Self::process_edge(entry.get, stack, live_strings, live_bigints);
+                Self::process_edge(entry.set, stack, live_strings, live_bigints);
             }
         }
-        Self::process_edge(obj.proto(), vm, stack, live_strings, live_bigints);
-        Self::process_edge(obj.captured_this(), vm, stack, live_strings, live_bigints);
-        Self::process_edge(obj.home_object(), vm, stack, live_strings, live_bigints);
-        Self::process_edge(obj.boxed_value(), vm, stack, live_strings, live_bigints);
+        Self::process_edge(obj.proto(), stack, live_strings, live_bigints);
+        Self::process_edge(obj.captured_this(), stack, live_strings, live_bigints);
+        Self::process_edge(obj.home_object(), stack, live_strings, live_bigints);
+        Self::process_edge(obj.boxed_value(), stack, live_strings, live_bigints);
         // native 载荷家族边：单点分类 + 家族表函数引用驱动，
         // 替代逐族 is_* 谓词链（各家族边函数引用见 native_box_dispatch）。
         let ops = native_box_dispatch::ops_for(native_box_dispatch::classify(obj));
         if let Some(object_edges) = ops.object_edges {
             for value in object_edges(obj) {
-                Self::process_edge(value, vm, stack, live_strings, live_bigints);
+                Self::process_edge(value, stack, live_strings, live_bigints);
             }
         }
         if let Some(string_edges) = ops.string_edges {
@@ -204,33 +189,23 @@ impl SessionGc {
             }
             live_cells.insert(*cell_ptr);
             let cell = unsafe { &**cell_ptr };
-            Self::process_edge(cell.value, vm, stack, live_strings, live_bigints);
+            Self::process_edge(cell.value, stack, live_strings, live_bigints);
         }
     }
 
     #[inline]
     fn process_edge(
-        value: JsValue, vm: &Vm, stack: &mut Vec<*mut JsObject>,
+        value: JsValue, stack: &mut Vec<*mut JsObject>,
         live_strings: &mut HashSet<*mut JsString, FxBuildHasher>,
         live_bigints: &mut HashSet<*mut num_bigint::BigInt, FxBuildHasher>,
     ) {
         if value.is_object() {
             let ptr = value.as_js_object_ptr();
-            // session 边与 epoch 边同栈：epoch 对象的 GC_MARK 位与 session 同字节
-            // 可置可读，晋升收集按"标记 ∩ epoch 表"取活集。
-            if vm.is_session_ptr(ptr) {
+            // perm 对象（builtin world / global 等）不回收，但可持有 session
+            // 子引用（defineProperty 写入 builtin 原型等）：入栈由 DFS 扫边
+            // 标活，否则该子引用永不被标活 → 原地 sweep 误释放 → 悬垂。
+            if !ptr.is_null() {
                 stack.push(ptr);
-            } else if !ptr.is_null() {
-                // SAFETY: 执行核心产出的对象值，指针在 session 生命周期内有效。
-                let obj = unsafe { &*ptr };
-                if obj.is_epoch() {
-                    stack.push(ptr);
-                } else {
-                    // perm 对象（builtin world / global 等）不回收，但可持有 session
-                    // 子引用（defineProperty 写入 builtin 原型等）：入栈由 DFS 扫边
-                    // 标活，否则该子引用永不被标活 → 原地 sweep 误释放 → 悬垂。
-                    stack.push(ptr);
-                }
             }
         } else if value.is_string() {
             Self::mark_string_live(live_strings, value.as_string_ptr_mut());
@@ -452,19 +427,13 @@ impl SessionGc {
                 stack.push(ptr);
                 continue;
             }
+            // P 对象根（builtin world / global）不回收，只扫边；登记已访防
+            // 后续作为 perm 边被重扫。
             // SAFETY: 对象根由 VM 自有的字段与 builtin 对象产生，指针合法。
             unsafe {
                 let obj = &*ptr;
-                // epoch 根（顶层 var 寄存器等）自身入栈置位：晋升收集按标记位
-                // 判活，根不置位会被误判为死。
-                if obj.is_epoch() {
-                    stack.push(ptr);
-                    continue;
-                }
-                // P 对象根（builtin world / global）不回收，只扫边；登记已访防
-                // 后续作为 perm 边被重扫。
                 if visited_perm.insert(ptr) {
-                    Self::scan_edges_for_mark(obj, vm, stack, live_strings, live_bigints, live_cells);
+                    Self::scan_edges_for_mark(obj, stack, live_strings, live_bigints, live_cells);
                 }
             }
         }
@@ -478,9 +447,9 @@ impl SessionGc {
                 let obj = &mut *ptr;
                 // perm 对象不回收：只扫边标活 session 子引用，不置 mark 位（其位
                 // 跨收集残留会令下次 DFS 短路漏扫）。已访则跳过，防 perm 环重入。
-                if !vm.is_session_ptr(ptr) && !obj.is_epoch() {
+                if !vm.is_session_ptr(ptr) {
                     if visited_perm.insert(ptr) {
-                        Self::scan_edges_for_mark(obj, vm, stack, live_strings, live_bigints, live_cells);
+                        Self::scan_edges_for_mark(obj, stack, live_strings, live_bigints, live_cells);
                     }
                     continue;
                 }
@@ -488,7 +457,7 @@ impl SessionGc {
                     continue;
                 }
                 obj.set_gc_mark(true);
-                Self::scan_edges_for_mark(obj, vm, stack, live_strings, live_bigints, live_cells);
+                Self::scan_edges_for_mark(obj, stack, live_strings, live_bigints, live_cells);
             }
         }
     }
@@ -573,7 +542,7 @@ impl SessionGc {
     /// 对象表，收尾统一释放按表枚举不会再见，置空保证对象侧幂等、无陈旧指针。
     fn drop_dead_session_object(obj_ptr: *mut JsObject) -> u64 {
         let mut freed = Self::drop_session_object_heap_data(obj_ptr) + size_of::<JsObject>() as u64;
-        // SAFETY: obj_ptr 来自 session 对象表，sweep 期间仍指向旧 arena 内合法对象；
+        // SAFETY: obj_ptr 来自 session 对象表，sweep 期间仍指向合法对象；
         // upvalues Box 仅本对象持有（死对象不克隆），保证恰好释放一次。
         unsafe {
             let up = (*obj_ptr).upvalues;
@@ -583,6 +552,11 @@ impl SessionGc {
                     + (vec.capacity() * size_of::<*mut oxide_types::object::Cell>()) as u64;
                 (*obj_ptr).upvalues = std::ptr::null_mut();
                 std::mem::drop(vec);
+            }
+            // 释放对象本体：堆载体（HEAP_BIT）经 Box::from_raw 释放，arena 载体
+            // （克隆）随旧 arena 归还，不在此释放。
+            if (*obj_ptr).is_heap_alloc() {
+                drop(Box::from_raw(obj_ptr));
             }
         }
         freed
@@ -620,8 +594,9 @@ impl SessionGc {
             if old_ptr.is_null() {
                 continue;
             }
-            // SAFETY: old_ptr 来自 session_arena 的晋升，sweep 运行期间仍指向旧 session arena。
+            // SAFETY: old_ptr 来自 session 对象表，sweep 运行期间仍指向合法对象。
             let is_live = unsafe { (*old_ptr).is_gc_marked() };
+            let is_heap = unsafe { (*old_ptr).is_heap_alloc() };
             if is_live {
                 survivors += 1;
                 let old_ref = unsafe { &*old_ptr };
@@ -663,6 +638,14 @@ impl SessionGc {
                 }
                 forwarding.insert(old_ptr, new_ptr);
                 freed_bytes += Self::drop_session_object_heap_data(old_ptr);
+                // 释放原件本体：堆载体（HEAP_BIT）经 Box::from_raw 释放，arena
+                // 载体（克隆）随旧 arena 归还，不在此释放。
+                if is_heap {
+                    freed_bytes += size_of::<JsObject>() as u64;
+                    unsafe {
+                        drop(Box::from_raw(old_ptr));
+                    }
+                }
             } else {
                 dead += 1;
                 freed_bytes += Self::drop_dead_session_object(old_ptr);
@@ -734,10 +717,6 @@ impl SessionGc {
                 size_of::<JsObject>() as u64 + Self::object_heap_data_bytes(obj)
             })
             .sum::<u64>() as usize;
-
-        // 移动式 sweep 后旧表对象已全释放/克隆（克隆未标记），session 臂空转，
-        // 只清 epoch 臂残留位（epoch 对象存活、位残留）。
-        self.clear_epoch_marks(vm);
 
         let total_ptrs = survivors + dead;
         if total_ptrs > 0 {
@@ -1027,17 +1006,12 @@ impl SessionGc {
         }
     }
 
-    /// 执行期两档收集：epoch 晋升档 + session 原地非移动 sweep 档。
+    /// 执行期收集：session 原地非移动 sweep。
     ///
     /// 在 dispatch 安全点（循环顶 + `native_call_depth == 0`）回收单 run 分配
-    /// 包络内的死对象：
-    /// - epoch 晋升档：扩展 mark（epoch 臂跟随）定活集，活 epoch 对象晋升
-    ///   session（递归克隆 + forwarding 去重共享与环 + native 盒深拷），根与
-    ///   session 对象的 epoch 子引用按转发表改写，全部 epoch 旧堆区与独占
-    ///   upvalue 列表释放，epoch 换新 Bump；
-    /// - session 原地 sweep 档：死 session 对象原地释放（堆区 + upvalue 列表）
-    ///   并出表；存活对象不移动——地址不变、免 forwarding/rewrite，用户可观察
-    ///   identity 不分裂。
+    /// 包络内的死对象：死 session 对象原地释放（堆区 + upvalue 列表 + 本体）
+    /// 并出表；存活对象不移动——地址不变、免 forwarding/rewrite，用户可观察
+    /// identity 不分裂。
     ///
     /// # 边界与前提
     /// - 调用方已完成门控（无活跃/挂起 for-in）：门控是保守门，迭代器体
@@ -1046,7 +1020,6 @@ impl SessionGc {
     ///   局部裸指针、dispatch 未重入。
     ///
     /// # 副作用
-    /// - `epoch_object_ptrs` 清空、epoch Bump 换新（旧 arena 全量归还）；
     /// - `session_object_ptrs` 仅剩存活，`session_bytes_allocated` 按存活重算
     ///   （串/BigInt 归 strings-only 路径，本路径不动，仅对象口径变化）；
     /// - `gc_watermark` = 当前分配包络 + 阈值增量；
@@ -1055,71 +1028,14 @@ impl SessionGc {
         let start = Instant::now();
         vm_info!("[GC] in-run cycle #{} start", self.total_collections + 1);
 
-        // 清残留 mark 位（session + epoch）：防 mark DFS 因历史 true 短路漏标。
+        // 清残留 mark 位：防 mark DFS 因历史 true 短路漏标。
         self.clear_all_marks(vm);
 
-        // 扩展 mark：epoch 臂跟随，活 epoch 集 = 被标记 ∩ epoch 表。
         self.mark(vm);
 
-        // ── epoch 晋升档 ──
-
-        let mut forwarding = std::mem::take(&mut vm.gc_state.forwarding);
-        let epoch_ptrs = std::mem::take(&mut vm.gc_state.epoch_object_ptrs);
-
-        // 活 epoch 对象逐个晋升：递归克隆携带 native 盒，共享/环经 forwarding
-        // 去重；死对象留在 epoch arena，换新 Bump 前统一释放。
-        let mut live_epoch = 0u64;
-        for &ptr in &epoch_ptrs {
-            if ptr.is_null() {
-                continue;
-            }
-            // SAFETY: ptr 来自 epoch 对象表登记，arena 存活期内有效。
-            if unsafe { (*ptr).is_gc_marked() } {
-                vm.promote_object_inner(ptr, &mut forwarding);
-                live_epoch += 1;
-            }
-        }
-
-        // 晋升克隆体自身即活：克隆不携带源对象标记位，而紧随其后的 session
-        // 原地 sweep 按标记位保活——不置位则克隆体在同一轮内被当作死对象
-        // 原地释放，而根已改写指向克隆体（悬垂）。此点转发表值集恰为本轮
-        // 晋升克隆体全集（session 原地改写路径的补晋升发生在其后、不入
-        // 本轮 sweep 集，无需置位）。
-        for &dst in forwarding.values() {
-            // SAFETY: dst 为本轮晋升克隆体，session arena 存活期内有效。
-            unsafe { (*dst).set_gc_mark(true) };
-        }
-
-        // 根持有的 epoch 对象（顶层 var 寄存器等）按转发表解析到克隆体。
-        rewrite_vm_roots(vm, &forwarding);
-
-        // session 对象可持有绕过写屏障的 epoch 子引用（函数 captured_this/
-        // home_object、native 盒直插）：按转发表就地晋升进 session（已晋升
-        // 对象的子引用解析到同一克隆，无二次克隆）。只改写存活对象：死对象的
-        // 子引用随对象原地释放（释放路径无后续解引用，不悬垂）。
+        // 死 session 对象原地释放（堆区 + upvalue 列表 + 本体）并出表；存活
+        // 对象不动——地址不变，免 forwarding/rewrite。
         let session_ptrs = std::mem::take(&mut vm.gc_state.session_object_ptrs);
-        let marked_session: Vec<*mut JsObject> = session_ptrs
-            .iter()
-            .copied()
-            .filter(|&ptr| !ptr.is_null() && unsafe { (*ptr).is_gc_marked() })
-            .collect();
-        vm.rewrite_session_epoch_refs(&marked_session, &mut forwarding);
-        // 弱表键定夺：主改写只走强边，epoch 键按收敛后的转发表定生死。
-        vm.rewrite_weak_map_keys_after_promotion(&marked_session, &mut forwarding);
-        forwarding.clear();
-        vm.gc_state.forwarding = forwarding;
-
-        // 全部 epoch 旧堆区释放：活对象的 vec/native 盒已被克隆深拷贝取代，
-        // 原件原地释放；死对象堆区随本体原地释放。
-        let epoch_freed = Self::free_epoch_object_heap_data(&epoch_ptrs, &session_ptrs);
-
-        // 换新 epoch Bump：旧 arena 全量归还，容量不保留。
-        vm.epoch.reset();
-
-        // ── session 原地非移动 sweep 档 ──
-
-        // 死 session 对象原地释放（堆区 + upvalue 列表）并出表；存活对象不动
-        // arena 槽位——地址不变，免 forwarding/rewrite。
         let mut survivors = Vec::with_capacity(session_ptrs.len());
         let mut dead_session = 0u64;
         let mut session_freed = 0u64;
@@ -1171,9 +1087,9 @@ impl SessionGc {
         vm.gc_state.gc_watermark = vm.run_alloc_bytes().saturating_add(vm.gc_state.gc_threshold_cached);
         vm.gc_state.gc_gate_retry_alloc = 0;
 
-        let live = live_epoch + live_session;
-        let dead = (epoch_ptrs.len() as u64 - live_epoch) + dead_session;
-        let freed_bytes = epoch_freed + session_freed;
+        let live = live_session;
+        let dead = dead_session;
+        let freed_bytes = session_freed;
 
         let elapsed = start.elapsed();
         self.total_collections += 1;
@@ -1181,10 +1097,10 @@ impl SessionGc {
         self.max_collection_duration_us = self.max_collection_duration_us.max(self.last_collection_duration_us);
         self.min_collection_duration_us = self.min_collection_duration_us.min(self.last_collection_duration_us);
         self.total_bytes_freed = self.total_bytes_freed.saturating_add(freed_bytes);
-        self.total_objects_scanned += (epoch_ptrs.len() + session_ptrs.len()) as u64;
+        self.total_objects_scanned += session_ptrs.len() as u64;
         self.total_objects_live += live;
         self.total_objects_dead += dead;
-        self.last_collection_objects_scanned = (epoch_ptrs.len() + session_ptrs.len()) as u64;
+        self.last_collection_objects_scanned = session_ptrs.len() as u64;
         self.last_collection_objects_live = live;
         self.last_collection_objects_dead = dead;
         self.last_collection_bytes_freed = freed_bytes;
@@ -1198,50 +1114,6 @@ impl SessionGc {
             elapsed.as_secs_f64() * 1000.0,
             freed_bytes,
         );
-    }
-
-    /// 释放全部 epoch 对象的旧堆区（四处属性/元素向量 + native 状态盒）与独占
-    /// upvalue 列表，返回释放字节数。
-    ///
-    /// 调用前提：活 epoch 对象已晋升 session——其 vec/native 盒被克隆深拷贝取代，
-    /// 原件在此恰好释放一次；死对象堆区随本体原地释放。upvalue 列表原件与晋升
-    /// 克隆共享同一 Box（`clone_for_session_epoch` 别名）：共享项由 session 对象
-    /// 持有、留待收尾统一释放，此处只放独占项，保证恰好一次。
-    fn free_epoch_object_heap_data(epoch_ptrs: &[*mut JsObject], session_ptrs: &[*mut JsObject]) -> u64 {
-        // 共享集：session 对象表（存活与待死同表）仍持有的 upvalue Box——
-        // 待死 session 对象的 Box 由本收集的原地 sweep 释放，交点恰好一处。
-        let mut shared: std::collections::HashSet<usize> = std::collections::HashSet::new();
-        for &ptr in session_ptrs {
-            if ptr.is_null() {
-                continue;
-            }
-            // SAFETY: ptr 来自 session 对象表登记，arena 存活期内有效。
-            let up = unsafe { (*ptr).upvalues } as usize;
-            if up != 0 {
-                shared.insert(up);
-            }
-        }
-
-        let mut seen: std::collections::HashSet<usize> = std::collections::HashSet::new();
-        let mut freed = 0u64;
-        for &ptr in epoch_ptrs {
-            if ptr.is_null() {
-                continue;
-            }
-            // SAFETY: epoch 对象表未清空，指向 epoch arena 内合法对象。
-            unsafe {
-                freed += Self::drop_object_heap_data(ptr, false);
-                let up = (*ptr).upvalues as usize;
-                if up == 0 || shared.contains(&up) || !seen.insert(up) {
-                    continue;
-                }
-                // SAFETY: up 由 set_upvalues 的 Box::into_raw 分配，去重与共享集
-                // 保证本路径恰好释放一次。
-                drop(Box::from_raw(up as *mut Vec<*mut oxide_types::object::Cell>));
-                (*ptr).upvalues = std::ptr::null_mut();
-            }
-        }
-        freed
     }
 
     /// 单行 GC 统计摘要：收集次数、扫描/存活/死对象数、释放字节与最近耗时。

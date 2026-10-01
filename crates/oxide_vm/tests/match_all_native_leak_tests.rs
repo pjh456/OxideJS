@@ -6,6 +6,7 @@
 use std::sync::Arc;
 
 use oxide_compiler::compiler::Compiler;
+use oxide_kernel::kernel::{KernelConfig, KernelCore};
 use oxide_types::value::JsValue;
 use oxide_vm::vm::Vm;
 use regress::Regex;
@@ -23,35 +24,36 @@ fn to_str(vm: &Vm, val: JsValue) -> String {
 
 const ROUNDS: u64 = 256;
 
-/// 字符串模式路径：N 个死载体（包装器 + 载体）经完整收集走 sweep 死分支，
+/// 字符串模式路径：N 个死载体（包装器 + 载体）经收集走 sweep 死分支，
 /// 释放字节必须含 N 份编译正则——守卫未命中时该部分恒不计入。
+/// 低阈值使执行期收集在循环内触发（默认 32MiB 阈值下本负载不触发收集）。
 #[test]
 fn string_pattern_match_all_boxes_freed_by_sweep() {
-    let mut vm = Vm::new();
+    let mut config = KernelConfig::minimal();
+    config.set_session_gc_threshold(1);
+    let mut vm = Vm::with_kernel_core(KernelCore::new(config));
     eval(&mut vm, "for (let i = 0; i < 256; i++) { 'aaaa'.matchAll('a'); }").unwrap();
-    let freed_before = vm.session_gc_stats().total_bytes_freed;
-    vm.reset();
-    let freed_delta = vm.session_gc_stats().total_bytes_freed - freed_before;
+    let freed = vm.session_gc_stats().total_bytes_freed;
     let min_regex_bytes = ROUNDS * std::mem::size_of::<Regex>() as u64;
     assert!(
-        freed_delta >= min_regex_bytes,
-        "sweep 释放 {freed_delta} 字节，应含 {ROUNDS} 份编译正则（下界 {min_regex_bytes}）"
+        freed >= min_regex_bytes,
+        "sweep 释放 {freed} 字节，应含 {ROUNDS} 份编译正则（下界 {min_regex_bytes}）"
     );
 }
 
 /// 非 global 正则路径：`RegExp.prototype.matchAll` 复制补 g 建载体，同口径断言。
 #[test]
 fn non_global_regexp_match_all_boxes_freed_by_sweep() {
-    let mut vm = Vm::new();
+    let mut config = KernelConfig::minimal();
+    config.set_session_gc_threshold(1);
+    let mut vm = Vm::with_kernel_core(KernelCore::new(config));
     // 真则常驻（存活根），循环内只产死载体：释放下界唯一来源是载体 Box。
     eval(&mut vm, "var r = /ab/; for (let i = 0; i < 256; i++) { r[Symbol.matchAll]('abab'); }").unwrap();
-    let freed_before = vm.session_gc_stats().total_bytes_freed;
-    vm.reset();
-    let freed_delta = vm.session_gc_stats().total_bytes_freed - freed_before;
+    let freed = vm.session_gc_stats().total_bytes_freed;
     let min_regex_bytes = ROUNDS * std::mem::size_of::<Regex>() as u64;
     assert!(
-        freed_delta >= min_regex_bytes,
-        "sweep 释放 {freed_delta} 字节，应含 {ROUNDS} 份编译正则（下界 {min_regex_bytes}）"
+        freed >= min_regex_bytes,
+        "sweep 释放 {freed} 字节，应含 {ROUNDS} 份编译正则（下界 {min_regex_bytes}）"
     );
 }
 

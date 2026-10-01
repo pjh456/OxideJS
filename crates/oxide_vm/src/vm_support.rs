@@ -124,7 +124,6 @@ impl Vm {
             gc_state: GcState {
                 session_epoch: bumpalo::Bump::new(),
                 session_gc: crate::session_gc::SessionGc::new(),
-                epoch_object_ptrs: Vec::new(),
                 session_object_ptrs: Vec::new(),
                 session_string_ptrs: Vec::new(),
                 session_bigint_ptrs: std::cell::RefCell::new(Vec::new()),
@@ -262,7 +261,6 @@ impl Vm {
             gc_state: GcState {
                 session_epoch: bumpalo::Bump::new(),
                 session_gc: crate::session_gc::SessionGc::new(),
-                epoch_object_ptrs: Vec::new(),
                 session_object_ptrs: Vec::new(),
                 session_string_ptrs: Vec::new(),
                 session_bigint_ptrs: std::cell::RefCell::new(Vec::new()),
@@ -403,8 +401,6 @@ impl Vm {
         );
         self.active_immutables = std::ptr::slice_from_raw_parts(std::ptr::null(), 0);
         self.teardown_session_heap_data();
-        self.epoch.reset();
-        self.gc_state.epoch_object_ptrs.clear();
         // 换新 Bump：旧 session arena 全量归还系统分配器（与 sweep 路径同构），
         // 容量不跨 full_reset 保留。
         self.gc_state.session_epoch = bumpalo::Bump::new();
@@ -421,21 +417,27 @@ impl Vm {
         self.active_reg_limit = 0;
     }
 
-    /// 释放全部 session 堆数据：epoch 对象堆数据 + session 对象堆数据 + upvalue
-    /// 列表 + session 串 + BigInt box + upvalue cell box。
+    /// 释放全部 session 堆数据：session 对象堆数据 + upvalue 列表 + 对象本体
+    /// + session 串 + BigInt box + upvalue cell box。
     ///
-    /// 供 `full_reset` 与 `Drop` 共用——对象本体（bumpalo arena / epoch bump）由调用方
-    /// 重置，本函数只释放手工管理的 Box 指针（属性向量、各原生盒、串、BigInt、cell）。
-    /// 原生盒在 GC 搬移/晋升时已深拷贝为单所有权，此处恰好释放一次。
+    /// 供 `full_reset` 与 `Drop` 共用——堆载体对象本体（HEAP_BIT）经
+    /// `Box::from_raw` 释放，arena 载体（克隆）随调用方换新的 session Bump 归还，
+    /// 本函数不释放。原生盒在 GC 搬移/晋升时已深拷贝为单所有权，此处恰好释放一次。
     pub(crate) fn teardown_session_heap_data(&mut self) {
         // 迭代器体是堆上 Box：收尾路径（full_reset 与 Drop 共用）逐条释放，
         // 防 Vm 直接 drop 时表内残留体泄漏。
         self.iters.reset();
-        // upvalue 列表先于对象表清空释放：去重枚举依赖两份对象表尚存。
+        // upvalue 列表先于对象表清空释放：去重枚举依赖对象表尚存。
         self.free_session_upvalues();
-        self.free_epoch_object_heap_data();
         for ptr in self.gc_state.session_object_ptrs.drain(..) {
             crate::session_gc::SessionGc::drop_object_heap_data(ptr, true);
+            // 释放对象本体：堆载体（HEAP_BIT）经 Box::from_raw 释放，arena
+            // 载体（克隆）随换新 Bump 归还，不在此释放。
+            if !ptr.is_null() && unsafe { (*ptr).is_heap_alloc() } {
+                unsafe {
+                    drop(Box::from_raw(ptr));
+                }
+            }
         }
         self.free_session_string_heap_data();
         self.free_session_bigint_heap_data();
@@ -444,20 +446,15 @@ impl Vm {
 
     /// 集中释放 upvalue 列表（`Box<Vec<*mut Cell>>`）：原件与晋升克隆经
     /// `clone_for_session_epoch` 共享同一 Box 分配，逐对象路径释放会双放，
-    /// 只在此处按指针去重后统一释放。须在两份对象表清空之前调用
+    /// 只在此处按指针去重后统一释放。须在对象表清空之前调用
     /// （枚举仍存对象完成去重），此时对象已死、Box 无其他读者。
     fn free_session_upvalues(&mut self) {
         let mut seen = std::collections::HashSet::new();
-        let ptrs = self
-            .gc_state
-            .epoch_object_ptrs
-            .iter()
-            .chain(self.gc_state.session_object_ptrs.iter());
-        for &ptr in ptrs {
+        for &ptr in self.gc_state.session_object_ptrs.iter() {
             if ptr.is_null() {
                 continue;
             }
-            // SAFETY: ptr 来自 epoch/session 对象表登记，收尾时仍指向 arena 内合法对象。
+            // SAFETY: ptr 来自 session 对象表登记，收尾时仍指向合法对象。
             let up = unsafe { (*ptr).upvalues };
             if up.is_null() || !seen.insert(up) {
                 continue;
@@ -497,18 +494,6 @@ impl Vm {
             unsafe {
                 (&mut *p.as_mut_ptr()).release_raw_heap();
             }
-        }
-    }
-
-    fn free_epoch_object_heap_data(&mut self) {
-        let mut freed = 0u64;
-        for ptr in self.gc_state.epoch_object_ptrs.drain(..) {
-            freed += crate::session_gc::SessionGc::drop_object_heap_data(ptr, false);
-        }
-        if freed > 0 {
-            self.gc_state.session_gc.total_bytes_freed =
-                self.gc_state.session_gc.total_bytes_freed.saturating_add(freed);
-            self.gc_state.session_gc.last_collection_bytes_freed = freed;
         }
     }
 
@@ -587,22 +572,18 @@ impl Vm {
         gc.min_collection_duration_us = u64::MAX;
     }
 
-    /// 轻量重置：清空执行状态并回收 epoch 内存，但保留 session 字符串与 builtin。
+    /// 轻量重置：清空执行状态并回收内存，但保留 session 字符串与 builtin。
     pub fn reset(&mut self) {
         self.clear_execution_state();
         self.maybe_collect_session_gc();
-        // session 对象可持有 epoch 子引用（函数对象捕获、原生盒直插）：epoch
-        // 重置前把 epoch 子引用原地克隆晋升进 session，避免悬垂指针。
+        // session 对象可持有 epoch 子引用（函数对象捕获、原生盒直插）：
+        // 把 epoch 子引用原地克隆晋升进 session，避免悬垂指针。
         self.promote_session_epoch_refs();
         self.bytecode = Arc::default();
         // 表代际注册表不动：存活函数对象（含挂起帧 callee）按创建期代际仍须
         // 命中原表，跨 run 调用与恢复靠它成立。active_immutables 指向的旧表
         // 指针作废，下次 run 重装。
         self.active_immutables = std::ptr::slice_from_raw_parts(std::ptr::null(), 0);
-        self.free_epoch_dead_upvalues();
-        self.free_epoch_object_heap_data();
-        self.epoch.reset();
-        self.gc_state.epoch_object_ptrs.clear();
         // 单 run 分配包络按 run 边界重起算（与 run_alloc_bytes 起算口径同源）。
         self.gc_state.run_alloc_peak = 0;
         // 两档收集水位与包络同起算：旧 run 的存活包络不延续到新 run 的触发判定。
@@ -610,41 +591,6 @@ impl Vm {
         self.gc_state.gc_gate_retry_alloc = 0;
         self.root_reg_limit = 0;
         self.active_reg_limit = 0;
-    }
-
-    /// 释放随本次 epoch 重置死亡的 epoch 对象的 upvalue 列表。
-    ///
-    /// 原件与晋升克隆共享同一 Box 分配：共享项归 session 克隆持有，
-    /// 留待收尾（`free_session_upvalues`）统一释放，此处只放独占项。
-    fn free_epoch_dead_upvalues(&mut self) {
-        let mut shared: std::collections::HashSet<usize> = std::collections::HashSet::new();
-        for &ptr in self.gc_state.session_object_ptrs.iter() {
-            if ptr.is_null() {
-                continue;
-            }
-            // SAFETY: session 对象表此刻未清空，指向 session arena 内合法对象。
-            let up = unsafe { (*ptr).upvalues } as usize;
-            if up != 0 {
-                shared.insert(up);
-            }
-        }
-        let mut seen: std::collections::HashSet<usize> = std::collections::HashSet::new();
-        for &ptr in self.gc_state.epoch_object_ptrs.iter() {
-            if ptr.is_null() {
-                continue;
-            }
-            // SAFETY: epoch 对象表此刻未清空，指向 epoch arena 内合法对象。
-            let up = unsafe { (*ptr).upvalues } as usize;
-            if up == 0 || shared.contains(&up) || !seen.insert(up) {
-                continue;
-            }
-            // SAFETY: up 由 set_upvalues 的 Box::into_raw 分配，去重与共享集
-            // 保证本路径恰好释放一次。
-            unsafe {
-                drop(Box::from_raw(up as *mut Vec<*mut oxide_types::object::Cell>));
-                (*ptr).upvalues = std::ptr::null_mut();
-            }
-        }
     }
 
     /// 分配一个可被 session GC 回收的字符串 `JsValue`（session-heap 字符串）。

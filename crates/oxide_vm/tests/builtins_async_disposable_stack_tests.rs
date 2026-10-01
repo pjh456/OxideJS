@@ -530,19 +530,20 @@ fn promote_then_reset_keeps_entries_alive() {
     assert_eq!(text, "true|false");
 }
 
-/// drop 记账：无引用的 async 栈对象被收集时释放状态盒（freed 字节增长）。
+/// drop 记账：无引用的 async 栈对象被收集时释放状态盒并计入释放字节。
+/// 低阈值使执行期收集在循环内触发（默认 32MiB 阈值下本负载不触发收集）。
 #[test]
 fn drop_accounts_capability_bytes() {
-    let mut vm = Vm::new();
+    let mut config = KernelConfig::minimal();
+    config.set_session_gc_threshold(1);
+    let mut vm = Vm::with_kernel_core(KernelCore::new(config));
     let allocator = Allocator::default();
     let program = oxide_parser::parse(&allocator, "for (var i = 0; i < 500; i++) { new AsyncDisposableStack(); } 0")
         .expect("parse");
     let module = Compiler::new().compile(&program).expect("compile");
     vm.run(&Arc::new(module)).expect("run");
-    let before = vm.session_gc_stats().total_bytes_freed;
-    vm.reset();
-    let after = vm.session_gc_stats().total_bytes_freed;
-    assert!(after > before, "reset 应回收栈对象状态盒，before={before} after={after}");
+    let freed = vm.session_gc_stats().total_bytes_freed;
+    assert!(freed > 0, "收集应释放死栈对象状态盒并记账，freed={freed}");
 }
 
 /// full_reset（dirty 重建）：global 与 object 家族重建后 AsyncDisposableStack 仍
