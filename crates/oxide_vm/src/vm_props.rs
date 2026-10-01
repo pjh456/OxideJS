@@ -958,8 +958,7 @@ impl Vm {
                     // 新元素（越界或 hole 空洞）要求对象可扩展；已有元素覆盖不受限制。
                     // 常规入口（ordinary_set）已预先拦截，此处为 REST/SPREAD/builtin
                     // 内部等直调方的兜底。
-                    let is_new =
-                        index >= obj.array_prop_count || obj.prop_meta_at(index).is_some_and(|m| m.is_hole());
+                    let is_new = index >= obj.array_prop_count || obj.prop_meta_at(index).is_some_and(|m| m.is_hole());
                     if is_new && !obj.is_extensible() {
                         return;
                     }
@@ -1160,7 +1159,15 @@ impl Vm {
                         }
                     }
                 } else {
-                    return self.define_array_index_element(obj, index, JsValue::undefined(), attributes, true, get, set);
+                    return self.define_array_index_element(
+                        obj,
+                        index,
+                        JsValue::undefined(),
+                        attributes,
+                        true,
+                        get,
+                        set,
+                    );
                 }
             }
         }
@@ -1447,9 +1454,7 @@ impl Vm {
             }
         }
         names.reverse();
-        let in_range = |name: u32| {
-            self.array_index_from_property_key(name).is_some_and(|i| i >= from && i < to)
-        };
+        let in_range = |name: u32| self.array_index_from_property_key(name).is_some_and(|i| i >= from && i < to);
         // 无命中键时零重建。
         if !names.iter().any(|&name| in_range(name)) {
             return;
@@ -1711,7 +1716,8 @@ mod tests {
             (*a.as_js_object_ptr()).set_prop_at(0, JsValue::int(1));
         }
         let si = array_index_si(&mut vm, 2_000_000);
-        vm.ordinary_set(unsafe { &mut *a.as_js_object_ptr() }, si, JsValue::int(9), a, true).expect("set");
+        vm.ordinary_set(unsafe { &mut *a.as_js_object_ptr() }, si, JsValue::int(9), a, true)
+            .expect("set");
 
         let obj = unsafe { &*a.as_js_object_ptr() };
         assert_eq!(obj.logical_len(), 2_000_001, "length 扩到 index+1");
@@ -1727,7 +1733,8 @@ mod tests {
         let mut vm = Vm::new();
         let b = new_array_val(&mut vm, 0);
         let si = array_index_si(&mut vm, u32::MAX);
-        vm.ordinary_set(unsafe { &mut *b.as_js_object_ptr() }, si, JsValue::int(9), b, true).expect("set");
+        vm.ordinary_set(unsafe { &mut *b.as_js_object_ptr() }, si, JsValue::int(9), b, true)
+            .expect("set");
 
         let obj = unsafe { &*b.as_js_object_ptr() };
         assert_eq!(obj.logical_len(), 0, "2^32-1 不扩展 length");
@@ -1741,7 +1748,8 @@ mod tests {
         let c = new_array_val(&mut vm, 0);
         // "4294967296" 非规范数组下标（u32 解析失败），走字符串键路径。
         let si = vm.kernel_core.perm_interner().intern("4294967296").0;
-        vm.ordinary_set(unsafe { &mut *c.as_js_object_ptr() }, si, JsValue::int(1), c, true).expect("set");
+        vm.ordinary_set(unsafe { &mut *c.as_js_object_ptr() }, si, JsValue::int(1), c, true)
+            .expect("set");
 
         let obj = unsafe { &*c.as_js_object_ptr() };
         assert_eq!(obj.logical_len(), 0);
@@ -1758,7 +1766,8 @@ mod tests {
             (*arr).set_prop_at(1, JsValue::int(2));
         }
         let si = array_index_si(&mut vm, 3_000_000);
-        vm.ordinary_set(unsafe { &mut *d.as_js_object_ptr() }, si, JsValue::int(7), d, true).expect("set");
+        vm.ordinary_set(unsafe { &mut *d.as_js_object_ptr() }, si, JsValue::int(7), d, true)
+            .expect("set");
         vm.set_array_length_value(unsafe { &mut *d.as_js_object_ptr() }, JsValue::int(5), true, true)
             .expect("length");
 
@@ -1776,7 +1785,8 @@ mod tests {
             (*a.as_js_object_ptr()).set_prop_at(0, JsValue::int(1));
         }
         let si = array_index_si(&mut vm, 2_000_000);
-        vm.ordinary_set(unsafe { &mut *a.as_js_object_ptr() }, si, JsValue::int(9), a, true).expect("set");
+        vm.ordinary_set(unsafe { &mut *a.as_js_object_ptr() }, si, JsValue::int(9), a, true)
+            .expect("set");
 
         // Object.defineProperty(a, "2000000", {value: 1, configurable: false})。
         let attrs = PropAttributes::new(true, true, false);
@@ -1811,7 +1821,8 @@ mod tests {
 
         // 命名阻挡点 N=2000000：大索引写后改为不可配置。
         let si = array_index_si(&mut vm, 2_000_000);
-        vm.ordinary_set(unsafe { &mut *a.as_js_object_ptr() }, si, JsValue::int(9), a, true).expect("set");
+        vm.ordinary_set(unsafe { &mut *a.as_js_object_ptr() }, si, JsValue::int(9), a, true)
+            .expect("set");
         vm.define_data_property(unsafe { &mut *a.as_js_object_ptr() }, si, JsValue::int(9), attrs)
             .expect("define named");
 
@@ -1834,13 +1845,11 @@ mod tests {
             (*a.as_js_object_ptr()).set_prop_at(0, JsValue::int(1));
         }
         let si = array_index_si(&mut vm, 2_000_000);
-        vm.ordinary_set(unsafe { &mut *a.as_js_object_ptr() }, si, JsValue::int(9), a, true).expect("set");
+        vm.ordinary_set(unsafe { &mut *a.as_js_object_ptr() }, si, JsValue::int(9), a, true)
+            .expect("set");
 
-        let outcome = oxide_builtins::object::delete_own_property_outcome(
-            &mut vm,
-            unsafe { &mut *a.as_js_object_ptr() },
-            si,
-        );
+        let outcome =
+            oxide_builtins::object::delete_own_property_outcome(&mut vm, unsafe { &mut *a.as_js_object_ptr() }, si);
         assert_eq!(outcome, oxide_builtins::object::DeleteOutcome::Deleted);
         let obj = unsafe { &*a.as_js_object_ptr() };
         assert_eq!(obj.logical_len(), 2_000_001, "length 不变");
@@ -1855,8 +1864,10 @@ mod tests {
             (*a.as_js_object_ptr()).set_prop_at(0, JsValue::int(1));
         }
         let si = array_index_si(&mut vm, 2_000_000);
-        vm.ordinary_set(unsafe { &mut *a.as_js_object_ptr() }, si, JsValue::int(5), a, true).expect("set");
-        vm.ordinary_set(unsafe { &mut *a.as_js_object_ptr() }, si, JsValue::int(9), a, true).expect("set");
+        vm.ordinary_set(unsafe { &mut *a.as_js_object_ptr() }, si, JsValue::int(5), a, true)
+            .expect("set");
+        vm.ordinary_set(unsafe { &mut *a.as_js_object_ptr() }, si, JsValue::int(9), a, true)
+            .expect("set");
 
         let obj = unsafe { &*a.as_js_object_ptr() };
         assert_eq!(obj.logical_len(), 2_000_001);

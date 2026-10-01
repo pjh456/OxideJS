@@ -362,18 +362,22 @@ impl SuspendedFrame {
             save_stack: self.save_stack.iter().copied().map(&mut rewrite).collect(),
             cell_stack: self.cell_stack.clone(),
             try_stack: self.try_stack.clone(),
-            for_in_iters: self.for_in_iters.iter().map(|&iter| {
-                if iter.is_null() {
-                    return iter;
-                }
-                // SAFETY: 指针是堆上迭代器体，原件状态盒独占持有；克隆新建
-                // 独立体，原件与克隆各持自有体，恰好各释放一次。
-                let body = unsafe { &*iter };
-                Box::into_raw(Box::new(ForInIter {
-                    keys: body.keys.iter().map(|(v, si)| (rewrite(*v), *si)).collect(),
-                    index: body.index,
-                }))
-            }).collect(),
+            for_in_iters: self
+                .for_in_iters
+                .iter()
+                .map(|&iter| {
+                    if iter.is_null() {
+                        return iter;
+                    }
+                    // SAFETY: 指针是堆上迭代器体，原件状态盒独占持有；克隆新建
+                    // 独立体，原件与克隆各持自有体，恰好各释放一次。
+                    let body = unsafe { &*iter };
+                    Box::into_raw(Box::new(ForInIter {
+                        keys: body.keys.iter().map(|(v, si)| (rewrite(*v), *si)).collect(),
+                        index: body.index,
+                    }))
+                })
+                .collect(),
             for_of_iters: self
                 .for_of_iters
                 .iter()

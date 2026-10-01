@@ -1702,10 +1702,7 @@ fn active_and_suspended_for_in_do_not_block_in_run_collection() {
     // 迭代器键经根收集标活。
     let mut vm = vm_with_threshold(65536);
     let dead = plain_object(&mut vm);
-    let iter = Box::into_raw(Box::new(crate::vm::ForInIter {
-        keys: Vec::new(),
-        index: 0,
-    }));
+    let iter = Box::into_raw(Box::new(crate::vm::ForInIter { keys: Vec::new(), index: 0 }));
     vm.iters.push_for_in(iter);
 
     vm.maybe_collect_in_run();

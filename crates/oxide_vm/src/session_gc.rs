@@ -134,8 +134,7 @@ impl SessionGc {
     /// 单趟替代原 `object_edges` + `record_object_string_edges` 双遍模式：消除每对象
     /// Vec 分配与重复字段遍历。
     fn scan_edges_for_mark(
-        obj: &JsObject, stack: &mut Vec<*mut JsObject>,
-        live_strings: &mut HashSet<*mut JsString, FxBuildHasher>,
+        obj: &JsObject, stack: &mut Vec<*mut JsObject>, live_strings: &mut HashSet<*mut JsString, FxBuildHasher>,
         live_bigints: &mut HashSet<*mut num_bigint::BigInt, FxBuildHasher>,
         live_cells: &mut HashSet<*mut Cell, FxBuildHasher>,
     ) {
@@ -197,8 +196,7 @@ impl SessionGc {
 
     #[inline]
     fn process_edge(
-        value: JsValue, stack: &mut Vec<*mut JsObject>,
-        live_strings: &mut HashSet<*mut JsString, FxBuildHasher>,
+        value: JsValue, stack: &mut Vec<*mut JsObject>, live_strings: &mut HashSet<*mut JsString, FxBuildHasher>,
         live_bigints: &mut HashSet<*mut num_bigint::BigInt, FxBuildHasher>,
     ) {
         if value.is_object() {
@@ -624,11 +622,7 @@ impl SessionGc {
             if obj.is_gc_marked() && obj.is_weak_map_obj() {
                 // SAFETY: 弱表 native 盒独占，整表重建在定夺期间无并发读者。
                 unsafe {
-                    weak_map::rewrite_weak_map_native(
-                        &mut *ptr,
-                        |key| resolve_weak_key_sweep(key),
-                        |value| value,
-                    );
+                    weak_map::rewrite_weak_map_native(&mut *ptr, |key| resolve_weak_key_sweep(key), |value| value);
                 }
             }
         }
@@ -1004,8 +998,11 @@ impl SessionGc {
             string_bytes += size_of::<JsString>() + unsafe { (*ptr).payload_bytes() };
         }
         let bigint_bytes = vm.gc_state.session_bigint_ptrs.borrow().len() * size_of::<num_bigint::BigInt>();
-        vm.gc_state.session_bytes_allocated =
-            vm.gc_state.session_bytes_allocated.saturating_add(string_bytes).saturating_add(bigint_bytes);
+        vm.gc_state.session_bytes_allocated = vm
+            .gc_state
+            .session_bytes_allocated
+            .saturating_add(string_bytes)
+            .saturating_add(bigint_bytes);
 
         // 抬高下次触发水位：当前分配包络 + 阈值增量——存活包络超阈值时不每指令
         // 重复触发无死对象可回收的白跑。

@@ -1203,8 +1203,7 @@ impl Vm {
         // 免 promote 搬移——若按 epoch 分配，首次写入 session 根会把对象搬到新
         // 地址，缓存中的旧指针与新实例分叉，同一 site 两次取值将返回不同对象。
         let mut alloc_session_array = |n: usize| {
-            let clone =
-                JsObject::new_array(oxide_kernel::shape_forge::EMPTY_SHAPE_ID, proto_val, n, self.epoch.bump());
+            let clone = JsObject::new_array(oxide_kernel::shape_forge::EMPTY_SHAPE_ID, proto_val, n, self.epoch.bump());
             self.alloc_session_object(clone)
         };
         let cooked = alloc_session_array(n);

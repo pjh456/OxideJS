@@ -820,10 +820,9 @@ fn reset_clears_runtime_state_like_rerun() {
         upvalues: std::ptr::slice_from_raw_parts(std::ptr::null(), 0),
     });
     vm.save_stack.push(JsValue::undefined());
-    vm.iters.for_in_iters.push(Box::into_raw(Box::new(crate::vm::ForInIter {
-        keys: Vec::new(),
-        index: 0,
-    })));
+    vm.iters
+        .for_in_iters
+        .push(Box::into_raw(Box::new(crate::vm::ForInIter { keys: Vec::new(), index: 0 })));
     vm.iters.for_of_iters.push(crate::vm_state::ForOfEntry {
         iterator: JsValue::undefined(),
         last_result: JsValue::undefined(),
@@ -888,15 +887,8 @@ fn inline_for_in_escape_restores_snapshot_and_releases_residual_body() {
     assert!(result.is_err(), "未捕获异常应返回 Err");
     // 回调 for-in 体经内联路径执行过一轮（hits 记 1），证明场景落在内联调用
     // 路径且残留体确曾入表；restore 后表须还原为快照（顶层为空）。
-    assert_eq!(
-        global_prop(&vm, "hits").as_int(),
-        1,
-        "回调 for-in 体应执行过一轮"
-    );
-    assert!(
-        vm.iters.for_in_iters.is_empty(),
-        "restore 后 for-in 表应与快照一致（顶层为空）"
-    );
+    assert_eq!(global_prop(&vm, "hits").as_int(), 1, "回调 for-in 体应执行过一轮");
+    assert!(vm.iters.for_in_iters.is_empty(), "restore 后 for-in 表应与快照一致（顶层为空）");
 }
 
 /// 既有 own 属性值覆盖须推进世代：`Array.prototype.push = 9`（P 对象既有槽、
