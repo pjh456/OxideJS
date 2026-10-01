@@ -622,7 +622,7 @@ impl SessionGc {
             if obj.is_gc_marked() && obj.is_weak_map_obj() {
                 // SAFETY: 弱表 native 盒独占，整表重建在定夺期间无并发读者。
                 unsafe {
-                    weak_map::rewrite_weak_map_native(&mut *ptr, |key| resolve_weak_key_sweep(key), |value| value);
+                    weak_map::rewrite_weak_map_native(&mut *ptr, resolve_weak_key_sweep, |value| value);
                 }
             }
         }

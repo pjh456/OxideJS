@@ -266,7 +266,7 @@ impl Vm {
                 if obj.is_weak_map_obj() {
                     weak_map::rewrite_weak_map_native(
                         obj,
-                        |key| crate::session_gc::resolve_weak_key_after_promotion(key),
+                        crate::session_gc::resolve_weak_key_after_promotion,
                         |value| value,
                     );
                 }
@@ -279,7 +279,7 @@ impl Vm {
                 if obj.is_weak_map_obj() {
                     weak_map::rewrite_weak_map_native(
                         obj,
-                        |key| crate::session_gc::resolve_weak_key_after_promotion(key),
+                        crate::session_gc::resolve_weak_key_after_promotion,
                         |value| value,
                     );
                 }

@@ -1,5 +1,6 @@
 //! 生成器 × session GC 回归：full_reset 逐对象释放 session 生成器（本体 + 堆数据
 //! + upvalue 列表，各单所有权），不 double-free、不悬垂，VM 继续可用。
+//!
 //! sweep 变体与闭包捕获变体见 `vm_support.rs` 内部测试（需 crate 内 `resume_generator`
 //! 在模块表未重建时恢复执行，integration 层无法触达）。
 
