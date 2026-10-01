@@ -449,8 +449,8 @@ fn reset_drops_stale_uncaught_value() {
     assert!(vm.last_uncaught_value.is_none(), "full_reset 应清空未捕获异常侧通道");
 }
 
-/// run 边界换新 Bump 后双 arena 保留锚恰 0：重源 run 冲高水位，
-/// full_reset 后 epoch/session 两 arena 均空（容量不跨 reset 保留）。
+/// 全量重置后 epoch/session 两 arena 均空：容量不跨 reset 保留。对象
+/// Box 化后 arena 零分配，此不变量是分配包络公式排除 arena 计数器的前提。
 #[test]
 fn full_reset_zeroes_arena_retained() {
     let mut vm = Vm::new();

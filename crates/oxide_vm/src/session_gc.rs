@@ -593,7 +593,8 @@ impl SessionGc {
     ///
     /// # 副作用
     /// - `session_object_ptrs` 仅剩存活对象；`session_bytes_allocated` 重算为
-    ///   存活对象字节（串/BigInt/cell 分量由各清扫路径自行补回）；
+    ///   存活对象字节（串分量由串清扫补回；BigInt/cell 不在手工账目内，
+    ///   由 `run_alloc_bytes` 公式按表长单列）；
     /// - `total_*` 与 `last_collection_*` 统计按对象口径更新（绝对赋值，
     ///   串/BigInt/cell 清扫在其上累加）。
     ///
@@ -729,15 +730,14 @@ impl SessionGc {
     pub(crate) fn sweep_session_bigints(&mut self, vm: &mut Vm) -> u64 {
         let old = vm.gc_state.session_bigint_ptrs.borrow_mut().drain(..).collect::<Vec<_>>();
         let mut freed = 0u64;
-        let mut live_bytes = 0usize;
         let mut live = Vec::with_capacity(old.len());
         for ptr in old {
             if ptr.is_null() {
                 continue;
             }
             if self.live_bigints.contains(&ptr) {
-                // 存活——地址不变，无需重写。
-                live_bytes += size_of::<num_bigint::BigInt>();
+                // 存活——地址不变，无需重写。BigInt 不入手工账目，
+                // 存活字节由 `run_alloc_bytes` 公式按表长单列。
                 live.push(ptr);
             } else {
                 // SAFETY: ptr 在 session_bigint_ptrs 中但不可达，恰好释放一次。
@@ -748,7 +748,6 @@ impl SessionGc {
             }
         }
         *vm.gc_state.session_bigint_ptrs.borrow_mut() = live;
-        vm.gc_state.session_bytes_allocated = vm.gc_state.session_bytes_allocated.saturating_add(live_bytes);
 
         self.total_bytes_freed = self.total_bytes_freed.saturating_add(freed);
         self.last_collection_bytes_freed = self.last_collection_bytes_freed.saturating_add(freed);
@@ -759,8 +758,9 @@ impl SessionGc {
     /// `Box::from_raw` 释放。存活 cell 不被搬移——Box 地址稳定——因此无需
     /// forwarding 表与根指针重写。在 BigInt 清扫之后运行。
     ///
-    /// cell 不在 `session_bytes_allocated` 账目口径内（与字符串/BigInt 补回口径
-    /// 不同），故只累计释放字节统计、不重算存活账目。
+    /// cell 不在 `session_bytes_allocated` 手工账目口径内（串分量在账目内，
+    /// BigInt/cell 由 `run_alloc_bytes` 公式按表长单列），故只累计释放字节
+    /// 统计、不重算存活账目。
     /// 返回释放的字节数。
     pub(crate) fn sweep_session_cells(&mut self, vm: &mut Vm) -> u64 {
         let old = vm.gc_state.session_cell_ptrs.borrow_mut().drain(..).collect::<Vec<_>>();
@@ -881,7 +881,8 @@ impl SessionGc {
     ///   本路径不跑对象 sweep（sweep 内清位不会执行），故开头与结尾都清位——
     ///   维持"mark 之后必由清位收尾"的不变量，strings-only 结束不留残留。
     /// - 不搬移对象，`session_bytes_allocated` 保持对象账目，手动扣掉字符串账目后
-    ///   由 `sweep_session_strings` 补回存活串字节，与完整收集的最终账目一致。
+    ///   由 `sweep_session_strings` 补回存活串字节（BigInt/cell 不在手工账目内），
+    ///   与完整收集的最终账目一致。
     pub(crate) fn collect_strings_only(&mut self, vm: &mut Vm) {
         let start = Instant::now();
 
@@ -967,7 +968,8 @@ impl SessionGc {
     ///
     /// # 副作用
     /// - `session_object_ptrs` 仅剩存活，`session_bytes_allocated` 按存活整体
-    ///   重算（对象 + 串 + BigInt；本路径不扫串/BigInt，串 GC 归 strings-only）；
+    ///   重算（对象 + 串；本路径不扫串，串表整体计入，串 GC 归 strings-only；
+    ///   BigInt/cell 不在手工账目内，由公式按表长单列）；
     /// - `gc_watermark` = 当前分配包络 + 阈值增量；
     /// - 累计/时长统计更新；mark 位全清（收集后无残留）。
     pub(crate) fn collect_in_run(&mut self, vm: &mut Vm) {
@@ -987,8 +989,9 @@ impl SessionGc {
         // 死 cell 随死对象出表：存活 cell 经 mark 种子 + 对象边入存活集，此处清扫。
         self.sweep_session_cells(vm);
 
-        // 整体口径重算：对象分量已由清扫核心写入，此处补串与 BigInt 分量
-        // （本路径不扫串/BigInt，按当前表整体计入，与 strings-only 口径一致）。
+        // 整体口径重算：对象分量已由清扫核心写入，此处补串分量（本路径不扫
+        // 串，串表整体计入，与 strings-only 口径一致；BigInt/cell 不在手工
+        // 账目内，由 `run_alloc_bytes` 公式按表长单列）。
         let mut string_bytes: usize = 0;
         for &ptr in &vm.gc_state.session_string_ptrs {
             if ptr.is_null() {
@@ -997,12 +1000,7 @@ impl SessionGc {
             // SAFETY: ptr 在字符串表登记，收尾前有效。
             string_bytes += size_of::<JsString>() + unsafe { (*ptr).payload_bytes() };
         }
-        let bigint_bytes = vm.gc_state.session_bigint_ptrs.borrow().len() * size_of::<num_bigint::BigInt>();
-        vm.gc_state.session_bytes_allocated = vm
-            .gc_state
-            .session_bytes_allocated
-            .saturating_add(string_bytes)
-            .saturating_add(bigint_bytes);
+        vm.gc_state.session_bytes_allocated = vm.gc_state.session_bytes_allocated.saturating_add(string_bytes);
 
         // 抬高下次触发水位：当前分配包络 + 阈值增量——存活包络超阈值时不每指令
         // 重复触发无死对象可回收的白跑。

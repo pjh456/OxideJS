@@ -28,9 +28,10 @@ pub(crate) struct GcState {
     pub(crate) session_gc: SessionGc,
     pub(crate) session_object_ptrs: Vec<*mut JsObject>,
     pub(crate) session_string_ptrs: Vec<*mut JsString>,
-    /// BigInt 堆 box（`Box<i128>`）追踪表。`RefCell` 使 `&self` 的
-    /// `convert_immutables` 也能登记新 box。与字符串不同，BigInt 不参与
-    /// mark/sweep 回收（值量少），只在 full_reset 统一释放。
+    /// BigInt 堆 box 追踪表。`RefCell` 使 `&self` 的分配入口（常量池
+    /// `convert_immutables`）也能登记新 box。BigInt 参与 mark/sweep 回收
+    /// （死 BigInt 随收集释放，存活字节由 `run_alloc_bytes` 公式按表长
+    /// 单列），full_reset 为收尾兜底（表已空时 no-op）。
     pub(crate) session_bigint_ptrs: RefCell<Vec<*mut num_bigint::BigInt>>,
     /// upvalue cell（`Box<Cell>`）追踪表。`RefCell` 使 `&self` 的分配入口也能
     /// 登记新 box。cell 独立堆分配、地址稳定，不参与对象搬移（原地 sweep

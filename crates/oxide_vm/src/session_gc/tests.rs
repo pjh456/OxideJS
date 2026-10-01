@@ -1540,6 +1540,38 @@ fn strings_only_collection_byte_accounting_matches_survivors() {
 }
 
 #[test]
+fn run_alloc_formula_lists_bigint_and_cell_via_tables() {
+    let mut vm = Vm::new();
+    let obj = plain_object(&mut vm);
+    vm.regs[0] = JsValue::from_js_object(obj);
+    let s = vm.new_string_owned("formula".repeat(4));
+    vm.regs[1] = s;
+    let b = vm.new_bigint(num_bigint::BigInt::from(7_i128));
+    vm.regs[2] = b;
+    // 未根 cell：收集后不可达，随 sweep 出表。
+    vm.gc_state.alloc_cell(JsValue::int(9), true);
+
+    // 公式 = 手工账目 + BigInt 表长 × 尺寸 + cell 表长 × 尺寸，三分量两两不相交。
+    assert_eq!(
+        vm.run_alloc_bytes(),
+        vm.gc_state.session_bytes_allocated
+            + vm.gc_state.session_bigint_ptrs.borrow().len() * size_of::<num_bigint::BigInt>()
+            + vm.gc_state.session_cell_ptrs.borrow().len() * size_of::<Cell>()
+    );
+    // BigInt 不在手工账目内：账目 = 对象（头 + 堆数据，本例无堆区）+ 串。
+    let string_bytes = size_of::<JsString>() + unsafe { (*s.as_string_ptr_mut()).payload_bytes() };
+    assert_eq!(vm.gc_state.session_bytes_allocated, size_of::<JsObject>() + string_bytes);
+
+    // 完整收集后：死 cell 出表、存活 BigInt 留表，账目保持对象 + 串口径。
+    vm.collect_session_gc();
+    assert_eq!(vm.gc_state.session_cell_ptrs.borrow().len(), 0);
+    assert_eq!(vm.gc_state.session_bigint_ptrs.borrow().len(), 1);
+    assert_eq!(vm.gc_state.session_bytes_allocated, size_of::<JsObject>() + string_bytes);
+    // 深采样全量重算 = 轻层公式 + 逐对象堆数据重算（本例无堆区，两值相等）。
+    assert_eq!(vm.run_alloc_bytes_full(), vm.run_alloc_bytes() as u64);
+}
+
+#[test]
 fn runtime_collection_below_threshold_is_noop() {
     let mut vm = Vm::new();
     let s = vm.new_string_owned("small".repeat(4));

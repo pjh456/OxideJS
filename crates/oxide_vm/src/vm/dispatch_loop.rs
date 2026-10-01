@@ -134,7 +134,7 @@ impl Vm {
                 if bytes > self.gc_state.session_bytes_peak {
                     self.gc_state.session_bytes_peak = bytes;
                 }
-                // 单 run 分配包络高水位：O(1) 三计数器读（双 arena + session 账目）。
+                // 单 run 分配包络高水位：O(1) 读（手工账目 + BigInt/cell 表长）。
                 let alloc = self.run_alloc_bytes();
                 if alloc > self.gc_state.run_alloc_peak {
                     self.gc_state.run_alloc_peak = alloc;

@@ -275,45 +275,34 @@ impl Vm {
         self.gc_state.session_bytes_peak
     }
 
-    /// 双 arena（epoch + session 对象）当前 chunk 已分配字节之和。
-    ///
-    /// # 注意事项
-    /// reset 边界读 = 换新 Bump 后空 arena 恰 0（空 chunk 哨兵计 0）；
-    /// run 中途读 = 当前 chunk 用量（非全 arena 口径——run 计量走
-    /// [`Self::run_alloc_bytes`]，勿据此断言）。
-    pub fn arena_retained_bytes(&self) -> usize {
-        self.epoch.bump().allocated_bytes() + self.gc_state.session_epoch.allocated_bytes()
-    }
-
     /// 本 run 累计分配字节的高水位：`run_alloc_bytes` 的顶层指令边界
     /// 采样上界，run 边界（reset/full_reset）重起算。留存内存观测锚。
     pub fn run_alloc_peak(&self) -> usize {
         self.gc_state.run_alloc_peak
     }
 
-    /// 本 run 累计分配字节：epoch arena + session 对象 arena + session 手工堆
-    /// 账目（session 串 + session 对象及其属性向量 + GC 后补回的 BigInt）。
-    /// 单次 run 内单调不减（执行期对象不回收、
-    /// 串 GC 只降手工堆账目而 arena 不减）；run 边界（reset）后重新起算，
-    /// 供单 run 分配上限判定。
+    /// 本 run 累计分配字节：session 手工堆账目（session 对象及其属性向量 +
+    /// session 串）+ BigInt 表长 × `size_of::<BigInt>` + cell 表长 ×
+    /// `size_of::<Cell>`。三分量两两不相交（BigInt 与 cell 不在手工账目内），
+    /// O(1) 读，供单 run 分配上限判定。收集释放后读数回落存活集量级；
+    /// run 边界（reset/full_reset）后账目与表清零重起算。
     ///
-    /// 注意：手工堆账目只在 promote/字符串分配/GC 回收点更新，执行期对象
+    /// 注意：手工堆账目只在对象分配/字符串分配/GC 回收点更新，执行期对象
     /// 属性区（元素/属性向量扩容）增长对其不可见——上限判定须配合
     /// [`Self::run_alloc_bytes_full`] 的深采样层。
     pub(crate) fn run_alloc_bytes(&self) -> usize {
-        self.epoch.bump().allocated_bytes()
-            + self.gc_state.session_epoch.allocated_bytes()
-            + self.gc_state.session_bytes_allocated
+        self.gc_state.session_bytes_allocated
+            + self.gc_state.session_bigint_ptrs.borrow().len() * std::mem::size_of::<num_bigint::BigInt>()
+            + self.gc_state.session_cell_ptrs.borrow().len() * std::mem::size_of::<Cell>()
     }
 
-    /// 本 run 累计分配字节的全量重算版：base 只取两个 arena 计数器
-    /// （epoch + session 对象 arena），手工堆逐一重算——已登记对象的堆数据
-    /// （属性/元素向量 + upvalue 列表 + native 状态盒）、session 串、BigInt
-    /// 与 upvalue cell 的容量。三分量（arena / 对象堆数据 / 串-BigInt-cell）
-    /// 两两不相交，且不含 session 手工堆账目——无交叠不双计，重算即属性区
-    /// 扩容等账目盲区的兜底。
+    /// 本 run 累计分配字节的全量重算版：base 与 [`Self::run_alloc_bytes`] 同
+    /// 一口径（手工账目 + BigInt/cell 表长），其上逐一重算已登记对象的堆数据
+    /// （属性/元素向量 + upvalue 列表 + native 状态盒）容量——重算即属性区
+    /// 扩容等账目盲区的兜底。base 的对象分量是最近分配/回收点的账目快照，
+    /// 重算取当前容量，读数偏高，上限判定偏安全侧。
     pub(crate) fn run_alloc_bytes_full(&self) -> u64 {
-        let mut bytes = (self.epoch.bump().allocated_bytes() + self.gc_state.session_epoch.allocated_bytes()) as u64;
+        let mut bytes = self.run_alloc_bytes() as u64;
         for &ptr in self.gc_state.session_object_ptrs.iter() {
             if ptr.is_null() {
                 continue;
@@ -321,12 +310,6 @@ impl Vm {
             // SAFETY: ptr 来自对象表登记，dispatch 安全点处仍有效。
             bytes += SessionGc::object_heap_data_bytes(unsafe { &*ptr });
         }
-        for &ptr in &self.gc_state.session_string_ptrs {
-            // SAFETY: ptr 来自字符串表登记，收尾前始终有效。
-            bytes += (std::mem::size_of::<oxide_types::object::JsString>() + unsafe { (*ptr).payload_bytes() }) as u64;
-        }
-        bytes += (self.gc_state.session_bigint_ptrs.borrow().len() * std::mem::size_of::<num_bigint::BigInt>()) as u64;
-        bytes += (self.gc_state.session_cell_ptrs.borrow().len() * std::mem::size_of::<Cell>()) as u64;
         bytes
     }
 

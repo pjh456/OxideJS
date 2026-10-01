@@ -450,17 +450,17 @@ pub fn run_mem_closure_dead_leak(kernel: &Arc<KernelCore>) -> ExitCode {
     report_series("closure_dead_leak", "iter", &series)
 }
 
-/// 校准用例：重源单次 run 后 `full_reset()`，读双 arena 保留锚
-/// （`arena_retained_bytes`，reset 边界换新 Bump 后恰 0），再 50 轮轻源
+/// 校准用例：重源单次 run 后 `full_reset()`，读 session 账目锚
+/// （`session_bytes_allocated`，全量重置清表归零后恰 0），再 50 轮轻源
 /// （每轮 `full_reset()`）采 VmRSS，度量 full_reset 归还路径的跨轮内存
 /// 增量（斜率 + 窗口总增量），期望走平。
 ///
 /// # 注意事项
 /// 不走 VM 池：drop clean 路径与池内归还走同一 `full_reset`，池锁/condvar
-/// 噪音与本测面无关。重源瞬时对象全 epoch 分配、不逃逸 global；锚 == 0 为
-/// 确定性主门槛（in-engine，免分配器噪音），RSS 序列为次锚（进程级辅助指标，
-/// 峰后无新增量——归还 chunk 可能滞留分配器自由链不回 OS，不要求回落
-/// 峰前）。
+/// 噪音与本测面无关。重源瞬时对象不逃逸 global，全量重置后 session 账目
+/// 清零；锚 == 0 为确定性主门槛（in-engine，免分配器噪音），RSS 序列为次锚
+/// （进程级辅助指标，峰后无新增量——归还 chunk 可能滞留分配器自由链不回
+/// OS，不要求回落峰前）。
 pub fn run_mem_pool_high_water(kernel: &Arc<KernelCore>) -> ExitCode {
     const LIGHT_ROUNDS: usize = 50;
 
@@ -484,7 +484,7 @@ pub fn run_mem_pool_high_water(kernel: &Arc<KernelCore>) -> ExitCode {
         return ExitCode::FAILURE;
     }
     vm.full_reset();
-    let anchor = vm.arena_retained_bytes();
+    let anchor = vm.session_bytes_allocated();
     eprintln!("[pool_high_water] anchor after full_reset: {anchor} bytes (expect 0)");
     if anchor != 0 {
         return ExitCode::FAILURE;
@@ -896,6 +896,25 @@ mod tests {
         let (slope, r2) = linreg(&pts);
         assert_eq!(slope, 0.0);
         assert_eq!(r2, 1.0);
+    }
+
+    /// 全量重置后 session 账目锚恰 0：`mem_pool_high_water` 的确定性主门槛
+    /// （锚 == 0）依赖全量重置清表归零，重源 run 后账目非零作对照。
+    #[test]
+    fn session_accounting_zero_after_full_reset() {
+        let kernel = KernelCore::new(KernelConfig::standard());
+        let mut vm = Vm::with_kernel_core(Arc::clone(&kernel));
+        let allocator = Allocator::default();
+        let program = oxide_parser::parse(&allocator, "var o = { a: 1 }; o").expect("parse");
+        let hash = compiled_module_hash(&program);
+        let module = kernel
+            .code_forge()
+            .get_or_insert_with(hash, || Compiler::new().compile(&program))
+            .expect("compile");
+        vm.run(&module).expect("run");
+        assert!(vm.session_bytes_allocated() > 0);
+        vm.full_reset();
+        assert_eq!(vm.session_bytes_allocated(), 0);
     }
 
     /// 窗口采样器：正斜率序列出判定且斜率还原正确。
