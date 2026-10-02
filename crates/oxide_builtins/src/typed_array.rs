@@ -181,39 +181,6 @@ pub fn typed_array_native_edges(obj: &JsObject) -> Vec<JsValue> {
     }
 }
 
-/// 克隆 TypedArray 的视图数据到新对象，用 `rewrite` 改写 buffer 引用。
-pub fn clone_typed_array_native_with_rewrite<F>(old_obj: &JsObject, new_obj: &mut JsObject, mut rewrite: F)
-where
-    F: FnMut(JsValue) -> JsValue,
-{
-    let Some(ptr) = typed_array_data_ptr(old_obj) else {
-        return;
-    };
-    if ptr.is_null() {
-        return;
-    }
-    let mut data = unsafe { *ptr };
-    data.buffer = rewrite(data.buffer);
-    let cloned = Box::into_raw(Box::new(data));
-    new_obj.set_native_fn(Some(unsafe { NativeFnPtr::from_raw(cloned as *const ()) }));
-}
-
-/// 原地重写 TypedArray 的 buffer 引用。
-pub fn rewrite_typed_array_native<F>(obj: &mut JsObject, mut rewrite: F)
-where
-    F: FnMut(JsValue) -> JsValue,
-{
-    let Some(ptr) = typed_array_data_ptr(obj) else {
-        return;
-    };
-    if ptr.is_null() {
-        return;
-    }
-    unsafe {
-        (*ptr).buffer = rewrite((*ptr).buffer);
-    }
-}
-
 /// 只读核算 TypedArray 视图数据字节（不释放）。
 pub fn typed_array_native_size(obj: &JsObject) -> u64 {
     let Some(ptr) = typed_array_data_ptr(obj) else {

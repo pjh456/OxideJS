@@ -1,9 +1,10 @@
 //! WeakMap 条目表：弱键 → 强值。
 //!
-//! 键为弱引用（GC mark 不产键边，死键由收集路径按转发表判定后丢条目），
-//! 值为强引用（值边进 mark 边扫描与晋升改写）。存储盒经 `Box::into_raw` 挂
-//! `JsObject.native_data`，GC 六站点（mark 边 / 移动式 sweep / 晋升克隆 /
-//! 原地晋升 / drop / 字节账目）经本模块五函数族接线，口径与 Map/Set 同形。
+//! 键为弱引用（GC mark 不产键边，死键由原地 sweep 的 mark 位判定后丢条目），
+//! 值为强引用（值边进 mark 边扫描，原地 sweep 弱键定夺相改写，该相值为恒等
+//! 改写）。存储盒经 `Box::into_raw` 挂 `JsObject.native_data`，GC 四站点
+//! （mark 边 / 原地 sweep 弱键定夺 / drop / 字节账目）经本模块四函数族接线，
+//! 口径与 Map/Set 同形。
 //! 构造体（iterable 协议）与 set/get/has/delete 四方法的品牌三分枝守卫
 //! （set/delete 对非 WeakMap this 抛 TypeError，get/has 静默返 undefined/false）
 //! 也在本模块。
@@ -19,7 +20,7 @@ use oxide_types::value::JsValue;
 /// （interner 保证同符号同 si）。两臂互斥，不可弱持的值不建键。
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum WeakKey {
-    /// 对象键：裸指针仅作哈希键与成员查，生命周期由 GC 转发表判定。
+    /// 对象键：裸指针仅作哈希键与成员查，生命周期由原地 sweep 的 mark 位判定。
     Obj(*const JsObject),
     /// symbol 键：interned si 值。
     Symbol(u32),
@@ -120,34 +121,11 @@ pub fn weak_map_native_edges(obj: &JsObject) -> Vec<JsValue> {
     unsafe { (*inner).entries.values().copied().collect() }
 }
 
-/// 克隆 WeakMap 条目表到新对象：键原样搬运（生死判定交晋升后的弱键定夺
-/// 路径），值经 `rewrite` 改写（强边）。源盒由释放路径单独释放，互不共享。
-pub fn clone_weak_map_native_with_rewrite<F>(src: &JsObject, dst: &mut JsObject, mut rewrite: F)
-where
-    F: FnMut(JsValue) -> JsValue,
-{
-    if !src.is_weak_map_obj() {
-        return;
-    }
-    // SAFETY: 源盒指针由构造路径写入，克隆完成 native_data 重指前读取有效。
-    let inner = weak_map_inner_of(src);
-    if inner.is_null() {
-        dst.set_native_data(std::ptr::null_mut());
-        return;
-    }
-    let mut cloned = WeakMapInner::new();
-    unsafe {
-        for (key, value) in (*inner).iter() {
-            let new_value = if value.is_object() { rewrite(value) } else { value };
-            cloned.entries.insert(key, new_value);
-        }
-    }
-    dst.set_native_data(Box::into_raw(Box::new(cloned)) as *mut u8);
-}
-
 /// 原地重写 WeakMap 条目表的键与值：键经 `key_resolve` 判定（返回 `None`
 /// 即死键，条目丢弃；`Some` 改指新键），值经 `value_rewrite` 改写（强边）。
-/// 按原表整表重建，免条目级原位换键的容量抖动。
+/// 键不提前改写，键的生死统一由弱键定夺路径判定（原地 sweep 弱键定夺按
+/// mark 位定生死、死键条目丢弃）；提前改写键会引入定夺序依赖。按原表
+/// 整表重建，免条目级原位换键的容量抖动。
 pub fn rewrite_weak_map_native<K, V>(obj: &mut JsObject, mut key_resolve: K, mut value_rewrite: V)
 where
     K: FnMut(WeakKey) -> Option<WeakKey>,
@@ -169,31 +147,6 @@ where
             };
             let new_value = if value.is_object() { value_rewrite(value) } else { value };
             rewritten.entries.insert(new_key, new_value);
-        }
-        *inner = rewritten;
-    }
-}
-
-/// 原地重写 WeakMap 条目表的值边（强边）：键不动，值经 `rewrite` 改写。
-/// 供晋升主改写路径使用——键的生死须待转发表收敛后由弱键定夺路径判定，
-/// 本路径提前改写键会引入晋升序依赖。
-pub fn rewrite_weak_map_native_values<F>(obj: &mut JsObject, mut rewrite: F)
-where
-    F: FnMut(JsValue) -> JsValue,
-{
-    if !obj.is_weak_map_obj() {
-        return;
-    }
-    // native_data 同 rewrite_weak_map_native：构造路径写入的有效 Box 指针。
-    let inner = obj.native_data() as *mut WeakMapInner;
-    if inner.is_null() {
-        return;
-    }
-    unsafe {
-        let mut rewritten = WeakMapInner::with_capacity((*inner).len());
-        for (key, value) in (*inner).iter() {
-            let new_value = if value.is_object() { rewrite(value) } else { value };
-            rewritten.entries.insert(key, new_value);
         }
         *inner = rewritten;
     }

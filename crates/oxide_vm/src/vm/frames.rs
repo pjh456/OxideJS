@@ -78,9 +78,9 @@ pub struct CallFrame {
     pub continuation: FrameContinuation,
     /// 被调函数 upvalue cell 表（压帧时从 callee 对象固化，非闭包为 null 空切片）。
     ///
-    /// SAFETY 前提：`callee` 是 GC 根（根遍历/重写/深拷贝三处均遍历该字段），
-    /// 其 `upvalues` Box 创建后不替换（`set_upvalues` 仅 CREATE_CLOSURE 调用一次，
-    /// 晋升克隆共享同一 Box），故指针跨 GC 恒有效；写路径经 `*mut` 转可变切片
+    /// SAFETY 前提：`callee` 是 GC 根（根遍历经该字段），其 `upvalues` Box
+    /// 创建后不替换（`set_upvalues` 仅 CREATE_CLOSURE 调用一次），故指针跨 GC
+    /// 恒有效；写路径经 `*mut` 转可变切片
     /// 与 `upvalues_slice_mut` 同口径（Box 单所有权）。
     pub upvalues: *const [*mut Cell],
 }

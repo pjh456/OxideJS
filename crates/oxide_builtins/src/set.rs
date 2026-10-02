@@ -141,51 +141,6 @@ pub fn set_native_edges(obj: &JsObject) -> Vec<JsValue> {
     unsafe { (*inner).iter().map(|key| key.0).collect() }
 }
 
-/// 克隆 Set 的 native 数据到新对象，用 `rewrite` 改写其中的对象引用。
-pub fn clone_set_native_with_rewrite<F>(src: &JsObject, dst: &mut JsObject, mut rewrite: F)
-where
-    F: FnMut(JsValue) -> JsValue,
-{
-    if !src.is_set() {
-        return;
-    }
-    let inner = src.native_data() as *const SetInner;
-    if inner.is_null() {
-        dst.set_native_data(std::ptr::null_mut());
-        return;
-    }
-    let mut cloned = SetInner::new();
-    unsafe {
-        for key in (*inner).iter() {
-            let new_key = if key.0.is_object() { SetKey(rewrite(key.0)) } else { *key };
-            cloned.insert(new_key);
-        }
-    }
-    dst.set_native_data(Box::into_raw(Box::new(cloned)) as *mut u8);
-}
-
-/// 原地重写 Set 的 native 数据，用 `rewrite` 改写其中的对象引用。
-pub fn rewrite_set_native<F>(obj: &mut JsObject, mut rewrite: F)
-where
-    F: FnMut(JsValue) -> JsValue,
-{
-    if !obj.is_set() {
-        return;
-    }
-    let inner = obj.native_data() as *mut SetInner;
-    if inner.is_null() {
-        return;
-    }
-    unsafe {
-        let mut rewritten = SetInner::with_capacity((*inner).len());
-        for key in (*inner).iter() {
-            let new_key = if key.0.is_object() { SetKey(rewrite(key.0)) } else { *key };
-            rewritten.insert(new_key);
-        }
-        *inner = rewritten;
-    }
-}
-
 /// 只读核算 Set 的 native 数据字节（不释放）。
 /// 与 `drop_set_native` 释放口径一致（capacity），供 GC 账目核算。
 pub fn set_native_size(obj: &JsObject) -> u64 {

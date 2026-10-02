@@ -7,8 +7,8 @@
 //! `type_tag` 为 `JsObject::OBJ_TYPE_DISPOSABLE_STACK`（同步）或
 //! `OBJ_TYPE_ASYNC_DISPOSABLE_STACK`（异步）时区分接收者，`hint` 以 0/1 两值区分
 //! 条目释放语义（定义见 `DisposeEntry.hint`），`wrap_sync` 标记 async 栈 use 落回
-//! `@@dispose` 的条目（返回值丢弃、异常异步化）。GC 四函数
-//! （edges/rewrite/clone/drop）供 session 层跨 epoch 追踪，签名与 Map/Promise
+//! `@@dispose` 的条目（返回值丢弃、异常异步化）。GC 三函数
+//! （edges/size/drop）接线 mark 边、字节账目与释放，形态与 Map/Promise
 //! 状态盒同构。
 
 use oxide_kernel::shape_forge::EMPTY_SHAPE_ID;
@@ -577,60 +577,6 @@ pub fn dispose_edges(obj: &JsObject) -> Vec<JsValue> {
     // SAFETY: native_data 持有 `alloc_capability` 写入的有效 Box 指针，本函数
     // 只在对象存活期间被 GC/绑定层调用。
     unsafe { (*ptr).entries.iter().flat_map(|entry| [entry.value, entry.method]).collect() }
-}
-
-/// 克隆状态盒到新对象，用 `rewrite` 改写其中的对象引用
-/// （供跨 epoch 的对象重写/克隆流程使用）。
-pub fn clone_dispose_native_with_rewrite<F>(src: &JsObject, dst: &mut JsObject, mut rewrite: F)
-where
-    F: FnMut(JsValue) -> JsValue,
-{
-    if !src.is_disposable_stack_obj() && !src.is_async_disposable_stack_obj() {
-        return;
-    }
-    let ptr = get_capability_ptr(src);
-    if ptr.is_null() {
-        dst.set_native_data(std::ptr::null_mut());
-        return;
-    }
-    // SAFETY: 同上，src 状态盒在 GC 移动期间仍存活。
-    let src_cap = unsafe { &*ptr };
-    let cloned = DisposeCapability {
-        state: src_cap.state,
-        entries: src_cap
-            .entries
-            .iter()
-            .map(|entry| DisposeEntry {
-                value: if entry.value.is_object() { rewrite(entry.value) } else { entry.value },
-                method: if entry.method.is_object() { rewrite(entry.method) } else { entry.method },
-                hint: entry.hint,
-                arg_style: entry.arg_style,
-                wrap_sync: entry.wrap_sync,
-            })
-            .collect(),
-    };
-    dst.set_native_data(Box::into_raw(Box::new(cloned)) as *mut u8);
-}
-
-/// 原地重写状态盒，用 `rewrite` 改写其中的对象引用。
-pub fn rewrite_dispose_native<F>(obj: &mut JsObject, mut rewrite: F)
-where
-    F: FnMut(JsValue) -> JsValue,
-{
-    if !obj.is_disposable_stack_obj() && !obj.is_async_disposable_stack_obj() {
-        return;
-    }
-    let ptr = get_capability_ptr(obj);
-    if ptr.is_null() {
-        return;
-    }
-    // SAFETY: 同上，改写发生在 GC 移动/清扫期间，对象仍存活。
-    unsafe {
-        for entry in &mut (*ptr).entries {
-            entry.value = rewrite(entry.value);
-            entry.method = rewrite(entry.method);
-        }
-    }
 }
 
 /// 只读核算 DisposableStack 状态盒字节（不释放）。

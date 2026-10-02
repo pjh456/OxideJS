@@ -41,13 +41,6 @@ impl MapInner {
         }
     }
 
-    pub(crate) fn with_capacity(capacity: usize) -> Self {
-        Self {
-            slots: Vec::with_capacity(capacity),
-            index: HashMap::with_capacity(capacity),
-        }
-    }
-
     /// 活表条目数（规范 SetDataSize 口径，空槽不计）。
     pub(crate) fn len(&self) -> usize {
         self.index.len()
@@ -169,54 +162,6 @@ pub fn map_native_edges(obj: &JsObject) -> Vec<JsValue> {
         return Vec::new();
     }
     unsafe { (*inner).iter().flat_map(|(key, value)| [key.0, value]).collect() }
-}
-
-/// 克隆 Map 的 native 数据到新对象，用 `rewrite` 改写其中的对象引用
-/// （供跨 epoch 的对象重写/克隆流程使用）。
-pub fn clone_map_native_with_rewrite<F>(src: &JsObject, dst: &mut JsObject, mut rewrite: F)
-where
-    F: FnMut(JsValue) -> JsValue,
-{
-    if !src.is_map() {
-        return;
-    }
-    let inner = src.native_data() as *const MapInner;
-    if inner.is_null() {
-        dst.set_native_data(std::ptr::null_mut());
-        return;
-    }
-    let mut cloned = MapInner::new();
-    unsafe {
-        for (key, value) in (*inner).iter() {
-            let new_key = if key.0.is_object() { SetKey(rewrite(key.0)) } else { key };
-            let new_value = if value.is_object() { rewrite(value) } else { value };
-            cloned.insert(new_key, new_value);
-        }
-    }
-    dst.set_native_data(Box::into_raw(Box::new(cloned)) as *mut u8);
-}
-
-/// 原地重写 Map 的 native 数据，用 `rewrite` 改写其中的对象引用。
-pub fn rewrite_map_native<F>(obj: &mut JsObject, mut rewrite: F)
-where
-    F: FnMut(JsValue) -> JsValue,
-{
-    if !obj.is_map() {
-        return;
-    }
-    let inner = obj.native_data() as *mut MapInner;
-    if inner.is_null() {
-        return;
-    }
-    unsafe {
-        let mut rewritten = MapInner::with_capacity((*inner).len());
-        for (key, value) in (*inner).iter() {
-            let new_key = if key.0.is_object() { SetKey(rewrite(key.0)) } else { key };
-            let new_value = if value.is_object() { rewrite(value) } else { value };
-            rewritten.insert(new_key, new_value);
-        }
-        *inner = rewritten;
-    }
 }
 
 /// 只读核算 Map 的 native 数据字节（不释放）。

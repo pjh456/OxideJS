@@ -144,8 +144,8 @@ fn dv_buffer_writable<H: VmHost>(vm: &mut H, view: DataViewData) -> Result<(), J
     Ok(())
 }
 
-/// JS 调用点后的缓冲重取纪律：重读寄存器再重取载荷（epoch 晋升改写
-/// 寄存器，旧 JsValue 滞留 epoch 克隆旧盒）；detached → TypeError。
+/// JS 调用点后的缓冲重取纪律：重读寄存器并重取载荷，寄存器值为唯一口径；
+/// detached → TypeError。
 /// 返回（寄存器重读值、live 长、存储上限）。
 fn revalidate_buffer<H: VmHost>(vm: &mut H, buf_reg: u8) -> Result<(JsValue, usize, usize), JsValue> {
     let buffer = vm.reg(buf_reg);
@@ -246,8 +246,7 @@ fn has_data_view_proto<H: VmHost>(vm: &mut H, this_val: JsValue) -> bool {
 /// # 边界与前提
 /// - 原型读取在全部初校验之后：越界 RangeError 先于抛错的 prototype getter。
 /// - NewTarget 非对象（直调/缺省面）时直接回落默认原型，不抛错。
-/// - 每个 JS 调用点后重取缓冲（重读寄存器 + 载荷重取）：晋升改写寄存器，
-///   旧值滞留 epoch 克隆旧盒。
+/// - 每个 JS 调用点后重取缓冲（重读寄存器 + 载荷重取），寄存器值为唯一口径。
 pub fn data_view_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
     if !has_data_view_proto(vm, this_val) {
@@ -354,39 +353,6 @@ pub fn data_view_native_edges(obj: &JsObject) -> Vec<JsValue> {
         vec![data.buffer]
     } else {
         Vec::new()
-    }
-}
-
-/// 克隆 DataView 视图数据到新对象，用 `rewrite` 改写 buffer 引用。
-pub fn clone_data_view_native_with_rewrite<F>(old_obj: &JsObject, new_obj: &mut JsObject, mut rewrite: F)
-where
-    F: FnMut(JsValue) -> JsValue,
-{
-    let Some(ptr) = data_view_data_ptr(old_obj) else {
-        return;
-    };
-    if ptr.is_null() {
-        return;
-    }
-    let mut data = unsafe { *ptr };
-    data.buffer = rewrite(data.buffer);
-    let cloned = Box::into_raw(Box::new(data));
-    new_obj.set_native_fn(Some(unsafe { NativeFnPtr::from_raw(cloned as *const ()) }));
-}
-
-/// 原地重写 DataView 的 buffer 引用。
-pub fn rewrite_data_view_native<F>(obj: &mut JsObject, mut rewrite: F)
-where
-    F: FnMut(JsValue) -> JsValue,
-{
-    let Some(ptr) = data_view_data_ptr(obj) else {
-        return;
-    };
-    if ptr.is_null() {
-        return;
-    }
-    unsafe {
-        (*ptr).buffer = rewrite((*ptr).buffer);
     }
 }
 
