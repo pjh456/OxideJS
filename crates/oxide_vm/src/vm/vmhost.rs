@@ -194,8 +194,8 @@ impl oxide_runtime_api::VmHost for Vm {
             || std::ptr::eq(p, self.async_function_proto.as_ptr())
             || std::ptr::eq(p, self.async_generator_function_proto.as_ptr())
     }
-    fn promote_if_needed_for_write_ptr(&mut self, target_ptr: *mut JsObject, value: JsValue) -> JsValue {
-        self.promote_if_needed_for_write_ptr(target_ptr, value)
+    fn promote_if_needed_for_write_ptr(&mut self, _target_ptr: *mut JsObject, value: JsValue) -> JsValue {
+        value
     }
     fn step_rng(&mut self) {
         self.step_rng()

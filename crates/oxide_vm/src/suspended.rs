@@ -243,6 +243,7 @@ impl SuspendedFrame {
     }
 
     /// GC 指针重写：与 `for_each_value` 字段一一对应。
+    #[allow(dead_code)]
     pub fn rewrite_values(&mut self, mut rewrite: impl FnMut(JsValue) -> JsValue) {
         for v in self.regs.iter_mut() {
             *v = rewrite(*v);
@@ -324,6 +325,7 @@ impl SuspendedFrame {
     }
 
     /// 深拷贝（promote / sweep 搬移用，替代 async/asyncgen 各自的 clone_*_with_rewrite）。
+    #[allow(dead_code)]
     pub fn clone_with_rewrite(&self, mut rewrite: impl FnMut(JsValue) -> JsValue) -> Self {
         SuspendedFrame {
             regs: Box::new({

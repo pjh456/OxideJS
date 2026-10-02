@@ -549,9 +549,6 @@ impl Vm {
     pub fn reset(&mut self) {
         self.clear_execution_state();
         self.maybe_collect_session_gc();
-        // 晋升族空转调用保留：统一入口 Box 化后生产路径不产 epoch 对象，
-        // 本调用在统一表上恒无操作（随晋升族整体退役）。
-        self.promote_session_epoch_refs();
         self.bytecode = Arc::default();
         // 表代际注册表不动：存活函数对象（含挂起帧 callee）按创建期代际仍须
         // 命中原表，跨 run 调用与恢复靠它成立。active_immutables 指向的旧表
@@ -563,6 +560,11 @@ impl Vm {
         self.gc_state.gc_watermark = self.gc_state.gc_threshold_cached;
         self.root_reg_limit = 0;
         self.active_reg_limit = 0;
+    }
+
+    /// 逃逸写屏障：写向全局/session 目标的对象值原样直通，不克隆。
+    pub(crate) fn promote_if_needed_for_write_ptr(&mut self, _target_ptr: *mut JsObject, value: JsValue) -> JsValue {
+        value
     }
 
     /// 分配一个可被 session GC 回收的字符串 `JsValue`（session-heap 字符串）。

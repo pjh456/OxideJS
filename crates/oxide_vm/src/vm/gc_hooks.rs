@@ -107,6 +107,7 @@ impl Vm {
     }
 
     /// GC 指针重写（session 搬移后调用）。与 `for_each_value` 字段一一对应。
+    #[allow(dead_code)]
     pub(crate) fn rewrite_values(&mut self, mut rewrite: impl FnMut(JsValue) -> JsValue) {
         for value in &mut self.regs {
             *value = rewrite(*value);

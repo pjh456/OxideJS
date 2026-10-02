@@ -17,10 +17,7 @@ mod jobs;
 mod reactions;
 mod settlement;
 
-pub(crate) use gc_edges::{
-    clone_promise_native_with_rewrite, drop_promise_native, migrate_settlement_to_newest_clone, promise_native_edges,
-    promise_native_size, rewrite_promise_native,
-};
+pub(crate) use gc_edges::{drop_promise_native, promise_native_edges, promise_native_size};
 pub(crate) use jobs::{for_each_job_value, rewrite_job_values};
 pub use reactions::promise_settled_value;
 
@@ -161,6 +158,7 @@ fn promise_state_ref(obj: &JsObject) -> Option<&PromiseState> {
 }
 
 #[expect(clippy::mut_from_ref)]
+#[allow(dead_code)]
 fn promise_state_mut(obj: &JsObject) -> Option<&mut PromiseState> {
     let ptr = obj.native_data() as *mut PromiseState;
     if ptr.is_null() {

@@ -624,8 +624,8 @@ impl Vm {
     /// # 注意事项
     /// - 须在换表注册新代际**之前**调用（此刻 current_gen 仍指上一 run 的表，
     ///   新表未注册天然不被回收）。
-    /// - 执行外安全点调用（dispatch 未重入、无在途 builtin 局部裸指针），与
-    ///   `promote_session_epoch_refs` 同前提：session 对象表此刻全部有效。
+    /// - 执行外安全点调用（dispatch 未重入、无在途 builtin 局部裸指针），
+    ///   session 对象表此刻全部有效。
     pub(crate) fn reclaim_unreferenced_tables(&mut self) {
         // 存活代际集：函数对象只经创建点直落 session 对象表登记（或晋升克隆
         // 随行），扫全表即完备；native 函数哨兵 sub_module_index == 0 不计数。

@@ -108,12 +108,7 @@ pub fn run_js_stress_bench(config: &BenchConfig, kernel: &Arc<KernelCore>, pool:
             let ic_hits = vm.ic_hit_count();
             let ic_misses = vm.ic_miss_count();
 
-            // 留存口径：先让存活集对 session 完全可见——根直接持有的 epoch 对象
-            // （顶层 var 等）晋升进 session，session 对象持有的 epoch 子引用
-            // （闭包捕获、原生盒直插）同样晋升（均与 epoch 边界同机制）；
-            // 再强制完整 GC 清掉不可达垃圾，清扫后账目即 workload 留存堆
-            vm.promote_rooted_epoch_objects();
-            vm.promote_session_epoch_refs();
+            // 留存口径：强制完整 GC 清掉不可达垃圾后账目即留存堆。
             vm.collect_session_gc();
             let retained_bytes = vm.session_bytes_allocated();
             let retained_objects = vm.session_object_count();

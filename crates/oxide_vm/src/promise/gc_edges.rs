@@ -38,6 +38,7 @@ pub(crate) fn promise_native_edges(obj: &JsObject) -> Vec<JsValue> {
 /// 结算链指针是裸指针边、不在本函数改写面：晋升克隆新分配于 session arena
 /// （原件地址不变），改写场景指针天然有效；结算链接链由
 /// `migrate_settlement_to_newest_clone` 负责。
+#[allow(dead_code)]
 pub(crate) fn rewrite_promise_native(obj: &JsObject, mut rewrite: impl FnMut(JsValue) -> JsValue) {
     let Some(state) = promise_state_mut(obj) else {
         return;
@@ -59,6 +60,7 @@ pub(crate) fn rewrite_promise_native(obj: &JsObject, mut rewrite: impl FnMut(JsV
 /// 永久丢失、原件侧消费者永不触发；每条反应的 JsValue 随状态盒其余字段同一
 /// pass 晋升/改写。结算链指针按原值保留（接链由
 /// `migrate_settlement_to_newest_clone` 负责）。
+#[allow(dead_code)]
 pub(crate) fn clone_promise_native_with_rewrite(
     old: &JsObject, new: &mut JsObject, mut rewrite: impl FnMut(JsValue) -> JsValue,
 ) {
@@ -110,6 +112,7 @@ pub(crate) fn clone_promise_native_with_rewrite(
 ///   `clone_promise_native_with_rewrite`）；session 搬移（GC sweep）不改结算
 ///   拓扑，不得调用。
 /// - 源非 pending 时无事可做直接返回（已结算原件不再传导）。
+#[allow(dead_code)]
 pub(crate) fn migrate_settlement_to_newest_clone(
     old: &JsObject, new: &mut JsObject, mut rewrite: impl FnMut(JsValue) -> JsValue,
 ) {
@@ -146,6 +149,7 @@ pub(crate) fn migrate_settlement_to_newest_clone(
 
 /// 改写单条反应的四条 JsValue 引用（派生 promise 能力与处理器），源反应迁移
 /// 与再晋升合并共用。
+#[allow(dead_code)]
 fn rewrite_reaction<F: FnMut(JsValue) -> JsValue>(r: PromiseReaction, rewrite: &mut F) -> PromiseReaction {
     PromiseReaction {
         promise: rewrite(r.promise),

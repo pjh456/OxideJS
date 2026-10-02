@@ -60,8 +60,8 @@ impl SessionGc {
             if ptr.is_null() {
                 continue;
             }
-            // SAFETY: session_object_ptrs 中的指针只来自 promote_object_inner 的
-            // session_epoch.alloc，在 arena 存活期间有效。
+            // SAFETY: session_object_ptrs 中的指针来自统一入口的 Box 化分配
+            // （alloc_object_box），对象堆内指针在释放前有效。
             unsafe { (*ptr).set_gc_mark(false) };
         }
     }
@@ -1060,6 +1060,7 @@ impl Default for SessionGc {
     }
 }
 
+#[allow(dead_code)]
 fn rewrite_forwarded_value(
     value: JsValue, forwarding: &HashMap<*mut JsObject, *mut JsObject, FxBuildHasher>,
 ) -> JsValue {
@@ -1103,6 +1104,7 @@ pub(crate) fn resolve_weak_key_sweep(key: weak_map::WeakKey) -> Option<weak_map:
 /// # 边界与前提
 /// - 不解引用任何对象本体（无位域读取），无定夺时序面；
 /// - 晋升族整体为死代码保留面，弱表族本体退役时一并删除。
+#[allow(dead_code)]
 pub(crate) fn resolve_weak_key_after_promotion(key: weak_map::WeakKey) -> Option<weak_map::WeakKey> {
     Some(key)
 }
@@ -1110,6 +1112,7 @@ pub(crate) fn resolve_weak_key_after_promotion(key: weak_map::WeakKey) -> Option
 /// 按 forwarding 表把全部 VM 根引用重写到搬移后的新地址。与 `for_each_value`
 /// 共用同一字段清单（经 `rewrite_values` 遍历）且须同步：遗漏字段会在搬移后
 /// 保留指向旧 arena 的悬垂指针。
+#[allow(dead_code)]
 pub(crate) fn rewrite_vm_roots(vm: &mut Vm, forwarding: &HashMap<*mut JsObject, *mut JsObject, FxBuildHasher>) {
     vm_debug!("[GC] rewrite_vm_roots: {} forwarded objects", forwarding.len());
     // 统一遍历：与 for_each_value 共用同一字段清单。

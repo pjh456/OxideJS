@@ -23,7 +23,6 @@ pub mod native;
 mod native_box_dispatch;
 /// Promise 运行时（状态盒 + 微任务队列 + 构造器/方法实现）。
 pub mod promise;
-mod session_arena;
 /// session 级 mark-sweep GC：标记-清扫 session arena 对象与 session 字符串。
 pub mod session_gc;
 mod suspended;

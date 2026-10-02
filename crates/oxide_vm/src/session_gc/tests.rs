@@ -31,7 +31,7 @@ fn has_ptr(roots: &[JsValue], ptr: *mut JsObject) -> bool {
 fn uncaught_value_is_gc_root() {
     let mut vm = Vm::new();
     let obj = plain_object(&mut vm);
-    let session = vm.promote_object(obj);
+    let session = obj;
     vm.last_uncaught_value = Some(JsValue::from_js_object(session));
     let mut roots = Vec::new();
     vm.for_each_root(|v| roots.push(v));
@@ -42,7 +42,7 @@ fn uncaught_value_is_gc_root() {
 fn pending_length_exception_is_gc_root() {
     let mut vm = Vm::new();
     let obj = plain_object(&mut vm);
-    let session = vm.promote_object(obj);
+    let session = obj;
     vm.pending_length_exception = Some(JsValue::from_js_object(session));
     let mut roots = Vec::new();
     vm.for_each_root(|v| roots.push(v));
@@ -55,9 +55,9 @@ fn suspended_signal_fields_are_roots() {
     let a = plain_object(&mut vm);
     let b = plain_object(&mut vm);
     let c = plain_object(&mut vm);
-    let a_s = vm.promote_object(a);
-    let b_s = vm.promote_object(b);
-    let c_s = vm.promote_object(c);
+    let a_s = a;
+    let b_s = b;
+    let c_s = c;
     vm.generator_suspended = Some(JsValue::from_js_object(a_s));
     vm.async_context = Some(JsValue::from_js_object(b_s));
     vm.async_gen_context = Some(JsValue::from_js_object(c_s));
@@ -80,10 +80,10 @@ fn gc_roots_contains_registers_frames_and_root_roots() {
         (*root).set_prop_at(0, JsValue::from_js_object(child));
     }
 
-    let root_session = vm.promote_object(root);
-    let frame_session = vm.promote_object(frame_obj);
-    let this_session = vm.promote_object(saved_this);
-    let child_session = vm.promote_object(child);
+    let root_session = root;
+    let frame_session = frame_obj;
+    let this_session = saved_this;
+    let child_session = child;
     vm.regs[0] = JsValue::from_js_object(root_session);
 
     vm.frames.push(CallFrame {
@@ -138,9 +138,9 @@ fn rewrite_matches_roots_coverage() {
     // 测试同口径，共同构成孪生清单验证）。
     let mut vm = Vm::new();
     let obj = plain_object(&mut vm);
-    let session = vm.promote_object(obj);
+    let session = obj;
     let marker = plain_object(&mut vm);
-    let marker_session = vm.promote_object(marker);
+    let marker_session = marker;
     vm.regs[0] = JsValue::from_js_object(session);
     vm.last_uncaught_value = Some(JsValue::from_js_object(session));
     vm.generator_suspended = Some(JsValue::from_js_object(session));
@@ -189,9 +189,9 @@ fn mark_phase_reaches_cycles_and_unreachable_are_unmarked() {
         (*reachable).set_prop_at(0, JsValue::from_js_object(root));
     }
 
-    let root_session = vm.promote_object(root);
+    let root_session = root;
     let reachable_session = unsafe { (*root_session).get_prop_at(0).as_js_object_ptr() };
-    let unreachable_session = vm.promote_object(unreachable);
+    let unreachable_session = unreachable;
 
     vm.regs[0] = JsValue::from_js_object(root_session);
     let mut gc = std::mem::take(&mut vm.gc_state.session_gc);
@@ -215,9 +215,9 @@ fn sweep_preserves_cycle_and_collects_unreachable() {
         (*child).set_prop_at(0, JsValue::from_js_object(root));
     }
 
-    let root_session = vm.promote_object(root);
+    let root_session = root;
     vm.regs[0] = JsValue::from_js_object(root_session);
-    let dead_session = vm.promote_object(dead);
+    let dead_session = dead;
     let mut gc = std::mem::take(&mut vm.gc_state.session_gc);
     gc.mark(&vm);
     let _ = gc.sweep(&mut vm);
@@ -250,9 +250,9 @@ fn sweep_preserves_array_elements_and_collects_dead_element_object() {
         (*arr).set_prop_at(0, JsValue::from_js_object(live_elem));
         (*arr).set_prop_at(1, JsValue::from_js_object(dead_elem));
     }
-    // 晋升数组会把元素对象一并带入 session；随后断开元素 1 的引用，使其成为
+    // 数组与其元素对象分配时同入 session 表；随后断开元素 1 的引用，使其成为
     // mark 不可达的死对象，供 sweep 回收。
-    let arr_session = vm.promote_object(arr);
+    let arr_session = arr;
     unsafe {
         (*arr_session).set_prop_at(1, JsValue::undefined());
     }
@@ -357,8 +357,7 @@ fn function_placeholder(vm: &mut Vm) -> JsValue {
 #[test]
 fn reset_maybe_collect_collects_after_threshold() {
     let mut vm = vm_with_low_threshold();
-    let obj = plain_object(&mut vm);
-    vm.promote_object(obj);
+    plain_object(&mut vm);
     assert!(!vm.gc_state.session_object_ptrs.is_empty());
     let tracked_before = vm.gc_state.session_object_ptrs.len();
 
@@ -374,8 +373,7 @@ fn reset_maybe_collect_collects_after_threshold() {
 #[test]
 fn gc_stats_summary_includes_collection() {
     let mut vm = vm_with_low_threshold();
-    let obj = plain_object(&mut vm);
-    vm.promote_object(obj);
+    plain_object(&mut vm);
     vm.regs[0] = JsValue::undefined();
     vm.maybe_collect_session_gc();
     let summary = vm.gc_state.session_gc.stats_summary();
@@ -389,7 +387,7 @@ fn full_collect_keeps_global_root_edges_in_place() {
     unsafe {
         (*obj).set_prop_at(0, JsValue::int(42));
     }
-    let old_ptr = vm.promote_object(obj);
+    let old_ptr = obj;
     let key = vm.kernel_core.perm_interner().intern("gcRoot").0;
     let global_ptr = vm.session.global_object().as_ptr() as *mut JsObject;
     unsafe {
@@ -446,7 +444,7 @@ fn session_gc_traces_map_object_key_and_value() {
     vm.regs[2] = value;
     native_ok(map::map_set(&mut vm, &[0, 1, 2]));
 
-    let map_session = vm.promote_object(map_value.as_js_object_ptr());
+    let map_session = map_value.as_js_object_ptr();
     vm.regs.fill(JsValue::undefined());
     vm.regs[0] = JsValue::from_js_object(map_session);
     let mut gc = std::mem::take(&mut vm.gc_state.session_gc);
@@ -470,7 +468,7 @@ fn session_gc_traces_set_object_key() {
     vm.regs[1] = key;
     native_ok(set::set_add(&mut vm, &[0, 1]));
 
-    let set_session = vm.promote_object(set_value.as_js_object_ptr());
+    let set_session = set_value.as_js_object_ptr();
     vm.regs.fill(JsValue::undefined());
     vm.regs[0] = JsValue::from_js_object(set_session);
     let mut gc = std::mem::take(&mut vm.gc_state.session_gc);
@@ -510,11 +508,11 @@ fn weak_map_entry_survives_promotion_with_live_key() {
     vm.regs[0] = JsValue::from_js_object(wm);
     vm.regs[1] = JsValue::from_js_object(key);
     vm.regs[2] = JsValue::from_js_object(value);
-    let wm_session = vm.promote_object(wm);
+    let wm_session = wm;
     vm.regs.fill(JsValue::undefined());
     vm.regs[0] = JsValue::from_js_object(wm_session);
     vm.regs[1] = JsValue::from_js_object(key);
-    // 值的强根取表内读回（统一入口后晋升为原样返回，读回即原件）。
+    // 值的强根取表内读回（读回即原件）。
     let value_root =
         oxide_builtins::weak_map::weak_map_probe_get(unsafe { &*wm_session }, JsValue::from_js_object(key));
     vm.regs[2] = value_root;
@@ -547,7 +545,7 @@ fn weak_map_entry_dropped_when_key_unrooted() {
     }
     vm.regs[0] = JsValue::from_js_object(wm);
     vm.regs[2] = JsValue::from_js_object(value);
-    let wm_session = vm.promote_object(wm);
+    let wm_session = wm;
     vm.regs.fill(JsValue::undefined());
     vm.regs[0] = JsValue::from_js_object(wm_session);
     vm.regs[2] = JsValue::from_js_object(value);
@@ -573,13 +571,13 @@ fn weak_map_value_edge_keeps_value_alive() {
             JsValue::from_js_object(value),
         );
     }
-    // 值的独立根随后撤销，存活仅靠弱表值边（统一入口后晋升为原样返回）。
+    // 值的独立根随后撤销，存活仅靠弱表值边。
     vm.regs[2] = JsValue::from_js_object(value);
-    let value_session = vm.promote_object(value);
+    let value_session = value;
     vm.regs[2] = JsValue::from_js_object(value_session);
     vm.regs[0] = JsValue::from_js_object(wm);
     vm.regs[1] = JsValue::from_js_object(key);
-    let wm_session = vm.promote_object(wm);
+    let wm_session = wm;
     vm.regs.fill(JsValue::undefined());
     vm.regs[0] = JsValue::from_js_object(wm_session);
     vm.regs[1] = JsValue::from_js_object(key);
@@ -687,7 +685,7 @@ fn session_gc_traces_map_string_and_bigint_value() {
     vm.regs[2] = bi;
     native_ok(map::map_set(&mut vm, &[0, 1, 2]));
 
-    let map_session = vm.promote_object(map_value.as_js_object_ptr());
+    let map_session = map_value.as_js_object_ptr();
     vm.regs.fill(JsValue::undefined());
     vm.regs[0] = JsValue::from_js_object(map_session);
     collect(&mut vm);
@@ -714,7 +712,7 @@ fn session_gc_traces_set_string_and_bigint_value() {
     vm.regs[1] = bi;
     native_ok(set::set_add(&mut vm, &[0, 1]));
 
-    let set_session = vm.promote_object(set_value.as_js_object_ptr());
+    let set_session = set_value.as_js_object_ptr();
     vm.regs.fill(JsValue::undefined());
     vm.regs[0] = JsValue::from_js_object(set_session);
     collect(&mut vm);
@@ -744,7 +742,7 @@ fn session_gc_traces_dispose_stack_string_and_bigint_value() {
     vm.regs[1] = bi;
     native_ok(disposable_stack::disposable_stack_adopt(&mut vm, &[0, 1, 2]));
 
-    let stack_session = vm.promote_object(stack_value.as_js_object_ptr());
+    let stack_session = stack_value.as_js_object_ptr();
     vm.regs.fill(JsValue::undefined());
     vm.regs[0] = JsValue::from_js_object(stack_session);
     collect(&mut vm);
@@ -780,8 +778,8 @@ fn session_gc_traces_promise_string_and_bigint_result() {
     let bi_ptr = bi.as_bigint_ptr() as *mut num_bigint::BigInt;
     vm.fulfill_promise(promise2, bi).expect("fulfill bigint");
 
-    let promise_session = vm.promote_object(promise.as_js_object_ptr());
-    let promise2_session = vm.promote_object(promise2.as_js_object_ptr());
+    let promise_session = promise.as_js_object_ptr();
+    let promise2_session = promise2.as_js_object_ptr();
     vm.regs.fill(JsValue::undefined());
     vm.regs[0] = JsValue::from_js_object(promise_session);
     vm.regs[1] = JsValue::from_js_object(promise2_session);
@@ -806,7 +804,7 @@ fn session_gc_traces_suspended_generator_bigint_value() {
     .expect("run");
 
     let g_val = global_prop_opt(&vm, "g").expect("g 应挂在 global 上");
-    let g_session = vm.promote_object(g_val.as_js_object_ptr());
+    let g_session = g_val.as_js_object_ptr();
     let g_obj = unsafe { &*g_session };
     // SAFETY: 生成器状态盒经 Box::into_raw 挂对象构造，生命周期与对象一致。
     let state = g_obj.native_data() as *mut crate::generator::GeneratorState;
@@ -879,7 +877,7 @@ fn session_gc_traces_suspended_async_generator_bigint_value() {
     .expect("run");
 
     let it_val = global_prop_opt(&vm, "it").expect("it 应挂在 global 上");
-    let it_session = vm.promote_object(it_val.as_js_object_ptr());
+    let it_session = it_val.as_js_object_ptr();
     let it_obj = unsafe { &*it_session };
     // SAFETY: 异步生成器状态盒经 Box::into_raw 挂迭代器构造，生命周期与对象一致。
     let state = it_obj.native_data() as *mut crate::async_generator::AsyncGeneratorState;
@@ -928,7 +926,7 @@ fn session_gc_keeps_shared_array_buffer_alive_through_view_native_edges() {
         (*root).set_prop_at(1, view);
     }
 
-    let root_session = vm.promote_object(root);
+    let root_session = root;
     vm.regs.fill(JsValue::undefined());
     vm.regs[0] = JsValue::from_js_object(root_session);
     let mut gc = std::mem::take(&mut vm.gc_state.session_gc);
@@ -981,7 +979,7 @@ fn session_gc_rewrites_buffer_retained_only_by_data_view_native_edge() {
     vm.regs[2] = JsValue::int(9);
     native_ok(data_view::data_view_set_int32(&mut vm, &[0, 1, 2]));
 
-    let view_session = vm.promote_object(view.as_js_object_ptr());
+    let view_session = view.as_js_object_ptr();
     vm.regs.fill(JsValue::undefined());
     vm.regs[0] = JsValue::from_js_object(view_session);
     let mut gc = std::mem::take(&mut vm.gc_state.session_gc);
@@ -1043,7 +1041,7 @@ fn session_string_survives_via_object_property() {
     unsafe {
         (*obj).set_prop_at(0, s);
     }
-    let obj_session = vm.promote_object(obj);
+    let obj_session = obj;
 
     // 该字符串仅通过存活对象的属性可达，不经过任何寄存器。
     vm.regs.fill(JsValue::undefined());
@@ -1282,7 +1280,7 @@ fn suspended_state_box_cell_root_survives_collect() {
     .expect("run");
 
     let g_val = global_prop_opt(&vm, "g").expect("g 应挂在 global 上");
-    let g_session = vm.promote_object(g_val.as_js_object_ptr());
+    let g_session = g_val.as_js_object_ptr();
     let g_obj = unsafe { &*g_session };
     // SAFETY: 生成器状态盒经 Box::into_raw 挂对象构造，生命周期与对象一致。
     let state = g_obj.native_data() as *mut crate::generator::GeneratorState;
@@ -1413,23 +1411,23 @@ fn strings_only_collection_preserves_all_root_kinds() {
     // 寄存器根：直接持有 session 串。
     let reg_str = vm.new_string_owned("reg-root".repeat(16));
     vm.regs[0] = reg_str;
-    // 存活对象属性根：session 对象经 promote 后持有 session 串（分配即触发回收，
+    // 存活对象属性根：session 对象持有 session 串（分配即触发回收，
     // reg_str 仍在寄存器，prop_str 挂到对象后才被下次回收看到）。
     let obj = plain_object(&mut vm);
     let prop_str = vm.new_string_owned("prop-root".repeat(16));
     unsafe {
         (*obj).set_prop_at(0, prop_str);
     }
-    let obj_session = vm.promote_object(obj);
+    let obj_session = obj;
     vm.regs[1] = JsValue::from_js_object(obj_session);
-    // 非 session 根对象属性：epoch 根对象（在寄存器）持有 session 串，mark 走
-    // 非 session 根扫描路径保护。
-    let epoch_obj = plain_object(&mut vm);
+    // 寄存器根对象属性：根对象（在寄存器）持有 session 串，mark 走根扫描
+    // 路径保护。
+    let root_obj = plain_object(&mut vm);
     let epoch_str = vm.new_string_owned("epoch-root".repeat(16));
     unsafe {
-        (*epoch_obj).set_prop_at(0, epoch_str);
+        (*root_obj).set_prop_at(0, epoch_str);
     }
-    vm.regs[2] = JsValue::from_js_object(epoch_obj);
+    vm.regs[2] = JsValue::from_js_object(root_obj);
     // 死串：无任何根引用，最后手动触发一轮回收它。
     let dead = vm.new_string_owned("dead".repeat(16));
     let dead_ptr = dead.as_string_ptr_mut();
@@ -1450,7 +1448,7 @@ fn strings_only_collection_preserves_all_root_kinds() {
 fn strings_only_collection_does_not_move_objects() {
     let mut vm = vm_with_threshold(1);
     let obj = plain_object(&mut vm);
-    let obj_session = vm.promote_object(obj);
+    let obj_session = obj;
     vm.regs[0] = JsValue::from_js_object(obj_session);
     let before: Vec<_> = vm.gc_state.session_object_ptrs.clone();
 
@@ -1469,7 +1467,7 @@ fn strings_only_collection_does_not_move_objects() {
 fn multiple_strings_only_cycles_keep_objects_alive() {
     let mut vm = vm_with_threshold(1);
     let obj = plain_object(&mut vm);
-    let obj_session = vm.promote_object(obj);
+    let obj_session = obj;
     let live = vm.new_string_owned("keep".repeat(32));
     unsafe {
         (*obj_session).set_prop_at(0, live);
@@ -1500,7 +1498,7 @@ fn strings_only_then_full_collect_keeps_object_strings_live() {
     unsafe {
         (*obj).set_prop_at(0, s);
     }
-    let obj_session = vm.promote_object(obj);
+    let obj_session = obj;
     vm.regs[0] = JsValue::from_js_object(obj_session);
 
     // 第一轮 strings-only：对象被 mark 置位。收尾清残留，否则该位残留至完整
@@ -1523,7 +1521,7 @@ fn strings_only_then_full_collect_keeps_object_strings_live() {
 fn strings_only_collection_byte_accounting_matches_survivors() {
     let mut vm = vm_with_threshold(1);
     let obj = plain_object(&mut vm);
-    let obj_session = vm.promote_object(obj);
+    let obj_session = obj;
     vm.regs[0] = JsValue::from_js_object(obj_session);
     let live = vm.new_string_owned("live".repeat(8));
     let live_ptr = live.as_string_ptr_mut();
@@ -1710,7 +1708,7 @@ fn full_reset_frees_rope_and_product() {
 // ── 执行期两档收集 ──────────────────────────────────────────────────────
 
 /// 执行期收集有效性：死 epoch 对象随换新 Bump 回收、死 session 对象原地
-/// 回收出表，活对象晋升 session 后值保持可读。
+/// 回收出表，活对象值保持可读。
 #[test]
 fn in_run_collection_reclaims_dead_and_keeps_live() {
     let mut vm = vm_with_threshold(65536);
@@ -1807,12 +1805,12 @@ fn in_run_collection_keeps_live_addresses_stable() {
     vm.run(&Arc::new(compile("globalThis.o = { a: [1, 2, 3], f: function() { return 1; } }; 0")))
         .expect("run1");
 
-    // 第一轮执行期收集：o 及其 epoch 子引用晋升 session。
+    // 第一轮执行期收集：o 分配即入 session 表（统一入口）。
     vm.maybe_collect_in_run();
     assert!(vm.session_gc_stats().total_collections >= 1, "第一轮收集应执行");
     let o = global_prop_opt(&vm, "o").expect("o 应挂在 global");
     let o_ptr = o.as_js_object_ptr();
-    assert!(unsafe { (*o_ptr).is_session_epoch() }, "o 晋升后应为 session 对象");
+    assert!(unsafe { (*o_ptr).is_session_epoch() }, "o 应为 session 对象");
     let a_ptr = vm
         .resolve_property(unsafe { &*o_ptr }, vm.kernel_core().perm_interner().intern("a").0)
         .expect("o.a")

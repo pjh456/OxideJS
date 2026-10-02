@@ -765,6 +765,7 @@ pub(crate) fn async_native_cell_edges(obj: &JsObject) -> Vec<*mut Cell> {
 }
 
 /// 用转发函数重写状态快照中的所有 JsValue（session GC 移动式清扫 / promote 用）。
+#[allow(dead_code)]
 pub(crate) fn rewrite_async_native(obj: &JsObject, mut rewrite: impl FnMut(JsValue) -> JsValue) {
     let Some(state) = async_state_mut(obj) else {
         return;
@@ -781,6 +782,7 @@ pub(crate) fn rewrite_async_native(obj: &JsObject, mut rewrite: impl FnMut(JsVal
 }
 
 /// 深拷贝状态盒到新对象（promote / sweep 用）：新对象持独立 Box，源盒可安全释放。
+#[allow(dead_code)]
 pub(crate) fn clone_async_native_with_rewrite(
     old: &JsObject, new: &mut JsObject, mut rewrite: impl FnMut(JsValue) -> JsValue,
 ) {
