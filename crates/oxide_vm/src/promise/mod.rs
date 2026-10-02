@@ -4,8 +4,7 @@
 //! 是携带目标 promise 的 native 闭包函数（函数对象 prop 存 promise 引用）。
 //! 反应（reaction）与 thenable 委托以 `Microtask` 入队 `Vm::job_queue`，
 //! 由 `run()` 末尾的 drain 循环 FIFO 执行。所有盒内 JsValue 由 session GC
-//! 经 Promise 对象边追踪（见 `promise_native_edges` / `rewrite_promise_native` /
-//! `clone_promise_native_with_rewrite` / `drop_promise_native`）。
+//! 经 Promise 对象边追踪（见 `promise_native_edges` / `drop_promise_native`）。
 
 use oxide_types::object::JsObject;
 use oxide_types::value::JsValue;
@@ -154,17 +153,5 @@ fn promise_state_ref(obj: &JsObject) -> Option<&PromiseState> {
     } else {
         // SAFETY: native_data 由 Box::into_raw 分配，生命周期与 Promise 对象一致。
         Some(unsafe { &*ptr })
-    }
-}
-
-#[expect(clippy::mut_from_ref)]
-#[allow(dead_code)]
-fn promise_state_mut(obj: &JsObject) -> Option<&mut PromiseState> {
-    let ptr = obj.native_data() as *mut PromiseState;
-    if ptr.is_null() {
-        None
-    } else {
-        // SAFETY: 同上，改写发生在 GC 移动/清扫期间，对象仍存活。
-        Some(unsafe { &mut *ptr })
     }
 }

@@ -12,8 +12,8 @@ pub(crate) const MAX_ARRAY_BUFFER_LENGTH: usize = 1 << 30;
 /// ArrayBuffer 载荷：字节缓冲与状态位。`data` 为 `None` 即缓冲区已 detach；
 /// `max_byte_length` 为存储态上限：0 即定长缓冲（resizable 判据），非 0 存
 /// 请求上限 + 1（上限 0 与定长必须可分）；`immutable` 为字节缓冲写守卫标志。
-/// 载荷经 `Box::into_raw` 存于对象 `native_fn` 槽，GC 三自由函数
-/// （clone/size/drop）对整结构体操作，克隆须连标志位一并拷贝。
+/// 载荷经 `Box::into_raw` 存于对象 `native_fn` 槽，GC 两自由函数
+/// （size/drop）对整结构体操作。
 #[derive(Clone)]
 pub(crate) struct ArrayBufferPayload {
     pub(crate) data: Option<Vec<u8>>,
@@ -113,20 +113,6 @@ pub(crate) fn array_buffer_payload_ptr(obj: &JsObject) -> Option<*mut ArrayBuffe
         return None;
     }
     obj.native_fn().map(|ptr| ptr.as_ptr() as *mut ArrayBufferPayload)
-}
-
-/// 克隆 ArrayBuffer 载荷（字节缓冲 + 状态位）到新对象（跨 epoch 克隆流程用）。
-pub fn clone_array_buffer_native(old_obj: &JsObject, new_obj: &mut JsObject) {
-    let Some(ptr) = array_buffer_payload_ptr(old_obj) else {
-        return;
-    };
-    if ptr.is_null() {
-        return;
-    }
-    // SAFETY: ptr 非空且指向存活载荷盒（克隆/晋升臂由 GC 持有源对象）。
-    let cloned = unsafe { &*ptr }.clone();
-    let cloned_ptr = Box::into_raw(Box::new(cloned));
-    new_obj.set_native_fn(Some(unsafe { NativeFnPtr::from_raw(cloned_ptr as *const ()) }));
 }
 
 /// 只读核算 ArrayBuffer 载荷字节（不释放）：结构体尺寸 + 附着缓冲容量，
@@ -257,20 +243,6 @@ pub fn drop_shared_array_buffer_native(obj: &mut JsObject) -> u64 {
     drop(payload);
     obj.set_native_fn(None);
     bytes
-}
-
-/// 克隆 SharedArrayBuffer 载荷（字节缓冲）到新对象（跨 epoch 克隆流程用）。
-pub fn clone_shared_array_buffer_native(old_obj: &JsObject, new_obj: &mut JsObject) {
-    let Some(ptr) = shared_array_buffer_payload_ptr(old_obj) else {
-        return;
-    };
-    if ptr.is_null() {
-        return;
-    }
-    // SAFETY: ptr 非空且指向存活载荷盒（克隆/晋升臂由 GC 持有源对象）。
-    let cloned = unsafe { &*ptr }.clone();
-    let cloned_ptr = Box::into_raw(Box::new(cloned));
-    new_obj.set_native_fn(Some(unsafe { NativeFnPtr::from_raw(cloned_ptr as *const ()) }));
 }
 
 /// `SharedArrayBuffer(length [, options])`：构造语义仅 `new`；length 缺省 0，
@@ -1187,7 +1159,7 @@ mod tests {
     use super::*;
     use oxide_vm::vm::Vm;
 
-    /// 手工构造带载荷盒的 ArrayBuffer 对象（不经 Vm，只验 GC 三自由函数）。
+    /// 手工构造带载荷盒的 ArrayBuffer 对象（不经 Vm，只验 GC 两自由函数）。
     fn ab_object_with_payload(payload: ArrayBufferPayload) -> JsObject {
         let mut obj = JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::undefined());
         obj.type_tag = JsObject::OBJ_TYPE_ARRAY_BUFFER;
@@ -1195,47 +1167,6 @@ mod tests {
         // SAFETY: 载荷盒形态与 new_array_buffer 的 native_fn 槽存储一致，测试结束前恰好释放一次。
         obj.set_native_fn(Some(unsafe { NativeFnPtr::from_raw(payload_ptr as *const ()) }));
         obj
-    }
-
-    /// 克隆目标对象与真实 GC 克隆体同形：AB 类型标签 + 空 native_fn 槽。
-    fn ab_clone_target() -> JsObject {
-        let mut obj = JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::undefined());
-        obj.type_tag = JsObject::OBJ_TYPE_ARRAY_BUFFER;
-        obj
-    }
-
-    #[test]
-    fn payload_clone_propagates_detached() {
-        let old = ab_object_with_payload(ArrayBufferPayload {
-            data: None,
-            max_byte_length: 0,
-            immutable: false,
-        });
-        let mut new_obj = ab_clone_target();
-        clone_array_buffer_native(&old, &mut new_obj);
-        let ptr = array_buffer_payload_ptr(&new_obj).expect("克隆体应携带载荷盒");
-        // SAFETY: ptr 由 clone_array_buffer_native 新建的存活盒。
-        let cloned = unsafe { &*ptr };
-        assert!(cloned.data.is_none());
-        unsafe { drop(Box::from_raw(ptr)) };
-    }
-
-    #[test]
-    fn payload_clone_copies_flags() {
-        let old = ab_object_with_payload(ArrayBufferPayload {
-            data: Some(vec![1, 2, 3]),
-            max_byte_length: 42,
-            immutable: true,
-        });
-        let mut new_obj = ab_clone_target();
-        clone_array_buffer_native(&old, &mut new_obj);
-        let ptr = array_buffer_payload_ptr(&new_obj).expect("克隆体应携带载荷盒");
-        // SAFETY: ptr 由 clone_array_buffer_native 新建的存活盒。
-        let cloned = unsafe { &*ptr };
-        assert_eq!(cloned.max_byte_length, 42);
-        assert!(cloned.immutable);
-        assert_eq!(cloned.data.as_ref().expect("附着缓冲应随克隆").as_slice(), &[1, 2, 3]);
-        unsafe { drop(Box::from_raw(ptr)) };
     }
 
     #[test]
