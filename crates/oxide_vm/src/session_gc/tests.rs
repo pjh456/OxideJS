@@ -1106,7 +1106,7 @@ fn global_prop_opt(vm: &Vm, name: &str) -> Option<JsValue> {
     vm.resolve_property(global, si)
 }
 
-/// 闭包捕获变量跨对象 sweep 存活：reset 触发完整收集（session_epoch 替换）。
+/// 闭包捕获变量跨对象 sweep 存活：reset 触发完整收集。
 /// cell 独立堆分配、地址稳定，原地 sweep 不搬移对象、不触碰 cell 结构——
 /// 跨收集的 cell 指针与值均保留。
 #[test]

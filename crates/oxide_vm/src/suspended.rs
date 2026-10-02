@@ -201,7 +201,7 @@ impl SuspendedFrame {
                 if p.is_null() {
                     continue;
                 }
-                // SAFETY: cell 由 session_epoch 分配，本 session 内指针有效。
+                // SAFETY: cell 经 alloc_cell 独立堆分配，本 session 内指针有效。
                 f(unsafe { &*p }.value);
             }
         }
@@ -265,7 +265,7 @@ impl SuspendedFrame {
                 if p.is_null() {
                     continue;
                 }
-                // SAFETY: cell 由 session_epoch 分配，本 session 内指针有效。
+                // SAFETY: cell 经 alloc_cell 独立堆分配，本 session 内指针有效。
                 let cell = unsafe { &mut *p };
                 cell.value = rewrite(cell.value);
             }

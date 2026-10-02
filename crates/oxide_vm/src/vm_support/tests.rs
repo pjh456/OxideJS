@@ -423,16 +423,6 @@ fn full_reset_dirty_four_families_cross_family_reads() {
     assert!(!vm.session.is_dirty_since_snapshot());
 }
 
-#[test]
-fn session_epoch_survives_reset() {
-    let mut vm = Vm::new();
-    let session_ptr = vm.gc_state.session_epoch.alloc(123i32) as *mut i32;
-
-    vm.reset();
-
-    assert!(unsafe { *session_ptr } == 123);
-}
-
 /// 未捕获异常侧通道是执行期状态：原生错误后可能残留原值，reset/full_reset
 /// 边界须随执行状态一并清空——否则其持有的 epoch 对象指针在池回收后悬垂
 /// （后续原生错误经 raise_call_error 消费残留值即 UAF）。
@@ -447,24 +437,6 @@ fn reset_drops_stale_uncaught_value() {
     vm.last_uncaught_value = Some(JsValue::float(42.0));
     vm.full_reset();
     assert!(vm.last_uncaught_value.is_none(), "full_reset 应清空未捕获异常侧通道");
-}
-
-/// 全量重置后 epoch/session 两 arena 均空：容量不跨 reset 保留。对象
-/// Box 化后 arena 零分配，此不变量是分配包络公式排除 arena 计数器的前提。
-#[test]
-fn full_reset_zeroes_arena_retained() {
-    let mut vm = Vm::new();
-    run_source(
-        &mut vm,
-        "var t = 0; for (var i = 0; i < 20000; i++) { var o = { s: 'ab' + i, a: [i] }; t += o.s.length + o.a.length; } t",
-    );
-    // 统一入口 Box 化后 epoch arena 零分配，水位恒零。
-    assert_eq!(vm.epoch.bump().allocated_bytes(), 0);
-
-    vm.full_reset();
-
-    assert_eq!(vm.epoch.bump().allocated_bytes(), 0);
-    assert_eq!(vm.gc_state.session_epoch.allocated_bytes(), 0);
 }
 
 /// 直 session 分配站（函数对象 + prototype 子对象）计入 session 堆账目：
@@ -615,15 +587,6 @@ fn dynamic_function_rethrows_to_string_exception() {
     // 形参 ToString 回调抛出的原始值须原样传播，而非包成 TypeError。
     let result = run_source(&mut vm, "try{new Function({toString:function(){throw 7}})}catch(e){e}");
     assert_eq!(result, JsValue::int(7));
-}
-
-#[test]
-fn session_epoch_replacement_is_only_in_full_reset_state_clear() {
-    let src = include_str!("../vm_support.rs");
-    let production = src.split("#[cfg(test)]").next().expect("production source");
-    assert_eq!(production.matches("self.gc_state.session_epoch = bumpalo::Bump::new()").count(), 1);
-    assert!(production.contains("fn clear_full_reset_state(&mut self)"));
-    assert!(production.contains("self.gc_state.session_epoch = bumpalo::Bump::new();"));
 }
 
 #[test]

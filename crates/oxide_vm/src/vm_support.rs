@@ -122,7 +122,6 @@ impl Vm {
             async_gen_dispatch: false,
             async_gen_suspended: false,
             gc_state: GcState {
-                session_epoch: bumpalo::Bump::new(),
                 session_gc: crate::session_gc::SessionGc::new(),
                 session_object_ptrs: Vec::new(),
                 session_string_ptrs: Vec::new(),
@@ -257,7 +256,6 @@ impl Vm {
             async_gen_dispatch: false,
             async_gen_suspended: false,
             gc_state: GcState {
-                session_epoch: bumpalo::Bump::new(),
                 session_gc: crate::session_gc::SessionGc::new(),
                 session_object_ptrs: Vec::new(),
                 session_string_ptrs: Vec::new(),
@@ -397,9 +395,6 @@ impl Vm {
         );
         self.active_immutables = std::ptr::slice_from_raw_parts(std::ptr::null(), 0);
         self.teardown_session_heap_data();
-        // 换新 Bump：旧 session arena 全量归还系统分配器（与 sweep 路径同构），
-        // 容量不跨 full_reset 保留。
-        self.gc_state.session_epoch = bumpalo::Bump::new();
         self.gc_state.session_bytes_allocated = 0;
         self.gc_state.session_bytes_peak = 0;
         self.gc_state.run_alloc_peak = 0;
@@ -417,10 +412,8 @@ impl Vm {
     /// + session 串 + BigInt box + upvalue cell box。
     ///
     /// 供 `full_reset` 与 `Drop` 共用——统一入口路径上对象本体全部为堆载体
-    /// （`Box::from_raw` 恰好释放一次；晋升族 Bump 克隆仅测试形态，本体随
-    /// 换新 Bump 归还），堆数据与 upvalue 列表各恰好释放一次。独占所有权
-    /// 免去重：死对象已出表不重复枚举，表内无共享 upvalue Box 的原件-克隆对
-    /// （死对象从不被克隆，生产路径不产克隆）。
+    /// （`Box::from_raw` 恰好释放一次），堆数据与 upvalue 列表各恰好释放一次。
+    /// 独占所有权免去重：死对象已出表不重复枚举。
     pub(crate) fn teardown_session_heap_data(&mut self) {
         // 迭代器体是堆上 Box：收尾路径（full_reset 与 Drop 共用）逐条释放，
         // 防 Vm 直接 drop 时表内残留体泄漏。

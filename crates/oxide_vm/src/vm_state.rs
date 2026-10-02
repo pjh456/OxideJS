@@ -18,13 +18,12 @@ use oxide_types::object::{Cell as UpvalueCell, JsObject, JsString};
 use oxide_types::private_key::WELL_KNOWN_SYMBOL_COUNT;
 use oxide_types::value::JsValue;
 
-/// session arena 与 GC 簿记。
+/// session 堆与 GC 簿记。
 ///
 /// 仅做字段分类。mark/sweep/rewrite_vm_roots 驻留在 `Vm` 上：GC 需扫描所有
 /// 子结构的根（regs、frames、for_in_iters、for_of_iters、exception_value 等），
 /// 无法限制在 GcState 内。
 pub(crate) struct GcState {
-    pub(crate) session_epoch: bumpalo::Bump,
     pub(crate) session_gc: SessionGc,
     pub(crate) session_object_ptrs: Vec<*mut JsObject>,
     pub(crate) session_string_ptrs: Vec<*mut JsString>,

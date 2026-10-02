@@ -46,7 +46,7 @@ impl Vm {
                 if cell_ptr.is_null() {
                     continue;
                 }
-                // SAFETY: cell 由 session_epoch 分配，本 session 内指针有效。
+                // SAFETY: cell 经 alloc_cell 独立堆分配，本 session 内指针有效。
                 f(unsafe { &*cell_ptr }.value);
             }
         }
@@ -129,7 +129,7 @@ impl Vm {
                 if cell_ptr.is_null() {
                     continue;
                 }
-                // SAFETY: cell 由 session_epoch 分配，本 session 内指针有效。
+                // SAFETY: cell 经 alloc_cell 独立堆分配，本 session 内指针有效。
                 let cell = unsafe { &mut *cell_ptr };
                 cell.value = rewrite(cell.value);
             }
