@@ -764,45 +764,6 @@ pub(crate) fn async_native_cell_edges(obj: &JsObject) -> Vec<*mut Cell> {
     out
 }
 
-/// 用转发函数重写状态快照中的所有 JsValue（session GC 移动式清扫 / promote 用）。
-#[allow(dead_code)]
-pub(crate) fn rewrite_async_native(obj: &JsObject, mut rewrite: impl FnMut(JsValue) -> JsValue) {
-    let Some(state) = async_state_mut(obj) else {
-        return;
-    };
-    state.callee = rewrite(state.callee);
-    for v in &mut state.args {
-        *v = rewrite(*v);
-    }
-    state.result = rewrite(state.result);
-    state.promise = rewrite(state.promise);
-    state.resolve = rewrite(state.resolve);
-    state.reject = rewrite(state.reject);
-    state.suspended.rewrite_values(rewrite);
-}
-
-/// 深拷贝状态盒到新对象（promote / sweep 用）：新对象持独立 Box，源盒可安全释放。
-#[allow(dead_code)]
-pub(crate) fn clone_async_native_with_rewrite(
-    old: &JsObject, new: &mut JsObject, mut rewrite: impl FnMut(JsValue) -> JsValue,
-) {
-    let Some(state) = async_state_mut(old) else {
-        return;
-    };
-    let cloned = AsyncState {
-        phase: state.phase,
-        callee: rewrite(state.callee),
-        args: state.args.iter().copied().map(&mut rewrite).collect(),
-        this_value: state.this_value,
-        result: rewrite(state.result),
-        promise: rewrite(state.promise),
-        resolve: rewrite(state.resolve),
-        reject: rewrite(state.reject),
-        suspended: state.suspended.clone_with_rewrite(rewrite),
-    };
-    new.set_native_data(Box::into_raw(Box::new(cloned)) as *mut u8);
-}
-
 /// 只读核算异步状态盒字节（不释放），供 GC 账目核算。
 pub(crate) fn async_native_size(obj: &JsObject) -> u64 {
     if !obj.is_async_obj() {

@@ -1,7 +1,7 @@
 //! 挂起执行上下文快照：生成器 / 异步函数 / 异步生成器 三份状态结构体共享的执行核心。
 //!
 //! 挂起时把 VM 的执行核心（regs/pc/bytecode/各栈段/在途异常与完成）整体搬入，
-//! 恢复时搬回；GC 侧对快照的根收集与指针重写也统一走本结构的方法。
+//! 恢复时搬回；GC 侧对快照的根收集统一走 for_each_value。
 //! 约定：本结构是"值"的容器，不含调度标志（generator_dispatch/async_*_dispatch/
 //! async_context 等仍由各恢复包装函数管理，避免跨状态机污染）。
 
@@ -177,7 +177,6 @@ impl SuspendedFrame {
     }
 
     /// GC 根遍历：产出全部 JsValue（对象与字符串都产出），含 cell/for_in 解引用。
-    /// 与 `rewrite_values` 字段一一对应。
     pub fn for_each_value(&self, mut f: impl FnMut(JsValue)) {
         for v in self.regs.iter() {
             f(*v);
@@ -242,197 +241,6 @@ impl SuspendedFrame {
         }
     }
 
-    /// GC 指针重写：与 `for_each_value` 字段一一对应。
-    #[allow(dead_code)]
-    pub fn rewrite_values(&mut self, mut rewrite: impl FnMut(JsValue) -> JsValue) {
-        for v in self.regs.iter_mut() {
-            *v = rewrite(*v);
-        }
-        if let Some(frame) = &mut self.frame {
-            frame.saved_this = rewrite(frame.saved_this);
-            frame.saved_new_target = rewrite(frame.saved_new_target);
-            frame.callee = rewrite(frame.callee);
-            frame.constructed_this = frame.constructed_this.map(&mut rewrite);
-        }
-        for v in &mut self.spill_stack {
-            *v = rewrite(*v);
-        }
-        for v in &mut self.save_stack {
-            *v = rewrite(*v);
-        }
-        for cells in &mut self.cell_stack {
-            for &mut p in cells.iter_mut() {
-                if p.is_null() {
-                    continue;
-                }
-                // SAFETY: cell 经 alloc_cell 独立堆分配，本 session 内指针有效。
-                let cell = unsafe { &mut *p };
-                cell.value = rewrite(cell.value);
-            }
-        }
-        for entry in &mut self.for_of_iters {
-            entry.iterator = rewrite(entry.iterator);
-            entry.last_result = rewrite(entry.last_result);
-            entry.fast_value = rewrite(entry.fast_value);
-        }
-        self.delegated_iterator = self.delegated_iterator.map(&mut rewrite);
-        self.exception_value = self.exception_value.map(&mut rewrite);
-        self.pending_exception = self.pending_exception.map(&mut rewrite);
-        self.pending_completion = self.pending_completion.map(|completion| match completion {
-            Completion::Return {
-                value,
-                remaining_finally,
-                for_of_count,
-                for_in_count,
-            } => Completion::Return {
-                value: rewrite(value),
-                remaining_finally,
-                for_of_count,
-                for_in_count,
-            },
-            other => other,
-        });
-        self.pending_async_escape = self.pending_async_escape.as_mut().map(|pend| {
-            let completion = match pend.completion {
-                Completion::Return {
-                    value,
-                    remaining_finally,
-                    for_of_count,
-                    for_in_count,
-                } => Completion::Return {
-                    value: rewrite(value),
-                    remaining_finally,
-                    for_of_count,
-                    for_in_count,
-                },
-                other => other,
-            };
-            PendingAsyncEscape {
-                close_promise: rewrite(pend.close_promise),
-                completion,
-                remaining: pend.remaining.iter().copied().map(&mut rewrite).collect(),
-            }
-        });
-        for iter in &mut self.for_in_iters {
-            if iter.is_null() {
-                continue;
-            }
-            // SAFETY: for_in_iters 存放堆上迭代器体，状态盒独占持有。
-            for (v, _si) in unsafe { (*(*iter)).keys.iter_mut() } {
-                *v = rewrite(*v);
-            }
-        }
-    }
-
-    /// 深拷贝（promote / sweep 搬移用，替代 async/asyncgen 各自的 clone_*_with_rewrite）。
-    #[allow(dead_code)]
-    pub fn clone_with_rewrite(&self, mut rewrite: impl FnMut(JsValue) -> JsValue) -> Self {
-        SuspendedFrame {
-            regs: Box::new({
-                let mut regs = [JsValue::undefined(); 256];
-                for (i, v) in self.regs.iter().enumerate() {
-                    regs[i] = rewrite(*v);
-                }
-                regs
-            }),
-            pc: self.pc,
-            bytecode: self.bytecode.clone(),
-            sub_idx: self.sub_idx,
-            active_reg_limit: self.active_reg_limit,
-            root_reg_limit: self.root_reg_limit,
-            frame: self.frame.as_ref().map(|f| CallFrame {
-                return_addr: f.return_addr,
-                function_name: f.function_name,
-                caller_reg_limit: f.caller_reg_limit,
-                caller_active_reg_limit: f.caller_active_reg_limit,
-                saved_reg_offset: f.saved_reg_offset,
-                spill_offset: f.spill_offset,
-                arguments_base: f.arguments_base,
-                arguments_count: f.arguments_count,
-                saved_this: rewrite(f.saved_this),
-                saved_new_target: rewrite(f.saved_new_target),
-                callee: rewrite(f.callee),
-                construct_result_reg: f.construct_result_reg,
-                constructed_this: f.constructed_this.map(&mut rewrite),
-                is_derived_constructor: f.is_derived_constructor,
-                super_called: f.super_called,
-                strict: f.strict,
-                continuation: f.continuation,
-                upvalues: f.upvalues,
-            }),
-            spill_stack: self.spill_stack.iter().copied().map(&mut rewrite).collect(),
-            save_stack: self.save_stack.iter().copied().map(&mut rewrite).collect(),
-            cell_stack: self.cell_stack.clone(),
-            try_stack: self.try_stack.clone(),
-            for_in_iters: self
-                .for_in_iters
-                .iter()
-                .map(|&iter| {
-                    if iter.is_null() {
-                        return iter;
-                    }
-                    // SAFETY: 指针是堆上迭代器体，原件状态盒独占持有；克隆新建
-                    // 独立体，原件与克隆各持自有体，恰好各释放一次。
-                    let body = unsafe { &*iter };
-                    Box::into_raw(Box::new(ForInIter {
-                        keys: body.keys.iter().map(|(v, si)| (rewrite(*v), *si)).collect(),
-                        index: body.index,
-                    }))
-                })
-                .collect(),
-            for_of_iters: self
-                .for_of_iters
-                .iter()
-                .copied()
-                .map(|entry| ForOfEntry {
-                    iterator: rewrite(entry.iterator),
-                    last_result: rewrite(entry.last_result),
-                    is_async: entry.is_async,
-                    fast: entry.fast,
-                    fast_value: rewrite(entry.fast_value),
-                })
-                .collect(),
-            delegated_iterator: self.delegated_iterator.map(&mut rewrite),
-            saved_bytecode_stack: self.saved_bytecode_stack.clone(),
-            saved_immutables_stack: self.saved_immutables_stack.clone(),
-            exception_value: self.exception_value.map(&mut rewrite),
-            pending_exception: self.pending_exception.map(&mut rewrite),
-            pending_error_kind: self.pending_error_kind,
-            pending_completion: self.pending_completion.map(|completion| match completion {
-                Completion::Return {
-                    value,
-                    remaining_finally,
-                    for_of_count,
-                    for_in_count,
-                } => Completion::Return {
-                    value: rewrite(value),
-                    remaining_finally,
-                    for_of_count,
-                    for_in_count,
-                },
-                other => other,
-            }),
-            pending_async_escape: self.pending_async_escape.as_ref().map(|p| PendingAsyncEscape {
-                close_promise: rewrite(p.close_promise),
-                completion: match p.completion {
-                    Completion::Return {
-                        value,
-                        remaining_finally,
-                        for_of_count,
-                        for_in_count,
-                    } => Completion::Return {
-                        value: rewrite(value),
-                        remaining_finally,
-                        for_of_count,
-                        for_in_count,
-                    },
-                    other => other,
-                },
-                remaining: p.remaining.iter().copied().map(&mut rewrite).collect(),
-            }),
-        }
-    }
-
     /// 堆字节数（drop 记账用：bytecode + spill/save/for_of 容量）。
     pub fn heap_bytes(&self) -> u64 {
         self.bytecode.len() as u64 * std::mem::size_of::<opcode::Instr>() as u64
@@ -463,8 +271,6 @@ impl Drop for SuspendedFrame {
 mod tests {
     use super::*;
     use crate::vm::{FrameContinuation, Vm};
-    use std::collections::HashSet;
-
     fn vm() -> Vm {
         Vm::new()
     }
@@ -490,85 +296,6 @@ mod tests {
             continuation: FrameContinuation::None,
             upvalues: std::ptr::slice_from_raw_parts(std::ptr::null(), 0),
         }
-    }
-
-    fn fill_frame(frame: &mut SuspendedFrame) {
-        frame.regs[0] = JsValue::float(1.0);
-        frame.regs[7] = JsValue::float(2.0);
-        frame.pc = 11;
-        frame.bytecode = Arc::from(vec![0u32]);
-        frame.sub_idx = 3;
-        frame.active_reg_limit = 4;
-        frame.root_reg_limit = 5;
-        frame.frame = Some(sentinel_frame(JsValue::float(3.0)));
-        frame.spill_stack.push(JsValue::float(4.0));
-        frame.save_stack.push(JsValue::float(5.0));
-        frame.cell_stack.push(Vec::new());
-        frame.try_stack.push(TryHandler {
-            catch_pc: None,
-            finally_pc: Some(2),
-            finally_active: false,
-            frame_depth: 0,
-            for_of_depth: 0,
-        });
-        frame.for_of_iters.push(ForOfEntry {
-            iterator: JsValue::float(6.0),
-            last_result: JsValue::float(7.0),
-            is_async: false,
-            fast: None,
-            fast_value: JsValue::undefined(),
-        });
-        frame.delegated_iterator = Some(JsValue::float(8.0));
-        frame.saved_bytecode_stack.push(Arc::from(vec![0u32]));
-        frame
-            .saved_immutables_stack
-            .push(std::ptr::slice_from_raw_parts(std::ptr::null(), 0));
-        frame.exception_value = Some(JsValue::float(9.0));
-        frame.pending_exception = Some(JsValue::float(10.0));
-        frame.pending_error_kind = Some("Error");
-        frame.pending_completion = Some(Completion::Return {
-            value: JsValue::float(11.0),
-            remaining_finally: 0,
-            for_of_count: 0,
-            for_in_count: 0,
-        });
-        frame.pending_async_escape = Some(PendingAsyncEscape {
-            close_promise: JsValue::float(12.0),
-            completion: Completion::Return {
-                value: JsValue::float(13.0),
-                remaining_finally: 0,
-                for_of_count: 0,
-                for_in_count: 0,
-            },
-            remaining: vec![JsValue::float(14.0)],
-        });
-    }
-
-    #[test]
-    fn for_each_rewrite_cover_same_fields() {
-        let mut frame = SuspendedFrame::new_empty();
-        fill_frame(&mut frame);
-
-        // for_each_value 与 rewrite_values 必须覆盖同一组字段：先统计 for_each 访问
-        // 的位点数，再把 rewrite 访问的每个位点改写为唯一值，最后 for_each 收集应
-        // 恰好产出全部唯一值——若两侧字段不对称则计数不等。
-        let mut for_each_count = 0usize;
-        frame.for_each_value(|_| for_each_count += 1);
-
-        let mut rewrite_count = 0usize;
-        let mut n = 1000.0f64;
-        frame.rewrite_values(|_v| {
-            rewrite_count += 1;
-            n += 1.0;
-            JsValue::float(n)
-        });
-        assert_eq!(rewrite_count, for_each_count);
-
-        let mut collected = HashSet::new();
-        frame.for_each_value(|v| {
-            collected.insert(v.to_bits());
-        });
-        assert_eq!(collected.len(), rewrite_count);
     }
 
     #[test]
