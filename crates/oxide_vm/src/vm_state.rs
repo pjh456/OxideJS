@@ -20,7 +20,7 @@ use oxide_types::value::JsValue;
 
 /// session 堆与 GC 簿记。
 ///
-/// 仅做字段分类。mark/sweep/rewrite_vm_roots 驻留在 `Vm` 上：GC 需扫描所有
+/// 仅做字段分类。mark/sweep 驻留在 `Vm` 上：GC 需扫描所有
 /// 子结构的根（regs、frames、for_in_iters、for_of_iters、exception_value 等），
 /// 无法限制在 GcState 内。
 pub(crate) struct GcState {

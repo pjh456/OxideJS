@@ -342,15 +342,6 @@ impl JsObject {
         }
     }
 
-    pub(crate) fn hash_props_vec_mut(&mut self) -> Option<&mut Vec<JsValue>> {
-        if self.hash_props.is_null() {
-            None
-        } else {
-            // SAFETY: 指针归本对象所有，见字段声明。
-            unsafe { Some(&mut *(self.hash_props as *mut Vec<JsValue>)) }
-        }
-    }
-
     /// 若数组元素区为空则初始化，并把长度对齐到 `array_prop_count`，返回其可变引用。
     fn ensure_array_elements(&mut self) -> &mut Vec<JsValue> {
         if self.array_elements.is_null() {
@@ -372,15 +363,6 @@ impl JsObject {
         } else {
             // SAFETY: 指针归本对象所有，见字段声明。
             unsafe { Some(&*(self.array_elements as *const Vec<JsValue>)) }
-        }
-    }
-
-    pub(crate) fn array_elements_vec_mut(&mut self) -> Option<&mut Vec<JsValue>> {
-        if self.array_elements.is_null() {
-            None
-        } else {
-            // SAFETY: 指针归本对象所有，见字段声明。
-            unsafe { Some(&mut *(self.array_elements as *mut Vec<JsValue>)) }
         }
     }
 

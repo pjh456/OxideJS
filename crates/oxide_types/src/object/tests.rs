@@ -62,36 +62,6 @@ fn session_epoch_marker_keeps_object_size_bound() {
 }
 
 #[test]
-fn clone_for_session_epoch_marks_clone_and_does_not_alias_hash_props() {
-    let mut source = JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null());
-    source.set_prop_at(0, JsValue::int(1));
-
-    let mut clone = source.clone_for_session_epoch();
-    assert!(clone.is_session_epoch());
-    clone.set_prop_at(0, JsValue::int(2));
-
-    assert_eq!(source.get_prop_at(0), JsValue::int(1));
-    assert_eq!(clone.get_prop_at(0), JsValue::int(2));
-}
-
-#[test]
-fn clone_for_session_epoch_does_not_alias_prop_meta() {
-    let mut source = JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null());
-    source.set_prop_at(0, JsValue::undefined());
-    source.set_accessor_meta(0, JsValue::int(10), JsValue::int(11), PropAttributes::DEFAULT_DATA);
-
-    let mut clone = source.clone_for_session_epoch();
-    clone.set_accessor_meta(0, JsValue::int(20), JsValue::int(21), PropAttributes::DEFAULT_DATA);
-
-    let source_meta = source.prop_meta_at(0).expect("source meta");
-    let clone_meta = clone.prop_meta_at(0).expect("clone meta");
-    assert_eq!(source_meta.get, JsValue::int(10));
-    assert_eq!(source_meta.set, JsValue::int(11));
-    assert_eq!(clone_meta.get, JsValue::int(20));
-    assert_eq!(clone_meta.set, JsValue::int(21));
-}
-
-#[test]
 fn shape_id_roundtrip() {
     let mut obj = JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null());
     obj.set_shape_id(0x00AB_CDEF);

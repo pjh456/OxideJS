@@ -359,7 +359,7 @@ pub struct Vm {
     /// 标签模板对象缓存（GetTemplateObject）：键 = (表代际, 模块 flat_id, site 序号)。
     /// 同一代际同 flat_id 同 site 恒返回同一对象；每次 `run()` 清空（缓存只留
     /// 本次 run 的条目，规模有界）。键含代际维度后，跨 run 调用旧代模块的
-    /// flat_id 重编号不再误命中。值为 GC 根（for_each_value/rewrite_values 遍历）。
+    /// flat_id 重编号不再误命中。值为 GC 根（for_each_value 遍历）。
     pub(crate) template_objects: HashMap<(u32, u32, u32), JsValue>,
     /// 当前活动字节码所属模块的 flat_id（顶层 0；帧切换时随 bytecode 换）。
     /// GET_TEMPLATE_OBJECT 据其区分不同编译树（eval 每次编译独立 site）。

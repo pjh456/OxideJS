@@ -1,4 +1,4 @@
-//! GC 根遍历与执行期收集钩子：根统一枚举、搬移后指针重写、执行期两档
+//! GC 根遍历与执行期收集钩子：根统一枚举、执行期两档
 //! 收集入口（安全点门控）与 session GC 账目统计访问器。
 
 use oxide_types::object::{Cell, JsObject, JsString};
@@ -9,10 +9,9 @@ use super::Vm;
 use crate::session_gc::SessionGc;
 
 impl Vm {
-    /// GC 根收集的统一遍历（对象与字符串都产出）。与 `rewrite_values` 字段一一对应。
+    /// GC 根收集的统一遍历（对象与字符串都产出）。
     /// 覆盖执行核心的全部 JsValue 持有点：regs/帧/各栈段/cell/在途异常与完成/
-    /// 挂起信号/迭代器/微任务/global。新增执行字段必须同时登记在此与
-    /// `rewrite_values`。
+    /// 挂起信号/迭代器/微任务/global。
     pub(crate) fn for_each_value(&self, mut f: impl FnMut(JsValue)) {
         for value in &self.regs {
             f(*value);
@@ -106,118 +105,7 @@ impl Vm {
         f(JsValue::from_js_object(self.session.global_object().as_ptr() as *mut JsObject));
     }
 
-    /// GC 指针重写（session 搬移后调用）。与 `for_each_value` 字段一一对应。
-    #[allow(dead_code)]
-    pub(crate) fn rewrite_values(&mut self, mut rewrite: impl FnMut(JsValue) -> JsValue) {
-        for value in &mut self.regs {
-            *value = rewrite(*value);
-        }
-        for frame in &mut self.frames {
-            frame.saved_this = rewrite(frame.saved_this);
-            frame.saved_new_target = rewrite(frame.saved_new_target);
-            frame.callee = rewrite(frame.callee);
-            frame.constructed_this = frame.constructed_this.map(&mut rewrite);
-        }
-        for v in &mut self.save_stack {
-            *v = rewrite(*v);
-        }
-        for v in &mut self.spill_stack {
-            *v = rewrite(*v);
-        }
-        for cell_vec in &mut self.cell_stack {
-            for &mut cell_ptr in cell_vec.iter_mut() {
-                if cell_ptr.is_null() {
-                    continue;
-                }
-                // SAFETY: cell 经 alloc_cell 独立堆分配，本 session 内指针有效。
-                let cell = unsafe { &mut *cell_ptr };
-                cell.value = rewrite(cell.value);
-            }
-        }
-        self.exception_value = self.exception_value.map(&mut rewrite);
-        self.pending_exception = self.pending_exception.map(&mut rewrite);
-        self.last_uncaught_value = self.last_uncaught_value.map(&mut rewrite);
-        self.pending_length_exception = self.pending_length_exception.map(&mut rewrite);
-        for cached in self.template_objects.values_mut() {
-            *cached = rewrite(*cached);
-        }
-        self.pending_completion = self.pending_completion.map(|completion| match completion {
-            Completion::Return {
-                value,
-                remaining_finally,
-                for_of_count,
-                for_in_count,
-            } => Completion::Return {
-                value: rewrite(value),
-                remaining_finally,
-                for_of_count,
-                for_in_count,
-            },
-            other => other,
-        });
-        self.generator_suspended = self.generator_suspended.map(&mut rewrite);
-        self.delegated_iterator = self.delegated_iterator.map(&mut rewrite);
-        self.async_context = self.async_context.map(&mut rewrite);
-        self.async_gen_context = self.async_gen_context.map(&mut rewrite);
-        // 在途异步逃出的 promise/完成值/剩余迭代器随 sweep 重写（与 mark 段一一对应）。
-        self.pending_async_escape = self.pending_async_escape.as_mut().map(|pend| {
-            let completion = match pend.completion {
-                Completion::Return {
-                    value,
-                    remaining_finally,
-                    for_of_count,
-                    for_in_count,
-                } => Completion::Return {
-                    value: rewrite(value),
-                    remaining_finally,
-                    for_of_count,
-                    for_in_count,
-                },
-                other => other,
-            };
-            super::PendingAsyncEscape {
-                close_promise: rewrite(pend.close_promise),
-                completion,
-                remaining: pend.remaining.iter().copied().map(&mut rewrite).collect(),
-            }
-        });
-        self.inline_callee = self.inline_callee.map(&mut rewrite);
-        for entry in &mut self.iters.for_of_iters {
-            entry.iterator = rewrite(entry.iterator);
-            entry.last_result = rewrite(entry.last_result);
-            entry.fast_value = rewrite(entry.fast_value);
-        }
-        // 微任务队列中的值随 sweep 重写。
-        for job in &mut self.job_queue {
-            crate::promise::rewrite_job_values(job, &mut rewrite);
-        }
-        // Atomics waiter 表中的 promise 随 sweep 重写（与 mark 段一一对应）。
-        for promises in self.atomics_waiters.values_mut() {
-            for p in promises {
-                *p = rewrite(*p);
-            }
-        }
-        for iter in &mut self.iters.for_in_iters {
-            if iter.is_null() {
-                continue;
-            }
-            // SAFETY: for_in_iters 存放堆上迭代器体，VM 表独占持有。
-            unsafe {
-                for (v, _si) in (*(*iter)).keys.iter_mut() {
-                    *v = rewrite(*v);
-                }
-            }
-        }
-        let global_ptr = self.session.global_object().as_ptr() as *mut JsObject;
-        if !global_ptr.is_null() {
-            // SAFETY: KernelSession 在 VM 生命周期内拥有 global_object。
-            unsafe {
-                (*global_ptr).rewrite_object_values(rewrite);
-            }
-        }
-    }
-
-    /// GC 根统一枚举入口：遍历的字段清单与 `rewrite_values` 一一对应。
+    /// GC 根统一枚举入口：遍历的字段清单与 `for_each_value` 相同。
     pub(crate) fn for_each_root(&self, f: impl FnMut(JsValue)) {
         self.for_each_value(f);
     }

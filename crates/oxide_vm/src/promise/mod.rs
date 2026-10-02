@@ -18,7 +18,7 @@ mod reactions;
 mod settlement;
 
 pub(crate) use gc_edges::{drop_promise_native, promise_native_edges, promise_native_size};
-pub(crate) use jobs::{for_each_job_value, rewrite_job_values};
+pub(crate) use jobs::for_each_job_value;
 pub use reactions::promise_settled_value;
 
 /// Promise 的 settled 状态。

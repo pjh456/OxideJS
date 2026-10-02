@@ -107,33 +107,3 @@ pub(crate) fn for_each_job_value(job: &Microtask, mut f: impl FnMut(JsValue)) {
         }
     }
 }
-
-/// 供外部改写微任务队列中的 JsValue（session GC sweep 用）。
-#[allow(dead_code)]
-pub(crate) fn rewrite_job_values(job: &mut Microtask, mut rewrite: impl FnMut(JsValue) -> JsValue) {
-    match job {
-        Microtask::Reaction {
-            handler,
-            argument,
-            resolve,
-            reject,
-            ..
-        } => {
-            *handler = rewrite(*handler);
-            *argument = rewrite(*argument);
-            *resolve = rewrite(*resolve);
-            *reject = rewrite(*reject);
-        }
-        Microtask::Thenable {
-            thenable,
-            then,
-            resolve,
-            reject,
-        } => {
-            *thenable = rewrite(*thenable);
-            *then = rewrite(*then);
-            *resolve = rewrite(*resolve);
-            *reject = rewrite(*reject);
-        }
-    }
-}

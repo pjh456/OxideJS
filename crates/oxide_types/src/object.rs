@@ -224,8 +224,6 @@ impl JsObject {
     pub const SESSION_EPOCH_BIT: u8 = 0x01;
     /// `is_session_epoch` 字段中的 GC 标记位。
     pub const GC_MARK_BIT: u8 = 0x02;
-    /// `is_session_epoch` 字段中的 epoch 归属标记位。
-    pub const EPOCH_BIT: u8 = 0x04;
     /// `is_session_epoch` 字段中的堆载体标记位：对象本体经 `Box::into_raw`
     /// 分配（统一分配入口），释放点据此 `Box::from_raw` 释放本体；arena
     /// 载体（移动式 sweep 克隆、晋升族克隆）无此位，本体随 arena 归还。
@@ -489,22 +487,6 @@ impl JsObject {
         }
     }
 
-    /// 是否为 epoch 分配（非 session）的对象。
-    #[inline]
-    pub fn is_epoch(&self) -> bool {
-        self.is_session_epoch & Self::EPOCH_BIT != 0
-    }
-
-    /// 设置 / 清除 epoch 归属标记。
-    #[inline]
-    pub fn set_is_epoch(&mut self, value: bool) {
-        if value {
-            self.is_session_epoch |= Self::EPOCH_BIT;
-        } else {
-            self.is_session_epoch &= !Self::EPOCH_BIT;
-        }
-    }
-
     /// 是否堆载体（本体经 `Box::into_raw` 分配，释放点须 `Box::from_raw`）。
     #[inline]
     pub fn is_heap_alloc(&self) -> bool {
@@ -518,56 +500,6 @@ impl JsObject {
             self.is_session_epoch |= Self::HEAP_BIT;
         } else {
             self.is_session_epoch &= !Self::HEAP_BIT;
-        }
-    }
-
-    /// 深拷贝本对象到 session epoch：复制属性向量与元数据，标记为新 session 对象。
-    ///
-    /// 用于把持久对象快照进当前调用上下文，修改不反向传播到源对象。
-    /// `upvalues` 指针别名共享（非深拷）：调用帧固化的 upvalue 表跨 GC 晋升
-    /// 恒有效依赖此不变量。
-    pub fn clone_for_session_epoch(&self) -> Self {
-        let hash_props = self
-            .hash_props_vec()
-            .map(|props| Box::into_raw(Box::new(props.clone())) as *mut u8)
-            .unwrap_or(std::ptr::null_mut());
-        let prop_meta = self
-            .prop_meta_vec()
-            .map(|meta| Box::into_raw(Box::new(meta.clone())) as *mut u8)
-            .unwrap_or(std::ptr::null_mut());
-        let array_elements = self
-            .array_elements_vec()
-            .map(|elems| Box::into_raw(Box::new(elems.clone())) as *mut u8)
-            .unwrap_or(std::ptr::null_mut());
-        let array_elements_meta = self
-            .array_elements_meta_vec()
-            .map(|meta| Box::into_raw(Box::new(meta.clone())) as *mut u8)
-            .unwrap_or(std::ptr::null_mut());
-
-        Self {
-            header: self.header,
-            native_arg_count: self.native_arg_count,
-            type_tag: self.type_tag,
-            is_session_epoch: Self::SESSION_EPOCH_BIT,
-            _pad: self._pad,
-            array_elements,
-            array_elements_meta,
-            hash_props,
-            prop_meta,
-            native_data: self.native_data,
-            proto: self.proto,
-            generation: self.generation,
-            array_prop_count: self.array_prop_count,
-            array_len_override: self.array_len_override,
-            native_fn: self.native_fn,
-            sub_module_index: self.sub_module_index,
-            table_gen: self.table_gen,
-            captured_this: self.captured_this,
-            home_object: self.home_object,
-            boxed_value: self.boxed_value,
-            regexp_source: self.regexp_source,
-            regexp_flags: self.regexp_flags,
-            upvalues: self.upvalues,
         }
     }
 
@@ -596,7 +528,7 @@ impl JsObject {
     ///
     /// 供 session 收尾调用：对象本体可能仍被 Arc 引用（此后属性区不再被读取），
     /// 每区至多释放一次、重复调用为 no-op。upvalue 列表不在本函数释放范围内
-    /// （原件与晋升克隆间别名，须收尾时去重统一释放）。
+    /// （与调用帧压帧时固化的 upvalue 表共享同一 Box，单所有权，随帧收尾释放）。
     pub fn release_raw_heap(&mut self) {
         // SAFETY: 四个区指针归本对象所有（见字段声明）；回收后即刻置空。
         unsafe {
@@ -658,78 +590,6 @@ impl JsObject {
             }
         }
         self.upvalues = Box::into_raw(v) as *mut u8;
-    }
-
-    /// 用 `rewrite` 改写对象内引用的所有对象值。
-    ///
-    /// 用于 GC 移动 / 世代晋升：遍历数组元素区、命名属性区、访问器 getter/setter、
-    /// `proto`、`captured_this`、`home_object` 与 upvalue cell 中的对象值，
-    /// 原地替换为新地址。非对象值保持不变。
-    pub fn rewrite_object_values<F>(&mut self, mut rewrite: F)
-    where
-        F: FnMut(JsValue) -> JsValue,
-    {
-        if let Some(elements) = self.array_elements_vec_mut() {
-            for value in elements {
-                if value.is_object() {
-                    *value = rewrite(*value);
-                }
-            }
-        }
-        if let Some(meta) = self.array_elements_meta_vec_mut() {
-            for entry in meta.iter_mut().flatten() {
-                if entry.get.is_object() {
-                    entry.get = rewrite(entry.get);
-                }
-                if entry.set.is_object() {
-                    entry.set = rewrite(entry.set);
-                }
-            }
-        }
-        if let Some(props) = self.hash_props_vec_mut() {
-            for value in props {
-                if value.is_object() {
-                    *value = rewrite(*value);
-                }
-            }
-        }
-        if let Some(meta) = self.prop_meta_vec_mut() {
-            for entry in meta.iter_mut().flatten() {
-                if entry.get.is_object() {
-                    entry.get = rewrite(entry.get);
-                }
-                if entry.set.is_object() {
-                    entry.set = rewrite(entry.set);
-                }
-            }
-        }
-        if self.proto.is_object() {
-            self.proto = rewrite(self.proto);
-        }
-        if self.captured_this.is_object() {
-            self.captured_this = rewrite(self.captured_this);
-        }
-        if self.home_object.is_object() {
-            self.home_object = rewrite(self.home_object);
-        }
-        if self.boxed_value.is_object() {
-            self.boxed_value = rewrite(self.boxed_value);
-        }
-        if self.regexp_source.is_object() {
-            self.regexp_source = rewrite(self.regexp_source);
-        }
-        if self.regexp_flags.is_object() {
-            self.regexp_flags = rewrite(self.regexp_flags);
-        }
-        if !self.upvalues.is_null() {
-            let cells = unsafe { &mut *(self.upvalues as *mut Vec<*mut Cell>) };
-            for cell_ptr in cells {
-                let cell = unsafe { &mut **cell_ptr };
-                if cell.value.is_object() {
-                    cell.value = rewrite(cell.value);
-                }
-            }
-        }
     }
 
     /// 当前形状 ID（header 低位 24 位）。

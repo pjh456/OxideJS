@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::mem::size_of;
 use std::time::Instant;
 
@@ -373,8 +373,8 @@ impl SessionGc {
     /// 对象 DFS 跟踪 session 对象单表（统一入口 Box 化后无 epoch 表）；perm
     /// 对象不置位（其位跨收集残留会令 DFS 短路漏扫），走独立已访集防环。
     /// 字符串边走 rope 闭包传播（Cons 子节点与扁平化产物），BigInt 边直接入
-    /// 存活集。roots 由 `Vm::for_each_root` 枚举，字段清单与 `rewrite_values`
-    /// 一一对应、须同步。只置位不搬移，调用前须先 `clear_all_marks` 清位。
+    /// 存活集。roots 由 `Vm::for_each_root` 枚举。只置位不搬移，调用前须先
+    /// `clear_all_marks` 清位。
     pub(crate) fn mark(&mut self, vm: &Vm) {
         vm_debug!("[GC] mark phase: {} roots", vm.gc_state.session_object_ptrs.len());
         let mut seeds = Vec::new();
@@ -1060,19 +1060,6 @@ impl Default for SessionGc {
     }
 }
 
-#[allow(dead_code)]
-fn rewrite_forwarded_value(
-    value: JsValue, forwarding: &HashMap<*mut JsObject, *mut JsObject, FxBuildHasher>,
-) -> JsValue {
-    if !value.is_object() {
-        return value;
-    }
-    forwarding
-        .get(&value.as_js_object_ptr())
-        .map(|&ptr| JsValue::from_js_object(ptr))
-        .unwrap_or(value)
-}
-
 /// 原地 sweep 的弱键判定：session 键按 mark 位定生死（已标 = 强可达保留，
 /// 未标 = 死键丢弃），非 session 键（perm 对象等）不可死、恒保留；symbol
 /// 键按值恒等、恒保留。
@@ -1094,29 +1081,6 @@ pub(crate) fn resolve_weak_key_sweep(key: weak_map::WeakKey) -> Option<weak_map:
         return None;
     }
     Some(key)
-}
-
-/// 晋升收敛后的弱键定夺：统一入口 Box 化后晋升族在生产路径不产克隆
-/// （epoch 守卫恒假、无 epoch 对象），转发表恒空、无重指需求；reset 边界
-/// 的 mark 位已被前序收集清位，不携带本轮可达性信息。故定夺退化为原样
-/// 保留——弱键生死由原地 sweep 的 mark 位判定单一裁定，本路径不改表项。
-///
-/// # 边界与前提
-/// - 不解引用任何对象本体（无位域读取），无定夺时序面；
-/// - 晋升族整体为死代码保留面，弱表族本体退役时一并删除。
-#[allow(dead_code)]
-pub(crate) fn resolve_weak_key_after_promotion(key: weak_map::WeakKey) -> Option<weak_map::WeakKey> {
-    Some(key)
-}
-
-/// 按 forwarding 表把全部 VM 根引用重写到搬移后的新地址。与 `for_each_value`
-/// 共用同一字段清单（经 `rewrite_values` 遍历）且须同步：遗漏字段会在搬移后
-/// 保留指向旧 arena 的悬垂指针。
-#[allow(dead_code)]
-pub(crate) fn rewrite_vm_roots(vm: &mut Vm, forwarding: &HashMap<*mut JsObject, *mut JsObject, FxBuildHasher>) {
-    vm_debug!("[GC] rewrite_vm_roots: {} forwarded objects", forwarding.len());
-    // 统一遍历：与 for_each_value 共用同一字段清单。
-    vm.rewrite_values(|value| rewrite_forwarded_value(value, forwarding));
 }
 
 #[cfg(test)]
