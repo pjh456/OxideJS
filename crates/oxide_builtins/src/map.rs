@@ -627,11 +627,10 @@ pub fn map_group_by<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
             }
             new_arr_val
         };
-        // push element 到分组数组（写入前 promote，与 Array.prototype.push 同款）。
+        // push element 到分组数组（与 Array.prototype.push 同款）。
         let arr_obj = unsafe { &mut *arr_val.as_js_object_ptr() };
         let idx = arr_obj.prop_count();
-        let promoted_elem = vm.promote_if_needed_for_write_ptr(arr_val.as_js_object_ptr(), element);
-        arr_obj.set_prop_at(idx, promoted_elem);
+        arr_obj.set_prop_at(idx, element);
         counter += 1;
     }
     NativeResult::Ok(map_val)

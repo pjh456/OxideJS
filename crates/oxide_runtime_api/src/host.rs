@@ -227,7 +227,6 @@ pub trait VmHost {
     /// caller/arguments 访问是否受限：严格函数对象，或生成器 / 异步 /
     /// 异步生成器函数对象（[[Prototype]] 为三个动态函数原型之一）。
     fn function_is_restricted(&self, obj: &JsObject) -> bool;
-    fn promote_if_needed_for_write_ptr(&mut self, target_ptr: *mut JsObject, value: JsValue) -> JsValue;
     fn step_rng(&mut self);
     fn math_rng_value(&self) -> f64;
     fn sub_module_function_name(&self, gen: u32, sub_idx: u16) -> String;

@@ -424,15 +424,13 @@ fn set_on_receiver<H: VmHost>(vm: &mut H, receiver: JsValue, key_si: u32, value:
                 return NativeResult::Ok(JsValue::bool(false));
             }
         }
-        let val = vm.promote_if_needed_for_write_ptr(receiver_ptr, value);
-        vm.set_or_create_prop_value(unsafe { &mut *receiver_ptr }, key_si, val);
+        vm.set_or_create_prop_value(unsafe { &mut *receiver_ptr }, key_si, value);
         return NativeResult::Ok(JsValue::bool(true));
     }
     if !receiver_obj.is_extensible() {
         return NativeResult::Ok(JsValue::bool(false));
     }
-    let val = vm.promote_if_needed_for_write_ptr(receiver_ptr, value);
-    vm.set_or_create_prop_value(unsafe { &mut *receiver_ptr }, key_si, val);
+    vm.set_or_create_prop_value(unsafe { &mut *receiver_ptr }, key_si, value);
     NativeResult::Ok(JsValue::bool(true))
 }
 

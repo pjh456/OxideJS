@@ -732,9 +732,8 @@ pub fn object_assign<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 
     let target = unsafe { &mut *target_ptr };
     for (si, val) in all_assignments {
-        let promoted = vm.promote_if_needed_for_write_ptr(target_ptr, val);
         // Set(to, key, value, true)：receiver 为目标对象（目标同名 setter 的 this 指向 target）。
-        if let Err(err) = vm.ordinary_set(target, si, promoted, target_val, true) {
+        if let Err(err) = vm.ordinary_set(target, si, val, target_val, true) {
             return NativeResult::Err(crate::error::create_type_error(vm, &err));
         }
     }
@@ -1605,9 +1604,8 @@ pub fn object_from_entries<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         let value_val = pair.get_prop_at(1);
         // ToPropertyKey 语义建键：int/规范数字串/symbol 统一映射，避免数字键分裂。
         let si = vm.property_key_si(key_val);
-        let promoted = vm.promote_if_needed_for_write_ptr(obj, value_val);
         // 写入失败按 builtin 边界传播（目标为 fresh 对象实际不可达，不得静默吞）。
-        if let Err(err) = vm.ordinary_set(unsafe { &mut *obj }, si, promoted, target_val, true) {
+        if let Err(err) = vm.ordinary_set(unsafe { &mut *obj }, si, value_val, target_val, true) {
             return NativeResult::Err(crate::array::from_engine_error(vm, &err));
         }
     }
@@ -2320,18 +2318,16 @@ pub fn object_group_by<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
             ));
             let new_arr_val = JsValue::from_js_object(arr);
             let result_ref_mut = unsafe { &mut *result };
-            let promoted = vm.promote_if_needed_for_write_ptr(result, new_arr_val);
             // 写入失败按 builtin 边界传播（result 为 fresh 对象实际不可达，不得静默吞）。
-            if let Err(err) = vm.ordinary_set(result_ref_mut, key_si, promoted, result_val, true) {
+            if let Err(err) = vm.ordinary_set(result_ref_mut, key_si, new_arr_val, result_val, true) {
                 return NativeResult::Err(crate::array::from_engine_error(vm, &err));
             }
             new_arr_val
         };
-        // push element 到分组数组（写入前 promote，与 Array.prototype.push 同款）。
+        // push element 到分组数组（与 Array.prototype.push 同款）。
         let arr_obj = unsafe { &mut *arr_val.as_js_object_ptr() };
         let idx = arr_obj.prop_count();
-        let promoted_elem = vm.promote_if_needed_for_write_ptr(arr_val.as_js_object_ptr(), element);
-        arr_obj.set_prop_at(idx, promoted_elem);
+        arr_obj.set_prop_at(idx, element);
         counter += 1;
     }
     NativeResult::Ok(result_val)
