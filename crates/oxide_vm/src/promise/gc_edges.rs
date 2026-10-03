@@ -1,6 +1,4 @@
 //! Promise 状态盒的 session GC 支撑：值边、字节核算与释放三类接线。
-//!
-//! 结算链指针是裸指针边、不是 JsValue。
 
 use oxide_types::object::JsObject;
 use oxide_types::value::JsValue;
@@ -17,11 +15,6 @@ pub(crate) fn promise_native_edges(obj: &JsObject) -> Vec<JsValue> {
     edges.push(state.result);
     edges.push(state.resolve_fn);
     edges.push(state.reject_fn);
-    // 结算链指针：克隆恒为 session 表成员，凭这条边在原件/旧克隆仍存活时被
-    // 同轮置活，结算传导不会读到悬垂克隆。
-    if !state.promoted_clone.is_null() {
-        edges.push(JsValue::from_js_object(state.promoted_clone));
-    }
     for r in &state.reactions {
         edges.push(r.promise);
         edges.push(r.resolve);

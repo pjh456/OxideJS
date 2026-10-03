@@ -35,7 +35,6 @@ impl Vm {
             resolve_fn: JsValue::undefined(),
             reject_fn: JsValue::undefined(),
             already_resolved: false,
-            promoted_clone: std::ptr::null_mut(),
         });
         obj.set_native_data(Box::into_raw(state) as *mut u8);
         JsValue::from_js_object(ptr)
@@ -431,7 +430,6 @@ fn promise_constructor(vm: &mut Vm, args: &[u8]) -> NativeResult {
         resolve_fn: resolve,
         reject_fn: reject,
         already_resolved: false,
-        promoted_clone: std::ptr::null_mut(),
     });
     obj.set_native_data(Box::into_raw(state) as *mut u8);
     match vm.call_function_sync(executor, JsValue::undefined(), &[resolve, reject]) {

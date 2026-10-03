@@ -2,7 +2,7 @@
 //! PromiseResolve / fulfill / reject 结算路径。
 //!
 //! 结算单次性：闭包首调置位 `already_resolved`，`state != Pending`
-//! 最终守卫；结算后反应入微任务队列，并沿 `promoted_clone` 链传导克隆。
+//! 最终守卫；结算后反应入微任务队列。
 
 use oxide_kernel::shape_forge::EMPTY_SHAPE_ID;
 use oxide_runtime_api::NativeResult;
@@ -267,15 +267,6 @@ impl Vm {
                 reject: r.reject,
             });
         }
-        // 原件若已晋升出克隆，把结算传导到克隆：克隆上晋升后新挂的反应方随此触发
-        // （顶层 var 读克隆，原件反应已在本处直接触发，不重复传导）。
-        // SAFETY: 同一 `state_ptr`，前块可变借用已结束；盒仍存活，promoted_clone
-        // 由 promise_native_edges 的 mark 边保证同轮存活（mod.rs 模块头不变量）。
-        let clone_ptr = unsafe { (*state_ptr).promoted_clone };
-        if !clone_ptr.is_null() {
-            let clone = JsValue::from_js_object(clone_ptr);
-            let _ = self.fulfill_promise(clone, value);
-        }
         Ok(())
     }
 
@@ -301,14 +292,6 @@ impl Vm {
                 resolve: r.resolve,
                 reject: r.reject,
             });
-        }
-        // 原件若已晋升出克隆，把拒绝传导到克隆（同 fulfill：顶层 var 读克隆）。
-        // SAFETY: 同一 `state_ptr`，前块可变借用已结束；盒仍存活，promoted_clone
-        // 由 promise_native_edges 的 mark 边保证同轮存活（mod.rs 模块头不变量）。
-        let clone_ptr = unsafe { (*state_ptr).promoted_clone };
-        if !clone_ptr.is_null() {
-            let clone = JsValue::from_js_object(clone_ptr);
-            let _ = self.reject_promise(clone, reason);
         }
         Ok(())
     }

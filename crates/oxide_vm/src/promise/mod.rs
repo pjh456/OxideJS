@@ -49,12 +49,6 @@ pub(crate) struct PromiseState {
     /// resolve/reject 是否已被调用过（Resolve Promise Functions 的 alreadyResolved）。
     /// 首次调用后置位，后续任何 resolve/reject（含 thenable 委托期间）均 no-op。
     pub already_resolved: bool,
-    /// 结算传导链指针：非空时指向本 promise 晋升出的 session 克隆，原件结算时
-    /// 结果沿它传导到克隆；再晋升场景旧克隆的残留反应被取回归并进新克隆，
-    /// 指针更新为最新克隆。非 pending 原件恒为空指针。本指针在
-    /// `promise_native_edges` 登记为 mark 边：克隆恒为 session 表成员，凭这条
-    /// 边在原件仍存活时被同轮置活，结算不会读到悬垂克隆。
-    pub promoted_clone: *mut JsObject,
 }
 
 /// 一条微任务（job）。
