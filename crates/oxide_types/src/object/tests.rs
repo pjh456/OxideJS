@@ -93,8 +93,7 @@ fn hash_prop_read_write() {
 
 #[test]
 fn new_array_flags() {
-    let bump = bumpalo::Bump::new();
-    let obj = JsObject::new_array(5, JsValue::null(), 3, &bump);
+    let obj = JsObject::new_array(5, JsValue::null(), 3);
     assert!(obj.is_array());
     assert_eq!(obj.shape_id(), 5);
     assert_eq!(obj.prop_count(), 3);
@@ -164,8 +163,7 @@ fn accessor_meta_roundtrip_and_alignment() {
 #[test]
 fn array_element_write_preserves_props_after_element_growth() {
     // 先写属性再 push 元素：元素区增长必须整体搬移属性区，不覆盖属性。
-    let bump = bumpalo::Bump::new();
-    let mut obj = JsObject::new_array(EMPTY_SHAPE_ID, JsValue::null(), 3, &bump);
+    let mut obj = JsObject::new_array(EMPTY_SHAPE_ID, JsValue::null(), 3);
     obj.set_prop_shape(0, JsValue::int(99));
     obj.set_prop_at(3, JsValue::int(4));
     assert_eq!(obj.prop_count(), 4);
@@ -176,8 +174,7 @@ fn array_element_write_preserves_props_after_element_growth() {
 #[test]
 fn array_element_write_beyond_count_relocates_prop_zone() {
     // 稀疏写入（越界索引）把属性区推到新元素之后，属性读取仍命中。
-    let bump = bumpalo::Bump::new();
-    let mut obj = JsObject::new_array(EMPTY_SHAPE_ID, JsValue::null(), 2, &bump);
+    let mut obj = JsObject::new_array(EMPTY_SHAPE_ID, JsValue::null(), 2);
     obj.set_prop_shape(0, JsValue::int(7));
     obj.set_prop_at(5, JsValue::int(50));
     assert_eq!(obj.prop_count(), 6);
@@ -188,8 +185,7 @@ fn array_element_write_beyond_count_relocates_prop_zone() {
 #[test]
 fn array_prop_count_truncate_keeps_prop_zone() {
     // pop 截断元素区时属性区不得被删（meta 同步 insert/drain 对齐）。
-    let bump = bumpalo::Bump::new();
-    let mut obj = JsObject::new_array(EMPTY_SHAPE_ID, JsValue::null(), 3, &bump);
+    let mut obj = JsObject::new_array(EMPTY_SHAPE_ID, JsValue::null(), 3);
     obj.set_prop_shape(0, JsValue::int(5));
     obj.set_data_meta(3, PropAttributes::new(true, false, true));
     obj.set_prop_count_fast(2);

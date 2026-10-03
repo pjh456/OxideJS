@@ -38,8 +38,7 @@ pub(crate) fn build_indices_array<H: VmHost>(vm: &mut H, m: &regress::Match, tex
     let group_count = m.captures.len();
     let n = 1 + group_count;
     let proto = vm.session().builtin_world().array_proto.as_ptr() as *mut JsObject;
-    let arr =
-        vm.alloc_object(JsObject::new_array(EMPTY_SHAPE_ID, JsValue::from_js_object(proto), n, vm.epoch().bump()));
+    let arr = vm.alloc_object(JsObject::new_array(EMPTY_SHAPE_ID, JsValue::from_js_object(proto), n));
     unsafe {
         let range = m.range();
         (*arr).set_prop_at(0, index_pair(vm, text.unit_pos(range.start), text.unit_pos(range.end)));
@@ -61,8 +60,7 @@ pub(crate) fn build_indices_array<H: VmHost>(vm: &mut H, m: &regress::Match, tex
 /// 单个 [start, end] 码元对数组（数组原型，两个自身元素）。
 fn index_pair<H: VmHost>(vm: &mut H, start: usize, end: usize) -> JsValue {
     let proto = vm.session().builtin_world().array_proto.as_ptr() as *mut JsObject;
-    let arr =
-        vm.alloc_object(JsObject::new_array(EMPTY_SHAPE_ID, JsValue::from_js_object(proto), 2, vm.epoch().bump()));
+    let arr = vm.alloc_object(JsObject::new_array(EMPTY_SHAPE_ID, JsValue::from_js_object(proto), 2));
     unsafe {
         (*arr).set_prop_at(0, JsValue::int(start as i32));
         (*arr).set_prop_at(1, JsValue::int(end as i32));
@@ -749,8 +747,7 @@ pub fn regexp_exec<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let group_count = m.captures.len();
     let n = 1 + group_count;
     let proto = vm.session().builtin_world().array_proto.as_ptr() as *mut JsObject;
-    let arr =
-        vm.alloc_object(JsObject::new_array(EMPTY_SHAPE_ID, JsValue::from_js_object(proto), n, vm.epoch().bump()));
+    let arr = vm.alloc_object(JsObject::new_array(EMPTY_SHAPE_ID, JsValue::from_js_object(proto), n));
     unsafe {
         (*arr).set_prop_at(0, vm.new_string_units_owned(text.slice(range.start, range.end).into_owned()));
         // 捕获组：未参与匹配的组为 undefined。

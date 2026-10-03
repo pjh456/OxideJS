@@ -748,7 +748,7 @@ pub fn detach_array_buffer_native<H: VmHost>(vm: &mut H, this_val: JsValue) -> N
 ///    读取之前：强转副作用不先于 immutable 观测）。
 /// 3. newByteLength = ToIntegerOrInfinity(newLength) 传播式（NaN → 0，
 ///    ±Infinity 保留）。
-/// 4. 重取载荷指针（强转调用可触发 epoch 晋升，旧指针悬垂）；detached
+/// 4. 重取载荷指针（强转调用可触发收集，旧指针悬垂）；detached
 ///    守卫在求值之后：强转内 detach 与本步前已 detach 同形 TypeError。
 /// 5. 定长（重读存储态上限 = 0）→ TypeError，先于界判。
 /// 6. newByteLength < 0 或 > 真实上限（重读存储态 − 1）→ RangeError。

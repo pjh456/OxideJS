@@ -400,8 +400,7 @@ pub(crate) fn split_limit_to_uint32<H: VmHost>(vm: &mut H, limit_val: JsValue) -
 pub(crate) fn make_string_array_values<H: VmHost>(vm: &mut H, parts: Vec<JsValue>) -> JsValue {
     let proto = vm.session().builtin_world().array_proto.as_ptr() as *mut JsObject;
     let n = parts.len();
-    let arr =
-        vm.alloc_object(JsObject::new_array(EMPTY_SHAPE_ID, JsValue::from_js_object(proto), n, vm.epoch().bump()));
+    let arr = vm.alloc_object(JsObject::new_array(EMPTY_SHAPE_ID, JsValue::from_js_object(proto), n));
     unsafe {
         for (i, sv) in parts.into_iter().enumerate() {
             (*arr).set_prop_at(i, sv);

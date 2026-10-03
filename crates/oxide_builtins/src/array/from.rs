@@ -25,7 +25,7 @@ pub fn array_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
                 Ok(n) => n,
                 Err(err) => return NativeResult::Err(err),
             };
-            let arr = vm.alloc_object(JsObject::new_array(EMPTY_SHAPE_ID, proto_val, n, vm.epoch().bump()));
+            let arr = vm.alloc_object(JsObject::new_array(EMPTY_SHAPE_ID, proto_val, n));
             // 数值长度分支建 n 个空洞而非 present-undefined：`in`、for-in、
             // Object.keys 按缺失处理，元素 Get 落原型链。物理区以稠密上限
             // 钳位（越界索引无物理槽，逻辑长度已覆盖）。
@@ -39,7 +39,7 @@ pub fn array_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     }
 
     let n_elems = if args.len() > 1 { args.len() - 1 } else { 0 };
-    let arr = vm.alloc_object(JsObject::new_array(EMPTY_SHAPE_ID, proto_val, n_elems, vm.epoch().bump()));
+    let arr = vm.alloc_object(JsObject::new_array(EMPTY_SHAPE_ID, proto_val, n_elems));
     for i in 0..n_elems {
         unsafe {
             (*arr).set_prop_at(i, vm.reg(args[1 + i]));
@@ -292,7 +292,7 @@ fn construct_array_from_result<H: VmHost>(
     let proto = vm.session().builtin_world().array_proto.as_ptr() as *mut JsObject;
     let proto_val = JsValue::from_js_object(proto);
     let mut fallback_array = || {
-        let arr = vm.alloc_object(JsObject::new_array(EMPTY_SHAPE_ID, proto_val, 0, vm.epoch().bump()));
+        let arr = vm.alloc_object(JsObject::new_array(EMPTY_SHAPE_ID, proto_val, 0));
         (arr, true)
     };
     // 不可构造（箭头函数 / 非构造器标记的 native 方法 / 普通值）回退普通数组。

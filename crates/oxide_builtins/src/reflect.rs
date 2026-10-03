@@ -233,7 +233,7 @@ pub fn reflect_is_extensible<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult
 /// 2. 追加自身 Symbol 键（保持插入序），符合 OrdinaryOwnPropertyKeys 的排序。
 ///
 /// # 副作用
-/// - 结果数组分配在当前 epoch。
+/// - 结果数组经统一入口分配为 session 对象。
 pub fn reflect_own_keys<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let target_val = arg(vm, args, 1);
     let Some(target_ptr) = object_ptr(target_val) else {
@@ -256,12 +256,7 @@ pub fn reflect_own_keys<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let n = keys.len() + symbols.len();
 
     let array_proto = vm.session().builtin_world().array_proto.as_ptr() as *mut JsObject;
-    let arr = vm.alloc_object(JsObject::new_array(
-        EMPTY_SHAPE_ID,
-        JsValue::from_js_object(array_proto),
-        n,
-        vm.epoch().bump(),
-    ));
+    let arr = vm.alloc_object(JsObject::new_array(EMPTY_SHAPE_ID, JsValue::from_js_object(array_proto), n));
     for (i, (si, _)) in keys.iter().enumerate() {
         let key_val = key_si_to_js_value(vm, *si);
         unsafe {

@@ -387,8 +387,7 @@ mod tests {
     #[test]
     fn ic_get_hit_virtual_length_marker_hits_array() {
         // shape 1（空形状）数组经虚拟长度标记命中：返回逻辑长度。
-        let bump = bumpalo::Bump::new();
-        let arr = JsObject::new_array(EMPTY_SHAPE_ID, JsValue::null(), 3, &bump);
+        let arr = JsObject::new_array(EMPTY_SHAPE_ID, JsValue::null(), 3);
         assert_eq!(ic_get_hit(&arr, EMPTY_SHAPE_ID, VIRTUAL_LENGTH_SLOT, 0), Some(JsValue::int(3)));
     }
 

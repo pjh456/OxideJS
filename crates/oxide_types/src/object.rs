@@ -422,7 +422,7 @@ impl JsObject {
     }
 
     /// 构造数组对象：预分配 `n_elements` 个 `undefined` 的独立元素区并置 array 标志。
-    pub fn new_array(shape_id: ShapeId, proto: JsValue, n_elements: usize, _bump: &bumpalo::Bump) -> Self {
+    pub fn new_array(shape_id: ShapeId, proto: JsValue, n_elements: usize) -> Self {
         let mut obj = Self {
             header: (shape_id & 0x00FF_FFFF) | (1 << 30) | (1 << 29),
             native_arg_count: 0,

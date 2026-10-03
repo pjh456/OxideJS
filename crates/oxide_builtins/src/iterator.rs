@@ -710,11 +710,10 @@ fn make_array_from_list<H: VmHost>(vm: &mut H, items: &[JsValue]) -> JsValue {
         EMPTY_SHAPE_ID,
         JsValue::from_js_object(array_proto),
         items.len().min(oxide_types::object::MAX_DENSE_PROPS),
-        vm.epoch().bump(),
     ));
     // 逐元素写入数组元素区，最后统一 set_prop_count（new_array 预分配不足时自动扩容）。
     for (i, item) in items.iter().enumerate() {
-        // SAFETY: arr 是当前 epoch 新分配数组对象，元素区已就绪。
+        // SAFETY: arr 是刚经统一入口分配的数组对象，元素区已就绪。
         unsafe {
             (*arr).set_prop_at(i, *item);
         }
@@ -2051,13 +2050,8 @@ fn is_set_value(value: JsValue) -> bool {
 
 fn make_map_set_pair<H: VmHost>(vm: &mut H, a: JsValue, b: JsValue) -> JsValue {
     let array_proto = vm.session().builtin_world().array_proto.as_ptr() as *mut JsObject;
-    let pair = vm.alloc_object(JsObject::new_array(
-        EMPTY_SHAPE_ID,
-        JsValue::from_js_object(array_proto),
-        2,
-        vm.epoch().bump(),
-    ));
-    // SAFETY: pair 是当前 epoch 内新分配的数组 JsObject。
+    let pair = vm.alloc_object(JsObject::new_array(EMPTY_SHAPE_ID, JsValue::from_js_object(array_proto), 2));
+    // SAFETY: pair 是刚经统一入口分配的数组 JsObject。
     unsafe {
         (*pair).set_prop_at(0, a);
         (*pair).set_prop_at(1, b);

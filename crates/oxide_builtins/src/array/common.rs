@@ -267,7 +267,6 @@ pub(crate) fn create_new_array<H: VmHost>(vm: &mut H, n: usize) -> *mut JsObject
         EMPTY_SHAPE_ID,
         JsValue::from_js_object(proto),
         n.min(MAX_DENSE_PROPS),
-        vm.epoch().bump(),
     ))
 }
 

@@ -76,7 +76,7 @@ const RAW_JSON_FORBIDDEN_EDGE_UNITS: [u16; 4] = [0x09, 0x0A, 0x0D, 0x20];
 ///    （writable:false、enumerable:true、configurable:false）。
 ///
 /// # 副作用
-/// - 分配一个 session/epoch 对象与其字符串属性值。
+/// - 经统一入口分配一个 session 对象与其字符串属性值。
 pub fn json_raw_json<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let text_val = match oxide_runtime_api::to_string_value_full(
         if args.len() >= 2 { vm.reg(args[1]) } else { JsValue::undefined() },
@@ -649,12 +649,8 @@ fn build_js_value<H: VmHost>(vm: &mut H, node: &JsonNode) -> JsValue {
         JsonKind::Array(items) => {
             let array_proto = vm.session().builtin_world().array_proto.as_ptr() as *mut JsObject;
             let n = items.len();
-            let array_obj = vm.alloc_object(JsObject::new_array(
-                EMPTY_SHAPE_ID,
-                JsValue::from_js_object(array_proto),
-                n,
-                vm.epoch().bump(),
-            ));
+            let array_obj =
+                vm.alloc_object(JsObject::new_array(EMPTY_SHAPE_ID, JsValue::from_js_object(array_proto), n));
             for (i, item) in items.iter().enumerate() {
                 let jsv = build_js_value(vm, item);
                 unsafe {

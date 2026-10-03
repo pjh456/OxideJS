@@ -392,9 +392,8 @@ impl Vm {
         let n = count as usize;
         let rest_len = n.saturating_sub(fixed_count);
         let proto_ptr = self.session.builtin_world().array_proto.as_ptr() as *mut JsObject;
-        let bump = self.epoch.bump();
         let obj_ptr =
-            self.alloc_object(JsObject::new_array(EMPTY_SHAPE_ID, JsValue::from_js_object(proto_ptr), rest_len, bump));
+            self.alloc_object(JsObject::new_array(EMPTY_SHAPE_ID, JsValue::from_js_object(proto_ptr), rest_len));
         let obj = unsafe { &mut *obj_ptr };
         for i in 0..rest_len {
             let val = self
@@ -413,8 +412,7 @@ impl Vm {
         let n = opcode::imm16(instr) as usize;
         vm_trace!("NEW_ARRAY rd={} n={}", rd, n);
         let proto_ptr = self.session.builtin_world().array_proto.as_ptr() as *mut JsObject;
-        let bump = self.epoch.bump();
-        let obj = self.alloc_object(JsObject::new_array(EMPTY_SHAPE_ID, JsValue::from_js_object(proto_ptr), n, bump));
+        let obj = self.alloc_object(JsObject::new_array(EMPTY_SHAPE_ID, JsValue::from_js_object(proto_ptr), n));
         self.regs[rd] = JsValue::object(obj as *mut u8);
     }
 

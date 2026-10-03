@@ -612,12 +612,7 @@ pub fn map_group_by<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
             existing
         } else {
             let arr_proto = vm.session().builtin_world().array_proto.as_ptr() as *mut JsObject;
-            let arr = vm.alloc_object(JsObject::new_array(
-                EMPTY_SHAPE_ID,
-                JsValue::from_js_object(arr_proto),
-                0,
-                vm.epoch().bump(),
-            ));
+            let arr = vm.alloc_object(JsObject::new_array(EMPTY_SHAPE_ID, JsValue::from_js_object(arr_proto), 0));
             let new_arr_val = JsValue::from_js_object(arr);
             if let Err(e) = vm.call_function_sync(adder, map_val, &[group_key, new_arr_val]) {
                 let exc = vm

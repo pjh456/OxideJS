@@ -195,7 +195,6 @@ fn sweep_preserves_array_elements_and_collects_dead_element_object() {
         oxide_kernel::shape_forge::EMPTY_SHAPE_ID,
         JsValue::from_js_object(array_proto),
         2,
-        vm.epoch.bump(),
     ));
     let live_elem = plain_object(&mut vm);
     let dead_elem = plain_object(&mut vm);
@@ -1501,7 +1500,6 @@ fn run_alloc_formula_lists_bigint_and_cell_via_tables() {
         oxide_kernel::shape_forge::EMPTY_SHAPE_ID,
         JsValue::from_js_object(vm.session.builtin_world().array_proto.as_ptr() as *mut JsObject),
         2,
-        vm.epoch.bump(),
     ));
     vm.regs[3] = JsValue::from_js_object(arr);
     let s = vm.new_string_owned("formula".repeat(4));

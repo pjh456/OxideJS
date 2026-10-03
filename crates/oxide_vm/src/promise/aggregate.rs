@@ -136,7 +136,7 @@ impl Vm {
     /// 把 errors 可迭代值收集为新数组（IterableToList）。不可迭代抛 TypeError。
     fn aggregate_errors_to_list(&mut self, errors: JsValue) -> Result<JsValue, JsValue> {
         let array_proto = JsValue::from_js_object(self.session.builtin_world().array_proto.as_ptr() as *mut JsObject);
-        let ptr = self.alloc_object(JsObject::new_array(EMPTY_SHAPE_ID, array_proto, 0, self.epoch.bump()));
+        let ptr = self.alloc_object(JsObject::new_array(EMPTY_SHAPE_ID, array_proto, 0));
         let list = JsValue::from_js_object(ptr);
         let mut index = 0usize;
         oxide_builtins::iterator::iterate_elements(self, errors, |_vm, elem| {
@@ -152,7 +152,7 @@ impl Vm {
     /// 建普通数组对象并依次写入元素（Promise.try 转发实参的承载）。
     fn make_plain_array(&mut self, elements: Vec<JsValue>) -> JsValue {
         let array_proto = JsValue::from_js_object(self.session.builtin_world().array_proto.as_ptr() as *mut JsObject);
-        let ptr = self.alloc_object(JsObject::new_array(EMPTY_SHAPE_ID, array_proto, 0, self.epoch.bump()));
+        let ptr = self.alloc_object(JsObject::new_array(EMPTY_SHAPE_ID, array_proto, 0));
         // SAFETY: ptr 由 alloc_object 新建，返回非空 arena 指针；元素写入不搬移对象。
         let obj = unsafe { &mut *ptr };
         for (i, elem) in elements.into_iter().enumerate() {
@@ -482,7 +482,7 @@ fn perform_promise_combine(
         JsValue::undefined()
     } else {
         let array_proto = JsValue::from_js_object(vm.session.builtin_world().array_proto.as_ptr() as *mut JsObject);
-        let ptr = vm.alloc_object(JsObject::new_array(EMPTY_SHAPE_ID, array_proto, 0, vm.epoch.bump()));
+        let ptr = vm.alloc_object(JsObject::new_array(EMPTY_SHAPE_ID, array_proto, 0));
         JsValue::from_js_object(ptr)
     };
     let record = vm.make_agg_record(values, resolve, reject);

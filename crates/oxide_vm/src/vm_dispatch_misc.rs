@@ -1201,7 +1201,7 @@ impl Vm {
         // 时对象地址稳定，缓存指针不失效——分配档不同则首次写入触发搬移，
         // 缓存旧指针与新实例分叉，同一 site 两次取值将返回不同对象。
         let mut alloc_session_array = |n: usize| {
-            let clone = JsObject::new_array(oxide_kernel::shape_forge::EMPTY_SHAPE_ID, proto_val, n, self.epoch.bump());
+            let clone = JsObject::new_array(oxide_kernel::shape_forge::EMPTY_SHAPE_ID, proto_val, n);
             self.alloc_session_object(clone)
         };
         let cooked = alloc_session_array(n);

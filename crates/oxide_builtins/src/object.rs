@@ -275,12 +275,7 @@ pub fn object_get_own_property_symbols<H: VmHost>(vm: &mut H, args: &[u8]) -> Na
 
     let n = symbols.len();
     let array_proto = vm.session().builtin_world().array_proto.as_ptr() as *mut JsObject;
-    let arr = vm.alloc_object(JsObject::new_array(
-        EMPTY_SHAPE_ID,
-        JsValue::from_js_object(array_proto),
-        n,
-        vm.epoch().bump(),
-    ));
+    let arr = vm.alloc_object(JsObject::new_array(EMPTY_SHAPE_ID, JsValue::from_js_object(array_proto), n));
     for (i, v) in symbols.iter().enumerate() {
         unsafe {
             (*arr).set_prop_at(i, *v);
@@ -610,12 +605,7 @@ pub fn object_keys<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     }
     let n = owned_keys.len();
     let array_proto = vm.session().builtin_world().array_proto.as_ptr() as *mut JsObject;
-    let arr = vm.alloc_object(JsObject::new_array(
-        EMPTY_SHAPE_ID,
-        JsValue::from_js_object(array_proto),
-        n,
-        vm.epoch().bump(),
-    ));
+    let arr = vm.alloc_object(JsObject::new_array(EMPTY_SHAPE_ID, JsValue::from_js_object(array_proto), n));
     for (i, (si, _offset)) in owned_keys.iter().enumerate() {
         let key_val = key_si_to_js_value(vm, *si);
         unsafe {
@@ -1522,12 +1512,7 @@ pub fn object_get_own_property_names<H: VmHost>(vm: &mut H, args: &[u8]) -> Nati
     let keys = walk_own_keys(vm, obj);
     let n = keys.len();
     let array_proto = vm.session().builtin_world().array_proto.as_ptr() as *mut JsObject;
-    let arr = vm.alloc_object(JsObject::new_array(
-        EMPTY_SHAPE_ID,
-        JsValue::from_js_object(array_proto),
-        n,
-        vm.epoch().bump(),
-    ));
+    let arr = vm.alloc_object(JsObject::new_array(EMPTY_SHAPE_ID, JsValue::from_js_object(array_proto), n));
     for (i, (si, _)) in keys.iter().enumerate() {
         let key_val = key_si_to_js_value(vm, *si);
         unsafe {
@@ -2158,12 +2143,7 @@ pub fn object_entries<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         .collect();
     let n = owned_keys.len();
     let array_proto = vm.session().builtin_world().array_proto.as_ptr() as *mut JsObject;
-    let arr = vm.alloc_object(JsObject::new_array(
-        EMPTY_SHAPE_ID,
-        JsValue::from_js_object(array_proto),
-        n,
-        vm.epoch().bump(),
-    ));
+    let arr = vm.alloc_object(JsObject::new_array(EMPTY_SHAPE_ID, JsValue::from_js_object(array_proto), n));
     let obj_val = JsValue::from_js_object(obj_ptr);
     for (i, (si, offset)) in owned_keys.iter().enumerate() {
         let key_val = key_si_to_js_value(vm, *si);
@@ -2172,12 +2152,7 @@ pub fn object_entries<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
             Ok(value) => value,
             Err(exc) => return NativeResult::Err(exc),
         };
-        let pair = vm.alloc_object(JsObject::new_array(
-            EMPTY_SHAPE_ID,
-            JsValue::from_js_object(array_proto),
-            2,
-            vm.epoch().bump(),
-        ));
+        let pair = vm.alloc_object(JsObject::new_array(EMPTY_SHAPE_ID, JsValue::from_js_object(array_proto), 2));
         unsafe {
             (*pair).set_prop_at(0, key_val);
             (*pair).set_prop_at(1, val);
@@ -2310,12 +2285,7 @@ pub fn object_group_by<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
             existing
         } else {
             let arr_proto = vm.session().builtin_world().array_proto.as_ptr() as *mut JsObject;
-            let arr = vm.alloc_object(JsObject::new_array(
-                EMPTY_SHAPE_ID,
-                JsValue::from_js_object(arr_proto),
-                0,
-                vm.epoch().bump(),
-            ));
+            let arr = vm.alloc_object(JsObject::new_array(EMPTY_SHAPE_ID, JsValue::from_js_object(arr_proto), 0));
             let new_arr_val = JsValue::from_js_object(arr);
             let result_ref_mut = unsafe { &mut *result };
             // 写入失败按 builtin 边界传播（result 为 fresh 对象实际不可达，不得静默吞）。
@@ -2348,12 +2318,7 @@ pub fn object_values<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         .collect();
     let n = owned_keys.len();
     let array_proto = vm.session().builtin_world().array_proto.as_ptr() as *mut JsObject;
-    let arr = vm.alloc_object(JsObject::new_array(
-        EMPTY_SHAPE_ID,
-        JsValue::from_js_object(array_proto),
-        n,
-        vm.epoch().bump(),
-    ));
+    let arr = vm.alloc_object(JsObject::new_array(EMPTY_SHAPE_ID, JsValue::from_js_object(array_proto), n));
     let obj_val = JsValue::from_js_object(obj_ptr);
     for (i, (si, offset)) in owned_keys.iter().enumerate() {
         // EnumerableOwnProperties 的 "value"：accessor 触发 getter，异常传播原值。

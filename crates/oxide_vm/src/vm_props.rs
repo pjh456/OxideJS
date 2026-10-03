@@ -1682,12 +1682,8 @@ mod tests {
 
     fn new_array_val(vm: &mut Vm, n: u32) -> JsValue {
         let proto = vm.session.builtin_world().array_proto.as_ptr() as *mut JsObject;
-        let arr = JsObject::new_array(
-            oxide_kernel::shape_forge::EMPTY_SHAPE_ID,
-            JsValue::from_js_object(proto),
-            n as usize,
-            vm.epoch.bump(),
-        );
+        let arr =
+            JsObject::new_array(oxide_kernel::shape_forge::EMPTY_SHAPE_ID, JsValue::from_js_object(proto), n as usize);
         JsValue::object(vm.alloc_object(arr) as *mut u8)
     }
 
