@@ -106,11 +106,11 @@ impl MapInner {
 ///
 /// # 调用方维护的安全性契约
 ///
-/// 指针在 Map `JsObject` 存活期间有效：`JsObject` 分配于当前 `Epoch` arena，
-/// native builtin 执行期间不会调用 `Epoch::reset()`。持有分配的
-/// `Box<MapInner>` 由 `new_map_inner()` 创建，进程退出前不释放（生命周期与
-/// epoch 绑定，属有意为之）。native 调用为单线程，同一 Map 对象同时至多
-/// 存在一个活 `*mut` 别名。
+/// 指针在 Map `JsObject` 存活期间有效：`JsObject` 经统一入口分配，session GC
+/// 回收界定其生命周期，native builtin 执行期间对象被根保持、不被回收。
+/// 持有分配的 `Box<MapInner>` 由 `new_map_inner()` 创建，进程退出前不释放
+/// （属有意为之）。native 调用为单线程，同一 Map 对象同时至多存在一个活
+/// `*mut` 别名。
 fn get_map_inner<H: VmHost>(vm: &mut H, this_val: JsValue) -> Result<*mut MapInner, JsValue> {
     if !this_val.is_object() {
         return Err(crate::error::create_type_error(vm, "called on non-Map object"));
@@ -119,8 +119,8 @@ fn get_map_inner<H: VmHost>(vm: &mut H, this_val: JsValue) -> Result<*mut MapInn
     if map_ptr.is_null() {
         return Err(crate::error::create_type_error(vm, "Map internal state invalid"));
     }
-    // SAFETY: map_ptr 是当前 Epoch bump 分配的 JsObject 的非空、对齐指针；
-    // native 执行期间 epoch 不重置，指针在本调用内有效。
+    // SAFETY: map_ptr 是 JsObject 的非空、对齐指针；对象在 native 执行期间
+    // 被根保持、不被回收，指针在本调用内有效。
     let map_obj = unsafe { &*map_ptr };
     if !map_obj.is_map() {
         return Err(crate::error::create_type_error(

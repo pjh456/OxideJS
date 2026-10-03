@@ -3,7 +3,6 @@
 use std::sync::Arc;
 
 use oxide_kernel::kernel::{KernelCore, KernelSession};
-use oxide_types::mem::Epoch;
 use oxide_types::object::{Cell, JsObject, PropAttributes};
 use oxide_types::value::JsValue;
 
@@ -45,9 +44,6 @@ impl oxide_runtime_api::VmHost for Vm {
     }
     fn session(&self) -> &KernelSession {
         self.session()
-    }
-    fn epoch(&self) -> &Epoch {
-        self.epoch()
     }
     fn pc(&self) -> usize {
         self.pc

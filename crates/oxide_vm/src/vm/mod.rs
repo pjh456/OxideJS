@@ -21,7 +21,7 @@ use crate::vm_debug;
 use crate::vm_state::{GcState, IterState, ProfilingState, SymbolState};
 use oxide_kernel::kernel::{KernelCore, KernelSession};
 use oxide_types::error::JsErrorKind;
-use oxide_types::mem::{Epoch, P};
+use oxide_types::mem::P;
 use oxide_types::object::{Cell, JsObject, NativeFnPtr};
 use oxide_types::private_key::INT_KEY_COUNT;
 use oxide_types::value::JsValue;
@@ -179,7 +179,6 @@ pub struct Vm {
     /// KernelCore 不重建），属性 get/set 热路径免每次 intern（hash64 + DashMap +
     /// RwLock 读锁）。
     pub(crate) length_si: u32,
-    pub epoch: Epoch,
     pub object_prototype: P<JsObject>,
     /// `%GeneratorPrototype%`：生成器实例的原型（next/return/throw 方法挂此）。
     pub generator_proto: P<JsObject>,
@@ -454,11 +453,6 @@ impl Vm {
     /// None 清除。
     pub fn set_pc_watch(&mut self, path: Option<PathBuf>) {
         self.pc_watch = path;
-    }
-
-    /// 只读访问 VM 的 epoch arena。
-    pub fn epoch(&self) -> &Epoch {
-        &self.epoch
     }
 
     /// 若 `val` 是字符串，返回其内容的 `String` 副本；否则返回 `None`。

@@ -3,7 +3,6 @@
 use std::sync::Arc;
 
 use oxide_kernel::kernel::{KernelCore, KernelSession};
-use oxide_types::mem::Epoch;
 use oxide_types::object::{Cell, JsObject, PropAttributes};
 use oxide_types::value::JsValue;
 
@@ -97,7 +96,6 @@ pub trait VmHost {
     // 内核访问器
     fn kernel_core(&self) -> &Arc<KernelCore>;
     fn session(&self) -> &KernelSession;
-    fn epoch(&self) -> &Epoch;
 
     // 属性解析
     fn property_key_si(&mut self, val: JsValue) -> u32;

@@ -11,7 +11,7 @@ use crate::vm_info;
 use crate::vm_state::{GcState, IterState, ProfilingState, SymbolState};
 use oxide_kernel::kernel::{KernelConfig, KernelCore, KernelSession};
 use oxide_kernel::shape_forge::EMPTY_SHAPE_ID;
-use oxide_types::mem::{Epoch, P};
+use oxide_types::mem::P;
 use oxide_types::object::{JsObject, JsString, PropAttributes};
 use oxide_types::value::JsValue;
 
@@ -55,7 +55,6 @@ impl Vm {
             kernel_core: core,
             session,
             length_si,
-            epoch: Epoch::new(),
             object_prototype: obj_proto,
             generator_proto: P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
             generator_function_proto: P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
@@ -189,7 +188,6 @@ impl Vm {
             kernel_core: core,
             session,
             length_si,
-            epoch: Epoch::new(),
             object_prototype: obj_proto,
             generator_proto: P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
             generator_function_proto: P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),

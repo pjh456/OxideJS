@@ -54,7 +54,8 @@ pub fn require_dispose_capability<H: VmHost>(
     if obj_ptr.is_null() {
         return Err(crate::error::create_type_error(vm, "DisposableStack internal state invalid"));
     }
-    // SAFETY: obj_ptr 是当前 epoch 分配的 JsObject 非空指针；native 执行期间 epoch 不重置。
+    // SAFETY: obj_ptr 是 JsObject 的非空、对齐指针；对象在 native 执行期间
+    // 被根保持、不被回收，指针在本调用内有效。
     let obj = unsafe { &*obj_ptr };
     if obj.type_tag != type_tag {
         return Err(crate::error::create_type_error(
