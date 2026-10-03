@@ -555,11 +555,6 @@ impl Vm {
         self.active_reg_limit = 0;
     }
 
-    /// 逃逸写屏障：写向全局/session 目标的对象值原样直通，不克隆。
-    pub(crate) fn promote_if_needed_for_write_ptr(&mut self, _target_ptr: *mut JsObject, value: JsValue) -> JsValue {
-        value
-    }
-
     /// 分配一个可被 session GC 回收的字符串 `JsValue`（session-heap 字符串）。
     pub fn new_string(&mut self, s: &str) -> JsValue {
         self.new_string_owned(s.to_string())
@@ -719,8 +714,8 @@ impl Vm {
             obj.set_captured_this(self.regs[254]);
         }
         // 函数对象直接 session 分配：寿命从调用级延至 session 级（session GC
-        // mark/sweep 回收）。若按 epoch 分配，写入全局等逃逸根时 promote 屏障会
-        // 深克隆进 session，全局属性与局部槽指针分裂、严格相等恒 false。
+        // mark/sweep 回收），写入全局等逃逸根时地址稳定，全局属性与局部槽
+        // 指向同一对象，严格相等保持。
         let obj_ptr = self.alloc_session_object(obj);
         let func_val = JsValue::object(obj_ptr as *mut u8);
 

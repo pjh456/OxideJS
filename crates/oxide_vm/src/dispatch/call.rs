@@ -717,7 +717,6 @@ impl Vm {
             self.raise_error_kind("TypeError", "SET_HOME_OBJECT expects function and object")?;
             return Ok(true);
         }
-        let home_val = self.promote_if_needed_for_write_ptr(func_val.as_js_object_ptr(), home_val);
         let func_obj = unsafe { &mut *func_val.as_js_object_ptr() };
         if !func_obj.is_function() {
             self.raise_error_kind("TypeError", "SET_HOME_OBJECT target is not a function")?;

@@ -326,7 +326,6 @@ impl Vm {
     pub(crate) fn ordinary_set(
         &mut self, obj: &mut JsObject, prop_name_si: u32, val: JsValue, receiver: JsValue, strict: bool,
     ) -> Result<(), String> {
-        let val = self.promote_if_needed_for_write_ptr(obj as *mut JsObject, val);
         self.ordinary_set_inner(obj, prop_name_si, val, receiver, false, strict, false)
     }
 
@@ -336,11 +335,10 @@ impl Vm {
     pub(crate) fn ordinary_set_builtin(
         &mut self, obj: &mut JsObject, prop_name_si: u32, val: JsValue, receiver: JsValue, strict: bool,
     ) -> Result<(), String> {
-        let val = self.promote_if_needed_for_write_ptr(obj as *mut JsObject, val);
         self.ordinary_set_inner(obj, prop_name_si, val, receiver, false, strict, true)
     }
 
-    /// 分发期入口：调用方（dispatch_set_prop 等）已对值做过 promote。
+    /// 分发期入口：值直接落位。
     pub(crate) fn ordinary_set_dispatch(
         &mut self, obj: &mut JsObject, prop_name_si: u32, val: JsValue, receiver: JsValue, strict: bool,
     ) -> Result<(), String> {
@@ -792,7 +790,6 @@ impl Vm {
         &mut self, obj: &mut JsObject, prop_name_si: u32, val: JsValue, receiver: JsValue, ext_pc: usize,
     ) -> Result<(), String> {
         ic_trace!("set_member_prop: shape_id={} prop_name_si={}", obj.shape_id(), prop_name_si);
-        let val = self.promote_if_needed_for_write_ptr(obj as *mut JsObject, val);
         // 写方即当前执行函数（赋值语义），strict/sloppy 判定取当前上下文。
         let strict = self.current_strict();
         if obj.has_prop_meta() {
@@ -1008,7 +1005,6 @@ impl Vm {
         &mut self, obj: &mut JsObject, prop_name_si: u32, val: JsValue, attributes: PropAttributes,
     ) -> Result<(), String> {
         vm_trace!("define_data_property: shape={} prop_si={}", obj.shape_id(), prop_name_si);
-        let val = self.promote_if_needed_for_write_ptr(obj as *mut JsObject, val);
         // TypedArray 统一数值键门：界内规范键走元素定义（界内写 buffer）；
         // 规范越界键（含 detach：live 长 0）拒绝定义；非规范数值串
         // （"+1"/"1.0" 等，round-trip 不成）与 symbol 键落命名属性路径。
@@ -1129,9 +1125,6 @@ impl Vm {
         &mut self, obj: &mut JsObject, prop_name_si: u32, get: JsValue, set: JsValue, attributes: PropAttributes,
     ) -> Result<(), String> {
         vm_trace!("define_accessor_property: shape={} prop_si={}", obj.shape_id(), prop_name_si);
-        let target_ptr = obj as *mut JsObject;
-        let get = self.promote_if_needed_for_write_ptr(target_ptr, get);
-        let set = self.promote_if_needed_for_write_ptr(target_ptr, set);
         // TA 数值索引臂：界内 / 数字无效索引不接受 accessor（false）；非规范数字
         // 串 / symbol 键落真实 accessor 属性。
         if obj.is_typed_array_obj() {

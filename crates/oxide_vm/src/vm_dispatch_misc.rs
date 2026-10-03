@@ -1080,8 +1080,7 @@ impl Vm {
         ));
         let rest = unsafe { &mut *rest_ptr };
         for (si, val) in assignments {
-            let promoted = self.promote_if_needed_for_write_ptr(rest_ptr, val);
-            self.set_or_create_prop_value(rest, si, promoted);
+            self.set_or_create_prop_value(rest, si, val);
         }
         self.regs[rd] = JsValue::from_js_object(rest_ptr);
         Ok(())
@@ -1156,8 +1155,7 @@ impl Vm {
         // 提交：覆盖目标已有同名属性（从左到右求值，后展开者胜）。
         let target = unsafe { &mut *target_val.as_js_object_ptr() };
         for (si, val) in assignments {
-            let promoted = self.promote_if_needed_for_write_ptr(target, val);
-            self.set_or_create_prop_value(target, si, promoted);
+            self.set_or_create_prop_value(target, si, val);
         }
         Ok(())
     }
@@ -1199,9 +1197,9 @@ impl Vm {
 
         let proto_ptr = self.session.builtin_world().array_proto.as_ptr() as *mut JsObject;
         let proto_val = JsValue::from_js_object(proto_ptr);
-        // 模板对象直接分配为 session 对象：跨 epoch 写入（存进 global/数组）时
-        // 免 promote 搬移——若按 epoch 分配，首次写入 session 根会把对象搬到新
-        // 地址，缓存中的旧指针与新实例分叉，同一 site 两次取值将返回不同对象。
+        // 模板对象直接分配为 session 对象：写入 session 根（存进 global/数组）
+        // 时对象地址稳定，缓存指针不失效——分配档不同则首次写入触发搬移，
+        // 缓存旧指针与新实例分叉，同一 site 两次取值将返回不同对象。
         let mut alloc_session_array = |n: usize| {
             let clone = JsObject::new_array(oxide_kernel::shape_forge::EMPTY_SHAPE_ID, proto_val, n, self.epoch.bump());
             self.alloc_session_object(clone)
@@ -1215,7 +1213,7 @@ impl Vm {
         let elem_attrs = PropAttributes::new(false, true, false);
         for i in 0..n {
             let (c_val, r_val) = {
-                // immutables 借用限于本块：promote 需 &mut self，先取值再放行借用。
+                // immutables 借用限于本块：先取出本段两值，再放行借用。
                 let imm = self.immutables();
                 let c_val = if cooked_words[i] & 0x8000_0000 != 0 {
                     JsValue::undefined()
@@ -1225,13 +1223,11 @@ impl Vm {
                 let r_val = imm.get(raw_idxs[i] as usize).copied().unwrap_or(JsValue::undefined());
                 (c_val, r_val)
             };
-            let c_promoted = self.promote_if_needed_for_write_ptr(cooked, c_val);
-            let r_promoted = self.promote_if_needed_for_write_ptr(raw, r_val);
             // SAFETY: cooked/raw 为本函数刚分配的 epoch 对象，借用仅在本循环内消费。
             unsafe {
-                (*cooked).set_prop_at(i, c_promoted);
+                (*cooked).set_prop_at(i, c_val);
                 (*cooked).set_data_meta(i, elem_attrs);
-                (*raw).set_prop_at(i, r_promoted);
+                (*raw).set_prop_at(i, r_val);
                 (*raw).set_data_meta(i, elem_attrs);
             }
         }

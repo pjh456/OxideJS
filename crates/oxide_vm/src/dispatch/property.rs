@@ -228,7 +228,7 @@ impl Vm {
                         return self.raise_type_error("private field has no setter");
                     }
                     let setter = meta.set;
-                    let value = self.promote_if_needed_for_write_ptr(obj_ptr, self.regs[a]);
+                    let value = self.regs[a];
                     return self.call_or_push_setter(setter, obj_val, value, true);
                 }
                 // 私有方法槽不可写（init 时打标记）。
@@ -237,7 +237,7 @@ impl Vm {
                         .raise_type_error("Cannot write private member to an object whose class did not declare it");
                 }
             }
-            let value = self.promote_if_needed_for_write_ptr(obj_ptr, self.regs[a]);
+            let value = self.regs[a];
             let obj = unsafe { &mut *obj_ptr };
             obj.set_prop_shape(pos, value);
             return Ok(());
@@ -257,7 +257,7 @@ impl Vm {
                     return self.raise_type_error("private field has no setter");
                 }
                 let setter = meta.set;
-                let value = self.promote_if_needed_for_write_ptr(obj_ptr, self.regs[a]);
+                let value = self.regs[a];
                 return self.call_or_push_setter(setter, obj_val, value, true);
             }
             // 私有方法槽不可写（init 时打标记）。
@@ -266,7 +266,7 @@ impl Vm {
                     .raise_type_error("Cannot write private member to an object whose class did not declare it");
             }
         }
-        let value = self.promote_if_needed_for_write_ptr(home_ptr, self.regs[a]);
+        let value = self.regs[a];
         let home = unsafe { &mut *home_ptr };
         home.set_prop_shape(pos, value);
         Ok(())
@@ -281,7 +281,7 @@ impl Vm {
         let private_key = self.private_key_from_reg(b);
         let is_method = self.bytecode[self.pc] != 0;
         self.pc += 1;
-        let value = self.promote_if_needed_for_write_ptr(obj_ptr, self.regs[a]);
+        let value = self.regs[a];
         let obj = unsafe { &mut *obj_ptr };
         if self
             .kernel_core
@@ -453,7 +453,7 @@ impl Vm {
         // read_ic_slot0 先消费全部扩展字，命中路径无需解析键。
         let (cached_shape_id, cached_slot, cached_depth) = ic_helper::read_ic_slot0(&self.bytecode, &mut self.pc);
         let ic_pc = self.pc;
-        let value = self.promote_if_needed_for_write_ptr(obj_ptr, self.regs[a]);
+        let value = self.regs[a];
         let receiver = self.regs[rd];
         let obj = unsafe { &mut *obj_ptr };
 
@@ -534,7 +534,7 @@ impl Vm {
         };
         let prop_name_si = self.property_key_si(self.regs[b])?;
         if self.kernel_core.perm_interner().lookup(prop_name_si) == Some("__proto__") {
-            let proto_value = self.promote_if_needed_for_write_ptr(obj_ptr, self.regs[a]);
+            let proto_value = self.regs[a];
             if self.is_object_prototype(obj_ptr) && !proto_value.is_null() {
                 self.raise_type_error("Object.prototype.__proto__ is immutable")?;
                 return Ok(());
@@ -543,25 +543,24 @@ impl Vm {
             obj.set_proto(proto_value).map_err(|e| e.to_string())?;
             return Ok(());
         }
-        let value = self.promote_if_needed_for_write_ptr(obj_ptr, self.regs[a]);
+        let value = self.regs[a];
         let obj = unsafe { &mut *obj_ptr };
         self.ordinary_set_dispatch(obj, prop_name_si, value, self.regs[rd], self.current_strict())?;
         Ok(())
     }
 
     /// 对象字面量批量构造的纯槽写：把值写入键序预建 shape 的 `slot` 槽。
-    /// 不做键解析/`__proto__` 拦截/promote 之外的任何形状变更——键与槽位由
+    /// 不做键解析、`__proto__` 拦截或任何形状变更——键与槽位由
     /// NEW_OBJECT 的键常量表一次性建好。
     ///
     /// # 边界与前提
     /// - `slot` 必须 < NEW_OBJECT 预分配的槽数（emit 保证 ≤255）。
-    /// - 值仍需 promote（对象值可能来自 session epoch 且目标是逃逸根）。
     fn dispatch_set_prop_batch(&mut self, rd: usize, a: usize, b: usize) -> Result<(), String> {
         vm_trace!("SET_PROP_BATCH rd={} slot={}", rd, b);
         let Some(obj_ptr) = self.checked_object_ptr(self.regs[rd], "Cannot create property on non-object")? else {
             return Ok(());
         };
-        let value = self.promote_if_needed_for_write_ptr(obj_ptr, self.regs[a]);
+        let value = self.regs[a];
         let obj = unsafe { &mut *obj_ptr };
         obj.set_prop_storage(b, value);
         Ok(())
@@ -619,9 +618,7 @@ impl Vm {
             if obj.is_array() && obj.array_elements_meta_vec().is_none() {
                 let idx = int_key_value(prop_name_si);
                 if idx < obj.array_prop_count {
-                    // promote 必须保留：obj 是 session 根、写入值可能是 epoch 对象，
-                    // 不 promote 下轮 GC 会悬垂。
-                    let value = self.promote_if_needed_for_write_ptr(obj_ptr, self.regs[b]);
+                    let value = self.regs[b];
                     let obj = unsafe { &mut *obj_ptr };
                     obj.set_prop_storage(idx as usize, value);
                     return Ok(());
@@ -631,7 +628,7 @@ impl Vm {
         // 整数键恒不可能等于 "__proto__"（字符串 intern id 远小于整数键区间），
         // 短路免去每次 set 的 RwLock 查询。
         if !is_int_key(prop_name_si) && self.kernel_core.perm_interner().lookup(prop_name_si) == Some("__proto__") {
-            let proto_value = self.promote_if_needed_for_write_ptr(obj_ptr, self.regs[b]);
+            let proto_value = self.regs[b];
             if self.is_object_prototype(obj_ptr) && !proto_value.is_null() {
                 self.raise_type_error("Object.prototype.__proto__ is immutable")?;
                 return Ok(());
@@ -640,7 +637,7 @@ impl Vm {
             obj.set_proto(proto_value).map_err(|e| e.to_string())?;
             return Ok(());
         }
-        let value = self.promote_if_needed_for_write_ptr(obj_ptr, self.regs[b]);
+        let value = self.regs[b];
         let obj = unsafe { &mut *obj_ptr };
         self.ordinary_set_dispatch(obj, prop_name_si, value, self.regs[rd], self.current_strict())?;
         Ok(())
@@ -658,7 +655,7 @@ impl Vm {
         } else {
             0
         };
-        let value = self.promote_if_needed_for_write_ptr(obj_ptr, self.regs[b]);
+        let value = self.regs[b];
         let obj = unsafe { &mut *obj_ptr };
         // 有属性 meta（freeze/seal 逐属性写 meta 后恒 true，含 accessor 元素/描述符
         // 元素）：回落 ordinary_set 走完整 writable/accessor/extensible 检查，防止
