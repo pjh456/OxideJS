@@ -80,6 +80,7 @@ impl Vm {
             f(entry.iterator);
             f(entry.last_result);
             f(entry.fast_value);
+            f(entry.fast_inner);
         }
         // 微任务队列中的处理器/能力/值都是 GC 根。
         for job in &self.job_queue {

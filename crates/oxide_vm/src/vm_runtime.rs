@@ -943,6 +943,8 @@ mod tests {
             is_async: false,
             fast: None,
             fast_value: JsValue::undefined(),
+            fast_inner: JsValue::undefined(),
+            fast_cursor: 0,
         });
         vm.spill_stack.push(JsValue::float(10.0));
         vm.save_stack.push(JsValue::float(11.0));

@@ -155,10 +155,16 @@ pub(crate) struct ForOfEntry {
     /// 不得同步调用其 return()。
     pub(crate) is_async: bool,
     /// 内置包装器快路径：迭代器为 Array/String/TA/Map/Set 内置包装器时非 None，
-    /// DONE/NEXT 直步不经 native 调用；kind 失配清标志回落慢路径。
+    /// DONE/NEXT 直步不经 native 调用。
     pub(crate) fast: Option<BuiltinIterKind>,
     /// 快路径本迭代产出的元素值（仅 DONE→NEXT 之间有效，不跨迭代）。
     pub(crate) fast_value: JsValue,
+    /// 快路径 inner 快照：init 期读 `__inner__` 槽后固化，步内不重读槽。
+    /// 是 GC 边（session 对象指针），须随 fast_value 接 mark。
+    pub(crate) fast_inner: JsValue,
+    /// 快路径游标：步内推进的迭代下标，替代每步读写 `__index__` 槽。
+    /// Map/Set 族耗尽哨兵为 i32::MAX（口径与慢路径槽一致）。
+    pub(crate) fast_cursor: usize,
 }
 
 /// for-in / for-of 的活跃迭代器状态。
@@ -203,14 +209,19 @@ impl IterState {
 
     /// 压入新迭代器条目：`last_result` 初始为 undefined（尚未执行任何 next()）。
     /// `is_async` 标记 for-await-of 的异步迭代器（异步逃出关闭走独立机制）；
-    /// `fast` 为内置包装器种类（None = 慢路径）。
-    pub(crate) fn push_for_of(&mut self, iterator: JsValue, is_async: bool, fast: Option<BuiltinIterKind>) {
+    /// `fast` 为内置包装器种类（None = 慢路径），`fast_inner` 为快路径 inner 快照
+    /// （慢路径传 undefined，游标恒 0）。
+    pub(crate) fn push_for_of(
+        &mut self, iterator: JsValue, is_async: bool, fast: Option<BuiltinIterKind>, fast_inner: JsValue,
+    ) {
         self.for_of_iters.push(ForOfEntry {
             iterator,
             last_result: JsValue::undefined(),
             is_async,
             fast,
             fast_value: JsValue::undefined(),
+            fast_inner,
+            fast_cursor: 0,
         });
     }
 

@@ -638,8 +638,12 @@ impl Vm {
         match oxide_builtins::iterator::make_iterator_for_value(self, iterable) {
             Ok(iterator) => {
                 // 内置包装器检测：Array/String/TA/Map/Set 走快路径（异步恒慢）。
-                let kind = oxide_builtins::iterator::builtin_iter_kind(self, iterator);
-                self.iters.push_for_of(iterator, false, kind);
+                // init 期把 inner 快照入条目，步内不重读 `__inner__` 槽。
+                let (kind, inner) = match oxide_builtins::iterator::builtin_iter_kind(self, iterator) {
+                    Some((k, i)) => (Some(k), i),
+                    None => (None, JsValue::undefined()),
+                };
+                self.iters.push_for_of(iterator, false, kind, inner);
                 Ok(())
             }
             Err(err) => {
@@ -657,7 +661,8 @@ impl Vm {
         let iterable = self.regs[a];
         match crate::async_from_sync::make_async_iterator(self, iterable) {
             Ok(iterator) => {
-                self.iters.push_for_of(iterator, true, None);
+                // for-await-of 恒慢路径：无快路径快照，inner 传 undefined。
+                self.iters.push_for_of(iterator, true, None, JsValue::undefined());
                 Ok(())
             }
             Err(err) => {
@@ -770,25 +775,31 @@ impl Vm {
         self.last_uncaught_value = None;
 
         // 快路径：内置包装器（Array/String/TA/Map/Set）直步，跳过 native 调用帧、
-        // 结果对象分配与 done/value 两次读；kind 失配清标志，本迭代回落慢路径。
-        let fast_kind = self.iters.for_of_iters.last().and_then(|e| e.fast);
-        if let Some(kind) = fast_kind {
-            // SAFETY: iterator 刚判定为对象。
-            let iter_obj = unsafe { &mut *iterator.as_js_object_ptr() };
-            let step = oxide_builtins::iterator::builtin_iter_fast_step(self, iter_obj, kind);
-            // 元素 getter / __inner__ 访问器抛出：深度 0 的 raise_call_error 已就地
-            // unwind（跳转 catch），条目已弹出、异常值已入异常通道——直接返回，
-            // 派发循环自 catch 点续行，不得再触碰迭代器栈。
-            if !self.iters.for_of_iters.last().is_some_and(|e| e.iterator == iterator) {
+        // 结果对象分配与 done/value 两次读；inner 与游标取条目快照，步内不重跑槽协议。
+        if self.iters.for_of_iters.last().is_some_and(|e| e.fast.is_some()) {
+            // inner 与游标为 Copy 值：先拷出释放借用，再做步进核心的可变调用。
+            let (inner, cursor) = {
+                let e = self.iters.for_of_iters.last().unwrap();
+                (e.fast_inner, e.fast_cursor)
+            };
+            let stack_len = self.iters.for_of_iters.len();
+            let step = oxide_builtins::iterator::builtin_iter_fast_step(self, inner, cursor);
+            // 元素 getter / 访问器抛出：深度 0 的 raise_call_error 已就地 unwind
+            // （跳转 catch），条目已弹出、异常值已入异常通道——直接返回，派发循环
+            // 自 catch 点续行，不得再触碰迭代器栈。
+            // 判据须含栈深度：同迭代器两层嵌套时栈顶被外层条目顶替，仅凭 iterator
+            // 同一性会误判通过，须以步前深度不变作锚。
+            if self.iters.for_of_iters.len() != stack_len
+                || !self.iters.for_of_iters.last().is_some_and(|e| e.iterator == iterator)
+            {
                 return Ok(());
             }
             match step {
-                Ok(Some((value, done))) => {
-                    self.iters.for_of_iters.last_mut().unwrap().fast_value = value;
+                Ok((value, done, next_cursor)) => {
+                    let entry = self.iters.for_of_iters.last_mut().unwrap();
+                    entry.fast_value = value;
+                    entry.fast_cursor = next_cursor;
                     self.regs[rd] = JsValue::bool(!done);
-                }
-                Ok(None) => {
-                    self.iters.for_of_iters.last_mut().unwrap().fast = None;
                 }
                 Err(exc) => return self.throw_for_of_error_value(exc),
             }
@@ -1283,6 +1294,8 @@ mod tests {
             is_async: false,
             fast: None,
             fast_value: JsValue::undefined(),
+            fast_inner: JsValue::undefined(),
+            fast_cursor: 0,
         });
 
         vm.run(&Arc::new(module))

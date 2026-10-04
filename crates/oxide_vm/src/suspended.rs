@@ -208,6 +208,7 @@ impl SuspendedFrame {
             f(entry.iterator);
             f(entry.last_result);
             f(entry.fast_value);
+            f(entry.fast_inner);
         }
         if let Some(it) = self.delegated_iterator {
             f(it);
