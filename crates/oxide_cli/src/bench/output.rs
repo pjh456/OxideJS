@@ -23,6 +23,17 @@ const MEMORY_BENCH_NOTES: &str = "\n内存基准用例（mem_*）：\n
 再克隆一份（object_graph 见留存锚测试）。
 ";
 
+/// A/B 判据口径说明，随表格尾部输出。
+const BENCH_JUDGMENT_NOTES: &str = "\nA/B 判据口径：\n
+  主判（回归门）：确定性列——指令数、内存账目（session/peak/retained）、
+  垃圾回收计数、内联缓存计数——跨运行逐字节一致，零容差，双向任何变化即信号；
+  基线对比的退出码 1 只认这些列。
+  次判（墙时间）：wall/exec/compile/gc_collection 列在 ±5% 带内（固定核、
+  warmup 2、三轮中位）；基线对比容差 0.50，信息性，不影响退出码。
+  基线文件是陈旧锚（安静树单次快照），不是 A/B 仪器；A/B 是同机同宿主
+  严格交错对比。
+";
+
 /// 把结果格式化为对齐的文本表格（供终端打印）。
 ///
 /// `Sess B`/`Peak B`/`Ret B` 为 session 堆账目（字节）：执行期累计 / 峰值高水位 /
@@ -64,6 +75,7 @@ pub fn format_text_table(results: &[MetricCollection]) -> String {
         out.push('\n');
     }
     out.push_str(MEMORY_BENCH_NOTES);
+    out.push_str(BENCH_JUDGMENT_NOTES);
     out
 }
 

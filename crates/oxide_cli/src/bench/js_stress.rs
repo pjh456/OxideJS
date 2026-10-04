@@ -155,9 +155,27 @@ pub fn run_js_stress_bench(config: &BenchConfig, kernel: &Arc<KernelCore>, pool:
         eprintln!("Baseline saved to BENCHMARK_BASELINE.md + benchmark_baseline.json");
     } else {
         let regressions = compare_baseline(&results);
-        if !regressions.is_empty() {
+        // 信息性旗标（墙时型列）只打印供人工参考，不影响退出码。
+        let informational: Vec<_> = regressions.iter().filter(|r| r.informational).collect();
+        if !informational.is_empty() {
+            eprintln!("\nWall-time drift (informational, does not affect exit code):");
+            for r in &informational {
+                eprintln!(
+                    "  {}: {} baseline={} current={} ratio={:.2}% tolerance={:.0}%",
+                    r.test_name,
+                    r.metric,
+                    r.baseline,
+                    r.current,
+                    (r.ratio - 1.0) * 100.0,
+                    r.tolerance * 100.0,
+                );
+            }
+        }
+        // 回归门：确定性列等硬信号出现即退出码 1。
+        let hard: Vec<_> = regressions.iter().filter(|r| !r.informational).collect();
+        if !hard.is_empty() {
             eprintln!("\nRegression detected:");
-            for r in &regressions {
+            for r in &hard {
                 eprintln!(
                     "  {}: {} baseline={} current={} ratio={:.2}% tolerance={:.0}%",
                     r.test_name,
