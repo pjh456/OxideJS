@@ -7,7 +7,7 @@
     <img alt="Rust" src="https://img.shields.io/badge/Rust-1.80%2B-orange?style=for-the-badge&logo=rust" />
     <img alt="Platform" src="https://img.shields.io/badge/Platform-Linux%20%7C%20macOS%20%7C%20Windows%20And%20More-blue?style=for-the-badge" />
     <img alt="Engine" src="https://img.shields.io/badge/JS%20Engine-Non--Wrapper-success?style=for-the-badge" />
-    <img alt="test262" src="https://img.shields.io/badge/test262-83.34%25-purple?style=for-the-badge" />
+    <img alt="test262" src="https://img.shields.io/badge/test262-78.10%25-purple?style=for-the-badge" />
   </p>
 </div>
 
@@ -16,8 +16,6 @@
 OxideJS 是一个基于 Rust 的轻量级 JavaScript 执行引擎，擅长短时、高频、即时执行的脚本运行场景，主要面向 Agent 工具调用、脚本沙箱、数据转换流水线和嵌入式运行时。
 
 当前项目聚焦于实用 ECMAScript 子集，并通过 [test262](https://github.com/tc39/test262) 持续验证兼容性。我们的最终目标是提供一个小型、可检查、跨平台、启动成本可预测、benchmark 可复现的 JavaScript runtime。
-
-演示视频链接: https://pan.baidu.com/s/11gvBV5G_rLrNTS0sb863Qg?pwd=pr7n 提取码: pr7n
 
 ## 2. 特性概览
 
@@ -61,7 +59,7 @@ OxideJS 采用经典的 parse -> compile -> execute 流水线，同时使用 **�
         |----------------| |----------------| |----------------|
         |  registers     | |  registers     | |  registers     |
         |  call frames   | |  call frames   | |  call frames   |
-        |  Epoch Arena   | |  Epoch Arena   | |  Epoch Arena   |
+        |  session objects | |  session objects | |  session objects |
         |  JsString GC   | |  JsString GC   | |  JsString GC   |
         +-------+--------+ +-------+--------+ +-------+--------+
                 |                  |                  |
@@ -92,7 +90,7 @@ Per request pipeline:
 
 1. **Parser 前端**：通过 `oxide_parser` 将源码解析为 AST。
 2. **字节码编译器**：将 AST 降低为 OxideJS 字节码、常量池和寄存器布局。
-3. **寄存器式 VM**：`oxide_vm` 读取字节码并使用固定寄存器文件执行；每个 VM 持有自己的寄存器、调用栈、Epoch Arena 与 JsString GC。
+3. **寄存器式 VM**：`oxide_vm` 读取字节码并使用固定寄存器文件执行；每个 VM 持有自己的寄存器、调用栈与 session 对象空间（SessionGc 原地清扫回收）。
 4. **值系统**：`JsValue` 通过 NaN-boxing 紧凑表示 JavaScript 运行时值；`JsString` 由 VM 内的标记清扫 GC 管理。
 5. **对象模型**：对象通过 Shape ID 描述属性布局。
 6. **运行时 Kernel**：`KernelCore` 保存进程级永久共享状态 (`PermInterner` 等), `KernelSession` 保存可重建的会话级状态 (`BuiltinWorld` / global object); 多个 VM 通过 `Arc<KernelCore>` 引用同一份永久共享数据。
@@ -125,7 +123,8 @@ project-root/
 │   ├── oxide_cli/         # 命令行工具
 │   └── oxide_test262/     # test262 兼容性测试运行器
 └── tests/
-    └── test262/           # 本地 test262 测试套件
+    ├── test262/           # 本地 test262 测试套件
+    └── stress/            # bench 语料（oxide bench js 消费）
 ```
 
 ## 5. 构建与日常验证
@@ -159,17 +158,29 @@ cargo clippy --all-targets
 cargo run --release -p oxide_cli -- eval "1 + 2"
 ```
 
+`eval` 与 `run` 均支持 `--trace`：逐指令 trace，每条指令向 stderr 写一行 pc + opcode + 操作数。
+
 ### 执行文件
 
 ```bash
-cargo run --release -p oxide_cli -- run examples/demo.js
+cargo run --release -p oxide_cli -- run tests/stress/arith_ops.js
 ```
+
+`run` 支持 `--repeat N`（缺省 1）：同一文件连续执行 N 次，失败即终止并传播退出码。
 
 ### 打印编译后的字节码
 
 ```bash
 cargo run --release -p oxide_cli -- compile -e "1 + 2"
 ```
+
+### 性能基准（bench）
+
+```bash
+cargo run --release -p oxide_cli -- bench js
+```
+
+`bench` 是性能主入口，语料为 `tests/stress/`：`mode` 缺省 `js`，`--filter` 按用例名筛选，`--warmup` 缺省 2，`--iterations` 缺省 10，`--update-baseline` 将本次结果写回基线。
 
 ### 启动 REPL
 
@@ -211,12 +222,14 @@ runner 会输出：
 - 失败类别统计与 FAIL 清单（按测试文件路径）；
 - 按目录拆分的结果（取决于 runner 版本）。
 
+当前口径锚：全量 53598 文件通过率 78.10%（2026-10-03 全量跑，pass 41860 / fail 4313 / skip 7425）。
+
 兼容性数字属于开发过程指标。发布正式 benchmark 或兼容性结论前，应基于当前 checkout 的 test262 版本重新生成结果。
 
 ## 8. 主要使用的开源项目
 
 - [oxc](https://github.com/oxc-project/oxc) — JavaScript 源码解析，因为这不是我们的工作中心，所以没有自己构建该系统
-- [bumpalo](https://github.com/fitzgen/bumpalo) — Bump allocator，构成 `Epoch` arena 内存系统的底层分配器
+- [bumpalo](https://github.com/fitzgen/bumpalo) — Bump allocator，`oxide_types` 的 `Epoch` 封装体（run 内高频分配）与 bench 分配对比用例的底层分配器
 - [dashmap](https://github.com/xacrimon/dashmap) — 并发 HashMap，用于 `CodeForge`、`ShapeForge`、`PropForge` 跨 VM 缓存共享
 
 ## 9. License
