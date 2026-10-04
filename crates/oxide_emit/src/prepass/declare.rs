@@ -66,6 +66,39 @@ impl Emitter {
         }
     }
 
+    /// 递归预声明 var 解构 pattern 内的全部绑定名（数组/对象/默认值/rest 叶名），
+    /// 使解构声明的叶名进入函数/全局 var 预声明集合，入口实例化得以到达它们。
+    ///
+    /// # 边界与前提
+    /// - 叶名走 `predeclare_var_name` 漏斗，保留顶层内置名镜像槽特判，与单绑定
+    ///   名行为一致；同 scope 既有 var 同名时经 `declare_initialized` 幂等复用槽。
+    fn predeclare_var_pattern(&self, pattern: &BindingPattern, ctx: &mut CompileCtx) {
+        match pattern {
+            BindingPattern::BindingIdentifier(bi) => {
+                self.predeclare_var_name(bi.name.as_str(), ctx);
+            }
+            BindingPattern::ArrayPattern(ap) => {
+                for e in ap.elements.iter().flatten() {
+                    self.predeclare_var_pattern(e, ctx);
+                }
+                if let Some(rest) = &ap.rest {
+                    self.predeclare_var_pattern(&rest.argument, ctx);
+                }
+            }
+            BindingPattern::ObjectPattern(op) => {
+                for prop in &op.properties {
+                    self.predeclare_var_pattern(&prop.value, ctx);
+                }
+                if let Some(rest) = &op.rest {
+                    self.predeclare_var_pattern(&rest.argument, ctx);
+                }
+            }
+            BindingPattern::AssignmentPattern(ap) => {
+                self.predeclare_var_pattern(&ap.left, ctx);
+            }
+        }
+    }
+
     /// 预声明语句列表中的全部 `var` 绑定，使先发的提升函数声明能解析它们。
     /// 顶层 `var` 名在编译闭包捕获它的函数体时必须可见。
     pub(crate) fn predeclare_var_declarations(&self, statements: &[Statement], ctx: &mut CompileCtx) {
@@ -76,9 +109,7 @@ impl Emitter {
                         continue;
                     }
                     for d in &decl.declarations {
-                        if let oxide_parser::BindingPattern::BindingIdentifier(bi) = &d.id {
-                            self.predeclare_var_name(bi.name.as_str(), ctx);
-                        }
+                        self.predeclare_var_pattern(&d.id, ctx);
                     }
                 }
                 Statement::BlockStatement(bs) => self.predeclare_var_declarations(&bs.body, ctx),
@@ -98,9 +129,7 @@ impl Emitter {
                     if let Some(oxide_parser::ForStatementInit::VariableDeclaration(decl)) = &fs.init {
                         if matches!(decl.kind, VariableDeclarationKind::Var) {
                             for d in &decl.declarations {
-                                if let oxide_parser::BindingPattern::BindingIdentifier(bi) = &d.id {
-                                    self.predeclare_var_name(bi.name.as_str(), ctx);
-                                }
+                                self.predeclare_var_pattern(&d.id, ctx);
                             }
                         }
                     }
@@ -113,9 +142,7 @@ impl Emitter {
                     if let oxide_parser::ForStatementLeft::VariableDeclaration(decl) = &fi.left {
                         if matches!(decl.kind, VariableDeclarationKind::Var) {
                             for d in &decl.declarations {
-                                if let oxide_parser::BindingPattern::BindingIdentifier(bi) = &d.id {
-                                    self.predeclare_var_name(bi.name.as_str(), ctx);
-                                }
+                                self.predeclare_var_pattern(&d.id, ctx);
                             }
                         }
                     }
@@ -125,9 +152,7 @@ impl Emitter {
                     if let oxide_parser::ForStatementLeft::VariableDeclaration(decl) = &fo.left {
                         if matches!(decl.kind, VariableDeclarationKind::Var) {
                             for d in &decl.declarations {
-                                if let oxide_parser::BindingPattern::BindingIdentifier(bi) = &d.id {
-                                    self.predeclare_var_name(bi.name.as_str(), ctx);
-                                }
+                                self.predeclare_var_pattern(&d.id, ctx);
                             }
                         }
                     }
@@ -159,9 +184,7 @@ impl Emitter {
                             continue;
                         }
                         for d in &decl.declarations {
-                            if let oxide_parser::BindingPattern::BindingIdentifier(bi) = &d.id {
-                                self.predeclare_var_name(bi.name.as_str(), ctx);
-                            }
+                            self.predeclare_var_pattern(&d.id, ctx);
                         }
                     }
                 }
