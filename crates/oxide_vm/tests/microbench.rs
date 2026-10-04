@@ -16,9 +16,9 @@
 //! 构造面，基线 122.77 毫秒）——覆盖最高频热路径两面的两用例，按用例名固定，数值
 //! 随基线重锚漂移。微基准赢的候选须经锚点层同方向确认才采信，锚点持平则不采信。
 //!
-//! 测量语义：`run()` 不清 IC（IC 扩展字在模块字节码内跨 run 持久），同一模块连续
-//! 多 run 时 IC 从首个 run 起持续热态；预热 run 吸收 IC 学习 miss、分配器与代码
-//! 缓存预热，测量轮全部热态。
+//! 测量语义：每次 `run()` 从冷 IC 起步（宿主字节码的 IC 扩展字恒零，IC 写回只落
+//! Vm 的 COW 私有拷贝，跨 run 不持久），IC 学习 miss 成本每 run 起点重付；
+//! 预热 run 的作用是分配器、代码缓存与表代际预热，不是 IC 预热。
 //!
 //! 循环规模按「debug 全套件执行段 5 秒内」约束调参：debug 构建每指令税高（无内联、
 //! 分派 match 开销主导），各用例单轮 30 至 130 毫秒，十二用例合计约 4.7 秒。
@@ -49,8 +49,8 @@ const PROFILE: &str = "release";
 /// 全部用例共享同一 kernel：builtin world 只建一次，各用例 VM 经 with_kernel_core 直建。
 static SHARED_KERNEL: OnceLock<Arc<KernelCore>> = OnceLock::new();
 
-/// GC churn 用例专用 kernel（512KB 阈值，gc_mark_sweep bench 同款）：默认阈值过高，
-/// 循环规模内不触发 GC，测不到 sweep 面。
+/// GC churn 用例专用 kernel（64KB 阈值，gc_mark_sweep bench 同款）：阈值须低于单
+/// run 分配包络（约 108KB），否则循环规模内不触发收集，测不到 sweep 面。
 static CHURN_KERNEL: OnceLock<Arc<KernelCore>> = OnceLock::new();
 
 /// 串行化各用例测量段：cargo test 并发跑测试，多线程争核会污染计时。
@@ -64,7 +64,7 @@ fn churn_kernel() -> Arc<KernelCore> {
     CHURN_KERNEL
         .get_or_init(|| {
             let mut config = KernelConfig::minimal();
-            config.session_gc_threshold = 512 * 1024;
+            config.session_gc_threshold = 64 * 1024;
             KernelCore::new(config)
         })
         .clone()
@@ -102,16 +102,23 @@ fn median(values: &[f64]) -> f64 {
 
 /// 测量单用例：1 个预热 run 加 3 个测量 run，每 run 新建 VM 共享同一 kernel，
 /// 三轮取中位后输出一行 `micro <case>: <n> ops, <median> ms, <ns/op> ns/op (r1, r2, r3)`。
-fn measure_case(name: &str, kernel: &Arc<KernelCore>, module: &Arc<CompiledModule>, n_ops: usize, expected: f64) {
+/// `assert_gc` 仅 GC churn 用例为真：每 run 后断言至少一次收集，
+/// 防阈值高于分配包络时用例静默退化为测分配路径。
+fn measure_case(
+    name: &str, kernel: &Arc<KernelCore>, module: &Arc<CompiledModule>, n_ops: usize, expected: f64, assert_gc: bool,
+) {
     // 串行化：测量段独占执行，避免并发测试线程争核。
     let _guard = BENCH_LOCK.lock().unwrap();
 
-    // 预热 run：吸收 IC 学习 miss、分配器与代码缓存预热。
+    // 预热 run：分配器、代码缓存与表代际预热（IC 每 run 冷起步，预热不预热 IC）。
     let mut vm = Vm::with_kernel_core(Arc::clone(kernel));
     let result = vm.run(module).expect("预热 run");
     expect_number(result, expected, name);
+    if assert_gc {
+        assert_gc_triggered(&vm);
+    }
 
-    // 测量轮：IC 与缓存全部热态，每轮新建 VM。
+    // 测量轮：每轮新建 VM。
     let mut walls_ms: Vec<f64> = Vec::with_capacity(MEASURE_RUNS);
     for _ in 0..MEASURE_RUNS {
         let mut vm = Vm::with_kernel_core(Arc::clone(kernel));
@@ -119,6 +126,9 @@ fn measure_case(name: &str, kernel: &Arc<KernelCore>, module: &Arc<CompiledModul
         let result = vm.run(module).expect("测量 run");
         let ms = t0.elapsed().as_secs_f64() * 1e3;
         expect_number(result, expected, name);
+        if assert_gc {
+            assert_gc_triggered(&vm);
+        }
         walls_ms.push(ms);
     }
 
@@ -130,12 +140,18 @@ fn measure_case(name: &str, kernel: &Arc<KernelCore>, module: &Arc<CompiledModul
     );
 }
 
+/// 断言本次 run 至少触发一次 GC 收集（gc_mark_sweep bench「GC 真触发」门禁同款）：
+/// 防阈值高于分配包络时 churn 用例静默退化为测分配路径。
+fn assert_gc_triggered(vm: &Vm) {
+    assert!(vm.session_gc_stats().total_collections > 0, "GC churn 用例未触发收集：阈值高于分配包络");
+}
+
 /// 纯算术循环：分发主循环每指令税基线（GC 安全点、步数采样、解码与分派）。
 #[test]
 fn micro_dispatch_arith() {
     let source = "var x = 0; for (var i = 0; i < 1000; i++) { x = x + i - i * 2 + (i % 3); } x";
     let module = compile_module(source);
-    measure_case("dispatch_arith", &shared_kernel(), &module, 1_000, -498_501.0);
+    measure_case("dispatch_arith", &shared_kernel(), &module, 1_000, -498_501.0, false);
 }
 
 /// 单态对象属性读循环：IC 命中路径。
@@ -143,7 +159,7 @@ fn micro_dispatch_arith() {
 fn micro_ic_get_mono() {
     let source = "var a = { x: 1 }; var sum = 0; for (var i = 0; i < 1800; i++) { sum += a.x; } sum";
     let module = compile_module(source);
-    measure_case("ic_get_mono", &shared_kernel(), &module, 1_800, 1_800.0);
+    measure_case("ic_get_mono", &shared_kernel(), &module, 1_800, 1_800.0, false);
 }
 
 /// 4 形轮换读（4 槽容量内）：IC 多态命中，每 shape 一次学习 miss 后全命中。
@@ -152,7 +168,7 @@ fn micro_ic_get_poly4() {
     let source = "var a = { x: 1 }, b = { x: 2, y: 3 }, c = { x: 4, z: 5 }, d = { x: 6, y: 7, z: 8 }; \
                   var sum = 0; for (var i = 0; i < 1500; i++) { var t = [a, b, c, d][i % 4]; sum += t.x; } sum";
     let module = compile_module(source);
-    measure_case("ic_get_poly4", &shared_kernel(), &module, 1_500, 4_875.0);
+    measure_case("ic_get_poly4", &shared_kernel(), &module, 1_500, 4_875.0, false);
 }
 
 /// 5 形轮换读（超 4 槽容量）：FIFO 逐访问滚动，每次访问都 miss，IC 抖动上限。
@@ -161,7 +177,7 @@ fn micro_ic_get_poly5() {
     let source = "var s = [{ x: 1 }, { x: 2, y: 3 }, { x: 4, z: 5 }, { x: 6, y: 7, z: 8 }, { x: 9, a: 1, b: 2 }]; \
                   var sum = 0; for (var i = 0; i < 1500; i++) { sum += s[i % 5].x; } sum";
     let module = compile_module(source);
-    measure_case("ic_get_poly5", &shared_kernel(), &module, 1_500, 6_600.0);
+    measure_case("ic_get_poly5", &shared_kernel(), &module, 1_500, 6_600.0, false);
 }
 
 /// 属性写循环：写侧路径（写侧未走 IC 命中的面）。
@@ -169,7 +185,7 @@ fn micro_ic_get_poly5() {
 fn micro_ic_set() {
     let source = "var o = { x: 0 }; for (var i = 0; i < 2200; i++) { o.x = i; } o.x";
     let module = compile_module(source);
-    measure_case("ic_set", &shared_kernel(), &module, 2_200, 2_199.0);
+    measure_case("ic_set", &shared_kernel(), &module, 2_200, 2_199.0, false);
 }
 
 /// 小函数调用循环：字节码调用与内联路径。
@@ -178,7 +194,7 @@ fn micro_call_bytecode() {
     let source = "function f(n) { return n * 2 + 1; } var r = 0; \
                   for (var i = 0; i < 750; i++) { r += f(i); } r";
     let module = compile_module(source);
-    measure_case("call_bytecode", &shared_kernel(), &module, 750, 562_500.0);
+    measure_case("call_bytecode", &shared_kernel(), &module, 750, 562_500.0, false);
 }
 
 /// push 循环：数组增长路径。
@@ -186,7 +202,7 @@ fn micro_call_bytecode() {
 fn micro_array_push() {
     let source = "var a = []; for (var i = 0; i < 1300; i++) { a.push(i); } a.length";
     let module = compile_module(source);
-    measure_case("array_push", &shared_kernel(), &module, 1_300, 1_300.0);
+    measure_case("array_push", &shared_kernel(), &module, 1_300, 1_300.0, false);
 }
 
 /// 字符串拼接循环：s = s + "y"，拼接与字符串 GC 路径。
@@ -194,7 +210,7 @@ fn micro_array_push() {
 fn micro_string_concat() {
     let source = "var s = \"x\"; for (var i = 0; i < 800; i++) { s = s + \"y\"; } s.length";
     let module = compile_module(source);
-    measure_case("string_concat", &shared_kernel(), &module, 800, 801.0);
+    measure_case("string_concat", &shared_kernel(), &module, 800, 801.0, false);
 }
 
 /// 强转循环：+x 每轮两次 to_number 强转。加数取二进可精确表示值，
@@ -204,19 +220,19 @@ fn micro_coerce_tonumber() {
     let source = "var x = \"42\"; var y = \"3.5\"; var r = 0; \
                   for (var i = 0; i < 1500; i++) { r += (+x) + (+y); } r";
     let module = compile_module(source);
-    measure_case("coerce_tonumber", &shared_kernel(), &module, 1_500, 68_250.0);
+    measure_case("coerce_tonumber", &shared_kernel(), &module, 1_500, 68_250.0, false);
 }
 
-/// GC churn 循环：闭包加对象加数组，每轮全部死亡，512KB 低阈值下执行期两档收集
-/// （epoch 晋升加 session 原地 sweep）触发。规模取单 run 约一千五百个对象
-/// （分配包络超阈值），保证至少一次收集。
+/// GC churn 循环：闭包加对象加数组，每轮全部死亡，64KB 低阈值低于单 run 分配
+/// 包络（约 108KB），执行期两档收集（epoch 晋升加 session 原地 sweep）触发；
+/// 每 run 断言至少一次收集，防用例静默退化为测分配路径。
 #[test]
 fn micro_gc_churn() {
     let source = "var t = 0; for (var i = 0; i < 500; i++) { \
                   var f = function() { return i; }; var o = { a: i, b: [i, i + 1] }; \
                   t += f() + o.a + o.b.length; } t";
     let module = compile_module(source);
-    measure_case("gc_churn", &churn_kernel(), &module, 500, 250_500.0);
+    measure_case("gc_churn", &churn_kernel(), &module, 500, 250_500.0, true);
 }
 
 // ── intern 直调用例（Rust 直调，分配成本微基准同款范式）──────────────────────
