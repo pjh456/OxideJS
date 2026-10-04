@@ -1,6 +1,6 @@
 //! 毫秒级热路径微基准套件：方向性过滤器，不是门禁。
 //!
-//! 十个 JS 循环用例加两个 intern 直调用例；JS 用例每用例 1 个预热 run 加 3 个测量
+//! 十一个 JS 循环用例加两个 intern 直调用例；JS 用例每用例 1 个预热 run 加 3 个测量
 //! run，每 run 均为同一模块的 `Vm::run`（新建 VM 共享同一 KernelCore，免每用例重建
 //! builtin world），3 轮取中位；intern 用例为 Rust 直调，三轮各二万五千次取中位，
 //! 未命中用例每轮换新键（同一键第二轮起走命中快路径，中位即被命中成本污染）。
@@ -21,7 +21,7 @@
 //! 预热 run 的作用是分配器、代码缓存与表代际预热，不是 IC 预热。
 //!
 //! 循环规模按「debug 全套件执行段 5 秒内」约束调参：debug 构建每指令税高（无内联、
-//! 分派 match 开销主导），各用例单轮 30 至 130 毫秒，十二用例合计约 4.7 秒。
+//! 分派 match 开销主导），各用例单轮 28 至 126 毫秒，十三用例合计约 4.8 秒。
 //! 规模不是测量语义的一部分，方向判定只依赖相对变化，跨宿主对比绝对值无意义。
 //!
 //! 日常入口 `cargo test -p oxide_vm micro`（名称过滤）；
@@ -233,6 +233,18 @@ fn micro_gc_churn() {
                   t += f() + o.a + o.b.length; } t";
     let module = compile_module(source);
     measure_case("gc_churn", &churn_kernel(), &module, 500, 250_500.0, true);
+}
+
+/// 纯对象字面量循环：两键字面量构造加属性读（gc_object 形态），覆盖对象构造
+/// 热路径（静态键装载期预内部化、构造期直读侧表）与 GC churn。debug 实测每迭代
+/// 约 77 微秒（端到端 gc_object 每迭代约 2.5 微秒的三十倍），按五秒预算取七百
+/// 迭代（方向判定只依赖相对变化，规模不改变相对差）。
+#[test]
+fn micro_object_literal() {
+    let source = "var sum = 0; for (var i = 0; i < 700; i++) { \
+                  var obj = { a: i, b: i * 2 }; sum += obj.a + obj.b; } sum";
+    let module = compile_module(source);
+    measure_case("object_literal", &shared_kernel(), &module, 700, 733_950.0, false);
 }
 
 // ── intern 直调用例（Rust 直调，分配成本微基准同款范式）──────────────────────
