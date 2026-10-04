@@ -235,12 +235,16 @@ impl Vm {
             }
 
             // 指令周期采样：开启时（周期为 2 的幂）每 period 条指令记一条样本
-            // (flat_id, pc, opcode, frames 深度)，run 末聚合成 top-K 直方图；
-            // 关闭时仅这一条可预测分支，零写零分配。
+            // (flat_id, pc, opcode, frames 深度, 表代际)，run 末聚合成 top-K
+            // 直方图；关闭时仅这一条可预测分支，零写零分配。
             if self.sampling.period != 0 && (steps & (self.sampling.period - 1)) == 0 {
-                self.sampling
-                    .records
-                    .push((self.active_flat_id, pc as u32, op as u8, self.frames.len() as u32));
+                self.sampling.records.push((
+                    self.active_flat_id,
+                    pc as u32,
+                    op as u8,
+                    self.frames.len() as u32,
+                    self.active_table_gen,
+                ));
             }
 
             match op {

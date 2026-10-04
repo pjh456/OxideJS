@@ -711,11 +711,11 @@ impl Vm {
         result
     }
 
-    /// 按 flat_id 聚合采样记录并向 stderr 输出 top-K 热点直方图。
+    /// 按 (flat_id, 表代际) 聚合采样记录并向 stderr 输出 top-K 热点直方图。
     ///
-    /// 聚合键取 (flat_id, pc)：样本数按 flat_id 汇总，top pc 取该 flat_id 下
-    /// 样本数最多的字节码偏移（与反汇编 offset 列同单位）。函数名经当前表代际
-    /// 平表解析（顶层为 0），未知 flat_id 输出 `<flat N>`。
+    /// 聚合键取 (flat_id, 表代际, pc)：样本数按 (flat_id, 表代际) 汇总，top pc
+    /// 取该键下样本数最多的字节码偏移（与反汇编 offset 列同单位）。函数名经样本
+    /// 记录表代际的平表解析（顶层为 0），未知 flat_id 输出 `<flat N>`。
     ///
     /// # 边界
     /// - 采样关闭（`period == 0`）或无样本时直接返回，零输出零分配。
@@ -724,23 +724,24 @@ impl Vm {
         if self.sampling.period == 0 || self.sampling.records.is_empty() {
             return;
         }
-        // 聚合：(flat_id, pc) → 样本数与 opcode；flat_id → 最大 frames 深度。
-        let mut pc_hist: HashMap<(u32, u32), (u64, u8)> = HashMap::new();
-        let mut flat_max_frames: HashMap<u32, u32> = HashMap::new();
-        for &(flat, pc, op, frames) in &self.sampling.records {
-            let entry = pc_hist.entry((flat, pc)).or_insert((0, op));
+        // 聚合：(flat_id, 表代际, pc) → 样本数与 opcode；
+        // (flat_id, 表代际) → 最大 frames 深度。
+        let mut pc_hist: HashMap<(u32, u32, u32), (u64, u8)> = HashMap::new();
+        let mut flat_max_frames: HashMap<(u32, u32), u32> = HashMap::new();
+        for &(flat, pc, op, frames, gen) in &self.sampling.records {
+            let entry = pc_hist.entry((flat, gen, pc)).or_insert((0, op));
             entry.0 += 1;
-            let top = flat_max_frames.entry(flat).or_insert(frames);
+            let top = flat_max_frames.entry((flat, gen)).or_insert(frames);
             if frames > *top {
                 *top = frames;
             }
         }
-        // 按 flat_id 汇总样本数，降序排列后取 top-K。
-        let mut flat_total: HashMap<u32, u64> = HashMap::new();
-        for (&(flat, _), &(count, _)) in &pc_hist {
-            *flat_total.entry(flat).or_insert(0) += count;
+        // 按 (flat_id, 表代际) 汇总样本数，降序排列后取 top-K。
+        let mut flat_total: HashMap<(u32, u32), u64> = HashMap::new();
+        for (&(flat, gen, _), &(count, _)) in &pc_hist {
+            *flat_total.entry((flat, gen)).or_insert(0) += count;
         }
-        let mut ranked: Vec<(u32, u64)> = flat_total.into_iter().collect();
+        let mut ranked: Vec<((u32, u32), u64)> = flat_total.into_iter().collect();
         ranked.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
         let k = self.sampling.top_k.min(ranked.len());
         eprintln!(
@@ -749,11 +750,12 @@ impl Vm {
             self.sampling.records.len(),
             self.profiling.instruction_count
         );
-        for (rank, &(flat, count)) in ranked.iter().take(k).enumerate() {
-            // top pc：该 flat_id 下样本数最多的字节码偏移（并列取小 pc）。
+        for (rank, &((flat, gen), count)) in ranked.iter().take(k).enumerate() {
+            // top pc：该 (flat_id, 表代际) 下样本数最多的字节码偏移（并列取哈希
+            // 遍历首个，非确定，诊断用途可接受）。
             let mut top_pc: Option<(u64, u32, u8)> = None;
-            for (&(f, pc), &(c, op)) in &pc_hist {
-                if f != flat {
+            for (&(f, g, pc), &(c, op)) in &pc_hist {
+                if f != flat || g != gen {
                     continue;
                 }
                 match top_pc {
@@ -768,11 +770,11 @@ impl Vm {
                 .unwrap_or_else(|_| format!("op{top_op}"));
             let name = self
                 .tables
-                .get(&self.current_gen)
+                .get(&gen)
                 .and_then(|t| t.modules.get(flat as usize))
                 .and_then(|m| m.function_name.clone())
                 .unwrap_or_else(|| format!("<flat {flat}>"));
-            let frames = flat_max_frames.get(&flat).copied().unwrap_or(0);
+            let frames = flat_max_frames.get(&(flat, gen)).copied().unwrap_or(0);
             eprintln!(
                 "  {rank:>2}. {name:<24} (flat {flat}) {count:>8} samples  top pc={top_pc} {op_name} ({top_count})  frames={frames}"
             );
