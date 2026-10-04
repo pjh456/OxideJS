@@ -159,7 +159,7 @@ pub(crate) struct PendingAsyncEscape {
 
 /// 基于寄存器的 JS 虚拟机：持有执行状态、寄存器文件、调用栈与 session 内存。
 ///
-/// 执行入口为 [`Vm::run`]（见 `vm_runtime` 模块）；内存模型为 epoch arena +
+/// 执行入口为 [`Vm::run`]（见 `vm_runtime` 模块）；内存模型为统一入口分配 +
 /// session 对象（可被 `SessionGc` 移动式回收）+ session 字符串。多数内部字段为
 /// `pub(crate)`，对外提供统计与内省 getter。
 pub struct Vm {

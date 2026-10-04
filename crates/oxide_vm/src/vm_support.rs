@@ -330,7 +330,7 @@ impl Vm {
     /// 用于在多次 JS 执行之间达到完全隔离：session 内未被污染的 builtin 保留原指针。
     pub fn full_reset(&mut self) {
         // 防御兜底：属性值写原语已推进 generation，常规覆盖写由快照对比发现；
-        // 若未来出现绕过属性写原语的裸属性区改写，session 对象会随 epoch 释放，
+        // 若未来出现绕过属性写原语的裸属性区改写，session 对象会被 session GC 回收，
         // 保留 global 将持悬垂指针，故带 session 对象时强制 bump 保证 global 重建。
         if !self.gc_state.session_object_ptrs.is_empty() {
             let global_ptr = self.session.global_object().as_ptr() as *mut JsObject;
@@ -466,7 +466,7 @@ impl Vm {
         // - 清空寄存器文件、pc、帧/迭代器栈、保存的执行栈、try 处理器、
         //   待处理异常、native 调用深度与 IC 命中/未命中计数。
         // - 保留 kernel 共享状态不变。
-        // - `reset()` 额外清空 bytecode/constants 并重置 epoch 归属。
+        // - `reset()` 额外清空 bytecode/constants 并重置 run 分配包络。
         self.regs = [JsValue::undefined(); 256];
         self.pc = 0;
         self.frames.clear();
@@ -483,7 +483,7 @@ impl Vm {
         self.cell_stack.clear();
         self.try_stack.clear();
         self.exception_value = None;
-        // 未捕获异常侧通道持原始 epoch 对象指针：执行期状态，跨 run/reset 不保留，
+        // 未捕获异常侧通道持原始 session 对象指针：执行期状态，跨 run/reset 不保留，
         // 池回收后残留将悬垂。
         self.last_uncaught_value = None;
         self.pending_length_exception = None;
@@ -728,8 +728,7 @@ impl Vm {
                 JsValue::from_js_object(self.session.builtin_world().object_proto.as_ptr() as *mut JsObject)
             };
             // prototype 子对象与函数本体同走 session 分配：`f.prototype ===
-            // globalThis.f.prototype` 要求两侧同一对象，epoch 分配会在逃逸写时
-            // 被递归克隆出第二份。
+            // globalThis.f.prototype` 要求两侧同一对象，逃逸写不会克隆出第二份。
             let prototype = JsObject::new_empty(EMPTY_SHAPE_ID, proto_of_proto);
             let prototype_obj = self.alloc_session_object(prototype);
             let prototype_val = JsValue::from_js_object(prototype_obj);
