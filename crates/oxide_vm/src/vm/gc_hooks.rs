@@ -185,6 +185,14 @@ impl Vm {
             + self.gc_state.session_cell_ptrs.borrow().len() * std::mem::size_of::<Cell>()
     }
 
+    /// 本 run 累计分配字节（O(1) 读）。
+    ///
+    /// 公开包装，供 profiling 统一出口跨 crate 读取：与 `run_alloc_bytes` 同一读
+    /// 口径，零行为变化。
+    pub fn run_alloc_bytes_total(&self) -> usize {
+        self.run_alloc_bytes()
+    }
+
     /// 本 run 累计分配字节的全量重算版：各分量按当前值各计一次、互不相交——
     /// 存活对象头加堆数据（属性/元素/meta 向量容量、upvalue 列表容量、native
     /// 状态盒）+ 存活串（头加 payload）+ BigInt 表长 × 尺寸 + cell 表长 ×

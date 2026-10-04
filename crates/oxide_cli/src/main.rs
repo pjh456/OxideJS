@@ -4,6 +4,7 @@
 use std::fs;
 use std::process::ExitCode;
 use std::sync::Arc;
+use std::time::Instant;
 
 use ansi_term::Colour::Red;
 use clap::{Parser, Subcommand};
@@ -40,6 +41,11 @@ struct Cli {
 
     #[arg(short, long, global = true)]
     quiet: bool,
+
+    /// 聚合并输出现有计数器（GC 统计、内联缓存、session 堆账目、指令数）。
+    /// 默认关闭，关闭时零开销；输出每指标一行，与 bench 输出对齐。
+    #[arg(long, global = true)]
+    profile: bool,
 }
 
 #[derive(Subcommand)]
@@ -94,13 +100,13 @@ fn main() -> ExitCode {
         Some(Commands::Eval { code, trace }) => {
             let kernel = make_kernel(cli.verbose, cli.quiet);
             let pool = make_pool(&kernel);
-            eval(&code, &kernel, &pool, trace, true)
+            eval(&code, &kernel, &pool, trace, cli.profile, true)
         }
         Some(Commands::Run { file, repeat, trace }) => {
             let kernel = make_kernel(cli.verbose, cli.quiet);
             let pool = make_pool(&kernel);
             for n in 0..repeat {
-                let code = run(&file, &kernel, &pool, trace);
+                let code = run(&file, &kernel, &pool, trace, cli.profile);
                 // 失败即终止并传播退出码，供脚本与 CI 区分成败。
                 if code != ExitCode::SUCCESS {
                     return code;
@@ -158,7 +164,9 @@ fn make_pool(kernel: &Arc<KernelCore>) -> Arc<VmPool> {
     VmPool::new(Arc::clone(kernel), kernel.config.min_pool_size, kernel.config.max_pool_size)
 }
 
-fn eval(code: &str, kernel: &Arc<KernelCore>, pool: &Arc<VmPool>, trace: bool, print_result: bool) -> ExitCode {
+fn eval(
+    code: &str, kernel: &Arc<KernelCore>, pool: &Arc<VmPool>, trace: bool, profile: bool, print_result: bool,
+) -> ExitCode {
     let allocator = Allocator::default();
     let program = match oxide_parser::parse(&allocator, code) {
         Ok(p) => p,
@@ -184,8 +192,16 @@ fn eval(code: &str, kernel: &Arc<KernelCore>, pool: &Arc<VmPool>, trace: bool, p
 
     let mut guard = pool.spawn();
     guard.vm_mut().set_instruction_trace(trace);
+    let exec_start = Instant::now();
     match guard.vm_mut().run(&module) {
         Ok(result) => {
+            // --profile 开启时聚合现有计数器，每指标一行输出到 stderr（stdout 保持纯结果）。
+            if profile {
+                let p = bench::profile::ProfileOutput::collect(guard.vm(), exec_start.elapsed().as_micros() as u64);
+                for (name, value) in p.iter_metrics() {
+                    eprintln!("{name} = {value}");
+                }
+            }
             // eval 臂按 REPL 语义打印完成值；run 臂脚本只输出自身产生内容。
             if print_result {
                 format_result(guard.vm(), kernel.perm_interner().as_ref(), kernel.shape_forge().as_ref(), result);
@@ -292,9 +308,9 @@ fn format_array(
     format!("[{}]", items.join(", "))
 }
 
-fn run(file: &str, kernel: &Arc<KernelCore>, pool: &Arc<VmPool>, trace: bool) -> ExitCode {
+fn run(file: &str, kernel: &Arc<KernelCore>, pool: &Arc<VmPool>, trace: bool, profile: bool) -> ExitCode {
     match fs::read_to_string(file) {
-        Ok(source) => eval(&source, kernel, pool, trace, false),
+        Ok(source) => eval(&source, kernel, pool, trace, profile, false),
         Err(err) => {
             kernel_error!("cannot read {}: {}", file, err);
             eprintln!("{}", Red.paint(format!("Cannot read {file}: {err}")));

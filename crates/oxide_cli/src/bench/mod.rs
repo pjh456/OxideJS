@@ -13,6 +13,8 @@ pub mod leak_detect;
 pub mod metrics;
 /// 结果格式化输出。
 pub mod output;
+/// `--profile` 旗标的聚合计数器快照。
+pub mod profile;
 /// Rust 原生 benchmark 委托。
 pub mod rust_bench;
 
