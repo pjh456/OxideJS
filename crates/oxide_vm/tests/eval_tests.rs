@@ -303,6 +303,19 @@ fn compound_statement_completion_values() {
     assert_num(result, 5.0);
     let result = eval(&mut vm, "a: { try { throw 1; } catch (e) { 5; break a; } }").unwrap();
     assert_num(result, 5.0);
+    // for 泄漏形完成值：体不读循环变量加常量尾，取末次迭代体值，前值不沿用。
+    let result = eval(&mut vm, "for (var i = 0; i < 2; ++i) { 42 }").unwrap();
+    assert_num(result, 42.0);
+    let result = eval(&mut vm, "for (var i = 0; i < 2; ++i) { 'bad completion' }").unwrap();
+    let rendered = vm.lookup_str(result).unwrap_or_default();
+    assert_eq!(rendered, "bad completion");
+    let result = eval(&mut vm, "7; for (var i = 0; i < 2; ++i) { 42 }").unwrap();
+    assert_num(result, 42.0);
+    let result = eval(&mut vm, "9; for (var i = 0; i < 2; ++i) { i; 42 }").unwrap();
+    assert_num(result, 42.0);
+    // 0 迭代块体：完成值 undefined（前值不沿用）。
+    let result = eval(&mut vm, "9; for (var i = 0; false;) { 42 }").unwrap();
+    assert_eq!(result, JsValue::undefined());
 }
 
 #[test]
