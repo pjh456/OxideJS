@@ -235,6 +235,28 @@ impl IterState {
     }
 }
 
+/// 指令周期采样状态：采样周期（2 的幂）与样本记录表。
+///
+/// 开启时 dispatch 主循环每 `period` 条指令记一条样本（flat_id、pc、opcode、
+/// frames 深度），run 末按 flat_id 聚合并输出 top-K 直方图（stderr）。
+/// 关闭（`period == 0`）时热路径仅一次可预测分支，零写零分配。
+pub(crate) struct SampleState {
+    /// 采样周期（2 的幂，0 = 关闭）。
+    pub(crate) period: u64,
+    /// 直方图 top-K 大小（默认 10）。
+    pub(crate) top_k: usize,
+    /// 样本记录：(flat_id, pc, opcode, frames 深度)，run 边界清空。
+    pub(crate) records: Vec<(u32, u32, u8, u32)>,
+}
+
+impl SampleState {
+    /// 清空样本记录（run 边界）。只清记录：period 与 top_k 是调用方
+    /// 设置的配置，不随 run 边界重置。
+    pub(crate) fn clear_records(&mut self) {
+        self.records.clear();
+    }
+}
+
 /// inline cache 命中/未命中计数与指令计数。
 pub(crate) struct ProfilingState {
     pub(crate) ic_hits: Cell<u64>,

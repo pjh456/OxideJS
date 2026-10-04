@@ -32,6 +32,11 @@ pub struct BenchConfig {
     pub iterations: u32,
     pub update_baseline: bool,
     pub leak_check_interval: usize,
+    /// 指令周期采样周期（2 的幂，0 关闭）：开启时测量迭代每 period 条指令
+    /// 记一条样本，run 末按 flat_id 输出 top-K 直方图。
+    pub sample_period: u64,
+    /// 采样直方图 top-K 大小（默认 10）。
+    pub sample_top: usize,
 }
 
 /// 按 mode 分派到具体 benchmark 实现（js/rust/leak）。

@@ -8,7 +8,7 @@ use oxide_bytecode::module::Constant;
 use crate::bindings;
 use crate::vm::{TableGen, Vm};
 use crate::vm_info;
-use crate::vm_state::{GcState, IterState, ProfilingState, SymbolState};
+use crate::vm_state::{GcState, IterState, ProfilingState, SampleState, SymbolState};
 use oxide_kernel::kernel::{KernelConfig, KernelCore, KernelSession};
 use oxide_kernel::shape_forge::EMPTY_SHAPE_ID;
 use oxide_types::mem::P;
@@ -149,6 +149,11 @@ impl Vm {
                 ic_misses: std::cell::Cell::new(0),
                 instruction_count: 0,
             },
+            sampling: SampleState {
+                period: 0,
+                top_k: 10,
+                records: Vec::new(),
+            },
             cell_stack: Vec::new(),
             template_objects: std::collections::HashMap::new(),
             active_flat_id: 0,
@@ -282,6 +287,11 @@ impl Vm {
                 ic_hits: std::cell::Cell::new(0),
                 ic_misses: std::cell::Cell::new(0),
                 instruction_count: 0,
+            },
+            sampling: SampleState {
+                period: 0,
+                top_k: 10,
+                records: Vec::new(),
             },
             cell_stack: Vec::new(),
             template_objects: std::collections::HashMap::new(),
@@ -522,6 +532,9 @@ impl Vm {
         // per-run 指标（ic_hit_rate）跨文件累积，报告失真。
         self.profiling.ic_hits.set(0);
         self.profiling.ic_misses.set(0);
+        // 采样记录同属执行期状态：池化 Vm 跨 run 复用，不清空则上一 run 的
+        // 样本混入本 run 的直方图，热点分布失真。
+        self.sampling.clear_records();
         // GC 统计同属执行期状态：池化 Vm 跨 run 复用，不清零则 per-run
         // 指标（gc_trigger_count）跨文件累积，报告失真。
         let gc = &mut self.gc_state.session_gc;

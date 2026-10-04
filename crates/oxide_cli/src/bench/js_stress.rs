@@ -86,6 +86,11 @@ pub fn run_js_stress_bench(config: &BenchConfig, kernel: &Arc<KernelCore>, pool:
             let mut guard = pool.spawn();
             let vm = guard.vm_mut();
 
+            // 指令周期采样只对测量迭代开启：预热不采样，直方图不混入
+            // 预热样本，stderr 输出也不随预热迭代重复。
+            vm.set_sample_period(config.sample_period);
+            vm.set_sample_top_k(config.sample_top);
+
             let pre_session = vm.session_object_count();
             let pre_epoch = vm.epoch_object_count();
 

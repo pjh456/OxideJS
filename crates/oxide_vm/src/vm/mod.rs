@@ -18,7 +18,7 @@ use smallvec::SmallVec;
 pub use crate::bindings::init_kernel_builtins;
 use crate::native::NativeFn;
 use crate::vm_debug;
-use crate::vm_state::{GcState, IterState, ProfilingState, SymbolState};
+use crate::vm_state::{GcState, IterState, ProfilingState, SampleState, SymbolState};
 use oxide_kernel::kernel::{KernelCore, KernelSession};
 use oxide_types::error::JsErrorKind;
 use oxide_types::mem::P;
@@ -354,6 +354,8 @@ pub struct Vm {
     pub(crate) iters: IterState,
     /// 分组保存 inline cache 与指令计数器。
     pub(crate) profiling: ProfilingState,
+    /// 分组保存指令周期采样状态（周期、top-K、样本记录）。
+    pub(crate) sampling: SampleState,
     pub(crate) cell_stack: Vec<Vec<*mut Cell>>,
     /// 标签模板对象缓存（GetTemplateObject）：键 = (表代际, 模块 flat_id, site 序号)。
     /// 同一代际同 flat_id 同 site 恒返回同一对象；每次 `run()` 清空（缓存只留
@@ -453,6 +455,19 @@ impl Vm {
     /// None 清除。
     pub fn set_pc_watch(&mut self, path: Option<PathBuf>) {
         self.pc_watch = path;
+    }
+
+    /// 设置指令周期采样周期（2 的幂，0 关闭）。开启后 dispatch 主循环每
+    /// `period` 条指令记一条样本（flat_id、pc、opcode、frames 深度），run 末
+    /// 按 flat_id 聚合并向 stderr 输出 top-K 直方图；关闭时热路径仅一次
+    /// 可预测分支，零写零分配。
+    pub fn set_sample_period(&mut self, period: u64) {
+        self.sampling.period = period;
+    }
+
+    /// 设置采样直方图的 top-K 大小（默认 10）。
+    pub fn set_sample_top_k(&mut self, k: usize) {
+        self.sampling.top_k = k;
     }
 
     /// 若 `val` 是字符串，返回其内容的 `String` 副本；否则返回 `None`。

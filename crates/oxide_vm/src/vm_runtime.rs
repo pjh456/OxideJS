@@ -1,6 +1,8 @@
+use std::collections::HashMap;
 use std::sync::{Arc, OnceLock};
 
 use oxide_bytecode::module::CompiledModule;
+use oxide_bytecode::opcode::OpCode;
 
 use crate::vm::{CallFrame, FrameArgs, FrameContinuation, InlineSyncState, TableGen, Vm};
 use crate::{vm_debug, vm_info, vm_trace, vm_warn};
@@ -702,7 +704,79 @@ impl Vm {
         let result = self.dispatch();
         // 顶层执行结束后 drain 微任务队列：Promise reactions 与 thenable 委托在此执行。
         self.drain_job_queue();
+        // 指令周期采样：run 末聚合本 run 的样本并输出 top-K 直方图（关闭时零开销
+        // 短路）。放 dispatch 返回后而非循环内：嵌套 dispatch 会多次返回，直方图
+        // 只应输出一次。
+        self.print_sample_histogram();
         result
+    }
+
+    /// 按 flat_id 聚合采样记录并向 stderr 输出 top-K 热点直方图。
+    ///
+    /// 聚合键取 (flat_id, pc)：样本数按 flat_id 汇总，top pc 取该 flat_id 下
+    /// 样本数最多的字节码偏移（与反汇编 offset 列同单位）。函数名经当前表代际
+    /// 平表解析（顶层为 0），未知 flat_id 输出 `<flat N>`。
+    ///
+    /// # 边界
+    /// - 采样关闭（`period == 0`）或无样本时直接返回，零输出零分配。
+    /// - 只读采样记录与平表，不改写任何执行状态。
+    pub(crate) fn print_sample_histogram(&self) {
+        if self.sampling.period == 0 || self.sampling.records.is_empty() {
+            return;
+        }
+        // 聚合：(flat_id, pc) → 样本数与 opcode；flat_id → 最大 frames 深度。
+        let mut pc_hist: HashMap<(u32, u32), (u64, u8)> = HashMap::new();
+        let mut flat_max_frames: HashMap<u32, u32> = HashMap::new();
+        for &(flat, pc, op, frames) in &self.sampling.records {
+            let entry = pc_hist.entry((flat, pc)).or_insert((0, op));
+            entry.0 += 1;
+            let top = flat_max_frames.entry(flat).or_insert(frames);
+            if frames > *top {
+                *top = frames;
+            }
+        }
+        // 按 flat_id 汇总样本数，降序排列后取 top-K。
+        let mut flat_total: HashMap<u32, u64> = HashMap::new();
+        for (&(flat, _), &(count, _)) in &pc_hist {
+            *flat_total.entry(flat).or_insert(0) += count;
+        }
+        let mut ranked: Vec<(u32, u64)> = flat_total.into_iter().collect();
+        ranked.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+        let k = self.sampling.top_k.min(ranked.len());
+        eprintln!(
+            "sample top {k} (period {}, {} samples, {} instructions):",
+            self.sampling.period,
+            self.sampling.records.len(),
+            self.profiling.instruction_count
+        );
+        for (rank, &(flat, count)) in ranked.iter().take(k).enumerate() {
+            // top pc：该 flat_id 下样本数最多的字节码偏移（并列取小 pc）。
+            let mut top_pc: Option<(u64, u32, u8)> = None;
+            for (&(f, pc), &(c, op)) in &pc_hist {
+                if f != flat {
+                    continue;
+                }
+                match top_pc {
+                    None => top_pc = Some((c, pc, op)),
+                    Some((tc, _, _)) if c > tc => top_pc = Some((c, pc, op)),
+                    Some(_) => {}
+                }
+            }
+            let (top_count, top_pc, top_op) = top_pc.unwrap_or((0, 0, 0));
+            let op_name = OpCode::try_from(top_op)
+                .map(|o| o.to_string())
+                .unwrap_or_else(|_| format!("op{top_op}"));
+            let name = self
+                .tables
+                .get(&self.current_gen)
+                .and_then(|t| t.modules.get(flat as usize))
+                .and_then(|m| m.function_name.clone())
+                .unwrap_or_else(|| format!("<flat {flat}>"));
+            let frames = flat_max_frames.get(&flat).copied().unwrap_or(0);
+            eprintln!(
+                "  {rank:>2}. {name:<24} (flat {flat}) {count:>8} samples  top pc={top_pc} {op_name} ({top_count})  frames={frames}"
+            );
+        }
     }
 
     /// 异常展开：沿 `try_stack` 查找最近可接管的 catch/finally，无则逐帧回退并返回未捕获错误。

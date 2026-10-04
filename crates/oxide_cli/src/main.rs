@@ -87,6 +87,13 @@ enum Commands {
         update_baseline: bool,
         #[arg(long, default_value = "1000")]
         leak_check_interval: usize,
+        /// 指令周期采样周期（2 的幂，0 关闭，默认关闭）。开启时测量迭代每
+        /// period 条指令记一条样本，run 末按 flat_id 输出 top-K 直方图。
+        #[arg(long, default_value = "0")]
+        sample: u64,
+        /// 采样直方图 top-K 大小（默认 10）。
+        #[arg(long, default_value = "10")]
+        sample_top: usize,
     },
     Test {
         suite: Option<String>,
@@ -130,9 +137,17 @@ fn main() -> ExitCode {
             iterations,
             update_baseline,
             leak_check_interval,
+            sample,
+            sample_top,
         }) => {
             let kernel = make_kernel(false, false);
             let pool = make_pool(&kernel);
+            // 采样周期边界检查：须为 0（关闭）或 2 的幂，否则指令边界的
+            // `steps & (period - 1) == 0` 判定退化（周期不整除步数序列）。
+            if sample != 0 && sample & (sample - 1) != 0 {
+                eprintln!("--sample period must be 0 (disabled) or a power of two, got {sample}");
+                return ExitCode::FAILURE;
+            }
             let config = bench::BenchConfig {
                 mode: mode.unwrap_or_else(|| "js".to_string()),
                 filter,
@@ -140,6 +155,8 @@ fn main() -> ExitCode {
                 iterations,
                 update_baseline,
                 leak_check_interval,
+                sample_period: sample,
+                sample_top,
             };
             bench::run_benchmarks(config, kernel, pool)
         }
