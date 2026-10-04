@@ -1,19 +1,27 @@
 //! 毫秒级热路径微基准套件：方向性过滤器，不是门禁。
 //!
-//! 十个 JS 循环用例，每用例 1 个预热 run 加 3 个测量 run，每 run 均为同一模块的
-//! `Vm::run`（新建 VM 共享同一 KernelCore，免每用例重建 builtin world），3 轮取中位。
-//! 每用例断言 run 结果值等于期望值，防死代码消除。
+//! 十个 JS 循环用例加两个 intern 直调用例；JS 用例每用例 1 个预热 run 加 3 个测量
+//! run，每 run 均为同一模块的 `Vm::run`（新建 VM 共享同一 KernelCore，免每用例重建
+//! builtin world），3 轮取中位；intern 用例为 Rust 直调，三轮各二万五千次取中位，
+//! 未命中用例每轮换新键（同一键第二轮起走命中快路径，中位即被命中成本污染）。
+//! 每用例断言 run 结果值等于期望值、intern 用例 black_box 返回值，防死代码消除。
 //!
 //! 角色是方向性过滤器：候选优化在微基准上无方向性收益即直接否决，不跑端到端；
 //! 有方向性收益须进锚点层（release 端到端）方向确认才采信。不设阈值判定——
 //! debug 构建噪声大，阈值会产 flaky 红，debug 数字仅过滤，不作绝对比较。
+//!
+//! 锚点层（方向确认，release）复用现有端到端 harness：`oxide bench js --filter
+//! prop_nested` 加 `--filter gc_object`，各 1 预热 3 迭代，总耗时不足一分钟（含增量
+//! 构建）。锚点用例：prop_nested（IC 加属性面，基线 132.86 毫秒）与 gc_object（对象
+//! 构造面，基线 122.77 毫秒）——覆盖最高频热路径两面的两用例，按用例名固定，数值
+//! 随基线重锚漂移。微基准赢的候选须经锚点层同方向确认才采信，锚点持平则不采信。
 //!
 //! 测量语义：`run()` 不清 IC（IC 扩展字在模块字节码内跨 run 持久），同一模块连续
 //! 多 run 时 IC 从首个 run 起持续热态；预热 run 吸收 IC 学习 miss、分配器与代码
 //! 缓存预热，测量轮全部热态。
 //!
 //! 循环规模按「debug 全套件执行段 5 秒内」约束调参：debug 构建每指令税高（无内联、
-//! 分派 match 开销主导），各用例单轮 30 至 130 毫秒，十用例四轮合计约 4 秒。
+//! 分派 match 开销主导），各用例单轮 30 至 130 毫秒，十二用例合计约 4.7 秒。
 //! 规模不是测量语义的一部分，方向判定只依赖相对变化，跨宿主对比绝对值无意义。
 //!
 //! 日常入口 `cargo test -p oxide_vm micro`（名称过滤）；
@@ -209,4 +217,65 @@ fn micro_gc_churn() {
                   t += f() + o.a + o.b.length; } t";
     let module = compile_module(source);
     measure_case("gc_churn", &churn_kernel(), &module, 500, 250_500.0);
+}
+
+// ── intern 直调用例（Rust 直调，分配成本微基准同款范式）──────────────────────
+
+/// intern 直调固定次数：五万次。十万次口径下全套件执行段超五秒预算，
+/// 按预算降规模（不删用例）；二万五千次仍足以摊薄计时开销、测出逐次成本。
+const INTERN_N: usize = 25_000;
+
+/// 测量单个 intern 直调用例：三轮各二万五千次取中位，每次调用返回值经 black_box
+/// 防死代码消除，输出一行 `micro <case>: <n> ops, <median> ms, <ns/op> ns/op (r1, r2, r3)`。
+///
+/// # 边界与前提
+/// - `key` 只在计时循环内调用，全局下标跨轮（第轮次乘 INTERN_N 加轮内下标），
+///   键构造须由调用方在计时循环外完成，隔离 intern 成本
+/// - 未命中语义要求每轮键互不重复：同一键第二轮起走命中快路径，中位即被命中
+///   成本污染；命中用例的键可忽略下标
+///
+/// # 副作用
+/// - 未命中轮向共享 perm_interner 追加唯一键（永久字符串惰性物化），仅测试进程内
+///   有界增长，不改引擎行为
+///
+/// # 注意事项
+/// - 首轮含 intern 表增长与分配器预热成本（约两倍稳态），三轮中位天然吸收该单轮
+///   尖峰，与 JS 用例同口径
+fn measure_intern_case<'a>(name: &str, kernel: &Arc<KernelCore>, key: impl Fn(usize) -> &'a str) {
+    // 串行化：计时循环独占执行，避免并发测试线程争核。
+    let _guard = BENCH_LOCK.lock().unwrap();
+    let interner = kernel.perm_interner();
+
+    let mut walls_ms: Vec<f64> = Vec::with_capacity(MEASURE_RUNS);
+    for round in 0..MEASURE_RUNS {
+        let t0 = Instant::now();
+        let mut last: (u32, u64) = (0, 0);
+        for i in 0..INTERN_N {
+            last = std::hint::black_box(interner.intern(key(round * INTERN_N + i)));
+        }
+        std::hint::black_box(&last);
+        walls_ms.push(t0.elapsed().as_secs_f64() * 1e3);
+    }
+
+    let median_ms = median(&walls_ms);
+    eprintln!(
+        "micro {name}: {INTERN_N} ops, {median_ms:.2} ms, {:.2} ns/op ({}) [{PROFILE}]",
+        median_ms * 1e6 / INTERN_N as f64,
+        walls_ms.iter().map(|m| format!("{m:.2}")).collect::<Vec<_>>().join(", ")
+    );
+}
+
+/// intern 命中路径：重复 intern 同一键，首次调用插入后其余全部走无锁候选读加
+/// 短读锁快路径。
+#[test]
+fn micro_intern_hit() {
+    measure_intern_case("intern_hit", &shared_kernel(), |_| "identical_key");
+}
+
+/// intern 未命中路径：每轮各二万五千个全新唯一键，全部走慢路径（写锁追加加永久
+/// 字符串物化）。键在计时循环外预建，隔离 intern 成本。
+#[test]
+fn micro_intern_miss() {
+    let keys: Vec<String> = (0..MEASURE_RUNS * INTERN_N).map(|i| format!("unique_key_{i}")).collect();
+    measure_intern_case("intern_miss", &shared_kernel(), |i| &keys[i]);
 }
