@@ -54,16 +54,16 @@ OxideJS 采用经典的 parse -> compile -> execute 流水线，同时使用 **�
                  +-----------------+-----------------+
                  |                 |                 |
                  v                 v                 v
-        +----------------+ +----------------+ +----------------+
-        |    oxide_vm    | |    oxide_vm    | |    oxide_vm    |
-        |----------------| |----------------| |----------------|
-        |  registers     | |  registers     | |  registers     |
-        |  call frames   | |  call frames   | |  call frames   |
+        +------------------+ +------------------+ +------------------+
+        |     oxide_vm     | |     oxide_vm     | |     oxide_vm     |
+        |------------------| |------------------| |------------------|
+        |  registers       | |  registers       | |  registers       |
+        |  call frames     | |  call frames     | |  call frames     |
         |  session objects | |  session objects | |  session objects |
-        |  JsString GC   | |  JsString GC   | |  JsString GC   |
-        +-------+--------+ +-------+--------+ +-------+--------+
-                |                  |                  |
-                v                  v                  v
+        |  JsString GC     | |  JsString GC     | |  JsString GC     |
+        +--------+---------+ +--------+---------+ +--------+---------+
+                 |                    |                    |
+                 v                    v                    v
         JsValue Result     JsValue Result     JsValue Result
 
 Per request pipeline:
