@@ -25,6 +25,11 @@ pub(crate) struct TableGen {
     /// 每个 `OnceLock` 保存该模块常量本次运行中只转换一次的 `JsValue` 结果。
     /// 不可变常量是标量 + perm 字符串，只读，GC 根收集按表代际遍历。
     pub(crate) immutables: Vec<OnceLock<Vec<JsValue>>>,
+    /// NEW_OBJECT 静态键 si 侧表，与 `immutables` 平行（下标 = flat_id，内部下标 =
+    /// 常量池下标）：`Some(si)` 是模块装载期预 intern 的键 si，`None` 表示该常量
+    /// 不是静态键。填充与 `immutables` 激活同点（`activate_immutables`），构造期
+    /// 直读免逐构造键推导。
+    pub(crate) si_tables: Vec<OnceLock<Vec<Option<u32>>>>,
 }
 
 impl Vm {
@@ -102,8 +107,42 @@ impl Vm {
         // 成立前提：代际表归注册表所有、只读、Box 承载地址稳定。
         let table = self.tables.get_mut(&gen).expect("激活的代际表须在注册表中");
         let slot: *const OnceLock<Vec<JsValue>> = &table.immutables[cache_idx];
+        // si 侧表与 immutables 同点填充：模块字节码从平表取（同裸指针手法，
+        // 平表 Arc 归注册表所有、地址稳定），预 intern 静态键 si。
+        let si_slot: *const OnceLock<Vec<Option<u32>>> = &table.si_tables[cache_idx];
+        let bc: *const [opcode::Instr] = &table.modules[cache_idx].bytecode[..];
         let vec = unsafe { &*slot }.get_or_init(|| self.convert_immutables(constants));
+        unsafe { &*si_slot }.get_or_init(|| self.fill_si_table(vec, unsafe { &*bc }));
         self.active_immutables = vec.as_slice() as *const [JsValue];
+    }
+
+    /// 填充模块的 NEW_OBJECT 静态键 si 侧表：按 dispatch 主循环同口径
+    /// （`ext_word_count` 逐指令推进）扫字节码，收集每条带键表 NEW_OBJECT 的
+    /// 键常量池下标，按键值经 `property_key_si` 预推导 si 存入侧表
+    /// （下标 = 常量池下标），其余常量保持 None。
+    ///
+    /// # 边界与前提
+    /// - 键值取自已转换的不可变常量（`values`），与构造期读同一池。
+    /// - 键推导失败（非字符串键的防御面）保持 None，构造期回退旧路径同口径重推。
+    fn fill_si_table(&mut self, values: &[JsValue], bytecode: &[opcode::Instr]) -> Vec<Option<u32>> {
+        let mut si = vec![None; values.len()];
+        let mut i = 0;
+        while i < bytecode.len() {
+            let instr = bytecode[i];
+            if opcode::opcode(instr) == opcode::OpCode::NEW_OBJECT && opcode::a(instr) > 0 {
+                let nprops = opcode::a(instr) as usize;
+                for &w in &bytecode[i + 1..i + 1 + nprops] {
+                    let idx = w as usize;
+                    if idx < si.len() && si[idx].is_none() {
+                        if let Ok(key_si) = self.property_key_si(values[idx]) {
+                            si[idx] = Some(key_si);
+                        }
+                    }
+                }
+            }
+            i += 1 + opcode::ext_word_count(bytecode, i);
+        }
+        si
     }
 
     /// 当前活动字节码的可变访问入口。bytecode 以 `Arc<[Instr]>` 与代际表 modules 源共享，

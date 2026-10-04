@@ -484,6 +484,7 @@ impl Vm {
         let table = self.current_table_mut();
         table.modules = modules;
         table.immutables.resize(table.modules.len(), OnceLock::new());
+        table.si_tables.resize(table.modules.len(), OnceLock::new());
     }
 }
 

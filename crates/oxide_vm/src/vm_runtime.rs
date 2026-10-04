@@ -673,6 +673,7 @@ impl Vm {
             self.current_gen,
             Box::new(TableGen {
                 immutables: (0..modules.len()).map(|_| OnceLock::new()).collect(),
+                si_tables: (0..modules.len()).map(|_| OnceLock::new()).collect(),
                 modules,
             }),
         );

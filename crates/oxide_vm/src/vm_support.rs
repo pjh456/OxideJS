@@ -75,6 +75,7 @@ impl Vm {
                 Box::new(TableGen {
                     modules: Arc::new(Vec::new()),
                     immutables: Vec::new(),
+                    si_tables: Vec::new(),
                 }),
             )]),
             current_gen: 0,
@@ -208,6 +209,7 @@ impl Vm {
                 Box::new(TableGen {
                     modules: Arc::new(Vec::new()),
                     immutables: Vec::new(),
+                    si_tables: Vec::new(),
                 }),
             )]),
             current_gen: 0,
@@ -389,6 +391,7 @@ impl Vm {
             Box::new(TableGen {
                 modules: Arc::new(Vec::new()),
                 immutables: Vec::new(),
+                si_tables: Vec::new(),
             }),
         );
         self.active_immutables = std::ptr::slice_from_raw_parts(std::ptr::null(), 0);

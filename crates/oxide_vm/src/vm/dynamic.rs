@@ -78,8 +78,9 @@ impl Vm {
         let mut added = Vec::new();
         rehome_subtree(&anonymous, base, &mut added);
         Arc::make_mut(&mut table.modules).extend(added);
-        // 平表变长后同步扩容常量缓存，否则激活新模块常量时越界 panic。
+        // 平表变长后同步扩容常量缓存与 si 侧表，否则激活新模块常量时越界 panic。
         table.immutables.resize(table.modules.len(), OnceLock::new());
+        table.si_tables.resize(table.modules.len(), OnceLock::new());
 
         let func_val = self.create_function_object(base, self.current_gen, false, false, false, false);
         let func_obj = unsafe { &mut *func_val.as_js_object_ptr() };
@@ -128,8 +129,9 @@ impl Vm {
         let mut added = Vec::new();
         rehome_subtree(&module, base + 1, &mut added);
         Arc::make_mut(&mut table.modules).extend(added);
-        // 平表变长后同步扩容常量缓存，否则激活新模块常量时越界 panic。
+        // 平表变长后同步扩容常量缓存与 si 侧表，否则激活新模块常量时越界 panic。
         table.immutables.resize(table.modules.len(), OnceLock::new());
+        table.si_tables.resize(table.modules.len(), OnceLock::new());
         Ok(self.create_function_object(base, self.current_gen, false, false, false, false))
     }
 
@@ -171,8 +173,9 @@ impl Vm {
         let mut added = Vec::new();
         rehome_subtree(&module, base + 1, &mut added);
         Arc::make_mut(&mut table.modules).extend(added);
-        // 平表变长后同步扩容常量缓存，否则激活新模块常量时越界 panic。
+        // 平表变长后同步扩容常量缓存与 si 侧表，否则激活新模块常量时越界 panic。
         table.immutables.resize(table.modules.len(), OnceLock::new());
+        table.si_tables.resize(table.modules.len(), OnceLock::new());
         Ok(self.create_function_object(base, self.current_gen, false, false, false, false))
     }
 }

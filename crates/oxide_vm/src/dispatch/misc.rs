@@ -204,13 +204,13 @@ impl Vm {
     /// 后续属性值经 SET_PROP_BATCH 纯槽写。
     ///
     /// # 步骤
-    /// 1. 逐个键常量取 perm string → `property_key_si`（与逐属性 SET_PROP 路径
-    ///    逐字节同键），链式 `make_shape` 累加 shape。
+    /// 1. 逐键直读模块 si 侧表（模块装载期 `activate_immutables` 已预 intern，
+    ///    与逐属性 SET_PROP 路径逐字节同键），链式 `make_shape` 累加 shape。
     /// 2. 分配对象、预填充 `nprops` 个数据槽、`generation += nprops`（与逐属性路径终值一致）。
     ///
     /// # 边界与前提
     /// - `nprops = 0` 时退化为普通空对象（无 ext 键表）。
-    /// - 键常量越界取 undefined 防御（emit 保证合法下标）。
+    /// - 侧表条目缺失（防御面，正常路径不出现）回退旧路径按键值重推 si。
     #[inline(always)]
     pub(crate) fn dispatch_new_object(&mut self, rd: usize, instr: u32) -> Result<(), String> {
         let nprops = opcode::a(instr) as usize;
@@ -218,17 +218,23 @@ impl Vm {
         let proto_ptr = &*self.object_prototype as *const JsObject as *mut JsObject;
         let mut shape_id = EMPTY_SHAPE_ID;
         if nprops > 0 {
-            // 先把键常量值拷出（immutables 借 self，property_key_si 需 &mut self）。
-            let key_vals: Vec<JsValue> = {
-                let imm = self.immutables();
-                self.bytecode[self.pc..self.pc + nprops]
-                    .iter()
-                    .map(|w| imm.get(*w as usize).copied().unwrap_or(JsValue::undefined()))
-                    .collect()
-            };
+            let key_idxs: Vec<u32> = self.bytecode[self.pc..self.pc + nprops].to_vec();
             self.pc += nprops;
-            for key_val in key_vals {
-                let si = self.property_key_si(key_val)?;
+            // si 侧表与 immutables 同点激活：活动模块的侧表此刻必已填充。
+            let si_table = self.active_table().si_tables[self.active_flat_id as usize]
+                .get()
+                .expect("活动模块的 si 侧表已随不可变常量激活同步填充");
+            let key_si: Vec<Option<u32>> =
+                key_idxs.iter().map(|k| si_table.get(*k as usize).copied().flatten()).collect();
+            for (key_idx, si_opt) in key_idxs.iter().zip(key_si.iter()) {
+                let si = match si_opt {
+                    Some(si) => *si,
+                    None => {
+                        let imm = self.immutables();
+                        let key_val = imm.get(*key_idx as usize).copied().unwrap_or(JsValue::undefined());
+                        self.property_key_si(key_val)?
+                    }
+                };
                 shape_id = self.kernel_core.shape_forge().make_shape(shape_id, si);
             }
         }
