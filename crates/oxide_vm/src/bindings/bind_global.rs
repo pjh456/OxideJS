@@ -44,6 +44,7 @@ pub fn bind_global(core: &Arc<KernelCore>, session: &KernelSession, global: &mut
                 oxide_builtins::module::module_set_reexport::<crate::vm::Vm> as *const (),
                 5,
             ),
+            ("__moduleAlias", oxide_builtins::module::module_alias::<crate::vm::Vm> as *const (), 3),
             ("__moduleGet", oxide_builtins::module::module_get::<crate::vm::Vm> as *const (), 2),
             (
                 "__moduleLinkGet",

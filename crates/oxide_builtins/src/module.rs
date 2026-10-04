@@ -561,6 +561,40 @@ pub fn module_set_reexport<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     NativeResult::Ok(JsValue::undefined())
 }
 
+/// `__moduleAlias(ns, name, fallback)`：自别名收尾刷新用。命名空间存在该导出时
+/// 返回其值，否则返回传入的 `fallback`（不抛错）：star 未提供该名时占位值原样
+/// 保留，与现行「星号未提供该名时静默 undefined」行为一致。
+///
+/// # 边界与前提
+/// - 命名空间无该导出时不抛错（区别于 `__moduleGet` 的 TypeError 与
+///   `__moduleLinkGet` 的 SyntaxError），缺失臂返回 `fallback` 原值。
+///
+/// # 副作用
+/// - 无：只读命名空间属性，不修改条目表。
+pub fn module_alias<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    if args.len() < 4 {
+        return type_error(vm, "__moduleAlias: 3 arguments required");
+    }
+    let ns_val = vm.reg(args[1]);
+    let ns_ptr = match vm.checked_object_ptr(ns_val, "__moduleAlias: target is not an object") {
+        Ok(Some(p)) => p,
+        Ok(None) => return type_error(vm, "__moduleAlias: target is not an object"),
+        Err(e) => return NativeResult::Err(crate::error::create_error(vm, &e)),
+    };
+    let name_val = vm.reg(args[2]);
+    let name_si = vm.property_key_si(name_val);
+    let fallback = vm.reg(args[3]);
+    let obj = unsafe { &*ns_ptr };
+    if vm.get_own_property_slot(obj, name_si).is_some() {
+        match vm.ordinary_get(obj, name_si, ns_val) {
+            Ok(v) => NativeResult::Ok(v),
+            Err(e) => NativeResult::Err(crate::error::create_error(vm, &e)),
+        }
+    } else {
+        NativeResult::Ok(fallback)
+    }
+}
+
 /// `__moduleGet(ns, name)`：读取命名空间导出属性。
 pub fn module_get<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     if args.len() < 3 {

@@ -175,8 +175,9 @@ pub struct CompileCtx {
     /// 自导入（import from 自身）的 source 字符串集合：绑定走别名语义，不能链接期快照。
     pub(crate) module_self_import_specs: HashSet<String>,
     /// 自导入别名：导出名 → 本地绑定槽寄存器（export 语句执行时回写绑定值）。
-    /// 仅承载无法静态解析源绑定的退化占位路径（star 转发的自导入名）。
-    pub(crate) module_self_aliases: HashMap<String, u32>,
+    /// 仅承载无法静态解析源绑定的退化占位路径（star 转发的自导入名）；同名多绑定
+    /// （如 default 双绑定）经 Vec 并列回写。
+    pub(crate) module_self_aliases: HashMap<String, Vec<u32>>,
     /// 自导入别名（本地名，基源绑定名）：供别名捕获后处理合并源/别名 cell。
     pub(crate) module_alias_pairs: Vec<(String, String)>,
     /// 标签模板 site 计数器：本编译树内全局唯一（子 ctx 继承父值继续递增）。

@@ -567,7 +567,7 @@ impl Emitter {
                                 }
                                 if is_self {
                                     let alias_reg = self.emit_self_alias_placeholder(s.local.name.as_str(), ctx)?;
-                                    ctx.module_self_aliases.insert(imported, alias_reg);
+                                    ctx.module_self_aliases.entry(imported).or_default().push(alias_reg);
                                 } else {
                                     let name_reg = self.load_string_const(&imported, ctx);
                                     let val_reg =
@@ -619,7 +619,10 @@ impl Emitter {
                                 }
                                 if is_self {
                                     let alias_reg = self.emit_self_alias_placeholder(s.local.name.as_str(), ctx)?;
-                                    ctx.module_self_aliases.insert(DEFAULT_EXPORT_NAME.to_string(), alias_reg);
+                                    ctx.module_self_aliases
+                                        .entry(DEFAULT_EXPORT_NAME.to_string())
+                                        .or_default()
+                                        .push(alias_reg);
                                 } else {
                                     let name_reg = self.load_string_const(DEFAULT_EXPORT_NAME, ctx);
                                     let val_reg =
@@ -799,6 +802,10 @@ impl Emitter {
             self.emit_statement(stmt, ctx)?;
         }
 
+        // —— 自别名收尾刷新：star 复制等跨模块注册路径后占位槽可能仍为旧值，
+        // 封冻命名空间前统一从命名空间非抛出回读兜底。 ——
+        self.emit_self_alias_refresh(ctx, ns_reg)?;
+
         // —— 收尾：封冻命名空间并返回（顶层 RETURN 亦终止 run）——
         self.emit_module_call(ctx, "__moduleSeal", &[ns_reg])?;
         if top_level {
@@ -888,9 +895,11 @@ impl Emitter {
     }
 
     /// 自导入别名回写：导出名若被本模块 self-import 绑定别名引用，
-    /// export 语句执行时同步把值写回本地绑定槽。
+    /// export 语句执行时同步把值写回本地绑定槽。同名多槽（default 双绑定）
+    /// 逐槽并列回写。
     fn emit_self_alias_write(&self, ctx: &mut CompileCtx, export_name: &str, value_reg: u32) {
-        if let Some(&alias_reg) = ctx.module_self_aliases.get(export_name) {
+        let regs = ctx.module_self_aliases.get(export_name).cloned().unwrap_or_default();
+        for &alias_reg in &regs {
             ctx.inst(Inst::new(
                 OpCode::STORE_VAR,
                 Operand::Reg(alias_reg),
@@ -900,9 +909,33 @@ impl Emitter {
         }
     }
 
+    /// 自导入别名统一刷新：对每个登记的自导入占位名，从命名空间非抛出读回写
+    /// 占位槽（命名空间无该名时保留占位值，不抛错）。star 转发的自导入名在
+    /// 导出语句处静态不可知，故每次 star 复制后与 body 收尾各刷新一次；
+    /// 名集按字典序排序后发射，保证发射序确定性。
+    fn emit_self_alias_refresh(&self, ctx: &mut CompileCtx, ns_reg: u32) -> Result<(), String> {
+        if ctx.module_self_aliases.is_empty() {
+            return Ok(());
+        }
+        let mut names: Vec<String> = ctx.module_self_aliases.keys().cloned().collect();
+        names.sort();
+        for name in names {
+            let regs = ctx.module_self_aliases.get(&name).cloned().unwrap_or_default();
+            for &alias_reg in &regs {
+                let name_reg = self.load_string_const(&name, ctx);
+                let cur_reg = ctx.alloc_reg();
+                ctx.inst(Inst::new(OpCode::LOAD_VAR, Operand::Reg(cur_reg), Operand::Reg(alias_reg), Operand::None));
+                let r = self.emit_module_call(ctx, "__moduleAlias", &[ns_reg, name_reg, cur_reg])?;
+                ctx.inst(Inst::new(OpCode::STORE_VAR, Operand::Reg(alias_reg), Operand::Reg(r), Operand::None));
+            }
+        }
+        Ok(())
+    }
+
     /// 自导入绑定的非别名占位：源绑定无法静态解析（star 转发的自导入名）时，
     /// prelude 把局部名绑成已初始化的 undefined 常量槽并登记回写，由 export
-    /// 语句执行时就地刷新。返回该本地绑定槽寄存器。
+    /// 语句执行时就地刷新，body 收尾再统一从命名空间回读兜底。
+    /// 返回该本地绑定槽寄存器。
     fn emit_self_alias_placeholder(&self, local: &str, ctx: &mut CompileCtx) -> Result<u32, String> {
         let undef_idx = ctx.add_constant(Constant::Undefined);
         let undef_reg = ctx.alloc_reg();
@@ -1132,6 +1165,9 @@ impl Emitter {
                                 &dep_path,
                                 &local_name,
                             )?;
+                            // 自导入名可能来自 star 转发（占位路径）：导出语句执行时
+                            // 就地刷新本地槽，覆盖同模块 body 内导出后读取的形态。
+                            self.emit_self_alias_write(ctx, &exported_name, val_reg);
                             continue;
                         }
                         // 无 source 但局部名是导入绑定：按规范重分类为间接导出，来源为
@@ -1139,6 +1175,8 @@ impl Emitter {
                         if let Some((dep_path, imported)) = ctx.module_import_origins.get(&local_name).cloned() {
                             let val_reg = self.load_var_reg(&local_name, ctx)?;
                             self.emit_module_set_reexport(ctx, ns_reg, &exported_name, val_reg, &dep_path, &imported)?;
+                            // 自导入名重分类为间接导出时同样就地刷新占位槽。
+                            self.emit_self_alias_write(ctx, &exported_name, val_reg);
                             continue;
                         }
                         // 本地导出：来源恒为 Local。
@@ -1265,10 +1303,15 @@ impl Emitter {
                         &dep_path,
                         MODULE_NAMESPACE_BINDING,
                     )?;
+                    // 自导入的 star-as 名走占位路径：就地刷新为命名空间对象。
+                    self.emit_self_alias_write(ctx, &exported_name, dep_ns_reg);
                 } else {
                     // 来源传播：star 复制按 (dep_path, 绑定) 判同名冲突。
                     let path_reg = self.load_string_const(&dep_path, ctx);
                     self.emit_module_call(ctx, "__moduleStar", &[ns_reg, dep_ns_reg, path_reg])?;
+                    // star 复制后 star 转发的自导入名已就位：就地刷新占位槽，
+                    // 覆盖 body 内 star 语句之后立即读取的形态。
+                    self.emit_self_alias_refresh(ctx, ns_reg)?;
                 }
             }
             _ => return Err("unsupported module export statement".into()),
