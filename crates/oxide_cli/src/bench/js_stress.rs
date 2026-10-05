@@ -93,6 +93,8 @@ pub fn run_js_stress_bench(config: &BenchConfig, kernel: &Arc<KernelCore>, pool:
 
             let pre_session = vm.session_object_count();
             let pre_epoch = vm.epoch_object_count();
+            let pre_ic_hits = vm.ic_hit_count();
+            let pre_ic_misses = vm.ic_miss_count();
 
             let exec_start = Instant::now();
             let _result = vm.run(&module);
@@ -109,9 +111,13 @@ pub fn run_js_stress_bench(config: &BenchConfig, kernel: &Arc<KernelCore>, pool:
             let session_bytes = vm.session_bytes_allocated();
             let epoch_objects = vm.epoch_object_count().saturating_sub(pre_epoch);
             let instruction_count = vm.instruction_count();
-            let ic_hit_rate = vm.ic_hit_rate();
-            let ic_hits = vm.ic_hit_count();
-            let ic_misses = vm.ic_miss_count();
+            let ic_hits = vm.ic_hit_count().saturating_sub(pre_ic_hits);
+            let ic_misses = vm.ic_miss_count().saturating_sub(pre_ic_misses);
+            let ic_hit_rate = if ic_hits + ic_misses == 0 {
+                0.0
+            } else {
+                ic_hits as f64 / (ic_hits + ic_misses) as f64
+            };
 
             // 留存口径：强制完整 GC 清掉不可达垃圾后账目即留存堆。
             vm.collect_session_gc();
