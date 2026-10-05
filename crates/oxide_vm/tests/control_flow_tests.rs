@@ -42,6 +42,14 @@ fn eval_if_without_else_false() {
 }
 
 #[test]
+fn eval_if_no_else_false_branch_undefined() {
+    // 顶层脚本完成值直读 if 的 result_reg：假支前有用后死的 vreg（x 持 1，
+    // 被 keep 调用读取后死亡），其物理槽可能与 result_reg 别名。假支必须显式
+    // 写 undefined，不得泄漏该槽前值。
+    assert_eq!(eval("let x = 1; function keep(v){ return v; } keep(x); if (false) { }"), "undefined");
+}
+
+#[test]
 fn eval_dangling_else() {
     assert_eq!(eval("if (true) { if (false) { 1 } else { 2 } }"), "2");
 }

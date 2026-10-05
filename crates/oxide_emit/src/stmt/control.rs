@@ -32,9 +32,8 @@ impl Emitter {
             ctx.inst(Inst::load_const(Operand::Reg(result_reg), undef_idx));
         }
 
-        if ifs.alternate.is_some() {
-            ctx.inst(Inst::jmp(end_label));
-        }
+        // 真支无条件跳末尾，无 else 时防穿落假支。
+        ctx.inst(Inst::jmp(end_label));
 
         ctx.labels.set_label_pos(else_label, ctx.insts.len());
         if let Some(alt) = &ifs.alternate {
@@ -47,6 +46,11 @@ impl Emitter {
                 let undef_idx = ctx.add_constant(Constant::Undefined);
                 ctx.inst(Inst::load_const(Operand::Reg(result_reg), undef_idx));
             }
+        } else {
+            // 无 else 的假支显式写 undefined：完成值在所有路径都有定义，
+            // 不依赖寄存器文件初始值，防物理槽别名泄漏前值。
+            let undef_idx = ctx.add_constant(Constant::Undefined);
+            ctx.inst(Inst::load_const(Operand::Reg(result_reg), undef_idx));
         }
 
         ctx.labels.set_label_pos(end_label, ctx.insts.len());
