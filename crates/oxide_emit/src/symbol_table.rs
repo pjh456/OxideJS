@@ -30,6 +30,10 @@ pub(crate) struct Binding {
     /// 由块/函数级预声明（TDZ 占位）创建，声明点据此复用槽位。
     /// 非预声明的同名绑定（如同 scope 的参数/var）不计，避免误复用。
     pub(crate) predeclared: bool,
+    /// 该绑定实例的闭包捕获 cell 索引：`None` 表示未被捕获（无 cell）。
+    /// 函数级绑定由捕获分析的名字排序分配回填；块级遮蔽绑定在预声明点
+    /// 追加新索引。解析点按绑定实例取索引，同名多绑定各持各的 cell。
+    pub(crate) cell_idx: Option<u8>,
 }
 
 /// 作用域符号表：名字 → 寄存器号/初始化状态/const 标志。
@@ -115,6 +119,7 @@ impl SymbolTable {
                 is_const: matches!(kind, VariableDeclarationKind::Const) || is_const,
                 lexical: !matches!(kind, VariableDeclarationKind::Var),
                 predeclared: false,
+                cell_idx: None,
             },
         );
         Ok(())
@@ -151,6 +156,17 @@ impl SymbolTable {
         None
     }
 
+    /// 给最内层同名可见绑定写入 cell 索引（函数级回填与块级追加共用）。
+    /// 名字未在任何作用域声明时静默跳过。
+    pub(crate) fn set_binding_cell_idx(&mut self, name: &str, idx: u8) {
+        for scope in self.scopes.iter_mut().rev() {
+            if let Some(b) = scope.bindings.get_mut(name) {
+                b.cell_idx = Some(idx);
+                return;
+            }
+        }
+    }
+
     /// 消费当前（最内层）作用域中由预声明创建的绑定槽：存在且 `predeclared`
     /// 时返回其寄存器并清除标志（声明点复用后不再视作预声明）；否则返回 None。
     /// 同 scope 的非预声明绑定（参数/var/未推 scope 的 try 内声明）不计，避免误复用。
@@ -179,6 +195,7 @@ impl SymbolTable {
                 is_const: false,
                 lexical: false,
                 predeclared: false,
+                cell_idx: None,
             },
         );
         reg_for_new
@@ -220,6 +237,7 @@ impl SymbolTable {
                 is_const: matches!(kind, VariableDeclarationKind::Const) || is_const,
                 lexical: !matches!(kind, VariableDeclarationKind::Var),
                 predeclared: false,
+                cell_idx: None,
             },
         );
         Ok(())
@@ -233,6 +251,7 @@ impl SymbolTable {
             is_const: false,
             lexical: false,
             predeclared: false,
+            cell_idx: None,
         });
     }
 
@@ -258,6 +277,7 @@ impl SymbolTable {
                 is_const: matches!(kind, VariableDeclarationKind::Const) || is_const,
                 lexical: !matches!(kind, VariableDeclarationKind::Var),
                 predeclared: true,
+                cell_idx: None,
             },
         );
         Ok(())
@@ -318,6 +338,7 @@ impl SymbolTable {
                 // 导入绑定是模块作用域词法（const）绑定，同 let/const 置位。
                 lexical: true,
                 predeclared: false,
+                cell_idx: None,
             },
         );
         self.aliases.insert(local.to_string(), base);
@@ -503,5 +524,27 @@ mod tests {
     fn alias_of_missing_source_is_error() {
         let mut st = SymbolTable::new();
         assert!(st.add_alias("y", "missing").is_err());
+    }
+
+    #[test]
+    fn set_binding_cell_idx_innermost_first() {
+        let mut st = SymbolTable::new();
+        st.declare("x", 0, l(), false).unwrap();
+        st.push_scope();
+        st.declare("x", 1, l(), false).unwrap();
+        st.set_binding_cell_idx("x", 3);
+        let (inner, _) = st.lookup_any_binding("x").unwrap();
+        assert_eq!(inner.cell_idx, Some(3));
+        st.pop_scope();
+        // 外层绑定不受内层写入影响：同名多绑定各持各的 cell 索引。
+        let (outer, _) = st.lookup_any_binding("x").unwrap();
+        assert_eq!(outer.cell_idx, None);
+    }
+
+    #[test]
+    fn set_binding_cell_idx_missing_name_noop() {
+        let mut st = SymbolTable::new();
+        st.set_binding_cell_idx("missing", 0);
+        assert!(st.lookup_any_binding("missing").is_none());
     }
 }

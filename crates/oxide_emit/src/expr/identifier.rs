@@ -34,18 +34,17 @@ impl Emitter {
         // 捕获集是函数级名字并集：块级 let/const 的 cell 在块退出后仍存留，但名字
         // 已不在作用域链内。仅当名字当前可解析为真实词法绑定时才走 cell（隐式全局
         // 登记不算），否则落下方全局解析（未声明读经 LOAD_GLOBAL 抛 ReferenceError），
-        // 不得按名误读已失效的 cell。
-        if let Some(&cell_idx) = ctx.captured_bindings.get(name) {
-            if let Some(binding_reg) = ctx.visible_binding_reg(name) {
-                let r = ctx.alloc_reg();
-                ctx.inst(Inst::new(
-                    OpCode::CELL_GET,
-                    Operand::Reg(r),
-                    Operand::Reg(binding_reg),
-                    Operand::Imm(cell_idx as u16),
-                ));
-                return Ok(r);
-            }
+        // 不得按名误读已失效的 cell。索引按绑定实例取（`visible_cell` 已含可见性
+        // 判定），同名多绑定各读各的 cell。
+        if let Some((cell_idx, binding_reg)) = ctx.visible_cell(name) {
+            let r = ctx.alloc_reg();
+            ctx.inst(Inst::new(
+                OpCode::CELL_GET,
+                Operand::Reg(r),
+                Operand::Reg(binding_reg),
+                Operand::Imm(cell_idx as u16),
+            ));
+            return Ok(r);
         }
 
         let var_reg = match ctx.lookup_or_builtin(name) {
@@ -117,29 +116,16 @@ impl Emitter {
                 Operand::Imm(uv_idx as u16),
                 Operand::None,
             ));
-        } else if let Some(&cell_idx) = ctx.captured_bindings.get(name) {
+        } else if let Some((cell_idx, binding_reg)) = ctx.visible_cell(name) {
             // 回退分支的捕获 cell 同样只在名字当前可解析为真实词法绑定时才有效；
             // 否则与静态解析一致：顶层 tier 名读全局对象属性，其余读 undefined
             // （with 回退不抛未解析引用）。
-            if let Some(binding_reg) = ctx.visible_binding_reg(name) {
-                ctx.inst(Inst::new(
-                    OpCode::CELL_GET,
-                    Operand::Reg(result_reg),
-                    Operand::Reg(binding_reg),
-                    Operand::Imm(cell_idx as u16),
-                ));
-            } else if self.is_global_tier_name(ctx, name) {
-                let key_idx = ctx.add_constant(Constant::String(name.to_string()));
-                ctx.inst(Inst::new(
-                    OpCode::LOAD_GLOBAL,
-                    Operand::Reg(result_reg),
-                    Operand::Const(key_idx),
-                    Operand::None,
-                ));
-            } else {
-                let undef_idx = ctx.add_constant(Constant::Undefined);
-                ctx.inst(Inst::load_const(Operand::Reg(result_reg), undef_idx));
-            }
+            ctx.inst(Inst::new(
+                OpCode::CELL_GET,
+                Operand::Reg(result_reg),
+                Operand::Reg(binding_reg),
+                Operand::Imm(cell_idx as u16),
+            ));
         } else if self.is_global_tier_name(ctx, name) {
             // 顶层已声明 var：with 对象无该属性时回退读全局对象属性（顶层 var 的唯一
             // 存储，引擎侧不保留镜像副本）。
@@ -229,17 +215,16 @@ impl Emitter {
         // 目标若是被捕获 cell，走 CELL_SET；仅当名字当前可解析为真实词法绑定时才写
         // cell——捕获集按名保留的块级绑定在块退出后不可解析（隐式全局登记不算），
         // 须落下方全局写（sloppy 物化隐式全局属性，strict 抛 ReferenceError）。
-        if let Some(&cell_idx) = ctx.captured_bindings.get(name) {
-            if ctx.visible_binding_reg(name).is_some() {
-                ctx.inst(Inst::new(
-                    OpCode::CELL_SET,
-                    Operand::None,
-                    Operand::Reg(val_reg),
-                    Operand::Imm(cell_idx as u16),
-                ));
-                self.emit_module_write_through(name, val_reg, ctx)?;
-                return Ok(());
-            }
+        // 索引按绑定实例取（`visible_cell` 已含可见性判定），同名多绑定各写各的 cell。
+        if let Some((cell_idx, _)) = ctx.visible_cell(name) {
+            ctx.inst(Inst::new(
+                OpCode::CELL_SET,
+                Operand::None,
+                Operand::Reg(val_reg),
+                Operand::Imm(cell_idx as u16),
+            ));
+            self.emit_module_write_through(name, val_reg, ctx)?;
+            return Ok(());
         }
         let var_reg = ctx.lookup_or_global(name);
         if ctx.targets_readonly_builtin(name, var_reg) {

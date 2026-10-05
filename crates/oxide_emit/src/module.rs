@@ -449,7 +449,9 @@ impl Emitter {
 
         // 闭包捕获分析（import 绑定名纳入 own_bindings，供嵌套函数 cell 捕获）。
         ctx.own_bindings = collect_own_binding_names(&[], body);
-        ctx.captured_bindings = collect_captured_bindings(body, &[], &ctx.own_bindings);
+        ctx.set_captured_bindings(collect_captured_bindings(body, &[], &ctx.own_bindings));
+        // 模块顶层函数级绑定 cell 索引回填：预声明已完成，绑定已齐。
+        ctx.backfill_captured_cell_idxs();
 
         // —— 模块命名空间对象 ——
         let ns_reg = self.emit_module_call(ctx, "__moduleObject", &[])?;

@@ -365,6 +365,9 @@ impl Emitter {
                     is_const: binding.is_const,
                     lexical: binding.lexical,
                     predeclared: false,
+                    // 父层 cell 索引在子帧无效：子帧经 upvalue 路径访问父捕获
+                    // 绑定，不复制索引（复制会让解析点误发子帧 cell 表读）。
+                    cell_idx: None,
                 },
             );
             inherited_reg_start = inherited_reg_start.max(binding.reg.saturating_add(1));
@@ -390,6 +393,7 @@ impl Emitter {
                     // 类 this 自绑定非用户词法声明，不置位。
                     lexical: false,
                     predeclared: false,
+                    cell_idx: None,
                 },
             );
             inherited_reg_start = inherited_reg_start.max(reg.saturating_add(1));
@@ -443,6 +447,10 @@ impl Emitter {
                 }
             }
         }
+
+        // 函数级绑定 cell 索引回填：预声明完成后函数级绑定已齐，捕获集的名字
+        // 排序索引写入各绑定实例，解析点据此按绑定身份取索引。
+        ctx.backfill_captured_cell_idxs();
 
         // `var` 与块级函数外层 var 绑定入口实例化（非捕获名）：预声明只登记槽位、
         // 不发射定义指令，声明点对已绑定名又跳过 undefined 写，缺失入口写会让首次
@@ -635,7 +643,7 @@ impl Emitter {
         // 字段初始化表达式（值表达式）与参数默认值一并纳入捕获分析。
         let mut capture_exprs: Vec<&oxide_parser::Expression> = param_defaults.clone();
         capture_exprs.extend_from_slice(extra_capture_exprs);
-        ctx.captured_bindings = collect_captured_bindings(body_stmts, &capture_exprs, &ctx.own_bindings);
+        ctx.set_captured_bindings(collect_captured_bindings(body_stmts, &capture_exprs, &ctx.own_bindings));
         // 自由变量分析：收集 upvalue 捕获（类方法也是普通函数，可捕获外层变量）。
         if matches!(
             body_context,

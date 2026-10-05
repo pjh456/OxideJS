@@ -629,7 +629,6 @@ impl Emitter {
             self.emit_const_write_guard(name, ctx)?;
         }
         let uv_idx = ctx.current_upvalue_captures.iter().position(|u| u.name == name);
-        let captured_cell = ctx.captured_bindings.get(name).copied();
         // 循环 update 段：被捕获绑定走寄存器 INC/DEC——C 风格 for 的 let/const
         // 循环变量每迭代新分配一个 cell，update 写寄存器供其拷入，不污染本迭代
         // 闭包捕获的 cell（机制见 `compile_ctx.rs` 的 `register_update_names` 字段文档）。
@@ -731,25 +730,16 @@ impl Emitter {
             ));
             self.emit_module_write_through(name, new_reg, ctx)?;
             Ok(if update.prefix { new_reg } else { old_reg })
-        } else if let Some(cell_idx) = captured_cell {
+        } else if let Some((cell_idx, binding_reg)) = ctx.visible_cell(name) {
             // 被捕获 cell：CELL_GET 旧值 + 常量 1 + ADD/SUB + CELL_SET。
             // 后缀形式须保留旧值（结果寄存器），前缀返回新值。
             let old_reg = ctx.alloc_reg();
-            if let Some((binding, _)) = ctx.scopes.symbols.lookup_any_binding(name) {
-                ctx.inst(Inst::new(
-                    OpCode::CELL_GET,
-                    Operand::Reg(old_reg),
-                    Operand::Reg(binding.reg),
-                    Operand::Imm(cell_idx as u16),
-                ));
-            } else {
-                ctx.inst(Inst::new(
-                    OpCode::CELL_GET,
-                    Operand::Reg(old_reg),
-                    Operand::None,
-                    Operand::Imm(cell_idx as u16),
-                ));
-            }
+            ctx.inst(Inst::new(
+                OpCode::CELL_GET,
+                Operand::Reg(old_reg),
+                Operand::Reg(binding_reg),
+                Operand::Imm(cell_idx as u16),
+            ));
             let one_idx = ctx.add_constant(Constant::Int(1));
             let one_reg = ctx.alloc_reg();
             ctx.inst(Inst::load_const(Operand::Reg(one_reg), one_idx));

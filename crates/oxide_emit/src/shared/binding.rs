@@ -86,7 +86,9 @@ impl Emitter {
             }
             return Ok(());
         }
-        if let Some(&cell_idx) = ctx.captured_bindings.get(name) {
+        // 索引按绑定实例取（`visible_cell` 已含可见性判定）：函数级绑定走回填
+        // 索引，绑定未分配索引时回退捕获映射（for 头覆盖等容器面）。
+        if let Some((cell_idx, _)) = ctx.visible_cell(name) {
             let op = if fresh_cell { OpCode::MAKE_CELL_FRESH } else { OpCode::MAKE_CELL };
             ctx.inst(Inst::new(op, Operand::Reg(src_reg), Operand::Imm(cell_idx as u16), Operand::None));
             // C 风格 for 头绑定：cell 之外补写绑定寄存器——循环体/test/update 读寄存器，
@@ -158,18 +160,17 @@ impl Emitter {
                     return Ok(());
                 }
                 // 目标若是被捕获 cell，走 CELL_SET；仅当名字当前可解析为真实词法绑定时才写
-                // cell，否则落下方全局解析（未声明名不建隐式全局登记）。
-                if let Some(&cell_idx) = ctx.captured_bindings.get(name) {
-                    if ctx.visible_binding_reg(name).is_some() {
-                        ctx.inst(Inst::new(
-                            OpCode::CELL_SET,
-                            Operand::None,
-                            Operand::Reg(src_reg),
-                            Operand::Imm(cell_idx as u16),
-                        ));
-                        self.emit_module_write_through(name, src_reg, ctx)?;
-                        return Ok(());
-                    }
+                // cell，否则落下方全局解析（未声明名不建隐式全局登记）。索引按绑定实例
+                // 取（`visible_cell` 已含可见性判定），同名多绑定各写各的 cell。
+                if let Some((cell_idx, _)) = ctx.visible_cell(name) {
+                    ctx.inst(Inst::new(
+                        OpCode::CELL_SET,
+                        Operand::None,
+                        Operand::Reg(src_reg),
+                        Operand::Imm(cell_idx as u16),
+                    ));
+                    self.emit_module_write_through(name, src_reg, ctx)?;
+                    return Ok(());
                 }
                 let var_reg = ctx.lookup_or_global(name);
                 if ctx.targets_readonly_builtin(name, var_reg) {
@@ -391,18 +392,17 @@ impl Emitter {
                     return Ok(());
                 }
                 // 目标若是被捕获 cell，走 CELL_SET；仅当名字当前可解析为真实词法绑定时才写
-                // cell，否则落下方全局解析（未声明名不建隐式全局登记）。
-                if let Some(&cell_idx) = ctx.captured_bindings.get(name) {
-                    if ctx.visible_binding_reg(name).is_some() {
-                        ctx.inst(Inst::new(
-                            OpCode::CELL_SET,
-                            Operand::None,
-                            Operand::Reg(src_reg),
-                            Operand::Imm(cell_idx as u16),
-                        ));
-                        self.emit_module_write_through(name, src_reg, ctx)?;
-                        return Ok(());
-                    }
+                // cell，否则落下方全局解析（未声明名不建隐式全局登记）。索引按绑定实例
+                // 取（`visible_cell` 已含可见性判定），同名多绑定各写各的 cell。
+                if let Some((cell_idx, _)) = ctx.visible_cell(name) {
+                    ctx.inst(Inst::new(
+                        OpCode::CELL_SET,
+                        Operand::None,
+                        Operand::Reg(src_reg),
+                        Operand::Imm(cell_idx as u16),
+                    ));
+                    self.emit_module_write_through(name, src_reg, ctx)?;
+                    return Ok(());
                 }
                 let var_reg = ctx.lookup_or_global(name);
                 if ctx.targets_readonly_builtin(name, var_reg) {
@@ -511,18 +511,17 @@ impl Emitter {
                         continue;
                     }
                     // 目标若是被捕获 cell，走 CELL_SET；仅当名字当前可解析为真实词法绑定时才写
-                    // cell，否则落下方全局解析（未声明名不建隐式全局登记）。
-                    if let Some(&cell_idx) = ctx.captured_bindings.get(name) {
-                        if ctx.visible_binding_reg(name).is_some() {
-                            ctx.inst(Inst::new(
-                                OpCode::CELL_SET,
-                                Operand::None,
-                                Operand::Reg(prop_reg),
-                                Operand::Imm(cell_idx as u16),
-                            ));
-                            self.emit_module_write_through(name, prop_reg, ctx)?;
-                            continue;
-                        }
+                    // cell，否则落下方全局解析（未声明名不建隐式全局登记）。索引按绑定实例
+                    // 取（`visible_cell` 已含可见性判定），同名多绑定各写各的 cell。
+                    if let Some((cell_idx, _)) = ctx.visible_cell(name) {
+                        ctx.inst(Inst::new(
+                            OpCode::CELL_SET,
+                            Operand::None,
+                            Operand::Reg(prop_reg),
+                            Operand::Imm(cell_idx as u16),
+                        ));
+                        self.emit_module_write_through(name, prop_reg, ctx)?;
+                        continue;
                     }
                     let var_reg = ctx.lookup_or_global(name);
                     if ctx.targets_readonly_builtin(name, var_reg) {

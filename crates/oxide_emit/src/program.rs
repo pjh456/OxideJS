@@ -349,8 +349,10 @@ impl Emitter {
             }
         }
         ctx.global_tier_names = tier_names;
-        ctx.captured_bindings = collect_captured_bindings(&program.body, &[], &ctx.own_bindings);
+        ctx.set_captured_bindings(collect_captured_bindings(&program.body, &[], &ctx.own_bindings));
         ctx.captured_bindings.retain(|n, _| !ctx.global_tier_names.contains(n));
+        // 顶层函数级绑定 cell 索引回填：预声明已完成，绑定已齐。
+        ctx.backfill_captured_cell_idxs();
 
         // 顶层 var 入口实例化：被捕获的 var 名统一 MAKE_CELL(undefined)，使 var
         // 声明语句执行前创建的闭包读取到 undefined（脚本 GlobalDeclarationInstantiation

@@ -94,6 +94,10 @@ pub struct CompileCtx {
     /// 捕获判断（MAKE_CELL / CELL_GET / CELL_SET）与子函数 upvalue cell_idx 统一查此映射，
     /// 消除符号表时序依赖与 cell 索引错位。
     pub(crate) captured_bindings: BTreeMap<String, u8>,
+    /// 下一可用 cell 索引（计数器）：捕获分析后初始化为名字集大小（函数级索引
+    /// 0..n-1 占满），块级遮蔽绑定预声明追加与合成 cell 经 `alloc_cell_idx`
+    /// 递增取号，保证与函数级名字排序索引及历次追加互不碰撞。
+    pub(crate) next_cell_idx: u8,
     /// 正在发射的 C 风格 for 头 let/const 声明名（含解构叶）。头名不像块级
     /// let/const 那样在块入口预声明，init 表达式内创建的嵌套函数引用同头尚未
     /// declare 的前向名时，父捕获可见性过滤据此放行；init 发射完毕后移除，
@@ -248,6 +252,7 @@ impl CompileCtx {
             block_fn_suppressed: HashSet::new(),
             block_fn_entry_mats: Vec::new(),
             captured_bindings: BTreeMap::new(),
+            next_cell_idx: 0,
             pending_for_head_names: HashSet::new(),
             global_tier_names: HashSet::new(),
             upvalue_const_flags: HashSet::new(),
@@ -415,6 +420,52 @@ impl CompileCtx {
     pub(crate) fn visible_binding_reg(&self, name: &str) -> Option<u32> {
         let (binding, _) = self.scopes.symbols.lookup_any_binding(name)?;
         (!self.is_implicit_global_reg(binding.reg)).then_some(binding.reg)
+    }
+
+    /// 解析点 cell 索引与绑定寄存器：名字当前可见（真实词法绑定、非隐式全局
+    /// 登记）时返回 (cell_idx, binding_reg)。索引优先取绑定自身字段（函数级
+    /// 回填与块级追加的真源），绑定未分配索引时回退捕获映射（for 头覆盖 /
+    /// catch 参数等容器面，后续子任务逐面收编）。块级遮蔽绑定在块退出后不可
+    /// 解析，返回 None（落全局解析），不得按名误读已失效 cell。
+    pub(crate) fn visible_cell(&self, name: &str) -> Option<(u8, u32)> {
+        let (binding, _) = self.scopes.symbols.lookup_any_binding(name)?;
+        if self.is_implicit_global_reg(binding.reg) {
+            return None;
+        }
+        let idx = binding.cell_idx.or_else(|| self.captured_bindings.get(name).copied())?;
+        Some((idx, binding.reg))
+    }
+
+    /// 设置捕获集并同步 cell 索引计数器：映射值为 0..n-1 的名字排序索引，
+    /// 计数器自 n 起保证后续追加（块级预声明 / 合成 cell）不与既有索引碰撞。
+    pub(crate) fn set_captured_bindings(&mut self, map: BTreeMap<String, u8>) {
+        self.next_cell_idx = map.len() as u8;
+        self.captured_bindings = map;
+    }
+
+    /// 分配一个新 cell 索引：取当前计数器值并递增。块级遮蔽绑定预声明追加与
+    /// 合成 cell 共用，分配序由发射序决定，跨 run 稳定。
+    #[allow(dead_code)] // 块级遮蔽绑定预声明追加（后续子任务）消费，本件仅立计数器
+    pub(crate) fn alloc_cell_idx(&mut self) -> u8 {
+        let idx = self.next_cell_idx;
+        self.next_cell_idx = self.next_cell_idx.saturating_add(1);
+        idx
+    }
+
+    /// 给最内层同名可见绑定写入 cell 索引（委托符号表）。
+    pub(crate) fn set_binding_cell_idx(&mut self, name: &str, idx: u8) {
+        self.scopes.symbols.set_binding_cell_idx(name, idx);
+    }
+
+    /// 函数级绑定 cell 索引回填：捕获集（名字排序分配）的索引写入对应绑定
+    /// 实例，使解析点按绑定身份取索引。预声明完成后调用，函数级绑定（参数 /
+    /// var / 直接子级词法 / 块级函数外层 var / arguments）此时已齐。
+    pub(crate) fn backfill_captured_cell_idxs(&mut self) {
+        let entries: Vec<(String, u8)> =
+            self.captured_bindings.iter().map(|(name, &idx)| (name.clone(), idx)).collect();
+        for (name, idx) in entries {
+            self.set_binding_cell_idx(&name, idx);
+        }
     }
 
     pub(crate) fn lookup_const_flag(&self, name: &str) -> bool {
@@ -810,9 +861,16 @@ impl CompileCtx {
             param_layout,
             builtin_reg_map: std::mem::take(&mut self.scopes.builtin_reg_map),
             upvalue_captures,
-            // 容量按名字集大小取：别名捕获合并会让多个名字共享同一 cell，
-            // 下标可重复但不超过名字数，故 len 恒覆盖实际使用的最大下标。
-            cells_needed: self.captured_bindings.len() as u8,
+            // 容量覆盖全部已分配 cell 索引：函数级名字排序索引（映射值 0..n-1）
+            // 与追加索引（计数器，块级预声明 / 合成 cell）取较大者加一；别名
+            // 捕获合并让多个名字共享同一 cell，下标可重复。
+            cells_needed: self
+                .captured_bindings
+                .values()
+                .copied()
+                .max()
+                .map_or(0, |m| m.saturating_add(1))
+                .max(self.next_cell_idx),
             n_registers: self.max_regs,
             is_arrow: false,
             is_class_constructor: false,

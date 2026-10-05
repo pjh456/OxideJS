@@ -49,7 +49,6 @@ impl Emitter {
             }
         }
         let uv_idx = ctx.current_upvalue_captures.iter().position(|u| u.name == name);
-        let captured_cell = ctx.captured_bindings.get(name).copied();
         let const_flag = if ctx.lookup_const_flag(name) { 1 } else { 0 };
         if let Some(uv) = uv_idx {
             let val_reg = ctx.alloc_reg();
@@ -68,16 +67,12 @@ impl Emitter {
             ));
             self.emit_module_write_through(name, val_reg, ctx)?;
             Ok(val_reg)
-        } else if let Some(cell_idx) = captured_cell {
+        } else if let Some((cell_idx, binding_reg)) = ctx.visible_cell(name) {
             let val_reg = ctx.alloc_reg();
-            let a_operand = match ctx.scopes.symbols.lookup_any_binding(name) {
-                Some((binding, _)) => Operand::Reg(binding.reg),
-                None => Operand::None,
-            };
             ctx.inst(Inst::new(
                 OpCode::CELL_GET,
                 Operand::Reg(val_reg),
-                a_operand,
+                Operand::Reg(binding_reg),
                 Operand::Imm(cell_idx as u16),
             ));
             ctx.inst(Inst::new(op, Operand::Reg(val_reg), Operand::Reg(rhs), Operand::None));
@@ -376,7 +371,6 @@ impl Emitter {
                     self.emit_identifier_tdz_guard(name, ctx)?;
                     // 目标判定：upvalue / 被捕获 cell / 普通槽，读与写须穿透共享单元。
                     let uv_idx = ctx.current_upvalue_captures.iter().position(|u| u.name == name);
-                    let captured_cell = ctx.captured_bindings.get(name).copied();
                     let result_reg = ctx.alloc_reg();
                     if let Some(uv) = uv_idx {
                         ctx.inst(Inst::new(
@@ -385,15 +379,11 @@ impl Emitter {
                             Operand::Imm(uv as u16),
                             Operand::None,
                         ));
-                    } else if let Some(cell_idx) = captured_cell {
-                        let a_operand = match ctx.scopes.symbols.lookup_any_binding(name) {
-                            Some((binding, _)) => Operand::Reg(binding.reg),
-                            None => Operand::None,
-                        };
+                    } else if let Some((cell_idx, binding_reg)) = ctx.visible_cell(name) {
                         ctx.inst(Inst::new(
                             OpCode::CELL_GET,
                             Operand::Reg(result_reg),
-                            a_operand,
+                            Operand::Reg(binding_reg),
                             Operand::Imm(cell_idx as u16),
                         ));
                     } else {
@@ -429,7 +419,7 @@ impl Emitter {
                             Operand::Reg(val_reg),
                             Operand::Imm(uv as u16),
                         ));
-                    } else if let Some(cell_idx) = captured_cell {
+                    } else if let Some((cell_idx, _)) = ctx.visible_cell(name) {
                         ctx.inst(Inst::new(
                             OpCode::CELL_SET,
                             Operand::None,
