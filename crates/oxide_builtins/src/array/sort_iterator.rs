@@ -16,7 +16,7 @@ use super::common::{
 
 /// 对元素向量执行 `Array.prototype.sort` 的比较语义（原地排序）。
 ///
-/// 默认按 ToString 结果的字符串字典序比较；提供比较回调时按其返回值
+/// 默认按 ToString 结果的 UTF-16 码元字典序比较；提供比较回调时按其返回值
 ///（<0/=0/>0）决定次序，回调抛错则中止并把异常原样返回。
 pub(crate) fn sort_values_inner<H: VmHost>(
     vm: &mut H, vals: &mut [JsValue], comparator: Option<JsValue>,
@@ -48,9 +48,12 @@ pub(crate) fn sort_values_inner<H: VmHost>(
                 }
             }
         } else {
+            // 规范 CompareArrayElements 对 ToString 结果做关系比较，字符串按
+            // UTF-16 码元字典序；码元序列比较与码点序在补充平面字符处分歧，
+            // 此处以码元序为准。
             let sa = oxide_runtime_api::to_string(*a);
             let sb = oxide_runtime_api::to_string(*b);
-            sa.cmp(&sb)
+            sa.encode_utf16().cmp(sb.encode_utf16())
         }
     });
     if let Some(err) = sort_error {
@@ -72,7 +75,7 @@ pub(crate) fn parse_sort_comparator<H: VmHost>(vm: &mut H, candidate: JsValue) -
 
 /// 原地排序数组元素并返回原数组（`Array.prototype.sort`）。
 ///
-/// 未提供比较回调时按 ToString 结果的字符串字典序排序；底层 `sort_by` 为稳定
+/// 未提供比较回调时按 ToString 结果的 UTF-16 码元字典序排序；底层 `sort_by` 为稳定
 /// 排序，比较结果相等（含 NaN）的元素保持原有相对次序。洞位不参与比较：
 /// present 值稳定排序后自索引 0 紧凑写回，尾部空位转为洞。
 ///

@@ -352,6 +352,24 @@ fn array_sort_propagates_comparator_exception() {
 }
 
 #[test]
+fn array_sort_default_orders_by_utf16_code_units() {
+    // 默认排序按 UTF-16 码元字典序（规范 CompareArrayElements）：补充平面字符
+    // 以高代理（U+D800 及以上）参与比较，小于 U+E000..U+FFFF，与码点序分歧。
+    // 前三例为判别例（码点序下结果相反），后两例为边界钉（两口径一致）。
+    let cases = [
+        ("['\\u{10000}','\\uFFFF'].sort().join('')", "\u{10000}\u{FFFF}"),
+        ("['\\uFFFF','\\u{10000}'].toSorted().join('')", "\u{10000}\u{FFFF}"),
+        ("['\\u{10000}','A','\\uFFFF'].sort().join('')", "A\u{10000}\u{FFFF}"),
+        ("['\\uD7FF','\\u{10000}'].sort().join('')", "\u{D7FF}\u{10000}"),
+        ("['\\u{12345}','\\u{10000}'].sort().join('')", "\u{10000}\u{12345}"),
+    ];
+    for (source, expected) in cases {
+        let (vm, result) = eval(source).unwrap();
+        assert_eq!(to_str(&vm, result), expected, "source: {source}");
+    }
+}
+
+#[test]
 fn array_callback_type_errors_are_not_sentinels() {
     let (vm, result) = eval("try { [1].map(null) } catch (e) { e.name }").unwrap();
     assert_eq!(to_str(&vm, result), "TypeError");

@@ -75,7 +75,7 @@ pub fn array_with<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 /// # 边界与前提
 /// - 先校验 compareFn 可调用（非 undefined 且不可调用则抛 TypeError），再读取
 ///   this/length；
-/// - 未提供比较回调时按 ToString 结果的字符串字典序排序；底层 `sort_by` 为稳定
+/// - 未提供比较回调时按 ToString 结果的 UTF-16 码元字典序排序；底层 `sort_by` 为稳定
 ///   排序，比较结果相等的元素保持原有相对次序。
 pub fn array_to_sorted<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("Array.prototype.toSorted called with {} args", args.len());
