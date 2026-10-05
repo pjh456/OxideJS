@@ -95,9 +95,13 @@ pub struct CompileCtx {
     /// 消除符号表时序依赖与 cell 索引错位。
     pub(crate) captured_bindings: BTreeMap<String, u8>,
     /// 下一可用 cell 索引（计数器）：捕获分析后初始化为名字集大小（函数级索引
-    /// 0..n-1 占满），块级遮蔽绑定预声明追加与合成 cell 经 `alloc_cell_idx`
-    /// 递增取号，保证与函数级名字排序索引及历次追加互不碰撞。
+    /// 0..n-1 占满），块级遮蔽绑定预声明追加、catch 参数就地声明与合成 cell 经
+    /// `alloc_cell_idx` 递增取号，保证与函数级名字排序索引及历次追加互不碰撞。
     pub(crate) next_cell_idx: u8,
+    /// 词法循环头（C-for / for-in / for-of）名集：头名索引由 ForHeadEnv 覆盖
+    /// 捕获映射分配（TDZ 占位与体区 fresh cell），声明点据此走映射回退而非
+    /// 就地追加新索引。begin 时并入、restore 时移除，嵌套循环成对。
+    pub(crate) for_head_env_names: HashSet<String>,
     /// 正在发射的 C 风格 for 头 let/const 声明名（含解构叶）。头名不像块级
     /// let/const 那样在块入口预声明，init 表达式内创建的嵌套函数引用同头尚未
     /// declare 的前向名时，父捕获可见性过滤据此放行；init 发射完毕后移除，
@@ -253,6 +257,7 @@ impl CompileCtx {
             block_fn_entry_mats: Vec::new(),
             captured_bindings: BTreeMap::new(),
             next_cell_idx: 0,
+            for_head_env_names: HashSet::new(),
             pending_for_head_names: HashSet::new(),
             global_tier_names: HashSet::new(),
             upvalue_const_flags: HashSet::new(),
@@ -426,13 +431,27 @@ impl CompileCtx {
     /// 登记）时返回 (cell_idx, binding_reg)。索引优先取绑定自身字段（函数级
     /// 回填与块级追加的真源），绑定未分配索引时回退捕获映射（for 头覆盖 /
     /// catch 参数等容器面，后续子任务逐面收编）。块级遮蔽绑定在块退出后不可
-    /// 解析，返回 None（落全局解析），不得按名误读已失效 cell。
+    /// 解析，返回 None（落全局解析），不得按名误读已失效 cell。tier 绑定
+    /// （scope 0 顶层 var/函数）的全局对象属性是唯一存储，不建 cell；映射中
+    /// 被同名块级绑定保留的 entry 不属该 tier 绑定，回退不得命中——for 头
+    /// 前向名除外（头绑定未 declare，映射值是 ForHeadEnv 的 TDZ 索引）。
     pub(crate) fn visible_cell(&self, name: &str) -> Option<(u8, u32)> {
-        let (binding, _) = self.scopes.symbols.lookup_any_binding(name)?;
+        let (binding, scope_idx) = self.scopes.symbols.lookup_any_binding(name)?;
         if self.is_implicit_global_reg(binding.reg) {
             return None;
         }
-        let idx = binding.cell_idx.or_else(|| self.captured_bindings.get(name).copied())?;
+        // for 头前向名（C 风格 for 头 pending / for-in/for-of env）读 TDZ cell：
+        // 头绑定未 declare，按名回查命中外层同名 tier 绑定，映射回退须放行以命中
+        // ForHeadEnv 覆盖的 TDZ 索引。
+        let is_for_head = self.pending_for_head_names.contains(name) || self.for_head_env_names.contains(name);
+        let is_tier_binding = scope_idx == 0 && self.global_tier_names.contains(name);
+        let idx = binding.cell_idx.or_else(|| {
+            if is_tier_binding && !is_for_head {
+                None
+            } else {
+                self.captured_bindings.get(name).copied()
+            }
+        })?;
         Some((idx, binding.reg))
     }
 
@@ -443,13 +462,52 @@ impl CompileCtx {
         self.captured_bindings = map;
     }
 
-    /// 分配一个新 cell 索引：取当前计数器值并递增。块级遮蔽绑定预声明追加与
-    /// 合成 cell 共用，分配序由发射序决定，跨 run 稳定。
-    #[allow(dead_code)] // 块级遮蔽绑定预声明追加（后续子任务）消费，本件仅立计数器
+    /// 分配一个新 cell 索引：取当前计数器值并递增。块级遮蔽绑定预声明追加、
+    /// catch 参数就地声明与合成 cell 共用，分配序由发射序决定，跨 run 稳定。
     pub(crate) fn alloc_cell_idx(&mut self) -> u8 {
         let idx = self.next_cell_idx;
         self.next_cell_idx = self.next_cell_idx.saturating_add(1);
         idx
+    }
+
+    /// 声明点 cell 索引解析：索引按绑定实例取（绑定自身字段是真源）。绑定未分配
+    /// 索引时，词法循环头名（ForHeadEnv 覆盖捕获映射）走映射回退；最内层为块
+    /// 作用域的就地声明（catch 参数）现场追加新索引并写回绑定，与函数级同名
+    /// 绑定的名字排序索引区分。名字不可见（隐式全局登记）或不在捕获集时返回
+    /// None，调用方落 with/全局臂。顶层 tier 名（顶层 var/函数）的全局对象属性
+    /// 是唯一存储，不建 cell，返回 None。
+    ///
+    /// # 副作用
+    /// - 就地追加臂写回绑定 cell 索引并递增计数器；指令流不改动。
+    pub(crate) fn resolve_bind_cell_idx(&mut self, name: &str) -> Option<u8> {
+        let (existing, is_implicit, block_scope, for_head, is_tier) = {
+            let symbols = &self.scopes.symbols;
+            let (binding, scope_idx) = symbols.lookup_any_binding(name)?;
+            (
+                binding.cell_idx,
+                self.is_implicit_global_reg(binding.reg),
+                symbols.scopes.last().is_some_and(|s| s.kind == ScopeKind::BlockScope),
+                self.for_head_env_names.contains(name),
+                self.is_global_scope && self.global_tier_names.contains(name) && scope_idx == 0,
+            )
+        };
+        if is_implicit {
+            return None;
+        }
+        if let Some(idx) = existing {
+            return Some(idx);
+        }
+        if is_tier {
+            return None;
+        }
+        let base = *self.captured_bindings.get(name)?;
+        if block_scope && !for_head {
+            let fresh = self.alloc_cell_idx();
+            self.set_binding_cell_idx(name, fresh);
+            Some(fresh)
+        } else {
+            Some(base)
+        }
     }
 
     /// 给最内层同名可见绑定写入 cell 索引（委托符号表）。
@@ -459,10 +517,15 @@ impl CompileCtx {
 
     /// 函数级绑定 cell 索引回填：捕获集（名字排序分配）的索引写入对应绑定
     /// 实例，使解析点按绑定身份取索引。预声明完成后调用，函数级绑定（参数 /
-    /// var / 直接子级词法 / 块级函数外层 var / arguments）此时已齐。
+    /// var / 直接子级词法 / 块级函数外层 var / arguments）此时已齐。顶层 tier
+    /// 名（顶层 var/函数）的全局对象属性是唯一存储，不回填 cell 索引。
     pub(crate) fn backfill_captured_cell_idxs(&mut self) {
-        let entries: Vec<(String, u8)> =
-            self.captured_bindings.iter().map(|(name, &idx)| (name.clone(), idx)).collect();
+        let entries: Vec<(String, u8)> = self
+            .captured_bindings
+            .iter()
+            .filter(|(name, _)| !(self.is_global_scope && self.global_tier_names.contains(*name)))
+            .map(|(name, &idx)| (name.clone(), idx))
+            .collect();
         for (name, idx) in entries {
             self.set_binding_cell_idx(&name, idx);
         }

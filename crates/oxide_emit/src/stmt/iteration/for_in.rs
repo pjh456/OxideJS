@@ -71,8 +71,9 @@ impl Emitter {
     /// 3. 发射未初始化 MAKE_CELL 并覆盖映射。
     ///
     /// # 副作用
-    /// - 捕获映射被改动；须经 `switch_for_head_env_to_body` 与
-    ///   `restore_for_head_env` 成对收尾，防头名泄漏进兄弟语句的捕获映射。
+    /// - 捕获映射与头名集（`for_head_env_names`）被改动；须经
+    ///   `switch_for_head_env_to_body` 与 `restore_for_head_env` 成对收尾，
+    ///   防头名泄漏进兄弟语句的捕获判定。
     pub(crate) fn begin_for_head_env(&self, names: Vec<String>, ctx: &mut CompileCtx) -> Result<ForHeadEnv, String> {
         let mut entries = Vec::with_capacity(names.len());
         let mut next = ctx.captured_bindings.values().copied().max().map_or(0, |m| m.saturating_add(1));
@@ -81,6 +82,8 @@ impl Emitter {
             let tdz_idx = next;
             next = next.saturating_add(1);
             ctx.captured_bindings.insert(name.clone(), tdz_idx);
+            // 头名登记：声明点索引解析据此走映射回退，不就地追加新索引。
+            ctx.for_head_env_names.insert(name.clone());
             // MAKE_CELL 的 16 位立即数：低字节是 cell 索引，高字节 bit 0 是
             // 未初始化标记。标志折入立即数高字节（0x0100），dispatch 侧按字节
             // 拆回两字段。
@@ -93,6 +96,7 @@ impl Emitter {
             ));
             entries.push((name, saved, tdz_idx, 0));
         }
+        ctx.next_cell_idx = next;
         Ok(ForHeadEnv { entries })
     }
 
@@ -128,20 +132,22 @@ impl Emitter {
                 Operand::None,
             ));
         }
+        ctx.next_cell_idx = next;
     }
 
     /// 语句收尾恢复捕获映射：旧条目放回（无旧条目则移除），头名不进入后续
-    /// 兄弟语句的捕获判定。
+    /// 兄弟语句的捕获判定；头名集同步移除（嵌套循环成对）。
     pub(crate) fn restore_for_head_env(&self, env: ForHeadEnv, ctx: &mut CompileCtx) {
         for (name, saved, _, _) in env.entries {
             match saved {
                 Some(old) => {
-                    ctx.captured_bindings.insert(name, old);
+                    ctx.captured_bindings.insert(name.clone(), old);
                 }
                 None => {
                     ctx.captured_bindings.remove(&name);
                 }
             }
+            ctx.for_head_env_names.remove(&name);
         }
     }
 

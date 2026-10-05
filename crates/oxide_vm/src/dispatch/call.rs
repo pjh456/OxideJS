@@ -250,14 +250,15 @@ impl Vm {
     /// 1. 取 a 槽为 cell 下标，按需扩容 `cell_stack` 至可容纳该下标。
     /// 2. b 槽为 0 表示已初始化，非 0 为 TDZ（读写抛 ReferenceError，用于 for-in/for-of
     ///    词法头环境建模）。
-    /// 3. 槽位为空时新建 cell；已有 `CREATE_CLOSURE` 建的占位 cell 则原位更新值与标志，
-    ///    使闭包 upvalue 指向的同一 cell 跟随初始化。
+    /// 3. 槽位为空时新建 cell；TDZ 占位遇已初始化 cell 恒新建替换（循环体每迭代
+    ///    重执行不得把上一迭代已被闭包捕获的 cell 原位翻回未初始化）；其余情形
+    ///    原位更新值与标志，使闭包 upvalue 指向的同一 cell 跟随初始化。
     ///
     /// # 边界与前提
     /// - `cell_stack` 为空时 `last_mut()` unwrap 失败；调用前须已压入当前帧环境层。
     ///
     /// # 副作用
-    /// - 写入/更新堆上 `Cell`（可能触发分配），改动闭包 upvalue 可见值。
+    /// - 写入/更新/替换堆上 `Cell`（可能触发分配），改动闭包 upvalue 可见值。
     ///
     /// # 注意事项
     /// - 手写 IR 路径保留的指令，常规编译不发射，故标 `#[allow(dead_code)]`。
@@ -276,12 +277,20 @@ impl Vm {
             // 无占位 cell：新建。
             current[cell_idx] = self.gc_state.alloc_cell(value, initialized);
         } else {
-            // 更新占位 cell（CREATE_CLOSURE 已建），使闭包 upvalue 指向的
-            // cell 值跟随初始化；初始化标志随指令 b 槽。
-            unsafe {
-                let cell = &mut *current[cell_idx];
-                cell.value = value;
-                cell.set_initialized(initialized);
+            let existing_initialized = unsafe { &*current[cell_idx] }.is_initialized();
+            if !initialized && existing_initialized {
+                // TDZ 占位而槽内是已初始化 cell：新建替换。循环体每迭代重执行
+                // 的 TDZ 占位不得原位翻新迭代 cell（已被本迭代前闭包捕获）；
+                // 已初始化 cell 保持身份，闭包 upvalue 保值。
+                current[cell_idx] = self.gc_state.alloc_cell(value, initialized);
+            } else {
+                // 更新占位 cell（CREATE_CLOSURE 已建），使闭包 upvalue 指向的
+                // cell 值跟随初始化；初始化标志随指令 b 槽。
+                unsafe {
+                    let cell = &mut *current[cell_idx];
+                    cell.value = value;
+                    cell.set_initialized(initialized);
+                }
             }
         }
         Ok(())

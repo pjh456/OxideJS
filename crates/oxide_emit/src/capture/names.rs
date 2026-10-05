@@ -181,6 +181,116 @@ pub(crate) fn collect_direct_lexical_names(stmts: &[Statement]) -> HashSet<Strin
     names
 }
 
+/// 收集块级声明名（块内 let/const/class、catch 参数、for 头 let/const）：
+/// 这些名字是块作用域绑定，遮蔽同名顶层 tier 名时，tier 名须保留在捕获集，
+/// 块级绑定才能追加新索引供闭包捕获。顶层直接子级 let/const/class 是顶层
+/// 词法绑定，不纳；var 声明不纳（var 是函数/全局作用域）。
+pub(crate) fn collect_block_level_decl_names(stmts: &[Statement]) -> HashSet<String> {
+    let mut names = HashSet::new();
+    collect_block_level_names_stmt(stmts, &mut names, true);
+    names
+}
+
+/// 递归遍历语句树收集块级声明名。`top` 标记当前层是否为顶层（顶层直接子级
+/// let/const/class 是顶层词法绑定，非块级）。
+fn collect_block_level_names_stmt(stmts: &[Statement], out: &mut HashSet<String>, top: bool) {
+    for stmt in stmts {
+        match stmt {
+            Statement::VariableDeclaration(vd) => {
+                if matches!(vd.kind, VariableDeclarationKind::Var) || top {
+                    continue;
+                }
+                for d in &vd.declarations {
+                    collect_binding_pattern_names(&d.id, out);
+                }
+            }
+            Statement::ClassDeclaration(cd) => {
+                if !top {
+                    if let Some(id) = &cd.id {
+                        out.insert(id.name.to_string());
+                    }
+                }
+            }
+            Statement::BlockStatement(b) => collect_block_level_names_stmt(&b.body, out, false),
+            Statement::IfStatement(is) => {
+                collect_block_level_names_stmt(std::slice::from_ref(&is.consequent), out, false);
+                if let Some(alt) = &is.alternate {
+                    collect_block_level_names_stmt(std::slice::from_ref(alt), out, false);
+                }
+            }
+            Statement::WhileStatement(w) => collect_block_level_names_stmt(std::slice::from_ref(&w.body), out, false),
+            Statement::DoWhileStatement(d) => collect_block_level_names_stmt(std::slice::from_ref(&d.body), out, false),
+            Statement::ForStatement(f) => {
+                if let Some(oxide_parser::ForStatementInit::VariableDeclaration(vd)) = &f.init {
+                    if !matches!(vd.kind, VariableDeclarationKind::Var) {
+                        for d in &vd.declarations {
+                            collect_binding_pattern_names(&d.id, out);
+                        }
+                    }
+                }
+                collect_block_level_names_stmt(std::slice::from_ref(&f.body), out, false);
+            }
+            Statement::ForInStatement(fi) => {
+                if let oxide_parser::ForStatementLeft::VariableDeclaration(vd) = &fi.left {
+                    if !matches!(vd.kind, VariableDeclarationKind::Var) {
+                        collect_for_left_decl_names(&fi.left, out);
+                    }
+                }
+                collect_block_level_names_stmt(std::slice::from_ref(&fi.body), out, false);
+            }
+            Statement::ForOfStatement(fo) => {
+                if let oxide_parser::ForStatementLeft::VariableDeclaration(vd) = &fo.left {
+                    if !matches!(vd.kind, VariableDeclarationKind::Var) {
+                        collect_for_left_decl_names(&fo.left, out);
+                    }
+                }
+                collect_block_level_names_stmt(std::slice::from_ref(&fo.body), out, false);
+            }
+            Statement::SwitchStatement(sw) => {
+                for case in &sw.cases {
+                    collect_block_level_names_stmt(&case.consequent, out, false);
+                }
+            }
+            Statement::TryStatement(ts) => {
+                collect_block_level_names_stmt(&ts.block.body, out, false);
+                if let Some(h) = &ts.handler {
+                    if let Some(param) = &h.param {
+                        collect_binding_pattern_names(&param.pattern, out);
+                    }
+                    collect_block_level_names_stmt(&h.body.body, out, false);
+                }
+                if let Some(f) = &ts.finalizer {
+                    collect_block_level_names_stmt(&f.body, out, false);
+                }
+            }
+            Statement::LabeledStatement(ls) => {
+                collect_block_level_names_stmt(std::slice::from_ref(&ls.body), out, false)
+            }
+            Statement::WithStatement(ws) => collect_block_level_names_stmt(std::slice::from_ref(&ws.body), out, false),
+            Statement::ExportNamedDeclaration(exp) => {
+                if let Some(decl) = &exp.declaration {
+                    match decl {
+                        oxide_parser::Declaration::VariableDeclaration(vd) => {
+                            if !matches!(vd.kind, VariableDeclarationKind::Var) && !top {
+                                for d in &vd.declarations {
+                                    collect_binding_pattern_names(&d.id, out);
+                                }
+                            }
+                        }
+                        oxide_parser::Declaration::ClassDeclaration(cd) if !top => {
+                            if let Some(id) = &cd.id {
+                                out.insert(id.name.to_string());
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
 /// 收集当前函数作用域声明的绑定名（参数 + 变量/函数声明，含嵌套 block，不含嵌套函数体）。
 pub(crate) fn collect_own_binding_names(param_names: &[&str], stmts: &[Statement]) -> HashSet<String> {
     let mut names = HashSet::new();

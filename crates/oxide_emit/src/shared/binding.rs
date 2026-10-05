@@ -86,9 +86,10 @@ impl Emitter {
             }
             return Ok(());
         }
-        // 索引按绑定实例取（`visible_cell` 已含可见性判定）：函数级绑定走回填
-        // 索引，绑定未分配索引时回退捕获映射（for 头覆盖等容器面）。
-        if let Some((cell_idx, _)) = ctx.visible_cell(name) {
+        // 索引按绑定实例取（`resolve_bind_cell_idx` 已含可见性判定）：函数级
+        // 绑定走回填索引，块级遮蔽绑定走预声明追加索引，catch 参数等块作用域
+        // 就地声明现场追加；词法循环头名走捕获映射回退。
+        if let Some(cell_idx) = ctx.resolve_bind_cell_idx(name) {
             let op = if fresh_cell { OpCode::MAKE_CELL_FRESH } else { OpCode::MAKE_CELL };
             ctx.inst(Inst::new(op, Operand::Reg(src_reg), Operand::Imm(cell_idx as u16), Operand::None));
             // C 风格 for 头绑定：cell 之外补写绑定寄存器——循环体/test/update 读寄存器，

@@ -17,7 +17,7 @@ use oxide_ir::IRFunction;
 use oxide_parser::Statement;
 
 use crate::capture::{
-    collect_captured_bindings, collect_direct_lexical_names, collect_own_binding_names,
+    collect_block_level_decl_names, collect_captured_bindings, collect_direct_lexical_names, collect_own_binding_names,
     collect_top_level_function_names, collect_top_level_function_names_ordered, collect_var_binding_names,
 };
 use crate::compile_ctx::CompileCtx;
@@ -350,7 +350,12 @@ impl Emitter {
         }
         ctx.global_tier_names = tier_names;
         ctx.set_captured_bindings(collect_captured_bindings(&program.body, &[], &ctx.own_bindings));
-        ctx.captured_bindings.retain(|n, _| !ctx.global_tier_names.contains(n));
+        // 顶层 tier 名（顶层 var/函数）的全局对象属性是唯一存储，从捕获集剔除；
+        // 被同名块级绑定（catch 参数 / 块级 let/const）遮蔽时保留，使块级绑定能
+        // 追加新索引供闭包捕获（顶层 var 本身不建 cell，回填与解析点均跳过）。
+        let block_level_names = collect_block_level_decl_names(&program.body);
+        ctx.captured_bindings
+            .retain(|n, _| !ctx.global_tier_names.contains(n) || block_level_names.contains(n));
         // 顶层函数级绑定 cell 索引回填：预声明已完成，绑定已齐。
         ctx.backfill_captured_cell_idxs();
 
@@ -358,9 +363,10 @@ impl Emitter {
         // 声明语句执行前创建的闭包读取到 undefined（脚本 GlobalDeclarationInstantiation
         // 语义），而非占位 cell 的 TDZ 误报。声明语句的 MAKE_CELL 覆盖此初值。
         // 名集保持 var-only：函数声明名从不入捕获集（tier 剔除），无需入口 cell。
+        // tier 名（全局对象属性为唯一存储）不建入口 cell。
         let mut var_names: Vec<String> = var_names
             .into_iter()
-            .filter(|n| ctx.captured_bindings.contains_key(n))
+            .filter(|n| ctx.captured_bindings.contains_key(n) && !ctx.global_tier_names.contains(n))
             .collect();
         // HashSet 迭代序带随机种子，排序后入口 MAKE_CELL 发射序跨进程稳定。
         var_names.sort();

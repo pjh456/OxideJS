@@ -70,7 +70,7 @@ impl Emitter {
                     };
                     (target, false)
                 };
-                if let Some(&cell_idx) = ctx.captured_bindings.get(bi.name.as_str()) {
+                if let Some(cell_idx) = ctx.resolve_bind_cell_idx(bi.name.as_str()) {
                     // 被捕获绑定的 cell 在函数入口已实例化（undefined）；声明语句
                     // 不赋值，仅首次声明刷新初值，已绑定的 cell 保留现值。
                     if !already_bound {

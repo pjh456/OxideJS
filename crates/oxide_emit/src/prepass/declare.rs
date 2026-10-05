@@ -1,7 +1,11 @@
 //! emit 前置 pass，声明预登记：函数/var 声明提升预声明、块级函数声明按 ES2015
 //! 块绑定预声明、let/const/class 建 TDZ 占位。
 
+use crate::symbol_table::ScopeKind;
 use crate::{CompileCtx, Emitter};
+use oxide_bytecode::opcode::OpCode;
+use oxide_ir::inst::Inst;
+use oxide_ir::operand::Operand;
 use oxide_parser::{BindingPattern, Declaration, ExportDefaultDeclarationKind, Statement, VariableDeclarationKind};
 
 impl Emitter {
@@ -395,6 +399,29 @@ impl Emitter {
                     },
                     is_const,
                 );
+                // 块级遮蔽绑定：名字在捕获集且最内层为块作用域时，追加新 cell
+                // 索引并发未初始化 MAKE_CELL（TDZ 占位）。声明点与闭包捕获据
+                // 绑定字段走新索引，不原位覆写函数级同名绑定的名字排序索引；
+                // 函数作用域调用点（函数体/顶层直接子级）名字排序索引归该
+                // 绑定所有，不追加。
+                if ctx.captured_bindings.contains_key(bi.name.as_str())
+                    && ctx
+                        .scopes
+                        .symbols
+                        .scopes
+                        .last()
+                        .is_some_and(|s| s.kind == ScopeKind::BlockScope)
+                {
+                    let idx = ctx.alloc_cell_idx();
+                    ctx.set_binding_cell_idx(bi.name.as_str(), idx);
+                    let undef_reg = self.emit_undefined(ctx);
+                    ctx.inst(Inst::new(
+                        OpCode::MAKE_CELL,
+                        Operand::Reg(undef_reg),
+                        Operand::Imm(idx as u16 | 0x0100),
+                        Operand::None,
+                    ));
+                }
             }
             BindingPattern::ArrayPattern(ap) => {
                 for e in ap.elements.iter().flatten() {

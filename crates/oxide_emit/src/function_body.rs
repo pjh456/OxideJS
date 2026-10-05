@@ -655,14 +655,56 @@ impl Emitter {
             // upvalue 代表的祖父绑定在父函数体内恒可见，不参与过滤。
             // C 风格 for 头 let/const 名在 init 内尚未 declare，但同头声明会为其
             // 建 cell，前向捕获须按父捕获集保留（见 `pending_for_head_names`）。
+            // 索引按父可见绑定实例取（块级遮蔽绑定持追加索引）；词法循环头名
+            // （for-in/for-of 头绑定在右值区编译时未进符号表，按名回查会误命中
+            // 外层同名绑定）与 for 头前向名无条件取捕获映射值（ForHeadEnv 覆盖
+            // 索引或名字排序索引）；绑定未分配索引的其余名（命名空间导入等）
+            // 回退映射值。顶层 tier 名（顶层 var/函数）已在捕获集剔除阶段出集，
+            // 不在此列。
             let visible_parent_captured: BTreeMap<String, u8> = parent_ctx
                 .captured_bindings
                 .iter()
                 .filter(|(n, _)| {
+                    // for 头前向名（C 风格 for 头 pending / for-in/for-of env）：
+                    // 头绑定未 declare，按名回查命中外层同名 tier 绑定，映射值是
+                    // ForHeadEnv 的 TDZ 索引，须保留为 upvalue。
+                    let for_head = parent_ctx.pending_for_head_names.contains(n.as_str())
+                        || parent_ctx.for_head_env_names.contains(n.as_str());
+                    // tier 绑定（scope 0 顶层 var/函数）：全局对象属性是唯一存储，
+                    // 不建 cell；嵌套函数直读全局，不入 upvalue。映射中为同名块级
+                    // 绑定保留的 entry 不属该 tier 绑定，不得按名捕获。
+                    let tier =
+                        !for_head
+                            && parent_ctx.scopes.symbols.lookup_any_binding(n.as_str()).is_some_and(
+                                |(_, scope_idx)| scope_idx == 0 && parent_ctx.global_tier_names.contains(n.as_str()),
+                            );
+                    if tier {
+                        return false;
+                    }
                     parent_ctx.visible_binding_reg(n.as_str()).is_some()
                         || parent_ctx.pending_for_head_names.contains(n.as_str())
                 })
-                .map(|(n, &i)| (n.clone(), i))
+                .map(|(n, &i)| {
+                    let idx = if parent_ctx.for_head_env_names.contains(n.as_str())
+                        || parent_ctx.pending_for_head_names.contains(n.as_str())
+                    {
+                        // 词法循环头名：头绑定在右值区编译时未进符号表（按名回查
+                        // 会误命中外层同名绑定），索引由 ForHeadEnv 覆盖映射分配，
+                        // 无条件取映射值。
+                        i
+                    } else {
+                        // 其余名按绑定实例取索引（块级遮蔽绑定持追加索引）；
+                        // 绑定未分配索引（命名空间导入等绑定点走映射值不写绑定
+                        // 字段）回退映射值，与基线按名取索引同口径。
+                        parent_ctx
+                            .scopes
+                            .symbols
+                            .lookup_any_binding(n.as_str())
+                            .and_then(|(b, _)| b.cell_idx)
+                            .unwrap_or(i)
+                    };
+                    (n.clone(), idx)
+                })
                 .collect();
             ctx.current_upvalue_captures = collect_upvalue_names(
                 body_stmts,
