@@ -43,6 +43,7 @@ impl Vm {
         // 在 builtin 绑定之后取 id：绑定过程已 intern "length"，此处命中缓存得到
         // 稳定的 id，用于运行期常见属性（如函数 length 槽）的快路径。
         let length_si = core.perm_interner().intern("length").0;
+        let length_perm_ptr = core.perm_interner().string_ptr(length_si);
         let obj_proto = P::clone(&session.builtin_world().object_proto);
         // 提前缓存执行期字符串 GC 初始水位（构造后 config 不再变化）。
         let gc_threshold = core.config().session_gc_threshold;
@@ -55,6 +56,7 @@ impl Vm {
             kernel_core: core,
             session,
             length_si,
+            length_perm_ptr,
             object_prototype: obj_proto,
             generator_proto: P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
             generator_function_proto: P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
@@ -182,6 +184,7 @@ impl Vm {
         // 在 builtin 绑定之后取 id：绑定过程已 intern "length"，此处命中缓存得到
         // 稳定的 id，用于运行期常见属性（如函数 length 槽）的快路径。
         let length_si = core.perm_interner().intern("length").0;
+        let length_perm_ptr = core.perm_interner().string_ptr(length_si);
         let obj_proto = P::clone(&session.builtin_world().object_proto);
         // 提前缓存执行期字符串 GC 初始水位（构造后 config 不再变化）。
         let gc_threshold = core.config().session_gc_threshold;
@@ -194,6 +197,7 @@ impl Vm {
             kernel_core: core,
             session,
             length_si,
+            length_perm_ptr,
             object_prototype: obj_proto,
             generator_proto: P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
             generator_function_proto: P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),

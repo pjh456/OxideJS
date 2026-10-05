@@ -1864,4 +1864,80 @@ mod tests {
         assert_eq!(obj.prop_vec_len(), 1, "命名区恰一个槽，复写不重复建槽");
         assert_eq!(vm.ordinary_get(obj, si, a).expect("get"), JsValue::int(9));
     }
+
+    // ===== defineProperty 对 length 键的拦截语义钉 =====
+
+    #[test]
+    fn define_property_array_length_applies_array_set_length() {
+        let mut vm = Vm::new();
+        let a = new_array_val(&mut vm, 3);
+        unsafe {
+            let arr = a.as_js_object_ptr();
+            (*arr).set_prop_at(0, JsValue::int(1));
+            (*arr).set_prop_at(1, JsValue::int(2));
+            (*arr).set_prop_at(2, JsValue::int(3));
+        }
+        let length_si = vm.kernel_core.perm_interner().intern("length").0;
+        let si0 = array_index_si(&mut vm, 0);
+        let si1 = array_index_si(&mut vm, 1);
+        // 数组 length 一律 ArraySetLength 拦截：截断到 1，元素区同步收缩。
+        // writable 保持 true，允许后续重定义再扩。
+        let attrs = PropAttributes::new(true, false, false);
+        vm.define_data_property(unsafe { &mut *a.as_js_object_ptr() }, length_si, JsValue::int(1), attrs)
+            .expect("define length");
+        let obj = unsafe { &*a.as_js_object_ptr() };
+        assert_eq!(obj.logical_len(), 1, "length 截断到 1");
+        assert_eq!(vm.ordinary_get(obj, length_si, a).expect("get"), JsValue::int(1));
+        assert_eq!(vm.ordinary_get(obj, si0, a).expect("get"), JsValue::int(1));
+        assert_eq!(vm.ordinary_get(obj, si1, a).expect("get"), JsValue::undefined(), "元素 1 随截断删除");
+        // 扩到 5：首元素保留，新增元素区补 undefined。
+        vm.define_data_property(unsafe { &mut *a.as_js_object_ptr() }, length_si, JsValue::int(5), attrs)
+            .expect("define length");
+        let obj = unsafe { &*a.as_js_object_ptr() };
+        assert_eq!(obj.logical_len(), 5, "length 扩到 5");
+        assert_eq!(vm.ordinary_get(obj, length_si, a).expect("get"), JsValue::int(5));
+        assert_eq!(vm.ordinary_get(obj, si0, a).expect("get"), JsValue::int(1), "首元素保留");
+    }
+
+    #[test]
+    fn define_property_array_length_accessor_rejected() {
+        let mut vm = Vm::new();
+        let a = new_array_val(&mut vm, 1);
+        let getter = native_function(&mut vm, native_return_7);
+        let length_si = vm.kernel_core.perm_interner().intern("length").0;
+        // 数组 length 为不可配置数据属性，禁止转访问器。
+        let err = vm
+            .define_accessor_property(
+                unsafe { &mut *a.as_js_object_ptr() },
+                length_si,
+                getter,
+                JsValue::undefined(),
+                PropAttributes::new(false, false, false),
+            )
+            .expect_err("数组 length 禁转访问器");
+        assert!(err.contains("cannot redefine"), "实际: {err}");
+        let obj = unsafe { &*a.as_js_object_ptr() };
+        assert_eq!(obj.logical_len(), 1, "length 不变");
+    }
+
+    #[test]
+    fn define_property_string_length_rejected() {
+        let mut vm = Vm::new();
+        let str_si = vm.kernel_core.perm_interner().intern("abcd").0;
+        let str_val = JsValue::perm_string(vm.kernel_core.perm_interner().string_ptr(str_si));
+        let boxed = coercion::to_object(str_val, &mut vm).expect("box");
+        let length_si = vm.kernel_core.perm_interner().intern("length").0;
+        // 字符串对象 length 不可写不可配置，重定义校验拒绝。
+        let err = vm
+            .define_data_property(
+                unsafe { &mut *boxed.as_js_object_ptr() },
+                length_si,
+                JsValue::int(5),
+                PropAttributes::new(false, false, false),
+            )
+            .expect_err("字符串 length 不可重定义");
+        assert!(err.contains("cannot redefine"), "实际: {err}");
+        let obj = unsafe { &*boxed.as_js_object_ptr() };
+        assert_eq!(vm.ordinary_get(obj, length_si, boxed).expect("get"), JsValue::int(4), "length 不变");
+    }
 }

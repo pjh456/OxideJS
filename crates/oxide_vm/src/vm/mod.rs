@@ -22,7 +22,7 @@ use crate::vm_state::{GcState, IterState, ProfilingState, SampleState, SymbolSta
 use oxide_kernel::kernel::{KernelCore, KernelSession};
 use oxide_types::error::JsErrorKind;
 use oxide_types::mem::P;
-use oxide_types::object::{Cell, JsObject, NativeFnPtr};
+use oxide_types::object::{Cell, JsObject, JsString, NativeFnPtr};
 use oxide_types::private_key::INT_KEY_COUNT;
 use oxide_types::value::JsValue;
 
@@ -179,6 +179,10 @@ pub struct Vm {
     /// KernelCore 不重建），属性 get/set 热路径免每次 intern（hash64 + DashMap +
     /// RwLock 读锁）。
     pub(crate) length_si: u32,
+    /// `"length"` 属性键 perm 串的内部指针：IC 站点的键寄存器恒为 perm 串
+    /// （发射层字符串常量统一经 perm_string 物化），指针相等即键为 "length"，
+    /// 入口快判只比指针免键解析。PermInterner 追加式、指针唯一，永不失效。
+    pub(crate) length_perm_ptr: *const JsString,
     pub object_prototype: P<JsObject>,
     /// `%GeneratorPrototype%`：生成器实例的原型（next/return/throw 方法挂此）。
     pub generator_proto: P<JsObject>,

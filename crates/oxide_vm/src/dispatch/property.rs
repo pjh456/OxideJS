@@ -334,6 +334,16 @@ impl Vm {
         let val = self.regs[a];
         let obj_ptr = val.as_object_ptr() as *mut JsObject;
         if obj_ptr.is_null() {
+            // 入口快判：键寄存器恒为 perm 串，指针相等即键为 "length"；
+            // 字符串接收者直返码元长度，免键解析（hash64 + DashMap + RwLock）。
+            let key_val = self.regs[b];
+            if key_val.is_string() && key_val.as_string_ptr() == self.length_perm_ptr && val.is_string() {
+                // SAFETY: val 是字符串值。
+                let len = unsafe { (*val.as_string_ptr()).utf16_len() };
+                self.regs[a] = JsValue::int(len as i32);
+                self.pc += IC_EXT_WORDS;
+                return Ok(());
+            }
             let prop_name_si = self.property_key_si(self.regs[b])?;
             if let Some(resolved) = self.primitive_property_get(val, prop_name_si)? {
                 self.regs[a] = resolved;
@@ -350,6 +360,14 @@ impl Vm {
         }
 
         let obj = unsafe { &*obj_ptr };
+        // 入口快判：键寄存器恒为 perm 串，指针相等即键为 "length"；
+        // 数组接收者直返逻辑长度，免 IC 读与键解析（与虚拟长度槽口径一致）。
+        let key_val = self.regs[b];
+        if key_val.is_string() && key_val.as_string_ptr() == self.length_perm_ptr && obj.is_array() {
+            self.regs[a] = obj.logical_len_value();
+            self.pc += IC_EXT_WORDS;
+            return Ok(());
+        }
         let (cached_shape_id, cached_slot, cached_depth) = ic_helper::read_ic_slot0(&self.bytecode, &mut self.pc);
         let ic_pc = self.pc;
         if obj.has_prop_meta() {
