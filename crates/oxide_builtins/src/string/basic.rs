@@ -135,23 +135,58 @@ pub fn string_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
             // 对 Symbol 抛 TypeError——与函数调用路径（3a 描述串）相异。
             return NativeResult::Err(crate::error::create_type_error(vm, "Cannot convert a Symbol value to a string"));
         }
-        // 对象参数须经 ToPrimitive/ToString 完整转换；函数调用路径的 Symbol
-        // 走 SymbolDescriptiveString（规范步骤 3a，不经 ToString）。
-        let v = oxide_runtime_api::to_string_for_string_constructor(v, vm);
-        match v {
-            Ok(s) => vm.new_string_owned(s),
-            Err(msg) => {
-                // ToString on an object may throw via toString/valueOf; propagate the original exception.
-                if let Some(exc) = vm.take_uncaught_value() {
-                    return NativeResult::Err(exc);
+        // 常量快路径：字符串直通，布尔/null/undefined/NaN/±Infinity 走永久常量表，
+        // 0..=99 小整数走小整数永久表，均零分配、不经过转换链。
+        if v.is_string() {
+            // ToString 对字符串是恒等（规范 §21.2.1.1 步骤 3），原值返回免克隆。
+            v
+        } else if v.is_bool() {
+            JsValue::string(oxide_kernel::string_forge::const_string_ptr(if v.as_bool() { 0 } else { 1 }))
+        } else if v.is_null() {
+            JsValue::string(oxide_kernel::string_forge::const_string_ptr(2))
+        } else if v.is_undefined() {
+            JsValue::string(oxide_kernel::string_forge::const_string_ptr(3))
+        } else if v.is_int() {
+            let n = v.as_int();
+            if n >= 0 {
+                if let Some(ptr) = oxide_kernel::string_forge::small_int_ptr(n as u32) {
+                    JsValue::string(ptr)
+                } else {
+                    vm.new_string_owned(oxide_runtime_api::to_string(v))
                 }
-                // 无在途异常时按格式化文本恢复 kind 与消息（装箱 Symbol 走 ToString
-                // 抛 TypeError，消息须与原始异常一致）。
-                return NativeResult::Err(crate::error::create_from_text(vm, &msg));
+            } else {
+                vm.new_string_owned(oxide_runtime_api::to_string(v))
+            }
+        } else if v.is_double() {
+            let d = v.as_double();
+            if d.is_nan() {
+                JsValue::string(oxide_kernel::string_forge::const_string_ptr(4))
+            } else if d.is_infinite() {
+                JsValue::string(oxide_kernel::string_forge::const_string_ptr(if d > 0.0 { 5 } else { 6 }))
+            } else {
+                // 有限 double 走原数值转串链，行为与转换链一致。
+                vm.new_string_owned(oxide_runtime_api::js_number_to_string(d))
+            }
+        } else {
+            // BigInt/对象参数走完整转换链（对象可经 valueOf/toString 抛错）；
+            // 函数调用路径的 Symbol 走 SymbolDescriptiveString（规范步骤 3a，不经 ToString）。
+            let v = oxide_runtime_api::to_string_for_string_constructor(v, vm);
+            match v {
+                Ok(s) => vm.new_string_owned(s),
+                Err(msg) => {
+                    // ToString on an object may throw via toString/valueOf; propagate the original exception.
+                    if let Some(exc) = vm.take_uncaught_value() {
+                        return NativeResult::Err(exc);
+                    }
+                    // 无在途异常时按格式化文本恢复 kind 与消息（装箱 Symbol 走 ToString
+                    // 抛 TypeError，消息须与原始异常一致）。
+                    return NativeResult::Err(crate::error::create_from_text(vm, &msg));
+                }
             }
         }
     } else {
-        vm.new_string("")
+        // 无参返回永久空串，免每次新建 session 串。
+        JsValue::string(oxide_kernel::string_forge::empty_string_ptr())
     };
 
     if !is_ctor {

@@ -479,3 +479,33 @@ pub fn typeof_string_ptr(kind: u8) -> *const JsString {
         }
     }
 }
+
+/// 原始值常量串文本表（下标见 [`const_string_ptr`]），进程生命周期内不释放。
+const CONST_STRING_TEXTS: [&str; 7] = ["true", "false", "null", "undefined", "NaN", "Infinity", "-Infinity"];
+
+/// 原始值常量串的永久 `JsString` 指针表：String() 构造器等高频常量产出路径，
+/// 复用静态表免每次 session 分配与 interner 锁查。物化面严格有界：7 条目 ≈ 数百字节，
+/// 随进程生命周期有意保留（同 `TYPEOF_TABLE` 论证）。
+static CONST_STRING_TABLE: [OnceLock<StringPtr>; 7] = [const { OnceLock::new() }; 7];
+
+/// 取原始值常量串的永久 `JsString` 指针，惰性物化一次后恒返回同一地址。
+///
+/// 下标约定：0=true、1=false、2=null、3=undefined、4=NaN、
+/// 5=Infinity、6=-Infinity。调用方按值类型映射。
+pub fn const_string_ptr(kind: u8) -> *const JsString {
+    let slot = &CONST_STRING_TABLE[kind as usize];
+    if let Some(ptr) = slot.get() {
+        return ptr.0;
+    }
+    let ptr = Box::into_raw(Box::new(JsString::new(CONST_STRING_TEXTS[kind as usize].to_string())));
+    match slot.set(StringPtr(ptr)) {
+        Ok(()) => ptr,
+        Err(_) => {
+            // 并发首用竞态：与 single_char_ptr 同款处置，本线程产物恰好释放一次。
+            let existing = slot.get().expect("set 失败时槽必已初始化").0;
+            // SAFETY: ptr 来自本线程的 Box::into_raw，无任何外部引用。
+            unsafe { drop(Box::from_raw(ptr)) };
+            existing
+        }
+    }
+}
