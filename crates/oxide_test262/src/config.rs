@@ -1,5 +1,5 @@
 //! test262 runner 运行配置：`RunConfig` 结构、CLI 解析（`parse`）与用法输出（`usage`）。
-//! 9 字段与 3 关联函数放宽为 `pub(crate)`；`leak_check_interval` 缺省 1000，`usage` 全文即 `--help` 用户可见输出，逐字保留。
+//! 7 字段与 3 关联函数放宽为 `pub(crate)`；`usage` 全文即 `--help` 用户可见输出，逐字保留。
 
 use std::path::PathBuf;
 
@@ -10,8 +10,6 @@ pub(crate) struct RunConfig {
     pub(crate) filter: Option<String>,
     pub(crate) no_skip: bool,
     pub(crate) supervise: bool,
-    pub(crate) leak_check: bool,
-    pub(crate) leak_check_interval: usize,
     /// 关闭 liveness/精确 DCE/RegAlloc 链（开关对比：关优化链 vs 开优化链各跑一遍）。
     pub(crate) no_regalloc: bool,
     /// 逐测试打印 PASS/FAIL/SKIP（开关对比时对比两轮结果集合用）。
@@ -28,8 +26,6 @@ impl RunConfig {
             filter: None,
             no_skip: false,
             supervise: false,
-            leak_check: false,
-            leak_check_interval: 1000,
             no_regalloc: false,
             verbose: false,
             no_fail_list: false,
@@ -53,13 +49,8 @@ impl RunConfig {
                 "--no-regalloc" => config.no_regalloc = true,
                 "--verbose" => config.verbose = true,
                 "--supervise" => config.supervise = true,
-                "--leak-check" => config.leak_check = true,
                 "--no-fail-list" => config.no_fail_list = true,
                 "--help" | "-h" => return Err(Self::usage()),
-                _ if arg.starts_with("--leak-check-interval=") => {
-                    config.leak_check_interval =
-                        arg.strip_prefix("--leak-check-interval=").unwrap().parse().unwrap_or(1000);
-                }
                 _ if arg.starts_with("--") => return Err(format!("unknown option: {arg}\n\n{}", Self::usage())),
                 _ => positional.push(arg.clone()),
             }
@@ -80,7 +71,7 @@ impl RunConfig {
 
     /// 打印用法说明。
     pub(crate) fn usage() -> String {
-        "usage: test262-runner [--no-skip] [--no-regalloc] [--verbose] [--supervise] [--leak-check] [--leak-check-interval=N] [--version] [test262-root] [path-filter]\n\
+        "usage: test262-runner [--no-skip] [--no-regalloc] [--verbose] [--supervise] [--version] [test262-root] [path-filter]\n\
           \n\
           --no-skip    Run capability-excluded tests and count unsupported compile/runtime results as failures.\n\
           --no-regalloc  Disable the liveness/precise-DCE/RegAlloc compiler chain (vregs stay as physical numbers).\n\
@@ -90,8 +81,6 @@ impl RunConfig {
           --supervise  Run the suite as single-worker child-process windows with a hard per-test timeout and\n\
           \x20            automatic resume past any hanging/crashing test. A hang or crash is reported by path.\n\
           \x20            Combines with [path-filter]: the filter is applied per-test inside each child window.\n\
-          --leak-check Monitor session_object_ptrs, session_bytes, code_forge.len(), symbol_registry.len() every\n\
-          \x20            --leak-check-interval tests (default 1000). Flags sustained linear growth (R^2>0.9).\n\
           \n\
           env tunables (all optional):\n\
           \x20  OXIDE_LOG                          per-subsystem log levels (default off)\n\
@@ -125,7 +114,7 @@ mod tests {
         v
     }
 
-    /// 七旗标 + 2 位置参数一次 parse：六裸旗各置位、interval 取字面值、
+    /// 五旗标 + 2 位置参数一次 parse：五裸旗各置位、
     /// 位置参数落 root/filter，Ok 路径全断言。
     #[test]
     fn parse_all_flags_with_two_positionals() {
@@ -134,9 +123,7 @@ mod tests {
             "--no-regalloc",
             "--verbose",
             "--supervise",
-            "--leak-check",
             "--no-fail-list",
-            "--leak-check-interval=250",
             "tests/test262",
             "language",
         ]))
@@ -145,9 +132,7 @@ mod tests {
         assert!(cfg.no_regalloc);
         assert!(cfg.verbose);
         assert!(cfg.supervise);
-        assert!(cfg.leak_check);
         assert!(cfg.no_fail_list);
-        assert_eq!(cfg.leak_check_interval, 250);
         assert_eq!(cfg.test262_root, Some(PathBuf::from("tests/test262")));
         assert_eq!(cfg.filter.as_deref(), Some("language"));
     }
@@ -174,12 +159,16 @@ mod tests {
         assert!(!off.supervised(false));
     }
 
-    /// interval 非数字回落缺省 1000；位置参数超过 2 个返回错误。
+    /// leak-check 旗标不在已知选项集内，落未知选项分支返回错误（回归钉）；
+    /// 位置参数超过 2 个返回错误。
     #[test]
-    fn parse_interval_fallback_and_positional_limit() {
-        let cfg =
-            RunConfig::parse(&args(&["--leak-check-interval=abc"])).expect("fallback interval parse should succeed");
-        assert_eq!(cfg.leak_check_interval, 1000);
+    fn parse_leak_check_flags_unknown_and_positional_limit() {
+        let err = RunConfig::parse(&args(&["--leak-check"])).expect_err("removed flag must be rejected");
+        assert!(err.contains("unknown option: --leak-check"));
+
+        let err = RunConfig::parse(&args(&["--leak-check-interval=abc"]))
+            .expect_err("removed interval flag must be rejected");
+        assert!(err.contains("unknown option: --leak-check-interval=abc"));
 
         let err = RunConfig::parse(&args(&["a", "b", "c"])).expect_err("three positionals must error");
         assert!(err.contains("too many positional arguments"));
