@@ -475,8 +475,8 @@ pub(crate) fn wire_builtin_world_links(world: &BuiltinWorld) {
 }
 
 impl BuiltinWorld {
-    /// 全量构造一个全新的 builtin world：创建所有原型/构造器对、Error 子类型、
-    /// TypedArray 家族与 well-known symbol 对象，并建立原型链链接。
+    /// 全量构造一个全新的 builtin world：创建所有原型/构造器对、Error 子类型
+    /// 与 TypedArray 家族，并建立原型链链接。
     pub fn new(string_forge: &PermInterner, shape_forge: &ShapeForge) -> Self {
         let labels = builtin_labels(string_forge);
 
@@ -513,19 +513,6 @@ impl BuiltinWorld {
         let (data_view_proto, data_view_constructor) = make_named_pair(string_forge, shape_forge, labels, "DataView");
         let typed_arrays = make_typed_array_family(string_forge, shape_forge, labels, &object_proto);
 
-        let sym_match = P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()));
-        let sym_replace = P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()));
-        let sym_search = P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()));
-        let sym_split = P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()));
-        let sym_iterator = P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()));
-        let sym_to_primitive = P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()));
-        let sym_has_instance = P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()));
-        let sym_match_all = P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()));
-        let sym_async_iterator = P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()));
-        let sym_to_string_tag = P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()));
-        let sym_species = P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()));
-        let sym_async_dispose = P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()));
-        let sym_dispose = P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()));
         let temporal_object = P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()));
         let temporal_now_object = P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()));
         let (instant_proto, instant_constructor) = make_named_pair(string_forge, shape_forge, labels, "Instant");
@@ -630,19 +617,6 @@ impl BuiltinWorld {
             bigint64array_proto: typed_arrays.bigint64array_proto,
             biguint64array_constructor: typed_arrays.biguint64array_constructor,
             biguint64array_proto: typed_arrays.biguint64array_proto,
-            sym_match,
-            sym_replace,
-            sym_search,
-            sym_split,
-            sym_iterator,
-            sym_to_primitive,
-            sym_has_instance,
-            sym_match_all,
-            sym_async_iterator,
-            sym_to_string_tag,
-            sym_species,
-            sym_async_dispose,
-            sym_dispose,
             temporal_object,
             temporal_now_object,
             instant_constructor,

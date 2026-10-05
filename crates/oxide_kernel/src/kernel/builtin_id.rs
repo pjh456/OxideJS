@@ -1,4 +1,4 @@
-//! 内置对象 id 枚举（`BuiltinId` 98 变体 + `ALL` 顺序钉表）、世代快照
+//! 内置对象 id 枚举（`BuiltinId` 85 变体 + `ALL` 顺序钉表）、世代快照
 //! （`BuiltinSnapshot`）与按家族划分的脏标记位集（`BuiltinDirtySet`）；
 //! `NUM_BUILTINS` 文档承载"新增 BuiltinWorld 字段须同步"四处约束注记。
 
@@ -11,13 +11,12 @@ use crate::builtin::BuiltinWorld;
 /// 维护注意：每个新增的 `BuiltinWorld` 对象字段都必须加到这里以及
 /// `KernelSession::dirty_since_snapshot()`，以便选择性重置重建正确的
 /// builtin 家族。
-pub const NUM_BUILTINS: usize = 98;
+pub const NUM_BUILTINS: usize = 85;
 
 /// 内置对象枚举 id，与 `BuiltinWorld` 中的存储槽一一对应。
 ///
-/// 覆盖各构造器/原型、Error 家族（含 SuppressedError 原型）、集合类型、
-/// TypedArray 家族与 well-known symbols；`repr(u8)` 使其可直接作为数组下标
-/// （`u8` 值即下标）。
+/// 覆盖各构造器/原型、Error 家族（含 SuppressedError 原型）、集合类型与
+/// TypedArray 家族；`repr(u8)` 使其可直接作为数组下标（`u8` 值即下标）。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
 pub enum BuiltinId {
@@ -80,45 +79,32 @@ pub enum BuiltinId {
     BigInt64ArrayProto = 56,
     BigUint64ArrayConstructor = 57,
     BigUint64ArrayProto = 58,
-    SymMatch = 59,
-    SymReplace = 60,
-    SymSearch = 61,
-    SymSplit = 62,
-    SymIterator = 63,
-    SymToPrimitive = 64,
-    SymHasInstance = 65,
-    SymMatchAll = 66,
-    SymAsyncIterator = 67,
-    TemporalObject = 68,
-    TemporalNowObject = 69,
-    InstantConstructor = 70,
-    InstantProto = 71,
-    PlainDateConstructor = 72,
-    PlainDateProto = 73,
-    PlainTimeConstructor = 74,
-    PlainTimeProto = 75,
-    BigIntConstructor = 76,
-    BigIntProto = 77,
-    DurationConstructor = 78,
-    DurationProto = 79,
-    SymToStringTag = 80,
-    SymSpecies = 85,
-    ZonedDateTimeConstructor = 81,
-    ZonedDateTimeProto = 82,
-    PlainDateTimeConstructor = 83,
-    PlainDateTimeProto = 84,
-    SymAsyncDispose = 86,
-    SymDispose = 87,
-    SuppressedErrorProto = 88,
-    Console = 89,
-    PlainMonthDayConstructor = 90,
-    PlainMonthDayProto = 91,
-    PlainYearMonthConstructor = 92,
-    PlainYearMonthProto = 93,
-    SharedArrayBufferProto = 94,
-    SharedArrayBufferConstructor = 95,
-    AtomicsObject = 96,
-    AsyncIteratorProto = 97,
+    TemporalObject = 59,
+    TemporalNowObject = 60,
+    InstantConstructor = 61,
+    InstantProto = 62,
+    PlainDateConstructor = 63,
+    PlainDateProto = 64,
+    PlainTimeConstructor = 65,
+    PlainTimeProto = 66,
+    BigIntConstructor = 67,
+    BigIntProto = 68,
+    DurationConstructor = 69,
+    DurationProto = 70,
+    ZonedDateTimeConstructor = 71,
+    ZonedDateTimeProto = 72,
+    PlainDateTimeConstructor = 73,
+    PlainDateTimeProto = 74,
+    SuppressedErrorProto = 75,
+    Console = 76,
+    PlainMonthDayConstructor = 77,
+    PlainMonthDayProto = 78,
+    PlainYearMonthConstructor = 79,
+    PlainYearMonthProto = 80,
+    SharedArrayBufferProto = 81,
+    SharedArrayBufferConstructor = 82,
+    AtomicsObject = 83,
+    AsyncIteratorProto = 84,
 }
 
 impl BuiltinId {
@@ -185,15 +171,6 @@ impl BuiltinId {
         BuiltinId::BigInt64ArrayProto,
         BuiltinId::BigUint64ArrayConstructor,
         BuiltinId::BigUint64ArrayProto,
-        BuiltinId::SymMatch,
-        BuiltinId::SymReplace,
-        BuiltinId::SymSearch,
-        BuiltinId::SymSplit,
-        BuiltinId::SymIterator,
-        BuiltinId::SymToPrimitive,
-        BuiltinId::SymHasInstance,
-        BuiltinId::SymMatchAll,
-        BuiltinId::SymAsyncIterator,
         BuiltinId::TemporalObject,
         BuiltinId::TemporalNowObject,
         BuiltinId::InstantConstructor,
@@ -206,14 +183,10 @@ impl BuiltinId {
         BuiltinId::BigIntProto,
         BuiltinId::DurationConstructor,
         BuiltinId::DurationProto,
-        BuiltinId::SymToStringTag,
         BuiltinId::ZonedDateTimeConstructor,
         BuiltinId::ZonedDateTimeProto,
         BuiltinId::PlainDateTimeConstructor,
         BuiltinId::PlainDateTimeProto,
-        BuiltinId::SymSpecies,
-        BuiltinId::SymAsyncDispose,
-        BuiltinId::SymDispose,
         BuiltinId::SuppressedErrorProto,
         BuiltinId::Console,
         BuiltinId::PlainMonthDayConstructor,
@@ -371,20 +344,19 @@ impl BuiltinDirtySet {
 mod tests {
     use super::*;
 
-    /// 槽对齐面：表尾追加 AsyncIteratorPrototype 后总槽数 98，既有 97 个
-    /// 判别值零位移，快照数组随 NUM_BUILTINS 自动扩维、逐槽对齐。
+    /// 槽对齐面：ALL 表与判别值 0..84 严格同序，快照数组随 NUM_BUILTINS
+    /// 自动扩维、逐槽对齐。
     #[test]
     fn builtin_snapshot_all_slots_aligned() {
-        assert_eq!(NUM_BUILTINS, 98);
+        assert_eq!(NUM_BUILTINS, 85);
         assert_eq!(BuiltinId::ALL.len(), NUM_BUILTINS);
-        // 前 97 项判别值 0-96 逐项不变（尾追加零位移）。
-        for i in 0..97usize {
+        for i in 0..84usize {
             assert_eq!(BuiltinId::ALL[i] as usize, i);
         }
-        assert_eq!(BuiltinId::ALL[94], BuiltinId::SharedArrayBufferProto);
-        assert_eq!(BuiltinId::ALL[95], BuiltinId::SharedArrayBufferConstructor);
-        assert_eq!(BuiltinId::ALL[96], BuiltinId::AtomicsObject);
-        assert_eq!(BuiltinId::ALL[97], BuiltinId::AsyncIteratorProto);
+        assert_eq!(BuiltinId::ALL[81], BuiltinId::SharedArrayBufferProto);
+        assert_eq!(BuiltinId::ALL[82], BuiltinId::SharedArrayBufferConstructor);
+        assert_eq!(BuiltinId::ALL[83], BuiltinId::AtomicsObject);
+        assert_eq!(BuiltinId::ALL[84], BuiltinId::AsyncIteratorProto);
 
         // 快照经 session 全量构造路径采集，generations 数组维度 = 槽数。
         use crate::kernel::{KernelConfig, KernelCore, KernelSession};

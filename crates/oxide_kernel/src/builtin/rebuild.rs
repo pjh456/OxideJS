@@ -223,59 +223,10 @@ impl BuiltinWorld {
                 },
             )
         };
-        let (
-            symbol_proto,
-            symbol_constructor,
-            sym_match,
-            sym_replace,
-            sym_search,
-            sym_split,
-            sym_iterator,
-            sym_to_primitive,
-            sym_has_instance,
-            sym_match_all,
-            sym_async_iterator,
-            sym_to_string_tag,
-            sym_species,
-            sym_async_dispose,
-            sym_dispose,
-        ) = if dirty.symbol_family {
-            let (symbol_proto, symbol_constructor) = make_named_pair(string_forge, shape_forge, labels, "Symbol");
-            (
-                symbol_proto,
-                symbol_constructor,
-                P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
-                P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
-                P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
-                P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
-                P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
-                P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
-                P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
-                P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
-                P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
-                P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
-                P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
-                P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
-                P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
-            )
+        let (symbol_proto, symbol_constructor) = if dirty.symbol_family {
+            make_named_pair(string_forge, shape_forge, labels, "Symbol")
         } else {
-            (
-                current.symbol_proto.clone(),
-                current.symbol_constructor.clone(),
-                current.sym_match.clone(),
-                current.sym_replace.clone(),
-                current.sym_search.clone(),
-                current.sym_split.clone(),
-                current.sym_iterator.clone(),
-                current.sym_to_primitive.clone(),
-                current.sym_has_instance.clone(),
-                current.sym_match_all.clone(),
-                current.sym_async_iterator.clone(),
-                current.sym_to_string_tag.clone(),
-                current.sym_species.clone(),
-                current.sym_async_dispose.clone(),
-                current.sym_dispose.clone(),
-            )
+            (current.symbol_proto.clone(), current.symbol_constructor.clone())
         };
 
         let math_object = if dirty.math {
@@ -564,19 +515,6 @@ impl BuiltinWorld {
             bigint64array_proto: typed_arrays.bigint64array_proto,
             biguint64array_constructor: typed_arrays.biguint64array_constructor,
             biguint64array_proto: typed_arrays.biguint64array_proto,
-            sym_match,
-            sym_replace,
-            sym_search,
-            sym_split,
-            sym_iterator,
-            sym_to_primitive,
-            sym_has_instance,
-            sym_match_all,
-            sym_async_iterator,
-            sym_to_string_tag,
-            sym_species,
-            sym_async_dispose,
-            sym_dispose,
             temporal_object,
             temporal_now_object,
             instant_constructor,

@@ -1,5 +1,5 @@
-//! 注册表职责：BuiltinWorld 结构（106 固定 P 字段 + stub 族 + Box::into_raw
-//! 登记表）、get_by_id 派发、all_p_fields 104 元组枚举（新增 P 字段四处同步
+//! 注册表职责：BuiltinWorld 结构（95 固定 P 字段 + stub 族 + Box::into_raw
+//! 登记表）、get_by_id 派发、all_p_fields 95 元组枚举（新增 P 字段四处同步
 //! 约束载体）与登记表 track/find/inherit/teardown。
 
 use oxide_types::mem::P;
@@ -8,7 +8,7 @@ use oxide_types::value::JsValue;
 
 use crate::kernel::BuiltinId;
 
-/// 全部内置对象（原型、构造器、全局单例 Math/JSON、well-known symbol 与 stub 对象）的持有者。
+/// 全部内置对象（原型、构造器、全局单例 Math/JSON 与 stub 对象）的持有者。
 ///
 /// 每个 session 独立持有自己的 `BuiltinWorld`，保证 session 间内置对象隔离；
 /// 由 [`BuiltinWorld::new`] 全量构造，或 [`BuiltinWorld::rebuild_with_dirty`] 按脏标记部分重建。
@@ -81,19 +81,6 @@ pub struct BuiltinWorld {
     pub bigint64array_proto: P<JsObject>,
     pub biguint64array_constructor: P<JsObject>,
     pub biguint64array_proto: P<JsObject>,
-    pub sym_match: P<JsObject>,
-    pub sym_replace: P<JsObject>,
-    pub sym_search: P<JsObject>,
-    pub sym_split: P<JsObject>,
-    pub sym_iterator: P<JsObject>,
-    pub sym_to_primitive: P<JsObject>,
-    pub sym_has_instance: P<JsObject>,
-    pub sym_match_all: P<JsObject>,
-    pub sym_async_iterator: P<JsObject>,
-    pub sym_to_string_tag: P<JsObject>,
-    pub sym_species: P<JsObject>,
-    pub sym_async_dispose: P<JsObject>,
-    pub sym_dispose: P<JsObject>,
     pub temporal_object: P<JsObject>,
     pub temporal_now_object: P<JsObject>,
     pub instant_constructor: P<JsObject>,
@@ -381,7 +368,7 @@ impl BuiltinWorld {
     /// session 收尾（`teardown_heap_data`）与选择性重建收尾（`retire_replaced`）
     /// 的 P 字段枚举唯一入口：`BuiltinWorld` 新增 P 字段须在此同步补一行，否则
     /// 收尾时该字段属性区无法释放、重建原型槽改写/释放漏掉该字段。
-    pub(crate) fn all_p_fields(&self) -> [&P<JsObject>; 108] {
+    pub(crate) fn all_p_fields(&self) -> [&P<JsObject>; 95] {
         [
             &self.object_proto,
             &self.array_proto,
@@ -447,19 +434,6 @@ impl BuiltinWorld {
             &self.bigint64array_proto,
             &self.biguint64array_constructor,
             &self.biguint64array_proto,
-            &self.sym_match,
-            &self.sym_replace,
-            &self.sym_search,
-            &self.sym_split,
-            &self.sym_iterator,
-            &self.sym_to_primitive,
-            &self.sym_has_instance,
-            &self.sym_match_all,
-            &self.sym_async_iterator,
-            &self.sym_to_string_tag,
-            &self.sym_species,
-            &self.sym_async_dispose,
-            &self.sym_dispose,
             &self.temporal_object,
             &self.temporal_now_object,
             &self.instant_constructor,
@@ -602,19 +576,6 @@ impl BuiltinWorld {
             BuiltinId::BigInt64ArrayProto => &self.bigint64array_proto,
             BuiltinId::BigUint64ArrayConstructor => &self.biguint64array_constructor,
             BuiltinId::BigUint64ArrayProto => &self.biguint64array_proto,
-            BuiltinId::SymMatch => &self.sym_match,
-            BuiltinId::SymReplace => &self.sym_replace,
-            BuiltinId::SymSearch => &self.sym_search,
-            BuiltinId::SymSplit => &self.sym_split,
-            BuiltinId::SymIterator => &self.sym_iterator,
-            BuiltinId::SymToPrimitive => &self.sym_to_primitive,
-            BuiltinId::SymHasInstance => &self.sym_has_instance,
-            BuiltinId::SymMatchAll => &self.sym_match_all,
-            BuiltinId::SymAsyncIterator => &self.sym_async_iterator,
-            BuiltinId::SymToStringTag => &self.sym_to_string_tag,
-            BuiltinId::SymSpecies => &self.sym_species,
-            BuiltinId::SymAsyncDispose => &self.sym_async_dispose,
-            BuiltinId::SymDispose => &self.sym_dispose,
             BuiltinId::TemporalObject => &self.temporal_object,
             BuiltinId::TemporalNowObject => &self.temporal_now_object,
             BuiltinId::InstantConstructor => &self.instant_constructor,
