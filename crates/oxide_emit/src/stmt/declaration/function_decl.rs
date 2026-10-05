@@ -164,7 +164,7 @@ impl Emitter {
         ctx.nested.push(sub_module);
         ctx.inst(Inst::create_closure(Operand::Reg(reg), ctx.nested.len() as u16));
         if write_slot {
-            if let Some(&cell_idx) = ctx.captured_bindings.get(name) {
+            if let Some((cell_idx, _)) = ctx.visible_cell(name) {
                 ctx.inst(Inst::new(
                     OpCode::MAKE_CELL,
                     Operand::Reg(reg),

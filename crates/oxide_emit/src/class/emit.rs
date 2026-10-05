@@ -138,7 +138,7 @@ impl Emitter {
         // （会改写 cell 值）与内联 accessor 调用（会清空寄存器文件）之后仍保持 identity
         // 一致；合成键 @@class_self_N 不影响外层作用域的同名用户绑定。
         let class_self_cell: Option<u8> = ctor_name.as_deref().map(|_| {
-            let cell_idx = ctx.captured_bindings.values().copied().max().map_or(0, |m| m.saturating_add(1));
+            let cell_idx = ctx.alloc_cell_idx();
             ctx.captured_bindings.insert(format!("@@class_self_{cell_idx}"), cell_idx);
             cell_idx
         });
@@ -167,13 +167,14 @@ impl Emitter {
         ctx.scopes.private_brand_id = private_brand_id;
 
         // 实例公有字段 computed key 求值于构造器帧外，须类定义期存入数组。构造器以
-        // upvalue 捕获该数组：父作用域登记 `@@field_keys`（cell_idx 取现有最大 +1）。
+        // upvalue 捕获该数组：父作用域登记 `@@field_keys`（索引经共享计数器追加，
+        // 与块级遮蔽绑定的追加索引不碰撞）。
         let has_computed_instance = instance_field_indices.iter().any(|&i| {
             let ClassElement::PropertyDefinition(p) = &elements[i] else { return false };
             p.computed && !matches!(p.key, PropertyKey::PrivateIdentifier(_))
         });
         let field_key_cell: Option<u8> = if has_computed_instance {
-            let cell_idx = ctx.captured_bindings.values().copied().max().map_or(0, |m| m.saturating_add(1));
+            let cell_idx = ctx.alloc_cell_idx();
             ctx.captured_bindings.insert("@@field_keys".to_string(), cell_idx);
             Some(cell_idx)
         } else {
@@ -181,7 +182,7 @@ impl Emitter {
         };
         // 类 brand 对象（= proto）由类定义期 MAKE_CELL 写入，构造器经 upvalue 捕获。
         let brand_cell: Option<u8> = private_brand_id.map(|_| {
-            let cell_idx = ctx.captured_bindings.values().copied().max().map_or(0, |m| m.saturating_add(1));
+            let cell_idx = ctx.alloc_cell_idx();
             ctx.captured_bindings.insert("@@class_brand".to_string(), cell_idx);
             cell_idx
         });
@@ -419,11 +420,11 @@ impl Emitter {
             }
             // 类名被外层嵌套函数捕获时，真实名 cell 同样须初始化（类元素自引用走
             // @@class_self_* 合成 cell，二者 cell_idx 不同则各发一次）。
-            // 仅类声明：类名是本作用域绑定，captured_bindings 按名命中的才是
-            // 它的 cell；类表达式名是类体内独立 const 绑定，按名查询只会命中
-            // 外层同名绑定 cell，MAKE_CELL 会把类值误写进外层绑定。
+            // 仅类声明：类名是本作用域绑定，可见绑定解析到的是它的 cell；类表达式
+            // 名是类体内独立 const 绑定，按名解析只会命中外层同名绑定 cell，
+            // MAKE_CELL 会把类值误写进外层绑定。
             if is_class_decl {
-                if let Some(&cell_idx) = ctx.captured_bindings.get(name) {
+                if let Some((cell_idx, _)) = ctx.visible_cell(name) {
                     ctx.inst(Inst::new(
                         OpCode::MAKE_CELL,
                         Operand::Reg(binding_reg),
