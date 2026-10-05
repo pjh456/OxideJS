@@ -76,6 +76,12 @@ impl Vm {
         for &cached in self.template_objects.values() {
             f(cached);
         }
+        // f64→string 缓存槽值是 session 串，是 GC 根（漏根 → 串清扫释放 → 命中悬垂）。
+        for &v in &self.number_to_string_cache_vals {
+            if v.is_string() {
+                f(v);
+            }
+        }
         for &entry in &self.iters.for_of_iters {
             f(entry.iterator);
             f(entry.last_result);

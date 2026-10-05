@@ -90,3 +90,62 @@ fn string_constructor_fallback_paths() {
     let (_vm, len) = eval("new String(\"ab\").length").unwrap();
     assert_eq!(len.as_int(), 2);
 }
+
+// 位模式低 4 位互异的十六个有限 double（槽位互不冲突的测试前提）。
+const CACHE_TEST_VALUES: [f64; 16] = [
+    0.119, 0.103, 0.087, 0.071, 0.063, 0.207, 0.175, 0.143, 0.015, 0.007, 0.003, 0.005, 0.001, 0.205, 0.173, 0.141,
+];
+
+#[test]
+fn number_to_string_cache_slot_correctness() {
+    // 十六个槽位互异的值两轮各调一次：命中须键全等才返回，
+    // 钉住槽位碰撞不得错返。
+    let mut vm = Vm::new();
+    let mut seen = [false; 16];
+    for &d in &CACHE_TEST_VALUES {
+        let slot = (d.to_bits() as usize) & 15;
+        assert!(!seen[slot], "槽位冲突：{d}");
+        seen[slot] = true;
+    }
+    for _round in 0..2 {
+        for &d in &CACHE_TEST_VALUES {
+            let v = vm.number_to_string_cached(d);
+            assert!(v.is_string());
+            let expected = oxide_runtime_api::js_number_to_string(d);
+            assert_eq!(unsafe { &*v.as_string_ptr() }.as_str(), expected.as_str(), "值 {d} 应与原转换链一致");
+        }
+    }
+}
+
+#[test]
+fn number_to_string_cache_survives_session_gc() {
+    // 填满十六槽后强制完整 session 收集：缓存串已登记为 GC 根，
+    // 收集后读回仍为原内容（漏根登记此测必挂）。
+    let mut vm = Vm::new();
+    for &d in &CACHE_TEST_VALUES {
+        vm.number_to_string_cached(d);
+    }
+    vm.collect_session_gc();
+    for &d in &CACHE_TEST_VALUES {
+        let v = vm.number_to_string_cached(d);
+        assert!(v.is_string());
+        let expected = oxide_runtime_api::js_number_to_string(d);
+        assert_eq!(unsafe { &*v.as_string_ptr() }.as_str(), expected.as_str(), "收集后值 {d} 应可读回");
+    }
+    // 2.5 挤占槽 0 后写新串：新串同样须存活后续收集。
+    let v = vm.number_to_string_cached(2.5);
+    vm.collect_session_gc();
+    let v2 = vm.number_to_string_cached(2.5);
+    assert_eq!(unsafe { &*v2.as_string_ptr() }.as_str(), "2.5");
+    assert_eq!(v.as_string_ptr(), v2.as_string_ptr());
+}
+
+#[test]
+fn number_to_string_cache_identity() {
+    // 同值两次调用命中同槽：返回指针相等（命中复用 session 串）。
+    let mut vm = Vm::new();
+    let a = vm.number_to_string_cached(2.5);
+    let b = vm.number_to_string_cached(2.5);
+    assert!(a.is_string() && b.is_string());
+    assert_eq!(a.as_string_ptr(), b.as_string_ptr());
+}

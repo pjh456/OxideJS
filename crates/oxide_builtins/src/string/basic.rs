@@ -164,8 +164,9 @@ pub fn string_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
             } else if d.is_infinite() {
                 JsValue::string(oxide_kernel::string_forge::const_string_ptr(if d > 0.0 { 5 } else { 6 }))
             } else {
-                // 有限 double 走原数值转串链，行为与转换链一致。
-                vm.new_string_owned(oxide_runtime_api::js_number_to_string(d))
+                // 有限 double 走十六槽 last-value 缓存：命中复用已登记串，
+                // miss 走原数值转串链，行为与转换链一致。
+                vm.number_to_string_cached(d)
             }
         } else {
             // BigInt/对象参数走完整转换链（对象可经 valueOf/toString 抛错）；

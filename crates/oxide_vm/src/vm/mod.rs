@@ -183,6 +183,12 @@ pub struct Vm {
     /// （发射层字符串常量统一经 perm_string 物化），指针相等即键为 "length"，
     /// 入口快判只比指针免键解析。PermInterner 追加式、指针唯一，永不失效。
     pub(crate) length_perm_ptr: *const JsString,
+    /// f64→string 十六槽 last-value 缓存的键（double 位模式）。空槽判定用
+    /// 对应值非字符串：键 0 是 +0.0 的合法位模式，不得作空标记。
+    pub(crate) number_to_string_cache_keys: [u64; 16],
+    /// f64→string 十六槽 last-value 缓存的值（session 串，经 `for_each_value`
+    /// 登记为 GC 根；`full_reset` 在 session 串释放前清空）。
+    pub(crate) number_to_string_cache_vals: [JsValue; 16],
     pub object_prototype: P<JsObject>,
     /// `%GeneratorPrototype%`：生成器实例的原型（next/return/throw 方法挂此）。
     pub generator_proto: P<JsObject>,

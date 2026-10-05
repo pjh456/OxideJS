@@ -58,6 +58,14 @@ pub trait VmHost {
     fn new_string(&mut self, s: &str) -> JsValue;
     /// move 接收 `String` 创建会话字符串，避免一次整串克隆。
     fn new_string_owned(&mut self, s: String) -> JsValue;
+    /// 有限 double 转串，带十六槽 last-value 缓存：命中返回已登记为 GC 根的
+    /// session 串，miss 走原数值转串链并写槽。
+    ///
+    /// # 注意事项
+    /// - 非有限值（NaN/±Infinity）走永久常量表，不进槽。
+    /// - `full_reset` 在 session 串释放前清空槽；轻量 `reset` 保留槽
+    ///   （session 串跨 eval 存活，缓存串仍有效）。
+    fn number_to_string_cached(&mut self, d: f64) -> JsValue;
     /// 取 ASCII 单字符的永久字符串值：命中返回共享 perm 串（零分配、可指针
     /// 短路比较），非 ASCII 返回 `None` 由调用方回落普通字符串创建。
     ///

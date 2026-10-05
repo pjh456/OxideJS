@@ -57,6 +57,8 @@ impl Vm {
             session,
             length_si,
             length_perm_ptr,
+            number_to_string_cache_keys: [0u64; 16],
+            number_to_string_cache_vals: [JsValue::undefined(); 16],
             object_prototype: obj_proto,
             generator_proto: P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
             generator_function_proto: P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
@@ -198,6 +200,8 @@ impl Vm {
             session,
             length_si,
             length_perm_ptr,
+            number_to_string_cache_keys: [0u64; 16],
+            number_to_string_cache_vals: [JsValue::undefined(); 16],
             object_prototype: obj_proto,
             generator_proto: P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
             generator_function_proto: P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
@@ -409,6 +413,10 @@ impl Vm {
             }),
         );
         self.active_immutables = std::ptr::slice_from_raw_parts(std::ptr::null(), 0);
+        // f64→string 缓存槽指向即将释放的 session 串：须在 teardown 之前清空，
+        // 否则下次命中返回悬垂指针。
+        self.number_to_string_cache_keys = [0u64; 16];
+        self.number_to_string_cache_vals = [JsValue::undefined(); 16];
         self.teardown_session_heap_data();
         self.gc_state.session_bytes_allocated = 0;
         self.gc_state.session_bytes_peak = 0;
@@ -593,6 +601,39 @@ impl Vm {
         let len = s.len();
         let ptr = Box::into_raw(Box::new(JsString::new(s)));
         self.register_session_string(ptr, len)
+    }
+
+    /// 有限 double 转串，带十六槽 last-value 缓存：命中返回已登记的 session 串，
+    /// miss 走原数值转串链并写槽。
+    ///
+    /// # 步骤
+    /// 1. 非有限值（NaN/±Infinity）返回对应永久常量串，不进槽。
+    /// 2. 槽位取位模式低 4 位；槽值为字符串且键全等时返回槽值。
+    /// 3. miss 走原数值转串链新建 session 串，写键与值后返回。
+    ///
+    /// # 副作用
+    /// - 槽值经 `for_each_value` 登记为 GC 根，strings-only 收集不释放；
+    ///   `full_reset` 在 session 串释放前清空槽。
+    ///
+    /// # 注意事项
+    /// - 空槽判定用值非字符串：+0.0 的位模式是 0，键不得作空标记。
+    /// - direct-mapped last-value：异值撞槽即覆盖，返回前键须 64 位全等。
+    pub fn number_to_string_cached(&mut self, d: f64) -> JsValue {
+        if d.is_nan() {
+            return JsValue::string(oxide_kernel::string_forge::const_string_ptr(4));
+        }
+        if d.is_infinite() {
+            return JsValue::string(oxide_kernel::string_forge::const_string_ptr(if d > 0.0 { 5 } else { 6 }));
+        }
+        let bits = d.to_bits();
+        let slot = (bits as usize) & 15;
+        if self.number_to_string_cache_vals[slot].is_string() && self.number_to_string_cache_keys[slot] == bits {
+            return self.number_to_string_cache_vals[slot];
+        }
+        let v = self.new_string_owned(oxide_runtime_api::js_number_to_string(d));
+        self.number_to_string_cache_keys[slot] = bits;
+        self.number_to_string_cache_vals[slot] = v;
+        v
     }
 
     /// 登记一个 session 字符串并记账（`new_string_owned` 与 `new_cons_string`
