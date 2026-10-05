@@ -67,7 +67,7 @@ impl Emitter {
     ///
     /// # 步骤
     /// 1. 逐头名：移除旧条目并记入恢复清单。
-    /// 2. 按现有最大 cell 索引顺序分配 TDZ cell（与类 brand 合成 cell 同口径）。
+    /// 2. 按共享计数器顺序分配 TDZ cell（与块级追加 / 合成 cell 同口径）。
     /// 3. 发射未初始化 MAKE_CELL 并覆盖映射。
     ///
     /// # 副作用
@@ -76,11 +76,9 @@ impl Emitter {
     ///   防头名泄漏进兄弟语句的捕获判定。
     pub(crate) fn begin_for_head_env(&self, names: Vec<String>, ctx: &mut CompileCtx) -> Result<ForHeadEnv, String> {
         let mut entries = Vec::with_capacity(names.len());
-        let mut next = ctx.captured_bindings.values().copied().max().map_or(0, |m| m.saturating_add(1));
         for name in names {
             let saved = ctx.captured_bindings.remove(&name);
-            let tdz_idx = next;
-            next = next.saturating_add(1);
+            let tdz_idx = ctx.alloc_cell_idx();
             ctx.captured_bindings.insert(name.clone(), tdz_idx);
             // 头名登记：声明点索引解析据此走映射回退，不就地追加新索引。
             ctx.for_head_env_names.insert(name.clone());
@@ -96,7 +94,6 @@ impl Emitter {
             ));
             entries.push((name, saved, tdz_idx, 0));
         }
-        ctx.next_cell_idx = next;
         Ok(ForHeadEnv { entries })
     }
 
@@ -117,12 +114,10 @@ impl Emitter {
         if env.entries.is_empty() {
             return;
         }
-        let mut next = ctx.captured_bindings.values().copied().max().map_or(0, |m| m.saturating_add(1));
         // 默认值窗口的 TDZ 占位：未初始化标志折入 MAKE_CELL 立即数高字节。
         let undef_reg = self.emit_undefined(ctx);
         for (name, _, _, body_idx) in &mut env.entries {
-            let idx = next;
-            next = next.saturating_add(1);
+            let idx = ctx.alloc_cell_idx();
             *body_idx = idx;
             ctx.captured_bindings.insert(name.clone(), idx);
             ctx.inst(Inst::new(
@@ -132,7 +127,6 @@ impl Emitter {
                 Operand::None,
             ));
         }
-        ctx.next_cell_idx = next;
     }
 
     /// 语句收尾恢复捕获映射：旧条目放回（无旧条目则移除），头名不进入后续
@@ -148,6 +142,7 @@ impl Emitter {
                 }
             }
             ctx.for_head_env_names.remove(&name);
+            ctx.for_head_keep.remove(&name);
         }
     }
 
@@ -162,7 +157,11 @@ impl Emitter {
         // 每迭代 fresh cell，体发射后恢复捕获映射。
         let mut head_env = self
             .collect_for_head_lexical_names(&fi.left)
-            .map(|names| self.begin_for_head_env(names, ctx))
+            .map(|names| {
+                // for-in 全头名保留（无撤出覆盖），保留集填全头名供头名回填门控。
+                ctx.for_head_keep.extend(names.iter().cloned());
+                self.begin_for_head_env(names, ctx)
+            })
             .transpose()?;
         let obj_reg = self.emit_expression(&fi.right, ctx)?;
         if let Some(env) = &mut head_env {
@@ -201,6 +200,12 @@ impl Emitter {
                                 }
                             } else {
                                 ctx.declare(name, var_reg, decl.kind, is_const)?;
+                                // 头名回填：体区绑定点建绑定后把覆盖 cell 索引写进绑定
+                                // 字段，解析点按绑定身份取索引（var 头绑定已回填，
+                                // 同值覆盖幂等）。
+                                if let Some(&idx) = ctx.captured_bindings.get(name) {
+                                    ctx.set_binding_cell_idx(name, idx);
+                                }
                                 var_reg
                             };
                             if ctx.targets_readonly_builtin(name, target_reg) {
@@ -209,7 +214,7 @@ impl Emitter {
                                 if ctx.is_strict {
                                     self.emit_throw_error("TypeError", "cannot assign to read-only property", ctx)?;
                                 }
-                            } else if let Some(&cell_idx) = ctx.captured_bindings.get(name) {
+                            } else if let Some((cell_idx, _)) = ctx.visible_cell(name) {
                                 let op = if fresh_cell { OpCode::MAKE_CELL_FRESH } else { OpCode::MAKE_CELL };
                                 ctx.inst(Inst::new(
                                     op,
@@ -253,17 +258,13 @@ impl Emitter {
                         Operand::Reg(key_reg),
                         Operand::Imm(uv_idx as u16),
                     ));
-                } else if let Some(&cell_idx) = ctx.captured_bindings.get(name) {
-                    if ctx.visible_binding_reg(name).is_some() {
-                        ctx.inst(Inst::new(
-                            OpCode::CELL_SET,
-                            Operand::None,
-                            Operand::Reg(key_reg),
-                            Operand::Imm(cell_idx as u16),
-                        ));
-                    } else {
-                        self.emit_for_in_assignment_target_write(name, key_reg, ctx)?;
-                    }
+                } else if let Some((cell_idx, _)) = ctx.visible_cell(name) {
+                    ctx.inst(Inst::new(
+                        OpCode::CELL_SET,
+                        Operand::None,
+                        Operand::Reg(key_reg),
+                        Operand::Imm(cell_idx as u16),
+                    ));
                 } else {
                     self.emit_for_in_assignment_target_write(name, key_reg, ctx)?;
                 }

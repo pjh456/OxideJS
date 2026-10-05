@@ -68,6 +68,7 @@ impl Emitter {
                 for name in &names {
                     if ctx.captured_bindings.contains_key(name) || self.is_global_tier_name(ctx, name) {
                         head_keep.insert(name.clone());
+                        ctx.for_head_keep.insert(name.clone());
                     }
                 }
                 head_env = Some(self.begin_for_head_env(names.clone(), ctx)?);
@@ -111,6 +112,15 @@ impl Emitter {
                             }
                         } else {
                             ctx.declare(bi.name.as_str(), var_reg, decl.kind, is_const)?;
+                            // 头名回填：保留头名在 init 声明点建绑定后把覆盖 cell 索引
+                            // 写进绑定字段，解析点按绑定身份取索引；非保留头名走寄存器
+                            // 循环，不置位绑定字段（否则体区读经可见判定命中陈旧 cell，
+                            // update 段写寄存器不覆写 cell，循环条件恒真致死循环）。
+                            if head_keep.contains(bi.name.as_str()) {
+                                if let Some(&idx) = ctx.captured_bindings.get(bi.name.as_str()) {
+                                    ctx.set_binding_cell_idx(bi.name.as_str(), idx);
+                                }
+                            }
                             (var_reg, false)
                         };
                         if !already_bound {
@@ -121,10 +131,12 @@ impl Emitter {
                                 Operand::None,
                             ));
                         }
-                        // 词法头无初始化声明：覆盖 cell 须置为已初始化（undefined），
-                        // 否则后续 init 表达式内创建、捕获该头名的闭包读时误报 TDZ。
-                        if !matches!(decl.kind, VariableDeclarationKind::Var) {
-                            if let Some(&cell_idx) = ctx.captured_bindings.get(bi.name.as_str()) {
+                        // 词法头无初始化声明：保留头名的覆盖 cell 须置为已初始化
+                        // （undefined），否则后续 init 表达式内创建、捕获该头名的
+                        // 闭包读时误报 TDZ；非保留头名走寄存器循环，不建 cell。
+                        // 索引按绑定实例取（`visible_cell` 已含可见性判定）。
+                        if !matches!(decl.kind, VariableDeclarationKind::Var) && head_keep.contains(bi.name.as_str()) {
+                            if let Some((cell_idx, _)) = ctx.visible_cell(bi.name.as_str()) {
                                 ctx.inst(Inst::new(
                                     OpCode::MAKE_CELL,
                                     Operand::Reg(tmp),
@@ -149,6 +161,7 @@ impl Emitter {
             }
         }
         ctx.for_head_store_registers.clear();
+        ctx.for_head_keep.clear();
         // 撤出非保留头名的覆盖：普通 for-let 回退寄存器循环，只有被闭包引用或与顶层
         // var/函数同名的头名保留独立 cell 贯穿循环。
         for name in head_names.iter().flatten() {
@@ -157,11 +170,14 @@ impl Emitter {
             }
         }
         // 每迭代 fresh cell 的绑定：保留覆盖者（仍含 cell 下标）；已撤出覆盖的头名
-        // 走寄存器，不含在内。
+        // 走寄存器，不含在内。门控用保留集而非可见性判定：头名字段对保留与非保留
+        // 头名都置位，可见性对全部头名返 Some，按可见性门控会误纳非保留头名。
         let mut fresh_bindings: Vec<(String, u8)> = Vec::new();
         for name in &update_names {
-            if let Some(&cell_idx) = ctx.captured_bindings.get(name) {
-                fresh_bindings.push((name.clone(), cell_idx));
+            if head_keep.contains(name) {
+                if let Some((cell_idx, _)) = ctx.visible_cell(name) {
+                    fresh_bindings.push((name.clone(), cell_idx));
+                }
             }
         }
         ctx.labels.set_label_pos(start_label, ctx.insts.len());

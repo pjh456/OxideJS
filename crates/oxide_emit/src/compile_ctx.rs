@@ -153,6 +153,12 @@ pub struct CompileCtx {
     /// 拷贝的源也是寄存器，故 `emit_bind_target` 对集合内名字在 cell 写之外补写
     /// 绑定寄存器。init 发射完毕后清空。
     pub(crate) for_head_store_registers: HashSet<String>,
+    /// C 风格 for 头保留集：被闭包引用或与顶层 var/函数同名的头名。这些头名保留
+    /// 独立 cell 贯穿循环（体/test/update 走 cell），其余头名撤出覆盖回退寄存器循环。
+    /// 仅 C-for 填充（for-in/for-of 全头名保留，本集为空）；`emit_bind_target` 头名
+    /// 回填据此门控，非保留头名不置位绑定字段（否则体区读命中陈旧 cell 致死循环）。
+    /// begin 前按捕获集与顶层 tier 名计算，init 发射完毕后清空。
+    pub(crate) for_head_keep: HashSet<String>,
     /// 模块编译上下文：当前模块命名空间对象寄存器（`__moduleObject` 返回值）。
     pub(crate) module_ns_reg: Option<u32>,
     /// 写穿反演表：本模块源绑定槽寄存器 → 引用它的导出名集合。仅自导入 ns 的
@@ -271,6 +277,7 @@ impl CompileCtx {
             completion_frames: Vec::new(),
             register_update_names: Vec::new(),
             for_head_store_registers: HashSet::new(),
+            for_head_keep: HashSet::new(),
             module_ns_reg: None,
             module_local_export_regs: HashMap::new(),
             module_dep_ns_regs: HashMap::new(),

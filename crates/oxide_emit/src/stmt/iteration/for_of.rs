@@ -30,7 +30,11 @@ impl Emitter {
         // 每迭代 fresh cell，体发射后恢复捕获映射（同 for-in 覆盖）。
         let mut head_env = self
             .collect_for_head_lexical_names(&fo.left)
-            .map(|names| self.begin_for_head_env(names, ctx))
+            .map(|names| {
+                // for-of 全头名保留（无撤出覆盖），保留集填全头名供头名回填门控。
+                ctx.for_head_keep.extend(names.iter().cloned());
+                self.begin_for_head_env(names, ctx)
+            })
             .transpose()?;
         let iter_src_reg = self.emit_expression(&fo.right, ctx)?;
         if let Some(env) = &mut head_env {
@@ -77,7 +81,11 @@ impl Emitter {
         // 词法头 TDZ 环境：同同步 for-of（右值区未初始化 cell → 体区 fresh cell）。
         let mut head_env = self
             .collect_for_head_lexical_names(&fo.left)
-            .map(|names| self.begin_for_head_env(names, ctx))
+            .map(|names| {
+                // for-await-of 全头名保留（无撤出覆盖），保留集填全头名供头名回填门控。
+                ctx.for_head_keep.extend(names.iter().cloned());
+                self.begin_for_head_env(names, ctx)
+            })
             .transpose()?;
         let iter_src_reg = self.emit_expression(&fo.right, ctx)?;
         if let Some(env) = &mut head_env {
@@ -153,18 +161,17 @@ impl Emitter {
                     ));
                     return Ok(());
                 }
-                // 目标若是被捕获 cell，走 CELL_SET；仅当名字当前可解析为真实词法绑定时才写
-                // cell，否则落下方全局解析（未声明名不建隐式全局登记）。
-                if let Some(&cell_idx) = ctx.captured_bindings.get(name) {
-                    if ctx.visible_binding_reg(name).is_some() {
-                        ctx.inst(Inst::new(
-                            OpCode::CELL_SET,
-                            Operand::None,
-                            Operand::Reg(val_reg),
-                            Operand::Imm(cell_idx as u16),
-                        ));
-                        return Ok(());
-                    }
+                // 目标若是被捕获 cell，走 CELL_SET；仅当名字当前可解析为真实词法
+                // 绑定时才写 cell（`visible_cell` 已含可见性判定），否则落下方
+                // 全局解析（未声明名不建隐式全局登记）。
+                if let Some((cell_idx, _)) = ctx.visible_cell(name) {
+                    ctx.inst(Inst::new(
+                        OpCode::CELL_SET,
+                        Operand::None,
+                        Operand::Reg(val_reg),
+                        Operand::Imm(cell_idx as u16),
+                    ));
+                    return Ok(());
                 }
                 let var_reg = ctx.lookup_or_global(name);
                 if ctx.targets_readonly_builtin(name, var_reg) {

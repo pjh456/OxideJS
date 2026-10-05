@@ -78,6 +78,15 @@ impl Emitter {
                 var_reg
             }
         };
+        // 头名回填：for 头绑定（字段 None）把覆盖 cell 索引写进绑定字段，解析点
+        // 按绑定身份取索引。保留集门控：C-for 仅保留头名置位（非保留头名走寄存器
+        // 循环，置位会使体区读命中陈旧 cell 致死循环）；for-in/for-of 全头名保留。
+        // 非 for 头绑定（函数级 / 块级 / catch 参数）已由各自路径置位，不在此覆盖。
+        if ctx.for_head_keep.contains(name) {
+            if let Some(&idx) = ctx.captured_bindings.get(name) {
+                ctx.set_binding_cell_idx(name, idx);
+            }
+        }
         if ctx.targets_readonly_builtin(name, target_reg) {
             // 声明撞全局不可写内置：声明不更新既有全局绑定——sloppy 静默跳过
             // （槽保留入口预载原值），strict 在初始化求值后抛 TypeError。
