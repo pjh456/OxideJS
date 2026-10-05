@@ -977,18 +977,10 @@ fn string_to_bigint_full<H: VmHost>(host: &mut H, s: &str) -> Result<JsValue, St
     Ok(host.new_bigint(if neg { -m } else { m }))
 }
 
-/// `String()` 构造器的字符串转换（§21.1.1.1）：原始 Symbol 值（及本引擎以空对象
-/// 表示的 well-known symbol）返回描述串 `Symbol(desc)`（步骤 2a）；其余走完整
-/// ToString（步骤 3）——装箱 Symbol 的 ToPrimitive 返回 Symbol 本体，ToString 抛
-/// TypeError。
+/// `String()` 构造器的字符串转换（§21.1.1.1）：原始 Symbol 值返回描述串
+/// `Symbol(desc)`（步骤 2a）；其余走完整 ToString（步骤 3）——装箱 Symbol 的
+/// ToPrimitive 返回 Symbol 本体，ToString 抛 TypeError。
 pub fn to_string_for_string_constructor<H: VmHost>(val: JsValue, host: &mut H) -> Result<String, String> {
-    if val.is_object() {
-        if let Some(id) = well_known_symbol_id(host, val.as_js_object_ptr()) {
-            if let Some(name) = well_known_symbol_name(id) {
-                return Ok(format!("Symbol({name})"));
-            }
-        }
-    }
     // 原始 Symbol：步骤 2a，SymbolDescriptiveString（不经 ToString）。
     if val.is_symbol() {
         let desc = host.symbol_description(val.as_symbol_index()).unwrap_or("");
@@ -1000,44 +992,6 @@ pub fn to_string_for_string_constructor<H: VmHost>(val: JsValue, host: &mut H) -
         return Err(host.error_message_text("TypeError", "Cannot convert a Symbol value to a string"));
     }
     Ok(to_string(primitive))
-}
-
-/// well-known symbol 以空对象存于 builtin world；把一个对象指针反查回它的
-/// well-known symbol id（0..WELL_KNOWN_SYMBOL_COUNT），非 well-known symbol 返回 None。
-pub fn well_known_symbol_id<H: VmHost + ?Sized>(host: &H, ptr: *mut JsObject) -> Option<u32> {
-    if ptr.is_null() {
-        return None;
-    }
-    let world = host.session().builtin_world();
-    if std::ptr::eq(ptr, world.sym_iterator.as_ptr()) {
-        Some(0)
-    } else if std::ptr::eq(ptr, world.sym_match.as_ptr()) {
-        Some(1)
-    } else if std::ptr::eq(ptr, world.sym_replace.as_ptr()) {
-        Some(2)
-    } else if std::ptr::eq(ptr, world.sym_search.as_ptr()) {
-        Some(3)
-    } else if std::ptr::eq(ptr, world.sym_split.as_ptr()) {
-        Some(4)
-    } else if std::ptr::eq(ptr, world.sym_to_primitive.as_ptr()) {
-        Some(5)
-    } else if std::ptr::eq(ptr, world.sym_has_instance.as_ptr()) {
-        Some(6)
-    } else if std::ptr::eq(ptr, world.sym_match_all.as_ptr()) {
-        Some(7)
-    } else if std::ptr::eq(ptr, world.sym_async_iterator.as_ptr()) {
-        Some(8)
-    } else if std::ptr::eq(ptr, world.sym_to_string_tag.as_ptr()) {
-        Some(9)
-    } else if std::ptr::eq(ptr, world.sym_species.as_ptr()) {
-        Some(10)
-    } else if std::ptr::eq(ptr, world.sym_async_dispose.as_ptr()) {
-        Some(11)
-    } else if std::ptr::eq(ptr, world.sym_dispose.as_ptr()) {
-        Some(12)
-    } else {
-        None
-    }
 }
 
 /// well-known symbol id 的描述名（如 id 9 对应 `Symbol.toStringTag`）。

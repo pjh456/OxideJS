@@ -59,12 +59,7 @@ impl Vm {
         if val.is_symbol() {
             return Ok(symbol_value_key(val.as_symbol_index()));
         }
-        // 遗留的 well-known symbol 空对象：按指针比对映射到各自的 well-known Symbol 键，
-        // 避免全部塌缩成同一个键。
         if val.is_object() {
-            if let Some(id) = oxide_runtime_api::well_known_symbol_id(self, val.as_js_object_ptr()) {
-                return Ok(make_well_known_symbol_key(id));
-            }
             // ToPropertyKey：对象经 ToPrimitive(string hint)，结果为 Symbol 时直接作键；
             // 其余字符串按单元序列推导键（避免 lossy 文本桥接破坏孤立 surrogate 键）。
             let prim = coercion::to_primitive(val, coercion::ToPrimitiveHint::String, self)?;

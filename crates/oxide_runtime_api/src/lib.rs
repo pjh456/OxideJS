@@ -23,8 +23,8 @@ pub use coercion::{
     materialize_string_box, push_to_string, push_units_to, relational_compare, same_value, same_value_zero,
     strict_equality, string_concat, string_value_eq, to_bigint_full, to_boolean, to_int32, to_integer_or_infinity,
     to_length, to_number, to_number_full, to_object, to_primitive, to_string, to_string_for_string_constructor,
-    to_string_full, to_string_value_full, to_uint32, to_units_full, well_known_symbol_id, well_known_symbol_name,
-    write_number_into, ToPrimitiveHint,
+    to_string_full, to_string_value_full, to_uint32, to_units_full, well_known_symbol_name, write_number_into,
+    ToPrimitiveHint,
 };
 pub use host::VmHost;
 pub use native_result::NativeResult;
