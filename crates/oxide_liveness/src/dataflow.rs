@@ -236,7 +236,7 @@ mod tests {
     fn try_catch_reg0_not_polluting_entry() {
         // 0: try_begin(L_catch)
         // 1: ADD r3=r3+r2
-        // 2: RETURN Reg(3)
+        // 2: TRY_END
         // 3: STORE_VAR(Reg(5), None, None)   catch 入口：a=None→0 读 reg 0
         // 4: RETURN Reg(5)
         let mut f = empty_function();
@@ -244,7 +244,7 @@ mod tests {
         f.insts
             .push(Inst::new(OpCode::ADD, Operand::Reg(3), Operand::Reg(3), Operand::Reg(2)));
         f.insts
-            .push(Inst::new(OpCode::RETURN, Operand::Reg(3), Operand::None, Operand::None));
+            .push(Inst::new(OpCode::TRY_END, Operand::None, Operand::None, Operand::None));
         f.insts
             .push(Inst::new(OpCode::STORE_VAR, Operand::Reg(5), Operand::None, Operand::None));
         f.insts

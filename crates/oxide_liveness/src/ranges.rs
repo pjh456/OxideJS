@@ -118,14 +118,14 @@ mod tests {
 
     #[test]
     fn catch_entry_reg0_not_live_before_block() {
-        // 0: try_begin(3)   1: ADD r3=r3+r2   2: RETURN r3
+        // 0: try_begin(3)   1: ADD r3=r3+r2   2: TRY_END
         // 3: STORE_VAR(r5, None, None)   4: RETURN r5
         let mut f = empty_function();
         f.insts.push(Inst::try_begin(3));
         f.insts
             .push(Inst::new(OpCode::ADD, Operand::Reg(3), Operand::Reg(3), Operand::Reg(2)));
         f.insts
-            .push(Inst::new(OpCode::RETURN, Operand::Reg(3), Operand::None, Operand::None));
+            .push(Inst::new(OpCode::TRY_END, Operand::None, Operand::None, Operand::None));
         f.insts
             .push(Inst::new(OpCode::STORE_VAR, Operand::Reg(5), Operand::None, Operand::None));
         f.insts

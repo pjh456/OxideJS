@@ -5,8 +5,8 @@
 //! （运行时回退到调用方 `active_reg_limit` 全量窗口）。`regs[254]/[255]`
 //! （this/new.target）由帧单独保存不占窗口，计算时排除。生成器 / 异步函数体
 //! 内部调用点不编码——挂起恢复按全量寄存器快照搬移，保持保守语义。含 TRY
-//! 指令的函数同样不编码——异常 handler 的存活集不经分支/循环内调用点传播，
-//! 截断窗口会丢仅 handler 存活的槽（见 `encode_call_window` 内 has_try 说明）。
+//! 指令的函数同样不编码——保守回退全量窗口（异常 handler 存活集经 try 体全部
+//! 块传播，但 keep 全量窗口避免截断边界风险，见 `encode_call_window` 内 has_try）。
 
 use std::borrow::Cow;
 
@@ -25,9 +25,9 @@ pub fn encode_call_window(f: &mut IRFunction, live: &LiveInfo) {
     if f.insts.is_empty() && f.nested.is_empty() {
         return;
     }
-    // 含 try/catch/finally 的函数跳过编码：异常边只从 TRY 标记所在 BB 发出，
-    // 分支/循环 BB 内调用点的 liveness 不含仅 catch/finally 存活的寄存器，
-    // 截断窗口会丢槽（unwind 恢复后 handler 读到 callee 残留）。整体回退全量窗口。
+    // 含 try/catch/finally 的函数跳过编码：保守回退全量窗口。异常边现从 try 体
+    // 全部块发出，handler 存活集已传播到 try 体内调用点，但 keep 全量窗口避免
+    // 截断边界风险（unwind 恢复后 handler 读到 callee 残留）。
     let has_try = f
         .insts
         .iter()

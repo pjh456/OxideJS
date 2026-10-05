@@ -92,8 +92,7 @@ fn call_window_stale_live_reruns() {
 
 #[test]
 fn call_window_skips_function_with_try() {
-    // 含 TRY_BEGIN 的函数整体跳过编码（全量窗口）：异常边只从 TRY 所在 BB 出发，
-    // 分支/循环内调用点的 liveness 不含仅 handler 存活的寄存器，截断窗口会丢槽。
+    // 含 TRY_BEGIN 的函数整体跳过编码（全量窗口）：保守回退，避免截断边界风险。
     let mut f = IRFunction::new();
     f.insts.push(Inst::try_begin(0)); // 0: TRY_BEGIN → L0
     f.insts.push(Inst::call(Operand::Reg(1), Operand::Reg(2), Operand::Reg(3), 1));

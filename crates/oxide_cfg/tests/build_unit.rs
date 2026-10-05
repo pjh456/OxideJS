@@ -79,7 +79,7 @@ fn if_else_conditional_jump_splits_block_with_dual_edges() {
     assert_eq!(succs_total(&cfg), preds_total(&cfg));
 }
 
-/// try/catch：TRY_BEGIN 是块内标记不切块，所在 BB 出 Exception 边到 catch 入口。
+/// try/catch：TRY_BEGIN 是块内标记不切块，try 体块出 Exception 边到 catch 入口。
 #[test]
 fn try_begin_does_not_split_block_and_emits_exception_edge() {
     let mut f = IRFunction::new();
@@ -87,7 +87,7 @@ fn try_begin_does_not_split_block_and_emits_exception_edge() {
     f.insts
         .push(Inst::new(OpCode::NOP, Operand::None, Operand::None, Operand::None)); // 1
     f.insts
-        .push(Inst::new(OpCode::RETURN, Operand::None, Operand::None, Operand::None)); // 2
+        .push(Inst::new(OpCode::TRY_END, Operand::None, Operand::None, Operand::None)); // 2
     f.insts
         .push(Inst::new(OpCode::NOP, Operand::None, Operand::None, Operand::None)); // 3: catch 入口
     f.insts
@@ -98,10 +98,10 @@ fn try_begin_does_not_split_block_and_emits_exception_edge() {
     let cfg = build_cfg(&f);
     assert_eq!(cfg.blocks.len(), 3); // 2 实块 + exit 哨兵（TRY_BEGIN 不切块）
     assert_eq!(cfg.blocks[0].inst_range, 0..3); // try 体未被切块
-                                                // Exception 边从 TRY_BEGIN 所在 BB 出发指向 catch 入口块。
+                                                // Exception 边从 try 体块出发指向 catch 入口块。
     assert!(cfg.blocks[0].succs.contains(&(1, EdgeKind::Exception)));
     assert_eq!(cfg.blocks[1].succs, vec![(2, EdgeKind::Fallthrough)]);
-    assert_eq!(cfg.blocks[2].preds, vec![0, 1]);
+    assert_eq!(cfg.blocks[2].preds, vec![1]);
     assert_eq!(succs_total(&cfg), preds_total(&cfg));
 }
 

@@ -76,7 +76,7 @@ mod tests {
         f.insts.push(Inst::try_begin(0)); // 0: TRY_BEGIN → catch 入口（label 0 → inst 3）
         f.insts.push(Inst::load_const(Operand::Reg(5), 1)); // 1
         f.insts
-            .push(Inst::new(OpCode::RETURN, Operand::Reg(5), Operand::None, Operand::None)); // 2
+            .push(Inst::new(OpCode::TRY_END, Operand::None, Operand::None, Operand::None)); // 2
         f.insts.push(Inst::load_const(Operand::Reg(6), 2)); // 3: catch 入口
         f.insts
             .push(Inst::new(OpCode::RETURN, Operand::Reg(6), Operand::None, Operand::None)); // 4
