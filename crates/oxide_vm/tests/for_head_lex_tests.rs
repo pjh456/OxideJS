@@ -205,3 +205,71 @@ fn c_for_let_head_non_captured_shadow_restores_outer_and_destructures() {
         "non-captured shadow restores the outer binding and destructuring heads bind leaf values"
     );
 }
+
+// ── for-in/for-of 头名与体内块级同名遮蔽 / catch 参数：头值不被污染 ──
+
+#[test]
+fn for_in_let_head_block_shadow_keeps_head_value() {
+    // 体内块级同名遮蔽声明：遮蔽绑定取独立追加索引，声明写落自身 cell，
+    // 头绑定值在本迭代剩余区间不被遮蔽值污染。
+    assert_eq!(
+        eval(
+            "var out = []; \
+             for (let x in {a:1, b:2}) { { let x = 100; } out.push(x); } \
+             out.length === 2 && out[0] === \"a\" && out[1] === \"b\""
+        ),
+        "true",
+        "a block-level shadow of the for-in head keeps the head value intact"
+    );
+}
+
+#[test]
+fn for_in_let_head_catch_param_keeps_head_value() {
+    // catch 参数与头名同名：参数就地声明取独立索引，异常值落参数自身 cell，
+    // 头绑定值不被异常值污染。
+    assert_eq!(
+        eval(
+            "var out = []; \
+             for (let x in {a:1, b:2}) { \
+               try { throw new Error(\"boom\"); } catch (x) { out.push(x instanceof Error); } \
+               out.push(x); \
+             } \
+             out.length === 4 && out[0] === true && out[1] === \"a\" && out[2] === true && out[3] === \"b\""
+        ),
+        "true",
+        "a catch parameter named like the for-in head keeps the head value intact"
+    );
+}
+
+#[test]
+fn for_of_let_head_block_shadow_keeps_head_value() {
+    // for-of 同形：体内块级同名遮蔽声明不污染头绑定值。
+    assert_eq!(
+        eval(
+            "var out = []; \
+             for (let x of [10, 20]) { { let x = 100; } out.push(x); } \
+             out.length === 2 && out[0] === 10 && out[1] === 20"
+        ),
+        "true",
+        "a block-level shadow of the for-of head keeps the head value intact"
+    );
+}
+
+#[test]
+fn c_for_head_catch_param_keeps_head_value() {
+    // C-for 头名加体内 catch 参数同名：参数就地声明取独立索引，异常值落参数
+    // 自身 cell，出 catch 块后头绑定读回迭代值、不被异常值污染。
+    assert_eq!(
+        eval(
+            "var out = []; \
+             for (let x = 0; x < 2; x++) { \
+               try { throw new Error(\"boom\"); } catch (x) { out.push(x instanceof Error); } \
+               out.push(typeof x); \
+             } \
+             out.length === 4 && out[0] === true && out[1] === \"number\" \
+               && out[2] === true && out[3] === \"number\""
+        ),
+        "true",
+        "a catch parameter named like a C-for head keeps the head value intact"
+    );
+}

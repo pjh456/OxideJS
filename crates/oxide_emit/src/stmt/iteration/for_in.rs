@@ -15,8 +15,11 @@ use oxide_parser::{ForStatementInit, ForStatementLeft, Statement, VariableDeclar
 
 /// for-in/for-of 词法头的捕获映射覆盖：每头名一条记录，依次为名字、旧条目
 /// （无旧条目为 None）、右值区 TDZ cell、体区 fresh cell（切换后填入）。
+/// `prev_depth` 保存进入时的 `for_head_depth` 前值，语句收尾恢复（嵌套循环
+/// 成对）。
 pub(crate) struct ForHeadEnv {
     entries: Vec<(String, Option<u8>, u8, u8)>,
+    prev_depth: Option<usize>,
 }
 
 impl Emitter {
@@ -75,6 +78,11 @@ impl Emitter {
     ///   `switch_for_head_env_to_body` 与 `restore_for_head_env` 成对收尾，
     ///   防头名泄漏进兄弟语句的捕获判定。
     pub(crate) fn begin_for_head_env(&self, names: Vec<String>, ctx: &mut CompileCtx) -> Result<ForHeadEnv, String> {
+        // 头名回填门控按作用域深度判定：本环境生效期间，仅 for 语句自身作用域
+        // （`push_scope` 后最内层）的声明点是头绑定声明点；体内嵌套作用域的同名
+        // 遮蔽声明不在此深度，不触发回填。
+        let prev_depth = ctx.for_head_depth;
+        ctx.for_head_depth = Some(ctx.scopes.symbols.scopes.len());
         let mut entries = Vec::with_capacity(names.len());
         for name in names {
             let saved = ctx.captured_bindings.remove(&name);
@@ -94,7 +102,7 @@ impl Emitter {
             ));
             entries.push((name, saved, tdz_idx, 0));
         }
-        Ok(ForHeadEnv { entries })
+        Ok(ForHeadEnv { entries, prev_depth })
     }
 
     /// 右值区求值完毕后把覆盖从 TDZ cell 切到体区 fresh cell：每头名分配新
@@ -144,6 +152,7 @@ impl Emitter {
             ctx.for_head_env_names.remove(&name);
             ctx.for_head_keep.remove(&name);
         }
+        ctx.for_head_depth = env.prev_depth;
     }
 
     pub(crate) fn emit_for_in_statement(&self, stmt: &Statement, ctx: &mut CompileCtx) -> Result<Option<u32>, String> {

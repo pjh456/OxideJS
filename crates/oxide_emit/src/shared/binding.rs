@@ -81,8 +81,11 @@ impl Emitter {
         // 头名回填：for 头绑定（字段 None）把覆盖 cell 索引写进绑定字段，解析点
         // 按绑定身份取索引。保留集门控：C-for 仅保留头名置位（非保留头名走寄存器
         // 循环，置位会使体区读命中陈旧 cell 致死循环）；for-in/for-of 全头名保留。
+        // 深度门控：仅 for 语句自身作用域的声明点是头绑定声明点；体内嵌套作用域
+        // 的同名遮蔽声明与 catch 参数不在此深度，不回填（否则遮蔽绑定的追加索引
+        // 被头名索引覆写，声明写落入头绑定 cell 污染头值）。
         // 非 for 头绑定（函数级 / 块级 / catch 参数）已由各自路径置位，不在此覆盖。
-        if ctx.for_head_keep.contains(name) {
+        if ctx.for_head_keep.contains(name) && ctx.for_head_depth == Some(ctx.scopes.symbols.scopes.len()) {
             if let Some(&idx) = ctx.captured_bindings.get(name) {
                 ctx.set_binding_cell_idx(name, idx);
             }

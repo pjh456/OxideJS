@@ -153,12 +153,17 @@ pub struct CompileCtx {
     /// 拷贝的源也是寄存器，故 `emit_bind_target` 对集合内名字在 cell 写之外补写
     /// 绑定寄存器。init 发射完毕后清空。
     pub(crate) for_head_store_registers: HashSet<String>,
-    /// C 风格 for 头保留集：被闭包引用或与顶层 var/函数同名的头名。这些头名保留
-    /// 独立 cell 贯穿循环（体/test/update 走 cell），其余头名撤出覆盖回退寄存器循环。
-    /// 仅 C-for 填充（for-in/for-of 全头名保留，本集为空）；`emit_bind_target` 头名
-    /// 回填据此门控，非保留头名不置位绑定字段（否则体区读命中陈旧 cell 致死循环）。
-    /// begin 前按捕获集与顶层 tier 名计算，init 发射完毕后清空。
+    /// 词法循环头保留集：C-for 填被闭包引用或与顶层 var/函数同名的头名，
+    /// for-in/for-of 填全头名（无撤出覆盖）。`emit_bind_target` 头名回填据此
+    /// 门控，非保留头名不置位绑定字段（否则体区读命中陈旧 cell 致死循环）。
+    /// C-for 在 init 发射完毕后清空；for-in/for-of 经 `restore_for_head_env`
+    /// 逐头名移除。
     pub(crate) for_head_keep: HashSet<String>,
+    /// 词法头声明所在作用域深度（`push_scope` 后的 `scopes.len()`）：头名回填
+    /// 仅在该深度（for 语句自身作用域）的声明点执行；for 体内嵌套作用域的同名
+    /// 遮蔽声明与 catch 参数不在此深度，不触发回填，防遮蔽绑定的追加索引被头名
+    /// 索引覆写、声明写落入头绑定 cell。嵌套循环由 `ForHeadEnv` 保存前值并恢复。
+    pub(crate) for_head_depth: Option<usize>,
     /// 模块编译上下文：当前模块命名空间对象寄存器（`__moduleObject` 返回值）。
     pub(crate) module_ns_reg: Option<u32>,
     /// 写穿反演表：本模块源绑定槽寄存器 → 引用它的导出名集合。仅自导入 ns 的
@@ -278,6 +283,7 @@ impl CompileCtx {
             register_update_names: Vec::new(),
             for_head_store_registers: HashSet::new(),
             for_head_keep: HashSet::new(),
+            for_head_depth: None,
             module_ns_reg: None,
             module_local_export_regs: HashMap::new(),
             module_dep_ns_regs: HashMap::new(),
@@ -480,9 +486,11 @@ impl CompileCtx {
     /// 声明点 cell 索引解析：索引按绑定实例取（绑定自身字段是真源）。绑定未分配
     /// 索引时，词法循环头名（ForHeadEnv 覆盖捕获映射）走映射回退；最内层为块
     /// 作用域的就地声明（catch 参数）现场追加新索引并写回绑定，与函数级同名
-    /// 绑定的名字排序索引区分。名字不可见（隐式全局登记）或不在捕获集时返回
-    /// None，调用方落 with/全局臂。顶层 tier 名（顶层 var/函数）的全局对象属性
-    /// 是唯一存储，不建 cell，返回 None。
+    /// 绑定的名字排序索引区分。头名判定按作用域深度门控：仅 for 语句自身作用域
+    /// 的声明点是头绑定本身（走映射回退）；体内嵌套作用域的同名就地声明（catch
+    /// 参数）不属头绑定，走块级追加臂取独立索引，不共用头 cell。名字不可见（隐式
+    /// 全局登记）或不在捕获集时返回 None，调用方落 with/全局臂。顶层 tier 名
+    /// （顶层 var/函数）的全局对象属性是唯一存储，不建 cell，返回 None。
     ///
     /// # 副作用
     /// - 就地追加臂写回绑定 cell 索引并递增计数器；指令流不改动。
@@ -494,7 +502,7 @@ impl CompileCtx {
                 binding.cell_idx,
                 self.is_implicit_global_reg(binding.reg),
                 symbols.scopes.last().is_some_and(|s| s.kind == ScopeKind::BlockScope),
-                self.for_head_env_names.contains(name),
+                self.for_head_env_names.contains(name) && self.for_head_depth == Some(symbols.scopes.len()),
                 self.is_global_scope && self.global_tier_names.contains(name) && scope_idx == 0,
             )
         };
