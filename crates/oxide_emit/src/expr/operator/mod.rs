@@ -138,7 +138,7 @@ impl Emitter {
             Expression::Identifier(ident) => {
                 let name = ident.name.as_str();
                 // with 体内自由标识符：对象有该属性则删除对象属性（返回删除结果），
-                // 否则非严格语义返回 true。
+                // 对象无该属性则回退外层绑定，按其可删除性定值。
                 if !ctx.with_stack.is_empty() && !ctx.is_with_internal_binding(name) {
                     let obj_reg = ctx.innermost_with_obj().expect("with stack non-empty");
                     let key_idx = ctx.add_constant(Constant::String(name.to_string()));
@@ -173,77 +173,19 @@ impl Emitter {
                     ));
                     ctx.inst(Inst::jmp(end_label));
                     ctx.labels.set_label_pos(fallback_label, ctx.insts.len());
-                    let true_idx = ctx.add_constant(Constant::Boolean(true));
-                    ctx.inst(Inst::load_const(Operand::Reg(result_reg), true_idx));
+                    // with 对象无该属性：引用解析到外层绑定，按外层绑定的可删除性
+                    // 定值（声明式绑定 → false；全局属性 → 运行期探针）。
+                    let binding_result = self.emit_delete_binding_result(name, ctx)?;
+                    ctx.inst(Inst::new(
+                        OpCode::LOAD_VAR,
+                        Operand::Reg(result_reg),
+                        Operand::Reg(binding_result),
+                        Operand::None,
+                    ));
                     ctx.labels.set_label_pos(end_label, ctx.insts.len());
                     return Ok(result_reg);
                 }
-                // 可删全局内置（可写全局名除宿主名 $262）：运行期真删
-                // 全局对象属性（c:true 数据描述符）并返 true；删除成功时清镜像
-                // 槽，裸读与 globalThis 反射不失步。
-                if let Some(slot_reg) = ctx.global_builtin_delete_slot(name) {
-                    let key_idx = ctx.add_constant(Constant::String(name.to_string()));
-                    let reg = ctx.alloc_reg();
-                    ctx.inst(Inst::delete_global_prop_c(Operand::Reg(reg), Operand::Reg(slot_reg), key_idx));
-                    return Ok(reg);
-                }
-                // DeleteBinding 三分类（13.5.1.2 步5 绑定引用走 base.DeleteBinding）：
-                // - 局部绑定（捕获 cell/upvalue/lookup 命中函数或块作用域槽）、
-                //   非 eval 脚本自身顶层已声明名（脚本 var/函数名 c:false）、eval
-                //   程序自身顶层 let/const（落 eval 自身 lexical 环境，declarative
-                //   环境记录 DeleteBinding 恒 false 且不物化全局属性）→ false 常数；
-                // - 其余——未声明名（引用不可解析）、隐式全局槽、eval 程序自身顶层
-                //   var/函数名（物化 c:true 全局属性）——发全局对象运行期探针（与
-                //   Reflect.deleteProperty 同源 DeleteBinding 语义：缺失 → true；
-                //   不可配置 → false 且保留；可配置 → 真删且 true）。三类全局属性的
-                //   c 位已由各自写点物化，探针取值即规范值；独立编译的 eval 程序见
-                //   不到调用方域变量，静态"当前程序内是否声明"粗于规范动态判定，故
-                //   不可解析面一律运行期定值。严格模式的 delete 标识符由语义分析
-                //   提前拦截为早期错误，本臂在 strict 代码不可达。
-                let local = ctx.captured_bindings.contains_key(name)
-                    || ctx.current_upvalue_captures.iter().any(|u| u.name == name);
-                let probe = if local {
-                    false
-                } else {
-                    match ctx.scopes.symbols.lookup_any_binding(name) {
-                        // 未声明名（引用不可解析）：运行期按全局属性定值。
-                        None => true,
-                        Some((binding, scope_idx)) => {
-                            if scope_idx == 0 {
-                                // 全局作用域：隐式全局槽（未声明名读写登记，属性
-                                // c:true）与 eval 程序自身顶层 var/函数名（顶层
-                                // var 名集 ∪ 顶层函数声明名，物化 c:true 全局属性）
-                                // 可删；eval 顶层 let/const 不在名集内（自身 lexical
-                                // 环境不可删），与非 eval 脚本自身顶层 var/函数名
-                                // （c:false）同保留 false。eval 起源随嵌套函数继承，
-                                // 子 ctx 内 delete 同一名同样判可删。
-                                ctx.is_implicit_global_reg(binding.reg)
-                                    || (ctx.is_eval_origin && ctx.global_tier_names.contains(name))
-                            } else {
-                                // 函数/块作用域局部绑定：非属性引用，恒 false。
-                                false
-                            }
-                        }
-                    }
-                };
-                if probe {
-                    let key_idx = ctx.add_constant(Constant::String(name.to_string()));
-                    let reg = ctx.alloc_reg();
-                    ctx.inst(Inst::delete_global_prop_c(Operand::Reg(reg), Operand::None, key_idx));
-                    // 隐式全局槽被真删后，同程序后续裸读该名须走全局对象属性（顶层 var
-                    // 的唯一存储，引擎侧不保留镜像副本）：缺失属性读抛 ReferenceError，
-                    // delete 的真删效应在读侧可见。
-                    if let Some((binding, _)) = ctx.scopes.symbols.lookup_any_binding(name) {
-                        if ctx.is_implicit_global_reg(binding.reg) {
-                            ctx.implicit_global_reads.insert(binding.reg);
-                        }
-                    }
-                    return Ok(reg);
-                }
-                let idx = ctx.add_constant(Constant::Boolean(false));
-                let reg = ctx.alloc_reg();
-                ctx.inst(Inst::load_const(Operand::Reg(reg), idx));
-                Ok(reg)
+                self.emit_delete_binding_result(name, ctx)
             }
             Expression::StaticMemberExpression(member) if matches!(&member.object, Expression::Super(_)) => {
                 // super 属性引用不可删除：在求值引用之前直接抛 ReferenceError。
@@ -335,6 +277,96 @@ impl Emitter {
                 Ok(reg)
             }
         }
+    }
+
+    /// delete 标识符回退外层绑定的定值：可删全局内置镜像槽先行（真删加清槽），
+    /// 其余按 DeleteBinding 三分类发运行期探针（未声明名/隐式全局槽/eval 自身
+    /// 顶层 var/函数名）或 false 常数（局部绑定/脚本自身顶层 var/函数名/eval
+    /// 自身顶层 let/const）。返回结果寄存器。
+    ///
+    /// # 步骤
+    /// 1. 可删全局内置镜像槽命中：发 DELETE_GLOBAL_PROP_C（真删加清槽）返结果寄存器
+    /// 2. DeleteBinding 三分类：局部绑定与脚本自身顶层已声明名发 false 常数；
+    ///    未声明名/隐式全局槽/eval 自身顶层 var/函数名发全局对象运行期探针
+    ///
+    /// # 边界与前提
+    /// - 严格模式的 delete 标识符由语义分析提前拦截为早期错误，本臂在 strict 代码不可达
+    ///
+    /// # 副作用
+    /// - 探针臂真删隐式全局槽后登记 `implicit_global_reads`（同程序后续裸读该名
+    ///   走全局对象属性，缺失抛 ReferenceError）
+    fn emit_delete_binding_result(&self, name: &str, ctx: &mut CompileCtx) -> Result<u32, String> {
+        // 可删全局内置（可写全局名除宿主名 $262）：运行期真删全局对象属性
+        // （c:true 数据描述符）并返 true；删除成功时清镜像槽，裸读与
+        // globalThis 反射不失步。
+        if let Some(slot_reg) = ctx.global_builtin_delete_slot(name) {
+            let key_idx = ctx.add_constant(Constant::String(name.to_string()));
+            let reg = ctx.alloc_reg();
+            ctx.inst(Inst::delete_global_prop_c(Operand::Reg(reg), Operand::Reg(slot_reg), key_idx));
+            return Ok(reg);
+        }
+
+        // DeleteBinding 三分类（13.5.1.2 步5 绑定引用走 base.DeleteBinding）：
+        // - 局部绑定（捕获 cell/upvalue/lookup 命中函数或块作用域槽）、
+        //   非 eval 脚本自身顶层已声明名（脚本 var/函数名 c:false）、eval
+        //   程序自身顶层 let/const（落 eval 自身 lexical 环境，declarative
+        //   环境记录 DeleteBinding 恒 false 且不物化全局属性）→ false 常数；
+        // - 其余——未声明名（引用不可解析）、隐式全局槽、eval 程序自身顶层
+        //   var/函数名（物化 c:true 全局属性）——发全局对象运行期探针（与
+        //   Reflect.deleteProperty 同源 DeleteBinding 语义：缺失 → true；
+        //   不可配置 → false 且保留；可配置 → 真删且 true）。三类全局属性的
+        //   c 位已由各自写点物化，探针取值即规范值；独立编译的 eval 程序见
+        //   不到调用方域变量，静态"当前程序内是否声明"粗于规范动态判定，故
+        //   不可解析面一律运行期定值。
+        let local =
+            ctx.captured_bindings.contains_key(name) || ctx.current_upvalue_captures.iter().any(|u| u.name == name);
+        let probe = if local {
+            false
+        } else {
+            match ctx.scopes.symbols.lookup_any_binding(name) {
+                // 未声明名（引用不可解析）：运行期按全局属性定值。
+                None => true,
+                Some((binding, scope_idx)) => {
+                    if scope_idx == 0 {
+                        // 全局作用域：隐式全局槽（未声明名读写登记，属性
+                        // c:true）与 eval 程序自身顶层 var/函数名（顶层
+                        // var 名集 ∪ 顶层函数声明名，物化 c:true 全局属性）
+                        // 可删；eval 顶层 let/const 不在名集内（自身 lexical
+                        // 环境不可删），与非 eval 脚本自身顶层 var/函数名
+                        // （c:false）同保留 false。eval 起源随嵌套函数继承，
+                        // 子 ctx 内 delete 同一名同样判可删。
+                        ctx.is_implicit_global_reg(binding.reg)
+                            || (ctx.is_eval_origin && ctx.global_tier_names.contains(name))
+                    } else {
+                        // 函数/块作用域局部绑定：非属性引用，恒 false。
+                        false
+                    }
+                }
+            }
+        };
+
+        // 探针臂：全局对象运行期定值（缺失 → true；不可配置 → false 且保留；
+        // 可配置 → 真删且 true）。
+        if probe {
+            let key_idx = ctx.add_constant(Constant::String(name.to_string()));
+            let reg = ctx.alloc_reg();
+            ctx.inst(Inst::delete_global_prop_c(Operand::Reg(reg), Operand::None, key_idx));
+            // 隐式全局槽被真删后，同程序后续裸读该名须走全局对象属性（顶层 var
+            // 的唯一存储，引擎侧不保留镜像副本）：缺失属性读抛 ReferenceError，
+            // delete 的真删效应在读侧可见。
+            if let Some((binding, _)) = ctx.scopes.symbols.lookup_any_binding(name) {
+                if ctx.is_implicit_global_reg(binding.reg) {
+                    ctx.implicit_global_reads.insert(binding.reg);
+                }
+            }
+            return Ok(reg);
+        }
+
+        // 声明式绑定与脚本自身顶层已声明名：恒 false。
+        let idx = ctx.add_constant(Constant::Boolean(false));
+        let reg = ctx.alloc_reg();
+        ctx.inst(Inst::load_const(Operand::Reg(reg), idx));
+        Ok(reg)
     }
 
     /// typeof 操作数求值：未声明标识符特判为 "undefined"。
