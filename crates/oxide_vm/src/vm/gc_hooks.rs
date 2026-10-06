@@ -8,13 +8,54 @@ use super::frames::Completion;
 use super::Vm;
 use crate::session_gc::SessionGc;
 
+/// GC 根组来源：`for_each_value` 枚举的 24 个根组，变体顺序与根清单
+/// 的枚举顺序一致。
+///
+/// 变体下标是逐组计数数组（`SessionGc::root_counts`）的下标；`COUNT` 与
+/// 变体数同源，新增根组须同步加变体并更新 `COUNT`，计数数组长度随之跟随。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RootGroup {
+    Regs,
+    Immutables,
+    Frames,
+    SaveStack,
+    SpillStack,
+    CellStack,
+    ExceptionValue,
+    PendingException,
+    LastUncaught,
+    PendingLengthException,
+    PendingCompletion,
+    GeneratorSuspended,
+    DelegatedIterator,
+    AsyncContext,
+    AsyncGenContext,
+    PendingAsyncEscape,
+    InlineCallee,
+    TemplateObjects,
+    NumberToStringCache,
+    ForOfIters,
+    JobQueue,
+    AtomicsWaiters,
+    ForInIters,
+    Global,
+}
+
+impl RootGroup {
+    /// 根组总数（与变体数同源，绑定逐组计数数组的长度）。
+    pub const COUNT: usize = 24;
+}
+
 impl Vm {
     /// GC 根收集的统一遍历（对象与字符串都产出）。
     /// 覆盖执行核心的全部 JsValue 持有点：regs/帧/各栈段/cell/在途异常与完成/
     /// 挂起信号/迭代器/微任务/global。
-    pub(crate) fn for_each_value(&self, mut f: impl FnMut(JsValue)) {
+    ///
+    /// 闭包接收根组来源（`RootGroup`）与根值：组是枚举顺序中的 24 根组之一，
+    /// 调用方按组计数（如 `SessionGc` 的逐组计数）。
+    pub(crate) fn for_each_value(&self, mut f: impl FnMut(RootGroup, JsValue)) {
         for value in &self.regs {
-            f(*value);
+            f(RootGroup::Regs, *value);
         }
         // 各代际 immutables 缓存含 session BigInt（new_bigint 分配），未入根则被
         // sweep 释放 → 常量池加载时悬垂。perm 字符串无害（不在 session 集合中）。
@@ -22,23 +63,23 @@ impl Vm {
             for once_lock in &table.immutables {
                 if let Some(immutable_vec) = once_lock.get() {
                     for &value in immutable_vec.iter() {
-                        f(value);
+                        f(RootGroup::Immutables, value);
                     }
                 }
             }
         }
         for frame in &self.frames {
-            f(frame.saved_this);
-            f(frame.saved_new_target);
-            f(frame.callee);
-            f(frame.constructed_this.unwrap_or(JsValue::undefined()));
+            f(RootGroup::Frames, frame.saved_this);
+            f(RootGroup::Frames, frame.saved_new_target);
+            f(RootGroup::Frames, frame.callee);
+            f(RootGroup::Frames, frame.constructed_this.unwrap_or(JsValue::undefined()));
         }
         for &v in &self.save_stack {
-            f(v);
+            f(RootGroup::SaveStack, v);
         }
         // spill 栈是 session GC 根（漏根 → 溢出值被回收 → use-after-free）。
         for &v in &self.spill_stack {
-            f(v);
+            f(RootGroup::SpillStack, v);
         }
         for cell_vec in &self.cell_stack {
             for &cell_ptr in cell_vec {
@@ -46,56 +87,56 @@ impl Vm {
                     continue;
                 }
                 // SAFETY: cell 经 alloc_cell 独立堆分配，本 session 内指针有效。
-                f(unsafe { &*cell_ptr }.value);
+                f(RootGroup::CellStack, unsafe { &*cell_ptr }.value);
             }
         }
-        f(self.exception_value.unwrap_or(JsValue::undefined()));
-        f(self.pending_exception.unwrap_or(JsValue::undefined()));
-        f(self.last_uncaught_value.unwrap_or(JsValue::undefined()));
-        f(self.pending_length_exception.unwrap_or(JsValue::undefined()));
+        f(RootGroup::ExceptionValue, self.exception_value.unwrap_or(JsValue::undefined()));
+        f(RootGroup::PendingException, self.pending_exception.unwrap_or(JsValue::undefined()));
+        f(RootGroup::LastUncaught, self.last_uncaught_value.unwrap_or(JsValue::undefined()));
+        f(RootGroup::PendingLengthException, self.pending_length_exception.unwrap_or(JsValue::undefined()));
         // 悬挂的 return 完成持有返回值，是 GC 根。
         if let Some(Completion::Return { value, .. }) = self.pending_completion {
-            f(value);
+            f(RootGroup::PendingCompletion, value);
         }
-        f(self.generator_suspended.unwrap_or(JsValue::undefined()));
-        f(self.delegated_iterator.unwrap_or(JsValue::undefined()));
-        f(self.async_context.unwrap_or(JsValue::undefined()));
-        f(self.async_gen_context.unwrap_or(JsValue::undefined()));
+        f(RootGroup::GeneratorSuspended, self.generator_suspended.unwrap_or(JsValue::undefined()));
+        f(RootGroup::DelegatedIterator, self.delegated_iterator.unwrap_or(JsValue::undefined()));
+        f(RootGroup::AsyncContext, self.async_context.unwrap_or(JsValue::undefined()));
+        f(RootGroup::AsyncGenContext, self.async_gen_context.unwrap_or(JsValue::undefined()));
         // 在途异步逃出的 promise/完成值/剩余迭代器都是 GC 根。
         if let Some(pend) = &self.pending_async_escape {
-            f(pend.close_promise);
+            f(RootGroup::PendingAsyncEscape, pend.close_promise);
             if let Completion::Return { value, .. } = pend.completion {
-                f(value);
+                f(RootGroup::PendingAsyncEscape, value);
             }
             for &v in &pend.remaining {
-                f(v);
+                f(RootGroup::PendingAsyncEscape, v);
             }
         }
-        f(self.inline_callee.unwrap_or(JsValue::undefined()));
+        f(RootGroup::InlineCallee, self.inline_callee.unwrap_or(JsValue::undefined()));
         // 标签模板对象缓存：命中的模板对象是 GC 根（未根 → sweep 搬移/回收悬垂）。
         for &cached in self.template_objects.values() {
-            f(cached);
+            f(RootGroup::TemplateObjects, cached);
         }
         // f64→string 缓存槽值是 session 串，是 GC 根（漏根 → 串清扫释放 → 命中悬垂）。
         for &v in &self.number_to_string_cache_vals {
             if v.is_string() {
-                f(v);
+                f(RootGroup::NumberToStringCache, v);
             }
         }
         for &entry in &self.iters.for_of_iters {
-            f(entry.iterator);
-            f(entry.last_result);
-            f(entry.fast_value);
-            f(entry.fast_inner);
+            f(RootGroup::ForOfIters, entry.iterator);
+            f(RootGroup::ForOfIters, entry.last_result);
+            f(RootGroup::ForOfIters, entry.fast_value);
+            f(RootGroup::ForOfIters, entry.fast_inner);
         }
         // 微任务队列中的处理器/能力/值都是 GC 根。
         for job in &self.job_queue {
-            crate::promise::for_each_job_value(job, &mut f);
+            crate::promise::for_each_job_value(job, RootGroup::JobQueue, &mut f);
         }
         // Atomics waiter 表登记的 promise 是 GC 根（run 内跨调用存活）。
         for promises in self.atomics_waiters.values() {
             for p in promises {
-                f(*p);
+                f(RootGroup::AtomicsWaiters, *p);
             }
         }
         for iter in &self.iters.for_in_iters {
@@ -105,15 +146,15 @@ impl Vm {
             // SAFETY: for_in_iters 存放堆上迭代器体，VM 表独占持有。
             unsafe {
                 for (v, _si) in (*(*iter)).keys.iter() {
-                    f(*v);
+                    f(RootGroup::ForInIters, *v);
                 }
             }
         }
-        f(JsValue::from_js_object(self.session.global_object().as_ptr() as *mut JsObject));
+        f(RootGroup::Global, JsValue::from_js_object(self.session.global_object().as_ptr() as *mut JsObject));
     }
 
     /// GC 根统一枚举入口：遍历的字段清单与 `for_each_value` 相同。
-    pub(crate) fn for_each_root(&self, f: impl FnMut(JsValue)) {
+    pub(crate) fn for_each_root(&self, f: impl FnMut(RootGroup, JsValue)) {
         self.for_each_value(f);
     }
 

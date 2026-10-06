@@ -39,6 +39,7 @@ mod vmhost;
 
 pub(crate) use frames::FrameArgs;
 pub use frames::{CallFrame, Completion, ForInIter, FrameContinuation, TryHandler};
+pub(crate) use gc_hooks::RootGroup;
 pub(crate) use inline::InlineSyncState;
 pub(crate) use tables::TableGen;
 

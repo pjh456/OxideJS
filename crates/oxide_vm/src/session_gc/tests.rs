@@ -8,7 +8,7 @@ use oxide_types::value::JsValue;
 use std::sync::Arc;
 
 use super::*;
-use crate::vm::{CallFrame, FrameContinuation};
+use crate::vm::{CallFrame, FrameContinuation, RootGroup};
 use oxide_builtins::{array_buffer, data_view, disposable_stack, map, module, set, typed_array};
 use oxide_emit::module::{ModuleKind, ModuleSourceLoader, ResolvedModule};
 use oxide_runtime_api::NativeResult;
@@ -34,7 +34,7 @@ fn uncaught_value_is_gc_root() {
     let session = obj;
     vm.last_uncaught_value = Some(JsValue::from_js_object(session));
     let mut roots = Vec::new();
-    vm.for_each_root(|v| roots.push(v));
+    vm.for_each_root(|_g, v| roots.push(v));
     assert!(has_ptr(&roots, session));
 }
 
@@ -45,7 +45,7 @@ fn pending_length_exception_is_gc_root() {
     let session = obj;
     vm.pending_length_exception = Some(JsValue::from_js_object(session));
     let mut roots = Vec::new();
-    vm.for_each_root(|v| roots.push(v));
+    vm.for_each_root(|_g, v| roots.push(v));
     assert!(has_ptr(&roots, session));
 }
 
@@ -62,7 +62,7 @@ fn suspended_signal_fields_are_roots() {
     vm.async_context = Some(JsValue::from_js_object(b_s));
     vm.async_gen_context = Some(JsValue::from_js_object(c_s));
     let mut roots = Vec::new();
-    vm.for_each_root(|v| roots.push(v));
+    vm.for_each_root(|_g, v| roots.push(v));
     assert!(has_ptr(&roots, a_s));
     assert!(has_ptr(&roots, b_s));
     assert!(has_ptr(&roots, c_s));
@@ -122,7 +122,7 @@ fn gc_roots_contains_registers_frames_and_root_roots() {
     });
 
     let mut roots = Vec::new();
-    vm.for_each_root(|v| roots.push(v));
+    vm.for_each_root(|_g, v| roots.push(v));
     assert!(has_ptr(&roots, root_session));
     assert!(has_ptr(&roots, frame_session));
     assert!(has_ptr(&roots, this_session));
@@ -1891,4 +1891,37 @@ fn promise_promote_migrates_reject_reactions_to_clone() {
         Some("boom".to_string()),
         "晋升前登记的拒绝消费者应在拒绝走克隆后被触发"
     );
+}
+
+/// mark 播种逐组计数：新 VM 加 1 个寄存器根后，Regs 组 256（全部寄存器槽，
+/// 含未定义槽）、Global 组 1（global 对象）、9 个单槽侧通道组各 1（空时经
+/// `unwrap_or(undefined)` 各产出一个未定义根值）、总和 266，其余组为 0。
+#[test]
+fn mark_counts_roots_by_group() {
+    let mut vm = Vm::new();
+    vm.regs[0] = JsValue::from_js_object(plain_object(&mut vm));
+    let mut gc = std::mem::take(&mut vm.gc_state.session_gc);
+    gc.mark(&vm);
+    vm.gc_state.session_gc = gc;
+
+    let counts = &vm.gc_state.session_gc.root_counts;
+    assert_eq!(counts[RootGroup::Regs as usize], 256, "寄存器组应计满 256 槽");
+    assert_eq!(counts[RootGroup::Global as usize], 1, "global 组应计 global 对象");
+    // 9 个单槽侧通道：空 VM 时各经 unwrap_or(undefined) 产出一个未定义根值。
+    for group in [
+        RootGroup::ExceptionValue,
+        RootGroup::PendingException,
+        RootGroup::LastUncaught,
+        RootGroup::PendingLengthException,
+        RootGroup::GeneratorSuspended,
+        RootGroup::DelegatedIterator,
+        RootGroup::AsyncContext,
+        RootGroup::AsyncGenContext,
+        RootGroup::InlineCallee,
+    ] {
+        assert_eq!(counts[group as usize], 1, "侧通道组 {group:?} 应各计 1");
+    }
+    // 计数非负：11 个非零组之和恰为 266，总和断言同时钉死其余 13 组为 0。
+    let total: u64 = counts.iter().sum();
+    assert_eq!(total, 266, "24 组之和应为根值总数");
 }

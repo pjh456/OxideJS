@@ -2,6 +2,7 @@
 
 use oxide_types::value::JsValue;
 
+use crate::vm::RootGroup;
 use crate::vm::Vm;
 use crate::vm_warn;
 
@@ -80,7 +81,10 @@ impl Vm {
 }
 
 /// 供外部遍历微任务队列（GC mark/rewrite 用）。
-pub(crate) fn for_each_job_value(job: &Microtask, mut f: impl FnMut(JsValue)) {
+///
+/// `group` 是调用方传入的根组来源（微任务队列属 `JobQueue` 组），原样透传给
+/// 内层闭包。
+pub(crate) fn for_each_job_value(job: &Microtask, group: RootGroup, mut f: impl FnMut(RootGroup, JsValue)) {
     match job {
         Microtask::Reaction {
             handler,
@@ -89,10 +93,10 @@ pub(crate) fn for_each_job_value(job: &Microtask, mut f: impl FnMut(JsValue)) {
             reject,
             ..
         } => {
-            f(*handler);
-            f(*argument);
-            f(*resolve);
-            f(*reject);
+            f(group, *handler);
+            f(group, *argument);
+            f(group, *resolve);
+            f(group, *reject);
         }
         Microtask::Thenable {
             thenable,
@@ -100,10 +104,10 @@ pub(crate) fn for_each_job_value(job: &Microtask, mut f: impl FnMut(JsValue)) {
             resolve,
             reject,
         } => {
-            f(*thenable);
-            f(*then);
-            f(*resolve);
-            f(*reject);
+            f(group, *thenable);
+            f(group, *then);
+            f(group, *resolve);
+            f(group, *reject);
         }
     }
 }

@@ -8,6 +8,7 @@ use oxide_types::value::JsValue;
 use rustc_hash::FxBuildHasher;
 
 use crate::native_box_dispatch;
+use crate::vm::RootGroup;
 use crate::vm::Vm;
 use oxide_builtins::{array_buffer, data_view, disposable_stack, map, module, regexp, set, typed_array, weak_map};
 
@@ -30,6 +31,8 @@ pub struct SessionGc {
     pub last_collection_duration_us: u64,
     pub max_collection_duration_us: u64,
     pub min_collection_duration_us: u64,
+    /// 最近一次 mark 播种的逐组根值计数（下标为 `RootGroup` 变体下标，和为根值总数）。
+    pub root_counts: [u64; RootGroup::COUNT],
     pub(crate) mark_stack: Vec<*mut JsObject>,
     pub(crate) live_strings: HashSet<*mut JsString, FxBuildHasher>,
     pub(crate) live_bigints: HashSet<*mut num_bigint::BigInt, FxBuildHasher>,
@@ -375,12 +378,19 @@ impl SessionGc {
     /// 字符串边走 rope 闭包传播（Cons 子节点与扁平化产物），BigInt 边直接入
     /// 存活集。roots 由 `Vm::for_each_root` 枚举。只置位不搬移，调用前须先
     /// `clear_all_marks` 清位。
+    ///
+    /// # 副作用
+    /// - `root_counts` 在播种开头重置、按根组累加（和为根值总数）。
     pub(crate) fn mark(&mut self, vm: &Vm) {
-        vm_debug!("[GC] mark phase: {} roots", vm.gc_state.session_object_ptrs.len());
+        // 播种开头重置逐组计数：计数器恒反映最近一次 mark 的播种画像。
+        self.root_counts = [0; RootGroup::COUNT];
+
         let mut seeds = Vec::new();
         let mut string_seeds: Vec<*mut JsString> = Vec::new();
         let mut bigint_seeds: Vec<*mut num_bigint::BigInt> = Vec::new();
-        vm.for_each_root(|root| {
+        let counts = &mut self.root_counts;
+        vm.for_each_root(|group, root| {
+            counts[group as usize] += 1;
             if root.is_object() {
                 seeds.push(root.as_js_object_ptr());
             } else if root.is_string() {
@@ -389,6 +399,37 @@ impl SessionGc {
                 bigint_seeds.push(root.as_bigint_ptr() as *mut num_bigint::BigInt);
             }
         });
+
+        // 根数口径是 `for_each_root` 枚举出的根值总数（24 组之和）。
+        let root_total: u64 = self.root_counts.iter().sum();
+        vm_debug!("[GC] mark phase: {} roots", root_total);
+        vm_debug!(
+            "[GC] mark phase root groups: regs={}, immutables={}, frames={}, save_stack={}, spill_stack={}, cell_stack={}, exception_value={}, pending_exception={}, last_uncaught={}, pending_length_exception={}, pending_completion={}, generator_suspended={}, delegated_iterator={}, async_context={}, async_gen_context={}, pending_async_escape={}, inline_callee={}, template_objects={}, number_to_string_cache={}, for_of_iters={}, job_queue={}, atomics_waiters={}, for_in_iters={}, global={}",
+            self.root_counts[RootGroup::Regs as usize],
+            self.root_counts[RootGroup::Immutables as usize],
+            self.root_counts[RootGroup::Frames as usize],
+            self.root_counts[RootGroup::SaveStack as usize],
+            self.root_counts[RootGroup::SpillStack as usize],
+            self.root_counts[RootGroup::CellStack as usize],
+            self.root_counts[RootGroup::ExceptionValue as usize],
+            self.root_counts[RootGroup::PendingException as usize],
+            self.root_counts[RootGroup::LastUncaught as usize],
+            self.root_counts[RootGroup::PendingLengthException as usize],
+            self.root_counts[RootGroup::PendingCompletion as usize],
+            self.root_counts[RootGroup::GeneratorSuspended as usize],
+            self.root_counts[RootGroup::DelegatedIterator as usize],
+            self.root_counts[RootGroup::AsyncContext as usize],
+            self.root_counts[RootGroup::AsyncGenContext as usize],
+            self.root_counts[RootGroup::PendingAsyncEscape as usize],
+            self.root_counts[RootGroup::InlineCallee as usize],
+            self.root_counts[RootGroup::TemplateObjects as usize],
+            self.root_counts[RootGroup::NumberToStringCache as usize],
+            self.root_counts[RootGroup::ForOfIters as usize],
+            self.root_counts[RootGroup::JobQueue as usize],
+            self.root_counts[RootGroup::AtomicsWaiters as usize],
+            self.root_counts[RootGroup::ForInIters as usize],
+            self.root_counts[RootGroup::Global as usize],
+        );
 
         let Self {
             mark_stack: stack,
@@ -1052,6 +1093,7 @@ impl Default for SessionGc {
             last_collection_duration_us: 0,
             max_collection_duration_us: 0,
             min_collection_duration_us: u64::MAX,
+            root_counts: [0; RootGroup::COUNT],
             mark_stack: Vec::new(),
             live_strings: HashSet::default(),
             live_bigints: HashSet::default(),
