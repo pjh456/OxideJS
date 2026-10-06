@@ -322,7 +322,7 @@ fn captured_top_let_destructuring_default_assign() {
 fn captured_top_let_rest_destructuring_assign() {
     // rest 元素须为末位，标识符目标在 rest 前：写落 cell 的判别与主形同。
     assert_eq!(
-        eval("let x = 1; function f() { return x; } [x, ...r] = [1, 2]; f() === 1 && x === 1"),
+        eval("let x = 0; function f() { return x; } [x, ...r] = [1, 2]; f() === 1 && x === 1"),
         "true",
         "rest destructuring assignment to a captured top-level let updates the cell"
     );
