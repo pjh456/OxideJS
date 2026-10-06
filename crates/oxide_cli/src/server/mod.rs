@@ -8,6 +8,8 @@
 //! 池、mpsc 轮询路由）、server 进程主体（accept 循环、控制请求直接处理、
 //! 执行请求路由、优雅退出）。
 
+/// 人工兜底清理命令：扫 sidecar、探活、杀 PID、删孤儿文件。
+pub mod cleanup;
 /// 执行请求路径：parse → compile → spawn → run → format → drop 六段纯函数。
 pub mod eval;
 /// 协议数据面：NDJSON 帧格式与 serde 结构体。
