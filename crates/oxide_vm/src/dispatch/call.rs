@@ -338,7 +338,7 @@ impl Vm {
         }
         let c = unsafe { &*current[cell_idx] };
         if !c.is_initialized() {
-            return self.raise_error_kind("ReferenceError", "Cannot access variable before initialization");
+            return self.raise_error_kind("ReferenceError", &Self::tdz_message(self.tdz_binding_name(cell_idx, false)));
         }
         self.regs[rd] = c.value;
         Ok(())
@@ -376,7 +376,8 @@ impl Vm {
             let cell = &mut *cell_ptr;
             // TDZ 写检查：cell 未初始化（捕获绑定声明点前）写抛 ReferenceError。
             if !cell.is_initialized() {
-                return self.raise_error_kind("ReferenceError", "Cannot access variable before initialization");
+                return self
+                    .raise_error_kind("ReferenceError", &Self::tdz_message(self.tdz_binding_name(cell_idx, false)));
             }
             cell.value = src_val;
             cell.set_initialized(true);
@@ -388,6 +389,36 @@ impl Vm {
     /// frames 被隔离为空，取 `inline_callee`。
     pub(crate) fn current_callee(&self) -> Option<JsValue> {
         self.frames.last().map(|f| f.callee).or(self.inline_callee)
+    }
+
+    /// TDZ 消息的绑定名：解析当前函数对象的编译模块，按站点类型取名
+    /// （upvalue 站点查 upvalue_captures，own cell 站点查 cell_names）。
+    ///
+    /// # 边界
+    /// - 无当前函数对象（顶层脚本直读）、非对象 callee、模块解析缺失或下标
+    ///   越界时返回 None，调用方回退通用文本。
+    fn tdz_binding_name(&self, idx: usize, is_upvalue: bool) -> Option<&str> {
+        let callee = self.current_callee()?;
+        if !callee.is_object() {
+            return None;
+        }
+        // callee 是 GC 根，对象在取名期间稳定。
+        let obj = unsafe { &*callee.as_js_object_ptr() };
+        let module = self.callee_module(obj)?;
+        if is_upvalue {
+            module.upvalue_captures.get(idx).map(|c| c.name.as_str())
+        } else {
+            module.cell_names.get(idx).filter(|n| !n.is_empty()).map(|n| n.as_str())
+        }
+    }
+
+    /// TDZ 消息：取到绑定名时用 `Cannot access 'x' before initialization` 形态，
+    /// 取不到时回退通用文本。
+    fn tdz_message(name: Option<&str>) -> String {
+        match name {
+            Some(n) => format!("Cannot access '{n}' before initialization"),
+            None => String::from("Cannot access variable before initialization"),
+        }
     }
 
     /// 读取当前闭包的 upvalue：命中 cell 判初始化后取值，未命中委托惰性建 cell。
@@ -413,7 +444,8 @@ impl Vm {
             if !cell.is_null() {
                 let c = unsafe { &*cell };
                 if !c.is_initialized() {
-                    return self.raise_error_kind("ReferenceError", "Cannot access variable before initialization");
+                    return self
+                        .raise_error_kind("ReferenceError", &Self::tdz_message(self.tdz_binding_name(uv_idx, true)));
                 }
                 self.regs[rd] = c.value;
                 return Ok(());
@@ -483,7 +515,10 @@ impl Vm {
                     let cell = &mut *upvals[uv_idx];
                     // TDZ 写检查：cell 未初始化（捕获绑定声明点前）写抛 ReferenceError。
                     if !cell.is_initialized() {
-                        self.raise_error_kind("ReferenceError", "Cannot access variable before initialization")?;
+                        self.raise_error_kind(
+                            "ReferenceError",
+                            &Self::tdz_message(self.tdz_binding_name(uv_idx, true)),
+                        )?;
                         return Ok(());
                     }
                     // const guard：TDZ 检查后 cell 必已初始化（存在性判定，与值无关），

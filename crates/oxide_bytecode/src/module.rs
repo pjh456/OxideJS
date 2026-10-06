@@ -83,6 +83,10 @@ pub struct CompiledModule {
     pub is_async: bool,
     pub upvalue_captures: Vec<UpvalueCapture>,
     pub cells_needed: u8,
+    /// own cell 绑定名表：下标 = cell 下标，值 = 绑定名；未覆盖下标（合成
+    /// cell、块级预声明追加）留空串。与 `cells_needed` 同容量口径，供运行时
+    /// TDZ 消息取名。
+    pub cell_names: Vec<String>,
     /// 全局扁平模块 id：编译末端 flatten 阶段分配（顶层 0，子模块 DFS 递增）。
     /// `CREATE_CLOSURE` 的 imm16 在 flatten 后即此 id，运行时以它为平表下标。
     pub flat_id: u32,
@@ -115,6 +119,7 @@ impl CompiledModule {
             is_async: false,
             upvalue_captures: Vec::new(),
             cells_needed: 0,
+            cell_names: Vec::new(),
             flat_id: 0,
             is_es_module: false,
         }
@@ -150,6 +155,7 @@ impl Clone for CompiledModule {
             is_async: self.is_async,
             upvalue_captures: self.upvalue_captures.clone(),
             cells_needed: self.cells_needed,
+            cell_names: self.cell_names.clone(),
             flat_id: self.flat_id,
             is_es_module: self.is_es_module,
         }

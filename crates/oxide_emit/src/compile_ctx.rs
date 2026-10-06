@@ -931,6 +931,22 @@ impl CompileCtx {
                 }
             })
             .collect();
+        // 容量覆盖全部已分配 cell 索引：函数级名字排序索引（映射值 0..n-1）
+        // 与追加索引（计数器，块级预声明 / 合成 cell）取较大者加一；别名
+        // 捕获合并让多个名字共享同一 cell，下标可重复。
+        let cells_needed = self
+            .captured_bindings
+            .values()
+            .copied()
+            .max()
+            .map_or(0, |m| m.saturating_add(1))
+            .max(self.next_cell_idx);
+        // own cell 绑定名表：下标 = cell 下标，值 = 绑定名；合成 cell 与块级
+        // 预声明追加无源名，留空串。
+        let mut cell_names = vec![String::new(); cells_needed as usize];
+        for (name, idx) in &self.captured_bindings {
+            cell_names[*idx as usize] = name.clone();
+        }
         IRFunction {
             insts: std::mem::take(&mut self.insts),
             label_pos: std::mem::take(&mut self.labels.label_pos),
@@ -939,16 +955,8 @@ impl CompileCtx {
             param_layout,
             builtin_reg_map: std::mem::take(&mut self.scopes.builtin_reg_map),
             upvalue_captures,
-            // 容量覆盖全部已分配 cell 索引：函数级名字排序索引（映射值 0..n-1）
-            // 与追加索引（计数器，块级预声明 / 合成 cell）取较大者加一；别名
-            // 捕获合并让多个名字共享同一 cell，下标可重复。
-            cells_needed: self
-                .captured_bindings
-                .values()
-                .copied()
-                .max()
-                .map_or(0, |m| m.saturating_add(1))
-                .max(self.next_cell_idx),
+            cells_needed,
+            cell_names,
             n_registers: self.max_regs,
             is_arrow: false,
             is_class_constructor: false,

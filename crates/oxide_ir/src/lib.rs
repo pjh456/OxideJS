@@ -45,6 +45,9 @@ pub struct IRFunction {
     // closures 域
     pub upvalue_captures: Vec<UpvalueCapture>,
     pub cells_needed: u8,
+    /// own cell 绑定名表：下标 = cell 下标，值 = 绑定名；未覆盖下标留空串。
+    /// 与 `cells_needed` 同容量口径，供运行时 TDZ 消息取名。
+    pub cell_names: Vec<String>,
     // meta 域
     pub n_registers: u32,
     pub is_arrow: bool,
@@ -85,6 +88,7 @@ impl IRFunction {
             builtin_reg_map: Vec::new(),
             upvalue_captures: Vec::new(),
             cells_needed: 0,
+            cell_names: Vec::new(),
             n_registers: 0,
             is_arrow: false,
             is_class_constructor: false,
