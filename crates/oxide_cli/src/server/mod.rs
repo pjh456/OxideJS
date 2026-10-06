@@ -14,7 +14,9 @@ pub mod eval;
 pub mod protocol;
 /// server 进程主体：accept 循环、控制请求分派、执行请求路由、信号处理
 /// （SIGINT/SIGTERM 置位关闭标志）、交接协议（向旧 server 发 yield 请求使其
-/// 排空退出、新 server 接管 socket 路径）与优雅退出。
+/// 排空退出、新 server 接管 socket 路径）、--rm 独立模式（进程唯一 socket
+/// 路径、不注册 sidecar、不碰全局路径、单连接、空闲超时或断开即退出）
+/// 与优雅退出。
 #[allow(clippy::module_inception)]
 pub mod server;
 /// 身份注册：sidecar 文件、liveness 检查与陈旧清理。

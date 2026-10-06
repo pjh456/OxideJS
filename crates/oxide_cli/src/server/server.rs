@@ -3,6 +3,10 @@
 //! 关键约定：
 //! - 启动顺序契约（与身份注册一致）：先认领 sidecar，再绑定 socket；
 //!   反向会让客户端在 sidecar 缺位时误判无 server 并启动第二实例。
+//! - --rm 独立模式（`run_server_rm`）：独立单进程入口，绑定进程唯一 socket
+//!   路径，不注册 sidecar、不碰全局 well-known 路径、不参与交接协议；
+//!   只服务一个客户端连接，空闲超时（无连接或连接上无数据）或客户端
+//!   断开（EOF）即自动退出。
 //! - accept 循环为非阻塞 accept 加 10 毫秒轮询加原子关闭标志：唤醒路径
 //!   确定、无锁、无唤醒丢失。
 //! - 并发模型：主线程只跑 accept 循环；每连接一个标准库线程只做 I/O
@@ -18,9 +22,10 @@ use std::fs;
 use std::io;
 use std::io::Write;
 use std::os::unix::net::{UnixListener, UnixStream};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use oxide_kernel::kernel::{KernelConfig, KernelCore};
@@ -90,10 +95,35 @@ impl ServerConfig {
 
 /// 缺省 worker 数：宿主核数，下限钳制为 1。
 fn default_worker_count() -> usize {
-    std::thread::available_parallelism()
-        .map(|n| n.get())
-        .unwrap_or(1)
-        .max(1)
+    std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1).max(1)
+}
+
+/// --rm 模式缺省空闲超时：30 秒。
+const RM_DEFAULT_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// --rm 独立模式运行配置：唯一 socket 路径、worker 数、空闲超时。
+///
+/// 不含 sidecar 路径字段：「不注册 sidecar」的不变量在类型上成立，
+/// 不需要运行时守卫。
+#[derive(Debug, Clone)]
+pub struct RmServerConfig {
+    /// Unix socket 路径；缺省为进程唯一路径。
+    pub socket_path: PathBuf,
+    /// 常驻 worker 线程数；缺省取宿主核数，下限钳制为 1。
+    pub worker_count: usize,
+    /// 空闲超时：绑定后该时长内无连接、或连接建立后该时长内无数据，
+    /// 进程即干净退出。
+    pub idle_timeout: Duration,
+}
+
+impl Default for RmServerConfig {
+    fn default() -> Self {
+        RmServerConfig {
+            socket_path: sidecar::rm_socket_path(),
+            worker_count: default_worker_count(),
+            idle_timeout: RM_DEFAULT_IDLE_TIMEOUT,
+        }
+    }
 }
 
 /// server 运行上下文：共享内核、启动时刻、关闭标志、在途计数、池聚合计数器。
@@ -189,6 +219,161 @@ pub fn run_server(config: &ServerConfig) -> Result<(), ServerError> {
     // accept 循环：非阻塞 accept 加 10 毫秒轮询加原子关闭标志。
     let accept_result = accept_loop(&listener, &ctx, &router);
 
+    // 关闭序列：在途归零、清空发送端、join worker、drop 内核、删文件。
+    finish_shutdown(&ctx, &router, worker_handles, kernel, &config.socket_path, Some(&config.sidecar_path))
+        .and(accept_result)
+}
+
+/// --rm 独立模式入口：独立单进程，不注册 sidecar、不碰全局 well-known
+/// 路径，只服务一个客户端连接，空闲超时或客户端断开即自动退出。
+///
+/// # 步骤
+/// 1. 建关闭标志并注册信号处理器（幂等）；失败直接返回（无 sidecar 可回滚）。
+/// 2. 绑定监听器（进程唯一路径，与持久路径共用同一绑定函数）。
+/// 3. 建内核（标准配置）、共享聚合计数器，派生 worker（参数与持久 server 一致）。
+/// 4. 空闲窗口一：等首个连接；空闲超时内无连接即干净退出（正常退出，非错误）。
+/// 5. 首个连接派生连接线程：处理完毕（EOF 或读超时）后置关闭标志并减在途计数。
+/// 6. 丢弃监听器：首个连接之后不再接受新连接，后续连接得连接被拒绝。
+/// 7. 轮询关闭标志（10 毫秒间隔）：触发源有四个——连接线程 EOF、连接线程
+///    读超时、信号、控制请求（关闭与 yield 臂经共享分派置位）。
+/// 8. 走共享关闭序列（在途归零、清空发送端、join worker、drop 内核、
+///    删 socket 文件；不删 sidecar，因为从未写过）。
+///
+/// # 边界与前提
+/// - 空闲超时内无连接时返回 `Ok(())`：客户端未来连接是预期场景，退出是
+///   正常退出而非错误。
+/// - 首个连接被接受后第二个连接得连接被拒绝（监听器已丢弃）。
+///
+/// # 副作用
+/// - 创建 socket 文件，正常退出时删除；不写 sidecar。
+/// - 注册进程级信号处理器（SIGINT、SIGTERM，termination 特性下含 SIGHUP）。
+/// - 派生 N 个常驻 worker 线程与每连接一个 I/O 线程。
+///
+/// # 注意事项
+/// - 在调用线程上运行（前台入口在主线程调用它）。
+/// - yield 控制帧在本模式语义等同关闭：置关闭标志并回确认帧（无 sidecar
+///   可删、无接管逻辑），是「不交接」而非「参与交接」。
+pub fn run_server_rm(config: &RmServerConfig) -> Result<(), ServerError> {
+    // 关闭标志提前创建并注册信号处理器：在绑定 socket 之前，socket 文件
+    // 出现即蕴含处理器已就位（与持久 server 同一契约）；失败直接返回，
+    // 无 sidecar 可回滚。
+    let shutdown = Arc::new(AtomicBool::new(false));
+    install_signal_handler(&shutdown)?;
+
+    // 绑定监听器：进程唯一路径不存在 stale 文件竞争，与持久路径共用同一
+    // 绑定函数（删除重试逻辑保留只为共用）。
+    let listener = bind_listener_path(&config.socket_path)?;
+
+    // 建内核（标准配置）与共享聚合计数器（全体 worker 池的增减累加到同一聚合）。
+    let kernel = KernelCore::new(KernelConfig::standard());
+    let counters = PoolCounters::shared();
+
+    // 派生 N 个常驻 worker：各持自己线程上建的池（Vm 不跨线程）。
+    let (router, worker_handles) = workers::spawn_workers(
+        Arc::clone(&kernel),
+        Arc::clone(&counters),
+        kernel.config.min_pool_size,
+        kernel.config.max_pool_size,
+        config.worker_count,
+    );
+    let router = Arc::new(router);
+
+    let ctx = Arc::new(ServerContext {
+        kernel: Arc::clone(&kernel),
+        started_at: Instant::now(),
+        shutdown: Arc::clone(&shutdown),
+        in_flight: Arc::new(AtomicUsize::new(0)),
+        pool_counters: counters,
+        socket_path: config.socket_path.to_string_lossy().into_owned(),
+    });
+
+    // 空闲窗口一：等首个连接；空闲超时内无连接即干净退出。
+    let stream = match rm_accept_first(&listener, config.idle_timeout)? {
+        Some(stream) => stream,
+        None => return finish_shutdown(&ctx, &router, worker_handles, kernel, &config.socket_path, None),
+    };
+
+    // 单连接模型：首个连接被接受后丢弃监听器，后续 connect 得连接被拒绝，
+    // 不进入任何处理路径。
+    drop(listener);
+
+    // 首个连接派生连接线程：处理完毕（对端断开 EOF 或读超时）即置关闭标志
+    // 并减在途计数，两个事件都映射为关闭标志置位。
+    ctx.in_flight.fetch_add(1, Ordering::SeqCst);
+    let ctx_conn = Arc::clone(&ctx);
+    let router_conn = Arc::clone(&router);
+    let read_timeout = config.idle_timeout;
+    std::thread::spawn(move || {
+        handle_connection(stream, &ctx_conn, &router_conn, read_timeout);
+        ctx_conn.shutdown.store(true, Ordering::SeqCst);
+        ctx_conn.in_flight.fetch_sub(1, Ordering::SeqCst);
+    });
+
+    // 轮询关闭标志：触发源有四个——连接线程 EOF、连接线程读超时、信号、
+    // 控制请求（关闭与 yield 臂经共享分派置位）。
+    while !shutdown.load(Ordering::SeqCst) {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+
+    finish_shutdown(&ctx, &router, worker_handles, kernel, &config.socket_path, None)
+}
+
+/// 等首个连接（--rm 空闲窗口一）：非阻塞 accept 加 10 毫秒轮询加截止时间。
+///
+/// # 步骤
+/// 1. 监听器置非阻塞。
+/// 2. 轮询 accept：成功返回连接；WouldBlock 睡 10 毫秒再查；其余错误以
+///    `AcceptFailed` 返回。
+/// 3. 截止时间（自调用时刻起算的空闲超时）内无连接返回 `None`（干净退出，
+///    非错误）。
+///
+/// # 边界与前提
+/// - 截止时间是 `Instant` 单调时钟，无时钟回拨问题。
+fn rm_accept_first(listener: &UnixListener, timeout: Duration) -> Result<Option<UnixStream>, ServerError> {
+    listener
+        .set_nonblocking(true)
+        .map_err(|e| ServerError::AcceptFailed(e.to_string()))?;
+
+    let deadline = Instant::now() + timeout;
+    loop {
+        match listener.accept() {
+            Ok((stream, _addr)) => return Ok(Some(stream)),
+            Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
+                if Instant::now() >= deadline {
+                    return Ok(None);
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            Err(e) => return Err(ServerError::AcceptFailed(e.to_string())),
+        }
+    }
+}
+
+/// 关闭序列：在途归零 → 清空发送端 → join worker → drop 内核 → 删 socket
+/// 文件（与 sidecar 文件）。
+///
+/// 持久 server 与 --rm 独立模式共用同一条固定序列，单点定义；`sidecar_path`
+/// 为 `None` 时不删 sidecar（--rm 从未写过）。
+///
+/// # 步骤
+/// 1. 在途归零：轮询至零，5 秒安全超时后记警告继续（余留连接线程持内核
+///    与路由器的共享句柄，不悬垂；其后续投递经清空的路由立即失败）。
+/// 2. 清空发送端：worker 的 recv 断开退出。
+/// 3. 逐一 join worker；panic 载荷以 `WorkerPanic` 返回。
+/// 4. 释放内核句柄（worker 池已随线程退出释放）；上下文由调用方持有，
+///    其内核句柄随调用方局部变量在函数返回时释放。
+/// 5. 先删 socket 文件、后删 sidecar 文件（尽力而为，文件已不存在不视为
+///    错误）。
+///
+/// # 边界与前提
+/// - `sidecar_path` 为 `None` 时跳过 sidecar 删除。
+///
+/// # 副作用
+/// - 删除 socket 文件与（若传入）sidecar 文件。
+fn finish_shutdown(
+    ctx: &Arc<ServerContext>, router: &Arc<WorkerRouter>, worker_handles: Vec<JoinHandle<()>>, kernel: Arc<KernelCore>,
+    socket_path: &Path, sidecar_path: Option<&Path>,
+) -> Result<(), ServerError> {
     // 在途归零：轮询至零，5 秒安全超时后记警告继续（余留连接线程持内核
     // 与路由器的共享句柄，不悬垂；其后续投递经清空的路由立即失败）。
     wait_in_flight_drained(&ctx.in_flight, Duration::from_secs(5));
@@ -201,17 +386,18 @@ pub fn run_server(config: &ServerConfig) -> Result<(), ServerError> {
         }
     }
 
-    // 按序释放：上下文（持内核句柄）→ 内核（worker 池已随线程退出释放）。
-    drop(ctx);
+    // 释放内核句柄（worker 池已随线程退出释放）；上下文由调用方持有，
+    // 其内核句柄随调用方局部变量在函数返回时释放。
     drop(kernel);
 
     // 先删 socket 文件、后删 sidecar（尽力而为，文件已不存在不视为错误）：
     // 新 server 以 sidecar 消失为接管信号，届时 socket 文件必已删除，
     // 接管绑定无竞态。
-    let _ = fs::remove_file(&config.socket_path);
-    let _ = fs::remove_file(&config.sidecar_path);
-
-    accept_result
+    let _ = fs::remove_file(socket_path);
+    if let Some(sidecar) = sidecar_path {
+        let _ = fs::remove_file(sidecar);
+    }
+    Ok(())
 }
 
 /// 交接接管：连接旧 server、发 yield 请求、等旧 server 排空退出后重新认领。
@@ -333,24 +519,32 @@ fn panic_payload_str(payload: &Box<dyn std::any::Any + Send>) -> String {
 /// - stale socket 文件是崩溃残留（文件存在但无监听者）。
 ///
 /// # 副作用
+/// - 可能删除 socket 文件。
+fn bind_listener_path(path: &Path) -> Result<UnixListener, ServerError> {
+    match UnixListener::bind(path) {
+        Ok(listener) => Ok(listener),
+        Err(_first) if path.exists() => {
+            // 路径存在：崩溃残留的 stale socket 文件，删一次重试。
+            let _ = fs::remove_file(path);
+            UnixListener::bind(path).map_err(|second| ServerError::BindFailed(format!("socket 绑定失败：{second}")))
+        }
+        Err(first) => Err(ServerError::BindFailed(format!("socket 绑定失败：{first}"))),
+    }
+}
+
+/// 绑定监听器：失败时删除 sidecar（回滚）并返回错误。
+///
+/// # 边界与前提
+/// - stale socket 文件是崩溃残留（文件存在但无监听者）。
+///
+/// # 副作用
 /// - 可能删除 socket 文件；重试仍失败时删除 sidecar（回滚）。
 fn bind_listener(config: &ServerConfig) -> Result<UnixListener, ServerError> {
-    match UnixListener::bind(&config.socket_path) {
+    match bind_listener_path(&config.socket_path) {
         Ok(listener) => Ok(listener),
-        Err(_first) if config.socket_path.exists() => {
-            // 路径存在：崩溃残留的 stale socket 文件，删一次重试。
-            let _ = fs::remove_file(&config.socket_path);
-            match UnixListener::bind(&config.socket_path) {
-                Ok(listener) => Ok(listener),
-                Err(second) => {
-                    let _ = fs::remove_file(&config.sidecar_path);
-                    Err(ServerError::BindFailed(format!("socket 绑定失败：{second}")))
-                }
-            }
-        }
-        Err(first) => {
+        Err(err) => {
             let _ = fs::remove_file(&config.sidecar_path);
-            Err(ServerError::BindFailed(format!("socket 绑定失败：{first}")))
+            Err(err)
         }
     }
 }
@@ -365,9 +559,7 @@ fn bind_listener(config: &ServerConfig) -> Result<UnixListener, ServerError> {
 /// # 副作用
 /// - 每连接派生一个标准库线程（只做 I/O），线程结束时减一在途计数。
 fn accept_loop(
-    listener: &UnixListener,
-    ctx: &Arc<ServerContext>,
-    router: &Arc<WorkerRouter>,
+    listener: &UnixListener, ctx: &Arc<ServerContext>, router: &Arc<WorkerRouter>,
 ) -> Result<(), ServerError> {
     listener
         .set_nonblocking(true)
@@ -385,7 +577,8 @@ fn accept_loop(
                 let ctx = Arc::clone(ctx);
                 let router = Arc::clone(router);
                 std::thread::spawn(move || {
-                    handle_connection(stream, &ctx, &router);
+                    // 持久 server 的读超时保持 30 秒（行为与参数化前一致）。
+                    handle_connection(stream, &ctx, &router, Duration::from_secs(30));
                     ctx.in_flight.fetch_sub(1, Ordering::SeqCst);
                 });
             }
@@ -400,27 +593,28 @@ fn accept_loop(
 /// 每连接处理：帧读取 → 分派 → 响应写回，循环至对端关闭。
 ///
 /// # 步骤
-/// 1. 克隆写端，原流交给帧读取器，设 30 秒读超时。
+/// 1. 克隆写端，原流交给帧读取器，设读超时（`read_timeout` 参数）。
 /// 2. 循环读帧：EOF、读超时、非法 UTF-8 退出；帧长超限按协议约定关连接。
 /// 3. 畸形帧以 `Error` 帧答复后继续；执行请求路由到 worker 并阻塞等回复；
 ///    控制请求直接应答并写回。
 /// 4. 关闭或 yield 确认帧写回即退出循环。
 ///
 /// # 边界与前提
-/// - 半开连接（对端静默不关）由 30 秒读超时有界化。
+/// - 半开连接（对端静默不关）由读超时有界化：持久 server 传 30 秒，
+///   --rm 独立模式传空闲超时（读超时即空闲语义）。
 /// - 本线程只做 I/O 与分派，不建池（池归 worker 线程所有）。
 ///
 /// # 副作用
 /// - 关闭请求会置位关闭标志。
-fn handle_connection(stream: UnixStream, ctx: &ServerContext, router: &WorkerRouter) {
+fn handle_connection(stream: UnixStream, ctx: &ServerContext, router: &WorkerRouter, read_timeout: Duration) {
     // 克隆写端：原流交给帧读取器，写端独立用于响应写回。
     let mut writer = match stream.try_clone() {
         Ok(writer) => writer,
         Err(_) => return,
     };
 
-    // 30 秒读超时：半开连接不永久占住线程。
-    let _ = stream.set_read_timeout(Some(Duration::from_secs(30)));
+    // 读超时：半开连接不永久占住线程。
+    let _ = stream.set_read_timeout(Some(read_timeout));
 
     let mut reader = FrameReader::new(io::BufReader::new(stream));
     // 读帧：EOF、读超时、非法 UTF-8 均退出。
@@ -461,7 +655,9 @@ fn dispatch_eval(code: &str, max_steps: Option<u64>, router: &WorkerRouter) -> S
         reply: reply_tx,
     };
     match router.route(task) {
-        Ok(()) => reply_rx.recv().unwrap_or_else(|_| ServerResponse::eval_err("worker 已退出，执行请求未处理")),
+        Ok(()) => reply_rx
+            .recv()
+            .unwrap_or_else(|_| ServerResponse::eval_err("worker 已退出，执行请求未处理")),
         Err(_) => ServerResponse::eval_err("server 正在关闭，执行请求未受理"),
     }
 }
@@ -564,6 +760,30 @@ mod tests {
         assert!(matches!(response, ServerResponse::Shutdown), "应得关闭确认帧：{response:?}");
         let result = handle.join().expect("server 线程应正常退出");
         assert!(result.is_ok(), "server 应正常退出：{result:?}");
+    }
+
+    /// --rm 配置：唯一临时路径、worker 数 1、300 毫秒空闲超时（不依赖真实
+    /// 超时值，断言带 5 秒裕量）。
+    fn rm_config(test_name: &str) -> RmServerConfig {
+        let dir = std::env::temp_dir().join(format!("oxide_server_rm_test_{}_{}", std::process::id(), test_name));
+        fs::create_dir_all(&dir).expect("测试目录创建应成功");
+        RmServerConfig {
+            socket_path: dir.join("rm.sock"),
+            worker_count: 1,
+            idle_timeout: Duration::from_millis(300),
+        }
+    }
+
+    /// 后台线程起真实 run_server_rm，等 socket 文件出现（bind 成功即就绪）。
+    fn start_rm_server(config: RmServerConfig) -> JoinHandle<Result<(), ServerError>> {
+        let server_config = config.clone();
+        let handle = std::thread::spawn(move || run_server_rm(&server_config));
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !config.socket_path.exists() {
+            assert!(Instant::now() < deadline, "socket 文件未出现");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        handle
     }
 
     /// 信号处理器体：置位关闭标志。
@@ -771,14 +991,26 @@ mod tests {
 
         // 两条连接各发 3 个 eval，响应逐帧按请求顺序送达。
         for code in ["1 + 1", "2 * 3", "10 - 4"] {
-            let response = send_and_recv(&mut stream_a, &ServerRequest::Eval { code: code.into(), max_steps: None });
+            let response = send_and_recv(
+                &mut stream_a,
+                &ServerRequest::Eval {
+                    code: code.into(),
+                    max_steps: None,
+                },
+            );
             assert!(
                 matches!(response, ServerResponse::EvalResult { ref value, .. } if value.is_some()),
                 "连接 A 应得完成值：{response:?}"
             );
         }
         for code in ["21 / 7", "2 + 30", "100 % 9"] {
-            let response = send_and_recv(&mut stream_b, &ServerRequest::Eval { code: code.into(), max_steps: None });
+            let response = send_and_recv(
+                &mut stream_b,
+                &ServerRequest::Eval {
+                    code: code.into(),
+                    max_steps: None,
+                },
+            );
             assert!(
                 matches!(response, ServerResponse::EvalResult { ref value, .. } if value.is_some()),
                 "连接 B 应得完成值：{response:?}"
@@ -788,25 +1020,33 @@ mod tests {
         // 完成值逐条核对（顺序与请求一致）。
         let expected_a = ["2", "6", "6"];
         let expected_b = ["3", "32", "1"];
-        for (code, expected) in [
-            ("1 + 1", expected_a[0]),
-            ("2 * 3", expected_a[1]),
-            ("10 - 4", expected_a[2]),
-        ] {
-            let response = send_and_recv(&mut stream_a, &ServerRequest::Eval { code: code.into(), max_steps: None });
+        for (code, expected) in [("1 + 1", expected_a[0]), ("2 * 3", expected_a[1]), ("10 - 4", expected_a[2])] {
+            let response = send_and_recv(
+                &mut stream_a,
+                &ServerRequest::Eval {
+                    code: code.into(),
+                    max_steps: None,
+                },
+            );
             match response {
-                ServerResponse::EvalResult { ref value, .. } => assert_eq!(value.as_deref(), Some(expected), "{code} 应得 {expected}"),
+                ServerResponse::EvalResult { ref value, .. } => {
+                    assert_eq!(value.as_deref(), Some(expected), "{code} 应得 {expected}")
+                }
                 other => panic!("应得 EvalResult 帧：{other:?}"),
             }
         }
-        for (code, expected) in [
-            ("21 / 7", expected_b[0]),
-            ("2 + 30", expected_b[1]),
-            ("100 % 9", expected_b[2]),
-        ] {
-            let response = send_and_recv(&mut stream_b, &ServerRequest::Eval { code: code.into(), max_steps: None });
+        for (code, expected) in [("21 / 7", expected_b[0]), ("2 + 30", expected_b[1]), ("100 % 9", expected_b[2])] {
+            let response = send_and_recv(
+                &mut stream_b,
+                &ServerRequest::Eval {
+                    code: code.into(),
+                    max_steps: None,
+                },
+            );
             match response {
-                ServerResponse::EvalResult { ref value, .. } => assert_eq!(value.as_deref(), Some(expected), "{code} 应得 {expected}"),
+                ServerResponse::EvalResult { ref value, .. } => {
+                    assert_eq!(value.as_deref(), Some(expected), "{code} 应得 {expected}")
+                }
                 other => panic!("应得 EvalResult 帧：{other:?}"),
             }
         }
@@ -922,10 +1162,7 @@ mod tests {
         // B 正常应答版本请求。
         let mut stream = connect(&config);
         let response = send_and_recv(&mut stream, &ServerRequest::Version);
-        assert!(
-            matches!(response, ServerResponse::Version { .. }),
-            "B 应应答版本请求：{response:?}"
-        );
+        assert!(matches!(response, ServerResponse::Version { .. }), "B 应应答版本请求：{response:?}");
         stop_server(&mut stream, handle_b);
     }
 
@@ -991,5 +1228,127 @@ mod tests {
         assert!(elapsed >= Duration::from_secs(5), "应命中 5 秒读超时：{elapsed:?}");
         assert!(config.sidecar_path.exists(), "模拟 sidecar 文件不应被删除");
         assert!(config.socket_path.exists(), "模拟 socket 文件不应被删除");
+    }
+
+    /// --rm 加断开 EOF：eval 得完成值后客户端断开，server 在有界时间内
+    /// 正常退出，socket 文件被删除，全局 well-known 路径前后不变。
+    #[test]
+    fn rm_eval_then_eof_exits() {
+        let config = rm_config("eval_eof");
+        let well_known_sidecar = sidecar::well_known_sidecar_path();
+        let well_known_socket = sidecar::well_known_socket_path();
+        let sidecar_before = well_known_sidecar.exists();
+        let socket_before = well_known_socket.exists();
+
+        let handle = start_rm_server(config.clone());
+        let mut stream = UnixStream::connect(&config.socket_path).expect("连接 rm server 应成功");
+        let response = send_and_recv(
+            &mut stream,
+            &ServerRequest::Eval {
+                code: "1 + 1".into(),
+                max_steps: None,
+            },
+        );
+        assert!(
+            matches!(response, ServerResponse::EvalResult { ref value, .. } if value.as_deref() == Some("2")),
+            "应得完成值为 2 的 EvalResult 帧：{response:?}"
+        );
+
+        // 客户端断开：连接线程读到 EOF 退出，server 应在空闲超时加裕量内正常退出。
+        drop(stream);
+        let deadline = Instant::now() + config.idle_timeout + Duration::from_secs(5);
+        while !handle.is_finished() {
+            assert!(Instant::now() < deadline, "rm server 应在空闲超时加裕量内退出");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let result = handle.join().expect("rm server 线程应正常退出");
+        assert!(result.is_ok(), "rm server 应正常退出：{result:?}");
+        assert!(!config.socket_path.exists(), "socket 文件应被删除");
+        assert_eq!(well_known_sidecar.exists(), sidecar_before, "全局 well-known sidecar 应前后不变");
+        assert_eq!(well_known_socket.exists(), socket_before, "全局 well-known socket 路径应前后不变");
+    }
+
+    /// --rm 空闲窗口一：不连接，空闲超时后 server 干净退出，socket 文件被删除。
+    ///
+    /// 计时起点是 socket 文件出现（就绪探测轮询，至多 10 毫秒延迟），而空闲
+    /// 超时窗口在绑定后的内核与 worker 搭建完成时才起算，故实测值可略低于
+    /// 超时值，下界留 20 毫秒裕量。
+    #[test]
+    fn rm_idle_kill_without_connection() {
+        let config = rm_config("idle_no_conn");
+        let handle = start_rm_server(config.clone());
+        let started = Instant::now();
+        let result = handle.join().expect("rm server 线程应正常退出");
+        assert!(result.is_ok(), "rm server 应正常退出：{result:?}");
+        assert!(
+            started.elapsed() >= config.idle_timeout - Duration::from_millis(20),
+            "应在空闲超时后退出（留就绪探测裕量）：{:?}",
+            started.elapsed()
+        );
+        assert!(!config.socket_path.exists(), "socket 文件应被删除");
+    }
+
+    /// --rm 空闲窗口二：连接建立后不发任何数据，读超时后 server 正常退出，
+    /// socket 文件被删除。
+    ///
+    /// 计时起点是 socket 文件出现（就绪探测轮询，至多 10 毫秒延迟），而读
+    /// 超时窗口在连接线程建立流读超时时才起算，故实测值可略低于超时值，
+    /// 下界留 20 毫秒裕量。
+    #[test]
+    fn rm_idle_kill_silent_client() {
+        let config = rm_config("idle_silent");
+        let handle = start_rm_server(config.clone());
+        let stream = UnixStream::connect(&config.socket_path).expect("连接 rm server 应成功");
+
+        // 保持连接打开但不发数据：连接线程在读超时后退出。
+        let started = Instant::now();
+        let result = handle.join().expect("rm server 线程应正常退出");
+        assert!(result.is_ok(), "rm server 应正常退出：{result:?}");
+        assert!(
+            started.elapsed() >= config.idle_timeout - Duration::from_millis(20),
+            "应在读超时后退出（留就绪探测裕量）：{:?}",
+            started.elapsed()
+        );
+        assert!(!config.socket_path.exists(), "socket 文件应被删除");
+        drop(stream);
+    }
+
+    /// --rm 单连接模型：首个连接正常应答后，第二个连接得连接被拒绝
+    /// （监听器已丢弃）。
+    #[test]
+    fn rm_second_connection_refused() {
+        let config = rm_config("second_refused");
+        let handle = start_rm_server(config.clone());
+        let mut stream = UnixStream::connect(&config.socket_path).expect("首个连接应成功");
+        let response = send_and_recv(&mut stream, &ServerRequest::Health);
+        assert!(
+            matches!(response, ServerResponse::Health { healthy: true }),
+            "应得 Health 帧：{response:?}"
+        );
+
+        // 监听器已丢弃：第二个连接得连接被拒绝。轮询至拒绝，容忍连接线程
+        // 建立与监听器丢弃之间的极小时序窗口（并发套件下调度延迟放大窗口）。
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut second = UnixStream::connect(&config.socket_path);
+        while second.is_ok() {
+            assert!(Instant::now() < deadline, "第二个连接应被拒绝");
+            std::thread::sleep(Duration::from_millis(10));
+            second = UnixStream::connect(&config.socket_path);
+        }
+        assert!(second.is_err(), "第二个连接应被拒绝：{second:?}");
+
+        // 清理：发关闭请求停 server。
+        stop_server(&mut stream, handle);
+    }
+
+    /// --rm 关闭请求：发 Shutdown 控制帧得确认帧，server 正常退出，
+    /// socket 文件被删除（控制请求经共享分派置关闭标志）。
+    #[test]
+    fn rm_shutdown_request_exits() {
+        let config = rm_config("shutdown_req");
+        let handle = start_rm_server(config.clone());
+        let mut stream = UnixStream::connect(&config.socket_path).expect("连接 rm server 应成功");
+        stop_server(&mut stream, handle);
+        assert!(!config.socket_path.exists(), "socket 文件应被删除");
     }
 }
