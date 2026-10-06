@@ -12,7 +12,7 @@ use oxide_cli::format_js_value;
 use oxide_cli::server::cleanup::{well_known_cleanup, CleanupOutcome};
 use oxide_cli::server::client::send_control_request;
 use oxide_cli::server::log as server_log;
-use oxide_cli::server::protocol::{ServerRequest, ServerResponse};
+use oxide_cli::server::protocol::{ForgeTarget, LookupResult, ServerRequest, ServerResponse};
 use oxide_cli::server::server::{run_server, run_server_rm, RmServerConfig, ServerConfig};
 use oxide_cli::server::sidecar;
 use oxide_compiler::compiler::{compiled_module_hash, Compiler};
@@ -154,8 +154,46 @@ enum ServerCommands {
         #[arg(long)]
         lines: Option<usize>,
     },
-    /// 查询内部状态（代码、对象、字符串、属性）。
-    Forge,
+    /// 查询内部 forge 状态（code/object/string/property），加三个行动旗标。
+    Forge {
+        /// 目标 forge：code（字节码缓存）/ object（shape 表）/ string（字符串
+        /// intern）/ property（属性模板缓存）。
+        target: ForgeTargetCli,
+        /// 触发垃圾回收（对池内全体空闲 VM 执行完整 session GC）。
+        #[arg(long)]
+        gc: bool,
+        /// 清空字节码缓存（LRU）。
+        #[arg(long)]
+        clear_cache: bool,
+        /// 在字符串 intern 表纯查询一个键的 id（不插入）。
+        #[arg(long)]
+        lookup: Option<String>,
+    },
+}
+
+/// forge 查询目标（CLI 侧，映射到协议侧 `ForgeTarget`）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
+enum ForgeTargetCli {
+    /// 字节码 LRU 缓存。
+    Code,
+    /// 隐藏类 shape 表。
+    Object,
+    /// 字符串 intern 表。
+    String,
+    /// 属性模板缓存。
+    Property,
+}
+
+impl ForgeTargetCli {
+    /// 映射到协议侧 `ForgeTarget`。
+    fn to_protocol(self) -> ForgeTarget {
+        match self {
+            ForgeTargetCli::Code => ForgeTarget::Code,
+            ForgeTargetCli::Object => ForgeTarget::Object,
+            ForgeTargetCli::String => ForgeTarget::String,
+            ForgeTargetCli::Property => ForgeTarget::Property,
+        }
+    }
 }
 
 /// 日志级别阈值（读取侧过滤，映射到 `oxide_log::Level`）。
@@ -246,7 +284,7 @@ fn main() -> ExitCode {
 /// server 子命令分派：start（两形态）与 cleanup 为最小实现，
 /// version/status/health/info/stop/restart 六臂为真实实现，
 /// log 为真实实现（读 well-known 日志文件，支持 --follow/--level/--lines），
-/// 其余一臂（forge）为 not_implemented 占位。
+/// forge 为真实实现（查询四张共享 forge 状态，加三行动旗标）。
 ///
 /// # 步骤
 /// 1. Start：rm 为真调独立模式入口（进程唯一路径）；foreground 为真当前进程
@@ -261,7 +299,8 @@ fn main() -> ExitCode {
 ///    （详见 restart_command）。
 /// 5. Log：读 well-known 日志文件，按级别阈值与最后 N 行过滤后打印，
 ///    `--follow` 时进入阻塞跟踪循环（详见 log_command）。
-/// 6. 其余一臂（forge）：not_implemented 占位（退出码 2）。
+/// 6. Forge：发 forge 查询请求（目标加三行动旗标），成功打印渲染文本退 0，
+///    失败打印错误消息退 1。
 ///
 /// # 边界与前提
 /// - `--idle-timeout` 不带 --rm 时静默忽略（语义门控归后续任务）。
@@ -341,8 +380,67 @@ fn server_command(command: ServerCommands) -> ExitCode {
         }),
         ServerCommands::Restart => restart_command(),
         ServerCommands::Log { follow, level, lines } => log_command(follow, level.map(LogLevel::as_level), lines),
-        ServerCommands::Forge => not_implemented("server forge"),
+        ServerCommands::Forge {
+            target,
+            gc,
+            clear_cache,
+            lookup,
+        } => {
+            let request = ServerRequest::ForgeQuery {
+                target: target.to_protocol(),
+                gc,
+                clear_cache,
+                lookup,
+            };
+            control_arm(&request, |response| match response {
+                ServerResponse::ForgeStatus {
+                    target,
+                    entries,
+                    capacity,
+                    gc_collected,
+                    cache_cleared,
+                    lookup,
+                } => Some(render_forge_status(
+                    *target,
+                    *entries,
+                    *capacity,
+                    *gc_collected,
+                    *cache_cleared,
+                    lookup.clone(),
+                )),
+                _ => None,
+            })
+        }
     }
+}
+
+/// 渲染 `ForgeStatus` 为多行文本：首行条目数，容量 / gc / 清缓存 / lookup
+/// 行按旗标结果附加。
+fn render_forge_status(
+    target: ForgeTarget,
+    entries: usize,
+    capacity: usize,
+    gc_collected: Option<usize>,
+    cache_cleared: bool,
+    lookup: Option<LookupResult>,
+) -> String {
+    let mut lines = vec![format!("{} forge: {entries} entries", target.as_str())];
+    if capacity != 0 {
+        lines.push(format!("capacity: {capacity}"));
+    }
+    if let Some(n) = gc_collected {
+        lines.push(format!("gc: collected {n} idle VMs"));
+    }
+    if cache_cleared {
+        lines.push("cache cleared".to_string());
+    }
+    if let Some(result) = lookup {
+        lines.push(match result {
+            LookupResult::Interned { id } => format!("lookup: interned id={id}"),
+            LookupResult::Absent => "lookup: not interned".to_string(),
+        });
+    }
+    lines.join("\n")
 }
 
 /// 控制臂公共入口：发请求，成功打印渲染文本退 0，失败打印消息退 1。

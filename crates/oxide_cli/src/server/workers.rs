@@ -17,7 +17,8 @@ use oxide_kernel::kernel::KernelCore;
 use oxide_vm::vm_pool::{PoolCounters, VmPool};
 
 use super::eval;
-use super::protocol::ServerResponse;
+use super::forge;
+use super::protocol::{ForgeTarget, ServerResponse};
 
 /// worker 任务：执行请求加一次性回复通道。
 #[derive(Debug)]
@@ -26,6 +27,14 @@ pub enum WorkerTask {
     Eval {
         code: String,
         max_steps: Option<u64>,
+        reply: mpsc::Sender<ServerResponse>,
+    },
+    /// forge 查询：目标 forge 加三个行动旗标，一次性回复通道。
+    ForgeQuery {
+        target: ForgeTarget,
+        gc: bool,
+        clear_cache: bool,
+        lookup: Option<String>,
         reply: mpsc::Sender<ServerResponse>,
     },
 }
@@ -123,6 +132,16 @@ fn worker_loop(receiver: mpsc::Receiver<WorkerTask>, kernel: Arc<KernelCore>, po
                 reply,
             } => {
                 let response = eval::handle_eval(&code, max_steps, &kernel, &pool);
+                let _ = reply.send(response);
+            }
+            WorkerTask::ForgeQuery {
+                target,
+                gc,
+                clear_cache,
+                lookup,
+                reply,
+            } => {
+                let response = forge::handle_forge_query(target, gc, clear_cache, lookup, &kernel, &pool);
                 let _ = reply.send(response);
             }
         }

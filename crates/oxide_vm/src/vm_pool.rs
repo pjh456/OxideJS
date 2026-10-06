@@ -228,6 +228,23 @@ impl VmPool {
     pub fn counters(&self) -> Arc<PoolCounters> {
         Arc::clone(&self.counters)
     }
+
+    /// 对池内全体空闲 VM 执行一次完整 session GC，返回收集的 VM 数。
+    ///
+    /// # 边界与前提
+    /// - 只触及空闲队列（available）；在借 VM（在途 eval）不在范围（非安全点）。
+    /// - 锁池内互斥锁，与 spawn 原子互斥，无竞态。
+    ///
+    /// # 副作用
+    /// - 各空闲 VM 的 session_bytes_allocated 重置为清扫后存活字节。
+    pub fn collect_idle_gc(&self) -> usize {
+        let mut inner = self.inner.lock().unwrap();
+        let n = inner.available.len();
+        for vm in inner.available.iter_mut() {
+            vm.collect_session_gc();
+        }
+        n
+    }
 }
 
 impl VmGuard {
@@ -427,5 +444,14 @@ mod tests {
         // 并发下精确峰值是竞争结果，只断言界：4 线程各至多持 1 个在借。
         let peak = counters.peak();
         assert!((1..=4).contains(&peak), "并发峰值应落在 1 到 4 之间：{peak}");
+    }
+
+    #[test]
+    fn test_collect_idle_gc_returns_idle_count() {
+        let kernel = test_kernel();
+        let pool = VmPool::new(kernel, 1, None);
+        let guard = pool.spawn();
+        drop(guard);
+        assert_eq!(pool.collect_idle_gc(), 1, "归还一个空闲 VM 后收集数应为 1");
     }
 }

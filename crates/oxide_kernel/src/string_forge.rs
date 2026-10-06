@@ -324,6 +324,16 @@ impl PermInterner {
         entries.get(id as usize).map(|e| e.data)
     }
 
+    /// 纯查询：键已 intern 时返回其稳定 id，未 intern 返回 None。
+    ///
+    /// 不插入新条目（区别于会插入的 `intern`，只读语义，供诊断查询）。
+    pub fn lookup_id(&self, s: &str) -> Option<u32> {
+        let hash = hash64(s);
+        let candidates = self.hash_map.get(&hash)?;
+        let entries = self.entries.read().unwrap();
+        candidates.iter().find(|&&id| entries[id as usize].data == s).copied()
+    }
+
     /// 全部唯一 intern 键的数量。
     pub fn entry_count(&self) -> u32 {
         self.entries.read().unwrap().len() as u32
@@ -507,5 +517,22 @@ pub fn const_string_ptr(kind: u8) -> *const JsString {
             unsafe { drop(Box::from_raw(ptr)) };
             existing
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::PermInterner;
+
+    /// `lookup_id` 纯查询：已 intern 键得该 id，未 intern 键得 None，且不增条目数。
+    #[test]
+    fn lookup_id_pure_query_no_insert() {
+        let interner = PermInterner::new();
+        let (id, _) = interner.intern("probe-key");
+        let before = interner.entry_count();
+
+        assert_eq!(interner.lookup_id("probe-key"), Some(id), "已 intern 键应得该 id");
+        assert_eq!(interner.lookup_id("absent-key"), None, "未 intern 键应得 None");
+        assert_eq!(interner.entry_count(), before, "纯查询不应插入新条目");
     }
 }

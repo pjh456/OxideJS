@@ -1,5 +1,5 @@
-//! server CLI 集成测试：真实二进制的分派面（help 列子命令、占位臂退出码、
-//! cleanup 幂等、start 与 restart 端到端）。
+//! server CLI 集成测试：真实二进制的分派面（help 列子命令、无 server 时
+//! 控制臂与 forge 退 1、cleanup 幂等、start 与 restart 端到端、forge 端到端）。
 //!
 //! start / restart 端到端与 cleanup 走 well-known 全局路径（每用户单例）：
 //! 测试先探活，socket 存活即 panic 不抢占存活 server；三枚触碰全局路径的
@@ -48,20 +48,6 @@ fn server_help_lists_subcommands() {
     }
 }
 
-/// 占位臂退 2，stderr 含 not yet implemented。
-///
-/// version/status/health/info/stop/restart/log 七臂已是真实实现（无 server
-/// 时退 1），不在此列；forge 仍是占位。
-#[test]
-fn server_stub_subcommands_exit_2() {
-    for sub in ["forge"] {
-        let output = oxide(&["server", sub]);
-        assert_eq!(output.status.code(), Some(2), "{sub} 应退 2");
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        assert!(stderr.contains("not yet implemented"), "{sub} 应打印未实现提示：{stderr}");
-    }
-}
-
 /// log 子命令无日志文件时退 1，stderr 含「日志文件不存在」。
 ///
 /// 走 well-known 全局路径：先探活，存活 server 占用时 panic 不抢占；删除
@@ -103,6 +89,26 @@ fn server_control_arms_no_server_exit_1() {
             "{sub} 应打印无 server 提示：{stderr}"
         );
     }
+}
+
+/// forge 子命令无 server 时退 1，stderr 含「无已注册的 server」提示。
+///
+/// 走 well-known 全局路径：先探活，存活 server 占用时 panic 不抢占。
+#[test]
+fn server_forge_no_server_exit_1() {
+    let _guard = WELL_KNOWN_LOCK.lock().expect("全局路径锁不应中毒");
+    assert!(
+        !sidecar::is_server_alive(&sidecar::well_known_socket_path()),
+        "存活 server 占用 well-known 路径，测试不抢占"
+    );
+
+    let output = oxide(&["server", "forge", "code"]);
+    assert_eq!(output.status.code(), Some(1), "forge 应退 1");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("无已注册的 server"),
+        "forge 应打印无 server 提示：{stderr}"
+    );
 }
 
 /// cleanup 退 0（幂等：有残留则清理、无残留则报无残留），事后全局路径无文件。
@@ -366,4 +372,63 @@ fn server_log_e2e() {
 
     // 收尾：删除日志文件恢复状态。
     let _ = std::fs::remove_file(&log_path);
+}
+
+/// forge 端到端：守护形态 start 后，`forge code` 打印条目数与容量行，
+/// `forge string --lookup` 打印 lookup 行，`forge code --gc --clear-cache`
+/// 打印 gc 与清缓存行；关闭后 socket 与 sidecar 文件被删。
+#[test]
+fn server_forge_e2e() {
+    let _guard = WELL_KNOWN_LOCK.lock().expect("全局路径锁不应中毒");
+    let socket = sidecar::well_known_socket_path();
+    let sidecar_path = sidecar::well_known_sidecar_path();
+
+    // 探活先行：存活 server 占用全局路径时 panic，不抢占。
+    assert!(!sidecar::is_server_alive(&socket), "存活 server 占用 well-known 路径，测试不抢占");
+
+    // start 为守护形态：CLI 即刻返回，server 是脱离的孙进程；轮询 socket 文件
+    // 出现判就绪（worker 数压到 2 避免按宿主核数预热的成本）。
+    let output = oxide(&["server", "start", "--workers", "2"]);
+    assert_eq!(output.status.code(), Some(0), "start 应退 0");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !socket.exists() {
+        assert!(Instant::now() < deadline, "socket 文件未出现");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+
+    // forge code：退 0，stdout 含条目数行与容量行。
+    let output = oxide(&["server", "forge", "code"]);
+    assert_eq!(output.status.code(), Some(0), "forge code 应退 0");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("code forge:"), "forge code 应打印条目数行：{stdout}");
+    assert!(stdout.contains("capacity: 512"), "forge code 应打印容量行：{stdout}");
+
+    // forge string --lookup：退 0，stdout 含 lookup 行。
+    let output = oxide(&["server", "forge", "string", "--lookup", "forge-e2e-key"]);
+    assert_eq!(output.status.code(), Some(0), "forge string --lookup 应退 0");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("lookup:"), "forge --lookup 应打印 lookup 行：{stdout}");
+
+    // forge code --gc --clear-cache：退 0，stdout 含 gc 与清缓存行。
+    let output = oxide(&["server", "forge", "code", "--gc", "--clear-cache"]);
+    assert_eq!(output.status.code(), Some(0), "forge code --gc --clear-cache 应退 0");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("gc: collected"), "forge --gc 应打印 gc 行：{stdout}");
+    assert!(stdout.contains("cache cleared"), "forge --clear-cache 应打印清缓存行：{stdout}");
+
+    // 关闭请求帧：读回关闭确认帧。
+    let mut stream = UnixStream::connect(&socket).expect("连接 server 应成功");
+    let response = send_and_recv(&mut stream, &ServerRequest::Shutdown);
+    assert!(matches!(response, ServerResponse::Shutdown), "应得关闭确认帧：{response:?}");
+    drop(stream);
+
+    // 轮询 sidecar 文件消失（30 秒截止、50 毫秒间隔）判 server 进程已退出。
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while sidecar_path.exists() {
+        assert!(Instant::now() < deadline, "server 应在有界时间内退出");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+
+    assert!(!socket.exists(), "socket 文件应被删除");
+    assert!(!sidecar_path.exists(), "sidecar 文件应被删除");
 }

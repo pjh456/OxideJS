@@ -10,8 +10,9 @@
 //! - accept 循环为非阻塞 accept 加 10 毫秒轮询加原子关闭标志：唤醒路径
 //!   确定、无锁、无唤醒丢失。
 //! - 并发模型：主线程只跑 accept 循环；每连接一个标准库线程只做 I/O
-//!   （帧读写）；六类控制请求由连接线程直接应答、不占 worker；执行请求
-//!   经 mpsc 路由到固定 N 个常驻 worker 执行（各持自己线程上的 VM 池）。
+//!   （帧读写）；六类控制请求由连接线程直接应答、不占 worker；执行请求与
+//!   forge 查询经 mpsc 路由到固定 N 个常驻 worker 执行（各持自己线程上的
+//!   VM 池）。
 //! - 优雅退出顺序：关闭请求、SIGINT/SIGTERM 信号或 yield 请求置位关闭标志
 //!   → 在途归零 → 清空发送端 → join worker → drop 内核 → 先删 socket 文件
 //!   后删 sidecar（新 server 以 sidecar 消失为接管信号）。
@@ -32,7 +33,7 @@ use oxide_kernel::kernel::{KernelConfig, KernelCore};
 use oxide_log::{Level, LogConfig, Output, SUBSYSTEM_COUNT};
 use oxide_vm::vm_pool::PoolCounters;
 
-use super::protocol::{self, FrameReader, ProtocolError, ServerRequest, ServerResponse};
+use super::protocol::{self, ForgeTarget, FrameReader, ProtocolError, ServerRequest, ServerResponse};
 use super::sidecar::{self, ClaimResult};
 use super::workers::{self, WorkerRouter};
 
@@ -617,8 +618,8 @@ fn accept_loop(
 /// # 步骤
 /// 1. 克隆写端，原流交给帧读取器，设读超时（`read_timeout` 参数）。
 /// 2. 循环读帧：EOF、读超时、非法 UTF-8 退出；帧长超限按协议约定关连接。
-/// 3. 畸形帧以 `Error` 帧答复后继续；执行请求路由到 worker 并阻塞等回复；
-///    控制请求直接应答并写回。
+/// 3. 畸形帧以 `Error` 帧答复后继续；执行请求与 forge 查询经 worker 路由
+///    并阻塞等回复；控制请求直接应答并写回。
 /// 4. 关闭或 yield 确认帧写回即退出循环。
 ///
 /// # 边界与前提
@@ -645,6 +646,12 @@ fn handle_connection(stream: UnixStream, ctx: &ServerContext, router: &WorkerRou
         // 执行请求走 worker 路由，控制请求直接应答。
         let response = match protocol::parse_request(&frame) {
             Ok(ServerRequest::Eval { code, max_steps }) => dispatch_eval(&code, max_steps, router),
+            Ok(ServerRequest::ForgeQuery {
+                target,
+                gc,
+                clear_cache,
+                lookup,
+            }) => dispatch_forge(target, gc, clear_cache, lookup, router),
             Ok(request) => dispatch_control(&request, ctx),
             Err(ProtocolError::FrameTooLarge) => break,
             Err(error) => error.to_error_frame(),
@@ -684,6 +691,32 @@ fn dispatch_eval(code: &str, max_steps: Option<u64>, router: &WorkerRouter) -> S
     }
 }
 
+/// forge 查询分派：路由到 worker 执行（读 forge 状态加可选 gc / clear-cache /
+/// lookup），阻塞在一次性回复通道上取回响应帧。
+///
+/// # 步骤
+/// 1. 建一次性回复通道，发送端随任务进 worker。
+/// 2. 轮询投递到 worker；发送端已清空（关闭序列进行中）时立即以错误帧答复。
+/// 3. 阻塞 recv 至回复；worker 已退出（通道断开）时以错误帧答复，不挂起。
+fn dispatch_forge(
+    target: ForgeTarget, gc: bool, clear_cache: bool, lookup: Option<String>, router: &WorkerRouter,
+) -> ServerResponse {
+    let (reply_tx, reply_rx) = std::sync::mpsc::channel();
+    let task = workers::WorkerTask::ForgeQuery {
+        target,
+        gc,
+        clear_cache,
+        lookup,
+        reply: reply_tx,
+    };
+    match router.route(task) {
+        Ok(()) => reply_rx
+            .recv()
+            .unwrap_or_else(|_| ServerResponse::eval_err("worker 已退出，forge 查询未处理")),
+        Err(_) => ServerResponse::eval_err("server 正在关闭，forge 查询未受理"),
+    }
+}
+
 /// 控制请求分派：六类控制请求直接应答，不占 worker。
 ///
 /// Status 响应读全体 worker 池的共享聚合计数器。
@@ -714,9 +747,10 @@ fn dispatch_control(request: &ServerRequest, ctx: &ServerContext) -> ServerRespo
             ctx.shutdown.store(true, Ordering::SeqCst);
             ServerResponse::Yield
         }
-        // 防御性兜底：正常路径 eval 在调用本函数前已被拦截走 worker 路由；
-        // 若到达此臂说明上游分流缺失，以错误帧答复而非静默执行。
+        // 防御性兜底：正常路径 eval 与 forge 查询在调用本函数前已被拦截走
+        // worker 路由；若到达此臂说明上游分流缺失，以错误帧答复而非静默执行。
         ServerRequest::Eval { .. } => ServerResponse::eval_err("执行请求应经 worker 路由，不应到达控制分派"),
+        ServerRequest::ForgeQuery { .. } => ServerResponse::eval_err("forge 查询应经 worker 路由，不应到达控制分派"),
     }
 }
 

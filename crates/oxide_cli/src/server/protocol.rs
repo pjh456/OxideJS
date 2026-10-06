@@ -48,7 +48,46 @@ impl ProtocolError {
     }
 }
 
-/// server 请求帧：eval 执行请求加六类控制请求。
+/// forge 查询目标：四张共享 forge 之一。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ForgeTarget {
+    /// 代码对象（字节码 LRU 缓存）。
+    Code,
+    /// 对象表（隐藏类 shape 表，含根节点）。
+    Object,
+    /// 字符串驻留（intern 键表）。
+    String,
+    /// 属性表（属性模板缓存）。
+    Property,
+}
+
+impl ForgeTarget {
+    /// 目标名（小写），供渲染与展示。
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ForgeTarget::Code => "code",
+            ForgeTarget::Object => "object",
+            ForgeTarget::String => "string",
+            ForgeTarget::Property => "property",
+        }
+    }
+}
+
+/// lookup 结果：已 intern（带稳定 id）或未 intern。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum LookupResult {
+    /// 已 intern，附稳定 id。
+    Interned {
+        /// intern 键的稳定 id。
+        id: u32,
+    },
+    /// 未 intern。
+    Absent,
+}
+
+/// server 请求帧：eval 执行请求、forge 状态查询加六类控制请求。
 ///
 /// 序列化为 tagged 对象，`type` 字段区分类型（snake_case）。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -60,6 +99,20 @@ pub enum ServerRequest {
         /// 最大指令数；None 表示用引擎默认。
         #[serde(default, skip_serializing_if = "Option::is_none")]
         max_steps: Option<u64>,
+    },
+    /// forge 状态查询：目标 forge 加三个行动旗标（gc / clear_cache / lookup）。
+    ForgeQuery {
+        /// 目标 forge：code / object / string / property。
+        target: ForgeTarget,
+        /// 触发垃圾回收（对池内全体空闲 VM 执行完整 session GC）。
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        gc: bool,
+        /// 清空字节码 LRU 缓存。
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        clear_cache: bool,
+        /// 在字符串 intern 表纯查询一个键的 id（不插入）。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        lookup: Option<String>,
     },
     /// 查询 server 版本。
     Version,
@@ -89,6 +142,24 @@ pub enum ServerResponse {
         /// 错误消息；成功时为 None。
         #[serde(default, skip_serializing_if = "Option::is_none")]
         error: Option<String>,
+    },
+    /// forge 状态响应：目标 forge 条目数与容量，加三个行动结果。
+    ForgeStatus {
+        /// 目标 forge：code / object / string / property。
+        target: ForgeTarget,
+        /// 目标 forge 的条目数（object 目标含根节点）。
+        entries: usize,
+        /// 容量上限（code 目标为 LRU 上限，其余为 0 表示无界）。
+        capacity: usize,
+        /// --gc 收集的空闲 VM 数；未设旗标为 None。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        gc_collected: Option<usize>,
+        /// --clear-cache 已执行时为真。
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        cache_cleared: bool,
+        /// --lookup 结果；未设旗标为 None。
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        lookup: Option<LookupResult>,
     },
     /// 版本响应。
     Version { version: String },
@@ -130,10 +201,12 @@ impl ServerResponse {
 }
 
 /// 请求帧可取的 `type` 值（须与 `ServerRequest` 变体保持同步）。
-const REQUEST_TAGS: &[&str] = &["eval", "version", "status", "health", "info", "shutdown", "yield"];
+const REQUEST_TAGS: &[&str] =
+    &["eval", "forge_query", "version", "status", "health", "info", "shutdown", "yield"];
 
 /// 响应帧可取的 `type` 值（须与 `ServerResponse` 变体保持同步）。
-const RESPONSE_TAGS: &[&str] = &["eval_result", "version", "status", "health", "info", "shutdown", "yield", "error"];
+const RESPONSE_TAGS: &[&str] =
+    &["eval_result", "forge_status", "version", "status", "health", "info", "shutdown", "yield", "error"];
 
 /// 序列化请求为帧字符串（含结尾换行）。
 ///
@@ -355,6 +428,83 @@ mod tests {
         ] {
             roundtrip_response(&resp);
         }
+    }
+
+    /// forge 查询请求 round-trip：四目标各一轮，带与不带三旗标两形态。
+    #[test]
+    fn forge_query_roundtrip() {
+        for target in [ForgeTarget::Code, ForgeTarget::Object, ForgeTarget::String, ForgeTarget::Property] {
+            roundtrip_request(&ServerRequest::ForgeQuery {
+                target,
+                gc: false,
+                clear_cache: false,
+                lookup: None,
+            });
+            roundtrip_request(&ServerRequest::ForgeQuery {
+                target,
+                gc: true,
+                clear_cache: true,
+                lookup: Some("key".into()),
+            });
+        }
+    }
+
+    /// forge 状态响应 round-trip：含 gc_collected 与 lookup 两 Some 形态与全省略形态。
+    #[test]
+    fn forge_status_roundtrip() {
+        for resp in [
+            ServerResponse::ForgeStatus {
+                target: ForgeTarget::Code,
+                entries: 0,
+                capacity: 512,
+                gc_collected: None,
+                cache_cleared: false,
+                lookup: None,
+            },
+            ServerResponse::ForgeStatus {
+                target: ForgeTarget::String,
+                entries: 42,
+                capacity: 0,
+                gc_collected: Some(3),
+                cache_cleared: true,
+                lookup: Some(LookupResult::Interned { id: 7 }),
+            },
+            ServerResponse::ForgeStatus {
+                target: ForgeTarget::Object,
+                entries: 1,
+                capacity: 0,
+                gc_collected: None,
+                cache_cleared: false,
+                lookup: Some(LookupResult::Absent),
+            },
+        ] {
+            roundtrip_response(&resp);
+        }
+    }
+
+    /// 序列化形态：forge_query 省略空旗标，lookup 省略 None。
+    #[test]
+    fn forge_query_serialization_shape() {
+        assert_eq!(
+            serde_json::to_string(&ServerRequest::ForgeQuery {
+                target: ForgeTarget::Code,
+                gc: false,
+                clear_cache: false,
+                lookup: None,
+            })
+            .unwrap(),
+            r#"{"type":"forge_query","target":"code"}"#
+        );
+        assert_eq!(
+            serde_json::to_string(&ServerRequest::ForgeQuery {
+                target: ForgeTarget::String,
+                gc: true,
+                clear_cache: false,
+                lookup: Some("k".into()),
+            })
+            .unwrap(),
+            r#"{"type":"forge_query","target":"string","gc":true,"lookup":"k"}"#
+        );
     }
 
     /// 序列化形态：eval 请求省略空 max_steps，控制请求无载荷字段。

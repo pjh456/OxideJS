@@ -87,6 +87,11 @@ impl CodeForge {
         Ok(module)
     }
 
+    /// 清空全部缓存模块（LRU 复位，后续 eval 重编译）。
+    pub fn clear(&self) {
+        self.map.lock().unwrap().clear();
+    }
+
     /// 当前缓存条目数。
     pub fn len(&self) -> usize {
         self.map.lock().unwrap().len()
