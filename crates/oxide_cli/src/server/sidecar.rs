@@ -141,7 +141,7 @@ pub fn process_starttime(pid: u32) -> Option<u64> {
     // 空格干扰字段计数。
     let rest = text.rsplit(')').next()?;
     // 剩余部分从 state（全文件第 3 字段）起，第 20 个字段即全文件第 22 字段。
-    rest.split_whitespace().skip(19).next()?.parse().ok()
+    rest.split_whitespace().nth(19)?.parse().ok()
 }
 
 /// 认领结果：注册入口的三态。
@@ -164,7 +164,7 @@ pub enum ClaimResult {
 ///    - 可解析且 PID 死：陈旧残留，删 sidecar 与 socket 文件后重建。
 ///    - 可解析且 PID 活：交叉核对启动时刻刻度，匹配则保守拒绝（server
 ///      可能正在启动或 socket 被外部删除），失配则 PID 已复用，删除重建。
-///    - 不可解析（损坏）：只删 sidecar（socket 路径未知不猜）后重建。
+///    - 不可解析（损坏）：删 sidecar 与 socket 文件后重建。
 ///
 /// # 边界与前提
 /// - 启动顺序契约是「先写 sidecar 再 bind socket」，存活 server 必有 sidecar。
@@ -192,8 +192,9 @@ pub fn claim_sidecar(sidecar_path: &Path, socket_path: &Path) -> ClaimResult {
     match read_identity(sidecar_path) {
         Some(id) => claim_dead_socket(&id, sidecar_path, socket_path),
         None => {
-            // 损坏文件：只删 sidecar（socket 路径未知不猜）后重建。
-            let _ = fs::remove_file(sidecar_path);
+            // 损坏文件：删 sidecar 与 socket 文件后重建（socket 探活已失败，
+            // 文件无监听者，不会误删存活 server 的 socket）。
+            remove_stale(sidecar_path, socket_path);
             re_register(sidecar_path, socket_path)
         }
     }
@@ -388,6 +389,22 @@ mod tests {
         assert_eq!(claim_sidecar(&sidecar, &socket), ClaimResult::Registered);
         let id = read_identity(&sidecar).expect("重建 sidecar 应可读");
         assert_eq!(id.pid, std::process::id());
+    }
+
+    /// 认领分支：损坏文件加无监听者的陈旧 socket 文件判陈旧，两文件都删后重建。
+    #[test]
+    fn claim_corrupted_sidecar_stale_socket_rebuilt() {
+        let dir = TestDir::new();
+        let sidecar = dir.path("sidecar.json");
+        let socket = dir.path("server.sock");
+        // 损坏文件：非 JSON 内容。
+        fs::write(&sidecar, "not json at all").expect("写损坏文件应成功");
+        // 陈旧 socket 文件：文件存在但无监听者。
+        fs::write(&socket, b"stale").expect("写陈旧 socket 文件应成功");
+        assert_eq!(claim_sidecar(&sidecar, &socket), ClaimResult::Registered);
+        let id = read_identity(&sidecar).expect("重建 sidecar 应可读");
+        assert_eq!(id.pid, std::process::id(), "重建 sidecar 应为本进程身份");
+        assert!(!socket.exists(), "陈旧 socket 文件应被删除");
     }
 
     /// 认领分支：损坏文件加存活 socket 拒绝（socket 是存活事实源）。
