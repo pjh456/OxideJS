@@ -22,8 +22,9 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use oxide_kernel::kernel::{KernelConfig, KernelCore};
-use oxide_vm::vm_pool::{PoolCounters, VmPool};
+use oxide_vm::vm_pool::VmPool;
 
+use super::eval;
 use super::protocol::{self, FrameReader, ProtocolError, ServerRequest, ServerResponse};
 use super::sidecar::{self, ClaimResult};
 
@@ -72,12 +73,12 @@ impl ServerConfig {
     }
 }
 
-/// server 运行上下文：池状态、启动时刻、关闭标志、在途计数。
+/// server 运行上下文：共享内核、启动时刻、关闭标志、在途计数。
 ///
-/// 池本体不进上下文（Vm 不跨线程），只持池的原子状态句柄；
-/// 内核不跨线程共享（执行路径由后续任务接线）。
+/// 内核跨线程共享（`Arc<KernelCore>` 是 Send/Sync）；池本体不进上下文
+/// （Vm 不跨线程），每连接线程自建池（见 `handle_connection`）。
 struct ServerContext {
-    pool_counters: Arc<PoolCounters>,
+    kernel: Arc<KernelCore>,
     started_at: Instant,
     shutdown: Arc<AtomicBool>,
     in_flight: Arc<AtomicUsize>,
@@ -114,12 +115,11 @@ pub fn run_server(config: &ServerConfig) -> Result<(), ServerError> {
     // 绑定监听器：stale socket 文件删一次重试，失败回滚 sidecar。
     let listener = bind_listener(config)?;
 
-    // 建内核与池：标准配置，池按 min_pool_size 预热。
+    // 建内核（标准配置）；池每连接线程自建（Vm 不跨线程，池本体不共享）。
     let kernel = KernelCore::new(KernelConfig::standard());
-    let pool = VmPool::new(Arc::clone(&kernel), kernel.config.min_pool_size, kernel.config.max_pool_size);
 
     let ctx = Arc::new(ServerContext {
-        pool_counters: pool.counters(),
+        kernel: Arc::clone(&kernel),
         started_at: Instant::now(),
         shutdown: Arc::new(AtomicBool::new(false)),
         in_flight: Arc::new(AtomicUsize::new(0)),
@@ -132,9 +132,8 @@ pub fn run_server(config: &ServerConfig) -> Result<(), ServerError> {
     // 在途归零：轮询至零，5 秒安全超时后记警告继续。
     wait_in_flight_drained(&ctx.in_flight, Duration::from_secs(5));
 
-    // 按序释放：上下文（持池状态句柄）→ 池 → 内核。
+    // 按序释放：上下文（持内核句柄）→ 内核。
     drop(ctx);
-    drop(pool);
     drop(kernel);
 
     // 删 sidecar 与 socket 文件（尽力而为，文件已不存在不视为错误）。
@@ -232,12 +231,15 @@ fn handle_connection(stream: UnixStream, ctx: &ServerContext) {
     // 30 秒读超时：半开连接不永久占住线程。
     let _ = stream.set_read_timeout(Some(Duration::from_secs(30)));
 
+    // 每连接自建池（Vm 不跨线程，池是每线程资产），按内核配置预热。
+    let pool = VmPool::new(Arc::clone(&ctx.kernel), ctx.kernel.config.min_pool_size, ctx.kernel.config.max_pool_size);
+
     let mut reader = FrameReader::new(io::BufReader::new(stream));
     // 读帧：EOF、读超时、非法 UTF-8 均退出。
     while let Ok(Some(frame)) = reader.read_frame() {
         // 分派：帧长超限按协议约定关连接；畸形帧以 Error 帧答复后继续。
         let response = match protocol::parse_request(&frame) {
-            Ok(request) => dispatch_control(&request, ctx),
+            Ok(request) => dispatch_control(&request, ctx, &pool),
             Err(ProtocolError::FrameTooLarge) => break,
             Err(error) => error.to_error_frame(),
         };
@@ -255,17 +257,17 @@ fn handle_connection(stream: UnixStream, ctx: &ServerContext) {
     }
 }
 
-/// 控制请求分派：五类控制请求直接应答，不 spawn 虚拟机。
+/// 控制请求分派：五类控制请求直接应答；执行请求走 `handle_eval`。
 ///
-/// 执行请求暂以协议错误帧答复（执行路径由后续任务补齐）。
-fn dispatch_control(request: &ServerRequest, ctx: &ServerContext) -> ServerResponse {
+/// 池是每连接资产（`handle_connection` 创建），Status 响应读本连接池状态。
+fn dispatch_control(request: &ServerRequest, ctx: &ServerContext, pool: &Arc<VmPool>) -> ServerResponse {
     match request {
         ServerRequest::Version => ServerResponse::Version {
             version: env!("CARGO_PKG_VERSION").to_string(),
         },
         ServerRequest::Status => ServerResponse::Status {
-            pool_available: ctx.pool_counters.available(),
-            pool_total: ctx.pool_counters.total(),
+            pool_available: pool.available_count(),
+            pool_total: pool.total_count(),
             uptime_ms: ctx.started_at.elapsed().as_millis() as u64,
         },
         ServerRequest::Health => ServerResponse::Health { healthy: true },
@@ -279,9 +281,7 @@ fn dispatch_control(request: &ServerRequest, ctx: &ServerContext) -> ServerRespo
             ctx.shutdown.store(true, Ordering::SeqCst);
             ServerResponse::Shutdown
         }
-        ServerRequest::Eval { .. } => ServerResponse::Error {
-            message: "执行路径尚未实现".to_string(),
-        },
+        ServerRequest::Eval { code, max_steps } => eval::handle_eval(code, *max_steps, &ctx.kernel, pool),
     }
 }
 
@@ -449,9 +449,9 @@ mod tests {
         stop_server(&mut stream, handle);
     }
 
-    /// 执行请求得 Error 帧（尚未实现），不 panic。
+    /// 执行请求得 EvalResult 帧："1 + 1" 得完成值 "2"，不 panic。
     #[test]
-    fn eval_not_implemented() {
+    fn eval_request_returns_value() {
         let config = unique_paths("eval");
         let handle = start_server(config.clone());
         let mut stream = connect(&config);
@@ -462,7 +462,10 @@ mod tests {
                 max_steps: None,
             },
         );
-        assert!(matches!(response, ServerResponse::Error { .. }), "应得 Error 帧：{response:?}");
+        assert!(
+            matches!(response, ServerResponse::EvalResult { ref value, .. } if value.as_deref() == Some("2")),
+            "应得完成值为 2 的 EvalResult 帧：{response:?}"
+        );
         stop_server(&mut stream, handle);
     }
 

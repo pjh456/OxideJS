@@ -92,7 +92,9 @@ impl Vm {
     pub(crate) fn dispatch(&mut self) -> Result<JsValue, String> {
         // config.max_steps / max_alloc_bytes 逐指令只读且循环内不变：提到循环外，
         // 免每次经 kernel_core Arc 指针追寻读取（热点内仅有的 config 访问）。
-        let max_steps = self.kernel_core.config.max_steps;
+        // 步数上限取每请求覆盖值.or(内核配置)：覆盖优先、None 回退内核配置，
+        // 未设覆盖的宿主（CLI/REPL/bench/test262）读到的值与改动前逐位一致。
+        let max_steps = self.max_steps_override.or(self.kernel_core.config.max_steps);
         let max_alloc_bytes = self.kernel_core.config.max_alloc_bytes;
         let mut steps: u64 = 0;
         // 小重入泵送盲区：native 终端循环泵送短 JS 重入时，顶层 steps 不推进、

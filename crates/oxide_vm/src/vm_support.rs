@@ -166,6 +166,7 @@ impl Vm {
             saved_table_gen_stack: Vec::new(),
             trace_instructions: false,
             pc_watch: None,
+            max_steps_override: None,
         };
         vm.init_generator_intrinsics();
         vm.init_promise_intrinsics();
@@ -309,6 +310,7 @@ impl Vm {
             saved_table_gen_stack: Vec::new(),
             trace_instructions: false,
             pc_watch: None,
+            max_steps_override: None,
         };
         vm.init_generator_intrinsics();
         vm.init_promise_intrinsics();
@@ -429,6 +431,9 @@ impl Vm {
         self.symbols.reset();
         self.root_reg_limit = 0;
         self.active_reg_limit = 0;
+        // 步数上限覆盖随池回收清位：执行路径按请求必设覆盖（含 None），
+        // 此处清位保证回收的 VM 不带旧覆盖回到默认态，循环 VM 回到内核配置。
+        self.max_steps_override = None;
     }
 
     /// 释放全部 session 堆数据：session 对象（本体 + 堆数据 + upvalue 列表）

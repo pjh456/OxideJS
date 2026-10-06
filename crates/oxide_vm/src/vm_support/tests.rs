@@ -1114,3 +1114,57 @@ fn full_reset_clears_symbol_state() {
     assert!(vm.symbols.symbol_descriptions.is_empty());
     assert!(vm.symbols.symbol_registry.is_empty());
 }
+
+/// 编译源文本为模块（供步数上限测试直接 `run` 并检查 `Result`）。
+fn compile_module(source: &str) -> Arc<oxide_bytecode::module::CompiledModule> {
+    let allocator = oxide_parser::Allocator::default();
+    let program = oxide_parser::parse(&allocator, source).expect("parse failed");
+    let module = oxide_compiler::compiler::Compiler::new()
+        .compile(&program)
+        .expect("compile failed");
+    Arc::new(module)
+}
+
+/// 步数覆盖超限：`set_max_steps(Some(100))` 加无限循环返回 `Err`，文本含 `step limit`。
+#[test]
+fn max_steps_override_exceeded_returns_err() {
+    let mut vm = Vm::new();
+    vm.set_max_steps(Some(100));
+    let module = compile_module("for(;;){}");
+    let result = vm.run(&module);
+    assert!(result.is_err(), "无限循环带步数覆盖应返回 Err：{result:?}");
+    let err = result.unwrap_err();
+    assert!(err.contains("step limit"), "错误文本应含 step limit：{err}");
+}
+
+/// 覆盖随 `full_reset` 清除：`Some(100)` 超限失败后 `full_reset`，再跑 50 轮循环
+/// （步数远超 100）返回 `Ok`，证明覆盖值未残留（回退内核配置无上限）。
+#[test]
+fn full_reset_clears_max_steps_override() {
+    let mut vm = Vm::new();
+    vm.set_max_steps(Some(100));
+    let infinite = compile_module("for(;;){}");
+    assert!(vm.run(&infinite).is_err(), "无限循环应超限");
+
+    vm.full_reset();
+
+    // 50 轮循环步数远超 100：覆盖清除后无上限，应返回 Ok。
+    let moderate = compile_module("let n = 0; for (let i = 0; i < 50; i++) { n += i; } n");
+    assert!(vm.run(&moderate).is_ok(), "full_reset 后 50 轮循环不应被旧覆盖限制");
+}
+
+/// `set_max_steps(None)` 回退内核配置：内核配置 `max_steps` 置 `Some(100)` 的独立
+/// kernel 上，覆盖置 None 后超限仍被限（`or` 回退语义）。
+#[test]
+fn max_steps_none_falls_back_to_kernel_config() {
+    let mut config = KernelConfig::minimal();
+    config.max_steps = Some(100);
+    let core = KernelCore::new(config);
+    let mut vm = Vm::with_kernel_core(Arc::clone(&core));
+    vm.set_max_steps(None);
+    let module = compile_module("for(;;){}");
+    let result = vm.run(&module);
+    assert!(result.is_err(), "内核配置限步下无限循环应返回 Err：{result:?}");
+    let err = result.unwrap_err();
+    assert!(err.contains("step limit"), "错误文本应含 step limit：{err}");
+}

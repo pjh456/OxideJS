@@ -391,6 +391,10 @@ pub struct Vm {
     /// `pc/opcode/flat_id/frames`，供监督者超时/崩溃杀子进程后读回挂死点；
     /// 默认 None（零输出零分配）。
     pub(crate) pc_watch: Option<PathBuf>,
+    /// 每请求步数上限覆盖：执行路径按请求设置，None 回退内核配置。
+    /// 池回收的 `full_reset` 路径清位；`run()` 入口的 `clear_execution_state`
+    /// 刻意不清（清在那会把执行路径刚设的覆盖抹掉）。
+    pub(crate) max_steps_override: Option<u64>,
 }
 
 impl Drop for Vm {
@@ -465,6 +469,13 @@ impl Vm {
     /// None 清除。
     pub fn set_pc_watch(&mut self, path: Option<PathBuf>) {
         self.pc_watch = path;
+    }
+
+    /// 设置每请求步数上限覆盖：dispatch 主循环取 `覆盖值.or(内核配置)`，
+    /// 覆盖优先、None 回退内核配置。执行路径按请求必设（含 None），池回收的
+    /// `full_reset` 路径清位。
+    pub fn set_max_steps(&mut self, limit: Option<u64>) {
+        self.max_steps_override = limit;
     }
 
     /// 设置指令周期采样周期（2 的幂，0 关闭）。开启后 dispatch 主循环每

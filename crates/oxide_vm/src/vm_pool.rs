@@ -179,6 +179,12 @@ impl VmGuard {
     pub fn vm_mut(&mut self) -> &mut Vm {
         self.vm.as_mut().expect("VmGuard has no VM")
     }
+
+    /// 显式标记被借出的 VM 为 dirty：`Drop` 时丢弃该 VM 并新建替补，
+    /// 不对其执行 `full_reset`。供并发与未来显式弃用场景使用。
+    pub fn mark_dirty(&mut self) {
+        self.dirty = true;
+    }
 }
 
 impl Drop for VmGuard {
@@ -189,7 +195,9 @@ impl Drop for VmGuard {
 
         let mut inner = self.pool.inner.lock().unwrap();
 
-        if self.dirty {
+        // panic 展开期（thread::panicking 为真）被 drop 的 VM 一律按 dirty 丢弃：
+        // 损坏 VM 上执行 full_reset 可能二次 panic，unwind 中二次 panic 即 abort。
+        if self.dirty || std::thread::panicking() {
             vm_debug!("pool: discarding dirty vm");
             let new_vm = self.pool.replace_vm();
             inner.available.push(new_vm);
