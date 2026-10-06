@@ -4,13 +4,15 @@
 use std::fs;
 use std::process::ExitCode;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use ansi_term::Colour::Red;
 use clap::{Parser, Subcommand};
+use oxide_cli::format_js_value;
+use oxide_cli::server::cleanup::{well_known_cleanup, CleanupOutcome};
+use oxide_cli::server::server::{run_server, run_server_rm, RmServerConfig, ServerConfig};
 use oxide_compiler::compiler::{compiled_module_hash, Compiler};
 use oxide_compiler::compiler_error;
-use oxide_cli::format_js_value;
 use oxide_kernel::kernel::{KernelConfig, KernelCore};
 use oxide_kernel::shape_forge::ShapeForge;
 use oxide_kernel::string_forge::PermInterner;
@@ -95,6 +97,47 @@ enum Commands {
     Test {
         suite: Option<String>,
     },
+    /// 持久 server：常驻进程，复用预热池，近零 spawn 成本。
+    Server {
+        #[command(subcommand)]
+        command: ServerCommands,
+    },
+}
+
+/// server 子命令：持久 server 进程管理与 --rm 独立模式。
+#[derive(Subcommand)]
+enum ServerCommands {
+    /// 启动 server。持久形态前台常驻（阻塞至关闭请求、信号或 yield 触发退出）；
+    /// --rm 为独立形态（进程唯一 socket、不注册 sidecar、空闲超时或断开即退出）。
+    Start {
+        /// 独立模式：进程唯一 socket 路径，不注册 sidecar，空闲超时或断开即自动退出。
+        #[arg(long)]
+        rm: bool,
+        /// 空闲超时（秒），仅对 --rm 有效；窗口内无连接或连接上无数据即自动退出。
+        #[arg(long, default_value = "30")]
+        idle_timeout: u64,
+        /// 常驻 worker 线程数；缺省取宿主核数。
+        #[arg(long)]
+        workers: Option<u32>,
+    },
+    /// 向持久 server 发送关闭请求。
+    Stop,
+    /// 查询 server 状态（池与运行时长）。
+    Status,
+    /// 健康检查。
+    Health,
+    /// 查询 server 信息（版本、socket 路径、进程号）。
+    Info,
+    /// 查询 server 版本。
+    Version,
+    /// 清理残留文件（无 sidecar、陈旧 socket、杀刻度匹配进程）。
+    Cleanup,
+    /// 向持久 server 发送 yield 请求（排空退出后重新接管 socket 路径）。
+    Restart,
+    /// 查看 server 日志。
+    Log,
+    /// 查询内部状态（代码、对象、字符串、属性）。
+    Forge,
 }
 
 fn main() -> ExitCode {
@@ -156,7 +199,85 @@ fn main() -> ExitCode {
             bench::run_benchmarks(config, kernel, pool)
         }
         Some(Commands::Test { .. }) => not_implemented("test"),
+        Some(Commands::Server { command }) => server_command(command),
         None => repl(),
+    }
+}
+
+/// server 子命令分派：start（两形态）与 cleanup 为最小实现，其余八臂为
+/// not_implemented 占位。
+///
+/// # 步骤
+/// 1. Start：rm 为假调持久 server 入口（well-known 路径），rm 为真调独立
+///    模式入口（进程唯一路径）；`--workers` 为 Some 时覆盖 worker 数。
+/// 2. Cleanup：调 well-known 路径清理入口，四态结果映射退出码（无残留与
+///    已清理退 0，拒绝与杀进程失败退 1）并打印结果。
+/// 3. 其余八臂：not_implemented 占位（退出码 2）。
+///
+/// # 边界与前提
+/// - `--idle-timeout` 不带 --rm 时静默忽略（语义门控归后续任务）。
+/// - 全局旗标 -v / -q / --profile 在 server 臂为空操作。
+///
+/// # 副作用
+/// - start 阻塞当前进程至 server 退出（持久形态为前台常驻）。
+/// - cleanup 可能向 sidecar 记录的进程发 SIGTERM 并删除残留文件。
+fn server_command(command: ServerCommands) -> ExitCode {
+    match command {
+        ServerCommands::Start { rm, idle_timeout, workers } => {
+            if rm {
+                let mut config = RmServerConfig {
+                    idle_timeout: Duration::from_secs(idle_timeout),
+                    ..RmServerConfig::default()
+                };
+                if let Some(n) = workers {
+                    config.worker_count = n as usize;
+                }
+                start_result(run_server_rm(&config))
+            } else {
+                let mut config = ServerConfig::well_known();
+                if let Some(n) = workers {
+                    config.worker_count = n as usize;
+                }
+                start_result(run_server(&config))
+            }
+        }
+        ServerCommands::Cleanup => match well_known_cleanup() {
+            CleanupOutcome::Clean => {
+                println!("无残留：sidecar 与 socket 文件均不存在。");
+                ExitCode::SUCCESS
+            }
+            CleanupOutcome::Removed => {
+                println!("残留已清理：孤儿文件已删除。");
+                ExitCode::SUCCESS
+            }
+            CleanupOutcome::RefusedLiveServer => {
+                eprintln!("存在存活 server 且进程号无法可靠确定，未触碰文件，需人工检查。");
+                ExitCode::FAILURE
+            }
+            CleanupOutcome::KillFailed => {
+                eprintln!("已发终止信号但进程在等待窗口内未退出，未触碰文件。");
+                ExitCode::FAILURE
+            }
+        },
+        ServerCommands::Stop => not_implemented("server stop"),
+        ServerCommands::Status => not_implemented("server status"),
+        ServerCommands::Health => not_implemented("server health"),
+        ServerCommands::Info => not_implemented("server info"),
+        ServerCommands::Version => not_implemented("server version"),
+        ServerCommands::Restart => not_implemented("server restart"),
+        ServerCommands::Log => not_implemented("server log"),
+        ServerCommands::Forge => not_implemented("server forge"),
+    }
+}
+
+/// 启动结果到退出码：成功退 0，错误以红色打印到 stderr 后退 1。
+fn start_result(result: Result<(), oxide_cli::server::server::ServerError>) -> ExitCode {
+    match result {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(err) => {
+            eprintln!("{}", Red.paint(format!("server 启动失败：{err}")));
+            ExitCode::FAILURE
+        }
     }
 }
 
