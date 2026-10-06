@@ -36,8 +36,10 @@ impl std::fmt::Display for ClientError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             ClientError::Connect(msg) => write!(f, "{msg}"),
-            ClientError::Protocol(err) => write!(f, "响应帧畸形：{err}"),
-            ClientError::Server(msg) => write!(f, "server 以错误帧答复：{msg}"),
+            ClientError::Protocol(err) => {
+                write!(f, "响应帧畸形：{err}，server 版本可能不匹配，可用 `oxide server restart` 更新")
+            }
+            ClientError::Server(msg) => write!(f, "server 拒绝请求：{msg}"),
         }
     }
 }

@@ -2,7 +2,7 @@
 #![allow(dead_code)]
 
 use std::fs;
-use std::process::ExitCode;
+use std::process::{Command, ExitCode, Stdio};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -13,6 +13,7 @@ use oxide_cli::server::cleanup::{well_known_cleanup, CleanupOutcome};
 use oxide_cli::server::client::send_control_request;
 use oxide_cli::server::protocol::{ServerRequest, ServerResponse};
 use oxide_cli::server::server::{run_server, run_server_rm, RmServerConfig, ServerConfig};
+use oxide_cli::server::sidecar;
 use oxide_compiler::compiler::{compiled_module_hash, Compiler};
 use oxide_compiler::compiler_error;
 use oxide_kernel::kernel::{KernelConfig, KernelCore};
@@ -134,7 +135,7 @@ enum ServerCommands {
     Version,
     /// 清理残留文件（无 sidecar、陈旧 socket、杀刻度匹配进程）。
     Cleanup,
-    /// 向持久 server 发送 yield 请求（排空退出后重新接管 socket 路径）。
+    /// 向存活 server 发关闭请求，等其退出后拉起新 server 进程。
     Restart,
     /// 查看 server 日志。
     Log,
@@ -207,8 +208,8 @@ fn main() -> ExitCode {
 }
 
 /// server 子命令分派：start（两形态）与 cleanup 为最小实现，
-/// version/status/health/info/stop 五臂经控制客户端为真实实现，
-/// 其余三臂为 not_implemented 占位。
+/// version/status/health/info/stop/restart 六臂为真实实现，
+/// 其余两臂为 not_implemented 占位。
 ///
 /// # 步骤
 /// 1. Start：rm 为假调持久 server 入口（well-known 路径），rm 为真调独立
@@ -217,7 +218,9 @@ fn main() -> ExitCode {
 ///    已清理退 0，拒绝与杀进程失败退 1）并打印结果。
 /// 3. 五个控制臂（version/status/health/info/stop）：发对应控制请求，
 ///    成功打印渲染文本退 0，失败打印错误消息退 1。
-/// 4. 其余三臂：not_implemented 占位（退出码 2）。
+/// 4. Restart：发关闭请求等旧 server 退出，拉起新 server 进程并探测就绪
+///    （详见 restart_command）。
+/// 5. 其余两臂：not_implemented 占位（退出码 2）。
 ///
 /// # 边界与前提
 /// - `--idle-timeout` 不带 --rm 时静默忽略（语义门控归后续任务）。
@@ -266,7 +269,7 @@ fn server_command(command: ServerCommands) -> ExitCode {
             }
         },
         ServerCommands::Stop => control_arm(&ServerRequest::Shutdown, |response| match response {
-            ServerResponse::Shutdown => Some("server 正在关闭".to_string()),
+            ServerResponse::Shutdown => Some("已停止".to_string()),
             _ => None,
         }),
         ServerCommands::Status => control_arm(&ServerRequest::Status, |response| match response {
@@ -284,7 +287,7 @@ fn server_command(command: ServerCommands) -> ExitCode {
         }),
         ServerCommands::Info => control_arm(&ServerRequest::Info, |response| match response {
             ServerResponse::Info { version, socket_path, pid } => {
-                Some(format!("版本 {version}\nsocket 路径 {socket_path}\n进程号 {pid}"))
+                Some(format!("版本：{version}\nsocket：{socket_path}\n进程号：{pid}"))
             }
             _ => None,
         }),
@@ -292,7 +295,7 @@ fn server_command(command: ServerCommands) -> ExitCode {
             ServerResponse::Version { version } => Some(version.clone()),
             _ => None,
         }),
-        ServerCommands::Restart => not_implemented("server restart"),
+        ServerCommands::Restart => restart_command(),
         ServerCommands::Log => not_implemented("server log"),
         ServerCommands::Forge => not_implemented("server forge"),
     }
@@ -317,6 +320,81 @@ fn control_arm(request: &ServerRequest, render: fn(&ServerResponse) -> Option<St
             ExitCode::FAILURE
         }
     }
+}
+
+/// restart 子命令：向存活 server 发关闭请求，等其退出后拉起新 server 进程。
+///
+/// # 步骤
+/// 1. 发关闭请求；三分支错误以红色打印退 1，无已注册 server 时消息即预设
+///    不满足提示。
+/// 2. 轮询 well-known sidecar 文件消失（50 毫秒间隔、10 秒截止）判旧 server
+///    排水完成；超时提示人工检查退 1。
+/// 3. 用当前可执行文件拉起脱离的 `oxide server start`（标准流全空、不等待）；
+///    spawn 失败退 1。
+/// 4. 轮询健康请求直至得 healthy（100 毫秒间隔、10 秒截止）判新 server 就绪；
+///    超时退 1。
+/// 5. 打印「已重启」退 0。
+///
+/// # 边界与前提
+/// - 新 server 用缺省配置拉起（worker 数回落宿主核数），不继承旧 server 旗标。
+///
+/// # 副作用
+/// - 旧 server 排空退出并删除 sidecar 与 socket 文件。
+/// - 新 server 为脱离进程，CLI 退出后由 init 收领继续运行。
+fn restart_command() -> ExitCode {
+    // 发关闭请求：三分支错误都以红色打印退 1，无 server 时消息即预设不满足提示。
+    if let Err(err) = send_control_request(&ServerRequest::Shutdown) {
+        eprintln!("{}", Red.paint(err.to_string()));
+        return ExitCode::FAILURE;
+    }
+
+    // 等旧 server 退出：sidecar 是退出序列的最后删除项，消失即排水完成。
+    let sidecar_path = sidecar::well_known_sidecar_path();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while sidecar_path.exists() {
+        if Instant::now() >= deadline {
+            eprintln!("{}", Red.paint("server 未在 10 秒内退出，可用 `oxide server cleanup` 人工检查"));
+            return ExitCode::FAILURE;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+
+    // 拉起新 server：脱离进程，标准流全空，不等待。
+    let exe = match std::env::current_exe() {
+        Ok(path) => path,
+        Err(err) => {
+            eprintln!("{}", Red.paint(format!("获取当前可执行文件路径失败：{err}")));
+            return ExitCode::FAILURE;
+        }
+    };
+    if let Err(err) = Command::new(exe)
+        .args(["server", "start"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+    {
+        eprintln!("{}", Red.paint(format!("拉起新 server 失败：{err}")));
+        return ExitCode::FAILURE;
+    }
+
+    // 就绪探测：健康请求通过即新 server 的监听与 accept 循环在运行。
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let ready =
+            matches!(send_control_request(&ServerRequest::Health), Ok(ServerResponse::Health { healthy: true }));
+        if ready {
+            break;
+        }
+        if Instant::now() >= deadline {
+            eprintln!("{}", Red.paint("新 server 未在 10 秒内就绪"));
+            return ExitCode::FAILURE;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+
+    println!("已重启");
+    ExitCode::SUCCESS
 }
 
 /// 启动结果到退出码：成功退 0，错误以红色打印到 stderr 后退 1。
