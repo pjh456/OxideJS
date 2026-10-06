@@ -286,3 +286,44 @@ fn typeof_captured_top_let_after_decl() {
         "typeof on a captured top-level let after initialization reports number"
     );
 }
+
+// ── 解构赋值写被捕获顶层 let：标识符目标写须落 cell，闭包读新值 ──
+
+#[test]
+fn captured_top_let_array_destructuring_assign() {
+    // 数组解构标识符目标：写只落寄存器而 cell 不更新时，闭包读旧值，此处判红。
+    assert_eq!(
+        eval("let x = 1; function f() { return x; } [x] = [2]; f() === 2 && x === 2"),
+        "true",
+        "array destructuring assignment to a captured top-level let updates the cell"
+    );
+}
+
+#[test]
+fn captured_top_let_object_destructuring_assign() {
+    assert_eq!(
+        eval("let x = 1; function f() { return x; } ({x} = {x: 3}); f() === 3 && x === 3"),
+        "true",
+        "object destructuring assignment to a captured top-level let updates the cell"
+    );
+}
+
+#[test]
+fn captured_top_let_destructuring_default_assign() {
+    // 默认值路径：元素为 undefined 触发默认值，写同样须落 cell。
+    assert_eq!(
+        eval("let x = 1; function f() { return x; } [x = 9] = [undefined]; f() === 9 && x === 9"),
+        "true",
+        "destructuring assignment with a default value to a captured top-level let updates the cell"
+    );
+}
+
+#[test]
+fn captured_top_let_rest_destructuring_assign() {
+    // rest 元素须为末位，标识符目标在 rest 前：写落 cell 的判别与主形同。
+    assert_eq!(
+        eval("let x = 1; function f() { return x; } [x, ...r] = [1, 2]; f() === 1 && x === 1"),
+        "true",
+        "rest destructuring assignment to a captured top-level let updates the cell"
+    );
+}
