@@ -48,7 +48,7 @@ impl ProtocolError {
     }
 }
 
-/// server 请求帧：eval 执行请求加五类控制请求。
+/// server 请求帧：eval 执行请求加六类控制请求。
 ///
 /// 序列化为 tagged 对象，`type` 字段区分类型（snake_case）。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -71,6 +71,8 @@ pub enum ServerRequest {
     Info,
     /// 优雅关闭。
     Shutdown,
+    /// 交接请求：旧 server 排空在途后退出，让出 socket 路径。
+    Yield,
 }
 
 /// server 响应帧：每类请求一个响应，外加协议错误帧。
@@ -103,6 +105,8 @@ pub enum ServerResponse {
     Info { version: String, socket_path: String, pid: u32 },
     /// 关闭确认。
     Shutdown,
+    /// 交接确认：旧 server 已受理，开始排空退出。
+    Yield,
     /// 协议错误帧：畸形帧或未知类型，server 以该帧答复。
     Error { message: String },
 }
@@ -126,10 +130,10 @@ impl ServerResponse {
 }
 
 /// 请求帧可取的 `type` 值（须与 `ServerRequest` 变体保持同步）。
-const REQUEST_TAGS: &[&str] = &["eval", "version", "status", "health", "info", "shutdown"];
+const REQUEST_TAGS: &[&str] = &["eval", "version", "status", "health", "info", "shutdown", "yield"];
 
 /// 响应帧可取的 `type` 值（须与 `ServerResponse` 变体保持同步）。
-const RESPONSE_TAGS: &[&str] = &["eval_result", "version", "status", "health", "info", "shutdown", "error"];
+const RESPONSE_TAGS: &[&str] = &["eval_result", "version", "status", "health", "info", "shutdown", "yield", "error"];
 
 /// 序列化请求为帧字符串（含结尾换行）。
 ///
@@ -311,7 +315,7 @@ mod tests {
         });
     }
 
-    /// 五类控制请求 round-trip。
+    /// 六类控制请求 round-trip。
     #[test]
     fn control_request_roundtrip() {
         for req in [
@@ -320,6 +324,7 @@ mod tests {
             ServerRequest::Health,
             ServerRequest::Info,
             ServerRequest::Shutdown,
+            ServerRequest::Yield,
         ] {
             roundtrip_request(&req);
         }
@@ -345,6 +350,7 @@ mod tests {
                 pid: 1234,
             },
             ServerResponse::Shutdown,
+            ServerResponse::Yield,
             ServerResponse::Error { message: "boom".into() },
         ] {
             roundtrip_response(&resp);

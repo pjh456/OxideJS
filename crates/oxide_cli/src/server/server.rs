@@ -6,10 +6,11 @@
 //! - accept 循环为非阻塞 accept 加 10 毫秒轮询加原子关闭标志：唤醒路径
 //!   确定、无锁、无唤醒丢失。
 //! - 并发模型：主线程只跑 accept 循环；每连接一个标准库线程只做 I/O
-//!   （帧读写）；五类控制请求由连接线程直接应答、不占 worker；执行请求
+//!   （帧读写）；六类控制请求由连接线程直接应答、不占 worker；执行请求
 //!   经 mpsc 路由到固定 N 个常驻 worker 执行（各持自己线程上的 VM 池）。
-//! - 优雅退出顺序：关闭请求或 SIGINT/SIGTERM 信号置位关闭标志 → 在途归零
-//!   → 清空发送端 → join worker → drop 内核 → 删 sidecar 与 socket 文件。
+//! - 优雅退出顺序：关闭请求、SIGINT/SIGTERM 信号或 yield 请求置位关闭标志
+//!   → 在途归零 → 清空发送端 → join worker → drop 内核 → 先删 socket 文件
+//!   后删 sidecar（新 server 以 sidecar 消失为接管信号）。
 //! - 池本体不是 Send/Sync（Vm 不跨线程），上下文只持池的原子状态句柄；
 //!   状态响应读全体 worker 池的共享聚合计数器。
 
@@ -30,7 +31,7 @@ use super::sidecar::{self, ClaimResult};
 use super::workers::{self, WorkerRouter};
 
 /// server 启动与运行错误：绑定失败、认领被拒、接受连接失败、读取身份失败、
-/// 信号处理器注册失败。
+/// 信号处理器注册失败、交接失败。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ServerError {
     /// sidecar 认领未通过（已有存活 server 或存活证据不足以裁决）。
@@ -45,6 +46,8 @@ pub enum ServerError {
     WorkerPanic(String),
     /// 信号处理器注册失败（系统级错误，非"已注册"的幂等情形）。
     SignalInstallFailed(String),
+    /// 交接失败（连不上旧 server、旧 server 不受理 yield、或交接后重新认领未通过）。
+    YieldFailed(String),
 }
 
 impl std::fmt::Display for ServerError {
@@ -56,6 +59,7 @@ impl std::fmt::Display for ServerError {
             ServerError::IdentityReadFailed(msg) => write!(f, "读取身份失败：{msg}"),
             ServerError::WorkerPanic(msg) => write!(f, "worker 线程异常退出：{msg}"),
             ServerError::SignalInstallFailed(msg) => write!(f, "信号处理器注册失败：{msg}"),
+            ServerError::YieldFailed(msg) => write!(f, "交接接管失败：{msg}"),
         }
     }
 }
@@ -110,10 +114,12 @@ struct ServerContext {
 
 /// server 进程主体：认领 sidecar → 注册信号处理器 → 绑定 socket → 建内核 →
 /// 派生 worker → accept 循环 → 在途归零 → 清空发送端 → join worker →
-/// drop 内核 → 删 sidecar 与 socket 文件。
+/// drop 内核 → 先删 socket 文件后删 sidecar。
 ///
 /// # 步骤
-/// 1. 认领 sidecar（启动顺序契约：先写 sidecar 再 bind socket）。
+/// 1. 认领 sidecar（启动顺序契约：先写 sidecar 再 bind socket）；已有存活
+///    server 时转入交接路径（向旧 server 发 yield 请求，等旧 server 排空
+///    退出后重新认领）。
 /// 2. 注册信号处理器（绑定 socket 之前；失败回滚 sidecar，此时无存活线程）。
 /// 3. 绑定监听器；失败且路径存在时删 stale socket 文件重试一次。
 /// 4. 建内核（标准配置）与共享聚合计数器。
@@ -121,7 +127,8 @@ struct ServerContext {
 /// 6. 进入 accept 循环；关闭标志置位后按关闭序列退出。
 ///
 /// # 边界与前提
-/// - 认领被拒（AlreadyRunning / RefusedAmbiguous）立即返回错误，不双注册。
+/// - 认领得 `AlreadyRunning` 时走交接路径，交接失败以 `YieldFailed` 返回。
+/// - 认领得 `RefusedAmbiguous` 立即返回错误，不双注册。
 /// - 信号处理器注册失败（系统级错误）回滚 sidecar 并以错误返回。
 /// - stale socket 文件删除重试后再失败时回滚删除 sidecar 并以错误返回。
 ///
@@ -132,14 +139,16 @@ struct ServerContext {
 ///
 /// # 注意事项
 /// - 在调用线程上运行（后续 CLI 骨架任务在主线程分派到它）。
-/// - 关闭标志由关闭请求或 SIGINT/SIGTERM 信号置位。
+/// - 关闭标志由关闭请求、SIGINT/SIGTERM 信号或 yield 请求置位（三个触发源
+///   汇合到同一条退出路径）。
 /// - 关闭序列固定：清空发送端 → join 全部 worker → drop 内核（内核 drop
 ///   的调试断言要求存活 VM 数为零，worker 池随线程退出先释放，前提满足）。
 pub fn run_server(config: &ServerConfig) -> Result<(), ServerError> {
-    // 认领 sidecar：已有存活 server 或存活证据不足即返回错误。
+    // 认领 sidecar：已有存活 server 走交接路径，存活证据不足即返回错误。
     match sidecar::claim_sidecar(&config.sidecar_path, &config.socket_path) {
         ClaimResult::Registered => {}
-        other => return Err(ServerError::ClaimRefused(other)),
+        ClaimResult::AlreadyRunning => yield_and_takeover(config)?,
+        ClaimResult::RefusedAmbiguous => return Err(ServerError::ClaimRefused(ClaimResult::RefusedAmbiguous)),
     }
 
     // 关闭标志提前创建并注册信号处理器：在绑定 socket 之前，socket 文件
@@ -196,11 +205,76 @@ pub fn run_server(config: &ServerConfig) -> Result<(), ServerError> {
     drop(ctx);
     drop(kernel);
 
-    // 删 sidecar 与 socket 文件（尽力而为，文件已不存在不视为错误）。
-    let _ = fs::remove_file(&config.sidecar_path);
+    // 先删 socket 文件、后删 sidecar（尽力而为，文件已不存在不视为错误）：
+    // 新 server 以 sidecar 消失为接管信号，届时 socket 文件必已删除，
+    // 接管绑定无竞态。
     let _ = fs::remove_file(&config.socket_path);
+    let _ = fs::remove_file(&config.sidecar_path);
 
     accept_result
+}
+
+/// 交接接管：连接旧 server、发 yield 请求、等旧 server 排空退出后重新认领。
+///
+/// # 步骤
+/// 1. 连接旧 server 的 socket；连接失败判 `YieldFailed`。
+/// 2. 设 5 秒读超时，写 yield 请求帧。
+/// 3. 读一帧应答：读超时（旧 server 挂起）或应答非 yield 确认（旧版本
+///    binary 无该变体时以错误帧答复未知类型）判 `YieldFailed`。
+/// 4. 关闭连接，轮询 sidecar 文件消失（50 毫秒间隔、10 秒上限）；超时判
+///    `YieldFailed`。
+/// 5. 重新认领 sidecar；得 `Registered` 即接管成功，其余态判 `YieldFailed`。
+///
+/// # 边界与前提
+/// - 交接等待 10 秒长于旧 server 的排水安全超时 5 秒，正常路径必然先于
+///   等待上限完成。
+/// - 旧 server 先删 socket 文件后删 sidecar，sidecar 消失时 socket 文件必
+///   已删除，接管绑定无竞态。
+///
+/// # 副作用
+/// - 失败时不触碰旧 server 的文件（socket 与 sidecar），人工兜底归清理命令。
+///
+/// # 注意事项
+/// - 纯函数式入口：版本管理路径在版本不匹配强制交接时调用同一入口。
+fn yield_and_takeover(config: &ServerConfig) -> Result<(), ServerError> {
+    // 连接旧 server：连接成功是交接的前提。
+    let mut stream = UnixStream::connect(&config.socket_path)
+        .map_err(|e| ServerError::YieldFailed(format!("连接旧 server 失败：{e}")))?;
+
+    // 5 秒读超时：旧 server 挂起（不回应 yield）不无限阻塞。
+    let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
+    stream
+        .write_all(protocol::encode_request(&ServerRequest::Yield).as_bytes())
+        .map_err(|e| ServerError::YieldFailed(format!("写 yield 请求帧失败：{e}")))?;
+
+    // 读确认帧：只有 yield 确认表示旧 server 已受理交接。
+    let mut reader = FrameReader::new(io::BufReader::new(stream));
+    let frame = reader
+        .read_frame()
+        .map_err(|e| ServerError::YieldFailed(format!("读 yield 确认帧失败：{e}")))?
+        .ok_or_else(|| ServerError::YieldFailed("旧 server 未应答即关闭连接".into()))?;
+    let response = protocol::parse_response(&frame)
+        .map_err(|e| ServerError::YieldFailed(format!("解析 yield 确认帧失败：{e}")))?;
+    if !matches!(response, ServerResponse::Yield) {
+        return Err(ServerError::YieldFailed(format!("旧 server 未受理交接：{response:?}")));
+    }
+    // 关闭连接：旧 server 已受理，交接进入文件轮询阶段。
+    drop(reader);
+
+    // 轮询 sidecar 消失：旧 server 的退出序列以 sidecar 最后删除收口。
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while config.sidecar_path.exists() {
+        if Instant::now() >= deadline {
+            return Err(ServerError::YieldFailed("旧 server 10 秒内未退出，sidecar 文件未消失".into()));
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+
+    // 重新认领：sidecar 已消失，O_EXCL 创建应成功；其余态判交接失败。
+    match sidecar::claim_sidecar(&config.sidecar_path, &config.socket_path) {
+        ClaimResult::Registered => Ok(()),
+        other => Err(ServerError::YieldFailed(format!("交接后重新认领未通过：{other:?}"))),
+    }
 }
 
 /// 信号处理器体：置位关闭标志。
@@ -330,7 +404,7 @@ fn accept_loop(
 /// 2. 循环读帧：EOF、读超时、非法 UTF-8 退出；帧长超限按协议约定关连接。
 /// 3. 畸形帧以 `Error` 帧答复后继续；执行请求路由到 worker 并阻塞等回复；
 ///    控制请求直接应答并写回。
-/// 4. 关闭确认帧写回即退出循环。
+/// 4. 关闭或 yield 确认帧写回即退出循环。
 ///
 /// # 边界与前提
 /// - 半开连接（对端静默不关）由 30 秒读超时有界化。
@@ -366,8 +440,8 @@ fn handle_connection(stream: UnixStream, ctx: &ServerContext, router: &WorkerRou
             break;
         }
 
-        // 关闭确认帧写回即退出循环。
-        if matches!(response, ServerResponse::Shutdown) {
+        // 关闭或 yield 确认帧写回即退出循环。
+        if matches!(response, ServerResponse::Shutdown | ServerResponse::Yield) {
             break;
         }
     }
@@ -392,7 +466,7 @@ fn dispatch_eval(code: &str, max_steps: Option<u64>, router: &WorkerRouter) -> S
     }
 }
 
-/// 控制请求分派：五类控制请求直接应答，不占 worker。
+/// 控制请求分派：六类控制请求直接应答，不占 worker。
 ///
 /// Status 响应读全体 worker 池的共享聚合计数器。
 fn dispatch_control(request: &ServerRequest, ctx: &ServerContext) -> ServerResponse {
@@ -416,6 +490,11 @@ fn dispatch_control(request: &ServerRequest, ctx: &ServerContext) -> ServerRespo
             // 置关闭标志；主循环至多 10 毫秒内退出 accept 循环。
             ctx.shutdown.store(true, Ordering::SeqCst);
             ServerResponse::Shutdown
+        }
+        ServerRequest::Yield => {
+            // 置与关闭请求同一关闭标志，退出序列与关闭请求完全一致。
+            ctx.shutdown.store(true, Ordering::SeqCst);
+            ServerResponse::Yield
         }
         // 防御性兜底：正常路径 eval 在调用本函数前已被拦截走 worker 路由；
         // 若到达此臂说明上游分流缺失，以错误帧答复而非静默执行。
@@ -639,9 +718,10 @@ mod tests {
         stop_server(&mut stream, handle);
     }
 
-    /// 同一连接连续两帧（状态后版本）逐帧应答；同路径第二实例返回认领被拒错误。
+    /// 同一连接连续两帧（状态后版本）逐帧应答；同路径第二实例走交接路径接管
+    /// （第一 server 正常退出，第二实例接管 socket 路径）。
     #[test]
-    fn multi_frame_same_connection_and_second_instance_refused() {
+    fn multi_frame_same_connection_and_second_instance_takeover() {
         let config = unique_paths("multi");
         let handle = start_server(config.clone());
         let mut stream = connect(&config);
@@ -652,14 +732,33 @@ mod tests {
         let second = send_and_recv(&mut stream, &ServerRequest::Version);
         assert!(matches!(second, ServerResponse::Version { .. }), "应得 Version 帧：{second:?}");
 
-        // 同路径第二实例：sidecar 已存在且 socket 存活，认领被拒。
-        let refused = run_server(&config);
-        assert!(
-            matches!(refused, Err(ServerError::ClaimRefused(ClaimResult::AlreadyRunning))),
-            "第二实例应被拒：{refused:?}"
-        );
+        // 关闭测试连接，让第一 server 的在途排水快速归零。
+        drop(stream);
 
-        stop_server(&mut stream, handle);
+        // 同路径第二实例：sidecar 已存在且 socket 存活，走交接路径接管。
+        let config_b = config.clone();
+        let handle_b = std::thread::spawn(move || run_server(&config_b));
+
+        // 第一 server 应在有界时间内正常退出（yield 受理后走既有退出序列）。
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while !handle.is_finished() {
+            assert!(Instant::now() < deadline, "第一 server 应在 30 秒内退出");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let result = handle.join().expect("第一 server 线程应正常退出");
+        assert!(result.is_ok(), "第一 server 交接后应正常退出：{result:?}");
+
+        // 第二实例已接管：等 socket 文件出现（第二实例的绑定），核对 sidecar 身份。
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while !config.socket_path.exists() {
+            assert!(Instant::now() < deadline, "第二实例的 socket 文件应出现");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let id = sidecar::read_identity(&config.sidecar_path).expect("第二实例的 sidecar 应可读");
+        assert_eq!(id.pid, std::process::id(), "第二实例的 sidecar 应为本进程身份");
+
+        let mut stream_b = connect(&config);
+        stop_server(&mut stream_b, handle_b);
     }
 
     /// 端到端并发：两条连接各发 3 个 eval，6 个响应帧全部正确且逐连接顺序与请求一致。
@@ -788,5 +887,109 @@ mod tests {
         assert!(result.is_ok(), "server 应正常退出：{result:?}");
         assert!(!config.sidecar_path.exists(), "sidecar 文件应被删除");
         assert!(!config.socket_path.exists(), "socket 文件应被删除");
+    }
+
+    /// 交接端到端：server A 运行中，server B 以同配置启动经 yield 路径接管；
+    /// A 正常退出，B 的 sidecar 为本进程身份（O_EXCL 重新认领通过即证明 A 的
+    /// 文件已删除），B 可正常应答版本请求，随后以 Shutdown 停 B。
+    #[test]
+    fn yield_takeover_end_to_end() {
+        let config = unique_paths("yield_e2e");
+        let handle_a = start_server(config.clone());
+
+        // B 以同配置启动：认领得 AlreadyRunning 转交接路径。
+        let config_b = config.clone();
+        let handle_b = std::thread::spawn(move || run_server(&config_b));
+
+        // A 应在 30 秒内有界退出（排水加退出序列）。
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while !handle_a.is_finished() {
+            assert!(Instant::now() < deadline, "A 应在 30 秒内退出");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let result_a = handle_a.join().expect("server A 线程应正常退出");
+        assert!(result_a.is_ok(), "server A 交接后应正常退出：{result_a:?}");
+
+        // B 已接管：等 socket 文件出现（B 的绑定），再核对 sidecar 身份。
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while !config.socket_path.exists() {
+            assert!(Instant::now() < deadline, "B 的 socket 文件应出现");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let id = sidecar::read_identity(&config.sidecar_path).expect("B 的 sidecar 应可读");
+        assert_eq!(id.pid, std::process::id(), "B 的 sidecar 应为本进程身份");
+
+        // B 正常应答版本请求。
+        let mut stream = connect(&config);
+        let response = send_and_recv(&mut stream, &ServerRequest::Version);
+        assert!(
+            matches!(response, ServerResponse::Version { .. }),
+            "B 应应答版本请求：{response:?}"
+        );
+        stop_server(&mut stream, handle_b);
+    }
+
+    /// 旧 server 不受理交接：裸监听者加手写 sidecar 模拟旧 server，
+    /// 接受连接后回 Error 帧（模拟旧版本 binary 无 yield 变体）；
+    /// run_server 判 YieldFailed 且不触碰旧 server 的文件。
+    #[test]
+    fn yield_failed_when_old_server_refuses() {
+        let config = unique_paths("yield_refused");
+
+        // 模拟旧 server：绑定 socket 并写本进程身份 sidecar（PID 存活且启动
+        // 时刻刻度匹配，认领判 AlreadyRunning）。
+        let listener = UnixListener::bind(&config.socket_path).expect("绑定模拟旧 server 应成功");
+        sidecar::write_exclusive(
+            &sidecar::ServerIdentity::new(config.socket_path.to_str().unwrap()),
+            &config.sidecar_path,
+        )
+        .expect("写模拟 sidecar 应成功");
+
+        // 模拟连接处理：读一帧后回 Error 帧。
+        std::thread::spawn(move || {
+            if let Ok((mut stream, _)) = listener.accept() {
+                let mut reader = FrameReader::new(io::BufReader::new(stream.try_clone().expect("克隆流应成功")));
+                let _ = reader.read_frame();
+                let frame = protocol::encode_response(&ServerResponse::Error {
+                    message: "未知协议类型：yield".into(),
+                });
+                let _ = stream.write_all(frame.as_bytes());
+            }
+        });
+
+        let err = run_server(&config).unwrap_err();
+        assert!(matches!(err, ServerError::YieldFailed(_)), "应判 YieldFailed：{err:?}");
+        assert!(config.sidecar_path.exists(), "模拟 sidecar 文件不应被删除");
+        assert!(config.socket_path.exists(), "模拟 socket 文件不应被删除");
+    }
+
+    /// 旧 server 挂起：模拟旧 server 接受连接后不回应；run_server 在约 5 秒
+    /// （读超时）后判 YieldFailed，且不触碰旧 server 的文件。
+    #[test]
+    fn yield_failed_when_old_server_hangs() {
+        let config = unique_paths("yield_hang");
+
+        let listener = UnixListener::bind(&config.socket_path).expect("绑定模拟旧 server 应成功");
+        sidecar::write_exclusive(
+            &sidecar::ServerIdentity::new(config.socket_path.to_str().unwrap()),
+            &config.sidecar_path,
+        )
+        .expect("写模拟 sidecar 应成功");
+
+        // 模拟连接处理：接受连接后挂住不回应（模拟挂起的旧 server）。
+        std::thread::spawn(move || {
+            if let Ok((stream, _)) = listener.accept() {
+                std::thread::sleep(Duration::from_secs(10));
+                drop(stream);
+            }
+        });
+
+        let started = Instant::now();
+        let err = run_server(&config).unwrap_err();
+        let elapsed = started.elapsed();
+        assert!(matches!(err, ServerError::YieldFailed(_)), "应判 YieldFailed：{err:?}");
+        assert!(elapsed >= Duration::from_secs(5), "应命中 5 秒读超时：{elapsed:?}");
+        assert!(config.sidecar_path.exists(), "模拟 sidecar 文件不应被删除");
+        assert!(config.socket_path.exists(), "模拟 socket 文件不应被删除");
     }
 }
