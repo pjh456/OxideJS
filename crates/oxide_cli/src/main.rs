@@ -24,6 +24,7 @@ use oxide_vm::vm_pool::VmPool;
 use oxide_vm::JsValue;
 
 mod bench;
+mod server;
 
 #[derive(Parser)]
 #[command(
