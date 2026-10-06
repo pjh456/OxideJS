@@ -346,6 +346,7 @@ fn dispatch_control(request: &ServerRequest, ctx: &ServerContext) -> ServerRespo
         ServerRequest::Status => ServerResponse::Status {
             pool_available: ctx.pool_counters.available(),
             pool_total: ctx.pool_counters.total(),
+            pool_peak: ctx.pool_counters.peak(),
             uptime_ms: ctx.started_at.elapsed().as_millis() as u64,
         },
         ServerRequest::Health => ServerResponse::Health { healthy: true },
@@ -467,10 +468,12 @@ mod tests {
             ServerResponse::Status {
                 pool_available,
                 pool_total,
+                pool_peak,
                 uptime_ms,
             } => {
                 assert!(pool_available <= pool_total, "空闲数应不超过总数：{pool_available}/{pool_total}");
                 assert!(pool_total >= 1, "总数应不小于 1（标准配置预热 1 个）：{pool_total}");
+                assert!(pool_peak <= pool_total, "峰值应不超过总数：{pool_peak}/{pool_total}");
                 assert!(uptime_ms < 10_000, "刚启动的 server 运行时长应小于 10 秒：{uptime_ms}");
             }
             other => panic!("应得 Status 帧，实得 {other:?}"),

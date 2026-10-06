@@ -13,13 +13,17 @@ struct VmPoolInner {
     total_count: usize,
 }
 
-/// 池状态计数器：空闲数与已创建总数的跨线程可读快照。
+/// 池状态计数器：空闲数、在借数、峰值借出数与已创建总数的跨线程可读快照。
 ///
 /// 池本体不是 Send/Sync（Vm 不跨线程），状态接口经独立原子暴露，
 /// 与队列变更同步更新；空闲数恒不大于总数（总数只增不减）。
+/// 安静态（无并发借出归还）下在借数恒等于总数减空闲数；峰值是每次
+/// 借出后精确在借数的最大值，单调不降。
 pub struct PoolCounters {
     available: AtomicUsize,
     total: AtomicUsize,
+    in_use: AtomicUsize,
+    peak: AtomicUsize,
 }
 
 impl PoolCounters {
@@ -30,6 +34,8 @@ impl PoolCounters {
         Arc::new(PoolCounters {
             available: AtomicUsize::new(0),
             total: AtomicUsize::new(0),
+            in_use: AtomicUsize::new(0),
+            peak: AtomicUsize::new(0),
         })
     }
 
@@ -41,6 +47,25 @@ impl PoolCounters {
     /// 读取已创建 VM 总数（含借出中的）。
     pub fn total(&self) -> usize {
         self.total.load(Ordering::Relaxed)
+    }
+
+    /// 读取历史峰值借出数（高水位，单调不降）。
+    pub fn peak(&self) -> usize {
+        self.peak.load(Ordering::Relaxed)
+    }
+
+    /// 记录一次借出：在借数加一，并抬高历史峰值。
+    ///
+    /// 峰值取借出后精确在借数的最大值，单调不降；归还路径不触碰峰值。
+    /// 诊断计数器，`Relaxed` 序，不参与同步语义。
+    fn record_borrow(&self) {
+        let in_use = self.in_use.fetch_add(1, Ordering::Relaxed) + 1;
+        self.peak.fetch_max(in_use, Ordering::Relaxed);
+    }
+
+    /// 记录一次归还：在借数减一。
+    fn record_return(&self) {
+        self.in_use.fetch_sub(1, Ordering::Relaxed);
     }
 }
 
@@ -132,6 +157,7 @@ impl VmPool {
             if let Some(vm) = inner.available.pop() {
                 vm_trace!("pool: reused vm, {} available", inner.available.len());
                 self.counters.available.fetch_sub(1, Ordering::Relaxed);
+                self.counters.record_borrow();
                 return VmGuard {
                     vm: Some(vm),
                     pool: Arc::clone(self),
@@ -149,6 +175,7 @@ impl VmPool {
                 vm_debug!("pool: growing to {} vms", inner.total_count);
                 drop(inner);
                 self.counters.total.fetch_add(1, Ordering::Relaxed);
+                self.counters.record_borrow();
                 let vm = Self::new_vm(&self.kernel_core);
                 return VmGuard {
                     vm: Some(vm),
@@ -164,6 +191,7 @@ impl VmPool {
                 inner.total_count += 1;
                 drop(inner);
                 self.counters.total.fetch_add(1, Ordering::Relaxed);
+                self.counters.record_borrow();
                 let vm = Self::new_vm(&self.kernel_core);
                 return VmGuard {
                     vm: Some(vm),
@@ -187,6 +215,13 @@ impl VmPool {
     /// 读原子快照，不锁池内互斥锁；总数只增不减。
     pub fn total_count(&self) -> usize {
         self.counters.total()
+    }
+
+    /// 读取历史峰值借出数（高水位）。
+    ///
+    /// 读原子快照，不锁池内互斥锁；峰值单调不降。
+    pub fn peak_count(&self) -> usize {
+        self.counters.peak()
     }
 
     /// 跨线程可读的池状态句柄（原子快照，无锁）。
@@ -234,6 +269,7 @@ impl Drop for VmGuard {
         }
 
         self.pool.counters.available.fetch_add(1, Ordering::Relaxed);
+        self.pool.counters.record_return();
         self.pool.condvar.notify_one();
     }
 }
@@ -328,5 +364,68 @@ mod tests {
         // 各池的读取面读同一聚合，两池读数一致。
         assert_eq!(pool_a.available_count(), counters.available());
         assert_eq!(pool_b.available_count(), counters.available());
+    }
+
+    #[test]
+    fn test_peak_count_single_thread_exact() {
+        let kernel = test_kernel();
+        let pool = VmPool::new(kernel, 2, None);
+        assert_eq!(pool.peak_count(), 0, "从未借出的池峰值应为零");
+
+        let g1 = pool.spawn();
+        let g2 = pool.spawn();
+        assert_eq!(pool.peak_count(), 2, "连续借出两个后峰值应为 2");
+        drop(g1);
+        drop(g2);
+
+        let g3 = pool.spawn();
+        assert_eq!(pool.peak_count(), 2, "归还后再借一个峰值不回落");
+        drop(g3);
+    }
+
+    #[test]
+    fn test_peak_count_shared_aggregate() {
+        let kernel = test_kernel();
+        let counters = PoolCounters::shared();
+        let pool_a = VmPool::with_counters(Arc::clone(&kernel), 1, Some(4), Arc::clone(&counters));
+        let pool_b = VmPool::with_counters(Arc::clone(&kernel), 1, Some(4), Arc::clone(&counters));
+
+        let g1 = pool_a.spawn();
+        let g2 = pool_b.spawn();
+        assert_eq!(counters.peak(), 2, "两池各借出一个后聚合峰值应为 2");
+        drop(g1);
+        drop(g2);
+
+        let g3 = pool_a.spawn();
+        assert_eq!(counters.peak(), 2, "归还后再借一个聚合峰值不回落");
+        drop(g3);
+    }
+
+    #[test]
+    fn test_peak_count_concurrent_bounded() {
+        let kernel = test_kernel();
+        let counters = PoolCounters::shared();
+
+        let handles: Vec<_> = (0..4)
+            .map(|_| {
+                let kernel = Arc::clone(&kernel);
+                let counters = Arc::clone(&counters);
+                std::thread::spawn(move || {
+                    // 池本体不跨线程（Vm 不 Send），每线程自建池、共享同一聚合计数器。
+                    let pool = VmPool::with_counters(kernel, 0, Some(8), counters);
+                    for _ in 0..50 {
+                        let guard = pool.spawn();
+                        drop(guard);
+                    }
+                })
+            })
+            .collect();
+        for handle in handles {
+            handle.join().unwrap();
+        }
+
+        // 并发下精确峰值是竞争结果，只断言界：4 线程各至多持 1 个在借。
+        let peak = counters.peak();
+        assert!((1..=4).contains(&peak), "并发峰值应落在 1 到 4 之间：{peak}");
     }
 }

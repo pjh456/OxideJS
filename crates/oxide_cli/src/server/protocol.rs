@@ -90,10 +90,11 @@ pub enum ServerResponse {
     },
     /// 版本响应。
     Version { version: String },
-    /// 状态响应：池可用/总数与运行时长。
+    /// 状态响应：池可用/总数、峰值借出数与运行时长。
     Status {
         pool_available: usize,
         pool_total: usize,
+        pool_peak: usize,
         uptime_ms: u64,
     },
     /// 健康检查响应。
@@ -334,6 +335,7 @@ mod tests {
             ServerResponse::Status {
                 pool_available: 2,
                 pool_total: 4,
+                pool_peak: 3,
                 uptime_ms: 1500,
             },
             ServerResponse::Health { healthy: true },
