@@ -8,6 +8,8 @@
 //!   PID 探活为次信号，PID 复用以启动时刻刻度交叉核对排除。
 //! - --rm 模式走独立分支：生成唯一 socket 路径、不写 sidecar、不碰全局
 //!   well-known 路径；该不变量由运行路径执行。
+//! - 日志文件由 sidecar 路径按扩展名派生（`.log`），与 sidecar、socket 同主名
+//!   同目录；有意不随退出删除（跨重启的诊断工件），不在清理命令范围内。
 
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
@@ -84,6 +86,11 @@ pub fn well_known_sidecar_path() -> PathBuf {
 /// well-known 持久 server socket 路径：`$TMPDIR/oxide-<uid>.sock`。
 pub fn well_known_socket_path() -> PathBuf {
     std::env::temp_dir().join(format!("oxide-{}.sock", current_uid()))
+}
+
+/// well-known 日志文件路径：`$TMPDIR/oxide-<uid>.log`（与 sidecar 同主名）。
+pub fn well_known_log_path() -> PathBuf {
+    well_known_sidecar_path().with_extension("log")
 }
 
 /// O_EXCL 原子创建 sidecar（文件已存在时创建失败）。
@@ -459,5 +466,15 @@ mod tests {
         let file_name = a.file_name().unwrap().to_string_lossy().into_owned();
         assert!(file_name.contains(&std::process::id().to_string()), "文件名应含本进程 PID");
         assert!(file_name.starts_with("oxide-rm-"), "文件名应以 oxide-rm- 前缀开头");
+    }
+
+    /// 日志路径：`.log` 扩展名，与 sidecar 路径同主名同目录。
+    #[test]
+    fn well_known_log_path_derives_from_sidecar() {
+        let log = well_known_log_path();
+        let sidecar = well_known_sidecar_path();
+        assert_eq!(log.extension().and_then(|e| e.to_str()), Some("log"), "日志路径应以 .log 结尾");
+        assert_eq!(log.file_stem(), sidecar.file_stem(), "日志与 sidecar 应同主名");
+        assert_eq!(log.parent(), sidecar.parent(), "日志与 sidecar 应同目录");
     }
 }

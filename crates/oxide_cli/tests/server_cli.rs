@@ -48,18 +48,39 @@ fn server_help_lists_subcommands() {
     }
 }
 
-/// 两个占位臂各退 2，stderr 含 not yet implemented。
+/// 占位臂退 2，stderr 含 not yet implemented。
 ///
-/// version/status/health/info/stop/restart 六臂已是真实实现（无 server 时退 1），
-/// 不在此列；log/forge 仍是占位。
+/// version/status/health/info/stop/restart/log 七臂已是真实实现（无 server
+/// 时退 1），不在此列；forge 仍是占位。
 #[test]
 fn server_stub_subcommands_exit_2() {
-    for sub in ["log", "forge"] {
+    for sub in ["forge"] {
         let output = oxide(&["server", sub]);
         assert_eq!(output.status.code(), Some(2), "{sub} 应退 2");
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(stderr.contains("not yet implemented"), "{sub} 应打印未实现提示：{stderr}");
     }
+}
+
+/// log 子命令无日志文件时退 1，stderr 含「日志文件不存在」。
+///
+/// 走 well-known 全局路径：先探活，存活 server 占用时 panic 不抢占；删除
+/// well-known 日志文件（无存活 server 时删除安全）。
+#[test]
+fn server_log_no_file_exit_1() {
+    let _guard = WELL_KNOWN_LOCK.lock().expect("全局路径锁不应中毒");
+    assert!(
+        !sidecar::is_server_alive(&sidecar::well_known_socket_path()),
+        "存活 server 占用 well-known 路径，测试不抢占"
+    );
+
+    let log_path = sidecar::well_known_log_path();
+    let _ = std::fs::remove_file(&log_path);
+
+    let output = oxide(&["server", "log"]);
+    assert_eq!(output.status.code(), Some(1), "log 应退 1");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("日志文件不存在"), "log 应打印无日志文件提示：{stderr}");
 }
 
 /// 五个控制臂无 server 时各退 1，stderr 含「无已注册的 server」提示。
@@ -263,4 +284,86 @@ fn server_restart_e2e() {
     }
     assert!(!socket.exists(), "socket 文件应被删除");
     assert!(!sidecar_path.exists(), "sidecar 文件应被删除");
+}
+
+/// log 端到端：守护形态 start 后轮询日志文件出现「KernelCore initialized」
+/// 行判就绪（socket 文件出现早于内核构造，不能直接作为日志就绪信号），
+/// 断言 `log` 退 0 且含该行、`--lines 1` 恰一行、`--level error` 为空
+/// （Info 级无 ERROR 行），关闭后日志文件有意保留。
+#[test]
+fn server_log_e2e() {
+    let _guard = WELL_KNOWN_LOCK.lock().expect("全局路径锁不应中毒");
+    let socket = sidecar::well_known_socket_path();
+    let sidecar_path = sidecar::well_known_sidecar_path();
+    let log_path = sidecar::well_known_log_path();
+
+    // 探活先行：存活 server 占用全局路径时 panic，不抢占。
+    assert!(!sidecar::is_server_alive(&socket), "存活 server 占用 well-known 路径，测试不抢占");
+
+    // 删旧日志文件：server 即将全新启动，内容断言不受历史污染。
+    let _ = std::fs::remove_file(&log_path);
+
+    // start 为守护形态：CLI 子进程即刻退 0 并打印「已启动」，server 是脱离
+    // 的孙进程（其日志初始化在孙进程内确定性生效，内容断言无竞态）。
+    let output = oxide(&["server", "start", "--workers", "2"]);
+    assert_eq!(output.status.code(), Some(0), "start 应退 0");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("已启动"), "start 应打印「已启动」：{stdout}");
+
+    // 读 sidecar 取 server 进程号。
+    let id = sidecar::read_identity(&sidecar_path).expect("读 sidecar 应成功");
+
+    // 轮询日志文件出现「KernelCore initialized」行判就绪（30 秒截止、
+    // 50 毫秒间隔）。
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let content = loop {
+        let content = std::fs::read_to_string(&log_path).unwrap_or_default();
+        if content.contains("KernelCore initialized") {
+            break content;
+        }
+        assert!(Instant::now() < deadline, "日志文件应在 30 秒内含内核初始化行");
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    assert!(!content.is_empty(), "日志文件内容应非空");
+
+    // log：退 0 且含内核初始化行。
+    let output = oxide(&["server", "log"]);
+    assert_eq!(output.status.code(), Some(0), "log 应退 0");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("KernelCore initialized"), "log 应含内核初始化行：{stdout}");
+
+    // --lines 1：恰一行。
+    let output = oxide(&["server", "log", "--lines", "1"]);
+    assert_eq!(output.status.code(), Some(0), "log --lines 1 应退 0");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert_eq!(stdout.lines().count(), 1, "log --lines 1 应恰一行：{stdout}");
+
+    // --level error：空（Info 级无 ERROR 行）。
+    let output = oxide(&["server", "log", "--level", "error"]);
+    assert_eq!(output.status.code(), Some(0), "log --level error 应退 0");
+    assert!(
+        output.stdout.is_empty(),
+        "log --level error 应为空：{}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+
+    // 关闭请求帧：读回关闭确认帧。
+    let mut stream = UnixStream::connect(&socket).expect("连接 server 应成功");
+    let response = send_and_recv(&mut stream, &ServerRequest::Shutdown);
+    assert!(matches!(response, ServerResponse::Shutdown), "应得关闭确认帧：{response:?}");
+    drop(stream);
+
+    // 轮询 sidecar 文件消失（30 秒截止、50 毫秒间隔）判 server 进程已退出。
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while sidecar_path.exists() {
+        assert!(Instant::now() < deadline, "server 应在有界时间内退出");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(!sidecar::pid_alive(id.pid), "server 进程应已退出");
+
+    // 日志文件有意保留（跨重启的诊断工件）。
+    assert!(log_path.exists(), "日志文件退出后应保留");
+
+    // 收尾：删除日志文件恢复状态。
+    let _ = std::fs::remove_file(&log_path);
 }

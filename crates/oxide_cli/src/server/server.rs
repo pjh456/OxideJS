@@ -29,6 +29,7 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use oxide_kernel::kernel::{KernelConfig, KernelCore};
+use oxide_log::{Level, LogConfig, Output, SUBSYSTEM_COUNT};
 use oxide_vm::vm_pool::PoolCounters;
 
 use super::protocol::{self, FrameReader, ProtocolError, ServerRequest, ServerResponse};
@@ -146,9 +147,9 @@ struct ServerContext {
     socket_path: String,
 }
 
-/// server 进程主体：认领 sidecar → 注册信号处理器 → 绑定 socket → 建内核 →
-/// 派生 worker → accept 循环 → 在途归零 → 清空发送端 → join worker →
-/// drop 内核 → 先删 socket 文件后删 sidecar。
+/// server 进程主体：认领 sidecar → 注册信号处理器 → 绑定 socket →
+/// 初始化日志文件输出 → 建内核 → 派生 worker → accept 循环 → 在途归零 →
+/// 清空发送端 → join worker → drop 内核 → 先删 socket 文件后删 sidecar。
 ///
 /// # 步骤
 /// 1. 认领 sidecar（启动顺序契约：先写 sidecar 再 bind socket）；已有同版本
@@ -156,9 +157,11 @@ struct ServerContext {
 ///    yield 请求，等旧 server 排空退出后重新认领）。
 /// 2. 注册信号处理器（绑定 socket 之前；失败回滚 sidecar，此时无存活线程）。
 /// 3. 绑定监听器；失败且路径存在时删 stale socket 文件重试一次。
-/// 4. 建内核（标准配置）与共享聚合计数器。
-/// 5. 派生 N 个常驻 worker（各在自己线程上建自有池）。
-/// 6. 进入 accept 循环；关闭标志置位后按关闭序列退出。
+/// 4. 初始化日志文件输出（sidecar 同主名的追加文件、Info 级；init 幂等，
+///    内核构造内部的重复调用是空操作）。
+/// 5. 建内核（标准配置）与共享聚合计数器。
+/// 6. 派生 N 个常驻 worker（各在自己线程上建自有池）。
+/// 7. 进入 accept 循环；关闭标志置位后按关闭序列退出。
 ///
 /// # 边界与前提
 /// - 认领得 `AlreadyRunning`（同版本）立即返回 `ClaimRefused`，不交接。
@@ -170,6 +173,8 @@ struct ServerContext {
 ///
 /// # 副作用
 /// - 创建 sidecar 与 socket 文件；正常退出时删除两者。
+/// - 创建日志文件（追加写、sidecar 同主名）；正常退出时不删除（跨重启的
+///   诊断工件）。
 /// - 注册进程级信号处理器（SIGINT、SIGTERM，termination 特性下含 SIGHUP）。
 /// - 派生 N 个常驻 worker 线程与每连接一个 I/O 线程。
 ///
@@ -199,6 +204,15 @@ pub fn run_server(config: &ServerConfig) -> Result<(), ServerError> {
 
     // 绑定监听器：stale socket 文件删一次重试，失败回滚 sidecar。
     let listener = bind_listener(config)?;
+
+    // 日志文件：sidecar 同主名的追加文件，先于内核构造初始化（init 幂等，
+    // 内核构造内部的重复调用是空操作；顺序颠倒则输出回落环境变量路径，
+    // 日志文件为空）。
+    let log_path = config.sidecar_path.with_extension("log");
+    oxide_log::init(&LogConfig {
+        output: Output::FileExact(log_path),
+        levels: [Level::Info; SUBSYSTEM_COUNT],
+    });
 
     // 建内核（标准配置）与共享聚合计数器（全体 worker 池的增减累加到同一聚合）。
     let kernel = KernelCore::new(KernelConfig::standard());

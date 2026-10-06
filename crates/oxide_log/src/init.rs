@@ -1,11 +1,13 @@
 //! 日志初始化。
 //!
 //! `init` 一次性初始化全局 `tracing` subscriber，输出可定向到 stderr / stdout /
-//! 按日滚动的文件；[`set_level`] 与 `get_subsystem` 提供运行期级别控制。
+//! 按日滚动的文件 / 追加写的精确文件；[`set_level`] 与 `get_subsystem` 提供运行期
+//! 级别控制。
 //! 重复调用 `init` 幂等（内部 `Once`），后续调用不生效。
 //! 时间戳统一毫秒精度（`MillisTime`，`epoch秒.毫秒`），供 GC 周期关联与
 //! 跨进程现场拼接。
 
+use std::fs::OpenOptions;
 use std::io;
 use std::path::PathBuf;
 use std::sync::{Once, OnceLock};
@@ -42,6 +44,8 @@ pub enum Output {
     Stdout,
     /// 按日滚动写入 `dir` 目录下的 `oxide.log`。
     File(PathBuf),
+    /// 追加写入指定文件（不滚动）。
+    FileExact(PathBuf),
 }
 
 /// 日志初始化配置。
@@ -143,6 +147,26 @@ pub fn init(config: &LogConfig) {
                 let subscriber = tracing_subscriber::Registry::default()
                     .with(env_filter)
                     .with(stderr_layer.with_filter(filter.clone()))
+                    .with(file_layer.with_filter(filter));
+                subscriber.init();
+            }
+            Output::FileExact(path) => {
+                // 同步写：低频诊断事件，不引入 non_blocking 与 FILE_GUARD 全局槽。
+                // 打开失败响亮失败：静默回落 stderr 会让日志文件永远为空，更难诊断。
+                let file = OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(path)
+                    .expect("打开日志文件失败：server 启动时打开自家临时目录下的文件失败是异常情形");
+
+                let file_layer = tracing_subscriber::fmt::Layer::default()
+                    .with_writer(file)
+                    .with_ansi(false)
+                    .with_timer(MillisTime)
+                    .compact();
+
+                let subscriber = tracing_subscriber::Registry::default()
+                    .with(env_filter)
                     .with(file_layer.with_filter(filter));
                 subscriber.init();
             }

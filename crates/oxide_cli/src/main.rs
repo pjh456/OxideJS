@@ -11,6 +11,7 @@ use clap::{Parser, Subcommand};
 use oxide_cli::format_js_value;
 use oxide_cli::server::cleanup::{well_known_cleanup, CleanupOutcome};
 use oxide_cli::server::client::send_control_request;
+use oxide_cli::server::log as server_log;
 use oxide_cli::server::protocol::{ServerRequest, ServerResponse};
 use oxide_cli::server::server::{run_server, run_server_rm, RmServerConfig, ServerConfig};
 use oxide_cli::server::sidecar;
@@ -141,10 +142,41 @@ enum ServerCommands {
     Cleanup,
     /// 向存活 server 发关闭请求，等其退出后拉起新 server 进程。
     Restart,
-    /// 查看 server 日志。
-    Log,
+    /// 查看 server 日志（well-known 日志文件）。
+    Log {
+        /// 持续跟踪新行（tail 语义，500 毫秒轮询）。
+        #[arg(long)]
+        follow: bool,
+        /// 级别阈值过滤：只显示不低于该级别的行。
+        #[arg(long, value_enum)]
+        level: Option<LogLevel>,
+        /// 显示最后 N 行（缺省全部）。
+        #[arg(long)]
+        lines: Option<usize>,
+    },
     /// 查询内部状态（代码、对象、字符串、属性）。
     Forge,
+}
+
+/// 日志级别阈值（读取侧过滤，映射到 `oxide_log::Level`）。
+#[derive(Copy, Clone, Debug, PartialEq, Eq, clap::ValueEnum)]
+enum LogLevel {
+    Error,
+    Warn,
+    Info,
+    Debug,
+}
+
+impl LogLevel {
+    /// 映射到 `oxide_log::Level`。
+    fn as_level(self) -> Level {
+        match self {
+            LogLevel::Error => Level::Error,
+            LogLevel::Warn => Level::Warn,
+            LogLevel::Info => Level::Info,
+            LogLevel::Debug => Level::Debug,
+        }
+    }
 }
 
 fn main() -> ExitCode {
@@ -213,7 +245,8 @@ fn main() -> ExitCode {
 
 /// server 子命令分派：start（两形态）与 cleanup 为最小实现，
 /// version/status/health/info/stop/restart 六臂为真实实现，
-/// 其余两臂为 not_implemented 占位。
+/// log 为真实实现（读 well-known 日志文件，支持 --follow/--level/--lines），
+/// 其余一臂（forge）为 not_implemented 占位。
 ///
 /// # 步骤
 /// 1. Start：rm 为真调独立模式入口（进程唯一路径）；foreground 为真当前进程
@@ -226,7 +259,9 @@ fn main() -> ExitCode {
 ///    成功打印渲染文本退 0，失败打印错误消息退 1。
 /// 4. Restart：发关闭请求等旧 server 退出，拉起新 server 进程并探测就绪
 ///    （详见 restart_command）。
-/// 5. 其余两臂：not_implemented 占位（退出码 2）。
+/// 5. Log：读 well-known 日志文件，按级别阈值与最后 N 行过滤后打印，
+///    `--follow` 时进入阻塞跟踪循环（详见 log_command）。
+/// 6. 其余一臂（forge）：not_implemented 占位（退出码 2）。
 ///
 /// # 边界与前提
 /// - `--idle-timeout` 不带 --rm 时静默忽略（语义门控归后续任务）。
@@ -305,7 +340,7 @@ fn server_command(command: ServerCommands) -> ExitCode {
             _ => None,
         }),
         ServerCommands::Restart => restart_command(),
-        ServerCommands::Log => not_implemented("server log"),
+        ServerCommands::Log { follow, level, lines } => log_command(follow, level.map(LogLevel::as_level), lines),
         ServerCommands::Forge => not_implemented("server forge"),
     }
 }
@@ -470,6 +505,42 @@ fn restart_command() -> ExitCode {
     }
 
     println!("已重启");
+    ExitCode::SUCCESS
+}
+
+/// log 子命令：读 well-known 日志文件，按级别阈值与最后 N 行过滤后打印；
+/// `--follow` 时进入阻塞跟踪循环。
+///
+/// # 步骤
+/// 1. 取 well-known 日志路径；文件不存在时以红色打印退 1（不等待文件出现，
+///    `--follow` 同样行为，保持单一）。
+/// 2. 读文件、过滤、逐行打印；io 错误以红色打印退 1。
+/// 3. `--follow` 时进入阻塞跟踪循环（标准输入中断即进程默认行为退出）。
+fn log_command(follow: bool, level: Option<Level>, lines: Option<usize>) -> ExitCode {
+    let path = sidecar::well_known_log_path();
+    if !path.exists() {
+        eprintln!(
+            "{}",
+            Red.paint(format!("日志文件不存在：{}（server 可能未启动过）", path.display()))
+        );
+        return ExitCode::FAILURE;
+    }
+
+    match server_log::read_log(&path, level, lines) {
+        Ok(log_lines) => {
+            for line in log_lines {
+                println!("{line}");
+            }
+        }
+        Err(err) => {
+            eprintln!("{}", Red.paint(format!("读取日志文件失败：{err}")));
+            return ExitCode::FAILURE;
+        }
+    }
+
+    if follow {
+        server_log::follow(&path, level);
+    }
     ExitCode::SUCCESS
 }
 
