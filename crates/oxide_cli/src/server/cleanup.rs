@@ -14,6 +14,9 @@
 //!   sidecar 消失为接管信号，届时 socket 文件必已删除）。
 //! - 两条保守拒绝底线：socket 存活但 PID 无法可靠确定、杀进程超时，均不碰
 //!   任何文件（拒绝清理不会双注册、不会误删存活 server 的文件）。
+//! - 裁决表与杀进程原语是 `liveness` 模块（启动时扫描）的第二消费方：
+//!   自动场景在 `decide` 分派前加 socket 存活守卫（存活即无操作），Kill 行
+//!   的自动语义是僵尸态自动恢复，人工语义是主动清理。
 
 use std::fs;
 use std::path::Path;
@@ -41,7 +44,7 @@ pub enum CleanupOutcome {
 
 /// 裁决表决策：四态。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Decision {
+pub enum Decision {
     /// 无残留，无操作。
     None,
     /// 只删文件（无存活监听者，无需杀进程）。
@@ -68,7 +71,10 @@ enum Decision {
 ///
 /// # 注意事项
 /// - 纯函数，无 I/O，全部分支可单测。
-fn decide(
+/// - 第二消费方是启动时 liveness 扫描（自动场景）：自动场景在分派前加
+///   socket 存活守卫，存活即无操作（`Kill` 行的自动语义是僵尸态恢复，
+///   人工语义是主动清理）。
+pub fn decide(
     sidecar: Option<&ServerIdentity>, socket_exists: bool, socket_alive: bool, pid_alive: bool, starttime_match: bool,
 ) -> Decision {
     // socket 存活：只有 sidecar 可解析、PID 活且刻度匹配才证明本进程是
@@ -196,7 +202,7 @@ pub fn well_known_cleanup() -> CleanupOutcome {
 /// # 边界与前提
 /// - `kill` 二进制缺失或进程不存在时返回 `false`（信号未确认送达，调用方
 ///   保守判杀进程失败）。
-fn send_sigterm(pid: u32) -> bool {
+pub fn send_sigterm(pid: u32) -> bool {
     Command::new("kill")
         .args(["-TERM", &pid.to_string()])
         .status()
@@ -205,7 +211,7 @@ fn send_sigterm(pid: u32) -> bool {
 }
 
 /// 轮询进程退出：100 毫秒间隔 `pid_alive` 检查，退出返回真，超时返回假。
-fn wait_pid_exit(pid: u32, timeout: Duration) -> bool {
+pub fn wait_pid_exit(pid: u32, timeout: Duration) -> bool {
     let deadline = Instant::now() + timeout;
     loop {
         if !sidecar::pid_alive(pid) {
@@ -224,7 +230,7 @@ fn wait_pid_exit(pid: u32, timeout: Duration) -> bool {
 /// # 副作用
 /// - 可能删除 socket 文件与 sidecar 文件；文件已不存在不视为错误（server
 ///   自身退出序列可能已删过）。
-fn remove_files(sidecar_path: &Path, socket_path: &Path) {
+pub fn remove_files(sidecar_path: &Path, socket_path: &Path) {
     let _ = fs::remove_file(socket_path);
     let _ = fs::remove_file(sidecar_path);
 }

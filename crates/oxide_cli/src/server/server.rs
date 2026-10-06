@@ -33,6 +33,7 @@ use oxide_kernel::kernel::{KernelConfig, KernelCore};
 use oxide_log::{Level, LogConfig, Output, SUBSYSTEM_COUNT};
 use oxide_vm::vm_pool::PoolCounters;
 
+use super::liveness;
 use super::protocol::{self, ForgeTarget, FrameReader, ProtocolError, ServerRequest, ServerResponse};
 use super::sidecar::{self, ClaimResult};
 use super::workers::{self, WorkerRouter};
@@ -148,21 +149,25 @@ struct ServerContext {
     socket_path: String,
 }
 
-/// server 进程主体：认领 sidecar → 注册信号处理器 → 绑定 socket →
-/// 初始化日志文件输出 → 建内核 → 派生 worker → accept 循环 → 在途归零 →
-/// 清空发送端 → join worker → drop 内核 → 先删 socket 文件后删 sidecar。
+/// server 进程主体：初始化日志文件输出 → 启动时 liveness 扫描 → 认领 sidecar →
+/// 注册信号处理器 → 绑定 socket → 建内核 → 派生 worker → accept 循环 →
+/// 在途归零 → 清空发送端 → join worker → drop 内核 → 先删 socket 文件后删
+/// sidecar。
 ///
 /// # 步骤
-/// 1. 认领 sidecar（启动顺序契约：先写 sidecar 再 bind socket）；已有同版本
+/// 1. 初始化日志文件输出（sidecar 同主名的追加文件、Info 级；init 幂等，
+///    内核构造内部的重复调用是空操作）。守护形态 stderr 是 null，日志文件是
+///    唯一的持久诊断通道，liveness 扫描的动作记入其中。
+/// 2. 启动时 liveness 扫描：认领裁决前清掉陈旧残留（僵尸态自动恢复）；杀进程
+///    失败映射 `ClaimRefused(RefusedAmbiguous)`，诊断指向人工清理命令。
+/// 3. 认领 sidecar（启动顺序契约：先写 sidecar 再 bind socket）；已有同版本
 ///    存活 server 时拒绝启动，版本不匹配时转入交接路径（向旧 server 发
 ///    yield 请求，等旧 server 排空退出后重新认领）。
-/// 2. 注册信号处理器（绑定 socket 之前；失败回滚 sidecar，此时无存活线程）。
-/// 3. 绑定监听器；失败且路径存在时删 stale socket 文件重试一次。
-/// 4. 初始化日志文件输出（sidecar 同主名的追加文件、Info 级；init 幂等，
-///    内核构造内部的重复调用是空操作）。
-/// 5. 建内核（标准配置）与共享聚合计数器。
-/// 6. 派生 N 个常驻 worker（各在自己线程上建自有池）。
-/// 7. 进入 accept 循环；关闭标志置位后按关闭序列退出。
+/// 4. 注册信号处理器（绑定 socket 之前；失败回滚 sidecar，此时无存活线程）。
+/// 5. 绑定监听器；失败且路径存在时删 stale socket 文件重试一次。
+/// 6. 建内核（标准配置）与共享聚合计数器。
+/// 7. 派生 N 个常驻 worker（各在自己线程上建自有池）。
+/// 8. 进入 accept 循环；关闭标志置位后按关闭序列退出。
 ///
 /// # 边界与前提
 /// - 认领得 `AlreadyRunning`（同版本）立即返回 `ClaimRefused`，不交接。
@@ -176,6 +181,8 @@ struct ServerContext {
 /// - 创建 sidecar 与 socket 文件；正常退出时删除两者。
 /// - 创建日志文件（追加写、sidecar 同主名）；正常退出时不删除（跨重启的
 ///   诊断工件）。
+/// - 启动时 liveness 扫描可能向 sidecar 记录的进程发 SIGTERM、删除陈旧的
+///   socket 与 sidecar 文件（僵尸态自动恢复）。
 /// - 注册进程级信号处理器（SIGINT、SIGTERM，termination 特性下含 SIGHUP）。
 /// - 派生 N 个常驻 worker 线程与每连接一个 I/O 线程。
 ///
@@ -186,6 +193,26 @@ struct ServerContext {
 /// - 关闭序列固定：清空发送端 → join 全部 worker → drop 内核（内核 drop
 ///   的调试断言要求存活 VM 数为零，worker 池随线程退出先释放，前提满足）。
 pub fn run_server(config: &ServerConfig) -> Result<(), ServerError> {
+    // 日志文件：sidecar 同主名的追加文件，最先初始化（init 幂等，内核构造
+    // 内部的重复调用是空操作；顺序颠倒则输出回落环境变量路径，日志文件为
+    // 空）。守护形态 stderr 是 null，日志文件是唯一的持久诊断通道，liveness
+    // 扫描的动作（杀进程决策与失败）记入其中。
+    let log_path = config.sidecar_path.with_extension("log");
+    oxide_log::init(&LogConfig {
+        output: Output::FileExact(log_path),
+        levels: [Level::Info; SUBSYSTEM_COUNT],
+    });
+
+    // 启动时 liveness 扫描：认领裁决前清掉陈旧残留（僵尸态自动恢复）。
+    // 杀进程失败映射既有的 ClaimRefused(RefusedAmbiguous)，诊断指向人工清理
+    // 命令。
+    match liveness::liveness_scan(&config.sidecar_path, &config.socket_path) {
+        liveness::LivenessOutcome::Noop | liveness::LivenessOutcome::Cleaned => {}
+        liveness::LivenessOutcome::KillFailed => {
+            return Err(ServerError::ClaimRefused(ClaimResult::RefusedAmbiguous))
+        }
+    }
+
     // 认领 sidecar：同版本拒绝启动，异版本走交接路径，存活证据不足即返回错误。
     match sidecar::claim_sidecar(&config.sidecar_path, &config.socket_path, &config.version) {
         ClaimResult::Registered => {}
@@ -205,15 +232,6 @@ pub fn run_server(config: &ServerConfig) -> Result<(), ServerError> {
 
     // 绑定监听器：stale socket 文件删一次重试，失败回滚 sidecar。
     let listener = bind_listener(config)?;
-
-    // 日志文件：sidecar 同主名的追加文件，先于内核构造初始化（init 幂等，
-    // 内核构造内部的重复调用是空操作；顺序颠倒则输出回落环境变量路径，
-    // 日志文件为空）。
-    let log_path = config.sidecar_path.with_extension("log");
-    oxide_log::init(&LogConfig {
-        output: Output::FileExact(log_path),
-        levels: [Level::Info; SUBSYSTEM_COUNT],
-    });
 
     // 建内核（标准配置）与共享聚合计数器（全体 worker 池的增减累加到同一聚合）。
     let kernel = KernelCore::new(KernelConfig::standard());
@@ -1241,9 +1259,11 @@ mod tests {
         )
         .expect("写模拟 sidecar 应成功");
 
-        // 模拟连接处理：读一帧后回 Error 帧。
+        // 模拟连接处理：接受循环，逐连接读一帧后回 Error 帧。须保持监听
+        // （真实 server 是 accept 循环）：启动时 liveness 扫描与认领探活各
+        // 消耗一条探活连接，若只处理一条即退出会丢监听者，后续探活误判死。
         std::thread::spawn(move || {
-            if let Ok((mut stream, _)) = listener.accept() {
+            while let Ok((mut stream, _)) = listener.accept() {
                 let mut reader = FrameReader::new(io::BufReader::new(stream.try_clone().expect("克隆流应成功")));
                 let _ = reader.read_frame();
                 let frame = protocol::encode_response(&ServerResponse::Error {
