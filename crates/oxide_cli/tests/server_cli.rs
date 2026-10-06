@@ -52,6 +52,18 @@ fn wait_for_healthy(deadline: Duration) {
     }
 }
 
+/// 轮询判 server 进程退出（50 毫秒间隔、给定截止）。
+///
+/// 删 sidecar 文件早于进程实际退出，二者间隙随构建环境变化（带内存
+/// sanitizer 的构建 atexit 收尾更久），立即断言会撞上未退出窗口，故有界轮询。
+fn wait_pid_dead(pid: u32, deadline: Duration) {
+    let end = Instant::now() + deadline;
+    while sidecar::pid_alive(pid) {
+        assert!(Instant::now() < end, "server 进程应在有界时间内退出");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
 /// 发送请求帧并读回一帧响应。
 fn send_and_recv(stream: &mut UnixStream, request: &ServerRequest) -> ServerResponse {
     stream
@@ -200,7 +212,7 @@ fn server_start_e2e() {
 
     assert!(!socket.exists(), "socket 文件应被删除");
     assert!(!sidecar_path.exists(), "sidecar 文件应被删除");
-    assert!(!sidecar::pid_alive(id.pid), "server 进程应已退出");
+    wait_pid_dead(id.pid, Duration::from_secs(30));
 }
 
 /// start 双启动幂等：已有存活 server 时再跑 start，断言第二次退 0 且打印
@@ -393,7 +405,7 @@ fn server_log_e2e() {
         assert!(Instant::now() < deadline, "server 应在有界时间内退出");
         std::thread::sleep(Duration::from_millis(50));
     }
-    assert!(!sidecar::pid_alive(id.pid), "server 进程应已退出");
+    wait_pid_dead(id.pid, Duration::from_secs(30));
 
     // 日志文件有意保留（跨重启的诊断工件）。
     assert!(log_path.exists(), "日志文件退出后应保留");
@@ -607,5 +619,5 @@ fn server_watchdog_sigint_stops_server() {
         assert!(Instant::now() < deadline, "server 应在有界时间内退出");
         std::thread::sleep(Duration::from_millis(50));
     }
-    assert!(!sidecar::pid_alive(id.pid), "server 进程应已退出");
+    wait_pid_dead(id.pid, Duration::from_secs(30));
 }
