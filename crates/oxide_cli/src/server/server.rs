@@ -8,8 +8,8 @@
 //! - 并发模型：主线程只跑 accept 循环；每连接一个标准库线程只做 I/O
 //!   （帧读写）；五类控制请求由连接线程直接应答、不占 worker；执行请求
 //!   经 mpsc 路由到固定 N 个常驻 worker 执行（各持自己线程上的 VM 池）。
-//! - 优雅退出顺序：关闭请求 → 在途归零 → 清空发送端 → join worker →
-//!   drop 内核 → 删 sidecar 与 socket 文件。
+//! - 优雅退出顺序：关闭请求或 SIGINT/SIGTERM 信号置位关闭标志 → 在途归零
+//!   → 清空发送端 → join worker → drop 内核 → 删 sidecar 与 socket 文件。
 //! - 池本体不是 Send/Sync（Vm 不跨线程），上下文只持池的原子状态句柄；
 //!   状态响应读全体 worker 池的共享聚合计数器。
 
@@ -29,7 +29,8 @@ use super::protocol::{self, FrameReader, ProtocolError, ServerRequest, ServerRes
 use super::sidecar::{self, ClaimResult};
 use super::workers::{self, WorkerRouter};
 
-/// server 启动与运行错误：绑定失败、认领被拒、接受连接失败、读取身份失败。
+/// server 启动与运行错误：绑定失败、认领被拒、接受连接失败、读取身份失败、
+/// 信号处理器注册失败。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ServerError {
     /// sidecar 认领未通过（已有存活 server 或存活证据不足以裁决）。
@@ -42,6 +43,8 @@ pub enum ServerError {
     IdentityReadFailed(String),
     /// worker 线程异常退出（panic 载荷文本）。
     WorkerPanic(String),
+    /// 信号处理器注册失败（系统级错误，非"已注册"的幂等情形）。
+    SignalInstallFailed(String),
 }
 
 impl std::fmt::Display for ServerError {
@@ -52,6 +55,7 @@ impl std::fmt::Display for ServerError {
             ServerError::AcceptFailed(msg) => write!(f, "接受连接失败：{msg}"),
             ServerError::IdentityReadFailed(msg) => write!(f, "读取身份失败：{msg}"),
             ServerError::WorkerPanic(msg) => write!(f, "worker 线程异常退出：{msg}"),
+            ServerError::SignalInstallFailed(msg) => write!(f, "信号处理器注册失败：{msg}"),
         }
     }
 }
@@ -93,6 +97,9 @@ fn default_worker_count() -> usize {
 /// 内核跨线程共享（`Arc<KernelCore>` 是 Send/Sync）；池本体不进上下文
 /// （Vm 不跨线程，池归各 worker 线程所有），状态响应读共享聚合计数器。
 struct ServerContext {
+    // 只持不读：余留连接线程（在途排水超时后仍存活）持本上下文，内核句柄
+    // 随上下文存活，不悬垂。
+    #[allow(dead_code)]
     kernel: Arc<KernelCore>,
     started_at: Instant,
     shutdown: Arc<AtomicBool>,
@@ -101,28 +108,31 @@ struct ServerContext {
     socket_path: String,
 }
 
-/// server 进程主体：认领 sidecar → 绑定 socket → 建内核 → 派生 worker →
-/// accept 循环 → 在途归零 → 清空发送端 → join worker → drop 内核 →
-/// 删 sidecar 与 socket 文件。
+/// server 进程主体：认领 sidecar → 注册信号处理器 → 绑定 socket → 建内核 →
+/// 派生 worker → accept 循环 → 在途归零 → 清空发送端 → join worker →
+/// drop 内核 → 删 sidecar 与 socket 文件。
 ///
 /// # 步骤
 /// 1. 认领 sidecar（启动顺序契约：先写 sidecar 再 bind socket）。
-/// 2. 绑定监听器；失败且路径存在时删 stale socket 文件重试一次。
-/// 3. 建内核（标准配置）与共享聚合计数器。
-/// 4. 派生 N 个常驻 worker（各在自己线程上建自有池）。
-/// 5. 进入 accept 循环；关闭标志置位后按关闭序列退出。
+/// 2. 注册信号处理器（绑定 socket 之前；失败回滚 sidecar，此时无存活线程）。
+/// 3. 绑定监听器；失败且路径存在时删 stale socket 文件重试一次。
+/// 4. 建内核（标准配置）与共享聚合计数器。
+/// 5. 派生 N 个常驻 worker（各在自己线程上建自有池）。
+/// 6. 进入 accept 循环；关闭标志置位后按关闭序列退出。
 ///
 /// # 边界与前提
 /// - 认领被拒（AlreadyRunning / RefusedAmbiguous）立即返回错误，不双注册。
+/// - 信号处理器注册失败（系统级错误）回滚 sidecar 并以错误返回。
 /// - stale socket 文件删除重试后再失败时回滚删除 sidecar 并以错误返回。
 ///
 /// # 副作用
 /// - 创建 sidecar 与 socket 文件；正常退出时删除两者。
+/// - 注册进程级信号处理器（SIGINT、SIGTERM，termination 特性下含 SIGHUP）。
 /// - 派生 N 个常驻 worker 线程与每连接一个 I/O 线程。
 ///
 /// # 注意事项
 /// - 在调用线程上运行（后续 CLI 骨架任务在主线程分派到它）。
-/// - 关闭标志由关闭请求置位；信号处理由后续任务在同一标志上接线。
+/// - 关闭标志由关闭请求或 SIGINT/SIGTERM 信号置位。
 /// - 关闭序列固定：清空发送端 → join 全部 worker → drop 内核（内核 drop
 ///   的调试断言要求存活 VM 数为零，worker 池随线程退出先释放，前提满足）。
 pub fn run_server(config: &ServerConfig) -> Result<(), ServerError> {
@@ -130,6 +140,15 @@ pub fn run_server(config: &ServerConfig) -> Result<(), ServerError> {
     match sidecar::claim_sidecar(&config.sidecar_path, &config.socket_path) {
         ClaimResult::Registered => {}
         other => return Err(ServerError::ClaimRefused(other)),
+    }
+
+    // 关闭标志提前创建并注册信号处理器：在绑定 socket 之前，socket 文件
+    // 出现即蕴含处理器已就位（集成测试的信号投递无竞态）；失败回滚
+    // sidecar，此时进程内没有存活线程。
+    let shutdown = Arc::new(AtomicBool::new(false));
+    if let Err(err) = install_signal_handler(&shutdown) {
+        let _ = fs::remove_file(&config.sidecar_path);
+        return Err(err);
     }
 
     // 绑定监听器：stale socket 文件删一次重试，失败回滚 sidecar。
@@ -152,7 +171,7 @@ pub fn run_server(config: &ServerConfig) -> Result<(), ServerError> {
     let ctx = Arc::new(ServerContext {
         kernel: Arc::clone(&kernel),
         started_at: Instant::now(),
-        shutdown: Arc::new(AtomicBool::new(false)),
+        shutdown: Arc::clone(&shutdown),
         in_flight: Arc::new(AtomicUsize::new(0)),
         pool_counters: counters,
         socket_path: config.socket_path.to_string_lossy().into_owned(),
@@ -182,6 +201,44 @@ pub fn run_server(config: &ServerConfig) -> Result<(), ServerError> {
     let _ = fs::remove_file(&config.socket_path);
 
     accept_result
+}
+
+/// 信号处理器体：置位关闭标志。
+///
+/// # 边界与前提
+/// - 只做一次原子写，不分配、不取锁、不做 I/O；即使按最严格的信号上下文
+///   标准衡量也是安全的。
+fn signal_shutdown(shutdown: &Arc<AtomicBool>) {
+    shutdown.store(true, Ordering::SeqCst);
+}
+
+/// 注册 SIGINT/SIGTERM 信号处理器：信号到达时置位关闭标志。
+///
+/// # 步骤
+/// 1. 闭包捕获关闭标志的共享句柄，转调 `signal_shutdown`。
+/// 2. `ctrlc::set_handler` 注册；"已注册"的幂等情形视为成功，其余系统
+///    错误映射为 `SignalInstallFailed`。
+///
+/// # 边界与前提
+/// - 处理器是进程级全局的（同一进程只允许一次注册）；生产路径一个进程
+///   只有一个 server，注册一次即成功。
+///
+/// # 副作用
+/// - 注册进程级信号处理器（SIGINT、SIGTERM，termination 特性下含 SIGHUP）。
+///
+/// # 注意事项
+/// - 须在绑定 socket 之前调用：socket 文件出现即蕴含处理器已就位，
+///   集成测试的信号投递无竞态。
+/// - 测试进程内多 server 并存时，仅首个注册者接上信号，其余返回"已注册"
+///   幂等成功；单测不发真实信号，无干扰。
+fn install_signal_handler(shutdown: &Arc<AtomicBool>) -> Result<(), ServerError> {
+    let flag = Arc::clone(shutdown);
+    match ctrlc::set_handler(move || signal_shutdown(&flag)) {
+        Ok(()) => Ok(()),
+        // 进程级处理器已注册（测试进程内多 server 并存的幂等情形）。
+        Err(ctrlc::Error::MultipleHandlers) => Ok(()),
+        Err(e) => Err(ServerError::SignalInstallFailed(e.to_string())),
+    }
 }
 
 /// 从 `catch_unwind` 的 panic payload 提取可读文本：`&str` 与 `String` 两种
@@ -428,6 +485,21 @@ mod tests {
         assert!(matches!(response, ServerResponse::Shutdown), "应得关闭确认帧：{response:?}");
         let result = handle.join().expect("server 线程应正常退出");
         assert!(result.is_ok(), "server 应正常退出：{result:?}");
+    }
+
+    /// 信号处理器体：置位关闭标志。
+    #[test]
+    fn signal_shutdown_sets_flag() {
+        let shutdown = Arc::new(AtomicBool::new(false));
+        signal_shutdown(&shutdown);
+        assert!(shutdown.load(Ordering::SeqCst), "标志应被置位");
+    }
+
+    /// 注册信号处理器：返回成功（"已注册"的幂等情形同样视为成功）。
+    #[test]
+    fn install_signal_handler_registers() {
+        let shutdown = Arc::new(AtomicBool::new(false));
+        install_signal_handler(&shutdown).expect("信号处理器注册应成功");
     }
 
     /// 版本请求得 Version 帧，取值与构建期版本一致。

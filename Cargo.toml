@@ -22,7 +22,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.8.30"
+version = "0.8.31"
 edition = "2021"
 license = "MIT"
 rust-version = "1.80"
@@ -38,6 +38,7 @@ oxc_syntax = "0.134.0"
 oxide_ir = { path = "crates/oxide_ir" }
 oxide_emit = { path = "crates/oxide_emit" }
 clap = { version = "4", features = ["derive"] }
+ctrlc = { version = "3.4", features = ["termination"] }
 rustyline = "14"
 ansi_term = "0.12"
 serde = "1"

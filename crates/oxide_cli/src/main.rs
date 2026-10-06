@@ -10,21 +10,19 @@ use ansi_term::Colour::Red;
 use clap::{Parser, Subcommand};
 use oxide_compiler::compiler::{compiled_module_hash, Compiler};
 use oxide_compiler::compiler_error;
+use oxide_cli::format_js_value;
 use oxide_kernel::kernel::{KernelConfig, KernelCore};
-use oxide_kernel::shape_forge::{ShapeForge, EMPTY_SHAPE_ID};
+use oxide_kernel::shape_forge::ShapeForge;
 use oxide_kernel::string_forge::PermInterner;
 use oxide_kernel::{kernel_error, kernel_info};
 use oxide_log::{Level, SUBSYSTEM_COUNT};
 use oxide_parser::Allocator;
-use oxide_types::object::JsObject;
-use oxide_types::private_key::{is_private_name_key, is_symbol_key};
 use oxide_vm::vm::Vm;
 use oxide_vm::vm_error;
 use oxide_vm::vm_pool::VmPool;
 use oxide_vm::JsValue;
 
 mod bench;
-mod server;
 
 #[derive(Parser)]
 #[command(
@@ -232,94 +230,6 @@ fn eval(
 
 fn format_result(vm: &oxide_vm::vm::Vm, string_forge: &PermInterner, shape_forge: &ShapeForge, val: JsValue) {
     println!("{}", format_js_value(vm, string_forge, shape_forge, val));
-}
-
-fn format_js_value(
-    vm: &oxide_vm::vm::Vm, string_forge: &PermInterner, shape_forge: &ShapeForge, val: JsValue,
-) -> String {
-    if val.is_string() {
-        // SAFETY: val 已确认是字符串值。
-        let s = unsafe { (*val.as_string_ptr()).to_owned_string() };
-        format!("\"{s}\"")
-    } else if val.is_bigint() {
-        format!("{}", vm.bigint_value(val))
-    } else if val.is_object() {
-        let obj = unsafe { &*val.as_js_object_ptr() };
-        if obj.is_promise_obj() {
-            // 已 settle 的 Promise 打印其结算值（便于 eval 观察微任务结果）。
-            return match oxide_vm::promise::promise_settled_value(obj) {
-                Some((true, v)) => format_js_value(vm, string_forge, shape_forge, v),
-                Some((false, v)) => {
-                    format!("Promise {{ <rejected> {} }}", format_js_value(vm, string_forge, shape_forge, v))
-                }
-                None => "Promise { <pending> }".to_string(),
-            };
-        }
-        if obj.is_function() {
-            "[Function]".to_string()
-        } else if obj.is_array() {
-            format_array(vm, string_forge, shape_forge, obj)
-        } else {
-            format_object(vm, string_forge, shape_forge, obj)
-        }
-    } else if val.is_undefined() {
-        "undefined".to_string()
-    } else {
-        format!("{val}")
-    }
-}
-
-fn format_object(
-    vm: &oxide_vm::vm::Vm, string_forge: &PermInterner, shape_forge: &ShapeForge, obj: &JsObject,
-) -> String {
-    let mut entries = Vec::new();
-    let shape_id = obj.shape_id();
-    let mut shape_ids = Vec::new();
-    let mut cursor = Some(shape_id);
-    while let Some(id) = cursor {
-        if id == EMPTY_SHAPE_ID {
-            break;
-        }
-        if let Some(shape) = shape_forge.get_shape(id) {
-            cursor = shape.parent;
-            if shape.property_name != u32::MAX {
-                shape_ids.push(id);
-            }
-        } else {
-            break;
-        }
-    }
-    let mut pos: u32 = 0;
-    for id in shape_ids.iter().rev() {
-        if let Some(shape) = shape_forge.get_shape(*id) {
-            // 跳过 Symbol/私有名键，仅展示字符串属性名。
-            if !is_symbol_key(shape.property_name) && !is_private_name_key(shape.property_name) {
-                let prop_val = obj.get_prop_at(pos);
-                if prop_val.is_undefined() {
-                    pos += 1;
-                    continue;
-                }
-                let name = string_forge.lookup(shape.property_name).unwrap_or_default();
-                let val_str = format_js_value(vm, string_forge, shape_forge, prop_val);
-                entries.push(format!("\"{name}\": {val_str}"));
-            }
-        }
-        pos += 1;
-    }
-    format!("{{{}}}", entries.join(", "))
-}
-
-fn format_array(
-    vm: &oxide_vm::vm::Vm, string_forge: &PermInterner, shape_forge: &ShapeForge, obj: &JsObject,
-) -> String {
-    // 数组元素在独立元素区，命名属性区长度恒 0；元素区未分配时 get_prop_at 自然返回 undefined。
-    let len = obj.array_prop_count as usize;
-    let mut items = Vec::new();
-    for i in 0..len {
-        let val = obj.get_prop_at(i);
-        items.push(format_js_value(vm, string_forge, shape_forge, val));
-    }
-    format!("[{}]", items.join(", "))
 }
 
 fn run(file: &str, kernel: &Arc<KernelCore>, pool: &Arc<VmPool>, trace: bool, profile: bool) -> ExitCode {
