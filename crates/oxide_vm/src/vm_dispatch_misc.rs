@@ -538,7 +538,11 @@ impl Vm {
                             .kernel_core
                             .shape_forge()
                             .lookup_position(cur.shape_id(), shape.property_name)
-                            .and_then(|pos| cur.prop_meta_at(pos))
+                            // 数组命名属性存储下标 = 元素区偏移加 shape 槽位；
+                            // 普通对象槽位即下标，空数组偏移为零。
+                            .and_then(|pos| {
+                                cur.prop_meta_at(if cur.is_array() { cur.array_prop_count + pos } else { pos })
+                            })
                             .map(|meta| meta.attributes.enumerable())
                             .unwrap_or(PropAttributes::DEFAULT_DATA.enumerable());
                         if enumerable {
