@@ -10,6 +10,8 @@ use ansi_term::Colour::Red;
 use clap::{Parser, Subcommand};
 use oxide_cli::format_js_value;
 use oxide_cli::server::cleanup::{well_known_cleanup, CleanupOutcome};
+use oxide_cli::server::client::send_control_request;
+use oxide_cli::server::protocol::{ServerRequest, ServerResponse};
 use oxide_cli::server::server::{run_server, run_server_rm, RmServerConfig, ServerConfig};
 use oxide_compiler::compiler::{compiled_module_hash, Compiler};
 use oxide_compiler::compiler_error;
@@ -204,15 +206,18 @@ fn main() -> ExitCode {
     }
 }
 
-/// server 子命令分派：start（两形态）与 cleanup 为最小实现，其余八臂为
-/// not_implemented 占位。
+/// server 子命令分派：start（两形态）与 cleanup 为最小实现，
+/// version/status/health/info/stop 五臂经控制客户端为真实实现，
+/// 其余三臂为 not_implemented 占位。
 ///
 /// # 步骤
 /// 1. Start：rm 为假调持久 server 入口（well-known 路径），rm 为真调独立
 ///    模式入口（进程唯一路径）；`--workers` 为 Some 时覆盖 worker 数。
 /// 2. Cleanup：调 well-known 路径清理入口，四态结果映射退出码（无残留与
 ///    已清理退 0，拒绝与杀进程失败退 1）并打印结果。
-/// 3. 其余八臂：not_implemented 占位（退出码 2）。
+/// 3. 五个控制臂（version/status/health/info/stop）：发对应控制请求，
+///    成功打印渲染文本退 0，失败打印错误消息退 1。
+/// 4. 其余三臂：not_implemented 占位（退出码 2）。
 ///
 /// # 边界与前提
 /// - `--idle-timeout` 不带 --rm 时静默忽略（语义门控归后续任务）。
@@ -221,6 +226,7 @@ fn main() -> ExitCode {
 /// # 副作用
 /// - start 阻塞当前进程至 server 退出（持久形态为前台常驻）。
 /// - cleanup 可能向 sidecar 记录的进程发 SIGTERM 并删除残留文件。
+/// - 控制臂向 server 建立并关闭一条 Unix socket 连接。
 fn server_command(command: ServerCommands) -> ExitCode {
     match command {
         ServerCommands::Start { rm, idle_timeout, workers } => {
@@ -259,14 +265,57 @@ fn server_command(command: ServerCommands) -> ExitCode {
                 ExitCode::FAILURE
             }
         },
-        ServerCommands::Stop => not_implemented("server stop"),
-        ServerCommands::Status => not_implemented("server status"),
-        ServerCommands::Health => not_implemented("server health"),
-        ServerCommands::Info => not_implemented("server info"),
-        ServerCommands::Version => not_implemented("server version"),
+        ServerCommands::Stop => control_arm(&ServerRequest::Shutdown, |response| match response {
+            ServerResponse::Shutdown => Some("server 正在关闭".to_string()),
+            _ => None,
+        }),
+        ServerCommands::Status => control_arm(&ServerRequest::Status, |response| match response {
+            ServerResponse::Status {
+                pool_available,
+                pool_total,
+                pool_peak,
+                uptime_ms,
+            } => Some(format!("池可用 {pool_available}/{pool_total}，峰值 {pool_peak}，运行 {uptime_ms} 毫秒")),
+            _ => None,
+        }),
+        ServerCommands::Health => control_arm(&ServerRequest::Health, |response| match response {
+            ServerResponse::Health { healthy } => Some(if *healthy { "healthy".into() } else { "unhealthy".into() }),
+            _ => None,
+        }),
+        ServerCommands::Info => control_arm(&ServerRequest::Info, |response| match response {
+            ServerResponse::Info { version, socket_path, pid } => {
+                Some(format!("版本 {version}\nsocket 路径 {socket_path}\n进程号 {pid}"))
+            }
+            _ => None,
+        }),
+        ServerCommands::Version => control_arm(&ServerRequest::Version, |response| match response {
+            ServerResponse::Version { version } => Some(version.clone()),
+            _ => None,
+        }),
         ServerCommands::Restart => not_implemented("server restart"),
         ServerCommands::Log => not_implemented("server log"),
         ServerCommands::Forge => not_implemented("server forge"),
+    }
+}
+
+/// 控制臂公共入口：发请求，成功打印渲染文本退 0，失败打印消息退 1。
+/// 渲染函数返回 None 表示响应变体与请求不匹配（防御性兜底）。
+fn control_arm(request: &ServerRequest, render: fn(&ServerResponse) -> Option<String>) -> ExitCode {
+    match send_control_request(request) {
+        Ok(response) => match render(&response) {
+            Some(text) => {
+                println!("{text}");
+                ExitCode::SUCCESS
+            }
+            None => {
+                eprintln!("{}", Red.paint(format!("意外的响应帧：{response:?}")));
+                ExitCode::FAILURE
+            }
+        },
+        Err(err) => {
+            eprintln!("{}", Red.paint(err.to_string()));
+            ExitCode::FAILURE
+        }
     }
 }
 

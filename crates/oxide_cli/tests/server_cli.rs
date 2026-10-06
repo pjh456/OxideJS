@@ -48,14 +48,39 @@ fn server_help_lists_subcommands() {
     }
 }
 
-/// 八个占位臂各退 2，stderr 含 not yet implemented。
+/// 三个占位臂各退 2，stderr 含 not yet implemented。
+///
+/// version/status/health/info/stop 五臂已由控制客户端接管（无 server 时退 1），
+/// 不在此列；restart/log/forge 仍是占位。
 #[test]
 fn server_stub_subcommands_exit_2() {
-    for sub in ["stop", "status", "health", "info", "version", "restart", "log", "forge"] {
+    for sub in ["restart", "log", "forge"] {
         let output = oxide(&["server", sub]);
         assert_eq!(output.status.code(), Some(2), "{sub} 应退 2");
         let stderr = String::from_utf8_lossy(&output.stderr);
         assert!(stderr.contains("not yet implemented"), "{sub} 应打印未实现提示：{stderr}");
+    }
+}
+
+/// 五个控制臂无 server 时各退 1，stderr 含「无已注册的 server」提示。
+///
+/// 走 well-known 全局路径：先探活，存活 server 占用时 panic 不抢占。
+#[test]
+fn server_control_arms_no_server_exit_1() {
+    let _guard = WELL_KNOWN_LOCK.lock().expect("全局路径锁不应中毒");
+    assert!(
+        !sidecar::is_server_alive(&sidecar::well_known_socket_path()),
+        "存活 server 占用 well-known 路径，测试不抢占"
+    );
+
+    for sub in ["stop", "status", "health", "info", "version"] {
+        let output = oxide(&["server", sub]);
+        assert_eq!(output.status.code(), Some(1), "{sub} 应退 1");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains("无已注册的 server"),
+            "{sub} 应打印无 server 提示：{stderr}"
+        );
     }
 }
 
