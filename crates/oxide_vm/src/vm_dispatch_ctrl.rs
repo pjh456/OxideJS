@@ -304,8 +304,9 @@ impl Vm {
     /// 定义全局 var 绑定数据属性：rd=全局对象，a=值，b=键。
     ///
     /// 描述符语义（CreateGlobalVarBinding 写点，对照 node 锚定）：
-    /// - 已有 accessor 属性（可配置或不可配置）：零修改返回——var 声明写点
-    ///   不覆写访问器（两模式均不抛，值与描述符保持原样）。
+    /// - 已有 accessor 属性（可配置或不可配置）：走 Set 语义——有 setter 以
+    ///   全局对象为 receiver 调用之；无 setter strict 抛 TypeError、sloppy 静默
+    ///   no-op（值与描述符均保持原样）。
     /// - 已有数据属性且不可写（可配置或不可配置）：strict 抛 TypeError、
     ///   sloppy 静默 no-op（规范不更新既有数据描述符，writable/enumerable/
     ///   configurable 与值均保持原样）。
@@ -324,14 +325,22 @@ impl Vm {
         let prop_name_si = self.property_key_si(self.regs[b])?;
         let value = self.regs[a];
         let obj = unsafe { &mut *obj_val.as_js_object_ptr() };
-        // 已有属性：CreateGlobalVarBinding 不改既有描述符——accessor 形零修改
-        // （不覆写、不抛）；数据属性不可写时 strict 抛 TypeError、sloppy 静默
-        // no-op；可写数据属性保 enumerable/configurable 仅更新值。
+        // 已有属性：accessor 形走 Set 语义（有 setter 调用之、无 setter strict
+        // 抛、sloppy 静默 no-op）；数据属性不可写时 strict 抛 TypeError、sloppy
+        // 静默 no-op；可写数据属性保 enumerable/configurable 仅更新值。
         if let Some(pos) = self.kernel_core.shape_forge().lookup_position(obj.shape_id(), prop_name_si) {
             if let Some(current) = obj.prop_meta_at(pos) {
-                // accessor 形：var 声明写点不覆写访问器，两模式均零修改。
+                // accessor 形：有 setter 以全局对象为 receiver 调用之；无 setter
+                // strict 抛 TypeError、sloppy 静默 no-op（值与描述符均保持原样）。
                 if current.is_accessor {
-                    return Ok(());
+                    if current.set.is_undefined() {
+                        return if self.current_strict() {
+                            self.raise_error_kind("TypeError", "property has no setter")
+                        } else {
+                            Ok(())
+                        };
+                    }
+                    return self.call_or_push_setter(current.set, obj_val, value, false);
                 }
                 // 既有数据属性不可写（可配置与不可配置同口径）：strict 抛
                 // TypeError、sloppy 静默 no-op。
@@ -360,9 +369,10 @@ impl Vm {
     /// eval 脚本 var/函数声明的属性描述符）。
     ///
     /// # 步骤
-    /// 1. 属性已存在：CreateGlobalVarBinding 不改既有描述符——accessor 形零修改
-    ///    （不覆写、不抛）；数据属性不可写时 strict 抛 TypeError、sloppy 静默
-    ///    no-op；可写数据属性保原描述符仅更新值。
+    /// 1. 属性已存在：accessor 形走 Set 语义（有 setter 以全局对象为 receiver
+    ///    调用之；无 setter strict 抛 TypeError、sloppy 静默 no-op）；数据属性
+    ///    不可写时 strict 抛 TypeError、sloppy 静默 no-op；可写数据属性保原
+    ///    描述符仅更新值。
     /// 2. 属性缺失：新建可写/可枚举/可配置属性；全局对象不可扩展 → TypeError
     ///    （两模式均抛，CreateGlobalVarBinding 语义）。
     ///
@@ -380,14 +390,23 @@ impl Vm {
         let global_ptr = self.session.global_object().as_ptr() as *mut JsObject;
         // SAFETY: 全局对象钉在 session 永久区，指针在 VM 生命周期内有效。
         let obj = unsafe { &mut *global_ptr };
-        // 属性已存在：CreateGlobalVarBinding 不改既有描述符——accessor 形零修改
-        // （不覆写、不抛）；数据属性不可写时 strict 抛 TypeError、sloppy 静默
-        // no-op；可写数据属性保原描述符仅更新值。
+        // 属性已存在：accessor 形走 Set 语义（有 setter 调用之、无 setter
+        // strict 抛、sloppy 静默 no-op）；数据属性不可写时 strict 抛 TypeError、
+        // sloppy 静默 no-op；可写数据属性保原描述符仅更新值。
         if let Some(pos) = self.kernel_core.shape_forge().lookup_position(obj.shape_id(), si) {
             if let Some(current) = obj.prop_meta_at(pos) {
-                // accessor 形：var 声明写点不覆写访问器，两模式均零修改。
+                // accessor 形：有 setter 以全局对象为 receiver 调用之；无 setter
+                // strict 抛 TypeError、sloppy 静默 no-op（值与描述符均保持原样）。
                 if current.is_accessor {
-                    return Ok(());
+                    if current.set.is_undefined() {
+                        return if self.current_strict() {
+                            self.raise_error_kind("TypeError", "property has no setter")
+                        } else {
+                            Ok(())
+                        };
+                    }
+                    let receiver = JsValue::from_js_object(global_ptr);
+                    return self.call_or_push_setter(current.set, receiver, value, false);
                 }
                 // 既有数据属性不可写：strict 抛 TypeError、sloppy 静默 no-op。
                 if !current.attributes.writable() {

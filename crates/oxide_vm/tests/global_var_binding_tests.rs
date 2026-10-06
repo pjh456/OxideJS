@@ -637,10 +637,11 @@ fn strict_var_init_on_builtin_math_updates_value() {
 }
 
 #[test]
-fn var_init_on_accessor_property_does_not_overwrite() {
-    // accessor 形：var 声明写点不覆写访问器，两模式均零修改（描述符保持原样）。
-    // 既有 accessor 须先于 GDI 存在，分两阶段。写面锚定：globalThis 反射见
-    // 访问器原值（getter 返回 1），描述符保持 accessor 形（get 在、无 value 面）。
+fn var_init_on_accessor_property_no_setter() {
+    // accessor 形（无 setter）：var 声明写点走 Set 语义——sloppy 静默 no-op
+    // （值与描述符均保持原样，getter 返回值不变、描述符保持 accessor 形）；
+    // strict 抛 TypeError（无 setter 可路由）。既有 accessor 须先于 GDI 存在，
+    // 分两阶段。
     assert_two_phases_truthy(
         "Object.defineProperty(globalThis, 'acc', {get() { return 1; }, configurable: true})",
         "var acc = 2; globalThis.acc === 1",
@@ -650,9 +651,42 @@ fn var_init_on_accessor_property_does_not_overwrite() {
         "var acc2 = 2; var d = Object.getOwnPropertyDescriptor(globalThis, 'acc2'); \
          typeof d.get === 'function' && d.value === undefined",
     );
-    // strict 同形：accessor 零修改不抛。
-    assert_two_phases_truthy(
+    // strict：无 setter 抛 TypeError。
+    let err = phase2_err_text(
         "Object.defineProperty(globalThis, 'acc3', {get() { return 1; }, configurable: true})",
-        "'use strict'; var acc3 = 2; globalThis.acc3 === 1",
+        "'use strict'; var acc3 = 2;",
     );
+    assert!(err.contains("TypeError"), "应抛 TypeError，实际: {err}");
+}
+
+#[test]
+fn var_init_on_accessor_property_with_setter_calls_setter() {
+    // accessor 形（有 setter）：var 声明写点以全局对象为 receiver 调用 setter，
+    // 两模式均不抛，描述符保持 accessor 形（getter 返回值不变）。
+    assert_two_phases_truthy(
+        "Object.defineProperty(globalThis, 'accs', {get() { return 1; }, \
+         set(v) { globalThis.setterSaw = v; }, configurable: true}); true",
+        "var accs = 2; globalThis.setterSaw === 2 && globalThis.accs === 1",
+    );
+    // strict 同形：setter 被调用、不抛。
+    assert_two_phases_truthy(
+        "Object.defineProperty(globalThis, 'accs2', {get() { return 1; }, \
+         set(v) { globalThis.setterSaw2 = v; }, configurable: true}); true",
+        "'use strict'; var accs2 = 2; globalThis.setterSaw2 === 2 && globalThis.accs2 === 1",
+    );
+}
+
+#[test]
+fn var_init_on_nonconfigurable_accessor_no_setter() {
+    // 不可配置 accessor 形（无 setter）：与可配置形同口径——sloppy 静默 no-op、
+    // strict 抛 TypeError（值与描述符均保持原样）。
+    assert_two_phases_truthy(
+        "Object.defineProperty(globalThis, 'accnc', {get() { return 1; }, configurable: false})",
+        "var accnc = 2; globalThis.accnc === 1",
+    );
+    let err = phase2_err_text(
+        "Object.defineProperty(globalThis, 'accnc2', {get() { return 1; }, configurable: false})",
+        "'use strict'; var accnc2 = 2;",
+    );
+    assert!(err.contains("TypeError"), "应抛 TypeError，实际: {err}");
 }
