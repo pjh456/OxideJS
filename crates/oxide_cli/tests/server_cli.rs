@@ -1,16 +1,18 @@
 //! server CLI 集成测试：真实二进制的分派面（help 列子命令、无 server 时
-//! 控制臂与 forge 退 1、cleanup 幂等、start 与 restart 端到端、forge 端到端）。
+//! 控制臂与 forge 退 1、cleanup 幂等、start 与 restart 端到端、forge 端到端、
+//! watchdog 崩溃自动重启与 SIGINT 优雅停 server）。
 //!
-//! start / restart 端到端与 cleanup 走 well-known 全局路径（每用户单例）：
-//! 测试先探活，socket 存活即 panic 不抢占存活 server；三枚触碰全局路径的
-//! 测试经同一把锁串行，避免相互干扰。
+//! start / restart / watchdog 端到端与 cleanup 走 well-known 全局路径
+//! （每用户单例）：测试先探活，socket 存活即 panic 不抢占存活 server；
+//! 触碰全局路径的测试经同一把锁串行，避免相互干扰。
 
-use std::io::{BufReader, Write};
+use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
 use std::process::{Command, Output};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
+use oxide_cli::server::client::send_control_request;
 use oxide_cli::server::protocol::{self, FrameReader, ServerRequest, ServerResponse};
 use oxide_cli::server::sidecar;
 
@@ -25,6 +27,31 @@ fn oxide(args: &[&str]) -> Output {
         .expect("failed to run oxide")
 }
 
+/// 向进程发信号（与 sidecar liveness 探活同一 `kill` 二进制路径）。
+fn kill_process(pid: u32, signal: &str) {
+    Command::new("kill")
+        .args([signal, &pid.to_string()])
+        .status()
+        .expect("发送信号应成功");
+}
+
+/// 轮询健康请求直至得 healthy（100 毫秒间隔、给定截止）。
+///
+/// sidecar 出现早于 socket 绑定与池预热，不能直接作为就绪信号；watchdog
+/// 的初始就绪探测与测试的崩溃模拟都以健康请求通过为界。
+fn wait_for_healthy(deadline: Duration) {
+    let end = Instant::now() + deadline;
+    loop {
+        let ready =
+            matches!(send_control_request(&ServerRequest::Health), Ok(ServerResponse::Health { healthy: true }));
+        if ready {
+            return;
+        }
+        assert!(Instant::now() < end, "server 应在有界时间内就绪");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
 /// 发送请求帧并读回一帧响应。
 fn send_and_recv(stream: &mut UnixStream, request: &ServerRequest) -> ServerResponse {
     stream
@@ -35,7 +62,7 @@ fn send_and_recv(stream: &mut UnixStream, request: &ServerRequest) -> ServerResp
     protocol::parse_response(&frame).expect("响应帧解析应成功")
 }
 
-/// help 列全部十个子命令。
+/// help 列全部十一个子命令。
 #[test]
 fn server_help_lists_subcommands() {
     let output = oxide(&["server", "--help"]);
@@ -43,6 +70,7 @@ fn server_help_lists_subcommands() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     for name in [
         "start", "stop", "status", "health", "info", "version", "cleanup", "restart", "log", "forge",
+        "watchdog",
     ] {
         assert!(stdout.contains(name), "help 应列出 {name}：{stdout}");
     }
@@ -431,4 +459,153 @@ fn server_forge_e2e() {
 
     assert!(!socket.exists(), "socket 文件应被删除");
     assert!(!sidecar_path.exists(), "sidecar 文件应被删除");
+}
+
+/// watchdog 端到端：拉起 watchdog 前台进程（其拉起 server），`kill -9` 模拟
+/// 崩溃，断言 watchdog 自动重启（新 sidecar 进程号不同、新 server 健康），
+/// 关闭后 watchdog 退 0 且 stdout 含崩溃提示与日志尾部。
+#[test]
+fn server_watchdog_e2e() {
+    let _guard = WELL_KNOWN_LOCK.lock().expect("全局路径锁不应中毒");
+    let socket = sidecar::well_known_socket_path();
+    let sidecar_path = sidecar::well_known_sidecar_path();
+
+    // 探活先行：存活 server 占用全局路径时 panic，不抢占。
+    assert!(!sidecar::is_server_alive(&socket), "存活 server 占用 well-known 路径，测试不抢占");
+
+    // 拉起 watchdog 前台进程（stdout 管道捕获崩溃诊断输出）。
+    let mut child = Command::new(env!("CARGO_BIN_EXE_oxide"))
+        .args(["server", "watchdog", "--workers", "2"])
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .expect("oxide server watchdog 应可启动");
+
+    // 后台线程消费 stdout 收集全部行，见到「开始监控」标记行即通知：
+    // 该标记行蕴含 watchdog 已越过初始就绪探测，崩溃模拟在此之后进行
+    // 才不与初始探测窗口竞争（预热期间杀 server 会让探测超时退 1、不重启）。
+    let stdout_pipe = child.stdout.take().expect("stdout 管道应可取");
+    let (monitoring_tx, monitoring_rx) = std::sync::mpsc::channel::<()>();
+    let out_handle = std::thread::spawn(move || {
+        let mut reader = BufReader::new(stdout_pipe);
+        let mut lines = Vec::new();
+        let mut line = String::new();
+        loop {
+            line.clear();
+            if reader.read_line(&mut line).unwrap_or(0) == 0 {
+                break;
+            }
+            lines.push(line.clone());
+            if line.contains("watchdog 开始监控") {
+                let _ = monitoring_tx.send(());
+            }
+        }
+        lines
+    });
+
+    // 轮询 sidecar 出现（10 秒截止）判 server 已启动。
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while sidecar::read_identity(&sidecar_path).is_none() {
+        assert!(Instant::now() < deadline, "sidecar 未出现");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let first_id = sidecar::read_identity(&sidecar_path).expect("读 sidecar 应成功");
+
+    // 等 watchdog 越过初始就绪探测进入监控循环（30 秒截止）。
+    monitoring_rx
+        .recv_timeout(Duration::from_secs(30))
+        .expect("watchdog 应在有界时间内进入监控循环");
+
+    // 模拟崩溃：kill -9（文件残留、无退出序列，与 panic=abort 消亡等价）。
+    kill_process(first_id.pid, "-9");
+
+    // 轮询新 sidecar 出现且进程号不同（30 秒截止、50 毫秒间隔）判 watchdog
+    // 已重启。
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let second_id = loop {
+        if let Some(id) = sidecar::read_identity(&sidecar_path) {
+            if id.pid != first_id.pid {
+                break id;
+            }
+        }
+        assert!(Instant::now() < deadline, "watchdog 应在有界时间内重启 server");
+        std::thread::sleep(Duration::from_millis(50));
+    };
+
+    // 等 watchdog 越过重启就绪探测（30 秒截止）：关闭请求发给探测完成前的
+    // 新 server 会让它优雅退出、删 sidecar，与 watchdog 的重启探测竞争
+    // （探测超时退 1、不重启）。
+    monitoring_rx
+        .recv_timeout(Duration::from_secs(30))
+        .expect("watchdog 应在有界时间内完成重启探测");
+
+    // 连接新 server：健康请求得 healthy。
+    let mut stream = UnixStream::connect(&socket).expect("连接新 server 应成功");
+    match send_and_recv(&mut stream, &ServerRequest::Health) {
+        ServerResponse::Health { healthy } => assert!(healthy, "新 server 应健康"),
+        other => panic!("应得 Health 帧，实得 {other:?}"),
+    }
+
+    // 发关闭请求得确认帧，轮询 sidecar 消失（watchdog 判 Exited 退 0）。
+    let response = send_and_recv(&mut stream, &ServerRequest::Shutdown);
+    assert!(matches!(response, ServerResponse::Shutdown), "应得关闭确认帧：{response:?}");
+    drop(stream);
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while sidecar_path.exists() {
+        assert!(Instant::now() < deadline, "server 应在有界时间内退出");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+
+    // 等 watchdog 子进程退出断言退出码 0，收集 stdout 断言含崩溃提示与日志尾部。
+    let status = child.wait().expect("等待 watchdog 应成功");
+    assert_eq!(status.code(), Some(0), "watchdog 应以退出码 0 退出：{status:?}");
+    let lines = out_handle.join().expect("stdout 读取线程应可汇合");
+    let stdout = lines.join("");
+    assert!(stdout.contains("server 已崩溃"), "watchdog 应打印崩溃提示：{stdout}");
+    assert!(stdout.contains("日志尾部"), "watchdog 应打印日志尾部：{stdout}");
+    assert_ne!(second_id.pid, first_id.pid, "重启后的 server 进程号应不同");
+}
+
+/// watchdog SIGINT：拉起 watchdog 前台进程后向其发 SIGINT，断言 watchdog 退 0、
+/// sidecar 消失、server 进程已退出（停 watchdog 即优雅停 server）。
+#[test]
+fn server_watchdog_sigint_stops_server() {
+    let _guard = WELL_KNOWN_LOCK.lock().expect("全局路径锁不应中毒");
+    let socket = sidecar::well_known_socket_path();
+    let sidecar_path = sidecar::well_known_sidecar_path();
+
+    // 探活先行：存活 server 占用全局路径时 panic，不抢占。
+    assert!(!sidecar::is_server_alive(&socket), "存活 server 占用 well-known 路径，测试不抢占");
+
+    // 拉起 watchdog 前台进程。
+    let mut child = Command::new(env!("CARGO_BIN_EXE_oxide"))
+        .args(["server", "watchdog", "--workers", "2"])
+        .spawn()
+        .expect("oxide server watchdog 应可启动");
+
+    // 轮询 sidecar 出现（10 秒截止）判 server 已启动。
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while sidecar::read_identity(&sidecar_path).is_none() {
+        assert!(Instant::now() < deadline, "sidecar 未出现");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let id = sidecar::read_identity(&sidecar_path).expect("读 sidecar 应成功");
+
+    // 等健康请求通过判 server 就绪：watchdog 已越过初始就绪探测进入监控
+    // 循环，SIGINT 的优雅关闭请求发给已就绪的 server 即被处理。
+    wait_for_healthy(Duration::from_secs(60));
+
+    // 向 watchdog 发 SIGINT。
+    kill_process(child.id(), "-INT");
+
+    // 等 watchdog 退出断言退出码 0。
+    let status = child.wait().expect("等待 watchdog 应成功");
+    assert_eq!(status.code(), Some(0), "watchdog 应以退出码 0 退出：{status:?}");
+
+    // server 被优雅停止：sidecar 消失、进程已退出。
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while sidecar_path.exists() {
+        assert!(Instant::now() < deadline, "server 应在有界时间内退出");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(!sidecar::pid_alive(id.pid), "server 进程应已退出");
 }

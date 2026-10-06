@@ -2,7 +2,7 @@
 #![allow(dead_code)]
 
 use std::fs;
-use std::process::{Command, ExitCode, Stdio};
+use std::process::ExitCode;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -15,6 +15,8 @@ use oxide_cli::server::log as server_log;
 use oxide_cli::server::protocol::{ForgeTarget, LookupResult, ServerRequest, ServerResponse};
 use oxide_cli::server::server::{run_server, run_server_rm, RmServerConfig, ServerConfig};
 use oxide_cli::server::sidecar;
+use oxide_cli::server::spawn;
+use oxide_cli::server::watchdog;
 use oxide_compiler::compiler::{compiled_module_hash, Compiler};
 use oxide_compiler::compiler_error;
 use oxide_kernel::kernel::{KernelConfig, KernelCore};
@@ -169,6 +171,12 @@ enum ServerCommands {
         #[arg(long)]
         lookup: Option<String>,
     },
+    /// 监控 server 存活并在崩溃后自动重启（前台进程，60 秒窗口 5 次崩溃即停）。
+    Watchdog {
+        /// 常驻 worker 线程数；缺省取宿主核数。
+        #[arg(long)]
+        workers: Option<u32>,
+    },
 }
 
 /// forge 查询目标（CLI 侧，映射到协议侧 `ForgeTarget`）。
@@ -281,10 +289,8 @@ fn main() -> ExitCode {
     }
 }
 
-/// server 子命令分派：start（两形态）与 cleanup 为最小实现，
-/// version/status/health/info/stop/restart 六臂为真实实现，
-/// log 为真实实现（读 well-known 日志文件，支持 --follow/--level/--lines），
-/// forge 为真实实现（查询四张共享 forge 状态，加三行动旗标）。
+/// server 子命令分派：全部十一臂为真实实现（start 两形态、cleanup、
+/// 五个控制臂、restart、log、forge、watchdog）。
 ///
 /// # 步骤
 /// 1. Start：rm 为真调独立模式入口（进程唯一路径）；foreground 为真当前进程
@@ -301,6 +307,8 @@ fn main() -> ExitCode {
 ///    `--follow` 时进入阻塞跟踪循环（详见 log_command）。
 /// 6. Forge：发 forge 查询请求（目标加三行动旗标），成功打印渲染文本退 0，
 ///    失败打印错误消息退 1。
+/// 7. Watchdog：前台监控进程，拉起 server、三态裁决、崩溃后自动重启
+///    （详见 run_watchdog）。
 ///
 /// # 边界与前提
 /// - `--idle-timeout` 不带 --rm 时静默忽略（语义门控归后续任务）。
@@ -311,6 +319,7 @@ fn main() -> ExitCode {
 ///   收领继续运行）。
 /// - cleanup 可能向 sidecar 记录的进程发 SIGTERM 并删除残留文件。
 /// - 控制臂向 server 建立并关闭一条 Unix socket 连接。
+/// - watchdog spawn 脱离的 server 子进程，崩溃后经同一入口重启。
 fn server_command(command: ServerCommands) -> ExitCode {
     match command {
         ServerCommands::Start { rm, idle_timeout, workers, foreground } => {
@@ -411,6 +420,7 @@ fn server_command(command: ServerCommands) -> ExitCode {
                 _ => None,
             })
         }
+        ServerCommands::Watchdog { workers } => watchdog::run_watchdog(workers),
     }
 }
 
@@ -484,73 +494,19 @@ fn control_arm(request: &ServerRequest, render: fn(&ServerResponse) -> Option<St
 /// - server 为脱离进程，CLI 退出后由 init 收领继续运行。
 fn start_daemon(workers: Option<u32>) -> ExitCode {
     // spawn：脱离子进程，标准流全空，不等待。
-    if let Err(err) = spawn_detached_server(workers) {
+    if let Err(err) = spawn::spawn_detached_server(workers) {
         eprintln!("{}", Red.paint(format!("spawn server 进程失败：{err}")));
         return ExitCode::FAILURE;
     }
 
     // 就绪探测：单循环全覆盖「sidecar 出现 + 健康请求通过」。
-    if let Err(msg) = wait_server_ready(Duration::from_secs(10)) {
+    if let Err(msg) = spawn::wait_server_ready(Duration::from_secs(10)) {
         eprintln!("{}", Red.paint(format!("{msg}（可用 `oxide server cleanup` 人工检查）")));
         return ExitCode::FAILURE;
     }
 
     println!("server 已启动");
     ExitCode::SUCCESS
-}
-
-/// spawn 脱离的前台 server 子进程（`server start --foreground`）：标准流全空，不等待。
-///
-/// # 步骤
-/// 1. 取当前可执行文件路径。
-/// 2. 构造命令 `server start --foreground` 加可选 `--workers N`。
-/// 3. 三个标准流置空并 spawn。
-///
-/// # 边界与前提
-/// - 必须带 `--foreground`：守护形态 spawn 的是前台 server 入口，不带该旗标会
-///   再次进入守护形态形成递归 spawn。
-///
-/// # 副作用
-/// - 创建脱离的子进程，调用方退出后由 init 收领继续运行。
-fn spawn_detached_server(workers: Option<u32>) -> std::io::Result<std::process::Child> {
-    let exe = std::env::current_exe()?;
-    let mut cmd = Command::new(exe);
-    cmd.args(["server", "start", "--foreground"]);
-    if let Some(n) = workers {
-        cmd.args(["--workers", &n.to_string()]);
-    }
-    cmd.stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-}
-
-/// 就绪探测：轮询健康请求直至得 healthy。
-///
-/// # 步骤
-/// 1. 循环发健康请求，得 healthy 即返回成功。
-/// 2. 超过截止返回含超时秒数的消息。
-///
-/// # 边界与前提
-/// - 控制客户端发请求前先读 sidecar 取 socket 路径，sidecar 缺失时自然走
-///   连接失败分支，「sidecar 出现」与「健康请求通过」一个循环全覆盖
-///   （socket 文件出现蕴含监听器已绑定，健康请求通过蕴含 accept 循环在运行）。
-///
-/// # 副作用
-/// - 每轮建立并关闭一条 Unix socket 连接。
-fn wait_server_ready(deadline: Duration) -> Result<(), String> {
-    let end = Instant::now() + deadline;
-    loop {
-        let ready =
-            matches!(send_control_request(&ServerRequest::Health), Ok(ServerResponse::Health { healthy: true }));
-        if ready {
-            return Ok(());
-        }
-        if Instant::now() >= end {
-            return Err(format!("server 未在 {} 秒内就绪", deadline.as_secs()));
-        }
-        std::thread::sleep(Duration::from_millis(100));
-    }
 }
 
 /// restart 子命令：向存活 server 发关闭请求，等其退出后拉起新 server 进程。
@@ -591,13 +547,13 @@ fn restart_command() -> ExitCode {
     }
 
     // 拉起新 server：脱离进程，标准流全空，不等待。
-    if let Err(err) = spawn_detached_server(None) {
+    if let Err(err) = spawn::spawn_detached_server(None) {
         eprintln!("{}", Red.paint(format!("拉起新 server 失败：{err}")));
         return ExitCode::FAILURE;
     }
 
     // 就绪探测：健康请求通过即新 server 的监听与 accept 循环在运行。
-    if let Err(msg) = wait_server_ready(Duration::from_secs(10)) {
+    if let Err(msg) = spawn::wait_server_ready(Duration::from_secs(10)) {
         eprintln!("{}", Red.paint(format!("新 {msg}")));
         return ExitCode::FAILURE;
     }
