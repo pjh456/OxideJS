@@ -110,7 +110,7 @@ enum Commands {
 /// server 子命令：持久 server 进程管理与 --rm 独立模式。
 #[derive(Subcommand)]
 enum ServerCommands {
-    /// 启动 server。持久形态前台常驻（阻塞至关闭请求、信号或 yield 触发退出）；
+    /// 启动 server。持久形态为守护形态（spawn 脱离的后台进程，就绪探测通过后返回）；
     /// --rm 为独立形态（进程唯一 socket、不注册 sidecar、空闲超时或断开即退出）。
     Start {
         /// 独立模式：进程唯一 socket 路径，不注册 sidecar，空闲超时或断开即自动退出。
@@ -122,6 +122,10 @@ enum ServerCommands {
         /// 常驻 worker 线程数；缺省取宿主核数。
         #[arg(long)]
         workers: Option<u32>,
+        /// 前台形态：当前进程直接运行持久 server（守护形态 spawn 的子进程用，
+        /// 不向用户暴露）。
+        #[arg(long, hide = true)]
+        foreground: bool,
     },
     /// 向持久 server 发送关闭请求。
     Stop,
@@ -212,8 +216,10 @@ fn main() -> ExitCode {
 /// 其余两臂为 not_implemented 占位。
 ///
 /// # 步骤
-/// 1. Start：rm 为假调持久 server 入口（well-known 路径），rm 为真调独立
-///    模式入口（进程唯一路径）；`--workers` 为 Some 时覆盖 worker 数。
+/// 1. Start：rm 为真调独立模式入口（进程唯一路径）；foreground 为真当前进程
+///    直接运行持久 server（守护形态 spawn 的子进程用）；否则 spawn 脱离的
+///    server 子进程并就绪探测通过后返回（守护形态，well-known 路径）；
+///    `--workers` 为 Some 时覆盖 worker 数。
 /// 2. Cleanup：调 well-known 路径清理入口，四态结果映射退出码（无残留与
 ///    已清理退 0，拒绝与杀进程失败退 1）并打印结果。
 /// 3. 五个控制臂（version/status/health/info/stop）：发对应控制请求，
@@ -227,12 +233,13 @@ fn main() -> ExitCode {
 /// - 全局旗标 -v / -q / --profile 在 server 臂为空操作。
 ///
 /// # 副作用
-/// - start 阻塞当前进程至 server 退出（持久形态为前台常驻）。
+/// - start 持久形态 spawn 脱离进程，就绪探测通过后返回（server 由 init
+///   收领继续运行）。
 /// - cleanup 可能向 sidecar 记录的进程发 SIGTERM 并删除残留文件。
 /// - 控制臂向 server 建立并关闭一条 Unix socket 连接。
 fn server_command(command: ServerCommands) -> ExitCode {
     match command {
-        ServerCommands::Start { rm, idle_timeout, workers } => {
+        ServerCommands::Start { rm, idle_timeout, workers, foreground } => {
             if rm {
                 let mut config = RmServerConfig {
                     idle_timeout: Duration::from_secs(idle_timeout),
@@ -242,12 +249,14 @@ fn server_command(command: ServerCommands) -> ExitCode {
                     config.worker_count = n as usize;
                 }
                 start_result(run_server_rm(&config))
-            } else {
+            } else if foreground {
                 let mut config = ServerConfig::well_known();
                 if let Some(n) = workers {
                     config.worker_count = n as usize;
                 }
                 start_result(run_server(&config))
+            } else {
+                start_daemon(workers)
             }
         }
         ServerCommands::Cleanup => match well_known_cleanup() {
@@ -322,6 +331,95 @@ fn control_arm(request: &ServerRequest, render: fn(&ServerResponse) -> Option<St
     }
 }
 
+/// start 持久形态：spawn 脱离的前台 server 子进程（`server start
+/// --foreground`），就绪探测通过后打印返回。
+///
+/// # 步骤
+/// 1. spawn 脱离的前台 server 子进程（标准流全空、不等待）；spawn 失败以
+///    红色打印退 1。
+/// 2. 就绪探测：轮询健康请求直至得 healthy（100 毫秒间隔、10 秒截止）；
+///    超时以红色打印退 1。
+/// 3. 打印「server 已启动」退 0。
+///
+/// # 边界与前提
+/// - sidecar 文件由被拉起的 server 进程自己写（先认领再绑定 socket 的启动
+///   顺序契约在 server 进程内执行），本命令不写 sidecar。
+/// - 已有存活 server 时再跑本命令：第二个 spawn 的子进程在认领阶段被拒
+///   （同版本不触碰文件），探测看到第一个 server 即通过，命令退 0（天然幂等）。
+///
+/// # 副作用
+/// - server 为脱离进程，CLI 退出后由 init 收领继续运行。
+fn start_daemon(workers: Option<u32>) -> ExitCode {
+    // spawn：脱离子进程，标准流全空，不等待。
+    if let Err(err) = spawn_detached_server(workers) {
+        eprintln!("{}", Red.paint(format!("spawn server 进程失败：{err}")));
+        return ExitCode::FAILURE;
+    }
+
+    // 就绪探测：单循环全覆盖「sidecar 出现 + 健康请求通过」。
+    if let Err(msg) = wait_server_ready(Duration::from_secs(10)) {
+        eprintln!("{}", Red.paint(format!("{msg}（可用 `oxide server cleanup` 人工检查）")));
+        return ExitCode::FAILURE;
+    }
+
+    println!("server 已启动");
+    ExitCode::SUCCESS
+}
+
+/// spawn 脱离的前台 server 子进程（`server start --foreground`）：标准流全空，不等待。
+///
+/// # 步骤
+/// 1. 取当前可执行文件路径。
+/// 2. 构造命令 `server start --foreground` 加可选 `--workers N`。
+/// 3. 三个标准流置空并 spawn。
+///
+/// # 边界与前提
+/// - 必须带 `--foreground`：守护形态 spawn 的是前台 server 入口，不带该旗标会
+///   再次进入守护形态形成递归 spawn。
+///
+/// # 副作用
+/// - 创建脱离的子进程，调用方退出后由 init 收领继续运行。
+fn spawn_detached_server(workers: Option<u32>) -> std::io::Result<std::process::Child> {
+    let exe = std::env::current_exe()?;
+    let mut cmd = Command::new(exe);
+    cmd.args(["server", "start", "--foreground"]);
+    if let Some(n) = workers {
+        cmd.args(["--workers", &n.to_string()]);
+    }
+    cmd.stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+}
+
+/// 就绪探测：轮询健康请求直至得 healthy。
+///
+/// # 步骤
+/// 1. 循环发健康请求，得 healthy 即返回成功。
+/// 2. 超过截止返回含超时秒数的消息。
+///
+/// # 边界与前提
+/// - 控制客户端发请求前先读 sidecar 取 socket 路径，sidecar 缺失时自然走
+///   连接失败分支，「sidecar 出现」与「健康请求通过」一个循环全覆盖
+///   （socket 文件出现蕴含监听器已绑定，健康请求通过蕴含 accept 循环在运行）。
+///
+/// # 副作用
+/// - 每轮建立并关闭一条 Unix socket 连接。
+fn wait_server_ready(deadline: Duration) -> Result<(), String> {
+    let end = Instant::now() + deadline;
+    loop {
+        let ready =
+            matches!(send_control_request(&ServerRequest::Health), Ok(ServerResponse::Health { healthy: true }));
+        if ready {
+            return Ok(());
+        }
+        if Instant::now() >= end {
+            return Err(format!("server 未在 {} 秒内就绪", deadline.as_secs()));
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
 /// restart 子命令：向存活 server 发关闭请求，等其退出后拉起新 server 进程。
 ///
 /// # 步骤
@@ -360,37 +458,15 @@ fn restart_command() -> ExitCode {
     }
 
     // 拉起新 server：脱离进程，标准流全空，不等待。
-    let exe = match std::env::current_exe() {
-        Ok(path) => path,
-        Err(err) => {
-            eprintln!("{}", Red.paint(format!("获取当前可执行文件路径失败：{err}")));
-            return ExitCode::FAILURE;
-        }
-    };
-    if let Err(err) = Command::new(exe)
-        .args(["server", "start"])
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-    {
+    if let Err(err) = spawn_detached_server(None) {
         eprintln!("{}", Red.paint(format!("拉起新 server 失败：{err}")));
         return ExitCode::FAILURE;
     }
 
     // 就绪探测：健康请求通过即新 server 的监听与 accept 循环在运行。
-    let deadline = Instant::now() + Duration::from_secs(10);
-    loop {
-        let ready =
-            matches!(send_control_request(&ServerRequest::Health), Ok(ServerResponse::Health { healthy: true }));
-        if ready {
-            break;
-        }
-        if Instant::now() >= deadline {
-            eprintln!("{}", Red.paint("新 server 未在 10 秒内就绪"));
-            return ExitCode::FAILURE;
-        }
-        std::thread::sleep(Duration::from_millis(100));
+    if let Err(msg) = wait_server_ready(Duration::from_secs(10)) {
+        eprintln!("{}", Red.paint(format!("新 {msg}")));
+        return ExitCode::FAILURE;
     }
 
     println!("已重启");

@@ -99,8 +99,9 @@ fn server_cleanup_exit_0() {
     assert!(!sidecar::well_known_sidecar_path().exists(), "sidecar 文件应不存在");
 }
 
-/// start 端到端：起真实子进程，well-known 路径连接，版本帧断言构建期版本，
-/// 关闭帧后子进程退 0，socket 与 sidecar 文件被删。
+/// start 端到端：CLI 即刻返回（server 是脱离的孙进程），断言退 0 且打印
+/// 「已启动」，well-known 路径连接，版本帧断言构建期版本，关闭帧后 server
+/// 进程退出，socket 与 sidecar 文件被删。
 #[test]
 fn server_start_e2e() {
     let _guard = WELL_KNOWN_LOCK.lock().expect("全局路径锁不应中毒");
@@ -110,18 +111,15 @@ fn server_start_e2e() {
     // 探活先行：存活 server 占用全局路径时 panic，不抢占。
     assert!(!sidecar::is_server_alive(&socket), "存活 server 占用 well-known 路径，测试不抢占");
 
-    // worker 数压到 2：避免按宿主核数预热的成本。
-    let mut child = Command::new(env!("CARGO_BIN_EXE_oxide"))
-        .args(["server", "start", "--workers", "2"])
-        .spawn()
-        .expect("oxide server start 应可启动");
+    // start 为守护形态：CLI 即刻返回，server 是脱离的孙进程；worker 数压到 2
+    // 避免按宿主核数预热的成本。
+    let output = oxide(&["server", "start", "--workers", "2"]);
+    assert_eq!(output.status.code(), Some(0), "start 应退 0");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("已启动"), "start 应打印「已启动」：{stdout}");
 
-    // 轮询 socket 文件出现（10 秒截止）判就绪。
-    let deadline = Instant::now() + Duration::from_secs(10);
-    while !socket.exists() {
-        assert!(Instant::now() < deadline, "socket 文件未出现");
-        std::thread::sleep(Duration::from_millis(10));
-    }
+    // 读 sidecar 取 server 进程号。
+    let id = sidecar::read_identity(&sidecar_path).expect("读 sidecar 应成功");
 
     // 版本请求帧：版本应等于构建期版本。
     let mut stream = UnixStream::connect(&socket).expect("连接 server 应成功");
@@ -138,22 +136,52 @@ fn server_start_e2e() {
     assert!(matches!(response, ServerResponse::Shutdown), "应得关闭确认帧：{response:?}");
     drop(stream);
 
-    // 等子进程以退出码 0 退出（30 秒截止）。
+    // 轮询 sidecar 文件消失（30 秒截止、50 毫秒间隔）判 server 进程已退出。
     let deadline = Instant::now() + Duration::from_secs(30);
-    loop {
-        match child.try_wait() {
-            Ok(Some(status)) => {
-                assert_eq!(status.code(), Some(0), "server 应以退出码 0 退出：{status:?}");
-                break;
-            }
-            Ok(None) => {
-                assert!(Instant::now() < deadline, "server 应在有界时间内退出");
-                std::thread::sleep(Duration::from_millis(50));
-            }
-            Err(err) => panic!("等待子进程失败：{err}"),
-        }
+    while sidecar_path.exists() {
+        assert!(Instant::now() < deadline, "server 应在有界时间内退出");
+        std::thread::sleep(Duration::from_millis(50));
     }
 
+    assert!(!socket.exists(), "socket 文件应被删除");
+    assert!(!sidecar_path.exists(), "sidecar 文件应被删除");
+    assert!(!sidecar::pid_alive(id.pid), "server 进程应已退出");
+}
+
+/// start 双启动幂等：已有存活 server 时再跑 start，断言第二次退 0 且打印
+/// 「已启动」（第二个 spawn 的子进程认领被拒退 1 不触碰文件，探测看到第一个
+/// server 即通过）。
+#[test]
+fn server_start_when_running() {
+    let _guard = WELL_KNOWN_LOCK.lock().expect("全局路径锁不应中毒");
+    let socket = sidecar::well_known_socket_path();
+    let sidecar_path = sidecar::well_known_sidecar_path();
+
+    // 探活先行：存活 server 占用全局路径时 panic，不抢占。
+    assert!(!sidecar::is_server_alive(&socket), "存活 server 占用 well-known 路径，测试不抢占");
+
+    // 首次 start：CLI 即刻返回，server 是脱离的孙进程。
+    let output = oxide(&["server", "start", "--workers", "2"]);
+    assert_eq!(output.status.code(), Some(0), "首次 start 应退 0");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("已启动"), "首次 start 应打印「已启动」：{stdout}");
+
+    // 二次 start：第二个 spawn 的子进程认领被拒，探测看到第一个 server 即通过。
+    let output = oxide(&["server", "start", "--workers", "2"]);
+    assert_eq!(output.status.code(), Some(0), "二次 start 应退 0");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("已启动"), "二次 start 应打印「已启动」：{stdout}");
+
+    // 收尾：发关闭请求，等 sidecar 消失。
+    let mut stream = UnixStream::connect(&socket).expect("连接 server 应成功");
+    let response = send_and_recv(&mut stream, &ServerRequest::Shutdown);
+    assert!(matches!(response, ServerResponse::Shutdown), "应得关闭确认帧：{response:?}");
+    drop(stream);
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while sidecar_path.exists() {
+        assert!(Instant::now() < deadline, "server 应在有界时间内退出");
+        std::thread::sleep(Duration::from_millis(50));
+    }
     assert!(!socket.exists(), "socket 文件应被删除");
     assert!(!sidecar_path.exists(), "sidecar 文件应被删除");
 }
