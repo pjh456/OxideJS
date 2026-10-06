@@ -830,16 +830,28 @@ impl Emitter {
             }
             let is_tier = self.is_global_tier_name(ctx, name);
             let is_implicit = ctx.is_implicit_global_reg(var_reg);
+            let is_builtin = ctx.is_builtin(name) && !ctx.is_local_shadowing_builtin(name);
             if is_implicit && ctx.is_strict {
                 // 严格模式未声明更新写：值无关抛 ReferenceError。
                 return self.emit_strict_undeclared_write(name, ctx);
             }
             // RMW 前从全局对象属性取旧值：tier 名（顶层已声明 var）与未声明名同，
-            // 属性缺失按 undefined（update 旧值角落，GetBaseValue 语义，不抛）。
+            // 属性缺失按 undefined（update 旧值角落，GetBaseValue 语义，不抛）；
+            // 已知 builtin 名（非局部遮蔽）读 A 侧属性，属性缺失（delete 真删后）
+            // 抛 ReferenceError，与裸读同形——镜像槽不反映删除，无法自区分缺位
+            // 与在位 undefined。
             if is_tier || is_implicit {
                 let key_idx = ctx.add_constant(Constant::String(name.to_string()));
                 ctx.inst(Inst::new(
                     OpCode::LOAD_GLOBAL_TYPEOF,
+                    Operand::Reg(var_reg),
+                    Operand::Const(key_idx),
+                    Operand::None,
+                ));
+            } else if is_builtin {
+                let key_idx = ctx.add_constant(Constant::String(name.to_string()));
+                ctx.inst(Inst::new(
+                    OpCode::LOAD_GLOBAL,
                     Operand::Reg(var_reg),
                     Operand::Const(key_idx),
                     Operand::None,
