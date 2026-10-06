@@ -15,6 +15,15 @@ use oxide_types::mem::P;
 use oxide_types::object::{JsObject, JsString, PropAttributes};
 use oxide_types::value::JsValue;
 
+/// 读 GC 压力模式开关：环境变量 `OXIDE_GC_PRESSURE` 存在即开启（取值不解析）。
+///
+/// 每次 VM 构造读一次，不做进程级缓存——缓存会在测试二进制内先构造的 VM 处
+/// 锁死取值，后跑的测试再设环境变量不生效。VM 构造不是热路径（每测试/每池/
+/// 每进程一次），读环境变量的开销可忽略。
+fn gc_pressure_mode_from_env() -> bool {
+    std::env::var_os("OXIDE_GC_PRESSURE").is_some()
+}
+
 impl Vm {
     /// Cons（rope）节点保留的单元阈值：拼接总长（UTF-16 单元数）≤ 该值时
     /// 急切扁平。小链的"链接 + 首次消费扁平化"双重分配高于直接拷贝，直接
@@ -138,6 +147,7 @@ impl Vm {
                 gc_threshold_cached: gc_threshold,
                 gc_watermark: gc_threshold,
                 pending_forced_collect: false,
+                gc_pressure_mode: gc_pressure_mode_from_env(),
             },
             symbols: SymbolState {
                 symbol_counter: 0,
@@ -282,6 +292,7 @@ impl Vm {
                 gc_threshold_cached: gc_threshold,
                 gc_watermark: gc_threshold,
                 pending_forced_collect: false,
+                gc_pressure_mode: gc_pressure_mode_from_env(),
             },
             symbols: SymbolState {
                 symbol_counter: 0,

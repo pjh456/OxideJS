@@ -57,6 +57,10 @@ pub(crate) struct GcState {
     /// 宿主强制收集旗标（`$262.gc()`）：native 重入中置位，由下一个顶层
     /// 指令边界（完整收集的唯一安全点：无在途 builtin 局部裸指针）消费。
     pub(crate) pending_forced_collect: bool,
+    /// GC 压力模式开关（构造时读环境变量 `OXIDE_GC_PRESSURE`，存在即开）：
+    /// 开启后每个顶层指令边界做一次完整收集，与强制收集共用同一安全点入口，
+    /// 同时跳过两个水位触发的档（完整收集已涵盖其全部工作）。
+    pub(crate) gc_pressure_mode: bool,
 }
 
 impl GcState {

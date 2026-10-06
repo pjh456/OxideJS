@@ -125,9 +125,10 @@ impl Vm {
             // 返回顶层后检查恢复，存活值此时已回拷为执行根。账目未超水位时仅
             // 少量字段比较。
             if self.native_call_depth == 0 {
-                // 宿主 `$262.gc()` 置位的强制收集在此边界消费：完整收集
-                // 唯一安全点（无在途 dispatch 局部值），与正常触发路径同一入口。
-                if self.gc_state.pending_forced_collect {
+                // 宿主 `$262.gc()` 置位的强制收集与压力模式收集在此边界消费：
+                // 完整收集唯一安全点（无在途 dispatch 局部值），与正常触发路径
+                // 同一入口。压力模式开启后每个顶层边界做一次完整收集。
+                if self.gc_state.pending_forced_collect || self.gc_state.gc_pressure_mode {
                     self.gc_state.pending_forced_collect = false;
                     self.collect_session_gc();
                 }
@@ -141,13 +142,15 @@ impl Vm {
                 if alloc > self.gc_state.run_alloc_peak {
                     self.gc_state.run_alloc_peak = alloc;
                 }
-                if bytes >= self.gc_state.string_gc_watermark {
+                // 压力模式开启时跳过两档水位收集：完整收集已涵盖其全部工作，
+                // 同边界双触发只会多一轮空转 mark。
+                if bytes >= self.gc_state.string_gc_watermark && !self.gc_state.gc_pressure_mode {
                     self.maybe_collect_session_strings();
                 }
                 // 执行期原地 sweep 收集：O(1) 包络超触发水位 → 收集（无门控：
                 // 迭代器键引用经根收集标活，原地释放不搬移存活对象；
                 // 边界契约见 maybe_collect_in_run）。
-                if alloc >= self.gc_state.gc_watermark {
+                if alloc >= self.gc_state.gc_watermark && !self.gc_state.gc_pressure_mode {
                     self.maybe_collect_in_run();
                 }
             }
