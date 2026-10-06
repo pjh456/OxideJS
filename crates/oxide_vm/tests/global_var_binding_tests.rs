@@ -616,3 +616,43 @@ fn nonextensible_global_var_existing_property_no_throw() {
         "var ex; ex === 1 && globalThis.ex === 1",
     );
 }
+
+// ── 顶层 var 撞 builtin 名与 accessor 形：写面对照 node 锚定（零覆写 / 可写仅更值）──
+
+#[test]
+fn var_init_on_builtin_math_updates_value() {
+    // var Math = 1：Math 是既有可写数据属性（c:true、e:false），PutValue 更新
+    // 值、保 enumerable；裸读与反射见同一新值。
+    eval_truthy("var Math = 1; Math === 1 && globalThis.Math === 1 && typeof Math === 'number'");
+    eval_truthy(
+        "var Math = 1; var d = Object.getOwnPropertyDescriptor(globalThis, 'Math'); \
+         d.value === 1 && d.writable === true && d.enumerable === false && d.configurable === true",
+    );
+}
+
+#[test]
+fn strict_var_init_on_builtin_math_updates_value() {
+    // strict 同形：可写 builtin 名更新值不抛。
+    eval_truthy("'use strict'; var Math = 1; Math === 1 && globalThis.Math === 1");
+}
+
+#[test]
+fn var_init_on_accessor_property_does_not_overwrite() {
+    // accessor 形：var 声明写点不覆写访问器，两模式均零修改（描述符保持原样）。
+    // 既有 accessor 须先于 GDI 存在，分两阶段。写面锚定：globalThis 反射见
+    // 访问器原值（getter 返回 1），描述符保持 accessor 形（get 在、无 value 面）。
+    assert_two_phases_truthy(
+        "Object.defineProperty(globalThis, 'acc', {get() { return 1; }, configurable: true})",
+        "var acc = 2; globalThis.acc === 1",
+    );
+    assert_two_phases_truthy(
+        "Object.defineProperty(globalThis, 'acc2', {get() { return 1; }, configurable: true})",
+        "var acc2 = 2; var d = Object.getOwnPropertyDescriptor(globalThis, 'acc2'); \
+         typeof d.get === 'function' && d.value === undefined",
+    );
+    // strict 同形：accessor 零修改不抛。
+    assert_two_phases_truthy(
+        "Object.defineProperty(globalThis, 'acc3', {get() { return 1; }, configurable: true})",
+        "'use strict'; var acc3 = 2; globalThis.acc3 === 1",
+    );
+}

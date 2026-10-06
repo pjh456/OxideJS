@@ -303,13 +303,14 @@ impl Vm {
 
     /// 定义全局 var 绑定数据属性：rd=全局对象，a=值，b=键。
     ///
-    /// 描述符语义（CreateGlobalVarBinding）：
-    /// - 已有可配置数据属性且不可写：no-op 返回——规范不更新既有数据描述符
-    ///   （writable/enumerable/configurable 与值均保持原样）。
-    /// - 已有可配置属性且可写（数据或 accessor）：保 enumerable/configurable、
-    ///   更新值；accessor 形重定义为数据属性（既有行为，不扩面）。
-    /// - 已有不可配置属性：走定义不变量检查（末尾统一路径）——描述符冲突或
-    ///   不可写属性值变更时静默 no-op，否则仅更新值、描述符不变。
+    /// 描述符语义（CreateGlobalVarBinding 写点，对照 node 锚定）：
+    /// - 已有 accessor 属性（可配置或不可配置）：零修改返回——var 声明写点
+    ///   不覆写访问器（两模式均不抛，值与描述符保持原样）。
+    /// - 已有数据属性且不可写（可配置或不可配置）：strict 抛 TypeError、
+    ///   sloppy 静默 no-op（规范不更新既有数据描述符，writable/enumerable/
+    ///   configurable 与值均保持原样）。
+    /// - 已有数据属性且可写（可配置或不可配置）：保 enumerable/configurable、
+    ///   仅更新值。
     /// - 属性缺失：新建可写/可枚举/不可配置数据属性。
     ///
     /// # 边界与前提
@@ -323,24 +324,32 @@ impl Vm {
         let prop_name_si = self.property_key_si(self.regs[b])?;
         let value = self.regs[a];
         let obj = unsafe { &mut *obj_val.as_js_object_ptr() };
-        // 已有可配置属性：CreateGlobalVarBinding 不改既有数据描述符；可写数据
-        // 属性仅更新值（保 e/c），accessor 形重定义为数据属性。
+        // 已有属性：CreateGlobalVarBinding 不改既有描述符——accessor 形零修改
+        // （不覆写、不抛）；数据属性不可写时 strict 抛 TypeError、sloppy 静默
+        // no-op；可写数据属性保 enumerable/configurable 仅更新值。
         if let Some(pos) = self.kernel_core.shape_forge().lookup_position(obj.shape_id(), prop_name_si) {
             if let Some(current) = obj.prop_meta_at(pos) {
-                if current.attributes.configurable() {
-                    // 既有数据属性不可写：不更新描述符也不更新值（规范零修改）。
-                    if !current.is_accessor && !current.attributes.writable() {
-                        return Ok(());
-                    }
-                    let attrs =
-                        PropAttributes::new(true, current.attributes.enumerable(), current.attributes.configurable());
-                    let _ = self.define_data_property(obj, prop_name_si, value, attrs);
+                // accessor 形：var 声明写点不覆写访问器，两模式均零修改。
+                if current.is_accessor {
                     return Ok(());
                 }
+                // 既有数据属性不可写（可配置与不可配置同口径）：strict 抛
+                // TypeError、sloppy 静默 no-op。
+                if !current.attributes.writable() {
+                    return if self.current_strict() {
+                        self.raise_error_kind("TypeError", "cannot assign to read-only property")
+                    } else {
+                        Ok(())
+                    };
+                }
+                // 可写数据属性：保 enumerable/configurable、仅更新值。
+                let attrs =
+                    PropAttributes::new(true, current.attributes.enumerable(), current.attributes.configurable());
+                let _ = self.define_data_property(obj, prop_name_si, value, attrs);
+                return Ok(());
             }
         }
-        // 属性缺失或不可配置既有属性：统一走定义，不可配置时由定义侧不变量
-        // 检查决定更新值或静默 no-op。
+        // 属性缺失：新建可写/可枚举/不可配置数据属性。
         let _ = self.define_data_property(obj, prop_name_si, value, PropAttributes::new(true, true, false));
         Ok(())
     }
@@ -351,8 +360,9 @@ impl Vm {
     /// eval 脚本 var/函数声明的属性描述符）。
     ///
     /// # 步骤
-    /// 1. 属性已存在：CreateGlobalVarBinding 不改既有描述符——保持原属性只更新
-    ///    值（不可写数据/访问器：strict 抛 TypeError、sloppy 静默 no-op）。
+    /// 1. 属性已存在：CreateGlobalVarBinding 不改既有描述符——accessor 形零修改
+    ///    （不覆写、不抛）；数据属性不可写时 strict 抛 TypeError、sloppy 静默
+    ///    no-op；可写数据属性保原描述符仅更新值。
     /// 2. 属性缺失：新建可写/可枚举/可配置属性；全局对象不可扩展 → TypeError
     ///    （两模式均抛，CreateGlobalVarBinding 语义）。
     ///
@@ -370,18 +380,24 @@ impl Vm {
         let global_ptr = self.session.global_object().as_ptr() as *mut JsObject;
         // SAFETY: 全局对象钉在 session 永久区，指针在 VM 生命周期内有效。
         let obj = unsafe { &mut *global_ptr };
-        // 属性已存在：保持原描述符只更新值，不升级 configurable（规范：
-        // CreateGlobalVarBinding 对既有属性不改描述符）。
+        // 属性已存在：CreateGlobalVarBinding 不改既有描述符——accessor 形零修改
+        // （不覆写、不抛）；数据属性不可写时 strict 抛 TypeError、sloppy 静默
+        // no-op；可写数据属性保原描述符仅更新值。
         if let Some(pos) = self.kernel_core.shape_forge().lookup_position(obj.shape_id(), si) {
             if let Some(current) = obj.prop_meta_at(pos) {
-                let writable = !current.is_accessor && current.attributes.writable();
-                if !writable {
+                // accessor 形：var 声明写点不覆写访问器，两模式均零修改。
+                if current.is_accessor {
+                    return Ok(());
+                }
+                // 既有数据属性不可写：strict 抛 TypeError、sloppy 静默 no-op。
+                if !current.attributes.writable() {
                     return if self.current_strict() {
                         self.raise_error_kind("TypeError", "cannot assign to read-only property")
                     } else {
                         Ok(())
                     };
                 }
+                // 可写数据属性：保原描述符仅更新值。
                 return self.define_data_property(obj, si, value, current.attributes);
             }
         }
