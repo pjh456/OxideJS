@@ -40,15 +40,17 @@ impl ServerIdentity {
     /// 构造当前进程的身份（pid、版本、启动时间、启动时刻刻度）。
     ///
     /// # 边界与前提
+    /// - 版本由调用方注入（生产默认取构建期版本，测试注入可区分值），
+    ///   本函数不读取构建期版本。
     /// - 非 Linux 宿主（`/proc` 缺位）时 `starttime` 填 0，交叉核对退化，
     ///   liveness 由 socket 探活裁决。
-    pub fn new(socket_path: impl AsRef<Path>) -> Self {
+    pub fn new(socket_path: impl AsRef<Path>, version: &str) -> Self {
         let pid = std::process::id();
         let started_at = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
         ServerIdentity {
             pid,
             socket_path: socket_path.as_ref().to_string_lossy().into_owned(),
-            version: env!("CARGO_PKG_VERSION").to_string(),
+            version: version.to_string(),
             started_at,
             starttime: process_starttime(pid).unwrap_or(0),
         }
@@ -144,13 +146,15 @@ pub fn process_starttime(pid: u32) -> Option<u64> {
     rest.split_whitespace().nth(19)?.parse().ok()
 }
 
-/// 认领结果：注册入口的三态。
+/// 认领结果：注册入口的四态。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ClaimResult {
     /// 新注册成功（sidecar 已写入）。
     Registered,
-    /// 已有存活 server，拒绝注册。
+    /// 已有同版本存活 server，拒绝注册（旧 server 继续运行）。
     AlreadyRunning,
+    /// 已有存活 server 且版本与本进程不同（含旧 sidecar 不可读），调用方应强制交接。
+    VersionMismatch,
     /// 存活证据不足以裁决（进程存活但 socket 不在），保守拒绝并提示跑清理命令。
     RefusedAmbiguous,
 }
@@ -159,7 +163,9 @@ pub enum ClaimResult {
 ///
 /// # 步骤
 /// 1. 尝试 O_EXCL 创建；sidecar 不存在即成功。
-/// 2. sidecar 已存在：探活 socket，连接成功即有存活 server，拒绝。
+/// 2. sidecar 已存在：探活 socket，连接成功即有存活 server，读回旧 sidecar
+///    与本进程版本比对：匹配判 `AlreadyRunning`，不匹配或不可读判
+///    `VersionMismatch`。
 /// 3. socket 死：按 sidecar 可读性分支。
 ///    - 可解析且 PID 死：陈旧残留，删 sidecar 与 socket 文件后重建。
 ///    - 可解析且 PID 活：交叉核对启动时刻刻度，匹配则保守拒绝（server
@@ -168,6 +174,9 @@ pub enum ClaimResult {
 ///
 /// # 边界与前提
 /// - 启动顺序契约是「先写 sidecar 再 bind socket」，存活 server 必有 sidecar。
+/// - 版本比对是精确字符串相等（同一性判定，不是新旧次序判定）；旧 sidecar
+///   不可读（损坏、缺 version 字段）按不匹配处理，方向安全（强制交接失败
+///   不触碰旧 server 的文件，旧 server 继续运行）。
 ///
 /// # 副作用
 /// - 可能创建、删除、重写 sidecar 与 socket 文件。
@@ -175,9 +184,9 @@ pub enum ClaimResult {
 /// # 注意事项
 /// - 意外 io 错误（权限等）保守判 `RefusedAmbiguous`；方向安全（拒绝注册
 ///   不会双注册）。
-pub fn claim_sidecar(sidecar_path: &Path, socket_path: &Path) -> ClaimResult {
+pub fn claim_sidecar(sidecar_path: &Path, socket_path: &Path, new_version: &str) -> ClaimResult {
     // 先尝试 O_EXCL 创建：sidecar 不存在即成功。
-    match write_exclusive(&ServerIdentity::new(socket_path), sidecar_path) {
+    match write_exclusive(&ServerIdentity::new(socket_path, new_version), sidecar_path) {
         Ok(()) => return ClaimResult::Registered,
         Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {}
         Err(_) => return ClaimResult::RefusedAmbiguous,
@@ -185,27 +194,32 @@ pub fn claim_sidecar(sidecar_path: &Path, socket_path: &Path) -> ClaimResult {
 
     // socket 探活是存活的唯一事实源：连接成功即有存活 server。
     if is_server_alive(socket_path) {
-        return ClaimResult::AlreadyRunning;
+        // 读回旧 sidecar 与本进程版本比对：匹配拒绝启动，不匹配或不可读
+        // 交调用方强制交接。
+        match read_identity(sidecar_path) {
+            Some(id) if id.version == new_version => return ClaimResult::AlreadyRunning,
+            _ => return ClaimResult::VersionMismatch,
+        }
     }
 
     // socket 死：按 sidecar 可读性分支。
     match read_identity(sidecar_path) {
-        Some(id) => claim_dead_socket(&id, sidecar_path, socket_path),
+        Some(id) => claim_dead_socket(&id, sidecar_path, socket_path, new_version),
         None => {
             // 损坏文件：删 sidecar 与 socket 文件后重建（socket 探活已失败，
             // 文件无监听者，不会误删存活 server 的 socket）。
             remove_stale(sidecar_path, socket_path);
-            re_register(sidecar_path, socket_path)
+            re_register(sidecar_path, socket_path, new_version)
         }
     }
 }
 
 /// socket 死且 sidecar 可解析：按 PID 与启动时刻刻度裁决陈旧性。
-fn claim_dead_socket(id: &ServerIdentity, sidecar_path: &Path, socket_path: &Path) -> ClaimResult {
+fn claim_dead_socket(id: &ServerIdentity, sidecar_path: &Path, socket_path: &Path, new_version: &str) -> ClaimResult {
     // PID 死：陈旧残留，删 sidecar 与 socket 文件后重建。
     if !pid_alive(id.pid) {
         remove_stale(sidecar_path, socket_path);
-        return re_register(sidecar_path, socket_path);
+        return re_register(sidecar_path, socket_path, new_version);
     }
 
     // PID 活：交叉核对启动时刻刻度裁决 PID 复用。
@@ -216,7 +230,7 @@ fn claim_dead_socket(id: &ServerIdentity, sidecar_path: &Path, socket_path: &Pat
 
     // 刻度失配：PID 已被复用，sidecar 是陈旧残留。
     remove_stale(sidecar_path, socket_path);
-    re_register(sidecar_path, socket_path)
+    re_register(sidecar_path, socket_path, new_version)
 }
 
 /// 删除 sidecar 与 socket 文件（socket 探活已失败，文件无监听者，不会误删
@@ -227,8 +241,8 @@ fn remove_stale(sidecar_path: &Path, socket_path: &Path) {
 }
 
 /// 清理后重建 sidecar，重建失败保守拒绝。
-fn re_register(sidecar_path: &Path, socket_path: &Path) -> ClaimResult {
-    match write_exclusive(&ServerIdentity::new(socket_path), sidecar_path) {
+fn re_register(sidecar_path: &Path, socket_path: &Path, new_version: &str) -> ClaimResult {
+    match write_exclusive(&ServerIdentity::new(socket_path, new_version), sidecar_path) {
         Ok(()) => ClaimResult::Registered,
         Err(_) => ClaimResult::RefusedAmbiguous,
     }
@@ -301,7 +315,7 @@ mod tests {
     fn identity_roundtrip() {
         let dir = TestDir::new();
         let path = dir.path("sidecar.json");
-        let id = ServerIdentity::new("/tmp/oxide-test.sock");
+        let id = ServerIdentity::new("/tmp/oxide-test.sock", "0.0.0");
         write_exclusive(&id, &path).expect("写 sidecar 应成功");
         let read = read_identity(&path).expect("读回 sidecar 应成功");
         assert_eq!(read, id, "五字段应逐字段一致");
@@ -312,7 +326,7 @@ mod tests {
     fn write_exclusive_second_create_fails() {
         let dir = TestDir::new();
         let path = dir.path("sidecar.json");
-        let id = ServerIdentity::new("/tmp/oxide-test.sock");
+        let id = ServerIdentity::new("/tmp/oxide-test.sock", "0.0.0");
         write_exclusive(&id, &path).expect("首次写入应成功");
         let err = write_exclusive(&id, &path).unwrap_err();
         assert_eq!(err.kind(), io::ErrorKind::AlreadyExists, "二次 create_new 必得 AlreadyExists");
@@ -324,22 +338,37 @@ mod tests {
         let dir = TestDir::new();
         let sidecar = dir.path("sidecar.json");
         let socket = dir.path("server.sock");
-        assert_eq!(claim_sidecar(&sidecar, &socket), ClaimResult::Registered);
+        assert_eq!(claim_sidecar(&sidecar, &socket, "0.0.0"), ClaimResult::Registered);
         let id = read_identity(&sidecar).expect("sidecar 应已写入");
         assert_eq!(id.pid, std::process::id());
         assert_eq!(id.socket_path, socket.to_str().unwrap());
     }
 
-    /// 认领分支：存活 server（真实监听者绑 socket 路径）拒绝注册。
+    /// 认领分支：存活监听者加同版本 sidecar 判 AlreadyRunning（旧 server 继续
+    /// 运行，新 server 拒绝启动）。
     #[test]
-    fn claim_live_server_refused() {
+    fn claim_live_server_same_version_refused() {
         let dir = TestDir::new();
         let sidecar = dir.path("sidecar.json");
         let socket = dir.path("server.sock");
         // 存活 server 必有 sidecar（启动顺序契约：先写 sidecar 再 bind socket）。
         let listener = UnixListener::bind(&socket).expect("绑定监听者应成功");
-        write_exclusive(&ServerIdentity::new(socket.to_str().unwrap()), &sidecar).expect("写 sidecar 应成功");
-        assert_eq!(claim_sidecar(&sidecar, &socket), ClaimResult::AlreadyRunning);
+        write_exclusive(&ServerIdentity::new(socket.to_str().unwrap(), "0.0.0"), &sidecar).expect("写 sidecar 应成功");
+        assert_eq!(claim_sidecar(&sidecar, &socket, "0.0.0"), ClaimResult::AlreadyRunning);
+        drop(listener);
+    }
+
+    /// 认领分支：存活监听者加异版本 sidecar 判 VersionMismatch（调用方应强制
+    /// 交接）。
+    #[test]
+    fn claim_live_server_version_mismatch() {
+        let dir = TestDir::new();
+        let sidecar = dir.path("sidecar.json");
+        let socket = dir.path("server.sock");
+        let listener = UnixListener::bind(&socket).expect("绑定监听者应成功");
+        // 旧 sidecar 版本与本进程版本不同：比对判不匹配。
+        write_exclusive(&ServerIdentity::new(socket.to_str().unwrap(), "0.0.0"), &sidecar).expect("写 sidecar 应成功");
+        assert_eq!(claim_sidecar(&sidecar, &socket, "0.0.1"), ClaimResult::VersionMismatch);
         drop(listener);
     }
 
@@ -350,7 +379,7 @@ mod tests {
         let sidecar = dir.path("sidecar.json");
         let socket = dir.path("server.sock");
         write_exclusive(&stale_identity(dead_pid(), &socket), &sidecar).expect("写陈旧 sidecar 应成功");
-        assert_eq!(claim_sidecar(&sidecar, &socket), ClaimResult::Registered);
+        assert_eq!(claim_sidecar(&sidecar, &socket, "0.0.0"), ClaimResult::Registered);
         let id = read_identity(&sidecar).expect("重建 sidecar 应可读");
         assert_eq!(id.pid, std::process::id(), "重建 sidecar 应为本进程身份");
     }
@@ -363,7 +392,7 @@ mod tests {
         let socket = dir.path("server.sock");
         // PID 是本进程（存活），启动时刻刻度为占位值：PID 已复用。
         write_exclusive(&stale_identity(std::process::id(), &socket), &sidecar).expect("写陈旧 sidecar 应成功");
-        assert_eq!(claim_sidecar(&sidecar, &socket), ClaimResult::Registered);
+        assert_eq!(claim_sidecar(&sidecar, &socket, "0.0.0"), ClaimResult::Registered);
     }
 
     /// 认领分支：存活 PID 加匹配启动时刻保守拒绝。
@@ -373,9 +402,9 @@ mod tests {
         let sidecar = dir.path("sidecar.json");
         let socket = dir.path("server.sock");
         // PID 与启动时刻刻度都是本进程的：进程活且刻度匹配。
-        let id = ServerIdentity::new(socket.to_str().unwrap());
+        let id = ServerIdentity::new(socket.to_str().unwrap(), "0.0.0");
         write_exclusive(&id, &sidecar).expect("写 sidecar 应成功");
-        assert_eq!(claim_sidecar(&sidecar, &socket), ClaimResult::RefusedAmbiguous);
+        assert_eq!(claim_sidecar(&sidecar, &socket, "0.0.0"), ClaimResult::RefusedAmbiguous);
     }
 
     /// 认领分支：损坏文件加死 socket 判陈旧，sidecar 重建。
@@ -386,7 +415,7 @@ mod tests {
         let socket = dir.path("server.sock");
         // 损坏文件：半写 JSON。
         fs::write(&sidecar, r#"{"pid":1,"socket_path":""#).expect("写损坏文件应成功");
-        assert_eq!(claim_sidecar(&sidecar, &socket), ClaimResult::Registered);
+        assert_eq!(claim_sidecar(&sidecar, &socket, "0.0.0"), ClaimResult::Registered);
         let id = read_identity(&sidecar).expect("重建 sidecar 应可读");
         assert_eq!(id.pid, std::process::id());
     }
@@ -401,21 +430,22 @@ mod tests {
         fs::write(&sidecar, "not json at all").expect("写损坏文件应成功");
         // 陈旧 socket 文件：文件存在但无监听者。
         fs::write(&socket, b"stale").expect("写陈旧 socket 文件应成功");
-        assert_eq!(claim_sidecar(&sidecar, &socket), ClaimResult::Registered);
+        assert_eq!(claim_sidecar(&sidecar, &socket, "0.0.0"), ClaimResult::Registered);
         let id = read_identity(&sidecar).expect("重建 sidecar 应可读");
         assert_eq!(id.pid, std::process::id(), "重建 sidecar 应为本进程身份");
         assert!(!socket.exists(), "陈旧 socket 文件应被删除");
     }
 
-    /// 认领分支：损坏文件加存活 socket 拒绝（socket 是存活事实源）。
+    /// 认领分支：损坏文件加存活 socket 判 VersionMismatch（不可读按不匹配
+    /// 处理，调用方应强制交接，socket 是存活事实源）。
     #[test]
-    fn claim_corrupted_sidecar_live_socket_refused() {
+    fn claim_corrupted_sidecar_live_socket_mismatch() {
         let dir = TestDir::new();
         let sidecar = dir.path("sidecar.json");
         let socket = dir.path("server.sock");
         let listener = UnixListener::bind(&socket).expect("绑定监听者应成功");
         fs::write(&sidecar, "not json at all").expect("写损坏文件应成功");
-        assert_eq!(claim_sidecar(&sidecar, &socket), ClaimResult::AlreadyRunning);
+        assert_eq!(claim_sidecar(&sidecar, &socket, "0.0.0"), ClaimResult::VersionMismatch);
         drop(listener);
     }
 

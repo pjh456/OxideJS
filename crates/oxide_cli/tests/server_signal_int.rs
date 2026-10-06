@@ -23,6 +23,7 @@ fn unique_paths(test_name: &str) -> ServerConfig {
         socket_path: dir.join("server.sock"),
         sidecar_path: dir.join("sidecar.json"),
         worker_count: 2,
+        version: env!("CARGO_PKG_VERSION").to_string(),
     }
 }
 
