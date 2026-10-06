@@ -1,16 +1,17 @@
-//! server 进程主体：accept 循环、控制请求直接处理与优雅退出。
+//! server 进程主体：accept 循环、控制请求直接处理、执行请求路由与优雅退出。
 //!
 //! 关键约定：
 //! - 启动顺序契约（与身份注册一致）：先认领 sidecar，再绑定 socket；
 //!   反向会让客户端在 sidecar 缺位时误判无 server 并启动第二实例。
 //! - accept 循环为非阻塞 accept 加 10 毫秒轮询加原子关闭标志：唤醒路径
-//!   确定、无锁、无唤醒丢失；每连接一个标准库线程是临时模型，并发任务
-//!   整体替换为固定 worker 加消息队列路由，`handle_connection` 签名保持稳定。
-//! - 五类控制请求全部直接应答，不 spawn 虚拟机；执行请求暂以协议错误帧
-//!   答复（执行路径由后续任务补齐）。
-//! - 优雅退出顺序：关闭请求 → 在途归零 → drop 池 → drop 内核 →
-//!   删 sidecar 与 socket 文件。
-//! - 池本体不是 Send/Sync（Vm 不跨线程），上下文只持池的原子状态句柄。
+//!   确定、无锁、无唤醒丢失。
+//! - 并发模型：主线程只跑 accept 循环；每连接一个标准库线程只做 I/O
+//!   （帧读写）；五类控制请求由连接线程直接应答、不占 worker；执行请求
+//!   经 mpsc 路由到固定 N 个常驻 worker 执行（各持自己线程上的 VM 池）。
+//! - 优雅退出顺序：关闭请求 → 在途归零 → 清空发送端 → join worker →
+//!   drop 内核 → 删 sidecar 与 socket 文件。
+//! - 池本体不是 Send/Sync（Vm 不跨线程），上下文只持池的原子状态句柄；
+//!   状态响应读全体 worker 池的共享聚合计数器。
 
 use std::fs;
 use std::io;
@@ -22,11 +23,11 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use oxide_kernel::kernel::{KernelConfig, KernelCore};
-use oxide_vm::vm_pool::VmPool;
+use oxide_vm::vm_pool::PoolCounters;
 
-use super::eval;
 use super::protocol::{self, FrameReader, ProtocolError, ServerRequest, ServerResponse};
 use super::sidecar::{self, ClaimResult};
+use super::workers::{self, WorkerRouter};
 
 /// server 启动与运行错误：绑定失败、认领被拒、接受连接失败、读取身份失败。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -39,6 +40,8 @@ pub enum ServerError {
     AcceptFailed(String),
     /// 读取身份失败（sidecar 写后读回解析失败）。
     IdentityReadFailed(String),
+    /// worker 线程异常退出（panic 载荷文本）。
+    WorkerPanic(String),
 }
 
 impl std::fmt::Display for ServerError {
@@ -48,6 +51,7 @@ impl std::fmt::Display for ServerError {
             ServerError::BindFailed(msg) => write!(f, "socket 绑定失败：{msg}"),
             ServerError::AcceptFailed(msg) => write!(f, "接受连接失败：{msg}"),
             ServerError::IdentityReadFailed(msg) => write!(f, "读取身份失败：{msg}"),
+            ServerError::WorkerPanic(msg) => write!(f, "worker 线程异常退出：{msg}"),
         }
     }
 }
@@ -61,38 +65,52 @@ pub struct ServerConfig {
     pub socket_path: PathBuf,
     /// sidecar 文件路径。
     pub sidecar_path: PathBuf,
+    /// 常驻 worker 线程数；缺省取宿主核数，下限钳制为 1。
+    pub worker_count: usize,
 }
 
 impl ServerConfig {
-    /// 生产默认配置：socket 与 sidecar 取 well-known 位置。
+    /// 生产默认配置：socket 与 sidecar 取 well-known 位置，worker 数取宿主核数。
     pub fn well_known() -> Self {
         ServerConfig {
             socket_path: sidecar::well_known_socket_path(),
             sidecar_path: sidecar::well_known_sidecar_path(),
+            worker_count: default_worker_count(),
         }
     }
 }
 
-/// server 运行上下文：共享内核、启动时刻、关闭标志、在途计数。
+/// 缺省 worker 数：宿主核数，下限钳制为 1。
+fn default_worker_count() -> usize {
+    std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1)
+        .max(1)
+}
+
+/// server 运行上下文：共享内核、启动时刻、关闭标志、在途计数、池聚合计数器。
 ///
 /// 内核跨线程共享（`Arc<KernelCore>` 是 Send/Sync）；池本体不进上下文
-/// （Vm 不跨线程），每连接线程自建池（见 `handle_connection`）。
+/// （Vm 不跨线程，池归各 worker 线程所有），状态响应读共享聚合计数器。
 struct ServerContext {
     kernel: Arc<KernelCore>,
     started_at: Instant,
     shutdown: Arc<AtomicBool>,
     in_flight: Arc<AtomicUsize>,
+    pool_counters: Arc<PoolCounters>,
     socket_path: String,
 }
 
-/// server 进程主体：认领 sidecar → 绑定 socket → 建内核与池 → accept 循环 →
-/// 在途归零 → 按序 drop 池与内核 → 删 sidecar 与 socket 文件。
+/// server 进程主体：认领 sidecar → 绑定 socket → 建内核 → 派生 worker →
+/// accept 循环 → 在途归零 → 清空发送端 → join worker → drop 内核 →
+/// 删 sidecar 与 socket 文件。
 ///
 /// # 步骤
 /// 1. 认领 sidecar（启动顺序契约：先写 sidecar 再 bind socket）。
 /// 2. 绑定监听器；失败且路径存在时删 stale socket 文件重试一次。
-/// 3. 建内核（标准配置）与池（按 min_pool_size 预热）。
-/// 4. 进入 accept 循环；关闭标志置位后在途归零、按序释放、删文件。
+/// 3. 建内核（标准配置）与共享聚合计数器。
+/// 4. 派生 N 个常驻 worker（各在自己线程上建自有池）。
+/// 5. 进入 accept 循环；关闭标志置位后按关闭序列退出。
 ///
 /// # 边界与前提
 /// - 认领被拒（AlreadyRunning / RefusedAmbiguous）立即返回错误，不双注册。
@@ -100,11 +118,13 @@ struct ServerContext {
 ///
 /// # 副作用
 /// - 创建 sidecar 与 socket 文件；正常退出时删除两者。
-/// - 每连接派生一个标准库线程（临时模型）。
+/// - 派生 N 个常驻 worker 线程与每连接一个 I/O 线程。
 ///
 /// # 注意事项
 /// - 在调用线程上运行（后续 CLI 骨架任务在主线程分派到它）。
 /// - 关闭标志由关闭请求置位；信号处理由后续任务在同一标志上接线。
+/// - 关闭序列固定：清空发送端 → join 全部 worker → drop 内核（内核 drop
+///   的调试断言要求存活 VM 数为零，worker 池随线程退出先释放，前提满足）。
 pub fn run_server(config: &ServerConfig) -> Result<(), ServerError> {
     // 认领 sidecar：已有存活 server 或存活证据不足即返回错误。
     match sidecar::claim_sidecar(&config.sidecar_path, &config.socket_path) {
@@ -115,24 +135,45 @@ pub fn run_server(config: &ServerConfig) -> Result<(), ServerError> {
     // 绑定监听器：stale socket 文件删一次重试，失败回滚 sidecar。
     let listener = bind_listener(config)?;
 
-    // 建内核（标准配置）；池每连接线程自建（Vm 不跨线程，池本体不共享）。
+    // 建内核（标准配置）与共享聚合计数器（全体 worker 池的增减累加到同一聚合）。
     let kernel = KernelCore::new(KernelConfig::standard());
+    let counters = PoolCounters::shared();
+
+    // 派生 N 个常驻 worker：各持自己线程上建的池（Vm 不跨线程）。
+    let (router, worker_handles) = workers::spawn_workers(
+        Arc::clone(&kernel),
+        Arc::clone(&counters),
+        kernel.config.min_pool_size,
+        kernel.config.max_pool_size,
+        config.worker_count,
+    );
+    let router = Arc::new(router);
 
     let ctx = Arc::new(ServerContext {
         kernel: Arc::clone(&kernel),
         started_at: Instant::now(),
         shutdown: Arc::new(AtomicBool::new(false)),
         in_flight: Arc::new(AtomicUsize::new(0)),
+        pool_counters: counters,
         socket_path: config.socket_path.to_string_lossy().into_owned(),
     });
 
     // accept 循环：非阻塞 accept 加 10 毫秒轮询加原子关闭标志。
-    let accept_result = accept_loop(&listener, &ctx);
+    let accept_result = accept_loop(&listener, &ctx, &router);
 
-    // 在途归零：轮询至零，5 秒安全超时后记警告继续。
+    // 在途归零：轮询至零，5 秒安全超时后记警告继续（余留连接线程持内核
+    // 与路由器的共享句柄，不悬垂；其后续投递经清空的路由立即失败）。
     wait_in_flight_drained(&ctx.in_flight, Duration::from_secs(5));
 
-    // 按序释放：上下文（持内核句柄）→ 内核。
+    // 关闭序列：清空发送端 → worker 的 recv 断开退出 → 逐一 join。
+    router.close();
+    for handle in worker_handles {
+        if let Err(payload) = handle.join() {
+            return Err(ServerError::WorkerPanic(panic_payload_str(&payload)));
+        }
+    }
+
+    // 按序释放：上下文（持内核句柄）→ 内核（worker 池已随线程退出释放）。
     drop(ctx);
     drop(kernel);
 
@@ -141,6 +182,18 @@ pub fn run_server(config: &ServerConfig) -> Result<(), ServerError> {
     let _ = fs::remove_file(&config.socket_path);
 
     accept_result
+}
+
+/// 从 `catch_unwind` 的 panic payload 提取可读文本：`&str` 与 `String` 两种
+/// 常见形态，其余返回占位文本。
+fn panic_payload_str(payload: &Box<dyn std::any::Any + Send>) -> String {
+    if let Some(s) = payload.downcast_ref::<&str>() {
+        return (*s).to_string();
+    }
+    if let Some(s) = payload.downcast_ref::<String>() {
+        return s.clone();
+    }
+    "non-string payload".into()
 }
 
 /// 绑定监听器：失败且路径存在时删 stale socket 文件重试一次。
@@ -179,8 +232,12 @@ fn bind_listener(config: &ServerConfig) -> Result<UnixListener, ServerError> {
 ///    其余错误以 `AcceptFailed` 返回。
 ///
 /// # 副作用
-/// - 每连接派生一个标准库线程，线程结束时减一在途计数。
-fn accept_loop(listener: &UnixListener, ctx: &Arc<ServerContext>) -> Result<(), ServerError> {
+/// - 每连接派生一个标准库线程（只做 I/O），线程结束时减一在途计数。
+fn accept_loop(
+    listener: &UnixListener,
+    ctx: &Arc<ServerContext>,
+    router: &Arc<WorkerRouter>,
+) -> Result<(), ServerError> {
     listener
         .set_nonblocking(true)
         .map_err(|e| ServerError::AcceptFailed(e.to_string()))?;
@@ -195,8 +252,9 @@ fn accept_loop(listener: &UnixListener, ctx: &Arc<ServerContext>) -> Result<(), 
             Ok((stream, _addr)) => {
                 ctx.in_flight.fetch_add(1, Ordering::SeqCst);
                 let ctx = Arc::clone(ctx);
+                let router = Arc::clone(router);
                 std::thread::spawn(move || {
-                    handle_connection(stream, &ctx);
+                    handle_connection(stream, &ctx, &router);
                     ctx.in_flight.fetch_sub(1, Ordering::SeqCst);
                 });
             }
@@ -213,15 +271,17 @@ fn accept_loop(listener: &UnixListener, ctx: &Arc<ServerContext>) -> Result<(), 
 /// # 步骤
 /// 1. 克隆写端，原流交给帧读取器，设 30 秒读超时。
 /// 2. 循环读帧：EOF、读超时、非法 UTF-8 退出；帧长超限按协议约定关连接。
-/// 3. 畸形帧以 `Error` 帧答复后继续；正常帧分派并写回。
+/// 3. 畸形帧以 `Error` 帧答复后继续；执行请求路由到 worker 并阻塞等回复；
+///    控制请求直接应答并写回。
 /// 4. 关闭确认帧写回即退出循环。
 ///
 /// # 边界与前提
 /// - 半开连接（对端静默不关）由 30 秒读超时有界化。
+/// - 本线程只做 I/O 与分派，不建池（池归 worker 线程所有）。
 ///
 /// # 副作用
 /// - 关闭请求会置位关闭标志。
-fn handle_connection(stream: UnixStream, ctx: &ServerContext) {
+fn handle_connection(stream: UnixStream, ctx: &ServerContext, router: &WorkerRouter) {
     // 克隆写端：原流交给帧读取器，写端独立用于响应写回。
     let mut writer = match stream.try_clone() {
         Ok(writer) => writer,
@@ -231,15 +291,14 @@ fn handle_connection(stream: UnixStream, ctx: &ServerContext) {
     // 30 秒读超时：半开连接不永久占住线程。
     let _ = stream.set_read_timeout(Some(Duration::from_secs(30)));
 
-    // 每连接自建池（Vm 不跨线程，池是每线程资产），按内核配置预热。
-    let pool = VmPool::new(Arc::clone(&ctx.kernel), ctx.kernel.config.min_pool_size, ctx.kernel.config.max_pool_size);
-
     let mut reader = FrameReader::new(io::BufReader::new(stream));
     // 读帧：EOF、读超时、非法 UTF-8 均退出。
     while let Ok(Some(frame)) = reader.read_frame() {
-        // 分派：帧长超限按协议约定关连接；畸形帧以 Error 帧答复后继续。
+        // 分派：帧长超限按协议约定关连接；畸形帧以 Error 帧答复后继续；
+        // 执行请求走 worker 路由，控制请求直接应答。
         let response = match protocol::parse_request(&frame) {
-            Ok(request) => dispatch_control(&request, ctx, &pool),
+            Ok(ServerRequest::Eval { code, max_steps }) => dispatch_eval(&code, max_steps, router),
+            Ok(request) => dispatch_control(&request, ctx),
             Err(ProtocolError::FrameTooLarge) => break,
             Err(error) => error.to_error_frame(),
         };
@@ -257,17 +316,36 @@ fn handle_connection(stream: UnixStream, ctx: &ServerContext) {
     }
 }
 
-/// 控制请求分派：五类控制请求直接应答；执行请求走 `handle_eval`。
+/// 执行请求分派：路由到 worker 执行，阻塞在一次性回复通道上取回响应帧。
 ///
-/// 池是每连接资产（`handle_connection` 创建），Status 响应读本连接池状态。
-fn dispatch_control(request: &ServerRequest, ctx: &ServerContext, pool: &Arc<VmPool>) -> ServerResponse {
+/// # 步骤
+/// 1. 建一次性回复通道，发送端随任务进 worker。
+/// 2. 轮询投递到 worker；发送端已清空（关闭序列进行中）时立即以错误帧答复。
+/// 3. 阻塞 recv 至回复；worker 已退出（通道断开）时以错误帧答复，不挂起。
+fn dispatch_eval(code: &str, max_steps: Option<u64>, router: &WorkerRouter) -> ServerResponse {
+    let (reply_tx, reply_rx) = std::sync::mpsc::channel();
+    let task = workers::WorkerTask::Eval {
+        code: code.to_string(),
+        max_steps,
+        reply: reply_tx,
+    };
+    match router.route(task) {
+        Ok(()) => reply_rx.recv().unwrap_or_else(|_| ServerResponse::eval_err("worker 已退出，执行请求未处理")),
+        Err(_) => ServerResponse::eval_err("server 正在关闭，执行请求未受理"),
+    }
+}
+
+/// 控制请求分派：五类控制请求直接应答，不占 worker。
+///
+/// Status 响应读全体 worker 池的共享聚合计数器。
+fn dispatch_control(request: &ServerRequest, ctx: &ServerContext) -> ServerResponse {
     match request {
         ServerRequest::Version => ServerResponse::Version {
             version: env!("CARGO_PKG_VERSION").to_string(),
         },
         ServerRequest::Status => ServerResponse::Status {
-            pool_available: pool.available_count(),
-            pool_total: pool.total_count(),
+            pool_available: ctx.pool_counters.available(),
+            pool_total: ctx.pool_counters.total(),
             uptime_ms: ctx.started_at.elapsed().as_millis() as u64,
         },
         ServerRequest::Health => ServerResponse::Health { healthy: true },
@@ -281,7 +359,9 @@ fn dispatch_control(request: &ServerRequest, ctx: &ServerContext, pool: &Arc<VmP
             ctx.shutdown.store(true, Ordering::SeqCst);
             ServerResponse::Shutdown
         }
-        ServerRequest::Eval { code, max_steps } => eval::handle_eval(code, *max_steps, &ctx.kernel, pool),
+        // 防御性兜底：正常路径 eval 在调用本函数前已被拦截走 worker 路由；
+        // 若到达此臂说明上游分流缺失，以错误帧答复而非静默执行。
+        ServerRequest::Eval { .. } => ServerResponse::eval_err("执行请求应经 worker 路由，不应到达控制分派"),
     }
 }
 
@@ -303,12 +383,14 @@ mod tests {
     use std::thread::JoinHandle;
 
     /// 唯一临时路径（进程号加测试名）：单进程内唯一，进程间以进程号隔离。
+    /// worker 数取小值 2：测试在宿主核数上跑，大值徒增预热成本。
     fn unique_paths(test_name: &str) -> ServerConfig {
         let dir = std::env::temp_dir().join(format!("oxide_server_test_{}_{}", std::process::id(), test_name));
         fs::create_dir_all(&dir).expect("测试目录创建应成功");
         ServerConfig {
             socket_path: dir.join("server.sock"),
             sidecar_path: dir.join("sidecar.json"),
+            worker_count: 2,
         }
     }
 
@@ -361,13 +443,26 @@ mod tests {
         stop_server(&mut stream, handle);
     }
 
-    /// 状态请求得 Status 帧：空闲数不超过总数、总数不小于 1（标准配置预热 1 个）、运行时长合理。
+    /// 状态请求得 Status 帧：空闲数不超过总数、总数不小于 1（标准配置每 worker 预热 1 个）、运行时长合理。
     #[test]
     fn status_response() {
         let config = unique_paths("status");
         let handle = start_server(config.clone());
         let mut stream = connect(&config);
-        let response = send_and_recv(&mut stream, &ServerRequest::Status);
+
+        // worker 池异步预热：轮询至聚合总数不小于 1（预热完成）。
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let response = loop {
+            let response = send_and_recv(&mut stream, &ServerRequest::Status);
+            if let ServerResponse::Status { pool_total, .. } = &response {
+                if *pool_total >= 1 {
+                    break response;
+                }
+            }
+            assert!(Instant::now() < deadline, "worker 池预热应完成");
+            std::thread::sleep(Duration::from_millis(10));
+        };
+
         match response {
             ServerResponse::Status {
                 pool_available,
@@ -490,5 +585,133 @@ mod tests {
         );
 
         stop_server(&mut stream, handle);
+    }
+
+    /// 端到端并发：两条连接各发 3 个 eval，6 个响应帧全部正确且逐连接顺序与请求一致。
+    #[test]
+    fn concurrent_evals_across_connections() {
+        let config = unique_paths("concurrent_evals");
+        let handle = start_server(config.clone());
+        let mut stream_a = connect(&config);
+        let mut stream_b = connect(&config);
+
+        // 两条连接各发 3 个 eval，响应逐帧按请求顺序送达。
+        for code in ["1 + 1", "2 * 3", "10 - 4"] {
+            let response = send_and_recv(&mut stream_a, &ServerRequest::Eval { code: code.into(), max_steps: None });
+            assert!(
+                matches!(response, ServerResponse::EvalResult { ref value, .. } if value.is_some()),
+                "连接 A 应得完成值：{response:?}"
+            );
+        }
+        for code in ["21 / 7", "2 + 30", "100 % 9"] {
+            let response = send_and_recv(&mut stream_b, &ServerRequest::Eval { code: code.into(), max_steps: None });
+            assert!(
+                matches!(response, ServerResponse::EvalResult { ref value, .. } if value.is_some()),
+                "连接 B 应得完成值：{response:?}"
+            );
+        }
+
+        // 完成值逐条核对（顺序与请求一致）。
+        let expected_a = ["2", "6", "6"];
+        let expected_b = ["3", "32", "1"];
+        for (code, expected) in [
+            ("1 + 1", expected_a[0]),
+            ("2 * 3", expected_a[1]),
+            ("10 - 4", expected_a[2]),
+        ] {
+            let response = send_and_recv(&mut stream_a, &ServerRequest::Eval { code: code.into(), max_steps: None });
+            match response {
+                ServerResponse::EvalResult { ref value, .. } => assert_eq!(value.as_deref(), Some(expected), "{code} 应得 {expected}"),
+                other => panic!("应得 EvalResult 帧：{other:?}"),
+            }
+        }
+        for (code, expected) in [
+            ("21 / 7", expected_b[0]),
+            ("2 + 30", expected_b[1]),
+            ("100 % 9", expected_b[2]),
+        ] {
+            let response = send_and_recv(&mut stream_b, &ServerRequest::Eval { code: code.into(), max_steps: None });
+            match response {
+                ServerResponse::EvalResult { ref value, .. } => assert_eq!(value.as_deref(), Some(expected), "{code} 应得 {expected}"),
+                other => panic!("应得 EvalResult 帧：{other:?}"),
+            }
+        }
+
+        drop(stream_a);
+        stop_server(&mut stream_b, handle);
+    }
+
+    /// 控制请求不占 worker：一条连接发长 eval 占住 worker 期间，
+    /// 另一连接发 Status 立即返回（不受 eval 阻塞）。
+    #[test]
+    fn control_request_not_blocked_by_eval() {
+        let config = unique_paths("control_not_blocked");
+        let handle = start_server(config.clone());
+        let mut stream_a = connect(&config);
+        let mut stream_b = connect(&config);
+
+        // 连接 A 发长 eval（步数上限使执行有界，占住 worker 数百毫秒）。
+        stream_a
+            .write_all(
+                protocol::encode_request(&ServerRequest::Eval {
+                    code: "for(;;){}".into(),
+                    max_steps: Some(20_000_000),
+                })
+                .as_bytes(),
+            )
+            .expect("写长 eval 应成功");
+
+        // 连接 B 发 Status：控制请求直接应答，须在有界时间内返回。
+        let started = Instant::now();
+        let response = send_and_recv(&mut stream_b, &ServerRequest::Status);
+        assert!(started.elapsed() < Duration::from_secs(3), "Status 不应被 eval 阻塞");
+        assert!(matches!(response, ServerResponse::Status { .. }), "应得 Status 帧：{response:?}");
+
+        // 连接 A 的长 eval 最终得步数超限错误帧。
+        let mut reader = FrameReader::new(io::BufReader::new(&mut stream_a));
+        let frame = reader.read_frame().expect("读响应应成功").expect("应读到响应帧");
+        let response = protocol::parse_response(&frame).expect("响应帧解析应成功");
+        match response {
+            ServerResponse::EvalResult { ref error, .. } => {
+                let err = error.as_deref().expect("长 eval 应得步数超限错误");
+                assert!(err.contains("step limit"), "错误应含 step limit：{err}");
+            }
+            other => panic!("应得 EvalResult 帧：{other:?}"),
+        }
+
+        drop(stream_a);
+        stop_server(&mut stream_b, handle);
+    }
+
+    /// 关闭序列：在有在途 eval 时发关闭请求，server 线程正常退出，
+    /// sidecar 与 socket 文件均被删除。
+    #[test]
+    fn shutdown_with_in_flight_eval() {
+        let config = unique_paths("shutdown_inflight");
+        let handle = start_server(config.clone());
+        let mut stream_a = connect(&config);
+        let mut stream_b = connect(&config);
+
+        // 连接 A 发长 eval（在途）；连接 B 发关闭请求。
+        stream_a
+            .write_all(
+                protocol::encode_request(&ServerRequest::Eval {
+                    code: "for(;;){}".into(),
+                    max_steps: Some(20_000_000),
+                })
+                .as_bytes(),
+            )
+            .expect("写长 eval 应成功");
+        let response = send_and_recv(&mut stream_b, &ServerRequest::Shutdown);
+        assert!(matches!(response, ServerResponse::Shutdown), "应得关闭确认帧：{response:?}");
+
+        // 关闭连接 A：在途连接线程写回响应后退出，在途归零。
+        drop(stream_a);
+        drop(stream_b);
+
+        let result = handle.join().expect("server 线程应正常退出");
+        assert!(result.is_ok(), "server 应正常退出：{result:?}");
+        assert!(!config.sidecar_path.exists(), "sidecar 文件应被删除");
+        assert!(!config.socket_path.exists(), "socket 文件应被删除");
     }
 }

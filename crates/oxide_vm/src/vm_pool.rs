@@ -23,7 +23,10 @@ pub struct PoolCounters {
 }
 
 impl PoolCounters {
-    fn new() -> Arc<Self> {
+    /// 创建新的聚合计数器（零初始化），供多个池共享。
+    ///
+    /// 共享后各池的原子增减自然累加到同一聚合，读取方拿到的是全体池的合计。
+    pub fn shared() -> Arc<Self> {
         Arc::new(PoolCounters {
             available: AtomicUsize::new(0),
             total: AtomicUsize::new(0),
@@ -66,9 +69,32 @@ pub struct VmGuard {
 impl VmPool {
     /// 创建 VM 池并同步预热 `min_size` 个 Vm（数量受 `max_size` 钳制），
     /// 首次 `spawn` 直接命中池。`max_size` 为池上限，`None` 表示不限。
+    ///
+    /// 计数器为本池私有（不与其他池共享）。
     pub fn new(kernel_core: Arc<KernelCore>, min_size: usize, max_size: Option<usize>) -> Arc<Self> {
+        Self::with_counters(kernel_core, min_size, max_size, PoolCounters::shared())
+    }
+
+    /// 创建共享外部聚合计数器的 VM 池：多个池的原子增减累加到同一聚合，
+    /// 读取方（如 server 的状态响应）拿到的是全体池的合计。
+    ///
+    /// # 步骤
+    /// 1. 以给定计数器建池结构。
+    /// 2. 同步预热 `min_size` 个 Vm（受 `max_size` 钳制），计数器以累加方式同步
+    ///    （共享聚合上不得覆盖写，各池各自累加）。
+    ///
+    /// # 边界与前提
+    /// - 计数器通常经 `PoolCounters::shared` 跨线程共享；池本体不跨线程移动。
+    ///
+    /// # 副作用
+    /// - 同步创建 `min_size` 个 Vm。
+    pub fn with_counters(
+        kernel_core: Arc<KernelCore>,
+        min_size: usize,
+        max_size: Option<usize>,
+        counters: Arc<PoolCounters>,
+    ) -> Arc<Self> {
         let warm = min_size.min(max_size.unwrap_or(min_size));
-        let counters = PoolCounters::new();
         let pool = Arc::new(Self {
             kernel_core: Arc::clone(&kernel_core),
             inner: Mutex::new(VmPoolInner {
@@ -85,8 +111,8 @@ impl VmPool {
             inner.total_count += 1;
         }
         drop(inner);
-        counters.available.store(warm, Ordering::Relaxed);
-        counters.total.store(warm, Ordering::Relaxed);
+        counters.available.fetch_add(warm, Ordering::Relaxed);
+        counters.total.fetch_add(warm, Ordering::Relaxed);
         pool
     }
 
@@ -275,5 +301,32 @@ mod tests {
         let inner = pool.inner.lock().unwrap();
         assert_eq!(inner.available.len(), 1);
         assert_eq!(inner.total_count, 1);
+    }
+
+    #[test]
+    fn test_with_counters_shared_aggregate() {
+        let kernel = test_kernel();
+        let counters = PoolCounters::shared();
+        let pool_a = VmPool::with_counters(Arc::clone(&kernel), 1, Some(4), Arc::clone(&counters));
+        let pool_b = VmPool::with_counters(Arc::clone(&kernel), 2, Some(4), Arc::clone(&counters));
+
+        // 预热后聚合等于两池之和：总数 1 + 2 = 3，全部空闲。
+        assert_eq!(counters.total(), 3, "聚合总数应为两池预热之和");
+        assert_eq!(counters.available(), 3, "聚合空闲数应为两池预热之和");
+
+        // 各池借出再归还：聚合空闲数与总数等于两池之和。
+        let g1 = pool_a.spawn();
+        let g2 = pool_b.spawn();
+        let g3 = pool_b.spawn();
+        assert_eq!(counters.available(), 0, "三笔借出后聚合空闲数应为零");
+        drop(g1);
+        drop(g2);
+        drop(g3);
+        assert_eq!(counters.available(), 3, "全部归还后聚合空闲数应复原");
+        assert_eq!(counters.total(), 3, "聚合总数应不变");
+
+        // 各池的读取面读同一聚合，两池读数一致。
+        assert_eq!(pool_a.available_count(), counters.available());
+        assert_eq!(pool_b.available_count(), counters.available());
     }
 }
