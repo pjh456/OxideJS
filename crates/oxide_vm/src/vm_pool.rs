@@ -1,5 +1,6 @@
 #![allow(clippy::arc_with_non_send_sync)]
 
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 
@@ -12,6 +13,34 @@ struct VmPoolInner {
     total_count: usize,
 }
 
+/// 池状态计数器：空闲数与已创建总数的跨线程可读快照。
+///
+/// 池本体不是 Send/Sync（Vm 不跨线程），状态接口经独立原子暴露，
+/// 与队列变更同步更新；空闲数恒不大于总数（总数只增不减）。
+pub struct PoolCounters {
+    available: AtomicUsize,
+    total: AtomicUsize,
+}
+
+impl PoolCounters {
+    fn new() -> Arc<Self> {
+        Arc::new(PoolCounters {
+            available: AtomicUsize::new(0),
+            total: AtomicUsize::new(0),
+        })
+    }
+
+    /// 读取空闲队列长度。
+    pub fn available(&self) -> usize {
+        self.available.load(Ordering::Relaxed)
+    }
+
+    /// 读取已创建 VM 总数（含借出中的）。
+    pub fn total(&self) -> usize {
+        self.total.load(Ordering::Relaxed)
+    }
+}
+
 /// 共享 `Vm` 实例池：按需创建并复用 VM，避免每次执行重建 kernel 共享状态。
 ///
 /// 空闲 VM 存放在 `available` 队列；达到 `max_size` 上限时 `spawn` 会阻塞等待
@@ -21,6 +50,7 @@ pub struct VmPool {
     inner: Mutex<VmPoolInner>,
     condvar: Condvar,
     max_size: Option<usize>,
+    counters: Arc<PoolCounters>,
 }
 
 /// 从池中借出的 VM 独占句柄（RAII）。
@@ -38,6 +68,7 @@ impl VmPool {
     /// 首次 `spawn` 直接命中池。`max_size` 为池上限，`None` 表示不限。
     pub fn new(kernel_core: Arc<KernelCore>, min_size: usize, max_size: Option<usize>) -> Arc<Self> {
         let warm = min_size.min(max_size.unwrap_or(min_size));
+        let counters = PoolCounters::new();
         let pool = Arc::new(Self {
             kernel_core: Arc::clone(&kernel_core),
             inner: Mutex::new(VmPoolInner {
@@ -46,6 +77,7 @@ impl VmPool {
             }),
             condvar: Condvar::new(),
             max_size,
+            counters: Arc::clone(&counters),
         });
         let mut inner = pool.inner.lock().unwrap();
         for _ in 0..warm {
@@ -53,6 +85,8 @@ impl VmPool {
             inner.total_count += 1;
         }
         drop(inner);
+        counters.available.store(warm, Ordering::Relaxed);
+        counters.total.store(warm, Ordering::Relaxed);
         pool
     }
 
@@ -71,6 +105,7 @@ impl VmPool {
 
             if let Some(vm) = inner.available.pop() {
                 vm_trace!("pool: reused vm, {} available", inner.available.len());
+                self.counters.available.fetch_sub(1, Ordering::Relaxed);
                 return VmGuard {
                     vm: Some(vm),
                     pool: Arc::clone(self),
@@ -87,6 +122,7 @@ impl VmPool {
                 inner.total_count += 1;
                 vm_debug!("pool: growing to {} vms", inner.total_count);
                 drop(inner);
+                self.counters.total.fetch_add(1, Ordering::Relaxed);
                 let vm = Self::new_vm(&self.kernel_core);
                 return VmGuard {
                     vm: Some(vm),
@@ -101,6 +137,7 @@ impl VmPool {
                 vm_warn!("pool: wait timeout, force-growing to {} vms", inner.total_count + 1);
                 inner.total_count += 1;
                 drop(inner);
+                self.counters.total.fetch_add(1, Ordering::Relaxed);
                 let vm = Self::new_vm(&self.kernel_core);
                 return VmGuard {
                     vm: Some(vm),
@@ -109,6 +146,26 @@ impl VmPool {
                 };
             }
         }
+    }
+
+    /// 读取空闲队列长度（当前可借出的 VM 数）。
+    ///
+    /// 读原子快照，不锁池内互斥锁；与队列变更同步更新，
+    /// 恒不大于总数。
+    pub fn available_count(&self) -> usize {
+        self.counters.available()
+    }
+
+    /// 读取已创建 VM 总数（含借出中的）。
+    ///
+    /// 读原子快照，不锁池内互斥锁；总数只增不减。
+    pub fn total_count(&self) -> usize {
+        self.counters.total()
+    }
+
+    /// 跨线程可读的池状态句柄（原子快照，无锁）。
+    pub fn counters(&self) -> Arc<PoolCounters> {
+        Arc::clone(&self.counters)
     }
 }
 
@@ -142,6 +199,7 @@ impl Drop for VmGuard {
             vm_trace!("pool: recycled clean vm, {} available", inner.available.len());
         }
 
+        self.pool.counters.available.fetch_add(1, Ordering::Relaxed);
         self.pool.condvar.notify_one();
     }
 }
