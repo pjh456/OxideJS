@@ -10,7 +10,10 @@ use oxide_types::object::JsObject;
 use crate::bind_constructor;
 
 /// 把 RegExp 构造器与原型方法绑定到 global。
-pub fn bind_regexp(core: &Arc<KernelCore>, session: &KernelSession, global: &mut JsObject) {
+///
+/// `realm_id` 是目标所属 realm 的编号：well-known 符号键按 (realm 编号, 局部
+/// 下标) 编码，realm 编号为 0 时与旧编码逐字节一致。
+pub fn bind_regexp(core: &Arc<KernelCore>, session: &KernelSession, global: &mut JsObject, realm_id: u32) {
     let ctor_ptr = session.builtin_world().regexp_constructor.as_ptr() as *mut JsObject;
     let ctor = unsafe { &mut *ctor_ptr };
     let proto_ptr = session.builtin_world().regexp_proto.as_ptr() as *mut JsObject;
@@ -121,6 +124,7 @@ pub fn bind_regexp(core: &Arc<KernelCore>, session: &KernelSession, global: &mut
         "[Symbol.match]",
         oxide_builtins::regexp::regexp_symbol_match::<crate::vm::Vm> as *const (),
         1,
+        realm_id,
     );
     bind_well_known_method(
         world,
@@ -130,6 +134,7 @@ pub fn bind_regexp(core: &Arc<KernelCore>, session: &KernelSession, global: &mut
         "[Symbol.replace]",
         oxide_builtins::regexp::regexp_symbol_replace::<crate::vm::Vm> as *const (),
         2,
+        realm_id,
     );
     bind_well_known_method(
         world,
@@ -139,6 +144,7 @@ pub fn bind_regexp(core: &Arc<KernelCore>, session: &KernelSession, global: &mut
         "[Symbol.search]",
         oxide_builtins::regexp::regexp_symbol_search::<crate::vm::Vm> as *const (),
         1,
+        realm_id,
     );
     bind_well_known_method(
         world,
@@ -148,6 +154,7 @@ pub fn bind_regexp(core: &Arc<KernelCore>, session: &KernelSession, global: &mut
         "[Symbol.split]",
         oxide_builtins::regexp::regexp_symbol_split::<crate::vm::Vm> as *const (),
         2,
+        realm_id,
     );
     bind_well_known_method(
         world,
@@ -157,6 +164,7 @@ pub fn bind_regexp(core: &Arc<KernelCore>, session: &KernelSession, global: &mut
         "[Symbol.matchAll]",
         oxide_builtins::regexp::regexp_symbol_match_all::<crate::vm::Vm> as *const (),
         1,
+        realm_id,
     );
 
     // RegExp[Symbol.species] 访问器：getter 返回 receiver，派生类沿静态原型链解析
@@ -165,7 +173,7 @@ pub fn bind_regexp(core: &Arc<KernelCore>, session: &KernelSession, global: &mut
         core,
         session,
         ctor,
-        oxide_types::private_key::make_well_known_symbol_key(oxide_types::private_key::WELL_KNOWN_SYMBOL_SPECIES),
+        oxide_types::private_key::encode_symbol_key(realm_id, oxide_types::private_key::WELL_KNOWN_SYMBOL_SPECIES),
         "get [Symbol.species]",
         oxide_builtins::array::array_species_get::<crate::vm::Vm> as *const (),
     );

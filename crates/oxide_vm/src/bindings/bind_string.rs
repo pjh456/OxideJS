@@ -7,7 +7,10 @@ use oxide_types::object::{JsObject, PropAttributes};
 use oxide_types::value::JsValue;
 
 /// 把 String 构造器与原型方法绑定到 global。
-pub fn bind_string(core: &Arc<KernelCore>, session: &KernelSession, global: &mut JsObject) {
+///
+/// `realm_id` 是目标所属 realm 的编号：`@@iterator` 符号键按 (realm 编号, 局部
+/// 下标) 编码，realm 编号为 0 时与旧编码逐字节一致。
+pub fn bind_string(core: &Arc<KernelCore>, session: &KernelSession, global: &mut JsObject, realm_id: u32) {
     let string_methods = StringMethods {
         from_char_code: oxide_builtins::string::string_from_char_code::<crate::vm::Vm> as *const (),
         index_of: oxide_builtins::string::string_index_of::<crate::vm::Vm> as *const (),
@@ -95,10 +98,11 @@ pub fn bind_string(core: &Arc<KernelCore>, session: &KernelSession, global: &mut
         "[Symbol.iterator]",
         oxide_builtins::string::string_symbol_iterator::<crate::vm::Vm> as *const (),
         0,
+        realm_id,
     );
     // 捕获默认迭代器函数对象指针写入 world：String 臂覆盖判定以此做指针比较。
     // 此时槽为初始数据属性（用户覆盖尚未可能），读回即默认函数本体。
-    let iter_key = oxide_types::private_key::make_well_known_symbol_key(0);
+    let iter_key = oxide_types::private_key::encode_symbol_key(realm_id, 0);
     if let Some(pos) = core.shape_forge().lookup_position(proto.shape_id(), iter_key) {
         let v = proto.get_prop_at(pos);
         if v.is_object() {

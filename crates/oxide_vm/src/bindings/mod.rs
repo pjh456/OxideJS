@@ -354,15 +354,19 @@ pub(crate) fn bind_method_alias(core: &Arc<KernelCore>, proto: &mut JsObject, so
 
 /// 在原型上按 well-known symbol 键绑定方法（键不字符串 intern，读键经
 /// `property_key_si` 的 well-known 分支映射到同一键）。
+///
+/// `realm_id` 是目标所属 realm 的编号：符号键按 (realm 编号, 局部下标) 编码，
+/// realm 编号为 0 时与旧编码逐字节一致。
+#[expect(clippy::too_many_arguments)]
 pub(crate) fn bind_well_known_method(
     world: &BuiltinWorld, core: &Arc<KernelCore>, target: &mut JsObject, well_known_id: u32, method_name: &str,
-    func: *const (), nargs: u8,
+    func: *const (), nargs: u8, realm_id: u32,
 ) {
     let shape_forge = core.shape_forge().as_ref();
     let string_forge = core.perm_interner().as_ref();
     // SAFETY: func 是转成 *const () 的 NativeFn 函数项指针。
     let fn_ptr = unsafe { oxide_types::object::NativeFnPtr::from_raw(func) };
-    let key = oxide_types::private_key::make_well_known_symbol_key(well_known_id);
+    let key = oxide_types::private_key::encode_symbol_key(realm_id, well_known_id);
     let _ = oxide_kernel::builtin::BuiltinWorld::bind_method_key_static(
         target,
         shape_forge,
@@ -383,8 +387,11 @@ pub(crate) fn bind_well_known_method(
 /// # 注意
 /// well-known 键已在位时原位更新值，不追加重复 shape 槽：初始化与重绑可多轮
 /// 经过同一原型，重复槽会让 delete 只删其一、读仍命中残留槽。
+///
+/// `realm_id` 是目标所属 realm 的编号：符号键按 (realm 编号, 局部下标) 编码，
+/// realm 编号为 0 时与旧编码逐字节一致。
 pub(crate) fn bind_well_known_method_alias(
-    core: &Arc<KernelCore>, proto: &mut JsObject, source: &str, well_known_id: u32,
+    core: &Arc<KernelCore>, proto: &mut JsObject, source: &str, well_known_id: u32, realm_id: u32,
 ) {
     let shape_forge = core.shape_forge().as_ref();
     let string_forge = core.perm_interner().as_ref();
@@ -393,7 +400,7 @@ pub(crate) fn bind_well_known_method_alias(
         return;
     };
     let value = proto.get_prop_at(pos);
-    let key = oxide_types::private_key::make_well_known_symbol_key(well_known_id);
+    let key = oxide_types::private_key::encode_symbol_key(realm_id, well_known_id);
     if let Some(existing) = shape_forge.lookup_position(proto.shape_id(), key) {
         proto.set_prop_at(existing, value);
         proto.set_data_meta(existing, PropAttributes::new(true, false, true));
@@ -408,10 +415,14 @@ pub(crate) fn bind_well_known_method_alias(
 }
 
 /// 在对象上按 well-known symbol 键绑定数据属性。
+///
+/// `realm_id` 是目标所属 realm 的编号：符号键按 (realm 编号, 局部下标) 编码，
+/// realm 编号为 0 时与旧编码逐字节一致。
 pub(crate) fn bind_well_known_data_property(
     core: &Arc<KernelCore>, target: &mut JsObject, well_known_id: u32, value: JsValue, attributes: PropAttributes,
+    realm_id: u32,
 ) {
-    let key = oxide_types::private_key::make_well_known_symbol_key(well_known_id);
+    let key = oxide_types::private_key::encode_symbol_key(realm_id, well_known_id);
     let new_shape = core.shape_forge().make_shape(target.shape_id(), key);
     target.set_shape_id(new_shape);
     let pos = target.push_prop(value);
@@ -455,14 +466,17 @@ pub(crate) fn bind_iterator_proto_next(
 ///
 /// 在迭代器原型全新重建后调用（object 家族 dirty 或全量初始化）；各绑定点
 /// 自带幂等检查，保留原型重复经过时安全跳过。
-fn bind_iterator_protos(core: &Arc<KernelCore>, session: &KernelSession) {
+///
+/// `realm_id` 是原型所属 realm 的编号：well-known 符号键按 (realm 编号, 局部
+/// 下标) 编码，realm 编号为 0 时与旧编码逐字节一致。
+fn bind_iterator_protos(core: &Arc<KernelCore>, session: &KernelSession, realm_id: u32) {
     let world = session.builtin_world();
 
     // %IteratorPrototype% 自身可迭代：@@iterator 返回 this，经原型链被全部
     // 集合迭代器继承（it[Symbol.iterator]() === it 恒等）。
     let iter_proto_ptr = world.iterator_proto.as_ptr() as *mut JsObject;
     let iter_proto = unsafe { &mut *iter_proto_ptr };
-    let sym_iter = oxide_types::private_key::make_well_known_symbol_key(0);
+    let sym_iter = oxide_types::private_key::encode_symbol_key(realm_id, 0);
     if core.shape_forge().lookup_position(iter_proto.shape_id(), sym_iter).is_none() {
         bind_well_known_method(
             world,
@@ -472,6 +486,7 @@ fn bind_iterator_protos(core: &Arc<KernelCore>, session: &KernelSession) {
             "iterator",
             oxide_builtins::iterator::iterator_symbol_iterator::<crate::vm::Vm> as *const (),
             0,
+            realm_id,
         );
     }
 
@@ -496,7 +511,7 @@ fn bind_iterator_protos(core: &Arc<KernelCore>, session: &KernelSession) {
         );
     }
     let sym_to_string_tag =
-        oxide_types::private_key::make_well_known_symbol_key(oxide_types::private_key::WELL_KNOWN_SYMBOL_TO_STRING_TAG);
+        oxide_types::private_key::encode_symbol_key(realm_id, oxide_types::private_key::WELL_KNOWN_SYMBOL_TO_STRING_TAG);
     if core
         .shape_forge()
         .lookup_position(iter_proto.shape_id(), sym_to_string_tag)
@@ -516,7 +531,7 @@ fn bind_iterator_protos(core: &Arc<KernelCore>, session: &KernelSession) {
 
     // %IteratorPrototype% 的 @@dispose：显式资源管理下用 return 关闭迭代器。
     let dispose_id = oxide_types::private_key::WELL_KNOWN_SYMBOL_DISPOSE;
-    let sym_dispose = oxide_types::private_key::make_well_known_symbol_key(dispose_id);
+    let sym_dispose = oxide_types::private_key::encode_symbol_key(realm_id, dispose_id);
     if core.shape_forge().lookup_position(iter_proto.shape_id(), sym_dispose).is_none() {
         bind_well_known_method(
             world,
@@ -526,6 +541,7 @@ fn bind_iterator_protos(core: &Arc<KernelCore>, session: &KernelSession) {
             "[Symbol.dispose]",
             oxide_builtins::iterator::iterator_dispose::<crate::vm::Vm> as *const (),
             0,
+            realm_id,
         );
     }
 
@@ -571,7 +587,8 @@ fn bind_iterator_protos(core: &Arc<KernelCore>, session: &KernelSession) {
     // （经 return 方法关闭迭代器）。幂等：键槽已存在时跳过。
     let aiter_proto_ptr = world.async_iterator_proto.as_ptr() as *mut JsObject;
     let aiter_proto = unsafe { &mut *aiter_proto_ptr };
-    let sym_aiter = oxide_types::private_key::make_well_known_symbol_key(
+    let sym_aiter = oxide_types::private_key::encode_symbol_key(
+        realm_id,
         oxide_types::private_key::WELL_KNOWN_SYMBOL_ASYNC_ITERATOR,
     );
     if core.shape_forge().lookup_position(aiter_proto.shape_id(), sym_aiter).is_none() {
@@ -583,10 +600,11 @@ fn bind_iterator_protos(core: &Arc<KernelCore>, session: &KernelSession) {
             "[Symbol.asyncIterator]",
             crate::async_generator::async_generator_symbol_async_iterator as *const (),
             0,
+            realm_id,
         );
     }
     let sym_adispose =
-        oxide_types::private_key::make_well_known_symbol_key(oxide_types::private_key::WELL_KNOWN_SYMBOL_ASYNC_DISPOSE);
+        oxide_types::private_key::encode_symbol_key(realm_id, oxide_types::private_key::WELL_KNOWN_SYMBOL_ASYNC_DISPOSE);
     if core
         .shape_forge()
         .lookup_position(aiter_proto.shape_id(), sym_adispose)
@@ -600,6 +618,7 @@ fn bind_iterator_protos(core: &Arc<KernelCore>, session: &KernelSession) {
             "[Symbol.asyncDispose]",
             crate::async_generator::async_iterator_async_dispose as *const (),
             0,
+            realm_id,
         );
     }
 
@@ -632,7 +651,7 @@ fn bind_iterator_protos(core: &Arc<KernelCore>, session: &KernelSession) {
     {
         let sf = core.perm_interner().as_ref();
         let tag = JsValue::perm_string(sf.string_ptr(sf.intern("Iterator Helper").0));
-        bind_well_known_data_property(core, helper_proto, 9, tag, PropAttributes::new(false, false, true));
+        bind_well_known_data_property(core, helper_proto, 9, tag, PropAttributes::new(false, false, true), realm_id);
     }
 
     // %ArrayIteratorPrototype% 服务 Array/TA 两族；Map/Set 共用按 `__mode__`
@@ -668,12 +687,15 @@ fn bind_iterator_protos(core: &Arc<KernelCore>, session: &KernelSession) {
 ///
 /// 幂等：目标已有 tag 键槽位时跳过（dirty reset 重复经过不追加重复属性槽）。
 /// `%IteratorPrototype%` / BigInt 原型的 tag 已由各家族绑定点安装，不在此列。
-fn install_to_string_tags(core: &Arc<KernelCore>, session: &KernelSession) {
+///
+/// `realm_id` 是原型所属 realm 的编号：`@@toStringTag` 符号键按 (realm 编号,
+/// 局部下标) 编码，realm 编号为 0 时与旧编码逐字节一致。
+fn install_to_string_tags(core: &Arc<KernelCore>, session: &KernelSession, realm_id: u32) {
     let world = session.builtin_world();
     let sf = core.perm_interner().as_ref();
     let sh = core.shape_forge().as_ref();
     let tag_id = oxide_types::private_key::WELL_KNOWN_SYMBOL_TO_STRING_TAG;
-    let tag_key = oxide_types::private_key::make_well_known_symbol_key(tag_id);
+    let tag_key = oxide_types::private_key::encode_symbol_key(realm_id, tag_id);
     let cases: [(*mut JsObject, &str); 14] = [
         (world.map_proto.as_ptr() as *mut JsObject, "Map"),
         (world.array_buffer_proto.as_ptr() as *mut JsObject, "ArrayBuffer"),
@@ -697,7 +719,7 @@ fn install_to_string_tags(core: &Arc<KernelCore>, session: &KernelSession) {
             continue;
         }
         let tag_val = JsValue::perm_string(sf.string_ptr(sf.intern(tag).0));
-        bind_well_known_data_property(core, proto, tag_id, tag_val, PropAttributes::new(false, false, true));
+        bind_well_known_data_property(core, proto, tag_id, tag_val, PropAttributes::new(false, false, true), realm_id);
     }
 }
 
@@ -946,7 +968,12 @@ fn bind_stub_globals(core: &Arc<KernelCore>, session: &KernelSession, global: &m
 ///
 /// 在 global 对象重建（dirty reset）后调用：重新配置构造器 native 函数并重绑
 /// `Object`/`Array`/`Math` 等全局名、TypedArray 家族、stub 与 `globalThis`。
-pub fn bind_global_builtin_slots(core: &Arc<KernelCore>, session: &KernelSession, global: &mut JsObject) {
+///
+/// `realm_id` 是 session 所属 realm 的编号：well-known 符号键按 (realm 编号,
+/// 局部下标) 编码，realm 编号为 0 时与旧编码逐字节一致。
+pub fn bind_global_builtin_slots(
+    core: &Arc<KernelCore>, session: &KernelSession, global: &mut JsObject, realm_id: u32,
+) {
     let world = session.builtin_world();
 
     configure_existing_ctor(
@@ -1175,10 +1202,10 @@ pub fn bind_global_builtin_slots(core: &Arc<KernelCore>, session: &KernelSession
 
     bind_reflect_global(core, session, global);
     bind_iterator_global(core, session, global);
-    bind_disposable_stack::bind_disposable_stack(core, session, global);
-    bind_async_disposable_stack::bind_async_disposable_stack(core, session, global);
+    bind_disposable_stack::bind_disposable_stack(core, session, global, realm_id);
+    bind_async_disposable_stack::bind_async_disposable_stack(core, session, global, realm_id);
     bind_stub_globals(core, session, global);
-    bind_bigint::bind_bigint(core, session, global);
+    bind_bigint::bind_bigint(core, session, global, realm_id);
     bind_global_functions(core, session, global);
     crate::test262_host::bind_test262_host(core, session, global);
     let global_this = JsValue::from_js_object(global as *mut JsObject);
@@ -1187,10 +1214,15 @@ pub fn bind_global_builtin_slots(core: &Arc<KernelCore>, session: &KernelSession
 
 /// 按脏标记重绑被污染的内置对象；`dirty` 为 `None` 时绑定全部（初始化路径）。
 ///
+/// `realm_id` 是 session 所属 realm 的编号：well-known 符号键按 (realm 编号,
+/// 局部下标) 编码，realm 编号为 0 时与旧编码逐字节一致。
+///
 /// # 注意事项
 /// 维护：新增 `BuiltinDirtySet` 分组时，须同步更新本重绑映射、`BuiltinSnapshot` 与
 /// `BuiltinWorld::rebuild_with_dirty()`。
-pub fn rebind_dirty_builtins(core: &Arc<KernelCore>, session: &mut KernelSession, dirty: Option<&BuiltinDirtySet>) {
+pub fn rebind_dirty_builtins(
+    core: &Arc<KernelCore>, session: &mut KernelSession, dirty: Option<&BuiltinDirtySet>, realm_id: u32,
+) {
     let global_ptr = session.global_object().as_ptr() as *mut JsObject;
     let global = unsafe { &mut *global_ptr };
 
@@ -1198,18 +1230,18 @@ pub fn rebind_dirty_builtins(core: &Arc<KernelCore>, session: &mut KernelSession
         bind_object::bind_object(core, session, global);
         // object 家族重建连带重建 6 个迭代器原型与两资源栈原型（其链到新
         // Object.prototype），须同步安装原型方法并让保留的 global 构造器指向新原型。
-        bind_iterator_protos(core, session);
+        bind_iterator_protos(core, session, realm_id);
         sync_iterator_function_prototype(core, session, global);
-        bind_disposable_stack::bind_disposable_stack_protos(core, session);
+        bind_disposable_stack::bind_disposable_stack_protos(core, session, realm_id);
         bind_disposable_stack::sync_disposable_stack_ctor(core, session, global);
-        bind_async_disposable_stack::bind_async_disposable_stack_protos(core, session);
+        bind_async_disposable_stack::bind_async_disposable_stack_protos(core, session, realm_id);
         bind_async_disposable_stack::sync_async_disposable_stack_ctor(core, session, global);
     }
     if dirty.map_or(true, |d| d.array) {
-        bind_array::bind_array(core, session, global);
+        bind_array::bind_array(core, session, global, realm_id);
     }
     if dirty.map_or(true, |d| d.array_buffer) {
-        bind_array_buffer::bind_array_buffer(core, session, global);
+        bind_array_buffer::bind_array_buffer(core, session, global, realm_id);
     }
     if dirty.map_or(true, |d| d.shared_array_buffer) {
         bind_shared_array_buffer::bind_shared_array_buffer(core, session, global);
@@ -1218,13 +1250,13 @@ pub fn rebind_dirty_builtins(core: &Arc<KernelCore>, session: &mut KernelSession
         bind_data_view::bind_data_view(core, session, global);
     }
     if dirty.map_or(true, |d| d.typed_array_family) {
-        bind_typed_array::bind_typed_array(core, session, global);
+        bind_typed_array::bind_typed_array(core, session, global, realm_id);
     }
     if dirty.map_or(true, |d| d.error_family) {
         bind_error::bind_error(core, session, global);
     }
     if dirty.map_or(true, |d| d.string) {
-        bind_string::bind_string(core, session, global);
+        bind_string::bind_string(core, session, global, realm_id);
     }
     if dirty.map_or(true, |d| d.number) {
         bind_number::bind_number(core, session, global);
@@ -1242,51 +1274,54 @@ pub fn rebind_dirty_builtins(core: &Arc<KernelCore>, session: &mut KernelSession
         bind_date::bind_date(core, session, global);
     }
     if dirty.map_or(true, |d| d.set) {
-        bind_set::bind_set(core, session, global);
+        bind_set::bind_set(core, session, global, realm_id);
     }
     if dirty.map_or(true, |d| d.map) {
-        bind_map::bind_map(core, session, global);
+        bind_map::bind_map(core, session, global, realm_id);
     }
     if dirty.map_or(true, |d| d.boolean) {
         bind_boolean::bind_boolean(core, session, global);
     }
     if dirty.map_or(true, |d| d.function) {
-        bind_function::bind_function(core, session, global);
+        bind_function::bind_function(core, session, global, realm_id);
     }
     if dirty.map_or(true, |d| d.regexp) {
-        bind_regexp::bind_regexp(core, session, global);
+        bind_regexp::bind_regexp(core, session, global, realm_id);
     }
     if dirty.map_or(true, |d| d.symbol_family) {
-        bind_symbol::bind_symbol(core, session, global);
+        bind_symbol::bind_symbol(core, session, global, realm_id);
     }
     if dirty.map_or(true, |d| d.temporal) {
-        bind_temporal::bind_temporal(core, session, global);
+        bind_temporal::bind_temporal(core, session, global, realm_id);
     }
     if dirty.map_or(true, |d| d.stubs) {
-        bind_stubs::bind_stubs(core, session, global);
+        bind_stubs::bind_stubs(core, session, global, realm_id);
         // WeakMap 真构造器面与 stub 族同脏位：原型对象经 leaked 登记表迁移，
         // 重绑时全局槽原位更新，不占 BuiltinWorld 槽。
-        bind_weak::bind_weak_map(core, session, global);
+        bind_weak::bind_weak_map(core, session, global, realm_id);
     }
     if dirty.map_or(true, |d| d.stubs) {
-        bind_bigint::bind_bigint(core, session, global);
+        bind_bigint::bind_bigint(core, session, global, realm_id);
     }
     if dirty.map_or(true, |d| d.console) {
         bind_console::bind_console(core, session, global);
     }
     // tag 目标横跨多个脏分组（Map/Set/DataView/Math/JSON/迭代器原型），
     // 各组各自重绑后统一补装；安装点自带幂等检查。
-    install_to_string_tags(core, session);
+    install_to_string_tags(core, session, realm_id);
 }
 
 /// 完整初始化一个 session 的内置对象（全量绑定 + `globalThis` + 快照记录）。
-pub fn init_kernel_builtins(core: &Arc<KernelCore>, session: &mut KernelSession) {
-    rebind_dirty_builtins(core, session, None);
+///
+/// `realm_id` 是 session 所属 realm 的编号：well-known 符号键按 (realm 编号,
+/// 局部下标) 编码，realm 编号为 0 时与旧编码逐字节一致。
+pub fn init_kernel_builtins(core: &Arc<KernelCore>, session: &mut KernelSession, realm_id: u32) {
+    rebind_dirty_builtins(core, session, None, realm_id);
     let global_ptr = session.global_object().as_ptr() as *mut oxide_types::object::JsObject;
     let global = unsafe { &mut *global_ptr };
     bind_iterator::bind_iterator(core, session, global);
-    bind_disposable_stack::bind_disposable_stack(core, session, global);
-    bind_async_disposable_stack::bind_async_disposable_stack(core, session, global);
+    bind_disposable_stack::bind_disposable_stack(core, session, global, realm_id);
+    bind_async_disposable_stack::bind_async_disposable_stack(core, session, global, realm_id);
     bind_reflect::bind_reflect(core, session, global);
     bind_global::bind_global(core, session, global);
     bind_global_value(core, global, "globalThis", JsValue::from_js_object(global_ptr));

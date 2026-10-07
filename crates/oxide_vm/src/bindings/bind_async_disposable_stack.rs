@@ -16,7 +16,10 @@ use crate::bindings::{
 /// 幂等：proto 上已有 `use` 方法（全新 proto 或已完整绑定）时整组跳过，
 /// 保留原型经 dirty reset 重复经过时安全。`@@asyncDispose` 别名须在
 /// `disposeAsync` 绑定之后调用（读源槽 lookup_position，顺序敏感）。
-pub fn bind_async_disposable_stack_protos(core: &Arc<KernelCore>, session: &KernelSession) {
+///
+/// `realm_id` 是目标所属 realm 的编号：well-known 符号键按 (realm 编号, 局部
+/// 下标) 编码，realm 编号为 0 时与旧编码逐字节一致。
+pub fn bind_async_disposable_stack_protos(core: &Arc<KernelCore>, session: &KernelSession, realm_id: u32) {
     let world = session.builtin_world();
     let proto_ptr = world.async_disposable_stack_proto.as_ptr() as *mut JsObject;
     let proto = unsafe { &mut *proto_ptr };
@@ -61,10 +64,10 @@ pub fn bind_async_disposable_stack_protos(core: &Arc<KernelCore>, session: &Kern
         oxide_builtins::disposable_stack::async_disposable_stack_disposed_getter::<crate::vm::Vm> as *const (),
     );
     // @@asyncDispose 与 disposeAsync 为同一函数对象（先绑 disposeAsync 再取源槽）。
-    bind_well_known_method_alias(core, proto, "disposeAsync", 11);
+    bind_well_known_method_alias(core, proto, "disposeAsync", 11, realm_id);
     let sf = core.perm_interner().as_ref();
     let tag = JsValue::perm_string(sf.string_ptr(sf.intern("AsyncDisposableStack").0));
-    bind_well_known_data_property(core, proto, 9, tag, PropAttributes::new(false, false, true));
+    bind_well_known_data_property(core, proto, 9, tag, PropAttributes::new(false, false, true), realm_id);
 }
 
 /// 把 `AsyncDisposableStack` 构造器绑定到 global（init 与 full_reset global 重建共用）。
@@ -72,7 +75,12 @@ pub fn bind_async_disposable_stack_protos(core: &Arc<KernelCore>, session: &Kern
 /// proto.constructor 已有则复用（dirty reset 保留路径）；否则 Box 自建构造器
 /// （proto=Function.prototype，prototype 槽=AsyncDisposableStack.prototype，
 /// 描述符按规范）。幂等：protos 安装与 global 槽写入均自带重复跳过。
-pub fn bind_async_disposable_stack(core: &Arc<KernelCore>, session: &KernelSession, global: &mut JsObject) {
+///
+/// `realm_id` 是目标所属 realm 的编号：well-known 符号键按 (realm 编号, 局部
+/// 下标) 编码，realm 编号为 0 时与旧编码逐字节一致。
+pub fn bind_async_disposable_stack(
+    core: &Arc<KernelCore>, session: &KernelSession, global: &mut JsObject, realm_id: u32,
+) {
     let world = session.builtin_world();
     let proto_ptr = world.async_disposable_stack_proto.as_ptr() as *mut JsObject;
     let proto = unsafe { &mut *proto_ptr };
@@ -145,7 +153,7 @@ pub fn bind_async_disposable_stack(core: &Arc<KernelCore>, session: &KernelSessi
     };
 
     write_proto_constructor(core, proto, ctor_val);
-    bind_async_disposable_stack_protos(core, session);
+    bind_async_disposable_stack_protos(core, session, realm_id);
     bind_global_value(core, global, "AsyncDisposableStack", ctor_val);
 }
 

@@ -48,7 +48,10 @@ fn bind_labeled_method(
 ///   经 `bind_constructor!` 原位安装（既有槽更新槽值，不追加新槽）。
 /// - 方法 wrapper 带族名站点标签登记复用键，选择性重建时按键迁移，
 ///   登记表跨重建不增长。
-pub fn bind_weak_map(core: &Arc<KernelCore>, session: &mut KernelSession, global: &mut JsObject) {
+///
+/// `realm_id` 是目标所属 realm 的编号：`@@toStringTag` 符号键按 (realm 编号,
+/// 局部下标) 编码，realm 编号为 0 时与旧编码逐字节一致。
+pub fn bind_weak_map(core: &Arc<KernelCore>, session: &mut KernelSession, global: &mut JsObject, realm_id: u32) {
     // world 唯一属主期：全程走可变引用（stub_objects 留存 + 释放登记同表）。
     let world = Arc::get_mut(&mut session.builtin_world)
         .expect("BuiltinWorld must be uniquely owned during init_kernel_builtins");
@@ -87,7 +90,7 @@ pub fn bind_weak_map(core: &Arc<KernelCore>, session: &mut KernelSession, global
     let ctor_pos = proto.hash_props_vec().map_or(0, |v| v.len() as u32).saturating_sub(1);
     proto.set_data_meta(ctor_pos, PropAttributes::new(true, false, true));
     let tag_key =
-        oxide_types::private_key::make_well_known_symbol_key(oxide_types::private_key::WELL_KNOWN_SYMBOL_TO_STRING_TAG);
+        oxide_types::private_key::encode_symbol_key(realm_id, oxide_types::private_key::WELL_KNOWN_SYMBOL_TO_STRING_TAG);
     let tag_shape = core.shape_forge().make_shape(proto.shape_id(), tag_key);
     proto.set_shape_id(tag_shape);
     proto.ensure_hash_props().push(JsValue::perm_string(

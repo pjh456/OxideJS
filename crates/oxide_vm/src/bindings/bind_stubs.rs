@@ -60,7 +60,10 @@ fn set_data_property(core: &Arc<KernelCore>, obj: &mut JsObject, si: u32, value:
 /// stub 的 `constructor` 与 @@toStringTag）——规范 25.1 的 %Proxy% 无
 /// prototype 属性，不装；描述符均不可枚举，`prototype` 另不可写、不可配置。
 /// 原型对象登记进 world 释放登记表，与 stub 对象同生死，session 收尾统一释放。
-pub fn bind_stubs(core: &Arc<KernelCore>, session: &mut KernelSession, global: &mut JsObject) {
+///
+/// `realm_id` 是目标所属 realm 的编号：`@@toStringTag` 符号键按 (realm 编号,
+/// 局部下标) 编码，realm 编号为 0 时与旧编码逐字节一致。
+pub fn bind_stubs(core: &Arc<KernelCore>, session: &mut KernelSession, global: &mut JsObject, realm_id: u32) {
     let builtin_world = Arc::get_mut(&mut session.builtin_world)
         .expect("BuiltinWorld must be uniquely owned during init_kernel_builtins");
     let object_proto_ptr = builtin_world.object_proto.as_ptr() as *mut JsObject;
@@ -92,7 +95,8 @@ pub fn bind_stubs(core: &Arc<KernelCore>, session: &mut KernelSession, global: &
                 PropAttributes::new(true, false, true),
             );
             if let Some(tag_name) = tag {
-                let tag_key = oxide_types::private_key::make_well_known_symbol_key(
+                let tag_key = oxide_types::private_key::encode_symbol_key(
+                    realm_id,
                     oxide_types::private_key::WELL_KNOWN_SYMBOL_TO_STRING_TAG,
                 );
                 let tag_val =

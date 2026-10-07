@@ -3,7 +3,7 @@
 
 use oxide_types::mem::P;
 use oxide_types::object::{JsObject, NativeFnPtr, PropAttributes};
-use oxide_types::private_key::make_well_known_symbol_key;
+use oxide_types::private_key::encode_symbol_key;
 use oxide_types::value::JsValue;
 
 use super::{ArrayMethods, BuiltinWorld, ErrorMethods, FnWrapperKey, FunctionMethods, ObjectMethods, StringMethods};
@@ -66,7 +66,12 @@ impl BuiltinWorld {
     }
 
     /// 把 Array 家族方法安装到 Array 构造器与原型上。
-    pub fn bind_array_methods(&self, methods: &ArrayMethods, string_forge: &PermInterner, shape_forge: &ShapeForge) {
+    ///
+    /// `realm_id` 是安装目标所属 realm 的编号：`@@iterator` 符号键按
+    /// (realm 编号, 局部下标) 编码，realm 编号为 0 时与旧编码逐字节一致。
+    pub fn bind_array_methods(
+        &self, methods: &ArrayMethods, string_forge: &PermInterner, shape_forge: &ShapeForge, realm_id: u32,
+    ) {
         let ctor_ptr = P::as_ptr(&self.array_constructor) as *mut JsObject;
         let ctor = unsafe { &mut *ctor_ptr };
         bind_methods!(
@@ -124,7 +129,7 @@ impl BuiltinWorld {
             ("with", methods.with_method, 2),
         );
 
-        let iterator_key = make_well_known_symbol_key(0);
+        let iterator_key = encode_symbol_key(realm_id, 0);
         let raw = methods.values;
         // SAFETY: methods.values 是 VM 绑定层传入的 NativeFn 函数项。
         let func_ptr = unsafe { NativeFnPtr::from_raw(raw) };
@@ -312,8 +317,11 @@ impl BuiltinWorld {
     }
 
     /// 把 Function 原型方法安装到 Function.prototype 上。
+    ///
+    /// `realm_id` 是安装目标所属 realm 的编号：`@@hasInstance` 符号键按
+    /// (realm 编号, 局部下标) 编码，realm 编号为 0 时与旧编码逐字节一致。
     pub fn bind_function_methods(
-        &self, methods: &FunctionMethods, string_forge: &PermInterner, shape_forge: &ShapeForge,
+        &self, methods: &FunctionMethods, string_forge: &PermInterner, shape_forge: &ShapeForge, realm_id: u32,
     ) {
         let proto_ptr = P::as_ptr(&self.function_proto) as *mut JsObject;
         let proto = unsafe { &mut *proto_ptr };
@@ -333,7 +341,7 @@ impl BuiltinWorld {
             proto,
             shape_forge,
             string_forge,
-            make_well_known_symbol_key(6),
+            encode_symbol_key(realm_id, 6),
             "[Symbol.hasInstance]",
             unsafe { NativeFnPtr::from_raw(methods.has_instance) },
             1,

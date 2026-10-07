@@ -9,7 +9,10 @@ use oxide_types::object::{JsObject, PropAttributes};
 use oxide_types::value::JsValue;
 
 /// 把 Temporal 命名空间及其子对象绑定到 global。
-pub fn bind_temporal(core: &Arc<KernelCore>, session: &KernelSession, global: &mut JsObject) {
+///
+/// `realm_id` 是目标所属 realm 的编号：`@@toStringTag` 符号键按 (realm 编号,
+/// 局部下标) 编码，realm 编号为 0 时与旧编码逐字节一致。
+pub fn bind_temporal(core: &Arc<KernelCore>, session: &KernelSession, global: &mut JsObject, realm_id: u32) {
     let world = session.builtin_world();
     let temporal_ptr = world.temporal_object.as_ptr() as *mut JsObject;
     let temporal = unsafe { &mut *temporal_ptr };
@@ -129,6 +132,7 @@ pub fn bind_temporal(core: &Arc<KernelCore>, session: &KernelSession, global: &m
                 .string_ptr(core.perm_interner().intern("Temporal.Instant").0),
         ),
         PropAttributes::new(false, false, true),
+        realm_id,
     );
 
     // Temporal.ZonedDateTime：最小构造器与三个稳定内部槽 getter。
@@ -383,6 +387,7 @@ pub fn bind_temporal(core: &Arc<KernelCore>, session: &KernelSession, global: &m
                 .string_ptr(core.perm_interner().intern("Temporal.ZonedDateTime").0),
         ),
         PropAttributes::new(false, false, true),
+        realm_id,
     );
     apply_binding_table(
         world,
@@ -734,6 +739,7 @@ pub fn bind_temporal(core: &Arc<KernelCore>, session: &KernelSession, global: &m
                 .string_ptr(core.perm_interner().intern("Temporal.PlainTime").0),
         ),
         PropAttributes::new(false, false, true),
+        realm_id,
     );
 
     // Temporal.PlainDateTime：ISO 日期时间分量、拆分转换与禁止隐式原始值转换。
@@ -893,6 +899,7 @@ pub fn bind_temporal(core: &Arc<KernelCore>, session: &KernelSession, global: &m
                 .string_ptr(core.perm_interner().intern("Temporal.PlainDateTime").0),
         ),
         PropAttributes::new(false, false, true),
+        realm_id,
     );
 
     // Temporal.Duration：构造器、from、分量 getter 与 ISO 字符串转换。
@@ -981,6 +988,7 @@ pub fn bind_temporal(core: &Arc<KernelCore>, session: &KernelSession, global: &m
                 .string_ptr(core.perm_interner().intern("Temporal.Duration").0),
         ),
         PropAttributes::new(false, false, true),
+        realm_id,
     );
 
     // Temporal.PlainMonthDay：构造器、3 个分量 getter 与 toString/toJSON。
@@ -1069,6 +1077,7 @@ pub fn bind_temporal(core: &Arc<KernelCore>, session: &KernelSession, global: &m
                 .string_ptr(core.perm_interner().intern("Temporal.PlainMonthDay").0),
         ),
         PropAttributes::new(false, false, true),
+        realm_id,
     );
 
     // Temporal.PlainYearMonth：构造器、10 个 getter 与 toString/toJSON。
@@ -1194,6 +1203,7 @@ pub fn bind_temporal(core: &Arc<KernelCore>, session: &KernelSession, global: &m
                 .string_ptr(core.perm_interner().intern("Temporal.PlainYearMonth").0),
         ),
         PropAttributes::new(false, false, true),
+        realm_id,
     );
 
     // 把子对象挂到 Temporal 命名空间对象上，再把 Temporal 挂到 global。

@@ -10,7 +10,10 @@ use super::bind_global_value;
 use super::configure_native_constructor;
 
 /// 把 Function 构造器与原型方法绑定到 global。
-pub fn bind_function(core: &Arc<KernelCore>, session: &KernelSession, global: &mut JsObject) {
+///
+/// `realm_id` 是目标所属 realm 的编号：`@@hasInstance` 符号键按 (realm 编号,
+/// 局部下标) 编码，realm 编号为 0 时与旧编码逐字节一致。
+pub fn bind_function(core: &Arc<KernelCore>, session: &KernelSession, global: &mut JsObject, realm_id: u32) {
     let function_methods = FunctionMethods {
         call: oxide_builtins::function::function_call::<crate::vm::Vm> as *const (),
         apply: oxide_builtins::function::function_apply::<crate::vm::Vm> as *const (),
@@ -22,6 +25,7 @@ pub fn bind_function(core: &Arc<KernelCore>, session: &KernelSession, global: &m
         &function_methods,
         core.perm_interner().as_ref(),
         core.shape_forge().as_ref(),
+        realm_id,
     );
 
     let function_ctor = session.builtin_world().function_constructor.as_ptr() as *mut JsObject;

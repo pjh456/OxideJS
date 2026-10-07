@@ -9,7 +9,10 @@ use oxide_kernel::kernel::{KernelCore, KernelSession};
 use oxide_types::object::JsObject;
 
 /// 把 Map 构造器与原型方法绑定到 global。
-pub fn bind_map(core: &Arc<KernelCore>, session: &KernelSession, global: &mut JsObject) {
+///
+/// `realm_id` 是目标所属 realm 的编号：well-known 符号键按 (realm 编号, 局部
+/// 下标) 编码，realm 编号为 0 时与旧编码逐字节一致。
+pub fn bind_map(core: &Arc<KernelCore>, session: &KernelSession, global: &mut JsObject, realm_id: u32) {
     let ctor_ptr = session.builtin_world().map_constructor.as_ptr() as *mut JsObject;
     let ctor = unsafe { &mut *ctor_ptr };
     let proto_ptr = session.builtin_world().map_proto.as_ptr() as *mut JsObject;
@@ -42,7 +45,7 @@ pub fn bind_map(core: &Arc<KernelCore>, session: &KernelSession, global: &mut Js
     );
 
     // Map 的 @@iterator（Symbol.iterator）是 entries 的同一函数对象。
-    bind_well_known_method_alias(core, proto, "entries", 0);
+    bind_well_known_method_alias(core, proto, "entries", 0, realm_id);
     bind_accessor_getter(core, session, proto, "size", oxide_builtins::map::map_size::<crate::vm::Vm> as *const ());
 
     // Map[Symbol.species] 访问器：getter 返回 receiver，派生类沿静态原型链解析
@@ -51,7 +54,7 @@ pub fn bind_map(core: &Arc<KernelCore>, session: &KernelSession, global: &mut Js
         core,
         session,
         ctor,
-        oxide_types::private_key::make_well_known_symbol_key(oxide_types::private_key::WELL_KNOWN_SYMBOL_SPECIES),
+        oxide_types::private_key::encode_symbol_key(realm_id, oxide_types::private_key::WELL_KNOWN_SYMBOL_SPECIES),
         "get [Symbol.species]",
         oxide_builtins::array::array_species_get::<crate::vm::Vm> as *const (),
     );

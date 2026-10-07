@@ -5,13 +5,16 @@ use crate::bindings::{
 };
 use oxide_kernel::kernel::{KernelCore, KernelSession};
 use oxide_types::object::{JsObject, PropAttributes};
-use oxide_types::private_key::{make_well_known_symbol_key, WELL_KNOWN_SYMBOL_TO_PRIMITIVE};
+use oxide_types::private_key::{encode_symbol_key, WELL_KNOWN_SYMBOL_TO_PRIMITIVE};
 use oxide_types::value::JsValue;
 
 use crate::bind_constructor;
 
 /// 把 Symbol 构造器与原型方法绑定到 global（含 `Symbol.iterator` 等 well-known symbols）。
-pub fn bind_symbol(core: &Arc<KernelCore>, session: &KernelSession, global: &mut JsObject) {
+///
+/// `realm_id` 是目标所属 realm 的编号：well-known 符号键按 (realm 编号, 局部
+/// 下标) 编码，realm 编号为 0 时与旧编码逐字节一致。
+pub fn bind_symbol(core: &Arc<KernelCore>, session: &KernelSession, global: &mut JsObject, realm_id: u32) {
     let ctor_ptr = session.builtin_world().symbol_constructor.as_ptr() as *mut JsObject;
     let ctor = unsafe { &mut *ctor_ptr };
     let proto_ptr = session.builtin_world().symbol_proto.as_ptr() as *mut JsObject;
@@ -57,8 +60,9 @@ pub fn bind_symbol(core: &Arc<KernelCore>, session: &KernelSession, global: &mut
         "[Symbol.toPrimitive]",
         oxide_builtins::symbol::symbol_to_primitive::<crate::vm::Vm> as *const (),
         1,
+        realm_id,
     );
-    let to_prim_key = make_well_known_symbol_key(WELL_KNOWN_SYMBOL_TO_PRIMITIVE);
+    let to_prim_key = encode_symbol_key(realm_id, WELL_KNOWN_SYMBOL_TO_PRIMITIVE);
     if let Some(pos) = core.shape_forge().lookup_position(proto.shape_id(), to_prim_key) {
         proto.set_data_meta(pos, PropAttributes::new(false, false, true));
         proto.bump_generation();

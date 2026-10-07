@@ -50,7 +50,10 @@ impl Vm {
     pub fn new() -> Self {
         let core = KernelCore::new(KernelConfig::minimal());
         let mut session = KernelSession::new(&core);
-        bindings::init_kernel_builtins(&core, &mut session);
+        // realm 编号在构造时分配并固化：首个 realm 编号为 0（与旧符号编码一致）。
+        // 须在 builtin 绑定之前分配：绑定按 (realm 编号, 局部下标) 编码 well-known 符号键。
+        let realm_id = core.alloc_realm_id();
+        bindings::init_kernel_builtins(&core, &mut session, realm_id);
         // 在 builtin 绑定之后取 id：绑定过程已 intern "length"，此处命中缓存得到
         // 稳定的 id，用于运行期常见属性（如函数 length 槽）的快路径。
         let length_si = core.perm_interner().intern("length").0;
@@ -58,8 +61,6 @@ impl Vm {
         let obj_proto = P::clone(&session.builtin_world().object_proto);
         // 提前缓存执行期字符串 GC 初始水位（构造后 config 不再变化）。
         let gc_threshold = core.config().session_gc_threshold;
-        // realm 编号在构造时分配并固化：首个 realm 编号为 0（与旧符号编码一致）。
-        let realm_id = core.alloc_realm_id();
         let mut vm = Self {
             regs: [JsValue::undefined(); 256],
             pc: 0,
@@ -199,7 +200,10 @@ impl Vm {
     /// 复用共享 `KernelCore` 创建 VM（VM 池路径），共享 intern/shape/code 缓存。
     pub fn with_kernel_core(core: Arc<KernelCore>) -> Self {
         let mut session = KernelSession::new(&core);
-        bindings::init_kernel_builtins(&core, &mut session);
+        // realm 编号在构造时分配并固化：首个 realm 编号为 0（与旧符号编码一致）。
+        // 须在 builtin 绑定之前分配：绑定按 (realm 编号, 局部下标) 编码 well-known 符号键。
+        let realm_id = core.alloc_realm_id();
+        bindings::init_kernel_builtins(&core, &mut session, realm_id);
         // 在 builtin 绑定之后取 id：绑定过程已 intern "length"，此处命中缓存得到
         // 稳定的 id，用于运行期常见属性（如函数 length 槽）的快路径。
         let length_si = core.perm_interner().intern("length").0;
@@ -207,8 +211,6 @@ impl Vm {
         let obj_proto = P::clone(&session.builtin_world().object_proto);
         // 提前缓存执行期字符串 GC 初始水位（构造后 config 不再变化）。
         let gc_threshold = core.config().session_gc_threshold;
-        // realm 编号在构造时分配并固化：首个 realm 编号为 0（与旧符号编码一致）。
-        let realm_id = core.alloc_realm_id();
         let mut vm = Self {
             regs: [JsValue::undefined(); 256],
             pc: 0,
@@ -381,12 +383,22 @@ impl Vm {
         }
         let dirty = self.realm.session.borrow_mut().selective_reset(&self.kernel_core);
         if dirty.any_builtin_dirty() {
-            bindings::rebind_dirty_builtins(&self.kernel_core, &mut self.realm.session.borrow_mut(), Some(&dirty));
+            bindings::rebind_dirty_builtins(
+                &self.kernel_core,
+                &mut self.realm.session.borrow_mut(),
+                Some(&dirty),
+                self.realm_id(),
+            );
         }
         if dirty.global {
             let global_ptr = self.realm.session.borrow().global_object().as_ptr() as *mut JsObject;
             let global = unsafe { &mut *global_ptr };
-            bindings::bind_global_builtin_slots(&self.kernel_core, &self.realm.session.borrow_mut(), global);
+            bindings::bind_global_builtin_slots(
+                &self.kernel_core,
+                &self.realm.session.borrow_mut(),
+                global,
+                self.realm_id(),
+            );
         }
         *self.realm
             .object_prototype
@@ -405,7 +417,7 @@ impl Vm {
     #[doc(hidden)]
     pub fn full_reset_legacy_for_bench(&mut self) {
         *self.realm.session.borrow_mut() = KernelSession::new(&self.kernel_core);
-        bindings::init_kernel_builtins(&self.kernel_core, &mut self.realm.session.borrow_mut());
+        bindings::init_kernel_builtins(&self.kernel_core, &mut self.realm.session.borrow_mut(), self.realm_id());
         *self.realm
             .object_prototype
             .borrow_mut() = P::clone(&self.realm.session.borrow().builtin_world().object_proto);

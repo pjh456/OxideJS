@@ -8,7 +8,10 @@ use crate::bind_constructor;
 use crate::bindings::apply_binding_table;
 
 /// 把 Array 构造器与原型方法绑定到 global。
-pub fn bind_array(core: &Arc<KernelCore>, session: &KernelSession, global: &mut JsObject) {
+///
+/// `realm_id` 是目标所属 realm 的编号：well-known 符号键按 (realm 编号, 局部
+/// 下标) 编码，realm 编号为 0 时与旧编码逐字节一致。
+pub fn bind_array(core: &Arc<KernelCore>, session: &KernelSession, global: &mut JsObject, realm_id: u32) {
     let _array_methods = ArrayMethods {
         is_array: oxide_builtins::array::array_is_array::<crate::vm::Vm> as *const (),
         from: oxide_builtins::array::array_from::<crate::vm::Vm> as *const (),
@@ -55,6 +58,7 @@ pub fn bind_array(core: &Arc<KernelCore>, session: &KernelSession, global: &mut 
         &_array_methods,
         core.perm_interner().as_ref(),
         core.shape_forge().as_ref(),
+        realm_id,
     );
 
     let array_proto_ptr = session.builtin_world().array_proto.as_ptr() as *mut JsObject;
@@ -71,7 +75,7 @@ pub fn bind_array(core: &Arc<KernelCore>, session: &KernelSession, global: &mut 
         array_proto.set_data_meta(pos, PropAttributes::new(true, false, true));
     }
     // Array.prototype[@@iterator] 与 values 共享同一函数对象。
-    super::bind_well_known_method_alias(core, array_proto, "values", 0);
+    super::bind_well_known_method_alias(core, array_proto, "values", 0, realm_id);
 
     let ctor_ptr = session.builtin_world().array_constructor.as_ptr() as *mut JsObject;
     bind_constructor!(core, global, "Array", ctor_ptr, oxide_builtins::array::array_constructor::<crate::vm::Vm>, 1, hash: true);
@@ -82,7 +86,7 @@ pub fn bind_array(core: &Arc<KernelCore>, session: &KernelSession, global: &mut 
         core,
         session,
         unsafe { &mut *ctor_ptr },
-        oxide_types::private_key::make_well_known_symbol_key(oxide_types::private_key::WELL_KNOWN_SYMBOL_SPECIES),
+        oxide_types::private_key::encode_symbol_key(realm_id, oxide_types::private_key::WELL_KNOWN_SYMBOL_SPECIES),
         "get [Symbol.species]",
         oxide_builtins::array::array_species_get::<crate::vm::Vm> as *const (),
     );

@@ -11,7 +11,10 @@ use oxide_types::value::JsValue;
 
 /// 把 `%TypedArray%` 抽象构造器的 native 实现配置为恒抛 TypeError（不可 new/不可调用），
 /// 设置 `length` 属性为 0，并挂载静态 `of`/`from`（具体构造器经原型链继承）。
-fn bind_typed_array_abstract_ctor(core: &Arc<KernelCore>, session: &KernelSession) {
+///
+/// `realm_id` 是目标所属 realm 的编号：`@@species` 符号键按 (realm 编号, 局部
+/// 下标) 编码，realm 编号为 0 时与旧编码逐字节一致。
+fn bind_typed_array_abstract_ctor(core: &Arc<KernelCore>, session: &KernelSession, realm_id: u32) {
     let ctor_ptr = session.builtin_world().typed_array_constructor.as_ptr() as *mut JsObject;
     let ctor = unsafe { &mut *ctor_ptr };
     configure_native_constructor(
@@ -61,7 +64,7 @@ fn bind_typed_array_abstract_ctor(core: &Arc<KernelCore>, session: &KernelSessio
     // （及派生类）沿原型链解析 @@species 得自身（具体构造器无 own 属性）。绑定站
     // 与 TA 构造器后续消费面改造共用，先查槽位防重复绑定追加第二访问器槽。
     let species_key =
-        oxide_types::private_key::make_well_known_symbol_key(oxide_types::private_key::WELL_KNOWN_SYMBOL_SPECIES);
+        oxide_types::private_key::encode_symbol_key(realm_id, oxide_types::private_key::WELL_KNOWN_SYMBOL_SPECIES);
     if core.shape_forge().lookup_position(ctor.shape_id(), species_key).is_none() {
         bind_accessor_getter_key(
             core,
@@ -112,7 +115,10 @@ macro_rules! bind_typed_array_constructor {
 }
 
 /// 把所有 TypedArray 家族构造器（Int8Array/Uint8Array/.../BigUint64Array）与其共享原型绑定到 global。
-pub fn bind_typed_array(core: &Arc<KernelCore>, session: &KernelSession, global: &mut JsObject) {
+///
+/// `realm_id` 是目标所属 realm 的编号：well-known 符号键按 (realm 编号, 局部
+/// 下标) 编码，realm 编号为 0 时与旧编码逐字节一致。
+pub fn bind_typed_array(core: &Arc<KernelCore>, session: &KernelSession, global: &mut JsObject, realm_id: u32) {
     let shared_proto_ptr = session.builtin_world().typed_array_proto.as_ptr() as *mut JsObject;
     let shared_proto = unsafe { &mut *shared_proto_ptr };
     apply_binding_table(
@@ -214,7 +220,7 @@ pub fn bind_typed_array(core: &Arc<KernelCore>, session: &KernelSession, global:
     );
     // `keys` 已由方法表独立绑定（索引流 ≠ 值流）；@@iterator 与 `values`
     // 共享同一函数对象。
-    bind_well_known_method_alias(core, shared_proto, "values", 0);
+    bind_well_known_method_alias(core, shared_proto, "values", 0, realm_id);
 
     // 原型访问器：视图属性（buffer/byteOffset/byteLength/length）读内部数据槽，
     // @@toStringTag 返回具体类型名，供 Object.prototype.toString 区分类型。
@@ -250,7 +256,7 @@ pub fn bind_typed_array(core: &Arc<KernelCore>, session: &KernelSession, global:
         core,
         session,
         shared_proto,
-        oxide_types::private_key::make_well_known_symbol_key(oxide_types::private_key::WELL_KNOWN_SYMBOL_TO_STRING_TAG),
+        oxide_types::private_key::encode_symbol_key(realm_id, oxide_types::private_key::WELL_KNOWN_SYMBOL_TO_STRING_TAG),
         "get [Symbol.toStringTag]",
         oxide_builtins::typed_array::typed_array_to_string_tag_getter::<crate::vm::Vm> as *const (),
     );
@@ -352,7 +358,7 @@ pub fn bind_typed_array(core: &Arc<KernelCore>, session: &KernelSession, global:
         1,
     );
 
-    bind_typed_array_abstract_ctor(core, session);
+    bind_typed_array_abstract_ctor(core, session, realm_id);
 
     // 把 `%TypedArray%` 抽象构造器暴露为全局 `TypedArray`（具体构造器的 [[Prototype]]）。
     let abstract_ctor_val =

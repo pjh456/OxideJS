@@ -12,7 +12,10 @@ use oxide_types::value::JsValue;
 /// 构造器/原型对象由 `BuiltinWorld` 创建（含 name/prototype/constructor 互指），
 /// 这里只配置 native 实现并挂方法。`BigInt(value)` 当函数调用时返回 BigInt 值；
 /// `new BigInt()` 抛 TypeError（BigInt 不可 new）。
-pub fn bind_bigint(core: &Arc<KernelCore>, session: &KernelSession, global: &mut JsObject) {
+///
+/// `realm_id` 是目标所属 realm 的编号：`@@toStringTag` 符号键按 (realm 编号,
+/// 局部下标) 编码，realm 编号为 0 时与旧编码逐字节一致。
+pub fn bind_bigint(core: &Arc<KernelCore>, session: &KernelSession, global: &mut JsObject, realm_id: u32) {
     let world = session.builtin_world();
     let ctor_ptr = world.bigint_constructor.as_ptr() as *mut JsObject;
     let ctor = unsafe { &mut *ctor_ptr };
@@ -57,7 +60,7 @@ pub fn bind_bigint(core: &Arc<KernelCore>, session: &KernelSession, global: &mut
     // BigInt.prototype[@@toStringTag] = "BigInt"，属性 { writable:false, enumerable:false, configurable:true }。
     let tag_si = core.perm_interner().intern("BigInt").0;
     let tag_value = JsValue::perm_string(core.perm_interner().string_ptr(tag_si));
-    bind_well_known_data_property(core, proto, 9, tag_value, PropAttributes::new(false, false, true));
+    bind_well_known_data_property(core, proto, 9, tag_value, PropAttributes::new(false, false, true), realm_id);
 
     bind_global_value(core, global, "BigInt", JsValue::from_js_object(ctor_ptr));
 }
