@@ -173,11 +173,13 @@ fn run_tests() -> bool {
         .and_then(|n| skip_until.checked_add(n))
         .map(|n| n.min(total))
         .unwrap_or(total);
+    // 缺省 256：每 kernel 生命周期 realm 计数不超 512 上界（属性键符号空间约束），
+    // 留一倍余量防重建边界 off-by-one 触发 debug 断言。
     let kernel_batch = std::env::var("OXIDE_TEST262_KERNEL_BATCH")
         .ok()
         .and_then(|s| s.parse::<usize>().ok())
         .filter(|&n| n > 0)
-        .unwrap_or(if config.no_skip { 1000 } else { 5000 });
+        .unwrap_or(256);
     let chunk_size = std::env::var("OXIDE_TEST262_CHUNK_SIZE")
         .ok()
         .and_then(|s| s.parse::<usize>().ok())

@@ -32,7 +32,9 @@ pub struct KernelCore {
     active_vms: AtomicUsize,
     /// realm 编号计数器：进程内单调递增，`alloc_realm_id` 取当前值后自增。
     /// 首个 realm 编号为 0（与旧符号编码一致），至多 2^9 = 512 个 realm
-    /// （属性键符号空间 29 位减局部下标 20 位）。
+    /// （属性键符号空间 29 位减局部下标 20 位）。宿主须在单 kernel 生命周期
+    /// 内创建满 512 个 Vm 前重建 kernel（重建即计数器归零）；test262 runner
+    /// 经 kernel_batch 缺省值（不超 512）满足该约束。
     realm_counter: AtomicU32,
 }
 
@@ -197,10 +199,15 @@ impl KernelCore {
     /// 分配一个 realm 编号：取计数器当前值后自增，进程内单调递增。
     ///
     /// 首个 realm 编号为 0（与旧符号编码一致），供 `Realm` 构造时固化。
-    /// 编号空间至多 2^9 = 512（属性键符号空间约束），超出后回绕（debug 断言不触发，
-    /// 实际单进程 realm 数远小于该上界）。
+    /// 编号空间至多 2^9 = 512（属性键符号空间 29 位减局部下标 20 位）：宿主
+    /// 须在单 kernel 生命周期内创建满 512 个 Vm 前重建 kernel（重建即计数器
+    /// 归零），否则超界编号编码的符号属性键与 realm 0 碰撞（属性别名、
+    /// `Symbol.for` 注册表污染）。debug 构建对超界 fail-fast，release 构建
+    /// 静默回绕（与引擎其余边界守卫同型）。
     pub fn alloc_realm_id(&self) -> u32 {
-        self.realm_counter.fetch_add(1, Ordering::Relaxed)
+        let id = self.realm_counter.fetch_add(1, Ordering::Relaxed);
+        debug_assert!(id < 512, "realm 编号超出 512 上界：宿主须在创建满 512 个 Vm 前重建 kernel");
+        id
     }
 }
 

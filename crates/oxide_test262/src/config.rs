@@ -95,7 +95,7 @@ impl RunConfig {
           \x20  OXIDE_TEST262_CHUNK_SIZE             tests per child in chunked mode\n\
           \x20  OXIDE_TEST262_CHILD_CHUNK            marks a spawned child as chunk worker (any value)\n\
           \x20  OXIDE_TEST262_ALLOW_FAIL_EXIT        child may exit 1 on fail (any value)\n\
-          \x20  OXIDE_TEST262_KERNEL_BATCH           kernel rebuilds every N tests (default 5000, 1000 under --no-skip)\n\
+          \x20  OXIDE_TEST262_KERNEL_BATCH           kernel rebuilds every N tests (default 256, kept under the 512 realm bound)\n\
           \x20  OXIDE_TEST262_LOG_LEVEL              runner log level (default info)\n\
           \x20  OXIDE_SKIP_UNTIL                      skip test indexes below N (chunking/supervise resume)\n\
           \x20  OXIDE_MAX_TESTS                       run at most N tests after skip point"

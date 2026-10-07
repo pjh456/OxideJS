@@ -107,3 +107,47 @@ fn symbol_key_realm_dimensions_distinct() {
     // 跨 realm 同名 well-known 符号也产生不同键。
     assert_ne!(encode_symbol_key(0, WELL_KNOWN_SYMBOL_ITERATOR), encode_symbol_key(2, WELL_KNOWN_SYMBOL_ITERATOR));
 }
+
+#[test]
+fn symbol_key_realm_511_in_range() {
+    // 511 是 512 上界内的最后一个 realm 编号：realm 位落 bit 20 至 28，与基址
+    // 不重叠，编码落 29 位符号空间内，往返自洽且与相邻 realm 不碰撞。
+    for idx in [0u32, 14, 15, 16] {
+        let key = encode_symbol_key(511, idx);
+        assert!(is_symbol_key(key));
+        assert_eq!(decode_symbol_key(key), (511, idx));
+        assert_ne!(key, encode_symbol_key(0, idx));
+        assert_ne!(key, encode_symbol_key(510, idx));
+    }
+}
+
+#[test]
+fn symbol_key_realm_512_collides_with_realm_zero() {
+    // 512 是第一个出界 realm 编号：realm 位 bit 9 左移 20 位落 bit 29，与
+    // SYMBOL_KEY_BASE 的 bit 29 重叠，编码结果与 realm 0 逐字节一致（碰撞）。
+    for idx in [0u32, 14, 15, 16] {
+        assert_eq!(encode_symbol_key(512, idx), encode_symbol_key(0, idx));
+    }
+}
+
+#[test]
+fn symbol_key_realm_1024_out_of_range_still_injective() {
+    // 1024 出界但 realm 位 bit 10 左移 20 位落 bit 30，与基址不重叠：键仍单射
+    // （解码自洽回 1024），仅出文档声明的 29 位符号空间，不与 realm 0 碰撞。
+    for idx in [0u32, 15, 16] {
+        let key = encode_symbol_key(1024, idx);
+        assert!(is_symbol_key(key));
+        assert_ne!(key, encode_symbol_key(0, idx));
+        assert_eq!(symbol_realm_id_from_key(key), 1024);
+        assert_eq!(symbol_local_index_from_key(key), idx);
+    }
+}
+
+#[test]
+fn symbol_key_realm_2048_collides_with_realm_zero() {
+    // 2048 是第二个碰撞环：realm 位 bit 11 左移 20 位落 bit 31，与
+    // SYMBOL_KEY_BASE 的 bit 31 重叠，编码结果与 realm 0 逐字节一致。
+    for idx in [0u32, 15, 16] {
+        assert_eq!(encode_symbol_key(2048, idx), encode_symbol_key(0, idx));
+    }
+}
