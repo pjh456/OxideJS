@@ -39,7 +39,7 @@ impl Vm {
             return Err(format!("LOAD_GLOBAL constant index {idx} is not a string key"));
         }
         let si = self.property_key_si(key_val)?;
-        let global = self.session.global_object();
+        let global = self.realm.session.global_object();
         if let Some(val) = self.resolve_property(global, si) {
             self.regs[rd] = val;
             Ok(false)
@@ -67,7 +67,7 @@ impl Vm {
             return Err(format!("LOAD_GLOBAL_TYPEOF constant index {idx} is not a string key"));
         }
         let si = self.property_key_si(key_val)?;
-        let global = self.session.global_object();
+        let global = self.realm.session.global_object();
         self.regs[rd] = self.resolve_property(global, si).unwrap_or(JsValue::undefined());
         Ok(())
     }
@@ -215,7 +215,7 @@ impl Vm {
     pub(crate) fn dispatch_new_object(&mut self, rd: usize, instr: u32) -> Result<(), String> {
         let nprops = opcode::a(instr) as usize;
         vm_trace!("NEW_OBJECT rd={} nprops={}", rd, nprops);
-        let proto_ptr = &*self.object_prototype as *const JsObject as *mut JsObject;
+        let proto_ptr = &*self.realm.object_prototype as *const JsObject as *mut JsObject;
         let mut shape_id = EMPTY_SHAPE_ID;
         if nprops > 0 {
             let key_idxs: Vec<u32> = self.bytecode[self.pc..self.pc + nprops].to_vec();
@@ -258,7 +258,7 @@ impl Vm {
     /// - 登记 session 对象表并计入堆账目；回收由 session GC mark/sweep 承担。
     pub(crate) fn dispatch_new_session_object(&mut self, rd: usize) -> Result<(), String> {
         vm_trace!("NEW_SESSION_OBJECT rd={}", rd);
-        let proto_ptr = &*self.object_prototype as *const JsObject as *mut JsObject;
+        let proto_ptr = &*self.realm.object_prototype as *const JsObject as *mut JsObject;
         let obj = JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(proto_ptr));
         let obj_ptr = self.alloc_session_object(obj);
         self.regs[rd] = JsValue::object(obj_ptr as *mut u8);
@@ -278,7 +278,7 @@ impl Vm {
             Some(frame) => (frame.arguments_base, frame.arguments_count),
             None => (self.inline_args_base, self.inline_args_count),
         };
-        let proto_ptr = &*self.object_prototype as *const JsObject as *mut JsObject;
+        let proto_ptr = &*self.realm.object_prototype as *const JsObject as *mut JsObject;
         let obj_ptr = self.alloc_object(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(proto_ptr)));
         let obj = unsafe { &mut *obj_ptr };
         obj.type_tag = JsObject::OBJ_TYPE_ARGUMENTS;
@@ -312,7 +312,7 @@ impl Vm {
         let simple = self.active_module().is_some_and(|m| m.has_simple_params);
         if strict || !simple {
             // SAFETY: 指针由绑定层在 session 构造期写入，session 存活期内有效。
-            let thrower_ptr = self.session.builtin_world().throw_type_error.get();
+            let thrower_ptr = self.realm.session.builtin_world().throw_type_error.get();
             if thrower_ptr.is_null() {
                 // 绑定层尚未写入共享对象（正常路径不出现）：退化为数据属性保调用可用。
                 if let Err(msg) =
@@ -367,7 +367,7 @@ impl Vm {
         let sym_iter_si = make_well_known_symbol_key(0);
         // SAFETY: array_proto 是 perm 层内置对象（BuiltinWorld 持有），地址稳定且
         // 跨 epoch/session 存活，本调用期间无 GC 搬移。
-        let array_proto = self.session.builtin_world().array_proto.as_ptr();
+        let array_proto = self.realm.session.builtin_world().array_proto.as_ptr();
         let iter_val = match self.ordinary_get(unsafe { &*array_proto }, sym_iter_si, JsValue::undefined()) {
             Ok(v) => v,
             Err(msg) => return self.raise_error_kind("TypeError", &msg),
@@ -397,7 +397,7 @@ impl Vm {
         };
         let n = count as usize;
         let rest_len = n.saturating_sub(fixed_count);
-        let proto_ptr = self.session.builtin_world().array_proto.as_ptr() as *mut JsObject;
+        let proto_ptr = self.realm.session.builtin_world().array_proto.as_ptr() as *mut JsObject;
         let obj_ptr =
             self.alloc_object(JsObject::new_array(EMPTY_SHAPE_ID, JsValue::from_js_object(proto_ptr), rest_len));
         let obj = unsafe { &mut *obj_ptr };
@@ -417,7 +417,7 @@ impl Vm {
     pub(crate) fn dispatch_new_array(&mut self, rd: usize, instr: u32) {
         let n = opcode::imm16(instr) as usize;
         vm_trace!("NEW_ARRAY rd={} n={}", rd, n);
-        let proto_ptr = self.session.builtin_world().array_proto.as_ptr() as *mut JsObject;
+        let proto_ptr = self.realm.session.builtin_world().array_proto.as_ptr() as *mut JsObject;
         let obj = self.alloc_object(JsObject::new_array(EMPTY_SHAPE_ID, JsValue::from_js_object(proto_ptr), n));
         self.regs[rd] = JsValue::object(obj as *mut u8);
     }

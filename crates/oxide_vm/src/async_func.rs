@@ -88,7 +88,7 @@ impl Vm {
         &mut self, callee: JsValue, this_value: JsValue, args: &[JsValue], promise: JsValue, resolve: JsValue,
         reject: JsValue,
     ) -> JsValue {
-        let proto_val = JsValue::from_js_object(self.session.builtin_world().object_proto.as_ptr() as *mut JsObject);
+        let proto_val = JsValue::from_js_object(self.realm.session.builtin_world().object_proto.as_ptr() as *mut JsObject);
         let ptr = self.alloc_object(JsObject::new_empty(EMPTY_SHAPE_ID, proto_val));
         let obj = unsafe { &mut *ptr };
         obj.type_tag = JsObject::OBJ_TYPE_ASYNC;
@@ -342,7 +342,7 @@ impl Vm {
 
     /// 构造 await 恢复闭包：携带目标异步上下文对象，区分 fulfill/reject 角色。
     fn make_async_await_resume_fn(&mut self, ctx: JsValue, reject_role: bool) -> JsValue {
-        let fn_proto = self.session.builtin_world().fn_proto_val();
+        let fn_proto = self.realm.session.builtin_world().fn_proto_val();
         let mut func = JsObject::new_empty(EMPTY_SHAPE_ID, fn_proto);
         func.set_function(true);
         // SAFETY: async_await_resume_closure 是 NativeFn 函数项。
@@ -361,7 +361,7 @@ impl Vm {
     /// 构造逃出关闭结算闭包：携带目标异步上下文对象与 return() promise，区分
     /// fulfill/reject 角色。
     pub(crate) fn make_async_escape_close_fn(&mut self, ctx: JsValue, promise: JsValue, reject_role: bool) -> JsValue {
-        let fn_proto = self.session.builtin_world().fn_proto_val();
+        let fn_proto = self.realm.session.builtin_world().fn_proto_val();
         let mut func = JsObject::new_empty(EMPTY_SHAPE_ID, fn_proto);
         func.set_function(true);
         // SAFETY: async_escape_close_closure 是 NativeFn 函数项。
@@ -596,7 +596,7 @@ fn async_escape_close_closure(vm: &mut Vm, args: &[u8]) -> NativeResult {
 pub(crate) fn init_async_intrinsics(vm: &mut Vm) {
     let sf = vm.kernel_core.perm_interner().as_ref();
     let sh = vm.kernel_core.shape_forge().as_ref();
-    let fn_proto_val = vm.session.builtin_world().fn_proto_val();
+    let fn_proto_val = vm.realm.session.builtin_world().fn_proto_val();
 
     // %AsyncFunction% 构造器：proto = Function.prototype，动态编译异步函数。
     // 选择性重建复用：前轮构造器按键迁移（prototype 槽在下方 P 槽换入后重指
@@ -607,13 +607,13 @@ pub(crate) fn init_async_intrinsics(vm: &mut Vm) {
     let af_ctor_fn_ptr =
         unsafe { NativeFnPtr::from_raw(oxide_builtins::function::async_function_constructor::<Vm> as *const ()) };
     let (af_ctor_ptr, af_ctor_is_new) =
-        match vm.session.builtin_world().find_fn_wrapper(af_reuse_key, af_ctor_fn_ptr, 1) {
+        match vm.realm.session.builtin_world().find_fn_wrapper(af_reuse_key, af_ctor_fn_ptr, 1) {
             Some(ptr) => (ptr, false),
             None => {
                 // [[Prototype]] = Function 构造器本体（与 Function 构造器同链，
                 // `Object.getPrototypeOf(AsyncFunction) === Function` 语义）。
                 let fn_ctor_val =
-                    JsValue::from_js_object(vm.session.builtin_world().function_constructor.as_ptr() as *mut JsObject);
+                    JsValue::from_js_object(vm.realm.session.builtin_world().function_constructor.as_ptr() as *mut JsObject);
                 let mut af_ctor = Box::new(JsObject::new_empty(EMPTY_SHAPE_ID, fn_ctor_val));
                 af_ctor.set_function(true);
                 af_ctor.set_native_arg_count(1);
@@ -637,7 +637,7 @@ pub(crate) fn init_async_intrinsics(vm: &mut Vm) {
                 af_ctor.set_shape_id(tag_shape);
                 let af_ctor_ptr = Box::into_raw(af_ctor);
                 // 登记进 world 释放表（带复用键）：session 收尾统一释放构造器本体与属性区。
-                vm.session.builtin_world().track_fn_wrapper(af_ctor_ptr, af_reuse_key);
+                vm.realm.session.builtin_world().track_fn_wrapper(af_ctor_ptr, af_reuse_key);
                 (af_ctor_ptr, true)
             }
         };
@@ -663,11 +663,11 @@ pub(crate) fn init_async_intrinsics(vm: &mut Vm) {
     // 使其与动态异步函数使用的 [[Prototype]] 同一对象，保证
     // `AsyncFunction.prototype === (async () => {}).__proto__`。
     // 复用构造器 prototype 槽原位改指新 P 原型（旧原型已随 P 换出释放）。
-    Vm::swap_intrinsic_proto(&mut vm.async_function_proto, *af_proto);
+    Vm::swap_intrinsic_proto(&mut vm.realm.async_function_proto, *af_proto);
     // SAFETY: af_ctor_ptr 为 Box 原分配（已登记释放表、生命周期覆盖 session），本 Vm 独占。
     unsafe {
         let ctor_mut = &mut *af_ctor_ptr;
-        let proto_val = JsValue::from_js_object(vm.async_function_proto.as_ptr() as *mut JsObject);
+        let proto_val = JsValue::from_js_object(vm.realm.async_function_proto.as_ptr() as *mut JsObject);
         let name_val = JsValue::perm_string(sf.string_ptr(sf.intern("AsyncFunction").0));
         if af_ctor_is_new {
             let lpos = ctor_mut.push_prop(JsValue::int(1));

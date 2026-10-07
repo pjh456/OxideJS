@@ -145,7 +145,7 @@ impl Vm {
             }
         };
         if ctor.is_undefined() {
-            return Ok(JsValue::from_js_object(self.promise_constructor.as_ptr() as *mut JsObject));
+            return Ok(JsValue::from_js_object(self.realm.promise_constructor.as_ptr() as *mut JsObject));
         }
         if !ctor.is_object() {
             return Err(oxide_builtins::error::create_type_error(
@@ -287,7 +287,7 @@ impl Vm {
     /// 调 onFinally 后经 PromiseResolve(ctor, 返回值) 解包，再以直通 thunk
     /// 调 Invoke(p, "then")——fulfill 角色透传原值，reject 角色重抛原拒绝原因。
     fn make_finally_handler(&mut self, on_finally: JsValue, ctor: JsValue, reject_role: bool) -> JsValue {
-        let fn_proto = self.session.builtin_world().fn_proto_val();
+        let fn_proto = self.realm.session.builtin_world().fn_proto_val();
         let mut func = JsObject::new_empty(EMPTY_SHAPE_ID, fn_proto);
         func.set_function(true);
         // SAFETY: promise_finally_handler 是 NativeFn 函数项。
@@ -309,7 +309,7 @@ impl Vm {
     /// 构造 finally 直通 thunk（CreateBuiltinFunction(closure, 0, "")）：
     /// fulfill 角色返回携带值，reject 角色抛携带的拒绝原因。
     fn make_finally_thunk(&mut self, reject_role: bool, value: JsValue) -> JsValue {
-        let fn_proto = self.session.builtin_world().fn_proto_val();
+        let fn_proto = self.realm.session.builtin_world().fn_proto_val();
         let mut func = JsObject::new_empty(EMPTY_SHAPE_ID, fn_proto);
         func.set_function(true);
         // SAFETY: finally_thunk 是 NativeFn 函数项。
@@ -360,7 +360,7 @@ fn promise_finally_handler(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let c_si = vm.kernel_core.perm_interner().intern(FINALLY_CTOR_PROP).0;
     let ctor = vm
         .resolve_property(callee_obj, c_si)
-        .unwrap_or_else(|| JsValue::from_js_object(vm.promise_constructor.as_ptr() as *mut JsObject));
+        .unwrap_or_else(|| JsValue::from_js_object(vm.realm.promise_constructor.as_ptr() as *mut JsObject));
     let rj_si = vm.kernel_core.perm_interner().intern(FINALLY_REJECT_PROP).0;
     let is_reject = vm
         .resolve_property(callee_obj, rj_si)

@@ -6,6 +6,7 @@ use std::sync::Arc;
 use oxide_bytecode::module::Constant;
 
 use crate::bindings;
+use crate::realm::Realm;
 use crate::vm::{TableGen, Vm};
 use crate::vm_info;
 use crate::vm_state::{GcState, IterState, ProfilingState, SampleState, SymbolState};
@@ -63,21 +64,38 @@ impl Vm {
             active_immutables: std::ptr::slice_from_raw_parts(std::ptr::null(), 0),
             frames: smallvec::SmallVec::new(),
             kernel_core: core,
-            session,
+            realm: Realm {
+                session,
+                object_prototype: obj_proto,
+                generator_proto: P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
+                generator_function_proto: P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
+                promise_constructor: P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
+                promise_proto: P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
+                aggregate_error_constructor: P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
+                aggregate_error_proto: P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
+                async_function_proto: P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
+                async_generator_proto: P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
+                async_generator_function_proto: P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
+                gc: GcState {
+                    session_gc: crate::session_gc::SessionGc::new(),
+                    session_object_ptrs: Vec::new(),
+                    session_string_ptrs: Vec::new(),
+                    session_bigint_ptrs: std::cell::RefCell::new(Vec::new()),
+                    session_cell_ptrs: std::cell::RefCell::new(Vec::new()),
+                    session_bytes_allocated: 0,
+                    session_bytes_peak: 0,
+                    run_alloc_peak: 0,
+                    string_gc_watermark: gc_threshold,
+                    gc_threshold_cached: gc_threshold,
+                    gc_watermark: gc_threshold,
+                    pending_forced_collect: false,
+                    gc_pressure_mode: gc_pressure_mode_from_env(),
+                },
+            },
             length_si,
             length_perm_ptr,
             number_to_string_cache_keys: [0u64; 16],
             number_to_string_cache_vals: [JsValue::undefined(); 16],
-            object_prototype: obj_proto,
-            generator_proto: P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
-            generator_function_proto: P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
-            promise_constructor: P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
-            promise_proto: P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
-            aggregate_error_constructor: P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
-            aggregate_error_proto: P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
-            async_function_proto: P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
-            async_generator_proto: P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
-            async_generator_function_proto: P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
             job_queue: VecDeque::new(),
             atomics_waiters: std::collections::HashMap::new(),
             math_rng_state: 0,
@@ -134,21 +152,6 @@ impl Vm {
             async_gen_context: None,
             async_gen_dispatch: false,
             async_gen_suspended: false,
-            gc_state: GcState {
-                session_gc: crate::session_gc::SessionGc::new(),
-                session_object_ptrs: Vec::new(),
-                session_string_ptrs: Vec::new(),
-                session_bigint_ptrs: std::cell::RefCell::new(Vec::new()),
-                session_cell_ptrs: std::cell::RefCell::new(Vec::new()),
-                session_bytes_allocated: 0,
-                session_bytes_peak: 0,
-                run_alloc_peak: 0,
-                string_gc_watermark: gc_threshold,
-                gc_threshold_cached: gc_threshold,
-                gc_watermark: gc_threshold,
-                pending_forced_collect: false,
-                gc_pressure_mode: gc_pressure_mode_from_env(),
-            },
             symbols: SymbolState {
                 symbol_counter: 0,
                 symbol_descriptions: Vec::new(),
@@ -183,7 +186,7 @@ impl Vm {
         vm.init_async_intrinsics();
         vm.init_async_generator_intrinsics();
         // Promise 全局绑定发生在快照采集之后，重录快照避免首次 full_reset 误判脏。
-        vm.session.record_snapshot();
+        vm.realm.session.record_snapshot();
         // 边界守卫计数：VM 完整构造后登记，与 `Drop for Vm` 的注销恰好配对。
         vm.kernel_core.note_vm_started();
         vm_info!("Vm created");
@@ -208,21 +211,38 @@ impl Vm {
             active_immutables: std::ptr::slice_from_raw_parts(std::ptr::null(), 0),
             frames: smallvec::SmallVec::new(),
             kernel_core: core,
-            session,
+            realm: Realm {
+                session,
+                object_prototype: obj_proto,
+                generator_proto: P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
+                generator_function_proto: P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
+                promise_constructor: P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
+                promise_proto: P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
+                aggregate_error_constructor: P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
+                aggregate_error_proto: P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
+                async_function_proto: P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
+                async_generator_proto: P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
+                async_generator_function_proto: P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
+                gc: GcState {
+                    session_gc: crate::session_gc::SessionGc::new(),
+                    session_object_ptrs: Vec::new(),
+                    session_string_ptrs: Vec::new(),
+                    session_bigint_ptrs: std::cell::RefCell::new(Vec::new()),
+                    session_cell_ptrs: std::cell::RefCell::new(Vec::new()),
+                    session_bytes_allocated: 0,
+                    session_bytes_peak: 0,
+                    run_alloc_peak: 0,
+                    string_gc_watermark: gc_threshold,
+                    gc_threshold_cached: gc_threshold,
+                    gc_watermark: gc_threshold,
+                    pending_forced_collect: false,
+                    gc_pressure_mode: gc_pressure_mode_from_env(),
+                },
+            },
             length_si,
             length_perm_ptr,
             number_to_string_cache_keys: [0u64; 16],
             number_to_string_cache_vals: [JsValue::undefined(); 16],
-            object_prototype: obj_proto,
-            generator_proto: P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
-            generator_function_proto: P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
-            promise_constructor: P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
-            promise_proto: P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
-            aggregate_error_constructor: P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
-            aggregate_error_proto: P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
-            async_function_proto: P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
-            async_generator_proto: P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
-            async_generator_function_proto: P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
             job_queue: VecDeque::new(),
             atomics_waiters: std::collections::HashMap::new(),
             math_rng_state: 0,
@@ -279,21 +299,6 @@ impl Vm {
             async_gen_context: None,
             async_gen_dispatch: false,
             async_gen_suspended: false,
-            gc_state: GcState {
-                session_gc: crate::session_gc::SessionGc::new(),
-                session_object_ptrs: Vec::new(),
-                session_string_ptrs: Vec::new(),
-                session_bigint_ptrs: std::cell::RefCell::new(Vec::new()),
-                session_cell_ptrs: std::cell::RefCell::new(Vec::new()),
-                session_bytes_allocated: 0,
-                session_bytes_peak: 0,
-                run_alloc_peak: 0,
-                string_gc_watermark: gc_threshold,
-                gc_threshold_cached: gc_threshold,
-                gc_watermark: gc_threshold,
-                pending_forced_collect: false,
-                gc_pressure_mode: gc_pressure_mode_from_env(),
-            },
             symbols: SymbolState {
                 symbol_counter: 0,
                 symbol_descriptions: Vec::new(),
@@ -328,7 +333,7 @@ impl Vm {
         vm.init_async_intrinsics();
         vm.init_async_generator_intrinsics();
         // Promise 全局绑定发生在快照采集之后，重录快照避免首次 full_reset 误判脏。
-        vm.session.record_snapshot();
+        vm.realm.session.record_snapshot();
         // 边界守卫计数：VM 完整构造后登记，与 `Drop for Vm` 的注销恰好配对。
         vm.kernel_core.note_vm_started();
         vm_info!("Vm created (pool)");
@@ -365,26 +370,26 @@ impl Vm {
         // 防御兜底：属性值写原语已推进 generation，常规覆盖写由快照对比发现；
         // 若未来出现绕过属性写原语的裸属性区改写，session 对象会被 session GC 回收，
         // 保留 global 将持悬垂指针，故带 session 对象时强制 bump 保证 global 重建。
-        if !self.gc_state.session_object_ptrs.is_empty() {
-            let global_ptr = self.session.global_object().as_ptr() as *mut JsObject;
+        if !self.realm.gc.session_object_ptrs.is_empty() {
+            let global_ptr = self.realm.session.global_object().as_ptr() as *mut JsObject;
             unsafe { &mut *global_ptr }.bump_generation();
         }
-        let dirty = self.session.selective_reset(&self.kernel_core);
+        let dirty = self.realm.session.selective_reset(&self.kernel_core);
         if dirty.any_builtin_dirty() {
-            bindings::rebind_dirty_builtins(&self.kernel_core, &mut self.session, Some(&dirty));
+            bindings::rebind_dirty_builtins(&self.kernel_core, &mut self.realm.session, Some(&dirty));
         }
         if dirty.global {
-            let global_ptr = self.session.global_object().as_ptr() as *mut JsObject;
+            let global_ptr = self.realm.session.global_object().as_ptr() as *mut JsObject;
             let global = unsafe { &mut *global_ptr };
-            bindings::bind_global_builtin_slots(&self.kernel_core, &self.session, global);
+            bindings::bind_global_builtin_slots(&self.kernel_core, &self.realm.session, global);
         }
-        self.object_prototype = P::clone(&self.session.builtin_world().object_proto);
+        self.realm.object_prototype = P::clone(&self.realm.session.builtin_world().object_proto);
         self.init_generator_intrinsics();
         self.init_promise_intrinsics();
         self.init_async_intrinsics();
         self.init_async_generator_intrinsics();
         // 快照须在 Promise 全局绑定之后采集：绑定会修改 global 世代。
-        self.session.record_snapshot();
+        self.realm.session.record_snapshot();
         self.clear_full_reset_state();
         vm_info!("full_reset completed");
     }
@@ -392,14 +397,14 @@ impl Vm {
     /// benchmark 专用重置路径：总是丢弃并重建整个 session 与内置对象。
     #[doc(hidden)]
     pub fn full_reset_legacy_for_bench(&mut self) {
-        self.session = KernelSession::new(&self.kernel_core);
-        bindings::init_kernel_builtins(&self.kernel_core, &mut self.session);
-        self.object_prototype = P::clone(&self.session.builtin_world().object_proto);
+        self.realm.session = KernelSession::new(&self.kernel_core);
+        bindings::init_kernel_builtins(&self.kernel_core, &mut self.realm.session);
+        self.realm.object_prototype = P::clone(&self.realm.session.builtin_world().object_proto);
         self.init_generator_intrinsics();
         self.init_promise_intrinsics();
         self.init_async_intrinsics();
         self.init_async_generator_intrinsics();
-        self.session.record_snapshot();
+        self.realm.session.record_snapshot();
         self.clear_full_reset_state();
     }
 
@@ -431,14 +436,14 @@ impl Vm {
         self.number_to_string_cache_keys = [0u64; 16];
         self.number_to_string_cache_vals = [JsValue::undefined(); 16];
         self.teardown_session_heap_data();
-        self.gc_state.session_bytes_allocated = 0;
-        self.gc_state.session_bytes_peak = 0;
-        self.gc_state.run_alloc_peak = 0;
-        self.gc_state.string_gc_watermark = self.kernel_core.config().session_gc_threshold;
+        self.realm.gc.session_bytes_allocated = 0;
+        self.realm.gc.session_bytes_peak = 0;
+        self.realm.gc.run_alloc_peak = 0;
+        self.realm.gc.string_gc_watermark = self.kernel_core.config().session_gc_threshold;
         // 执行期收集水位同点复位（同式：阈值增量起算）：旧 run 的存活包络
         // 不延续到新 run 的触发判定。
-        self.gc_state.gc_watermark = self.gc_state.gc_threshold_cached;
-        self.gc_state.session_gc = crate::session_gc::SessionGc::new();
+        self.realm.gc.gc_watermark = self.realm.gc.gc_threshold_cached;
+        self.realm.gc.session_gc = crate::session_gc::SessionGc::new();
         self.symbols.reset();
         self.root_reg_limit = 0;
         self.active_reg_limit = 0;
@@ -459,7 +464,7 @@ impl Vm {
         self.iters.reset();
         // 对象逐条独占释放：本体 + 堆数据 + upvalue 列表，顺序由
         // drop_dead_session_object 收口。
-        for ptr in self.gc_state.session_object_ptrs.drain(..) {
+        for ptr in self.realm.gc.session_object_ptrs.drain(..) {
             if ptr.is_null() {
                 continue;
             }
@@ -469,7 +474,7 @@ impl Vm {
         }
         self.free_session_string_heap_data();
         self.free_session_bigint_heap_data();
-        self.gc_state.free_cells();
+        self.realm.gc.free_cells();
     }
 
     /// 释放 VM 内建原型 P 对象（生成器/Promise/异步族与 Object 原型）的堆外属性区。
@@ -481,16 +486,16 @@ impl Vm {
     /// world 引用同一对象，其属性区归 session 收尾（`teardown_builtins`）释放。
     pub(crate) fn teardown_intrinsic_protos(&mut self) {
         for p in [
-            &self.object_prototype,
-            &self.generator_proto,
-            &self.generator_function_proto,
-            &self.promise_constructor,
-            &self.promise_proto,
-            &self.aggregate_error_constructor,
-            &self.aggregate_error_proto,
-            &self.async_function_proto,
-            &self.async_generator_proto,
-            &self.async_generator_function_proto,
+            &self.realm.object_prototype,
+            &self.realm.generator_proto,
+            &self.realm.generator_function_proto,
+            &self.realm.promise_constructor,
+            &self.realm.promise_proto,
+            &self.realm.aggregate_error_constructor,
+            &self.realm.aggregate_error_proto,
+            &self.realm.async_function_proto,
+            &self.realm.async_generator_proto,
+            &self.realm.async_generator_function_proto,
         ] {
             if p.strong_count() != 1 {
                 continue;
@@ -565,7 +570,7 @@ impl Vm {
         self.sampling.clear_records();
         // GC 统计同属执行期状态：池化 Vm 跨 run 复用，不清零则 per-run
         // 指标（gc_trigger_count）跨文件累积，报告失真。
-        let gc = &mut self.gc_state.session_gc;
+        let gc = &mut self.realm.gc.session_gc;
         gc.total_collections = 0;
         gc.total_bytes_freed = 0;
         gc.total_objects_scanned = 0;
@@ -590,9 +595,9 @@ impl Vm {
         // 指针作废，下次 run 重装。
         self.active_immutables = std::ptr::slice_from_raw_parts(std::ptr::null(), 0);
         // 单 run 分配包络按 run 边界重起算（与 run_alloc_bytes 起算口径同源）。
-        self.gc_state.run_alloc_peak = 0;
+        self.realm.gc.run_alloc_peak = 0;
         // 执行期收集水位与包络同起算：旧 run 的存活包络不延续到新 run 的触发判定。
-        self.gc_state.gc_watermark = self.gc_state.gc_threshold_cached;
+        self.realm.gc.gc_watermark = self.realm.gc.gc_threshold_cached;
         self.root_reg_limit = 0;
         self.active_reg_limit = 0;
     }
@@ -664,8 +669,8 @@ impl Vm {
     ///   水位触发（此时 builtin 局部值已落地为执行根，分配点触发会误释放
     ///   仅存于局部/构造中的活串）。
     fn register_session_string(&mut self, ptr: *mut JsString, bytes: usize) -> JsValue {
-        self.gc_state.session_string_ptrs.push(ptr);
-        self.gc_state.session_bytes_allocated += std::mem::size_of::<JsString>() + bytes;
+        self.realm.gc.session_string_ptrs.push(ptr);
+        self.realm.gc.session_bytes_allocated += std::mem::size_of::<JsString>() + bytes;
         JsValue::string(ptr)
     }
 
@@ -737,7 +742,7 @@ impl Vm {
     /// （`full_reset` / `clear_full_reset_state`）时调用，此时没有存活的 session 对象
     /// 会引用它们。较轻量的 `reset()` 刻意保留它们，与 session 对象跨 eval 存活一致。
     fn free_session_string_heap_data(&mut self) {
-        for ptr in self.gc_state.session_string_ptrs.drain(..) {
+        for ptr in self.realm.gc.session_string_ptrs.drain(..) {
             // SAFETY: 每个指针来自 new_string/new_cons_string 的 Box::into_raw，
             // 且只在这里（或 sweep）恰好释放一次；内部连带释放 rope 扁平化产物。
             unsafe {
@@ -767,13 +772,13 @@ impl Vm {
         // 异步生成器（`async function*`）函数对象：原型为 %AsyncGeneratorFunction.prototype%。
         let is_async_generator = is_generator && is_async;
         let proto_val = if is_async_generator {
-            JsValue::from_js_object(self.async_generator_function_proto.as_ptr() as *mut JsObject)
+            JsValue::from_js_object(self.realm.async_generator_function_proto.as_ptr() as *mut JsObject)
         } else if is_generator {
-            JsValue::from_js_object(self.generator_function_proto.as_ptr() as *mut JsObject)
+            JsValue::from_js_object(self.realm.generator_function_proto.as_ptr() as *mut JsObject)
         } else if is_async {
-            JsValue::from_js_object(self.async_function_proto.as_ptr() as *mut JsObject)
+            JsValue::from_js_object(self.realm.async_function_proto.as_ptr() as *mut JsObject)
         } else {
-            JsValue::from_js_object(self.session.builtin_world().function_proto.as_ptr() as *mut JsObject)
+            JsValue::from_js_object(self.realm.session.builtin_world().function_proto.as_ptr() as *mut JsObject)
         };
         let mut obj = JsObject::new_empty(EMPTY_SHAPE_ID, proto_val);
         obj.set_function(true);
@@ -798,11 +803,11 @@ impl Vm {
             // 原型对象自身的 [[Prototype]]：生成器为 %GeneratorPrototype%，普通函数为 Object.prototype。
             // 纯异步函数（非生成器）无 `prototype` 属性：规范不为其建 prototype 子对象。
             let proto_of_proto = if is_async_generator {
-                JsValue::from_js_object(self.async_generator_proto.as_ptr() as *mut JsObject)
+                JsValue::from_js_object(self.realm.async_generator_proto.as_ptr() as *mut JsObject)
             } else if is_generator {
-                JsValue::from_js_object(self.generator_proto.as_ptr() as *mut JsObject)
+                JsValue::from_js_object(self.realm.generator_proto.as_ptr() as *mut JsObject)
             } else {
-                JsValue::from_js_object(self.session.builtin_world().object_proto.as_ptr() as *mut JsObject)
+                JsValue::from_js_object(self.realm.session.builtin_world().object_proto.as_ptr() as *mut JsObject)
             };
             // prototype 子对象与函数本体同走 session 分配：`f.prototype ===
             // globalThis.f.prototype` 要求两侧同一对象，逃逸写不会克隆出第二份。
@@ -864,11 +869,11 @@ impl Vm {
 
     /// 分配一个 BigInt 值：把 `i128` 堆分配为 box 并返回携带指针的 `JsValue`。
     ///
-    /// box 指针登记进 `gc_state.session_bigint_ptrs`，在 `full_reset` 统一释放。
+    /// box 指针登记进 `realm.gc.session_bigint_ptrs`，在 `full_reset` 统一释放。
     /// `&self` 使 `convert_immutables`（常量池 → JsValue）也能分配。
     pub fn new_bigint(&self, v: num_bigint::BigInt) -> JsValue {
         let ptr = Box::into_raw(Box::new(v));
-        self.gc_state.session_bigint_ptrs.borrow_mut().push(ptr);
+        self.realm.gc.session_bigint_ptrs.borrow_mut().push(ptr);
         JsValue::bigint(ptr)
     }
 
@@ -881,7 +886,7 @@ impl Vm {
     /// 释放全部 session 堆 BigInt box。仅在完全隔离重置（`full_reset`）时调用，
     /// 此时没有存活的 session 对象/寄存器会引用它们。
     fn free_session_bigint_heap_data(&mut self) {
-        for ptr in self.gc_state.session_bigint_ptrs.borrow_mut().drain(..) {
+        for ptr in self.realm.gc.session_bigint_ptrs.borrow_mut().drain(..) {
             // SAFETY: 每个指针来自 new_bigint 的 Box::into_raw(Box::new(BigInt))，
             // 且只在这里恰好释放一次。
             unsafe {

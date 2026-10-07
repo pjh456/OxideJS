@@ -88,27 +88,27 @@ impl Vm {
                 }
                 return Ok(Some(JsValue::undefined()));
             }
-            let proto_ptr = self.session.builtin_world().string_proto.as_ptr() as *mut JsObject;
+            let proto_ptr = self.realm.session.builtin_world().string_proto.as_ptr() as *mut JsObject;
             let proto = unsafe { &*proto_ptr };
             return self.ordinary_get(proto, prop_name_si, val).map(Some);
         }
         if val.is_int() || val.is_double() {
-            let proto_ptr = self.session.builtin_world().number_proto.as_ptr() as *mut JsObject;
+            let proto_ptr = self.realm.session.builtin_world().number_proto.as_ptr() as *mut JsObject;
             let proto = unsafe { &*proto_ptr };
             return self.ordinary_get(proto, prop_name_si, val).map(Some);
         }
         if val.is_bool() {
-            let proto_ptr = self.session.builtin_world().boolean_proto.as_ptr() as *mut JsObject;
+            let proto_ptr = self.realm.session.builtin_world().boolean_proto.as_ptr() as *mut JsObject;
             let proto = unsafe { &*proto_ptr };
             return self.ordinary_get(proto, prop_name_si, val).map(Some);
         }
         if val.is_bigint() {
-            let proto_ptr = self.session.builtin_world().bigint_proto.as_ptr() as *mut JsObject;
+            let proto_ptr = self.realm.session.builtin_world().bigint_proto.as_ptr() as *mut JsObject;
             let proto = unsafe { &*proto_ptr };
             return self.ordinary_get(proto, prop_name_si, val).map(Some);
         }
         if val.is_symbol() {
-            let proto_ptr = self.session.builtin_world().symbol_proto.as_ptr() as *mut JsObject;
+            let proto_ptr = self.realm.session.builtin_world().symbol_proto.as_ptr() as *mut JsObject;
             let proto = unsafe { &*proto_ptr };
             return self.ordinary_get(proto, prop_name_si, val).map(Some);
         }
@@ -790,7 +790,7 @@ impl Vm {
             return Err(format!("DELETE_GLOBAL_PROP_C constant index {idx} is not a string key"));
         }
         let si = self.property_key_si(key_val)?;
-        let global_ptr = self.session.global_object().as_ptr() as *mut JsObject;
+        let global_ptr = self.realm.session.global_object().as_ptr() as *mut JsObject;
         // SAFETY: 全局对象钉在 session 永久区，指针在 VM 生命周期内有效。
         let obj = unsafe { &mut *global_ptr };
         // 统一走共享删除逻辑（与 Reflect.deleteProperty 同源）；不可配置返回

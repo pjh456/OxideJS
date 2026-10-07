@@ -103,7 +103,7 @@ impl Vm {
     pub(crate) fn create_async_generator_object(
         &mut self, callee: JsValue, this_value: JsValue, args: &[JsValue],
     ) -> Result<JsValue, String> {
-        let gen_proto_val = JsValue::from_js_object(self.async_generator_proto.as_ptr() as *mut JsObject);
+        let gen_proto_val = JsValue::from_js_object(self.realm.async_generator_proto.as_ptr() as *mut JsObject);
         let obj = self.alloc_object(JsObject::new_empty(EMPTY_SHAPE_ID, gen_proto_val));
         let obj_ref = unsafe { &mut *obj };
         obj_ref.type_tag = JsObject::OBJ_TYPE_ASYNC_GENERATOR;
@@ -681,7 +681,7 @@ impl Vm {
 
     /// 构造 await 恢复闭包：携带目标异步生成器上下文对象，区分 fulfill/reject 角色。
     pub(crate) fn make_async_gen_await_resume_fn(&mut self, ctx: JsValue, reject_role: bool) -> JsValue {
-        let fn_proto = self.session.builtin_world().fn_proto_val();
+        let fn_proto = self.realm.session.builtin_world().fn_proto_val();
         let mut func = JsObject::new_empty(EMPTY_SHAPE_ID, fn_proto);
         func.set_function(true);
         // SAFETY: async_gen_await_resume_closure 是 NativeFn 函数项。
@@ -702,7 +702,7 @@ impl Vm {
     fn make_async_gen_yield_unwrap_fn(
         &mut self, ctx: JsValue, promise: JsValue, raw: bool, reject_role: bool,
     ) -> JsValue {
-        let fn_proto = self.session.builtin_world().fn_proto_val();
+        let fn_proto = self.realm.session.builtin_world().fn_proto_val();
         let mut func = JsObject::new_empty(EMPTY_SHAPE_ID, fn_proto);
         func.set_function(true);
         // SAFETY: async_gen_yield_unwrap_closure 是 NativeFn 函数项。
@@ -726,7 +726,7 @@ impl Vm {
     pub(crate) fn make_delegate_step_closure(
         &mut self, ctx: JsValue, step: DelegateStep, reject_role: bool,
     ) -> JsValue {
-        let fn_proto = self.session.builtin_world().fn_proto_val();
+        let fn_proto = self.realm.session.builtin_world().fn_proto_val();
         let mut func = JsObject::new_empty(EMPTY_SHAPE_ID, fn_proto);
         func.set_function(true);
         // SAFETY: async_gen_delegate_step_closure 是 NativeFn 函数项。
@@ -747,7 +747,7 @@ impl Vm {
     /// 构造委托 return 请求值 Await 恢复闭包：携带目标异步生成器上下文与
     /// fulfill/reject 角色，结算后以展开值完成生成器（拒绝时以拒绝原因终止）。
     fn make_delegate_return_await_closure(&mut self, ctx: JsValue, reject_role: bool) -> JsValue {
-        let fn_proto = self.session.builtin_world().fn_proto_val();
+        let fn_proto = self.realm.session.builtin_world().fn_proto_val();
         let mut func = JsObject::new_empty(EMPTY_SHAPE_ID, fn_proto);
         func.set_function(true);
         // SAFETY: async_gen_delegate_return_await_closure 是 NativeFn 函数项。
@@ -770,7 +770,7 @@ impl Vm {
     pub(crate) fn make_async_gen_escape_close_fn(
         &mut self, ctx: JsValue, promise: JsValue, reject_role: bool,
     ) -> JsValue {
-        let fn_proto = self.session.builtin_world().fn_proto_val();
+        let fn_proto = self.realm.session.builtin_world().fn_proto_val();
         let mut func = JsObject::new_empty(EMPTY_SHAPE_ID, fn_proto);
         func.set_function(true);
         // SAFETY: async_gen_escape_closure 是 NativeFn 函数项。
@@ -1469,7 +1469,7 @@ fn async_dispose_settle_closure(vm: &mut Vm, args: &[u8]) -> NativeResult {
 impl Vm {
     /// 构造 `@@asyncDispose` 的 unwrap 闭包（无捕获状态，恒返回 undefined）。
     fn make_async_dispose_unwrap_fn(&mut self) -> JsValue {
-        let fn_proto = self.session.builtin_world().fn_proto_val();
+        let fn_proto = self.realm.session.builtin_world().fn_proto_val();
         let mut func = JsObject::new_empty(EMPTY_SHAPE_ID, fn_proto);
         func.set_function(true);
         // SAFETY: async_dispose_unwrap_closure 是 NativeFn 函数项。
@@ -1483,7 +1483,7 @@ impl Vm {
     /// 构造 `@@asyncDispose` 结算闭包：捕获能力 promise 与结算角色，
     /// 反应触发时以反应值结算能力 promise。
     fn make_async_dispose_settle_fn(&mut self, promise: JsValue, reject_role: bool) -> JsValue {
-        let fn_proto = self.session.builtin_world().fn_proto_val();
+        let fn_proto = self.realm.session.builtin_world().fn_proto_val();
         let mut func = JsObject::new_empty(EMPTY_SHAPE_ID, fn_proto);
         func.set_function(true);
         // SAFETY: async_dispose_settle_closure 是 NativeFn 函数项。
@@ -1507,8 +1507,8 @@ impl Vm {
 pub(crate) fn init_async_generator_intrinsics(vm: &mut Vm) {
     let sf = vm.kernel_core.perm_interner().as_ref();
     let sh = vm.kernel_core.shape_forge().as_ref();
-    let fn_proto_val = vm.session.builtin_world().fn_proto_val();
-    let world = vm.session.builtin_world();
+    let fn_proto_val = vm.realm.session.builtin_world().fn_proto_val();
+    let world = vm.realm.session.builtin_world();
     // %AsyncGeneratorPrototype% 链到 %AsyncIteratorPrototype%（规范原型链），
     // 方法 next/return/throw 挂其自身。
     let async_iterator_proto_val = JsValue::from_js_object(world.async_iterator_proto.as_ptr() as *mut JsObject);
@@ -1547,7 +1547,7 @@ pub(crate) fn init_async_generator_intrinsics(vm: &mut Vm) {
         world,
         ag_label,
     );
-    Vm::swap_intrinsic_proto(&mut vm.async_generator_proto, *ag_proto);
+    Vm::swap_intrinsic_proto(&mut vm.realm.async_generator_proto, *ag_proto);
 
     // %AsyncGeneratorFunction.prototype%：proto = Function.prototype，
     // constructor = %AsyncGeneratorFunction%。占位构造器动态创建未实现，
@@ -1600,7 +1600,7 @@ pub(crate) fn init_async_generator_intrinsics(vm: &mut Vm) {
     let proto2_si = sf.intern("prototype").0;
     let proto2_shape = sh.make_shape(agf_proto.shape_id(), proto2_si);
     agf_proto.set_shape_id(proto2_shape);
-    let ppos2 = agf_proto.push_prop(JsValue::from_js_object(vm.async_generator_proto.as_ptr() as *mut JsObject));
+    let ppos2 = agf_proto.push_prop(JsValue::from_js_object(vm.realm.async_generator_proto.as_ptr() as *mut JsObject));
     agf_proto.set_data_meta(ppos2, PropAttributes::new(false, false, true));
     // agf_proto[Symbol.toStringTag] = "AsyncGeneratorFunction"（数据属性，w/e/c = false/false/true）。
     let tag2_key =
@@ -1614,11 +1614,11 @@ pub(crate) fn init_async_generator_intrinsics(vm: &mut Vm) {
     // 构造器 length/name/prototype/@@toStringTag 属性（按形状序），prototype 指向 P 槽实例，
     // 使其与动态异步生成器函数使用的 [[Prototype]] 同一对象。复用构造器槽位已填充，
     // prototype 原位改指新 P 原型（旧原型已随 P 换出释放）。
-    Vm::swap_intrinsic_proto(&mut vm.async_generator_function_proto, *agf_proto);
+    Vm::swap_intrinsic_proto(&mut vm.realm.async_generator_function_proto, *agf_proto);
     // SAFETY: agf_ctor_ptr 为 Box 原分配（已登记释放表、生命周期覆盖 session），本 Vm 独占。
     unsafe {
         let ctor_mut = &mut *agf_ctor_ptr;
-        let proto_val = JsValue::from_js_object(vm.async_generator_function_proto.as_ptr() as *mut JsObject);
+        let proto_val = JsValue::from_js_object(vm.realm.async_generator_function_proto.as_ptr() as *mut JsObject);
         let name_val = JsValue::perm_string(sf.string_ptr(sf.intern("AsyncGeneratorFunction").0));
         if agf_ctor_is_new {
             let lpos = ctor_mut.push_prop(JsValue::int(1));
@@ -1644,7 +1644,7 @@ pub(crate) fn init_async_generator_intrinsics(vm: &mut Vm) {
 
     // 绑定 global：AsyncGeneratorFunction 槽已存在则原位更新（full_reset 未重建
     // global 时旧槽指向已弃 ctor），不存在则开新槽。
-    let global_ptr = vm.session.global_object().as_ptr() as *mut JsObject;
+    let global_ptr = vm.realm.session.global_object().as_ptr() as *mut JsObject;
     // SAFETY: global 由 session 持有存活整个 session；本函数内只改其 shape/属性区，
     // 期间无 reset 或对象搬移。
     let global = unsafe { &mut *global_ptr };

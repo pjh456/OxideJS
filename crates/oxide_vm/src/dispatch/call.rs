@@ -230,7 +230,7 @@ impl Vm {
                         if current_cells[cell_idx].is_null() {
                             // 占位 Cell 保持未初始化（TDZ）直到 MAKE_CELL 置位；
                             // 若绑定为 var 则其初始化 MAKE_CELL 在函数序言先于任何读取执行。
-                            current_cells[cell_idx] = self.gc_state.alloc_cell(JsValue::undefined(), false);
+                            current_cells[cell_idx] = self.realm.gc.alloc_cell(JsValue::undefined(), false);
                         }
                         current_cells[cell_idx]
                     };
@@ -275,14 +275,14 @@ impl Vm {
         }
         if current[cell_idx].is_null() {
             // 无占位 cell：新建。
-            current[cell_idx] = self.gc_state.alloc_cell(value, initialized);
+            current[cell_idx] = self.realm.gc.alloc_cell(value, initialized);
         } else {
             let existing_initialized = unsafe { &*current[cell_idx] }.is_initialized();
             if !initialized && existing_initialized {
                 // TDZ 占位而槽内是已初始化 cell：新建替换。循环体每迭代重执行
                 // 的 TDZ 占位不得原位翻新迭代 cell（已被本迭代前闭包捕获）；
                 // 已初始化 cell 保持身份，闭包 upvalue 保值。
-                current[cell_idx] = self.gc_state.alloc_cell(value, initialized);
+                current[cell_idx] = self.realm.gc.alloc_cell(value, initialized);
             } else {
                 // 更新占位 cell（CREATE_CLOSURE 已建），使闭包 upvalue 指向的
                 // cell 值跟随初始化；初始化标志随指令 b 槽。
@@ -309,7 +309,7 @@ impl Vm {
         while current.len() <= cell_idx {
             current.push(std::ptr::null_mut());
         }
-        current[cell_idx] = self.gc_state.alloc_cell(value, true);
+        current[cell_idx] = self.realm.gc.alloc_cell(value, true);
         Ok(())
     }
 
@@ -334,7 +334,7 @@ impl Vm {
         }
         if current[cell_idx].is_null() {
             let val = self.regs[a];
-            current[cell_idx] = self.gc_state.alloc_cell(val, true);
+            current[cell_idx] = self.realm.gc.alloc_cell(val, true);
         }
         let c = unsafe { &*current[cell_idx] };
         if !c.is_initialized() {
@@ -478,7 +478,7 @@ impl Vm {
                     } else {
                         self.regs[rd]
                     };
-                    upvals[uv_idx] = self.gc_state.alloc_cell(val, true);
+                    upvals[uv_idx] = self.realm.gc.alloc_cell(val, true);
                     self.regs[rd] = unsafe { (*upvals[uv_idx]).value };
                     return Ok(());
                 }
@@ -532,7 +532,7 @@ impl Vm {
                 }
                 vm_debug!("STORE_UPVALUE len={} wrote existing", upvals.len());
             } else {
-                upvals[uv_idx] = self.gc_state.alloc_cell(src_val, true);
+                upvals[uv_idx] = self.realm.gc.alloc_cell(src_val, true);
             }
         }
         Ok(())
@@ -544,7 +544,7 @@ impl Vm {
         vm_trace!("CREATE_REGEXP rd={}", rd);
         let pat_val = self.regs[a];
         let flags_val = self.regs[b];
-        let ctor_ptr = self.session.builtin_world().regexp_constructor.as_ptr() as *mut JsObject;
+        let ctor_ptr = self.realm.session.builtin_world().regexp_constructor.as_ptr() as *mut JsObject;
         let ctor = unsafe { &*ctor_ptr };
         let Some(native_fn) = ctor.native_fn() else {
             self.raise_error_kind("TypeError", "RegExp constructor unavailable")?;
@@ -1004,7 +1004,7 @@ impl Vm {
 
         // bound 包装：解包链后转发到最内层 target（[[Construct]] 语义）。
         if ctor_obj.type_tag == oxide_types::object::JsObject::OBJ_TYPE_BOUND {
-            let proto_ptr = &*self.object_prototype as *const JsObject as *mut JsObject;
+            let proto_ptr = &*self.realm.object_prototype as *const JsObject as *mut JsObject;
             let new_obj = self.alloc_object(JsObject::new_empty(
                 oxide_kernel::shape_forge::EMPTY_SHAPE_ID,
                 JsValue::from_js_object(proto_ptr),
@@ -1012,7 +1012,7 @@ impl Vm {
             return self.dispatch_new_bound(rd, constructor, new_obj, args, 0);
         }
 
-        let proto_ptr = &*self.object_prototype as *const JsObject as *mut JsObject;
+        let proto_ptr = &*self.realm.object_prototype as *const JsObject as *mut JsObject;
         let new_obj = self.alloc_object(JsObject::new_empty(
             oxide_kernel::shape_forge::EMPTY_SHAPE_ID,
             JsValue::from_js_object(proto_ptr),

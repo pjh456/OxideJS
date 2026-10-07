@@ -6,7 +6,7 @@ fn global_prop(vm: &Vm, name: &str) -> JsValue {
 }
 
 fn global_prop_opt(vm: &Vm, name: &str) -> Option<JsValue> {
-    let global = vm.session.global_object();
+    let global = vm.realm.session.global_object();
     let si = vm.kernel_core.perm_interner().intern(name).0;
     vm.kernel_core
         .shape_forge()
@@ -68,17 +68,17 @@ fn full_reset_with_session_objects_forces_global_rebuild() {
         unsafe { (&*written.as_js_object_ptr()).is_session_epoch() },
         "覆盖值应为 session 对象（统一入口 Box 化）"
     );
-    let old_global = vm.session.global_object.as_ptr();
+    let old_global = vm.realm.session.global_object.as_ptr();
 
     vm.full_reset();
 
     // global 必须重建：旧 global 与其 session 子引用随 session 释放，Array 恢复内置构造器。
-    assert!(!std::ptr::eq(old_global, vm.session.global_object.as_ptr()));
+    assert!(!std::ptr::eq(old_global, vm.realm.session.global_object.as_ptr()));
     assert!(std::ptr::eq(
         global_prop(&vm, "Array").as_js_object_ptr(),
-        vm.session.builtin_world().array_constructor.as_ptr() as *mut JsObject
+        vm.realm.session.builtin_world().array_constructor.as_ptr() as *mut JsObject
     ));
-    assert!(!vm.session.is_dirty_since_snapshot());
+    assert!(!vm.realm.session.is_dirty_since_snapshot());
 }
 
 /// P 原型上方法槽的 wrapper 对象原始指针（rebuild 跨轮复用验证用）。
@@ -98,7 +98,7 @@ fn method_wrapper_ptr(vm: &Vm, proto_ptr: *const JsObject, name: &str) -> *const
 
 /// global 属性槽数（槽位原位更新跨轮不追加验证用）。
 fn global_slot_count(vm: &Vm) -> usize {
-    let g = vm.session.global_object.as_ptr() as *mut JsObject;
+    let g = vm.realm.session.global_object.as_ptr() as *mut JsObject;
     // SAFETY: global 是本 session 对象，安全点内无并发读者。
     unsafe { (*g).prop_vec_len() }
 }
@@ -110,9 +110,9 @@ fn global_slot_count(vm: &Vm) -> usize {
 fn full_reset_rebuild_reuses_method_wrappers_across_rounds() {
     let mut vm = Vm::new();
     let _ = run_source(&mut vm, "0");
-    let push_before = method_wrapper_ptr(&vm, vm.session.builtin_world().array_proto.as_ptr(), "push");
+    let push_before = method_wrapper_ptr(&vm, vm.realm.session.builtin_world().array_proto.as_ptr(), "push");
     let push_shape_before = unsafe { &*push_before }.shape_id();
-    let registry_before = vm.session.builtin_world().leaked_object_count();
+    let registry_before = vm.realm.session.builtin_world().leaked_object_count();
     let slots_before = global_slot_count(&vm);
 
     for i in 0..3u32 {
@@ -126,10 +126,10 @@ fn full_reset_rebuild_reuses_method_wrappers_across_rounds() {
         vm.full_reset();
     }
 
-    let push_after = method_wrapper_ptr(&vm, vm.session.builtin_world().array_proto.as_ptr(), "push");
+    let push_after = method_wrapper_ptr(&vm, vm.realm.session.builtin_world().array_proto.as_ptr(), "push");
     assert!(std::ptr::eq(push_before, push_after), "存活方法 wrapper 应复用（同 raw 指针）");
     assert_eq!(push_shape_before, unsafe { &*push_after }.shape_id(), "wrapper shape 应稳定");
-    let registry_after = vm.session.builtin_world().leaked_object_count();
+    let registry_after = vm.realm.session.builtin_world().leaked_object_count();
     assert!(
         registry_after <= registry_before,
         "释放表计数跨轮不应增长: {registry_before} -> {registry_after}"
@@ -161,7 +161,7 @@ fn full_reset_rebuild_keeps_global_slot_count_flat() {
     // Error 槽应指向本轮重建的构造器（非滞留旧指针）。
     assert!(std::ptr::eq(
         global_prop(&vm, "Error").as_js_object_ptr(),
-        vm.session.builtin_world().error_constructor.as_ptr() as *mut JsObject
+        vm.realm.session.builtin_world().error_constructor.as_ptr() as *mut JsObject
     ));
     assert!(global_prop(&vm, "TypeError").is_object());
     assert_eq!(run_source(&mut vm, "new TypeError('x') instanceof TypeError"), JsValue::bool(true));
@@ -279,74 +279,74 @@ fn generator_captured_upvalue_survives_sweep() {
 #[test]
 fn full_reset_clean_keeps_session_objects() {
     let mut vm = Vm::new();
-    let world_ptr = Arc::as_ptr(&vm.session.builtin_world);
-    let global_ptr = vm.session.global_object.as_ptr();
-    let object_proto_ptr = vm.session.builtin_world().object_proto.as_ptr();
+    let world_ptr = Arc::as_ptr(&vm.realm.session.builtin_world);
+    let global_ptr = vm.realm.session.global_object.as_ptr();
+    let object_proto_ptr = vm.realm.session.builtin_world().object_proto.as_ptr();
 
     vm.full_reset();
 
-    assert!(std::ptr::eq(world_ptr, Arc::as_ptr(&vm.session.builtin_world)));
-    assert!(std::ptr::eq(global_ptr, vm.session.global_object.as_ptr()));
-    assert!(std::ptr::eq(object_proto_ptr, vm.session.builtin_world().object_proto.as_ptr()));
-    assert!(!vm.session.is_dirty_since_snapshot());
+    assert!(std::ptr::eq(world_ptr, Arc::as_ptr(&vm.realm.session.builtin_world)));
+    assert!(std::ptr::eq(global_ptr, vm.realm.session.global_object.as_ptr()));
+    assert!(std::ptr::eq(object_proto_ptr, vm.realm.session.builtin_world().object_proto.as_ptr()));
+    assert!(!vm.realm.session.is_dirty_since_snapshot());
 }
 
 #[test]
 fn full_reset_global_dirty_rebuilds_global_and_restores_slots() {
     let mut vm = Vm::new();
-    let world_ptr = Arc::as_ptr(&vm.session.builtin_world);
-    let global_ptr = vm.session.global_object.as_ptr();
-    let global = unsafe { &mut *(vm.session.global_object.as_ptr() as *mut JsObject) };
+    let world_ptr = Arc::as_ptr(&vm.realm.session.builtin_world);
+    let global_ptr = vm.realm.session.global_object.as_ptr();
+    let global = unsafe { &mut *(vm.realm.session.global_object.as_ptr() as *mut JsObject) };
     bindings::bind_global_value(&vm.kernel_core, global, "userGlobal", JsValue::int(99));
-    unsafe { &mut *(vm.session.global_object.as_ptr() as *mut JsObject) }.bump_generation();
+    unsafe { &mut *(vm.realm.session.global_object.as_ptr() as *mut JsObject) }.bump_generation();
 
     vm.full_reset();
 
-    assert!(std::ptr::eq(world_ptr, Arc::as_ptr(&vm.session.builtin_world)));
-    assert!(!std::ptr::eq(global_ptr, vm.session.global_object.as_ptr()));
+    assert!(std::ptr::eq(world_ptr, Arc::as_ptr(&vm.realm.session.builtin_world)));
+    assert!(!std::ptr::eq(global_ptr, vm.realm.session.global_object.as_ptr()));
     assert!(global_prop_opt(&vm, "userGlobal").is_none());
     assert!(std::ptr::eq(
         global_prop(&vm, "Array").as_js_object_ptr(),
-        vm.session.builtin_world().array_constructor.as_ptr() as *mut JsObject
+        vm.realm.session.builtin_world().array_constructor.as_ptr() as *mut JsObject
     ));
     assert!(std::ptr::eq(
         global_prop(&vm, "globalThis").as_js_object_ptr(),
-        vm.session.global_object.as_ptr() as *mut JsObject
+        vm.realm.session.global_object.as_ptr() as *mut JsObject
     ));
-    assert!(!vm.session.is_dirty_since_snapshot());
+    assert!(!vm.realm.session.is_dirty_since_snapshot());
 }
 
 #[test]
 fn full_reset_dirty_builtin_rebinds_global_slot() {
     let mut vm = Vm::new();
-    let old_object_proto = vm.session.builtin_world().object_proto.as_ptr();
-    let old_array_proto = vm.session.builtin_world().array_proto.as_ptr();
+    let old_object_proto = vm.realm.session.builtin_world().object_proto.as_ptr();
+    let old_array_proto = vm.realm.session.builtin_world().array_proto.as_ptr();
     unsafe { &mut *(old_array_proto as *mut JsObject) }.bump_generation();
 
     vm.full_reset();
 
-    assert!(std::ptr::eq(old_object_proto, vm.session.builtin_world().object_proto.as_ptr()));
-    assert!(!std::ptr::eq(old_array_proto, vm.session.builtin_world().array_proto.as_ptr()));
+    assert!(std::ptr::eq(old_object_proto, vm.realm.session.builtin_world().object_proto.as_ptr()));
+    assert!(!std::ptr::eq(old_array_proto, vm.realm.session.builtin_world().array_proto.as_ptr()));
     assert!(std::ptr::eq(
         global_prop(&vm, "Array").as_js_object_ptr(),
-        vm.session.builtin_world().array_constructor.as_ptr() as *mut JsObject
+        vm.realm.session.builtin_world().array_constructor.as_ptr() as *mut JsObject
     ));
     let constructor_si = vm.kernel_core.perm_interner().intern("constructor").0;
-    let array_proto = &*vm.session.builtin_world().array_proto;
+    let array_proto = &*vm.realm.session.builtin_world().array_proto;
     let constructor = vm
         .resolve_property(array_proto, constructor_si)
         .expect("Array.prototype.constructor");
     assert!(std::ptr::eq(
         constructor.as_js_object_ptr(),
-        vm.session.builtin_world().array_constructor.as_ptr() as *mut JsObject
+        vm.realm.session.builtin_world().array_constructor.as_ptr() as *mut JsObject
     ));
-    assert!(!vm.session.is_dirty_since_snapshot());
+    assert!(!vm.realm.session.is_dirty_since_snapshot());
 }
 
 #[test]
 fn full_reset_dirty_function_keeps_call_working() {
     let mut vm = Vm::new();
-    let function_proto = vm.session.builtin_world().function_proto.as_ptr();
+    let function_proto = vm.realm.session.builtin_world().function_proto.as_ptr();
     unsafe { &mut *(function_proto as *mut JsObject) }.bump_generation();
 
     vm.full_reset();
@@ -366,7 +366,7 @@ fn full_reset_dirty_function_keeps_call_working() {
     assert_eq!(in_map, JsValue::bool(true));
     let mapped = run_source(&mut vm, "Array.prototype.map.call([1, 2], function(x){ return x + 1; }).join(',')");
     assert_eq!(vm.lookup_str(mapped).as_deref(), Some("2,3"));
-    assert!(!vm.session.is_dirty_since_snapshot());
+    assert!(!vm.realm.session.is_dirty_since_snapshot());
 }
 
 /// Function 家族脏重建：未重建家族的方法 wrapper 是跨重置存活对象，其 proto
@@ -374,9 +374,9 @@ fn full_reset_dirty_function_keeps_call_working() {
 #[test]
 fn full_reset_dirty_function_repoints_retained_wrapper_proto() {
     let mut vm = Vm::new();
-    let old_fn_proto = vm.session.builtin_world().function_proto.as_ptr() as *mut JsObject;
+    let old_fn_proto = vm.realm.session.builtin_world().function_proto.as_ptr() as *mut JsObject;
     // 保留方法 wrapper：array 家族不重建，wrapper 对象与其 proto 槽跨重置存活。
-    let array_proto = vm.session.builtin_world().array_proto.as_ptr() as *mut JsObject;
+    let array_proto = vm.realm.session.builtin_world().array_proto.as_ptr() as *mut JsObject;
     let push_si = vm.kernel_core.perm_interner().intern("push").0;
     let push = vm
         .resolve_property(unsafe { &*array_proto }, push_si)
@@ -388,12 +388,12 @@ fn full_reset_dirty_function_repoints_retained_wrapper_proto() {
 
     vm.full_reset();
 
-    let new_fn_proto = vm.session.builtin_world().function_proto.as_ptr() as *mut JsObject;
+    let new_fn_proto = vm.realm.session.builtin_world().function_proto.as_ptr() as *mut JsObject;
     assert!(!std::ptr::eq(new_fn_proto, old_fn_proto));
     // 保留 wrapper proto 槽已重指新 fn_proto，call 链走新原型。
     assert!(std::ptr::eq(unsafe { (*push_ptr).proto().as_js_object_ptr() }, new_fn_proto));
     assert_eq!(run_source(&mut vm, "Array.prototype.push.call([1], 2)"), JsValue::int(2));
-    assert!(!vm.session.is_dirty_since_snapshot());
+    assert!(!vm.realm.session.is_dirty_since_snapshot());
 }
 
 /// 新键写脏 object/array/string/function 四家族（S2 脏源形态）：full_reset 后
@@ -406,7 +406,7 @@ fn full_reset_dirty_four_families_cross_family_reads() {
         &mut vm,
         "Object.prototype['d'] = 1; Array.prototype['d'] = 2; String.prototype['d'] = 3; Function.prototype['d'] = 4;",
     );
-    assert!(vm.session.is_dirty_since_snapshot());
+    assert!(vm.realm.session.is_dirty_since_snapshot());
 
     vm.full_reset();
 
@@ -420,7 +420,7 @@ fn full_reset_dirty_four_families_cross_family_reads() {
         JsValue::bool(true)
     );
     assert_eq!(run_source(&mut vm, "Array.prototype.constructor === Array"), JsValue::bool(true));
-    assert!(!vm.session.is_dirty_since_snapshot());
+    assert!(!vm.realm.session.is_dirty_since_snapshot());
 }
 
 /// 未捕获异常侧通道是执行期状态：原生错误后可能残留原值，reset/full_reset
@@ -592,32 +592,32 @@ fn dynamic_function_rethrows_to_string_exception() {
 #[test]
 fn full_reset_refreshes_object_prototype_after_object_dirty() {
     let mut vm = Vm::new();
-    let old_object_proto = vm.session.builtin_world().object_proto.as_ptr();
+    let old_object_proto = vm.realm.session.builtin_world().object_proto.as_ptr();
     unsafe { &mut *(old_object_proto as *mut JsObject) }.bump_generation();
 
     vm.full_reset();
 
-    assert!(!std::ptr::eq(old_object_proto, vm.session.builtin_world().object_proto.as_ptr()));
+    assert!(!std::ptr::eq(old_object_proto, vm.realm.session.builtin_world().object_proto.as_ptr()));
     assert!(std::ptr::eq(
-        vm.object_prototype.as_ptr(),
-        vm.session.builtin_world().object_proto.as_ptr()
+        vm.realm.object_prototype.as_ptr(),
+        vm.realm.session.builtin_world().object_proto.as_ptr()
     ));
-    assert!(!vm.session.is_dirty_since_snapshot());
+    assert!(!vm.realm.session.is_dirty_since_snapshot());
 }
 
 #[test]
 fn full_reset_object_dirty_rebinds_iterator_family() {
     let mut vm = Vm::new();
-    let old_object_proto = vm.session.builtin_world().object_proto.as_ptr();
-    let old_iterator_proto = vm.session.builtin_world().iterator_proto.as_ptr();
+    let old_object_proto = vm.realm.session.builtin_world().object_proto.as_ptr();
+    let old_iterator_proto = vm.realm.session.builtin_world().iterator_proto.as_ptr();
     // 用户修改 Object.prototype：object 家族世代递增，global 未动。
     unsafe { &mut *(old_object_proto as *mut JsObject) }.bump_generation();
 
     vm.full_reset();
 
     // object 家族与迭代器原型全部重建（新原型链到新 Object.prototype）。
-    assert!(!std::ptr::eq(old_object_proto, vm.session.builtin_world().object_proto.as_ptr()));
-    assert!(!std::ptr::eq(old_iterator_proto, vm.session.builtin_world().iterator_proto.as_ptr()));
+    assert!(!std::ptr::eq(old_object_proto, vm.realm.session.builtin_world().object_proto.as_ptr()));
+    assert!(!std::ptr::eq(old_iterator_proto, vm.realm.session.builtin_world().iterator_proto.as_ptr()));
     // global 保留（dirty.global=false）：其 Iterator 函数对象的 prototype
     // 属性须对齐到重建后的 %IteratorPrototype%。
     let iter_val = global_prop(&vm, "Iterator");
@@ -630,10 +630,10 @@ fn full_reset_object_dirty_rebinds_iterator_family() {
         .expect("Iterator should have prototype slot");
     assert!(std::ptr::eq(
         iter_obj.get_prop_at(proto_pos).as_js_object_ptr(),
-        vm.session.builtin_world().iterator_proto.as_ptr() as *mut JsObject
+        vm.realm.session.builtin_world().iterator_proto.as_ptr() as *mut JsObject
     ));
     // full_reset 后 session 干净；此后 run_source 执行才重新累积世代变化。
-    assert!(!vm.session.is_dirty_since_snapshot());
+    assert!(!vm.realm.session.is_dirty_since_snapshot());
     // 迭代器家族功能完整：原型 next 就位，for-of/spread/Array.from/Iterator.from/
     // Map/Set/String/yield* 全部可用，原型链与 Iterator.prototype 一致。
     let r = run_source(&mut vm, "[...[1,2,3]].join(',')");
@@ -662,19 +662,19 @@ fn full_reset_object_dirty_rebinds_iterator_family() {
 #[test]
 fn full_reset_global_dirty_keeps_iterator_proto_slots_stable() {
     let mut vm = Vm::new();
-    let arr_iter_proto = vm.session.builtin_world().array_iterator_proto.as_ptr() as *mut JsObject;
+    let arr_iter_proto = vm.realm.session.builtin_world().array_iterator_proto.as_ptr() as *mut JsObject;
     let slots_before = unsafe { &*arr_iter_proto }.hash_props_vec().map_or(0, |v| v.len());
     // global 世代递增（用户写 global），builtin 家族未动。
-    unsafe { &mut *(vm.session.global_object.as_ptr() as *mut JsObject) }.bump_generation();
+    unsafe { &mut *(vm.realm.session.global_object.as_ptr() as *mut JsObject) }.bump_generation();
 
     vm.full_reset();
 
     // builtin 未脏 → 迭代器原型保留原对象且属性槽不膨胀（重复 full_reset 不再追加）。
-    let arr_iter_proto_after = vm.session.builtin_world().array_iterator_proto.as_ptr() as *mut JsObject;
+    let arr_iter_proto_after = vm.realm.session.builtin_world().array_iterator_proto.as_ptr() as *mut JsObject;
     assert!(std::ptr::eq(arr_iter_proto, arr_iter_proto_after));
     let slots_after = unsafe { &*arr_iter_proto_after }.hash_props_vec().map_or(0, |v| v.len());
     assert_eq!(slots_before, slots_after);
-    assert!(!vm.session.is_dirty_since_snapshot());
+    assert!(!vm.realm.session.is_dirty_since_snapshot());
     // 迭代器功能经保留原型仍完整（run_source 起再次累积世代变化）。
     let r = run_source(&mut vm, "[...[1,2,3]].join(',')");
     assert_eq!(vm.lookup_str(r).as_deref(), Some("1,2,3"));
@@ -862,19 +862,19 @@ fn inline_for_in_escape_restores_snapshot_and_releases_residual_body() {
 fn full_reset_value_overwrite_on_builtin_proto_rebuilds_family() {
     let mut vm = Vm::new();
     let _ = run_source(&mut vm, "0");
-    let old_array_proto = vm.session.builtin_world().array_proto.as_ptr();
+    let old_array_proto = vm.realm.session.builtin_world().array_proto.as_ptr();
 
     assert_eq!(run_source(&mut vm, "Array.prototype.push = 9"), JsValue::int(9));
     assert_eq!(run_source(&mut vm, "Array.prototype.push"), JsValue::int(9));
-    assert!(vm.session.is_dirty_since_snapshot(), "值覆盖应推进世代被脏检测捕获");
+    assert!(vm.realm.session.is_dirty_since_snapshot(), "值覆盖应推进世代被脏检测捕获");
 
     vm.full_reset();
 
-    assert!(!std::ptr::eq(old_array_proto, vm.session.builtin_world().array_proto.as_ptr()));
+    assert!(!std::ptr::eq(old_array_proto, vm.realm.session.builtin_world().array_proto.as_ptr()));
     let t = run_source(&mut vm, "typeof Array.prototype.push");
     assert_eq!(vm.lookup_str(t).as_deref(), Some("function"));
     assert_eq!(run_source(&mut vm, "[1, 2].push(3)"), JsValue::int(3));
-    assert!(!vm.session.is_dirty_since_snapshot());
+    assert!(!vm.realm.session.is_dirty_since_snapshot());
 }
 
 /// 对象值形态的既有槽覆盖同样须被发现：epoch 对象写入 builtin P 对象不被晋升，
@@ -883,17 +883,17 @@ fn full_reset_value_overwrite_on_builtin_proto_rebuilds_family() {
 fn full_reset_value_overwrite_with_object_value_drops_stale_pointer() {
     let mut vm = Vm::new();
     let _ = run_source(&mut vm, "0");
-    let old_array_proto = vm.session.builtin_world().array_proto.as_ptr();
+    let old_array_proto = vm.realm.session.builtin_world().array_proto.as_ptr();
 
     let _ = run_source(&mut vm, "Array.prototype.push = {}; 0");
-    assert!(vm.session.is_dirty_since_snapshot(), "对象值覆盖应被脏检测捕获");
+    assert!(vm.realm.session.is_dirty_since_snapshot(), "对象值覆盖应被脏检测捕获");
 
     vm.full_reset();
 
-    assert!(!std::ptr::eq(old_array_proto, vm.session.builtin_world().array_proto.as_ptr()));
+    assert!(!std::ptr::eq(old_array_proto, vm.realm.session.builtin_world().array_proto.as_ptr()));
     let t = run_source(&mut vm, "typeof Array.prototype.push");
     assert_eq!(vm.lookup_str(t).as_deref(), Some("function"));
-    assert!(!vm.session.is_dirty_since_snapshot());
+    assert!(!vm.realm.session.is_dirty_since_snapshot());
 }
 
 /// 零 session 对象的全局内置值覆盖：`globalThis.Array = 9` 不触发 promote，
@@ -905,17 +905,17 @@ fn full_reset_global_builtin_value_overwrite_restores_constructor() {
     let _ = run_source(&mut vm, "0");
 
     let _ = run_source(&mut vm, "globalThis.Array = 9; 0");
-    assert!(vm.gc_state.session_object_ptrs.is_empty(), "原始值覆盖不产生 session 对象");
-    assert!(vm.session.is_dirty_since_snapshot(), "全局值覆盖应推进世代");
+    assert!(vm.realm.gc.session_object_ptrs.is_empty(), "原始值覆盖不产生 session 对象");
+    assert!(vm.realm.session.is_dirty_since_snapshot(), "全局值覆盖应推进世代");
 
     vm.full_reset();
 
     assert!(std::ptr::eq(
         global_prop(&vm, "Array").as_js_object_ptr(),
-        vm.session.builtin_world().array_constructor.as_ptr() as *mut JsObject
+        vm.realm.session.builtin_world().array_constructor.as_ptr() as *mut JsObject
     ));
     assert_eq!(run_source(&mut vm, "[1].push(2)"), JsValue::int(2));
-    assert!(!vm.session.is_dirty_since_snapshot());
+    assert!(!vm.realm.session.is_dirty_since_snapshot());
 }
 
 /// IC 二次写（miss 落既有槽 + 命中直写）与复合赋值（set_member_prop 既有槽）
@@ -927,19 +927,19 @@ fn full_reset_value_overwrite_via_ic_and_compound_marks_dirty() {
 
     // IC 首写 miss 落既有槽、二次写经缓存命中，两次都须 bump。
     let _ = run_source(&mut vm, "Array.prototype.push = 9; Array.prototype.push = 8; 0");
-    assert!(vm.session.is_dirty_since_snapshot(), "IC 二次写应被脏检测捕获");
+    assert!(vm.realm.session.is_dirty_since_snapshot(), "IC 二次写应被脏检测捕获");
     vm.full_reset();
     let t = run_source(&mut vm, "typeof Array.prototype.push");
     assert_eq!(vm.lookup_str(t).as_deref(), Some("function"));
 
     // 复合赋值读改写走 set_member_prop 既有槽路径，同样须 bump。
     let _ = run_source(&mut vm, "Array.prototype.push = 9; Array.prototype.push += 1; 0");
-    assert!(vm.session.is_dirty_since_snapshot(), "复合赋值应被脏检测捕获");
+    assert!(vm.realm.session.is_dirty_since_snapshot(), "复合赋值应被脏检测捕获");
     vm.full_reset();
     let t = run_source(&mut vm, "typeof Array.prototype.push");
     assert_eq!(vm.lookup_str(t).as_deref(), Some("function"));
     assert_eq!(run_source(&mut vm, "[1, 2, 3].push(4)"), JsValue::int(4));
-    assert!(!vm.session.is_dirty_since_snapshot());
+    assert!(!vm.realm.session.is_dirty_since_snapshot());
 }
 
 /// wrapper 本体新增 own 属性：写入的是方法 wrapper 自身而非所属 P 对象，
@@ -949,20 +949,20 @@ fn full_reset_value_overwrite_via_ic_and_compound_marks_dirty() {
 fn full_reset_wrapper_own_property_does_not_survive() {
     let mut vm = Vm::new();
     let _ = run_source(&mut vm, "0");
-    let push_before = method_wrapper_ptr(&vm, vm.session.builtin_world().array_proto.as_ptr(), "push");
+    let push_before = method_wrapper_ptr(&vm, vm.realm.session.builtin_world().array_proto.as_ptr(), "push");
 
     let _ = run_source(&mut vm, "Array.prototype.push.custom = 1; 0");
-    assert!(vm.session.is_dirty_since_snapshot(), "wrapper 本体写应被脏检测捕获");
+    assert!(vm.realm.session.is_dirty_since_snapshot(), "wrapper 本体写应被脏检测捕获");
 
     vm.full_reset();
 
     assert_eq!(run_source(&mut vm, "Array.prototype.push.custom"), JsValue::undefined());
     assert_eq!(run_source(&mut vm, "'custom' in Array.prototype.push"), JsValue::bool(false));
     assert_eq!(run_source(&mut vm, "typeof Array.prototype.push === 'function'"), JsValue::bool(true));
-    let push_after = method_wrapper_ptr(&vm, vm.session.builtin_world().array_proto.as_ptr(), "push");
+    let push_after = method_wrapper_ptr(&vm, vm.realm.session.builtin_world().array_proto.as_ptr(), "push");
     assert!(!std::ptr::eq(push_before, push_after), "被写的 wrapper 不应被复用");
     assert_eq!(run_source(&mut vm, "[1, 2].push(3)"), JsValue::int(3));
-    assert!(!vm.session.is_dirty_since_snapshot());
+    assert!(!vm.realm.session.is_dirty_since_snapshot());
 }
 
 /// wrapper 本体写 epoch 对象值：epoch 对象不晋升、不登记，若 wrapper 跨轮
@@ -973,13 +973,13 @@ fn full_reset_wrapper_object_property_does_not_dangle() {
     let _ = run_source(&mut vm, "0");
 
     let _ = run_source(&mut vm, "Array.prototype.push.custom = {}; 0");
-    assert!(vm.session.is_dirty_since_snapshot(), "wrapper 对象值写应被脏检测捕获");
+    assert!(vm.realm.session.is_dirty_since_snapshot(), "wrapper 对象值写应被脏检测捕获");
 
     vm.full_reset();
 
     assert_eq!(run_source(&mut vm, "Array.prototype.push.custom"), JsValue::undefined());
     assert_eq!(run_source(&mut vm, "[1, 2].push(3)"), JsValue::int(3));
-    assert!(!vm.session.is_dirty_since_snapshot());
+    assert!(!vm.realm.session.is_dirty_since_snapshot());
 }
 
 /// wrapper 既有 own 槽的值覆盖：首次写已建槽后重录快照，第二次写走
@@ -989,16 +989,16 @@ fn full_reset_wrapper_existing_slot_overwrite_marks_dirty() {
     let mut vm = Vm::new();
     let _ = run_source(&mut vm, "0");
     let _ = run_source(&mut vm, "Array.prototype.push.custom = 1; 0");
-    vm.session.record_snapshot();
+    vm.realm.session.record_snapshot();
 
     let _ = run_source(&mut vm, "Array.prototype.push.custom = 2; 0");
-    assert!(vm.session.is_dirty_since_snapshot(), "wrapper 既有槽覆盖应被脏检测捕获");
+    assert!(vm.realm.session.is_dirty_since_snapshot(), "wrapper 既有槽覆盖应被脏检测捕获");
 
     vm.full_reset();
 
     assert_eq!(run_source(&mut vm, "Array.prototype.push.custom"), JsValue::undefined());
     assert_eq!(run_source(&mut vm, "typeof Array.prototype.push === 'function'"), JsValue::bool(true));
-    assert!(!vm.session.is_dirty_since_snapshot());
+    assert!(!vm.realm.session.is_dirty_since_snapshot());
 }
 
 /// 不可复用宿主对象（`Reflect`）的属性写：登记面无复用键，脏时靠 global
@@ -1009,13 +1009,13 @@ fn full_reset_keyless_leaked_object_property_does_not_survive() {
     let _ = run_source(&mut vm, "0");
 
     let _ = run_source(&mut vm, "Reflect.custom = 1; 0");
-    assert!(vm.session.is_dirty_since_snapshot(), "keyless 宿主对象写应被脏检测捕获");
+    assert!(vm.realm.session.is_dirty_since_snapshot(), "keyless 宿主对象写应被脏检测捕获");
 
     vm.full_reset();
 
     assert_eq!(run_source(&mut vm, "'custom' in Reflect"), JsValue::bool(false));
     assert_eq!(run_source(&mut vm, "typeof Reflect.apply === 'function'"), JsValue::bool(true));
-    assert!(!vm.session.is_dirty_since_snapshot());
+    assert!(!vm.realm.session.is_dirty_since_snapshot());
 }
 
 /// global 函数 wrapper（`parseInt`）的属性写：global 函数 wrapper 无 P 家族
@@ -1026,13 +1026,13 @@ fn full_reset_global_function_wrapper_property_does_not_survive() {
     let _ = run_source(&mut vm, "0");
 
     let _ = run_source(&mut vm, "parseInt.custom = 1; 0");
-    assert!(vm.session.is_dirty_since_snapshot(), "global 函数 wrapper 写应被脏检测捕获");
+    assert!(vm.realm.session.is_dirty_since_snapshot(), "global 函数 wrapper 写应被脏检测捕获");
 
     vm.full_reset();
 
     assert_eq!(run_source(&mut vm, "'custom' in parseInt"), JsValue::bool(false));
     assert_eq!(run_source(&mut vm, "parseInt('42')"), JsValue::int(42));
-    assert!(!vm.session.is_dirty_since_snapshot());
+    assert!(!vm.realm.session.is_dirty_since_snapshot());
 }
 
 /// wrapper 写重建后基线已刷新：后续仅 P 对象脏写的轮次复用新 wrapper、
@@ -1044,8 +1044,8 @@ fn wrapper_write_rebuild_then_p_writes_reuse_fresh_wrapper() {
     let _ = run_source(&mut vm, "Array.prototype.push.custom = 1; 0");
     vm.full_reset();
 
-    let push_after = method_wrapper_ptr(&vm, vm.session.builtin_world().array_proto.as_ptr(), "push");
-    let registry_after = vm.session.builtin_world().leaked_object_count();
+    let push_after = method_wrapper_ptr(&vm, vm.realm.session.builtin_world().array_proto.as_ptr(), "push");
+    let registry_after = vm.realm.session.builtin_world().leaked_object_count();
 
     for i in 0..3u32 {
         let source = format!("Array.prototype['w{i}'] = 1; Object.prototype['w{i}'] = 2; 0");
@@ -1053,15 +1053,15 @@ fn wrapper_write_rebuild_then_p_writes_reuse_fresh_wrapper() {
         vm.full_reset();
     }
 
-    let push_final = method_wrapper_ptr(&vm, vm.session.builtin_world().array_proto.as_ptr(), "push");
+    let push_final = method_wrapper_ptr(&vm, vm.realm.session.builtin_world().array_proto.as_ptr(), "push");
     assert!(std::ptr::eq(push_after, push_final), "P 写轮应复用 wrapper，不应每轮失效重建");
     assert_eq!(
-        vm.session.builtin_world().leaked_object_count(),
+        vm.realm.session.builtin_world().leaked_object_count(),
         registry_after,
         "P 写轮释放登记表不应增长"
     );
     assert_eq!(run_source(&mut vm, "[1, 2].push(3)"), JsValue::int(3));
-    assert!(!vm.session.is_dirty_since_snapshot());
+    assert!(!vm.realm.session.is_dirty_since_snapshot());
 }
 
 /// 假阳性护栏：只写用户对象的良性运行不得误判 wrapper 脏——wrapper 世代
@@ -1070,16 +1070,16 @@ fn wrapper_write_rebuild_then_p_writes_reuse_fresh_wrapper() {
 fn benign_user_object_writes_do_not_dirty_leaked_objects() {
     let mut vm = Vm::new();
     let _ = run_source(&mut vm, "0");
-    let world_ptr = Arc::as_ptr(&vm.session.builtin_world);
+    let world_ptr = Arc::as_ptr(&vm.realm.session.builtin_world);
 
     let result = run_source(&mut vm, "(function () { var a = {}; a.x = 1; a.x = 2; return a.x; })()");
     assert_eq!(result, JsValue::int(2));
-    assert!(!vm.session.is_dirty_since_snapshot(), "只写用户对象不应误判 wrapper 脏");
+    assert!(!vm.realm.session.is_dirty_since_snapshot(), "只写用户对象不应误判 wrapper 脏");
 
     vm.full_reset();
 
-    assert!(std::ptr::eq(world_ptr, Arc::as_ptr(&vm.session.builtin_world)), "无污染不应重建 world");
-    assert!(!vm.session.is_dirty_since_snapshot());
+    assert!(std::ptr::eq(world_ptr, Arc::as_ptr(&vm.realm.session.builtin_world)), "无污染不应重建 world");
+    assert!(!vm.realm.session.is_dirty_since_snapshot());
 }
 
 /// 假阳性护栏：只写用户对象的良性运行不得误判 builtin 脏。
@@ -1091,16 +1091,16 @@ fn benign_user_object_writes_do_not_dirty_leaked_objects() {
 fn benign_run_does_not_falsely_dirty_builtins() {
     let mut vm = Vm::new();
     let _ = run_source(&mut vm, "0");
-    let world_ptr = Arc::as_ptr(&vm.session.builtin_world);
+    let world_ptr = Arc::as_ptr(&vm.realm.session.builtin_world);
 
     run_source(&mut vm, "({ x: 1 }).x + [1, 2].length");
     assert_eq!(vm.session_object_count(), 2, "良性表达式应产生两枚临时对象（对象字面量 + 数组字面量）");
-    assert!(!vm.session.is_dirty_since_snapshot(), "良性运行不应误判 builtin 脏");
+    assert!(!vm.realm.session.is_dirty_since_snapshot(), "良性运行不应误判 builtin 脏");
 
     vm.full_reset();
 
-    assert!(std::ptr::eq(world_ptr, Arc::as_ptr(&vm.session.builtin_world)), "builtin world 不应重建");
-    assert!(!vm.session.is_dirty_since_snapshot());
+    assert!(std::ptr::eq(world_ptr, Arc::as_ptr(&vm.realm.session.builtin_world)), "builtin world 不应重建");
+    assert!(!vm.realm.session.is_dirty_since_snapshot());
 }
 
 #[test]

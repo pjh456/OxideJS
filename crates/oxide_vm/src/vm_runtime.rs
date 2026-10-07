@@ -502,7 +502,7 @@ impl Vm {
         self.regs[254] = if sub.is_arrow {
             callee_obj.captured_this()
         } else if !sub.is_strict && receiver.is_nullish() {
-            JsValue::from_js_object(self.session.global_object().as_ptr() as *mut JsObject)
+            JsValue::from_js_object(self.realm.session.global_object().as_ptr() as *mut JsObject)
         } else if sub.is_strict {
             receiver
         } else {
@@ -632,7 +632,7 @@ impl Vm {
         // 存活代际集：函数对象只经创建点直落 session 对象表登记（或晋升克隆
         // 随行），扫全表即完备；native 函数哨兵 sub_module_index == 0 不计数。
         let mut live_gens: Vec<u32> = Vec::new();
-        for &ptr in &self.gc_state.session_object_ptrs {
+        for &ptr in &self.realm.gc.session_object_ptrs {
             if ptr.is_null() {
                 continue;
             }
@@ -692,7 +692,7 @@ impl Vm {
         // 顶层 this：脚本为全局对象（ECMA-262 全局执行上下文）；
         // ES module 顶层环境 GetThisBinding 返回 undefined。记录到
         // top_level_this：rerun 清空寄存器文件后按此恢复顶层 this。
-        let global = self.session.global_object();
+        let global = self.realm.session.global_object();
         let this_val = if module.is_es_module {
             JsValue::undefined()
         } else {

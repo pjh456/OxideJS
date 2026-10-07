@@ -47,7 +47,7 @@ pub fn eval_script(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let code = oxide_kernel::string_forge::source_escape(&units);
     match vm.create_plain_dynamic_script(&code) {
         Ok(func) => {
-            let global = JsValue::from_js_object(vm.session().global_object().as_ptr() as *mut JsObject);
+            let global = JsValue::from_js_object(vm.realm.session.global_object().as_ptr() as *mut JsObject);
             match vm.call_function_sync(func, global, &[]) {
                 Ok(val) => NativeResult::Ok(val),
                 Err(e) => NativeResult::Err(oxide_builtins::error::create_from_text(vm, &e)),
@@ -82,7 +82,7 @@ pub fn create_realm(vm: &mut Vm, _args: &[u8]) -> NativeResult {
 /// - 置强制收集旗标；下一个顶层指令边界执行 mark + 移动式 sweep +
 ///   字符串/BigInt 清扫，重写 session 对象指针。
 pub fn gc(vm: &mut Vm, _args: &[u8]) -> NativeResult {
-    vm.gc_state.pending_forced_collect = true;
+    vm.realm.gc.pending_forced_collect = true;
     NativeResult::Ok(JsValue::undefined())
 }
 

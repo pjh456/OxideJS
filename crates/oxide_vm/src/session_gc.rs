@@ -50,7 +50,7 @@ impl SessionGc {
     /// 清空 session 对象表的 GC mark 位。置位不随表清位消失，残留位会让下一次
     /// `mark` 的 DFS 在已标对象处短路，漏扫其新增引用边。
     pub(crate) fn clear_all_marks(&mut self, vm: &mut Vm) {
-        vm_debug!("[GC] clear_all_marks: {} session objects", vm.gc_state.session_object_ptrs.len());
+        vm_debug!("[GC] clear_all_marks: {} session objects", vm.realm.gc.session_object_ptrs.len());
         self.clear_session_marks(vm);
     }
 
@@ -59,7 +59,7 @@ impl SessionGc {
     /// 与收集前历史残留——残留 true 会让下一次 `mark` 的 DFS 在已标对象处
     /// 短路，漏扫其新增引用边。
     pub(crate) fn clear_session_marks(&mut self, vm: &mut Vm) {
-        for &ptr in &vm.gc_state.session_object_ptrs {
+        for &ptr in &vm.realm.gc.session_object_ptrs {
             if ptr.is_null() {
                 continue;
             }
@@ -650,7 +650,7 @@ impl SessionGc {
     /// `sweep`（完整收集）与 `collect_in_run`（执行期收集）共用，保证两条
     /// 收集路径的弱键定夺口径一致。返回 (存活数, 死数, 释放字节)。
     fn sweep_in_place(&mut self, vm: &mut Vm) -> (u64, u64, u64) {
-        let old_ptrs = std::mem::take(&mut vm.gc_state.session_object_ptrs);
+        let old_ptrs = std::mem::take(&mut vm.realm.gc.session_object_ptrs);
         let mut survivors = Vec::with_capacity(old_ptrs.len());
 
         // 弱键定夺先于死对象释放：键对象（含死键）此刻全部仍分配，
@@ -689,12 +689,12 @@ impl SessionGc {
             }
         }
         let live = survivors.len() as u64;
-        vm.gc_state.session_object_ptrs = survivors;
+        vm.realm.gc.session_object_ptrs = survivors;
 
         // 对象口径重算：存活对象头 + 堆数据求和（串/BigInt/cell 分量不在此口径，
         // 由各清扫路径按存活补回，与完整收集的最终账目一致）。
-        vm.gc_state.session_bytes_allocated = vm
-            .gc_state
+        vm.realm.gc.session_bytes_allocated = vm
+            .realm.gc
             .session_object_ptrs
             .iter()
             .filter(|&&ptr| !ptr.is_null())
@@ -737,8 +737,8 @@ impl SessionGc {
     /// `session_bytes_allocated` 重置为仅对象），再补回存活字符串字节。
     /// 返回释放的字节数。
     pub(crate) fn sweep_session_strings(&mut self, vm: &mut Vm) -> u64 {
-        vm_debug!("[GC] sweep strings: {} string ptrs", vm.gc_state.session_string_ptrs.len());
-        let old = std::mem::take(&mut vm.gc_state.session_string_ptrs);
+        vm_debug!("[GC] sweep strings: {} string ptrs", vm.realm.gc.session_string_ptrs.len());
+        let old = std::mem::take(&mut vm.realm.gc.session_string_ptrs);
         let mut freed = 0u64;
         let mut live_bytes = 0usize;
         let mut live = Vec::with_capacity(old.len());
@@ -756,8 +756,8 @@ impl SessionGc {
                 freed += unsafe { Self::drop_dead_session_string(ptr) };
             }
         }
-        vm.gc_state.session_string_ptrs = live;
-        vm.gc_state.session_bytes_allocated = vm.gc_state.session_bytes_allocated.saturating_add(live_bytes);
+        vm.realm.gc.session_string_ptrs = live;
+        vm.realm.gc.session_bytes_allocated = vm.realm.gc.session_bytes_allocated.saturating_add(live_bytes);
 
         self.total_bytes_freed = self.total_bytes_freed.saturating_add(freed);
         self.last_collection_bytes_freed = self.last_collection_bytes_freed.saturating_add(freed);
@@ -769,7 +769,7 @@ impl SessionGc {
     /// forwarding 表与根指针重写。在字符串清扫之后运行。
     /// 返回释放的字节数。
     pub(crate) fn sweep_session_bigints(&mut self, vm: &mut Vm) -> u64 {
-        let old = vm.gc_state.session_bigint_ptrs.borrow_mut().drain(..).collect::<Vec<_>>();
+        let old = vm.realm.gc.session_bigint_ptrs.borrow_mut().drain(..).collect::<Vec<_>>();
         let mut freed = 0u64;
         let mut live = Vec::with_capacity(old.len());
         for ptr in old {
@@ -788,7 +788,7 @@ impl SessionGc {
                 }
             }
         }
-        *vm.gc_state.session_bigint_ptrs.borrow_mut() = live;
+        *vm.realm.gc.session_bigint_ptrs.borrow_mut() = live;
 
         self.total_bytes_freed = self.total_bytes_freed.saturating_add(freed);
         self.last_collection_bytes_freed = self.last_collection_bytes_freed.saturating_add(freed);
@@ -804,7 +804,7 @@ impl SessionGc {
     /// 统计、不重算存活账目。
     /// 返回释放的字节数。
     pub(crate) fn sweep_session_cells(&mut self, vm: &mut Vm) -> u64 {
-        let old = vm.gc_state.session_cell_ptrs.borrow_mut().drain(..).collect::<Vec<_>>();
+        let old = vm.realm.gc.session_cell_ptrs.borrow_mut().drain(..).collect::<Vec<_>>();
         let mut freed = 0u64;
         let mut live = Vec::with_capacity(old.len());
         for ptr in old {
@@ -822,7 +822,7 @@ impl SessionGc {
                 }
             }
         }
-        *vm.gc_state.session_cell_ptrs.borrow_mut() = live;
+        *vm.realm.gc.session_cell_ptrs.borrow_mut() = live;
 
         self.total_bytes_freed = self.total_bytes_freed.saturating_add(freed);
         self.last_collection_bytes_freed = self.last_collection_bytes_freed.saturating_add(freed);
@@ -831,10 +831,10 @@ impl SessionGc {
 
     /// 完整收集的触发判断：对象、字符串或 BigInt 表非空，且字节账目已达阈值。
     pub(crate) fn should_collect(&self, vm: &Vm) -> bool {
-        (!vm.gc_state.session_object_ptrs.is_empty()
-            || !vm.gc_state.session_string_ptrs.is_empty()
-            || !vm.gc_state.session_bigint_ptrs.borrow().is_empty())
-            && vm.gc_state.session_bytes_allocated >= vm.kernel_core().config().session_gc_threshold
+        (!vm.realm.gc.session_object_ptrs.is_empty()
+            || !vm.realm.gc.session_string_ptrs.is_empty()
+            || !vm.realm.gc.session_bigint_ptrs.borrow().is_empty())
+            && vm.realm.gc.session_bytes_allocated >= vm.kernel_core().config().session_gc_threshold
     }
 
     /// 执行期字符串回收的触发判断：账目须超过水位（上次收集后的存活字节 +
@@ -842,10 +842,10 @@ impl SessionGc {
     /// 保证死对象超阈值即被 reset 回收；执行期走增量水位，活串超阈值时不每指令
     /// 重复触发无死串可回收的白跑。
     pub(crate) fn should_collect_strings(&self, vm: &Vm) -> bool {
-        (!vm.gc_state.session_object_ptrs.is_empty()
-            || !vm.gc_state.session_string_ptrs.is_empty()
-            || !vm.gc_state.session_bigint_ptrs.borrow().is_empty())
-            && vm.gc_state.session_bytes_allocated >= vm.gc_state.string_gc_watermark
+        (!vm.realm.gc.session_object_ptrs.is_empty()
+            || !vm.realm.gc.session_string_ptrs.is_empty()
+            || !vm.realm.gc.session_bigint_ptrs.borrow().is_empty())
+            && vm.realm.gc.session_bytes_allocated >= vm.realm.gc.string_gc_watermark
     }
 
     /// debug 兜底：mark 之后断言所有存活对象持有的字符串边都已登记进
@@ -853,7 +853,7 @@ impl SessionGc {
     #[cfg(debug_assertions)]
     fn debug_assert_marked_object_strings_live(&self, vm: &Vm) {
         let mut live = HashSet::with_hasher(FxBuildHasher);
-        for &ptr in &vm.gc_state.session_object_ptrs {
+        for &ptr in &vm.realm.gc.session_object_ptrs {
             if ptr.is_null() {
                 continue;
             }
@@ -942,7 +942,7 @@ impl SessionGc {
 
         // 扣减字符串账目（保留对象账目），再补回存活串字节。
         let object_bytes: usize = vm
-            .gc_state
+            .realm.gc
             .session_object_ptrs
             .iter()
             .filter(|&&ptr| !ptr.is_null())
@@ -951,7 +951,7 @@ impl SessionGc {
                 size_of::<JsObject>() as u64 + Self::object_heap_data_bytes(obj)
             })
             .sum::<u64>() as usize;
-        vm.gc_state.session_bytes_allocated = object_bytes;
+        vm.realm.gc.session_bytes_allocated = object_bytes;
         let mut freed_bytes = self.sweep_session_strings(vm);
         freed_bytes += self.sweep_session_bigints(vm);
         freed_bytes += self.sweep_session_cells(vm);
@@ -964,7 +964,7 @@ impl SessionGc {
         // 抬高下次触发水位：本次存活字节 + 阈值增量，避免活串超阈值时每指令重复
         // 触发无死串可回收的完整 mark + 串清扫。
         let threshold = vm.kernel_core().config().session_gc_threshold;
-        vm.gc_state.string_gc_watermark = vm.gc_state.session_bytes_allocated.saturating_add(threshold);
+        vm.realm.gc.string_gc_watermark = vm.realm.gc.session_bytes_allocated.saturating_add(threshold);
 
         let elapsed = start.elapsed();
         self.total_collections += 1;
@@ -1034,18 +1034,18 @@ impl SessionGc {
         // 串，串表整体计入，与 strings-only 口径一致；BigInt/cell 不在手工
         // 账目内，由 `run_alloc_bytes` 公式按表长单列）。
         let mut string_bytes: usize = 0;
-        for &ptr in &vm.gc_state.session_string_ptrs {
+        for &ptr in &vm.realm.gc.session_string_ptrs {
             if ptr.is_null() {
                 continue;
             }
             // SAFETY: ptr 在字符串表登记，收尾前有效。
             string_bytes += size_of::<JsString>() + unsafe { (*ptr).payload_bytes() };
         }
-        vm.gc_state.session_bytes_allocated = vm.gc_state.session_bytes_allocated.saturating_add(string_bytes);
+        vm.realm.gc.session_bytes_allocated = vm.realm.gc.session_bytes_allocated.saturating_add(string_bytes);
 
         // 抬高下次触发水位：当前分配包络 + 阈值增量——存活包络超阈值时不每指令
         // 重复触发无死对象可回收的白跑。
-        vm.gc_state.gc_watermark = vm.run_alloc_bytes().saturating_add(vm.gc_state.gc_threshold_cached);
+        vm.realm.gc.gc_watermark = vm.run_alloc_bytes().saturating_add(vm.realm.gc.gc_threshold_cached);
 
         let elapsed = start.elapsed();
         self.total_collections += 1;

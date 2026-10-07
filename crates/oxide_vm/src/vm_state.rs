@@ -1,6 +1,6 @@
 //! `Vm` 的状态子结构分组。
 //!
-//! `Vm` 以字段持有这些子结构（`gc_state`、`symbols`、`iters`、`profiling`），
+//! `Vm` 以字段持有这些子结构（`realm` 内的 `gc`、`symbols`、`iters`、`profiling`），
 //! 使各子系统维护者只需改动一个结构而非庞大的 `Vm` 主结构。约定：
 //! Symbol/Iter/Profiling 为完整子模块（逻辑自包含）；`GcState` 仅做字段分类——
 //! GC 的 mark/sweep/alloc_object 需要扫描跨全部子结构的根（regs、frames、

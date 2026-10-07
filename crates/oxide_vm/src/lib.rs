@@ -23,6 +23,8 @@ pub mod native;
 mod native_box_dispatch;
 /// Promise 运行时（状态盒 + 微任务队列 + 构造器/方法实现）。
 pub mod promise;
+/// 每 VM 的 realm 组合：内核会话、session GC 簿记与 10 个内建原型槽。
+mod realm;
 /// session 级 mark-sweep GC：标记-清扫 session arena 对象与 session 字符串。
 pub mod session_gc;
 mod suspended;

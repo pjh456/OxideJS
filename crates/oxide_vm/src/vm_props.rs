@@ -239,7 +239,7 @@ impl Vm {
     /// - 只可挂在真实 A 侧写发生之后；写失败路径（只读 no-op / 抛错）不得
     ///   调用，否则污染镜像槽。
     pub(crate) fn sync_global_builtin_mirror(&mut self, obj: &JsObject, key_si: u32, val: JsValue) {
-        if !std::ptr::eq(obj as *const JsObject, self.session.global_object().as_ptr()) {
+        if !std::ptr::eq(obj as *const JsObject, self.realm.session.global_object().as_ptr()) {
             return;
         }
         let Some(module) = self.active_module() else {
@@ -264,7 +264,7 @@ impl Vm {
     pub(crate) fn sync_global_builtin_mirror_slot(
         &mut self, obj: &JsObject, shape_id: u32, slot: u32, depth: u8, val: JsValue,
     ) {
-        if !std::ptr::eq(obj as *const JsObject, self.session.global_object().as_ptr()) {
+        if !std::ptr::eq(obj as *const JsObject, self.realm.session.global_object().as_ptr()) {
             return;
         }
         if depth != 0 || shape_id != obj.shape_id() {
@@ -305,7 +305,7 @@ impl Vm {
         if map.is_empty() {
             return;
         }
-        let global = self.session.global_object();
+        let global = self.realm.session.global_object();
         for (name, reg) in map {
             if (*reg as usize) < pack_end {
                 continue;
@@ -1543,7 +1543,7 @@ mod tests {
     }
 
     fn native_function(vm: &mut Vm, f: crate::native::NativeFn) -> JsValue {
-        let proto = vm.session.builtin_world().function_proto.as_ptr() as *mut JsObject;
+        let proto = vm.realm.session.builtin_world().function_proto.as_ptr() as *mut JsObject;
         let mut obj = JsObject::new_empty(oxide_kernel::shape_forge::EMPTY_SHAPE_ID, JsValue::from_js_object(proto));
         obj.set_function(true);
         // SAFETY: f 是 NativeFn 函数项，可作为 NativeFnPtr 存储。
@@ -1552,7 +1552,7 @@ mod tests {
     }
 
     fn plain_object(vm: &mut Vm) -> JsValue {
-        let proto = vm.session.builtin_world().object_proto.as_ptr() as *mut JsObject;
+        let proto = vm.realm.session.builtin_world().object_proto.as_ptr() as *mut JsObject;
         let obj = JsObject::new_empty(oxide_kernel::shape_forge::EMPTY_SHAPE_ID, JsValue::from_js_object(proto));
         JsValue::object(vm.alloc_object(obj) as *mut u8)
     }
@@ -1681,7 +1681,7 @@ mod tests {
     // ===== 大索引（越稠密上限）写降级命名属性的行为钉 =====
 
     fn new_array_val(vm: &mut Vm, n: u32) -> JsValue {
-        let proto = vm.session.builtin_world().array_proto.as_ptr() as *mut JsObject;
+        let proto = vm.realm.session.builtin_world().array_proto.as_ptr() as *mut JsObject;
         let arr =
             JsObject::new_array(oxide_kernel::shape_forge::EMPTY_SHAPE_ID, JsValue::from_js_object(proto), n as usize);
         JsValue::object(vm.alloc_object(arr) as *mut u8)

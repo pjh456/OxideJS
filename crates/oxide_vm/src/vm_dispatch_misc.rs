@@ -55,7 +55,7 @@ impl Vm {
             for i in 0..arg_count.min(256) {
                 args.push(self.regs[first_arg_reg.wrapping_add(i as u8) as usize]);
             }
-            let proto_ptr = &*self.object_prototype as *const JsObject as *mut JsObject;
+            let proto_ptr = &*self.realm.object_prototype as *const JsObject as *mut JsObject;
             let new_obj = self.alloc_object(JsObject::new_empty(
                 oxide_kernel::shape_forge::EMPTY_SHAPE_ID,
                 JsValue::from_js_object(proto_ptr),
@@ -63,7 +63,7 @@ impl Vm {
             return self.dispatch_new_bound(rd, constructor, new_obj, args, call_window);
         }
 
-        let proto_ptr = &*self.object_prototype as *const JsObject as *mut JsObject;
+        let proto_ptr = &*self.realm.object_prototype as *const JsObject as *mut JsObject;
         let new_obj = self.alloc_object(JsObject::new_empty(
             oxide_kernel::shape_forge::EMPTY_SHAPE_ID,
             JsValue::from_js_object(proto_ptr),
@@ -998,7 +998,7 @@ impl Vm {
             if src.is_null() || src.is_undefined() {
                 return self.raise_type_error("Cannot destructure property of null/undefined");
             }
-            let proto_ptr = self.session.builtin_world().object_proto.as_ptr() as *mut JsObject;
+            let proto_ptr = self.realm.session.builtin_world().object_proto.as_ptr() as *mut JsObject;
             let rest_ptr = self.alloc_object(JsObject::new_empty(
                 oxide_kernel::shape_forge::EMPTY_SHAPE_ID,
                 JsValue::from_js_object(proto_ptr),
@@ -1088,7 +1088,7 @@ impl Vm {
         }
 
         // 提交到 rest 对象。
-        let proto_ptr = self.session.builtin_world().object_proto.as_ptr() as *mut JsObject;
+        let proto_ptr = self.realm.session.builtin_world().object_proto.as_ptr() as *mut JsObject;
         let rest_ptr = self.alloc_object(JsObject::new_empty(
             oxide_kernel::shape_forge::EMPTY_SHAPE_ID,
             JsValue::from_js_object(proto_ptr),
@@ -1210,7 +1210,7 @@ impl Vm {
             return Ok(());
         }
 
-        let proto_ptr = self.session.builtin_world().array_proto.as_ptr() as *mut JsObject;
+        let proto_ptr = self.realm.session.builtin_world().array_proto.as_ptr() as *mut JsObject;
         let proto_val = JsValue::from_js_object(proto_ptr);
         // 模板对象直接分配为 session 对象：写入 session 根（存进 global/数组）
         // 时对象地址稳定，缓存指针不失效——分配档不同则首次写入触发搬移，

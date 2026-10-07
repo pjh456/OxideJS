@@ -17,11 +17,11 @@ use smallvec::SmallVec;
 /// 初始化一个 session 的内置对象（global 槽位、各构造器与原型、IC 预热）。
 pub use crate::bindings::init_kernel_builtins;
 use crate::native::NativeFn;
+use crate::realm::Realm;
 use crate::vm_debug;
-use crate::vm_state::{GcState, IterState, ProfilingState, SampleState, SymbolState};
+use crate::vm_state::{IterState, ProfilingState, SampleState, SymbolState};
 use oxide_kernel::kernel::{KernelCore, KernelSession};
 use oxide_types::error::JsErrorKind;
-use oxide_types::mem::P;
 use oxide_types::object::{Cell, JsObject, JsString, NativeFnPtr};
 use oxide_types::private_key::INT_KEY_COUNT;
 use oxide_types::value::JsValue;
@@ -175,7 +175,9 @@ pub struct Vm {
     pub(crate) active_immutables: *const [JsValue],
     pub(crate) frames: SmallVec<[CallFrame; 16]>,
     pub(crate) kernel_core: Arc<KernelCore>,
-    pub(crate) session: KernelSession,
+    /// 每 VM 的 realm 组合：内核会话（builtin world 与 global 对象）、
+    /// session GC 簿记与 10 个内建原型槽（见 `realm` 模块）。
+    pub(crate) realm: Realm,
     /// `"length"` 属性键的 intern id 缓存：进程内稳定（PermInterner append-only、
     /// KernelCore 不重建），属性 get/set 热路径免每次 intern（hash64 + DashMap +
     /// RwLock 读锁）。
@@ -190,26 +192,6 @@ pub struct Vm {
     /// f64→string 十六槽 last-value 缓存的值（session 串，经 `for_each_value`
     /// 登记为 GC 根；`full_reset` 在 session 串释放前清空）。
     pub(crate) number_to_string_cache_vals: [JsValue; 16],
-    pub object_prototype: P<JsObject>,
-    /// `%GeneratorPrototype%`：生成器实例的原型（next/return/throw 方法挂此）。
-    pub generator_proto: P<JsObject>,
-    /// `%GeneratorFunction.prototype%`：生成器函数对象的原型（`constructor` 指向
-    /// `%GeneratorFunction%`，使 `g.constructor.name` 解析为 "GeneratorFunction"）。
-    pub generator_function_proto: P<JsObject>,
-    /// `%Promise%` 构造器（resolve/reject 静态方法挂此，global 的 Promise 槽指向它）。
-    pub promise_constructor: P<JsObject>,
-    /// `%Promise.prototype%`：Promise 实例的原型（then/catch/finally 方法挂此）。
-    pub promise_proto: P<JsObject>,
-    /// `%AggregateError%` 构造器（Promise.any 拒绝时构造 AggregateError 用）。
-    pub aggregate_error_constructor: P<JsObject>,
-    /// `%AggregateError.prototype%`（proto = %Error.prototype%）。
-    pub aggregate_error_proto: P<JsObject>,
-    /// `%AsyncFunction.prototype%`：异步函数对象的原型（`constructor` 指向 `%AsyncFunction%`）。
-    pub async_function_proto: P<JsObject>,
-    /// `%AsyncGeneratorPrototype%`：异步生成器实例的原型（next/return/throw/@@asyncIterator）。
-    pub async_generator_proto: P<JsObject>,
-    /// `%AsyncGeneratorFunction.prototype%`：异步生成器函数对象的原型。
-    pub async_generator_function_proto: P<JsObject>,
     /// 微任务队列（Promise reactions / thenable 委托），`run()` 末尾 FIFO drain。
     pub(crate) job_queue: VecDeque<crate::promise::Microtask>,
     /// Atomics.waitAsync waiter 表：键 = (缓冲对象指针, 元素字节偏移)，值 =
@@ -357,8 +339,6 @@ pub struct Vm {
     /// 异步生成器 body `dispatch()` 的 AWAIT 让出信号：置 true 表示挂起在 await，
     /// 恢复方（异步生成器内嵌 dispatch 循环）据此快照挂起状态。
     pub(crate) async_gen_suspended: bool,
-    /// 分组保存 session arena / GC 簿记状态。
-    pub(crate) gc_state: GcState,
     /// 分组保存 `Symbol` intern 状态。
     pub(crate) symbols: SymbolState,
     /// 分组保存活跃的 for-in / for-of 迭代器状态。
@@ -440,12 +420,12 @@ impl Vm {
 
     /// 只读访问当前 session（builtin world 与 global object）。
     pub fn session(&self) -> &KernelSession {
-        &self.session
+        &self.realm.session
     }
 
     /// 判定裸指针是否指向当前 session 的 `%Object.prototype%`。
     pub(crate) fn is_object_prototype(&self, ptr: *const JsObject) -> bool {
-        let proto_ptr = self.session.builtin_world().object_proto.as_ptr();
+        let proto_ptr = self.realm.session.builtin_world().object_proto.as_ptr();
         std::ptr::eq(ptr, proto_ptr)
     }
 

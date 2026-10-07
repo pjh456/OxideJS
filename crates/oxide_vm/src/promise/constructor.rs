@@ -22,7 +22,7 @@ use super::{is_constructor_value, PromiseState, PromiseStateKind};
 impl Vm {
     /// 创建空 Promise 对象（proto = `%Promise.prototype%`），状态盒为 Pending。
     pub(super) fn create_promise_object(&mut self) -> JsValue {
-        let proto_val = JsValue::from_js_object(self.promise_proto.as_ptr() as *mut JsObject);
+        let proto_val = JsValue::from_js_object(self.realm.promise_proto.as_ptr() as *mut JsObject);
         let ptr = self.alloc_object(JsObject::new_empty(EMPTY_SHAPE_ID, proto_val));
         // SAFETY: `alloc_object` 返回非空 arena 指针；此处写 type_tag 与 native_data
         // （Box<PromiseState> 由 Box::into_raw 分配，随对象释放），无别名。
@@ -114,11 +114,11 @@ impl Vm {
             // 的 receiver 原型链判定通过。
             let is_data_view = std::ptr::eq(
                 ctor.as_js_object_ptr(),
-                self.session.builtin_world().data_view_constructor.as_ptr() as *mut JsObject,
+                self.realm.session.builtin_world().data_view_constructor.as_ptr() as *mut JsObject,
             );
             let this_val = if is_data_view {
                 let data_view_proto_val =
-                    JsValue::from_js_object(self.session.builtin_world().data_view_proto.as_ptr() as *mut JsObject);
+                    JsValue::from_js_object(self.realm.session.builtin_world().data_view_proto.as_ptr() as *mut JsObject);
                 JsValue::from_js_object(self.alloc_object(JsObject::new_empty(EMPTY_SHAPE_ID, data_view_proto_val)))
             } else {
                 let this_ptr = self.alloc_ctor_this(nt_obj, ctor_obj, new_target)?;
@@ -156,7 +156,7 @@ impl Vm {
         &mut self, nt_obj: &JsObject, ctor_obj: &JsObject, nt_val: JsValue,
     ) -> Result<*mut JsObject, JsValue> {
         let proto_si = self.kernel_core.perm_interner().intern("prototype").0;
-        let object_proto = JsValue::from_js_object(self.session.builtin_world().object_proto.as_ptr() as *mut JsObject);
+        let object_proto = JsValue::from_js_object(self.realm.session.builtin_world().object_proto.as_ptr() as *mut JsObject);
         let is_native_ctor = ctor_obj.native_fn().is_some() && ctor_obj.type_tag == JsObject::OBJ_TYPE_CONSTRUCTOR;
         let proto_val = if is_native_ctor {
             match self.resolve_property(nt_obj, proto_si) {
@@ -257,10 +257,10 @@ impl Vm {
     pub(crate) fn init_promise_intrinsics(&mut self) {
         let sf = self.kernel_core.perm_interner().as_ref();
         let sh = self.kernel_core.shape_forge().as_ref();
-        let fn_proto_val = self.session.builtin_world().fn_proto_val();
-        let world = self.session.builtin_world();
+        let fn_proto_val = self.realm.session.builtin_world().fn_proto_val();
+        let world = self.realm.session.builtin_world();
         let object_proto_val =
-            JsValue::from_js_object(self.session.builtin_world().object_proto.as_ptr() as *mut JsObject);
+            JsValue::from_js_object(self.realm.session.builtin_world().object_proto.as_ptr() as *mut JsObject);
 
         // %Promise.prototype%：proto = Object.prototype，方法 then/catch/finally + @@toStringTag。
         let mut proto = Box::new(JsObject::new_empty(EMPTY_SHAPE_ID, object_proto_val));
@@ -327,23 +327,23 @@ impl Vm {
         );
 
         // 固定地址后互相接线：proto.constructor ↔ ctor.prototype。
-        Self::swap_intrinsic_proto(&mut self.promise_proto, *proto);
-        Self::swap_intrinsic_proto(&mut self.promise_constructor, *ctor);
+        Self::swap_intrinsic_proto(&mut self.realm.promise_proto, *proto);
+        Self::swap_intrinsic_proto(&mut self.realm.promise_constructor, *ctor);
         // SAFETY: `promise_proto` 为 `P<JsObject>`（Arc 透明包装），堆址固定且本行前刚经
         // swap_intrinsic_proto 落地；与下一处 ctor_mut 指向不同对象，无别名。
-        let proto_mut = unsafe { &mut *self.promise_proto.as_mut_ptr() };
-        proto_mut.set_prop_at(0u32, JsValue::from_js_object(self.promise_constructor.as_ptr() as *mut JsObject));
+        let proto_mut = unsafe { &mut *self.realm.promise_proto.as_mut_ptr() };
+        proto_mut.set_prop_at(0u32, JsValue::from_js_object(self.realm.promise_constructor.as_ptr() as *mut JsObject));
         // SAFETY: `promise_constructor` 同为堆址固定的存活 `P<JsObject>`（Arc 透明包装）；
         // 此处写 prototype 槽位（下标 2），与 proto_mut 分属不同对象，无别名。
-        let ctor_mut = unsafe { &mut *self.promise_constructor.as_mut_ptr() };
+        let ctor_mut = unsafe { &mut *self.realm.promise_constructor.as_mut_ptr() };
         // prototype 槽位在 length/name 之后（下标 2）。
-        ctor_mut.set_prop_at(2u32, JsValue::from_js_object(self.promise_proto.as_ptr() as *mut JsObject));
+        ctor_mut.set_prop_at(2u32, JsValue::from_js_object(self.realm.promise_proto.as_ptr() as *mut JsObject));
 
         // Promise[Symbol.species] 访问器：getter 返回 receiver，派生类沿静态原型链
         // 解析 @@species 得自身构造器。ctor 经本函数每次调用全新构造，同键槽不累积。
         crate::bindings::bind_accessor_getter_key(
             &self.kernel_core,
-            &self.session,
+            &self.realm.session,
             ctor_mut,
             oxide_types::private_key::make_well_known_symbol_key(oxide_types::private_key::WELL_KNOWN_SYMBOL_SPECIES),
             "get [Symbol.species]",
@@ -351,12 +351,12 @@ impl Vm {
         );
 
         // 绑定 global：槽已存在则更新（full_reset 未重建 global 时旧槽指向已弃 ctor）。
-        let global_ptr = self.session.global_object().as_ptr() as *mut JsObject;
+        let global_ptr = self.realm.session.global_object().as_ptr() as *mut JsObject;
         // SAFETY: global 对象由 session 持有，存活整个 session；本函数内只改其
         // shape/属性区，期间无 reset 或对象搬移。
         let global = unsafe { &mut *global_ptr };
         let si = self.kernel_core.perm_interner().intern("Promise").0;
-        let ctor_val = JsValue::from_js_object(self.promise_constructor.as_ptr() as *mut JsObject);
+        let ctor_val = JsValue::from_js_object(self.realm.promise_constructor.as_ptr() as *mut JsObject);
         if let Some(pos) = self.kernel_core.shape_forge().lookup_position(global.shape_id(), si) {
             global.set_prop_at(pos, ctor_val);
         } else {
@@ -392,7 +392,7 @@ fn promise_constructor(vm: &mut Vm, args: &[u8]) -> NativeResult {
         return NativeResult::Err(oxide_builtins::error::create_type_error(vm, "Promise executor is not a function"));
     }
     // GetPrototypeFromConstructor：异常原值上抛；非对象结果回落内建原型。
-    let promise_proto_val = JsValue::from_js_object(vm.promise_proto.as_ptr() as *mut JsObject);
+    let promise_proto_val = JsValue::from_js_object(vm.realm.promise_proto.as_ptr() as *mut JsObject);
     let new_target = vm.reg(255);
     let proto = if new_target.is_object() {
         let nt_ptr = new_target.as_js_object_ptr();
