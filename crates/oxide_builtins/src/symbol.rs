@@ -48,7 +48,7 @@ pub fn symbol_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     };
 
     let idx = vm.symbol_intern(description);
-    NativeResult::Ok(JsValue::symbol(idx))
+    NativeResult::Ok(JsValue::symbol_realm(vm.realm_id(), idx))
 }
 
 /// `Symbol.prototype.toString`：返回 `Symbol(description)` 形式字符串。
@@ -89,7 +89,7 @@ pub fn symbol_to_string<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         Ok(v) => v,
         Err(e) => return NativeResult::Err(e),
     };
-    let idx = sym.as_symbol_index();
+    let idx = sym.as_symbol_local_index();
     let desc = vm.symbol_description(idx).unwrap_or_default();
     let result = format!("Symbol({})", desc);
     NativeResult::Ok(vm.new_string_owned(result))
@@ -127,7 +127,7 @@ pub fn symbol_description_getter<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeRe
         Ok(v) => v,
         Err(e) => return NativeResult::Err(e),
     };
-    let idx = sym.as_symbol_index();
+    let idx = sym.as_symbol_local_index();
     match vm.symbol_description(idx) {
         Some(desc) => NativeResult::Ok(vm.new_string_owned(desc)),
         None => NativeResult::Ok(JsValue::undefined()),
@@ -153,12 +153,12 @@ pub fn symbol_for<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     };
 
     if let Some(idx) = vm.symbol_lookup_global(&key) {
-        return NativeResult::Ok(JsValue::symbol(idx));
+        return NativeResult::Ok(JsValue::symbol_realm(vm.realm_id(), idx));
     }
 
     let idx = vm.symbol_intern(Some(key.clone()));
     vm.symbol_register_global(key, idx);
-    NativeResult::Ok(JsValue::symbol(idx))
+    NativeResult::Ok(JsValue::symbol_realm(vm.realm_id(), idx))
 }
 
 /// `Symbol.keyFor(sym)`：返回全局注册表中该 Symbol 的 key；未登记返回 undefined。
@@ -169,7 +169,7 @@ pub fn symbol_key_for<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         return NativeResult::Err(crate::error::create_type_error(vm, "is not a symbol"));
     }
 
-    let idx = sym.as_symbol_index();
+    let idx = sym.as_symbol_local_index();
     match vm.symbol_key_for_id(idx) {
         Some(key) => NativeResult::Ok(vm.new_string(&key)),
         None => NativeResult::Ok(JsValue::undefined()),

@@ -9,7 +9,7 @@
 use oxide_kernel::shape_forge::EMPTY_SHAPE_ID;
 use oxide_runtime_api::{NativeResult, VmHost};
 use oxide_types::object::{Cell, JsObject, PropAttributes, PropMetaEntry};
-use oxide_types::private_key::make_well_known_symbol_key;
+use oxide_types::private_key::encode_symbol_key;
 use oxide_types::value::JsValue;
 
 /// `Symbol.toStringTag` 在 well-known symbol 表中的序号，命名空间标签键按其编码。
@@ -326,7 +326,7 @@ pub fn module_pre_register<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 ///   `module_set`/`module_star` 的瞬态可扩展窗口旁路，其余写/定义一律拒绝。
 pub fn module_object<H: VmHost>(vm: &mut H, _args: &[u8]) -> NativeResult {
     let obj = vm.alloc_object(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()));
-    let tag_si = make_well_known_symbol_key(TO_STRING_TAG_SYMBOL_ID);
+    let tag_si = encode_symbol_key(vm.realm_id(), TO_STRING_TAG_SYMBOL_ID);
     let tag_val = vm.new_string("Module");
     let obj_ref = unsafe { &mut *obj };
     if let Err(e) = vm.define_data_property(obj_ref, tag_si, tag_val, PropAttributes::new(false, false, false)) {

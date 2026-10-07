@@ -2,8 +2,8 @@ use oxide_kernel::shape_forge::{ShapeForge, EMPTY_SHAPE_ID};
 use oxide_kernel::string_forge::PermInterner;
 use oxide_types::object::{JsObject, PropAttributes, PropMetaEntry};
 use oxide_types::private_key::{
-    int_key_value, is_int_key, is_private_name_key, is_symbol_key, make_int_key, make_well_known_symbol_key,
-    symbol_index_from_key, well_known_symbol_id_from_key, INT_KEY_COUNT,
+    decode_symbol_key, encode_symbol_key, int_key_value, is_int_key, is_private_name_key, is_symbol_key, make_int_key,
+    INT_KEY_COUNT,
 };
 use oxide_types::value::JsValue;
 
@@ -178,13 +178,11 @@ pub(crate) fn walk_own_symbol_keys<H: VmHost>(vm: &H, obj: &JsObject) -> Vec<(u3
     keys
 }
 
-/// 把 Symbol 键反解为对应的 Symbol 值：well-known 键还原为对应下标的符号原语，
-/// 用户 symbol 键按偏移还原为 `JsValue::symbol` 值。
-fn decode_symbol_key(key: u32) -> JsValue {
-    if let Some(id) = well_known_symbol_id_from_key(key) {
-        return JsValue::symbol(id);
-    }
-    JsValue::symbol(symbol_index_from_key(key))
+/// 把 Symbol 键反解为对应的 Symbol 值：键自含 realm 编号与局部下标，
+/// 直接还原为 realm 感知符号值，无需外部上下文。
+fn symbol_key_to_value(key: u32) -> JsValue {
+    let (realm_id, local_index) = decode_symbol_key(key);
+    JsValue::symbol_realm(realm_id, local_index)
 }
 
 /// 收集对象自身全部 Symbol 键并按插入序物化为 Symbol 值。
@@ -200,7 +198,7 @@ fn decode_symbol_key(key: u32) -> JsValue {
 pub fn own_symbol_key_values<H: VmHost>(vm: &H, obj: &JsObject) -> Vec<JsValue> {
     walk_own_symbol_keys(vm, obj)
         .iter()
-        .map(|(key, _)| decode_symbol_key(*key))
+        .map(|(key, _)| symbol_key_to_value(*key))
         .collect()
 }
 
@@ -1957,7 +1955,7 @@ pub fn object_proto_to_string<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResul
     };
     // @@toStringTag 为字符串时覆盖品牌名；非字符串（含缺失）回退品牌名，
     // getter 抛错透传原异常。
-    let tag_key = make_well_known_symbol_key(9);
+    let tag_key = encode_symbol_key(vm.realm_id(), 9);
     match vm.ordinary_get(obj, tag_key, obj_val) {
         Ok(v) => {
             // 先把 tag 字符串取出（结束对 vm 的不可变借用），再拼结果串。
@@ -2183,7 +2181,7 @@ pub fn object_group_by<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         Err(msg) => return NativeResult::Err(crate::error::create_type_error(vm, &msg)),
     };
     let items_ptr = items_obj.as_js_object_ptr();
-    let sym_iter_si = make_well_known_symbol_key(0);
+    let sym_iter_si = encode_symbol_key(vm.realm_id(), 0);
     let iter_method = match unsafe { vm.ordinary_get(&*items_ptr, sym_iter_si, items_val) } {
         Ok(m) => m,
         Err(e) => return NativeResult::Err(crate::iterator::engine_error(vm, &e)),

@@ -1,6 +1,6 @@
 use oxide_kernel::shape_forge::EMPTY_SHAPE_ID;
 use oxide_types::object::{JsObject, PropAttributes};
-use oxide_types::private_key::{make_int_key, make_well_known_symbol_key};
+use oxide_types::private_key::{encode_symbol_key, make_int_key};
 use oxide_types::value::JsValue;
 
 use oxide_runtime_api::{to_object, NativeResult, VmHost};
@@ -135,7 +135,7 @@ pub fn iterator_constructor_setter<H: VmHost>(vm: &mut H, args: &[u8]) -> Native
 
 /// `Symbol.toStringTag` 访问器的 setter（键为 `@@toStringTag`）。
 pub fn iterator_to_string_tag_setter<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
-    iterator_setter_ignore_proto_props(vm, args, make_well_known_symbol_key(9))
+    iterator_setter_ignore_proto_props(vm, args, encode_symbol_key(vm.realm_id(), 9))
 }
 
 /// `%IteratorPrototype%[@@dispose]`：GetMethod(this, "return")，有则调用并返回
@@ -406,7 +406,7 @@ fn get_iterator_flattenable<H: VmHost>(vm: &mut H, value: JsValue) -> Result<(Js
         return Err(crate::error::create_type_error(vm, "iterator mapper result is not an object"));
     }
     let obj = unsafe { &*value.as_js_object_ptr() };
-    let sym_iter_si = make_well_known_symbol_key(0);
+    let sym_iter_si = encode_symbol_key(vm.realm_id(), 0);
     let method = match vm.ordinary_get(obj, sym_iter_si, value) {
         Ok(m) => m,
         Err(err) => return Err(engine_error(vm, &err)),
@@ -1408,7 +1408,7 @@ pub(crate) fn peek_iterator_method<H: VmHost>(vm: &mut H, value: JsValue) -> Res
         let proto_ptr = vm.session().builtin_world().string_proto.as_ptr() as *mut JsObject;
         // SAFETY: string_proto 是 BuiltinWorld 长驻原型对象，进程内有效且不被 GC 搬移。
         let proto_obj = unsafe { &*proto_ptr };
-        let sym_iter_si = make_well_known_symbol_key(0);
+        let sym_iter_si = encode_symbol_key(vm.realm_id(), 0);
         let method = match vm.ordinary_get(proto_obj, sym_iter_si, value) {
             Ok(m) => m,
             Err(err) => {
@@ -1442,7 +1442,7 @@ pub(crate) fn peek_iterator_method<H: VmHost>(vm: &mut H, value: JsValue) -> Res
     };
     if recv.is_object() {
         let obj = unsafe { &*recv.as_js_object_ptr() };
-        let sym_iter_si = make_well_known_symbol_key(0);
+        let sym_iter_si = encode_symbol_key(vm.realm_id(), 0);
         let method = match vm.ordinary_get(obj, sym_iter_si, value) {
             Ok(m) => m,
             Err(err) => {
@@ -1542,7 +1542,7 @@ fn get_iterator<H: VmHost>(vm: &mut H, value: JsValue) -> Result<Option<(JsValue
             vm.session().builtin_world().string_proto.as_ptr() as *mut JsObject
         };
         let read_obj = unsafe { &*read_ptr };
-        let sym_iter_si = make_well_known_symbol_key(0);
+        let sym_iter_si = encode_symbol_key(vm.realm_id(), 0);
         let method = match vm.ordinary_get(read_obj, sym_iter_si, value) {
             Ok(m) => m,
             Err(err) => {
@@ -1623,7 +1623,7 @@ fn get_iterator<H: VmHost>(vm: &mut H, value: JsValue) -> Result<Option<(JsValue
     let obj = unsafe { &*obj_value.as_js_object_ptr() };
     // 迭代协议：GetIterator 先取 value[Symbol.iterator] 并调用；装箱对象仅作查找
     // 起点与鸭子回退 inner，receiver/this 用原始 value（GetV / GetIteratorFromMethod）。
-    let sym_iter_si = make_well_known_symbol_key(0);
+    let sym_iter_si = encode_symbol_key(vm.realm_id(), 0);
     let method = match vm.ordinary_get(obj, sym_iter_si, value) {
         Ok(m) => m,
         Err(err) => {

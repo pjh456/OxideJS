@@ -2,7 +2,7 @@
 
 use oxide_kernel::shape_forge::EMPTY_SHAPE_ID;
 use oxide_types::object::{JsObject, PropAttributes, MAX_DENSE_PROPS};
-use oxide_types::private_key::make_well_known_symbol_key;
+use oxide_types::private_key::encode_symbol_key;
 use oxide_types::value::JsValue;
 
 use oxide_runtime_api::{NativeResult, VmHost};
@@ -333,7 +333,7 @@ pub(crate) fn array_species_create<H: VmHost>(
     }
     // 一切对象 C 均须查 @@species（null 归一为 undefined）：S 为 undefined 回退
     // ArrayCreate，S 非构造器抛 TypeError，否则以 S 构造。
-    let species_key = make_well_known_symbol_key(10);
+    let species_key = encode_symbol_key(vm.realm_id(), 10);
     let s = match vm.ordinary_get(unsafe { &*c.as_js_object_ptr() }, species_key, c) {
         Ok(v) => v,
         Err(msg) => return Err(from_engine_error(vm, &msg)),

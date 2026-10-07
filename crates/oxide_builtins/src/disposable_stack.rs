@@ -13,7 +13,7 @@
 
 use oxide_kernel::shape_forge::EMPTY_SHAPE_ID;
 use oxide_types::object::JsObject;
-use oxide_types::private_key::make_well_known_symbol_key;
+use oxide_types::private_key::encode_symbol_key;
 use oxide_types::value::JsValue;
 
 use oxide_runtime_api::{NativeResult, VmHost};
@@ -178,7 +178,7 @@ pub fn disposable_stack_use<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult 
         return NativeResult::Err(crate::error::create_type_error(vm, "value is not an Object"));
     }
     let value_obj = unsafe { &*value.as_js_object_ptr() };
-    let dispose_key = oxide_types::private_key::make_well_known_symbol_key(12);
+    let dispose_key = oxide_types::private_key::encode_symbol_key(vm.realm_id(), 12);
     let method = match vm.ordinary_get(value_obj, dispose_key, value) {
         Ok(m) => m,
         Err(err) => return NativeResult::Err(crate::iterator::engine_error(vm, &err)),
@@ -263,14 +263,14 @@ pub fn async_disposable_stack_use<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeR
         return NativeResult::Err(crate::error::create_type_error(vm, "value is not an Object"));
     }
     let value_obj = unsafe { &*value.as_js_object_ptr() };
-    let async_dispose_key = make_well_known_symbol_key(11);
+    let async_dispose_key = encode_symbol_key(vm.realm_id(), 11);
     let method = match vm.ordinary_get(value_obj, async_dispose_key, value) {
         Ok(m) => m,
         Err(err) => return NativeResult::Err(crate::iterator::engine_error(vm, &err)),
     };
     if method.is_null() || method.is_undefined() {
         // 键 11 缺失：回落读 @@dispose（读取顺序测试断言键 11 先、键 12 后）。
-        let dispose_key = make_well_known_symbol_key(12);
+        let dispose_key = encode_symbol_key(vm.realm_id(), 12);
         let sync_method = match vm.ordinary_get(value_obj, dispose_key, value) {
             Ok(m) => m,
             Err(err) => return NativeResult::Err(crate::iterator::engine_error(vm, &err)),

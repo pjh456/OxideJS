@@ -512,7 +512,7 @@ pub fn map_group_by<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         Err(msg) => return NativeResult::Err(crate::error::create_type_error(vm, &msg)),
     };
     let items_ptr = items_obj.as_js_object_ptr();
-    let sym_iter_si = oxide_types::private_key::make_well_known_symbol_key(0);
+    let sym_iter_si = oxide_types::private_key::encode_symbol_key(vm.realm_id(), 0);
     let iter_method = match unsafe { vm.ordinary_get(&*items_ptr, sym_iter_si, items_val) } {
         Ok(m) => m,
         Err(e) => return NativeResult::Err(crate::iterator::engine_error(vm, &e)),

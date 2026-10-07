@@ -8,7 +8,7 @@ use oxide_runtime_api::{NativeResult, VmHost};
 use crate::builtins_debug;
 use crate::builtins_error;
 
-use oxide_types::private_key::{make_well_known_symbol_key, WELL_KNOWN_SYMBOL_IS_CONCAT_SPREADABLE};
+use oxide_types::private_key::{encode_symbol_key, WELL_KNOWN_SYMBOL_IS_CONCAT_SPREADABLE};
 
 use super::common::{
     array_ptr, array_type_error, arraylike_get, arraylike_get_or_err, arraylike_index_present, check_array_create_len,
@@ -499,7 +499,7 @@ pub fn array_concat<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     // 结果钉入返回寄存器：其后的元素读取 / 写入窗口保 GC 根，返回时自钉位读回。
     vm.set_reg(0, JsValue::from_js_object(a_ptr));
 
-    let spread_key = make_well_known_symbol_key(WELL_KNOWN_SYMBOL_IS_CONCAT_SPREADABLE);
+    let spread_key = encode_symbol_key(vm.realm_id(), WELL_KNOWN_SYMBOL_IS_CONCAT_SPREADABLE);
     let length_si = vm.string_key_si("length");
     let mut n_acc: u64 = 0;
     let mut holes: Vec<usize> = Vec::new();
