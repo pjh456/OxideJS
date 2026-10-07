@@ -150,7 +150,7 @@ impl Vm {
                 }
             }
         }
-        f(RootGroup::Global, JsValue::from_js_object(self.realm.session.global_object().as_ptr() as *mut JsObject));
+        f(RootGroup::Global, JsValue::from_js_object(self.realm.session.borrow().global_object().as_ptr() as *mut JsObject));
     }
 
     /// GC 根统一枚举入口：遍历的字段清单与 `for_each_value` 相同。
@@ -163,17 +163,17 @@ impl Vm {
     /// `session_gc` 经 `mem::take` 借出后再放回：收集需要 `&mut Vm`，而
     /// `SessionGc` 是 `Vm` 的内部字段，借出以避开借用冲突。
     pub(crate) fn maybe_collect_session_gc(&mut self) {
-        let mut session_gc = std::mem::take(&mut self.realm.gc.session_gc);
+        let mut session_gc = std::mem::take(&mut self.realm.gc.borrow_mut().session_gc);
         session_gc.maybe_collect(self);
-        self.realm.gc.session_gc = session_gc;
+        self.realm.gc.borrow_mut().session_gc = session_gc;
     }
 
     /// 执行期字符串阈值回收：仅回收 session 字符串（跳过对象搬移）。热路径只在
     /// 超阈值后进入，`mem::take` 不承担每次分配的开销。
     pub(crate) fn maybe_collect_session_strings(&mut self) {
-        let mut session_gc = std::mem::take(&mut self.realm.gc.session_gc);
+        let mut session_gc = std::mem::take(&mut self.realm.gc.borrow_mut().session_gc);
         session_gc.maybe_collect_strings_only(self);
-        self.realm.gc.session_gc = session_gc;
+        self.realm.gc.borrow_mut().session_gc = session_gc;
     }
 
     /// 执行期原地 sweep 收集的 dispatch 安全点入口：仅在循环顶
@@ -187,35 +187,38 @@ impl Vm {
     /// - 无对象可回收时仍跑一轮（mark + 原地清扫），水位同点抬高，
     ///   触发间距由包络增量控制。
     pub(crate) fn maybe_collect_in_run(&mut self) {
-        let mut session_gc = std::mem::take(&mut self.realm.gc.session_gc);
+        let mut session_gc = std::mem::take(&mut self.realm.gc.borrow_mut().session_gc);
         session_gc.collect_in_run(self);
-        self.realm.gc.session_gc = session_gc;
+        self.realm.gc.borrow_mut().session_gc = session_gc;
     }
 
     /// 只读访问 session GC 的统计（回收次数、存活/死亡对象数、释放字节等）。
-    pub fn session_gc_stats(&self) -> &SessionGc {
-        &self.realm.gc.session_gc
+    ///
+    /// 返回 `Ref` 守卫（`session_gc` 入 `RefCell` 后无法再给稳定 `&`）：
+    /// 调用方在单表达式内消费，不跨 `borrow_mut` 长存。
+    pub fn session_gc_stats(&self) -> std::cell::Ref<'_, SessionGc> {
+        std::cell::Ref::map(self.realm.gc.borrow(), |gc| &gc.session_gc)
     }
 
     /// 当前 session arena 中存活（已晋升）的对象数量。
     pub fn session_object_count(&self) -> usize {
-        self.realm.gc.session_object_ptrs.len()
+        self.realm.gc.borrow().session_object_ptrs.len()
     }
 
     /// session 当前分配的字节数（对象 + 存活字符串）。
     pub fn session_bytes_allocated(&self) -> usize {
-        self.realm.gc.session_bytes_allocated
+        self.realm.gc.borrow().session_bytes_allocated
     }
 
     /// 执行期 session 堆账目的峰值高水位（顶层指令边界采样，全量重置清零）。
     pub fn session_bytes_peak(&self) -> usize {
-        self.realm.gc.session_bytes_peak
+        self.realm.gc.borrow().session_bytes_peak
     }
 
     /// 本 run 累计分配字节的高水位：`run_alloc_bytes` 的顶层指令边界
     /// 采样上界，run 边界（reset/full_reset）重起算。留存内存观测锚。
     pub fn run_alloc_peak(&self) -> usize {
-        self.realm.gc.run_alloc_peak
+        self.realm.gc.borrow().run_alloc_peak
     }
 
     /// 本 run 累计分配字节：session 手工堆账目（session 对象及其属性向量 +
@@ -228,9 +231,9 @@ impl Vm {
     /// 属性区（元素/属性向量扩容）增长对其不可见——上限判定须配合
     /// [`Self::run_alloc_bytes_full`] 的深采样层。
     pub(crate) fn run_alloc_bytes(&self) -> usize {
-        self.realm.gc.session_bytes_allocated
-            + self.realm.gc.session_bigint_ptrs.borrow().len() * std::mem::size_of::<num_bigint::BigInt>()
-            + self.realm.gc.session_cell_ptrs.borrow().len() * std::mem::size_of::<Cell>()
+        self.realm.gc.borrow().session_bytes_allocated
+            + self.realm.gc.borrow().session_bigint_ptrs.borrow().len() * std::mem::size_of::<num_bigint::BigInt>()
+            + self.realm.gc.borrow().session_cell_ptrs.borrow().len() * std::mem::size_of::<Cell>()
     }
 
     /// 本 run 累计分配字节（O(1) 读）。
@@ -248,7 +251,7 @@ impl Vm {
     /// 与 [`Self::run_alloc_bytes`] 的轻层公式逐位相等。
     pub(crate) fn run_alloc_bytes_full(&self) -> u64 {
         let mut bytes = 0u64;
-        for &ptr in self.realm.gc.session_object_ptrs.iter() {
+        for &ptr in self.realm.gc.borrow().session_object_ptrs.iter() {
             if ptr.is_null() {
                 continue;
             }
@@ -256,15 +259,15 @@ impl Vm {
             let obj = unsafe { &*ptr };
             bytes += std::mem::size_of::<JsObject>() as u64 + SessionGc::object_heap_data_bytes(obj);
         }
-        for &ptr in &self.realm.gc.session_string_ptrs {
+        for &ptr in &self.realm.gc.borrow().session_string_ptrs {
             if ptr.is_null() {
                 continue;
             }
             // SAFETY: ptr 在字符串表登记，收尾前有效。
             bytes += (std::mem::size_of::<JsString>() + unsafe { (*ptr).payload_bytes() }) as u64;
         }
-        bytes += (self.realm.gc.session_bigint_ptrs.borrow().len() * std::mem::size_of::<num_bigint::BigInt>()) as u64;
-        bytes += (self.realm.gc.session_cell_ptrs.borrow().len() * std::mem::size_of::<Cell>()) as u64;
+        bytes += (self.realm.gc.borrow().session_bigint_ptrs.borrow().len() * std::mem::size_of::<num_bigint::BigInt>()) as u64;
+        bytes += (self.realm.gc.borrow().session_cell_ptrs.borrow().len() * std::mem::size_of::<Cell>()) as u64;
         bytes
     }
 
@@ -278,9 +281,9 @@ impl Vm {
     /// - 须在执行外的安全点调用（无在途 builtin 局部裸指针、dispatch 未重入）；
     ///   执行期触发仍走水位路径，本入口供事后观测（如基准测 workload 后留存堆）。
     pub fn collect_session_gc(&mut self) {
-        let mut session_gc = std::mem::take(&mut self.realm.gc.session_gc);
+        let mut session_gc = std::mem::take(&mut self.realm.gc.borrow_mut().session_gc);
         session_gc.collect(self);
-        self.realm.gc.session_gc = session_gc;
+        self.realm.gc.borrow_mut().session_gc = session_gc;
     }
 
     /// 当前 epoch 中已分配并跟踪的对象数量。对象分配统一入口 Box 化后

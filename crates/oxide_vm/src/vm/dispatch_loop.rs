@@ -128,29 +128,31 @@ impl Vm {
                 // 宿主 `$262.gc()` 置位的强制收集与压力模式收集在此边界消费：
                 // 完整收集唯一安全点（无在途 dispatch 局部值），与正常触发路径
                 // 同一入口。压力模式开启后每个顶层边界做一次完整收集。
-                if self.realm.gc.pending_forced_collect || self.realm.gc.gc_pressure_mode {
-                    self.realm.gc.pending_forced_collect = false;
+                // 各字段读入局部变量（临时借用）后释放借用再调收集，
+                // 不跨 collect 调用持借。
+                if self.realm.gc.borrow().pending_forced_collect || self.realm.gc.borrow().gc_pressure_mode {
+                    self.realm.gc.borrow_mut().pending_forced_collect = false;
                     self.collect_session_gc();
                 }
                 // 峰值高水位：同一边界采样 session 堆账目上界
-                let bytes = self.realm.gc.session_bytes_allocated;
-                if bytes > self.realm.gc.session_bytes_peak {
-                    self.realm.gc.session_bytes_peak = bytes;
+                let bytes = self.realm.gc.borrow().session_bytes_allocated;
+                if bytes > self.realm.gc.borrow().session_bytes_peak {
+                    self.realm.gc.borrow_mut().session_bytes_peak = bytes;
                 }
                 // 单 run 分配包络高水位：O(1) 读（手工账目 + BigInt/cell 表长）。
                 let alloc = self.run_alloc_bytes();
-                if alloc > self.realm.gc.run_alloc_peak {
-                    self.realm.gc.run_alloc_peak = alloc;
+                if alloc > self.realm.gc.borrow().run_alloc_peak {
+                    self.realm.gc.borrow_mut().run_alloc_peak = alloc;
                 }
                 // 压力模式开启时跳过两档水位收集：完整收集已涵盖其全部工作，
                 // 同边界双触发只会多一轮空转 mark。
-                if bytes >= self.realm.gc.string_gc_watermark && !self.realm.gc.gc_pressure_mode {
+                if bytes >= self.realm.gc.borrow().string_gc_watermark && !self.realm.gc.borrow().gc_pressure_mode {
                     self.maybe_collect_session_strings();
                 }
                 // 执行期原地 sweep 收集：O(1) 包络超触发水位 → 收集（无门控：
                 // 迭代器键引用经根收集标活，原地释放不搬移存活对象；
                 // 边界契约见 maybe_collect_in_run）。
-                if alloc >= self.realm.gc.gc_watermark && !self.realm.gc.gc_pressure_mode {
+                if alloc >= self.realm.gc.borrow().gc_watermark && !self.realm.gc.borrow().gc_pressure_mode {
                     self.maybe_collect_in_run();
                 }
             }

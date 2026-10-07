@@ -176,8 +176,10 @@ pub struct Vm {
     pub(crate) frames: SmallVec<[CallFrame; 16]>,
     pub(crate) kernel_core: Arc<KernelCore>,
     /// 每 VM 的 realm 组合：内核会话（builtin world 与 global 对象）、
-    /// session GC 簿记与 10 个内建原型槽（见 `realm` 模块）。
-    pub(crate) realm: Realm,
+    /// session GC 簿记与 10 个内建原型槽（见 `realm` 模块）。以 `Arc` 持有：
+    /// 可变组经 `RefCell` 内部可变性在 `&Arc<Realm>` 下改写，teardown 归
+    /// `Drop for Realm`（per-realm 消亡：Arc 计数归零时收尾）。
+    pub(crate) realm: Arc<Realm>,
     /// `"length"` 属性键的 intern id 缓存：进程内稳定（PermInterner append-only、
     /// KernelCore 不重建），属性 get/set 热路径免每次 intern（hash64 + DashMap +
     /// RwLock 读锁）。
@@ -382,10 +384,11 @@ impl Drop for Vm {
     fn drop(&mut self) {
         // 边界守卫计数：与构造器登记恰好配对（Rust 所有权保证恰好一次）。
         self.kernel_core.note_vm_ended();
-        // 直接 drop（test262 每测试新建即弃）不经 reset/full_reset 路径：
-        // 统一收尾释放全部 session 堆数据与内建原型属性区，防逐测试累积泄漏。
-        self.teardown_intrinsic_protos();
-        self.teardown_session_heap_data();
+        // 活跃 for-in / for-of 迭代器是 per-VM 执行态：收尾路径逐条释放，
+        // 防 Vm 直接 drop 时表内残留体泄漏。
+        self.iters.reset();
+        // realm 收尾归 `Drop for Realm`（per-realm 消亡：Arc 计数归零时触发，
+        // 直接 drop 时恰好一次）。
     }
 }
 
@@ -419,13 +422,16 @@ impl Vm {
     }
 
     /// 只读访问当前 session（builtin world 与 global object）。
-    pub fn session(&self) -> &KernelSession {
-        &self.realm.session
+    ///
+    /// 返回 `Ref` 守卫（session 入 `RefCell` 后无法再给稳定 `&`）：调用方
+    /// 在单表达式内消费，不跨 `borrow_mut` 长存。
+    pub fn session(&self) -> std::cell::Ref<'_, KernelSession> {
+        self.realm.session.borrow()
     }
 
     /// 判定裸指针是否指向当前 session 的 `%Object.prototype%`。
     pub(crate) fn is_object_prototype(&self, ptr: *const JsObject) -> bool {
-        let proto_ptr = self.realm.session.builtin_world().object_proto.as_ptr();
+        let proto_ptr = self.realm.session.borrow().builtin_world().object_proto.as_ptr();
         std::ptr::eq(ptr, proto_ptr)
     }
 

@@ -160,7 +160,8 @@ fn error_subtype_constructors_produce_named_objects() {
 #[test]
 fn error_prototype_has_name() {
     let vm = make_vm();
-    let bw = vm.session().builtin_world();
+    let session = vm.session();
+    let bw = session.builtin_world();
     let name_si = vm.kernel_core().perm_interner().intern("name").0;
     let proto_ptr = P::as_ptr(&bw.error_proto) as *mut oxide_types::object::JsObject;
     let si = vm
@@ -173,7 +174,8 @@ fn error_prototype_has_name() {
 #[test]
 fn error_prototype_has_message() {
     let vm = make_vm();
-    let bw = vm.session().builtin_world();
+    let session = vm.session();
+    let bw = session.builtin_world();
     let msg_si = vm.kernel_core().perm_interner().intern("message").0;
     let proto_ptr = P::as_ptr(&bw.error_proto) as *mut oxide_types::object::JsObject;
     let si = vm
@@ -186,7 +188,8 @@ fn error_prototype_has_message() {
 #[test]
 fn type_error_prototype_name() {
     let vm = make_vm();
-    let bw = vm.session().builtin_world();
+    let session = vm.session();
+    let bw = session.builtin_world();
     let name_si = vm.kernel_core().perm_interner().intern("name").0;
     let proto_ptr = P::as_ptr(&bw.type_error_proto) as *mut oxide_types::object::JsObject;
     let si = vm
@@ -199,7 +202,8 @@ fn type_error_prototype_name() {
 #[test]
 fn reference_error_prototype_name() {
     let vm = make_vm();
-    let bw = vm.session().builtin_world();
+    let session = vm.session();
+    let bw = session.builtin_world();
     let name_si = vm.kernel_core().perm_interner().intern("name").0;
     let proto_ptr = P::as_ptr(&bw.reference_error_proto) as *mut oxide_types::object::JsObject;
     let si = vm
@@ -212,7 +216,8 @@ fn reference_error_prototype_name() {
 #[test]
 fn range_error_prototype_name() {
     let vm = make_vm();
-    let bw = vm.session().builtin_world();
+    let session = vm.session();
+    let bw = session.builtin_world();
     let name_si = vm.kernel_core().perm_interner().intern("name").0;
     let proto_ptr = P::as_ptr(&bw.range_error_proto) as *mut oxide_types::object::JsObject;
     let si = vm
@@ -225,7 +230,8 @@ fn range_error_prototype_name() {
 #[test]
 fn syntax_error_prototype_name() {
     let vm = make_vm();
-    let bw = vm.session().builtin_world();
+    let session = vm.session();
+    let bw = session.builtin_world();
     let name_si = vm.kernel_core().perm_interner().intern("name").0;
     let proto_ptr = P::as_ptr(&bw.syntax_error_proto) as *mut oxide_types::object::JsObject;
     let si = vm
@@ -238,7 +244,8 @@ fn syntax_error_prototype_name() {
 #[test]
 fn uri_error_prototype_name() {
     let vm = make_vm();
-    let bw = vm.session().builtin_world();
+    let session = vm.session();
+    let bw = session.builtin_world();
     let name_si = vm.kernel_core().perm_interner().intern("name").0;
     let proto_ptr = P::as_ptr(&bw.uri_error_proto) as *mut oxide_types::object::JsObject;
     let si = vm
@@ -251,7 +258,8 @@ fn uri_error_prototype_name() {
 #[test]
 fn eval_error_prototype_name() {
     let vm = make_vm();
-    let bw = vm.session().builtin_world();
+    let session = vm.session();
+    let bw = session.builtin_world();
     let name_si = vm.kernel_core().perm_interner().intern("name").0;
     let proto_ptr = P::as_ptr(&bw.eval_error_proto) as *mut oxide_types::object::JsObject;
     let si = vm

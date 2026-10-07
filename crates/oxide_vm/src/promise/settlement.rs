@@ -36,7 +36,7 @@ impl Vm {
     pub(super) fn new_promise_capability_with_ctor(
         &mut self, ctor: JsValue,
     ) -> Result<(JsValue, JsValue, JsValue), JsValue> {
-        let intrinsic = JsValue::from_js_object(self.realm.promise_constructor.as_ptr() as *mut JsObject);
+        let intrinsic = JsValue::from_js_object(self.realm.promise_constructor.borrow().as_ptr() as *mut JsObject);
         if oxide_runtime_api::same_value(ctor, intrinsic) {
             return Ok(self.new_promise_capability());
         }
@@ -71,7 +71,7 @@ impl Vm {
 
     /// 构造 GetCapabilitiesExecutor：调用时把 resolve/reject 存入自身 prop。
     fn make_capability_executor(&mut self) -> JsValue {
-        let fn_proto = self.realm.session.builtin_world().fn_proto_val();
+        let fn_proto = self.realm.session.borrow().builtin_world().fn_proto_val();
         let mut func = JsObject::new_empty(EMPTY_SHAPE_ID, fn_proto);
         func.set_function(true);
         // SAFETY: capability_executor 是 NativeFn 函数项。
@@ -90,7 +90,7 @@ impl Vm {
     /// 仍阻止二次结算。
     pub(super) fn make_resolve_reject_fn(&mut self, promise: JsValue, reject_role: bool, delegated: bool) -> JsValue {
         let native_fn: NativeFn = if reject_role { promise_reject_closure } else { promise_resolve_closure };
-        let fn_proto = self.realm.session.builtin_world().fn_proto_val();
+        let fn_proto = self.realm.session.borrow().builtin_world().fn_proto_val();
         let mut func = JsObject::new_empty(EMPTY_SHAPE_ID, fn_proto);
         func.set_function(true);
         // SAFETY: native_fn 是 NativeFn 函数项。
@@ -314,7 +314,7 @@ impl Vm {
                     return Err(exc);
                 }
             };
-            let intrinsic = JsValue::from_js_object(self.realm.promise_constructor.as_ptr() as *mut JsObject);
+            let intrinsic = JsValue::from_js_object(self.realm.promise_constructor.borrow().as_ptr() as *mut JsObject);
             if oxide_runtime_api::same_value(ctor, intrinsic) {
                 return Ok(value);
             }

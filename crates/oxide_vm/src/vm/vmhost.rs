@@ -45,8 +45,8 @@ impl oxide_runtime_api::VmHost for Vm {
     fn kernel_core(&self) -> &Arc<KernelCore> {
         self.kernel_core()
     }
-    fn session(&self) -> &KernelSession {
-        &self.realm.session
+    fn session(&self) -> std::cell::Ref<'_, KernelSession> {
+        self.session()
     }
     fn pc(&self) -> usize {
         self.pc
@@ -189,9 +189,9 @@ impl oxide_runtime_api::VmHost for Vm {
             return false;
         }
         let p = proto.as_js_object_ptr() as *const JsObject;
-        std::ptr::eq(p, self.realm.generator_function_proto.as_ptr())
-            || std::ptr::eq(p, self.realm.async_function_proto.as_ptr())
-            || std::ptr::eq(p, self.realm.async_generator_function_proto.as_ptr())
+        std::ptr::eq(p, self.realm.generator_function_proto.borrow().as_ptr())
+            || std::ptr::eq(p, self.realm.async_function_proto.borrow().as_ptr())
+            || std::ptr::eq(p, self.realm.async_generator_function_proto.borrow().as_ptr())
     }
     fn step_rng(&mut self) {
         self.step_rng()

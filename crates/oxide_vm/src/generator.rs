@@ -102,7 +102,7 @@ impl Vm {
     pub(crate) fn create_generator_object(
         &mut self, callee: JsValue, this_value: JsValue, args: &[JsValue],
     ) -> Result<JsValue, String> {
-        let gen_proto_val = JsValue::from_js_object(self.realm.generator_proto.as_ptr() as *mut JsObject);
+        let gen_proto_val = JsValue::from_js_object(self.realm.generator_proto.borrow().as_ptr() as *mut JsObject);
         let obj = self.alloc_object(JsObject::new_empty(EMPTY_SHAPE_ID, gen_proto_val));
         let obj_ref = unsafe { &mut *obj };
         obj_ref.type_tag = JsObject::OBJ_TYPE_GENERATOR;
@@ -797,12 +797,13 @@ fn generator_step_result(vm: &mut Vm, step: Result<GeneratorStep, String>) -> Na
 pub(crate) fn init_generator_intrinsics(vm: &mut Vm) {
     let sf = vm.kernel_core.perm_interner().as_ref();
     let sh = vm.kernel_core.shape_forge().as_ref();
-    let fn_proto_val = vm.realm.session.builtin_world().fn_proto_val();
-    let world = vm.realm.session.builtin_world();
+    let fn_proto_val = vm.realm.session.borrow().builtin_world().fn_proto_val();
+    let session = vm.realm.session.borrow();
+    let world = session.builtin_world();
     // %GeneratorPrototype%：proto = %IteratorPrototype%（生成器是迭代器，继承
     // @@iterator 与 Iterator helper 方法），方法 next/return/throw。
     let iterator_proto_val =
-        JsValue::from_js_object(vm.realm.session.builtin_world().iterator_proto.as_ptr() as *mut JsObject);
+        JsValue::from_js_object(vm.realm.session.borrow().builtin_world().iterator_proto.as_ptr() as *mut JsObject);
     let mut gen_proto = Box::new(JsObject::new_empty(EMPTY_SHAPE_ID, iterator_proto_val));
     // 站点标签：与 AsyncGenerator 原型的同名方法槽（next/return/throw）区分复用键。
     let gen_label = sf.intern("GeneratorPrototype").0;
@@ -836,7 +837,7 @@ pub(crate) fn init_generator_intrinsics(vm: &mut Vm) {
         world,
         gen_label,
     );
-    Vm::swap_intrinsic_proto(&mut vm.realm.generator_proto, *gen_proto);
+    Vm::swap_intrinsic_proto(&mut vm.realm.generator_proto.borrow_mut(), *gen_proto);
 
     // %GeneratorFunction.prototype%：proto = Function.prototype，constructor = %GeneratorFunction%。
     let mut gf_proto = Box::new(JsObject::new_empty(EMPTY_SHAPE_ID, fn_proto_val));
@@ -888,7 +889,7 @@ pub(crate) fn init_generator_intrinsics(vm: &mut Vm) {
     let proto2_si = sf.intern("prototype").0;
     let proto2_shape = sh.make_shape(gf_proto.shape_id(), proto2_si);
     gf_proto.set_shape_id(proto2_shape);
-    let ppos2 = gf_proto.push_prop(JsValue::from_js_object(vm.realm.generator_proto.as_ptr() as *mut JsObject));
+    let ppos2 = gf_proto.push_prop(JsValue::from_js_object(vm.realm.generator_proto.borrow().as_ptr() as *mut JsObject));
     gf_proto.set_data_meta(ppos2, oxide_types::object::PropAttributes::new(false, false, true));
     // gf_proto[Symbol.toStringTag] = "GeneratorFunction"（数据属性，w/e/c = false/false/true）。
     let tag2_key =
@@ -902,11 +903,11 @@ pub(crate) fn init_generator_intrinsics(vm: &mut Vm) {
     // 构造器 length/name/prototype/@@toStringTag 属性（按形状序），prototype 指向
     // P 槽实例，使其与动态生成器函数使用的 [[Prototype]] 同一对象。复用构造器槽位
     // 已填充，prototype 原位改指新 P 原型（旧原型已随 P 换出释放）。
-    Vm::swap_intrinsic_proto(&mut vm.realm.generator_function_proto, *gf_proto);
+    Vm::swap_intrinsic_proto(&mut vm.realm.generator_function_proto.borrow_mut(), *gf_proto);
     // SAFETY: gf_ctor_ptr 为 Box 原分配（已登记释放表、生命周期覆盖 session），本 Vm 独占。
     unsafe {
         let ctor_mut = &mut *gf_ctor_ptr;
-        let proto_val = JsValue::from_js_object(vm.realm.generator_function_proto.as_ptr() as *mut JsObject);
+        let proto_val = JsValue::from_js_object(vm.realm.generator_function_proto.borrow().as_ptr() as *mut JsObject);
         let name_val = JsValue::perm_string(sf.string_ptr(sf.intern("GeneratorFunction").0));
         if gf_ctor_is_new {
             let lpos = ctor_mut.push_prop(JsValue::int(1));
@@ -932,7 +933,7 @@ pub(crate) fn init_generator_intrinsics(vm: &mut Vm) {
 
     // 绑定 global：GeneratorFunction 槽已存在则原位更新（full_reset 未重建 global
     // 时旧槽指向已弃 ctor），不存在则开新槽。
-    let global_ptr = vm.realm.session.global_object().as_ptr() as *mut JsObject;
+    let global_ptr = vm.realm.session.borrow().global_object().as_ptr() as *mut JsObject;
     // SAFETY: global 由 session 持有存活整个 session；本函数内只改其 shape/属性区，
     // 期间无 reset 或对象搬移。
     let global = unsafe { &mut *global_ptr };

@@ -103,7 +103,11 @@ pub trait VmHost {
 
     // 内核访问器
     fn kernel_core(&self) -> &Arc<KernelCore>;
-    fn session(&self) -> &KernelSession;
+    /// 只读访问当前 session（builtin world 与 global object）。
+    ///
+    /// 返回 `Ref` 守卫（session 入 `RefCell` 后无法再给稳定 `&`）：调用方
+    /// 在单表达式内消费，不跨 `borrow_mut` 长存。
+    fn session(&self) -> std::cell::Ref<'_, KernelSession>;
 
     // 属性解析
     fn property_key_si(&mut self, val: JsValue) -> u32;

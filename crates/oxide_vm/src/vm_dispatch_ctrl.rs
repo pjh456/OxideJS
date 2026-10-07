@@ -387,7 +387,7 @@ impl Vm {
         }
         let si = self.property_key_si(key_val)?;
         let value = self.regs[a];
-        let global_ptr = self.realm.session.global_object().as_ptr() as *mut JsObject;
+        let global_ptr = self.realm.session.borrow().global_object().as_ptr() as *mut JsObject;
         // SAFETY: 全局对象钉在 session 永久区，指针在 VM 生命周期内有效。
         let obj = unsafe { &mut *global_ptr };
         // 属性已存在：accessor 形走 Set 语义（有 setter 调用之、无 setter
@@ -483,7 +483,7 @@ impl Vm {
         }
         let si = self.property_key_si(key_val)?;
         let value = self.regs[a];
-        let global_ptr = self.realm.session.global_object().as_ptr() as *mut JsObject;
+        let global_ptr = self.realm.session.borrow().global_object().as_ptr() as *mut JsObject;
         // SAFETY: 全局对象钉在 session 永久区，指针在 VM 生命周期内有效。
         let obj = unsafe { &mut *global_ptr };
         // 既有属性：CreateGlobalVarBinding 零动作。

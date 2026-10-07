@@ -200,7 +200,8 @@ fn run_test_inner(
 /// 读取异步测试捕获的 `$DONE` 输出字符串。
 pub(crate) fn read_async_output(vm: &Vm) -> String {
     let si = vm.kernel_core().perm_interner().intern("$__test262_async_result").0;
-    let global = vm.session().global_object();
+    let session = vm.session();
+    let global = session.global_object();
     let val = vm
         .kernel_core()
         .shape_forge()

@@ -107,6 +107,8 @@ pub fn run_js_stress_bench(config: &BenchConfig, kernel: &Arc<KernelCore>, pool:
             let gc_bytes_freed = gc_stats.last_collection_bytes_freed;
             let gc_objects_scanned = gc_stats.last_collection_objects_scanned;
             let gc_collection_us = gc_stats.last_collection_duration_us;
+            // 统计已读尽：释放读守卫，使下方强制 GC 可借 vm。
+            drop(gc_stats);
             let session_objects = vm.session_object_count().saturating_sub(pre_session);
             let session_bytes = vm.session_bytes_allocated();
             let epoch_objects = vm.epoch_object_count().saturating_sub(pre_epoch);

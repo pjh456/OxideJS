@@ -81,7 +81,7 @@ impl Vm {
         let return_fn = make_wrapper_fn(self, async_from_sync_return as *const ());
         let throw_fn = make_wrapper_fn(self, async_from_sync_throw as *const ());
         let self_fn = make_wrapper_fn(self, async_from_sync_symbol_async_iterator as *const ());
-        let object_proto = self.realm.session.builtin_world().object_proto.as_ptr() as *mut JsObject;
+        let object_proto = self.realm.session.borrow().builtin_world().object_proto.as_ptr() as *mut JsObject;
         let ptr = self.alloc_object(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(object_proto)));
         let obj = unsafe { &mut *ptr };
         let inner_si = self.kernel_core.perm_interner().intern(INNER_PROP).0;
@@ -100,7 +100,7 @@ impl Vm {
 
 /// 构造包装器方法 native 函数对象（name/length 属性由 `add_fn_name_length` 补全）。
 fn make_wrapper_fn(vm: &mut Vm, native_fn: *const ()) -> JsValue {
-    let fn_proto = vm.realm.session.builtin_world().fn_proto_val();
+    let fn_proto = vm.realm.session.borrow().builtin_world().fn_proto_val();
     let mut func = JsObject::new_empty(EMPTY_SHAPE_ID, fn_proto);
     func.set_function(true);
     // SAFETY: native_fn 来自 NativeFn 函数项。
@@ -235,7 +235,7 @@ fn close_sync_iterator(vm: &mut Vm, inner: JsValue) {
 
 /// 构造 valueWrapper 拒绝时关闭迭代器的闭包：携带目标 reject 与内层同步迭代器。
 fn make_reject_close_fn(vm: &mut Vm, reject: JsValue, inner: JsValue) -> JsValue {
-    let fn_proto = vm.realm.session.builtin_world().fn_proto_val();
+    let fn_proto = vm.realm.session.borrow().builtin_world().fn_proto_val();
     let mut func = JsObject::new_empty(EMPTY_SHAPE_ID, fn_proto);
     func.set_function(true);
     // SAFETY: async_from_sync_reject_close 是 NativeFn 函数项。
@@ -271,7 +271,7 @@ fn async_from_sync_reject_close(vm: &mut Vm, args: &[u8]) -> NativeResult {
 /// 构造 AsyncFromSyncIteratorContinuation 的 value unwrap 闭包：携带目标 resolve 与
 /// done 标志，valueWrapper settle 后把解开值包成 `{value, done}` 结算。
 fn make_unwrap_fn(vm: &mut Vm, resolve: JsValue, done: bool) -> JsValue {
-    let fn_proto = vm.realm.session.builtin_world().fn_proto_val();
+    let fn_proto = vm.realm.session.borrow().builtin_world().fn_proto_val();
     let mut func = JsObject::new_empty(EMPTY_SHAPE_ID, fn_proto);
     func.set_function(true);
     // SAFETY: async_from_sync_unwrap 是 NativeFn 函数项。

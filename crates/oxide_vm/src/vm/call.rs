@@ -47,10 +47,13 @@ impl Vm {
         obj.set_session_epoch(true);
         obj.set_heap_alloc(true);
         let ptr = Box::into_raw(Box::new(obj));
-        self.realm.gc.session_object_ptrs.push(ptr);
-        // 直 session 分配计入堆账目（与 promote 同式：对象头 + 对象堆数据）。
-        self.realm.gc.session_bytes_allocated += std::mem::size_of::<JsObject>()
+        // 直 session 分配计入堆账目（与 promote 同式：对象头 + 对象堆数据）：
+        // 表登记与账目更新合并进同一次借用。
+        let bytes = std::mem::size_of::<JsObject>()
             + crate::session_gc::SessionGc::object_heap_data_bytes(unsafe { &*ptr }) as usize;
+        let gc = &mut self.realm.gc.borrow_mut();
+        gc.session_object_ptrs.push(ptr);
+        gc.session_bytes_allocated += bytes;
         ptr
     }
 
@@ -296,7 +299,7 @@ impl Vm {
         self.regs[254] = if sub_is_arrow {
             obj.captured_this()
         } else if !sub_is_strict && this_value.is_nullish() {
-            JsValue::from_js_object(self.realm.session.global_object().as_ptr() as *mut JsObject)
+            JsValue::from_js_object(self.realm.session.borrow().global_object().as_ptr() as *mut JsObject)
         } else if sub_is_strict {
             this_value
         } else {
@@ -402,7 +405,7 @@ mod tests {
     }
 
     fn native_function(vm: &mut Vm, f: crate::native::NativeFn) -> JsValue {
-        let proto = vm.realm.session.builtin_world().function_proto.as_ptr() as *mut JsObject;
+        let proto = vm.realm.session.borrow().builtin_world().function_proto.as_ptr() as *mut JsObject;
         let mut obj = JsObject::new_empty(oxide_kernel::shape_forge::EMPTY_SHAPE_ID, JsValue::from_js_object(proto));
         obj.set_function(true);
         // SAFETY: f 是 NativeFn 函数项，可作为 NativeFnPtr 存储。

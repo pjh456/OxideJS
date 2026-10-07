@@ -83,7 +83,7 @@ pub(crate) fn dispose_async(vm: &mut Vm, args: &[u8]) -> NativeResult {
 fn make_dispose_continue_fn(
     vm: &mut Vm, stack: JsValue, resolve: JsValue, reject: JsValue, reject_role: bool, state_from: Option<&JsObject>,
 ) -> JsValue {
-    let fn_proto = vm.realm.session.builtin_world().fn_proto_val();
+    let fn_proto = vm.realm.session.borrow().builtin_world().fn_proto_val();
     let mut func = JsObject::new_empty(EMPTY_SHAPE_ID, fn_proto);
     func.set_function(true);
     // SAFETY: dispose_async_continue 是 NativeFn 函数项。

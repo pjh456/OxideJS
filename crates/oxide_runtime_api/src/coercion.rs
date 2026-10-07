@@ -803,19 +803,22 @@ pub fn to_object<H: VmHost>(val: JsValue, host: &mut H) -> Result<JsValue, Strin
     if val.is_null() || val.is_undefined() {
         return Err(host.error_message_text("TypeError", "Cannot convert null or undefined to object"));
     }
-    let world = host.session().builtin_world();
-    let (proto_ptr, type_tag) = if val.is_string() {
-        (P::as_ptr(&world.string_proto) as *mut JsObject, JsObject::OBJ_TYPE_STRING_OBJ)
-    } else if val.is_int() || val.is_double() {
-        (P::as_ptr(&world.number_proto) as *mut JsObject, JsObject::OBJ_TYPE_NUMBER_OBJ)
-    } else if val.is_bool() {
-        (P::as_ptr(&world.boolean_proto) as *mut JsObject, JsObject::OBJ_TYPE_BOOLEAN_OBJ)
-    } else if val.is_bigint() {
-        (P::as_ptr(&world.bigint_proto) as *mut JsObject, JsObject::OBJ_TYPE_PLAIN)
-    } else if val.is_symbol() {
-        (P::as_ptr(&world.symbol_proto) as *mut JsObject, JsObject::OBJ_TYPE_SYMBOL_OBJ)
-    } else {
-        (P::as_ptr(&world.object_proto) as *mut JsObject, JsObject::OBJ_TYPE_PLAIN)
+    let (proto_ptr, type_tag) = {
+        let session = host.session();
+        let world = session.builtin_world();
+        if val.is_string() {
+            (P::as_ptr(&world.string_proto) as *mut JsObject, JsObject::OBJ_TYPE_STRING_OBJ)
+        } else if val.is_int() || val.is_double() {
+            (P::as_ptr(&world.number_proto) as *mut JsObject, JsObject::OBJ_TYPE_NUMBER_OBJ)
+        } else if val.is_bool() {
+            (P::as_ptr(&world.boolean_proto) as *mut JsObject, JsObject::OBJ_TYPE_BOOLEAN_OBJ)
+        } else if val.is_bigint() {
+            (P::as_ptr(&world.bigint_proto) as *mut JsObject, JsObject::OBJ_TYPE_PLAIN)
+        } else if val.is_symbol() {
+            (P::as_ptr(&world.symbol_proto) as *mut JsObject, JsObject::OBJ_TYPE_SYMBOL_OBJ)
+        } else {
+            (P::as_ptr(&world.object_proto) as *mut JsObject, JsObject::OBJ_TYPE_PLAIN)
+        }
     };
     let proto_val = JsValue::from_js_object(proto_ptr);
     let obj = host.alloc_object(JsObject::new_empty(EMPTY_SHAPE_ID, proto_val));

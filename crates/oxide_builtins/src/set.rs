@@ -315,10 +315,11 @@ pub fn set_size<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 pub fn set_entries<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
     let _inner = native_try!(get_set_inner(vm, this_val));
+    let proto_ptr = vm.session().builtin_world().set_iterator_proto.as_ptr() as *mut JsObject;
     NativeResult::Ok(crate::iterator::make_collection_iterator(
         vm,
         this_val,
-        JsValue::from_js_object(vm.session().builtin_world().set_iterator_proto.as_ptr() as *mut JsObject),
+        JsValue::from_js_object(proto_ptr),
         crate::iterator::MapSetMode::SetEntries,
     ))
 }
@@ -327,10 +328,11 @@ pub fn set_entries<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 pub fn set_values<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
     let _inner = native_try!(get_set_inner(vm, this_val));
+    let proto_ptr = vm.session().builtin_world().set_iterator_proto.as_ptr() as *mut JsObject;
     NativeResult::Ok(crate::iterator::make_collection_iterator(
         vm,
         this_val,
-        JsValue::from_js_object(vm.session().builtin_world().set_iterator_proto.as_ptr() as *mut JsObject),
+        JsValue::from_js_object(proto_ptr),
         crate::iterator::MapSetMode::SetValues,
     ))
 }
@@ -340,10 +342,11 @@ pub fn set_keys<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
     let _inner = native_try!(get_set_inner(vm, this_val));
     // Set 的 keys() 是 values() 的别名——返回同样的逐元素迭代器。
+    let proto_ptr = vm.session().builtin_world().set_iterator_proto.as_ptr() as *mut JsObject;
     NativeResult::Ok(crate::iterator::make_collection_iterator(
         vm,
         this_val,
-        JsValue::from_js_object(vm.session().builtin_world().set_iterator_proto.as_ptr() as *mut JsObject),
+        JsValue::from_js_object(proto_ptr),
         crate::iterator::MapSetMode::SetValues,
     ))
 }

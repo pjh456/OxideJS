@@ -14,7 +14,7 @@ use oxide_emit::module::{ModuleKind, ModuleSourceLoader, ResolvedModule};
 use oxide_runtime_api::NativeResult;
 
 fn plain_object(vm: &mut Vm) -> *mut JsObject {
-    let proto_ptr = vm.realm.session.builtin_world().object_proto.as_ptr() as *mut JsObject;
+    let proto_ptr = vm.realm.session.borrow().builtin_world().object_proto.as_ptr() as *mut JsObject;
     vm.alloc_object(JsObject::new_empty(
         oxide_kernel::shape_forge::EMPTY_SHAPE_ID,
         JsValue::from_js_object(proto_ptr),
@@ -127,7 +127,7 @@ fn gc_roots_contains_registers_frames_and_root_roots() {
     assert!(has_ptr(&roots, frame_session));
     assert!(has_ptr(&roots, this_session));
     assert!(has_ptr(&roots, child_session));
-    assert!(has_ptr(&roots, vm.realm.session.global_object().as_ptr() as *mut JsObject));
+    assert!(has_ptr(&roots, vm.realm.session.borrow().global_object().as_ptr() as *mut JsObject));
     assert!(!roots.is_empty());
     assert!(roots.contains(&JsValue::from_js_object(root_session)));
     assert_eq!(vm.exception_value, Some(JsValue::from_js_object(root_session)));
@@ -149,9 +149,9 @@ fn mark_phase_reaches_cycles_and_unreachable_are_unmarked() {
     let unreachable_session = unreachable;
 
     vm.regs[0] = JsValue::from_js_object(root_session);
-    let mut gc = std::mem::take(&mut vm.realm.gc.session_gc);
+    let mut gc = std::mem::take(&mut vm.realm.gc.borrow_mut().session_gc);
     gc.mark(&vm);
-    vm.realm.gc.session_gc = gc;
+    vm.realm.gc.borrow_mut().session_gc = gc;
 
     assert!(unsafe { (*root_session).is_gc_marked() });
     assert!(unsafe { (*reachable_session).is_gc_marked() });
@@ -173,17 +173,19 @@ fn sweep_preserves_cycle_and_collects_unreachable() {
     let root_session = root;
     vm.regs[0] = JsValue::from_js_object(root_session);
     let dead_session = dead;
-    let mut gc = std::mem::take(&mut vm.realm.gc.session_gc);
+    let mut gc = std::mem::take(&mut vm.realm.gc.borrow_mut().session_gc);
     gc.mark(&vm);
     let _ = gc.sweep(&mut vm);
-    vm.realm.gc.session_gc = gc;
+    vm.realm.gc.borrow_mut().session_gc = gc;
 
-    assert_eq!(vm.realm.gc.session_object_ptrs.len(), 2);
+    assert_eq!(vm.realm.gc.borrow().session_object_ptrs.len(), 2);
     // 原地 sweep 不搬移存活对象：根与子保持原址（克隆体即原对象），死对象出表。
-    assert!(vm.realm.gc.session_object_ptrs.contains(&root_session));
-    assert!(!vm.realm.gc.session_object_ptrs.contains(&dead_session));
+    assert!(vm.realm.gc.borrow().session_object_ptrs.contains(&root_session));
+    assert!(!vm.realm.gc.borrow().session_object_ptrs.contains(&dead_session));
     assert!(!vm
-        .realm.gc
+        .realm
+        .gc
+        .borrow()
         .session_object_ptrs
         .iter()
         .any(|ptr| unsafe { (*(*ptr)).is_gc_marked() }));
@@ -192,7 +194,7 @@ fn sweep_preserves_cycle_and_collects_unreachable() {
 #[test]
 fn sweep_preserves_array_elements_and_collects_dead_element_object() {
     let mut vm = Vm::new();
-    let array_proto = vm.realm.session.builtin_world().array_proto.as_ptr() as *mut JsObject;
+    let array_proto = vm.realm.session.borrow().builtin_world().array_proto.as_ptr() as *mut JsObject;
     let arr = vm.alloc_object(JsObject::new_array(
         oxide_kernel::shape_forge::EMPTY_SHAPE_ID,
         JsValue::from_js_object(array_proto),
@@ -212,10 +214,10 @@ fn sweep_preserves_array_elements_and_collects_dead_element_object() {
     }
     vm.regs[0] = JsValue::from_js_object(arr_session);
 
-    let mut gc = std::mem::take(&mut vm.realm.gc.session_gc);
+    let mut gc = std::mem::take(&mut vm.realm.gc.borrow_mut().session_gc);
     gc.mark(&vm);
     let _ = gc.sweep(&mut vm);
-    vm.realm.gc.session_gc = gc;
+    vm.realm.gc.borrow_mut().session_gc = gc;
 
     // 原地 sweep 不搬移存活对象：数组保持原址、根指针不变，死元素对象
     // 原地释放并出表，存活集合只剩数组与元素 0 的对象。
@@ -227,7 +229,7 @@ fn sweep_preserves_array_elements_and_collects_dead_element_object() {
     assert_eq!(unsafe { (*arr_addr).get_prop_at(0).as_js_object_ptr() }, live_session);
     // 元素 1 引用已断开：死元素对象被回收。
     assert_eq!(unsafe { (*arr_addr).get_prop_at(1) }, JsValue::undefined());
-    assert_eq!(vm.realm.gc.session_object_ptrs.len(), 2);
+    assert_eq!(vm.realm.gc.borrow().session_object_ptrs.len(), 2);
 }
 
 fn vm_with_low_threshold() -> Vm {
@@ -247,7 +249,7 @@ fn native_ok(result: NativeResult) -> JsValue {
 
 /// 分配一个原型指向 Map.prototype 的占位对象并写入寄存器，作为构造器调用的 `this`。
 fn map_this(vm: &mut Vm, reg: u8) -> JsValue {
-    let proto = vm.realm.session.builtin_world().map_proto.as_ptr() as *mut JsObject;
+    let proto = vm.realm.session.borrow().builtin_world().map_proto.as_ptr() as *mut JsObject;
     let obj = vm.alloc_object(JsObject::new_empty(
         oxide_kernel::shape_forge::EMPTY_SHAPE_ID,
         JsValue::from_js_object(proto),
@@ -259,7 +261,7 @@ fn map_this(vm: &mut Vm, reg: u8) -> JsValue {
 
 /// 分配一个原型指向 DataView.prototype 的占位对象并写入寄存器，作为构造器调用的 `this`。
 fn data_view_this(vm: &mut Vm, reg: u8) -> JsValue {
-    let proto = vm.realm.session.builtin_world().data_view_proto.as_ptr() as *mut JsObject;
+    let proto = vm.realm.session.borrow().builtin_world().data_view_proto.as_ptr() as *mut JsObject;
     let obj = vm.alloc_object(JsObject::new_empty(
         oxide_kernel::shape_forge::EMPTY_SHAPE_ID,
         JsValue::from_js_object(proto),
@@ -271,7 +273,7 @@ fn data_view_this(vm: &mut Vm, reg: u8) -> JsValue {
 
 /// 分配一个原型指向 Set.prototype 的占位对象并写入寄存器，作为构造器调用的 `this`。
 fn set_this(vm: &mut Vm, reg: u8) -> JsValue {
-    let proto = vm.realm.session.builtin_world().set_proto.as_ptr() as *mut JsObject;
+    let proto = vm.realm.session.borrow().builtin_world().set_proto.as_ptr() as *mut JsObject;
     let obj = vm.alloc_object(JsObject::new_empty(
         oxide_kernel::shape_forge::EMPTY_SHAPE_ID,
         JsValue::from_js_object(proto),
@@ -284,7 +286,7 @@ fn set_this(vm: &mut Vm, reg: u8) -> JsValue {
 /// 分配一个原型指向 DisposableStack.prototype 的占位对象并写入寄存器，
 /// 作为构造器调用的 `this`。
 fn dispose_stack_this(vm: &mut Vm, reg: u8) -> JsValue {
-    let proto = vm.realm.session.builtin_world().disposable_stack_proto.as_ptr() as *mut JsObject;
+    let proto = vm.realm.session.borrow().builtin_world().disposable_stack_proto.as_ptr() as *mut JsObject;
     let obj = vm.alloc_object(JsObject::new_empty(
         oxide_kernel::shape_forge::EMPTY_SHAPE_ID,
         JsValue::from_js_object(proto),
@@ -297,7 +299,7 @@ fn dispose_stack_this(vm: &mut Vm, reg: u8) -> JsValue {
 /// 置函数位标志的占位对象（通过 `is_callable` 判定），供 adopt 的
 /// onDispose 槽使用；测试不调用它。
 fn function_placeholder(vm: &mut Vm) -> JsValue {
-    let proto = vm.realm.session.builtin_world().object_proto.as_ptr() as *mut JsObject;
+    let proto = vm.realm.session.borrow().builtin_world().object_proto.as_ptr() as *mut JsObject;
     let obj = vm.alloc_object(JsObject::new_empty(
         oxide_kernel::shape_forge::EMPTY_SHAPE_ID,
         JsValue::from_js_object(proto),
@@ -312,16 +314,16 @@ fn function_placeholder(vm: &mut Vm) -> JsValue {
 fn reset_maybe_collect_collects_after_threshold() {
     let mut vm = vm_with_low_threshold();
     plain_object(&mut vm);
-    assert!(!vm.realm.gc.session_object_ptrs.is_empty());
-    let tracked_before = vm.realm.gc.session_object_ptrs.len();
+    assert!(!vm.realm.gc.borrow().session_object_ptrs.is_empty());
+    let tracked_before = vm.realm.gc.borrow().session_object_ptrs.len();
 
     vm.regs[0] = JsValue::undefined();
     vm.regs[1] = JsValue::undefined();
     vm.reset();
 
-    assert!(vm.realm.gc.session_object_ptrs.len() <= tracked_before);
-    assert_eq!(vm.realm.gc.session_object_ptrs.len(), 0);
-    assert_eq!(vm.realm.gc.session_bytes_allocated, 0);
+    assert!(vm.realm.gc.borrow().session_object_ptrs.len() <= tracked_before);
+    assert_eq!(vm.realm.gc.borrow().session_object_ptrs.len(), 0);
+    assert_eq!(vm.realm.gc.borrow().session_bytes_allocated, 0);
 }
 
 #[test]
@@ -330,7 +332,7 @@ fn gc_stats_summary_includes_collection() {
     plain_object(&mut vm);
     vm.regs[0] = JsValue::undefined();
     vm.maybe_collect_session_gc();
-    let summary = vm.realm.gc.session_gc.stats_summary();
+    let summary = vm.realm.gc.borrow().session_gc.stats_summary();
     assert!(summary.contains("[GC] collection"));
 }
 
@@ -343,7 +345,7 @@ fn full_collect_keeps_global_root_edges_in_place() {
     }
     let old_ptr = obj;
     let key = vm.kernel_core.perm_interner().intern("gcRoot").0;
-    let global_ptr = vm.realm.session.global_object().as_ptr() as *mut JsObject;
+    let global_ptr = vm.realm.session.borrow().global_object().as_ptr() as *mut JsObject;
     unsafe {
         let global = &mut *global_ptr;
         vm.set_or_create_prop_value(global, key, JsValue::from_js_object(old_ptr));
@@ -351,7 +353,8 @@ fn full_collect_keeps_global_root_edges_in_place() {
 
     vm.maybe_collect_session_gc();
 
-    let global = vm.realm.session.global_object();
+    let session = vm.realm.session.borrow();
+    let global = session.global_object();
     let pos = vm
         .kernel_core
         .shape_forge()
@@ -401,15 +404,15 @@ fn session_gc_traces_map_object_key_and_value() {
     let map_session = map_value.as_js_object_ptr();
     vm.regs.fill(JsValue::undefined());
     vm.regs[0] = JsValue::from_js_object(map_session);
-    let mut gc = std::mem::take(&mut vm.realm.gc.session_gc);
+    let mut gc = std::mem::take(&mut vm.realm.gc.borrow_mut().session_gc);
     gc.collect(&mut vm);
-    vm.realm.gc.session_gc = gc;
+    vm.realm.gc.borrow_mut().session_gc = gc;
 
     let live_map = unsafe { &*vm.regs[0].as_js_object_ptr() };
     let edges = map::map_native_edges(live_map);
     assert_eq!(edges.len(), 2);
     assert!(edges.iter().all(|value| vm.is_session_ptr(value.as_js_object_ptr())));
-    assert_eq!(vm.realm.gc.session_object_ptrs.len(), 3);
+    assert_eq!(vm.realm.gc.borrow().session_object_ptrs.len(), 3);
 }
 
 #[test]
@@ -425,15 +428,15 @@ fn session_gc_traces_set_object_key() {
     let set_session = set_value.as_js_object_ptr();
     vm.regs.fill(JsValue::undefined());
     vm.regs[0] = JsValue::from_js_object(set_session);
-    let mut gc = std::mem::take(&mut vm.realm.gc.session_gc);
+    let mut gc = std::mem::take(&mut vm.realm.gc.borrow_mut().session_gc);
     gc.collect(&mut vm);
-    vm.realm.gc.session_gc = gc;
+    vm.realm.gc.borrow_mut().session_gc = gc;
 
     let live_set = unsafe { &*vm.regs[0].as_js_object_ptr() };
     let edges = set::set_native_edges(live_set);
     assert_eq!(edges.len(), 1);
     assert!(vm.is_session_ptr(edges[0].as_js_object_ptr()));
-    assert_eq!(vm.realm.gc.session_object_ptrs.len(), 2);
+    assert_eq!(vm.realm.gc.borrow().session_object_ptrs.len(), 2);
 }
 
 /// 造带条目盒的 WeakMap 形 session 对象（构造体落地前的单测代用形态）。
@@ -470,9 +473,9 @@ fn weak_map_entry_survives_promotion_with_live_key() {
     let value_root =
         oxide_builtins::weak_map::weak_map_probe_get(unsafe { &*wm_session }, JsValue::from_js_object(key));
     vm.regs[2] = value_root;
-    let mut gc = std::mem::take(&mut vm.realm.gc.session_gc);
+    let mut gc = std::mem::take(&mut vm.realm.gc.borrow_mut().session_gc);
     gc.collect(&mut vm);
-    vm.realm.gc.session_gc = gc;
+    vm.realm.gc.borrow_mut().session_gc = gc;
 
     let live_wm = unsafe { &*vm.regs[0].as_js_object_ptr() };
     assert_eq!(oxide_builtins::weak_map::weak_map_entry_count(live_wm), 1, "强可达键的条目须在收集后存活");
@@ -503,9 +506,9 @@ fn weak_map_entry_dropped_when_key_unrooted() {
     vm.regs.fill(JsValue::undefined());
     vm.regs[0] = JsValue::from_js_object(wm_session);
     vm.regs[2] = JsValue::from_js_object(value);
-    let mut gc = std::mem::take(&mut vm.realm.gc.session_gc);
+    let mut gc = std::mem::take(&mut vm.realm.gc.borrow_mut().session_gc);
     gc.collect(&mut vm);
-    vm.realm.gc.session_gc = gc;
+    vm.realm.gc.borrow_mut().session_gc = gc;
 
     let live_wm = unsafe { &*vm.regs[0].as_js_object_ptr() };
     assert_eq!(oxide_builtins::weak_map::weak_map_entry_count(live_wm), 0, "死键条目须在收集时丢弃");
@@ -535,9 +538,9 @@ fn weak_map_value_edge_keeps_value_alive() {
     vm.regs.fill(JsValue::undefined());
     vm.regs[0] = JsValue::from_js_object(wm_session);
     vm.regs[1] = JsValue::from_js_object(key);
-    let mut gc = std::mem::take(&mut vm.realm.gc.session_gc);
+    let mut gc = std::mem::take(&mut vm.realm.gc.borrow_mut().session_gc);
     gc.collect(&mut vm);
-    vm.realm.gc.session_gc = gc;
+    vm.realm.gc.borrow_mut().session_gc = gc;
 
     let live_wm = unsafe { &*vm.regs[0].as_js_object_ptr() };
     // 原地 sweep 不搬移对象：键与值边原地保留，按原键读回同一对象。
@@ -547,7 +550,7 @@ fn weak_map_value_edge_keeps_value_alive() {
     assert!(vm.is_session_ptr(stored.as_js_object_ptr()));
     // key、value、wm 三对象均存活（key/value 经寄存器根、wm 经寄存器根），
     // 原地保留原址。
-    assert_eq!(vm.realm.gc.session_object_ptrs.len(), 3);
+    assert_eq!(vm.realm.gc.borrow().session_object_ptrs.len(), 3);
 }
 
 /// in-run 原地 sweep·死键面：无强根的 session 键在原地 sweep 按 mark 位判死，
@@ -560,7 +563,7 @@ fn weak_map_dead_key_freed_by_in_run_sweep() {
     // 键无强根：仅表内弱边引用。
     let key = plain_object(&mut vm);
     // P 键（builtin 原型，不可死）：对照条目须保留。
-    let p_key = JsValue::from_js_object(vm.realm.session.builtin_world().object_proto.as_ptr() as *mut JsObject);
+    let p_key = JsValue::from_js_object(vm.realm.session.borrow().builtin_world().object_proto.as_ptr() as *mut JsObject);
     unsafe {
         oxide_builtins::weak_map::weak_map_insert(
             &mut *wm,
@@ -574,7 +577,7 @@ fn weak_map_dead_key_freed_by_in_run_sweep() {
     vm.maybe_collect_in_run();
 
     assert_eq!(vm.session_gc_stats().total_collections, 1, "in-run 收集应跑一轮");
-    assert!(!vm.realm.gc.session_object_ptrs.contains(&key), "死键对象须出表");
+    assert!(!vm.realm.gc.borrow().session_object_ptrs.contains(&key), "死键对象须出表");
     let live_wm = unsafe { &*vm.regs[0].as_js_object_ptr() };
     assert_eq!(
         oxide_builtins::weak_map::weak_map_entry_count(live_wm),
@@ -645,8 +648,8 @@ fn session_gc_traces_map_string_and_bigint_value() {
     collect(&mut vm);
 
     // 只断言表成员——sweep 已释放的指针解引用即 UB。
-    assert!(vm.realm.gc.session_string_ptrs.contains(&str_ptr));
-    assert!(vm.realm.gc.session_bigint_ptrs.borrow().contains(&bi_ptr));
+    assert!(vm.realm.gc.borrow().session_string_ptrs.contains(&str_ptr));
+    assert!(vm.realm.gc.borrow().session_bigint_ptrs.borrow().contains(&bi_ptr));
 }
 
 /// 盒持唯一引用的 session 串与 BigInt 经 Set native 边进入存活集：
@@ -672,8 +675,8 @@ fn session_gc_traces_set_string_and_bigint_value() {
     collect(&mut vm);
 
     // 只断言表成员——sweep 已释放的指针解引用即 UB。
-    assert!(vm.realm.gc.session_string_ptrs.contains(&str_ptr));
-    assert!(vm.realm.gc.session_bigint_ptrs.borrow().contains(&bi_ptr));
+    assert!(vm.realm.gc.borrow().session_string_ptrs.contains(&str_ptr));
+    assert!(vm.realm.gc.borrow().session_bigint_ptrs.borrow().contains(&bi_ptr));
 }
 
 /// 盒持唯一引用的 session 串与 BigInt 经资源栈条目边进入存活集：
@@ -702,8 +705,8 @@ fn session_gc_traces_dispose_stack_string_and_bigint_value() {
     collect(&mut vm);
 
     // 只断言表成员——sweep 已释放的指针解引用即 UB。
-    assert!(vm.realm.gc.session_string_ptrs.contains(&str_ptr));
-    assert!(vm.realm.gc.session_bigint_ptrs.borrow().contains(&bi_ptr));
+    assert!(vm.realm.gc.borrow().session_string_ptrs.contains(&str_ptr));
+    assert!(vm.realm.gc.borrow().session_bigint_ptrs.borrow().contains(&bi_ptr));
 }
 
 /// 挂起帧内期望值 BigInt 查找：挂起点唯一持有期望值（帧内死槽残留的
@@ -740,8 +743,8 @@ fn session_gc_traces_promise_string_and_bigint_result() {
     collect(&mut vm);
 
     // 只断言表成员——sweep 已释放的指针解引用即 UB。
-    assert!(vm.realm.gc.session_string_ptrs.contains(&str_ptr));
-    assert!(vm.realm.gc.session_bigint_ptrs.borrow().contains(&bi_ptr));
+    assert!(vm.realm.gc.borrow().session_string_ptrs.contains(&str_ptr));
+    assert!(vm.realm.gc.borrow().session_bigint_ptrs.borrow().contains(&bi_ptr));
 }
 
 /// 挂起生成器帧寄存器持唯一引用 session BigInt：yield 挂起时 b 存活
@@ -771,7 +774,7 @@ fn session_gc_traces_suspended_generator_bigint_value() {
     collect(&mut vm);
 
     // 只断言表成员——sweep 已释放的指针解引用即 UB。
-    assert!(vm.realm.gc.session_bigint_ptrs.borrow().contains(&bi_ptr));
+    assert!(vm.realm.gc.borrow().session_bigint_ptrs.borrow().contains(&bi_ptr));
 }
 
 /// 挂起异步函数帧持唯一引用 session BigInt：body await 永不结算的 promise，
@@ -815,7 +818,7 @@ fn session_gc_traces_suspended_async_function_bigint_value() {
     collect(&mut vm);
 
     // 只断言表成员——sweep 已释放的指针解引用即 UB。
-    assert!(vm.realm.gc.session_bigint_ptrs.borrow().contains(&bi_ptr));
+    assert!(vm.realm.gc.borrow().session_bigint_ptrs.borrow().contains(&bi_ptr));
 }
 
 /// 挂起异步生成器帧持唯一引用 session BigInt：首次 next() 挂起于 yield，
@@ -844,7 +847,7 @@ fn session_gc_traces_suspended_async_generator_bigint_value() {
     collect(&mut vm);
 
     // 只断言表成员——sweep 已释放的指针解引用即 UB。
-    assert!(vm.realm.gc.session_bigint_ptrs.borrow().contains(&bi_ptr));
+    assert!(vm.realm.gc.borrow().session_bigint_ptrs.borrow().contains(&bi_ptr));
 }
 
 #[test]
@@ -883,9 +886,9 @@ fn session_gc_keeps_shared_array_buffer_alive_through_view_native_edges() {
     let root_session = root;
     vm.regs.fill(JsValue::undefined());
     vm.regs[0] = JsValue::from_js_object(root_session);
-    let mut gc = std::mem::take(&mut vm.realm.gc.session_gc);
+    let mut gc = std::mem::take(&mut vm.realm.gc.borrow_mut().session_gc);
     gc.collect(&mut vm);
-    vm.realm.gc.session_gc = gc;
+    vm.realm.gc.borrow_mut().session_gc = gc;
 
     let live_root = unsafe { &*vm.regs[0].as_js_object_ptr() };
     let live_typed = live_root.get_prop_at(0);
@@ -936,16 +939,16 @@ fn session_gc_rewrites_buffer_retained_only_by_data_view_native_edge() {
     let view_session = view.as_js_object_ptr();
     vm.regs.fill(JsValue::undefined());
     vm.regs[0] = JsValue::from_js_object(view_session);
-    let mut gc = std::mem::take(&mut vm.realm.gc.session_gc);
+    let mut gc = std::mem::take(&mut vm.realm.gc.borrow_mut().session_gc);
     gc.collect(&mut vm);
-    vm.realm.gc.session_gc = gc;
+    vm.realm.gc.borrow_mut().session_gc = gc;
 
     let live_view = vm.regs[0];
     let live_view_obj = unsafe { &*live_view.as_js_object_ptr() };
     let edges = data_view::data_view_native_edges(live_view_obj);
     assert_eq!(edges.len(), 1);
     assert!(vm.is_session_ptr(edges[0].as_js_object_ptr()));
-    assert_eq!(vm.realm.gc.session_object_ptrs.len(), 2);
+    assert_eq!(vm.realm.gc.borrow().session_object_ptrs.len(), 2);
 
     vm.regs[0] = live_view;
     vm.regs[1] = JsValue::int(0);
@@ -953,9 +956,9 @@ fn session_gc_rewrites_buffer_retained_only_by_data_view_native_edge() {
 }
 
 fn collect(vm: &mut Vm) {
-    let mut gc = std::mem::take(&mut vm.realm.gc.session_gc);
+    let mut gc = std::mem::take(&mut vm.realm.gc.borrow_mut().session_gc);
     gc.collect(vm);
-    vm.realm.gc.session_gc = gc;
+    vm.realm.gc.borrow_mut().session_gc = gc;
 }
 
 #[test]
@@ -963,12 +966,12 @@ fn session_string_collected_when_dead() {
     let mut vm = Vm::new();
     let dead = vm.new_string("dead-string");
     let dead_ptr = dead.as_string_ptr_mut();
-    assert!(vm.realm.gc.session_string_ptrs.contains(&dead_ptr));
+    assert!(vm.realm.gc.borrow().session_string_ptrs.contains(&dead_ptr));
 
     // 没有根引用 `dead`（它只作为值包装存在于 Rust 栈上）。
     collect(&mut vm);
 
-    assert!(!vm.realm.gc.session_string_ptrs.contains(&dead_ptr));
+    assert!(!vm.realm.gc.borrow().session_string_ptrs.contains(&dead_ptr));
 }
 
 #[test]
@@ -980,7 +983,7 @@ fn session_string_survives_when_in_register() {
 
     collect(&mut vm);
 
-    assert!(vm.realm.gc.session_string_ptrs.contains(&live_ptr));
+    assert!(vm.realm.gc.borrow().session_string_ptrs.contains(&live_ptr));
     // 存活字符串永不搬移——寄存器仍指向同一 box。
     assert_eq!(vm.regs[0].as_string_ptr_mut(), live_ptr);
     assert_eq!(unsafe { (*live_ptr).as_str() }, "live-in-reg");
@@ -1003,7 +1006,7 @@ fn session_string_survives_via_object_property() {
 
     collect(&mut vm);
 
-    assert!(vm.realm.gc.session_string_ptrs.contains(&s_ptr));
+    assert!(vm.realm.gc.borrow().session_string_ptrs.contains(&s_ptr));
     assert_eq!(unsafe { (*s_ptr).as_str() }, "prop-string");
 }
 
@@ -1013,13 +1016,13 @@ fn permanent_string_untouched_by_sweep() {
     let perm = vm.perm_string("perm");
     let perm_ptr = perm.as_string_ptr_mut();
     // 永久字符串位于 PermInterner，绝不在 session 集合中。
-    assert!(!vm.realm.gc.session_string_ptrs.contains(&perm_ptr));
+    assert!(!vm.realm.gc.borrow().session_string_ptrs.contains(&perm_ptr));
     vm.regs[0] = perm;
 
     collect(&mut vm);
 
     // 绝不被 session 清扫释放（仍可读，仍不在 session 集合中）。
-    assert!(!vm.realm.gc.session_string_ptrs.contains(&perm_ptr));
+    assert!(!vm.realm.gc.borrow().session_string_ptrs.contains(&perm_ptr));
     assert_eq!(unsafe { (*perm_ptr).as_str() }, "perm");
 }
 
@@ -1030,11 +1033,11 @@ fn string_sweep_byte_accounting() {
     let _ = dead.as_string_ptr_mut();
     let expected = (size_of::<JsString>() + "0123456789".len()) as u64;
 
-    let mut gc = std::mem::take(&mut vm.realm.gc.session_gc);
+    let mut gc = std::mem::take(&mut vm.realm.gc.borrow_mut().session_gc);
     let before = gc.total_bytes_freed;
     gc.collect(&mut vm);
     let after = gc.total_bytes_freed;
-    vm.realm.gc.session_gc = gc;
+    vm.realm.gc.borrow_mut().session_gc = gc;
 
     assert!(after >= before + expected);
 }
@@ -1055,7 +1058,8 @@ fn compile(source: &str) -> oxide_bytecode::module::CompiledModule {
 }
 
 fn global_prop_opt(vm: &Vm, name: &str) -> Option<JsValue> {
-    let global = vm.realm.session.global_object();
+    let session = vm.realm.session.borrow();
+    let global = session.global_object();
     let si = vm.kernel_core().perm_interner().intern(name).0;
     vm.resolve_property(global, si)
 }
@@ -1071,7 +1075,7 @@ fn closure_cell_survives_object_sweep() {
         "function outer() { var counter = 0; function inc() { return ++counter; } globalThis.inc = inc; return 0; } outer(); 0",
     )))
     .expect("run1");
-    assert!(!vm.realm.gc.session_cell_ptrs.borrow().is_empty(), "run1 应分配 upvalue cell");
+    assert!(!vm.realm.gc.borrow().session_cell_ptrs.borrow().is_empty(), "run1 应分配 upvalue cell");
 
     // reset 触发对象 sweep：存活对象原地保留，死对象原地释放。
     vm.reset();
@@ -1126,10 +1130,10 @@ fn cells_freed_by_full_reset_and_reallocatable() {
         "function outer() { var x = 1; function f() { return x; } globalThis.f = f; return f(); } outer()",
     )))
     .expect("run1");
-    assert!(!vm.realm.gc.session_cell_ptrs.borrow().is_empty());
+    assert!(!vm.realm.gc.borrow().session_cell_ptrs.borrow().is_empty());
 
     vm.full_reset();
-    assert!(vm.realm.gc.session_cell_ptrs.borrow().is_empty(), "full_reset 应释放全部 cell");
+    assert!(vm.realm.gc.borrow().session_cell_ptrs.borrow().is_empty(), "full_reset 应释放全部 cell");
 
     let result = vm
         .run(&Arc::new(compile(
@@ -1186,13 +1190,13 @@ fn live_closure_cell_survives_full_collect() {
     let cells = obj.upvalues_slice();
     assert_eq!(cells.len(), 1, "inc 应捕获 counter 一个 cell");
     let cell_ptr = cells[0];
-    assert!(vm.realm.gc.session_cell_ptrs.borrow().contains(&cell_ptr), "活 cell 应登记在表");
+    assert!(vm.realm.gc.borrow().session_cell_ptrs.borrow().contains(&cell_ptr), "活 cell 应登记在表");
 
     vm.regs.fill(JsValue::undefined());
     collect(&mut vm);
 
     // 只断言表成员——sweep 已释放的指针解引用即 UB。
-    assert!(vm.realm.gc.session_cell_ptrs.borrow().contains(&cell_ptr), "活 cell 应跨完整收集存活");
+    assert!(vm.realm.gc.borrow().session_cell_ptrs.borrow().contains(&cell_ptr), "活 cell 应跨完整收集存活");
 }
 
 /// 活跃帧 cell_stack 根：内层函数 upvalue cell 在活跃帧 cell_stack 上（低阈值使
@@ -1245,14 +1249,14 @@ fn suspended_state_box_cell_root_survives_collect() {
         .copied()
         .find(|p| !p.is_null())
         .expect("挂起帧应持有 x cell");
-    assert!(vm.realm.gc.session_cell_ptrs.borrow().contains(&cell_ptr), "cell 应登记在表");
+    assert!(vm.realm.gc.borrow().session_cell_ptrs.borrow().contains(&cell_ptr), "cell 应登记在表");
 
     vm.regs.fill(JsValue::undefined());
     vm.regs[0] = JsValue::from_js_object(g_session);
     collect(&mut vm);
 
     // 只断言表成员——sweep 已释放的指针解引用即 UB。
-    assert!(vm.realm.gc.session_cell_ptrs.borrow().contains(&cell_ptr), "挂起帧 cell 应跨完整收集存活");
+    assert!(vm.realm.gc.borrow().session_cell_ptrs.borrow().contains(&cell_ptr), "挂起帧 cell 应跨完整收集存活");
 
     // 恢复后读值：cell 未被误释放。
     let read = vm.run(&Arc::new(compile("globalThis.g.next().value"))).expect("read");
@@ -1312,7 +1316,7 @@ fn module_ns_cell_root_survives_collect() {
         .into_iter()
         .next()
         .expect("依赖 ns 应持有 x 的 cell");
-    assert!(vm.realm.gc.session_cell_ptrs.borrow().contains(&cell_ptr), "cell 应登记在表");
+    assert!(vm.realm.gc.borrow().session_cell_ptrs.borrow().contains(&cell_ptr), "cell 应登记在表");
 
     vm.regs.fill(JsValue::undefined());
     vm.regs[0] = ns_val;
@@ -1320,7 +1324,7 @@ fn module_ns_cell_root_survives_collect() {
 
     // 只断言表成员——sweep 已释放的指针解引用即 UB。
     assert!(
-        vm.realm.gc.session_cell_ptrs.borrow().contains(&cell_ptr),
+        vm.realm.gc.borrow().session_cell_ptrs.borrow().contains(&cell_ptr),
         "模块 ns cell 应跨完整收集存活"
     );
 
@@ -1346,16 +1350,16 @@ fn allocation_does_not_trigger_gc_before_safe_point() {
     let seed_ptr = seed.as_string_ptr_mut();
     let returned = vm.new_string_owned("returned".repeat(16));
 
-    assert_eq!(vm.realm.gc.session_gc.total_collections, 0);
-    assert!(vm.realm.gc.session_string_ptrs.contains(&seed_ptr));
-    assert!(vm.realm.gc.session_string_ptrs.contains(&returned.as_string_ptr_mut()));
+    assert_eq!(vm.realm.gc.borrow().session_gc.total_collections, 0);
+    assert!(vm.realm.gc.borrow().session_string_ptrs.contains(&seed_ptr));
+    assert!(vm.realm.gc.borrow().session_string_ptrs.contains(&returned.as_string_ptr_mut()));
 
     // 显式触发后：无根引用的 seed 被回收，入根的 returned 存活（安全点语义）。
     vm.regs[0] = returned;
     vm.maybe_collect_session_strings();
-    assert!(vm.realm.gc.session_gc.total_collections >= 1);
-    assert!(!vm.realm.gc.session_string_ptrs.contains(&seed_ptr));
-    assert!(vm.realm.gc.session_string_ptrs.contains(&returned.as_string_ptr_mut()));
+    assert!(vm.realm.gc.borrow().session_gc.total_collections >= 1);
+    assert!(!vm.realm.gc.borrow().session_string_ptrs.contains(&seed_ptr));
+    assert!(vm.realm.gc.borrow().session_string_ptrs.contains(&returned.as_string_ptr_mut()));
 }
 
 #[test]
@@ -1388,10 +1392,10 @@ fn strings_only_collection_preserves_all_root_kinds() {
 
     vm.maybe_collect_session_strings();
 
-    assert!(vm.realm.gc.session_string_ptrs.contains(&reg_str.as_string_ptr_mut()));
-    assert!(vm.realm.gc.session_string_ptrs.contains(&prop_str.as_string_ptr_mut()));
-    assert!(vm.realm.gc.session_string_ptrs.contains(&epoch_str.as_string_ptr_mut()));
-    assert!(!vm.realm.gc.session_string_ptrs.contains(&dead_ptr));
+    assert!(vm.realm.gc.borrow().session_string_ptrs.contains(&reg_str.as_string_ptr_mut()));
+    assert!(vm.realm.gc.borrow().session_string_ptrs.contains(&prop_str.as_string_ptr_mut()));
+    assert!(vm.realm.gc.borrow().session_string_ptrs.contains(&epoch_str.as_string_ptr_mut()));
+    assert!(!vm.realm.gc.borrow().session_string_ptrs.contains(&dead_ptr));
     // 存活串内容可读，地址稳定。
     assert_eq!(unsafe { (*reg_str.as_string_ptr_mut()).as_str() }, "reg-root".repeat(16));
     assert_eq!(unsafe { (*prop_str.as_string_ptr_mut()).as_str() }, "prop-root".repeat(16));
@@ -1404,7 +1408,7 @@ fn strings_only_collection_does_not_move_objects() {
     let obj = plain_object(&mut vm);
     let obj_session = obj;
     vm.regs[0] = JsValue::from_js_object(obj_session);
-    let before: Vec<_> = vm.realm.gc.session_object_ptrs.clone();
+    let before: Vec<_> = vm.realm.gc.borrow().session_object_ptrs.clone();
 
     let s = vm.new_string_owned("x".repeat(64));
     vm.regs[1] = s;
@@ -1412,7 +1416,7 @@ fn strings_only_collection_does_not_move_objects() {
     vm.maybe_collect_session_strings();
 
     // 对象指针逐一相同：不搬移、不重写根。
-    assert_eq!(vm.realm.gc.session_object_ptrs, before);
+    assert_eq!(vm.realm.gc.borrow().session_object_ptrs, before);
     assert_eq!(vm.regs[0].as_js_object_ptr(), obj_session);
     assert_eq!(vm.session_object_count(), 1);
 }
@@ -1435,10 +1439,10 @@ fn multiple_strings_only_cycles_keep_objects_alive() {
         }
         // 分配不自动触发，每轮显式触发一次回收。
         vm.maybe_collect_session_strings();
-        assert!(vm.realm.gc.session_object_ptrs.contains(&obj_session));
+        assert!(vm.realm.gc.borrow().session_object_ptrs.contains(&obj_session));
         assert_eq!(unsafe { (*obj_session).get_prop_at(0) }, live);
     }
-    assert!(vm.realm.gc.session_string_ptrs.contains(&live.as_string_ptr_mut()));
+    assert!(vm.realm.gc.borrow().session_string_ptrs.contains(&live.as_string_ptr_mut()));
 }
 
 #[test]
@@ -1458,15 +1462,15 @@ fn strings_only_then_full_collect_keeps_object_strings_live() {
     // 第一轮 strings-only：对象被 mark 置位。收尾清残留，否则该位残留至完整
     // 收集会使 mark DFS 在对象处短路、漏标其属性中的串；随后校验串跨完整收集存活。
     vm.maybe_collect_session_strings();
-    assert!(vm.realm.gc.session_string_ptrs.contains(&s_ptr));
+    assert!(vm.realm.gc.borrow().session_string_ptrs.contains(&s_ptr));
 
     // 完整收集（reset 的 maybe_collect 路径）：对象搬移、字符串地址稳定。
-    let mut gc = std::mem::take(&mut vm.realm.gc.session_gc);
+    let mut gc = std::mem::take(&mut vm.realm.gc.borrow_mut().session_gc);
     gc.collect(&mut vm);
-    vm.realm.gc.session_gc = gc;
+    vm.realm.gc.borrow_mut().session_gc = gc;
 
     // 存活对象经重写仍可达其串：串未被误释放，内容可读。
-    assert!(vm.realm.gc.session_string_ptrs.contains(&s_ptr));
+    assert!(vm.realm.gc.borrow().session_string_ptrs.contains(&s_ptr));
     assert_eq!(unsafe { (*s_ptr).as_str() }, "kept".repeat(8));
     assert_eq!(unsafe { (*vm.regs[0].as_js_object_ptr()).get_prop_at(0) }, s);
 }
@@ -1487,8 +1491,8 @@ fn strings_only_collection_byte_accounting_matches_survivors() {
 
     // 账目 = 对象头 + 存活串（size_of::<JsString>() + len），死串不再计入。
     let expected = size_of::<JsObject>() + (size_of::<JsString>() + unsafe { (*live_ptr).payload_bytes() });
-    assert_eq!(vm.realm.gc.session_bytes_allocated, expected);
-    assert!(!vm.realm.gc.session_string_ptrs.contains(&dead.as_string_ptr_mut()));
+    assert_eq!(vm.realm.gc.borrow().session_bytes_allocated, expected);
+    assert!(!vm.realm.gc.borrow().session_string_ptrs.contains(&dead.as_string_ptr_mut()));
 }
 
 #[test]
@@ -1498,9 +1502,10 @@ fn run_alloc_formula_lists_bigint_and_cell_via_tables() {
     vm.regs[0] = JsValue::from_js_object(obj);
     // 带堆区对象：元素向量非空（账目含头 + 向量容量），深层等式在双计形态
     // 下不成立，钉向量面互不相交。
+    let array_proto_ptr = vm.realm.session.borrow().builtin_world().array_proto.as_ptr() as *mut JsObject;
     let arr = vm.alloc_object(JsObject::new_array(
         oxide_kernel::shape_forge::EMPTY_SHAPE_ID,
-        JsValue::from_js_object(vm.realm.session.builtin_world().array_proto.as_ptr() as *mut JsObject),
+        JsValue::from_js_object(array_proto_ptr),
         2,
     ));
     vm.regs[3] = JsValue::from_js_object(arr);
@@ -1509,30 +1514,30 @@ fn run_alloc_formula_lists_bigint_and_cell_via_tables() {
     let b = vm.new_bigint(num_bigint::BigInt::from(7_i128));
     vm.regs[2] = b;
     // 未根 cell：收集后不可达，随 sweep 出表。
-    vm.realm.gc.alloc_cell(JsValue::int(9), true);
+    vm.realm.gc.borrow().alloc_cell(JsValue::int(9), true);
 
     // 公式 = 手工账目 + BigInt 表长 × 尺寸 + cell 表长 × 尺寸，三分量两两不相交。
     assert_eq!(
         vm.run_alloc_bytes(),
-        vm.realm.gc.session_bytes_allocated
-            + vm.realm.gc.session_bigint_ptrs.borrow().len() * size_of::<num_bigint::BigInt>()
-            + vm.realm.gc.session_cell_ptrs.borrow().len() * size_of::<Cell>()
+        vm.realm.gc.borrow().session_bytes_allocated
+            + vm.realm.gc.borrow().session_bigint_ptrs.borrow().len() * size_of::<num_bigint::BigInt>()
+            + vm.realm.gc.borrow().session_cell_ptrs.borrow().len() * size_of::<Cell>()
     );
     // BigInt 不在手工账目内：账目 = 两对象（头 + 堆数据）+ 串，数组带元素向量。
     let string_bytes = size_of::<JsString>() + unsafe { (*s.as_string_ptr_mut()).payload_bytes() };
     let arr_heap_bytes = SessionGc::object_heap_data_bytes(unsafe { &*arr });
     assert!(arr_heap_bytes > 0, "数组元素向量应计入对象堆数据");
     assert_eq!(
-        vm.realm.gc.session_bytes_allocated,
+        vm.realm.gc.borrow().session_bytes_allocated,
         2 * size_of::<JsObject>() + arr_heap_bytes as usize + string_bytes
     );
 
     // 完整收集后：死 cell 出表、存活 BigInt 留表，账目保持对象 + 串口径。
     vm.collect_session_gc();
-    assert_eq!(vm.realm.gc.session_cell_ptrs.borrow().len(), 0);
-    assert_eq!(vm.realm.gc.session_bigint_ptrs.borrow().len(), 1);
+    assert_eq!(vm.realm.gc.borrow().session_cell_ptrs.borrow().len(), 0);
+    assert_eq!(vm.realm.gc.borrow().session_bigint_ptrs.borrow().len(), 1);
     assert_eq!(
-        vm.realm.gc.session_bytes_allocated,
+        vm.realm.gc.borrow().session_bytes_allocated,
         2 * size_of::<JsObject>() + arr_heap_bytes as usize + string_bytes
     );
     // 深采样全量重算与轻层公式零增长下逐位相等：存活对象带堆区（元素向量），
@@ -1546,8 +1551,8 @@ fn runtime_collection_below_threshold_is_noop() {
     let s = vm.new_string_owned("small".repeat(4));
     vm.regs[0] = s;
 
-    assert_eq!(vm.realm.gc.session_gc.total_collections, 0);
-    assert!(vm.realm.gc.session_string_ptrs.contains(&s.as_string_ptr_mut()));
+    assert_eq!(vm.realm.gc.borrow().session_gc.total_collections, 0);
+    assert!(vm.realm.gc.borrow().session_string_ptrs.contains(&s.as_string_ptr_mut()));
 }
 
 // ── rope（Cons）GC 传播闭包 ──
@@ -1570,9 +1575,9 @@ fn rope_survives_collection_with_children_propagated() {
 
     // 父（寄存器根）+ 子节点（经传播闭包）全部存活，内容可读。
     let parent_ptr = parent.as_string_ptr_mut();
-    assert!(vm.realm.gc.session_string_ptrs.contains(&parent_ptr));
-    assert!(vm.realm.gc.session_string_ptrs.contains(&l_ptr));
-    assert!(vm.realm.gc.session_string_ptrs.contains(&r_ptr));
+    assert!(vm.realm.gc.borrow().session_string_ptrs.contains(&parent_ptr));
+    assert!(vm.realm.gc.borrow().session_string_ptrs.contains(&l_ptr));
+    assert!(vm.realm.gc.borrow().session_string_ptrs.contains(&r_ptr));
     assert_eq!(unsafe { (*parent_ptr).as_lossy_str() }, "left-partright-part");
 }
 
@@ -1581,14 +1586,14 @@ fn rope_children_swept_when_parent_dead() {
     let mut vm = Vm::new();
     let (parent, l_ptr, r_ptr) = make_cons_pair(&mut vm, "left", "right");
     let parent_ptr = parent.as_string_ptr_mut();
-    assert!(vm.realm.gc.session_string_ptrs.contains(&parent_ptr));
+    assert!(vm.realm.gc.borrow().session_string_ptrs.contains(&parent_ptr));
 
     // 父与子均无根引用 → 整树回收。
     collect(&mut vm);
 
-    assert!(!vm.realm.gc.session_string_ptrs.contains(&parent_ptr));
-    assert!(!vm.realm.gc.session_string_ptrs.contains(&l_ptr));
-    assert!(!vm.realm.gc.session_string_ptrs.contains(&r_ptr));
+    assert!(!vm.realm.gc.borrow().session_string_ptrs.contains(&parent_ptr));
+    assert!(!vm.realm.gc.borrow().session_string_ptrs.contains(&l_ptr));
+    assert!(!vm.realm.gc.borrow().session_string_ptrs.contains(&r_ptr));
 }
 
 #[test]
@@ -1605,8 +1610,8 @@ fn rope_product_freed_with_parent() {
 
     // 父死 → 连带释放产物（不 double-free、不泄漏；产物从不进 session 表）。
     let flat_mut = flat_ptr as *mut JsString;
-    assert!(!vm.realm.gc.session_string_ptrs.contains(&parent_ptr));
-    assert!(!vm.realm.gc.session_string_ptrs.contains(&flat_mut));
+    assert!(!vm.realm.gc.borrow().session_string_ptrs.contains(&parent_ptr));
+    assert!(!vm.realm.gc.borrow().session_string_ptrs.contains(&flat_mut));
 }
 
 #[test]
@@ -1623,7 +1628,7 @@ fn rope_deep_chain_mark_iterative() {
 
     collect(&mut vm);
 
-    assert!(vm.realm.gc.session_string_ptrs.contains(&chain_ptr));
+    assert!(vm.realm.gc.borrow().session_string_ptrs.contains(&chain_ptr));
     assert_eq!(unsafe { (*chain_ptr).as_lossy_str() }, format!("root{}", "x".repeat(1024)));
 }
 
@@ -1640,8 +1645,8 @@ fn rope_perm_child_untouched_by_sweep() {
     collect(&mut vm);
 
     // perm 子节点永不释放（不在 session 表）；session 子节点随父存活。
-    assert!(!vm.realm.gc.session_string_ptrs.contains(&perm_ptr));
-    assert!(vm.realm.gc.session_string_ptrs.contains(&session_ptr));
+    assert!(!vm.realm.gc.borrow().session_string_ptrs.contains(&perm_ptr));
+    assert!(vm.realm.gc.borrow().session_string_ptrs.contains(&session_ptr));
     assert_eq!(unsafe { (*parent.as_string_ptr_mut()).as_lossy_str() }, "perm-leafsession-leaf");
 }
 
@@ -1655,7 +1660,7 @@ fn full_reset_frees_rope_and_product() {
 
     // full_reset 清空全部 session 字符串（连带产物）：无泄漏、无 double-free。
     vm.full_reset();
-    assert!(vm.realm.gc.session_string_ptrs.is_empty());
+    assert!(vm.realm.gc.borrow().session_string_ptrs.is_empty());
 }
 
 // ── 执行期两档收集 ──────────────────────────────────────────────────────
@@ -1708,7 +1713,7 @@ fn active_and_suspended_for_in_do_not_block_in_run_collection() {
 
     vm.maybe_collect_in_run();
     assert_eq!(vm.session_gc_stats().total_collections, 1, "无门控：活跃 for-in 存在时收集照常执行");
-    assert!(!vm.realm.gc.session_object_ptrs.contains(&dead), "死 session 对象应被原地释放并出表");
+    assert!(!vm.realm.gc.borrow().session_object_ptrs.contains(&dead), "死 session 对象应被原地释放并出表");
 
     // 挂起形：生成器在 for-in 内 yield 后 run 结束，迭代器经状态盒持有
     // （vm.iters 已空）——键经状态盒边入根收集标活，收集照常执行。
@@ -1725,7 +1730,9 @@ fn active_and_suspended_for_in_do_not_block_in_run_collection() {
     assert_eq!(vm.session_gc_stats().total_collections, 1, "挂起 for-in：收集照常执行");
     // 挂起生成器对象保持原址（未释放）：状态盒与迭代器一体存活。
     let gen_in_session = vm
-        .realm.gc
+        .realm
+        .gc
+        .borrow()
         .session_object_ptrs
         .iter()
         .any(|&p| !p.is_null() && unsafe { (*p).type_tag == JsObject::OBJ_TYPE_GENERATOR });
@@ -1900,11 +1907,11 @@ fn promise_promote_migrates_reject_reactions_to_clone() {
 fn mark_counts_roots_by_group() {
     let mut vm = Vm::new();
     vm.regs[0] = JsValue::from_js_object(plain_object(&mut vm));
-    let mut gc = std::mem::take(&mut vm.realm.gc.session_gc);
+    let mut gc = std::mem::take(&mut vm.realm.gc.borrow_mut().session_gc);
     gc.mark(&vm);
-    vm.realm.gc.session_gc = gc;
+    vm.realm.gc.borrow_mut().session_gc = gc;
 
-    let counts = &vm.realm.gc.session_gc.root_counts;
+    let counts = &vm.realm.gc.borrow().session_gc.root_counts;
     assert_eq!(counts[RootGroup::Regs as usize], 256, "寄存器组应计满 256 槽");
     assert_eq!(counts[RootGroup::Global as usize], 1, "global 组应计 global 对象");
     // 9 个单槽侧通道：空 VM 时各经 unwrap_or(undefined) 产出一个未定义根值。

@@ -58,19 +58,22 @@ fn to_index<H: VmHost>(vm: &mut H, value: JsValue, msg: &str) -> Result<usize, J
 }
 
 fn typed_array_proto_ptr<H: VmHost>(vm: &mut H, kind: TypedArrayKind) -> *mut JsObject {
-    let world = vm.session().builtin_world();
-    match kind {
-        TypedArrayKind::Int8 => world.int8array_proto.as_ptr() as *mut JsObject,
-        TypedArrayKind::Uint8 => world.uint8array_proto.as_ptr() as *mut JsObject,
-        TypedArrayKind::Uint8Clamped => world.uint8clampedarray_proto.as_ptr() as *mut JsObject,
-        TypedArrayKind::Int16 => world.int16array_proto.as_ptr() as *mut JsObject,
-        TypedArrayKind::Uint16 => world.uint16array_proto.as_ptr() as *mut JsObject,
-        TypedArrayKind::Int32 => world.int32array_proto.as_ptr() as *mut JsObject,
-        TypedArrayKind::Uint32 => world.uint32array_proto.as_ptr() as *mut JsObject,
-        TypedArrayKind::Float32 => world.float32array_proto.as_ptr() as *mut JsObject,
-        TypedArrayKind::Float64 => world.float64array_proto.as_ptr() as *mut JsObject,
-        TypedArrayKind::BigInt64 => world.bigint64array_proto.as_ptr() as *mut JsObject,
-        TypedArrayKind::BigUint64 => world.biguint64array_proto.as_ptr() as *mut JsObject,
+    {
+        let session = vm.session();
+        let world = session.builtin_world();
+        match kind {
+            TypedArrayKind::Int8 => world.int8array_proto.as_ptr() as *mut JsObject,
+            TypedArrayKind::Uint8 => world.uint8array_proto.as_ptr() as *mut JsObject,
+            TypedArrayKind::Uint8Clamped => world.uint8clampedarray_proto.as_ptr() as *mut JsObject,
+            TypedArrayKind::Int16 => world.int16array_proto.as_ptr() as *mut JsObject,
+            TypedArrayKind::Uint16 => world.uint16array_proto.as_ptr() as *mut JsObject,
+            TypedArrayKind::Int32 => world.int32array_proto.as_ptr() as *mut JsObject,
+            TypedArrayKind::Uint32 => world.uint32array_proto.as_ptr() as *mut JsObject,
+            TypedArrayKind::Float32 => world.float32array_proto.as_ptr() as *mut JsObject,
+            TypedArrayKind::Float64 => world.float64array_proto.as_ptr() as *mut JsObject,
+            TypedArrayKind::BigInt64 => world.bigint64array_proto.as_ptr() as *mut JsObject,
+            TypedArrayKind::BigUint64 => world.biguint64array_proto.as_ptr() as *mut JsObject,
+        }
     }
 }
 
@@ -100,19 +103,22 @@ fn ta_gpf_proto<H: VmHost>(vm: &mut H, kind: TypedArrayKind) -> Result<JsValue, 
 }
 
 fn typed_array_ctor_value<H: VmHost>(vm: &mut H, kind: TypedArrayKind) -> JsValue {
-    let world = vm.session().builtin_world();
-    let ctor = match kind {
-        TypedArrayKind::Int8 => world.int8array_constructor.clone(),
-        TypedArrayKind::Uint8 => world.uint8array_constructor.clone(),
-        TypedArrayKind::Uint8Clamped => world.uint8clampedarray_constructor.clone(),
-        TypedArrayKind::Int16 => world.int16array_constructor.clone(),
-        TypedArrayKind::Uint16 => world.uint16array_constructor.clone(),
-        TypedArrayKind::Int32 => world.int32array_constructor.clone(),
-        TypedArrayKind::Uint32 => world.uint32array_constructor.clone(),
-        TypedArrayKind::Float32 => world.float32array_constructor.clone(),
-        TypedArrayKind::Float64 => world.float64array_constructor.clone(),
-        TypedArrayKind::BigInt64 => world.bigint64array_constructor.clone(),
-        TypedArrayKind::BigUint64 => world.biguint64array_constructor.clone(),
+    let ctor = {
+        let session = vm.session();
+        let world = session.builtin_world();
+        match kind {
+            TypedArrayKind::Int8 => world.int8array_constructor.clone(),
+            TypedArrayKind::Uint8 => world.uint8array_constructor.clone(),
+            TypedArrayKind::Uint8Clamped => world.uint8clampedarray_constructor.clone(),
+            TypedArrayKind::Int16 => world.int16array_constructor.clone(),
+            TypedArrayKind::Uint16 => world.uint16array_constructor.clone(),
+            TypedArrayKind::Int32 => world.int32array_constructor.clone(),
+            TypedArrayKind::Uint32 => world.uint32array_constructor.clone(),
+            TypedArrayKind::Float32 => world.float32array_constructor.clone(),
+            TypedArrayKind::Float64 => world.float64array_constructor.clone(),
+            TypedArrayKind::BigInt64 => world.bigint64array_constructor.clone(),
+            TypedArrayKind::BigUint64 => world.biguint64array_constructor.clone(),
+        }
     };
     JsValue::from_js_object(ctor.as_ptr() as *mut JsObject)
 }

@@ -1568,10 +1568,8 @@ pub fn object_from_entries<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     if entries_ptr.is_null() {
         return NativeResult::Err(crate::error::create_type_error(vm, "Object.fromEntries: argument must be iterable"));
     }
-    let obj = vm.alloc_object(JsObject::new_empty(
-        EMPTY_SHAPE_ID,
-        JsValue::from_js_object(vm.session().builtin_world().object_proto.as_ptr() as *mut JsObject),
-    ));
+    let proto_ptr = vm.session().builtin_world().object_proto.as_ptr() as *mut JsObject;
+    let obj = vm.alloc_object(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(proto_ptr)));
     let target_val = JsValue::from_js_object(obj);
     // entry 数组的元素存元素区（元素区之外才是命名属性区），按元素区长度迭代。
     let n: usize = unsafe { (*entries_ptr).array_prop_count } as usize;

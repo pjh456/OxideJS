@@ -931,10 +931,8 @@ fn match_all_construct_invoke<H: VmHost>(vm: &mut H, this_val: JsValue, pattern_
 
     // regexp = RegExpCreate(pattern, "g")。
     let g_str = vm.new_string("g");
-    let rx_val = match vm.construct_ctor(
-        JsValue::from_js_object(vm.session().builtin_world().regexp_constructor.as_ptr() as *mut JsObject),
-        &[pattern_val, g_str],
-    ) {
+    let ctor_ptr = vm.session().builtin_world().regexp_constructor.as_ptr() as *mut JsObject;
+    let rx_val = match vm.construct_ctor(JsValue::from_js_object(ctor_ptr), &[pattern_val, g_str]) {
         Ok(v) => v,
         Err(e) => return NativeResult::Err(e),
     };

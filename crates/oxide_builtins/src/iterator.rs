@@ -67,12 +67,16 @@ pub fn iterator_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult 
 /// 重建内置对象族，换新的 `Iterator` 函数对象；缓存旧指针会指向已释放对象。
 /// lookup 失败（极端：global 无 `Iterator`）返回 undefined，不 panic。
 pub fn iterator_constructor_getter<H: VmHost>(vm: &mut H, _args: &[u8]) -> NativeResult {
-    let global = vm.session().global_object();
+    let (shape_id, global_ptr) = {
+        let session = vm.session();
+        let global = session.global_object();
+        (global.shape_id(), global.as_ptr() as *mut JsObject)
+    };
     let si = vm.kernel_core().perm_interner().intern("Iterator").0;
-    let Some(pos) = vm.kernel_core().shape_forge().lookup_position(global.shape_id(), si) else {
+    let Some(pos) = vm.kernel_core().shape_forge().lookup_position(shape_id, si) else {
         return NativeResult::Ok(JsValue::undefined());
     };
-    NativeResult::Ok(global.get_prop_at(pos))
+    NativeResult::Ok(unsafe { &*global_ptr }.get_prop_at(pos))
 }
 
 /// `%IteratorPrototype%` 上 `Symbol.toStringTag` 访问器的 getter：返回 `"Iterator"`。
@@ -1486,15 +1490,18 @@ fn builtin_iterator_default_intact<H: VmHost>(vm: &mut H, value: JsValue, method
     if !method.is_object() {
         return false;
     }
-    let world = vm.session().builtin_world();
-    let (anchor_ptr, anchor_name) = if is_array_value(value) {
-        (world.array_proto.as_ptr() as *mut JsObject, "values")
-    } else if is_typed_array_value(value) {
-        (world.typed_array_proto.as_ptr() as *mut JsObject, "values")
-    } else if is_map_value(value) {
-        (world.map_proto.as_ptr() as *mut JsObject, "entries")
-    } else {
-        (world.set_proto.as_ptr() as *mut JsObject, "values")
+    let (anchor_ptr, anchor_name) = {
+        let session = vm.session();
+        let world = session.builtin_world();
+        if is_array_value(value) {
+            (world.array_proto.as_ptr() as *mut JsObject, "values")
+        } else if is_typed_array_value(value) {
+            (world.typed_array_proto.as_ptr() as *mut JsObject, "values")
+        } else if is_map_value(value) {
+            (world.map_proto.as_ptr() as *mut JsObject, "entries")
+        } else {
+            (world.set_proto.as_ptr() as *mut JsObject, "values")
+        }
     };
     let anchor_obj = unsafe { &*anchor_ptr };
     let anchor_si = vm.kernel_core().perm_interner().intern(anchor_name).0;
