@@ -220,20 +220,23 @@ impl oxide_runtime_api::VmHost for Vm {
     fn create_dynamic_script(&mut self, code: &str) -> Result<JsValue, String> {
         self.create_dynamic_script(code)
     }
-    fn symbol_intern(&mut self, desc: Option<String>) -> u32 {
-        self.symbols.intern(desc)
+    fn realm_id(&self) -> u32 {
+        self.realm_id()
     }
-    fn symbol_description(&self, idx: u32) -> Option<&str> {
-        self.symbols.description(idx)
+    fn symbol_intern(&mut self, desc: Option<String>) -> u32 {
+        self.realm.symbols.borrow_mut().intern(desc)
+    }
+    fn symbol_description(&self, idx: u32) -> Option<String> {
+        self.realm.symbols.borrow().description(idx).map(|s| s.to_string())
     }
     fn symbol_lookup_global(&self, key: &str) -> Option<u32> {
-        self.symbols.lookup_global(key)
+        self.realm.symbols.borrow().lookup_global(key)
     }
     fn symbol_register_global(&mut self, key: String, idx: u32) {
-        self.symbols.register_global(key, idx)
+        self.realm.symbols.borrow_mut().register_global(key, idx)
     }
     fn symbol_key_for_id(&self, idx: u32) -> Option<String> {
-        self.symbols.key_for_id(idx)
+        self.realm.symbols.borrow().key_for_id(idx)
     }
     fn atomics_new_waiter_promise(&mut self) -> JsValue {
         self.atomics_new_waiter_promise()

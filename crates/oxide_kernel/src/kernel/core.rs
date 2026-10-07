@@ -4,7 +4,7 @@
 
 use std::num::NonZeroUsize;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use crate::code_forge::CodeForge;
@@ -30,6 +30,10 @@ pub struct KernelCore {
     /// `Vm` 构造器增、`Drop for Vm` 减（恰好一次），供 sweep / kernel 重建 /
     /// kernel drop 处断言"无存活 VM"边界。
     active_vms: AtomicUsize,
+    /// realm 编号计数器：进程内单调递增，`alloc_realm_id` 取当前值后自增。
+    /// 首个 realm 编号为 0（与旧符号编码一致），至多 2^9 = 512 个 realm
+    /// （属性键符号空间 29 位减局部下标 20 位）。
+    realm_counter: AtomicU32,
 }
 
 impl KernelCore {
@@ -59,6 +63,7 @@ impl KernelCore {
             code_forge,
             prop_forge,
             active_vms: AtomicUsize::new(0),
+            realm_counter: AtomicU32::new(0),
         });
         kernel_info!("KernelCore initialized: max_cached_modules={}, min_pool={}", max_cached, min_pool);
         core
@@ -187,6 +192,15 @@ impl KernelCore {
     /// 读取当前持有本 kernel 的存活 Vm 数；release 宿主可在 id 空间复位边界自检。
     pub fn active_vms(&self) -> usize {
         self.active_vms.load(Ordering::Relaxed)
+    }
+
+    /// 分配一个 realm 编号：取计数器当前值后自增，进程内单调递增。
+    ///
+    /// 首个 realm 编号为 0（与旧符号编码一致），供 `Realm` 构造时固化。
+    /// 编号空间至多 2^9 = 512（属性键符号空间约束），超出后回绕（debug 断言不触发，
+    /// 实际单进程 realm 数远小于该上界）。
+    pub fn alloc_realm_id(&self) -> u32 {
+        self.realm_counter.fetch_add(1, Ordering::Relaxed)
     }
 }
 

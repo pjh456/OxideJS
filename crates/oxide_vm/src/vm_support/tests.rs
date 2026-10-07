@@ -1108,13 +1108,13 @@ fn benign_run_does_not_falsely_dirty_builtins() {
 #[test]
 fn full_reset_clears_symbol_state() {
     let mut vm = Vm::new();
-    vm.symbols.intern(Some("shared".to_string()));
+    vm.realm.symbols.borrow_mut().intern(Some("shared".to_string()));
 
     vm.full_reset();
 
-    assert_eq!(vm.symbols.symbol_counter, 0);
-    assert!(vm.symbols.symbol_descriptions.is_empty());
-    assert!(vm.symbols.symbol_registry.is_empty());
+    assert_eq!(vm.realm.symbols.borrow().symbol_counter, 0);
+    assert!(vm.realm.symbols.borrow().symbol_descriptions.is_empty());
+    assert!(vm.realm.symbols.borrow().symbol_registry.is_empty());
 }
 
 /// 编译源文本为模块（供步数上限测试直接 `run` 并检查 `Result`）。

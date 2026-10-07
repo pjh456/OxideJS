@@ -304,7 +304,7 @@ impl Vm {
 
     /// 全局 symbol 注册表中已注册的 key 数量。
     pub fn symbol_registry_len(&self) -> usize {
-        self.symbols.registry_len()
+        self.realm.symbols.borrow().registry_len()
     }
 
     /// inline cache 命中次数。

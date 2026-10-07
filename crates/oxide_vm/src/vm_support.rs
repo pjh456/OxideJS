@@ -58,6 +58,8 @@ impl Vm {
         let obj_proto = P::clone(&session.builtin_world().object_proto);
         // 提前缓存执行期字符串 GC 初始水位（构造后 config 不再变化）。
         let gc_threshold = core.config().session_gc_threshold;
+        // realm 编号在构造时分配并固化：首个 realm 编号为 0（与旧符号编码一致）。
+        let realm_id = core.alloc_realm_id();
         let mut vm = Self {
             regs: [JsValue::undefined(); 256],
             pc: 0,
@@ -66,6 +68,7 @@ impl Vm {
             frames: smallvec::SmallVec::new(),
             kernel_core: core,
             realm: Arc::new(Realm {
+                realm_id,
                 session: RefCell::new(session),
                 object_prototype: RefCell::new(obj_proto),
                 generator_proto: RefCell::new(P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()))),
@@ -91,6 +94,11 @@ impl Vm {
                     gc_watermark: gc_threshold,
                     pending_forced_collect: false,
                     gc_pressure_mode: gc_pressure_mode_from_env(),
+                }),
+                symbols: RefCell::new(SymbolState {
+                    symbol_counter: 0,
+                    symbol_descriptions: Vec::new(),
+                    symbol_registry: std::collections::HashMap::new(),
                 }),
             }),
             length_si,
@@ -153,11 +161,6 @@ impl Vm {
             async_gen_context: None,
             async_gen_dispatch: false,
             async_gen_suspended: false,
-            symbols: SymbolState {
-                symbol_counter: 0,
-                symbol_descriptions: Vec::new(),
-                symbol_registry: std::collections::HashMap::new(),
-            },
             iters: IterState {
                 for_in_iters: Vec::new(),
                 for_of_iters: Vec::new(),
@@ -205,6 +208,8 @@ impl Vm {
         let obj_proto = P::clone(&session.builtin_world().object_proto);
         // 提前缓存执行期字符串 GC 初始水位（构造后 config 不再变化）。
         let gc_threshold = core.config().session_gc_threshold;
+        // realm 编号在构造时分配并固化：首个 realm 编号为 0（与旧符号编码一致）。
+        let realm_id = core.alloc_realm_id();
         let mut vm = Self {
             regs: [JsValue::undefined(); 256],
             pc: 0,
@@ -213,6 +218,7 @@ impl Vm {
             frames: smallvec::SmallVec::new(),
             kernel_core: core,
             realm: Arc::new(Realm {
+                realm_id,
                 session: RefCell::new(session),
                 object_prototype: RefCell::new(obj_proto),
                 generator_proto: RefCell::new(P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()))),
@@ -238,6 +244,11 @@ impl Vm {
                     gc_watermark: gc_threshold,
                     pending_forced_collect: false,
                     gc_pressure_mode: gc_pressure_mode_from_env(),
+                }),
+                symbols: RefCell::new(SymbolState {
+                    symbol_counter: 0,
+                    symbol_descriptions: Vec::new(),
+                    symbol_registry: std::collections::HashMap::new(),
                 }),
             }),
             length_si,
@@ -300,11 +311,6 @@ impl Vm {
             async_gen_context: None,
             async_gen_dispatch: false,
             async_gen_suspended: false,
-            symbols: SymbolState {
-                symbol_counter: 0,
-                symbol_descriptions: Vec::new(),
-                symbol_registry: std::collections::HashMap::new(),
-            },
             iters: IterState {
                 for_in_iters: Vec::new(),
                 for_of_iters: Vec::new(),
@@ -450,7 +456,7 @@ impl Vm {
         let threshold = self.realm.gc.borrow().gc_threshold_cached;
         self.realm.gc.borrow_mut().gc_watermark = threshold;
         self.realm.gc.borrow_mut().session_gc = crate::session_gc::SessionGc::new();
-        self.symbols.reset();
+        self.realm.symbols.borrow_mut().reset();
         self.root_reg_limit = 0;
         self.active_reg_limit = 0;
         // 步数上限覆盖随池回收清位：执行路径按请求必设覆盖（含 None），

@@ -90,7 +90,7 @@ pub fn symbol_to_string<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         Err(e) => return NativeResult::Err(e),
     };
     let idx = sym.as_symbol_index();
-    let desc = vm.symbol_description(idx).unwrap_or("").to_string();
+    let desc = vm.symbol_description(idx).unwrap_or_default();
     let result = format!("Symbol({})", desc);
     NativeResult::Ok(vm.new_string_owned(result))
 }
@@ -129,7 +129,7 @@ pub fn symbol_description_getter<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeRe
     };
     let idx = sym.as_symbol_index();
     match vm.symbol_description(idx) {
-        Some(desc) => NativeResult::Ok(vm.new_string_owned(desc.to_string())),
+        Some(desc) => NativeResult::Ok(vm.new_string_owned(desc)),
         None => NativeResult::Ok(JsValue::undefined()),
     }
 }

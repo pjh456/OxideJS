@@ -74,3 +74,36 @@ fn int_key_roundtrip_max() {
     assert!(key < PRIVATE_NAME_BASE);
     assert_eq!(int_key_value(key), INT_KEY_COUNT - 1);
 }
+
+#[test]
+fn realm_zero_symbol_keys_match_legacy() {
+    // realm 编号为 0 时新编码与旧编码逐字节一致：well-known 与用户符号各取若干下标比对。
+    for id in 0..WELL_KNOWN_SYMBOL_COUNT {
+        assert_eq!(encode_symbol_key(0, id), make_well_known_symbol_key(id));
+    }
+    for idx in WELL_KNOWN_SYMBOL_COUNT..(WELL_KNOWN_SYMBOL_COUNT + 8) {
+        assert_eq!(encode_symbol_key(0, idx), make_symbol_key(idx));
+    }
+}
+
+#[test]
+fn symbol_key_realm_roundtrip() {
+    for realm in [0u32, 1, 7, 511] {
+        for idx in [0u32, 14, 15, 16, 1000] {
+            let key = encode_symbol_key(realm, idx);
+            assert!(is_symbol_key(key));
+            assert_eq!(decode_symbol_key(key), (realm, idx));
+            assert_eq!(symbol_realm_id_from_key(key), realm);
+            assert_eq!(symbol_local_index_from_key(key), idx);
+        }
+    }
+}
+
+#[test]
+fn symbol_key_realm_dimensions_distinct() {
+    // 同下标不同 realm 产生不同键；同 realm 不同下标产生不同键。
+    assert_ne!(encode_symbol_key(0, 15), encode_symbol_key(1, 15));
+    assert_ne!(encode_symbol_key(1, 15), encode_symbol_key(1, 16));
+    // 跨 realm 同名 well-known 符号也产生不同键。
+    assert_ne!(encode_symbol_key(0, WELL_KNOWN_SYMBOL_ITERATOR), encode_symbol_key(2, WELL_KNOWN_SYMBOL_ITERATOR));
+}

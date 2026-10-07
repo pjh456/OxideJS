@@ -364,6 +364,18 @@ impl JsValue {
         Self(make_tag(TAG_SYMBOL) | (index as u64))
     }
 
+    /// 构造 realm 感知 symbol 值（payload = (realm 编号 << 20) | 全局下标）。
+    ///
+    /// 全局下标沿用现有口径（0..14 well-known、15 起用户符号）。realm 编号为
+    /// 0 时与 [`symbol`](Self::symbol) 逐字节一致。
+    ///
+    /// # 边界与前提
+    /// - `realm_id < 2^12`（payload 32 位减局部下标 20 位），`local_index`
+    ///   须落在 20 位内（每 realm 至多 2^20 个符号）。
+    pub fn symbol_realm(realm_id: u32, local_index: u32) -> Self {
+        Self(make_tag(TAG_SYMBOL) | (((realm_id << 20) | (local_index & 0x000F_FFFF)) as u64))
+    }
+
     /// 是否为 symbol。
     pub fn is_symbol(&self) -> bool {
         is_nan_boxed(self.0) && get_tag(self.0) == TAG_SYMBOL
@@ -373,6 +385,19 @@ impl JsValue {
     pub fn as_symbol_index(&self) -> u32 {
         debug_assert!(self.is_symbol());
         (self.0 & INT_MASK) as u32
+    }
+
+    /// 解出 symbol 的 realm 编号；调用方须先保证 [`is_symbol`](JsValue::is_symbol)。
+    pub fn as_symbol_realm_id(&self) -> u32 {
+        debug_assert!(self.is_symbol());
+        ((self.0 & INT_MASK) >> 20) as u32
+    }
+
+    /// 解出 symbol 的全局下标（0..14 well-known、15 起用户符号）；
+    /// 调用方须先保证 [`is_symbol`](JsValue::is_symbol)。
+    pub fn as_symbol_local_index(&self) -> u32 {
+        debug_assert!(self.is_symbol());
+        ((self.0 & INT_MASK) & 0x000F_FFFF) as u32
     }
 
     /// 构造 BigInt 值（payload 为堆分配 `i128` 的 48 位指针）。

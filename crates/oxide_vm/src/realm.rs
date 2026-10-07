@@ -19,7 +19,7 @@ use oxide_types::mem::P;
 use oxide_types::object::JsObject;
 
 use crate::session_gc::SessionGc;
-use crate::vm_state::GcState;
+use crate::vm_state::{GcState, SymbolState};
 
 /// 每 VM 的 realm 组合：内核会话（builtin world 与 global 对象）、
 /// session GC 簿记与 10 个内建原型槽。
@@ -30,8 +30,12 @@ use crate::vm_state::GcState;
 /// 透传。
 ///
 /// 字段顺序按原 `Vm` 声明顺序（session 先、10 个 P 字段次之、gc 最后），
-/// 保 Drop 相对顺序。
+/// 保 Drop 相对顺序。`realm_id` 是分配时固化的编号（无 Drop 关切）；
+/// `symbols` 是 per-realm 符号表（经 `RefCell` 内部可变性，与 session/gc 同型）。
 pub(crate) struct Realm {
+    /// realm 编号：构造时经 `KernelCore::alloc_realm_id` 分配，进程内单调递增，
+    /// 首个 realm 编号为 0（与旧符号编码一致）。符号身份 = (realm 编号, 局部下标)。
+    pub(crate) realm_id: u32,
     pub(crate) session: RefCell<KernelSession>,
     /// `%Object.prototype%`：session 的 Object 原型（global 的 `[[Prototype]]` 挂它）。
     pub(crate) object_prototype: RefCell<P<JsObject>>,
@@ -56,6 +60,9 @@ pub(crate) struct Realm {
     pub(crate) async_generator_function_proto: RefCell<P<JsObject>>,
     /// session 堆与 GC 簿记（对象/字符串/BigInt/cell 四表 + 水位与账目）。
     pub(crate) gc: RefCell<GcState>,
+    /// per-realm 符号表：well-known 名表 + 用户符号描述 + `Symbol.for` 全局注册表。
+    /// 只持 Rust `String` 与 `u32` 下标，无 GC 根，移入 realm 后 `Send` 性不变。
+    pub(crate) symbols: RefCell<SymbolState>,
 }
 
 impl Drop for Realm {

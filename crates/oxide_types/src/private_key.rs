@@ -173,5 +173,59 @@ pub const fn well_known_symbol_id_from_key(key: u32) -> Option<u32> {
     }
 }
 
+/// 符号键局部下标占用的位数（低 20 位）。
+///
+/// 每 realm 至多 2^20 个符号，充足；realm 编号占高位（属性键符号空间 29 位
+/// 减 20 位，至多 2^9 = 512 个 realm）。
+pub const SYMBOL_LOCAL_INDEX_BITS: u32 = 20;
+
+/// 符号键局部下标的位掩码（低 20 位）。
+pub const SYMBOL_LOCAL_INDEX_MASK: u32 = (1 << SYMBOL_LOCAL_INDEX_BITS) - 1;
+
+/// 把 (realm 编号, 全局下标) 编码为属性键。
+///
+/// 全局下标沿用现有口径（0..14 well-known、15 起用户符号）；编码时按现有口径
+/// 叠加 well-known 预留槽偏移（用户符号下标再加一次偏移），realm 编号前置到
+/// 高位。realm 编号为 0 时与旧编码（[`make_well_known_symbol_key`] /
+/// [`make_symbol_key`]）逐字节一致。
+///
+/// # 边界与前提
+/// - `realm_id < 2^9`（属性键符号空间 29 位减局部下标 20 位），`global_idx`
+///   的键偏移须落在 20 位内（每 realm 至多 2^20 个符号）。
+#[inline]
+pub const fn encode_symbol_key(realm_id: u32, global_idx: u32) -> u32 {
+    let offset = if global_idx < WELL_KNOWN_SYMBOL_COUNT {
+        global_idx
+    } else {
+        WELL_KNOWN_SYMBOL_COUNT + global_idx
+    };
+    SYMBOL_KEY_BASE | ((realm_id << SYMBOL_LOCAL_INDEX_BITS) | (offset & SYMBOL_LOCAL_INDEX_MASK))
+}
+
+/// 从属性键反解 realm 编号（与 [`encode_symbol_key`] 的 realm 维度互逆）。
+#[inline]
+pub const fn symbol_realm_id_from_key(key: u32) -> u32 {
+    (key - SYMBOL_KEY_BASE) >> SYMBOL_LOCAL_INDEX_BITS
+}
+
+/// 从属性键反解全局下标（与 [`encode_symbol_key`] 的下标维度互逆）。
+///
+/// 按现有口径反解：well-known 区间直取，用户区间减一次 well-known 预留槽偏移。
+#[inline]
+pub const fn symbol_local_index_from_key(key: u32) -> u32 {
+    let local = (key - SYMBOL_KEY_BASE) & SYMBOL_LOCAL_INDEX_MASK;
+    if local < WELL_KNOWN_SYMBOL_COUNT {
+        local
+    } else {
+        local - WELL_KNOWN_SYMBOL_COUNT
+    }
+}
+
+/// 把属性键反解为 (realm 编号, 全局下标)（与 [`encode_symbol_key`] 互逆）。
+#[inline]
+pub const fn decode_symbol_key(key: u32) -> (u32, u32) {
+    (symbol_realm_id_from_key(key), symbol_local_index_from_key(key))
+}
+
 #[cfg(test)]
 mod tests;

@@ -19,7 +19,7 @@ pub use crate::bindings::init_kernel_builtins;
 use crate::native::NativeFn;
 use crate::realm::Realm;
 use crate::vm_debug;
-use crate::vm_state::{IterState, ProfilingState, SampleState, SymbolState};
+use crate::vm_state::{IterState, ProfilingState, SampleState};
 use oxide_kernel::kernel::{KernelCore, KernelSession};
 use oxide_types::error::JsErrorKind;
 use oxide_types::object::{Cell, JsObject, JsString, NativeFnPtr};
@@ -341,8 +341,6 @@ pub struct Vm {
     /// 异步生成器 body `dispatch()` 的 AWAIT 让出信号：置 true 表示挂起在 await，
     /// 恢复方（异步生成器内嵌 dispatch 循环）据此快照挂起状态。
     pub(crate) async_gen_suspended: bool,
-    /// 分组保存 `Symbol` intern 状态。
-    pub(crate) symbols: SymbolState,
     /// 分组保存活跃的 for-in / for-of 迭代器状态。
     pub(crate) iters: IterState,
     /// 分组保存 inline cache 与指令计数器。
@@ -453,6 +451,11 @@ impl Vm {
     /// 在单表达式内消费，不跨 `borrow_mut` 长存。
     pub fn session(&self) -> std::cell::Ref<'_, KernelSession> {
         self.realm.session.borrow()
+    }
+
+    /// 读取本 VM 所属 realm 的编号（符号身份 = (realm 编号, 局部下标) 的 realm 维度）。
+    pub fn realm_id(&self) -> u32 {
+        self.realm.realm_id
     }
 
     /// 判定裸指针是否指向当前 session 的 `%Object.prototype%`。

@@ -258,9 +258,14 @@ pub trait VmHost {
     /// 动态编译脚本（`eval` 字符串模式）：按脚本模式编译，var/函数声明落全局对象。
     /// 编译或解析失败返回 `Err`，由调用方转为 `SyntaxError`。
     fn create_dynamic_script(&mut self, code: &str) -> Result<JsValue, String>;
+    /// 读取本 VM 所属 realm 的编号（符号身份 = (realm 编号, 局部下标) 的 realm 维度）。
+    ///
+    /// 供 `oxide_builtins` 侧构造 realm 感知符号键 / 符号值时取 realm 编号。
+    fn realm_id(&self) -> u32;
     /// `None` 表示无描述（`Symbol()`/`Symbol(undefined)`），`Some(desc)` 为字符串描述。
     fn symbol_intern(&mut self, desc: Option<String>) -> u32;
-    fn symbol_description(&self, idx: u32) -> Option<&str>;
+    /// 符号描述字符串（符号表入 realm 后数据在 `RefCell` 内，返回克隆串免临时 `Ref` 悬垂）。
+    fn symbol_description(&self, idx: u32) -> Option<String>;
     fn symbol_lookup_global(&self, key: &str) -> Option<u32>;
     fn symbol_register_global(&mut self, key: String, idx: u32);
     fn symbol_key_for_id(&self, idx: u32) -> Option<String>;
