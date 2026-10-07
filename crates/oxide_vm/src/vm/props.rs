@@ -4,26 +4,19 @@
 use oxide_runtime_api as coercion;
 
 use oxide_types::object::JsObject;
-use oxide_types::private_key::{
-    int_key_value, is_int_key, make_int_key, make_symbol_key, make_well_known_symbol_key, INT_KEY_COUNT,
-    WELL_KNOWN_SYMBOL_COUNT,
-};
+use oxide_types::private_key::{encode_symbol_key, int_key_value, is_int_key, make_int_key, INT_KEY_COUNT};
 use oxide_types::value::JsValue;
 
 use super::{canonical_index_of, canonical_index_units, Vm, MAX_PROTO_CHAIN_DEPTH};
 use crate::vm_trace;
 
-/// 把符号原语的下标编码为属性键：well-known 下标走保留键槽，用户下标加偏移，
-/// 两段键区间不重叠。
-fn symbol_value_key(idx: u32) -> u32 {
-    if idx < WELL_KNOWN_SYMBOL_COUNT {
-        make_well_known_symbol_key(idx)
-    } else {
-        make_symbol_key(idx)
-    }
-}
-
 impl Vm {
+    /// 把符号原语的局部下标编码为属性键：经 realm 感知编码（realm 编号占高位、
+    /// 局部下标占低 20 位），realm 0 路径与旧编码逐字节一致。
+    fn symbol_value_key(&self, idx: u32) -> u32 {
+        encode_symbol_key(self.realm_id(), idx)
+    }
+
     /// 把 `JsValue` 转为属性键 si（字符串 intern id，`u32`）。
     ///
     /// 非负小整数（含整值 double）直接编码到整数键区间，免 to_string + intern；
@@ -55,16 +48,16 @@ impl Vm {
             return Ok(self.string_key_units(&s.units()));
         }
         // Symbol 值直接编码为 Symbol 键（不进字符串 interner，键相互独立）；
-        // well-known 下标占保留槽，用户符号下标须加偏移，两段键区间不重叠。
+        // realm 编号占高位、局部下标占低 20 位，realm 0 与旧编码逐字节一致。
         if val.is_symbol() {
-            return Ok(symbol_value_key(val.as_symbol_index()));
+            return Ok(self.symbol_value_key(val.as_symbol_local_index()));
         }
         if val.is_object() {
             // ToPropertyKey：对象经 ToPrimitive(string hint)，结果为 Symbol 时直接作键；
             // 其余字符串按单元序列推导键（避免 lossy 文本桥接破坏孤立 surrogate 键）。
             let prim = coercion::to_primitive(val, coercion::ToPrimitiveHint::String, self)?;
             if prim.is_symbol() {
-                return Ok(symbol_value_key(prim.as_symbol_index()));
+                return Ok(self.symbol_value_key(prim.as_symbol_local_index()));
             }
             let units = oxide_runtime_api::to_units_full(prim, self)?;
             return Ok(self.string_key_units(&units));

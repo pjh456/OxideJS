@@ -985,8 +985,9 @@ fn string_to_bigint_full<H: VmHost>(host: &mut H, s: &str) -> Result<JsValue, St
 /// ToPrimitive 返回 Symbol 本体，ToString 抛 TypeError。
 pub fn to_string_for_string_constructor<H: VmHost>(val: JsValue, host: &mut H) -> Result<String, String> {
     // 原始 Symbol：步骤 2a，SymbolDescriptiveString（不经 ToString）。
+    // 描述表按 realm 内局部下标索引，取局部下标（realm 0 与全载荷一致）。
     if val.is_symbol() {
-        let desc = host.symbol_description(val.as_symbol_index()).unwrap_or_default();
+        let desc = host.symbol_description(val.as_symbol_local_index()).unwrap_or_default();
         return Ok(format!("Symbol({desc})"));
     }
     // 步骤 3：ToString。装箱 Symbol 经 ToPrimitive 得 Symbol 本体，ToString 抛 TypeError。

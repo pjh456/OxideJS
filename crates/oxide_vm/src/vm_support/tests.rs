@@ -1112,7 +1112,6 @@ fn full_reset_clears_symbol_state() {
 
     vm.full_reset();
 
-    assert_eq!(vm.realm.symbols.borrow().symbol_counter, 0);
     assert!(vm.realm.symbols.borrow().symbol_descriptions.is_empty());
     assert!(vm.realm.symbols.borrow().symbol_registry.is_empty());
 }

@@ -96,7 +96,6 @@ impl Vm {
                     gc_pressure_mode: gc_pressure_mode_from_env(),
                 }),
                 symbols: RefCell::new(SymbolState {
-                    symbol_counter: 0,
                     symbol_descriptions: Vec::new(),
                     symbol_registry: std::collections::HashMap::new(),
                 }),
@@ -246,7 +245,6 @@ impl Vm {
                     gc_pressure_mode: gc_pressure_mode_from_env(),
                 }),
                 symbols: RefCell::new(SymbolState {
-                    symbol_counter: 0,
                     symbol_descriptions: Vec::new(),
                     symbol_registry: std::collections::HashMap::new(),
                 }),

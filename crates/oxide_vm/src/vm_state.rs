@@ -90,27 +90,25 @@ impl GcState {
     }
 }
 
-/// Symbol 的 intern 状态。
+/// 每 realm 一份的 Symbol intern 状态。
 ///
-/// 符号下标 `0..WELL_KNOWN_SYMBOL_COUNT` 保留给 well-known symbol（描述取内建
-/// 名表），用户 `Symbol()`/`Symbol.for()` 的下标自此区间之后递增，
-/// `symbol_descriptions` 只存用户符号描述。
+/// 符号下标是 realm 内局部下标：`0..WELL_KNOWN_SYMBOL_COUNT` 保留给
+/// well-known symbol（描述取内建名表），用户 `Symbol()`/`Symbol.for()` 的
+/// 局部下标自此区间之后递增，`symbol_descriptions` 只存用户符号描述。
+/// 局部下标由描述槽数自然递增，每 realm 独立计数。
 pub(crate) struct SymbolState {
-    pub(crate) symbol_counter: u32,
     pub(crate) symbol_descriptions: Vec<Option<String>>,
     pub(crate) symbol_registry: HashMap<String, u32>,
 }
 
 impl SymbolState {
     pub(crate) fn reset(&mut self) {
-        self.symbol_counter = 0;
         self.symbol_descriptions.clear();
         self.symbol_registry.clear();
     }
 
     pub(crate) fn intern(&mut self, description: Option<String>) -> u32 {
-        self.symbol_counter = self.symbol_counter.wrapping_add(1);
-        // 用户符号下标顺延到 well-known 保留区间之后，与 well-known 下标空间不重叠。
+        // 用户符号局部下标顺延到 well-known 保留区间之后，与 well-known 下标空间不重叠。
         let idx = WELL_KNOWN_SYMBOL_COUNT + self.symbol_descriptions.len() as u32;
         self.symbol_descriptions.push(description);
         idx
