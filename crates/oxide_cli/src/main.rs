@@ -322,7 +322,12 @@ fn main() -> ExitCode {
 /// - watchdog spawn 脱离的 server 子进程，崩溃后经同一入口重启。
 fn server_command(command: ServerCommands) -> ExitCode {
     match command {
-        ServerCommands::Start { rm, idle_timeout, workers, foreground } => {
+        ServerCommands::Start {
+            rm,
+            idle_timeout,
+            workers,
+            foreground,
+        } => {
             if rm {
                 let mut config = RmServerConfig {
                     idle_timeout: Duration::from_secs(idle_timeout),
@@ -427,11 +432,7 @@ fn server_command(command: ServerCommands) -> ExitCode {
 /// 渲染 `ForgeStatus` 为多行文本：首行条目数，容量 / gc / 清缓存 / lookup
 /// 行按旗标结果附加。
 fn render_forge_status(
-    target: ForgeTarget,
-    entries: usize,
-    capacity: usize,
-    gc_collected: Option<usize>,
-    cache_cleared: bool,
+    target: ForgeTarget, entries: usize, capacity: usize, gc_collected: Option<usize>, cache_cleared: bool,
     lookup: Option<LookupResult>,
 ) -> String {
     let mut lines = vec![format!("{} forge: {entries} entries", target.as_str())];
@@ -573,10 +574,7 @@ fn restart_command() -> ExitCode {
 fn log_command(follow: bool, level: Option<Level>, lines: Option<usize>) -> ExitCode {
     let path = sidecar::well_known_log_path();
     if !path.exists() {
-        eprintln!(
-            "{}",
-            Red.paint(format!("日志文件不存在：{}（server 可能未启动过）", path.display()))
-        );
+        eprintln!("{}", Red.paint(format!("日志文件不存在：{}（server 可能未启动过）", path.display())));
         return ExitCode::FAILURE;
     }
 

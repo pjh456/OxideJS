@@ -81,8 +81,7 @@ fn server_help_lists_subcommands() {
     assert!(output.status.success(), "server --help 应退 0");
     let stdout = String::from_utf8_lossy(&output.stdout);
     for name in [
-        "start", "stop", "status", "health", "info", "version", "cleanup", "restart", "log", "forge",
-        "watchdog",
+        "start", "stop", "status", "health", "info", "version", "cleanup", "restart", "log", "forge", "watchdog",
     ] {
         assert!(stdout.contains(name), "help 应列出 {name}：{stdout}");
     }
@@ -124,10 +123,7 @@ fn server_control_arms_no_server_exit_1() {
         let output = oxide(&["server", sub]);
         assert_eq!(output.status.code(), Some(1), "{sub} 应退 1");
         let stderr = String::from_utf8_lossy(&output.stderr);
-        assert!(
-            stderr.contains("无已注册的 server"),
-            "{sub} 应打印无 server 提示：{stderr}"
-        );
+        assert!(stderr.contains("无已注册的 server"), "{sub} 应打印无 server 提示：{stderr}");
     }
 }
 
@@ -145,10 +141,7 @@ fn server_forge_no_server_exit_1() {
     let output = oxide(&["server", "forge", "code"]);
     assert_eq!(output.status.code(), Some(1), "forge 应退 1");
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains("无已注册的 server"),
-        "forge 应打印无 server 提示：{stderr}"
-    );
+    assert!(stderr.contains("无已注册的 server"), "forge 应打印无 server 提示：{stderr}");
 }
 
 /// cleanup 退 0（幂等：有残留则清理、无残留则报无残留），事后全局路径无文件。

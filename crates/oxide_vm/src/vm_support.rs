@@ -80,7 +80,10 @@ impl Vm {
                 aggregate_error_proto: RefCell::new(P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()))),
                 async_function_proto: RefCell::new(P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()))),
                 async_generator_proto: RefCell::new(P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()))),
-                async_generator_function_proto: RefCell::new(P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()))),
+                async_generator_function_proto: RefCell::new(P::new(JsObject::new_empty(
+                    EMPTY_SHAPE_ID,
+                    JsValue::null(),
+                ))),
                 gc: RefCell::new(GcState {
                     session_gc: crate::session_gc::SessionGc::new(),
                     session_object_ptrs: Vec::new(),
@@ -230,7 +233,10 @@ impl Vm {
                 aggregate_error_proto: RefCell::new(P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()))),
                 async_function_proto: RefCell::new(P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()))),
                 async_generator_proto: RefCell::new(P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()))),
-                async_generator_function_proto: RefCell::new(P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()))),
+                async_generator_function_proto: RefCell::new(P::new(JsObject::new_empty(
+                    EMPTY_SHAPE_ID,
+                    JsValue::null(),
+                ))),
                 gc: RefCell::new(GcState {
                     session_gc: crate::session_gc::SessionGc::new(),
                     session_object_ptrs: Vec::new(),
@@ -400,9 +406,7 @@ impl Vm {
                 self.realm_id(),
             );
         }
-        *self.realm
-            .object_prototype
-            .borrow_mut() = P::clone(&self.realm.session.borrow().builtin_world().object_proto);
+        *self.realm.object_prototype.borrow_mut() = P::clone(&self.realm.session.borrow().builtin_world().object_proto);
         self.init_generator_intrinsics();
         self.init_promise_intrinsics();
         self.init_async_intrinsics();
@@ -418,9 +422,7 @@ impl Vm {
     pub fn full_reset_legacy_for_bench(&mut self) {
         *self.realm.session.borrow_mut() = KernelSession::new(&self.kernel_core);
         bindings::init_kernel_builtins(&self.kernel_core, &mut self.realm.session.borrow_mut(), self.realm_id());
-        *self.realm
-            .object_prototype
-            .borrow_mut() = P::clone(&self.realm.session.borrow().builtin_world().object_proto);
+        *self.realm.object_prototype.borrow_mut() = P::clone(&self.realm.session.borrow().builtin_world().object_proto);
         self.init_generator_intrinsics();
         self.init_promise_intrinsics();
         self.init_async_intrinsics();
@@ -762,7 +764,9 @@ impl Vm {
             } else if is_generator {
                 JsValue::from_js_object(self.realm.generator_proto.borrow().as_ptr() as *mut JsObject)
             } else {
-                JsValue::from_js_object(self.realm.session.borrow().builtin_world().object_proto.as_ptr() as *mut JsObject)
+                JsValue::from_js_object(
+                    self.realm.session.borrow().builtin_world().object_proto.as_ptr() as *mut JsObject
+                )
             };
             // prototype 子对象与函数本体同走 session 分配：`f.prototype ===
             // globalThis.f.prototype` 要求两侧同一对象，逃逸写不会克隆出第二份。

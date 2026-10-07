@@ -114,10 +114,7 @@ impl VmPool {
     /// # 副作用
     /// - 同步创建 `min_size` 个 Vm。
     pub fn with_counters(
-        kernel_core: Arc<KernelCore>,
-        min_size: usize,
-        max_size: Option<usize>,
-        counters: Arc<PoolCounters>,
+        kernel_core: Arc<KernelCore>, min_size: usize, max_size: Option<usize>, counters: Arc<PoolCounters>,
     ) -> Arc<Self> {
         let warm = min_size.min(max_size.unwrap_or(min_size));
         let pool = Arc::new(Self {

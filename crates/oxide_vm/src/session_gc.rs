@@ -774,7 +774,14 @@ impl SessionGc {
     /// forwarding 表与根指针重写。在字符串清扫之后运行。
     /// 返回释放的字节数。
     pub(crate) fn sweep_session_bigints(&mut self, vm: &mut Vm) -> u64 {
-        let old = vm.realm.gc.borrow_mut().session_bigint_ptrs.borrow_mut().drain(..).collect::<Vec<_>>();
+        let old = vm
+            .realm
+            .gc
+            .borrow_mut()
+            .session_bigint_ptrs
+            .borrow_mut()
+            .drain(..)
+            .collect::<Vec<_>>();
         let mut freed = 0u64;
         let mut live = Vec::with_capacity(old.len());
         for ptr in old {
@@ -809,7 +816,14 @@ impl SessionGc {
     /// 统计、不重算存活账目。
     /// 返回释放的字节数。
     pub(crate) fn sweep_session_cells(&mut self, vm: &mut Vm) -> u64 {
-        let old = vm.realm.gc.borrow_mut().session_cell_ptrs.borrow_mut().drain(..).collect::<Vec<_>>();
+        let old = vm
+            .realm
+            .gc
+            .borrow_mut()
+            .session_cell_ptrs
+            .borrow_mut()
+            .drain(..)
+            .collect::<Vec<_>>();
         let mut freed = 0u64;
         let mut live = Vec::with_capacity(old.len());
         for ptr in old {

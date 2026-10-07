@@ -201,12 +201,20 @@ impl ServerResponse {
 }
 
 /// 请求帧可取的 `type` 值（须与 `ServerRequest` 变体保持同步）。
-const REQUEST_TAGS: &[&str] =
-    &["eval", "forge_query", "version", "status", "health", "info", "shutdown", "yield"];
+const REQUEST_TAGS: &[&str] = &["eval", "forge_query", "version", "status", "health", "info", "shutdown", "yield"];
 
 /// 响应帧可取的 `type` 值（须与 `ServerResponse` 变体保持同步）。
-const RESPONSE_TAGS: &[&str] =
-    &["eval_result", "forge_status", "version", "status", "health", "info", "shutdown", "yield", "error"];
+const RESPONSE_TAGS: &[&str] = &[
+    "eval_result",
+    "forge_status",
+    "version",
+    "status",
+    "health",
+    "info",
+    "shutdown",
+    "yield",
+    "error",
+];
 
 /// 序列化请求为帧字符串（含结尾换行）。
 ///

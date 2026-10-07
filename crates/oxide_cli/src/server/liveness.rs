@@ -146,7 +146,8 @@ pub fn liveness_scan_with_waits(
 /// - 可能向 sidecar 记录的进程发 SIGTERM；可能删除 socket 与 sidecar 文件。
 /// - 杀进程决策与失败记入跨重启保留的日志文件。
 fn kill_zombie(
-    id: &sidecar::ServerIdentity, sidecar_path: &Path, socket_path: &Path, zombie_exit_window: Duration, kill_wait: Duration,
+    id: &sidecar::ServerIdentity, sidecar_path: &Path, socket_path: &Path, zombie_exit_window: Duration,
+    kill_wait: Duration,
 ) -> LivenessOutcome {
     // 有界等待 sidecar 消失：覆盖旧 server 退出序列窗口（排水 5 秒，sidecar
     // 最后删除）。消失即无操作，`claim_sidecar` 的 O_EXCL 创建成功。
@@ -313,11 +314,8 @@ mod tests {
         let sidecar = dir.path("sidecar.json");
         let socket = dir.path("server.sock");
         let listener = UnixListener::bind(&socket).expect("绑定监听者应成功");
-        sidecar::write_exclusive(
-            &sidecar::ServerIdentity::new(socket.to_str().unwrap(), "0.0.0"),
-            &sidecar,
-        )
-        .expect("写 sidecar 应成功");
+        sidecar::write_exclusive(&sidecar::ServerIdentity::new(socket.to_str().unwrap(), "0.0.0"), &sidecar)
+            .expect("写 sidecar 应成功");
         let outcome = liveness_scan(&sidecar, &socket);
         assert_eq!(outcome, LivenessOutcome::Noop, "存活 socket 应判无操作");
         assert!(sidecar.exists(), "sidecar 应原样");
@@ -395,7 +393,8 @@ mod tests {
         sidecar::write_exclusive(&id, &sidecar).expect("写 sidecar 应成功");
         // 注入短僵尸退出窗口（500 毫秒）加短杀进程等待（300 毫秒）：子进程忽略
         // SIGTERM，扫描判杀进程失败，文件原样。
-        let outcome = liveness_scan_with_waits(&sidecar, &socket, Duration::from_millis(500), Duration::from_millis(300));
+        let outcome =
+            liveness_scan_with_waits(&sidecar, &socket, Duration::from_millis(500), Duration::from_millis(300));
         assert_eq!(outcome, LivenessOutcome::KillFailed, "忽略 SIGTERM 应判杀进程失败");
         assert!(sidecar.exists(), "sidecar 应原样");
         assert!(!socket.exists(), "socket 文件应保持不存在");

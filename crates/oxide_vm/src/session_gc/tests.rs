@@ -563,7 +563,8 @@ fn weak_map_dead_key_freed_by_in_run_sweep() {
     // 键无强根：仅表内弱边引用。
     let key = plain_object(&mut vm);
     // P 键（builtin 原型，不可死）：对照条目须保留。
-    let p_key = JsValue::from_js_object(vm.realm.session.borrow().builtin_world().object_proto.as_ptr() as *mut JsObject);
+    let p_key =
+        JsValue::from_js_object(vm.realm.session.borrow().builtin_world().object_proto.as_ptr() as *mut JsObject);
     unsafe {
         oxide_builtins::weak_map::weak_map_insert(
             &mut *wm,
@@ -1196,7 +1197,10 @@ fn live_closure_cell_survives_full_collect() {
     collect(&mut vm);
 
     // 只断言表成员——sweep 已释放的指针解引用即 UB。
-    assert!(vm.realm.gc.borrow().session_cell_ptrs.borrow().contains(&cell_ptr), "活 cell 应跨完整收集存活");
+    assert!(
+        vm.realm.gc.borrow().session_cell_ptrs.borrow().contains(&cell_ptr),
+        "活 cell 应跨完整收集存活"
+    );
 }
 
 /// 活跃帧 cell_stack 根：内层函数 upvalue cell 在活跃帧 cell_stack 上（低阈值使
@@ -1256,7 +1260,10 @@ fn suspended_state_box_cell_root_survives_collect() {
     collect(&mut vm);
 
     // 只断言表成员——sweep 已释放的指针解引用即 UB。
-    assert!(vm.realm.gc.borrow().session_cell_ptrs.borrow().contains(&cell_ptr), "挂起帧 cell 应跨完整收集存活");
+    assert!(
+        vm.realm.gc.borrow().session_cell_ptrs.borrow().contains(&cell_ptr),
+        "挂起帧 cell 应跨完整收集存活"
+    );
 
     // 恢复后读值：cell 未被误释放。
     let read = vm.run(&Arc::new(compile("globalThis.g.next().value"))).expect("read");
@@ -1394,7 +1401,12 @@ fn strings_only_collection_preserves_all_root_kinds() {
 
     assert!(vm.realm.gc.borrow().session_string_ptrs.contains(&reg_str.as_string_ptr_mut()));
     assert!(vm.realm.gc.borrow().session_string_ptrs.contains(&prop_str.as_string_ptr_mut()));
-    assert!(vm.realm.gc.borrow().session_string_ptrs.contains(&epoch_str.as_string_ptr_mut()));
+    assert!(vm
+        .realm
+        .gc
+        .borrow()
+        .session_string_ptrs
+        .contains(&epoch_str.as_string_ptr_mut()));
     assert!(!vm.realm.gc.borrow().session_string_ptrs.contains(&dead_ptr));
     // 存活串内容可读，地址稳定。
     assert_eq!(unsafe { (*reg_str.as_string_ptr_mut()).as_str() }, "reg-root".repeat(16));
@@ -1713,7 +1725,10 @@ fn active_and_suspended_for_in_do_not_block_in_run_collection() {
 
     vm.maybe_collect_in_run();
     assert_eq!(vm.session_gc_stats().total_collections, 1, "无门控：活跃 for-in 存在时收集照常执行");
-    assert!(!vm.realm.gc.borrow().session_object_ptrs.contains(&dead), "死 session 对象应被原地释放并出表");
+    assert!(
+        !vm.realm.gc.borrow().session_object_ptrs.contains(&dead),
+        "死 session 对象应被原地释放并出表"
+    );
 
     // 挂起形：生成器在 for-in 内 yield 后 run 结束，迭代器经状态盒持有
     // （vm.iters 已空）——键经状态盒边入根收集标活，收集照常执行。

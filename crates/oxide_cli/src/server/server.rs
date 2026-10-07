@@ -208,9 +208,7 @@ pub fn run_server(config: &ServerConfig) -> Result<(), ServerError> {
     // 命令。
     match liveness::liveness_scan(&config.sidecar_path, &config.socket_path) {
         liveness::LivenessOutcome::Noop | liveness::LivenessOutcome::Cleaned => {}
-        liveness::LivenessOutcome::KillFailed => {
-            return Err(ServerError::ClaimRefused(ClaimResult::RefusedAmbiguous))
-        }
+        liveness::LivenessOutcome::KillFailed => return Err(ServerError::ClaimRefused(ClaimResult::RefusedAmbiguous)),
     }
 
     // 认领 sidecar：同版本拒绝启动，异版本走交接路径，存活证据不足即返回错误。
@@ -1208,11 +1206,17 @@ mod tests {
     fn yield_takeover_end_to_end() {
         let config = unique_paths("yield_e2e");
         // A 用版本 0.0.1。
-        let config_a = ServerConfig { version: "0.0.1".to_string(), ..config.clone() };
+        let config_a = ServerConfig {
+            version: "0.0.1".to_string(),
+            ..config.clone()
+        };
         let handle_a = start_server(config_a);
 
         // B 用版本 0.0.2：认领得 VersionMismatch 转交接路径。
-        let config_b = ServerConfig { version: "0.0.2".to_string(), ..config.clone() };
+        let config_b = ServerConfig {
+            version: "0.0.2".to_string(),
+            ..config.clone()
+        };
         let handle_b = std::thread::spawn(move || run_server(&config_b));
 
         // A 应在 30 秒内有界退出（排水加退出序列）。

@@ -45,7 +45,11 @@ pub fn line_level(line: &str) -> Option<Level> {
 ///   `ERROR`/`WARN`/`INFO` 行。
 pub fn filter_tail(lines: &[String], min_level: Option<Level>, last_n: Option<usize>) -> Vec<String> {
     let mut filtered: Vec<String> = match min_level {
-        Some(min) => lines.iter().filter(|line| line_level(line).is_some_and(|level| level <= min)).cloned().collect(),
+        Some(min) => lines
+            .iter()
+            .filter(|line| line_level(line).is_some_and(|level| level <= min))
+            .cloned()
+            .collect(),
         None => lines.to_vec(),
     };
     match last_n {
@@ -85,7 +89,10 @@ pub fn follow(path: &Path, min_level: Option<Level>) {
 /// # 副作用
 /// - 向 writer 写行。
 fn follow_to<W: Write>(path: &Path, min_level: Option<Level>, writer: &mut W) {
-    let mut file = OpenOptions::new().read(true).open(path).expect("日志文件应存在（调用方已检查）");
+    let mut file = OpenOptions::new()
+        .read(true)
+        .open(path)
+        .expect("日志文件应存在（调用方已检查）");
     let mut offset = file.seek(SeekFrom::End(0)).expect("定位日志文件末尾应成功");
     let mut buf = [0u8; 8192];
     let mut pending = String::new();
@@ -176,11 +183,7 @@ mod tests {
         // info 留 ERROR/WARN/INFO 行，丢 DEBUG 行。
         assert_eq!(
             filter_tail(&lines, Some(Level::Info), None),
-            vec![
-                "1700000000.001 INFO a: one",
-                "1700000000.002 ERROR a: two",
-                "1700000000.004 WARN a: four",
-            ]
+            vec!["1700000000.001 INFO a: one", "1700000000.002 ERROR a: two", "1700000000.004 WARN a: four",]
         );
         // debug 留 DEBUG 与更严重行（全留）；trace 全留。
         assert_eq!(filter_tail(&lines, Some(Level::Debug), None), lines);

@@ -30,10 +30,7 @@ pub fn spawn_detached_server(workers: Option<u32>) -> std::io::Result<std::proce
     if let Some(n) = workers {
         cmd.args(["--workers", &n.to_string()]);
     }
-    cmd.stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
+    cmd.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn()
 }
 
 /// 就绪探测：轮询健康请求直至得 healthy。

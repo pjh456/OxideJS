@@ -53,8 +53,7 @@ fn control_client_end_to_end() {
     // 状态请求：worker 池异步预热，轮询至总数不小于 1 后核对字段。
     let deadline = Instant::now() + Duration::from_secs(5);
     let response = loop {
-        let response =
-            send_control_request_from(&config.sidecar_path, &ServerRequest::Status).expect("状态请求应成功");
+        let response = send_control_request_from(&config.sidecar_path, &ServerRequest::Status).expect("状态请求应成功");
         if let ServerResponse::Status { pool_total, .. } = &response {
             if *pool_total >= 1 {
                 break response;
@@ -89,12 +88,8 @@ fn control_client_end_to_end() {
     }
 
     // 关闭请求：得确认帧，server 线程正常退出，socket 与 sidecar 文件均被删。
-    let response =
-        send_control_request_from(&config.sidecar_path, &ServerRequest::Shutdown).expect("关闭请求应成功");
-    assert!(
-        matches!(response, ServerResponse::Shutdown),
-        "应得关闭确认帧：{response:?}"
-    );
+    let response = send_control_request_from(&config.sidecar_path, &ServerRequest::Shutdown).expect("关闭请求应成功");
+    assert!(matches!(response, ServerResponse::Shutdown), "应得关闭确认帧：{response:?}");
     let result = handle.join().expect("server 线程应正常退出");
     assert!(result.is_ok(), "server 应正常退出：{result:?}");
     assert!(!config.socket_path.exists(), "socket 文件应被删除");

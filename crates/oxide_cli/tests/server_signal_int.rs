@@ -13,11 +13,7 @@ use oxide_cli::server::server::{run_server, ServerConfig, ServerError};
 /// 唯一临时路径（进程号加测试名）：单进程内唯一，进程间以进程号隔离。
 /// worker 数取小值 2：与既有单测同口径，大值徒增预热成本。
 fn unique_paths(test_name: &str) -> ServerConfig {
-    let dir = std::env::temp_dir().join(format!(
-        "oxide_server_signal_int_{}_{}",
-        std::process::id(),
-        test_name
-    ));
+    let dir = std::env::temp_dir().join(format!("oxide_server_signal_int_{}_{}", std::process::id(), test_name));
     std::fs::create_dir_all(&dir).expect("测试目录创建应成功");
     ServerConfig {
         socket_path: dir.join("server.sock"),

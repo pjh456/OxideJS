@@ -89,8 +89,10 @@ pub fn bind_weak_map(core: &Arc<KernelCore>, session: &mut KernelSession, global
     proto.ensure_hash_props().push(JsValue::from_js_object(ctor_ptr));
     let ctor_pos = proto.hash_props_vec().map_or(0, |v| v.len() as u32).saturating_sub(1);
     proto.set_data_meta(ctor_pos, PropAttributes::new(true, false, true));
-    let tag_key =
-        oxide_types::private_key::encode_symbol_key(realm_id, oxide_types::private_key::WELL_KNOWN_SYMBOL_TO_STRING_TAG);
+    let tag_key = oxide_types::private_key::encode_symbol_key(
+        realm_id,
+        oxide_types::private_key::WELL_KNOWN_SYMBOL_TO_STRING_TAG,
+    );
     let tag_shape = core.shape_forge().make_shape(proto.shape_id(), tag_key);
     proto.set_shape_id(tag_shape);
     proto.ensure_hash_props().push(JsValue::perm_string(

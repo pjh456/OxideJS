@@ -25,7 +25,8 @@ impl Vm {
     /// 创建聚合静态方法（all/race/allSettled/any）的共享记录对象：剩余计数
     /// 初始 1，结果数组（race 无）与能力 resolve/reject 闭包全部存为自身属性。
     fn make_agg_record(&mut self, values: JsValue, resolve: JsValue, reject: JsValue) -> JsValue {
-        let proto_val = JsValue::from_js_object(self.realm.session.borrow().builtin_world().object_proto.as_ptr() as *mut JsObject);
+        let proto_val =
+            JsValue::from_js_object(self.realm.session.borrow().builtin_world().object_proto.as_ptr() as *mut JsObject);
         let ptr = self.alloc_object(JsObject::new_empty(EMPTY_SHAPE_ID, proto_val));
         // SAFETY: ptr 由 alloc_object 新建，返回非空 arena 指针；本次 native 调用内不搬移，借出期间无别名。
         let obj = unsafe { &mut *ptr };
@@ -43,7 +44,8 @@ impl Vm {
     /// 创建 keyed 聚合静态方法的共享记录对象：剩余计数（初始 1）、结果平行数组、
     /// 键平行数组与能力 resolve/reject 闭包存为自身属性。
     fn make_agg_record_keyed(&mut self, values: JsValue, keys: JsValue, resolve: JsValue, reject: JsValue) -> JsValue {
-        let proto_val = JsValue::from_js_object(self.realm.session.borrow().builtin_world().object_proto.as_ptr() as *mut JsObject);
+        let proto_val =
+            JsValue::from_js_object(self.realm.session.borrow().builtin_world().object_proto.as_ptr() as *mut JsObject);
         let ptr = self.alloc_object(JsObject::new_empty(EMPTY_SHAPE_ID, proto_val));
         // SAFETY: ptr 由 alloc_object 新建，返回非空 arena 指针；本次 native 调用内不搬移，借出期间无别名。
         let obj = unsafe { &mut *ptr };
@@ -96,7 +98,8 @@ impl Vm {
 
     /// 构造 allSettled 的结算记录 `{status, <value_field>: value}` 普通对象。
     fn make_settled_record(&mut self, status: &str, value_field: &str, value: JsValue) -> JsValue {
-        let proto_val = JsValue::from_js_object(self.realm.session.borrow().builtin_world().object_proto.as_ptr() as *mut JsObject);
+        let proto_val =
+            JsValue::from_js_object(self.realm.session.borrow().builtin_world().object_proto.as_ptr() as *mut JsObject);
         let ptr = self.alloc_object(JsObject::new_empty(EMPTY_SHAPE_ID, proto_val));
         // SAFETY: ptr 由 alloc_object 新建，返回非空 arena 指针；写 status/value 属性（含 new_string 分配）期间不搬移，借出期间无别名。
         let obj = unsafe { &mut *ptr };
@@ -132,7 +135,8 @@ impl Vm {
 
     /// 把 errors 可迭代值收集为新数组（IterableToList）。不可迭代抛 TypeError。
     fn aggregate_errors_to_list(&mut self, errors: JsValue) -> Result<JsValue, JsValue> {
-        let array_proto = JsValue::from_js_object(self.realm.session.borrow().builtin_world().array_proto.as_ptr() as *mut JsObject);
+        let array_proto =
+            JsValue::from_js_object(self.realm.session.borrow().builtin_world().array_proto.as_ptr() as *mut JsObject);
         let ptr = self.alloc_object(JsObject::new_array(EMPTY_SHAPE_ID, array_proto, 0));
         let list = JsValue::from_js_object(ptr);
         let mut index = 0usize;
@@ -148,7 +152,8 @@ impl Vm {
 
     /// 建普通数组对象并依次写入元素（Promise.try 转发实参的承载）。
     fn make_plain_array(&mut self, elements: Vec<JsValue>) -> JsValue {
-        let array_proto = JsValue::from_js_object(self.realm.session.borrow().builtin_world().array_proto.as_ptr() as *mut JsObject);
+        let array_proto =
+            JsValue::from_js_object(self.realm.session.borrow().builtin_world().array_proto.as_ptr() as *mut JsObject);
         let ptr = self.alloc_object(JsObject::new_array(EMPTY_SHAPE_ID, array_proto, 0));
         // SAFETY: ptr 由 alloc_object 新建，返回非空 arena 指针；元素写入不搬移对象。
         let obj = unsafe { &mut *ptr };
@@ -210,8 +215,9 @@ impl Vm {
         proto.set_data_meta(msg_pos, PropAttributes::new(true, false, true));
 
         // %AggregateError% 构造器：proto = %Error%（NativeError 构造器继承 Error 构造器），length 2。
-        let error_ctor_val =
-            JsValue::from_js_object(self.realm.session.borrow().builtin_world().error_constructor.as_ptr() as *mut JsObject);
+        let error_ctor_val = JsValue::from_js_object(
+            self.realm.session.borrow().builtin_world().error_constructor.as_ptr() as *mut JsObject,
+        );
         let mut ctor = Box::new(JsObject::new_empty(EMPTY_SHAPE_ID, error_ctor_val));
         ctor.set_function(true);
         ctor.type_tag = JsObject::OBJ_TYPE_CONSTRUCTOR;
@@ -239,18 +245,24 @@ impl Vm {
         Self::swap_intrinsic_proto(&mut self.realm.aggregate_error_constructor.borrow_mut(), *ctor);
         // SAFETY: aggregate_error_proto 为堆址固定的 P<JsObject>（Arc 透明包装），本行前刚经 swap_intrinsic_proto 落地；与 ctor_mut 分属不同对象，无别名。
         let proto_mut = unsafe { &mut *self.realm.aggregate_error_proto.borrow().as_mut_ptr() };
-        proto_mut
-            .set_prop_at(0u32, JsValue::from_js_object(self.realm.aggregate_error_constructor.borrow().as_ptr() as *mut JsObject));
+        proto_mut.set_prop_at(
+            0u32,
+            JsValue::from_js_object(self.realm.aggregate_error_constructor.borrow().as_ptr() as *mut JsObject),
+        );
         // SAFETY: aggregate_error_constructor 同为堆址固定的 P<JsObject>（Arc 透明包装）；此处写 prototype 槽位（下标 2），与 proto_mut 分属不同对象，无别名。
         let ctor_mut = unsafe { &mut *self.realm.aggregate_error_constructor.borrow().as_mut_ptr() };
-        ctor_mut.set_prop_at(2u32, JsValue::from_js_object(self.realm.aggregate_error_proto.borrow().as_ptr() as *mut JsObject));
+        ctor_mut.set_prop_at(
+            2u32,
+            JsValue::from_js_object(self.realm.aggregate_error_proto.borrow().as_ptr() as *mut JsObject),
+        );
 
         // 绑定 global（槽已存在则更新）。
         let global_ptr = self.realm.session.borrow().global_object().as_ptr() as *mut JsObject;
         // SAFETY: global 对象由 session 持有，存活整个 session；本函数内只改其 shape/属性区，期间无 reset 或对象搬移。
         let global = unsafe { &mut *global_ptr };
         let si = self.kernel_core.perm_interner().intern("AggregateError").0;
-        let ctor_val = JsValue::from_js_object(self.realm.aggregate_error_constructor.borrow().as_ptr() as *mut JsObject);
+        let ctor_val =
+            JsValue::from_js_object(self.realm.aggregate_error_constructor.borrow().as_ptr() as *mut JsObject);
         if let Some(pos) = self.kernel_core.shape_forge().lookup_position(global.shape_id(), si) {
             global.set_prop_at(pos, ctor_val);
         } else {
@@ -353,7 +365,8 @@ pub(super) fn promise_static_with_resolvers(vm: &mut Vm, args: &[u8]) -> NativeR
         Ok(t) => t,
         Err(err) => return NativeResult::Err(err),
     };
-    let object_proto = JsValue::from_js_object(vm.realm.session.borrow().builtin_world().object_proto.as_ptr() as *mut JsObject);
+    let object_proto =
+        JsValue::from_js_object(vm.realm.session.borrow().builtin_world().object_proto.as_ptr() as *mut JsObject);
     let ptr = vm.alloc_object(JsObject::new_empty(EMPTY_SHAPE_ID, object_proto));
     // SAFETY: ptr 由 alloc_object 新建，返回非空 arena 指针；写 promise/resolve/reject 属性期间不搬移，借出期间无别名。
     let obj = unsafe { &mut *ptr };
@@ -478,7 +491,8 @@ fn perform_promise_combine(
     let values = if kind == AggregateKind::Race {
         JsValue::undefined()
     } else {
-        let array_proto = JsValue::from_js_object(vm.realm.session.borrow().builtin_world().array_proto.as_ptr() as *mut JsObject);
+        let array_proto =
+            JsValue::from_js_object(vm.realm.session.borrow().builtin_world().array_proto.as_ptr() as *mut JsObject);
         let ptr = vm.alloc_object(JsObject::new_array(EMPTY_SHAPE_ID, array_proto, 0));
         JsValue::from_js_object(ptr)
     };

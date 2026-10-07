@@ -88,7 +88,8 @@ impl Vm {
         &mut self, callee: JsValue, this_value: JsValue, args: &[JsValue], promise: JsValue, resolve: JsValue,
         reject: JsValue,
     ) -> JsValue {
-        let proto_val = JsValue::from_js_object(self.realm.session.borrow().builtin_world().object_proto.as_ptr() as *mut JsObject);
+        let proto_val =
+            JsValue::from_js_object(self.realm.session.borrow().builtin_world().object_proto.as_ptr() as *mut JsObject);
         let ptr = self.alloc_object(JsObject::new_empty(EMPTY_SHAPE_ID, proto_val));
         let obj = unsafe { &mut *ptr };
         obj.type_tag = JsObject::OBJ_TYPE_ASYNC;
@@ -607,13 +608,20 @@ pub(crate) fn init_async_intrinsics(vm: &mut Vm) {
     let af_ctor_fn_ptr =
         unsafe { NativeFnPtr::from_raw(oxide_builtins::function::async_function_constructor::<Vm> as *const ()) };
     let (af_ctor_ptr, af_ctor_is_new) =
-        match vm.realm.session.borrow().builtin_world().find_fn_wrapper(af_reuse_key, af_ctor_fn_ptr, 1) {
+        match vm
+            .realm
+            .session
+            .borrow()
+            .builtin_world()
+            .find_fn_wrapper(af_reuse_key, af_ctor_fn_ptr, 1)
+        {
             Some(ptr) => (ptr, false),
             None => {
                 // [[Prototype]] = Function 构造器本体（与 Function 构造器同链，
                 // `Object.getPrototypeOf(AsyncFunction) === Function` 语义）。
-                let fn_ctor_val =
-                    JsValue::from_js_object(vm.realm.session.borrow().builtin_world().function_constructor.as_ptr() as *mut JsObject);
+                let fn_ctor_val = JsValue::from_js_object(
+                    vm.realm.session.borrow().builtin_world().function_constructor.as_ptr() as *mut JsObject,
+                );
                 let mut af_ctor = Box::new(JsObject::new_empty(EMPTY_SHAPE_ID, fn_ctor_val));
                 af_ctor.set_function(true);
                 af_ctor.set_native_arg_count(1);
@@ -638,7 +646,11 @@ pub(crate) fn init_async_intrinsics(vm: &mut Vm) {
                 af_ctor.set_shape_id(tag_shape);
                 let af_ctor_ptr = Box::into_raw(af_ctor);
                 // 登记进 world 释放表（带复用键）：session 收尾统一释放构造器本体与属性区。
-                vm.realm.session.borrow().builtin_world().track_fn_wrapper(af_ctor_ptr, af_reuse_key);
+                vm.realm
+                    .session
+                    .borrow()
+                    .builtin_world()
+                    .track_fn_wrapper(af_ctor_ptr, af_reuse_key);
                 (af_ctor_ptr, true)
             }
         };

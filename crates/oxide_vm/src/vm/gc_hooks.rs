@@ -93,7 +93,10 @@ impl Vm {
         f(RootGroup::ExceptionValue, self.exception_value.unwrap_or(JsValue::undefined()));
         f(RootGroup::PendingException, self.pending_exception.unwrap_or(JsValue::undefined()));
         f(RootGroup::LastUncaught, self.last_uncaught_value.unwrap_or(JsValue::undefined()));
-        f(RootGroup::PendingLengthException, self.pending_length_exception.unwrap_or(JsValue::undefined()));
+        f(
+            RootGroup::PendingLengthException,
+            self.pending_length_exception.unwrap_or(JsValue::undefined()),
+        );
         // 悬挂的 return 完成持有返回值，是 GC 根。
         if let Some(Completion::Return { value, .. }) = self.pending_completion {
             f(RootGroup::PendingCompletion, value);
@@ -150,7 +153,10 @@ impl Vm {
                 }
             }
         }
-        f(RootGroup::Global, JsValue::from_js_object(self.realm.session.borrow().global_object().as_ptr() as *mut JsObject));
+        f(
+            RootGroup::Global,
+            JsValue::from_js_object(self.realm.session.borrow().global_object().as_ptr() as *mut JsObject),
+        );
     }
 
     /// GC 根统一枚举入口：遍历的字段清单与 `for_each_value` 相同。
@@ -266,7 +272,8 @@ impl Vm {
             // SAFETY: ptr 在字符串表登记，收尾前有效。
             bytes += (std::mem::size_of::<JsString>() + unsafe { (*ptr).payload_bytes() }) as u64;
         }
-        bytes += (self.realm.gc.borrow().session_bigint_ptrs.borrow().len() * std::mem::size_of::<num_bigint::BigInt>()) as u64;
+        bytes += (self.realm.gc.borrow().session_bigint_ptrs.borrow().len() * std::mem::size_of::<num_bigint::BigInt>())
+            as u64;
         bytes += (self.realm.gc.borrow().session_cell_ptrs.borrow().len() * std::mem::size_of::<Cell>()) as u64;
         bytes
     }

@@ -892,7 +892,8 @@ pub(crate) fn init_generator_intrinsics(vm: &mut Vm) {
     let proto2_si = sf.intern("prototype").0;
     let proto2_shape = sh.make_shape(gf_proto.shape_id(), proto2_si);
     gf_proto.set_shape_id(proto2_shape);
-    let ppos2 = gf_proto.push_prop(JsValue::from_js_object(vm.realm.generator_proto.borrow().as_ptr() as *mut JsObject));
+    let ppos2 =
+        gf_proto.push_prop(JsValue::from_js_object(vm.realm.generator_proto.borrow().as_ptr() as *mut JsObject));
     gf_proto.set_data_meta(ppos2, oxide_types::object::PropAttributes::new(false, false, true));
     // gf_proto[Symbol.toStringTag] = "GeneratorFunction"（数据属性，w/e/c = false/false/true）。
     let tag2_key = oxide_types::private_key::encode_symbol_key(

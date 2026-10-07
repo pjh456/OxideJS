@@ -105,7 +105,10 @@ fn symbol_key_realm_dimensions_distinct() {
     assert_ne!(encode_symbol_key(0, 15), encode_symbol_key(1, 15));
     assert_ne!(encode_symbol_key(1, 15), encode_symbol_key(1, 16));
     // 跨 realm 同名 well-known 符号也产生不同键。
-    assert_ne!(encode_symbol_key(0, WELL_KNOWN_SYMBOL_ITERATOR), encode_symbol_key(2, WELL_KNOWN_SYMBOL_ITERATOR));
+    assert_ne!(
+        encode_symbol_key(0, WELL_KNOWN_SYMBOL_ITERATOR),
+        encode_symbol_key(2, WELL_KNOWN_SYMBOL_ITERATOR)
+    );
 }
 
 #[test]

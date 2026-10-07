@@ -103,7 +103,8 @@ impl Vm {
     pub(crate) fn create_async_generator_object(
         &mut self, callee: JsValue, this_value: JsValue, args: &[JsValue],
     ) -> Result<JsValue, String> {
-        let gen_proto_val = JsValue::from_js_object(self.realm.async_generator_proto.borrow().as_ptr() as *mut JsObject);
+        let gen_proto_val =
+            JsValue::from_js_object(self.realm.async_generator_proto.borrow().as_ptr() as *mut JsObject);
         let obj = self.alloc_object(JsObject::new_empty(EMPTY_SHAPE_ID, gen_proto_val));
         let obj_ref = unsafe { &mut *obj };
         obj_ref.type_tag = JsObject::OBJ_TYPE_ASYNC_GENERATOR;
@@ -1604,7 +1605,8 @@ pub(crate) fn init_async_generator_intrinsics(vm: &mut Vm) {
     let proto2_si = sf.intern("prototype").0;
     let proto2_shape = sh.make_shape(agf_proto.shape_id(), proto2_si);
     agf_proto.set_shape_id(proto2_shape);
-    let ppos2 = agf_proto.push_prop(JsValue::from_js_object(vm.realm.async_generator_proto.borrow().as_ptr() as *mut JsObject));
+    let ppos2 =
+        agf_proto.push_prop(JsValue::from_js_object(vm.realm.async_generator_proto.borrow().as_ptr() as *mut JsObject));
     agf_proto.set_data_meta(ppos2, PropAttributes::new(false, false, true));
     // agf_proto[Symbol.toStringTag] = "AsyncGeneratorFunction"（数据属性，w/e/c = false/false/true）。
     let tag2_key = oxide_types::private_key::encode_symbol_key(
@@ -1624,7 +1626,8 @@ pub(crate) fn init_async_generator_intrinsics(vm: &mut Vm) {
     // SAFETY: agf_ctor_ptr 为 Box 原分配（已登记释放表、生命周期覆盖 session），本 Vm 独占。
     unsafe {
         let ctor_mut = &mut *agf_ctor_ptr;
-        let proto_val = JsValue::from_js_object(vm.realm.async_generator_function_proto.borrow().as_ptr() as *mut JsObject);
+        let proto_val =
+            JsValue::from_js_object(vm.realm.async_generator_function_proto.borrow().as_ptr() as *mut JsObject);
         let name_val = JsValue::perm_string(sf.string_ptr(sf.intern("AsyncGeneratorFunction").0));
         if agf_ctor_is_new {
             let lpos = ctor_mut.push_prop(JsValue::int(1));

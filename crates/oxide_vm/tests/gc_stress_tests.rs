@@ -41,17 +41,11 @@ fn gc_pressure_mode_env_toggle() {
     let result = eval_on(&mut vm, SCRIPT).expect("脚本不应运行失败");
     assert!(result.as_bool(), "存活钉读回应完整");
     let total = vm.session_gc_stats().total_collections;
-    assert!(
-        total > 100,
-        "压力模式应每个顶层边界做一次完整收集，实际 {total}"
-    );
+    assert!(total > 100, "压力模式应每个顶层边界做一次完整收集，实际 {total}");
     // 关臂：移除环境变量后同一脚本走退化路径。
     std::env::remove_var("OXIDE_GC_PRESSURE");
     let mut vm = Vm::new();
     let result = eval_on(&mut vm, SCRIPT).expect("脚本不应运行失败");
     assert!(result.as_bool(), "存活钉读回应完整");
-    assert_eq!(
-        vm.session_gc_stats().total_collections, 0,
-        "关臂小脚本分配不超水位，收集应为零"
-    );
+    assert_eq!(vm.session_gc_stats().total_collections, 0, "关臂小脚本分配不超水位，收集应为零");
 }

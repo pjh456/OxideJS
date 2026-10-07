@@ -99,10 +99,7 @@ impl WorkerRouter {
 /// # 注意事项
 /// - 返回的句柄必须在关闭序列中逐一 join（drop 发送端 → join → drop 内核）。
 pub fn spawn_workers(
-    kernel: Arc<KernelCore>,
-    counters: Arc<PoolCounters>,
-    min_pool_size: usize,
-    max_pool_size: Option<usize>,
+    kernel: Arc<KernelCore>, counters: Arc<PoolCounters>, min_pool_size: usize, max_pool_size: Option<usize>,
     worker_count: usize,
 ) -> (WorkerRouter, Vec<JoinHandle<()>>) {
     let n = worker_count.max(1);
@@ -126,11 +123,7 @@ pub fn spawn_workers(
 fn worker_loop(receiver: mpsc::Receiver<WorkerTask>, kernel: Arc<KernelCore>, pool: Arc<VmPool>) {
     for task in receiver {
         match task {
-            WorkerTask::Eval {
-                code,
-                max_steps,
-                reply,
-            } => {
+            WorkerTask::Eval { code, max_steps, reply } => {
                 let response = eval::handle_eval(&code, max_steps, &kernel, &pool);
                 let _ = reply.send(response);
             }

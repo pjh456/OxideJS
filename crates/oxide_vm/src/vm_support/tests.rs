@@ -288,7 +288,10 @@ fn full_reset_clean_keeps_session_objects() {
 
     assert!(std::ptr::eq(world_ptr, Arc::as_ptr(&vm.realm.session.borrow().builtin_world)));
     assert!(std::ptr::eq(global_ptr, vm.realm.session.borrow().global_object.as_ptr()));
-    assert!(std::ptr::eq(object_proto_ptr, vm.realm.session.borrow().builtin_world().object_proto.as_ptr()));
+    assert!(std::ptr::eq(
+        object_proto_ptr,
+        vm.realm.session.borrow().builtin_world().object_proto.as_ptr()
+    ));
     assert!(!vm.realm.session.borrow().is_dirty_since_snapshot());
 }
 
@@ -326,8 +329,14 @@ fn full_reset_dirty_builtin_rebinds_global_slot() {
 
     vm.full_reset();
 
-    assert!(std::ptr::eq(old_object_proto, vm.realm.session.borrow().builtin_world().object_proto.as_ptr()));
-    assert!(!std::ptr::eq(old_array_proto, vm.realm.session.borrow().builtin_world().array_proto.as_ptr()));
+    assert!(std::ptr::eq(
+        old_object_proto,
+        vm.realm.session.borrow().builtin_world().object_proto.as_ptr()
+    ));
+    assert!(!std::ptr::eq(
+        old_array_proto,
+        vm.realm.session.borrow().builtin_world().array_proto.as_ptr()
+    ));
     assert!(std::ptr::eq(
         global_prop(&vm, "Array").as_js_object_ptr(),
         vm.realm.session.borrow().builtin_world().array_constructor.as_ptr() as *mut JsObject
@@ -599,7 +608,10 @@ fn full_reset_refreshes_object_prototype_after_object_dirty() {
 
     vm.full_reset();
 
-    assert!(!std::ptr::eq(old_object_proto, vm.realm.session.borrow().builtin_world().object_proto.as_ptr()));
+    assert!(!std::ptr::eq(
+        old_object_proto,
+        vm.realm.session.borrow().builtin_world().object_proto.as_ptr()
+    ));
     assert!(std::ptr::eq(
         vm.realm.object_prototype.borrow().as_ptr(),
         vm.realm.session.borrow().builtin_world().object_proto.as_ptr()
@@ -618,8 +630,14 @@ fn full_reset_object_dirty_rebinds_iterator_family() {
     vm.full_reset();
 
     // object 家族与迭代器原型全部重建（新原型链到新 Object.prototype）。
-    assert!(!std::ptr::eq(old_object_proto, vm.realm.session.borrow().builtin_world().object_proto.as_ptr()));
-    assert!(!std::ptr::eq(old_iterator_proto, vm.realm.session.borrow().builtin_world().iterator_proto.as_ptr()));
+    assert!(!std::ptr::eq(
+        old_object_proto,
+        vm.realm.session.borrow().builtin_world().object_proto.as_ptr()
+    ));
+    assert!(!std::ptr::eq(
+        old_iterator_proto,
+        vm.realm.session.borrow().builtin_world().iterator_proto.as_ptr()
+    ));
     // global 保留（dirty.global=false）：其 Iterator 函数对象的 prototype
     // 属性须对齐到重建后的 %IteratorPrototype%。
     let iter_val = global_prop(&vm, "Iterator");
@@ -872,7 +890,10 @@ fn full_reset_value_overwrite_on_builtin_proto_rebuilds_family() {
 
     vm.full_reset();
 
-    assert!(!std::ptr::eq(old_array_proto, vm.realm.session.borrow().builtin_world().array_proto.as_ptr()));
+    assert!(!std::ptr::eq(
+        old_array_proto,
+        vm.realm.session.borrow().builtin_world().array_proto.as_ptr()
+    ));
     let t = run_source(&mut vm, "typeof Array.prototype.push");
     assert_eq!(vm.lookup_str(t).as_deref(), Some("function"));
     assert_eq!(run_source(&mut vm, "[1, 2].push(3)"), JsValue::int(3));
@@ -892,7 +913,10 @@ fn full_reset_value_overwrite_with_object_value_drops_stale_pointer() {
 
     vm.full_reset();
 
-    assert!(!std::ptr::eq(old_array_proto, vm.realm.session.borrow().builtin_world().array_proto.as_ptr()));
+    assert!(!std::ptr::eq(
+        old_array_proto,
+        vm.realm.session.borrow().builtin_world().array_proto.as_ptr()
+    ));
     let t = run_source(&mut vm, "typeof Array.prototype.push");
     assert_eq!(vm.lookup_str(t).as_deref(), Some("function"));
     assert!(!vm.realm.session.borrow().is_dirty_since_snapshot());
@@ -1028,7 +1052,10 @@ fn full_reset_global_function_wrapper_property_does_not_survive() {
     let _ = run_source(&mut vm, "0");
 
     let _ = run_source(&mut vm, "parseInt.custom = 1; 0");
-    assert!(vm.realm.session.borrow().is_dirty_since_snapshot(), "global 函数 wrapper 写应被脏检测捕获");
+    assert!(
+        vm.realm.session.borrow().is_dirty_since_snapshot(),
+        "global 函数 wrapper 写应被脏检测捕获"
+    );
 
     vm.full_reset();
 
@@ -1080,7 +1107,10 @@ fn benign_user_object_writes_do_not_dirty_leaked_objects() {
 
     vm.full_reset();
 
-    assert!(std::ptr::eq(world_ptr, Arc::as_ptr(&vm.realm.session.borrow().builtin_world)), "无污染不应重建 world");
+    assert!(
+        std::ptr::eq(world_ptr, Arc::as_ptr(&vm.realm.session.borrow().builtin_world)),
+        "无污染不应重建 world"
+    );
     assert!(!vm.realm.session.borrow().is_dirty_since_snapshot());
 }
 
@@ -1101,7 +1131,10 @@ fn benign_run_does_not_falsely_dirty_builtins() {
 
     vm.full_reset();
 
-    assert!(std::ptr::eq(world_ptr, Arc::as_ptr(&vm.realm.session.borrow().builtin_world)), "builtin world 不应重建");
+    assert!(
+        std::ptr::eq(world_ptr, Arc::as_ptr(&vm.realm.session.borrow().builtin_world)),
+        "builtin world 不应重建"
+    );
     assert!(!vm.realm.session.borrow().is_dirty_since_snapshot());
 }
 

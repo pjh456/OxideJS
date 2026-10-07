@@ -41,7 +41,7 @@ pub mod server;
 pub mod sidecar;
 /// spawn 与就绪探测：start、restart、watchdog 三条路径共用的唯一共享入口。
 pub mod spawn;
-/// worker 池：固定 N 常驻 worker、各持自有 VM 池、mpsc 轮询路由。
-pub mod workers;
 /// watchdog：前台监控进程，三态裁决加崩溃预算，崩溃后自动重启。
 pub mod watchdog;
+/// worker 池：固定 N 常驻 worker、各持自有 VM 池、mpsc 轮询路由。
+pub mod workers;

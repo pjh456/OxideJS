@@ -510,8 +510,10 @@ fn bind_iterator_protos(core: &Arc<KernelCore>, session: &KernelSession, realm_i
             oxide_builtins::iterator::iterator_constructor_setter::<crate::vm::Vm> as *const (),
         );
     }
-    let sym_to_string_tag =
-        oxide_types::private_key::encode_symbol_key(realm_id, oxide_types::private_key::WELL_KNOWN_SYMBOL_TO_STRING_TAG);
+    let sym_to_string_tag = oxide_types::private_key::encode_symbol_key(
+        realm_id,
+        oxide_types::private_key::WELL_KNOWN_SYMBOL_TO_STRING_TAG,
+    );
     if core
         .shape_forge()
         .lookup_position(iter_proto.shape_id(), sym_to_string_tag)
@@ -603,8 +605,10 @@ fn bind_iterator_protos(core: &Arc<KernelCore>, session: &KernelSession, realm_i
             realm_id,
         );
     }
-    let sym_adispose =
-        oxide_types::private_key::encode_symbol_key(realm_id, oxide_types::private_key::WELL_KNOWN_SYMBOL_ASYNC_DISPOSE);
+    let sym_adispose = oxide_types::private_key::encode_symbol_key(
+        realm_id,
+        oxide_types::private_key::WELL_KNOWN_SYMBOL_ASYNC_DISPOSE,
+    );
     if core
         .shape_forge()
         .lookup_position(aiter_proto.shape_id(), sym_adispose)

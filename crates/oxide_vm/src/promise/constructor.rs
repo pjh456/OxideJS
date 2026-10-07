@@ -117,8 +117,9 @@ impl Vm {
                 self.realm.session.borrow().builtin_world().data_view_constructor.as_ptr() as *mut JsObject,
             );
             let this_val = if is_data_view {
-                let data_view_proto_val =
-                    JsValue::from_js_object(self.realm.session.borrow().builtin_world().data_view_proto.as_ptr() as *mut JsObject);
+                let data_view_proto_val = JsValue::from_js_object(
+                    self.realm.session.borrow().builtin_world().data_view_proto.as_ptr() as *mut JsObject,
+                );
                 JsValue::from_js_object(self.alloc_object(JsObject::new_empty(EMPTY_SHAPE_ID, data_view_proto_val)))
             } else {
                 let this_ptr = self.alloc_ctor_this(nt_obj, ctor_obj, new_target)?;
@@ -156,7 +157,8 @@ impl Vm {
         &mut self, nt_obj: &JsObject, ctor_obj: &JsObject, nt_val: JsValue,
     ) -> Result<*mut JsObject, JsValue> {
         let proto_si = self.kernel_core.perm_interner().intern("prototype").0;
-        let object_proto = JsValue::from_js_object(self.realm.session.borrow().builtin_world().object_proto.as_ptr() as *mut JsObject);
+        let object_proto =
+            JsValue::from_js_object(self.realm.session.borrow().builtin_world().object_proto.as_ptr() as *mut JsObject);
         let is_native_ctor = ctor_obj.native_fn().is_some() && ctor_obj.type_tag == JsObject::OBJ_TYPE_CONSTRUCTOR;
         let proto_val = if is_native_ctor {
             match self.resolve_property(nt_obj, proto_si) {
@@ -337,12 +339,16 @@ impl Vm {
         // SAFETY: `promise_proto` 为 `P<JsObject>`（Arc 透明包装），堆址固定且本行前刚经
         // swap_intrinsic_proto 落地；与下一处 ctor_mut 指向不同对象，无别名。
         let proto_mut = unsafe { &mut *self.realm.promise_proto.borrow().as_mut_ptr() };
-        proto_mut.set_prop_at(0u32, JsValue::from_js_object(self.realm.promise_constructor.borrow().as_ptr() as *mut JsObject));
+        proto_mut.set_prop_at(
+            0u32,
+            JsValue::from_js_object(self.realm.promise_constructor.borrow().as_ptr() as *mut JsObject),
+        );
         // SAFETY: `promise_constructor` 同为堆址固定的存活 `P<JsObject>`（Arc 透明包装）；
         // 此处写 prototype 槽位（下标 2），与 proto_mut 分属不同对象，无别名。
         let ctor_mut = unsafe { &mut *self.realm.promise_constructor.borrow().as_mut_ptr() };
         // prototype 槽位在 length/name 之后（下标 2）。
-        ctor_mut.set_prop_at(2u32, JsValue::from_js_object(self.realm.promise_proto.borrow().as_ptr() as *mut JsObject));
+        ctor_mut
+            .set_prop_at(2u32, JsValue::from_js_object(self.realm.promise_proto.borrow().as_ptr() as *mut JsObject));
 
         // Promise[Symbol.species] 访问器：getter 返回 receiver，派生类沿静态原型链
         // 解析 @@species 得自身构造器。ctor 经本函数每次调用全新构造，同键槽不累积。

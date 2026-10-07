@@ -31,11 +31,7 @@ use super::protocol::{ForgeTarget, LookupResult, ServerResponse};
 /// - --gc 重置各空闲 VM 的 session_bytes_allocated 为清扫后存活字节。
 /// - --clear-cache 清空字节码缓存（后续 eval 重编译）。
 pub fn handle_forge_query(
-    target: ForgeTarget,
-    gc: bool,
-    clear_cache: bool,
-    lookup: Option<String>,
-    kernel: &Arc<KernelCore>,
+    target: ForgeTarget, gc: bool, clear_cache: bool, lookup: Option<String>, kernel: &Arc<KernelCore>,
     pool: &Arc<VmPool>,
 ) -> ServerResponse {
     // 读目标 forge 条目数与容量。
@@ -140,7 +136,8 @@ mod tests {
             other => panic!("应得 ForgeStatus 帧，实得 {other:?}"),
         }
 
-        let response = handle_forge_query(ForgeTarget::String, false, false, Some("not-interned".into()), &kernel, &pool);
+        let response =
+            handle_forge_query(ForgeTarget::String, false, false, Some("not-interned".into()), &kernel, &pool);
         match response {
             ServerResponse::ForgeStatus { lookup, .. } => {
                 assert_eq!(lookup, Some(LookupResult::Absent), "未 intern 键应得 Absent");
