@@ -10,10 +10,7 @@
 use oxide_kernel::shape_forge::EMPTY_SHAPE_ID;
 use oxide_runtime_api::NativeResult;
 use oxide_types::object::{JsObject, NativeFnPtr, PropAttributes};
-use oxide_types::private_key::{
-    is_symbol_key, make_int_key, make_symbol_key, make_well_known_symbol_key, symbol_index_from_key,
-    well_known_symbol_id_from_key, WELL_KNOWN_SYMBOL_COUNT,
-};
+use oxide_types::private_key::{decode_symbol_key, encode_symbol_key, is_symbol_key, make_int_key};
 use oxide_types::value::JsValue;
 
 use crate::native::NativeFn;
@@ -671,12 +668,7 @@ fn perform_promise_combine_keyed(
     // 换算绝对存储下标，与 walk_own_keys 口径一致）。
     let mut all_keys = oxide_builtins::object::walk_own_keys(vm, promises_obj);
     for sym in oxide_builtins::object::own_symbol_key_values(vm, promises_obj) {
-        let idx = sym.as_symbol_index();
-        let si = if idx < WELL_KNOWN_SYMBOL_COUNT {
-            make_well_known_symbol_key(idx)
-        } else {
-            make_symbol_key(idx)
-        };
+        let si = encode_symbol_key(vm.realm_id(), sym.as_symbol_index());
         if let Some(pos) = vm.kernel_core.shape_forge().lookup_position(promises_obj.shape_id(), si) {
             let store = if promises_obj.is_array() { promises_obj.array_prop_count + pos } else { pos };
             all_keys.push((si, store));
@@ -759,10 +751,9 @@ fn perform_promise_combine_keyed(
 /// 键 si 物化为 JS 可见键值：字符串 / 数字串经文本还原，符号键还原为符号值。
 fn key_si_to_key_value(vm: &mut Vm, si: u32) -> JsValue {
     if is_symbol_key(si) {
-        if let Some(id) = well_known_symbol_id_from_key(si) {
-            return JsValue::symbol(id);
-        }
-        return JsValue::symbol(symbol_index_from_key(si));
+        // 键自含 realm 编号：解出 (realm 编号, 全局下标) 还原符号值，无需外部上下文。
+        let (realm_id, idx) = decode_symbol_key(si);
+        return JsValue::symbol_realm(realm_id, idx);
     }
     oxide_builtins::object::key_si_to_js_value(vm, si)
 }

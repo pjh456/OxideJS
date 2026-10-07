@@ -3,7 +3,7 @@ use crate::{vm_error, vm_trace};
 use oxide_bytecode::opcode;
 use oxide_kernel::shape_forge::EMPTY_SHAPE_ID;
 use oxide_types::object::{JsObject, PropAttributes};
-use oxide_types::private_key::{make_int_key, make_well_known_symbol_key};
+use oxide_types::private_key::{encode_symbol_key, make_int_key};
 use oxide_types::value::{JsType, JsValue};
 
 impl Vm {
@@ -368,7 +368,7 @@ impl Vm {
 
         // @@iterator：与 Array.prototype[Symbol.iterator] 共享同一函数对象，
         // 使 arguments 对象可迭代（可写、不可枚举、可配置）。
-        let sym_iter_si = make_well_known_symbol_key(0);
+        let sym_iter_si = encode_symbol_key(self.realm_id(), 0);
         // SAFETY: array_proto 是 perm 层内置对象（BuiltinWorld 持有），地址稳定且
         // 跨 epoch/session 存活，本调用期间无 GC 搬移。
         let array_proto = self.realm.session.borrow().builtin_world().array_proto.as_ptr();

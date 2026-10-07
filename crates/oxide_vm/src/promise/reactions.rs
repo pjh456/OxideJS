@@ -9,7 +9,7 @@
 use oxide_kernel::shape_forge::EMPTY_SHAPE_ID;
 use oxide_runtime_api::NativeResult;
 use oxide_types::object::{JsObject, NativeFnPtr, PropAttributes};
-use oxide_types::private_key::{make_well_known_symbol_key, WELL_KNOWN_SYMBOL_SPECIES};
+use oxide_types::private_key::{encode_symbol_key, WELL_KNOWN_SYMBOL_SPECIES};
 use oxide_types::value::JsValue;
 
 use crate::vm::Vm;
@@ -155,7 +155,7 @@ impl Vm {
         }
         // SAFETY: is_object 保证指针非空且指向存活对象；此处只读 @@species，不跨 GC/reset。
         let c_obj = unsafe { &*ctor.as_js_object_ptr() };
-        let species_si = make_well_known_symbol_key(WELL_KNOWN_SYMBOL_SPECIES);
+        let species_si = encode_symbol_key(self.realm_id(), WELL_KNOWN_SYMBOL_SPECIES);
         let s = match self.ordinary_get(c_obj, species_si, ctor) {
             Ok(v) => v,
             Err(e) => {

@@ -5,7 +5,7 @@ use oxide_runtime_api as coercion;
 
 use oxide_types::error::JsError;
 use oxide_types::object::JsObject;
-use oxide_types::private_key::{make_well_known_symbol_key, WELL_KNOWN_SYMBOL_TO_PRIMITIVE};
+use oxide_types::private_key::{encode_symbol_key, WELL_KNOWN_SYMBOL_TO_PRIMITIVE};
 use oxide_types::value::{JsValue, PTR_MASK};
 
 use super::{format_error_message, js_error_kind, js_error_kind_name, Vm};
@@ -47,8 +47,8 @@ impl Vm {
         }
 
         // ECMA-262 §7.1.1 step 1：exotic 对象上（沿原型链读取）的 Symbol.toPrimitive 优先于
-        // OrdinaryToPrimitive；well-known symbol 键恒定，直接取保留槽。
-        let sym_si = make_well_known_symbol_key(WELL_KNOWN_SYMBOL_TO_PRIMITIVE);
+        // OrdinaryToPrimitive；well-known symbol 键经 realm 感知编码，直接取保留槽。
+        let sym_si = encode_symbol_key(self.realm_id(), WELL_KNOWN_SYMBOL_TO_PRIMITIVE);
         let exotic = {
             let obj = unsafe { &*obj_ptr };
             self.ordinary_get(obj, sym_si, value)?

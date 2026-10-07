@@ -1529,14 +1529,16 @@ pub(crate) fn init_async_generator_intrinsics(vm: &mut Vm) {
         ("throw", async_generator_throw as *const (), 1),
     );
     // Symbol.toStringTag（Object.prototype.toString → "[object AsyncGenerator]"）。
-    let tag_key =
-        oxide_types::private_key::make_well_known_symbol_key(oxide_types::private_key::WELL_KNOWN_SYMBOL_TO_STRING_TAG);
+    let tag_key = oxide_types::private_key::encode_symbol_key(
+        vm.realm_id(),
+        oxide_types::private_key::WELL_KNOWN_SYMBOL_TO_STRING_TAG,
+    );
     let tag_shape = sh.make_shape(ag_proto.shape_id(), tag_key);
     ag_proto.set_shape_id(tag_shape);
     let tag_pos = ag_proto.push_prop(JsValue::perm_string(sf.string_ptr(sf.intern("AsyncGenerator").0)));
     ag_proto.set_data_meta(tag_pos, PropAttributes::new(false, false, true));
     // @@asyncIterator：返回自身（异步生成器是异步可迭代对象，供 for-await-of 消费）。
-    let aiter_key = oxide_types::private_key::make_well_known_symbol_key(8);
+    let aiter_key = oxide_types::private_key::encode_symbol_key(vm.realm_id(), 8);
     let _ = oxide_kernel::builtin::BuiltinWorld::bind_method_key_labeled_static(
         &mut ag_proto,
         sh,
@@ -1579,7 +1581,8 @@ pub(crate) fn init_async_generator_intrinsics(vm: &mut Vm) {
             let proto_si = sf.intern("prototype").0;
             let proto_shape = sh.make_shape(agf_ctor.shape_id(), proto_si);
             agf_ctor.set_shape_id(proto_shape);
-            let tag_key = oxide_types::private_key::make_well_known_symbol_key(
+            let tag_key = oxide_types::private_key::encode_symbol_key(
+                vm.realm_id(),
                 oxide_types::private_key::WELL_KNOWN_SYMBOL_TO_STRING_TAG,
             );
             let tag_shape = sh.make_shape(agf_ctor.shape_id(), tag_key);
@@ -1604,8 +1607,10 @@ pub(crate) fn init_async_generator_intrinsics(vm: &mut Vm) {
     let ppos2 = agf_proto.push_prop(JsValue::from_js_object(vm.realm.async_generator_proto.borrow().as_ptr() as *mut JsObject));
     agf_proto.set_data_meta(ppos2, PropAttributes::new(false, false, true));
     // agf_proto[Symbol.toStringTag] = "AsyncGeneratorFunction"（数据属性，w/e/c = false/false/true）。
-    let tag2_key =
-        oxide_types::private_key::make_well_known_symbol_key(oxide_types::private_key::WELL_KNOWN_SYMBOL_TO_STRING_TAG);
+    let tag2_key = oxide_types::private_key::encode_symbol_key(
+        vm.realm_id(),
+        oxide_types::private_key::WELL_KNOWN_SYMBOL_TO_STRING_TAG,
+    );
     let tag2_shape = sh.make_shape(agf_proto.shape_id(), tag2_key);
     agf_proto.set_shape_id(tag2_shape);
     let tag2_pos = agf_proto.push_prop(JsValue::perm_string(sf.string_ptr(sf.intern("AsyncGeneratorFunction").0)));

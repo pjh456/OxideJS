@@ -818,14 +818,16 @@ pub(crate) fn init_generator_intrinsics(vm: &mut Vm) {
         ("throw", generator_throw as *const (), 1),
     );
     // Symbol.toStringTag（Object.prototype.toString → "[object Generator]"）。
-    let tag_key =
-        oxide_types::private_key::make_well_known_symbol_key(oxide_types::private_key::WELL_KNOWN_SYMBOL_TO_STRING_TAG);
+    let tag_key = oxide_types::private_key::encode_symbol_key(
+        vm.realm_id(),
+        oxide_types::private_key::WELL_KNOWN_SYMBOL_TO_STRING_TAG,
+    );
     let tag_shape = sh.make_shape(gen_proto.shape_id(), tag_key);
     gen_proto.set_shape_id(tag_shape);
     let tag_pos = gen_proto.push_prop(JsValue::perm_string(sf.string_ptr(sf.intern("Generator").0)));
     gen_proto.set_data_meta(tag_pos, oxide_types::object::PropAttributes::new(false, false, true));
     // @@iterator：返回自身（生成器是可迭代对象）。
-    let iter_key = oxide_types::private_key::make_well_known_symbol_key(0);
+    let iter_key = oxide_types::private_key::encode_symbol_key(vm.realm_id(), 0);
     let _ = oxide_kernel::builtin::BuiltinWorld::bind_method_key_labeled_static(
         &mut gen_proto,
         sh,
@@ -868,7 +870,8 @@ pub(crate) fn init_generator_intrinsics(vm: &mut Vm) {
             let proto_si = sf.intern("prototype").0;
             let proto_shape = sh.make_shape(gf_ctor.shape_id(), proto_si);
             gf_ctor.set_shape_id(proto_shape);
-            let tag_key = oxide_types::private_key::make_well_known_symbol_key(
+            let tag_key = oxide_types::private_key::encode_symbol_key(
+                vm.realm_id(),
                 oxide_types::private_key::WELL_KNOWN_SYMBOL_TO_STRING_TAG,
             );
             let tag_shape = sh.make_shape(gf_ctor.shape_id(), tag_key);
@@ -892,8 +895,10 @@ pub(crate) fn init_generator_intrinsics(vm: &mut Vm) {
     let ppos2 = gf_proto.push_prop(JsValue::from_js_object(vm.realm.generator_proto.borrow().as_ptr() as *mut JsObject));
     gf_proto.set_data_meta(ppos2, oxide_types::object::PropAttributes::new(false, false, true));
     // gf_proto[Symbol.toStringTag] = "GeneratorFunction"（数据属性，w/e/c = false/false/true）。
-    let tag2_key =
-        oxide_types::private_key::make_well_known_symbol_key(oxide_types::private_key::WELL_KNOWN_SYMBOL_TO_STRING_TAG);
+    let tag2_key = oxide_types::private_key::encode_symbol_key(
+        vm.realm_id(),
+        oxide_types::private_key::WELL_KNOWN_SYMBOL_TO_STRING_TAG,
+    );
     let tag2_shape = sh.make_shape(gf_proto.shape_id(), tag2_key);
     gf_proto.set_shape_id(tag2_shape);
     let tag2_pos = gf_proto.push_prop(JsValue::perm_string(sf.string_ptr(sf.intern("GeneratorFunction").0)));

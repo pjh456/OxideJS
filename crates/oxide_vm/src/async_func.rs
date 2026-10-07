@@ -630,7 +630,8 @@ pub(crate) fn init_async_intrinsics(vm: &mut Vm) {
                 let proto_si = sf.intern("prototype").0;
                 let proto_shape = sh.make_shape(af_ctor.shape_id(), proto_si);
                 af_ctor.set_shape_id(proto_shape);
-                let tag_key = oxide_types::private_key::make_well_known_symbol_key(
+                let tag_key = oxide_types::private_key::encode_symbol_key(
+                    vm.realm_id(),
                     oxide_types::private_key::WELL_KNOWN_SYMBOL_TO_STRING_TAG,
                 );
                 let tag_shape = sh.make_shape(af_ctor.shape_id(), tag_key);
@@ -651,8 +652,10 @@ pub(crate) fn init_async_intrinsics(vm: &mut Vm) {
     let cpos = af_proto.push_prop(JsValue::from_js_object(af_ctor_ptr));
     af_proto.set_data_meta(cpos, PropAttributes::new(false, false, true));
     // af_proto[Symbol.toStringTag] = "AsyncFunction"（数据属性，w/e/c = false/false/true）。
-    let tag_key =
-        oxide_types::private_key::make_well_known_symbol_key(oxide_types::private_key::WELL_KNOWN_SYMBOL_TO_STRING_TAG);
+    let tag_key = oxide_types::private_key::encode_symbol_key(
+        vm.realm_id(),
+        oxide_types::private_key::WELL_KNOWN_SYMBOL_TO_STRING_TAG,
+    );
     let tag_shape = sh.make_shape(af_proto.shape_id(), tag_key);
     af_proto.set_shape_id(tag_shape);
     let tag_pos = af_proto.push_prop(JsValue::perm_string(sf.string_ptr(sf.intern("AsyncFunction").0)));

@@ -9,7 +9,7 @@ use oxide_builtins::iterator::make_iter_result;
 use oxide_kernel::shape_forge::EMPTY_SHAPE_ID;
 use oxide_runtime_api::NativeResult;
 use oxide_types::object::{JsObject, NativeFnPtr};
-use oxide_types::private_key::make_well_known_symbol_key;
+use oxide_types::private_key::encode_symbol_key;
 use oxide_types::value::JsValue;
 
 use crate::vm::Vm;
@@ -39,7 +39,7 @@ pub(crate) fn make_async_iterator(vm: &mut Vm, value: JsValue) -> Result<JsValue
         }
     };
     let obj = unsafe { &*obj_value.as_js_object_ptr() };
-    let aiter_key = make_well_known_symbol_key(ASYNC_ITERATOR_SYMBOL_ID);
+    let aiter_key = encode_symbol_key(vm.realm_id(), ASYNC_ITERATOR_SYMBOL_ID);
     let method = match vm.ordinary_get(obj, aiter_key, obj_value) {
         Ok(m) => m,
         Err(e) => {
@@ -92,7 +92,7 @@ impl Vm {
         self.set_or_create_prop_value(obj, return_si, return_fn);
         let throw_si = self.kernel_core.perm_interner().intern("throw").0;
         self.set_or_create_prop_value(obj, throw_si, throw_fn);
-        let aiter_key = make_well_known_symbol_key(ASYNC_ITERATOR_SYMBOL_ID);
+        let aiter_key = encode_symbol_key(self.realm_id(), ASYNC_ITERATOR_SYMBOL_ID);
         self.set_or_create_prop_value(obj, aiter_key, self_fn);
         JsValue::from_js_object(ptr)
     }

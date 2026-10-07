@@ -279,7 +279,8 @@ impl Vm {
             ("catch", promise_catch as *const (), 1),
             ("finally", promise_finally as *const (), 1),
         );
-        let tag_key = oxide_types::private_key::make_well_known_symbol_key(
+        let tag_key = oxide_types::private_key::encode_symbol_key(
+            self.realm_id(),
             oxide_types::private_key::WELL_KNOWN_SYMBOL_TO_STRING_TAG,
         );
         let tag_shape = sh.make_shape(proto.shape_id(), tag_key);
@@ -349,7 +350,10 @@ impl Vm {
             &self.kernel_core,
             &self.realm.session.borrow(),
             ctor_mut,
-            oxide_types::private_key::make_well_known_symbol_key(oxide_types::private_key::WELL_KNOWN_SYMBOL_SPECIES),
+            oxide_types::private_key::encode_symbol_key(
+                self.realm_id(),
+                oxide_types::private_key::WELL_KNOWN_SYMBOL_SPECIES,
+            ),
             "get [Symbol.species]",
             oxide_builtins::array::array_species_get::<crate::vm::Vm> as *const (),
         );
