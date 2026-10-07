@@ -2,7 +2,7 @@ use num_bigint::BigInt;
 use num_traits::ToPrimitive;
 use oxide_kernel::shape_forge::EMPTY_SHAPE_ID;
 use oxide_types::object::{JsObject, NativeFnPtr, TypedArrayKind};
-use oxide_types::private_key::{int_key_value, is_int_key, make_well_known_symbol_key, WELL_KNOWN_SYMBOL_SPECIES};
+use oxide_types::private_key::{encode_symbol_key, int_key_value, is_int_key, WELL_KNOWN_SYMBOL_SPECIES};
 use oxide_types::value::JsValue;
 
 use crate::array_buffer::{
@@ -1151,7 +1151,7 @@ fn typed_array_species_create<H: VmHost>(
     } else if !c.is_object() {
         return Err(type_error(vm, "Species constructor not a constructor"));
     } else {
-        let species_key = make_well_known_symbol_key(WELL_KNOWN_SYMBOL_SPECIES);
+        let species_key = encode_symbol_key(vm.realm_id(), WELL_KNOWN_SYMBOL_SPECIES);
         let s = match vm.ordinary_get(unsafe { &*c.as_js_object_ptr() }, species_key, c) {
             Ok(v) => v,
             Err(msg) => return Err(crate::iterator::engine_error(vm, &msg)),

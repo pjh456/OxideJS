@@ -1,6 +1,6 @@
 use oxide_kernel::shape_forge::EMPTY_SHAPE_ID;
 use oxide_types::object::{JsObject, NativeFnPtr};
-use oxide_types::private_key::{make_well_known_symbol_key, WELL_KNOWN_SYMBOL_SPECIES};
+use oxide_types::private_key::{encode_symbol_key, WELL_KNOWN_SYMBOL_SPECIES};
 use oxide_types::value::JsValue;
 
 use oxide_runtime_api::{NativeResult, VmHost};
@@ -819,7 +819,7 @@ fn ab_species_constructor<H: VmHost>(vm: &mut H, o_val: JsValue, default_ctor: J
     if !c.is_object() {
         return Err(crate::error::create_type_error(vm, "buffer constructor is not an object"));
     }
-    let species_key = make_well_known_symbol_key(WELL_KNOWN_SYMBOL_SPECIES);
+    let species_key = encode_symbol_key(vm.realm_id(), WELL_KNOWN_SYMBOL_SPECIES);
     let s = match vm.ordinary_get(unsafe { &*c.as_js_object_ptr() }, species_key, c) {
         Ok(v) => v,
         Err(msg) => return Err(crate::iterator::engine_error(vm, &msg)),

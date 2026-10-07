@@ -242,7 +242,7 @@ fn species_constructor<H: VmHost>(
     }
     // Get(C, @@species) 的 receiver 是构造器 C 本身：访问器 getter 返回
     // receiver，传实例会让返回值错指到接收者本体。
-    let species_key = oxide_types::private_key::make_well_known_symbol_key(10);
+    let species_key = oxide_types::private_key::encode_symbol_key(vm.realm_id(), 10);
     let c_val = JsValue::from_js_object(c.as_js_object_ptr());
     let s = match vm.ordinary_get(unsafe { &*c.as_js_object_ptr() }, species_key, c_val) {
         Ok(v) => v,
@@ -1831,7 +1831,7 @@ pub fn regexp_symbol_match_all<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResu
     let is_unicode = flags.contains('u') || flags.contains('v');
 
     // 旧式 IsRegExp：Get(R, @@match) 为布尔取之，否则 true。
-    let match_key = oxide_types::private_key::make_well_known_symbol_key(1);
+    let match_key = oxide_types::private_key::encode_symbol_key(vm.realm_id(), 1);
     let matcher_prop = match vm.ordinary_get(unsafe { &*re_ptr }, match_key, this_val) {
         Ok(v) => v,
         Err(_) => return NativeResult::Err(crate::iterator::engine_error(vm, "cannot read @@match")),

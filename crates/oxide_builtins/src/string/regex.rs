@@ -65,7 +65,7 @@ pub(crate) fn is_regexp_live<H: VmHost>(vm: &mut H, val: JsValue) -> Result<bool
     if !val.is_object() {
         return Ok(false);
     }
-    let match_key = oxide_types::private_key::make_well_known_symbol_key(1);
+    let match_key = oxide_types::private_key::encode_symbol_key(vm.realm_id(), 1);
     let ptr = val.as_js_object_ptr();
     // SAFETY: val 已校验为非空对象值。
     let obj = unsafe { &*ptr };
@@ -86,7 +86,7 @@ pub(crate) fn is_regexp_live<H: VmHost>(vm: &mut H, val: JsValue) -> Result<bool
 fn rx_get_replace_method<H: VmHost>(
     vm: &mut H, rx: *mut JsObject, this_val: JsValue,
 ) -> Result<Option<JsValue>, JsValue> {
-    let replace_key = oxide_types::private_key::make_well_known_symbol_key(2);
+    let replace_key = oxide_types::private_key::encode_symbol_key(vm.realm_id(), 2);
     // SAFETY: this_val 为对象值，rx 与其同址。
     let func = match vm.ordinary_get(unsafe { &*rx }, replace_key, this_val) {
         Ok(v) => v,
@@ -166,7 +166,7 @@ fn string_arm_replace<H: VmHost>(
 /// GetMethod(sep, @@split)：undefined/null 返回 None（落字符串臂），不可调用
 /// 抛 TypeError，属性读抛错恢复原异常值。
 fn rx_get_split_method<H: VmHost>(vm: &mut H, sep: JsValue) -> Result<Option<JsValue>, JsValue> {
-    let split_key = oxide_types::private_key::make_well_known_symbol_key(4);
+    let split_key = oxide_types::private_key::encode_symbol_key(vm.realm_id(), 4);
     let ptr = sep.as_js_object_ptr();
     // SAFETY: 调用方已校验 sep 为非空对象值。
     let func = match vm.ordinary_get(unsafe { &*ptr }, split_key, sep) {
@@ -569,7 +569,7 @@ pub fn string_match_fn<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 /// GetMethod(rx, @@match)：可调用返回之，null/undefined/不可调用抛 TypeError；
 /// 属性读抛错恢复原异常值。
 fn rx_get_match_method<H: VmHost>(vm: &mut H, rx: *mut JsObject, this_val: JsValue) -> Result<JsValue, JsValue> {
-    let match_key = oxide_types::private_key::make_well_known_symbol_key(1);
+    let match_key = oxide_types::private_key::encode_symbol_key(vm.realm_id(), 1);
     let matcher = match vm.ordinary_get(unsafe { &*rx }, match_key, this_val) {
         Ok(v) => v,
         Err(e) => return Err(crate::iterator::engine_error(vm, &e)),
@@ -585,7 +585,7 @@ fn rx_get_match_method<H: VmHost>(vm: &mut H, rx: *mut JsObject, this_val: JsVal
 fn rx_get_match_method_opt<H: VmHost>(
     vm: &mut H, rx: *mut JsObject, this_val: JsValue,
 ) -> Result<Option<JsValue>, JsValue> {
-    let match_key = oxide_types::private_key::make_well_known_symbol_key(1);
+    let match_key = oxide_types::private_key::encode_symbol_key(vm.realm_id(), 1);
     let func = match vm.ordinary_get(unsafe { &*rx }, match_key, this_val) {
         Ok(v) => v,
         Err(e) => return Err(crate::iterator::engine_error(vm, &e)),
@@ -604,7 +604,7 @@ fn rx_get_match_method_opt<H: VmHost>(
 fn rx_get_search_method<H: VmHost>(
     vm: &mut H, rx: *mut JsObject, this_val: JsValue,
 ) -> Result<Option<JsValue>, JsValue> {
-    let search_key = oxide_types::private_key::make_well_known_symbol_key(3);
+    let search_key = oxide_types::private_key::encode_symbol_key(vm.realm_id(), 3);
     let func = match vm.ordinary_get(unsafe { &*rx }, search_key, this_val) {
         Ok(v) => v,
         Err(e) => return Err(crate::iterator::engine_error(vm, &e)),
@@ -843,7 +843,7 @@ pub fn string_match_all<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         }
         // GetMethod(pattern, @@matchAll) 全链单次 Get：own 命中 undefined/null
         // 即停（Get 语义），不回退原型链。
-        let match_all_key = oxide_types::private_key::make_well_known_symbol_key(7);
+        let match_all_key = oxide_types::private_key::encode_symbol_key(vm.realm_id(), 7);
         let matcher = match vm.ordinary_get(unsafe { &*pattern_val.as_js_object_ptr() }, match_all_key, pattern_val) {
             Ok(v) => v,
             Err(e) => return NativeResult::err(crate::iterator::engine_error(vm, &e)),
@@ -944,7 +944,7 @@ fn match_all_construct_invoke<H: VmHost>(vm: &mut H, this_val: JsValue, pattern_
     }
 
     // Invoke(regexp, @@matchAll, « string »)：产物全链 Get，无 callable 抛 TypeError。
-    let match_all_key = oxide_types::private_key::make_well_known_symbol_key(7);
+    let match_all_key = oxide_types::private_key::encode_symbol_key(vm.realm_id(), 7);
     let rx_ptr = rx_val.as_js_object_ptr();
     let rx_this = JsValue::from_js_object(rx_ptr);
     let matcher = match vm.ordinary_get(unsafe { &*rx_ptr }, match_all_key, rx_this) {
