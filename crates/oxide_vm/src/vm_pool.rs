@@ -1,5 +1,3 @@
-#![allow(clippy::arc_with_non_send_sync)]
-
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
@@ -15,8 +13,9 @@ struct VmPoolInner {
 
 /// 池状态计数器：空闲数、在借数、峰值借出数与已创建总数的跨线程可读快照。
 ///
-/// 池本体不是 Send/Sync（Vm 不跨线程），状态接口经独立原子暴露，
-/// 与队列变更同步更新；空闲数恒不大于总数（总数只增不减）。
+/// 池本体是 Send/Sync（Vm 经 unsafe impl Send 跨线程移动，VmGuard 独占借出
+/// 不共享 &Vm），状态接口经独立原子暴露，与队列变更同步更新；
+/// 空闲数恒不大于总数（总数只增不减）。
 /// 安静态（无并发借出归还）下在借数恒等于总数减空闲数；峰值是每次
 /// 借出后精确在借数的最大值，单调不降。
 pub struct PoolCounters {
@@ -109,7 +108,8 @@ impl VmPool {
     ///    （共享聚合上不得覆盖写，各池各自累加）。
     ///
     /// # 边界与前提
-    /// - 计数器通常经 `PoolCounters::shared` 跨线程共享；池本体不跨线程移动。
+    /// - 计数器通常经 `PoolCounters::shared` 跨线程共享；池本体可跨线程移动
+    ///   （Send/Sync），worker 经 spawn 独占借出 Vm。
     ///
     /// # 副作用
     /// - 同步创建 `min_size` 个 Vm。
@@ -428,7 +428,8 @@ mod tests {
                 let kernel = Arc::clone(&kernel);
                 let counters = Arc::clone(&counters);
                 std::thread::spawn(move || {
-                    // 池本体不跨线程（Vm 不 Send），每线程自建池、共享同一聚合计数器。
+                    // 每线程自建池、共享同一聚合计数器（Vm 经 unsafe impl Send 可
+                    // 跨线程，本测试仍按每线程自有池验证计数器聚合）。
                     let pool = VmPool::with_counters(kernel, 0, Some(8), counters);
                     for _ in 0..50 {
                         let guard = pool.spawn();

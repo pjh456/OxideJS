@@ -392,6 +392,32 @@ impl Drop for Vm {
     }
 }
 
+// SAFETY: Vm 可安全跨线程移动（Send），依据四条不变量：
+//
+// 1. session 堆随 Vm 整体迁移：Vm 内全部裸指针（session 对象表
+//    session_object_ptrs、字符串表 session_string_ptrs、BigInt/cell 表、
+//    upvalue cell 指针、active_immutables 视图、length_perm_ptr）指向的堆对象
+//    均由该 Vm 独占分配（Box::into_raw 统一入口），地址稳定、不随 Vm 移动而
+//    搬移。跨线程移动 Vm 时指针恒有效，不产生悬垂。
+//
+// 2. &Vm 不跨线程共享：Vm 只经 &mut Vm 在单线程内访问（池化 VmGuard 独占
+//    借出），RefCell（GcState 的 BigInt/cell 表、Realm 的 session/gc/P 字段）
+//    与 Cell（profiling 计数）的非 Sync 性不构成跨线程数据竞争。
+//
+// 3. GC 根集不跨线程共享：每个 Vm 持有独立的 session 堆、独立的 mark/sweep
+//    表与水位，无跨 Vm 的 GC 边。KernelCore 经 Arc<KernelCore> 共享
+//    （Send + Sync），是唯一的跨 Vm 共享面，其内部为 append-only forge 与
+//    原子计数，无 per-VM 可变状态。
+//
+// 4. 裸指针不跨线程逃逸：Vm 内的裸指针只指向本 Vm 的 session 堆或共享 kernel
+//    对象（perm 串 / shape / code forge），不指向其他 Vm 的堆。跨线程移动
+//    Vm 时这些指针的指向不变（堆对象地址稳定），不引入别名。
+//
+// realm 字段为 Arc<Realm>：Realm 的 session 堆不跨线程共享，Arc 引用计数为
+// 原子操作，跨线程移动 Arc 安全；Realm 只经 Vm（单线程 &mut）访问，
+// 其非 Sync 性对 Send 无碍。
+unsafe impl Send for Vm {}
+
 impl Vm {
     const SYNC_NATIVE_ARG_BASE: usize = 0;
     const SYNC_NATIVE_ARG_LIMIT: usize = 253;
