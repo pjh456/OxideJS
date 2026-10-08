@@ -9,10 +9,12 @@
 //! （function / DOM / 模块命名空间 / Promise / 迭代器 / 特型对象）一律
 //! DataCloneError。plain 对象与数组只复制可枚举自有属性，克隆侧描述符一律
 //! writable / enumerable / configurable 全真数据属性。缓冲区克隆支持 transfer
-//! 转移：命中转移集合的 ArrayBuffer 移动载荷（源 detach），未命中克隆字节；
-//! SharedArrayBuffer 克隆共享同一载荷盒。
+//! 转移：转移条目在序列化前注册为 seen 映射占位（空载荷），整个序列化成功后
+//! 才移动源载荷入克隆（源 detach）；值图外条目同样 detach；值图内 detached
+//! 缓冲报 DataCloneError。未转移的 ArrayBuffer 克隆字节；SharedArrayBuffer
+//! 克隆共享同一载荷盒。
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use oxide_kernel::shape_forge::EMPTY_SHAPE_ID;
@@ -27,34 +29,37 @@ use crate::object::{walk_own_keys, walk_own_symbol_keys};
 use crate::set::{SetInner, SetKey};
 
 /// 克隆状态：`seen` 映射保共享引用（同源对象二次出现复用同一克隆，循环引用不
-/// 死循环）；`transfer` 集合枚举待转移的 ArrayBuffer（命中移动载荷，未命中
-/// 克隆字节）。
+/// 死循环）；`transfer_placeholders` 记录转移条目（源指针、克隆指针）——克隆体
+/// 是空载荷占位，整个序列化成功后才移动源载荷入克隆（源 detach）。
 struct CloneState {
     seen: HashMap<*const JsObject, *mut JsObject>,
-    transfer: HashSet<*const JsObject>,
+    transfer_placeholders: Vec<(*const JsObject, *mut JsObject)>,
 }
 
 impl CloneState {
     fn new() -> Self {
         Self {
             seen: HashMap::new(),
-            transfer: HashSet::new(),
+            transfer_placeholders: Vec::new(),
         }
     }
 }
 
 /// `structuredClone(value, options)` 入口：解析 value 与 options.transfer，
-/// 建克隆状态，调核心。
+/// 建克隆状态，调核心，成功后完成转移（源 detach 并填克隆载荷）。
 ///
 /// # 步骤
 /// 1. 取第一实参 value（缺省 undefined）
-/// 2. 取第二实参 options（缺省 undefined）；在场时解析 transfer 列表
+/// 2. 取第二实参 options（缺省 undefined）；在场时解析 transfer 列表（注册占位）
 /// 3. 建 `CloneState`
 /// 4. 调 `clone_value` 递归克隆
+/// 5. 成功后对每个转移条目完成转移（源 detach 并填克隆载荷）
 ///
 /// # 边界与前提
 /// - options 非对象 → TypeError；`transfer` 非数组 → TypeError；元素非
 ///   ArrayBuffer 或重复 → DataCloneError；
+/// - 序列化中值图内 detached 缓冲 → DataCloneError（源保持未 detach）；
+/// - 序列化成功后转移条目 detached → DataCloneError；
 /// - 返回 `Ok(克隆值)` 或 `Err(TypeError / DataCloneError)`。
 pub fn structured_clone_entry<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let value = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
@@ -65,19 +70,25 @@ pub fn structured_clone_entry<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResul
             return NativeResult::Err(e);
         }
     }
-    match clone_value(vm, &mut state, value) {
-        Ok(v) => NativeResult::Ok(v),
-        Err(e) => NativeResult::Err(e),
+    let cloned = match clone_value(vm, &mut state, value) {
+        Ok(v) => v,
+        Err(e) => return NativeResult::Err(e),
+    };
+    if let Err(e) = finish_transfer(vm, &mut state) {
+        return NativeResult::Err(e);
     }
+    NativeResult::Ok(cloned)
 }
 
-/// 解析 options.transfer 入 transfer 集合：options 须为对象，`transfer` 须为
-/// 数组，元素须为不重复的 ArrayBuffer（缺省 `transfer` 为空集）。
+/// 解析 options.transfer 并把转移条目注册进 seen 映射：options 须为对象，
+/// `transfer` 须为数组，元素须为不重复的 ArrayBuffer（缺省 `transfer` 为空集）。
+/// 每个元素分配空载荷占位克隆（存储态上限继承源、immutable 恒 false），登记
+/// seen 映射并记入占位列表（源、克隆），序列化成功后才移动载荷。
 ///
 /// # 边界与前提
 /// - `transfer` 属性读取是用户代码窗口（getter 副作用与异常原值传播）；
-/// - 转移集合只收 ArrayBuffer 对象指针（SAB 不可转移，非 AB 元素报
-///   DataCloneError）。
+/// - 转移条目只收 ArrayBuffer 对象（SAB 不可转移，非 AB 元素报
+///   DataCloneError）；重复经 seen 映射判定（占位注册即重复检查）。
 fn parse_transfer_list<H: VmHost>(vm: &mut H, options: JsValue, state: &mut CloneState) -> Result<(), JsValue> {
     if !options.is_object() {
         return Err(crate::error::create_type_error(vm, "structuredClone options must be an object"));
@@ -108,10 +119,53 @@ fn parse_transfer_list<H: VmHost>(vm: &mut H, options: JsValue, state: &mut Clon
         if !e.is_object() || !unsafe { &*e.as_js_object_ptr() }.is_array_buffer_obj() {
             return Err(data_clone_error(vm, "transfer list element is not an ArrayBuffer"));
         }
-        let ptr = e.as_js_object_ptr() as *const JsObject;
-        if !state.transfer.insert(ptr) {
+        let src_ptr = e.as_js_object_ptr() as *const JsObject;
+        if state.seen.contains_key(&src_ptr) {
             return Err(data_clone_error(vm, "duplicate buffer in transfer list"));
         }
+        // SAFETY: is_object 保证非空指针；对象在 native 执行期间被根保持、不被回收。
+        let src = unsafe { &*e.as_js_object_ptr() };
+        let Some(payload_ptr) = crate::array_buffer::array_buffer_payload_ptr(src) else {
+            return Err(data_clone_error(vm, "ArrayBuffer internal state invalid"));
+        };
+        // SAFETY: payload_ptr 经 array_buffer_payload_ptr 校验为存活载荷盒；标量
+        // 拷出后借用即结束，不跨 JS 调用。
+        let max_byte_length = unsafe { (*payload_ptr).max_byte_length };
+        let proto = crate::array_buffer::default_array_buffer_proto(vm);
+        let clone_ptr = alloc_buffer_object(vm, None, max_byte_length, false, proto);
+        state.seen.insert(src_ptr, clone_ptr);
+        state.transfer_placeholders.push((src_ptr, clone_ptr));
+    }
+    Ok(())
+}
+
+/// 序列化成功后完成转移：对每个转移条目校验源未 detach，再移动源载荷入克隆
+/// 占位（源 detach）；值图外条目同样 detach。
+///
+/// # 副作用
+/// - 源缓冲载荷移入克隆占位（源转 detached 态）；
+/// - 克隆占位的空载荷被填为源载荷。
+fn finish_transfer<H: VmHost>(vm: &mut H, state: &mut CloneState) -> Result<(), JsValue> {
+    for (src_ptr, clone_ptr) in &state.transfer_placeholders {
+        // SAFETY: 源对象由调用方寄存器保活（值图根），载荷指针本段有效。
+        let src = unsafe { &**src_ptr };
+        let Some(src_payload) = crate::array_buffer::array_buffer_payload_ptr(src) else {
+            return Err(data_clone_error(vm, "ArrayBuffer internal state invalid"));
+        };
+        // SAFETY: clone_ptr 是本克隆核新分配的占位对象，载荷指针本段有效。
+        let clone_payload = unsafe {
+            (**clone_ptr)
+                .native_fn()
+                .map(|p| p.as_ptr() as *mut crate::array_buffer::ArrayBufferPayload)
+                .unwrap()
+        };
+        // SAFETY: 两载荷指针均经校验为存活载荷盒；移动为标量操作，不跨 JS 调用。
+        let data = unsafe { (*src_payload).data.take() };
+        // 转移条目 detached 不可转移（规范报 DataCloneError）。
+        let Some(data) = data else {
+            return Err(data_clone_error(vm, "detached buffer in transfer list"));
+        };
+        unsafe { (*clone_payload).data = Some(data) };
     }
     Ok(())
 }
@@ -153,7 +207,7 @@ fn clone_value<H: VmHost>(vm: &mut H, state: &mut CloneState, value: JsValue) ->
     } else if src.is_regexp_obj() {
         alloc_regexp_clone(vm, src)?
     } else if src.is_array_buffer_obj() {
-        alloc_array_buffer_clone(vm, state, src, src_ptr as *const JsObject)?
+        alloc_array_buffer_clone(vm, src)?
     } else if src.is_shared_array_buffer_obj() {
         alloc_shared_array_buffer_clone(vm, src)?
     } else if src.is_typed_array_obj() {
@@ -456,26 +510,25 @@ fn alloc_error_clone<H: VmHost>(vm: &mut H, src: &JsObject) -> *mut JsObject {
     vm.alloc_object(obj)
 }
 
-/// 分配 ArrayBuffer 克隆：transfer 命中移动载荷（源 `data → None` 即 detach），
-/// 未命中克隆字节；存储态上限与 immutable 标志原样拷贝，detached 源产 detached
-/// 克隆。
-fn alloc_array_buffer_clone<H: VmHost>(
-    vm: &mut H, state: &mut CloneState, src: &JsObject, src_ptr: *const JsObject,
-) -> Result<*mut JsObject, JsValue> {
+/// 分配 ArrayBuffer 克隆：克隆源字节（转移条目已被 seen 映射短路返回占位，
+/// 不会到达此处）；存储态上限与 immutable 标志原样拷贝，detached 源报
+/// DataCloneError。
+fn alloc_array_buffer_clone<H: VmHost>(vm: &mut H, src: &JsObject) -> Result<*mut JsObject, JsValue> {
     let Some(payload_ptr) = crate::array_buffer::array_buffer_payload_ptr(src) else {
         return Err(data_clone_error(vm, "ArrayBuffer internal state invalid"));
     };
-    let transferred = state.transfer.contains(&src_ptr);
     // SAFETY: payload_ptr 经 array_buffer_payload_ptr 校验为存活载荷盒；标量
     // 拷出后借用即结束，不跨 JS 调用。
     let (data, max_byte_length, immutable) = unsafe {
-        let p = &mut *payload_ptr;
-        // 转移命中移动载荷（源 data → None）；未命中克隆字节。
-        let data = if transferred { p.data.take() } else { p.data.clone() };
-        (data, p.max_byte_length, p.immutable)
+        let p = &*payload_ptr;
+        (p.data.clone(), p.max_byte_length, p.immutable)
+    };
+    // 值图内 detached 缓冲不可克隆（规范报 DataCloneError）。
+    let Some(data) = data else {
+        return Err(data_clone_error(vm, "detached ArrayBuffer is not cloneable"));
     };
     let proto = crate::array_buffer::default_array_buffer_proto(vm);
-    let clone_ptr = alloc_buffer_object(vm, data, max_byte_length, immutable, proto);
+    let clone_ptr = alloc_buffer_object(vm, Some(data), max_byte_length, immutable, proto);
     Ok(clone_ptr)
 }
 
@@ -1090,5 +1143,182 @@ mod tests {
         assert!(cl.is_error_obj());
         assert!(std::ptr::eq(unsafe { &*v.as_js_object_ptr() }.proto().as_ptr(), cl.proto().as_ptr()));
         assert_eq!(vm.lookup_str(obj_prop(&vm, cl, "message")).unwrap(), "msg");
+    }
+
+    /// 读 ArrayBuffer 载荷存储态上限（0 定长，非 0 为请求上限加 1）。
+    fn ab_max_byte_length(ab: &JsObject) -> Option<usize> {
+        let ptr = crate::array_buffer::array_buffer_payload_ptr(ab)?;
+        // SAFETY: ptr 经 array_buffer_payload_ptr 校验为存活载荷盒。
+        Some(unsafe { &*ptr }.max_byte_length)
+    }
+
+    /// 读 ArrayBuffer 载荷 immutable 标志。
+    fn ab_immutable(ab: &JsObject) -> Option<bool> {
+        let ptr = crate::array_buffer::array_buffer_payload_ptr(ab)?;
+        // SAFETY: ptr 经 array_buffer_payload_ptr 校验为存活载荷盒。
+        Some(unsafe { &*ptr }.immutable)
+    }
+
+    #[test]
+    fn transfer_failure_does_not_detach() {
+        let (mut vm, v) = eval(
+            "var ab = new Uint8Array([1, 2, 3]).buffer; \
+                   var opts = {transfer: [ab]}; \
+                   ({ab: ab, fn: function f() {}, opts: opts})",
+        )
+        .unwrap();
+        let holder = unsafe { &*v.as_js_object_ptr() };
+        let si_ab = vm.kernel_core().perm_interner().intern("ab").0;
+        let si_opts = vm.kernel_core().perm_interner().intern("opts").0;
+        let ab = holder.get_prop_at(vm.get_own_property_slot(holder, si_ab).unwrap());
+        let opts = holder.get_prop_at(vm.get_own_property_slot(holder, si_opts).unwrap());
+        // 克隆持有者对象（含函数值，不可克隆）→ DataCloneError。
+        let e = clone_with_options(&mut vm, v, opts).unwrap_err();
+        let err = unsafe { &*e.as_js_object_ptr() };
+        assert!(err.is_error_obj());
+        // 克隆失败时转移未完成，源缓冲未 detach。
+        assert_eq!(ab_bytes(unsafe { &*ab.as_js_object_ptr() }), Some(vec![1, 2, 3]));
+    }
+
+    #[test]
+    fn transfer_outside_value_graph_detaches() {
+        let (mut vm, v) = eval(
+            "var ab = new Uint8Array([1, 2, 3]).buffer; var opts = {transfer: [ab]}; \
+             ({v: 42, ab: ab, opts: opts})",
+        )
+        .unwrap();
+        let holder = unsafe { &*v.as_js_object_ptr() };
+        let si_v = vm.kernel_core().perm_interner().intern("v").0;
+        let si_ab = vm.kernel_core().perm_interner().intern("ab").0;
+        let si_opts = vm.kernel_core().perm_interner().intern("opts").0;
+        let val = holder.get_prop_at(vm.get_own_property_slot(holder, si_v).unwrap());
+        let ab = holder.get_prop_at(vm.get_own_property_slot(holder, si_ab).unwrap());
+        let opts = holder.get_prop_at(vm.get_own_property_slot(holder, si_opts).unwrap());
+        let c = clone_with_options(&mut vm, val, opts).unwrap();
+        assert_eq!(c, JsValue::int(42));
+        // 值图外转移条目同样 detach。
+        assert!(ab_bytes(unsafe { &*ab.as_js_object_ptr() }).is_none());
+    }
+
+    #[test]
+    fn clone_detached_arraybuffer_data_clone_error() {
+        let (mut vm, v) = eval("var ab = new ArrayBuffer(4); $262.detachArrayBuffer(ab); ab").unwrap();
+        let e = clone(&mut vm, v).unwrap_err();
+        let err = unsafe { &*e.as_js_object_ptr() };
+        assert!(err.is_error_obj());
+    }
+
+    #[test]
+    fn transfer_detached_buffer_data_clone_error() {
+        let (mut vm, v) = eval(
+            "var ab = new ArrayBuffer(4); $262.detachArrayBuffer(ab); \
+             var opts = {transfer: [ab]}; ({v: 1, opts: opts})",
+        )
+        .unwrap();
+        let holder = unsafe { &*v.as_js_object_ptr() };
+        let si_v = vm.kernel_core().perm_interner().intern("v").0;
+        let si_opts = vm.kernel_core().perm_interner().intern("opts").0;
+        let val = holder.get_prop_at(vm.get_own_property_slot(holder, si_v).unwrap());
+        let opts = holder.get_prop_at(vm.get_own_property_slot(holder, si_opts).unwrap());
+        let e = clone_with_options(&mut vm, val, opts).unwrap_err();
+        let err = unsafe { &*e.as_js_object_ptr() };
+        assert!(err.is_error_obj());
+    }
+
+    #[test]
+    fn clone_map_key_cycle() {
+        let (mut vm, v) = eval("var m = new Map(); var k = {}; k.m = m; m.set(k, 1); m").unwrap();
+        let c = clone(&mut vm, v).unwrap();
+        let cl = unsafe { &*c.as_js_object_ptr() };
+        let inner = cl.native_data() as *const MapInner;
+        let entries: Vec<(SetKey, JsValue)> = unsafe { (*inner).iter() }.collect();
+        assert_eq!(entries.len(), 1);
+        // 克隆键引用克隆的 map（循环保持）。
+        let key = &entries[0].0;
+        assert!(key.0.is_object());
+        let key_obj = unsafe { &*key.0.as_js_object_ptr() };
+        let si_m = vm.kernel_core().perm_interner().intern("m").0;
+        let key_m = key_obj.get_prop_at(vm.get_own_property_slot(key_obj, si_m).unwrap());
+        assert!(std::ptr::eq(key_m.as_js_object_ptr(), c.as_js_object_ptr()), "克隆键应引用克隆的 map");
+    }
+
+    #[test]
+    fn clone_local_map_independent_calls() {
+        let (mut vm, v) = eval("var o = {a: 1}; o").unwrap();
+        let c1 = clone(&mut vm, v).unwrap();
+        let c2 = clone(&mut vm, v).unwrap();
+        assert!(
+            !std::ptr::eq(c1.as_js_object_ptr(), c2.as_js_object_ptr()),
+            "两次调用应产独立克隆（seen 映射本地）"
+        );
+    }
+
+    #[test]
+    fn clone_deep_cycle() {
+        let (mut vm, v) = eval("var a = {}; var b = {}; a.b = b; b.a = a; a").unwrap();
+        let c = clone(&mut vm, v).unwrap();
+        let cl = unsafe { &*c.as_js_object_ptr() };
+        let si_b = vm.kernel_core().perm_interner().intern("b").0;
+        let b_clone = cl.get_prop_at(vm.get_own_property_slot(cl, si_b).unwrap());
+        let b_obj = unsafe { &*b_clone.as_js_object_ptr() };
+        let si_a = vm.kernel_core().perm_interner().intern("a").0;
+        let a_back = b_obj.get_prop_at(vm.get_own_property_slot(b_obj, si_a).unwrap());
+        assert!(std::ptr::eq(a_back.as_js_object_ptr(), c.as_js_object_ptr()), "深循环应指回克隆的 a");
+    }
+
+    #[test]
+    fn clone_shared_reference_and_cycle_mixed() {
+        let (mut vm, v) = eval("var a = {x: 1}; var b = {ref: a, ref2: a}; b.self = b; b").unwrap();
+        let c = clone(&mut vm, v).unwrap();
+        let cl = unsafe { &*c.as_js_object_ptr() };
+        let si_ref = vm.kernel_core().perm_interner().intern("ref").0;
+        let si_ref2 = vm.kernel_core().perm_interner().intern("ref2").0;
+        let si_self = vm.kernel_core().perm_interner().intern("self").0;
+        let ref1 = cl.get_prop_at(vm.get_own_property_slot(cl, si_ref).unwrap());
+        let ref2 = cl.get_prop_at(vm.get_own_property_slot(cl, si_ref2).unwrap());
+        let self_ref = cl.get_prop_at(vm.get_own_property_slot(cl, si_self).unwrap());
+        assert!(std::ptr::eq(ref1.as_js_object_ptr(), ref2.as_js_object_ptr()), "共享引用应映射到同一克隆");
+        assert!(std::ptr::eq(self_ref.as_js_object_ptr(), c.as_js_object_ptr()), "循环应指向克隆自身");
+    }
+
+    #[test]
+    fn transfer_resizable_preserves_max_byte_length() {
+        let (mut vm, v) = eval(
+            "var ab = new ArrayBuffer(4, {maxByteLength: 8}); var opts = {transfer: [ab]}; \
+             ({ab: ab, opts: opts})",
+        )
+        .unwrap();
+        let holder = unsafe { &*v.as_js_object_ptr() };
+        let si_ab = vm.kernel_core().perm_interner().intern("ab").0;
+        let si_opts = vm.kernel_core().perm_interner().intern("opts").0;
+        let ab = holder.get_prop_at(vm.get_own_property_slot(holder, si_ab).unwrap());
+        let opts = holder.get_prop_at(vm.get_own_property_slot(holder, si_opts).unwrap());
+        let c = clone_with_options(&mut vm, ab, opts).unwrap();
+        let cl = unsafe { &*c.as_js_object_ptr() };
+        // 克隆保留存储态上限（请求上限加 1）与源字节。
+        assert_eq!(ab_max_byte_length(cl), Some(9));
+        assert_eq!(ab_bytes(cl), Some(vec![0, 0, 0, 0]));
+        // 源缓冲已 detach。
+        assert!(ab_bytes(unsafe { &*ab.as_js_object_ptr() }).is_none());
+    }
+
+    #[test]
+    fn transfer_clone_does_not_inherit_immutable() {
+        let (mut vm, v) = eval(
+            "var ab = new ArrayBuffer(4); ab.markImmutable(); var opts = {transfer: [ab]}; \
+             ({ab: ab, opts: opts})",
+        )
+        .unwrap();
+        let holder = unsafe { &*v.as_js_object_ptr() };
+        let si_ab = vm.kernel_core().perm_interner().intern("ab").0;
+        let si_opts = vm.kernel_core().perm_interner().intern("opts").0;
+        let ab = holder.get_prop_at(vm.get_own_property_slot(holder, si_ab).unwrap());
+        let opts = holder.get_prop_at(vm.get_own_property_slot(holder, si_opts).unwrap());
+        let c = clone_with_options(&mut vm, ab, opts).unwrap();
+        let cl = unsafe { &*c.as_js_object_ptr() };
+        // 转移产物是新缓冲，不继承 immutable 标志。
+        assert_eq!(ab_immutable(cl), Some(false));
+        assert_eq!(ab_bytes(cl), Some(vec![0, 0, 0, 0]));
+        assert!(ab_bytes(unsafe { &*ab.as_js_object_ptr() }).is_none());
     }
 }
