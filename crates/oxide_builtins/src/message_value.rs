@@ -20,12 +20,11 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use oxide_kernel::shape_forge::EMPTY_SHAPE_ID;
-use oxide_types::mem::P;
 use oxide_types::object::{JsObject, NativeFnPtr, PropAttributes};
 use oxide_types::private_key::{decode_symbol_key, int_key_value, is_int_key, WELL_KNOWN_SYMBOL_COUNT};
 use oxide_types::value::JsValue;
 
-use oxide_runtime_api::{to_string_full, VmHost};
+use oxide_runtime_api::{to_string_full, ProtoKind, VmHost};
 
 use crate::array::create_new_array;
 use crate::map::MapInner;
@@ -330,7 +329,7 @@ fn detach_error<H: VmHost>(
     vm: &mut H, state: &mut DetachState, src: &JsObject, transfer: &HashSet<*const JsObject>,
 ) -> Result<MessageValue, JsValue> {
     let src_val = JsValue::from_js_object(src as *const JsObject as *mut JsObject);
-    let si_name = vm.kernel_core().perm_interner().intern("name").0;
+    let si_name = vm.perm_intern("name");
     let name_val = match vm.ordinary_get(src, si_name, src_val) {
         Ok(v) => v,
         Err(e) => {
@@ -341,7 +340,7 @@ fn detach_error<H: VmHost>(
         }
     };
     let name = vm.lookup_str(name_val).unwrap_or_else(|| "Error".to_string());
-    let si_msg = vm.kernel_core().perm_interner().intern("message").0;
+    let si_msg = vm.perm_intern("message");
     let message = if let Some(store) = vm.get_own_property_slot(src, si_msg) {
         let is_accessor = src.prop_meta_at(store).is_some_and(|m| m.is_accessor);
         if !is_accessor {
@@ -353,7 +352,7 @@ fn detach_error<H: VmHost>(
     } else {
         None
     };
-    let si_cause = vm.kernel_core().perm_interner().intern("cause").0;
+    let si_cause = vm.perm_intern("cause");
     let cause = if let Some(store) = vm.get_own_property_slot(src, si_cause) {
         let val = read_own_value(vm, src, src_val, si_cause, store)?;
         Some(Box::new(detach_value(vm, state, val, transfer)?))
@@ -430,7 +429,7 @@ fn key_si_to_message_value<H: VmHost>(vm: &mut H, si: u32) -> Result<MessageValu
     let text = if is_int_key(si) {
         int_key_value(si).to_string()
     } else {
-        vm.kernel_core().perm_interner().lookup(si).unwrap_or_default().to_string()
+        vm.perm_lookup(si).unwrap_or_default().to_string()
     };
     let units = text.encode_utf16().collect::<Vec<u16>>();
     Ok(MessageValue::String(units.into_boxed_slice()))
@@ -497,7 +496,7 @@ fn rehydrate_value<H: VmHost>(vm: &mut H, value: &MessageValue) -> JsValue {
             JsValue::from_js_object(ptr)
         }
         MessageValue::Object(props) => {
-            let proto = vm.session().builtin_world().object_proto.as_ptr() as *mut JsObject;
+            let proto = vm.builtin_proto(ProtoKind::ObjectProto);
             let ptr = vm.alloc_object(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(proto)));
             // SAFETY: ptr 是本函数新分配的对象，存活且本段无别名。
             let obj = unsafe { &mut *ptr };
@@ -510,7 +509,7 @@ fn rehydrate_value<H: VmHost>(vm: &mut H, value: &MessageValue) -> JsValue {
             JsValue::from_js_object(ptr)
         }
         MessageValue::Map(entries) => {
-            let map_proto = vm.session().builtin_world().map_proto.as_ptr() as *mut JsObject;
+            let map_proto = vm.builtin_proto(ProtoKind::MapProto);
             let mut obj = JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(map_proto));
             obj.set_map(true);
             let inner = Box::into_raw(Box::new(MapInner::new()));
@@ -527,7 +526,7 @@ fn rehydrate_value<H: VmHost>(vm: &mut H, value: &MessageValue) -> JsValue {
             JsValue::from_js_object(ptr)
         }
         MessageValue::Set(elems) => {
-            let set_proto = vm.session().builtin_world().set_proto.as_ptr() as *mut JsObject;
+            let set_proto = vm.builtin_proto(ProtoKind::SetProto);
             let mut obj = JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(set_proto));
             obj.set_set(true);
             let inner = Box::into_raw(Box::new(SetInner::new()));
@@ -543,7 +542,7 @@ fn rehydrate_value<H: VmHost>(vm: &mut H, value: &MessageValue) -> JsValue {
             JsValue::from_js_object(ptr)
         }
         MessageValue::Date(ts) => {
-            let proto = vm.session().builtin_world().date_proto.as_ptr() as *mut JsObject;
+            let proto = vm.builtin_proto(ProtoKind::DateProto);
             let mut obj = JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(proto));
             obj.type_tag = JsObject::OBJ_TYPE_DATE;
             obj.set_prop_at(0, JsValue::float(*ts));
@@ -575,7 +574,7 @@ fn rehydrate_array_buffer<H: VmHost>(vm: &mut H, bytes: &Arc<Vec<u8>>) -> JsValu
 
 /// RegExp 臂 rehydrate：按源与标志重编译，建 RegExp 对象（lastIndex 初始 0）。
 fn rehydrate_regexp<H: VmHost>(vm: &mut H, source: &str, flags: &str) -> JsValue {
-    let proto = vm.session().builtin_world().regexp_proto.as_ptr() as *mut JsObject;
+    let proto = vm.builtin_proto(ProtoKind::RegExpProto);
     let mut obj = JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(proto));
     let source_val = vm.new_string(source);
     let flags_val = vm.new_string(flags);
@@ -589,7 +588,7 @@ fn rehydrate_regexp<H: VmHost>(vm: &mut H, source: &str, flags: &str) -> JsValue
     obj.type_tag = JsObject::OBJ_TYPE_REGEXP;
     obj.set_regexp_source(source_val);
     obj.set_regexp_flags(flags_val);
-    let si_lastindex = vm.kernel_core().perm_interner().intern("lastIndex").0;
+    let si_lastindex = vm.perm_intern("lastIndex");
     let _ = vm.define_data_property(&mut obj, si_lastindex, JsValue::int(0), PropAttributes::new(true, false, false));
     let ptr = vm.alloc_object(obj);
     JsValue::from_js_object(ptr)
@@ -601,13 +600,13 @@ fn rehydrate_error<H: VmHost>(
     vm: &mut H, name: &str, message: &Option<String>, cause: &Option<Box<MessageValue>>,
 ) -> JsValue {
     let proto = match name {
-        "EvalError" => P::as_ptr(&vm.session().builtin_world().eval_error_proto) as *mut JsObject,
-        "RangeError" => P::as_ptr(&vm.session().builtin_world().range_error_proto) as *mut JsObject,
-        "ReferenceError" => P::as_ptr(&vm.session().builtin_world().reference_error_proto) as *mut JsObject,
-        "SyntaxError" => P::as_ptr(&vm.session().builtin_world().syntax_error_proto) as *mut JsObject,
-        "TypeError" => P::as_ptr(&vm.session().builtin_world().type_error_proto) as *mut JsObject,
-        "URIError" => P::as_ptr(&vm.session().builtin_world().uri_error_proto) as *mut JsObject,
-        _ => P::as_ptr(&vm.session().builtin_world().error_proto) as *mut JsObject,
+        "EvalError" => vm.builtin_proto(ProtoKind::EvalErrorProto),
+        "RangeError" => vm.builtin_proto(ProtoKind::RangeErrorProto),
+        "ReferenceError" => vm.builtin_proto(ProtoKind::ReferenceErrorProto),
+        "SyntaxError" => vm.builtin_proto(ProtoKind::SyntaxErrorProto),
+        "TypeError" => vm.builtin_proto(ProtoKind::TypeErrorProto),
+        "URIError" => vm.builtin_proto(ProtoKind::UriErrorProto),
+        _ => vm.builtin_proto(ProtoKind::ErrorProto),
     };
     let mut obj = JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(proto));
     obj.type_tag = JsObject::OBJ_TYPE_ERROR;
@@ -615,12 +614,12 @@ fn rehydrate_error<H: VmHost>(
     // SAFETY: ptr 是本函数新分配的 Error 对象，存活且本段无别名。
     let err = unsafe { &mut *ptr };
     if let Some(msg) = message {
-        let si_msg = vm.kernel_core().perm_interner().intern("message").0;
+        let si_msg = vm.perm_intern("message");
         let msg_val = vm.new_string(msg);
         let _ = vm.define_data_property(err, si_msg, msg_val, PropAttributes::new(true, false, true));
     }
     if let Some(cause_val) = cause {
-        let si_cause = vm.kernel_core().perm_interner().intern("cause").0;
+        let si_cause = vm.perm_intern("cause");
         let cause_js = rehydrate_value(vm, cause_val);
         let _ = vm.define_data_property(err, si_cause, cause_js, PropAttributes::DEFAULT_DATA);
     }
@@ -672,7 +671,7 @@ mod tests {
 
     /// 读对象自身属性值（按名称），无则 undefined。
     fn obj_prop(vm: &Vm, obj: &JsObject, name: &str) -> JsValue {
-        let si = vm.kernel_core().perm_interner().intern(name).0;
+        let si = vm.perm_intern(name);
         match vm.get_own_property_slot(obj, si) {
             Some(idx) => obj.get_prop_at(idx),
             None => JsValue::undefined(),
