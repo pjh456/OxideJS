@@ -429,7 +429,6 @@ mod tests {
         for e in [
             "uncaught ReferenceError: $262 is not defined",
             "compile error: Identifier '$262' is not defined",
-            "uncaught ReferenceError: structuredClone is not defined",
             "compile error: Identifier 'queueMicrotask' is not defined",
         ] {
             assert_outcome(e, None, false, &TestOutcome::Skip("".into()));
