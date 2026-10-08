@@ -26,11 +26,10 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use oxide_kernel::shape_forge::EMPTY_SHAPE_ID;
-use oxide_types::mem::P;
 use oxide_types::object::{JsObject, NativeFnPtr, PropAttributes};
 use oxide_types::value::JsValue;
 
-use oxide_runtime_api::{to_string_full, NativeResult, VmHost};
+use oxide_runtime_api::{to_string_full, NativeResult, ProtoKind, VmHost};
 
 use crate::array::create_new_array;
 use crate::map::MapInner;
@@ -111,7 +110,7 @@ fn parse_transfer_list<H: VmHost>(vm: &mut H, options: JsValue, state: &mut Clon
     let opt_ptr = options.as_js_object_ptr();
     // SAFETY: is_object 保证非空指针（入口已过滤）；对象在 native 执行期间被根保持、不被回收。
     let opt = unsafe { &*opt_ptr };
-    let si_transfer = vm.kernel_core().perm_interner().intern("transfer").0;
+    let si_transfer = vm.perm_intern("transfer");
     let transfer_val = match vm.ordinary_get(opt, si_transfer, options) {
         Ok(v) => v,
         Err(e) => {
@@ -289,7 +288,7 @@ fn fill_error<H: VmHost>(
     vm: &mut H, state: &mut CloneState, src: &JsObject, clone_ptr: *mut JsObject,
 ) -> Result<(), JsValue> {
     let src_val = JsValue::from_js_object(src as *const JsObject as *mut JsObject);
-    let si_msg = vm.kernel_core().perm_interner().intern("message").0;
+    let si_msg = vm.perm_intern("message");
     if let Some(store) = vm.get_own_property_slot(src, si_msg) {
         // message 仅数据描述符复制：访问器不触发 getter、不复制。
         let is_accessor = src.prop_meta_at(store).is_some_and(|m| m.is_accessor);
@@ -308,7 +307,7 @@ fn fill_error<H: VmHost>(
             define_on_clone(vm, clone_ptr, si_msg, msg_val, PropAttributes::new(true, false, true))?;
         }
     }
-    let si_cause = vm.kernel_core().perm_interner().intern("cause").0;
+    let si_cause = vm.perm_intern("cause");
     if let Some(store) = vm.get_own_property_slot(src, si_cause) {
         let val = read_own_value(vm, src, src_val, si_cause, store)?;
         let cloned = clone_value(vm, state, val)?;
@@ -443,7 +442,7 @@ fn fill_set<H: VmHost>(
 
 /// 分配 plain 对象克隆（proto = %Object.prototype%）。
 fn alloc_plain_clone<H: VmHost>(vm: &mut H) -> *mut JsObject {
-    let proto = vm.session().builtin_world().object_proto.as_ptr() as *mut JsObject;
+    let proto = vm.builtin_proto(ProtoKind::ObjectProto);
     vm.alloc_object(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(proto)))
 }
 
@@ -468,7 +467,7 @@ fn alloc_array_clone<H: VmHost>(vm: &mut H, src: &JsObject) -> *mut JsObject {
 
 /// 分配 Map 克隆（空 `MapInner`，proto = %Map.prototype%）。
 fn alloc_map_clone<H: VmHost>(vm: &mut H) -> *mut JsObject {
-    let map_proto = vm.session().builtin_world().map_proto.as_ptr() as *mut JsObject;
+    let map_proto = vm.builtin_proto(ProtoKind::MapProto);
     let mut obj = JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(map_proto));
     obj.set_map(true);
     let inner = Box::into_raw(Box::new(MapInner::new()));
@@ -478,7 +477,7 @@ fn alloc_map_clone<H: VmHost>(vm: &mut H) -> *mut JsObject {
 
 /// 分配 Set 克隆（空 `SetInner`，proto = %Set.prototype%）。
 fn alloc_set_clone<H: VmHost>(vm: &mut H) -> *mut JsObject {
-    let set_proto = vm.session().builtin_world().set_proto.as_ptr() as *mut JsObject;
+    let set_proto = vm.builtin_proto(ProtoKind::SetProto);
     let mut obj = JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(set_proto));
     obj.set_set(true);
     let inner = Box::into_raw(Box::new(SetInner::new()));
@@ -488,7 +487,7 @@ fn alloc_set_clone<H: VmHost>(vm: &mut H) -> *mut JsObject {
 
 /// 分配 Date 克隆（同时间戳，proto = %Date.prototype%）。
 fn alloc_date_clone<H: VmHost>(vm: &mut H, src: &JsObject) -> *mut JsObject {
-    let proto = vm.session().builtin_world().date_proto.as_ptr() as *mut JsObject;
+    let proto = vm.builtin_proto(ProtoKind::DateProto);
     let mut obj = JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(proto));
     obj.type_tag = JsObject::OBJ_TYPE_DATE;
     obj.set_prop_at(0, src.get_prop_at(0));
@@ -501,7 +500,7 @@ fn alloc_date_clone<H: VmHost>(vm: &mut H, src: &JsObject) -> *mut JsObject {
 /// - 源模式非法（理论上不发生，源已是合法 RegExp）时抛 SyntaxError；
 /// - lastIndex 初始化为 0（writable / 非枚举 / 非可配置）。
 fn alloc_regexp_clone<H: VmHost>(vm: &mut H, src: &JsObject) -> Result<*mut JsObject, JsValue> {
-    let proto = vm.session().builtin_world().regexp_proto.as_ptr() as *mut JsObject;
+    let proto = vm.builtin_proto(ProtoKind::RegExpProto);
     let mut obj = JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(proto));
     let source_val = src.get_regexp_source();
     let flags_val = src.get_regexp_flags();
@@ -521,7 +520,7 @@ fn alloc_regexp_clone<H: VmHost>(vm: &mut H, src: &JsObject) -> Result<*mut JsOb
     obj.type_tag = JsObject::OBJ_TYPE_REGEXP;
     obj.set_regexp_source(source_val);
     obj.set_regexp_flags(flags_val);
-    let si_lastindex = vm.kernel_core().perm_interner().intern("lastIndex").0;
+    let si_lastindex = vm.perm_intern("lastIndex");
     let _ = vm.define_data_property(&mut obj, si_lastindex, JsValue::int(0), PropAttributes::new(true, false, false));
     Ok(vm.alloc_object(obj))
 }
@@ -534,7 +533,7 @@ fn alloc_regexp_clone<H: VmHost>(vm: &mut H, src: &JsObject) -> Result<*mut JsOb
 /// - 克隆原型与源原型解耦（源子类原型丢弃，按规范反序列化口径回落标准原型）。
 fn alloc_error_clone<H: VmHost>(vm: &mut H, src: &JsObject) -> Result<*mut JsObject, JsValue> {
     let src_val = JsValue::from_js_object(src as *const JsObject as *mut JsObject);
-    let si_name = vm.kernel_core().perm_interner().intern("name").0;
+    let si_name = vm.perm_intern("name");
     let name_val = match vm.ordinary_get(src, si_name, src_val) {
         Ok(v) => v,
         Err(e) => {
@@ -546,13 +545,13 @@ fn alloc_error_clone<H: VmHost>(vm: &mut H, src: &JsObject) -> Result<*mut JsObj
     };
     // 归一化：七标准名取对应标准原型，其余（非字符串或自定义名）取 %Error.prototype%。
     let proto = match vm.lookup_str(name_val).as_deref() {
-        Some("EvalError") => P::as_ptr(&vm.session().builtin_world().eval_error_proto) as *mut JsObject,
-        Some("RangeError") => P::as_ptr(&vm.session().builtin_world().range_error_proto) as *mut JsObject,
-        Some("ReferenceError") => P::as_ptr(&vm.session().builtin_world().reference_error_proto) as *mut JsObject,
-        Some("SyntaxError") => P::as_ptr(&vm.session().builtin_world().syntax_error_proto) as *mut JsObject,
-        Some("TypeError") => P::as_ptr(&vm.session().builtin_world().type_error_proto) as *mut JsObject,
-        Some("URIError") => P::as_ptr(&vm.session().builtin_world().uri_error_proto) as *mut JsObject,
-        _ => P::as_ptr(&vm.session().builtin_world().error_proto) as *mut JsObject,
+        Some("EvalError") => vm.builtin_proto(ProtoKind::EvalErrorProto),
+        Some("RangeError") => vm.builtin_proto(ProtoKind::RangeErrorProto),
+        Some("ReferenceError") => vm.builtin_proto(ProtoKind::ReferenceErrorProto),
+        Some("SyntaxError") => vm.builtin_proto(ProtoKind::SyntaxErrorProto),
+        Some("TypeError") => vm.builtin_proto(ProtoKind::TypeErrorProto),
+        Some("URIError") => vm.builtin_proto(ProtoKind::UriErrorProto),
+        _ => vm.builtin_proto(ProtoKind::ErrorProto),
     };
     let mut obj = JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(proto));
     obj.type_tag = JsObject::OBJ_TYPE_ERROR;
@@ -659,7 +658,7 @@ fn alloc_data_view_clone<H: VmHost>(
     // SAFETY: data_ptr 经对象类型标签校验为存活状态盒；Copy 语义，不跨 JS 调用持借用。
     let data = unsafe { *data_ptr };
     let cloned_buffer = clone_value(vm, state, data.buffer)?;
-    let proto = JsValue::from_js_object(vm.session().builtin_world().data_view_proto.as_ptr() as *mut JsObject);
+    let proto = JsValue::from_js_object(vm.builtin_proto(ProtoKind::DataViewProto));
     let mut obj = JsObject::new_empty(EMPTY_SHAPE_ID, proto);
     obj.type_tag = JsObject::OBJ_TYPE_DATA_VIEW;
     let new_data = Box::into_raw(Box::new(crate::data_view::DataViewData {
@@ -701,7 +700,7 @@ fn is_boxed_cloneable(src: &JsObject) -> bool {
 /// 供同 crate 的跨 realm 值传递抽象（`message_value`）复用。
 pub(crate) fn data_clone_error<H: VmHost>(vm: &mut H, msg: &str) -> JsValue {
     let err = crate::error::create_kind_error(vm, "DataCloneError", msg);
-    let si_name = vm.kernel_core().perm_interner().intern("name").0;
+    let si_name = vm.perm_intern("name");
     let name_val = vm.new_string("DataCloneError");
     // 新建错误对象形状为空，define 恒成功；失败忽略（不影响异常值身份）。
     let _ = vm.define_data_property(
@@ -745,7 +744,7 @@ mod tests {
 
     /// 读对象自身属性值（按名称），无则 undefined。
     fn obj_prop(vm: &Vm, obj: &JsObject, name: &str) -> JsValue {
-        let si = vm.kernel_core().perm_interner().intern(name).0;
+        let si = vm.perm_intern(name);
         match vm.get_own_property_slot(obj, si) {
             Some(idx) => obj.get_prop_at(idx),
             None => JsValue::undefined(),
@@ -860,8 +859,8 @@ mod tests {
         let (mut vm, v) = eval("var a = {x: 1}; var b = {ref: a, ref2: a}; b").unwrap();
         let c = clone(&mut vm, v).unwrap();
         let cl = unsafe { &*c.as_js_object_ptr() };
-        let si_ref = vm.kernel_core().perm_interner().intern("ref").0;
-        let si_ref2 = vm.kernel_core().perm_interner().intern("ref2").0;
+        let si_ref = vm.perm_intern("ref");
+        let si_ref2 = vm.perm_intern("ref2");
         let ref1 = cl.get_prop_at(vm.get_own_property_slot(cl, si_ref).unwrap());
         let ref2 = cl.get_prop_at(vm.get_own_property_slot(cl, si_ref2).unwrap());
         assert!(ref1.is_object() && ref2.is_object());
@@ -873,7 +872,7 @@ mod tests {
         let (mut vm, v) = eval("var a = {}; a.self = a; a").unwrap();
         let c = clone(&mut vm, v).unwrap();
         let cl = unsafe { &*c.as_js_object_ptr() };
-        let si_self = vm.kernel_core().perm_interner().intern("self").0;
+        let si_self = vm.perm_intern("self");
         let self_ref = cl.get_prop_at(vm.get_own_property_slot(cl, si_self).unwrap());
         assert!(std::ptr::eq(self_ref.as_js_object_ptr(), c.as_js_object_ptr()), "循环引用应指向克隆自身");
     }
@@ -935,8 +934,8 @@ mod tests {
             eval("var ab = new Uint8Array([9, 8, 7]).buffer; var opts = {transfer: [ab]}; ({ab: ab, opts: opts})")
                 .unwrap();
         let holder = unsafe { &*v.as_js_object_ptr() };
-        let si_ab = vm.kernel_core().perm_interner().intern("ab").0;
-        let si_opts = vm.kernel_core().perm_interner().intern("opts").0;
+        let si_ab = vm.perm_intern("ab");
+        let si_opts = vm.perm_intern("opts");
         let ab = holder.get_prop_at(vm.get_own_property_slot(holder, si_ab).unwrap());
         let opts = holder.get_prop_at(vm.get_own_property_slot(holder, si_opts).unwrap());
         let c = clone_with_options(&mut vm, ab, opts).unwrap();
@@ -971,8 +970,8 @@ mod tests {
             eval("var ta = new Uint8Array([1, 2, 3]); var opts = {transfer: [ta.buffer]}; ({ta: ta, opts: opts})")
                 .unwrap();
         let holder = unsafe { &*v.as_js_object_ptr() };
-        let si_ta = vm.kernel_core().perm_interner().intern("ta").0;
-        let si_opts = vm.kernel_core().perm_interner().intern("opts").0;
+        let si_ta = vm.perm_intern("ta");
+        let si_opts = vm.perm_intern("opts");
         let ta = holder.get_prop_at(vm.get_own_property_slot(holder, si_ta).unwrap());
         let opts = holder.get_prop_at(vm.get_own_property_slot(holder, si_opts).unwrap());
         let c = clone_with_options(&mut vm, ta, opts).unwrap();
@@ -1026,8 +1025,8 @@ mod tests {
         let (mut vm, v) =
             eval("var sab = new SharedArrayBuffer(4); var opts = {transfer: [sab]}; ({v: sab, opts: opts})").unwrap();
         let holder = unsafe { &*v.as_js_object_ptr() };
-        let si_v = vm.kernel_core().perm_interner().intern("v").0;
-        let si_opts = vm.kernel_core().perm_interner().intern("opts").0;
+        let si_v = vm.perm_intern("v");
+        let si_opts = vm.perm_intern("opts");
         let val = holder.get_prop_at(vm.get_own_property_slot(holder, si_v).unwrap());
         let opts = holder.get_prop_at(vm.get_own_property_slot(holder, si_opts).unwrap());
         let e = clone_with_options(&mut vm, val, opts).unwrap_err();
@@ -1040,8 +1039,8 @@ mod tests {
         let (mut vm, v) =
             eval("var ab = new ArrayBuffer(4); var opts = {transfer: [ab, ab]}; ({v: ab, opts: opts})").unwrap();
         let holder = unsafe { &*v.as_js_object_ptr() };
-        let si_v = vm.kernel_core().perm_interner().intern("v").0;
-        let si_opts = vm.kernel_core().perm_interner().intern("opts").0;
+        let si_v = vm.perm_intern("v");
+        let si_opts = vm.perm_intern("opts");
         let val = holder.get_prop_at(vm.get_own_property_slot(holder, si_v).unwrap());
         let opts = holder.get_prop_at(vm.get_own_property_slot(holder, si_opts).unwrap());
         let e = clone_with_options(&mut vm, val, opts).unwrap_err();
@@ -1075,8 +1074,8 @@ mod tests {
         // 字符串经 ToList 逐字符迭代，'x' 非 ArrayBuffer → DataCloneError。
         let (mut vm, v) = eval("var opts = {transfer: 'x'}; ({v: 1, opts: opts})").unwrap();
         let holder = unsafe { &*v.as_js_object_ptr() };
-        let si_v = vm.kernel_core().perm_interner().intern("v").0;
-        let si_opts = vm.kernel_core().perm_interner().intern("opts").0;
+        let si_v = vm.perm_intern("v");
+        let si_opts = vm.perm_intern("opts");
         let val = holder.get_prop_at(vm.get_own_property_slot(holder, si_v).unwrap());
         let opts = holder.get_prop_at(vm.get_own_property_slot(holder, si_opts).unwrap());
         let e = clone_with_options(&mut vm, val, opts).unwrap_err();
@@ -1090,8 +1089,8 @@ mod tests {
         // 不可迭代对象经 GetIterator 抛 TypeError。
         let (mut vm, v) = eval("var opts = {transfer: {}}; ({v: 1, opts: opts})").unwrap();
         let holder = unsafe { &*v.as_js_object_ptr() };
-        let si_v = vm.kernel_core().perm_interner().intern("v").0;
-        let si_opts = vm.kernel_core().perm_interner().intern("opts").0;
+        let si_v = vm.perm_intern("v");
+        let si_opts = vm.perm_intern("opts");
         let val = holder.get_prop_at(vm.get_own_property_slot(holder, si_v).unwrap());
         let opts = holder.get_prop_at(vm.get_own_property_slot(holder, si_opts).unwrap());
         let e = clone_with_options(&mut vm, val, opts).unwrap_err();
@@ -1110,8 +1109,8 @@ mod tests {
         )
         .unwrap();
         let holder = unsafe { &*v.as_js_object_ptr() };
-        let si_ab = vm.kernel_core().perm_interner().intern("ab").0;
-        let si_opts = vm.kernel_core().perm_interner().intern("opts").0;
+        let si_ab = vm.perm_intern("ab");
+        let si_opts = vm.perm_intern("opts");
         let ab = holder.get_prop_at(vm.get_own_property_slot(holder, si_ab).unwrap());
         let opts = holder.get_prop_at(vm.get_own_property_slot(holder, si_opts).unwrap());
         let c = clone_with_options(&mut vm, ab, opts).unwrap();
@@ -1197,7 +1196,7 @@ mod tests {
         let cl = unsafe { &*c.as_js_object_ptr() };
         // 克隆是 plain 对象：原型链丢弃，回落 Object 原型，自有属性带过。
         assert_eq!(cl.type_tag, JsObject::OBJ_TYPE_PLAIN);
-        let object_proto = vm.session().builtin_world().object_proto.as_ptr() as *const u8;
+        let object_proto = vm.builtin_proto(ProtoKind::ObjectProto) as *const u8;
         assert!(std::ptr::eq(cl.proto().as_ptr(), object_proto));
         assert_eq!(obj_prop(&vm, cl, "x"), JsValue::int(1));
     }
@@ -1231,7 +1230,7 @@ mod tests {
         let (mut vm, v) = eval("var o = {a: 1}; Object.freeze(o); o").unwrap();
         let c = clone(&mut vm, v).unwrap();
         let cl = unsafe { &*c.as_js_object_ptr() };
-        let si = vm.kernel_core().perm_interner().intern("a").0;
+        let si = vm.perm_intern("a");
         let store = vm.get_own_property_slot(cl, si).unwrap();
         let meta = cl.prop_meta_at(store).unwrap();
         assert_eq!(meta.attributes, PropAttributes::DEFAULT_DATA, "克隆侧描述符应 w/e/c 全真");
@@ -1245,7 +1244,7 @@ mod tests {
         let c = clone(&mut vm, v).unwrap();
         let cl = unsafe { &*c.as_js_object_ptr() };
         assert_eq!(obj_prop(&vm, cl, "a"), JsValue::int(1));
-        let si_b = vm.kernel_core().perm_interner().intern("b").0;
+        let si_b = vm.perm_intern("b");
         assert!(vm.get_own_property_slot(cl, si_b).is_none(), "不可枚举自有属性不应复制");
     }
 
@@ -1265,7 +1264,7 @@ mod tests {
         let (mut vm, v) = eval("var e = new Error('boom'); e.cause = {x: 1}; e").unwrap();
         let c = clone(&mut vm, v).unwrap();
         let cl = unsafe { &*c.as_js_object_ptr() };
-        let si_cause = vm.kernel_core().perm_interner().intern("cause").0;
+        let si_cause = vm.perm_intern("cause");
         let store = vm.get_own_property_slot(cl, si_cause).unwrap();
         let meta = cl.prop_meta_at(store).unwrap();
         assert_eq!(meta.attributes, PropAttributes::DEFAULT_DATA, "克隆侧 cause 应全真数据属性");
@@ -1279,7 +1278,7 @@ mod tests {
         // 引擎给 Error 子类实例打 Error 家族标签，克隆走 Error 臂；name 归一
         // "Error"，原型回落 %Error.prototype%（源子类原型丢弃），message 带过。
         assert!(cl.is_error_obj());
-        let error_proto = vm.session().builtin_world().error_proto.as_ptr() as *const u8;
+        let error_proto = vm.builtin_proto(ProtoKind::ErrorProto) as *const u8;
         assert!(std::ptr::eq(cl.proto().as_ptr(), error_proto), "克隆原型应回落 %Error.prototype%");
         assert_eq!(vm.lookup_str(obj_prop(&vm, cl, "message")).unwrap(), "msg");
     }
@@ -1290,7 +1289,7 @@ mod tests {
         let (mut vm, v) = eval("var e = new TypeError('boom'); e").unwrap();
         let c = clone(&mut vm, v).unwrap();
         let cl = unsafe { &*c.as_js_object_ptr() };
-        let type_proto = vm.session().builtin_world().type_error_proto.as_ptr() as *const u8;
+        let type_proto = vm.builtin_proto(ProtoKind::TypeErrorProto) as *const u8;
         assert!(std::ptr::eq(cl.proto().as_ptr(), type_proto), "克隆原型应为 %TypeError.prototype%");
         assert_eq!(vm.lookup_str(obj_prop(&vm, cl, "message")).unwrap(), "boom");
     }
@@ -1318,8 +1317,8 @@ mod tests {
         )
         .unwrap();
         let holder = unsafe { &*v.as_js_object_ptr() };
-        let si_ab = vm.kernel_core().perm_interner().intern("ab").0;
-        let si_opts = vm.kernel_core().perm_interner().intern("opts").0;
+        let si_ab = vm.perm_intern("ab");
+        let si_opts = vm.perm_intern("opts");
         let ab = holder.get_prop_at(vm.get_own_property_slot(holder, si_ab).unwrap());
         let opts = holder.get_prop_at(vm.get_own_property_slot(holder, si_opts).unwrap());
         // 克隆持有者对象（含函数值，不可克隆）→ DataCloneError。
@@ -1338,9 +1337,9 @@ mod tests {
         )
         .unwrap();
         let holder = unsafe { &*v.as_js_object_ptr() };
-        let si_v = vm.kernel_core().perm_interner().intern("v").0;
-        let si_ab = vm.kernel_core().perm_interner().intern("ab").0;
-        let si_opts = vm.kernel_core().perm_interner().intern("opts").0;
+        let si_v = vm.perm_intern("v");
+        let si_ab = vm.perm_intern("ab");
+        let si_opts = vm.perm_intern("opts");
         let val = holder.get_prop_at(vm.get_own_property_slot(holder, si_v).unwrap());
         let ab = holder.get_prop_at(vm.get_own_property_slot(holder, si_ab).unwrap());
         let opts = holder.get_prop_at(vm.get_own_property_slot(holder, si_opts).unwrap());
@@ -1366,8 +1365,8 @@ mod tests {
         )
         .unwrap();
         let holder = unsafe { &*v.as_js_object_ptr() };
-        let si_v = vm.kernel_core().perm_interner().intern("v").0;
-        let si_opts = vm.kernel_core().perm_interner().intern("opts").0;
+        let si_v = vm.perm_intern("v");
+        let si_opts = vm.perm_intern("opts");
         let val = holder.get_prop_at(vm.get_own_property_slot(holder, si_v).unwrap());
         let opts = holder.get_prop_at(vm.get_own_property_slot(holder, si_opts).unwrap());
         let e = clone_with_options(&mut vm, val, opts).unwrap_err();
@@ -1387,7 +1386,7 @@ mod tests {
         let key = &entries[0].0;
         assert!(key.0.is_object());
         let key_obj = unsafe { &*key.0.as_js_object_ptr() };
-        let si_m = vm.kernel_core().perm_interner().intern("m").0;
+        let si_m = vm.perm_intern("m");
         let key_m = key_obj.get_prop_at(vm.get_own_property_slot(key_obj, si_m).unwrap());
         assert!(std::ptr::eq(key_m.as_js_object_ptr(), c.as_js_object_ptr()), "克隆键应引用克隆的 map");
     }
@@ -1408,10 +1407,10 @@ mod tests {
         let (mut vm, v) = eval("var a = {}; var b = {}; a.b = b; b.a = a; a").unwrap();
         let c = clone(&mut vm, v).unwrap();
         let cl = unsafe { &*c.as_js_object_ptr() };
-        let si_b = vm.kernel_core().perm_interner().intern("b").0;
+        let si_b = vm.perm_intern("b");
         let b_clone = cl.get_prop_at(vm.get_own_property_slot(cl, si_b).unwrap());
         let b_obj = unsafe { &*b_clone.as_js_object_ptr() };
-        let si_a = vm.kernel_core().perm_interner().intern("a").0;
+        let si_a = vm.perm_intern("a");
         let a_back = b_obj.get_prop_at(vm.get_own_property_slot(b_obj, si_a).unwrap());
         assert!(std::ptr::eq(a_back.as_js_object_ptr(), c.as_js_object_ptr()), "深循环应指回克隆的 a");
     }
@@ -1421,9 +1420,9 @@ mod tests {
         let (mut vm, v) = eval("var a = {x: 1}; var b = {ref: a, ref2: a}; b.self = b; b").unwrap();
         let c = clone(&mut vm, v).unwrap();
         let cl = unsafe { &*c.as_js_object_ptr() };
-        let si_ref = vm.kernel_core().perm_interner().intern("ref").0;
-        let si_ref2 = vm.kernel_core().perm_interner().intern("ref2").0;
-        let si_self = vm.kernel_core().perm_interner().intern("self").0;
+        let si_ref = vm.perm_intern("ref");
+        let si_ref2 = vm.perm_intern("ref2");
+        let si_self = vm.perm_intern("self");
         let ref1 = cl.get_prop_at(vm.get_own_property_slot(cl, si_ref).unwrap());
         let ref2 = cl.get_prop_at(vm.get_own_property_slot(cl, si_ref2).unwrap());
         let self_ref = cl.get_prop_at(vm.get_own_property_slot(cl, si_self).unwrap());
@@ -1439,8 +1438,8 @@ mod tests {
         )
         .unwrap();
         let holder = unsafe { &*v.as_js_object_ptr() };
-        let si_ab = vm.kernel_core().perm_interner().intern("ab").0;
-        let si_opts = vm.kernel_core().perm_interner().intern("opts").0;
+        let si_ab = vm.perm_intern("ab");
+        let si_opts = vm.perm_intern("opts");
         let ab = holder.get_prop_at(vm.get_own_property_slot(holder, si_ab).unwrap());
         let opts = holder.get_prop_at(vm.get_own_property_slot(holder, si_opts).unwrap());
         let c = clone_with_options(&mut vm, ab, opts).unwrap();
@@ -1460,8 +1459,8 @@ mod tests {
         )
         .unwrap();
         let holder = unsafe { &*v.as_js_object_ptr() };
-        let si_ab = vm.kernel_core().perm_interner().intern("ab").0;
-        let si_opts = vm.kernel_core().perm_interner().intern("opts").0;
+        let si_ab = vm.perm_intern("ab");
+        let si_opts = vm.perm_intern("opts");
         let ab = holder.get_prop_at(vm.get_own_property_slot(holder, si_ab).unwrap());
         let opts = holder.get_prop_at(vm.get_own_property_slot(holder, si_opts).unwrap());
         let c = clone_with_options(&mut vm, ab, opts).unwrap();
@@ -1493,7 +1492,7 @@ mod tests {
         .unwrap();
         let c = clone(&mut vm, v).unwrap();
         let cl = unsafe { &*c.as_js_object_ptr() };
-        let si_msg = vm.kernel_core().perm_interner().intern("message").0;
+        let si_msg = vm.perm_intern("message");
         assert!(vm.get_own_property_slot(cl, si_msg).is_none(), "访问器 message 不应复制");
     }
 
@@ -1512,7 +1511,7 @@ mod tests {
         let (mut vm, v) = eval("var e = new Error('base'); delete e.message; e").unwrap();
         let c = clone(&mut vm, v).unwrap();
         let cl = unsafe { &*c.as_js_object_ptr() };
-        let si_msg = vm.kernel_core().perm_interner().intern("message").0;
+        let si_msg = vm.perm_intern("message");
         assert!(vm.get_own_property_slot(cl, si_msg).is_none());
     }
 
@@ -1532,8 +1531,8 @@ mod tests {
         // 全局绑定面：length 为 1、name 为 "structuredClone"（防绑定面回归）。
         let (vm, v) = eval("({len: structuredClone.length, name: structuredClone.name})").unwrap();
         let holder = unsafe { &*v.as_js_object_ptr() };
-        let si_len = vm.kernel_core().perm_interner().intern("len").0;
-        let si_name = vm.kernel_core().perm_interner().intern("name").0;
+        let si_len = vm.perm_intern("len");
+        let si_name = vm.perm_intern("name");
         let len = holder.get_prop_at(vm.get_own_property_slot(holder, si_len).unwrap());
         let name = holder.get_prop_at(vm.get_own_property_slot(holder, si_name).unwrap());
         assert_eq!(len, JsValue::int(1));

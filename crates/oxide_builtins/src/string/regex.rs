@@ -2,7 +2,7 @@ use oxide_kernel::shape_forge::EMPTY_SHAPE_ID;
 use oxide_types::object::JsObject;
 use oxide_types::value::JsValue;
 
-use oxide_runtime_api::{NativeResult, VmHost};
+use oxide_runtime_api::{NativeResult, ProtoKind, VmHost};
 
 use crate::builtins_debug;
 use crate::builtins_error;
@@ -54,7 +54,7 @@ fn is_regexp_obj<H: VmHost>(val: JsValue, vm: &H) -> bool {
     if proto_ptr.is_null() {
         return false;
     }
-    let rp = vm.session().builtin_world().regexp_proto.as_ptr() as *mut JsObject;
+    let rp = vm.builtin_proto(ProtoKind::RegExpProto);
     std::ptr::eq(proto_ptr, rp)
 }
 
@@ -347,11 +347,7 @@ fn string_replace_impl<H: VmHost>(vm: &mut H, args: &[u8], all: bool) -> NativeR
             // ToString 须含 "g"（转换异常传播）。
             let re_ptr = pattern_val.as_js_object_ptr();
             // SAFETY: pattern_val 已校验为非空对象值。
-            let flags_val = match vm.ordinary_get(
-                unsafe { &*re_ptr },
-                vm.kernel_core().perm_interner().intern("flags").0,
-                pattern_val,
-            ) {
+            let flags_val = match vm.ordinary_get(unsafe { &*re_ptr }, vm.perm_intern("flags"), pattern_val) {
                 Ok(v) => v,
                 Err(_) => {
                     if let Some(exc) = vm.take_uncaught_value() {
@@ -545,7 +541,7 @@ pub fn string_match_fn<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     // 非对象 / matcher undefined：Construct %RegExp%（undefined → 空模式、其余
     // 经 ToString），再 GetMethod(rx, @@match) + Invoke；转换抛错（含 Symbol）
     // 原样传播。
-    let regexp_ctor = vm.session().builtin_world().regexp_constructor.as_ptr() as *mut JsObject;
+    let regexp_ctor = vm.builtin_proto(ProtoKind::RegExpConstructor);
     let rx_val = match vm.construct_ctor(JsValue::from_js_object(regexp_ctor), &[pattern_val]) {
         Ok(v) => v,
         Err(e) => return NativeResult::Err(e),
@@ -656,7 +652,7 @@ pub fn string_search<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 
     // 非对象 / searcher undefined：Construct %RegExp% + GetMethod(rx, @@search)
     // + Invoke(rx, «string»）；转换抛错（含 Symbol）原样传播。
-    let regexp_ctor = vm.session().builtin_world().regexp_constructor.as_ptr() as *mut JsObject;
+    let regexp_ctor = vm.builtin_proto(ProtoKind::RegExpConstructor);
     let rx_val = match vm.construct_ctor(JsValue::from_js_object(regexp_ctor), &[pattern_val]) {
         Ok(v) => v,
         Err(e) => return NativeResult::Err(e),
@@ -814,7 +810,7 @@ pub fn string_match_all<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
             let re_ptr = pattern_val.as_js_object_ptr();
             // SAFETY: pattern_val 已校验为非空对象值。
             let re_obj = unsafe { &*re_ptr };
-            let flags_si = vm.kernel_core().perm_interner().intern("flags").0;
+            let flags_si = vm.perm_intern("flags");
             let flags_val = match vm.ordinary_get(re_obj, flags_si, pattern_val) {
                 Ok(v) => v,
                 Err(e) => return NativeResult::err(crate::iterator::engine_error(vm, &e)),
@@ -883,7 +879,7 @@ pub fn string_match_all<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
                 return NativeResult::Err(crate::error::create_syntax_error(vm, &format!("Invalid regex: {}", e)));
             }
         };
-        let object_proto = vm.session().builtin_world().object_proto.as_ptr() as *mut JsObject;
+        let object_proto = vm.builtin_proto(ProtoKind::ObjectProto);
         let mut stub = JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(object_proto));
         // 载体专型标签：native_fn 槽的 Box 经 RegExp 同一守卫释放/深拷贝，
         // 避免每次 matchAll 泄漏一个已编译正则。
@@ -931,7 +927,7 @@ fn match_all_construct_invoke<H: VmHost>(vm: &mut H, this_val: JsValue, pattern_
 
     // regexp = RegExpCreate(pattern, "g")。
     let g_str = vm.new_string("g");
-    let ctor_ptr = vm.session().builtin_world().regexp_constructor.as_ptr() as *mut JsObject;
+    let ctor_ptr = vm.builtin_proto(ProtoKind::RegExpConstructor);
     let rx_val = match vm.construct_ctor(JsValue::from_js_object(ctor_ptr), &[pattern_val, g_str]) {
         Ok(v) => v,
         Err(e) => return NativeResult::Err(e),
@@ -973,15 +969,15 @@ fn match_all_construct_invoke<H: VmHost>(vm: &mut H, this_val: JsValue, pattern_
 fn builder_wrapper<H: VmHost>(vm: &mut H, input_val: JsValue, re_obj: JsValue) -> NativeResult {
     // matchAll 迭代器挂 %RegExpStringIteratorPrototype%（链到 %IteratorPrototype%），
     // next 由原型提供（不挂实例 own）。
-    let regexp_iter_proto = vm.session().builtin_world().regexp_string_iterator_proto.as_ptr() as *mut JsObject;
+    let regexp_iter_proto = vm.builtin_proto(ProtoKind::RegExpStringIteratorProto);
     let wrapper = vm.alloc_object(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(regexp_iter_proto)));
 
     let wrapper_obj = unsafe { &mut *wrapper };
-    let input_si = vm.kernel_core().perm_interner().intern(MALL_INPUT).0;
-    let re_si = vm.kernel_core().perm_interner().intern(MALL_RE).0;
-    let done_si = vm.kernel_core().perm_interner().intern(MALL_DONE).0;
-    let global_si = vm.kernel_core().perm_interner().intern(MALL_GLOBAL).0;
-    let unicode_si = vm.kernel_core().perm_interner().intern(MALL_UNICODE).0;
+    let input_si = vm.perm_intern(MALL_INPUT);
+    let re_si = vm.perm_intern(MALL_RE);
+    let done_si = vm.perm_intern(MALL_DONE);
+    let global_si = vm.perm_intern(MALL_GLOBAL);
+    let unicode_si = vm.perm_intern(MALL_UNICODE);
 
     vm.set_or_create_prop_value(wrapper_obj, input_si, input_val);
     vm.set_or_create_prop_value(wrapper_obj, re_si, re_obj);
@@ -1023,7 +1019,7 @@ pub fn string_symbol_iterator<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResul
     // 直构 String 迭代器：内层即 ToString 结果，不再回读 @@iterator。本函数语义
     // 只由 this 决定，属性表被删除/置 null/被覆盖均不影响已保存引用的直调。
     // 迭代器挂 %StringIteratorPrototype%（链到 %IteratorPrototype%）；串内层不暴露 return。
-    let string_iter_proto = vm.session().builtin_world().string_iterator_proto.as_ptr() as *mut JsObject;
+    let string_iter_proto = vm.builtin_proto(ProtoKind::StringIteratorProto);
     NativeResult::Ok(crate::iterator::build_iterator_wrapper(vm, s_val, None, true, Some(string_iter_proto)))
 }
 
@@ -1057,11 +1053,11 @@ pub fn string_match_all_next<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult
         return NativeResult::Err(crate::error::create_type_error(vm, "matchAll next called on non-object"));
     }
     let wrapper = unsafe { &mut *this_val.as_js_object_ptr() };
-    let input_si = vm.kernel_core().perm_interner().intern(MALL_INPUT).0;
-    let re_si = vm.kernel_core().perm_interner().intern(MALL_RE).0;
-    let done_si = vm.kernel_core().perm_interner().intern(MALL_DONE).0;
-    let global_si = vm.kernel_core().perm_interner().intern(MALL_GLOBAL).0;
-    let unicode_si = vm.kernel_core().perm_interner().intern(MALL_UNICODE).0;
+    let input_si = vm.perm_intern(MALL_INPUT);
+    let re_si = vm.perm_intern(MALL_RE);
+    let done_si = vm.perm_intern(MALL_DONE);
+    let global_si = vm.perm_intern(MALL_GLOBAL);
+    let unicode_si = vm.perm_intern(MALL_UNICODE);
 
     // 内部槽守卫：五槽同批写入，查一槽即全查；缺失即 TypeError。
     if vm.get_own_property_slot(wrapper, done_si).is_none() {
@@ -1221,21 +1217,21 @@ fn make_match_result_array<H: VmHost>(
     let arr = make_string_array_values(vm, parts);
     let arr_ptr = arr.as_js_object_ptr();
     let arr_obj = unsafe { &mut *arr_ptr };
-    let index_si = vm.kernel_core().perm_interner().intern("index").0;
+    let index_si = vm.perm_intern("index");
     vm.set_or_create_prop_value(arr_obj, index_si, JsValue::int(match_index));
-    let input_si = vm.kernel_core().perm_interner().intern("input").0;
+    let input_si = vm.perm_intern("input");
     vm.set_or_create_prop_value(arr_obj, input_si, input_val);
     let groups_val = match m {
         Some(m) => build_groups_object(vm, m, text),
         None => JsValue::undefined(),
     };
-    let groups_si = vm.kernel_core().perm_interner().intern("groups").0;
+    let groups_si = vm.perm_intern("groups");
     vm.set_or_create_prop_value(arr_obj, groups_si, groups_val);
     // d 标志：挂 indices 属性（与 exec 结果同口径的码元对数组族）。
     if has_indices {
         if let Some(m) = m {
             let indices_val = crate::regexp::build_indices_array(vm, m, text);
-            let indices_si = vm.kernel_core().perm_interner().intern("indices").0;
+            let indices_si = vm.perm_intern("indices");
             vm.set_or_create_prop_value(arr_obj, indices_si, indices_val);
         }
     }
@@ -1245,10 +1241,10 @@ fn make_match_result_array<H: VmHost>(
 /// 构造迭代器结果对象 `{value, done}`（done 仅在 value 为 undefined 时为 true）。
 fn make_match_done_result<H: VmHost>(vm: &mut H, value: JsValue) -> NativeResult {
     let done = value.is_undefined();
-    let object_proto = vm.session().builtin_world().object_proto.as_ptr() as *mut JsObject;
+    let object_proto = vm.builtin_proto(ProtoKind::ObjectProto);
     let obj = vm.alloc_object(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(object_proto)));
-    let value_si = vm.kernel_core().perm_interner().intern("value").0;
-    let done_si = vm.kernel_core().perm_interner().intern("done").0;
+    let value_si = vm.perm_intern("value");
+    let done_si = vm.perm_intern("done");
     let obj_ref = unsafe { &mut *obj };
     vm.set_or_create_prop_value(obj_ref, value_si, value);
     vm.set_or_create_prop_value(obj_ref, done_si, JsValue::bool(done));
@@ -1286,7 +1282,7 @@ pub fn string_raw<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let template_ptr = template_val.as_js_object_ptr();
 
     // Step 2: 取 template.raw 属性。
-    let raw_si = vm.kernel_core().perm_interner().intern("raw").0;
+    let raw_si = vm.perm_intern("raw");
     let template_obj = unsafe { &*template_ptr };
     let raw_val = match vm.ordinary_get(template_obj, raw_si, template_val) {
         Ok(v) => v,
@@ -1303,7 +1299,7 @@ pub fn string_raw<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let raw_ptr = raw_val.as_js_object_ptr();
 
     // Step 3: 取 raw.length（ToLength，Symbol 抛 TypeError）。
-    let length_si = vm.kernel_core().perm_interner().intern("length").0;
+    let length_si = vm.perm_intern("length");
     let raw_obj = unsafe { &*raw_ptr };
     let raw_len = match vm.ordinary_get(raw_obj, length_si, raw_val) {
         Ok(v) => {

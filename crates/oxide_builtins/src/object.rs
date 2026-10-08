@@ -7,7 +7,7 @@ use oxide_types::private_key::{
 };
 use oxide_types::value::JsValue;
 
-use oxide_runtime_api::{NativeResult, VmHost};
+use oxide_runtime_api::{NativeResult, ProtoKind, VmHost};
 
 use crate::builtins_debug;
 
@@ -53,7 +53,7 @@ pub fn walk_own_keys<H: VmHost>(vm: &H, obj: &JsObject) -> Vec<(u32, u32)> {
         if id == EMPTY_SHAPE_ID {
             break;
         }
-        if let Some(shape) = vm.kernel_core().shape_forge().get_shape(id) {
+        if let Some(shape) = vm.get_shape(id) {
             cursor = shape.parent;
             // Symbol 键/私有名键非字符串属性名，排除在字符串枚举之外（但仍占 shape
             // 槽位，pos 计数须含它们才能与物理存储对齐）。
@@ -65,7 +65,7 @@ pub fn walk_own_keys<H: VmHost>(vm: &H, obj: &JsObject) -> Vec<(u32, u32)> {
         }
     }
     for id in shape_ids.iter().rev() {
-        if let Some(shape) = vm.kernel_core().shape_forge().get_shape(*id) {
+        if let Some(shape) = vm.get_shape(*id) {
             if !is_symbol_key(shape.property_name) && !is_private_name_key(shape.property_name) {
                 // 绝对存储索引：数组命名属性位于元素区之后。
                 let store = if obj.is_array() { obj.array_prop_count + pos } else { pos };
@@ -77,7 +77,6 @@ pub fn walk_own_keys<H: VmHost>(vm: &H, obj: &JsObject) -> Vec<(u32, u32)> {
     // 类构造器属性序修正：shape 链构建序为 prototype→length→name（叶→根），
     // 规范要求的插入序为 length→name→prototype。按规范重排字符串键。
     if obj.is_class_constructor() {
-        let perm = vm.kernel_core().perm_interner();
         let canonical = ["length", "name", "prototype"];
         let mut canonical_map: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
         for (i, &name) in canonical.iter().enumerate() {
@@ -93,8 +92,8 @@ pub fn walk_own_keys<H: VmHost>(vm: &H, obj: &JsObject) -> Vec<(u32, u32)> {
                 (None, Some(_)) => std::cmp::Ordering::Greater,
                 (None, None) => {
                     // 两者均为字符串键：查规范序。
-                    let a_name = perm.lookup(*a_si).unwrap_or("");
-                    let b_name = perm.lookup(*b_si).unwrap_or("");
+                    let a_name = vm.perm_lookup(*a_si).unwrap_or("");
+                    let b_name = vm.perm_lookup(*b_si).unwrap_or("");
                     let a_rank = canonical_map.get(a_name).copied().unwrap_or(usize::MAX);
                     let b_rank = canonical_map.get(b_name).copied().unwrap_or(usize::MAX);
                     // 规范键按序排，其余保持原序。
@@ -124,7 +123,7 @@ fn int_or_string_index<H: VmHost>(vm: &H, si: u32) -> Option<u32> {
     if is_int_key(si) {
         return Some(int_key_value(si));
     }
-    let key = vm.kernel_core().perm_interner().lookup(si)?;
+    let key = vm.perm_lookup(si)?;
     is_integer_index(key).then(|| key.parse::<u32>().ok()).flatten()
 }
 
@@ -136,9 +135,7 @@ pub fn key_si_to_js_value<H: VmHost>(vm: &mut H, si: u32) -> JsValue {
         return vm.new_string(&int_key_value(si).to_string());
     }
     let units = vm
-        .kernel_core()
-        .perm_interner()
-        .lookup(si)
+        .perm_lookup(si)
         .map(oxide_kernel::string_forge::decode_key)
         .unwrap_or_default();
     vm.new_string_units_owned(units)
@@ -157,7 +154,7 @@ pub(crate) fn walk_own_symbol_keys<H: VmHost>(vm: &H, obj: &JsObject) -> Vec<(u3
         if id == EMPTY_SHAPE_ID {
             break;
         }
-        if let Some(shape) = vm.kernel_core().shape_forge().get_shape(id) {
+        if let Some(shape) = vm.get_shape(id) {
             cursor = shape.parent;
             if shape.property_name != u32::MAX {
                 shape_ids.push(id);
@@ -167,7 +164,7 @@ pub(crate) fn walk_own_symbol_keys<H: VmHost>(vm: &H, obj: &JsObject) -> Vec<(u3
         }
     }
     for (pos, id) in (0_u32..).zip(shape_ids.iter().rev()) {
-        if let Some(shape) = vm.kernel_core().shape_forge().get_shape(*id) {
+        if let Some(shape) = vm.get_shape(*id) {
             // Symbol 键节点按绝对槽位回传（数组命名属性位于元素区之后）。
             let store = if obj.is_array() { obj.array_prop_count + pos } else { pos };
             if is_symbol_key(shape.property_name) {
@@ -233,7 +230,7 @@ pub fn sort_namespace_exports<H: VmHost>(vm: &mut H, obj: &mut JsObject) {
     obj.set_shape_id(EMPTY_SHAPE_ID);
     obj.clear_props();
     for (si, value, meta) in entries.into_iter().chain(symbols) {
-        let shape = vm.kernel_core().shape_forge().make_shape(obj.shape_id(), si);
+        let shape = vm.make_shape(obj.shape_id(), si);
         obj.set_shape_id(shape);
         let pos = obj.push_prop(value);
         if let Some(meta) = meta {
@@ -252,11 +249,7 @@ fn namespace_key_units<H: VmHost>(vm: &H, si: u32) -> Vec<u16> {
     if is_int_key(si) {
         return int_key_value(si).to_string().encode_utf16().collect();
     }
-    vm.kernel_core()
-        .perm_interner()
-        .lookup(si)
-        .map(|key| key.encode_utf16().collect())
-        .unwrap_or_default()
+    vm.perm_lookup(si).map(|key| key.encode_utf16().collect()).unwrap_or_default()
 }
 
 /// `Object.getOwnPropertySymbols(obj)`：返回全部自身 Symbol 键数组。
@@ -272,7 +265,7 @@ pub fn object_get_own_property_symbols<H: VmHost>(vm: &mut H, args: &[u8]) -> Na
     };
 
     let n = symbols.len();
-    let array_proto = vm.session().builtin_world().array_proto.as_ptr() as *mut JsObject;
+    let array_proto = vm.builtin_proto(ProtoKind::ArrayProto);
     let arr = vm.alloc_object(JsObject::new_array(EMPTY_SHAPE_ID, JsValue::from_js_object(array_proto), n));
     for (i, v) in symbols.iter().enumerate() {
         unsafe {
@@ -290,7 +283,7 @@ fn array_index_of<H: VmHost>(vm: &H, key_si: u32) -> Option<u32> {
     if is_int_key(key_si) {
         return Some(int_key_value(key_si));
     }
-    let key = vm.kernel_core().perm_interner().lookup(key_si)?;
+    let key = vm.perm_lookup(key_si)?;
     if key.is_empty() || (key.len() > 1 && key.starts_with('0')) {
         return None;
     }
@@ -375,7 +368,7 @@ pub fn delete_own_property_outcome<H: VmHost>(vm: &mut H, obj: &mut JsObject, ke
         }
         // 非下标键：length 是虚拟属性（无 shape 槽、不在元素区），但描述符声明
         // configurable:false，删除恒失败。
-        if key_si == vm.kernel_core().perm_interner().intern("length").0 {
+        if key_si == vm.perm_intern("length") {
             return DeleteOutcome::NonConfigurable;
         }
     }
@@ -430,7 +423,7 @@ pub fn delete_own_property_outcome<H: VmHost>(vm: &mut H, obj: &mut JsObject, ke
     obj.set_shape_id(EMPTY_SHAPE_ID);
     obj.clear_props();
     for (si, value, meta) in retained {
-        let shape = vm.kernel_core().shape_forge().make_shape(obj.shape_id(), si);
+        let shape = vm.make_shape(obj.shape_id(), si);
         obj.set_shape_id(shape);
         let pos = obj.push_prop(value);
         if let Some(meta) = meta {
@@ -475,7 +468,7 @@ pub fn delete_own_property<H: VmHost>(vm: &mut H, obj: &mut JsObject, key_si: u3
 /// JS `Object()` 构造逻辑：创建空对象（prototype 为 null，由 VM 补装内置原型）。
 pub fn object_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let val = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
-    let object_proto = vm.session().builtin_world().object_proto.as_ptr() as *mut JsObject;
+    let object_proto = vm.builtin_proto(ProtoKind::ObjectProto);
     // 对象参数原样返回；原始值参数创建对应 boxed 对象（规范 ToObject）。
     if val.is_object() {
         return NativeResult::Ok(val);
@@ -485,7 +478,7 @@ pub fn object_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         return NativeResult::Ok(JsValue::from_js_object(obj));
     }
     if val.is_int() || val.is_double() {
-        let proto = vm.session().builtin_world().number_proto.as_ptr() as *mut JsObject;
+        let proto = vm.builtin_proto(ProtoKind::NumberProto);
         let obj = vm.alloc_object(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(proto)));
         let obj_ref = unsafe { &mut *obj };
         obj_ref.type_tag = JsObject::OBJ_TYPE_NUMBER_OBJ;
@@ -493,7 +486,7 @@ pub fn object_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         return NativeResult::Ok(JsValue::from_js_object(obj));
     }
     if val.is_string() {
-        let proto = vm.session().builtin_world().string_proto.as_ptr() as *mut JsObject;
+        let proto = vm.builtin_proto(ProtoKind::StringProto);
         let obj = vm.alloc_object(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(proto)));
         let obj_ref = unsafe { &mut *obj };
         obj_ref.type_tag = JsObject::OBJ_TYPE_STRING_OBJ;
@@ -502,7 +495,7 @@ pub fn object_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         return NativeResult::Ok(JsValue::from_js_object(obj));
     }
     if val.is_bool() {
-        let proto = vm.session().builtin_world().boolean_proto.as_ptr() as *mut JsObject;
+        let proto = vm.builtin_proto(ProtoKind::BooleanProto);
         let obj = vm.alloc_object(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(proto)));
         let obj_ref = unsafe { &mut *obj };
         obj_ref.type_tag = JsObject::OBJ_TYPE_BOOLEAN_OBJ;
@@ -510,7 +503,7 @@ pub fn object_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         return NativeResult::Ok(JsValue::from_js_object(obj));
     }
     if val.is_symbol() {
-        let proto = vm.session().builtin_world().symbol_proto.as_ptr() as *mut JsObject;
+        let proto = vm.builtin_proto(ProtoKind::SymbolProto);
         let obj = vm.alloc_object(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(proto)));
         let obj_ref = unsafe { &mut *obj };
         obj_ref.type_tag = JsObject::OBJ_TYPE_SYMBOL_OBJ;
@@ -518,7 +511,7 @@ pub fn object_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         return NativeResult::Ok(JsValue::from_js_object(obj));
     }
     if val.is_bigint() {
-        let proto = vm.session().builtin_world().bigint_proto.as_ptr() as *mut JsObject;
+        let proto = vm.builtin_proto(ProtoKind::BigIntProto);
         let obj = vm.alloc_object(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(proto)));
         let obj_ref = unsafe { &mut *obj };
         obj_ref.set_boxed_value(val);
@@ -602,7 +595,7 @@ pub fn object_keys<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         }
     }
     let n = owned_keys.len();
-    let array_proto = vm.session().builtin_world().array_proto.as_ptr() as *mut JsObject;
+    let array_proto = vm.builtin_proto(ProtoKind::ArrayProto);
     let arr = vm.alloc_object(JsObject::new_array(EMPTY_SHAPE_ID, JsValue::from_js_object(array_proto), n));
     for (i, (si, _offset)) in owned_keys.iter().enumerate() {
         let key_val = key_si_to_js_value(vm, *si);
@@ -780,12 +773,12 @@ pub(crate) fn define_from_descriptor<H: VmHost>(
         return Err(DefineDescFailure::Engine("Property description must be an object".to_string()));
     }
 
-    let value_si = vm.kernel_core().perm_interner().intern("value").0;
-    let get_si = vm.kernel_core().perm_interner().intern("get").0;
-    let set_si = vm.kernel_core().perm_interner().intern("set").0;
-    let writable_si = vm.kernel_core().perm_interner().intern("writable").0;
-    let enumerable_si = vm.kernel_core().perm_interner().intern("enumerable").0;
-    let configurable_si = vm.kernel_core().perm_interner().intern("configurable").0;
+    let value_si = vm.perm_intern("value");
+    let get_si = vm.perm_intern("get");
+    let set_si = vm.perm_intern("set");
+    let writable_si = vm.perm_intern("writable");
+    let enumerable_si = vm.perm_intern("enumerable");
+    let configurable_si = vm.perm_intern("configurable");
 
     // 六字段按规范序逐个 GetV，读取期异常原值传播（ReturnIfAbrupt）。
     let value_field = own_field(vm, desc_val, value_si)?;
@@ -798,7 +791,7 @@ pub(crate) fn define_from_descriptor<H: VmHost>(
     // 数组 length 是无 shape 槽的虚拟数据属性：需与普通已有属性一样参与描述符
     // 缺省回填（writable 保持当前值、value 保持当前长度），其当前描述符由元素
     // 计数与独立可写位虚拟构造；enumerable/configurable 恒为 false。
-    let length_si = vm.kernel_core().perm_interner().intern("length").0;
+    let length_si = vm.perm_intern("length");
     let is_array_length = unsafe { &*obj_ptr }.is_array() && key_si == length_si;
 
     let existing_pos = if is_array_length {
@@ -1075,8 +1068,8 @@ fn own_descriptor_of<H: VmHost>(vm: &mut H, obj: &JsObject, key_si: u32) -> Resu
         {
             let value = crate::typed_array::typed_array_element_get(vm, obj, index).unwrap_or(JsValue::undefined());
             let desc = alloc_desc_object(vm);
-            let sh_ptr = vm.kernel_core().shape_forge().as_ref() as *const ShapeForge;
-            let sf_ptr = vm.kernel_core().perm_interner().as_ref() as *const PermInterner;
+            let sh_ptr = vm.shape_forge_ptr() as *const ShapeForge;
+            let sf_ptr = vm.perm_interner_ptr() as *const PermInterner;
             // SAFETY: desc 为本函数刚分配的 epoch 对象；sh/sf 为 kernel 永久引用。
             let d: &mut JsObject = unsafe { &mut *desc };
             let sh = unsafe { &*sh_ptr };
@@ -1092,11 +1085,11 @@ fn own_descriptor_of<H: VmHost>(vm: &mut H, obj: &JsObject, key_si: u32) -> Resu
     // 数组 length 是虚拟属性（无 shape 槽，ordinary_get 直接返回逻辑长度）：
     // 描述符 {value: len, writable: !frozen && 非显式收窄, enumerable: false,
     // configurable: false}。冻结数组与经 defineProperty 收窄的数组 writable=false。
-    let length_si = vm.kernel_core().perm_interner().intern("length").0;
+    let length_si = vm.perm_intern("length");
     if obj.is_array() && key_si == length_si {
         let desc = alloc_desc_object(vm);
-        let sh_ptr = vm.kernel_core().shape_forge().as_ref() as *const ShapeForge;
-        let sf_ptr = vm.kernel_core().perm_interner().as_ref() as *const PermInterner;
+        let sh_ptr = vm.shape_forge_ptr() as *const ShapeForge;
+        let sf_ptr = vm.perm_interner_ptr() as *const PermInterner;
         let d: &mut JsObject = unsafe { &mut *desc };
         let sh = unsafe { &*sh_ptr };
         let sf = unsafe { &*sf_ptr };
@@ -1119,8 +1112,8 @@ fn own_descriptor_of<H: VmHost>(vm: &mut H, obj: &JsObject, key_si: u32) -> Resu
     let found_meta = obj.prop_meta_at(offset);
 
     let desc = alloc_desc_object(vm);
-    let sh_ptr = vm.kernel_core().shape_forge().as_ref() as *const ShapeForge;
-    let sf_ptr = vm.kernel_core().perm_interner().as_ref() as *const PermInterner;
+    let sh_ptr = vm.shape_forge_ptr() as *const ShapeForge;
+    let sf_ptr = vm.perm_interner_ptr() as *const PermInterner;
     let d: &mut JsObject = unsafe { &mut *desc };
     let sh = unsafe { &*sh_ptr };
     let sf = unsafe { &*sf_ptr };
@@ -1141,7 +1134,7 @@ fn own_descriptor_of<H: VmHost>(vm: &mut H, obj: &JsObject, key_si: u32) -> Resu
 
 /// 分配空描述符对象（proto = %Object.prototype%）。
 fn alloc_desc_object<H: VmHost>(vm: &mut H) -> *mut JsObject {
-    let desc_proto = vm.session().builtin_world().object_proto.as_ptr() as *mut JsObject;
+    let desc_proto = vm.builtin_proto(ProtoKind::ObjectProto);
     vm.alloc_object(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(desc_proto)))
 }
 
@@ -1207,7 +1200,7 @@ pub fn object_get_own_property_descriptors<H: VmHost>(vm: &mut H, args: &[u8]) -
     keys.extend(walk_own_symbol_keys(vm, obj));
 
     // 结果对象：proto = %Object.prototype%。
-    let desc_proto = vm.session().builtin_world().object_proto.as_ptr() as *mut JsObject;
+    let desc_proto = vm.builtin_proto(ProtoKind::ObjectProto);
     let result = vm.alloc_object(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(desc_proto)));
     let result_val = JsValue::from_js_object(result);
 
@@ -1509,7 +1502,7 @@ pub fn object_get_own_property_names<H: VmHost>(vm: &mut H, args: &[u8]) -> Nati
     let obj = unsafe { &*obj_ptr };
     let keys = walk_own_keys(vm, obj);
     let n = keys.len();
-    let array_proto = vm.session().builtin_world().array_proto.as_ptr() as *mut JsObject;
+    let array_proto = vm.builtin_proto(ProtoKind::ArrayProto);
     let arr = vm.alloc_object(JsObject::new_array(EMPTY_SHAPE_ID, JsValue::from_js_object(array_proto), n));
     for (i, (si, _)) in keys.iter().enumerate() {
         let key_val = key_si_to_js_value(vm, *si);
@@ -1566,7 +1559,7 @@ pub fn object_from_entries<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     if entries_ptr.is_null() {
         return NativeResult::Err(crate::error::create_type_error(vm, "Object.fromEntries: argument must be iterable"));
     }
-    let proto_ptr = vm.session().builtin_world().object_proto.as_ptr() as *mut JsObject;
+    let proto_ptr = vm.builtin_proto(ProtoKind::ObjectProto);
     let obj = vm.alloc_object(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(proto_ptr)));
     let target_val = JsValue::from_js_object(obj);
     // entry 数组的元素存元素区（元素区之外才是命名属性区），按元素区长度迭代。
@@ -1740,7 +1733,7 @@ pub fn object_proto_to_locale_string<H: VmHost>(vm: &mut H, args: &[u8]) -> Nati
         Err(msg) => return NativeResult::Err(crate::error::create_type_error(vm, &msg)),
     };
     let obj = unsafe { &*obj_val.as_js_object_ptr() };
-    let si_to_string = vm.kernel_core().perm_interner().intern("toString").0;
+    let si_to_string = vm.perm_intern("toString");
     let to_str = match vm.ordinary_get(obj, si_to_string, this_val) {
         Ok(v) => v,
         Err(e) => return NativeResult::Err(crate::iterator::engine_error(vm, &e)),
@@ -2138,7 +2131,7 @@ pub fn object_entries<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         })
         .collect();
     let n = owned_keys.len();
-    let array_proto = vm.session().builtin_world().array_proto.as_ptr() as *mut JsObject;
+    let array_proto = vm.builtin_proto(ProtoKind::ArrayProto);
     let arr = vm.alloc_object(JsObject::new_array(EMPTY_SHAPE_ID, JsValue::from_js_object(array_proto), n));
     let obj_val = JsValue::from_js_object(obj_ptr);
     for (i, (si, offset)) in owned_keys.iter().enumerate() {
@@ -2205,7 +2198,7 @@ pub fn object_group_by<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         return NativeResult::Err(crate::error::create_type_error(vm, "Object.groupBy: iterator is not an object"));
     }
     let iter_obj = unsafe { &*iter_val.as_js_object_ptr() };
-    let next_si = vm.kernel_core().perm_interner().intern("next").0;
+    let next_si = vm.perm_intern("next");
     let next_fn = match vm.ordinary_get(iter_obj, next_si, iter_val) {
         Ok(f) => f,
         Err(e) => return NativeResult::Err(crate::iterator::engine_error(vm, &e)),
@@ -2231,7 +2224,7 @@ pub fn object_group_by<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
             ));
         }
         let nr = unsafe { &*next_result.as_js_object_ptr() };
-        let done_si = vm.kernel_core().perm_interner().intern("done").0;
+        let done_si = vm.perm_intern("done");
         let done = match vm.ordinary_get(nr, done_si, next_result) {
             Ok(v) => oxide_runtime_api::to_boolean(v),
             Err(e) => return NativeResult::Err(crate::iterator::engine_error(vm, &e)),
@@ -2239,7 +2232,7 @@ pub fn object_group_by<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         if done {
             break;
         }
-        let value_si = vm.kernel_core().perm_interner().intern("value").0;
+        let value_si = vm.perm_intern("value");
         let element = match vm.ordinary_get(nr, value_si, next_result) {
             Ok(v) => v,
             Err(e) => return NativeResult::Err(crate::iterator::engine_error(vm, &e)),
@@ -2280,7 +2273,7 @@ pub fn object_group_by<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         let arr_val = if let Some(existing) = existing {
             existing
         } else {
-            let arr_proto = vm.session().builtin_world().array_proto.as_ptr() as *mut JsObject;
+            let arr_proto = vm.builtin_proto(ProtoKind::ArrayProto);
             let arr = vm.alloc_object(JsObject::new_array(EMPTY_SHAPE_ID, JsValue::from_js_object(arr_proto), 0));
             let new_arr_val = JsValue::from_js_object(arr);
             let result_ref_mut = unsafe { &mut *result };
@@ -2313,7 +2306,7 @@ pub fn object_values<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         })
         .collect();
     let n = owned_keys.len();
-    let array_proto = vm.session().builtin_world().array_proto.as_ptr() as *mut JsObject;
+    let array_proto = vm.builtin_proto(ProtoKind::ArrayProto);
     let arr = vm.alloc_object(JsObject::new_array(EMPTY_SHAPE_ID, JsValue::from_js_object(array_proto), n));
     let obj_val = JsValue::from_js_object(obj_ptr);
     for (i, (si, offset)) in owned_keys.iter().enumerate() {

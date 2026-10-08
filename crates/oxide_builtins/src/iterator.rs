@@ -1,9 +1,10 @@
 use oxide_kernel::shape_forge::EMPTY_SHAPE_ID;
 use oxide_types::object::{JsObject, PropAttributes};
 use oxide_types::private_key::{encode_symbol_key, make_int_key};
+use oxide_types::string_forge::PermInterner;
 use oxide_types::value::JsValue;
 
-use oxide_runtime_api::{to_object, NativeResult, VmHost};
+use oxide_runtime_api::{to_object, NativeResult, ProtoKind, VmHost};
 
 const INNER_PROP: &str = "__inner__";
 const INDEX_PROP: &str = "__index__";
@@ -47,7 +48,7 @@ pub fn iterator_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult 
         if proto.is_object() {
             let proto_ptr = proto.as_js_object_ptr();
             if !proto_ptr.is_null() {
-                let home = vm.session().builtin_world().iterator_proto.as_ptr() as *mut JsObject;
+                let home = vm.builtin_proto(ProtoKind::IteratorProto);
                 if std::ptr::eq(proto_ptr, home) {
                     return NativeResult::Err(crate::error::create_type_error(vm, "Iterator is not a constructor"));
                 }
@@ -68,12 +69,11 @@ pub fn iterator_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult 
 /// lookup 失败（极端：global 无 `Iterator`）返回 undefined，不 panic。
 pub fn iterator_constructor_getter<H: VmHost>(vm: &mut H, _args: &[u8]) -> NativeResult {
     let (shape_id, global_ptr) = {
-        let session = vm.session();
-        let global = session.global_object();
+        let global = vm.global_object();
         (global.shape_id(), global.as_ptr() as *mut JsObject)
     };
-    let si = vm.kernel_core().perm_interner().intern("Iterator").0;
-    let Some(pos) = vm.kernel_core().shape_forge().lookup_position(shape_id, si) else {
+    let si = vm.perm_intern("Iterator");
+    let Some(pos) = vm.lookup_position(shape_id, si) else {
         return NativeResult::Ok(JsValue::undefined());
     };
     NativeResult::Ok(unsafe { &*global_ptr }.get_prop_at(pos))
@@ -81,8 +81,9 @@ pub fn iterator_constructor_getter<H: VmHost>(vm: &mut H, _args: &[u8]) -> Nativ
 
 /// `%IteratorPrototype%` 上 `Symbol.toStringTag` 访问器的 getter：返回 `"Iterator"`。
 pub fn iterator_to_string_tag_getter<H: VmHost>(vm: &mut H, _args: &[u8]) -> NativeResult {
-    let sf = vm.kernel_core().perm_interner().as_ref();
-    NativeResult::Ok(JsValue::perm_string(sf.string_ptr(sf.intern("Iterator").0)))
+    // SAFETY: perm interner 随 VM 存活，本表达式内只读即时消费。
+    let sf = vm.perm_interner_ptr() as *const PermInterner;
+    NativeResult::Ok(JsValue::perm_string(unsafe { &*sf }.string_ptr(vm.perm_intern("Iterator"))))
 }
 
 /// 忽略原型属性的 setter 的共享实现（对应规范 SetterThatIgnoresPrototypeProperties）：
@@ -100,7 +101,7 @@ fn iterator_setter_ignore_proto_props<H: VmHost>(vm: &mut H, args: &[u8], key: u
     if !this_val.is_object() {
         return NativeResult::Err(crate::error::create_type_error(vm, "Iterator property setter called on non-object"));
     }
-    let home = vm.session().builtin_world().iterator_proto.as_ptr() as *mut JsObject;
+    let home = vm.builtin_proto(ProtoKind::IteratorProto);
     if std::ptr::eq(this_val.as_js_object_ptr(), home) {
         return NativeResult::Err(crate::error::create_type_error(
             vm,
@@ -109,12 +110,7 @@ fn iterator_setter_ignore_proto_props<H: VmHost>(vm: &mut H, args: &[u8], key: u
     }
     let val = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
     let this_obj = unsafe { &mut *this_val.as_js_object_ptr() };
-    if vm
-        .kernel_core()
-        .shape_forge()
-        .lookup_position(this_obj.shape_id(), key)
-        .is_none()
-    {
+    if vm.lookup_position(this_obj.shape_id(), key).is_none() {
         match vm.define_data_property(this_obj, key, val, PropAttributes::new(true, true, true)) {
             Ok(()) => NativeResult::Ok(JsValue::undefined()),
             Err(err) => NativeResult::Err(crate::error::create_type_error(vm, &err)),
@@ -129,7 +125,7 @@ fn iterator_setter_ignore_proto_props<H: VmHost>(vm: &mut H, args: &[u8], key: u
 
 /// `constructor` 访问器的 setter（键 = "constructor"）。
 pub fn iterator_constructor_setter<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
-    let key = vm.kernel_core().perm_interner().intern("constructor").0;
+    let key = vm.perm_intern("constructor");
     iterator_setter_ignore_proto_props(vm, args, key)
 }
 
@@ -154,7 +150,7 @@ pub fn iterator_dispose<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         ));
     }
     let obj = unsafe { &*this_val.as_js_object_ptr() };
-    let return_si = vm.kernel_core().perm_interner().intern("return").0;
+    let return_si = vm.perm_intern("return");
     let return_fn = match vm.ordinary_get(obj, return_si, this_val) {
         Ok(f) if is_callable(f) => f,
         Ok(_) => JsValue::undefined(),
@@ -203,7 +199,7 @@ pub(crate) fn validate_terminal_and_get_direct<H: VmHost>(
 /// - `next` getter 抛错时透传原异常值。
 pub(crate) fn get_iterator_direct<H: VmHost>(vm: &mut H, this_val: JsValue) -> Result<(JsValue, JsValue), JsValue> {
     let iter_obj = unsafe { &*this_val.as_js_object_ptr() };
-    let next_si = vm.kernel_core().perm_interner().intern("next").0;
+    let next_si = vm.perm_intern("next");
     let next = vm.ordinary_get(iter_obj, next_si, this_val).map_err(|e| engine_error(vm, &e))?;
     Ok((this_val, next))
 }
@@ -222,12 +218,12 @@ pub(crate) fn iterator_record_step<H: VmHost>(
         return Err(crate::error::create_type_error(vm, "iterator result is not an object"));
     }
     let result_obj = unsafe { &*result.as_js_object_ptr() };
-    let done_si = vm.kernel_core().perm_interner().intern("done").0;
+    let done_si = vm.perm_intern("done");
     let done = vm.ordinary_get(result_obj, done_si, result).map_err(|e| engine_error(vm, &e))?;
     if oxide_runtime_api::to_boolean(done) {
         return Ok(None);
     }
-    let value_si = vm.kernel_core().perm_interner().intern("value").0;
+    let value_si = vm.perm_intern("value");
     let value = vm
         .ordinary_get(result_obj, value_si, result)
         .map_err(|e| engine_error(vm, &e))?;
@@ -248,7 +244,7 @@ pub(crate) fn iterator_close_record<H: VmHost>(
     vm: &mut H, iterated: JsValue, completion_err: Option<JsValue>,
 ) -> Result<(), JsValue> {
     let iter_obj = unsafe { &*iterated.as_js_object_ptr() };
-    let return_si = vm.kernel_core().perm_interner().intern("return").0;
+    let return_si = vm.perm_intern("return");
     let return_fn = match vm.ordinary_get(iter_obj, return_si, iterated) {
         Ok(f) if is_callable(f) => f,
         Ok(_) => {
@@ -439,17 +435,17 @@ fn get_iterator_flattenable<H: VmHost>(vm: &mut H, value: JsValue) -> Result<(Js
 fn make_iterator_helper<H: VmHost>(
     vm: &mut H, inner: JsValue, next: JsValue, kind: IteratorHelperKind, callback: JsValue, counter: JsValue,
 ) -> JsValue {
-    let helper_proto = vm.session().builtin_world().iterator_helper_proto.as_ptr() as *mut JsObject;
+    let helper_proto = vm.builtin_proto(ProtoKind::IteratorHelperProto);
     let wrapper = vm.alloc_object(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(helper_proto)));
     let wrapper_obj = unsafe { &mut *wrapper };
-    let inner_si = vm.kernel_core().perm_interner().intern(INNER_PROP).0;
-    let next_si = vm.kernel_core().perm_interner().intern(NEXT_CACHE_PROP).0;
-    let kind_si = vm.kernel_core().perm_interner().intern(KIND_PROP).0;
-    let state_si = vm.kernel_core().perm_interner().intern(STATE_PROP).0;
-    let counter_si = vm.kernel_core().perm_interner().intern(COUNTER_PROP).0;
-    let callback_si = vm.kernel_core().perm_interner().intern(CALLBACK_PROP).0;
-    let inner_iter_si = vm.kernel_core().perm_interner().intern(INNER_ITER_PROP).0;
-    let inner_next_si = vm.kernel_core().perm_interner().intern(INNER_NEXT_PROP).0;
+    let inner_si = vm.perm_intern(INNER_PROP);
+    let next_si = vm.perm_intern(NEXT_CACHE_PROP);
+    let kind_si = vm.perm_intern(KIND_PROP);
+    let state_si = vm.perm_intern(STATE_PROP);
+    let counter_si = vm.perm_intern(COUNTER_PROP);
+    let callback_si = vm.perm_intern(CALLBACK_PROP);
+    let inner_iter_si = vm.perm_intern(INNER_ITER_PROP);
+    let inner_next_si = vm.perm_intern(INNER_NEXT_PROP);
     vm.set_or_create_prop_value(wrapper_obj, inner_si, inner);
     vm.set_or_create_prop_value(wrapper_obj, next_si, next);
     vm.set_or_create_prop_value(wrapper_obj, kind_si, JsValue::int(kind as i32));
@@ -471,7 +467,7 @@ fn validate_helper_this<H: VmHost>(vm: &mut H, this_val: JsValue, method: &str) 
         return Err(crate::error::create_type_error(vm, &format!("{method} called on non-object")));
     }
     let obj = unsafe { &*this_val.as_js_object_ptr() };
-    let inner_si = vm.kernel_core().perm_interner().intern(INNER_PROP).0;
+    let inner_si = vm.perm_intern(INNER_PROP);
     let inner = vm.ordinary_get(obj, inner_si, this_val).map_err(|e| engine_error(vm, &e))?;
     if !inner.is_object() {
         return Err(crate::error::create_type_error(vm, &format!("{method} called on non-iterator-helper")));
@@ -709,7 +705,7 @@ pub fn iterator_to_array<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 
 /// 按元素列表构造普通数组，以 Array.prototype 为原型（对应规范 CreateArrayFromList）。
 fn make_array_from_list<H: VmHost>(vm: &mut H, items: &[JsValue]) -> JsValue {
-    let array_proto = vm.session().builtin_world().array_proto.as_ptr() as *mut JsObject;
+    let array_proto = vm.builtin_proto(ProtoKind::ArrayProto);
     let arr = vm.alloc_object(JsObject::new_array(
         EMPTY_SHAPE_ID,
         JsValue::from_js_object(array_proto),
@@ -863,7 +859,7 @@ pub fn iterator_helper_next<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult 
         Err(v) => return NativeResult::Err(v),
     };
     let helper = unsafe { &mut *this_val.as_js_object_ptr() };
-    let state_si = vm.kernel_core().perm_interner().intern(STATE_PROP).0;
+    let state_si = vm.perm_intern(STATE_PROP);
     let state = read_slot_int(vm, helper, state_si, 2);
     if state == 2 {
         return NativeResult::Ok(make_iter_result(vm, JsValue::undefined(), true));
@@ -871,10 +867,10 @@ pub fn iterator_helper_next<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult 
     if state == 1 {
         return NativeResult::Err(crate::error::create_type_error(vm, "Iterator helper is already executing"));
     }
-    let kind_si = vm.kernel_core().perm_interner().intern(KIND_PROP).0;
+    let kind_si = vm.perm_intern(KIND_PROP);
     let kind = IteratorHelperKind::from_i32(read_slot_int(vm, helper, kind_si, 0));
     vm.set_or_create_prop_value(helper, state_si, JsValue::int(1));
-    let next_si = vm.kernel_core().perm_interner().intern(NEXT_CACHE_PROP).0;
+    let next_si = vm.perm_intern(NEXT_CACHE_PROP);
     let next = vm.ordinary_get(helper, next_si, this_val).unwrap_or(JsValue::undefined());
     let step = match kind {
         IteratorHelperKind::Map => helper_step_map(vm, this_val, helper, inner, next),
@@ -914,7 +910,7 @@ pub fn iterator_helper_return<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResul
         Err(v) => return NativeResult::Err(v),
     };
     let helper = unsafe { &mut *this_val.as_js_object_ptr() };
-    let state_si = vm.kernel_core().perm_interner().intern(STATE_PROP).0;
+    let state_si = vm.perm_intern(STATE_PROP);
     let state = read_slot_int(vm, helper, state_si, 2);
     if state == 2 {
         return NativeResult::Ok(make_iter_result(vm, JsValue::undefined(), true));
@@ -923,9 +919,9 @@ pub fn iterator_helper_return<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResul
         return NativeResult::Err(crate::error::create_type_error(vm, "Iterator helper is already executing"));
     }
     vm.set_or_create_prop_value(helper, state_si, JsValue::int(2));
-    let kind_si = vm.kernel_core().perm_interner().intern(KIND_PROP).0;
+    let kind_si = vm.perm_intern(KIND_PROP);
     if IteratorHelperKind::from_i32(read_slot_int(vm, helper, kind_si, 0)) == IteratorHelperKind::FlatMap {
-        let inner_iter_si = vm.kernel_core().perm_interner().intern(INNER_ITER_PROP).0;
+        let inner_iter_si = vm.perm_intern(INNER_ITER_PROP);
         if let Ok(inner_iter) = vm.ordinary_get(helper, inner_iter_si, this_val) {
             if inner_iter.is_object() {
                 // 内层关闭出错：以该错误关外层（外层 return 错误被吞），传播内层错误。
@@ -956,7 +952,7 @@ pub fn iterator_helper_throw<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult
         Err(v) => return NativeResult::Err(v),
     };
     let helper = unsafe { &mut *this_val.as_js_object_ptr() };
-    let state_si = vm.kernel_core().perm_interner().intern(STATE_PROP).0;
+    let state_si = vm.perm_intern(STATE_PROP);
     let state = read_slot_int(vm, helper, state_si, 2);
     if state == 2 {
         return NativeResult::Err(value);
@@ -965,9 +961,9 @@ pub fn iterator_helper_throw<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult
         return NativeResult::Err(crate::error::create_type_error(vm, "Iterator helper is already executing"));
     }
     vm.set_or_create_prop_value(helper, state_si, JsValue::int(2));
-    let kind_si = vm.kernel_core().perm_interner().intern(KIND_PROP).0;
+    let kind_si = vm.perm_intern(KIND_PROP);
     if IteratorHelperKind::from_i32(read_slot_int(vm, helper, kind_si, 0)) == IteratorHelperKind::FlatMap {
-        let inner_iter_si = vm.kernel_core().perm_interner().intern(INNER_ITER_PROP).0;
+        let inner_iter_si = vm.perm_intern(INNER_ITER_PROP);
         if let Ok(inner_iter) = vm.ordinary_get(helper, inner_iter_si, this_val) {
             if inner_iter.is_object() {
                 // throw 语义：原值胜出，内层/外层关闭错误均被吞。
@@ -984,8 +980,8 @@ pub fn iterator_helper_throw<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult
 fn helper_step_map<H: VmHost>(
     vm: &mut H, this_val: JsValue, helper: &mut JsObject, inner: JsValue, next: JsValue,
 ) -> Result<Option<JsValue>, JsValue> {
-    let counter_si = vm.kernel_core().perm_interner().intern(COUNTER_PROP).0;
-    let callback_si = vm.kernel_core().perm_interner().intern(CALLBACK_PROP).0;
+    let counter_si = vm.perm_intern(COUNTER_PROP);
+    let callback_si = vm.perm_intern(CALLBACK_PROP);
     let mapper = vm.ordinary_get(helper, callback_si, this_val).unwrap_or(JsValue::undefined());
     let counter = read_counter(vm, helper, counter_si);
     let value = match iterator_record_step(vm, next, inner) {
@@ -1012,8 +1008,8 @@ fn helper_step_map<H: VmHost>(
 fn helper_step_filter<H: VmHost>(
     vm: &mut H, this_val: JsValue, helper: &mut JsObject, inner: JsValue, next: JsValue,
 ) -> Result<Option<JsValue>, JsValue> {
-    let counter_si = vm.kernel_core().perm_interner().intern(COUNTER_PROP).0;
-    let callback_si = vm.kernel_core().perm_interner().intern(CALLBACK_PROP).0;
+    let counter_si = vm.perm_intern(COUNTER_PROP);
+    let callback_si = vm.perm_intern(CALLBACK_PROP);
     let predicate = vm.ordinary_get(helper, callback_si, this_val).unwrap_or(JsValue::undefined());
     let mut counter = read_counter(vm, helper, counter_si);
     loop {
@@ -1045,7 +1041,7 @@ fn helper_step_filter<H: VmHost>(
 fn helper_step_take<H: VmHost>(
     vm: &mut H, helper: &mut JsObject, inner: JsValue, next: JsValue,
 ) -> Result<Option<JsValue>, JsValue> {
-    let counter_si = vm.kernel_core().perm_interner().intern(COUNTER_PROP).0;
+    let counter_si = vm.perm_intern(COUNTER_PROP);
     let remaining = read_slot_double(vm, helper, counter_si, f64::INFINITY);
     if remaining == 0.0 {
         // remaining 归零：正常完成形态关底层（return 错误胜出）。
@@ -1068,7 +1064,7 @@ fn helper_step_take<H: VmHost>(
 fn helper_step_drop<H: VmHost>(
     vm: &mut H, helper: &mut JsObject, inner: JsValue, next: JsValue,
 ) -> Result<Option<JsValue>, JsValue> {
-    let counter_si = vm.kernel_core().perm_interner().intern(COUNTER_PROP).0;
+    let counter_si = vm.perm_intern(COUNTER_PROP);
     let mut remaining = read_slot_double(vm, helper, counter_si, 0.0);
     while remaining > 0.0 {
         if remaining != f64::INFINITY {
@@ -1096,10 +1092,10 @@ fn helper_step_drop<H: VmHost>(
 fn helper_step_flat_map<H: VmHost>(
     vm: &mut H, this_val: JsValue, helper: &mut JsObject, outer: JsValue, outer_next: JsValue,
 ) -> Result<Option<JsValue>, JsValue> {
-    let counter_si = vm.kernel_core().perm_interner().intern(COUNTER_PROP).0;
-    let callback_si = vm.kernel_core().perm_interner().intern(CALLBACK_PROP).0;
-    let inner_iter_si = vm.kernel_core().perm_interner().intern(INNER_ITER_PROP).0;
-    let inner_next_si = vm.kernel_core().perm_interner().intern(INNER_NEXT_PROP).0;
+    let counter_si = vm.perm_intern(COUNTER_PROP);
+    let callback_si = vm.perm_intern(CALLBACK_PROP);
+    let inner_iter_si = vm.perm_intern(INNER_ITER_PROP);
+    let inner_next_si = vm.perm_intern(INNER_NEXT_PROP);
     let mapper = vm.ordinary_get(helper, callback_si, this_val).unwrap_or(JsValue::undefined());
     let mut counter = read_counter(vm, helper, counter_si);
     loop {
@@ -1246,13 +1242,13 @@ pub(crate) fn build_iterator_wrapper<H: VmHost>(
 ) -> JsValue {
     let iterator_proto = match wrapper_proto {
         Some(proto) => proto,
-        None => vm.session().builtin_world().iterator_proto.as_ptr() as *mut JsObject,
+        None => vm.builtin_proto(ProtoKind::IteratorProto),
     };
     let wrapper = vm.alloc_object(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(iterator_proto)));
 
-    let inner_si = vm.kernel_core().perm_interner().intern(INNER_PROP).0;
-    let index_si = vm.kernel_core().perm_interner().intern(INDEX_PROP).0;
-    let next_si = vm.kernel_core().perm_interner().intern("next").0;
+    let inner_si = vm.perm_intern(INNER_PROP);
+    let index_si = vm.perm_intern(INDEX_PROP);
+    let next_si = vm.perm_intern("next");
     let wrapper_obj = unsafe { &mut *wrapper };
     vm.set_or_create_prop_value(wrapper_obj, inner_si, inner);
     vm.set_or_create_prop_value(wrapper_obj, index_si, JsValue::int(0));
@@ -1261,7 +1257,7 @@ pub(crate) fn build_iterator_wrapper<H: VmHost>(
     // "只读一次"同模式），消费期直读槽不重触发 getter；非鸭子路径无槽，wrapper next
     // 回退重读内层 next（既有行为）。
     if let Some(next_fn) = cached_next {
-        let next_cache_si = vm.kernel_core().perm_interner().intern(NEXT_CACHE_PROP).0;
+        let next_cache_si = vm.perm_intern(NEXT_CACHE_PROP);
         vm.set_or_create_prop_value(wrapper_obj, next_cache_si, next_fn);
     }
 
@@ -1270,7 +1266,7 @@ pub(crate) fn build_iterator_wrapper<H: VmHost>(
 
     // for-of/解构的 IteratorClose 需要 return 方法：条件暴露（内层有可调用 return 时）。
     // `yield*` 委托（bind_return=false）不绑定，转发时对内层延迟 GetMethod。
-    let return_si = vm.kernel_core().perm_interner().intern("return").0;
+    let return_si = vm.perm_intern("return");
     if bind_return && inner.is_object() {
         let inner_obj = unsafe { &*inner.as_js_object_ptr() };
         if let Ok(return_fn) = vm.ordinary_get(inner_obj, return_si, inner) {
@@ -1290,14 +1286,14 @@ fn iterator_wrapper_return<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         return NativeResult::Ok(JsValue::undefined());
     }
     let wrapper = unsafe { &*this_val.as_js_object_ptr() };
-    let inner_si = vm.kernel_core().perm_interner().intern(INNER_PROP).0;
+    let inner_si = vm.perm_intern(INNER_PROP);
     let inner = match vm.ordinary_get(wrapper, inner_si, this_val) {
         Ok(inner) if inner.is_object() => inner,
         _ => return NativeResult::Ok(JsValue::undefined()),
     };
     // 延迟 GetMethod：内层无 return 方法时返回 undefined（IteratorClose 跳过）。
     let inner_obj = unsafe { &*inner.as_js_object_ptr() };
-    let return_si = vm.kernel_core().perm_interner().intern("return").0;
+    let return_si = vm.perm_intern("return");
     let return_fn = match vm.ordinary_get(inner_obj, return_si, inner) {
         Ok(f) if is_callable(f) => f,
         _ => return NativeResult::Ok(JsValue::undefined()),
@@ -1323,8 +1319,8 @@ pub fn iterator_wrapper_next<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult
     }
 
     let wrapper = unsafe { &mut *this_val.as_js_object_ptr() };
-    let inner_si = vm.kernel_core().perm_interner().intern(INNER_PROP).0;
-    let index_si = vm.kernel_core().perm_interner().intern(INDEX_PROP).0;
+    let inner_si = vm.perm_intern(INNER_PROP);
+    let index_si = vm.perm_intern(INDEX_PROP);
     let inner = match vm.ordinary_get(wrapper, inner_si, this_val) {
         Ok(inner) if !inner.is_undefined() => inner,
         _ => return NativeResult::Err(crate::error::create_type_error(vm, "Iterator wrapper has no inner iterator")),
@@ -1340,7 +1336,7 @@ pub fn iterator_wrapper_next<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult
         // 鸭子回退包装器优先读 `__next__` 槽（from() 时只读一次的缓存闭包，
         // 消费期不重触发 getter）；槽缺失或不可调用时回退重读内层 next
         // （非鸭子路径既有行为）。
-        let next_cache_si = vm.kernel_core().perm_interner().intern(NEXT_CACHE_PROP).0;
+        let next_cache_si = vm.perm_intern(NEXT_CACHE_PROP);
         let cached = match vm.ordinary_get(wrapper, next_cache_si, this_val) {
             Ok(c) => c,
             Err(err) => {
@@ -1355,7 +1351,7 @@ pub fn iterator_wrapper_next<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult
             cached
         } else {
             let inner_obj = unsafe { &*inner.as_js_object_ptr() };
-            let next_si = vm.kernel_core().perm_interner().intern("next").0;
+            let next_si = vm.perm_intern("next");
             match vm.ordinary_get(inner_obj, next_si, inner) {
                 Ok(n) => n,
                 Err(err) => {
@@ -1405,7 +1401,7 @@ pub(crate) fn peek_iterator_method<H: VmHost>(vm: &mut H, value: JsValue) -> Res
     // （与 get_iterator 的 String 臂同口径）。默认迭代器被删除/置 null 时须落
     // array-like，而非按"String 恒可迭代"放行迭代路径。
     if value.is_string() {
-        let proto_ptr = vm.session().builtin_world().string_proto.as_ptr() as *mut JsObject;
+        let proto_ptr = vm.builtin_proto(ProtoKind::StringProto);
         // SAFETY: string_proto 是 BuiltinWorld 长驻原型对象，进程内有效且不被 GC 搬移。
         let proto_obj = unsafe { &*proto_ptr };
         let sym_iter_si = encode_symbol_key(vm.realm_id(), 0);
@@ -1465,7 +1461,7 @@ pub(crate) fn peek_iterator_method<H: VmHost>(vm: &mut H, value: JsValue) -> Res
         // 装箱串不套用：get_iterator 的 String 臂无 duck-next 回退，规范也只看
         // @@iterator（Array.from/%TypedArray%.from 应落 array-like）。
         if !obj.is_string_obj() {
-            let next_si = vm.kernel_core().perm_interner().intern("next").0;
+            let next_si = vm.perm_intern("next");
             if let Ok(next) = vm.ordinary_get(obj, next_si, value) {
                 if is_callable(next) {
                     return Ok(true);
@@ -1490,21 +1486,17 @@ fn builtin_iterator_default_intact<H: VmHost>(vm: &mut H, value: JsValue, method
     if !method.is_object() {
         return false;
     }
-    let (anchor_ptr, anchor_name) = {
-        let session = vm.session();
-        let world = session.builtin_world();
-        if is_array_value(value) {
-            (world.array_proto.as_ptr() as *mut JsObject, "values")
-        } else if is_typed_array_value(value) {
-            (world.typed_array_proto.as_ptr() as *mut JsObject, "values")
-        } else if is_map_value(value) {
-            (world.map_proto.as_ptr() as *mut JsObject, "entries")
-        } else {
-            (world.set_proto.as_ptr() as *mut JsObject, "values")
-        }
+    let (anchor_ptr, anchor_name) = if is_array_value(value) {
+        (vm.builtin_proto(ProtoKind::ArrayProto), "values")
+    } else if is_typed_array_value(value) {
+        (vm.builtin_proto(ProtoKind::TypedArrayProto), "values")
+    } else if is_map_value(value) {
+        (vm.builtin_proto(ProtoKind::MapProto), "entries")
+    } else {
+        (vm.builtin_proto(ProtoKind::SetProto), "values")
     };
     let anchor_obj = unsafe { &*anchor_ptr };
-    let anchor_si = vm.kernel_core().perm_interner().intern(anchor_name).0;
+    let anchor_si = vm.perm_intern(anchor_name);
     let Ok(anchor) = vm.ordinary_get(anchor_obj, anchor_si, JsValue::from_js_object(anchor_ptr)) else {
         return false;
     };
@@ -1539,7 +1531,7 @@ fn get_iterator<H: VmHost>(vm: &mut H, value: JsValue) -> Result<Option<(JsValue
         let read_ptr = if value_is_string_box {
             value.as_js_object_ptr()
         } else {
-            vm.session().builtin_world().string_proto.as_ptr() as *mut JsObject
+            vm.builtin_proto(ProtoKind::StringProto)
         };
         let read_obj = unsafe { &*read_ptr };
         let sym_iter_si = encode_symbol_key(vm.realm_id(), 0);
@@ -1567,7 +1559,7 @@ fn get_iterator<H: VmHost>(vm: &mut H, value: JsValue) -> Result<Option<(JsValue
         };
         // 默认迭代器（自别名：即 @@iterator 槽本身）走码元快速路径、不调方法——
         // 调默认函数会递归回本 String 臂。指针未捕获（绑定前瞬时）亦回退快速路径。
-        let default_ptr = vm.session().builtin_world().string_default_iterator.get();
+        let default_ptr = vm.string_default_iterator();
         if !default_ptr.is_null()
             && is_callable(method)
             && std::ptr::eq(method.as_js_object_ptr() as *const JsObject, default_ptr)
@@ -1657,7 +1649,7 @@ fn get_iterator<H: VmHost>(vm: &mut H, value: JsValue) -> Result<Option<(JsValue
     }
     // 鸭子回退：对象自身有可调用 next（Map/Set 迭代器包装等既有用法）。
     // getter 抛错透传原值（不落入"不可迭代"），读到的闭包随 inner 回传供缓存。
-    let next_si = vm.kernel_core().perm_interner().intern("next").0;
+    let next_si = vm.perm_intern("next");
     let next = match vm.ordinary_get(obj, next_si, value) {
         Ok(n) => n,
         Err(err) => {
@@ -1743,7 +1735,7 @@ pub fn builtin_iter_kind<H: VmHost>(vm: &mut H, wrapper: JsValue) -> Option<(Bui
     }
     // SAFETY: wrapper 刚判定为对象。
     let wrapper_obj = unsafe { &*wrapper.as_js_object_ptr() };
-    let inner_si = vm.kernel_core().perm_interner().intern(INNER_PROP).0;
+    let inner_si = vm.perm_intern(INNER_PROP);
     let inner = match vm.ordinary_get(wrapper_obj, inner_si, wrapper) {
         Ok(inner) if !inner.is_undefined() => inner,
         _ => return None,
@@ -1900,10 +1892,10 @@ fn current_index<H: VmHost>(vm: &mut H, wrapper: &JsObject, index_si: u32) -> us
 
 /// 构造迭代器结果对象 `{value, done}`（生成器 next/return 结果复用）。
 pub fn make_iter_result<H: VmHost>(vm: &mut H, value: JsValue, done: bool) -> JsValue {
-    let object_proto = vm.session().builtin_world().object_proto.as_ptr() as *mut JsObject;
+    let object_proto = vm.builtin_proto(ProtoKind::ObjectProto);
     let obj = vm.alloc_object(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(object_proto)));
-    let value_si = vm.kernel_core().perm_interner().intern("value").0;
-    let done_si = vm.kernel_core().perm_interner().intern("done").0;
+    let value_si = vm.perm_intern("value");
+    let done_si = vm.perm_intern("done");
     let obj_ref = unsafe { &mut *obj };
     vm.set_or_create_prop_value(obj_ref, value_si, value);
     vm.set_or_create_prop_value(obj_ref, done_si, JsValue::bool(done));
@@ -1913,14 +1905,14 @@ pub fn make_iter_result<H: VmHost>(vm: &mut H, value: JsValue, done: bool) -> Js
 /// 构造 native 函数对象并返回：设置函数标记、native 函数项、参数个数与 `name`
 /// 属性。供迭代器包装器把自己的 next/return 方法装到包装对象上，不经绑定层注册。
 pub(crate) fn make_native_function<H: VmHost>(vm: &mut H, name: &str, native_fn: *const (), arg_count: u8) -> JsValue {
-    let function_proto = vm.session().builtin_world().function_proto.as_ptr() as *mut JsObject;
+    let function_proto = vm.builtin_proto(ProtoKind::FunctionProto);
     let mut func = JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(function_proto));
     func.set_function(true);
     // SAFETY: native_fn 来自 NativeFn 函数项。
     func.set_native_fn(Some(unsafe { oxide_types::object::NativeFnPtr::from_raw(native_fn) }));
     func.set_native_arg_count(arg_count);
     let func = vm.alloc_object(func);
-    let name_si = vm.kernel_core().perm_interner().intern("name").0;
+    let name_si = vm.perm_intern("name");
     let value = vm.new_string(name);
     let func_ref = unsafe { &mut *func };
     vm.set_or_create_prop_value(func_ref, name_si, value);
@@ -1966,7 +1958,7 @@ pub(crate) fn close_iterator<H: VmHost>(vm: &mut H, iterator: JsValue) {
         return;
     }
     let iter_obj = unsafe { &*iterator.as_js_object_ptr() };
-    let return_si = vm.kernel_core().perm_interner().intern("return").0;
+    let return_si = vm.perm_intern("return");
     if let Ok(ret) = vm.ordinary_get(iter_obj, return_si, iterator) {
         if is_callable(ret) {
             // return() 的抛错被忽略，其值不得外泄进槽覆盖在途异常。
@@ -2004,9 +1996,9 @@ pub fn iterate_iterator<H: VmHost, F>(vm: &mut H, iterator: JsValue, mut on_elem
 where
     F: FnMut(&mut H, JsValue) -> Result<(), JsValue>,
 {
-    let next_si = vm.kernel_core().perm_interner().intern("next").0;
-    let done_si = vm.kernel_core().perm_interner().intern("done").0;
-    let value_si = vm.kernel_core().perm_interner().intern("value").0;
+    let next_si = vm.perm_intern("next");
+    let done_si = vm.perm_intern("done");
+    let value_si = vm.perm_intern("value");
     let run: Result<(), JsValue> = (|| {
         loop {
             let iter_obj = unsafe { &*iterator.as_js_object_ptr() };
@@ -2052,7 +2044,7 @@ fn is_set_value(value: JsValue) -> bool {
 }
 
 fn make_map_set_pair<H: VmHost>(vm: &mut H, a: JsValue, b: JsValue) -> JsValue {
-    let array_proto = vm.session().builtin_world().array_proto.as_ptr() as *mut JsObject;
+    let array_proto = vm.builtin_proto(ProtoKind::ArrayProto);
     let pair = vm.alloc_object(JsObject::new_array(EMPTY_SHAPE_ID, JsValue::from_js_object(array_proto), 2));
     // SAFETY: pair 是刚经统一入口分配的数组 JsObject。
     unsafe {
@@ -2176,9 +2168,9 @@ pub fn map_set_iterator_next<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult
         return NativeResult::Err(crate::error::create_type_error(vm, "iterator next called on non-object"));
     }
     let wrapper = unsafe { &mut *this_val.as_js_object_ptr() };
-    let inner_si = vm.kernel_core().perm_interner().intern(INNER_PROP).0;
-    let index_si = vm.kernel_core().perm_interner().intern(INDEX_PROP).0;
-    let mode_si = vm.kernel_core().perm_interner().intern(MODE_PROP).0;
+    let inner_si = vm.perm_intern(INNER_PROP);
+    let index_si = vm.perm_intern(INDEX_PROP);
+    let mode_si = vm.perm_intern(MODE_PROP);
     let inner = match vm.ordinary_get(wrapper, inner_si, this_val) {
         Ok(inner) if !inner.is_undefined() => inner,
         _ => return NativeResult::Err(crate::error::create_type_error(vm, "iterator has no inner collection")),
@@ -2204,9 +2196,9 @@ pub(crate) fn make_collection_iterator<H: VmHost>(
         std::ptr::null_mut()
     };
     let wrapper = vm.alloc_object(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(proto_ptr)));
-    let inner_si = vm.kernel_core().perm_interner().intern(INNER_PROP).0;
-    let index_si = vm.kernel_core().perm_interner().intern(INDEX_PROP).0;
-    let mode_si = vm.kernel_core().perm_interner().intern(MODE_PROP).0;
+    let inner_si = vm.perm_intern(INNER_PROP);
+    let index_si = vm.perm_intern(INDEX_PROP);
+    let mode_si = vm.perm_intern(MODE_PROP);
     let wrapper_obj = unsafe { &mut *wrapper };
     vm.set_or_create_prop_value(wrapper_obj, inner_si, inner);
     vm.set_or_create_prop_value(wrapper_obj, index_si, JsValue::int(0));

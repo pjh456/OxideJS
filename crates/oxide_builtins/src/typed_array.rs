@@ -9,7 +9,7 @@ use crate::array_buffer::{
     buffer_payload, buffer_payload_ptr, default_array_buffer_proto, new_array_buffer, MAX_ARRAY_BUFFER_LENGTH,
 };
 
-use oxide_runtime_api::{NativeResult, VmHost};
+use oxide_runtime_api::{NativeResult, ProtoKind, VmHost};
 
 #[derive(Clone, Copy)]
 pub(crate) struct TypedArrayData {
@@ -58,23 +58,20 @@ fn to_index<H: VmHost>(vm: &mut H, value: JsValue, msg: &str) -> Result<usize, J
 }
 
 pub(crate) fn typed_array_proto_ptr<H: VmHost>(vm: &mut H, kind: TypedArrayKind) -> *mut JsObject {
-    {
-        let session = vm.session();
-        let world = session.builtin_world();
-        match kind {
-            TypedArrayKind::Int8 => world.int8array_proto.as_ptr() as *mut JsObject,
-            TypedArrayKind::Uint8 => world.uint8array_proto.as_ptr() as *mut JsObject,
-            TypedArrayKind::Uint8Clamped => world.uint8clampedarray_proto.as_ptr() as *mut JsObject,
-            TypedArrayKind::Int16 => world.int16array_proto.as_ptr() as *mut JsObject,
-            TypedArrayKind::Uint16 => world.uint16array_proto.as_ptr() as *mut JsObject,
-            TypedArrayKind::Int32 => world.int32array_proto.as_ptr() as *mut JsObject,
-            TypedArrayKind::Uint32 => world.uint32array_proto.as_ptr() as *mut JsObject,
-            TypedArrayKind::Float32 => world.float32array_proto.as_ptr() as *mut JsObject,
-            TypedArrayKind::Float64 => world.float64array_proto.as_ptr() as *mut JsObject,
-            TypedArrayKind::BigInt64 => world.bigint64array_proto.as_ptr() as *mut JsObject,
-            TypedArrayKind::BigUint64 => world.biguint64array_proto.as_ptr() as *mut JsObject,
-        }
-    }
+    let kind = match kind {
+        TypedArrayKind::Int8 => ProtoKind::Int8ArrayProto,
+        TypedArrayKind::Uint8 => ProtoKind::Uint8ArrayProto,
+        TypedArrayKind::Uint8Clamped => ProtoKind::Uint8ClampedArrayProto,
+        TypedArrayKind::Int16 => ProtoKind::Int16ArrayProto,
+        TypedArrayKind::Uint16 => ProtoKind::Uint16ArrayProto,
+        TypedArrayKind::Int32 => ProtoKind::Int32ArrayProto,
+        TypedArrayKind::Uint32 => ProtoKind::Uint32ArrayProto,
+        TypedArrayKind::Float32 => ProtoKind::Float32ArrayProto,
+        TypedArrayKind::Float64 => ProtoKind::Float64ArrayProto,
+        TypedArrayKind::BigInt64 => ProtoKind::BigInt64ArrayProto,
+        TypedArrayKind::BigUint64 => ProtoKind::BigUint64ArrayProto,
+    };
+    vm.builtin_proto(kind)
 }
 
 /// 取指定类型的内建构造器值（`[[TypedArrayName]]` → world 槽），species 默认臂
@@ -95,7 +92,7 @@ fn ta_gpf_proto<H: VmHost>(vm: &mut H, kind: TypedArrayKind) -> Result<JsValue, 
     let nt_ptr = new_target.as_js_object_ptr();
     // SAFETY: is_object 保证指针非空且对象本 session 存活。
     let nt_obj = unsafe { &*nt_ptr };
-    let proto_si = vm.kernel_core().perm_interner().intern("prototype").0;
+    let proto_si = vm.perm_intern("prototype");
     match vm.ordinary_get(nt_obj, proto_si, new_target) {
         Ok(v) => Ok(if v.is_object() { v } else { default_proto }),
         Err(err) => Err(crate::iterator::engine_error(vm, &err)),
@@ -103,24 +100,20 @@ fn ta_gpf_proto<H: VmHost>(vm: &mut H, kind: TypedArrayKind) -> Result<JsValue, 
 }
 
 fn typed_array_ctor_value<H: VmHost>(vm: &mut H, kind: TypedArrayKind) -> JsValue {
-    let ctor = {
-        let session = vm.session();
-        let world = session.builtin_world();
-        match kind {
-            TypedArrayKind::Int8 => world.int8array_constructor.clone(),
-            TypedArrayKind::Uint8 => world.uint8array_constructor.clone(),
-            TypedArrayKind::Uint8Clamped => world.uint8clampedarray_constructor.clone(),
-            TypedArrayKind::Int16 => world.int16array_constructor.clone(),
-            TypedArrayKind::Uint16 => world.uint16array_constructor.clone(),
-            TypedArrayKind::Int32 => world.int32array_constructor.clone(),
-            TypedArrayKind::Uint32 => world.uint32array_constructor.clone(),
-            TypedArrayKind::Float32 => world.float32array_constructor.clone(),
-            TypedArrayKind::Float64 => world.float64array_constructor.clone(),
-            TypedArrayKind::BigInt64 => world.bigint64array_constructor.clone(),
-            TypedArrayKind::BigUint64 => world.biguint64array_constructor.clone(),
-        }
+    let kind = match kind {
+        TypedArrayKind::Int8 => ProtoKind::Int8ArrayConstructor,
+        TypedArrayKind::Uint8 => ProtoKind::Uint8ArrayConstructor,
+        TypedArrayKind::Uint8Clamped => ProtoKind::Uint8ClampedArrayConstructor,
+        TypedArrayKind::Int16 => ProtoKind::Int16ArrayConstructor,
+        TypedArrayKind::Uint16 => ProtoKind::Uint16ArrayConstructor,
+        TypedArrayKind::Int32 => ProtoKind::Int32ArrayConstructor,
+        TypedArrayKind::Uint32 => ProtoKind::Uint32ArrayConstructor,
+        TypedArrayKind::Float32 => ProtoKind::Float32ArrayConstructor,
+        TypedArrayKind::Float64 => ProtoKind::Float64ArrayConstructor,
+        TypedArrayKind::BigInt64 => ProtoKind::BigInt64ArrayConstructor,
+        TypedArrayKind::BigUint64 => ProtoKind::BigUint64ArrayConstructor,
     };
-    JsValue::from_js_object(ctor.as_ptr() as *mut JsObject)
+    JsValue::from_js_object(vm.builtin_proto(kind))
 }
 
 /// 把 TypedArray 实例数据（类型标签 + 视图内部槽）写入指定对象；构造调用与
@@ -402,7 +395,7 @@ pub fn ta_index_gate<H: VmHost>(vm: &H, obj: &JsObject, key_si: u32) -> TaIndexG
     if is_int_key(key_si) {
         return ta_index_gate_int(int_key_value(key_si), length);
     }
-    let Some(key) = vm.kernel_core().perm_interner().lookup(key_si) else {
+    let Some(key) = vm.perm_lookup(key_si) else {
         return TaIndexGate::Ordinary;
     };
     ta_index_gate_from_text(key, length)
@@ -699,8 +692,8 @@ pub fn element_error_text<H: VmHost>(vm: &mut H, err: JsValue) -> String {
     }
     if err.is_object() {
         let obj = unsafe { &*err.as_js_object_ptr() };
-        let name_si = vm.kernel_core().perm_interner().intern("name").0;
-        let message_si = vm.kernel_core().perm_interner().intern("message").0;
+        let name_si = vm.perm_intern("name");
+        let message_si = vm.perm_intern("message");
         let name = vm
             .resolve_property(obj, name_si)
             .and_then(|v| vm.lookup_str(v))
@@ -825,7 +818,7 @@ fn collect_array_like<H: VmHost>(
         return Ok(values);
     }
 
-    let length_si = vm.kernel_core().perm_interner().intern("length").0;
+    let length_si = vm.perm_intern("length");
     let len_val = vm
         .ordinary_get(obj, length_si, value)
         .map_err(|e| crate::iterator::engine_error(vm, &e))?;
@@ -1141,7 +1134,7 @@ fn typed_array_species_create<H: VmHost>(
 ) -> Result<JsValue, JsValue> {
     let o_ptr = o_val.as_js_object_ptr();
     let o_obj = unsafe { &*o_ptr };
-    let ctor_key = vm.kernel_core().perm_interner().intern("constructor").0;
+    let ctor_key = vm.perm_intern("constructor");
     let c = match vm.ordinary_get(o_obj, ctor_key, o_val) {
         Ok(v) => v,
         Err(msg) => return Err(crate::iterator::engine_error(vm, &msg)),
@@ -1371,7 +1364,7 @@ enum SetSourceKind {
 
 /// array-like 源的 `length` 属性读 + ToLength 收敛（NaN/负取 0，上限 2^53-1）。
 fn set_array_like_length<H: VmHost>(vm: &mut H, source: JsValue) -> Result<usize, JsValue> {
-    let si = vm.kernel_core().perm_interner().intern("length").0;
+    let si = vm.perm_intern("length");
     let ptr = source.as_js_object_ptr();
     let len_val = unsafe { vm.ordinary_get(&*ptr, si, source) }.map_err(|e| crate::iterator::engine_error(vm, &e))?;
     let n = oxide_runtime_api::to_number_full(len_val, vm).map_err(|e| crate::iterator::engine_error(vm, &e))?;
@@ -2229,7 +2222,7 @@ pub fn typed_array_copy_within<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResu
 fn invoke_element_to_locale_string<H: VmHost>(vm: &mut H, element: JsValue) -> Result<JsValue, JsValue> {
     let obj_val = oxide_runtime_api::to_object(element, vm).map_err(|e| crate::iterator::engine_error(vm, &e))?;
     let obj = unsafe { &*obj_val.as_js_object_ptr() };
-    let method_si = vm.kernel_core().perm_interner().intern("toLocaleString").0;
+    let method_si = vm.perm_intern("toLocaleString");
     let method = vm
         .ordinary_get(obj, method_si, element)
         .map_err(|e| crate::iterator::engine_error(vm, &e))?;
@@ -2446,7 +2439,7 @@ pub fn typed_array_from<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
                     Err(err) => return NativeResult::Err(crate::error::create_type_error(vm, &err)),
                 };
                 let obj = unsafe { &*obj_val.as_js_object_ptr() };
-                let length_si = vm.kernel_core().perm_interner().intern("length").0;
+                let length_si = vm.perm_intern("length");
                 let len_val = match vm.ordinary_get(obj, length_si, obj_val) {
                     Ok(v) => v,
                     Err(e) => return NativeResult::Err(crate::iterator::engine_error(vm, &e)),
@@ -2604,10 +2597,10 @@ fn ta_decode_base64<H: VmHost>(
 
 /// setFrom* 结果对象 `{ read, written }`：普通对象 + 两数据属性。
 fn ta_read_written_result<H: VmHost>(vm: &mut H, read: usize, written: usize) -> JsValue {
-    let object_proto = vm.session().builtin_world().object_proto.as_ptr() as *mut JsObject;
+    let object_proto = vm.builtin_proto(ProtoKind::ObjectProto);
     let obj = vm.alloc_object(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(object_proto)));
-    let read_si = vm.kernel_core().perm_interner().intern("read").0;
-    let written_si = vm.kernel_core().perm_interner().intern("written").0;
+    let read_si = vm.perm_intern("read");
+    let written_si = vm.perm_intern("written");
     let obj_ref = unsafe { &mut *obj };
     vm.set_or_create_prop_value(obj_ref, read_si, JsValue::int(read as i32));
     vm.set_or_create_prop_value(obj_ref, written_si, JsValue::int(written as i32));

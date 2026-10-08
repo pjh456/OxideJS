@@ -7,7 +7,7 @@ use oxide_types::value::JsValue;
 
 use crate::object::walk_own_keys;
 
-use oxide_runtime_api::{NativeResult, VmHost};
+use oxide_runtime_api::{NativeResult, ProtoKind, VmHost};
 
 /// `JSON.parse(text, reviver)`：解析 JSON 文本为 JS 值（递归下降解析器，
 /// 逐原始值记录精确源文本切片）。提供 reviver 时以后序遍历逐属性调用
@@ -49,7 +49,7 @@ pub fn json_parse<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         if reviver_val.is_object() {
             let rptr = reviver_val.as_js_object_ptr();
             if !rptr.is_null() && unsafe { (*rptr).is_function() } {
-                let empty_si = vm.kernel_core().perm_interner().intern("").0;
+                let empty_si = vm.perm_intern("");
                 let holder = create_wrapper(vm, result);
                 let holder_ptr = holder.as_js_object_ptr();
                 result = match walk_reviver(vm, holder_ptr, empty_si, reviver_val, Some(&parsed)) {
@@ -121,8 +121,8 @@ pub fn json_raw_json<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     // 建 null 原型对象：rawJSON 属性为唯一自身属性，frozen 形态收尾。
     let mut obj = JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null());
     obj.type_tag = JsObject::OBJ_TYPE_RAW_JSON;
-    let raw_si = vm.kernel_core().perm_interner().intern("rawJSON").0;
-    let new_shape = vm.kernel_core().shape_forge().make_shape(obj.shape_id(), raw_si);
+    let raw_si = vm.perm_intern("rawJSON");
+    let new_shape = vm.make_shape(obj.shape_id(), raw_si);
     obj.set_shape_id(new_shape);
     obj.ensure_hash_props().push(text_val);
     let obj_ptr = vm.alloc_object(obj);
@@ -576,13 +576,13 @@ fn walk_reviver<H: VmHost>(
 /// 属性（w/e/c 全 true）——被 reviver 前向替换的值、array/object 节点
 /// 与无节点处一律空 context。
 fn build_context<H: VmHost>(vm: &mut H, val: JsValue, node: Option<&JsonNode>) -> JsValue {
-    let object_proto = vm.session().builtin_world().object_proto.as_ptr() as *mut JsObject;
+    let object_proto = vm.builtin_proto(ProtoKind::ObjectProto);
     let mut obj = JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(object_proto));
     if let Some(n) = node {
         if let Some(src) = n.source.as_ref() {
             if same_value_as(vm, val, n) {
-                let source_si = vm.kernel_core().perm_interner().intern("source").0;
-                let new_shape = vm.kernel_core().shape_forge().make_shape(obj.shape_id(), source_si);
+                let source_si = vm.perm_intern("source");
+                let new_shape = vm.make_shape(obj.shape_id(), source_si);
                 obj.set_shape_id(new_shape);
                 obj.ensure_hash_props().push(vm.new_string(src));
             }
@@ -647,7 +647,7 @@ fn build_js_value<H: VmHost>(vm: &mut H, node: &JsonNode) -> JsValue {
         JsonKind::Number(n) => JsValue::float(*n),
         JsonKind::String(s) => vm.new_string(s),
         JsonKind::Array(items) => {
-            let array_proto = vm.session().builtin_world().array_proto.as_ptr() as *mut JsObject;
+            let array_proto = vm.builtin_proto(ProtoKind::ArrayProto);
             let n = items.len();
             let array_obj =
                 vm.alloc_object(JsObject::new_array(EMPTY_SHAPE_ID, JsValue::from_js_object(array_proto), n));
@@ -670,13 +670,13 @@ fn build_js_value<H: VmHost>(vm: &mut H, node: &JsonNode) -> JsValue {
             }
             unique.sort_by(|a, b| a.0.cmp(b.0));
 
-            let object_proto = vm.session().builtin_world().object_proto.as_ptr() as *mut JsObject;
+            let object_proto = vm.builtin_proto(ProtoKind::ObjectProto);
             let mut obj = JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(object_proto));
             for (key, val) in unique {
                 // 键经字符串规范化：规范数字串（"0"/"5"）映射整数键，与属性访问统一。
                 let si = vm.string_key_si(key);
                 let jsv = build_js_value(vm, val);
-                let new_shape = vm.kernel_core().shape_forge().make_shape(obj.shape_id(), si);
+                let new_shape = vm.make_shape(obj.shape_id(), si);
                 obj.set_shape_id(new_shape);
                 obj.ensure_hash_props().push(jsv);
             }
@@ -687,10 +687,10 @@ fn build_js_value<H: VmHost>(vm: &mut H, node: &JsonNode) -> JsValue {
 }
 
 fn create_wrapper<H: VmHost>(vm: &mut H, value: JsValue) -> JsValue {
-    let object_proto = vm.session().builtin_world().object_proto.as_ptr() as *mut JsObject;
-    let empty_si = vm.kernel_core().perm_interner().intern("").0;
+    let object_proto = vm.builtin_proto(ProtoKind::ObjectProto);
+    let empty_si = vm.perm_intern("");
     let mut obj = JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(object_proto));
-    let new_shape = vm.kernel_core().shape_forge().make_shape(obj.shape_id(), empty_si);
+    let new_shape = vm.make_shape(obj.shape_id(), empty_si);
     obj.set_shape_id(new_shape);
     obj.ensure_hash_props().push(value);
     let obj_ptr = vm.alloc_object(obj);
@@ -764,9 +764,7 @@ fn key_si_to_units<H: VmHost>(vm: &H, si: u32) -> Vec<u16> {
     if is_int_key(si) {
         int_key_value(si).to_string().encode_utf16().collect()
     } else {
-        vm.kernel_core()
-            .perm_interner()
-            .lookup(si)
+        vm.perm_lookup(si)
             .map(oxide_kernel::string_forge::decode_key)
             .unwrap_or_default()
     }
@@ -797,8 +795,8 @@ fn whitelist_element_name<H: VmHost>(vm: &mut H, elem: JsValue) -> Result<Option
     }
 
     // ToPrimitive string hint：toString 优先，valueOf 兜底。
-    let to_string_si = vm.kernel_core().perm_interner().intern("toString").0;
-    let value_of_si = vm.kernel_core().perm_interner().intern("valueOf").0;
+    let to_string_si = vm.perm_intern("toString");
+    let value_of_si = vm.perm_intern("valueOf");
     for m_si in [to_string_si, value_of_si] {
         let m = vm.ordinary_get(obj, m_si, elem).map_err(|msg| {
             vm.take_uncaught_value()
@@ -835,9 +833,9 @@ fn call_to_json<H: VmHost>(vm: &mut H, obj_val: JsValue, key: &[u16]) -> Result<
         }
         p
     } else {
-        vm.session().builtin_world().bigint_proto.as_ptr() as *mut JsObject
+        vm.builtin_proto(ProtoKind::BigIntProto)
     };
-    let tojson_si = vm.kernel_core().perm_interner().intern("toJSON").0;
+    let tojson_si = vm.perm_intern("toJSON");
     // Get 语义查表：访问器形 toJSON 触发 getter（receiver = 原值，BigInt 原语
     // 以自身作 this），getter 异常传播原始抛出值。
     let fn_val = match vm.ordinary_get(unsafe { &*obj_ptr }, tojson_si, obj_val) {

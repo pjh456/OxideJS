@@ -1,8 +1,5 @@
-use std::sync::Arc;
-
 use oxide_kernel::shape_forge::EMPTY_SHAPE_ID;
-use oxide_runtime_api::{to_string_full, NativeResult, VmHost};
-use oxide_types::mem::P;
+use oxide_runtime_api::{to_string_full, NativeResult, ProtoKind, VmHost};
 use oxide_types::object::{JsObject, PropAttributes};
 use oxide_types::value::JsValue;
 
@@ -25,10 +22,8 @@ fn set_own_message<H: VmHost>(host: &mut H, this: *mut JsObject, args: &[u8]) ->
             return NativeResult::Err(create_type_error(host, "Cannot convert value to a string"));
         }
     };
-    let sf = Arc::clone(host.kernel_core().perm_interner());
-    let sh = Arc::clone(host.kernel_core().shape_forge());
-    let si = sf.intern("message").0;
-    let new_shape = sh.make_shape(EMPTY_SHAPE_ID, si);
+    let si = host.perm_intern("message");
+    let new_shape = host.make_shape(EMPTY_SHAPE_ID, si);
     let perm_val = host.new_string(&msg_str);
     unsafe {
         (*this).set_shape_id(new_shape);
@@ -43,20 +38,18 @@ fn set_own_message<H: VmHost>(host: &mut H, this: *mut JsObject, args: &[u8]) ->
 /// 这是引擎内部构造错误的统一入口，供 VM/native 层抛错使用。
 pub fn create_kind_error<H: VmHost>(host: &mut H, kind: &str, msg: &str) -> JsValue {
     let proto_ptr = match kind {
-        "TypeError" => P::as_ptr(&host.session().builtin_world().type_error_proto) as *mut JsObject,
-        "RangeError" => P::as_ptr(&host.session().builtin_world().range_error_proto) as *mut JsObject,
-        "ReferenceError" => P::as_ptr(&host.session().builtin_world().reference_error_proto) as *mut JsObject,
-        "SyntaxError" => P::as_ptr(&host.session().builtin_world().syntax_error_proto) as *mut JsObject,
-        "URIError" => P::as_ptr(&host.session().builtin_world().uri_error_proto) as *mut JsObject,
-        "EvalError" => P::as_ptr(&host.session().builtin_world().eval_error_proto) as *mut JsObject,
-        _ => P::as_ptr(&host.session().builtin_world().error_proto) as *mut JsObject,
+        "TypeError" => host.builtin_proto(ProtoKind::TypeErrorProto),
+        "RangeError" => host.builtin_proto(ProtoKind::RangeErrorProto),
+        "ReferenceError" => host.builtin_proto(ProtoKind::ReferenceErrorProto),
+        "SyntaxError" => host.builtin_proto(ProtoKind::SyntaxErrorProto),
+        "URIError" => host.builtin_proto(ProtoKind::UriErrorProto),
+        "EvalError" => host.builtin_proto(ProtoKind::EvalErrorProto),
+        _ => host.builtin_proto(ProtoKind::ErrorProto),
     };
     let obj = host.alloc_object(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(proto_ptr)));
-    let sf = Arc::clone(host.kernel_core().perm_interner());
-    let sh = Arc::clone(host.kernel_core().shape_forge());
     if !msg.is_empty() {
-        let si_msg = sf.intern("message").0;
-        let shape = sh.make_shape(EMPTY_SHAPE_ID, si_msg);
+        let si_msg = host.perm_intern("message");
+        let shape = host.make_shape(EMPTY_SHAPE_ID, si_msg);
         let msg_val = host.new_string(msg);
         unsafe {
             (*obj).set_shape_id(shape);
@@ -160,7 +153,7 @@ pub fn create_uri_error<H: VmHost>(host: &mut H, msg: &str) -> JsValue {
 }
 
 macro_rules! error_ctor {
-    ($name:ident, $proto_field:ident) => {
+    ($name:ident, $proto_kind:ident) => {
         /// 对应 Error 子类（如 `TypeError`）的构造函数：接收第一个实参作为 message，
         /// 返回携带 Error 家族标签（`[[ErrorData]]` 谓词）的实例。
         ///
@@ -172,7 +165,7 @@ macro_rules! error_ctor {
         pub fn $name<H: VmHost>(host: &mut H, args: &[u8]) -> NativeResult {
             let this_val = host.reg(if args.is_empty() { 0 } else { args[0] });
             let new_target = host.reg(255);
-            let proto_ptr = P::as_ptr(&host.session().builtin_world().$proto_field) as *mut JsObject;
+            let proto_ptr = host.builtin_proto(ProtoKind::$proto_kind);
             let this = if this_val.is_object() && new_target.is_object() {
                 this_val.as_js_object_ptr()
             } else {
@@ -195,21 +188,19 @@ macro_rules! error_ctor {
     };
 }
 
-error_ctor!(error_constructor, error_proto);
-error_ctor!(type_error_constructor, type_error_proto);
-error_ctor!(reference_error_constructor, reference_error_proto);
-error_ctor!(range_error_constructor, range_error_proto);
-error_ctor!(syntax_error_constructor, syntax_error_proto);
-error_ctor!(uri_error_constructor, uri_error_proto);
-error_ctor!(eval_error_constructor, eval_error_proto);
+error_ctor!(error_constructor, ErrorProto);
+error_ctor!(type_error_constructor, TypeErrorProto);
+error_ctor!(reference_error_constructor, ReferenceErrorProto);
+error_ctor!(range_error_constructor, RangeErrorProto);
+error_ctor!(syntax_error_constructor, SyntaxErrorProto);
+error_ctor!(uri_error_constructor, UriErrorProto);
+error_ctor!(eval_error_constructor, EvalErrorProto);
 
 /// 在对象上追加一个非枚举数据属性（writable/configurable=true，enumerable=false），
 /// 与 `CreateNonEnumerableDataPropertyOrThrow` 语义一致。
 fn set_own_data_prop<H: VmHost>(host: &mut H, obj: *mut JsObject, key: &str, val: JsValue) {
-    let sf = Arc::clone(host.kernel_core().perm_interner());
-    let sh = Arc::clone(host.kernel_core().shape_forge());
-    let si = sf.intern(key).0;
-    let new_shape = sh.make_shape(unsafe { (*obj).shape_id() }, si);
+    let si = host.perm_intern(key);
+    let new_shape = host.make_shape(unsafe { (*obj).shape_id() }, si);
     unsafe {
         (*obj).set_shape_id(new_shape);
         let pos = (*obj).push_prop(val);
@@ -229,7 +220,7 @@ pub fn install_error_cause<H: VmHost>(host: &mut H, obj: *mut JsObject, options:
     }
     // SAFETY: is_object 保证指针非空且对象本 session 存活。
     let opts = unsafe { &*options.as_js_object_ptr() };
-    let si = host.kernel_core().perm_interner().intern("cause").0;
+    let si = host.perm_intern("cause");
     if host.resolve_property(opts, si).is_none() {
         return NativeResult::Ok(JsValue::undefined());
     }
@@ -257,7 +248,7 @@ pub fn install_error_cause<H: VmHost>(host: &mut H, obj: *mut JsObject, options:
 pub fn suppressed_error_constructor<H: VmHost>(host: &mut H, args: &[u8]) -> NativeResult {
     let this_val = host.reg(if args.is_empty() { 0 } else { args[0] });
     let new_target = host.reg(255);
-    let proto_ptr = P::as_ptr(&host.session().builtin_world().suppressed_error_proto) as *mut JsObject;
+    let proto_ptr = host.builtin_proto(ProtoKind::SuppressedErrorProto);
     let obj = if this_val.is_object() && new_target.is_object() {
         this_val.as_js_object_ptr()
     } else {
@@ -302,7 +293,7 @@ pub fn suppressed_error_constructor<H: VmHost>(host: &mut H, args: &[u8]) -> Nat
 /// - 错误值/suppressed 值原样存储，不做任何转换；
 /// - 返回对象 proto = suppressed_error_proto，标记 OBJ_TYPE_ERROR。
 pub fn create_suppressed_error<H: VmHost>(host: &mut H, error_val: JsValue, suppressed_val: JsValue) -> JsValue {
-    let proto_ptr = P::as_ptr(&host.session().builtin_world().suppressed_error_proto) as *mut JsObject;
+    let proto_ptr = host.builtin_proto(ProtoKind::SuppressedErrorProto);
     let obj = host.alloc_object(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(proto_ptr)));
     set_own_data_prop(host, obj, "error", error_val);
     set_own_data_prop(host, obj, "suppressed", suppressed_val);
@@ -332,9 +323,8 @@ pub fn error_to_string<H: VmHost>(host: &mut H, args: &[u8]) -> NativeResult {
         return NativeResult::Err(err);
     }
     let obj = unsafe { &*this_val.as_js_object_ptr() };
-    let sf = Arc::clone(host.kernel_core().perm_interner());
-    let si_name = sf.intern("name").0;
-    let si_msg = sf.intern("message").0;
+    let si_name = host.perm_intern("name");
+    let si_msg = host.perm_intern("message");
 
     let name_str = match host.ordinary_get(obj, si_name, this_val) {
         Ok(v) if v.is_undefined() => "Error".to_string(),
@@ -383,9 +373,8 @@ pub fn error_stack_getter<H: VmHost>(host: &mut H, args: &[u8]) -> NativeResult 
     if !obj.is_error_obj() {
         return NativeResult::Ok(JsValue::undefined());
     }
-    let sf = Arc::clone(host.kernel_core().perm_interner());
-    let si_name = sf.intern("name").0;
-    let si_msg = sf.intern("message").0;
+    let si_name = host.perm_intern("name");
+    let si_msg = host.perm_intern("message");
     let n = host
         .resolve_property(obj, si_name)
         .and_then(|v| host.lookup_str(v))
@@ -421,7 +410,7 @@ pub fn error_stack_setter<H: VmHost>(host: &mut H, args: &[u8]) -> NativeResult 
     if !this_val.is_object() {
         return NativeResult::Err(create_type_error(host, "Error.prototype.stack setter called on non-object"));
     }
-    let home = P::as_ptr(&host.session().builtin_world().error_proto) as *mut JsObject;
+    let home = host.builtin_proto(ProtoKind::ErrorProto);
     if std::ptr::eq(this_val.as_js_object_ptr(), home) {
         return NativeResult::Err(create_type_error(host, "cannot assign to read only property of Error prototype"));
     }
@@ -431,7 +420,7 @@ pub fn error_stack_setter<H: VmHost>(host: &mut H, args: &[u8]) -> NativeResult 
     }
     // SAFETY: is_object 保证指针非空且对象本 session 存活；写入路径对象不搬移。
     let this_obj = unsafe { &mut *this_val.as_js_object_ptr() };
-    let si = host.kernel_core().perm_interner().intern("stack").0;
+    let si = host.perm_intern("stack");
     match host.get_own_property_slot(this_obj, si) {
         None => match host.define_data_property(this_obj, si, val, PropAttributes::new(true, true, true)) {
             Ok(()) => NativeResult::Ok(JsValue::undefined()),
@@ -477,9 +466,8 @@ pub fn error_to_json<H: VmHost>(host: &mut H, args: &[u8]) -> NativeResult {
     }
     // SAFETY: is_object 保证指针非空且对象本 session 存活；读取期间不搬移。
     let obj = unsafe { &*this_val.as_js_object_ptr() };
-    let sf = Arc::clone(host.kernel_core().perm_interner());
-    let si_name = sf.intern("name").0;
-    let si_msg = sf.intern("message").0;
+    let si_name = host.perm_intern("name");
+    let si_msg = host.perm_intern("message");
 
     let name_val = match host.ordinary_get(obj, si_name, this_val) {
         Ok(v) => v,
@@ -517,16 +505,15 @@ pub fn error_to_json<H: VmHost>(host: &mut H, args: &[u8]) -> NativeResult {
     }
 
     // 新对象：proto = %Object.prototype%，name/message 为可枚举数据属性。
-    let object_proto = P::as_ptr(&host.session().builtin_world().object_proto) as *mut JsObject;
+    let object_proto = host.builtin_proto(ProtoKind::ObjectProto);
     let ptr = host.alloc_object(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(object_proto)));
     // SAFETY: ptr 由 alloc_object 新建，非空 arena 指针；后续 shape/属性分配不改对象地址，无别名。
     let obj_ref = unsafe { &mut *ptr };
-    let sh = Arc::clone(host.kernel_core().shape_forge());
-    let name_shape = sh.make_shape(EMPTY_SHAPE_ID, si_name);
+    let name_shape = host.make_shape(EMPTY_SHAPE_ID, si_name);
     obj_ref.set_shape_id(name_shape);
     let name_pos = obj_ref.push_prop(host.new_string(&name_str));
     obj_ref.set_data_meta(name_pos, PropAttributes::new(true, true, true));
-    let msg_shape = sh.make_shape(obj_ref.shape_id(), si_msg);
+    let msg_shape = host.make_shape(obj_ref.shape_id(), si_msg);
     obj_ref.set_shape_id(msg_shape);
     let msg_pos = obj_ref.push_prop(host.new_string(&msg_str));
     obj_ref.set_data_meta(msg_pos, PropAttributes::new(true, true, true));

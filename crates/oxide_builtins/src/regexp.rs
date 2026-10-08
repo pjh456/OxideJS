@@ -2,7 +2,7 @@ use oxide_kernel::shape_forge::EMPTY_SHAPE_ID;
 use oxide_types::object::{JsObject, NativeFnPtr};
 use oxide_types::value::JsValue;
 
-use oxide_runtime_api::{NativeResult, VmHost};
+use oxide_runtime_api::{NativeResult, ProtoKind, VmHost};
 
 use crate::string::{make_units_array, MatchText, OwnedText};
 
@@ -20,7 +20,7 @@ pub(crate) fn build_groups_object<H: VmHost>(vm: &mut H, m: &regress::Match, tex
 
     // 遍历所有命名捕获组，按名称设置属性（重复名称取首个已定义的出现）。
     for (name, range) in named {
-        let name_si = vm.kernel_core().perm_interner().intern(name).0;
+        let name_si = vm.perm_intern(name);
         let value = match range {
             Some(r) => vm.new_string_units_owned(text.slice(r.start, r.end).into_owned()),
             None => JsValue::undefined(),
@@ -37,7 +37,7 @@ pub(crate) fn build_groups_object<H: VmHost>(vm: &mut H, m: &regress::Match, tex
 pub(crate) fn build_indices_array<H: VmHost>(vm: &mut H, m: &regress::Match, text: &MatchText) -> JsValue {
     let group_count = m.captures.len();
     let n = 1 + group_count;
-    let proto = vm.session().builtin_world().array_proto.as_ptr() as *mut JsObject;
+    let proto = vm.builtin_proto(ProtoKind::ArrayProto);
     let arr = vm.alloc_object(JsObject::new_array(EMPTY_SHAPE_ID, JsValue::from_js_object(proto), n));
     unsafe {
         let range = m.range();
@@ -52,14 +52,14 @@ pub(crate) fn build_indices_array<H: VmHost>(vm: &mut H, m: &regress::Match, tex
         (*arr).set_prop_count(n);
     }
     let groups_val = build_indices_groups_object(vm, m, text);
-    let groups_si = vm.kernel_core().perm_interner().intern("groups").0;
+    let groups_si = vm.perm_intern("groups");
     vm.set_or_create_prop_value(unsafe { &mut *arr }, groups_si, groups_val);
     JsValue::from_js_object(arr)
 }
 
 /// 单个 [start, end] 码元对数组（数组原型，两个自身元素）。
 fn index_pair<H: VmHost>(vm: &mut H, start: usize, end: usize) -> JsValue {
-    let proto = vm.session().builtin_world().array_proto.as_ptr() as *mut JsObject;
+    let proto = vm.builtin_proto(ProtoKind::ArrayProto);
     let arr = vm.alloc_object(JsObject::new_array(EMPTY_SHAPE_ID, JsValue::from_js_object(proto), 2));
     unsafe {
         (*arr).set_prop_at(0, JsValue::int(start as i32));
@@ -79,7 +79,7 @@ fn build_indices_groups_object<H: VmHost>(vm: &mut H, m: &regress::Match, text: 
     let groups_obj = vm.alloc_object(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()));
     let groups_ptr = unsafe { &mut *groups_obj };
     for (name, range) in named {
-        let name_si = vm.kernel_core().perm_interner().intern(name).0;
+        let name_si = vm.perm_intern(name);
         let value = match range {
             Some(r) => index_pair(vm, text.unit_pos(r.start), text.unit_pos(r.end)),
             None => JsValue::undefined(),
@@ -145,7 +145,7 @@ pub(crate) fn to_length_value<H: VmHost>(vm: &mut H, val: JsValue) -> Result<usi
 fn set_last_index<H: VmHost>(
     vm: &mut H, re_ptr: *mut JsObject, this_val: JsValue, index: usize,
 ) -> Result<(), JsValue> {
-    let li_si = vm.kernel_core().perm_interner().intern("lastIndex").0;
+    let li_si = vm.perm_intern("lastIndex");
     // setter 抛错优先恢复 uncaught 原异常值（与 rx_set_prop 同口径）。
     match vm.ordinary_set(unsafe { &mut *re_ptr }, li_si, JsValue::int(index as i32), this_val, true) {
         Ok(()) => Ok(()),
@@ -158,7 +158,7 @@ fn set_last_index<H: VmHost>(
 pub(crate) fn rx_get_prop<H: VmHost>(
     vm: &mut H, obj: *mut JsObject, name: &str, this_val: JsValue,
 ) -> Result<JsValue, JsValue> {
-    let si = vm.kernel_core().perm_interner().intern(name).0;
+    let si = vm.perm_intern(name);
     match vm.ordinary_get(unsafe { &*obj }, si, this_val) {
         Ok(v) => Ok(v),
         Err(_) => Err(crate::iterator::engine_error(vm, "cannot read property")),
@@ -181,7 +181,7 @@ pub(crate) fn rx_get_index<H: VmHost>(
 pub(crate) fn rx_set_prop<H: VmHost>(
     vm: &mut H, obj: *mut JsObject, name: &str, val: JsValue, this_val: JsValue,
 ) -> Result<(), JsValue> {
-    let si = vm.kernel_core().perm_interner().intern(name).0;
+    let si = vm.perm_intern(name);
     // setter 抛错时原异常值留在 uncaught 槽（优先恢复）；写保护失败无
     // uncaught，经格式化文本的 "TypeError: " 前缀恢复种类。
     match vm.ordinary_set(unsafe { &mut *obj }, si, val, this_val, true) {
@@ -311,7 +311,7 @@ pub(crate) fn get_substitution_units<H: VmHost>(
                 (Some(end), Some(obj)) => {
                     let name_units = &rest[2..2 + end];
                     let name_str = String::from_utf16_lossy(name_units);
-                    let si = vm.kernel_core().perm_interner().intern(&name_str).0;
+                    let si = vm.perm_intern(&name_str);
                     // 真 Get 走完整原型链；getter 抛错恢复原异常上抛。
                     let cap = match vm.ordinary_get(
                         obj,
@@ -372,12 +372,12 @@ pub(crate) fn get_substitution_units<H: VmHost>(
 }
 
 fn set_prop<H: VmHost>(obj: &mut JsObject, name: &str, val: JsValue, vm: &H) {
-    let si = vm.kernel_core().perm_interner().intern(name).0;
+    let si = vm.perm_intern(name);
     set_prop_by_si(obj, si, val, vm);
 }
 
 fn set_prop_by_si<H: VmHost>(obj: &mut JsObject, prop_name_si: u32, val: JsValue, vm: &H) {
-    let shape_id = vm.kernel_core().shape_forge().make_shape(obj.shape_id(), prop_name_si);
+    let shape_id = vm.make_shape(obj.shape_id(), prop_name_si);
     obj.set_shape_id(shape_id);
     obj.ensure_hash_props().push(val);
 }
@@ -490,10 +490,8 @@ pub fn regexp_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         ));
     }
 
-    let mut obj = JsObject::new_empty(
-        EMPTY_SHAPE_ID,
-        JsValue::from_js_object(vm.session().builtin_world().regexp_proto.as_ptr() as *mut JsObject),
-    );
+    let mut obj =
+        JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(vm.builtin_proto(ProtoKind::RegExpProto)));
 
     // regress 用 JS flag 字符串编译：g/i/m/s/y/u/v 原样透传（vendored fork
     // 原生识别 v 标志，u/v 互斥已在上方前置校验）。
@@ -632,7 +630,7 @@ pub(crate) fn rx_search<H: VmHost>(
     // lastIndex 读无条件执行（规范先读后在非 global/sticky 臂丢弃）；
     // 读走 Get + ToLength：完整属性解析，读异常传播原异常。
     let last_index = {
-        let li_si = vm.kernel_core().perm_interner().intern("lastIndex").0;
+        let li_si = vm.perm_intern("lastIndex");
         match vm.ordinary_get(unsafe { &*re_ptr }, li_si, this_val) {
             Ok(val) => to_length_value(vm, val)?,
             Err(_) => {
@@ -746,7 +744,7 @@ pub fn regexp_exec<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let range = m.range();
     let group_count = m.captures.len();
     let n = 1 + group_count;
-    let proto = vm.session().builtin_world().array_proto.as_ptr() as *mut JsObject;
+    let proto = vm.builtin_proto(ProtoKind::ArrayProto);
     let arr = vm.alloc_object(JsObject::new_array(EMPTY_SHAPE_ID, JsValue::from_js_object(proto), n));
     unsafe {
         (*arr).set_prop_at(0, vm.new_string_units_owned(text.slice(range.start, range.end).into_owned()));
@@ -760,19 +758,19 @@ pub fn regexp_exec<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         (*arr).set_prop_count(n);
     }
 
-    let index_si = vm.kernel_core().perm_interner().intern("index").0;
+    let index_si = vm.perm_intern("index");
     vm.set_or_create_prop_value(unsafe { &mut *arr }, index_si, JsValue::int(text.unit_pos(range.start) as i32));
     let input_val = haystack.to_value(vm);
-    let input_si = vm.kernel_core().perm_interner().intern("input").0;
+    let input_si = vm.perm_intern("input");
     vm.set_or_create_prop_value(unsafe { &mut *arr }, input_si, input_val);
     let groups_val = build_groups_object(vm, &m, &text);
-    let groups_si = vm.kernel_core().perm_interner().intern("groups").0;
+    let groups_si = vm.perm_intern("groups");
     vm.set_or_create_prop_value(unsafe { &mut *arr }, groups_si, groups_val);
 
     // d 标志：挂 indices 属性（逐组 [start, end] 码元对 + indices.groups 同构对象）。
     if has_indices {
         let indices_val = build_indices_array(vm, &m, &text);
-        let indices_si = vm.kernel_core().perm_interner().intern("indices").0;
+        let indices_si = vm.perm_intern("indices");
         vm.set_or_create_prop_value(unsafe { &mut *arr }, indices_si, indices_val);
     }
 
@@ -921,7 +919,7 @@ fn regexp_flag_of<H: VmHost>(vm: &mut H, args: &[u8], unit: char) -> NativeResul
     let this_val = vm.reg(args[0]);
     if this_val.is_object() {
         let this_ptr = this_val.as_js_object_ptr();
-        let proto_ptr = vm.session().builtin_world().regexp_proto.as_ptr() as *mut JsObject;
+        let proto_ptr = vm.builtin_proto(ProtoKind::RegExpProto);
         if !this_ptr.is_null() && this_ptr == proto_ptr {
             return NativeResult::Ok(JsValue::undefined());
         }
@@ -1027,7 +1025,7 @@ pub fn regexp_get_source<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     // proto 恒等判定：规范对 prototype 本身返回 "(?:)"（无 [[OriginalFlags]] 槽时）。
     if this_val.is_object() {
         let this_ptr = this_val.as_js_object_ptr();
-        let proto_ptr = vm.session().builtin_world().regexp_proto.as_ptr() as *mut JsObject;
+        let proto_ptr = vm.builtin_proto(ProtoKind::RegExpProto);
         if !this_ptr.is_null() && this_ptr == proto_ptr {
             return NativeResult::Ok(vm.new_string_units_owned(vec!['(' as u16, '?' as u16, ':' as u16, ')' as u16]));
         }
@@ -1684,7 +1682,7 @@ pub fn regexp_symbol_split<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     }
 
     // 物种构造 + y 标志：splitter 是后续唯一匹配面。
-    let regexp_ctor = vm.session().builtin_world().regexp_constructor.as_ptr() as *mut JsObject;
+    let regexp_ctor = vm.builtin_proto(ProtoKind::RegExpConstructor);
     let regexp_ctor_val = JsValue::from_js_object(regexp_ctor);
     let c = match species_constructor(vm, re_ptr, this_val, regexp_ctor_val) {
         Ok(c) => c,
@@ -1841,7 +1839,7 @@ pub fn regexp_symbol_match_all<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResu
         _ => true,
     };
 
-    let regexp_ctor = vm.session().builtin_world().regexp_constructor.as_ptr() as *mut JsObject;
+    let regexp_ctor = vm.builtin_proto(ProtoKind::RegExpConstructor);
     let regexp_ctor_val = JsValue::from_js_object(regexp_ctor);
     let matcher_val = if is_regexp {
         let c = match species_constructor(vm, re_ptr, this_val, regexp_ctor_val) {
@@ -1879,14 +1877,14 @@ pub fn regexp_symbol_match_all<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResu
     }
 
     // 迭代器包装：五槽（input/re/done/global/unicode），next 由原型提供。
-    let regexp_iter_proto = vm.session().builtin_world().regexp_string_iterator_proto.as_ptr() as *mut JsObject;
+    let regexp_iter_proto = vm.builtin_proto(ProtoKind::RegExpStringIteratorProto);
     let wrapper = vm.alloc_object(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(regexp_iter_proto)));
     let wrapper_obj = unsafe { &mut *wrapper };
-    let input_si = vm.kernel_core().perm_interner().intern(crate::string::MALL_INPUT).0;
-    let re_si = vm.kernel_core().perm_interner().intern(crate::string::MALL_RE).0;
-    let done_si = vm.kernel_core().perm_interner().intern(crate::string::MALL_DONE).0;
-    let global_si = vm.kernel_core().perm_interner().intern(crate::string::MALL_GLOBAL).0;
-    let unicode_si = vm.kernel_core().perm_interner().intern(crate::string::MALL_UNICODE).0;
+    let input_si = vm.perm_intern(crate::string::MALL_INPUT);
+    let re_si = vm.perm_intern(crate::string::MALL_RE);
+    let done_si = vm.perm_intern(crate::string::MALL_DONE);
+    let global_si = vm.perm_intern(crate::string::MALL_GLOBAL);
+    let unicode_si = vm.perm_intern(crate::string::MALL_UNICODE);
     // [[Global]]/[[Unicode]] 由 flags 串判定（u/v 均码点口径）；input 属性存
     // 完整转换后的字符串值（单元保真），游标归匹配器 lastIndex（已写入）。
     vm.set_or_create_prop_value(wrapper_obj, input_si, s_val);
