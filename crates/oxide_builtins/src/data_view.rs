@@ -14,10 +14,10 @@ use oxide_runtime_api::{NativeResult, VmHost};
 /// 存构造期 live − offset 初值，活读一律现算 live − offset。
 #[derive(Clone, Copy)]
 pub(crate) struct DataViewData {
-    buffer: JsValue,
-    byte_offset: usize,
-    byte_length: usize,
-    length_is_auto: bool,
+    pub(crate) buffer: JsValue,
+    pub(crate) byte_offset: usize,
+    pub(crate) byte_length: usize,
+    pub(crate) length_is_auto: bool,
 }
 
 macro_rules! native_try {

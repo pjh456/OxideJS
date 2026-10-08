@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use oxide_kernel::shape_forge::EMPTY_SHAPE_ID;
 use oxide_types::object::{JsObject, NativeFnPtr};
 use oxide_types::private_key::{encode_symbol_key, WELL_KNOWN_SYMBOL_SPECIES};
@@ -12,8 +14,9 @@ pub(crate) const MAX_ARRAY_BUFFER_LENGTH: usize = 1 << 30;
 /// ArrayBuffer 载荷：字节缓冲与状态位。`data` 为 `None` 即缓冲区已 detach；
 /// `max_byte_length` 为存储态上限：0 即定长缓冲（resizable 判据），非 0 存
 /// 请求上限 + 1（上限 0 与定长必须可分）；`immutable` 为字节缓冲写守卫标志。
-/// 载荷经 `Box::into_raw` 存于对象 `native_fn` 槽，GC 两自由函数
-/// （size/drop）对整结构体操作。
+/// 载荷经 `Arc::into_raw` 存于对象 `native_fn` 槽（引用计数盒：SharedArrayBuffer
+/// 克隆共享同一载荷，计数归零统一释放），GC 两自由函数（size/drop）对整结构体
+/// 操作。
 #[derive(Clone)]
 pub(crate) struct ArrayBufferPayload {
     pub(crate) data: Option<Vec<u8>>,
@@ -101,7 +104,7 @@ pub(crate) fn new_array_buffer<H: VmHost>(
         max_byte_length,
         immutable: false,
     };
-    let payload_ptr = Box::into_raw(Box::new(payload));
+    let payload_ptr = Arc::into_raw(Arc::new(payload));
     // SAFETY: ArrayBuffer 对象不可调用，故 native_fn 槽复用作不透明载荷盒
     // 指针，与既有 RegExp 存储模式一致。
     obj.set_native_fn(Some(unsafe { NativeFnPtr::from_raw(payload_ptr as *const ()) }));
@@ -138,8 +141,8 @@ pub fn drop_array_buffer_native(obj: &mut JsObject) -> u64 {
     let Some(payload_ptr) = array_buffer_payload_ptr(obj) else {
         return 0;
     };
-    // SAFETY: payload_ptr 非空（array_buffer_native_size 已验证），Box::from_raw 恰好释放一次。
-    let payload = unsafe { Box::from_raw(payload_ptr) };
+    // SAFETY: payload_ptr 非空（array_buffer_native_size 已验证），Arc::from_raw 恰好减引用一次。
+    let payload = unsafe { Arc::from_raw(payload_ptr) };
     drop(payload);
     obj.set_native_fn(None);
     bytes
@@ -163,7 +166,7 @@ pub(crate) fn new_shared_array_buffer<H: VmHost>(
         max_byte_length,
         immutable: false,
     };
-    let payload_ptr = Box::into_raw(Box::new(payload));
+    let payload_ptr = Arc::into_raw(Arc::new(payload));
     // SAFETY: SharedArrayBuffer 对象不可调用，native_fn 槽复用为不透明载荷盒
     // 指针，与 ArrayBuffer 存储模式一致。
     obj.set_native_fn(Some(unsafe { NativeFnPtr::from_raw(payload_ptr as *const ()) }));
@@ -238,8 +241,8 @@ pub fn drop_shared_array_buffer_native(obj: &mut JsObject) -> u64 {
     let Some(payload_ptr) = shared_array_buffer_payload_ptr(obj) else {
         return 0;
     };
-    // SAFETY: payload_ptr 非空（size 已验证），Box::from_raw 恰好释放一次。
-    let payload = unsafe { Box::from_raw(payload_ptr) };
+    // SAFETY: payload_ptr 非空（size 已验证），Arc::from_raw 恰好减引用一次。
+    let payload = unsafe { Arc::from_raw(payload_ptr) };
     drop(payload);
     obj.set_native_fn(None);
     bytes
@@ -1163,7 +1166,7 @@ mod tests {
     fn ab_object_with_payload(payload: ArrayBufferPayload) -> JsObject {
         let mut obj = JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::undefined());
         obj.type_tag = JsObject::OBJ_TYPE_ARRAY_BUFFER;
-        let payload_ptr = Box::into_raw(Box::new(payload));
+        let payload_ptr = Arc::into_raw(Arc::new(payload));
         // SAFETY: 载荷盒形态与 new_array_buffer 的 native_fn 槽存储一致，测试结束前恰好释放一次。
         obj.set_native_fn(Some(unsafe { NativeFnPtr::from_raw(payload_ptr as *const ()) }));
         obj
@@ -1200,7 +1203,7 @@ mod tests {
     fn payload_ptr_brand_guard() {
         // 非 ArrayBuffer 类型标签（PLAIN）对象取载荷指针恒 None。
         let mut obj = JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::undefined());
-        let payload_ptr = Box::into_raw(Box::new(ArrayBufferPayload {
+        let payload_ptr = Arc::into_raw(Arc::new(ArrayBufferPayload {
             data: Some(vec![0u8; 4]),
             max_byte_length: 0,
             immutable: false,
@@ -1209,7 +1212,7 @@ mod tests {
         obj.set_native_fn(Some(unsafe { NativeFnPtr::from_raw(payload_ptr as *const ()) }));
         assert!(array_buffer_payload_ptr(&obj).is_none());
         // SAFETY: 测试构造的盒，恰好释放一次。
-        unsafe { drop(Box::from_raw(payload_ptr)) };
+        unsafe { drop(Arc::from_raw(payload_ptr)) };
     }
 
     /// JS 求值辅助：单脚本编译执行，返回完成值。

@@ -857,6 +857,7 @@ fn bind_global_functions(core: &Arc<KernelCore>, session: &KernelSession, global
                 1,
             ),
             ("eval", oxide_builtins::eval::eval::<crate::vm::Vm> as *const (), 1),
+            ("structuredClone", oxide_builtins::structured_clone::structured_clone_entry::<crate::vm::Vm> as *const (), 1),
         ],
     );
 }

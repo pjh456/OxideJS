@@ -57,7 +57,7 @@ fn to_index<H: VmHost>(vm: &mut H, value: JsValue, msg: &str) -> Result<usize, J
     Ok(integer as usize)
 }
 
-fn typed_array_proto_ptr<H: VmHost>(vm: &mut H, kind: TypedArrayKind) -> *mut JsObject {
+pub(crate) fn typed_array_proto_ptr<H: VmHost>(vm: &mut H, kind: TypedArrayKind) -> *mut JsObject {
     {
         let session = vm.session();
         let world = session.builtin_world();
@@ -144,7 +144,7 @@ fn materialize_typed_array(
     obj.set_native_fn(Some(unsafe { NativeFnPtr::from_raw(data as *const ()) }));
 }
 
-fn create_typed_array<H: VmHost>(
+pub(crate) fn create_typed_array<H: VmHost>(
     vm: &mut H, kind: TypedArrayKind, buffer: JsValue, byte_offset: usize, length: usize, auto_length: bool,
     proto: JsValue,
 ) -> *mut JsObject {

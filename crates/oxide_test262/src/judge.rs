@@ -151,7 +151,7 @@ fn parse_undefined_ident(e: &str) -> Option<&str> {
 
 /// 已知缺失的宿主/标准全局白名单：这些标识符未绑定是能力缺失（skip），
 /// 其它 `is not defined` 是引擎回归或语义缺口（fail）。
-const KNOWN_MISSING_GLOBALS: &[&str] = &["$262", "structuredClone", "queueMicrotask"];
+const KNOWN_MISSING_GLOBALS: &[&str] = &["$262", "queueMicrotask"];
 
 /// 判定编译期错误结果：compile 错误无条件放行 negative；能力未实现形态
 /// （含白名单内的未绑定标识符）→ Skip（`--no-skip` 下为 Fail）；其余一律 Fail。
