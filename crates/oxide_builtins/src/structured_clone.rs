@@ -2,11 +2,14 @@
 //! 逐类型分派、DataCloneError 报错路径。
 //!
 //! 本核以 `VmHost` 为接口、目标 realm 为分配上下文，做同 realm 克隆（源与目标
-//! 同一 realm，符号映射为恒等）。可克隆类型白名单：原始值、数组、plain 对象、
+//! 同一 realm，符号映射为恒等）。可克隆类型白名单：原始值（symbol 除外）、
+//! 装箱对象（Boolean / Number / String 盒与 BigInt 包装）、数组、plain 对象、
 //! Map、Set、Date、RegExp、Error 家族、缓冲区族（ArrayBuffer / SharedArrayBuffer /
-//! TypedArray / DataView）；其余对象（function / DOM / 模块命名空间 / Promise /
-//! 迭代器 / 特型对象）一律 DataCloneError。缓冲区克隆支持 transfer 转移：
-//! 命中转移集合的 ArrayBuffer 移动载荷（源 detach），未命中克隆字节；
+//! TypedArray / DataView）；symbol 原始值、装箱 Symbol 盒及其余对象
+//! （function / DOM / 模块命名空间 / Promise / 迭代器 / 特型对象）一律
+//! DataCloneError。plain 对象与数组只复制可枚举自有属性，克隆侧描述符一律
+//! writable / enumerable / configurable 全真数据属性。缓冲区克隆支持 transfer
+//! 转移：命中转移集合的 ArrayBuffer 移动载荷（源 detach），未命中克隆字节；
 //! SharedArrayBuffer 克隆共享同一载荷盒。
 
 use std::collections::{HashMap, HashSet};
@@ -113,10 +116,10 @@ fn parse_transfer_list<H: VmHost>(vm: &mut H, options: JsValue, state: &mut Clon
     Ok(())
 }
 
-/// 递归克隆一个值：原始值原样拷贝，对象按类型分派。
+/// 递归克隆一个值：symbol 原始值拒绝，其余原始值原样拷贝，对象按类型分派。
 ///
 /// # 步骤
-/// 1. 非对象（原始值）原样返回
+/// 1. 非对象值：symbol 原始值报 DataCloneError，其余原样返回
 /// 2. 对象查 `seen` 映射：命中返回既有克隆（保共享引用与循环）
 /// 3. 按类型分配克隆空壳（不可克隆类型在此报 DataCloneError）
 /// 4. 登记 `seen`（先于递归填充，循环引用不重入）
@@ -124,11 +127,15 @@ fn parse_transfer_list<H: VmHost>(vm: &mut H, options: JsValue, state: &mut Clon
 ///
 /// # 边界与前提
 /// - 源对象由调用方寄存器保活；克隆经 `alloc_object` 入目标 realm 对象表即成根；
-/// - 可克隆白名单：数组 / plain / Map / Set / Date / RegExp / Error / 缓冲区族，
-///   其余对象（function / DOM / 模块命名空间 / Promise / 迭代器 / 特型对象）
-///   报 DataCloneError。
+/// - 可克隆白名单：装箱对象 / 数组 / plain / Map / Set / Date / RegExp / Error /
+///   缓冲区族，其余对象（function / DOM / 模块命名空间 / Promise / 迭代器 /
+///   特型对象）报 DataCloneError。
 fn clone_value<H: VmHost>(vm: &mut H, state: &mut CloneState, value: JsValue) -> Result<JsValue, JsValue> {
     if !value.is_object() {
+        // symbol 原始值不可克隆（规范枚举的拒绝面）。
+        if value.is_symbol() {
+            return Err(data_clone_error(vm, "symbol values are not cloneable"));
+        }
         return Ok(value);
     }
     let src_ptr = value.as_js_object_ptr();
@@ -137,18 +144,14 @@ fn clone_value<H: VmHost>(vm: &mut H, state: &mut CloneState, value: JsValue) ->
     }
     // SAFETY: is_object 保证非空指针；对象在 native 执行期间被根保持、不被回收。
     let src = unsafe { &*src_ptr };
-    let clone_ptr = if src.is_array() {
-        alloc_array_clone(vm, src)
-    } else if src.is_map() {
-        alloc_map_clone(vm)
-    } else if src.is_set() {
-        alloc_set_clone(vm)
+    let clone_ptr = if is_boxed_cloneable(src) {
+        alloc_boxed_clone(vm, src)
+    } else if src.is_symbol_obj() {
+        return Err(data_clone_error(vm, "symbol objects are not cloneable"));
     } else if src.is_date_obj() {
         alloc_date_clone(vm, src)
     } else if src.is_regexp_obj() {
         alloc_regexp_clone(vm, src)?
-    } else if src.is_error_obj() {
-        alloc_error_clone(vm, src)
     } else if src.is_array_buffer_obj() {
         alloc_array_buffer_clone(vm, state, src, src_ptr as *const JsObject)?
     } else if src.is_shared_array_buffer_obj() {
@@ -157,6 +160,14 @@ fn clone_value<H: VmHost>(vm: &mut H, state: &mut CloneState, value: JsValue) ->
         alloc_typed_array_clone(vm, state, src)?
     } else if src.is_data_view_obj() {
         alloc_data_view_clone(vm, state, src)?
+    } else if src.is_map() {
+        alloc_map_clone(vm)
+    } else if src.is_set() {
+        alloc_set_clone(vm)
+    } else if src.is_error_obj() {
+        alloc_error_clone(vm, src)
+    } else if src.is_array() {
+        alloc_array_clone(vm, src)
     } else if is_plain_object(src) {
         alloc_plain_clone(vm)
     } else {
@@ -167,9 +178,9 @@ fn clone_value<H: VmHost>(vm: &mut H, state: &mut CloneState, value: JsValue) ->
     Ok(JsValue::from_js_object(clone_ptr))
 }
 
-/// 填充克隆内容：Map / Set 走各自条目复制，数组 / plain / Error 统一走自有属性复制。
-/// Date / RegExp / 缓冲区族在分配时已填充（时间戳 / 源与标志 / 载荷与视图状态盒），
-/// 此处无操作。
+/// 填充克隆内容：Map / Set 走各自条目复制，Error 走规范字段定义，
+/// 数组 / plain 统一走可枚举自有属性复制。Date / RegExp / 装箱对象 /
+/// 缓冲区族在分配时已填充（时间戳 / 源与标志 / 载荷与视图状态盒），此处无操作。
 fn fill_clone<H: VmHost>(
     vm: &mut H, state: &mut CloneState, src: &JsObject, clone_ptr: *mut JsObject,
 ) -> Result<(), JsValue> {
@@ -183,18 +194,55 @@ fn fill_clone<H: VmHost>(
     if src.is_date_obj() || src.is_regexp_obj() {
         return Ok(());
     }
+    // 装箱对象在分配时已填充载荷（String 盒含物化的字符索引与 length 面），
+    // 不再复制自有属性。
+    if is_boxed_cloneable(src) {
+        return Ok(());
+    }
     // 缓冲区族（AB / SAB / TypedArray / DataView）在分配时已填充载荷与视图
     // 状态盒，无自有属性可复制。
     if is_buffer(src) {
         return Ok(());
     }
+    // Error 臂按规范显式定义 message（非枚举）与 cause（在场时全真数据属性），
+    // 不走可枚举自有属性通用复制。
+    if src.is_error_obj() {
+        return fill_error(vm, state, src, clone_ptr);
+    }
     fill_object_props(vm, state, src, clone_ptr)
 }
 
-/// 复制自有属性（数组元素 / 命名属性 / Symbol 键）到克隆：逐键读源值、克隆、
-/// 按源描述符定义到克隆。
+/// 填充 Error 克隆：按规范 message 定义为非枚举数据属性，cause 在场时定义为
+/// 可枚举数据属性（CreateDataProperty 口径），其余自有属性不复制。
 ///
 /// # 边界与前提
+/// - message / cause 缺失（无对应自有属性）时不定义；
+/// - 值读取经 `read_own_value`（数据属性直读槽值，访问器经 getter）。
+fn fill_error<H: VmHost>(
+    vm: &mut H, state: &mut CloneState, src: &JsObject, clone_ptr: *mut JsObject,
+) -> Result<(), JsValue> {
+    let src_val = JsValue::from_js_object(src as *const JsObject as *mut JsObject);
+    let si_msg = vm.kernel_core().perm_interner().intern("message").0;
+    if let Some(store) = vm.get_own_property_slot(src, si_msg) {
+        let val = read_own_value(vm, src, src_val, si_msg, store)?;
+        let cloned = clone_value(vm, state, val)?;
+        define_on_clone(vm, clone_ptr, si_msg, cloned, PropAttributes::new(true, false, true))?;
+    }
+    let si_cause = vm.kernel_core().perm_interner().intern("cause").0;
+    if let Some(store) = vm.get_own_property_slot(src, si_cause) {
+        let val = read_own_value(vm, src, src_val, si_cause, store)?;
+        let cloned = clone_value(vm, state, val)?;
+        define_on_clone(vm, clone_ptr, si_cause, cloned, PropAttributes::DEFAULT_DATA)?;
+    }
+    Ok(())
+}
+
+/// 复制可枚举自有属性（数组元素 / 命名属性 / Symbol 键）到克隆：逐键读源值、
+/// 克隆，克隆侧一律按 writable / enumerable / configurable 全真数据属性定义
+/// （CreateDataProperty 口径，不保留源描述符标志）。
+///
+/// # 边界与前提
+/// - 不可枚举自有属性不复制（不读值、不触发 getter）；
 /// - 访问器属性经 getter 取值（用户代码窗口），数据属性直读槽值；
 /// - 数组元素键经 `define_data_property` 路由到元素区，命名 / Symbol 键路由到
 ///   命名属性区；数组 hole 在克隆中落为在位 undefined（稀疏数组边界，后续补齐）。
@@ -205,16 +253,20 @@ fn fill_object_props<H: VmHost>(
     let str_keys = walk_own_keys(vm, src);
     let sym_keys = walk_own_symbol_keys(vm, src);
     for (si, store) in str_keys {
+        if !is_enumerable_own(src, store) {
+            continue;
+        }
         let val = read_own_value(vm, src, src_val, si, store)?;
         let cloned = clone_value(vm, state, val)?;
-        let attrs = prop_attributes_of(src, store);
-        define_on_clone(vm, clone_ptr, si, cloned, attrs)?;
+        define_on_clone(vm, clone_ptr, si, cloned, PropAttributes::DEFAULT_DATA)?;
     }
     for (si, store) in sym_keys {
+        if !is_enumerable_own(src, store) {
+            continue;
+        }
         let val = read_own_value(vm, src, src_val, si, store)?;
         let cloned = clone_value(vm, state, val)?;
-        let attrs = prop_attributes_of(src, store);
-        define_on_clone(vm, clone_ptr, si, cloned, attrs)?;
+        define_on_clone(vm, clone_ptr, si, cloned, PropAttributes::DEFAULT_DATA)?;
     }
     Ok(())
 }
@@ -242,11 +294,11 @@ fn read_own_value<H: VmHost>(
     }
 }
 
-/// 取源对象在 store 槽的属性描述符标志；无元数据时回退默认数据描述符。
-fn prop_attributes_of(src: &JsObject, store: u32) -> PropAttributes {
+/// 判定 store 槽的自有属性是否可枚举（无元数据槽时按默认数据属性，可枚举）。
+fn is_enumerable_own(src: &JsObject, store: u32) -> bool {
     src.prop_meta_at(store)
-        .map(|m| m.attributes)
-        .unwrap_or(PropAttributes::DEFAULT_DATA)
+        .map(|m| m.attributes.enumerable())
+        .unwrap_or(true)
 }
 
 /// 把克隆值按描述符定义到克隆对象。
@@ -315,6 +367,20 @@ fn fill_set<H: VmHost>(
 fn alloc_plain_clone<H: VmHost>(vm: &mut H) -> *mut JsObject {
     let proto = vm.session().builtin_world().object_proto.as_ptr() as *mut JsObject;
     vm.alloc_object(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(proto)))
+}
+
+/// 分配装箱对象克隆：同类型标签、同原型、同被包载荷。String 盒复用构造期
+/// 物化路径（字符索引与 length 面与构造器一致），其余装箱类型直写载荷。
+fn alloc_boxed_clone<H: VmHost>(vm: &mut H, src: &JsObject) -> *mut JsObject {
+    let mut obj = JsObject::new_empty(EMPTY_SHAPE_ID, src.proto());
+    obj.type_tag = src.type_tag;
+    let payload = src.boxed_value();
+    if src.is_string_obj() {
+        oxide_runtime_api::materialize_string_box(vm, &mut obj, payload);
+    } else {
+        obj.set_boxed_value(payload);
+    }
+    vm.alloc_object(obj)
 }
 
 /// 分配数组克隆（同长度，元素区初始为在位 undefined）。
@@ -503,6 +569,16 @@ fn is_buffer(src: &JsObject) -> bool {
 /// 特型对象在分派前已被拦截，不会到达本判定）。
 fn is_plain_object(src: &JsObject) -> bool {
     src.type_tag == JsObject::OBJ_TYPE_PLAIN && !src.is_function() && !src.is_module_namespace()
+}
+
+/// 是否可克隆的装箱对象：Boolean / Number / String 盒，或 BigInt 包装
+/// （PLAIN 标签加 `boxed_value` 存 bigint 载荷）。非装箱对象的 `boxed_value`
+/// 恒为 undefined，BigInt 包装判定不会误命中普通 plain 对象。
+fn is_boxed_cloneable(src: &JsObject) -> bool {
+    src.is_boolean_obj()
+        || src.is_number_obj()
+        || src.is_string_obj()
+        || (src.type_tag == JsObject::OBJ_TYPE_PLAIN && src.boxed_value().is_bigint())
 }
 
 /// 构造 DataCloneError 对象（统一报错入口）。
@@ -862,5 +938,157 @@ mod tests {
         assert!(e.is_object());
         let err = unsafe { &*e.as_js_object_ptr() };
         assert!(err.is_error_obj());
+    }
+
+    #[test]
+    fn clone_symbol_primitive_data_clone_error() {
+        let (mut vm, v) = eval("Symbol('x')").unwrap();
+        let e = clone(&mut vm, v).unwrap_err();
+        let err = unsafe { &*e.as_js_object_ptr() };
+        assert!(err.is_error_obj());
+    }
+
+    #[test]
+    fn clone_symbol_box_data_clone_error() {
+        let (mut vm, v) = eval("Object(Symbol('x'))").unwrap();
+        let e = clone(&mut vm, v).unwrap_err();
+        let err = unsafe { &*e.as_js_object_ptr() };
+        assert!(err.is_error_obj());
+    }
+
+    #[test]
+    fn clone_boolean_box() {
+        let (mut vm, v) = eval("new Boolean(true)").unwrap();
+        let c = clone(&mut vm, v).unwrap();
+        let cl = unsafe { &*c.as_js_object_ptr() };
+        assert!(cl.is_boolean_obj());
+        assert!(!std::ptr::eq(v.as_js_object_ptr(), c.as_js_object_ptr()), "克隆应为新对象");
+        assert_eq!(cl.boxed_value(), JsValue::bool(true));
+    }
+
+    #[test]
+    fn clone_number_box() {
+        let (mut vm, v) = eval("new Number(42)").unwrap();
+        let c = clone(&mut vm, v).unwrap();
+        let cl = unsafe { &*c.as_js_object_ptr() };
+        assert!(cl.is_number_obj());
+        assert_eq!(cl.boxed_value(), JsValue::int(42));
+    }
+
+    #[test]
+    fn clone_string_box() {
+        let (mut vm, v) = eval("new String('hi')").unwrap();
+        let c = clone(&mut vm, v).unwrap();
+        let cl = unsafe { &*c.as_js_object_ptr() };
+        assert!(cl.is_string_obj());
+        assert_eq!(vm.lookup_str(cl.boxed_value()).unwrap(), "hi");
+        // 字符索引与 length 面已物化（与构造器一致；字符索引为整数键，按物理槽位读）。
+        assert_eq!(obj_prop(&vm, cl, "length"), JsValue::int(2));
+        assert_eq!(vm.lookup_str(cl.get_prop_at(0)).unwrap(), "h");
+        assert_eq!(vm.lookup_str(cl.get_prop_at(1)).unwrap(), "i");
+    }
+
+    #[test]
+    fn clone_bigint_wrapper() {
+        let (mut vm, v) = eval("Object(10n)").unwrap();
+        let src = unsafe { &*v.as_js_object_ptr() };
+        let c = clone(&mut vm, v).unwrap();
+        let cl = unsafe { &*c.as_js_object_ptr() };
+        // BigInt 包装是 PLAIN 标签加大整数载荷，克隆保标签与载荷。
+        assert_eq!(cl.type_tag, JsObject::OBJ_TYPE_PLAIN);
+        assert!(cl.boxed_value().is_bigint());
+        assert!(oxide_runtime_api::same_value_zero(cl.boxed_value(), src.boxed_value()));
+    }
+
+    #[test]
+    fn clone_class_instance() {
+        let (mut vm, v) = eval("class C { constructor() { this.x = 1; } } new C()").unwrap();
+        let c = clone(&mut vm, v).unwrap();
+        let cl = unsafe { &*c.as_js_object_ptr() };
+        // 克隆是 plain 对象：原型链丢弃，回落 Object 原型，自有属性带过。
+        assert_eq!(cl.type_tag, JsObject::OBJ_TYPE_PLAIN);
+        let object_proto = vm.session().builtin_world().object_proto.as_ptr() as *const u8;
+        assert!(std::ptr::eq(cl.proto().as_ptr(), object_proto));
+        assert_eq!(obj_prop(&vm, cl, "x"), JsValue::int(1));
+    }
+
+    #[test]
+    fn clone_null_proto_object() {
+        let (mut vm, v) = eval("Object.create(null)").unwrap();
+        let c = clone(&mut vm, v).unwrap();
+        let cl = unsafe { &*c.as_js_object_ptr() };
+        assert_eq!(cl.type_tag, JsObject::OBJ_TYPE_PLAIN);
+    }
+
+    #[test]
+    fn clone_weak_map_data_clone_error() {
+        let (mut vm, v) = eval("var w = new WeakMap(); var k = {}; w.set(k, 1); w").unwrap();
+        let e = clone(&mut vm, v).unwrap_err();
+        let err = unsafe { &*e.as_js_object_ptr() };
+        assert!(err.is_error_obj());
+    }
+
+    #[test]
+    fn clone_generator_data_clone_error() {
+        let (mut vm, v) = eval("function* g() { yield 1; } g()").unwrap();
+        let e = clone(&mut vm, v).unwrap_err();
+        let err = unsafe { &*e.as_js_object_ptr() };
+        assert!(err.is_error_obj());
+    }
+
+    #[test]
+    fn clone_frozen_plain_object_flattens_descriptors() {
+        let (mut vm, v) = eval("var o = {a: 1}; Object.freeze(o); o").unwrap();
+        let c = clone(&mut vm, v).unwrap();
+        let cl = unsafe { &*c.as_js_object_ptr() };
+        let si = vm.kernel_core().perm_interner().intern("a").0;
+        let store = vm.get_own_property_slot(cl, si).unwrap();
+        let meta = cl.prop_meta_at(store).unwrap();
+        assert_eq!(meta.attributes, PropAttributes::DEFAULT_DATA, "克隆侧描述符应 w/e/c 全真");
+        assert_eq!(cl.get_prop_at(store), JsValue::int(1));
+    }
+
+    #[test]
+    fn clone_skips_non_enumerable_own_property() {
+        let (mut vm, v) =
+            eval("var o = {a: 1}; Object.defineProperty(o, 'b', {value: 2, enumerable: false}); o").unwrap();
+        let c = clone(&mut vm, v).unwrap();
+        let cl = unsafe { &*c.as_js_object_ptr() };
+        assert_eq!(obj_prop(&vm, cl, "a"), JsValue::int(1));
+        let si_b = vm.kernel_core().perm_interner().intern("b").0;
+        assert!(vm.get_own_property_slot(cl, si_b).is_none(), "不可枚举自有属性不应复制");
+    }
+
+    #[test]
+    fn clone_enumerable_symbol_key() {
+        let (mut vm, v) = eval("var s = Symbol('k'); var o = {}; o[s] = 7; o").unwrap();
+        let c = clone(&mut vm, v).unwrap();
+        let cl = unsafe { &*c.as_js_object_ptr() };
+        let sym_keys = crate::object::walk_own_symbol_keys(&vm, cl);
+        assert_eq!(sym_keys.len(), 1);
+        let (_, store) = sym_keys[0];
+        assert_eq!(cl.get_prop_at(store), JsValue::int(7));
+    }
+
+    #[test]
+    fn clone_error_cause_flattened_to_data_property() {
+        let (mut vm, v) = eval("var e = new Error('boom'); e.cause = {x: 1}; e").unwrap();
+        let c = clone(&mut vm, v).unwrap();
+        let cl = unsafe { &*c.as_js_object_ptr() };
+        let si_cause = vm.kernel_core().perm_interner().intern("cause").0;
+        let store = vm.get_own_property_slot(cl, si_cause).unwrap();
+        let meta = cl.prop_meta_at(store).unwrap();
+        assert_eq!(meta.attributes, PropAttributes::DEFAULT_DATA, "克隆侧 cause 应全真数据属性");
+    }
+
+    #[test]
+    fn clone_error_subclass_instance() {
+        let (mut vm, v) = eval("class E extends Error {} var e = new E('msg'); e").unwrap();
+        let c = clone(&mut vm, v).unwrap();
+        let cl = unsafe { &*c.as_js_object_ptr() };
+        // 引擎给 Error 子类实例打 Error 家族标签，克隆走 Error 臂（同原型、message 带过）。
+        assert!(cl.is_error_obj());
+        assert!(std::ptr::eq(unsafe { &*v.as_js_object_ptr() }.proto().as_ptr(), cl.proto().as_ptr()));
+        assert_eq!(vm.lookup_str(obj_prop(&vm, cl, "message")).unwrap(), "msg");
     }
 }
