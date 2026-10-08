@@ -33,7 +33,7 @@ impl Emitter {
             .collect();
 
         // 容量提示按单元数口径（键文本经物化解码还原单元序列）。
-        let total_len_hint: usize = quasi_keys.iter().map(|k| oxide_kernel::string_forge::decode_key(k).len()).sum();
+        let total_len_hint: usize = quasi_keys.iter().map(|k| oxide_types::string_forge::decode_key(k).len()).sum();
 
         let mut parts = Vec::with_capacity(quasi_const_idxs.len() * 2);
         let mut expr_iter = expr_regs.iter();

@@ -2,10 +2,10 @@ use std::hash::{Hash, Hasher};
 use std::sync::{OnceLock, RwLock};
 
 use dashmap::DashMap;
-use oxide_types::object::JsString;
 use rustc_hash::FxHasher;
 
-use crate::{kernel_debug, kernel_trace};
+use crate::object::JsString;
+use crate::{types_debug, types_trace};
 
 /// 完整 64 位内容哈希。interner 的 hash→候选表碰撞风险可忽略。
 fn hash64(s: &str) -> u64 {
@@ -289,7 +289,7 @@ impl PermInterner {
             let entries = self.entries.read().unwrap();
             for &id in candidates.iter() {
                 if entries[id as usize].data == s {
-                    kernel_trace!("PermInterner intern hit id={}", id);
+                    types_trace!("PermInterner intern hit id={}", id);
                     return (id, hash);
                 }
             }
@@ -310,9 +310,9 @@ impl PermInterner {
         let entry_count = entries.len();
         drop(entries);
         self.hash_map.entry(hash).or_default().push(id);
-        kernel_debug!("PermInterner intern new id={} len={}", id, s.len());
+        types_debug!("PermInterner intern new id={} len={}", id, s.len());
         if entry_count % 1000 == 0 {
-            kernel_debug!("PermInterner stats: {} strings", entry_count);
+            types_debug!("PermInterner stats: {} strings", entry_count);
         }
         (id, hash)
     }

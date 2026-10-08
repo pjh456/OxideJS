@@ -176,7 +176,7 @@ pub struct CompileCtx {
     /// 依赖模块规范路径（按 import/export source 字符串索引）：再导出来源身份用。
     pub(crate) module_dep_paths: HashMap<String, String>,
     /// 非自导入的导入局部名 → (依赖模块规范路径, 导入名)。命名空间导入的导入名为
-    /// `oxide_kernel::MODULE_NAMESPACE_BINDING`；再导出据此重分类为间接导出。
+    /// `oxide_types::MODULE_NAMESPACE_BINDING`；再导出据此重分类为间接导出。
     pub(crate) module_import_origins: HashMap<String, (String, String)>,
     /// 依赖 source 字符串 → 依赖模块是否含可重赋导出（`compile_js_dep` 回传；
     /// Json/Text 数据模块恒 false）。导入方据此把命名/默认导入登记为活读。

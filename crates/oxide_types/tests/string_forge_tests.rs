@@ -1,4 +1,4 @@
-use oxide_kernel::string_forge::{
+use oxide_types::string_forge::{
     decode_key, encode_key, single_char_ptr, small_int_ptr, source_escape, source_escape_to_key, typeof_string_ptr,
     PermInterner,
 };

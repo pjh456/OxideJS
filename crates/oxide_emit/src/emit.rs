@@ -24,7 +24,7 @@ pub use oxide_parser::{AssignmentOperator, BinaryOperator, Expression, Statement
 
 /// 编译入口。方法按语法域组织在 `impl Emitter` 中。
 pub struct Emitter {
-    /// 源码是否为 `oxide_kernel::string_forge::source_escape` 产物
+    /// 源码是否为 `oxide_types::string_forge::source_escape` 产物
     /// （eval/Function 动态编译）：源文本内的孤立 surrogate 单元 / FFFD 以
     /// `\uXXXX` 转义文本承载（oxc 不可见裸单元——Rust str 无孤立 surrogate，
     /// 转义文本是唯一注入形态），反斜杠原样透传。正则字面量的源文本切片据此

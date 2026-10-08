@@ -96,7 +96,7 @@ impl Emitter {
                 // 转义文本还原为池键 marker 形态（物化还原原始单元，
                 // `.source` 按原始源返回），用户转义文本逐字透传。
                 let pattern_key = if ctx.source_encoded {
-                    oxide_kernel::string_forge::source_escape_to_key(&pattern)
+                    oxide_types::string_forge::source_escape_to_key(&pattern)
                 } else {
                     crate::shared::string_pool::pool_key_plain(&pattern)
                 };

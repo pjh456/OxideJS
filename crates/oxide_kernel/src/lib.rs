@@ -17,15 +17,10 @@ pub mod kernel_log;
 pub mod prop_forge;
 /// hidden class（shape）共享存储：把对象结构映射为整数 id。
 pub mod shape_forge;
-/// 永久字符串 intern 表：属性名/方法名稳定 id 化。
-pub mod string_forge;
 
 /// kernel 对外的三个核心类型：配置、共享核心、会话。
 pub use kernel::{KernelConfig, KernelCore, KernelSession};
-
-/// 模块命名空间再导出的绑定身份哨兵。
-///
-/// `export * as ns from mod` 与 `import * as ns from mod; export { ns }` 两路
-/// 转发的是同一个命名空间对象，来源身份须用同一绑定名才能判为同一绑定；该字面量
-/// 含 NUL，不可能与任何静态导出名相同。编译器与运行时共享此常量，禁止另写字面量。
-pub const MODULE_NAMESPACE_BINDING: &str = "\u{0}namespace";
+/// 永久字符串 intern 表与键编码（本体在 `oxide_types`，此处再导出保持既有路径有效）。
+pub use oxide_types::string_forge;
+/// 模块命名空间再导出的绑定身份哨兵（本体在 `oxide_types`，此处再导出）。
+pub use oxide_types::MODULE_NAMESPACE_BINDING;

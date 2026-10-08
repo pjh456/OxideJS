@@ -19,7 +19,7 @@ use oxide_bytecode::opcode::OpCode;
 use oxide_ir::inst::Inst;
 use oxide_ir::operand::Operand;
 use oxide_ir::{IRFunction, ParamLayout};
-use oxide_kernel::MODULE_NAMESPACE_BINDING;
+use oxide_types::MODULE_NAMESPACE_BINDING;
 use oxide_parser::{
     BindingPattern, Declaration, ExportDefaultDeclarationKind, Expression, ImportAttributeKey,
     ImportDeclarationSpecifier, ModuleExportName, Statement, VariableDeclarationKind, WithClause,

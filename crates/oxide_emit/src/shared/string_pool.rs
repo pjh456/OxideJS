@@ -1,4 +1,4 @@
-//! 常量池字符串键编码：池统一存无标志键编码（`oxide_kernel::string_forge::encode_key`
+//! 常量池字符串键编码：池统一存无标志键编码（`oxide_types::string_forge::encode_key`
 //! 语义），物化侧（perm_string → `decode_key`）是其精确逆变换。
 //!
 //! 两类来源文本：
@@ -8,8 +8,8 @@
 //!   须逃逸编码防裸 FFFD 与 surrogate marker 碰撞；
 //! - 普通文本（标识符 / 数字 / 源文本）：非 FFFD 恒等，真实 FFFD 逃逸为 FFFD+"fffd"。
 
-use oxide_kernel::string_forge::encode_key;
 use oxide_parser::PropertyKey;
+use oxide_types::string_forge::encode_key;
 
 /// 普通文本 → 池键：真实 FFFD 逃逸为 FFFD+"fffd"，其余逐单元恒等。
 pub(crate) fn pool_key_plain(text: &str) -> String {

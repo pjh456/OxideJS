@@ -81,7 +81,7 @@ pub trait VmHost {
     /// 本次 `&self` 借用（返回值即时消费即可）。
     fn single_char(&self, ch: char) -> Option<JsValue> {
         if ch.is_ascii() {
-            Some(JsValue::string(oxide_kernel::string_forge::single_char_ptr(ch as u8)))
+            Some(JsValue::string(oxide_types::string_forge::single_char_ptr(ch as u8)))
         } else {
             None
         }
@@ -94,7 +94,7 @@ pub trait VmHost {
     /// 短路），非 ASCII 返回 `None` 由调用方回落单元创建。
     fn single_unit(&self, u: u16) -> Option<JsValue> {
         if u < 0x80 {
-            Some(JsValue::string(oxide_kernel::string_forge::single_char_ptr(u as u8)))
+            Some(JsValue::string(oxide_types::string_forge::single_char_ptr(u as u8)))
         } else {
             None
         }
