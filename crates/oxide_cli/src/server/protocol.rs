@@ -350,8 +350,13 @@ impl<R: BufRead> FrameReader<R> {
             }
 
             // 从流读一块追加到余量缓冲。
+            // 信号中断（EINTR）不视为错误：重试读，保持读循环不变式。
             let mut chunk = [0u8; 4096];
-            let n = self.inner.read(&mut chunk)?;
+            let n = match self.inner.read(&mut chunk) {
+                Ok(n) => n,
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(e) => return Err(e),
+            };
             if n == 0 {
                 // EOF：余量缓冲的残行原样交付（可能为空）。
                 let line = std::mem::take(&mut self.pending);
