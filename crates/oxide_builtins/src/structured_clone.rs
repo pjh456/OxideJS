@@ -376,9 +376,7 @@ fn read_own_value<H: VmHost>(
 
 /// 判定 store 槽的自有属性是否可枚举（无元数据槽时按默认数据属性，可枚举）。
 fn is_enumerable_own(src: &JsObject, store: u32) -> bool {
-    src.prop_meta_at(store)
-        .map(|m| m.attributes.enumerable())
-        .unwrap_or(true)
+    src.prop_meta_at(store).map(|m| m.attributes.enumerable()).unwrap_or(true)
 }
 
 /// 把克隆值按描述符定义到克隆对象。
@@ -590,7 +588,11 @@ fn alloc_buffer_object<H: VmHost>(
 ) -> *mut JsObject {
     let mut obj = JsObject::new_empty(EMPTY_SHAPE_ID, proto);
     obj.type_tag = JsObject::OBJ_TYPE_ARRAY_BUFFER;
-    let payload = crate::array_buffer::ArrayBufferPayload { data, max_byte_length, immutable };
+    let payload = crate::array_buffer::ArrayBufferPayload {
+        data,
+        max_byte_length,
+        immutable,
+    };
     let payload_ptr = Arc::into_raw(Arc::new(payload));
     // SAFETY: ArrayBuffer 对象不可调用，native_fn 槽复用为不透明载荷盒指针，
     // 与 new_array_buffer 的存储形态一致。
@@ -630,8 +632,15 @@ fn alloc_typed_array_clone<H: VmHost>(
     let data = unsafe { *data_ptr };
     let cloned_buffer = clone_value(vm, state, data.buffer)?;
     let proto = JsValue::from_js_object(crate::typed_array::typed_array_proto_ptr(vm, data.kind));
-    let clone_ptr =
-        crate::typed_array::create_typed_array(vm, data.kind, cloned_buffer, data.byte_offset, data.length, data.auto_length, proto);
+    let clone_ptr = crate::typed_array::create_typed_array(
+        vm,
+        data.kind,
+        cloned_buffer,
+        data.byte_offset,
+        data.length,
+        data.auto_length,
+        proto,
+    );
     Ok(clone_ptr)
 }
 
@@ -900,7 +909,10 @@ mod tests {
 
     /// 读 TypedArray 视图状态盒（Copy）。
     fn ta_data(ta: &JsObject) -> crate::typed_array::TypedArrayData {
-        let ptr = ta.native_fn().map(|p| p.as_ptr() as *const crate::typed_array::TypedArrayData).unwrap();
+        let ptr = ta
+            .native_fn()
+            .map(|p| p.as_ptr() as *const crate::typed_array::TypedArrayData)
+            .unwrap();
         // SAFETY: ptr 经对象类型标签校验为存活状态盒。
         unsafe { *ptr }
     }
@@ -920,7 +932,8 @@ mod tests {
     #[test]
     fn clone_arraybuffer_transfer() {
         let (mut vm, v) =
-            eval("var ab = new Uint8Array([9, 8, 7]).buffer; var opts = {transfer: [ab]}; ({ab: ab, opts: opts})").unwrap();
+            eval("var ab = new Uint8Array([9, 8, 7]).buffer; var opts = {transfer: [ab]}; ({ab: ab, opts: opts})")
+                .unwrap();
         let holder = unsafe { &*v.as_js_object_ptr() };
         let si_ab = vm.kernel_core().perm_interner().intern("ab").0;
         let si_opts = vm.kernel_core().perm_interner().intern("opts").0;
@@ -942,7 +955,10 @@ mod tests {
         assert!(cl.is_typed_array_obj());
         let data = ta_data(cl);
         let src_data = ta_data(unsafe { &*v.as_js_object_ptr() });
-        assert!(!std::ptr::eq(data.buffer.as_js_object_ptr(), src_data.buffer.as_js_object_ptr()), "克隆缓冲应为新对象");
+        assert!(
+            !std::ptr::eq(data.buffer.as_js_object_ptr(), src_data.buffer.as_js_object_ptr()),
+            "克隆缓冲应为新对象"
+        );
         assert_eq!(data.length, 3);
         assert_eq!(data.byte_offset, 0);
         let buf = unsafe { &*data.buffer.as_js_object_ptr() };
@@ -952,7 +968,8 @@ mod tests {
     #[test]
     fn clone_typed_array_with_transfer() {
         let (mut vm, v) =
-            eval("var ta = new Uint8Array([1, 2, 3]); var opts = {transfer: [ta.buffer]}; ({ta: ta, opts: opts})").unwrap();
+            eval("var ta = new Uint8Array([1, 2, 3]); var opts = {transfer: [ta.buffer]}; ({ta: ta, opts: opts})")
+                .unwrap();
         let holder = unsafe { &*v.as_js_object_ptr() };
         let si_ta = vm.kernel_core().perm_interner().intern("ta").0;
         let si_opts = vm.kernel_core().perm_interner().intern("opts").0;
@@ -976,7 +993,10 @@ mod tests {
         let c = clone(&mut vm, v).unwrap();
         let cl = unsafe { &*c.as_js_object_ptr() };
         assert!(cl.is_data_view_obj());
-        let data_ptr = cl.native_fn().map(|p| p.as_ptr() as *const crate::data_view::DataViewData).unwrap();
+        let data_ptr = cl
+            .native_fn()
+            .map(|p| p.as_ptr() as *const crate::data_view::DataViewData)
+            .unwrap();
         // SAFETY: data_ptr 经对象类型标签校验为存活状态盒。
         let data = unsafe { *data_ptr };
         assert_eq!(data.byte_length, 4);
@@ -992,7 +1012,8 @@ mod tests {
         let cl = unsafe { &*c.as_js_object_ptr() };
         assert!(cl.is_shared_array_buffer_obj());
         // 两对象共享同一载荷盒（克隆侧写入对源侧可见）。
-        let src_payload = crate::array_buffer::shared_array_buffer_payload_ptr(unsafe { &*v.as_js_object_ptr() }).unwrap();
+        let src_payload =
+            crate::array_buffer::shared_array_buffer_payload_ptr(unsafe { &*v.as_js_object_ptr() }).unwrap();
         let cl_payload = crate::array_buffer::shared_array_buffer_payload_ptr(cl).unwrap();
         assert!(std::ptr::eq(src_payload, cl_payload), "克隆应共享同一载荷");
         // SAFETY: 载荷盒存活。

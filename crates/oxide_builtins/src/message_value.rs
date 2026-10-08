@@ -22,9 +22,7 @@ use std::sync::Arc;
 use oxide_kernel::shape_forge::EMPTY_SHAPE_ID;
 use oxide_types::mem::P;
 use oxide_types::object::{JsObject, NativeFnPtr, PropAttributes};
-use oxide_types::private_key::{
-    decode_symbol_key, int_key_value, is_int_key, WELL_KNOWN_SYMBOL_COUNT,
-};
+use oxide_types::private_key::{decode_symbol_key, int_key_value, is_int_key, WELL_KNOWN_SYMBOL_COUNT};
 use oxide_types::value::JsValue;
 
 use oxide_runtime_api::{to_string_full, VmHost};
@@ -58,7 +56,10 @@ pub enum MessageValue {
     Map(Vec<(MessageValue, MessageValue)>),
     Set(Vec<MessageValue>),
     Date(f64),
-    RegExp { source: String, flags: String },
+    RegExp {
+        source: String,
+        flags: String,
+    },
     Error {
         name: String,
         message: Option<String>,
@@ -66,7 +67,10 @@ pub enum MessageValue {
     },
     /// 跨 realm 符号：`well_known` 为 well-known 局部下标（0..14），
     /// `description` 为用户符号描述。
-    Symbol { well_known: Option<u32>, description: Option<String> },
+    Symbol {
+        well_known: Option<u32>,
+        description: Option<String>,
+    },
 }
 
 /// detach 状态：`on_stack` 记录正在 detach 中的源对象指针（递归栈），用于
@@ -98,9 +102,7 @@ impl DetachState {
 /// # 返回值
 /// 成功 `Ok(MessageValue)`，失败 `Err(DataCloneError)`。
 pub fn detach_message<H: VmHost>(
-    vm: &mut H,
-    value: JsValue,
-    transfer: &HashSet<*const JsObject>,
+    vm: &mut H, value: JsValue, transfer: &HashSet<*const JsObject>,
 ) -> Result<MessageValue, JsValue> {
     let mut state = DetachState::new();
     detach_value(vm, &mut state, value, transfer)
@@ -108,10 +110,7 @@ pub fn detach_message<H: VmHost>(
 
 /// 递归 detach 一个值：非对象走原始值分派，对象先查循环再按类型分派。
 fn detach_value<H: VmHost>(
-    vm: &mut H,
-    state: &mut DetachState,
-    value: JsValue,
-    transfer: &HashSet<*const JsObject>,
+    vm: &mut H, state: &mut DetachState, value: JsValue, transfer: &HashSet<*const JsObject>,
 ) -> Result<MessageValue, JsValue> {
     if !value.is_object() {
         return detach_primitive(vm, value);
@@ -162,7 +161,10 @@ fn detach_primitive<H: VmHost>(vm: &mut H, value: JsValue) -> Result<MessageValu
 fn detach_symbol<H: VmHost>(vm: &mut H, value: JsValue) -> MessageValue {
     let local_index = value.as_symbol_local_index();
     if local_index < WELL_KNOWN_SYMBOL_COUNT {
-        MessageValue::Symbol { well_known: Some(local_index), description: None }
+        MessageValue::Symbol {
+            well_known: Some(local_index),
+            description: None,
+        }
     } else {
         let description = vm.symbol_description(local_index);
         MessageValue::Symbol { well_known: None, description }
@@ -171,10 +173,7 @@ fn detach_symbol<H: VmHost>(vm: &mut H, value: JsValue) -> MessageValue {
 
 /// 对象值按类型分派：装箱解箱、缓冲区、容器递归、Date/RegExp/Error 专用。
 fn detach_object<H: VmHost>(
-    vm: &mut H,
-    state: &mut DetachState,
-    value: JsValue,
-    transfer: &HashSet<*const JsObject>,
+    vm: &mut H, state: &mut DetachState, value: JsValue, transfer: &HashSet<*const JsObject>,
 ) -> Result<MessageValue, JsValue> {
     let src_ptr = value.as_js_object_ptr();
     // SAFETY: is_object 保证非空指针；对象在 native 执行期间被根保持、不被回收。
@@ -260,9 +259,7 @@ fn detach_boxed<H: VmHost>(vm: &mut H, src: &JsObject) -> MessageValue {
 /// ArrayBuffer：transfer 命中移动载荷（源 detach），未命中克隆字节；detached
 /// 源报 DataCloneError。
 fn detach_array_buffer<H: VmHost>(
-    vm: &mut H,
-    src: &JsObject,
-    transfer: &HashSet<*const JsObject>,
+    vm: &mut H, src: &JsObject, transfer: &HashSet<*const JsObject>,
 ) -> Result<MessageValue, JsValue> {
     let Some(payload_ptr) = crate::array_buffer::array_buffer_payload_ptr(src) else {
         return Err(data_clone_error(vm, "ArrayBuffer internal state invalid"));
@@ -290,10 +287,7 @@ fn detach_array_buffer<H: VmHost>(
 
 /// Map：逐条 detach 键值后组装 `MessageValue::Map`。
 fn detach_map<H: VmHost>(
-    vm: &mut H,
-    state: &mut DetachState,
-    src: &JsObject,
-    transfer: &HashSet<*const JsObject>,
+    vm: &mut H, state: &mut DetachState, src: &JsObject, transfer: &HashSet<*const JsObject>,
 ) -> Result<MessageValue, JsValue> {
     let src_inner = src.native_data() as *const MapInner;
     if src_inner.is_null() {
@@ -313,10 +307,7 @@ fn detach_map<H: VmHost>(
 
 /// Set：逐个 detach 元素后组装 `MessageValue::Set`。
 fn detach_set<H: VmHost>(
-    vm: &mut H,
-    state: &mut DetachState,
-    src: &JsObject,
-    transfer: &HashSet<*const JsObject>,
+    vm: &mut H, state: &mut DetachState, src: &JsObject, transfer: &HashSet<*const JsObject>,
 ) -> Result<MessageValue, JsValue> {
     let src_inner = src.native_data() as *const SetInner;
     if src_inner.is_null() {
@@ -336,10 +327,7 @@ fn detach_set<H: VmHost>(
 /// Error：name 经原型链 Get 归一、message 仅取自有数据描述符槽值并 ToString、
 /// cause 在场时递归 detach。
 fn detach_error<H: VmHost>(
-    vm: &mut H,
-    state: &mut DetachState,
-    src: &JsObject,
-    transfer: &HashSet<*const JsObject>,
+    vm: &mut H, state: &mut DetachState, src: &JsObject, transfer: &HashSet<*const JsObject>,
 ) -> Result<MessageValue, JsValue> {
     let src_val = JsValue::from_js_object(src as *const JsObject as *mut JsObject);
     let si_name = vm.kernel_core().perm_interner().intern("name").0;
@@ -377,11 +365,7 @@ fn detach_error<H: VmHost>(
 
 /// 读源对象自有属性的值：数据属性直读槽值，访问器属性经 getter 取值。
 fn read_own_value<H: VmHost>(
-    vm: &mut H,
-    src: &JsObject,
-    src_val: JsValue,
-    si: u32,
-    store: u32,
+    vm: &mut H, src: &JsObject, src_val: JsValue, si: u32, store: u32,
 ) -> Result<JsValue, JsValue> {
     let is_accessor = src.prop_meta_at(store).is_some_and(|m| m.is_accessor);
     if !is_accessor {
@@ -400,10 +384,7 @@ fn read_own_value<H: VmHost>(
 
 /// 数组：逐元素 detach（元素区 0..length）。
 fn detach_array<H: VmHost>(
-    vm: &mut H,
-    state: &mut DetachState,
-    src: &JsObject,
-    transfer: &HashSet<*const JsObject>,
+    vm: &mut H, state: &mut DetachState, src: &JsObject, transfer: &HashSet<*const JsObject>,
 ) -> Result<MessageValue, JsValue> {
     let len = src.logical_len() as usize;
     let mut result = Vec::with_capacity(len);
@@ -417,10 +398,7 @@ fn detach_array<H: VmHost>(
 
 /// plain 对象：复制可枚举自有属性（字符串键加 Symbol 键），键值均 detach。
 fn detach_plain_object<H: VmHost>(
-    vm: &mut H,
-    state: &mut DetachState,
-    src: &JsObject,
-    transfer: &HashSet<*const JsObject>,
+    vm: &mut H, state: &mut DetachState, src: &JsObject, transfer: &HashSet<*const JsObject>,
 ) -> Result<MessageValue, JsValue> {
     let src_val = JsValue::from_js_object(src as *const JsObject as *mut JsObject);
     let str_keys = walk_own_keys(vm, src);
@@ -463,7 +441,10 @@ fn key_si_to_message_value<H: VmHost>(vm: &mut H, si: u32) -> Result<MessageValu
 fn symbol_key_to_message_value<H: VmHost>(vm: &mut H, si: u32) -> MessageValue {
     let (_realm_id, local_index) = decode_symbol_key(si);
     if local_index < WELL_KNOWN_SYMBOL_COUNT {
-        MessageValue::Symbol { well_known: Some(local_index), description: None }
+        MessageValue::Symbol {
+            well_known: Some(local_index),
+            description: None,
+        }
     } else {
         let description = vm.symbol_description(local_index);
         MessageValue::Symbol { well_known: None, description }
@@ -472,9 +453,7 @@ fn symbol_key_to_message_value<H: VmHost>(vm: &mut H, si: u32) -> MessageValue {
 
 /// 判定 store 槽的自有属性是否可枚举（无元数据槽时按默认数据属性，可枚举）。
 fn is_enumerable_own(src: &JsObject, store: u32) -> bool {
-    src.prop_meta_at(store)
-        .map(|m| m.attributes.enumerable())
-        .unwrap_or(true)
+    src.prop_meta_at(store).map(|m| m.attributes.enumerable()).unwrap_or(true)
 }
 
 /// 目标 realm 侧：遍历 `MessageValue` 产出目标 realm 的 `JsValue`。
@@ -519,8 +498,7 @@ fn rehydrate_value<H: VmHost>(vm: &mut H, value: &MessageValue) -> JsValue {
         }
         MessageValue::Object(props) => {
             let proto = vm.session().builtin_world().object_proto.as_ptr() as *mut JsObject;
-            let ptr =
-                vm.alloc_object(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(proto)));
+            let ptr = vm.alloc_object(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(proto)));
             // SAFETY: ptr 是本函数新分配的对象，存活且本段无别名。
             let obj = unsafe { &mut *ptr };
             for (key, val) in props {
@@ -620,10 +598,7 @@ fn rehydrate_regexp<H: VmHost>(vm: &mut H, source: &str, flags: &str) -> JsValue
 /// Error 臂 rehydrate：按归一化 name 选标准原型，定义 message（非枚举）与
 /// cause（在场时全真数据属性）。
 fn rehydrate_error<H: VmHost>(
-    vm: &mut H,
-    name: &str,
-    message: &Option<String>,
-    cause: &Option<Box<MessageValue>>,
+    vm: &mut H, name: &str, message: &Option<String>, cause: &Option<Box<MessageValue>>,
 ) -> JsValue {
     let proto = match name {
         "EvalError" => P::as_ptr(&vm.session().builtin_world().eval_error_proto) as *mut JsObject,
@@ -654,11 +629,7 @@ fn rehydrate_error<H: VmHost>(
 
 /// Symbol 臂 rehydrate：well-known 映目标 realm 同 local_index，用户符号经
 /// 描述重新 intern 得目标 realm 新局部下标。
-fn rehydrate_symbol<H: VmHost>(
-    vm: &mut H,
-    well_known: &Option<u32>,
-    description: &Option<String>,
-) -> JsValue {
+fn rehydrate_symbol<H: VmHost>(vm: &mut H, well_known: &Option<u32>, description: &Option<String>) -> JsValue {
     let realm_id = vm.realm_id();
     match well_known {
         Some(idx) => JsValue::symbol_realm(realm_id, *idx),

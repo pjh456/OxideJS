@@ -19,11 +19,11 @@ use oxide_bytecode::opcode::OpCode;
 use oxide_ir::inst::Inst;
 use oxide_ir::operand::Operand;
 use oxide_ir::{IRFunction, ParamLayout};
-use oxide_types::MODULE_NAMESPACE_BINDING;
 use oxide_parser::{
     BindingPattern, Declaration, ExportDefaultDeclarationKind, Expression, ImportAttributeKey,
     ImportDeclarationSpecifier, ModuleExportName, Statement, VariableDeclarationKind, WithClause,
 };
+use oxide_types::MODULE_NAMESPACE_BINDING;
 
 /// 数据模块种类（非 JS 源码模块）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

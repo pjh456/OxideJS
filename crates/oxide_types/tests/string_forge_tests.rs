@@ -1,8 +1,8 @@
+use oxide_types::object::JsString;
 use oxide_types::string_forge::{
     decode_key, encode_key, single_char_ptr, small_int_ptr, source_escape, source_escape_to_key, typeof_string_ptr,
     PermInterner,
 };
-use oxide_types::object::JsString;
 
 #[test]
 fn intern_dedup() {

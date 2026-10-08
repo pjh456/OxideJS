@@ -56,7 +56,11 @@ pub fn bind_global(core: &Arc<KernelCore>, session: &KernelSession, global: &mut
             ("__moduleEval", oxide_builtins::module::module_eval::<crate::vm::Vm> as *const (), 1),
             ("__moduleData", oxide_builtins::module::module_data::<crate::vm::Vm> as *const (), 2),
             ("eval", oxide_builtins::eval::eval::<crate::vm::Vm> as *const (), 1),
-            ("structuredClone", oxide_builtins::structured_clone::structured_clone_entry::<crate::vm::Vm> as *const (), 1),
+            (
+                "structuredClone",
+                oxide_builtins::structured_clone::structured_clone_entry::<crate::vm::Vm> as *const (),
+                1,
+            ),
         ],
     );
 }
