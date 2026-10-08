@@ -8,10 +8,10 @@ use oxide_kernel::shape_forge::EMPTY_SHAPE_ID;
 use oxide_types::object::{JsObject, TypedArrayKind};
 use oxide_types::value::JsValue;
 
-use crate::array_buffer::{buffer_payload_ptr, ArrayBufferPayload};
+use crate::array_buffer::{buffer_store_mut_ptr, BufferStoreMut};
 use crate::typed_array::{
     get_typed_array_data, read_element, ta_element_value, ta_to_integer_or_infinity, ta_validate, write_element,
-    TypedArrayData,
+    write_element_shared, TypedArrayData,
 };
 use oxide_runtime_api::{NativeResult, ProtoKind, VmHost};
 
@@ -78,9 +78,9 @@ fn is_bigint_kind(kind: TypedArrayKind) -> bool {
 ///
 /// # 副作用
 /// 无（纯读；写守卫只读 immutable 位）。
-fn resolve_atomic_access<H: VmHost>(
+fn resolve_atomic_access<'a, H: VmHost>(
     vm: &mut H, this_val: JsValue, writable: bool, index_val: JsValue,
-) -> Result<(*mut ArrayBufferPayload, TypedArrayData, usize), JsValue> {
+) -> Result<(BufferStoreMut<'a>, TypedArrayData, usize), JsValue> {
     let view = get_typed_array_data(vm, this_val)?;
     if !is_integer_kind(view.kind) {
         return Err(type_error(vm, "Atomics operations require an integer TypedArray type"));
@@ -92,44 +92,55 @@ fn resolve_atomic_access<H: VmHost>(
     }
     let index = ta_to_integer_or_infinity(vm, index_val)?;
 
-    // 缓冲字节长：AB/SAB 双认（buffer_payload_ptr），载荷缺失视同越界。
+    // 缓冲字节长：AB/SAB 双认，detached 视同 0（越界）。
     let buffer_ptr = view.buffer.as_js_object_ptr();
     if buffer_ptr.is_null() {
         return Err(type_error(vm, "TypedArray buffer internal state invalid"));
     }
-    // SAFETY: buffer 对象与视图同生命周期，此处只读载荷指针。
-    let payload_ptr = match buffer_payload_ptr(unsafe { &*buffer_ptr }) {
-        Some(p) if !p.is_null() => p,
-        _ => return Err(range_error(vm, "invalid indexed access to Atomics")),
+    // SAFETY: buffer 对象与视图同生命周期，此处只读写载荷。
+    let obj: &'a JsObject = unsafe { &*buffer_ptr };
+    let buffer_len = match buffer_store_mut_ptr(obj) {
+        Some(BufferStoreMut::Ab(bytes)) => bytes.len(),
+        Some(BufferStoreMut::Sab(buffer)) => buffer.len(),
+        None => 0,
     };
-    // SAFETY: payload_ptr 经 buffer_payload_ptr 校验为合法载荷盒，只读字节长。
-    let buffer_len = unsafe { (*payload_ptr).data.as_ref().map_or(0, |d| d.len()) };
 
     let offset = view.byte_offset as f64 + index * (view.kind.bytes_per_element() as f64);
     if offset < 0.0 || offset >= buffer_len as f64 {
         return Err(range_error(vm, "invalid indexed access to Atomics"));
     }
-    Ok((payload_ptr, view, offset as usize))
+    // 界判通过，载荷必在场（detached 已越界排除）。
+    let store = buffer_store_mut_ptr(obj)
+        .ok_or_else(|| range_error(vm, "invalid indexed access to Atomics"))?;
+    Ok((store, view, offset as usize))
 }
 
-/// 读指定偏移元素并转为 JS 值；detach（`data` 为 `None`）返回 `None`。
+/// 读指定偏移元素并转为 JS 值（detach 已由 resolve 的越界判收口，载荷恒在场）。
 fn atomic_read<H: VmHost>(
-    vm: &mut H, payload_ptr: *mut ArrayBufferPayload, kind: TypedArrayKind, offset: usize,
+    vm: &mut H, store: &BufferStoreMut, kind: TypedArrayKind, offset: usize,
 ) -> Option<JsValue> {
-    // SAFETY: payload_ptr 经 resolve_atomic_access 校验为存活载荷盒，只读字节切片。
-    let bytes = unsafe { &*payload_ptr }.data.as_deref()?;
+    // SAFETY: store 经 resolve_atomic_access 校验为存活载荷，只读字节切片。
+    let bytes: &[u8] = match store {
+        BufferStoreMut::Ab(b) => b,
+        BufferStoreMut::Sab(buffer) => buffer.as_slice(),
+    };
     Some(read_element(vm, kind, bytes, offset))
 }
 
-/// 把已转换值按位模式写入指定偏移；detach 静默 no-op（越界语义已由偏移判收口）。
+/// 把已转换值按位模式写入指定偏移（detach 已由 resolve 的越界判收口）。
 fn atomic_write<H: VmHost>(
-    vm: &mut H, payload_ptr: *mut ArrayBufferPayload, kind: TypedArrayKind, offset: usize, value: JsValue,
+    vm: &mut H, store: &mut BufferStoreMut, kind: TypedArrayKind, offset: usize, value: JsValue,
 ) {
-    // SAFETY: payload_ptr 经 resolve_atomic_access 校验为存活载荷盒，只写字节切片。
-    let Some(bytes) = unsafe { &mut *payload_ptr }.data.as_deref_mut() else {
-        return;
-    };
-    write_element(vm, kind, bytes, offset, value);
+    // SAFETY: store 经 resolve_atomic_access 校验为存活载荷，只写字节切片。
+    match store {
+        BufferStoreMut::Ab(bytes) => {
+            write_element(vm, kind, bytes, offset, value);
+        }
+        BufferStoreMut::Sab(buffer) => {
+            // SAB 臂无 detach 路径，写经共享缓冲（越界静默不写）。
+            write_element_shared(vm, kind, buffer, offset, value);
+        }
+    }
 }
 
 /// 读-改-写运算结果：整数宽度按算术/位运算在 i32 域（语料值 < 2^31，f64 精确），
@@ -184,9 +195,9 @@ fn arithmetic_write_value<H: VmHost>(
 ///
 /// # 副作用
 /// 无（纯读）。
-fn resolve_atomic_wait_access<H: VmHost>(
+fn resolve_atomic_wait_access<'a, H: VmHost>(
     vm: &mut H, this_val: JsValue, index_val: JsValue, require_sab: bool,
-) -> Result<(*mut ArrayBufferPayload, TypedArrayData, usize, bool), JsValue> {
+) -> Result<(BufferStoreMut<'a>, TypedArrayData, usize, bool), JsValue> {
     let view = get_typed_array_data(vm, this_val)?;
     if !matches!(view.kind, TypedArrayKind::Int32 | TypedArrayKind::BigInt64) {
         return Err(type_error(vm, "not an int32 or BigInt64 typed array"));
@@ -197,18 +208,18 @@ fn resolve_atomic_wait_access<H: VmHost>(
     if buffer_ptr.is_null() {
         return Err(type_error(vm, "TypedArray buffer internal state invalid"));
     }
-    // SAFETY: buffer 对象与视图同生命周期，此处只读标签与载荷指针。
-    let buffer = unsafe { &*buffer_ptr };
-    let is_sab = buffer.is_shared_array_buffer_obj();
+    // SAFETY: buffer 对象与视图同生命周期，此处只读写载荷。
+    let obj: &'a JsObject = unsafe { &*buffer_ptr };
+    let is_sab = obj.is_shared_array_buffer_obj();
     if require_sab && !is_sab {
         return Err(type_error(vm, "Atomics.wait cannot be used on a non-shared buffer"));
     }
-    let payload_ptr = match buffer_payload_ptr(buffer) {
-        Some(p) if !p.is_null() => p,
-        _ => return Err(range_error(vm, "invalid indexed access to Atomics")),
+    // 缓冲字节长：AB/SAB 双认，detached 视同 0（越界）。
+    let buffer_len = match buffer_store_mut_ptr(obj) {
+        Some(BufferStoreMut::Ab(bytes)) => bytes.len(),
+        Some(BufferStoreMut::Sab(buffer)) => buffer.len(),
+        None => 0,
     };
-    // SAFETY: payload_ptr 经 buffer_payload_ptr 校验为合法载荷盒，只读字节长。
-    let buffer_len = unsafe { (*payload_ptr).data.as_ref().map_or(0, |d| d.len()) };
 
     let index = ta_to_integer_or_infinity(vm, index_val)?;
     let esize = view.kind.bytes_per_element() as f64;
@@ -216,7 +227,10 @@ fn resolve_atomic_wait_access<H: VmHost>(
     if offset < 0.0 || offset + esize > buffer_len as f64 {
         return Err(range_error(vm, "invalid indexed access to Atomics"));
     }
-    Ok((payload_ptr, view, offset as usize, is_sab))
+    // 界判通过，载荷必在场（detached 已越界排除）。
+    let store = buffer_store_mut_ptr(obj)
+        .ok_or_else(|| range_error(vm, "invalid indexed access to Atomics"))?;
+    Ok((store, view, offset as usize, is_sab))
 }
 
 /// `Atomics.wait(typedArray, index, value, timeout)` 单线程退化面：值/超时
@@ -227,11 +241,11 @@ pub fn atomics_wait<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let index_val = arg_at(vm, args, 2);
     let value_val = arg_at(vm, args, 3);
     let timeout_val = arg_at(vm, args, 4);
-    let (payload_ptr, view, offset, _) = native_try!(resolve_atomic_wait_access(vm, ta_val, index_val, true));
+    let (store, view, offset, _) = native_try!(resolve_atomic_wait_access(vm, ta_val, index_val, true));
     let value = native_try!(ta_element_value(vm, view.kind, value_val));
     // 超时 ToNumber 归一（NaN → +∞、负值 → 0）：单线程下无观察差，只承载毒传播。
     native_try!(oxide_runtime_api::to_number_full(timeout_val, vm).map_err(|e| crate::iterator::engine_error(vm, &e)));
-    let old = atomic_read(vm, payload_ptr, view.kind, offset).unwrap_or(JsValue::undefined());
+    let old = atomic_read(vm, &store, view.kind, offset).unwrap_or(JsValue::undefined());
     let equal = if is_bigint_kind(view.kind) {
         let old_bi = vm.bigint_value(old).clone();
         let value_bi = vm.bigint_value(value).clone();
@@ -250,7 +264,7 @@ pub fn atomics_notify<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let ta_val = arg_at(vm, args, 1);
     let index_val = arg_at(vm, args, 2);
     let count_val = arg_at(vm, args, 3);
-    let (_payload_ptr, view, offset, is_sab) = native_try!(resolve_atomic_wait_access(vm, ta_val, index_val, false));
+    let (_store, view, offset, is_sab) = native_try!(resolve_atomic_wait_access(vm, ta_val, index_val, false));
     // count 实参缺省 → +∞（全唤醒）；显式传入才走强转（毒传播语料钉：
     // 非 SAB 亦先评估 count 再返 0）。
     let count = if args.len() > 3 {
@@ -270,8 +284,8 @@ pub fn atomics_notify<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 pub fn atomics_load<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let ta_val = arg_at(vm, args, 1);
     let index_val = arg_at(vm, args, 2);
-    let (payload_ptr, view, offset) = native_try!(resolve_atomic_access(vm, ta_val, false, index_val));
-    NativeResult::Ok(atomic_read(vm, payload_ptr, view.kind, offset).unwrap_or(JsValue::undefined()))
+    let (store, view, offset) = native_try!(resolve_atomic_access(vm, ta_val, false, index_val));
+    NativeResult::Ok(atomic_read(vm, &store, view.kind, offset).unwrap_or(JsValue::undefined()))
 }
 
 /// `Atomics.store(typedArray, index, value)`：写值后读回返回（宽度归一，-0 → +0）。
@@ -279,10 +293,10 @@ pub fn atomics_store<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let ta_val = arg_at(vm, args, 1);
     let index_val = arg_at(vm, args, 2);
     let value_val = arg_at(vm, args, 3);
-    let (payload_ptr, view, offset) = native_try!(resolve_atomic_access(vm, ta_val, true, index_val));
+    let (mut store, view, offset) = native_try!(resolve_atomic_access(vm, ta_val, true, index_val));
     let value = native_try!(ta_element_value(vm, view.kind, value_val));
-    atomic_write(vm, payload_ptr, view.kind, offset, value);
-    NativeResult::Ok(atomic_read(vm, payload_ptr, view.kind, offset).unwrap_or(value))
+    atomic_write(vm, &mut store, view.kind, offset, value);
+    NativeResult::Ok(atomic_read(vm, &store, view.kind, offset).unwrap_or(value))
 }
 
 /// `Atomics.exchange(typedArray, index, value)`：读旧值、写新值、返回旧值。
@@ -290,10 +304,10 @@ pub fn atomics_exchange<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let ta_val = arg_at(vm, args, 1);
     let index_val = arg_at(vm, args, 2);
     let value_val = arg_at(vm, args, 3);
-    let (payload_ptr, view, offset) = native_try!(resolve_atomic_access(vm, ta_val, true, index_val));
-    let old = atomic_read(vm, payload_ptr, view.kind, offset).unwrap_or(JsValue::undefined());
+    let (mut store, view, offset) = native_try!(resolve_atomic_access(vm, ta_val, true, index_val));
+    let old = atomic_read(vm, &store, view.kind, offset).unwrap_or(JsValue::undefined());
     let value = native_try!(ta_element_value(vm, view.kind, value_val));
-    atomic_write(vm, payload_ptr, view.kind, offset, value);
+    atomic_write(vm, &mut store, view.kind, offset, value);
     NativeResult::Ok(old)
 }
 
@@ -327,11 +341,11 @@ fn atomic_arithmetic<H: VmHost>(vm: &mut H, args: &[u8], op: &str) -> NativeResu
     let ta_val = arg_at(vm, args, 1);
     let index_val = arg_at(vm, args, 2);
     let value_val = arg_at(vm, args, 3);
-    let (payload_ptr, view, offset) = native_try!(resolve_atomic_access(vm, ta_val, true, index_val));
-    let old = atomic_read(vm, payload_ptr, view.kind, offset).unwrap_or(JsValue::undefined());
+    let (mut store, view, offset) = native_try!(resolve_atomic_access(vm, ta_val, true, index_val));
+    let old = atomic_read(vm, &store, view.kind, offset).unwrap_or(JsValue::undefined());
     let value = native_try!(ta_element_value(vm, view.kind, value_val));
     let result = arithmetic_write_value(vm, view.kind, op, old, value);
-    atomic_write(vm, payload_ptr, view.kind, offset, result);
+    atomic_write(vm, &mut store, view.kind, offset, result);
     NativeResult::Ok(old)
 }
 
@@ -342,8 +356,8 @@ pub fn atomics_compare_exchange<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeRes
     let index_val = arg_at(vm, args, 2);
     let expected_val = arg_at(vm, args, 3);
     let replacement_val = arg_at(vm, args, 4);
-    let (payload_ptr, view, offset) = native_try!(resolve_atomic_access(vm, ta_val, true, index_val));
-    let old = atomic_read(vm, payload_ptr, view.kind, offset).unwrap_or(JsValue::undefined());
+    let (mut store, view, offset) = native_try!(resolve_atomic_access(vm, ta_val, true, index_val));
+    let old = atomic_read(vm, &store, view.kind, offset).unwrap_or(JsValue::undefined());
     let expected = native_try!(ta_element_value(vm, view.kind, expected_val));
     let matched = if is_bigint_kind(view.kind) {
         let old_bi = vm.bigint_value(old).clone();
@@ -354,7 +368,7 @@ pub fn atomics_compare_exchange<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeRes
     };
     if matched {
         let replacement = native_try!(ta_element_value(vm, view.kind, replacement_val));
-        atomic_write(vm, payload_ptr, view.kind, offset, replacement);
+        atomic_write(vm, &mut store, view.kind, offset, replacement);
     }
     NativeResult::Ok(old)
 }
@@ -390,9 +404,9 @@ pub fn atomics_wait_async<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let index_val = arg_at(vm, args, 2);
     let value_val = arg_at(vm, args, 3);
     let timeout_val = arg_at(vm, args, 4);
-    let (payload_ptr, view, offset, _) = native_try!(resolve_atomic_wait_access(vm, ta_val, index_val, true));
+    let (store, view, offset, _) = native_try!(resolve_atomic_wait_access(vm, ta_val, index_val, true));
     let value = native_try!(ta_element_value(vm, view.kind, value_val));
-    let old = atomic_read(vm, payload_ptr, view.kind, offset).unwrap_or(JsValue::undefined());
+    let old = atomic_read(vm, &store, view.kind, offset).unwrap_or(JsValue::undefined());
     let equal = if is_bigint_kind(view.kind) {
         let old_bi = vm.bigint_value(old).clone();
         let value_bi = vm.bigint_value(value).clone();

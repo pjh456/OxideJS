@@ -5,7 +5,9 @@ use oxide_types::value::JsValue;
 use num_bigint::BigInt;
 use num_traits::ToPrimitive;
 
-use crate::array_buffer::{buffer_payload, ArrayBufferPayload};
+use crate::array_buffer::{
+    buffer_store, buffer_store_mut_ptr, buffer_store_ptr, BufferStore, BufferStoreMut,
+};
 
 use oxide_runtime_api::{NativeResult, ProtoKind, VmHost};
 
@@ -111,17 +113,19 @@ fn get_data_view_data<H: VmHost>(vm: &mut H, this_val: JsValue) -> Result<DataVi
 }
 
 /// 视图界判核（规范 IsViewOutOfBounds 与 GetViewByteLength 合一）：缓冲已
-/// detach（载荷 `data` 为 `None`）、auto 视图 offset 超 live、定长视图
+/// detach（AB 臂 detached 标志）、auto 视图 offset 超 live、定长视图
 /// offset + 静态长超 live（含溢出）→ TypeError；通过时返回视图长
 /// （auto 视图现算 live − offset，定长视图返静态长）。
 fn dv_view_bounds<H: VmHost>(
-    vm: &mut H, payload_ptr: *mut ArrayBufferPayload, view: DataViewData,
+    vm: &mut H, store: &BufferStore, view: DataViewData,
 ) -> Result<usize, JsValue> {
-    // SAFETY: payload_ptr 由调用方读入口（buffer_payload）校验为合法缓冲区载荷。
-    let Some(data) = unsafe { &*payload_ptr }.data.as_deref() else {
+    if store.is_detached() {
         return Err(crate::error::create_type_error(vm, "ArrayBuffer internal state invalid"));
+    }
+    let live = match store {
+        BufferStore::Ab(payload) => payload.bytes.len(),
+        BufferStore::Sab(payload) => payload.buffer.len(),
     };
-    let live = data.len();
     if view.length_is_auto {
         if view.byte_offset > live {
             return Err(crate::error::create_type_error(vm, "ArrayBuffer internal state invalid"));
@@ -136,10 +140,12 @@ fn dv_view_bounds<H: VmHost>(
 
 /// set 面入口写守卫：immutable 缓冲 → TypeError（先于一切实参强转）。
 fn dv_buffer_writable<H: VmHost>(vm: &mut H, view: DataViewData) -> Result<(), JsValue> {
-    let payload_ptr = buffer_payload(vm, view.buffer)?;
-    // SAFETY: payload_ptr 经 buffer_payload 校验为合法缓冲区载荷（AB/SAB 双认）。
-    if unsafe { &*payload_ptr }.immutable {
-        return Err(crate::error::create_type_error(vm, "ArrayBuffer is immutable"));
+    let store = buffer_store(vm, view.buffer)?;
+    // SAFETY: store 经 buffer_store 校验为合法缓冲区载荷（AB/SAB 双认）。
+    if let BufferStore::Ab(payload) = store {
+        if payload.immutable {
+            return Err(crate::error::create_type_error(vm, "ArrayBuffer is immutable"));
+        }
     }
     Ok(())
 }
@@ -149,32 +155,37 @@ fn dv_buffer_writable<H: VmHost>(vm: &mut H, view: DataViewData) -> Result<(), J
 /// 返回（寄存器重读值、live 长、存储上限）。
 fn revalidate_buffer<H: VmHost>(vm: &mut H, buf_reg: u8) -> Result<(JsValue, usize, usize), JsValue> {
     let buffer = vm.reg(buf_reg);
-    let payload_ptr = buffer_payload(vm, buffer)?;
-    // SAFETY: payload_ptr 经 buffer_payload 校验为合法缓冲区载荷（AB/SAB 双认）。
-    let payload = unsafe { &*payload_ptr };
-    let Some(data) = payload.data.as_deref() else {
+    let store = buffer_store(vm, buffer)?;
+    // SAFETY: store 经 buffer_store 校验为合法缓冲区载荷（AB/SAB 双认）。
+    if store.is_detached() {
         return Err(crate::error::create_type_error(vm, "ArrayBuffer internal state invalid"));
+    }
+    let (live, max_byte_length) = match store {
+        BufferStore::Ab(payload) => (payload.bytes.len(), payload.max_byte_length),
+        BufferStore::Sab(payload) => (payload.buffer.len(), usize::from(payload.growable)),
     };
-    Ok((buffer, data.len(), payload.max_byte_length))
+    Ok((buffer, live, max_byte_length))
 }
 
 /// GetViewValue 后半：按已校验的视图与偏移读 N 字节。界判核先
 /// （detach/OOB → TypeError，live 长口径），后视图相对越界
 /// （→ RangeError，判活视图长）。
 fn read_bytes_at<const N: usize, H: VmHost>(vm: &mut H, view: DataViewData, offset: usize) -> Result<[u8; N], JsValue> {
-    let payload_ptr = buffer_payload(vm, view.buffer)?;
-    // SAFETY: payload_ptr 经 buffer_payload 校验为合法缓冲区载荷（AB/SAB 双认）。
-    let Some(buffer) = unsafe { &*payload_ptr }.data.as_deref() else {
-        return Err(crate::error::create_type_error(vm, "ArrayBuffer internal state invalid"));
-    };
-    let view_len = dv_view_bounds(vm, payload_ptr, view)?;
+    let store = buffer_store(vm, view.buffer)?;
+    // SAFETY: store 经 buffer_store 校验为合法缓冲区载荷（AB/SAB 双认）。
+    let view_len = dv_view_bounds(vm, &store, view)?;
     match offset.checked_add(N) {
         Some(end) if end <= view_len => {}
         _ => return Err(crate::error::create_range_error(vm, "DataView offset out of bounds")),
     }
     let abs = view.byte_offset + offset;
     let mut out = [0u8; N];
-    out.copy_from_slice(&buffer[abs..abs + N]);
+    // 界判核已证载荷在场（detached 已拒），下方只读字节切片。
+    let bytes: &[u8] = match &store {
+        BufferStore::Ab(payload) => &payload.bytes,
+        BufferStore::Sab(payload) => payload.buffer.as_slice(),
+    };
+    out.copy_from_slice(&bytes[abs..abs + N]);
     Ok(out)
 }
 
@@ -182,20 +193,35 @@ fn read_bytes_at<const N: usize, H: VmHost>(vm: &mut H, view: DataViewData, offs
 fn write_bytes<const N: usize, H: VmHost>(
     vm: &mut H, view: DataViewData, offset: usize, bytes: [u8; N],
 ) -> Result<(), JsValue> {
-    let payload_ptr = buffer_payload(vm, view.buffer)?;
-    // 界判核共享借用先于可变借用建立，避免活别名。
-    let view_len = dv_view_bounds(vm, payload_ptr, view)?;
-    // SAFETY: payload_ptr 经 buffer_payload 校验为合法缓冲区载荷（AB/SAB 双认）；
-    // 界判核已证 data 在场，下方守卫为结构性兜底。
-    let Some(buffer) = unsafe { &mut *payload_ptr }.data.as_deref_mut() else {
+    let buffer_ptr = view.buffer.as_js_object_ptr();
+    if buffer_ptr.is_null() {
         return Err(crate::error::create_type_error(vm, "ArrayBuffer internal state invalid"));
-    };
+    }
+    // SAFETY: buffer 对象与视图同生命周期，此处只读写载荷。
+    let obj = unsafe { &*buffer_ptr };
+    // 界判核（只读克隆）先于可变借用建立，避免活别名。
+    let store = buffer_store_ptr(obj)
+        .ok_or_else(|| crate::error::create_type_error(vm, "ArrayBuffer method called on incompatible receiver"))?;
+    let view_len = dv_view_bounds(vm, &store, view)?;
     match offset.checked_add(N) {
         Some(end) if end <= view_len => {}
         _ => return Err(crate::error::create_range_error(vm, "DataView offset out of bounds")),
     }
     let abs = view.byte_offset + offset;
-    buffer[abs..abs + N].copy_from_slice(&bytes);
+    // 界判核已拒 detached；此处取可变借用写回对象内载荷。
+    let store = buffer_store_mut_ptr(obj)
+        .ok_or_else(|| crate::error::create_type_error(vm, "ArrayBuffer internal state invalid"))?;
+    match store {
+        BufferStoreMut::Ab(b) => {
+            b[abs..abs + N].copy_from_slice(&bytes);
+        }
+        BufferStoreMut::Sab(buffer) => {
+            // 界判核已证 abs + N 在活长内，越界为结构性不可达（防御背板）。
+            buffer
+                .write_range(abs, &bytes)
+                .map_err(|_| crate::error::create_type_error(vm, "ArrayBuffer internal state invalid"))?;
+        }
+    }
     Ok(())
 }
 
@@ -258,7 +284,7 @@ pub fn data_view_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult
     }
     let buffer = vm.reg(args[1]);
     // 首个载荷取用只做品牌校验，指针即弃，不持借用跨 JS 调用。
-    native_try!(buffer_payload(vm, buffer));
+    native_try!(buffer_store(vm, buffer));
 
     let byte_offset = if args.len() > 2 {
         native_try!(to_index(vm, vm.reg(args[2]), "DataView byteOffset out of bounds"))
@@ -731,8 +757,8 @@ pub fn data_view_buffer_getter<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResu
 pub fn data_view_byte_offset_getter<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
     let view = native_try!(get_data_view_data(vm, this_val));
-    let payload_ptr = native_try!(buffer_payload(vm, view.buffer));
-    native_try!(dv_view_bounds(vm, payload_ptr, view));
+    let store = native_try!(buffer_store(vm, view.buffer));
+    native_try!(dv_view_bounds(vm, &store, view));
     NativeResult::Ok(JsValue::float(view.byte_offset as f64))
 }
 
@@ -742,7 +768,7 @@ pub fn data_view_byte_offset_getter<H: VmHost>(vm: &mut H, args: &[u8]) -> Nativ
 pub fn data_view_byte_length_getter<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
     let view = native_try!(get_data_view_data(vm, this_val));
-    let payload_ptr = native_try!(buffer_payload(vm, view.buffer));
-    let view_len = native_try!(dv_view_bounds(vm, payload_ptr, view));
+    let store = native_try!(buffer_store(vm, view.buffer));
+    let view_len = native_try!(dv_view_bounds(vm, &store, view));
     NativeResult::Ok(JsValue::float(view_len as f64))
 }

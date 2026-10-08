@@ -1,7 +1,9 @@
 //! `VmHost` trait：builtins 依赖的 `Vm` 能力集合，trait 面向泛型而非对象安全。
 
 use std::ffi::c_void;
+use std::sync::Arc;
 
+use oxide_kernel::KernelCore;
 use oxide_types::mem::P;
 use oxide_types::object::{Cell, JsObject, PropAttributes};
 use oxide_types::value::JsValue;
@@ -224,6 +226,9 @@ pub trait VmHost {
     fn string_default_iterator(&self) -> *const JsObject;
     /// 读当前 session 全局对象（引用计数持久指针，跨调用存活）。
     fn global_object(&self) -> P<JsObject>;
+    /// 读内核核共享指针（SAB 字节区构造用：`SharedBuffer` 随核的
+    /// `shared_buffer_bytes` 账目登记与释放）。
+    fn kernel_core(&self) -> Arc<KernelCore>;
 
     // 属性解析
     fn property_key_si(&mut self, val: JsValue) -> u32;

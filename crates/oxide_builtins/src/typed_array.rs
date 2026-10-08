@@ -1,12 +1,15 @@
 use num_bigint::BigInt;
 use num_traits::ToPrimitive;
 use oxide_kernel::shape_forge::EMPTY_SHAPE_ID;
+use oxide_kernel::SharedBuffer;
 use oxide_types::object::{JsObject, NativeFnPtr, TypedArrayKind};
 use oxide_types::private_key::{encode_symbol_key, int_key_value, is_int_key, WELL_KNOWN_SYMBOL_SPECIES};
 use oxide_types::value::JsValue;
 
 use crate::array_buffer::{
-    buffer_payload, buffer_payload_ptr, default_array_buffer_proto, new_array_buffer, MAX_ARRAY_BUFFER_LENGTH,
+    array_buffer_payload_ptr, buffer_store, buffer_store_mut_ptr, buffer_store_ptr,
+    default_array_buffer_proto, new_array_buffer, BufferStore, BufferStoreMut,
+    MAX_ARRAY_BUFFER_LENGTH,
 };
 
 use oxide_runtime_api::{NativeResult, ProtoKind, VmHost};
@@ -242,19 +245,22 @@ fn absolute_byte_offset(view: TypedArrayData, index: usize) -> usize {
 }
 
 /// 读视图引用 buffer 的当前字节长度；ArrayBuffer/SharedArrayBuffer 双认，
-/// buffer 两标签之外、无载荷或已 detach（`data` 为 `None`）时返回 `None`。
+/// buffer 两标签之外、无载荷或已 detach 时返回 `None`。
 fn ta_buffer_byte_length(view: TypedArrayData) -> Option<usize> {
     let buffer_ptr = view.buffer.as_js_object_ptr();
     if buffer_ptr.is_null() {
         return None;
     }
     // SAFETY: buffer 对象与视图同生命周期，此处只读载荷存活位与长度。
-    let payload_ptr = buffer_payload_ptr(unsafe { &*buffer_ptr })?;
-    if payload_ptr.is_null() {
-        return None;
+    let store = buffer_store_ptr(unsafe { &*buffer_ptr })?;
+    if store.is_detached() {
+        None
+    } else {
+        match store {
+            BufferStore::Ab(payload) => Some(payload.bytes.len()),
+            BufferStore::Sab(payload) => Some(payload.buffer.len()),
+        }
     }
-    // SAFETY: payload_ptr 经 buffer_payload_ptr 校验为合法载荷盒。
-    unsafe { (*payload_ptr).data.as_ref().map(|data| data.len()) }
 }
 
 /// 规范 TypedArrayLength：已 detach 恒 0；定长视图取静态长度（哪怕 buffer
@@ -305,9 +311,9 @@ pub(crate) fn ta_validate<H: VmHost>(
     if writable {
         let buffer_ptr = view.buffer.as_js_object_ptr();
         if !buffer_ptr.is_null() {
-            // SAFETY: buffer 对象与视图同生命周期，此处只读写守卫位。
-            if let Some(payload_ptr) = buffer_payload_ptr(unsafe { &*buffer_ptr }) {
-                if !payload_ptr.is_null() && unsafe { (*payload_ptr).immutable } {
+            // SAFETY: buffer 对象与视图同生命周期，此处只读守卫位。
+            if let Some(BufferStore::Ab(payload)) = buffer_store_ptr(unsafe { &*buffer_ptr }) {
+                if payload.immutable {
                     return Err(type_error(vm, "ArrayBuffer is immutable"));
                 }
             }
@@ -356,15 +362,19 @@ pub fn typed_array_element_get<H: VmHost>(vm: &mut H, obj: &JsObject, index: u32
         return Err("TypedArray buffer internal state invalid".to_string());
     }
     // SAFETY: buffer 对象与视图同生命周期，此处只读载荷存活位与字节切片。
-    let Some(payload_ptr) = buffer_payload_ptr(unsafe { &*buffer_ptr }) else {
+    let Some(store) = buffer_store_ptr(unsafe { &*buffer_ptr }) else {
         // 防御背板：构造期 buffer 必为 ArrayBuffer/SharedArrayBuffer 之一。
         return Err("TypedArray buffer internal state invalid".to_string());
     };
-    let Some(buffer) = unsafe { &*payload_ptr }.data.as_deref() else {
+    if store.is_detached() {
         // 载荷缺失即 detach（live 界判后不可达，防御背板）：按 [[Get]] 读 undefined。
         return Ok(JsValue::undefined());
+    }
+    let bytes: &[u8] = match &store {
+        BufferStore::Ab(payload) => &payload.bytes,
+        BufferStore::Sab(payload) => payload.buffer.as_slice(),
     };
-    Ok(read_element(vm, view.kind, buffer, absolute_byte_offset(view, index as usize)))
+    Ok(read_element(vm, view.kind, bytes, absolute_byte_offset(view, index as usize)))
 }
 
 // ── 统一数值键门 ─────────────────────────────────────────────────────────
@@ -607,16 +617,13 @@ fn write_typed_array_element<H: VmHost>(
         return Err("TypedArray buffer internal state invalid".to_string());
     }
     // SAFETY: buffer 对象与视图同生命周期，此处只写载荷字节切片。
-    let Some(payload_ptr) = buffer_payload_ptr(unsafe { &*buffer_ptr }) else {
-        // 防御背板：构造期 buffer 必为 ArrayBuffer/SharedArrayBuffer 之一。
-        return Err("TypedArray buffer internal state invalid".to_string());
-    };
-    let Some(buffer) = unsafe { &mut *payload_ptr }.data.as_deref_mut() else {
-        // 载荷缺失即 detach（live 界判后不可达，防御背板）：转换副作用已先
-        // 发生，写按 [[Set]] 静默 no-op。
+    let obj = unsafe { &*buffer_ptr };
+    // 载荷缺失即 detach（live 界判后不可达，防御背板）：转换副作用已先
+    // 发生，写按 [[Set]] 静默 no-op。
+    let Some(mut store) = buffer_store_mut_ptr(obj) else {
         return Ok(());
     };
-    write_element(vm, view.kind, buffer, absolute_byte_offset(view, index as usize), elem);
+    ta_store_write(vm, &mut store, view.kind, absolute_byte_offset(view, index as usize), elem);
     Ok(())
 }
 
@@ -754,6 +761,91 @@ pub(crate) fn write_element<H: VmHost>(
     }
 }
 
+/// 把已转换值按元素类型编码后写入共享缓冲（SAB 臂）：越界（含活长收缩后
+/// 越界）静默不写，与 [`write_element`] 的 live 视图越界语义同口径。
+pub(crate) fn write_element_shared<H: VmHost>(
+    vm: &mut H, kind: TypedArrayKind, buffer: &SharedBuffer, offset: usize, value: JsValue,
+) {
+    // 活长可被并发推进/收缩：元素字节区越界时静默不写（live 视图越界语义）。
+    if offset + kind.bytes_per_element() > buffer.len() {
+        return;
+    }
+    let n = oxide_runtime_api::to_number(value);
+    let mut bytes = [0u8; 8];
+    let len = match kind {
+        TypedArrayKind::Int8 => {
+            bytes[0] = n as i32 as u8 as i8 as u8;
+            1
+        }
+        TypedArrayKind::Uint8 => {
+            bytes[0] = n as i32 as u8;
+            1
+        }
+        TypedArrayKind::Uint8Clamped => {
+            bytes[0] = n.clamp(0.0, 255.0).round() as u8;
+            1
+        }
+        TypedArrayKind::Int16 => {
+            bytes[..2].copy_from_slice(&(n as i32 as u16 as i16).to_ne_bytes());
+            2
+        }
+        TypedArrayKind::Uint16 => {
+            bytes[..2].copy_from_slice(&(n as i32 as u16).to_ne_bytes());
+            2
+        }
+        TypedArrayKind::Int32 => {
+            bytes[..4].copy_from_slice(&(n as i32).to_ne_bytes());
+            4
+        }
+        TypedArrayKind::Uint32 => {
+            bytes[..4].copy_from_slice(&(n as u32).to_ne_bytes());
+            4
+        }
+        TypedArrayKind::Float32 => {
+            bytes[..4].copy_from_slice(&(n as f32).to_ne_bytes());
+            4
+        }
+        TypedArrayKind::Float64 => {
+            bytes[..8].copy_from_slice(&n.to_ne_bytes());
+            8
+        }
+        TypedArrayKind::BigInt64 | TypedArrayKind::BigUint64 => {
+            // 取低 64 位位模式（与 [`write_element`] 同口径）：BigInt64 按位模式
+            // 重解释为 i64（二进制补码），非 BigInt 值按 ToBigInt 语义落 0。
+            static ZERO_BI: std::sync::LazyLock<BigInt> = std::sync::LazyLock::new(|| BigInt::from(0_i64));
+            let v: &BigInt = if value.is_bigint() { vm.bigint_value(value) } else { &ZERO_BI };
+            let low = (v & (BigInt::from(u64::MAX)))
+                .to_u64()
+                .expect("与 u64::MAX 掩码后恒在 u64 范围");
+            let bytes64 = if matches!(kind, TypedArrayKind::BigInt64) {
+                (low as i64).to_ne_bytes()
+            } else {
+                low.to_ne_bytes()
+            };
+            bytes[..8].copy_from_slice(&bytes64);
+            8
+        }
+    };
+    // 越界由 write_range 守卫（活长收缩后静默不写，不改变活长）。
+    let _ = buffer.write_range(offset, &bytes[..len]);
+}
+
+/// 按元素类型把已转换值写入缓冲区载荷（AB 臂对象字节区独占借用，SAB 臂共享
+/// 缓冲写）；越界静默不写（live 视图越界语义）。detach 由调用方经
+/// [`buffer_store_mut_ptr`] 的 `None` 收口，此处载荷恒在场。
+fn ta_store_write<H: VmHost>(
+    vm: &mut H, store: &mut BufferStoreMut, kind: TypedArrayKind, offset: usize, value: JsValue,
+) {
+    match store {
+        BufferStoreMut::Ab(bytes) => {
+            write_element(vm, kind, bytes, offset, value);
+        }
+        BufferStoreMut::Sab(buffer) => {
+            write_element_shared(vm, kind, buffer, offset, value);
+        }
+    }
+}
+
 /// 收集源对象的元素值。
 ///
 /// # 步骤
@@ -783,17 +875,21 @@ fn collect_array_like<H: VmHost>(
     }
     if obj.is_typed_array_obj() {
         let view = get_typed_array_data(vm, value)?;
-        let payload_ptr = buffer_payload(vm, view.buffer)?;
-        // SAFETY: payload_ptr 经 buffer_payload 校验为合法缓冲区载荷（AB/SAB 双认）。
-        let Some(buffer) = unsafe { &*payload_ptr }.data.as_deref() else {
+        let store = buffer_store(vm, view.buffer)?;
+        // SAFETY: store 经 buffer_store 校验为合法缓冲区载荷（AB/SAB 双认）。
+        if store.is_detached() {
             // 源 buffer detach：按规范的源缓冲校验步抛 TypeError；各入口的
-            // 校验/活长界判先行，此臂为防御背板。
+            // 校验/活长界判先行，此判为防御背板。
             return Err(crate::error::create_type_error(vm, "ArrayBuffer internal state invalid"));
+        }
+        let bytes: &[u8] = match &store {
+            BufferStore::Ab(payload) => &payload.bytes,
+            BufferStore::Sab(payload) => payload.buffer.as_slice(),
         };
         // 源视图按 live 长度收集：buffer 收缩越界后视同空源（与构造器
         // TypedArrayCreate 的数组元素收集口径一致）。
         return Ok((0..ta_live_length(view))
-            .map(|i| read_element(vm, view.kind, buffer, absolute_byte_offset(view, i)))
+            .map(|i| read_element(vm, view.kind, bytes, absolute_byte_offset(view, i)))
             .collect());
     }
 
@@ -882,7 +978,7 @@ fn typed_array_new<H: VmHost>(vm: &mut H, args: &[u8], kind: TypedArrayKind) -> 
         // ArrayBuffer/SharedArrayBuffer 双认：长度/偏移/长度校验与定长臂同构；
         // SAB 无 detach 产出路径，载荷恒在（防御背板保留）。
         if first_obj.is_array_buffer_obj() || first_obj.is_shared_array_buffer_obj() {
-            let Some(payload_ptr) = buffer_payload_ptr(first_obj) else {
+            let Some(store) = buffer_store_ptr(first_obj) else {
                 return NativeResult::Err(crate::error::create_type_error(vm, "ArrayBuffer internal state invalid"));
             };
             // spec 步序：ToIndex(offset) → offset 模校验 → ToIndex(length) →
@@ -906,22 +1002,24 @@ fn typed_array_new<H: VmHost>(vm: &mut H, args: &[u8], kind: TypedArrayKind) -> 
             } else {
                 native_try!(to_index(vm, vm.reg(args[3]), "TypedArray length out of bounds"))
             };
-            // SAFETY: payload_ptr 经 buffer_payload_ptr 校验为合法缓冲区载荷。
-            let payload = unsafe { &*payload_ptr };
-            let Some(data) = payload.data.as_ref() else {
-                // 首参 buffer 载荷缺失（AB 转换窗口内已 detach；SAB 为防御背板）：
+            // SAFETY: store 经 buffer_store_ptr 校验为合法缓冲区载荷。
+            if store.is_detached() {
+                // 首参 buffer 载荷缺失（AB 转换窗口内已 detach）：
                 // 按规范的 IsDetached 步抛 TypeError。
                 return NativeResult::Err(type_error(vm, "ArrayBuffer internal state invalid"));
+            }
+            let (buffer_len, fixed) = match &store {
+                BufferStore::Ab(payload) => (payload.bytes.len(), payload.max_byte_length == 0),
+                BufferStore::Sab(payload) => (payload.buffer.len(), !payload.growable),
             };
-            let buffer_len = data.len();
             if byte_offset > buffer_len {
                 return NativeResult::Err(range_error(vm, "TypedArray byteOffset out of bounds"));
             }
             let remaining = buffer_len - byte_offset;
             if auto_length {
-                // 定长 + 省略 length：剩余字节须被元素大小整除（max_byte_length
-                // 存储态 0 = 定长，AB/SAB 同编码）；可增缓冲无此模校验。
-                if payload.max_byte_length == 0 && remaining % bpe != 0 {
+                // 定长 + 省略 length：剩余字节须被元素大小整除；可增缓冲
+                // 无此模校验。
+                if fixed && remaining % bpe != 0 {
                     return NativeResult::Err(range_error(vm, "TypedArray length out of bounds"));
                 }
                 length = remaining / bpe;
@@ -941,15 +1039,19 @@ fn typed_array_new<H: VmHost>(vm: &mut H, args: &[u8], kind: TypedArrayKind) -> 
             let byte_len = values.len().saturating_mul(bpe);
             let buffer =
                 JsValue::from_js_object(new_array_buffer(vm, vec![0; byte_len], 0, default_array_buffer_proto(vm)));
-            let payload_ptr = native_try!(buffer_payload(vm, buffer));
-            // SAFETY: payload_ptr 经 buffer_payload 校验为合法缓冲区载荷（AB/SAB 双认）。
-            let Some(buffer_ref) = unsafe { &mut *payload_ptr }.data.as_deref_mut() else {
+            // 新建 buffer 必为 ArrayBuffer（非 SAB），直接经对象内载荷写元素。
+            let buffer_ptr = buffer.as_js_object_ptr();
+            // SAFETY: buffer 对象本 session 存活，此处只写载荷字节切片。
+            let obj = unsafe { &*buffer_ptr };
+            let Some(payload_ptr) = array_buffer_payload_ptr(obj) else {
                 // 新建 buffer 载荷恒存活（无人可 detach），此臂为防御背板。
                 return NativeResult::Err(crate::error::create_type_error(vm, "ArrayBuffer internal state invalid"));
             };
+            // SAFETY: payload_ptr 经 array_buffer_payload_ptr 校验为合法载荷盒，借用止于循环。
+            let payload = unsafe { &mut *payload_ptr };
             for (idx, value) in values.into_iter().enumerate() {
                 let elem = native_try!(ta_element_value(vm, kind, value));
-                write_element(vm, kind, buffer_ref, idx * bpe, elem);
+                write_element(vm, kind, &mut payload.bytes, idx * bpe, elem);
             }
             (buffer, 0, byte_len / bpe, false, proto)
         }
@@ -1093,15 +1195,16 @@ pub fn typed_array_fill<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     native_try!(ta_validate(vm, view, true));
     let start = clamp_index_to_len(start_raw, len);
     let end = clamp_index_to_len(end_raw, len).min(ta_spec_length(view));
-    let payload_ptr = native_try!(buffer_payload(vm, view.buffer));
-    // SAFETY: payload_ptr 经 buffer_payload 校验为合法缓冲区载荷（AB/SAB 双认）。
-    let Some(buffer) = unsafe { &mut *payload_ptr }.data.as_deref_mut() else {
-        // 转换窗口内 detach：填充写退化为静默 no-op（循环内无重入窗，单次
-        // 判即封窗），按 [[Set]] 语义正常返回 this。
+    let buffer_ptr = view.buffer.as_js_object_ptr();
+    // SAFETY: buffer 对象与视图同生命周期，此处只写载荷字节切片。
+    let obj = unsafe { &*buffer_ptr };
+    // 转换窗口内的 detach：填充写退化为静默 no-op（循环内无重入窗，单次
+    // 判即封窗），按 [[Set]] 语义正常返回 this。
+    let Some(mut store) = buffer_store_mut_ptr(obj) else {
         return NativeResult::Ok(this_val);
     };
     for idx in start..end.max(start) {
-        write_element(vm, view.kind, buffer, absolute_byte_offset(view, idx), elem);
+        ta_store_write(vm, &mut store, view.kind, absolute_byte_offset(view, idx), elem);
     }
     NativeResult::Ok(this_val)
 }
@@ -1268,8 +1371,11 @@ pub fn typed_array_subarray<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult 
     // 2 参构造（省略 count，子视图随 buffer 伸缩）仅当 end 未给、源视图为
     // auto 且 buffer 可缩放；定长视图恒三参定死区间（窗口超 buffer 由构造器
     // 抛 RangeError）。
-    let resizable = match buffer_payload(vm, view.buffer) {
-        Ok(p) => unsafe { &*p }.max_byte_length != 0,
+    let resizable = match buffer_store(vm, view.buffer) {
+        Ok(store) => match store {
+            BufferStore::Ab(payload) => payload.max_byte_length != 0,
+            BufferStore::Sab(payload) => payload.growable,
+        },
         Err(_) => false,
     };
     let ctor_args = if end_undefined && view.auto_length && resizable {
@@ -1332,12 +1438,13 @@ pub fn typed_array_set<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     if (source_len as u64) + (offset as u64) > len as u64 {
         return NativeResult::Err(range_error(vm, "TypedArray.set offset out of bounds"));
     }
-    let payload_ptr = native_try!(buffer_payload(vm, view.buffer));
-    // SAFETY: payload_ptr 经 buffer_payload 校验为合法缓冲区载荷（AB/SAB 双认）。
-    let mut buffer = unsafe { &mut *payload_ptr }.data.as_deref_mut();
+    let buffer_ptr = view.buffer.as_js_object_ptr();
+    // SAFETY: buffer 对象与视图同生命周期，此处只写载荷字节切片。
+    let obj = unsafe { &*buffer_ptr };
     // 逐元素惰性读源→转换→写：循环中的 detach/收缩使后续写入静默失效
     // （目标越界不写，与规范 SetValueInBuffer 边界无操作同语义）；载荷缺失
     // 等同 detach，全循环退化为源读副作用与转换、零写入。
+    let mut store = buffer_store_mut_ptr(obj);
     for k in 0..source_len {
         let value = match &source_kind {
             SetSourceKind::TypedArray(sview) => native_try!(ta_read(vm, *sview, k)),
@@ -1346,8 +1453,8 @@ pub fn typed_array_set<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         };
         let elem = native_try!(ta_element_value(vm, view.kind, value));
         if offset + k < ta_live_length(view) {
-            if let Some(buffer) = buffer.as_deref_mut() {
-                write_element(vm, view.kind, buffer, absolute_byte_offset(view, offset + k), elem);
+            if let Some(s) = &mut store {
+                ta_store_write(vm, s, view.kind, absolute_byte_offset(view, offset + k), elem);
             }
         }
     }
@@ -1490,14 +1597,15 @@ fn set_typed_array_element<H: VmHost>(vm: &mut H, ta: JsValue, index: usize, val
     if index >= ta_live_length(view) {
         return Ok(());
     }
-    let payload_ptr = buffer_payload(vm, view.buffer)?;
-    // SAFETY: payload_ptr 经 buffer_payload 校验为合法缓冲区载荷（AB/SAB 双认）。
-    let Some(buffer) = unsafe { &mut *payload_ptr }.data.as_deref_mut() else {
-        // 载荷缺失即 detach（live 界判后不可达，防御背板）：转换副作用已先
-        // 发生，写按 [[Set]] 静默 no-op。
+    let buffer_ptr = view.buffer.as_js_object_ptr();
+    // SAFETY: buffer 对象与视图同生命周期，此处只写载荷字节切片。
+    let obj = unsafe { &*buffer_ptr };
+    // 载荷缺失即 detach（live 界判后不可达，防御背板）：转换副作用已先
+    // 发生，写按 [[Set]] 静默 no-op。
+    let Some(mut store) = buffer_store_mut_ptr(obj) else {
         return Ok(());
     };
-    write_element(vm, view.kind, buffer, absolute_byte_offset(view, index), elem);
+    ta_store_write(vm, &mut store, view.kind, absolute_byte_offset(view, index), elem);
     Ok(())
 }
 
@@ -1526,14 +1634,18 @@ fn ta_read<H: VmHost>(vm: &mut H, view: TypedArrayData, index: usize) -> Result<
     if index >= ta_live_length(view) {
         return Ok(JsValue::undefined());
     }
-    let payload_ptr = buffer_payload(vm, view.buffer)?;
-    // SAFETY: payload_ptr 经 buffer_payload 校验为合法缓冲区载荷（AB/SAB 双认）。
-    let Some(buffer) = unsafe { &*payload_ptr }.data.as_deref() else {
+    let store = buffer_store(vm, view.buffer)?;
+    // SAFETY: store 经 buffer_store 校验为合法缓冲区载荷（AB/SAB 双认）。
+    if store.is_detached() {
         // 载荷缺失即 detach（live 界判后不可达，防御背板）：按 [[Get]] 读
         // undefined。
         return Ok(JsValue::undefined());
+    }
+    let bytes: &[u8] = match &store {
+        BufferStore::Ab(payload) => &payload.bytes,
+        BufferStore::Sab(payload) => payload.buffer.as_slice(),
     };
-    Ok(read_element(vm, view.kind, buffer, absolute_byte_offset(view, index)))
+    Ok(read_element(vm, view.kind, bytes, absolute_byte_offset(view, index)))
 }
 
 /// 把已转换的值写入 TypedArray 指定索引（视图 data 已取出的形式，供原型方法内部使用）。
@@ -1543,13 +1655,14 @@ fn ta_write<H: VmHost>(vm: &mut H, view: TypedArrayData, index: usize, value: Js
     if index >= ta_live_length(view) {
         return Ok(());
     }
-    let payload_ptr = buffer_payload(vm, view.buffer)?;
-    // SAFETY: payload_ptr 经 buffer_payload 校验为合法缓冲区载荷（AB/SAB 双认）。
-    let Some(buffer) = unsafe { &mut *payload_ptr }.data.as_deref_mut() else {
-        // 载荷缺失即 detach（live 界判后不可达，防御背板）：写静默 no-op。
+    let buffer_ptr = view.buffer.as_js_object_ptr();
+    // SAFETY: buffer 对象与视图同生命周期，此处只写载荷字节切片。
+    let obj = unsafe { &*buffer_ptr };
+    // 载荷缺失即 detach（live 界判后不可达，防御背板）：写静默 no-op。
+    let Some(mut store) = buffer_store_mut_ptr(obj) else {
         return Ok(());
     };
-    write_element(vm, view.kind, buffer, absolute_byte_offset(view, index), value);
+    ta_store_write(vm, &mut store, view.kind, absolute_byte_offset(view, index), value);
     Ok(())
 }
 
@@ -2625,36 +2738,44 @@ pub fn uint8array_to_base64<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult 
             .map_err(|e| crate::iterator::engine_error(vm, &e)));
         omit_padding = ta_to_boolean(v);
     }
-    let payload_ptr = native_try!(buffer_payload(vm, view.buffer));
-    // SAFETY: payload_ptr 来自活动缓冲区对象（AB/SAB 双认），视图范围由构造保证界内。
-    let Some(buffer) = unsafe { &*payload_ptr }.data.as_deref() else {
+    let store = native_try!(buffer_store(vm, view.buffer));
+    // SAFETY: store 来自活动缓冲区对象（AB/SAB 双认），视图范围由构造保证界内。
+    if store.is_detached() {
         // buffer detach：按规范的视图校验步抛 TypeError；入口校验先行，
-        // 此臂为防御背板。
+        // 此判为防御背板。
         return NativeResult::Err(crate::error::create_type_error(vm, "ArrayBuffer internal state invalid"));
+    }
+    let bytes: &[u8] = match &store {
+        BufferStore::Ab(payload) => &payload.bytes,
+        BufferStore::Sab(payload) => payload.buffer.as_slice(),
     };
     // 视图范围按 live 长度与当前缓冲长度双收口（缓冲可被 resize 收缩、
     // 视图可越界）。
-    let start = view.byte_offset.min(buffer.len());
-    let end = (view.byte_offset.saturating_add(ta_live_length(view))).min(buffer.len());
-    NativeResult::Ok(vm.new_string_owned(crate::ta_codec::encode_base64(&buffer[start..end], alphabet, omit_padding)))
+    let start = view.byte_offset.min(bytes.len());
+    let end = (view.byte_offset.saturating_add(ta_live_length(view))).min(bytes.len());
+    NativeResult::Ok(vm.new_string_owned(crate::ta_codec::encode_base64(&bytes[start..end], alphabet, omit_padding)))
 }
 
 /// `%Uint8Array%.prototype.toHex()`：ValidateUint8Array 后编码小写两位 hex。
 pub fn uint8array_to_hex<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
     let view = native_try!(validate_uint8_array(vm, this_val));
-    let payload_ptr = native_try!(buffer_payload(vm, view.buffer));
-    // SAFETY: payload_ptr 来自活动缓冲区对象（AB/SAB 双认），视图范围由构造保证界内。
-    let Some(buffer) = unsafe { &*payload_ptr }.data.as_deref() else {
+    let store = native_try!(buffer_store(vm, view.buffer));
+    // SAFETY: store 来自活动缓冲区对象（AB/SAB 双认），视图范围由构造保证界内。
+    if store.is_detached() {
         // buffer detach：按规范的视图校验步抛 TypeError；入口校验先行，
-        // 此臂为防御背板。
+        // 此判为防御背板。
         return NativeResult::Err(crate::error::create_type_error(vm, "ArrayBuffer internal state invalid"));
+    }
+    let bytes: &[u8] = match &store {
+        BufferStore::Ab(payload) => &payload.bytes,
+        BufferStore::Sab(payload) => payload.buffer.as_slice(),
     };
     // 视图范围按 live 长度与当前缓冲长度双收口（缓冲可被 resize 收缩、
     // 视图可越界）。
-    let start = view.byte_offset.min(buffer.len());
-    let end = (view.byte_offset.saturating_add(ta_live_length(view))).min(buffer.len());
-    NativeResult::Ok(vm.new_string_owned(crate::ta_codec::encode_hex(&buffer[start..end])))
+    let start = view.byte_offset.min(bytes.len());
+    let end = (view.byte_offset.saturating_add(ta_live_length(view))).min(bytes.len());
+    NativeResult::Ok(vm.new_string_owned(crate::ta_codec::encode_hex(&bytes[start..end])))
 }
 
 /// `%Uint8Array%.prototype.setFromBase64(string, options)`：解码写入视图，
@@ -2664,26 +2785,55 @@ pub fn uint8array_set_from_base64<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeR
     let view = native_try!(validate_uint8_array(vm, this_val));
     let string = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
     let options = if args.len() > 2 { vm.reg(args[2]) } else { JsValue::undefined() };
-    let payload_ptr = native_try!(buffer_payload(vm, view.buffer));
+    let buffer_ptr = view.buffer.as_js_object_ptr();
+    // SAFETY: buffer 对象与视图同生命周期，此处只读写载荷。
+    let obj = unsafe { &*buffer_ptr };
     // 目标缓冲不可变（immutable）：写前抛 TypeError（规范 ValidateUint8Array
     // 后的不可变守卫步）。
-    if unsafe { (*payload_ptr).immutable } {
-        return NativeResult::Err(type_error(vm, "ArrayBuffer is immutable"));
+    if let Some(ptr) = array_buffer_payload_ptr(obj) {
+        if !ptr.is_null() {
+            // SAFETY: ptr 经 array_buffer_payload_ptr 校验为存活载荷盒。
+            let payload = unsafe { &*ptr };
+            if payload.immutable {
+                return NativeResult::Err(type_error(vm, "ArrayBuffer is immutable"));
+            }
+        }
     }
-    // SAFETY: payload_ptr 来自活动缓冲区对象（AB/SAB 双认），视图范围由构造保证界内。
-    let Some(buffer) = unsafe { &mut *payload_ptr }.data.as_deref_mut() else {
-        // buffer detach：按规范的视图校验步抛 TypeError；入口校验先行，
-        // 此臂为防御背板。
+    let start = view.byte_offset;
+    // buffer detach：按规范的视图校验步抛 TypeError；入口校验先行，此判为防御背板。
+    let Some(store) = buffer_store_mut_ptr(obj) else {
         return NativeResult::Err(crate::error::create_type_error(vm, "ArrayBuffer internal state invalid"));
     };
-    let start = view.byte_offset;
-    let (read, written) =
-        native_try!(ta_decode_base64(vm, string, options, Some(ta_live_length(view)), &mut |idx, b| {
-            // 缓冲可被 resize 收缩：目标字节越界时静默不写（live 视图越界语义）。
-            if start + idx < buffer.len() {
-                buffer[start + idx] = b;
-            }
-        }));
+    let (read, written) = match store {
+        BufferStoreMut::Ab(bytes) => {
+            native_try!(ta_decode_base64(
+                vm,
+                string,
+                options,
+                Some(ta_live_length(view)),
+                &mut |idx, b| {
+                    // 缓冲可被 resize 收缩：目标字节越界时静默不写（live 视图越界语义）。
+                    if start + idx < bytes.len() {
+                        bytes[start + idx] = b;
+                    }
+                },
+            ))
+        }
+        BufferStoreMut::Sab(buffer) => {
+            native_try!(ta_decode_base64(
+                vm,
+                string,
+                options,
+                Some(ta_live_length(view)),
+                &mut |idx, b| {
+                    // 活长可被并发推进：目标字节越界时静默不写（live 视图越界语义）。
+                    if start + idx < buffer.len() {
+                        let _ = buffer.write_range(start + idx, &[b]);
+                    }
+                },
+            ))
+        }
+    };
     NativeResult::Ok(ta_read_written_result(vm, read, written))
 }
 
@@ -2696,28 +2846,49 @@ pub fn uint8array_set_from_hex<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResu
     if !string.is_string() {
         return NativeResult::Err(type_error(vm, "string argument required"));
     }
-    let payload_ptr = native_try!(buffer_payload(vm, view.buffer));
+    let buffer_ptr = view.buffer.as_js_object_ptr();
+    // SAFETY: buffer 对象与视图同生命周期，此处只读写载荷。
+    let obj = unsafe { &*buffer_ptr };
     // 目标缓冲不可变（immutable）：写前抛 TypeError（规范 ValidateUint8Array
     // 后的不可变守卫步）。
-    if unsafe { (*payload_ptr).immutable } {
-        return NativeResult::Err(type_error(vm, "ArrayBuffer is immutable"));
+    if let Some(ptr) = array_buffer_payload_ptr(obj) {
+        if !ptr.is_null() {
+            // SAFETY: ptr 经 array_buffer_payload_ptr 校验为存活载荷盒。
+            let payload = unsafe { &*ptr };
+            if payload.immutable {
+                return NativeResult::Err(type_error(vm, "ArrayBuffer is immutable"));
+            }
+        }
     }
-    // SAFETY: payload_ptr 来自活动缓冲区对象（AB/SAB 双认），视图范围由构造保证界内。
-    let Some(buffer) = unsafe { &mut *payload_ptr }.data.as_deref_mut() else {
-        // buffer detach：按规范的视图校验步抛 TypeError；入口校验先行，
-        // 此臂为防御背板。
-        return NativeResult::Err(crate::error::create_type_error(vm, "ArrayBuffer internal state invalid"));
-    };
     let start = view.byte_offset;
     let units = vm.string_units(string).into_owned();
-    let (read, written) = match crate::ta_codec::decode_hex(&units, Some(ta_live_length(view)), &mut |idx, b| {
-        // 缓冲可被 resize 收缩：目标字节越界时静默不写（live 视图越界语义）。
-        if start + idx < buffer.len() {
-            buffer[start + idx] = b;
+    // buffer detach：按规范的视图校验步抛 TypeError；入口校验先行，此判为防御背板。
+    let Some(store) = buffer_store_mut_ptr(obj) else {
+        return NativeResult::Err(crate::error::create_type_error(vm, "ArrayBuffer internal state invalid"));
+    };
+    let (read, written) = match store {
+        BufferStoreMut::Ab(bytes) => {
+            match crate::ta_codec::decode_hex(&units, Some(ta_live_length(view)), &mut |idx, b| {
+                // 缓冲可被 resize 收缩：目标字节越界时静默不写（live 视图越界语义）。
+                if start + idx < bytes.len() {
+                    bytes[start + idx] = b;
+                }
+            }) {
+                Ok(r) => r,
+                Err(_) => return NativeResult::Err(crate::error::create_syntax_error(vm, "invalid hex input")),
+            }
         }
-    }) {
-        Ok(r) => r,
-        Err(_) => return NativeResult::Err(crate::error::create_syntax_error(vm, "invalid hex input")),
+        BufferStoreMut::Sab(buffer) => {
+            match crate::ta_codec::decode_hex(&units, Some(ta_live_length(view)), &mut |idx, b| {
+                // 活长可被并发推进：目标字节越界时静默不写（live 视图越界语义）。
+                if start + idx < buffer.len() {
+                    let _ = buffer.write_range(start + idx, &[b]);
+                }
+            }) {
+                Ok(r) => r,
+                Err(_) => return NativeResult::Err(crate::error::create_syntax_error(vm, "invalid hex input")),
+            }
+        }
     };
     NativeResult::Ok(ta_read_written_result(vm, read, written))
 }
@@ -2772,7 +2943,8 @@ pub fn uint8array_from_hex<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::array_buffer::ArrayBufferPayload;
+    use std::sync::Arc;
+    use crate::array_buffer::{ArrayBufferPayload, SharedArrayBufferPayload};
 
     fn gate(text: &str, length: usize) -> TaIndexGate {
         ta_index_gate_from_text(text, length)
@@ -2782,22 +2954,33 @@ mod tests {
     fn ab_object_with_data(data: Option<Vec<u8>>) -> JsObject {
         let mut obj = JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::undefined());
         obj.type_tag = JsObject::OBJ_TYPE_ARRAY_BUFFER;
+        let detached = data.is_none();
         let payload = ArrayBufferPayload {
-            data,
+            bytes: data.unwrap_or_default(),
+            detached,
             max_byte_length: 0,
             immutable: false,
         };
-        let payload_ptr = Box::into_raw(Box::new(payload));
+        let payload_ptr = Arc::into_raw(Arc::new(payload));
         // SAFETY: 载荷盒形态与 new_array_buffer 的 native_fn 槽存储一致，测试结束前恰好释放一次。
         obj.set_native_fn(Some(unsafe { NativeFnPtr::from_raw(payload_ptr as *const ()) }));
         obj
     }
 
     /// 手工构造带载荷盒的 SharedArrayBuffer 对象（不经 Vm，只验 live 长度纯核；
-    /// 载荷盒形态与 ArrayBuffer 臂同构）。
+    /// 字节区经核账目登记，随对象释放）。
     fn sab_object_with_data(data: Option<Vec<u8>>) -> JsObject {
-        let mut obj = ab_object_with_data(data);
+        let mut obj = JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::undefined());
         obj.type_tag = JsObject::OBJ_TYPE_SHARED_ARRAY_BUFFER;
+        let core = oxide_kernel::KernelCore::new(oxide_kernel::KernelConfig::minimal());
+        let buffer = Arc::new(SharedBuffer::new(core, data.unwrap_or_default()));
+        let payload = SharedArrayBufferPayload {
+            buffer,
+            growable: false,
+        };
+        let payload_ptr = Arc::into_raw(Arc::new(payload));
+        // SAFETY: 载荷盒形态与 new_shared_array_buffer 的 native_fn 槽存储一致，测试结束前恰好释放一次。
+        obj.set_native_fn(Some(unsafe { NativeFnPtr::from_raw(payload_ptr as *const ()) }));
         obj
     }
 

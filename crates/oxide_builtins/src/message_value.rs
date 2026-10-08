@@ -268,17 +268,22 @@ fn detach_array_buffer<H: VmHost>(
         // 转移：移动源载荷入消息，源转 detached 态。
         // SAFETY: payload_ptr 经 array_buffer_payload_ptr 校验为存活载荷盒；
         // 移动为标量操作，不跨 JS 调用。
-        let data = unsafe { (*payload_ptr).data.take() };
-        let Some(data) = data else {
+        let src_detached = unsafe { (*payload_ptr).detached };
+        if src_detached {
             return Err(data_clone_error(vm, "detached buffer in transfer list"));
         };
+        let data = unsafe { std::mem::take(&mut (*payload_ptr).bytes) };
+        unsafe { (*payload_ptr).detached = true };
         return Ok(MessageValue::ArrayBuffer(Arc::new(data)));
     }
     // 未转移：克隆字节。
     // SAFETY: payload_ptr 经 array_buffer_payload_ptr 校验为存活载荷盒；标量
     // 拷出后借用即结束，不跨 JS 调用。
-    let data = unsafe { (*payload_ptr).data.clone() };
-    let Some(data) = data else {
+    let (data, detached) = unsafe {
+        let p = &*payload_ptr;
+        (p.bytes.clone(), p.detached)
+    };
+    if detached {
         return Err(data_clone_error(vm, "detached ArrayBuffer is not cloneable"));
     };
     Ok(MessageValue::ArrayBuffer(Arc::new(data)))
@@ -802,7 +807,7 @@ mod tests {
         assert!(cl.is_array_buffer_obj());
         let ptr = crate::array_buffer::array_buffer_payload_ptr(cl).unwrap();
         // SAFETY: ptr 经 array_buffer_payload_ptr 校验为存活载荷盒。
-        assert_eq!(unsafe { &*ptr }.data.as_ref(), Some(&vec![1, 2, 3, 4]));
+        assert_eq!(unsafe { &*ptr }.bytes.as_slice(), &[1, 2, 3, 4]);
     }
 
     #[test]
@@ -816,13 +821,13 @@ mod tests {
         let src = unsafe { &*v.as_js_object_ptr() };
         let src_ptr2 = crate::array_buffer::array_buffer_payload_ptr(src).unwrap();
         // SAFETY: src_ptr2 经校验为存活载荷盒。
-        assert!(unsafe { &*src_ptr2 }.data.is_none(), "transfer 后源应 detach");
+        assert!(unsafe { &*src_ptr2 }.detached, "transfer 后源应 detach");
         let mut target = Vm::new();
         let r = rehydrate(&mut target, &mv);
         let cl = unsafe { &*r.as_js_object_ptr() };
         let ptr = crate::array_buffer::array_buffer_payload_ptr(cl).unwrap();
         // SAFETY: ptr 经校验为存活载荷盒。
-        assert_eq!(unsafe { &*ptr }.data.as_ref(), Some(&vec![9, 8, 7]));
+        assert_eq!(unsafe { &*ptr }.bytes.as_slice(), &[9, 8, 7]);
     }
 
     #[test]

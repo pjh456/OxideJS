@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use oxide_kernel::shape_forge::EMPTY_SHAPE_ID;
+use oxide_kernel::SharedBuffer;
 use oxide_types::object::{JsObject, NativeFnPtr};
 use oxide_types::private_key::{encode_symbol_key, WELL_KNOWN_SYMBOL_SPECIES};
 use oxide_types::value::JsValue;
@@ -11,17 +12,80 @@ use crate::array::to_integer_or_infinity_bounded;
 
 pub(crate) const MAX_ARRAY_BUFFER_LENGTH: usize = 1 << 30;
 
-/// ArrayBuffer 载荷：字节缓冲与状态位。`data` 为 `None` 即缓冲区已 detach；
-/// `max_byte_length` 为存储态上限：0 即定长缓冲（resizable 判据），非 0 存
-/// 请求上限 + 1（上限 0 与定长必须可分）；`immutable` 为字节缓冲写守卫标志。
-/// 载荷经 `Arc::into_raw` 存于对象 `native_fn` 槽（引用计数盒：SharedArrayBuffer
-/// 克隆共享同一载荷，计数归零统一释放），GC 两自由函数（size/drop）对整结构体
-/// 操作。
+/// ArrayBuffer 载荷：字节缓冲与状态位。`detached` 为真即缓冲区已 detach
+/// （detach 时字节区清空、标志置位，与空缓冲可分）；`max_byte_length` 为
+/// 存储态上限：0 即定长缓冲（resizable 判据），非 0 存请求上限 + 1（上限 0
+/// 与定长必须可分）；`immutable` 为字节缓冲写守卫标志。
+/// 载荷经 `Arc::into_raw` 存于对象 `native_fn` 槽（引用计数盒），GC 两自由
+/// 函数（size/drop）对整结构体操作。
 #[derive(Clone)]
 pub(crate) struct ArrayBufferPayload {
-    pub(crate) data: Option<Vec<u8>>,
+    pub(crate) bytes: Vec<u8>,
+    pub(crate) detached: bool,
     pub(crate) max_byte_length: usize,
     pub(crate) immutable: bool,
+}
+
+/// SharedArrayBuffer 载荷：共享字节缓冲（跨线程共享，预分配至真实上限，活长
+/// 原子推进）。载荷经 `Arc::into_raw` 存于对象 `native_fn` 槽（引用计数盒：
+/// SAB 克隆共享同一载荷，计数归零统一释放）；字节区账目在核的
+/// `shared_buffer_bytes`，session 账目只计结构体。
+#[derive(Clone)]
+pub(crate) struct SharedArrayBufferPayload {
+    pub(crate) buffer: Arc<SharedBuffer>,
+    pub(crate) growable: bool,
+}
+
+/// 缓冲区载荷统一双认入口：ArrayBuffer 与 SharedArrayBuffer 载荷盒双标签
+/// 双认，消费方经本枚举统一分流。
+#[derive(Clone)]
+pub(crate) enum BufferStore {
+    Ab(ArrayBufferPayload),
+    Sab(SharedArrayBufferPayload),
+}
+
+impl BufferStore {
+    /// detached 探针：AB 臂读 detached 标志（区分 detached 与空缓冲）；
+    /// SAB 臂无 detach 路径，恒 false。
+    pub(crate) fn is_detached(&self) -> bool {
+        match self {
+            BufferStore::Ab(payload) => payload.detached,
+            BufferStore::Sab(_) => false,
+        }
+    }
+}
+
+/// 缓冲区载荷可变借用（写点专用）：AB 臂为对象字节区独占借用（detached
+/// 不返回），SAB 臂为共享缓冲共享借用（`write_range` 取 `&self`）。与只读
+/// [`BufferStore`] 的克隆语义相区分：写点必须落回对象内载荷，克隆不可写回。
+pub(crate) enum BufferStoreMut<'a> {
+    Ab(&'a mut [u8]),
+    Sab(&'a SharedBuffer),
+}
+
+/// 缓冲区载荷可变借用双认入口：AB 臂返回对象字节区独占借用（detached 或
+/// 槽位空 → `None`），SAB 臂返回共享缓冲共享借用；两标签之外（含槽位空）
+/// 返回 `None`。
+pub(crate) fn buffer_store_mut_ptr<'a>(obj: &'a JsObject) -> Option<BufferStoreMut<'a>> {
+    if obj.is_array_buffer_obj() {
+        let ptr = array_buffer_payload_ptr(obj)?;
+        if ptr.is_null() {
+            return None;
+        }
+        // SAFETY: ptr 非空且指向存活载荷盒，独占借用经返回移交调用方。
+        let payload = unsafe { &mut *ptr };
+        if payload.detached {
+            return None;
+        }
+        return Some(BufferStoreMut::Ab(&mut payload.bytes));
+    }
+    let ptr = shared_array_buffer_payload_ptr(obj)?;
+    if ptr.is_null() {
+        return None;
+    }
+    // SAFETY: ptr 非空且指向存活载荷盒，共享借用经返回移交调用方。
+    let payload = unsafe { &*ptr };
+    Some(BufferStoreMut::Sab(&payload.buffer))
 }
 
 macro_rules! native_try {
@@ -100,7 +164,8 @@ pub(crate) fn new_array_buffer<H: VmHost>(
     let mut obj = JsObject::new_empty(EMPTY_SHAPE_ID, proto);
     obj.type_tag = JsObject::OBJ_TYPE_ARRAY_BUFFER;
     let payload = ArrayBufferPayload {
-        data: Some(data),
+        bytes: data,
+        detached: false,
         max_byte_length,
         immutable: false,
     };
@@ -129,7 +194,7 @@ pub fn array_buffer_native_size(obj: &JsObject) -> u64 {
     }
     // SAFETY: payload_ptr 非空且指向存活载荷盒。
     let payload = unsafe { &*payload_ptr };
-    (std::mem::size_of::<ArrayBufferPayload>() + payload.data.as_ref().map_or(0, |d| d.capacity())) as u64
+    (std::mem::size_of::<ArrayBufferPayload>() + payload.bytes.capacity()) as u64
 }
 
 /// 释放 ArrayBuffer 载荷盒（native_fn 槽），返回字节数；槽置空后重复调用零释放。
@@ -155,16 +220,22 @@ pub(crate) fn default_shared_array_buffer_proto<H: VmHost>(vm: &H) -> JsValue {
 
 /// 分配携给定 proto 与载荷形态（`max_byte_length` 为存储态：0 定长，非 0 可
 /// grow）的 SharedArrayBuffer 对象；byteLength 经原型访问器读（不写 own 数据
-/// 属性）。
+/// 属性）。字节区经 `SharedBuffer` 预分配（growable 预分至真实上限）并计入
+/// 核的 `shared_buffer_bytes` 账目。
 pub(crate) fn new_shared_array_buffer<H: VmHost>(
     vm: &mut H, data: Vec<u8>, max_byte_length: usize, proto: JsValue,
 ) -> *mut JsObject {
     let mut obj = JsObject::new_empty(EMPTY_SHAPE_ID, proto);
     obj.type_tag = JsObject::OBJ_TYPE_SHARED_ARRAY_BUFFER;
-    let payload = ArrayBufferPayload {
-        data: Some(data),
-        max_byte_length,
-        immutable: false,
+    let core = vm.kernel_core().clone();
+    let buffer = if max_byte_length == 0 {
+        SharedBuffer::new(core, data)
+    } else {
+        SharedBuffer::new_growable(core, data.len(), max_byte_length - 1)
+    };
+    let payload = SharedArrayBufferPayload {
+        buffer: Arc::new(buffer),
+        growable: max_byte_length != 0,
     };
     let payload_ptr = Arc::into_raw(Arc::new(payload));
     // SAFETY: SharedArrayBuffer 对象不可调用，native_fn 槽复用为不透明载荷盒
@@ -173,33 +244,44 @@ pub(crate) fn new_shared_array_buffer<H: VmHost>(
     vm.alloc_object(obj)
 }
 
-pub(crate) fn shared_array_buffer_payload_ptr(obj: &JsObject) -> Option<*mut ArrayBufferPayload> {
+pub(crate) fn shared_array_buffer_payload_ptr(obj: &JsObject) -> Option<*mut SharedArrayBufferPayload> {
     if !obj.is_shared_array_buffer_obj() {
         return None;
     }
-    obj.native_fn().map(|ptr| ptr.as_ptr() as *mut ArrayBufferPayload)
+    obj.native_fn().map(|ptr| ptr.as_ptr() as *mut SharedArrayBufferPayload)
 }
 
-/// 缓冲区载荷指针单收口：ArrayBuffer 与 SharedArrayBuffer 共用同一载荷
-/// 结构，双标签双认，返回统一形态的载荷盒指针；两标签之外（含槽位空）
-/// 返回 `None`。
-pub(crate) fn buffer_payload_ptr(obj: &JsObject) -> Option<*mut ArrayBufferPayload> {
+/// 缓冲区载荷统一双认入口：ArrayBuffer 与 SharedArrayBuffer 双标签双认，
+/// 克隆出统一形态的载荷（AB 臂克隆字节区，SAB 臂仅增 Arc 计数）；两标签
+/// 之外（含槽位空）返回 `None`。
+pub(crate) fn buffer_store_ptr(obj: &JsObject) -> Option<BufferStore> {
     if obj.is_array_buffer_obj() {
-        return array_buffer_payload_ptr(obj);
+        let ptr = array_buffer_payload_ptr(obj)?;
+        if ptr.is_null() {
+            return None;
+        }
+        // SAFETY: ptr 非空且指向存活载荷盒，克隆只读标量与字节区。
+        return Some(BufferStore::Ab(unsafe { (*ptr).clone() }));
     }
-    shared_array_buffer_payload_ptr(obj)
+    let ptr = shared_array_buffer_payload_ptr(obj)?;
+    if ptr.is_null() {
+        return None;
+    }
+    // SAFETY: ptr 非空且指向存活载荷盒，克隆只增 Arc 计数。
+    Some(BufferStore::Sab(unsafe { (*ptr).clone() }))
 }
 
 /// 缓冲区载荷读入口（两标签双认）：校验 receiver 为 ArrayBuffer 或
-/// SharedArrayBuffer 并取载荷指针。AB 臂经 `array_buffer_payload_ptr` 与
+/// SharedArrayBuffer 并取载荷。AB 臂经 `array_buffer_payload_ptr` 与
 /// `array_buffer_payload` 路径同函数同序（逐位同形），SAB 臂经
 /// `shared_array_buffer_payload_ptr`；非对象 / 双标签外 / 槽位空（防御背板）
 /// → TypeError。
 ///
 /// # 边界与前提
-/// - SAB 无 detach 生产路径，载荷 `data` 恒在场；detach 分叉由消费方现读处理。
-/// - 调用方不得跨 JS 调用窗口持有返回指针（晋升可改写对象，须重取）。
-pub(crate) fn buffer_payload<H: VmHost>(vm: &mut H, this_val: JsValue) -> Result<*mut ArrayBufferPayload, JsValue> {
+/// - SAB 无 detach 生产路径，载荷恒在场；detach 分叉由消费方经
+///   `is_detached()` 探针现读处理。
+/// - 调用方不得跨 JS 调用窗口持有返回载荷（晋升可改写对象，须重取）。
+pub(crate) fn buffer_store<H: VmHost>(vm: &mut H, this_val: JsValue) -> Result<BufferStore, JsValue> {
     if !this_val.is_object() {
         return Err(crate::error::create_type_error(vm, "ArrayBuffer method called on incompatible receiver"));
     }
@@ -209,38 +291,34 @@ pub(crate) fn buffer_payload<H: VmHost>(vm: &mut H, this_val: JsValue) -> Result
     }
     // SAFETY: is_object 保证指针非空且对象本 session 存活。
     let obj = unsafe { &*obj_ptr };
-    let Some(payload_ptr) = buffer_payload_ptr(obj) else {
+    let Some(store) = buffer_store_ptr(obj) else {
         return Err(crate::error::create_type_error(vm, "ArrayBuffer method called on incompatible receiver"));
     };
-    if payload_ptr.is_null() {
-        return Err(crate::error::create_type_error(vm, "ArrayBuffer internal state invalid"));
-    }
-    Ok(payload_ptr)
+    Ok(store)
 }
 
-/// SharedArrayBuffer 载荷盒字节数（`native_fn` 槽）；非 SAB 或已释放 → 0。
+/// SharedArrayBuffer 载荷盒字节数（`native_fn` 槽）：只计结构体（字节区
+/// 账目在核的 `shared_buffer_bytes`）；非 SAB 或已释放 → 0。
 pub fn shared_array_buffer_native_size(obj: &JsObject) -> u64 {
-    let payload_ptr = match shared_array_buffer_payload_ptr(obj) {
-        Some(p) => p,
-        None => return 0,
-    };
-    if payload_ptr.is_null() {
-        return 0;
-    }
-    // SAFETY: payload_ptr 非空且指向存活载荷盒。
-    let payload = unsafe { &*payload_ptr };
-    (std::mem::size_of::<ArrayBufferPayload>() + payload.data.as_ref().map_or(0, |d| d.capacity())) as u64
-}
-
-/// 释放 SharedArrayBuffer 载荷盒（native_fn 槽），返回字节数；槽置空后重复调用零释放。
-pub fn drop_shared_array_buffer_native(obj: &mut JsObject) -> u64 {
-    let bytes = shared_array_buffer_native_size(obj);
-    if bytes == 0 {
-        return 0;
-    }
     let Some(payload_ptr) = shared_array_buffer_payload_ptr(obj) else {
         return 0;
     };
+    if payload_ptr.is_null() {
+        return 0;
+    }
+    std::mem::size_of::<SharedArrayBufferPayload>() as u64
+}
+
+/// 释放 SharedArrayBuffer 载荷盒（native_fn 槽），返回字节数；槽置空后重复
+/// 调用零释放。字节区随 `SharedBuffer` 引用计数归零经核账目减回。
+pub fn drop_shared_array_buffer_native(obj: &mut JsObject) -> u64 {
+    let Some(payload_ptr) = shared_array_buffer_payload_ptr(obj) else {
+        return 0;
+    };
+    if payload_ptr.is_null() {
+        return 0;
+    }
+    let bytes = std::mem::size_of::<SharedArrayBufferPayload>() as u64;
     // SAFETY: payload_ptr 非空（size 已验证），Arc::from_raw 恰好减引用一次。
     let payload = unsafe { Arc::from_raw(payload_ptr) };
     drop(payload);
@@ -331,10 +409,10 @@ pub fn shared_array_buffer_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> Na
 }
 
 /// 读入口：校验 receiver 为 SharedArrayBuffer 并取载荷指针。SAB 无 detach
-/// 生产路径，载荷 `data` 恒在场（`map_or` 兜底与 AB 读入口同形）。
+/// 生产路径，载荷恒在场（`map_or` 兜底与 AB 读入口同形）。
 pub(crate) fn shared_array_buffer_payload<H: VmHost>(
     vm: &mut H, this_val: JsValue,
-) -> Result<*mut ArrayBufferPayload, JsValue> {
+) -> Result<*mut SharedArrayBufferPayload, JsValue> {
     if !this_val.is_object() {
         return Err(crate::error::create_type_error(
             vm,
@@ -355,45 +433,44 @@ pub(crate) fn shared_array_buffer_payload<H: VmHost>(
     let Some(payload_ptr) = obj.native_fn() else {
         return Err(crate::error::create_type_error(vm, "SharedArrayBuffer internal state invalid"));
     };
-    let payload_ptr = payload_ptr.as_ptr() as *mut ArrayBufferPayload;
+    let payload_ptr = payload_ptr.as_ptr() as *mut SharedArrayBufferPayload;
     if payload_ptr.is_null() {
         return Err(crate::error::create_type_error(vm, "SharedArrayBuffer internal state invalid"));
     }
     Ok(payload_ptr)
 }
 
-/// `SharedArrayBuffer.prototype.byteLength` getter：返回缓冲区字节数
-/// （定长臂读载荷 len；growable 臂归后续面）。
+/// `SharedArrayBuffer.prototype.byteLength` getter：返回缓冲区活字节数
+/// （定长与 growable 同读活长）。
 pub fn shared_array_buffer_byte_length<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
     let payload_ptr = native_try!(shared_array_buffer_payload(vm, this_val));
     // SAFETY: payload_ptr 经 shared_array_buffer_payload 校验为合法 SAB 载荷。
-    let len = unsafe { &*payload_ptr }.data.as_ref().map_or(0, |d| d.len());
+    let len = unsafe { &*payload_ptr }.buffer.len();
     NativeResult::Ok(JsValue::int(len as i32))
 }
 
 /// `SharedArrayBuffer.prototype.growable` getter：返回缓冲区是否 growable
-/// （载荷存储态上限非 0：0 = 定长，非 0 = 请求上限 + 1）。
+/// （载荷 growable 位：构造期 maxByteLength 选项在场）。
 /// 非 SAB receiver 经品牌校验抛 TypeError（RequireInternalSlot 同语义）。
 pub fn shared_array_buffer_growable<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
     let payload_ptr = native_try!(shared_array_buffer_payload(vm, this_val));
     // SAFETY: payload_ptr 经 shared_array_buffer_payload 校验为合法 SAB 载荷。
-    NativeResult::Ok(JsValue::bool(unsafe { &*payload_ptr }.max_byte_length != 0))
+    NativeResult::Ok(JsValue::bool(unsafe { &*payload_ptr }.growable))
 }
 
-/// `SharedArrayBuffer.prototype.maxByteLength` getter：定长（存储态上限 0）
-/// 返回当前字节数；growable 返回真实上限（存储态 − 1 解码）。SAB 无
-/// detached 臂（载荷 `data` 恒在场）。
+/// `SharedArrayBuffer.prototype.maxByteLength` getter：定长返回当前字节数；
+/// growable 返回真实上限（预分配真实上限）。SAB 无 detached 臂（载荷恒在场）。
 pub fn shared_array_buffer_max_byte_length<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
     let payload_ptr = native_try!(shared_array_buffer_payload(vm, this_val));
     // SAFETY: payload_ptr 经 shared_array_buffer_payload 校验为合法 SAB 载荷。
     let payload = unsafe { &*payload_ptr };
-    let value = if payload.max_byte_length == 0 {
-        payload.data.as_ref().map_or(0, |d| d.len())
+    let value = if payload.growable {
+        payload.buffer.max_len()
     } else {
-        payload.max_byte_length - 1
+        payload.buffer.len()
     };
     NativeResult::Ok(JsValue::int(value as i32))
 }
@@ -403,15 +480,15 @@ pub fn shared_array_buffer_max_byte_length<H: VmHost>(vm: &mut H, args: &[u8]) -
 ///
 /// # 步骤
 /// 1. this 品牌校验（非对象/非 SAB → TypeError）。
-/// 2. 非 growable（存储态上限 0）→ TypeError，先于强转。
+/// 2. 非 growable（载荷 growable 位未置）→ TypeError，先于强转。
 /// 3. newByteLength = ToIntegerOrInfinity(newLength) 传播式（NaN → 0，
 ///    ±Infinity 保留）。
 /// 4. 重取 this 寄存器 + 载荷指针（强转 JS 调用窗可晋升——AB resize 同式；
 ///    SAB 无 detach 面，仅晋升面）。
-/// 5. 重读存储态上限 0 → TypeError。
-/// 6. newByteLength < 0 或 > 真实上限（重读存储态 − 1）或 < 当前字节数
+/// 5. 重读 growable 位 0 → TypeError。
+/// 6. newByteLength < 0 或 > 真实上限（预分配真实上限）或 < 当前活长
 ///    （grow-only）→ RangeError。
-/// 7. `Vec::resize` 一次调用收口目标长度。
+/// 7. 活长原子推进（字节区已预分配，O(1)）。
 /// 8. 返回 undefined。
 pub fn shared_array_buffer_grow<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let this_reg = if args.is_empty() { 0 } else { args[0] };
@@ -419,7 +496,7 @@ pub fn shared_array_buffer_grow<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeRes
     let payload_ptr = native_try!(shared_array_buffer_payload(vm, this_val));
     // SAFETY: payload_ptr 经 shared_array_buffer_payload 校验为合法 SAB 载荷；
     // 状态位拷出后本次借用即结束，不跨 JS 调用点。
-    if unsafe { &*payload_ptr }.max_byte_length == 0 {
+    if !unsafe { &*payload_ptr }.growable {
         return NativeResult::Err(crate::error::create_type_error(vm, "SharedArrayBuffer is not growable"));
     }
     let new_val = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
@@ -429,20 +506,17 @@ pub fn shared_array_buffer_grow<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeRes
     let this_val = vm.reg(this_reg);
     let payload_ptr = native_try!(shared_array_buffer_payload(vm, this_val));
     // SAFETY: 重取的 payload_ptr 指向存活载荷盒。
-    let payload = unsafe { &mut *payload_ptr };
-    if payload.max_byte_length == 0 {
+    let payload = unsafe { &*payload_ptr };
+    if !payload.growable {
         return NativeResult::Err(crate::error::create_type_error(vm, "SharedArrayBuffer is not growable"));
     }
-    let Some(data) = payload.data.as_mut() else {
-        return NativeResult::Err(crate::error::create_type_error(vm, "SharedArrayBuffer internal state invalid"));
-    };
-    // 存储态上限 +1 编码：真实上限 = max - 1（上限 0 的缓冲区只许 grow(0)）；
-    // 当前长度之下拒缩。
-    let real_max = payload.max_byte_length - 1;
-    if new_length < 0.0 || new_length > real_max as f64 || new_length < data.len() as f64 {
+    // 真实上限即预分配上限；当前活长之下拒缩。
+    let real_max = payload.buffer.max_len();
+    let cur_len = payload.buffer.len();
+    if new_length < 0.0 || new_length > real_max as f64 || new_length < cur_len as f64 {
         return NativeResult::Err(crate::error::create_range_error(vm, "invalid SharedArrayBuffer length"));
     }
-    data.resize(new_length as usize, 0);
+    payload.buffer.grow(new_length as usize);
     NativeResult::Ok(JsValue::undefined())
 }
 
@@ -475,7 +549,7 @@ pub fn shared_array_buffer_slice<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeRe
     let payload_ptr = native_try!(shared_array_buffer_payload(vm, this_val));
     // SAFETY: payload_ptr 经 shared_array_buffer_payload 校验为合法 SAB 载荷；
     // 标量拷出后借用即结束，不跨 JS 调用窗口。
-    let len = unsafe { &*payload_ptr }.data.as_ref().map_or(0, |d| d.len());
+    let len = unsafe { &*payload_ptr }.buffer.len();
     let start = if args.len() > 1 { Some(vm.reg(args[1])) } else { None };
     let end = if args.len() > 2 { Some(vm.reg(args[2])) } else { None };
     let (first, final_) = native_try!(ab_resolve_bounds(vm, len, start, end));
@@ -493,7 +567,7 @@ pub fn shared_array_buffer_slice<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeRe
     let this_val = vm.reg(this_reg);
     let payload_ptr = native_try!(shared_array_buffer_payload(vm, this_val));
     // SAFETY: 重取的 payload_ptr 指向存活载荷盒；字节借出止于拷贝语句。
-    let data = unsafe { &*payload_ptr }.data.as_ref();
+    let data = unsafe { &*payload_ptr }.buffer.as_slice();
     // 结果三检：SAB 品牌槽 → SameValue → 活长。
     if !new_val.is_object() {
         return NativeResult::Err(crate::error::create_type_error(
@@ -521,23 +595,21 @@ pub fn shared_array_buffer_slice<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeRe
         ));
     }
     // SAFETY: new_payload 经 shared_array_buffer_payload_ptr 校验为 SAB 载荷盒。
-    if unsafe { &*new_payload }.data.as_ref().map_or(0, |d| d.len()) < new_len {
+    if unsafe { &*new_payload }.buffer.len() < new_len {
         return NativeResult::Err(crate::error::create_type_error(vm, "SharedArrayBuffer slice result is too small"));
     }
-    let Some(data) = data else {
-        return NativeResult::Err(crate::error::create_type_error(vm, "SharedArrayBuffer internal state invalid"));
-    };
     // 直拷 newLen 字节（grow-only 恒在界，见 边界与前提）。
     // SAFETY: new_payload 经 shared_array_buffer_payload_ptr 校验；SAB 无
-    // detach 臂，data 必为 Some，可变借用止于本语句。
-    if let Some(dest) = unsafe { (*new_payload).data.as_mut() } {
-        dest[..new_len].copy_from_slice(&data[first..first + new_len]);
+    // detach 臂，字节区恒在场，经 &self 裸写止于本语句。
+    if unsafe { (*new_payload).buffer.write_range(0, &data[first..first + new_len]) }.is_err() {
+        // 防御背板：活长检已证在界，此臂不可达。
+        return NativeResult::Err(crate::error::create_type_error(vm, "SharedArrayBuffer internal state invalid"));
     }
     NativeResult::Ok(new_val)
 }
 
-/// 读入口：校验 receiver 为 ArrayBuffer 并取载荷指针。detach（载荷 `data` 为
-/// `None`）不在此分叉，由消费方现读 `data` 时按既有错误形态处理。
+/// 读入口：校验 receiver 为 ArrayBuffer 并取载荷指针。detach（detached 标志
+/// 置位）不在此分叉，由消费方现读标志时按既有错误形态处理。
 pub(crate) fn array_buffer_payload<H: VmHost>(
     vm: &mut H, this_val: JsValue,
 ) -> Result<*mut ArrayBufferPayload, JsValue> {
@@ -660,7 +732,8 @@ pub fn array_buffer_byte_length<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeRes
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
     let payload_ptr = native_try!(array_buffer_payload(vm, this_val));
     // SAFETY: payload_ptr 经 array_buffer_payload 校验为合法 ArrayBuffer 载荷。
-    let len = unsafe { &*payload_ptr }.data.as_ref().map_or(0, |d| d.len());
+    let payload = unsafe { &*payload_ptr };
+    let len = if payload.detached { 0 } else { payload.bytes.len() };
     NativeResult::Ok(JsValue::int(len as i32))
 }
 
@@ -681,11 +754,11 @@ pub fn array_buffer_max_byte_length<H: VmHost>(vm: &mut H, args: &[u8]) -> Nativ
     let payload_ptr = native_try!(array_buffer_payload(vm, this_val));
     // SAFETY: payload_ptr 经 array_buffer_payload 校验为合法 ArrayBuffer 载荷。
     let payload = unsafe { &*payload_ptr };
-    if payload.data.is_none() {
+    if payload.detached {
         return NativeResult::Ok(JsValue::int(0));
     }
     let value = if payload.max_byte_length == 0 {
-        payload.data.as_ref().map_or(0, |d| d.len())
+        payload.bytes.len()
     } else {
         payload.max_byte_length - 1
     };
@@ -700,13 +773,13 @@ pub fn array_buffer_immutable<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResul
     NativeResult::Ok(JsValue::bool(unsafe { &*payload_ptr }.immutable))
 }
 
-/// `ArrayBuffer.prototype.detached` getter：detached 判据即载荷 `data` 为
-/// `None`。
+/// `ArrayBuffer.prototype.detached` getter：detached 判据即载荷 detached
+/// 标志（detach 时字节区清空、标志置位）。
 pub fn array_buffer_detached<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
     let payload_ptr = native_try!(array_buffer_payload(vm, this_val));
     // SAFETY: payload_ptr 经 array_buffer_payload 校验为合法 ArrayBuffer 载荷。
-    NativeResult::Ok(JsValue::bool(unsafe { &*payload_ptr }.data.is_none()))
+    NativeResult::Ok(JsValue::bool(unsafe { &*payload_ptr }.detached))
 }
 
 /// `ArrayBuffer.prototype.markImmutable()`：定长附着缓冲区置 immutable 标志
@@ -722,7 +795,7 @@ pub fn array_buffer_mark_immutable<H: VmHost>(vm: &mut H, args: &[u8]) -> Native
     let payload_ptr = native_try!(array_buffer_payload(vm, this_val));
     // SAFETY: payload_ptr 经 array_buffer_payload 校验为合法 ArrayBuffer 载荷。
     let payload = unsafe { &mut *payload_ptr };
-    if payload.data.is_none() {
+    if payload.detached {
         return NativeResult::Err(crate::error::create_type_error(vm, "ArrayBuffer internal state invalid"));
     }
     if payload.max_byte_length != 0 {
@@ -732,12 +805,15 @@ pub fn array_buffer_mark_immutable<H: VmHost>(vm: &mut H, args: &[u8]) -> Native
     NativeResult::Ok(this_val)
 }
 
-/// ArrayBuffer detach 生产路径：品牌守卫后载荷 `data → None`（字节缓冲随
-/// `Option` 置空释放，载荷盒本体存活至对象 drop）。返回 undefined。
+/// ArrayBuffer detach 生产路径：品牌守卫后载荷 detach（字节区清空、detached
+/// 标志置位，载荷盒本体存活至对象 drop）。返回 undefined。
 pub fn detach_array_buffer_native<H: VmHost>(vm: &mut H, this_val: JsValue) -> NativeResult {
     let payload_ptr = native_try!(array_buffer_payload(vm, this_val));
     // SAFETY: payload_ptr 经 array_buffer_payload 校验为合法 ArrayBuffer 载荷。
-    unsafe { (*payload_ptr).data = None };
+    unsafe {
+        (*payload_ptr).bytes.clear();
+        (*payload_ptr).detached = true;
+    };
     NativeResult::Ok(JsValue::undefined())
 }
 
@@ -775,9 +851,9 @@ pub fn array_buffer_resize<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     // SAFETY: 重取的 payload_ptr 指向存活载荷盒。
     let payload = unsafe { &mut *payload_ptr };
     let max = payload.max_byte_length;
-    let Some(data) = payload.data.as_mut() else {
+    if payload.detached {
         return NativeResult::Err(crate::error::create_type_error(vm, "ArrayBuffer internal state invalid"));
-    };
+    }
     if max == 0 {
         return NativeResult::Err(crate::error::create_type_error(vm, "ArrayBuffer is not resizable"));
     }
@@ -786,7 +862,7 @@ pub fn array_buffer_resize<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     if new_length < 0.0 || new_length > real_max as f64 {
         return NativeResult::Err(crate::error::create_range_error(vm, "invalid ArrayBuffer length"));
     }
-    data.resize(new_length as usize, 0);
+    payload.bytes.resize(new_length as usize, 0);
     NativeResult::Ok(JsValue::undefined())
 }
 
@@ -862,10 +938,11 @@ pub fn array_buffer_slice<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let payload_ptr = native_try!(array_buffer_payload(vm, this_val));
     // SAFETY: payload_ptr 经 array_buffer_payload 校验为合法 ArrayBuffer 载荷；
     // 标量拷出后借用即结束，不跨 JS 调用窗口。
-    let Some(data) = unsafe { &*payload_ptr }.data.as_ref() else {
+    let payload = unsafe { &*payload_ptr };
+    if payload.detached {
         return NativeResult::Err(crate::error::create_type_error(vm, "ArrayBuffer internal state invalid"));
-    };
-    let len = data.len();
+    }
+    let len = payload.bytes.len();
     let start = if args.len() > 1 { Some(vm.reg(args[1])) } else { None };
     let end = if args.len() > 2 { Some(vm.reg(args[2])) } else { None };
     let (first, final_) = native_try!(ab_resolve_bounds(vm, len, start, end));
@@ -883,9 +960,11 @@ pub fn array_buffer_slice<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(this_reg);
     let payload_ptr = native_try!(array_buffer_payload(vm, this_val));
     // SAFETY: 重取的 payload_ptr 指向存活载荷盒；标量拷出后借用即结束。
-    let Some(data) = unsafe { &*payload_ptr }.data.as_ref() else {
+    let payload = unsafe { &*payload_ptr };
+    if payload.detached {
         return NativeResult::Err(crate::error::create_type_error(vm, "ArrayBuffer internal state invalid"));
-    };
+    }
+    let data = &payload.bytes;
     // 结果五检：AB 载荷槽 → detached → immutable → SameValue → 长度。
     let new_ptr = new_val.as_js_object_ptr();
     if new_ptr.is_null() {
@@ -909,7 +988,7 @@ pub fn array_buffer_slice<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     }
     // SAFETY: new_payload 经 array_buffer_payload_ptr 校验为 ArrayBuffer 载荷盒。
     let new_state = unsafe { &*new_payload };
-    if new_state.data.is_none() {
+    if new_state.detached {
         return NativeResult::Err(crate::error::create_type_error(vm, "ArrayBuffer slice result is detached"));
     }
     if new_state.immutable {
@@ -921,7 +1000,7 @@ pub fn array_buffer_slice<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
             "ArrayBuffer slice result must not be the source buffer",
         ));
     }
-    if new_state.data.as_ref().map_or(0, |d| d.len()) < new_len {
+    if new_state.bytes.len() < new_len {
         return NativeResult::Err(crate::error::create_type_error(vm, "ArrayBuffer slice result is too small"));
     }
     // 活长度夹拷贝写入结果缓冲前区（构造器已零填充）：源中途收缩只拷现存
@@ -929,10 +1008,8 @@ pub fn array_buffer_slice<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let current_len = data.len();
     let count = if first < current_len { new_len.min(current_len - first) } else { 0 };
     // SAFETY: new_payload 经 array_buffer_payload_ptr 校验；detached 臂已先行
-    // 排除，data 必为 Some，可变借用止于本语句。
-    if let Some(dest) = unsafe { (*new_payload).data.as_mut() } {
-        dest[..count].copy_from_slice(&data[first..first + count]);
-    }
+    // 排除，字节区恒在场，可变借用止于本语句。
+    unsafe { (&mut (*new_payload).bytes)[..count].copy_from_slice(&data[first..first + count]) };
     NativeResult::Ok(new_val)
 }
 
@@ -959,10 +1036,11 @@ pub fn array_buffer_slice_to_immutable<H: VmHost>(vm: &mut H, args: &[u8]) -> Na
     let payload_ptr = native_try!(array_buffer_payload(vm, this_val));
     // SAFETY: payload_ptr 经 array_buffer_payload 校验为合法 ArrayBuffer 载荷；
     // 标量拷出后借用即结束，不跨 JS 调用窗口。
-    let Some(data) = unsafe { &*payload_ptr }.data.as_ref() else {
+    let payload = unsafe { &*payload_ptr };
+    if payload.detached {
         return NativeResult::Err(crate::error::create_type_error(vm, "ArrayBuffer internal state invalid"));
-    };
-    let len = data.len();
+    }
+    let len = payload.bytes.len();
     let start = if args.len() > 1 { Some(vm.reg(args[1])) } else { None };
     let end = if args.len() > 2 { Some(vm.reg(args[2])) } else { None };
     let (first, final_) = native_try!(ab_resolve_bounds(vm, len, start, end));
@@ -972,9 +1050,11 @@ pub fn array_buffer_slice_to_immutable<H: VmHost>(vm: &mut H, args: &[u8]) -> Na
     let this_val = vm.reg(this_reg);
     let payload_ptr = native_try!(array_buffer_payload(vm, this_val));
     // SAFETY: 重取的 payload_ptr 指向存活载荷盒；标量拷出后借用即结束。
-    let Some(data) = unsafe { &*payload_ptr }.data.as_ref() else {
+    let payload = unsafe { &*payload_ptr };
+    if payload.detached {
         return NativeResult::Err(crate::error::create_type_error(vm, "ArrayBuffer internal state invalid"));
-    };
+    }
+    let data = &payload.bytes;
     if data.len() < final_ {
         return NativeResult::Err(crate::error::create_range_error(vm, "invalid ArrayBuffer length"));
     }
@@ -993,9 +1073,11 @@ pub fn array_buffer_slice_to_immutable<H: VmHost>(vm: &mut H, args: &[u8]) -> Na
     let this_val = vm.reg(this_reg);
     let payload_ptr = native_try!(array_buffer_payload(vm, this_val));
     // SAFETY: 重取的 payload_ptr 指向存活载荷盒；字节借出止于本语句。
-    let Some(data) = unsafe { &*payload_ptr }.data.as_ref() else {
+    let payload = unsafe { &*payload_ptr };
+    if payload.detached {
         return NativeResult::Err(crate::error::create_type_error(vm, "ArrayBuffer internal state invalid"));
-    };
+    }
+    let data = &payload.bytes;
     if data.len() < final_ {
         return NativeResult::Err(crate::error::create_range_error(vm, "invalid ArrayBuffer length"));
     }
@@ -1036,8 +1118,8 @@ enum TransferKeep {
 /// 5. 物化拷贝（载荷指针新鲜，字节借出止于本步）。
 /// 6. 新建缓冲（proto 取 %ArrayBuffer.prototype%，保持性按 keep），字节
 ///    序列零填充至 newByteLength。
-/// 7. 再重取源载荷指针 detach（`data → None`）：分配可已晋升源对象，新缓冲
-///    持独立拷贝，源 detach 不影响返回值。
+/// 7. 再重取源载荷指针 detach（字节区清空、detached 置位）：分配可已晋升
+///    源对象，新缓冲持独立拷贝，源 detach 不影响返回值。
 /// 8. 返回新缓冲。
 fn array_buffer_copy_and_detach<H: VmHost>(
     vm: &mut H, this_reg: u8, new_length: Option<JsValue>, keep: TransferKeep,
@@ -1046,7 +1128,8 @@ fn array_buffer_copy_and_detach<H: VmHost>(
     let payload_ptr = native_try!(array_buffer_payload(vm, this_val));
     // SAFETY: payload_ptr 经 array_buffer_payload 校验为合法 ArrayBuffer 载荷；
     // 只读当前字节长，借用即结束，不跨 JS 调用点。
-    let cur_len = unsafe { &*payload_ptr }.data.as_ref().map_or(0, |d| d.len());
+    let payload = unsafe { &*payload_ptr };
+    let cur_len = if payload.detached { 0 } else { payload.bytes.len() };
     let new_len = match new_length {
         // undefined 缺省臂（含显式 undefined）先于 ToIndex：显式 undefined 与
         // 缺省同义，直接取源当前字节长。
@@ -1061,7 +1144,7 @@ fn array_buffer_copy_and_detach<H: VmHost>(
     // SAFETY: 重取的 payload_ptr 指向存活载荷盒；标量拷出后借用即结束。
     let (cur_len, stored_max, immutable, detached) = unsafe {
         let p = &*payload_ptr;
-        (p.data.as_ref().map_or(0, |d| d.len()), p.max_byte_length, p.immutable, p.data.is_none())
+        (if p.detached { 0 } else { p.bytes.len() }, p.max_byte_length, p.immutable, p.detached)
     };
     if detached {
         return NativeResult::Err(crate::error::create_type_error(vm, "ArrayBuffer internal state invalid"));
@@ -1077,13 +1160,14 @@ fn array_buffer_copy_and_detach<H: VmHost>(
     if new_len > MAX_ARRAY_BUFFER_LENGTH {
         return NativeResult::Err(crate::error::create_range_error(vm, "invalid ArrayBuffer length"));
     }
-    // SAFETY: 重取的 payload_ptr 指向存活载荷盒；detached 已排除，data 必为
-    // Some。字节借出止于本语句。
+    // SAFETY: 重取的 payload_ptr 指向存活载荷盒；detached 已排除，字节区恒
+    // 在场。字节借出止于本语句。
     let copy_len = new_len.min(cur_len);
     let mut new_data: Vec<u8> = unsafe { &*payload_ptr }
-        .data
-        .as_deref()
-        .map_or_else(Vec::new, |d| d[..copy_len].to_vec());
+        .bytes
+        .as_slice()
+        .get(..copy_len)
+        .map_or_else(Vec::new, |d| d.to_vec());
     new_data.resize(new_len, 0);
     let (dest_max, dest_immutable) = match keep {
         TransferKeep::Preserve => (stored_max, false),
@@ -1103,7 +1187,10 @@ fn array_buffer_copy_and_detach<H: VmHost>(
     let this_val = vm.reg(this_reg);
     let payload_ptr = native_try!(array_buffer_payload(vm, this_val));
     // SAFETY: 重取的 payload_ptr 指向存活载荷盒。
-    unsafe { (*payload_ptr).data = None };
+    unsafe {
+        (*payload_ptr).bytes.clear();
+        (*payload_ptr).detached = true;
+    };
     NativeResult::Ok(JsValue::from_js_object(dest_ptr))
 }
 
@@ -1172,7 +1259,8 @@ mod tests {
     #[test]
     fn detached_size_and_drop_idempotent() {
         let mut obj = ab_object_with_payload(ArrayBufferPayload {
-            data: None,
+            bytes: vec![],
+            detached: true,
             max_byte_length: 0,
             immutable: false,
         });
@@ -1186,7 +1274,8 @@ mod tests {
     #[test]
     fn attached_size_and_drop() {
         let mut obj = ab_object_with_payload(ArrayBufferPayload {
-            data: Some(vec![0u8; 8]),
+            bytes: vec![0u8; 8],
+            detached: false,
             max_byte_length: 0,
             immutable: false,
         });
@@ -1201,7 +1290,8 @@ mod tests {
         // 非 ArrayBuffer 类型标签（PLAIN）对象取载荷指针恒 None。
         let mut obj = JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::undefined());
         let payload_ptr = Arc::into_raw(Arc::new(ArrayBufferPayload {
-            data: Some(vec![0u8; 4]),
+            bytes: vec![0u8; 4],
+            detached: false,
             max_byte_length: 0,
             immutable: false,
         }));
@@ -1282,7 +1372,7 @@ mod tests {
         let payload = unsafe { &*p };
         assert_eq!(payload.max_byte_length, 9);
         assert!(!payload.immutable);
-        assert_eq!(payload.data.as_ref().expect("产物应附着").len(), 5);
+        assert_eq!(payload.bytes.len(), 5);
     }
 
     /// resize detach 守卫序钉：守卫在 newLength 求值之后——强转内 detach

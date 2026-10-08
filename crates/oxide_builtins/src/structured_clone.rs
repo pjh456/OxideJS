@@ -141,7 +141,7 @@ fn parse_transfer_list<H: VmHost>(vm: &mut H, options: JsValue, state: &mut Clon
         // 拷出后借用即结束，不跨 JS 调用。
         let max_byte_length = unsafe { (*payload_ptr).max_byte_length };
         let proto = crate::array_buffer::default_array_buffer_proto(vm);
-        let clone_ptr = alloc_buffer_object(vm, None, max_byte_length, false, proto);
+        let clone_ptr = alloc_buffer_object(vm, Vec::new(), max_byte_length, false, proto);
         state.seen.insert(src_ptr, clone_ptr);
         state.transfer_placeholders.push((src_ptr, clone_ptr));
         Ok(())
@@ -169,12 +169,18 @@ fn finish_transfer<H: VmHost>(vm: &mut H, state: &mut CloneState) -> Result<(), 
                 .unwrap()
         };
         // SAFETY: 两载荷指针均经校验为存活载荷盒；移动为标量操作，不跨 JS 调用。
-        let data = unsafe { (*src_payload).data.take() };
+        let src_detached = unsafe { (*src_payload).detached };
         // 转移条目 detached 不可转移（规范报 DataCloneError）。
-        let Some(data) = data else {
+        if src_detached {
             return Err(data_clone_error(vm, "detached buffer in transfer list"));
         };
-        unsafe { (*clone_payload).data = Some(data) };
+        let bytes = unsafe { std::mem::take(&mut (*src_payload).bytes) };
+        unsafe {
+            // 源转 detached 态（字节区清空、标志置位），克隆占位填为源载荷。
+            (*src_payload).detached = true;
+            (*clone_payload).bytes = bytes;
+            (*clone_payload).detached = false;
+        };
     }
     Ok(())
 }
@@ -567,28 +573,29 @@ fn alloc_array_buffer_clone<H: VmHost>(vm: &mut H, src: &JsObject) -> Result<*mu
     };
     // SAFETY: payload_ptr 经 array_buffer_payload_ptr 校验为存活载荷盒；标量
     // 拷出后借用即结束，不跨 JS 调用。
-    let (data, max_byte_length) = unsafe {
+    let (bytes, max_byte_length, detached) = unsafe {
         let p = &*payload_ptr;
-        (p.data.clone(), p.max_byte_length)
+        (p.bytes.clone(), p.max_byte_length, p.detached)
     };
     // 值图内 detached 缓冲不可克隆（规范报 DataCloneError）。
-    let Some(data) = data else {
+    if detached {
         return Err(data_clone_error(vm, "detached ArrayBuffer is not cloneable"));
-    };
+    }
     let proto = crate::array_buffer::default_array_buffer_proto(vm);
     // 克隆是新缓冲：immutable 恒 false（不继承源标志），存储态上限照抄。
-    let clone_ptr = alloc_buffer_object(vm, Some(data), max_byte_length, false, proto);
+    let clone_ptr = alloc_buffer_object(vm, bytes, max_byte_length, false, proto);
     Ok(clone_ptr)
 }
 
-/// 分配携给定载荷形态（`data` 为 `None` 即 detached）的 ArrayBuffer 对象。
+/// 分配携给定载荷形态（字节区、存储态上限、immutable 标志）的 ArrayBuffer 对象。
 fn alloc_buffer_object<H: VmHost>(
-    vm: &mut H, data: Option<Vec<u8>>, max_byte_length: usize, immutable: bool, proto: JsValue,
+    vm: &mut H, bytes: Vec<u8>, max_byte_length: usize, immutable: bool, proto: JsValue,
 ) -> *mut JsObject {
     let mut obj = JsObject::new_empty(EMPTY_SHAPE_ID, proto);
     obj.type_tag = JsObject::OBJ_TYPE_ARRAY_BUFFER;
     let payload = crate::array_buffer::ArrayBufferPayload {
-        data,
+        bytes,
+        detached: false,
         max_byte_length,
         immutable,
     };
@@ -903,7 +910,12 @@ mod tests {
     fn ab_bytes(ab: &JsObject) -> Option<Vec<u8>> {
         let ptr = crate::array_buffer::array_buffer_payload_ptr(ab)?;
         // SAFETY: ptr 经 array_buffer_payload_ptr 校验为存活载荷盒。
-        unsafe { &*ptr }.data.as_ref().cloned()
+        let p = unsafe { &*ptr };
+        if p.detached {
+            None
+        } else {
+            Some(p.bytes.clone())
+        }
     }
 
     /// 读 TypedArray 视图状态盒（Copy）。
@@ -1015,9 +1027,17 @@ mod tests {
             crate::array_buffer::shared_array_buffer_payload_ptr(unsafe { &*v.as_js_object_ptr() }).unwrap();
         let cl_payload = crate::array_buffer::shared_array_buffer_payload_ptr(cl).unwrap();
         assert!(std::ptr::eq(src_payload, cl_payload), "克隆应共享同一载荷");
+        // 内层字节缓冲为同一 Arc（克隆侧写入对源侧可见）。
+        assert!(
+            std::ptr::eq(
+                Arc::as_ptr(&unsafe { &*src_payload }.buffer),
+                Arc::as_ptr(&unsafe { &*cl_payload }.buffer),
+            ),
+            "克隆应共享同一内层字节缓冲"
+        );
         // SAFETY: 载荷盒存活。
-        unsafe { (*cl_payload).data.as_mut().unwrap()[0] = 0xAB };
-        assert_eq!(unsafe { &*src_payload }.data.as_ref().unwrap()[0], 0xAB);
+        unsafe { (*cl_payload).buffer.write_range(0, &[0xAB]).unwrap() };
+        assert_eq!(unsafe { &*src_payload }.buffer.as_slice()[0], 0xAB);
     }
 
     #[test]

@@ -9,6 +9,7 @@ description = "OxideJS - VmHost trait: the abstract Vm interface builtins are wr
 [dependencies]
 oxide_bytecode = { path = "../oxide_bytecode" }
 oxide_types = { path = "../oxide_types" }
+oxide_kernel = { path = "../oxide_kernel" }
 num-bigint = "0.4"
 num-traits = "0.2"
 oxide_log = { path = "../oxide_log" }

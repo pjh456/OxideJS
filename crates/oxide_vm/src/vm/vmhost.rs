@@ -3,6 +3,7 @@
 use std::ffi::c_void;
 use std::sync::Arc;
 
+use oxide_kernel::KernelCore;
 use oxide_runtime_api::{ProtoKind, ShapeNode};
 use oxide_types::mem::P;
 use oxide_types::object::{Cell, JsObject, PropAttributes};
@@ -151,6 +152,9 @@ impl oxide_runtime_api::VmHost for Vm {
     fn global_object(&self) -> P<JsObject> {
         let session = self.session();
         session.global_object().clone()
+    }
+    fn kernel_core(&self) -> Arc<KernelCore> {
+        Arc::clone(self.kernel_core())
     }
     fn pc(&self) -> usize {
         self.pc
