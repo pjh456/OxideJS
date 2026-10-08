@@ -84,13 +84,14 @@ pub fn create_error<H: VmHost>(host: &mut H, msg: &str) -> JsValue {
 
 /// 错误文本的 kind 前缀表：`(kind 名, 前缀)`，供文本恢复与 `define` 通道共用。
 /// `Error` 排在末位，避免在匹配更具体的子类前缀之前抢先命中。
-const KIND_PREFIXES: [(&str, &str); 7] = [
+const KIND_PREFIXES: [(&str, &str); 8] = [
     ("TypeError", "TypeError: "),
     ("ReferenceError", "ReferenceError: "),
     ("RangeError", "RangeError: "),
     ("SyntaxError", "SyntaxError: "),
     ("URIError", "URIError: "),
     ("EvalError", "EvalError: "),
+    ("DataCloneError", "DataCloneError: "),
     ("Error", "Error: "),
 ];
 

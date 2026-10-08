@@ -58,6 +58,8 @@ pub mod regexp;
 pub mod set;
 /// String 内置对象实现（目录模块：common 共享工具、basic 基础方法、regex 正则与匹配）。
 pub mod string;
+/// 结构化克隆核（递归遍历加 seen 映射保共享引用、逐类型分派、DataCloneError 报错路径）。
+pub mod structured_clone;
 /// 未实现特性的占位 native 实现（统一抛 TypeError）。
 pub mod stubs;
 /// Symbol 内置对象实现（constructor/for/keyFor/toString）。
