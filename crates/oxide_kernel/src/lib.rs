@@ -17,6 +17,8 @@ pub mod kernel_log;
 pub mod prop_forge;
 /// hidden class（shape）共享存储：把对象结构映射为整数 id。
 pub mod shape_forge;
+/// 共享字节缓冲：SharedArrayBuffer 的跨线程共享存储（预分配至真实上限，活长原子推进）。
+pub mod shared_buffer;
 
 /// kernel 对外的三个核心类型：配置、共享核心、会话。
 pub use kernel::{KernelConfig, KernelCore, KernelSession};
@@ -24,3 +26,5 @@ pub use kernel::{KernelConfig, KernelCore, KernelSession};
 pub use oxide_types::string_forge;
 /// 模块命名空间再导出的绑定身份哨兵（本体在 `oxide_types`，此处再导出）。
 pub use oxide_types::MODULE_NAMESPACE_BINDING;
+/// 跨线程共享字节缓冲（SharedArrayBuffer 的共享存储）。
+pub use shared_buffer::SharedBuffer;

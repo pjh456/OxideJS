@@ -36,6 +36,9 @@ pub struct KernelCore {
     /// 内创建满 512 个 Vm 前重建 kernel（重建即计数器归零）；test262 runner
     /// 经 kernel_batch 缺省值（不超 512）满足该约束。
     realm_counter: AtomicU32,
+    /// 共享字节缓冲账目：存活 `SharedBuffer` 的预分配真实上限之和。
+    /// `SharedBuffer` 构造加、`Drop` 减（同值），供宿主读取共享层内存占用。
+    shared_buffer_bytes: AtomicUsize,
 }
 
 impl KernelCore {
@@ -66,6 +69,7 @@ impl KernelCore {
             prop_forge,
             active_vms: AtomicUsize::new(0),
             realm_counter: AtomicU32::new(0),
+            shared_buffer_bytes: AtomicUsize::new(0),
         });
         kernel_info!("KernelCore initialized: max_cached_modules={}, min_pool={}", max_cached, min_pool);
         core
@@ -194,6 +198,21 @@ impl KernelCore {
     /// 读取当前持有本 kernel 的存活 Vm 数；release 宿主可在 id 空间复位边界自检。
     pub fn active_vms(&self) -> usize {
         self.active_vms.load(Ordering::Relaxed)
+    }
+
+    /// 读取存活共享字节缓冲的预分配真实上限之和（字节）。
+    pub fn shared_buffer_bytes(&self) -> usize {
+        self.shared_buffer_bytes.load(Ordering::Relaxed)
+    }
+
+    /// 共享字节缓冲账目加账（`SharedBuffer` 构造调用；单位是预分配真实上限）。
+    pub(crate) fn shared_buffer_bytes_add(&self, bytes: usize) {
+        self.shared_buffer_bytes.fetch_add(bytes, Ordering::Relaxed);
+    }
+
+    /// 共享字节缓冲账目减账（`SharedBuffer` 析构调用；单位是预分配真实上限）。
+    pub(crate) fn shared_buffer_bytes_sub(&self, bytes: usize) {
+        self.shared_buffer_bytes.fetch_sub(bytes, Ordering::Relaxed);
     }
 
     /// 分配一个 realm 编号：取计数器当前值后自增，进程内单调递增。
