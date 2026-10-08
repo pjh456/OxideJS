@@ -44,6 +44,9 @@ pub mod json;
 pub mod map;
 /// Math 内置对象实现（数学函数）。
 pub mod math;
+/// MessageValue 跨 realm 值传递抽象（`detach_message` / `rehydrate_message` 与
+/// `Send` 中间表示，供 worker 调度跨线程消息复用）。
+pub mod message_value;
 /// 模块命名空间与求值辅助（import 实现内部用）。
 pub mod module;
 /// Number 内置对象实现（constructor 与 toFixed/isInteger 等）。

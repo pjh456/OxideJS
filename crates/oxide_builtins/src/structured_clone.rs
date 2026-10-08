@@ -688,7 +688,9 @@ fn is_boxed_cloneable(src: &JsObject) -> bool {
 
 /// 构造 DataCloneError 对象（统一报错入口）：`name` 归一为自有 "DataCloneError"
 /// 数据属性（非枚举、不可写、可配置），覆盖原型链继承的 "Error"。
-fn data_clone_error<H: VmHost>(vm: &mut H, msg: &str) -> JsValue {
+///
+/// 供同 crate 的跨 realm 值传递抽象（`message_value`）复用。
+pub(crate) fn data_clone_error<H: VmHost>(vm: &mut H, msg: &str) -> JsValue {
     let err = crate::error::create_kind_error(vm, "DataCloneError", msg);
     let si_name = vm.kernel_core().perm_interner().intern("name").0;
     let name_val = vm.new_string("DataCloneError");
