@@ -10,6 +10,13 @@ use oxide_types::value::JsValue;
 ///
 /// 方法签名是 `Vm` 上同名固有方法的逐字节拷贝；`impl VmHost for Vm` 委托给
 /// 它们。trait 刻意保持扁平且非对象安全——builtins 始终接受 `&mut impl VmHost`。
+///
+/// 边界：本 trait 是单 realm 接口——所有方法只作用于所属 VM 的当前 realm，
+/// 不含跨 realm（跨线程）值传递方法。跨 realm 值传递由
+/// `oxide_builtins::message_value` 的独立函数实现（源 realm 侧 `detach_message`、
+/// 目标 realm 侧 `rehydrate_message`，经 `MessageValue` 中间表示），不挂本 trait，
+/// 免污染单 realm 接口。trait 亦无 realm 查找方法：`realm_id` 只用于符号编码
+/// （符号身份 = (realm 编号, 局部下标) 的 realm 维度），不用于查找他 realm 对象。
 pub trait VmHost {
     // 寄存器访问
     fn reg(&self, idx: u8) -> JsValue;

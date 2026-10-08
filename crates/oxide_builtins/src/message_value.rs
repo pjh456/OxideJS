@@ -8,6 +8,8 @@
 //! 为 well-known 符号映目标 realm 同 local_index、用户符号经描述重新 intern。
 //!
 //! 边界：
+//! - 两函数为独立函数，刻意不挂 `VmHost` trait：trait 是单 realm 接口，跨 realm
+//!   值传递不挂 trait（见 trait 文档边界条款），免污染单 realm 接口。
 //! - `MessageValue` 是树形（无共享引用间接），值图内循环引用报 DataCloneError；
 //!   共享引用（有向无环）复制为多份。
 //! - 装箱对象（Boolean/Number/String 盒、BigInt 包装）传递时解箱为原始值。
