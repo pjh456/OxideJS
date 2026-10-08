@@ -11,15 +11,17 @@ use super::{Microtask, MAX_DRAIN_JOBS};
 impl Vm {
     /// drain 微任务队列：FIFO 逐条处理直到清空或达到上限。
     ///
+    /// 调用时机：`run()` 末尾与事件循环每个 turn 边界。
+    ///
     /// # 副作用
     /// - 任务内调用 JS 回调（`call_function_sync`），可能入队新任务。
     /// - 单任务抛错不中断 drain（未处理拒绝按规范不可见）。
-    pub(crate) fn drain_job_queue(&mut self) {
+    pub fn drain_microtasks(&mut self) {
         let mut count = 0usize;
         while let Some(job) = self.job_queue.pop_front() {
             count += 1;
             if count > MAX_DRAIN_JOBS {
-                vm_warn!("drain_job_queue: exceeded {MAX_DRAIN_JOBS} microtasks, aborting");
+                vm_warn!("drain_microtasks: exceeded {MAX_DRAIN_JOBS} microtasks, aborting");
                 break;
             }
             self.run_microtask(job);

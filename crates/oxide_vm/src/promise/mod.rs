@@ -3,7 +3,8 @@
 //! Promise 对象把 `PromiseState` 状态盒（Box）挂在 `native_data`；resolve/reject
 //! 是携带目标 promise 的 native 闭包函数（函数对象 prop 存 promise 引用）。
 //! 反应（reaction）与 thenable 委托以 `Microtask` 入队 `Vm::job_queue`，
-//! 由 `run()` 末尾的 drain 循环 FIFO 执行。所有盒内 JsValue 由 session GC
+//! 由 `drain_microtasks` 在 `run()` 末尾与事件循环每个 turn 边界 FIFO 执行。
+//! 所有盒内 JsValue 由 session GC
 //! 经 Promise 对象边追踪（见 `promise_native_edges` / `drop_promise_native`）。
 
 use oxide_types::object::JsObject;

@@ -201,7 +201,8 @@ pub struct Vm {
     /// f64→string 十六槽 last-value 缓存的值（session 串，经 `for_each_value`
     /// 登记为 GC 根；`full_reset` 在 session 串释放前清空）。
     pub(crate) number_to_string_cache_vals: [JsValue; 16],
-    /// 微任务队列（Promise reactions / thenable 委托），`run()` 末尾 FIFO drain。
+    /// 微任务队列（Promise reactions / thenable 委托），由 `drain_microtasks`
+    /// 在 `run()` 末尾与事件循环每个 turn 边界 FIFO drain。
     pub(crate) job_queue: VecDeque<crate::promise::Microtask>,
     /// Atomics.waitAsync waiter 表：键 = (缓冲对象指针, 元素字节偏移)，值 =
     /// 登记的 promise FIFO。键取登记时刻视图的 `buffer` 现指针（同 run 无 GC 时

@@ -647,6 +647,23 @@ impl Vm {
         self.tables.retain(|gen, _| live_gens.contains(gen));
     }
 
+    /// 执行一个 JS 任务：闭包是任务体，本方法执行它并原样返回结果。
+    ///
+    /// 任务体在 `run()` 是 `dispatch` 主循环，在 worker 消息是单次函数调用。
+    /// 本方法是任务边界原语，不排空微任务队列（排空时机由事件循环决定）。
+    ///
+    /// # 边界与前提
+    /// - 闭包返回 `Err`（未捕获异常）时原样上交，不吞并、不改写。
+    ///
+    /// # 副作用
+    /// - 任务体对 `self` 的全部改写（寄存器 / 帧栈 / 对象表 / 异常侧通道）原样保留。
+    pub fn execute_task(
+        &mut self,
+        task: impl FnOnce(&mut Self) -> Result<JsValue, String>,
+    ) -> Result<JsValue, String> {
+        task(self)
+    }
+
     /// 加载并执行一个已编译模块，返回模块顶层执行结果或未捕获异常消息。
     ///
     /// 模块以 `Arc` 与调用方共享（如 CodeForge 缓存条目）：平表装载只做
@@ -701,9 +718,9 @@ impl Vm {
         self.top_level_this = this_val;
         self.regs[254] = this_val;
 
-        let result = self.dispatch();
+        let result = self.execute_task(|vm| vm.dispatch());
         // 顶层执行结束后 drain 微任务队列：Promise reactions 与 thenable 委托在此执行。
-        self.drain_job_queue();
+        self.drain_microtasks();
         // 指令周期采样：run 末聚合本 run 的样本并输出 top-K 直方图（关闭时零开销
         // 短路）。放 dispatch 返回后而非循环内：嵌套 dispatch 会多次返回，直方图
         // 只应输出一次。
@@ -1003,5 +1020,83 @@ mod tests {
         assert_eq!(vm.regs[253], JsValue::float(253.0));
         assert_eq!(vm.regs[254], JsValue::float(254.0));
         assert_eq!(vm.regs[255], JsValue::float(255.0));
+    }
+
+    fn global_value(vm: &mut Vm, name: &str) -> JsValue {
+        let key = vm.kernel_core.perm_interner().intern(name).0;
+        let session = vm.realm.session.borrow();
+        let global = session.global_object();
+        let pos = vm
+            .kernel_core
+            .shape_forge()
+            .lookup_position(global.shape_id(), key)
+            .expect("global slot");
+        global.get_prop_at(pos)
+    }
+
+    fn as_number(v: &JsValue) -> f64 {
+        if v.is_int() {
+            v.as_int() as f64
+        } else {
+            v.as_double()
+        }
+    }
+
+    #[test]
+    fn execute_task_returns_closure_result() {
+        // 任务体为单次 call_function_sync 调用，execute_task 原样返回闭包结果。
+        let mut vm = Vm::new();
+        let module = Arc::new(compile("function f() { return 42; }"));
+        vm.run(&module).expect("run");
+        let f = global_value(&mut vm, "f");
+        let result = vm.execute_task(|vm| vm.call_function_sync(f, JsValue::undefined(), &[]));
+        assert_eq!(as_number(&result.expect("execute_task")), 42.0);
+    }
+
+    #[test]
+    fn execute_task_propagates_closure_error() {
+        // 任务体抛未捕获异常：execute_task 原样上交 Err，last_uncaught_value 侧通道按既有语义填充。
+        let mut vm = Vm::new();
+        let module = Arc::new(compile("function f() { throw new Error('boom'); }"));
+        vm.run(&module).expect("run");
+        let f = global_value(&mut vm, "f");
+        let result = vm.execute_task(|vm| vm.call_function_sync(f, JsValue::undefined(), &[]));
+        assert!(result.is_err(), "未捕获异常须以 Err 上交");
+        assert!(vm.last_uncaught_value.is_some(), "last_uncaught_value 侧通道须填充");
+    }
+
+    #[test]
+    fn drain_microtasks_runs_promise_reactions() {
+        // 任务体建 promise 并挂 .then：execute_task 不排空微任务队列，反应留在队列，
+        // drain_microtasks 执行之，侧效应发生。
+        let mut vm = Vm::new();
+        let module = Arc::new(compile(
+            "var done = false; \
+             function make() { Promise.resolve(1).then(function (x) { done = true; }); }",
+        ));
+        vm.run(&module).expect("run");
+        let make = global_value(&mut vm, "make");
+        vm.execute_task(|vm| vm.call_function_sync(make, JsValue::undefined(), &[]))
+            .expect("execute_task");
+        assert!(!vm.job_queue.is_empty(), "反应应已入队");
+        vm.drain_microtasks();
+        assert!(vm.job_queue.is_empty(), "drain 后队列应清空");
+        assert_eq!(
+            global_value(&mut vm, "done"),
+            JsValue::bool(true),
+            "promise 反应应已置 done = true"
+        );
+    }
+
+    #[test]
+    fn drain_microtasks_empty_queue_idempotent() {
+        // run 后队列为空，连续两次 drain_microtasks 无副作用。
+        let mut vm = Vm::new();
+        let module = Arc::new(compile("var x = 1;"));
+        vm.run(&module).expect("run");
+        assert!(vm.job_queue.is_empty());
+        vm.drain_microtasks();
+        vm.drain_microtasks();
+        assert!(vm.job_queue.is_empty());
     }
 }
