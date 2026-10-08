@@ -12,6 +12,8 @@
 
 /// ECMAScript 强转函数族。
 mod coercion;
+/// 动态编译服务接口（`Vm` 经它解耦对编译器的直接依赖）。
+pub mod compiler_service;
 /// builtins 依赖的 `VmHost` 能力面。
 mod host;
 /// builtin native 函数的三态返回值。
@@ -26,5 +28,6 @@ pub use coercion::{
     to_string_full, to_string_value_full, to_uint32, to_units_full, well_known_symbol_name, write_number_into,
     ToPrimitiveHint,
 };
+pub use compiler_service::CompilerService;
 pub use host::VmHost;
 pub use native_result::NativeResult;

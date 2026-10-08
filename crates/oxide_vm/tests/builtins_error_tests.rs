@@ -2,13 +2,16 @@ use std::sync::Arc;
 
 use oxide_builtins::error;
 use oxide_compiler::compiler::Compiler;
+use oxide_compiler::DefaultCompilerService;
 use oxide_types::mem::P;
 use oxide_types::object::JsObject;
 use oxide_types::value::JsValue;
 use oxide_vm::vm::Vm;
 
 fn make_vm() -> Vm {
-    Vm::new()
+    let mut vm = Vm::new();
+    vm.set_compiler_service(Arc::new(DefaultCompilerService));
+    vm
 }
 
 fn eval(source: &str) -> Result<JsValue, String> {

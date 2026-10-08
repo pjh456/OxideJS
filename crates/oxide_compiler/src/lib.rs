@@ -6,5 +6,8 @@
 
 pub mod compiler;
 pub mod compiler_log;
+pub mod compiler_service;
 pub mod flatten;
 pub mod hash;
+
+pub use compiler_service::DefaultCompilerService;

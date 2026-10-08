@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use oxide_compiler::compiler::Compiler;
+use oxide_compiler::DefaultCompilerService;
 use oxide_types::object::JsObject;
 use oxide_types::value::JsValue;
 use oxide_vm::vm::Vm;
@@ -21,6 +22,7 @@ fn assert_num(result: JsValue, expected: f64) {
 #[test]
 fn eval_string_expression_completion_value() {
     let mut vm = Vm::new();
+    vm.set_compiler_service(Arc::new(DefaultCompilerService));
     // 脚本模式完成值保留：`eval('1+2')` 返回 3（档 2 起，不再被函数模式 body wrap 吞掉）。
     let result = eval(&mut vm, "eval('1+2')").unwrap();
     assert_num(result, 3.0);
@@ -29,6 +31,7 @@ fn eval_string_expression_completion_value() {
 #[test]
 fn eval_string_number_completion_value() {
     let mut vm = Vm::new();
+    vm.set_compiler_service(Arc::new(DefaultCompilerService));
     // 脚本模式完成值保留：`eval('42')` 返回 42。
     let result = eval(&mut vm, "eval('42')").unwrap();
     assert_num(result, 42.0);
@@ -37,6 +40,7 @@ fn eval_string_number_completion_value() {
 #[test]
 fn eval_string_var_declaration_inside() {
     let mut vm = Vm::new();
+    vm.set_compiler_service(Arc::new(DefaultCompilerService));
     // 档 2：eval 内 var 声明落全局对象，完成值保留为末表达式值。
     let result = eval(&mut vm, "eval('var y = 1; y')").unwrap();
     assert_num(result, 1.0);
@@ -47,6 +51,7 @@ fn eval_string_var_declaration_inside() {
 #[test]
 fn eval_non_string_returns_as_is() {
     let mut vm = Vm::new();
+    vm.set_compiler_service(Arc::new(DefaultCompilerService));
     let result = eval(&mut vm, "eval(123)").unwrap();
     assert_num(result, 123.0);
 }
@@ -54,6 +59,7 @@ fn eval_non_string_returns_as_is() {
 #[test]
 fn eval_object_identity() {
     let mut vm = Vm::new();
+    vm.set_compiler_service(Arc::new(DefaultCompilerService));
     // 非字符串实参原样返回：同一对象引用。
     let result = eval(&mut vm, "var o = {}; eval(o) === o").unwrap();
     assert_eq!(result, JsValue::bool(true));
@@ -62,6 +68,7 @@ fn eval_object_identity() {
 #[test]
 fn eval_new_string_not_tostring() {
     let mut vm = Vm::new();
+    vm.set_compiler_service(Arc::new(DefaultCompilerService));
     // new String 是非字符串对象：不 ToString，原样返回同一对象（非原始值）。
     let result = eval(&mut vm, "var s = new String('1+1'); eval(s) === s").unwrap();
     assert_eq!(result, JsValue::bool(true));
@@ -70,6 +77,7 @@ fn eval_new_string_not_tostring() {
 #[test]
 fn eval_throw_primitive_rethrown() {
     let mut vm = Vm::new();
+    vm.set_compiler_service(Arc::new(DefaultCompilerService));
     // eval 内 throw 1 重抛原始值 1，可被外层 catch 捕获（非 Error 包装）。
     let result = eval(&mut vm, "try { eval('throw 1') } catch(e) { e }").unwrap();
     assert_num(result, 1.0);
@@ -78,6 +86,7 @@ fn eval_throw_primitive_rethrown() {
 #[test]
 fn eval_syntax_error_throws() {
     let mut vm = Vm::new();
+    vm.set_compiler_service(Arc::new(DefaultCompilerService));
     // 换行分隔的 `x` 与 `++` 为非法语法，eval 抛 SyntaxError。
     let result = eval(&mut vm, "try { eval('x\\u000A++') } catch(e) { e.name }").unwrap();
     let rendered = vm.lookup_str(result).unwrap_or_default();
@@ -87,6 +96,7 @@ fn eval_syntax_error_throws() {
 #[test]
 fn eval_length_is_one() {
     let mut vm = Vm::new();
+    vm.set_compiler_service(Arc::new(DefaultCompilerService));
     let result = eval(&mut vm, "eval.length").unwrap();
     assert_num(result, 1.0);
 }
@@ -94,6 +104,7 @@ fn eval_length_is_one() {
 #[test]
 fn eval_name_is_eval() {
     let mut vm = Vm::new();
+    vm.set_compiler_service(Arc::new(DefaultCompilerService));
     let result = eval(&mut vm, "eval.name").unwrap();
     let rendered = vm.lookup_str(result).unwrap_or_default();
     assert_eq!(rendered, "eval");
@@ -102,6 +113,7 @@ fn eval_name_is_eval() {
 #[test]
 fn eval_global_descriptor() {
     let mut vm = Vm::new();
+    vm.set_compiler_service(Arc::new(DefaultCompilerService));
     // 全局 eval 属性描述符：{writable:true, enumerable:false, configurable:true}。
     let result = eval(
         &mut vm,
@@ -115,6 +127,7 @@ fn eval_global_descriptor() {
 #[test]
 fn eval_new_throws_type_error() {
     let mut vm = Vm::new();
+    vm.set_compiler_service(Arc::new(DefaultCompilerService));
     // eval 不是构造器：new eval() 抛 TypeError。
     let result = eval(&mut vm, "try { new eval() } catch(e) { e.name }").unwrap();
     let rendered = vm.lookup_str(result).unwrap_or_default();
@@ -124,6 +137,7 @@ fn eval_new_throws_type_error() {
 #[test]
 fn eval_no_arg_and_undefined_are_undefined() {
     let mut vm = Vm::new();
+    vm.set_compiler_service(Arc::new(DefaultCompilerService));
     let result = eval(&mut vm, "eval() === undefined && eval(undefined) === undefined").unwrap();
     assert_eq!(result, JsValue::bool(true));
 }
@@ -131,6 +145,7 @@ fn eval_no_arg_and_undefined_are_undefined() {
 #[test]
 fn eval_typeof_is_function() {
     let mut vm = Vm::new();
+    vm.set_compiler_service(Arc::new(DefaultCompilerService));
     let result = eval(&mut vm, "typeof eval").unwrap();
     let rendered = vm.lookup_str(result).unwrap_or_default();
     assert_eq!(rendered, "function");
@@ -139,6 +154,7 @@ fn eval_typeof_is_function() {
 #[test]
 fn eval_survives_full_reset_rebuild() {
     let mut vm = Vm::new();
+    vm.set_compiler_service(Arc::new(DefaultCompilerService));
     // 仅 global 脏：full_reset 走 bind_global_functions 重建路径，eval 须保留。
     let g_ptr = vm.session().global_object().as_ptr() as *mut JsObject;
     unsafe { (&mut *g_ptr).bump_generation() };
@@ -157,6 +173,7 @@ fn eval_survives_full_reset_rebuild() {
 #[test]
 fn eval_script_var_lands_on_global() {
     let mut vm = Vm::new();
+    vm.set_compiler_service(Arc::new(DefaultCompilerService));
     // 间接 eval 脚本模式：var 声明落全局对象，外层 this 可见。
     let result = eval(&mut vm, "(0,eval)('var q = 9'); this.q === 9").unwrap();
     assert_eq!(result, JsValue::bool(true));
@@ -165,6 +182,7 @@ fn eval_script_var_lands_on_global() {
 #[test]
 fn eval_script_function_decl_lands_on_global() {
     let mut vm = Vm::new();
+    vm.set_compiler_service(Arc::new(DefaultCompilerService));
     // 脚本模式：顶层函数声明落全局对象。
     let result = eval(&mut vm, "(0,eval)('function f(){}'); typeof f === 'function'").unwrap();
     assert_eq!(result, JsValue::bool(true));
@@ -173,6 +191,7 @@ fn eval_script_function_decl_lands_on_global() {
 #[test]
 fn eval_script_let_is_isolated() {
     let mut vm = Vm::new();
+    vm.set_compiler_service(Arc::new(DefaultCompilerService));
     // let/const 词法隔离：不落全局，不泄漏到外层。
     let result = eval(&mut vm, "(0,eval)('let z = 1'); typeof z === 'undefined'").unwrap();
     assert_eq!(result, JsValue::bool(true));
@@ -184,6 +203,7 @@ fn eval_script_let_is_isolated() {
 #[test]
 fn eval_script_this_is_global() {
     let mut vm = Vm::new();
+    vm.set_compiler_service(Arc::new(DefaultCompilerService));
     // 脚本模式：this 与 globalThis 恒等（inline 调用 receiver 传 global）。
     let result = eval(&mut vm, "(0,eval)('this === globalThis')").unwrap();
     assert_eq!(result, JsValue::bool(true));
@@ -192,6 +212,7 @@ fn eval_script_this_is_global() {
 #[test]
 fn eval_nested_eval() {
     let mut vm = Vm::new();
+    vm.set_compiler_service(Arc::new(DefaultCompilerService));
     // 嵌套 eval：内层完成值透传为外层脚本值。
     let result = eval(&mut vm, "eval(\"eval('1+1')\")").unwrap();
     assert_num(result, 2.0);
@@ -200,6 +221,7 @@ fn eval_nested_eval() {
 #[test]
 fn eval_script_completion_value() {
     let mut vm = Vm::new();
+    vm.set_compiler_service(Arc::new(DefaultCompilerService));
     // 间接 eval 脚本模式完成值：var 初始化 + 表达式。
     let result = eval(&mut vm, "(0,eval)('var a = 1; a')").unwrap();
     assert_num(result, 1.0);
@@ -210,6 +232,7 @@ fn eval_script_completion_value() {
 #[test]
 fn eval_script_empty_and_decl_only() {
     let mut vm = Vm::new();
+    vm.set_compiler_service(Arc::new(DefaultCompilerService));
     // 空脚本 / 纯声明脚本：完成值为 undefined。
     let result = eval(&mut vm, "eval('') === undefined").unwrap();
     assert_eq!(result, JsValue::bool(true));
@@ -220,6 +243,7 @@ fn eval_script_empty_and_decl_only() {
 #[test]
 fn eval_script_throw_still_rethrows() {
     let mut vm = Vm::new();
+    vm.set_compiler_service(Arc::new(DefaultCompilerService));
     // 脚本模式异常路径回归：eval 内 throw 原始值，外层 catch 捕获同一值。
     let result = eval(&mut vm, "try { (0,eval)('throw 5') } catch(e) { e }").unwrap();
     assert_num(result, 5.0);
@@ -228,6 +252,7 @@ fn eval_script_throw_still_rethrows() {
 #[test]
 fn compound_statement_completion_values() {
     let mut vm = Vm::new();
+    vm.set_compiler_service(Arc::new(DefaultCompilerService));
     // 混合形完成值：switch 命中 case 链最后非空值、无命中 undefined；空命中不沿用前值。
     let result = eval(&mut vm, "7; switch(1){case 1: 9}").unwrap();
     assert_num(result, 9.0);
@@ -321,6 +346,7 @@ fn compound_statement_completion_values() {
 #[test]
 fn iteration_labeled_completion_values() {
     let mut vm = Vm::new();
+    vm.set_compiler_service(Arc::new(DefaultCompilerService));
     // do-while 循环体完成值 = 末次体值。
     let result = eval(&mut vm, "7; do { 8 } while (false)").unwrap();
     assert_num(result, 8.0);

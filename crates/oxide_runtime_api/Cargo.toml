@@ -7,6 +7,7 @@ rust-version.workspace = true
 description = "OxideJS - VmHost trait: the abstract Vm interface builtins are written against"
 
 [dependencies]
+oxide_bytecode = { path = "../oxide_bytecode" }
 oxide_types = { path = "../oxide_types" }
 num-bigint = "0.4"
 num-traits = "0.2"

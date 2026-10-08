@@ -13,6 +13,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread::JoinHandle;
 
+use oxide_compiler::DefaultCompilerService;
 use oxide_kernel::kernel::KernelCore;
 use oxide_vm::vm_pool::{PoolCounters, VmPool};
 
@@ -111,7 +112,14 @@ pub fn spawn_workers(
         let counters = Arc::clone(&counters);
         handles.push(std::thread::spawn(move || {
             // 池在本线程上创建，永不跨线程移动（Vm 不是 Send）。
-            let pool = VmPool::with_counters(Arc::clone(&kernel), min_pool_size, max_pool_size, counters);
+            // 编译服务随池构造注入：worker 池内 Vm 的 eval 动态编译面由此供给。
+            let pool = VmPool::with_counters(
+                Arc::clone(&kernel),
+                Arc::new(DefaultCompilerService),
+                min_pool_size,
+                max_pool_size,
+                counters,
+            );
             worker_loop(rx, kernel, pool);
         }));
         senders.push(tx);

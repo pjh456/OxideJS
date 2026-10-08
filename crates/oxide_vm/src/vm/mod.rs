@@ -37,6 +37,7 @@ mod props;
 mod tables;
 mod vmhost;
 
+pub(crate) use dynamic::NoopCompilerService;
 pub(crate) use frames::FrameArgs;
 pub use frames::{CallFrame, Completion, ForInIter, FrameContinuation, TryHandler};
 pub(crate) use gc_hooks::RootGroup;
@@ -175,6 +176,12 @@ pub struct Vm {
     pub(crate) active_immutables: *const [JsValue],
     pub(crate) frames: SmallVec<[CallFrame; 16]>,
     pub(crate) kernel_core: Arc<KernelCore>,
+    /// 动态编译服务句柄：`Function` 构造器 / eval / `$262.evalScript` 经它编译
+    /// 源码（`dynamic.rs` 三方法）。缺省为 no-op stub（返 `Err`），生产 entry
+    /// points 与动态编译测试经 `set_compiler_service` 注入真实实现。
+    /// `Arc<dyn CompilerService>` 因 trait `Send + Sync` 而 Send + Sync，
+    /// 不破坏 `unsafe impl Send for Vm`。
+    pub(crate) compiler: Arc<dyn oxide_runtime_api::CompilerService>,
     /// 每 VM 的 realm 组合：内核会话（builtin world 与 global 对象）、
     /// session GC 簿记与 10 个内建原型槽（见 `realm` 模块）。以 `Arc` 持有：
     /// 可变组经 `RefCell` 内部可变性在 `&Arc<Realm>` 下改写，teardown 归
@@ -443,6 +450,18 @@ impl Vm {
     /// 只读访问 VM 共享的 `KernelCore`。
     pub fn kernel_core(&self) -> &Arc<KernelCore> {
         &self.kernel_core
+    }
+
+    /// 注入动态编译服务（`Function` 构造器 / eval / `$262.evalScript` 的编译面）。
+    ///
+    /// # 边界与前提
+    /// - 构造后缺省为 no-op stub（动态编译返 `Err`）；需要动态编译的调用方
+    ///   （生产 entry points 与动态编译测试）须在首次动态编译前注入真实实现。
+    ///
+    /// # 副作用
+    /// - 替换 `compiler` 句柄（`Arc` 克隆，无其他状态变更）。
+    pub fn set_compiler_service(&mut self, service: Arc<dyn oxide_runtime_api::CompilerService>) {
+        self.compiler = service;
     }
 
     /// 只读访问当前 session（builtin world 与 global object）。

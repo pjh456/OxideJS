@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use oxide_builtins::array::{array_constructor, array_push};
 use oxide_compiler::compiler::Compiler;
+use oxide_compiler::DefaultCompilerService;
 use oxide_types::value::JsValue;
 use oxide_vm::vm::Vm;
 
@@ -10,6 +11,7 @@ fn eval(source: &str) -> Result<(Vm, JsValue), String> {
     let program = oxide_parser::parse(&allocator, source).map_err(|e| format!("Parse error: {:?}", e))?;
     let module = Compiler::new().compile(&program).map_err(|e| format!("Compile error: {}", e))?;
     let mut vm = Vm::new();
+    vm.set_compiler_service(Arc::new(DefaultCompilerService));
     let result = vm.run(&Arc::new(module))?;
     Ok((vm, result))
 }
@@ -40,6 +42,7 @@ fn array_push_returns_length() {
 #[test]
 fn array_push_returns_true_length_beyond_31() {
     let mut vm = Vm::new();
+    vm.set_compiler_service(Arc::new(DefaultCompilerService));
     vm.set_reg(1, oxide_types::value::JsValue::int(31));
     let array = array_constructor(&mut vm, &[0, 1]).unwrap();
     vm.set_reg(0, array);

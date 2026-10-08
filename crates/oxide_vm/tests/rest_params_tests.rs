@@ -4,6 +4,7 @@
 use std::sync::Arc;
 
 use oxide_compiler::compiler::Compiler;
+use oxide_compiler::DefaultCompilerService;
 use oxide_parser::Allocator;
 use oxide_types::value::JsValue;
 use oxide_vm::vm::Vm;
@@ -13,6 +14,7 @@ fn eval(source: &str) -> JsValue {
     let program = oxide_parser::parse(&allocator, source).expect("parse failed");
     let module = Compiler::new().compile(&program).expect("compile failed");
     let mut vm = Vm::new();
+    vm.set_compiler_service(Arc::new(DefaultCompilerService));
     vm.run(&Arc::new(module)).expect("vm run failed")
 }
 
@@ -32,6 +34,7 @@ fn eval_str(source: &str) -> String {
     let program = oxide_parser::parse(&allocator, source).expect("parse failed");
     let module = Compiler::new().compile(&program).expect("compile failed");
     let mut vm = Vm::new();
+    vm.set_compiler_service(Arc::new(DefaultCompilerService));
     let v = vm.run(&Arc::new(module)).expect("vm run failed");
     // 字符串结果须在同一 VM 上读：perm 串指向 VM 私有内核，VM drop 后指针悬垂。
     if v.is_string() {

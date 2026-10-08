@@ -19,6 +19,7 @@ use oxide_cli::server::spawn;
 use oxide_cli::server::watchdog;
 use oxide_compiler::compiler::{compiled_module_hash, Compiler};
 use oxide_compiler::compiler_error;
+use oxide_compiler::DefaultCompilerService;
 use oxide_kernel::kernel::{KernelConfig, KernelCore};
 use oxide_kernel::shape_forge::ShapeForge;
 use oxide_kernel::string_forge::PermInterner;
@@ -620,7 +621,12 @@ fn make_kernel(verbose: bool, quiet: bool) -> Arc<KernelCore> {
 }
 
 fn make_pool(kernel: &Arc<KernelCore>) -> Arc<VmPool> {
-    VmPool::new(Arc::clone(kernel), kernel.config.min_pool_size, kernel.config.max_pool_size)
+    VmPool::new(
+        Arc::clone(kernel),
+        Arc::new(DefaultCompilerService),
+        kernel.config.min_pool_size,
+        kernel.config.max_pool_size,
+    )
 }
 
 fn eval(
@@ -767,6 +773,8 @@ fn repl() -> ExitCode {
 
     let kernel = make_kernel(false, false);
     let mut vm = Vm::with_kernel_core(Arc::clone(&kernel));
+    // REPL 源经 eval 路径动态编译（含 `new Function` / eval 内置），注入真实编译服务。
+    vm.set_compiler_service(Arc::new(DefaultCompilerService));
     let mut input_buf = String::new();
 
     loop {

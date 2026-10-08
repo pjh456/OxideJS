@@ -3,6 +3,7 @@
 use std::sync::Arc;
 
 use oxide_compiler::compiler::Compiler;
+use oxide_compiler::DefaultCompilerService;
 use oxide_parser::Allocator;
 use oxide_types::value::JsValue;
 use oxide_vm::vm::Vm;
@@ -12,6 +13,7 @@ fn eval_truthy(source: &str) {
     let program = oxide_parser::parse(&allocator, source).expect("parse");
     let module = Compiler::new().compile(&program).expect("compile");
     let mut vm = Vm::new();
+    vm.set_compiler_service(Arc::new(DefaultCompilerService));
     let result = vm.run(&Arc::new(module)).expect("run");
     assert!(result.is_bool() && result.as_bool(), "expected true, got: {result:?}\nsource: {source}");
 }
@@ -21,6 +23,7 @@ fn eval_string(source: &str) -> String {
     let program = oxide_parser::parse(&allocator, source).expect("parse");
     let module = Compiler::new().compile(&program).expect("compile");
     let mut vm = Vm::new();
+    vm.set_compiler_service(Arc::new(DefaultCompilerService));
     let result = vm.run(&Arc::new(module)).expect("run");
     vm.lookup_str(result).unwrap_or_default()
 }
@@ -34,6 +37,7 @@ fn compile(source: &str) -> oxide_bytecode::module::CompiledModule {
 /// 两阶段执行：phase1 → `reset()`（轻量重置，epoch 清空、session 保留）→ phase2。
 fn eval_two_phases(phase1: &str, phase2: &str) -> bool {
     let mut vm = Vm::new();
+    vm.set_compiler_service(Arc::new(DefaultCompilerService));
     vm.run(&Arc::new(compile(phase1))).expect("run1");
     vm.reset();
     let result = vm.run(&Arc::new(compile(phase2))).expect("run2");
@@ -43,6 +47,7 @@ fn eval_two_phases(phase1: &str, phase2: &str) -> bool {
 /// 两阶段 run-Err 变体：phase2 返回运行结果，供未捕获异常（TypeError 等）断言。
 fn run_two_phases(phase1: &str, phase2: &str) -> Result<JsValue, String> {
     let mut vm = Vm::new();
+    vm.set_compiler_service(Arc::new(DefaultCompilerService));
     vm.run(&Arc::new(compile(phase1))).expect("run1");
     vm.reset();
     vm.run(&Arc::new(compile(phase2)))
@@ -69,6 +74,7 @@ fn phase2_err_text(phase1: &str, phase2: &str) -> String {
 /// "true"/"false"）。
 fn phase2_err_then_probe(phase1: &str, phase2: &str, probe: &str) -> String {
     let mut vm = Vm::new();
+    vm.set_compiler_service(Arc::new(DefaultCompilerService));
     vm.run(&Arc::new(compile(phase1))).expect("run1");
     vm.reset();
     assert!(vm.run(&Arc::new(compile(phase2))).is_err(), "phase2 应抛未捕获异常: {phase2}");
@@ -576,6 +582,7 @@ fn strict_eval_var_init_on_nonwritable_user_property_throws() {
 fn nonextensible_global_strict_var_prologue_throws_before_body() {
     // 序言期抛：体副作用不执行（touched 未写入）。
     let mut vm = Vm::new();
+    vm.set_compiler_service(Arc::new(DefaultCompilerService));
     vm.run(&Arc::new(compile("Object.preventExtensions(globalThis)")))
         .expect("run1");
     vm.reset();

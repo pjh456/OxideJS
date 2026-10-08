@@ -4,6 +4,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use oxide_compiler::compiler::{compiled_module_hash, Compiler};
+use oxide_compiler::DefaultCompilerService;
 use oxide_kernel::kernel::{KernelConfig, KernelCore};
 use oxide_parser::Allocator;
 use oxide_types::value::JsValue;
@@ -225,6 +226,7 @@ pub fn run_mem_vm_creation_leak(kernel: &Arc<KernelCore>) -> ExitCode {
     for i in 0..ITERATIONS {
         {
             let mut vm = Vm::with_kernel_core(Arc::clone(kernel));
+            vm.set_compiler_service(Arc::new(DefaultCompilerService));
             if let Err(e) = vm.run(&module) {
                 eprintln!("[vm_creation] iteration {i} run failed: {e}");
                 return ExitCode::FAILURE;
@@ -318,6 +320,7 @@ pub fn run_mem_dirty_rebuild_leak(kernel: &Arc<KernelCore>) -> ExitCode {
     const SAMPLE_EVERY: usize = 10;
 
     let mut vm = Vm::with_kernel_core(Arc::clone(kernel));
+    vm.set_compiler_service(Arc::new(DefaultCompilerService));
     let compiler = Compiler::new();
 
     let mut sampler = LeakSampler::new(20);
@@ -421,6 +424,7 @@ pub fn run_mem_closure_dead_leak(kernel: &Arc<KernelCore>) -> ExitCode {
     let mut series: Vec<(usize, f64)> = Vec::new();
     for window in 0..WINDOWS {
         let mut vm = Vm::with_kernel_core(Arc::clone(kernel));
+        vm.set_compiler_service(Arc::new(DefaultCompilerService));
         for round in 0..ROUNDS_PER_WINDOW {
             if let Err(e) = vm.run(create) {
                 eprintln!("[closure_dead_leak] window {window} round {round} create run failed: {e}");
@@ -479,6 +483,7 @@ pub fn run_mem_pool_high_water(kernel: &Arc<KernelCore>) -> ExitCode {
     let light = compile_one(light_js);
 
     let mut vm = Vm::with_kernel_core(Arc::clone(kernel));
+    vm.set_compiler_service(Arc::new(DefaultCompilerService));
     if let Err(e) = vm.run(&heavy) {
         eprintln!("[pool_high_water] heavy run failed: {e}");
         return ExitCode::FAILURE;
@@ -548,6 +553,7 @@ pub fn run_mem_object_churn_peak(kernel: &Arc<KernelCore>) -> ExitCode {
     };
 
     let mut vm = Vm::with_kernel_core(Arc::clone(kernel));
+    vm.set_compiler_service(Arc::new(DefaultCompilerService));
     let mut series: Vec<(usize, f64)> = Vec::new();
     if let Some(kb) = read_vmrss_kb() {
         series.push((0, kb as f64));
@@ -652,6 +658,7 @@ pub fn run_mem_kernel_lifetime() -> ExitCode {
         let rss_pre = read_vmrss_kb().unwrap_or(0);
         {
             let mut vm = Vm::with_kernel_core(Arc::clone(&kernel));
+            vm.set_compiler_service(Arc::new(DefaultCompilerService));
             let result = match vm.run(&js_module) {
                 Ok(v) => v,
                 Err(e) => {
@@ -769,7 +776,12 @@ pub fn run_mem_startup_breakdown() -> ExitCode {
         let t1 = Instant::now();
 
         // 池构造：同步预热 min_size 个 Vm，预热成本计入本段。
-        let pool = VmPool::new(Arc::clone(&kernel), config.min_pool_size, config.max_pool_size);
+        let pool = VmPool::new(
+            Arc::clone(&kernel),
+            Arc::new(DefaultCompilerService),
+            config.min_pool_size,
+            config.max_pool_size,
+        );
         let t2 = Instant::now();
 
         // 首次 spawn：命中预热池，近零成本。
@@ -904,6 +916,7 @@ mod tests {
     fn session_accounting_zero_after_full_reset() {
         let kernel = KernelCore::new(KernelConfig::standard());
         let mut vm = Vm::with_kernel_core(Arc::clone(&kernel));
+        vm.set_compiler_service(Arc::new(DefaultCompilerService));
         let allocator = Allocator::default();
         let program = oxide_parser::parse(&allocator, "var o = { a: 1 }; o").expect("parse");
         let hash = compiled_module_hash(&program);

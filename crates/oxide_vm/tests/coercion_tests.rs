@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use oxide_compiler::compiler::Compiler;
+use oxide_compiler::DefaultCompilerService;
 use oxide_parser::Allocator;
 use oxide_runtime_api as coercion;
 use oxide_types::value::JsValue;
@@ -17,6 +18,7 @@ fn eval(source: &str) -> String {
         Err(e) => return format!("compile error: {e}"),
     };
     let mut vm = Vm::new();
+    vm.set_compiler_service(Arc::new(DefaultCompilerService));
     match vm.run(&Arc::new(module)) {
         Ok(result) => format!("{result}"),
         Err(e) => format!("vm error: {e}"),
@@ -88,6 +90,7 @@ fn test_strict_equality_null_undefined() {
 #[test]
 fn test_to_int32_and_to_uint32() {
     let mut vm = Vm::new();
+    vm.set_compiler_service(Arc::new(DefaultCompilerService));
     let string_three = vm.new_string("3");
     let string_bad = vm.new_string("x");
 
@@ -151,6 +154,7 @@ fn to_primitive_symbol_hint_invoked() {
 #[test]
 fn to_number_full_symbol_throws() {
     let mut vm = Vm::new();
+    vm.set_compiler_service(Arc::new(DefaultCompilerService));
     let sym = JsValue::symbol(0);
     let result = coercion::to_number_full(sym, &mut vm);
     assert!(result.is_err(), "to_number_full(Symbol) must error, got {result:?}");
@@ -323,6 +327,7 @@ fn eval_ty(source: &str) -> Result<(Vm, JsValue), String> {
     let program = oxide_parser::parse(&allocator, source).map_err(|e| format!("Parse error: {:?}", e))?;
     let module = Compiler::new().compile(&program).map_err(|e| format!("Compile error: {}", e))?;
     let mut vm = Vm::new();
+    vm.set_compiler_service(Arc::new(DefaultCompilerService));
     let result = vm.run(&Arc::new(module))?;
     Ok((vm, result))
 }

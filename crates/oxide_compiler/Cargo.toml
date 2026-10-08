@@ -9,6 +9,7 @@ description = "OxideJS - AST to bytecode compiler"
 [dependencies]
 oxide_bytecode = { path = "../oxide_bytecode" }
 oxide_parser = { path = "../oxide_parser" }
+oxide_runtime_api = { path = "../oxide_runtime_api" }
 oxide_log = { path = "../oxide_log" }
 oxide_dce = { path = "../oxide_dce" }
 oxide_cfg = { path = "../oxide_cfg" }

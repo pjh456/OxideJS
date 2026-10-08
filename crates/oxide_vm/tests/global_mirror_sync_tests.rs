@@ -12,6 +12,7 @@
 use std::sync::Arc;
 
 use oxide_compiler::compiler::Compiler;
+use oxide_compiler::DefaultCompilerService;
 use oxide_parser::Allocator;
 use oxide_types::value::JsValue;
 use oxide_vm::vm::Vm;
@@ -21,6 +22,7 @@ fn eval(source: &str) -> Result<JsValue, String> {
     let program = oxide_parser::parse(&allocator, source).map_err(|e| format!("Parse error: {:?}", e))?;
     let module = Compiler::new().compile(&program).map_err(|e| format!("Compile error: {}", e))?;
     let mut vm = Vm::new();
+    vm.set_compiler_service(Arc::new(DefaultCompilerService));
     vm.run(&Arc::new(module))
 }
 
@@ -29,6 +31,7 @@ fn eval_str(source: &str) -> String {
     let program = oxide_parser::parse(&allocator, source).expect("parse");
     let module = Compiler::new().compile(&program).expect("compile");
     let mut vm = Vm::new();
+    vm.set_compiler_service(Arc::new(DefaultCompilerService));
     let result = vm.run(&Arc::new(module)).expect("run");
     vm.lookup_str(result).unwrap_or_else(|| format!("{result}"))
 }

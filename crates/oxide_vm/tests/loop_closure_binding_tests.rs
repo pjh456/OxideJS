@@ -4,6 +4,7 @@
 use std::sync::Arc;
 
 use oxide_compiler::compiler::Compiler;
+use oxide_compiler::DefaultCompilerService;
 use oxide_types::value::JsValue;
 use oxide_vm::vm::Vm;
 
@@ -12,6 +13,7 @@ fn eval(source: &str) -> Result<(Vm, JsValue), String> {
     let program = oxide_parser::parse(&allocator, source).map_err(|e| format!("Parse error: {:?}", e))?;
     let module = Compiler::new().compile(&program).map_err(|e| format!("Compile error: {}", e))?;
     let mut vm = Vm::new();
+    vm.set_compiler_service(Arc::new(DefaultCompilerService));
     let result = vm.run(&Arc::new(module))?;
     Ok((vm, result))
 }

@@ -11,6 +11,7 @@ use crate::judge::{
 };
 use crate::meta::{parse_meta, strip_meta, TestMeta};
 use oxide_compiler::compiler::Compiler;
+use oxide_compiler::DefaultCompilerService;
 use oxide_kernel::kernel::{KernelConfig, KernelCore};
 use oxide_types::value::JsValue;
 use oxide_vm::vm::Vm;
@@ -171,6 +172,8 @@ fn run_test_inner(
     };
 
     let mut vm = Vm::with_kernel_core(Arc::clone(kernel));
+    // test262 语料含 eval / Function 动态编译面，注入真实编译服务。
+    vm.set_compiler_service(Arc::new(DefaultCompilerService));
     // 监督者注入现场文件路径时开启 VM 的 last-pc 定频写（未注入时零开销）。
     if let Some(watch) = pc_watch_path() {
         vm.set_pc_watch(Some(watch.clone()));

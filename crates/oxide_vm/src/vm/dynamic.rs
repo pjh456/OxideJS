@@ -1,13 +1,32 @@
 //! 动态编译：`Function` 构造器与脚本动态编译入口，及子树 flat_id 重编号。
+//! 编译经 `Vm` 持有的 `CompilerService` 句柄完成（`self.compiler`），
+//! 本 crate 生产代码不直接依赖 `oxide_compiler` / `oxide_parser`。
 
 use std::sync::{Arc, OnceLock};
 
 use oxide_bytecode::module::CompiledModule;
 use oxide_bytecode::opcode::{self, OpCode};
+use oxide_runtime_api::CompilerService;
 use oxide_types::object::PropAttributes;
 use oxide_types::value::JsValue;
 
 use super::Vm;
+
+/// 缺省 no-op 编译服务：两方法均返 `Err`（错误消息指向「未安装编译服务」）。
+///
+/// 供不需要动态编译的 `Vm` 实例（构造器缺省值）；生产 entry points 与
+/// 动态编译测试经 `set_compiler_service` 注入真实实现。
+pub(crate) struct NoopCompilerService;
+
+impl CompilerService for NoopCompilerService {
+    fn compile_script(&self, _source: &str) -> Result<CompiledModule, String> {
+        Err("dynamic compilation unavailable: no compiler service installed".to_string())
+    }
+
+    fn compile_eval_script(&self, _source: &str) -> Result<CompiledModule, String> {
+        Err("dynamic compilation unavailable: no compiler service installed".to_string())
+    }
+}
 
 impl Vm {
     /// 动态编译函数（`Function` 构造器路径）：把参数列表与函数体 wrap 成匿名函数
@@ -57,15 +76,11 @@ impl Vm {
         let params_str = params.join(", ");
         let source = format!("{prefix} anonymous({params_str}\n) {{\n{body}\n}}");
 
-        let allocator = oxide_parser::Allocator::default();
-        let program = oxide_parser::parse(&allocator, &source)
-            .map_err(|errs| errs.into_iter().map(|e| e.message).collect::<Vec<_>>().join("\n"))?;
         // 动态路径源契约：调用方以源码域转义（`string_forge::source_escape`）
         // 形态传源；正则字面量源切片经 `source_escape_to_key` 还原注入
         // marker 后入池（编码源口径，区别于静态源的 `pool_key_plain`）。
-        let mut module = oxide_compiler::compiler::Compiler::new()
-            .with_source_encoded(true)
-            .compile(&program)?;
+        // 编译经注入的编译服务完成（parse 与 compile 串联在实现侧）。
+        let mut module = self.compiler.compile_script(&source)?;
         let anonymous = module.sub_modules.remove(0);
         // 形参数以编译结果为准：单个实参 "a,b,c" 拼接后解析为 3 个形参
         // （ES 动态函数把非末位实参以逗号连接成参数串再解析）。
@@ -113,15 +128,9 @@ impl Vm {
     /// # 副作用
     /// - 扩展当前代际平表（`tables[current_gen]`）与常量缓存。
     pub fn create_dynamic_script(&mut self, code: &str) -> Result<JsValue, String> {
-        let allocator = oxide_parser::Allocator::default();
-        let program = oxide_parser::parse(&allocator, code)
-            .map_err(|errs| errs.into_iter().map(|e| e.message).collect::<Vec<_>>().join("\n"))?;
         // eval 脚本：顶层 var/function 声明落全局属性 configurable:true。
         // 动态路径源契约同 `create_dynamic_function`（源码域转义形态传源）。
-        let module = oxide_compiler::compiler::Compiler::new()
-            .with_eval_script(true)
-            .with_source_encoded(true)
-            .compile(&program)?;
+        let module = self.compiler.compile_eval_script(code)?;
         // 根模块 flat_id=0 传 base+1，重编号后落 base（避开 sub_module_index()==0
         // 守卫）。make_mut 彼时平表 Arc 强引用唯一持有者是本表，原地扩展不分叉。
         let table = self.current_table_mut();
@@ -157,15 +166,10 @@ impl Vm {
     /// # 副作用
     /// - 扩展当前代际平表（`tables[current_gen]`）与常量缓存。
     pub fn create_plain_dynamic_script(&mut self, code: &str) -> Result<JsValue, String> {
-        let allocator = oxide_parser::Allocator::default();
-        let program = oxide_parser::parse(&allocator, code)
-            .map_err(|errs| errs.into_iter().map(|e| e.message).collect::<Vec<_>>().join("\n"))?;
         // 普通脚本：顶层 var/function 声明落全局属性 configurable:false，
         // let/const 落全局词法环境。动态路径源契约同 `create_dynamic_function`
         // （源码域转义形态传源）。
-        let module = oxide_compiler::compiler::Compiler::new()
-            .with_source_encoded(true)
-            .compile(&program)?;
+        let module = self.compiler.compile_script(code)?;
         // 根模块 flat_id=0 传 base+1，重编号后落 base（避开 sub_module_index()==0
         // 守卫）。make_mut 彼时平表 Arc 强引用唯一持有者是本表，原地扩展不分叉。
         let table = self.current_table_mut();

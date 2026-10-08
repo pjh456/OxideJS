@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use oxide_compiler::compiler::Compiler;
+use oxide_compiler::DefaultCompilerService;
 use oxide_kernel::kernel::{KernelConfig, KernelCore};
 use oxide_parser::Allocator;
 use oxide_vm::vm::Vm;
@@ -16,6 +17,7 @@ fn eval(source: &str) -> String {
         Err(e) => return format!("compile error: {e}"),
     };
     let mut vm = Vm::new();
+    vm.set_compiler_service(Arc::new(DefaultCompilerService));
     match vm.run(&Arc::new(module)) {
         Ok(result) => format!("{result}"),
         Err(e) => format!("vm error: {e}"),
@@ -33,6 +35,7 @@ fn eval_with_kernel(source: &str, kernel: Arc<KernelCore>) -> String {
         Err(e) => return format!("compile error: {e}"),
     };
     let mut vm = Vm::with_kernel_core(kernel);
+    vm.set_compiler_service(Arc::new(DefaultCompilerService));
     match vm.run(&Arc::new(module)) {
         Ok(result) => format!("{result}"),
         Err(e) => format!("vm error: {e}"),
@@ -52,6 +55,7 @@ fn regression_rerun_clears_ic_cache() {
     let program = oxide_parser::parse(&allocator, source).expect("parse");
     let module = Compiler::new().compile(&program).expect("compile");
     let mut vm = Vm::new();
+    vm.set_compiler_service(Arc::new(DefaultCompilerService));
     assert_eq!(format!("{}", vm.run(&Arc::new(module)).unwrap()), "1");
 
     let source2 = "var o = {a: 2}; o.a";
@@ -188,6 +192,7 @@ fn eval_shallow(source: &str, depth: usize) -> String {
     let mut cfg = KernelConfig::minimal();
     cfg.max_call_depth = depth;
     let mut vm = Vm::with_kernel_core(KernelCore::new(cfg));
+    vm.set_compiler_service(Arc::new(DefaultCompilerService));
     match vm.run(&Arc::new(module)) {
         Ok(val) => {
             if val.is_string() {

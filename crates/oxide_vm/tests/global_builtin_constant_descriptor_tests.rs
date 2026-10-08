@@ -8,6 +8,7 @@
 use std::sync::Arc;
 
 use oxide_compiler::compiler::Compiler;
+use oxide_compiler::DefaultCompilerService;
 use oxide_parser::Allocator;
 use oxide_vm::vm::Vm;
 
@@ -19,12 +20,14 @@ fn compile(source: &str) -> oxide_bytecode::module::CompiledModule {
 
 fn run_truthy(source: &str) {
     let mut vm = Vm::new();
+    vm.set_compiler_service(Arc::new(DefaultCompilerService));
     let result = vm.run(&Arc::new(compile(source))).expect("run");
     assert!(result.is_bool() && result.as_bool(), "expected true, got: {result:?}\nsource: {source}");
 }
 
 fn run_string(source: &str) -> String {
     let mut vm = Vm::new();
+    vm.set_compiler_service(Arc::new(DefaultCompilerService));
     let result = vm.run(&Arc::new(compile(source))).expect("run");
     if result.is_undefined() {
         return "undefined".to_string();
@@ -35,6 +38,7 @@ fn run_string(source: &str) -> String {
 /// 求值并返回完成值字符串；运行期异常返回错误文本（供 TypeError 断言）。
 fn eval(source: &str) -> String {
     let mut vm = Vm::new();
+    vm.set_compiler_service(Arc::new(DefaultCompilerService));
     match vm.run(&Arc::new(compile(source))) {
         Ok(result) => vm.lookup_str(result).unwrap_or_default(),
         Err(e) => e,

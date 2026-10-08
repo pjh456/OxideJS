@@ -4,6 +4,7 @@
 use std::sync::Arc;
 
 use oxide_compiler::compiler::Compiler;
+use oxide_compiler::DefaultCompilerService;
 use oxide_kernel::kernel::{KernelConfig, KernelCore};
 use oxide_parser::Allocator;
 use oxide_types::value::JsValue;
@@ -21,6 +22,7 @@ fn eval(source: &str) -> String {
         Err(e) => return format!("compile error: {e}"),
     };
     let mut vm = Vm::new();
+    vm.set_compiler_service(Arc::new(DefaultCompilerService));
     match vm.run(&Arc::new(module)) {
         Ok(result) => vm.lookup_str(result).unwrap_or_else(|| format!("{result}")),
         Err(e) => format!("vm error: {e}"),
@@ -104,6 +106,7 @@ fn gc_keeps_reachable_session_objects_alive() {
     let mut config = KernelConfig::minimal();
     config.set_session_gc_threshold(4096);
     let mut vm = Vm::with_kernel_core(KernelCore::new(config));
+    vm.set_compiler_service(Arc::new(DefaultCompilerService));
     let result = eval_on(
         &mut vm,
         "(function () { \

@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use oxide_compiler::compiler::Compiler;
+use oxide_compiler::DefaultCompilerService;
 use oxide_parser::Allocator;
 use oxide_vm::vm::Vm;
 
@@ -15,6 +16,7 @@ fn eval(source: &str) -> String {
         Err(e) => return format!("compile error: {e}"),
     };
     let mut vm = Vm::new();
+    vm.set_compiler_service(Arc::new(DefaultCompilerService));
     match vm.run(&Arc::new(module)) {
         Ok(result) => format!("{result}"),
         Err(e) => format!("vm error: {e}"),
@@ -28,6 +30,7 @@ fn object_create_and_read() {
     let program = oxide_parser::parse(&allocator, source).expect("parse failed");
     let module = Compiler::new().compile(&program).expect("compile failed");
     let mut vm = Vm::new();
+    vm.set_compiler_service(Arc::new(DefaultCompilerService));
     let obj = vm.run(&Arc::new(module)).expect("vm run failed");
     assert!(obj.is_object());
     let obj_ref = unsafe { &*obj.as_js_object_ptr() };
@@ -273,6 +276,7 @@ fn object_literal_getter_setter_pair() {
 fn eval_string(source: &str) -> String {
     let allocator = Allocator::default();
     let mut vm = Vm::new();
+    vm.set_compiler_service(Arc::new(DefaultCompilerService));
     let program = oxide_parser::parse(&allocator, source).expect("parse failed");
     let module = Compiler::new().compile(&program).expect("compile failed");
     let result = vm.run(&Arc::new(module)).expect("vm run failed");

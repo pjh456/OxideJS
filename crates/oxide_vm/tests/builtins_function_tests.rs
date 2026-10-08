@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use oxide_compiler::compiler::Compiler;
+use oxide_compiler::DefaultCompilerService;
 use oxide_types::value::JsValue;
 use oxide_vm::vm::Vm;
 
@@ -249,6 +250,7 @@ fn function_apply_non_callable_this_throws_catchable_type_error() {
     // 不可调用 this（实例原型链含函数）经 apply 转发：抛可捕获 TypeError，
     // 不得绕过 try/catch 成为引擎级错误。
     let mut vm = Vm::new();
+    vm.set_compiler_service(Arc::new(DefaultCompilerService));
     let name = eval(
         &mut vm,
         "function FACTORY(){} FACTORY.prototype = Function(); var o = new FACTORY(); try { o.apply(); } catch (e) { e.name }",

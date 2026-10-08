@@ -1,6 +1,8 @@
 //! vm_support 内联测试：全量重置状态清除与全局重建、分配上限、生成器与 BigInt 存活、动态编译及源文本断言行为。
 use super::*;
 
+use oxide_compiler::DefaultCompilerService;
+
 fn global_prop(vm: &Vm, name: &str) -> JsValue {
     global_prop_opt(vm, name).expect("global slot should exist")
 }
@@ -499,6 +501,7 @@ fn immutables_filled_once_per_module() {
 #[test]
 fn dynamic_function_basic_arity() {
     let mut vm = Vm::new();
+    vm.set_compiler_service(Arc::new(DefaultCompilerService));
     // 与等价静态函数返回值逐位一致（引擎函数调用统一产 Double 数值）。
     let expected = run_source(&mut vm, "function f(a,b){return a+b} f(3,4)");
     let result = run_source(&mut vm, "new Function('a','b','return a+b')(3,4)");
@@ -508,6 +511,7 @@ fn dynamic_function_basic_arity() {
 #[test]
 fn dynamic_function_called_without_new() {
     let mut vm = Vm::new();
+    vm.set_compiler_service(Arc::new(DefaultCompilerService));
     let expected = run_source(&mut vm, "function f(a,b){return a*b} f(6,7)");
     let result = run_source(&mut vm, "Function('a','b','return a*b')(6,7)");
     assert_eq!(result, expected);
@@ -516,12 +520,14 @@ fn dynamic_function_called_without_new() {
 #[test]
 fn dynamic_function_empty_body_returns_undefined() {
     let mut vm = Vm::new();
+    vm.set_compiler_service(Arc::new(DefaultCompilerService));
     assert!(run_source(&mut vm, "Function()()").is_undefined());
 }
 
 #[test]
 fn dynamic_function_syntax_error_throws_syntax_error() {
     let mut vm = Vm::new();
+    vm.set_compiler_service(Arc::new(DefaultCompilerService));
     let result = run_source(&mut vm, "try{new Function('return {{')}catch(e){e.name}");
     assert!(result.is_string());
     assert_eq!(vm.lookup_str(result).as_deref(), Some("SyntaxError"));
@@ -530,6 +536,7 @@ fn dynamic_function_syntax_error_throws_syntax_error() {
 #[test]
 fn dynamic_function_nested_closure_renumbering() {
     let mut vm = Vm::new();
+    vm.set_compiler_service(Arc::new(DefaultCompilerService));
     // 匿名函数体声明嵌套函数 g，返回值是引用 g 的闭包：验证子树 flat_id 重编号
     // 与 CREATE_CLOSURE imm16 重写后嵌套调用仍指向正确的子模块。
     let expected = run_source(
@@ -546,6 +553,7 @@ fn dynamic_function_nested_closure_renumbering() {
 #[test]
 fn dynamic_function_multiple_in_one_run() {
     let mut vm = Vm::new();
+    vm.set_compiler_service(Arc::new(DefaultCompilerService));
     // 同一 run 内连续创建多个动态函数：验证 base 偏移累计正确。
     let expected = run_source(
         &mut vm,
@@ -561,6 +569,7 @@ fn dynamic_function_multiple_in_one_run() {
 #[test]
 fn dynamic_function_name_and_length() {
     let mut vm = Vm::new();
+    vm.set_compiler_service(Arc::new(DefaultCompilerService));
     let name = run_source(&mut vm, "var f=new Function('a','b','return a'); f.name");
     assert!(name.is_string());
     assert_eq!(vm.lookup_str(name).as_deref(), Some("anonymous"));
@@ -571,6 +580,7 @@ fn dynamic_function_name_and_length() {
 #[test]
 fn dynamic_function_comma_split_params_count() {
     let mut vm = Vm::new();
+    vm.set_compiler_service(Arc::new(DefaultCompilerService));
     // 单个实参 "a,b,c" 拼接解析为 3 个形参，length 应为解析后的形参数。
     let result = run_source(&mut vm, "new Function('a,b,c','null').length");
     assert_eq!(result, JsValue::int(3));
@@ -579,6 +589,7 @@ fn dynamic_function_comma_split_params_count() {
 #[test]
 fn dynamic_function_name_and_length_attributes() {
     let mut vm = Vm::new();
+    vm.set_compiler_service(Arc::new(DefaultCompilerService));
     // length/name 为不可写、不可枚举、可配置的数据属性。
     let attrs = run_source(
         &mut vm,
@@ -595,6 +606,7 @@ fn dynamic_function_name_and_length_attributes() {
 #[test]
 fn dynamic_function_rethrows_to_string_exception() {
     let mut vm = Vm::new();
+    vm.set_compiler_service(Arc::new(DefaultCompilerService));
     // 形参 ToString 回调抛出的原始值须原样传播，而非包成 TypeError。
     let result = run_source(&mut vm, "try{new Function({toString:function(){throw 7}})}catch(e){e}");
     assert_eq!(result, JsValue::int(7));

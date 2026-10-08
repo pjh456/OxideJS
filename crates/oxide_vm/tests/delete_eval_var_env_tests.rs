@@ -15,6 +15,7 @@
 use std::sync::Arc;
 
 use oxide_compiler::compiler::Compiler;
+use oxide_compiler::DefaultCompilerService;
 use oxide_parser::Allocator;
 use oxide_vm::vm::Vm;
 
@@ -23,6 +24,7 @@ fn eval_truthy(source: &str) {
     let program = oxide_parser::parse(&allocator, source).expect("parse");
     let module = Compiler::new().compile(&program).expect("compile");
     let mut vm = Vm::new();
+    vm.set_compiler_service(Arc::new(DefaultCompilerService));
     let result = vm.run(&Arc::new(module)).expect("run");
     assert!(result.is_bool() && result.as_bool(), "expected true, got: {result:?}\nsource: {source}");
 }

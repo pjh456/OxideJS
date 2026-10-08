@@ -5,6 +5,7 @@ use std::time::Duration;
 use crate::vm::Vm;
 use crate::{vm_debug, vm_trace, vm_warn};
 use oxide_kernel::kernel::KernelCore;
+use oxide_runtime_api::CompilerService;
 
 struct VmPoolInner {
     available: Vec<Vm>,
@@ -74,6 +75,9 @@ impl PoolCounters {
 /// 归还（带 5 秒超时强制扩容兜底）。线程安全，可供多线程并发领取。
 pub struct VmPool {
     kernel_core: Arc<KernelCore>,
+    /// 动态编译服务句柄：构造期定、此后不可变，`new_vm` 逐个注入每个 Vm
+    /// （预热与增长路径同口径，无「预热后补注入」时序问题）。
+    compiler: Arc<dyn CompilerService>,
     inner: Mutex<VmPoolInner>,
     condvar: Condvar,
     max_size: Option<usize>,
@@ -94,9 +98,12 @@ impl VmPool {
     /// 创建 VM 池并同步预热 `min_size` 个 Vm（数量受 `max_size` 钳制），
     /// 首次 `spawn` 直接命中池。`max_size` 为池上限，`None` 表示不限。
     ///
+    /// `compiler` 为池内全部 Vm 的动态编译服务（构造期定、此后不可变）。
     /// 计数器为本池私有（不与其他池共享）。
-    pub fn new(kernel_core: Arc<KernelCore>, min_size: usize, max_size: Option<usize>) -> Arc<Self> {
-        Self::with_counters(kernel_core, min_size, max_size, PoolCounters::shared())
+    pub fn new(
+        kernel_core: Arc<KernelCore>, compiler: Arc<dyn CompilerService>, min_size: usize, max_size: Option<usize>,
+    ) -> Arc<Self> {
+        Self::with_counters(kernel_core, compiler, min_size, max_size, PoolCounters::shared())
     }
 
     /// 创建共享外部聚合计数器的 VM 池：多个池的原子增减累加到同一聚合，
@@ -110,15 +117,18 @@ impl VmPool {
     /// # 边界与前提
     /// - 计数器通常经 `PoolCounters::shared` 跨线程共享；池本体可跨线程移动
     ///   （Send/Sync），worker 经 spawn 独占借出 Vm。
+    /// - `compiler` 在构造期固化：预热与增长路径经 `new_vm` 逐个注入同一服务。
     ///
     /// # 副作用
     /// - 同步创建 `min_size` 个 Vm。
     pub fn with_counters(
-        kernel_core: Arc<KernelCore>, min_size: usize, max_size: Option<usize>, counters: Arc<PoolCounters>,
+        kernel_core: Arc<KernelCore>, compiler: Arc<dyn CompilerService>, min_size: usize, max_size: Option<usize>,
+        counters: Arc<PoolCounters>,
     ) -> Arc<Self> {
         let warm = min_size.min(max_size.unwrap_or(min_size));
         let pool = Arc::new(Self {
             kernel_core: Arc::clone(&kernel_core),
+            compiler: Arc::clone(&compiler),
             inner: Mutex::new(VmPoolInner {
                 available: Vec::new(),
                 total_count: 0,
@@ -129,7 +139,7 @@ impl VmPool {
         });
         let mut inner = pool.inner.lock().unwrap();
         for _ in 0..warm {
-            inner.available.push(Self::new_vm(&kernel_core));
+            inner.available.push(pool.new_vm());
             inner.total_count += 1;
         }
         drop(inner);
@@ -138,12 +148,15 @@ impl VmPool {
         pool
     }
 
-    fn new_vm(core: &Arc<KernelCore>) -> Vm {
-        Vm::with_kernel_core(Arc::clone(core))
+    /// 新建一个 Vm 并注入本池的动态编译服务（预热与增长路径共用）。
+    fn new_vm(&self) -> Vm {
+        let mut vm = Vm::with_kernel_core(Arc::clone(&self.kernel_core));
+        vm.set_compiler_service(Arc::clone(&self.compiler));
+        vm
     }
 
     fn replace_vm(&self) -> Vm {
-        Self::new_vm(&self.kernel_core)
+        self.new_vm()
     }
 
     /// 从池中借出一个 VM：优先复用空闲实例，否则在池未满时新建，池满则阻塞等待归还。
@@ -173,7 +186,7 @@ impl VmPool {
                 drop(inner);
                 self.counters.total.fetch_add(1, Ordering::Relaxed);
                 self.counters.record_borrow();
-                let vm = Self::new_vm(&self.kernel_core);
+                let vm = self.new_vm();
                 return VmGuard {
                     vm: Some(vm),
                     pool: Arc::clone(self),
@@ -189,7 +202,7 @@ impl VmPool {
                 drop(inner);
                 self.counters.total.fetch_add(1, Ordering::Relaxed);
                 self.counters.record_borrow();
-                let vm = Self::new_vm(&self.kernel_core);
+                let vm = self.new_vm();
                 return VmGuard {
                     vm: Some(vm),
                     pool: Arc::clone(self),
@@ -291,16 +304,22 @@ impl Drop for VmGuard {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use oxide_compiler::DefaultCompilerService;
     use oxide_kernel::kernel::KernelConfig;
 
     fn test_kernel() -> Arc<KernelCore> {
         KernelCore::new(KernelConfig::minimal())
     }
 
+    /// 测试池的编译服务（池测试不 exercise 动态编译，缺省实现即可）。
+    fn test_compiler() -> Arc<dyn CompilerService> {
+        Arc::new(DefaultCompilerService)
+    }
+
     #[test]
     fn test_pool_spawn_returns_guard() {
         let kernel = test_kernel();
-        let pool = VmPool::new(kernel, 1, None);
+        let pool = VmPool::new(kernel, test_compiler(), 1, None);
         let guard = pool.spawn();
         drop(guard);
     }
@@ -308,7 +327,7 @@ mod tests {
     #[test]
     fn test_pool_recycle_on_drop() {
         let kernel = test_kernel();
-        let pool = VmPool::new(kernel, 1, None);
+        let pool = VmPool::new(kernel, test_compiler(), 1, None);
         let guard = pool.spawn();
         drop(guard);
         let guard2 = pool.spawn();
@@ -318,7 +337,7 @@ mod tests {
     #[test]
     fn test_pool_grows_if_empty() {
         let kernel = test_kernel();
-        let pool = VmPool::new(Arc::clone(&kernel), 1, Some(3));
+        let pool = VmPool::new(Arc::clone(&kernel), test_compiler(), 1, Some(3));
         let g1 = pool.spawn();
         let g2 = pool.spawn();
         drop(g1);
@@ -328,7 +347,7 @@ mod tests {
     #[test]
     fn test_pool_warms_min_size_on_new() {
         let kernel = test_kernel();
-        let pool = VmPool::new(kernel, 2, None);
+        let pool = VmPool::new(kernel, test_compiler(), 2, None);
         {
             let inner = pool.inner.lock().unwrap();
             assert_eq!(inner.available.len(), 2);
@@ -347,7 +366,7 @@ mod tests {
     #[test]
     fn test_pool_warmup_clamped_by_max_size() {
         let kernel = test_kernel();
-        let pool = VmPool::new(kernel, 2, Some(1));
+        let pool = VmPool::new(kernel, test_compiler(), 2, Some(1));
         let inner = pool.inner.lock().unwrap();
         assert_eq!(inner.available.len(), 1);
         assert_eq!(inner.total_count, 1);
@@ -357,8 +376,8 @@ mod tests {
     fn test_with_counters_shared_aggregate() {
         let kernel = test_kernel();
         let counters = PoolCounters::shared();
-        let pool_a = VmPool::with_counters(Arc::clone(&kernel), 1, Some(4), Arc::clone(&counters));
-        let pool_b = VmPool::with_counters(Arc::clone(&kernel), 2, Some(4), Arc::clone(&counters));
+        let pool_a = VmPool::with_counters(Arc::clone(&kernel), test_compiler(), 1, Some(4), Arc::clone(&counters));
+        let pool_b = VmPool::with_counters(Arc::clone(&kernel), test_compiler(), 2, Some(4), Arc::clone(&counters));
 
         // 预热后聚合等于两池之和：总数 1 + 2 = 3，全部空闲。
         assert_eq!(counters.total(), 3, "聚合总数应为两池预热之和");
@@ -383,7 +402,7 @@ mod tests {
     #[test]
     fn test_peak_count_single_thread_exact() {
         let kernel = test_kernel();
-        let pool = VmPool::new(kernel, 2, None);
+        let pool = VmPool::new(kernel, test_compiler(), 2, None);
         assert_eq!(pool.peak_count(), 0, "从未借出的池峰值应为零");
 
         let g1 = pool.spawn();
@@ -401,8 +420,8 @@ mod tests {
     fn test_peak_count_shared_aggregate() {
         let kernel = test_kernel();
         let counters = PoolCounters::shared();
-        let pool_a = VmPool::with_counters(Arc::clone(&kernel), 1, Some(4), Arc::clone(&counters));
-        let pool_b = VmPool::with_counters(Arc::clone(&kernel), 1, Some(4), Arc::clone(&counters));
+        let pool_a = VmPool::with_counters(Arc::clone(&kernel), test_compiler(), 1, Some(4), Arc::clone(&counters));
+        let pool_b = VmPool::with_counters(Arc::clone(&kernel), test_compiler(), 1, Some(4), Arc::clone(&counters));
 
         let g1 = pool_a.spawn();
         let g2 = pool_b.spawn();
@@ -427,7 +446,7 @@ mod tests {
                 std::thread::spawn(move || {
                     // 每线程自建池、共享同一聚合计数器（Vm 经 unsafe impl Send 可
                     // 跨线程，本测试仍按每线程自有池验证计数器聚合）。
-                    let pool = VmPool::with_counters(kernel, 0, Some(8), counters);
+                    let pool = VmPool::with_counters(kernel, test_compiler(), 0, Some(8), counters);
                     for _ in 0..50 {
                         let guard = pool.spawn();
                         drop(guard);
@@ -447,7 +466,7 @@ mod tests {
     #[test]
     fn test_collect_idle_gc_returns_idle_count() {
         let kernel = test_kernel();
-        let pool = VmPool::new(kernel, 1, None);
+        let pool = VmPool::new(kernel, test_compiler(), 1, None);
         let guard = pool.spawn();
         drop(guard);
         assert_eq!(pool.collect_idle_gc(), 1, "归还一个空闲 VM 后收集数应为 1");

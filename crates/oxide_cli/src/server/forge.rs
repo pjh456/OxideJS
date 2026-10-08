@@ -73,12 +73,13 @@ pub fn handle_forge_query(
 mod tests {
     use super::*;
     use crate::server::eval;
+    use oxide_compiler::DefaultCompilerService;
     use oxide_kernel::kernel::KernelConfig;
 
     /// 测试环境：minimal 内核加单 VM 池（与 eval 测试同口径）。
     fn test_env() -> (Arc<KernelCore>, Arc<VmPool>) {
         let kernel = KernelCore::new(KernelConfig::minimal());
-        let pool = VmPool::new(Arc::clone(&kernel), 1, Some(2));
+        let pool = VmPool::new(Arc::clone(&kernel), Arc::new(DefaultCompilerService), 1, Some(2));
         (kernel, pool)
     }
 

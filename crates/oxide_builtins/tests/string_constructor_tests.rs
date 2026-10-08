@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use oxide_compiler::compiler::Compiler;
+use oxide_compiler::DefaultCompilerService;
 use oxide_types::value::JsValue;
 use oxide_vm::vm::Vm;
 
@@ -9,6 +10,7 @@ fn eval(source: &str) -> Result<(Vm, JsValue), String> {
     let program = oxide_parser::parse(&allocator, source).map_err(|e| format!("Parse error: {:?}", e))?;
     let module = Compiler::new().compile(&program).map_err(|e| format!("Compile error: {}", e))?;
     let mut vm = Vm::new();
+    vm.set_compiler_service(Arc::new(DefaultCompilerService));
     let result = vm.run(&Arc::new(module))?;
     Ok((vm, result))
 }
@@ -101,6 +103,7 @@ fn number_to_string_cache_slot_correctness() {
     // 十六个槽位互异的值两轮各调一次：命中须键全等才返回，
     // 钉住槽位碰撞不得错返。
     let mut vm = Vm::new();
+    vm.set_compiler_service(Arc::new(DefaultCompilerService));
     let mut seen = [false; 16];
     for &d in &CACHE_TEST_VALUES {
         let slot = (d.to_bits() as usize) & 15;
@@ -122,6 +125,7 @@ fn number_to_string_cache_survives_session_gc() {
     // 填满十六槽后强制完整 session 收集：缓存串已登记为 GC 根，
     // 收集后读回仍为原内容（漏根登记此测必挂）。
     let mut vm = Vm::new();
+    vm.set_compiler_service(Arc::new(DefaultCompilerService));
     for &d in &CACHE_TEST_VALUES {
         vm.number_to_string_cached(d);
     }
@@ -144,6 +148,7 @@ fn number_to_string_cache_survives_session_gc() {
 fn number_to_string_cache_identity() {
     // 同值两次调用命中同槽：返回指针相等（命中复用 session 串）。
     let mut vm = Vm::new();
+    vm.set_compiler_service(Arc::new(DefaultCompilerService));
     let a = vm.number_to_string_cached(2.5);
     let b = vm.number_to_string_cached(2.5);
     assert!(a.is_string() && b.is_string());

@@ -8,6 +8,7 @@ use std::sync::Arc;
 
 use oxide_bytecode::module::CompiledModule;
 use oxide_compiler::compiler::Compiler;
+use oxide_compiler::DefaultCompilerService;
 use oxide_emit::module::{ModuleSourceLoader, ResolvedModule};
 use oxide_types::value::JsValue;
 use oxide_vm::vm::Vm;
@@ -17,6 +18,7 @@ fn eval(source: &str) -> Result<JsValue, String> {
     let program = oxide_parser::parse(&allocator, source).map_err(|e| format!("Parse error: {:?}", e))?;
     let module = Compiler::new().compile(&program).map_err(|e| format!("Compile error: {}", e))?;
     let mut vm = Vm::new();
+    vm.set_compiler_service(Arc::new(DefaultCompilerService));
     vm.run(&Arc::new(module))
 }
 
@@ -33,6 +35,7 @@ fn eval_str(source: &str) -> String {
     let program = oxide_parser::parse(&allocator, source).expect("parse");
     let module = Compiler::new().compile(&program).expect("compile");
     let mut vm = Vm::new();
+    vm.set_compiler_service(Arc::new(DefaultCompilerService));
     let result = vm.run(&Arc::new(module)).expect("run");
     vm.lookup_str(result).unwrap_or_else(|| format!("{result}"))
 }
@@ -53,6 +56,7 @@ fn script_err_text(source: &str) -> String {
     let program = oxide_parser::parse(&allocator, source).expect("parse");
     let module = Compiler::new().compile(&program).expect("compile");
     let mut vm = Vm::new();
+    vm.set_compiler_service(Arc::new(DefaultCompilerService));
     match vm.run(&Arc::new(module)) {
         Err(e) => e,
         Ok(v) => panic!("expected uncaught error, got: {v:?}\nsource: {source}"),
@@ -68,6 +72,7 @@ fn err_then_script_str(decl: &str, probe: &str) -> String {
         Arc::new(Compiler::new().compile(&program).expect("compile"))
     };
     let mut vm = Vm::new();
+    vm.set_compiler_service(Arc::new(DefaultCompilerService));
     let err = vm.run(&compile(decl));
     assert!(err.is_err(), "声明脚本应抛未捕获异常，实际: {err:?}\ndecl: {decl}");
     let result = vm.run(&compile(probe)).expect("probe run");
@@ -181,6 +186,7 @@ fn module_fn_decl_undefined_keeps_global_constant() {
         .compile_module(&program, "test.mjs", &mut NoopLoader)
         .expect("compile module");
     let mut vm = Vm::new();
+    vm.set_compiler_service(Arc::new(DefaultCompilerService));
     vm.run(&Arc::new(module)).expect("module run");
 
     assert_eq!(

@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use oxide_compiler::compiler::Compiler;
+use oxide_compiler::DefaultCompilerService;
 use oxide_types::value::JsValue;
 use oxide_vm::vm::Vm;
 
@@ -18,6 +19,7 @@ fn to_str(vm: &Vm, val: JsValue) -> String {
 #[test]
 fn to_base64_rfc4648_vectors() {
     let mut vm = Vm::new();
+    vm.set_compiler_service(Arc::new(DefaultCompilerService));
     let result = eval(
         &mut vm,
         r#"(function() {
@@ -43,6 +45,7 @@ fn to_base64_rfc4648_vectors() {
 #[test]
 fn to_base64_alphabet_and_omit_padding() {
     let mut vm = Vm::new();
+    vm.set_compiler_service(Arc::new(DefaultCompilerService));
     let result = eval(
         &mut vm,
         r#"(function() {
@@ -65,6 +68,7 @@ fn to_base64_alphabet_and_omit_padding() {
 #[test]
 fn to_base64_option_coercion_and_receiver() {
     let mut vm = Vm::new();
+    vm.set_compiler_service(Arc::new(DefaultCompilerService));
     let result = eval(
         &mut vm,
         r#"(function() {
@@ -90,6 +94,7 @@ fn to_base64_option_coercion_and_receiver() {
 #[test]
 fn to_hex_and_receiver_validation() {
     let mut vm = Vm::new();
+    vm.set_compiler_service(Arc::new(DefaultCompilerService));
     let result = eval(
         &mut vm,
         r#"(function() {
@@ -110,6 +115,7 @@ fn to_hex_and_receiver_validation() {
 #[test]
 fn set_from_base64_results_and_target_size() {
     let mut vm = Vm::new();
+    vm.set_compiler_service(Arc::new(DefaultCompilerService));
     let result = eval(
         &mut vm,
         r#"(function() {
@@ -151,6 +157,7 @@ fn set_from_base64_results_and_target_size() {
 #[test]
 fn set_from_base64_last_chunk_handling() {
     let mut vm = Vm::new();
+    vm.set_compiler_service(Arc::new(DefaultCompilerService));
     let result = eval(
         &mut vm,
         r#"(function() {
@@ -190,6 +197,7 @@ fn set_from_base64_last_chunk_handling() {
 #[test]
 fn set_from_base64_subarray_and_option_order() {
     let mut vm = Vm::new();
+    vm.set_compiler_service(Arc::new(DefaultCompilerService));
     let result = eval(
         &mut vm,
         r#"(function() {
@@ -234,6 +242,7 @@ fn set_from_base64_subarray_and_option_order() {
 #[test]
 fn set_from_base64_writes_up_to_error() {
     let mut vm = Vm::new();
+    vm.set_compiler_service(Arc::new(DefaultCompilerService));
     let result = eval(
         &mut vm,
         r#"(function() {
@@ -251,6 +260,7 @@ fn set_from_base64_writes_up_to_error() {
 #[test]
 fn set_from_hex_results_and_odd_length() {
     let mut vm = Vm::new();
+    vm.set_compiler_service(Arc::new(DefaultCompilerService));
     let result = eval(
         &mut vm,
         r#"(function() {
@@ -285,6 +295,7 @@ fn set_from_hex_results_and_odd_length() {
 #[test]
 fn from_base64_static() {
     let mut vm = Vm::new();
+    vm.set_compiler_service(Arc::new(DefaultCompilerService));
     let result = eval(
         &mut vm,
         r#"(function() {
@@ -330,6 +341,7 @@ fn from_base64_static() {
 #[test]
 fn from_hex_static() {
     let mut vm = Vm::new();
+    vm.set_compiler_service(Arc::new(DefaultCompilerService));
     let result = eval(
         &mut vm,
         r#"(function() {
@@ -353,6 +365,7 @@ fn from_hex_static() {
 #[test]
 fn typed_array_prototype_to_string_chain() {
     let mut vm = Vm::new();
+    vm.set_compiler_service(Arc::new(DefaultCompilerService));
     let result = eval(
         &mut vm,
         r#"(function() {
@@ -378,6 +391,7 @@ fn typed_array_prototype_to_string_chain() {
 #[test]
 fn clamped_inherits_base64_methods_but_rejects() {
     let mut vm = Vm::new();
+    vm.set_compiler_service(Arc::new(DefaultCompilerService));
     let result = eval(
         &mut vm,
         r#"(function() {
@@ -401,6 +415,7 @@ fn clamped_inherits_base64_methods_but_rejects() {
 #[test]
 fn base64_method_metadata() {
     let mut vm = Vm::new();
+    vm.set_compiler_service(Arc::new(DefaultCompilerService));
     let result = eval(
         &mut vm,
         r#"(function() {

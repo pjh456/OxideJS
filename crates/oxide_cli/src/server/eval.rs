@@ -100,12 +100,13 @@ fn panic_payload_str(payload: &Box<dyn std::any::Any + Send>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use oxide_compiler::DefaultCompilerService;
     use oxide_kernel::kernel::KernelConfig;
 
     /// 测试环境：minimal 内核加单 VM 池（与池既有测试同口径）。
     fn test_env() -> (Arc<KernelCore>, Arc<VmPool>) {
         let kernel = KernelCore::new(KernelConfig::minimal());
-        let pool = VmPool::new(Arc::clone(&kernel), 1, Some(2));
+        let pool = VmPool::new(Arc::clone(&kernel), Arc::new(DefaultCompilerService), 1, Some(2));
         (kernel, pool)
     }
 
