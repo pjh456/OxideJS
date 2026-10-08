@@ -9,7 +9,6 @@ description = "OxideJS - Shared kernel (CodeForge, ShapeForge, PropForge, String
 [dependencies]
 oxide_bytecode = { path = "../oxide_bytecode" }
 oxide_code_cache = { path = "../oxide_code_cache" }
-oxide_parser = { path = "../oxide_parser" }
 oxide_types = { path = "../oxide_types" }
 oxide_log = { path = "../oxide_log" }
 bumpalo.workspace = true
