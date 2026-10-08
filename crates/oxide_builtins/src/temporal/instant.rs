@@ -2,7 +2,7 @@
 
 use chrono::Utc;
 use num_traits::ToPrimitive;
-use oxide_runtime_api::{to_number, to_string, NativeResult, VmHost};
+use oxide_runtime_api::{to_number, to_string, NativeResult, ProtoKind, VmHost};
 use oxide_types::object::JsObject;
 use oxide_types::value::JsValue;
 
@@ -300,7 +300,7 @@ pub fn now_time_zone_id<H: VmHost>(vm: &mut H, _args: &[u8]) -> NativeResult {
 
 /// `Temporal.Instant` 构造器：把参数按 ToBigInt 转换为纪元纳秒。
 pub fn instant_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
-    let ctor_proto = vm.session().builtin_world().instant_proto.as_ptr();
+    let ctor_proto = vm.builtin_proto(ProtoKind::InstantProto);
     if !is_ctor_call(vm, args, ctor_proto) {
         return NativeResult::Err(crate::error::create_type_error(
             vm,

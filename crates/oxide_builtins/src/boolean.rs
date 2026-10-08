@@ -2,7 +2,7 @@ use num_traits::Zero;
 use oxide_types::object::JsObject;
 use oxide_types::value::JsValue;
 
-use oxide_runtime_api::{NativeResult, VmHost};
+use oxide_runtime_api::{NativeResult, ProtoKind, VmHost};
 
 /// JS `Boolean()` 构造逻辑：把参数按 ToBoolean 语义转换。
 /// 以普通函数调用时返回原始 bool；以 new 语义调用时返回 `[[BooleanData]]` 为结果的包装对象。
@@ -38,7 +38,7 @@ pub fn boolean_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         false
     };
 
-    let boolean_proto = vm.session().builtin_world().boolean_proto.as_ptr() as *mut JsObject;
+    let boolean_proto = vm.builtin_proto(ProtoKind::BooleanProto);
     let is_ctor = if this_val.is_object() {
         let ptr = this_val.as_js_object_ptr();
         if ptr.is_null() {

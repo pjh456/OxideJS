@@ -2,7 +2,7 @@
 //! with/until/since、舍入、加减与格式化。
 
 use chrono::{Datelike, NaiveDate};
-use oxide_runtime_api::{to_number, to_string, NativeResult, VmHost};
+use oxide_runtime_api::{to_number, to_string, NativeResult, ProtoKind, VmHost};
 use oxide_types::object::JsObject;
 use oxide_types::value::JsValue;
 
@@ -34,7 +34,7 @@ use super::{
 
 /// `Temporal.ZonedDateTime` 构造器：保存纪元纳秒、固定偏移或 UTC 时区以及 ISO 日历。
 pub fn zoned_date_time_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
-    let ctor_proto = vm.session().builtin_world().zoned_date_time_proto.as_ptr();
+    let ctor_proto = vm.builtin_proto(ProtoKind::ZonedDateTimeProto);
     if !is_ctor_call(vm, args, ctor_proto) {
         return NativeResult::Err(crate::error::create_type_error(
             vm,

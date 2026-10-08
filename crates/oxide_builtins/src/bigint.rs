@@ -1,5 +1,5 @@
 use num_bigint::BigInt;
-use oxide_runtime_api::{to_primitive, NativeResult, ToPrimitiveHint, VmHost};
+use oxide_runtime_api::{to_primitive, NativeResult, ProtoKind, ToPrimitiveHint, VmHost};
 use oxide_types::value::JsValue;
 
 /// JS `BigInt(value)` 构造逻辑（§21.2.1.1）：
@@ -184,8 +184,7 @@ fn this_bigint_value<H: VmHost>(vm: &mut H, this_val: JsValue) -> Result<JsValue
             let obj = unsafe { &*ptr };
             if obj.proto().is_object() {
                 let proto_ptr = obj.proto().as_js_object_ptr();
-                let bigint_proto =
-                    vm.session().builtin_world().bigint_proto.as_ptr() as *mut oxide_types::object::JsObject;
+                let bigint_proto = vm.builtin_proto(ProtoKind::BigIntProto);
                 if !proto_ptr.is_null() && std::ptr::eq(proto_ptr, bigint_proto) {
                     let v = obj.boxed_value();
                     if v.is_bigint() {

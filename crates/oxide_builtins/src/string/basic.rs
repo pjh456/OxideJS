@@ -1,4 +1,4 @@
-use oxide_runtime_api::{NativeResult, VmHost};
+use oxide_runtime_api::{NativeResult, ProtoKind, VmHost};
 use oxide_types::object::JsObject;
 use oxide_types::value::JsValue;
 
@@ -114,7 +114,7 @@ pub fn string_value_of<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 /// JS `String()` 构造逻辑：把参数转成字符串（单元保真）；new 语义返回
 /// `[[StringData]]` 包装对象。
 pub fn string_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
-    let string_proto = vm.session().builtin_world().string_proto.as_ptr() as *mut JsObject;
+    let string_proto = vm.builtin_proto(ProtoKind::StringProto);
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
     let is_ctor = if this_val.is_object() {
         let ptr = this_val.as_js_object_ptr();

@@ -13,7 +13,7 @@ use crate::typed_array::{
     get_typed_array_data, read_element, ta_element_value, ta_to_integer_or_infinity, ta_validate, write_element,
     TypedArrayData,
 };
-use oxide_runtime_api::{NativeResult, VmHost};
+use oxide_runtime_api::{NativeResult, ProtoKind, VmHost};
 
 macro_rules! native_try {
     ($expr:expr) => {
@@ -369,7 +369,7 @@ pub fn atomics_is_lock_free<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult 
 /// waitAsync 结果对象：普通对象（proto = Object.prototype），own 属性
 /// async/value 双 data 属性（普通创建路径默认形）。
 fn wait_async_result_object<H: VmHost>(vm: &mut H, async_arm: bool, value: JsValue) -> JsValue {
-    let object_proto = vm.session().builtin_world().object_proto.as_ptr() as *mut JsObject;
+    let object_proto = vm.builtin_proto(ProtoKind::ObjectProto);
     let obj_ptr = vm.alloc_object(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(object_proto)));
     // SAFETY: alloc_object 返回存活 arena 指针，借出期间无别名。
     let obj = unsafe { &mut *obj_ptr };

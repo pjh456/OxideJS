@@ -1,7 +1,7 @@
 //! Temporal.PlainDate：ISO 日期解析与校验、构造、getter、日历属性与加减/差值。
 
 use chrono::{Datelike, Days, NaiveDate};
-use oxide_runtime_api::{to_string, NativeResult, VmHost};
+use oxide_runtime_api::{to_string, NativeResult, ProtoKind, VmHost};
 use oxide_types::object::JsObject;
 use oxide_types::value::JsValue;
 
@@ -138,7 +138,7 @@ pub(crate) fn parse_iso_date(s: &str) -> Result<(i32, u32, u32), String> {
 
 /// `Temporal.PlainDate` 构造器：`new PlainDate(year, month, day)`。
 pub fn plain_date_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
-    let ctor_proto = vm.session().builtin_world().plain_date_proto.as_ptr();
+    let ctor_proto = vm.builtin_proto(ProtoKind::PlainDateProto);
     if !is_ctor_call(vm, args, ctor_proto) {
         return NativeResult::Err(crate::error::create_type_error(
             vm,

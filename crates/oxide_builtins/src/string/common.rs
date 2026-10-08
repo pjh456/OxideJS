@@ -4,7 +4,7 @@ use oxide_kernel::shape_forge::EMPTY_SHAPE_ID;
 use oxide_types::object::JsObject;
 use oxide_types::value::JsValue;
 
-use oxide_runtime_api::VmHost;
+use oxide_runtime_api::{ProtoKind, VmHost};
 
 macro_rules! try_string {
     ($e:expr) => {
@@ -398,7 +398,7 @@ pub(crate) fn split_limit_to_uint32<H: VmHost>(vm: &mut H, limit_val: JsValue) -
 /// 以已构造的字符串值构建字符串数组（元素零拷贝落地），供逐单元产出路径
 /// （空分隔 split）复用，跳过 `Vec<String>` 中间层。
 pub(crate) fn make_string_array_values<H: VmHost>(vm: &mut H, parts: Vec<JsValue>) -> JsValue {
-    let proto = vm.session().builtin_world().array_proto.as_ptr() as *mut JsObject;
+    let proto = vm.builtin_proto(ProtoKind::ArrayProto);
     let n = parts.len();
     let arr = vm.alloc_object(JsObject::new_array(EMPTY_SHAPE_ID, JsValue::from_js_object(proto), n));
     unsafe {

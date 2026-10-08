@@ -38,7 +38,7 @@ pub fn eval<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let code = oxide_kernel::string_forge::source_escape(&units);
     match vm.create_dynamic_script(&code) {
         Ok(func) => {
-            let global = JsValue::from_js_object(vm.session().global_object().as_ptr() as *mut JsObject);
+            let global = JsValue::from_js_object(vm.global_object().as_ptr() as *mut JsObject);
             match vm.call_function_sync(func, global, &[]) {
                 Ok(val) => NativeResult::Ok(val),
                 Err(e) => {

@@ -1,6 +1,6 @@
 //! Temporal.PlainMonthDay：ISO 月日解析、构造、getter 与 with/toPlainDate。
 
-use oxide_runtime_api::{to_string, NativeResult, VmHost};
+use oxide_runtime_api::{to_string, NativeResult, ProtoKind, VmHost};
 use oxide_types::object::JsObject;
 use oxide_types::value::JsValue;
 
@@ -60,7 +60,7 @@ pub(crate) fn temporal_constructor_calendar_id<H: VmHost>(vm: &mut H, value: JsV
 
 /// `Temporal.PlainMonthDay` 构造器：`new PlainMonthDay(month, day[, calendar[, referenceISOYear]])`。
 pub fn plain_month_day_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
-    let ctor_proto = vm.session().builtin_world().plain_month_day_proto.as_ptr();
+    let ctor_proto = vm.builtin_proto(ProtoKind::PlainMonthDayProto);
     if !is_ctor_call(vm, args, ctor_proto) {
         return NativeResult::Err(crate::error::create_type_error(
             vm,

@@ -1,7 +1,7 @@
 //! Temporal.Duration：ISO 字符串与 property bag 解析、构造、getter、total/round、
 //! 加减比较与格式化。
 
-use oxide_runtime_api::{to_number, to_string, NativeResult, VmHost};
+use oxide_runtime_api::{to_number, to_string, NativeResult, ProtoKind, VmHost};
 use oxide_types::object::JsObject;
 use oxide_types::value::JsValue;
 
@@ -265,7 +265,7 @@ pub(crate) fn duration_like_values<H: VmHost>(vm: &mut H, val: JsValue) -> Resul
 
 /// `Temporal.Duration` 构造器，保存十个整数时长分量。
 pub fn duration_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
-    let ctor_proto = vm.session().builtin_world().duration_proto.as_ptr();
+    let ctor_proto = vm.builtin_proto(ProtoKind::DurationProto);
     if !is_ctor_call(vm, args, ctor_proto) {
         return NativeResult::Err(crate::error::create_type_error(
             vm,

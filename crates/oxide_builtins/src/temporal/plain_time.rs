@@ -1,6 +1,6 @@
 //! Temporal.PlainTime：ISO 时间解析、构造、getter、with/until/since 与加减舍入。
 
-use oxide_runtime_api::{to_number, to_string, NativeResult, VmHost};
+use oxide_runtime_api::{to_number, to_string, NativeResult, ProtoKind, VmHost};
 use oxide_types::object::JsObject;
 use oxide_types::value::JsValue;
 
@@ -272,7 +272,7 @@ pub(crate) fn valid_plain_time(hour: u32, minute: u32, second: u32, ms: u32, us:
 
 /// `Temporal.PlainTime` 构造器：`new PlainTime(h, m, s, ms, us, ns)`，缺省为 0。
 pub fn plain_time_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
-    let ctor_proto = vm.session().builtin_world().plain_time_proto.as_ptr();
+    let ctor_proto = vm.builtin_proto(ProtoKind::PlainTimeProto);
     if !is_ctor_call(vm, args, ctor_proto) {
         return NativeResult::Err(crate::error::create_type_error(
             vm,

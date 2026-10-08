@@ -1,6 +1,6 @@
 //! Temporal.PlainYearMonth：ISO 年月解析、构造、getter、日历属性与 with/加减差值。
 
-use oxide_runtime_api::{to_string, NativeResult, VmHost};
+use oxide_runtime_api::{to_string, NativeResult, ProtoKind, VmHost};
 use oxide_types::object::JsObject;
 use oxide_types::value::JsValue;
 
@@ -26,7 +26,7 @@ fn plain_year_month_ymd<H: VmHost>(vm: &mut H, args: &[u8]) -> Result<(f64, f64,
 
 /// `Temporal.PlainYearMonth` 构造器：`new PlainYearMonth(year, month[, calendar[, referenceISODay]])`。
 pub fn plain_year_month_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
-    let ctor_proto = vm.session().builtin_world().plain_year_month_proto.as_ptr();
+    let ctor_proto = vm.builtin_proto(ProtoKind::PlainYearMonthProto);
     if !is_ctor_call(vm, args, ctor_proto) {
         return NativeResult::Err(crate::error::create_type_error(
             vm,
