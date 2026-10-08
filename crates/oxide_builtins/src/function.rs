@@ -2,7 +2,7 @@ use oxide_kernel::shape_forge::EMPTY_SHAPE_ID;
 use oxide_types::object::{JsObject, NativeFnPtr, PropAttributes};
 use oxide_types::value::JsValue;
 
-use oxide_runtime_api::{to_integer_or_infinity, to_length, to_units_full, NativeResult, VmHost};
+use oxide_runtime_api::{to_integer_or_infinity, to_length, to_units_full, NativeResult, ProtoKind, VmHost};
 
 fn invoke_target<H: VmHost>(vm: &mut H, target_val: JsValue, this_val: JsValue, arg_regs: &[u8]) -> NativeResult {
     let args: Vec<JsValue> = arg_regs.iter().map(|&r| vm.reg(r)).collect();
@@ -130,7 +130,7 @@ pub fn function_symbol_has_instance<H: VmHost>(vm: &mut H, args: &[u8]) -> Nativ
     }
 
     // prototype 非对象 → TypeError（OrdinaryHasInstance 唯一抛错点）。
-    let proto_si = vm.kernel_core().perm_interner().intern("prototype").0;
+    let proto_si = vm.perm_intern("prototype");
     let Some(proto_val) = vm.resolve_property(c_obj, proto_si) else {
         return NativeResult::Err(crate::error::create_type_error(
             vm,
@@ -229,7 +229,7 @@ pub fn function_apply<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
             if !arr_ptr.is_null() {
                 // SAFETY: is_object 与非空守卫保证存活对象；length/下标读取即时消费，不跨 GC/reset。
                 let arr = unsafe { &*arr_ptr };
-                let length_si = vm.kernel_core().perm_interner().intern("length").0;
+                let length_si = vm.perm_intern("length");
                 let count = match vm.ordinary_get(arr, length_si, arr_val) {
                     Ok(v) => to_length(v).min(oxide_types::private_key::INT_KEY_COUNT as u64) as u32,
                     Err(e) => return NativeResult::Err(to_string_error_value(vm, &e)),
@@ -279,7 +279,7 @@ pub fn function_bind<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let bound_arg_count = args.len().saturating_sub(2);
 
     // bound 函数 [[Prototype]] 为 Function.prototype（BoundFunctionCreate 语义）。
-    let fn_proto_val = JsValue::from_js_object(vm.session().builtin_world().function_proto.as_ptr() as *mut JsObject);
+    let fn_proto_val = JsValue::from_js_object(vm.builtin_proto(ProtoKind::FunctionProto));
     let wrapper = vm.alloc_object(JsObject::new_empty(EMPTY_SHAPE_ID, fn_proto_val));
     unsafe {
         (*wrapper).set_function(true);
@@ -295,8 +295,8 @@ pub fn function_bind<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     // 第 2 号 shape 属性（保留键），不与用户 own 属性共享下标空间。bound 函数
     // 无 own caller/arguments（BoundFunctionCreate 语义），经原型链继承 FP
     // 受限访问器，访问即抛 TypeError。
-    let length_si = vm.kernel_core().perm_interner().intern("length").0;
-    let name_si = vm.kernel_core().perm_interner().intern("name").0;
+    let length_si = vm.perm_intern("length");
+    let name_si = vm.perm_intern("name");
     let attrs = PropAttributes::new(false, false, true);
 
     // 全部 shape 属性（length/name）须先于状态数据定义完成，保证 shape 槽位
@@ -350,7 +350,7 @@ pub fn function_bind<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     // shape 槽位共享下标，状态值若直接裸推包装器存储槽 2+，用户新增 own 属性时
     // shape 槽位与存储下标错位（读写互串）。状态对象内部存储不占 shape 槽位，
     // 经保留键作为包装器固定第 2 号 shape 属性暴露，用户代码不可见。
-    let object_proto = vm.session().builtin_world().object_proto.as_ptr() as *mut JsObject;
+    let object_proto = vm.builtin_proto(ProtoKind::ObjectProto);
     let state = vm.alloc_object(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(object_proto)));
     unsafe {
         let state_props = (*state).ensure_hash_props();
@@ -360,7 +360,7 @@ pub fn function_bind<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
             state_props.push(vm.reg(r));
         }
     }
-    let state_si = vm.kernel_core().perm_interner().intern("\u{0}bound-state").0;
+    let state_si = vm.perm_intern("\u{0}bound-state");
     if let Err(e) = vm.define_data_property(unsafe { &mut *wrapper }, state_si, JsValue::from_js_object(state), attrs) {
         return NativeResult::Err(crate::error::create_type_error(vm, &e));
     }
@@ -408,7 +408,7 @@ pub fn function_to_string<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         ));
     }
 
-    let name_si = vm.kernel_core().perm_interner().intern("name").0;
+    let name_si = vm.perm_intern("name");
     let name = vm
         .resolve_property(func, name_si)
         .and_then(|v| vm.lookup_str(v))

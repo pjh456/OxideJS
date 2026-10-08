@@ -4,7 +4,7 @@ use oxide_kernel::shape_forge::EMPTY_SHAPE_ID;
 use oxide_types::object::JsObject;
 use oxide_types::value::{JsType, JsValue};
 
-use oxide_runtime_api::{bigint_data, same_value_zero, NativeResult, VmHost};
+use oxide_runtime_api::{bigint_data, same_value_zero, NativeResult, ProtoKind, VmHost};
 
 macro_rules! native_try {
     ($expr:expr) => {
@@ -120,7 +120,7 @@ fn new_set_inner() -> *mut SetInner {
 }
 
 fn alloc_set<H: VmHost>(vm: &mut H) -> *mut JsObject {
-    let set_proto = vm.session().builtin_world().set_proto.as_ptr() as *mut JsObject;
+    let set_proto = vm.builtin_proto(ProtoKind::SetProto);
     let mut obj = JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(set_proto));
     obj.set_set(true);
     let inner = new_set_inner();
@@ -183,7 +183,7 @@ pub fn drop_set_native(obj: &mut JsObject) -> u64 {
 pub fn set_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
     let is_new_call = this_val.is_object() && {
-        let set_proto = vm.session().builtin_world().set_proto.as_ptr() as *mut JsObject;
+        let set_proto = vm.builtin_proto(ProtoKind::SetProto);
         // 沿原型链查找 Set.prototype：`new Set()` 直接命中，子类 `super()` 经
         // 子类 prototype 链命中；普通调用（global/undefined）不命中。
         let this_ptr = this_val.as_js_object_ptr();
@@ -220,7 +220,7 @@ pub fn set_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         let iterable = vm.reg(args[1]);
         if !iterable.is_undefined() && !iterable.is_null() {
             let set_ref = unsafe { &*set_obj };
-            let add_si = vm.kernel_core().perm_interner().intern("add").0;
+            let add_si = vm.perm_intern("add");
             let adder = match vm.ordinary_get(set_ref, add_si, set_val) {
                 Ok(v) => v,
                 Err(err) => return NativeResult::Err(crate::iterator::engine_error(vm, &err)),
@@ -315,7 +315,7 @@ pub fn set_size<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 pub fn set_entries<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
     let _inner = native_try!(get_set_inner(vm, this_val));
-    let proto_ptr = vm.session().builtin_world().set_iterator_proto.as_ptr() as *mut JsObject;
+    let proto_ptr = vm.builtin_proto(ProtoKind::SetIteratorProto);
     NativeResult::Ok(crate::iterator::make_collection_iterator(
         vm,
         this_val,
@@ -328,7 +328,7 @@ pub fn set_entries<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 pub fn set_values<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
     let _inner = native_try!(get_set_inner(vm, this_val));
-    let proto_ptr = vm.session().builtin_world().set_iterator_proto.as_ptr() as *mut JsObject;
+    let proto_ptr = vm.builtin_proto(ProtoKind::SetIteratorProto);
     NativeResult::Ok(crate::iterator::make_collection_iterator(
         vm,
         this_val,
@@ -342,7 +342,7 @@ pub fn set_keys<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
     let _inner = native_try!(get_set_inner(vm, this_val));
     // Set 的 keys() 是 values() 的别名——返回同样的逐元素迭代器。
-    let proto_ptr = vm.session().builtin_world().set_iterator_proto.as_ptr() as *mut JsObject;
+    let proto_ptr = vm.builtin_proto(ProtoKind::SetIteratorProto);
     NativeResult::Ok(crate::iterator::make_collection_iterator(
         vm,
         this_val,
@@ -365,7 +365,7 @@ fn get_set_record<H: VmHost>(vm: &mut H, other: JsValue) -> Result<(JsValue, f64
         return Err(crate::error::create_type_error(vm, "argument is not an object"));
     }
     let obj = unsafe { &*other.as_js_object_ptr() };
-    let size_si = vm.kernel_core().perm_interner().intern("size").0;
+    let size_si = vm.perm_intern("size");
     let raw_size = vm
         .ordinary_get(obj, size_si, other)
         .map_err(|e| crate::iterator::engine_error(vm, &e))?;
@@ -376,14 +376,14 @@ fn get_set_record<H: VmHost>(vm: &mut H, other: JsValue) -> Result<(JsValue, f64
     if num_size.is_nan() {
         return Err(crate::error::create_type_error(vm, "size must be a number"));
     }
-    let has_si = vm.kernel_core().perm_interner().intern("has").0;
+    let has_si = vm.perm_intern("has");
     let has = vm
         .ordinary_get(obj, has_si, other)
         .map_err(|e| crate::iterator::engine_error(vm, &e))?;
     if !crate::iterator::is_callable(has) {
         return Err(crate::error::create_type_error(vm, "has must be callable"));
     }
-    let keys_si = vm.kernel_core().perm_interner().intern("keys").0;
+    let keys_si = vm.perm_intern("keys");
     let keys = vm
         .ordinary_get(obj, keys_si, other)
         .map_err(|e| crate::iterator::engine_error(vm, &e))?;
@@ -406,7 +406,7 @@ fn normalize_neg_zero(value: JsValue) -> JsValue {
 
 /// 用一个已填充的 `SetInner` 创建普通 Set 对象（原型为 Set.prototype）。
 fn alloc_set_with_inner<H: VmHost>(vm: &mut H, inner: SetInner) -> JsValue {
-    let set_proto = vm.session().builtin_world().set_proto.as_ptr() as *mut JsObject;
+    let set_proto = vm.builtin_proto(ProtoKind::SetProto);
     let mut obj = JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(set_proto));
     obj.set_set(true);
     obj.set_native_data(Box::into_raw(Box::new(inner)) as *mut u8);
@@ -441,9 +441,9 @@ where
     if !iter.is_object() {
         return Err(crate::error::create_type_error(vm, "keys() result is not an object"));
     }
-    let next_si = vm.kernel_core().perm_interner().intern("next").0;
-    let done_si = vm.kernel_core().perm_interner().intern("done").0;
-    let value_si = vm.kernel_core().perm_interner().intern("value").0;
+    let next_si = vm.perm_intern("next");
+    let done_si = vm.perm_intern("done");
+    let value_si = vm.perm_intern("value");
     let mut flow = KeysFlow::Continue;
     let run: Result<(), JsValue> = (|| {
         loop {

@@ -422,7 +422,7 @@ fn remove_export_slot<H: VmHost>(vm: &mut H, obj: &mut JsObject, name_si: u32) {
     obj.set_shape_id(EMPTY_SHAPE_ID);
     obj.clear_props();
     for (si, value, meta) in retained.drain(..).chain(symbols) {
-        let shape = vm.kernel_core().shape_forge().make_shape(obj.shape_id(), si);
+        let shape = vm.make_shape(obj.shape_id(), si);
         obj.set_shape_id(shape);
         let pos = obj.push_prop(value);
         if let Some(meta) = meta {
@@ -548,8 +548,8 @@ pub fn module_set_reexport<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     if ns_table_ptr(obj).is_null() {
         install_ns_table(obj);
     }
-    let path_id = vm.kernel_core().perm_interner().intern(&dep_path).0;
-    let binding_id = vm.kernel_core().perm_interner().intern(&imported).0;
+    let path_id = vm.perm_intern(&dep_path);
+    let binding_id = vm.perm_intern(&imported);
     let origin = ModuleNsOrigin::Reexport {
         path_id,
         binding_id,
@@ -706,9 +706,9 @@ pub fn module_star<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let Some(src_path) = vm.lookup_str(src_path_val) else {
         return type_error(vm, "__moduleStar: source path is not a string");
     };
-    let src_path_id = vm.kernel_core().perm_interner().intern(&src_path).0;
+    let src_path_id = vm.perm_intern(&src_path);
     let src = unsafe { &*src_ptr };
-    let default_si = vm.kernel_core().perm_interner().intern("default").0;
+    let default_si = vm.perm_intern("default");
     let keys = crate::object::walk_own_keys(vm, src);
     let dst = unsafe { &mut *dst_ptr };
     for (name_si, pos) in keys {
@@ -844,7 +844,7 @@ pub fn module_data<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         _ => return type_error(vm, "__moduleData: unsupported data kind"),
     };
     let obj = vm.alloc_object(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()));
-    let default_si = vm.kernel_core().perm_interner().intern("default").0;
+    let default_si = vm.perm_intern("default");
     let obj_ref = unsafe { &mut *obj };
     if let Err(e) = vm.define_data_property(obj_ref, default_si, default_val, ns_attrs()) {
         return NativeResult::Err(crate::error::create_error(vm, &e));

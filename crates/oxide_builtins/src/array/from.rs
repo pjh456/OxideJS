@@ -5,7 +5,7 @@ use oxide_types::object::{JsObject, PropAttributes, MAX_DENSE_PROPS};
 use oxide_types::private_key::encode_symbol_key;
 use oxide_types::value::JsValue;
 
-use oxide_runtime_api::{NativeResult, VmHost};
+use oxide_runtime_api::{NativeResult, ProtoKind, VmHost};
 
 use super::common::{
     array_length_arg, array_type_error, arraylike_get, arraylike_get_or_err, create_new_array, invoke_native_callback,
@@ -15,7 +15,7 @@ use super::common::{
 
 /// JS `Array()` 构造逻辑：单个数字参数创建指定长度空数组，其余情况把参数作为元素。
 pub fn array_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
-    let proto = vm.session().builtin_world().array_proto.as_ptr() as *mut JsObject;
+    let proto = vm.builtin_proto(ProtoKind::ArrayProto);
     let proto_val = JsValue::from_js_object(proto);
 
     if args.len() == 2 {
@@ -65,7 +65,7 @@ pub fn array_is_array<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     if ptr.is_null() {
         return NativeResult::Ok(JsValue::bool(false));
     }
-    let array_proto = vm.session().builtin_world().array_proto.as_ptr();
+    let array_proto = vm.builtin_proto(ProtoKind::ArrayProto);
     NativeResult::Ok(JsValue::bool(unsafe { &*ptr }.is_array() || std::ptr::eq(ptr, array_proto)))
 }
 
@@ -159,9 +159,9 @@ pub fn array_from<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
             Ok(it) => it,
             Err(err) => return NativeResult::Err(err),
         };
-        let next_si = vm.kernel_core().perm_interner().intern("next").0;
-        let done_si = vm.kernel_core().perm_interner().intern("done").0;
-        let value_si = vm.kernel_core().perm_interner().intern("value").0;
+        let next_si = vm.perm_intern("next");
+        let done_si = vm.perm_intern("done");
+        let value_si = vm.perm_intern("value");
         let mut k = 0usize;
         let iter_result: Result<(), JsValue> = (|| {
             loop {
@@ -289,7 +289,7 @@ pub(crate) fn from_engine_error<H: VmHost>(vm: &mut H, err: &str) -> JsValue {
 fn construct_array_from_result<H: VmHost>(
     vm: &mut H, c: JsValue, args: &[JsValue],
 ) -> Result<(*mut JsObject, bool), JsValue> {
-    let proto = vm.session().builtin_world().array_proto.as_ptr() as *mut JsObject;
+    let proto = vm.builtin_proto(ProtoKind::ArrayProto);
     let proto_val = JsValue::from_js_object(proto);
     let mut fallback_array = || {
         let arr = vm.alloc_object(JsObject::new_array(EMPTY_SHAPE_ID, proto_val, 0));
@@ -319,7 +319,7 @@ pub(crate) fn array_species_create<H: VmHost>(
     }
     let o_ptr = o_val.as_js_object_ptr();
     let o_obj = unsafe { &*o_ptr };
-    let ctor_key = vm.kernel_core().perm_interner().intern("constructor").0;
+    let ctor_key = vm.perm_intern("constructor");
     let c = match vm.ordinary_get(o_obj, ctor_key, o_val) {
         Ok(v) => v,
         Err(msg) => return Err(from_engine_error(vm, &msg)),
@@ -417,7 +417,7 @@ fn close_iterator<H: VmHost>(vm: &mut H, iterator: JsValue) {
         return;
     }
     let iter_obj = unsafe { &*iterator.as_js_object_ptr() };
-    let return_si = vm.kernel_core().perm_interner().intern("return").0;
+    let return_si = vm.perm_intern("return");
     if let Ok(ret) = vm.ordinary_get(iter_obj, return_si, iterator) {
         if ret.is_object() && unsafe { &*ret.as_js_object_ptr() }.is_function() {
             // return() 的抛错被忽略，其值不得外泄进槽覆盖在途异常。

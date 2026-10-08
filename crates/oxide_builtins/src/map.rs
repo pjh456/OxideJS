@@ -6,7 +6,7 @@ use oxide_types::value::JsValue;
 
 use crate::set::SetKey;
 
-use oxide_runtime_api::{NativeResult, VmHost};
+use oxide_runtime_api::{NativeResult, ProtoKind, VmHost};
 
 use crate::builtins_debug;
 
@@ -143,7 +143,7 @@ fn new_map_inner() -> *mut MapInner {
 }
 
 fn alloc_map<H: VmHost>(vm: &mut H) -> *mut JsObject {
-    let map_proto = vm.session().builtin_world().map_proto.as_ptr() as *mut JsObject;
+    let map_proto = vm.builtin_proto(ProtoKind::MapProto);
     let mut obj = JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(map_proto));
     obj.set_map(true);
     let inner = new_map_inner();
@@ -213,7 +213,7 @@ pub fn drop_map_native(obj: &mut JsObject) -> u64 {
 pub fn map_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
     let is_new_call = this_val.is_object() && {
-        let map_proto = vm.session().builtin_world().map_proto.as_ptr() as *mut JsObject;
+        let map_proto = vm.builtin_proto(ProtoKind::MapProto);
         // 沿原型链查找 Map.prototype：`new Map()` 直接命中，子类 `super()` 经
         // 子类 prototype 链命中；普通调用（global/undefined）不命中。
         let this_ptr = this_val.as_js_object_ptr();
@@ -250,7 +250,7 @@ pub fn map_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         let iterable = vm.reg(args[1]);
         if !iterable.is_undefined() && !iterable.is_null() {
             let map_ref = unsafe { &*map_obj };
-            let set_si = vm.kernel_core().perm_interner().intern("set").0;
+            let set_si = vm.perm_intern("set");
             let adder = match vm.ordinary_get(map_ref, set_si, map_val) {
                 Ok(v) => v,
                 Err(err) => return NativeResult::Err(crate::iterator::engine_error(vm, &err)),
@@ -455,7 +455,7 @@ pub fn map_size<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 pub fn map_entries<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
     let _inner = native_try!(get_map_inner(vm, this_val));
-    let proto_ptr = vm.session().builtin_world().map_iterator_proto.as_ptr() as *mut JsObject;
+    let proto_ptr = vm.builtin_proto(ProtoKind::MapIteratorProto);
     NativeResult::Ok(crate::iterator::make_collection_iterator(
         vm,
         this_val,
@@ -468,7 +468,7 @@ pub fn map_entries<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 pub fn map_values<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
     let _inner = native_try!(get_map_inner(vm, this_val));
-    let proto_ptr = vm.session().builtin_world().map_iterator_proto.as_ptr() as *mut JsObject;
+    let proto_ptr = vm.builtin_proto(ProtoKind::MapIteratorProto);
     NativeResult::Ok(crate::iterator::make_collection_iterator(
         vm,
         this_val,
@@ -481,7 +481,7 @@ pub fn map_values<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 pub fn map_keys<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
     let _inner = native_try!(get_map_inner(vm, this_val));
-    let proto_ptr = vm.session().builtin_world().map_iterator_proto.as_ptr() as *mut JsObject;
+    let proto_ptr = vm.builtin_proto(ProtoKind::MapIteratorProto);
     NativeResult::Ok(crate::iterator::make_collection_iterator(
         vm,
         this_val,
@@ -536,19 +536,19 @@ pub fn map_group_by<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         return NativeResult::Err(crate::error::create_type_error(vm, "Map.groupBy: iterator is not an object"));
     }
     let iter_obj = unsafe { &*iter_val.as_js_object_ptr() };
-    let next_si = vm.kernel_core().perm_interner().intern("next").0;
+    let next_si = vm.perm_intern("next");
     let next_fn = match vm.ordinary_get(iter_obj, next_si, iter_val) {
         Ok(f) => f,
         Err(e) => return NativeResult::Err(crate::iterator::engine_error(vm, &e)),
     };
     // 读取 Map.set / Map.get 方法。
     let map_ref = unsafe { &*map_obj };
-    let set_si = vm.kernel_core().perm_interner().intern("set").0;
+    let set_si = vm.perm_intern("set");
     let adder = match vm.ordinary_get(map_ref, set_si, map_val) {
         Ok(v) => v,
         Err(e) => return NativeResult::Err(crate::iterator::engine_error(vm, &e)),
     };
-    let get_si = vm.kernel_core().perm_interner().intern("get").0;
+    let get_si = vm.perm_intern("get");
     let getter = match vm.ordinary_get(map_ref, get_si, map_val) {
         Ok(v) => v,
         Err(e) => return NativeResult::Err(crate::iterator::engine_error(vm, &e)),
@@ -574,7 +574,7 @@ pub fn map_group_by<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
             ));
         }
         let nr = unsafe { &*next_result.as_js_object_ptr() };
-        let done_si = vm.kernel_core().perm_interner().intern("done").0;
+        let done_si = vm.perm_intern("done");
         let done = match vm.ordinary_get(nr, done_si, next_result) {
             Ok(v) => oxide_runtime_api::to_boolean(v),
             Err(e) => return NativeResult::Err(crate::iterator::engine_error(vm, &e)),
@@ -582,7 +582,7 @@ pub fn map_group_by<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         if done {
             break;
         }
-        let value_si = vm.kernel_core().perm_interner().intern("value").0;
+        let value_si = vm.perm_intern("value");
         let element = match vm.ordinary_get(nr, value_si, next_result) {
             Ok(v) => v,
             Err(e) => return NativeResult::Err(crate::iterator::engine_error(vm, &e)),
@@ -614,7 +614,7 @@ pub fn map_group_by<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         {
             existing
         } else {
-            let arr_proto = vm.session().builtin_world().array_proto.as_ptr() as *mut JsObject;
+            let arr_proto = vm.builtin_proto(ProtoKind::ArrayProto);
             let arr = vm.alloc_object(JsObject::new_array(EMPTY_SHAPE_ID, JsValue::from_js_object(arr_proto), 0));
             let new_arr_val = JsValue::from_js_object(arr);
             if let Err(e) = vm.call_function_sync(adder, map_val, &[group_key, new_arr_val]) {

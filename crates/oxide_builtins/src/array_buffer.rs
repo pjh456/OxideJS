@@ -5,7 +5,7 @@ use oxide_types::object::{JsObject, NativeFnPtr};
 use oxide_types::private_key::{encode_symbol_key, WELL_KNOWN_SYMBOL_SPECIES};
 use oxide_types::value::JsValue;
 
-use oxide_runtime_api::{NativeResult, VmHost};
+use oxide_runtime_api::{NativeResult, ProtoKind, VmHost};
 
 use crate::array::to_integer_or_infinity_bounded;
 
@@ -89,7 +89,7 @@ fn normalize_index<H: VmHost>(vm: &mut H, value: JsValue, len: usize) -> Result<
 
 /// 默认缓冲区原型 %ArrayBuffer.prototype%（构造器回落路径与各定长建点共用）。
 pub(crate) fn default_array_buffer_proto<H: VmHost>(vm: &H) -> JsValue {
-    JsValue::from_js_object(vm.session().builtin_world().array_buffer_proto.as_ptr() as *mut JsObject)
+    JsValue::from_js_object(vm.builtin_proto(ProtoKind::ArrayBufferProto))
 }
 
 /// 分配携给定 proto 与载荷形态（`max_byte_length` 为存储态：0 定长，非 0 可
@@ -150,7 +150,7 @@ pub fn drop_array_buffer_native(obj: &mut JsObject) -> u64 {
 
 /// 默认缓冲区原型 %SharedArrayBuffer.prototype%（构造器回落路径与各定长建点共用）。
 pub(crate) fn default_shared_array_buffer_proto<H: VmHost>(vm: &H) -> JsValue {
-    JsValue::from_js_object(vm.session().builtin_world().shared_array_buffer_proto.as_ptr() as *mut JsObject)
+    JsValue::from_js_object(vm.builtin_proto(ProtoKind::SharedArrayBufferProto))
 }
 
 /// 分配携给定 proto 与载荷形态（`max_byte_length` 为存储态：0 定长，非 0 可
@@ -281,7 +281,7 @@ pub fn shared_array_buffer_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> Na
             let options_ptr = options.as_js_object_ptr();
             // SAFETY: is_object 保证指针非空且对象本 session 存活。
             let options_obj = unsafe { &*options_ptr };
-            let si = vm.kernel_core().perm_interner().intern("maxByteLength").0;
+            let si = vm.perm_intern("maxByteLength");
             let max_val = match vm.ordinary_get(options_obj, si, options) {
                 Ok(v) => v,
                 Err(err) => return NativeResult::Err(crate::iterator::engine_error(vm, &err)),
@@ -308,7 +308,7 @@ pub fn shared_array_buffer_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> Na
         let nt_ptr = new_target.as_js_object_ptr();
         // SAFETY: is_object 保证指针非空且对象本 session 存活。
         let nt_obj = unsafe { &*nt_ptr };
-        let proto_si = vm.kernel_core().perm_interner().intern("prototype").0;
+        let proto_si = vm.perm_intern("prototype");
         let proto_val = match vm.ordinary_get(nt_obj, proto_si, new_target) {
             Ok(v) => v,
             Err(err) => return NativeResult::Err(crate::iterator::engine_error(vm, &err)),
@@ -482,8 +482,7 @@ pub fn shared_array_buffer_slice<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeRe
     let new_len = final_.saturating_sub(first);
 
     // 物种读与构造各是 JS 调用窗口：getter/构造器可晋升源。
-    let default_ctor =
-        JsValue::from_js_object(vm.session().builtin_world().shared_array_buffer_constructor.as_ptr() as *mut JsObject);
+    let default_ctor = JsValue::from_js_object(vm.builtin_proto(ProtoKind::SharedArrayBufferConstructor));
     let ctor = native_try!(ab_species_constructor(vm, this_val, default_ctor));
     let new_val = match vm.construct_ctor(ctor, &[JsValue::int(new_len as i32)]) {
         Ok(v) => v,
@@ -593,7 +592,7 @@ pub fn array_buffer_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeRes
             let options_ptr = options.as_js_object_ptr();
             // SAFETY: is_object 保证指针非空且对象本 session 存活。
             let options_obj = unsafe { &*options_ptr };
-            let si = vm.kernel_core().perm_interner().intern("maxByteLength").0;
+            let si = vm.perm_intern("maxByteLength");
             let max_val = match vm.ordinary_get(options_obj, si, options) {
                 Ok(v) => v,
                 Err(err) => return NativeResult::Err(crate::iterator::engine_error(vm, &err)),
@@ -620,7 +619,7 @@ pub fn array_buffer_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeRes
         let nt_ptr = new_target.as_js_object_ptr();
         // SAFETY: is_object 保证指针非空且对象本 session 存活。
         let nt_obj = unsafe { &*nt_ptr };
-        let proto_si = vm.kernel_core().perm_interner().intern("prototype").0;
+        let proto_si = vm.perm_intern("prototype");
         let proto_val = match vm.ordinary_get(nt_obj, proto_si, new_target) {
             Ok(v) => v,
             Err(err) => return NativeResult::Err(crate::iterator::engine_error(vm, &err)),
@@ -642,7 +641,7 @@ pub fn array_buffer_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeRes
     // SAFETY: obj_ptr 为 alloc_object 新建对象，无别名。
     let obj = unsafe { &mut *obj_ptr };
     if let Some(max) = max_opt {
-        let si = vm.kernel_core().perm_interner().intern("maxByteLength").0;
+        let si = vm.perm_intern("maxByteLength");
         if let Err(err) = vm.define_data_property(
             obj,
             si,
@@ -811,7 +810,7 @@ fn ab_resolve_bounds<H: VmHost>(
 /// 构造器，非构造器抛 TypeError。
 fn ab_species_constructor<H: VmHost>(vm: &mut H, o_val: JsValue, default_ctor: JsValue) -> Result<JsValue, JsValue> {
     let o_obj = unsafe { &*o_val.as_js_object_ptr() };
-    let ctor_key = vm.kernel_core().perm_interner().intern("constructor").0;
+    let ctor_key = vm.perm_intern("constructor");
     let c = match vm.ordinary_get(o_obj, ctor_key, o_val) {
         Ok(v) => v,
         Err(msg) => return Err(crate::iterator::engine_error(vm, &msg)),
@@ -873,8 +872,7 @@ pub fn array_buffer_slice<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let new_len = final_.saturating_sub(first);
 
     // 物种读与构造各是 JS 调用窗口：getter/构造器可 detach、resize、晋升源。
-    let default_ctor =
-        JsValue::from_js_object(vm.session().builtin_world().array_buffer_constructor.as_ptr() as *mut JsObject);
+    let default_ctor = JsValue::from_js_object(vm.builtin_proto(ProtoKind::ArrayBufferConstructor));
     let ctor = native_try!(ab_species_constructor(vm, this_val, default_ctor));
     let new_val = match vm.construct_ctor(ctor, &[JsValue::int(new_len as i32)]) {
         Ok(v) => v,
@@ -982,10 +980,9 @@ pub fn array_buffer_slice_to_immutable<H: VmHost>(vm: &mut H, args: &[u8]) -> Na
     }
     // GetPrototypeFromConstructor(%ArrayBuffer%)：prototype 读为 JS 窗口
     // （访问器可被用户重定义），抛错传播；非对象回落默认原型。
-    let ctor_val =
-        JsValue::from_js_object(vm.session().builtin_world().array_buffer_constructor.as_ptr() as *mut JsObject);
+    let ctor_val = JsValue::from_js_object(vm.builtin_proto(ProtoKind::ArrayBufferConstructor));
     let ctor_obj = unsafe { &*ctor_val.as_js_object_ptr() };
-    let proto_si = vm.kernel_core().perm_interner().intern("prototype").0;
+    let proto_si = vm.perm_intern("prototype");
     let proto_val = match vm.ordinary_get(ctor_obj, proto_si, ctor_val) {
         Ok(v) => v,
         Err(msg) => return NativeResult::Err(crate::iterator::engine_error(vm, &msg)),

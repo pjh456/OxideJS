@@ -16,7 +16,7 @@
 
 use num_traits::ToPrimitive;
 use oxide_kernel::shape_forge::EMPTY_SHAPE_ID;
-use oxide_runtime_api::{to_number, to_string, NativeResult, VmHost};
+use oxide_runtime_api::{to_number, to_string, NativeResult, ProtoKind, VmHost};
 use oxide_types::object::JsObject;
 use oxide_types::value::JsValue;
 
@@ -166,7 +166,7 @@ pub(crate) fn is_ctor_call<H: VmHost>(vm: &mut H, args: &[u8], proto_ptr: *const
 }
 
 pub(crate) fn make_instant<H: VmHost>(vm: &mut H, epoch_ns: i128) -> NativeResult {
-    let proto = JsValue::from_js_object(vm.session().builtin_world().instant_proto.as_ptr() as *mut JsObject);
+    let proto = JsValue::from_js_object(vm.builtin_proto(ProtoKind::InstantProto));
     let epoch_value = vm.new_bigint(num_bigint::BigInt::from(epoch_ns));
     let mut obj = JsObject::new_empty(EMPTY_SHAPE_ID, proto);
     obj.type_tag = JsObject::OBJ_TYPE_INSTANT;
@@ -177,7 +177,7 @@ pub(crate) fn make_instant<H: VmHost>(vm: &mut H, epoch_ns: i128) -> NativeResul
 pub(crate) fn make_zoned_date_time<H: VmHost>(
     vm: &mut H, epoch_ns: i128, time_zone_id: &str, calendar: &str,
 ) -> NativeResult {
-    let proto = JsValue::from_js_object(vm.session().builtin_world().zoned_date_time_proto.as_ptr() as *mut JsObject);
+    let proto = JsValue::from_js_object(vm.builtin_proto(ProtoKind::ZonedDateTimeProto));
     let epoch_value = vm.new_bigint(num_bigint::BigInt::from(epoch_ns));
     let time_zone_value = vm.new_string(time_zone_id);
     let calendar_value = vm.new_string(calendar);
@@ -1332,7 +1332,7 @@ pub(crate) fn local_to_epoch_ns(year: i32, month: u32, day: u32, time_ns: f64, o
 }
 
 pub(crate) fn make_plain_date<H: VmHost>(vm: &mut H, year: i32, month: u32, day: u32, calendar: &str) -> NativeResult {
-    let proto = JsValue::from_js_object(vm.session().builtin_world().plain_date_proto.as_ptr() as *mut JsObject);
+    let proto = JsValue::from_js_object(vm.builtin_proto(ProtoKind::PlainDateProto));
     let mut obj = JsObject::new_empty(EMPTY_SHAPE_ID, proto);
     obj.type_tag = JsObject::OBJ_TYPE_PLAIN_DATE;
     obj.set_prop_at(0, JsValue::float(year as f64));
@@ -1343,7 +1343,7 @@ pub(crate) fn make_plain_date<H: VmHost>(vm: &mut H, year: i32, month: u32, day:
 }
 
 pub(crate) fn make_plain_time<H: VmHost>(vm: &mut H, total_ns: f64) -> NativeResult {
-    let proto = JsValue::from_js_object(vm.session().builtin_world().plain_time_proto.as_ptr() as *mut JsObject);
+    let proto = JsValue::from_js_object(vm.builtin_proto(ProtoKind::PlainTimeProto));
     let mut obj = JsObject::new_empty(EMPTY_SHAPE_ID, proto);
     obj.type_tag = JsObject::OBJ_TYPE_PLAIN_TIME;
     obj.set_prop_at(0, JsValue::float(total_ns));
@@ -1353,7 +1353,7 @@ pub(crate) fn make_plain_time<H: VmHost>(vm: &mut H, total_ns: f64) -> NativeRes
 pub(crate) fn make_plain_date_time<H: VmHost>(
     vm: &mut H, year: i32, month: u32, day: u32, total_ns: f64, calendar: &str,
 ) -> NativeResult {
-    let proto = JsValue::from_js_object(vm.session().builtin_world().plain_date_time_proto.as_ptr() as *mut JsObject);
+    let proto = JsValue::from_js_object(vm.builtin_proto(ProtoKind::PlainDateTimeProto));
     let mut obj = JsObject::new_empty(EMPTY_SHAPE_ID, proto);
     obj.type_tag = JsObject::OBJ_TYPE_PLAIN_DATE_TIME;
     obj.set_prop_at(0, JsValue::float(year as f64));
@@ -1365,7 +1365,7 @@ pub(crate) fn make_plain_date_time<H: VmHost>(
 }
 
 pub(crate) fn make_duration<H: VmHost>(vm: &mut H, values: [f64; 10]) -> NativeResult {
-    let proto = JsValue::from_js_object(vm.session().builtin_world().duration_proto.as_ptr() as *mut JsObject);
+    let proto = JsValue::from_js_object(vm.builtin_proto(ProtoKind::DurationProto));
     let mut obj = JsObject::new_empty(EMPTY_SHAPE_ID, proto);
     obj.type_tag = JsObject::OBJ_TYPE_DURATION;
     for (index, value) in values.into_iter().enumerate() {
@@ -1382,7 +1382,7 @@ pub(crate) fn make_duration<H: VmHost>(vm: &mut H, values: [f64; 10]) -> NativeR
 pub(crate) fn make_plain_month_day<H: VmHost>(
     vm: &mut H, month: u32, day: u32, ref_year: i32, calendar: &str,
 ) -> NativeResult {
-    let proto = JsValue::from_js_object(vm.session().builtin_world().plain_month_day_proto.as_ptr() as *mut JsObject);
+    let proto = JsValue::from_js_object(vm.builtin_proto(ProtoKind::PlainMonthDayProto));
     let mut obj = JsObject::new_empty(EMPTY_SHAPE_ID, proto);
     obj.type_tag = JsObject::OBJ_TYPE_PLAIN_MONTH_DAY;
     obj.set_prop_at(0, JsValue::float(month as f64));
@@ -1397,7 +1397,7 @@ pub(crate) fn make_plain_month_day<H: VmHost>(
 pub(crate) fn make_plain_year_month<H: VmHost>(
     vm: &mut H, year: i32, month: u32, ref_day: u32, calendar: &str,
 ) -> NativeResult {
-    let proto = JsValue::from_js_object(vm.session().builtin_world().plain_year_month_proto.as_ptr() as *mut JsObject);
+    let proto = JsValue::from_js_object(vm.builtin_proto(ProtoKind::PlainYearMonthProto));
     let mut obj = JsObject::new_empty(EMPTY_SHAPE_ID, proto);
     obj.type_tag = JsObject::OBJ_TYPE_PLAIN_YEAR_MONTH;
     obj.set_prop_at(0, JsValue::float(year as f64));

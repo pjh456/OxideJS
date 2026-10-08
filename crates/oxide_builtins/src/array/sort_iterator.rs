@@ -4,7 +4,7 @@ use oxide_kernel::shape_forge::EMPTY_SHAPE_ID;
 use oxide_types::object::JsObject;
 use oxide_types::value::JsValue;
 
-use oxide_runtime_api::{NativeResult, VmHost};
+use oxide_runtime_api::{NativeResult, ProtoKind, VmHost};
 
 use crate::builtins_debug;
 use crate::builtins_error;
@@ -150,11 +150,11 @@ pub(crate) fn make_array_iterator<H: VmHost>(vm: &mut H, this_val: JsValue, kind
         Ok(v) => v,
         Err(msg) => return Err(array_type_error(vm, &msg)),
     };
-    let array_iter_proto = vm.session().builtin_world().array_iterator_proto.as_ptr() as *mut JsObject;
+    let array_iter_proto = vm.builtin_proto(ProtoKind::ArrayIteratorProto);
     let iter = vm.alloc_object(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(array_iter_proto)));
-    let target_si = vm.kernel_core().perm_interner().intern(ARRAY_ITER_TARGET_PROP).0;
-    let index_si = vm.kernel_core().perm_interner().intern(ARRAY_ITER_INDEX_PROP).0;
-    let kind_si = vm.kernel_core().perm_interner().intern(ARRAY_ITER_KIND_PROP).0;
+    let target_si = vm.perm_intern(ARRAY_ITER_TARGET_PROP);
+    let index_si = vm.perm_intern(ARRAY_ITER_INDEX_PROP);
+    let kind_si = vm.perm_intern(ARRAY_ITER_KIND_PROP);
     let iter_ref = unsafe { &mut *iter };
     vm.set_or_create_prop_value(iter_ref, target_si, target);
     vm.set_or_create_prop_value(iter_ref, index_si, JsValue::int(0));
@@ -189,9 +189,9 @@ pub fn array_iterator_next<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         return NativeResult::Err(array_type_error(vm, "Array Iterator next called on non-object"));
     }
     let iter = unsafe { &mut *this_val.as_js_object_ptr() };
-    let target_si = vm.kernel_core().perm_interner().intern(ARRAY_ITER_TARGET_PROP).0;
-    let index_si = vm.kernel_core().perm_interner().intern(ARRAY_ITER_INDEX_PROP).0;
-    let kind_si = vm.kernel_core().perm_interner().intern(ARRAY_ITER_KIND_PROP).0;
+    let target_si = vm.perm_intern(ARRAY_ITER_TARGET_PROP);
+    let index_si = vm.perm_intern(ARRAY_ITER_INDEX_PROP);
+    let kind_si = vm.perm_intern(ARRAY_ITER_KIND_PROP);
     // 内部槽守卫：无 own __target__ 槽的对象（如 Object.create 产物）不是数组
     // 迭代器，不得沿原型链读底层迭代器的槽；三槽同批写入，查一槽即全查。
     if vm.get_own_property_slot(&*iter, target_si).is_none() {
