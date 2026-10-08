@@ -97,8 +97,9 @@ impl oxide_emit::module::ModuleSourceLoader for Test262ModuleLoader {
 /// 单测执行主流程：拼 harness 前缀 → parse → compile → run；
 /// 依据 `negative` 元数据校验期望错误，未实现特性按 no_skip 选择跳过或失败。
 ///
-/// script 臂经 `Engine::compile` 便捷路径（parse + CodeForge 缓存）；module 臂
+/// script 臂经 `Engine::compile_with` 便捷路径（parse + CodeForge 缓存）；module 臂
 /// 保留本模块的 `parse_module` + 依赖加载器（引擎暂不吸收 module 加载器面）。
+/// 两臂共享同一 compiler，`no_regalloc` 旗标对两臂同口径生效。
 #[expect(clippy::too_many_arguments)]
 fn run_test_inner(
     path: &Path, source: &str, meta: &TestMeta, engine: &Engine, harness: &HarnessSources,
@@ -139,7 +140,9 @@ fn run_test_inner(
     };
 
     // module 臂保留本模块的 parse_module + 依赖加载器；script 臂经引擎
-    // 便捷路径（parse + CodeForge 缓存）。
+    // 便捷路径（parse + CodeForge 缓存）。compiler 由两臂共享，
+    // no_regalloc 旗标对两臂同口径生效。
+    let compiler = if no_regalloc { Compiler::new().with_regalloc(false) } else { Compiler::new() };
     let module_result = if is_module {
         let alloc = oxide_parser::Allocator::default();
         let program = match oxide_parser::parse_module(&alloc, &code) {
@@ -153,13 +156,12 @@ fn run_test_inner(
                 return TestResult::fail(path.to_path_buf(), dur, msg);
             }
         };
-        let compiler = if no_regalloc { Compiler::new().with_regalloc(false) } else { Compiler::new() };
         let mut loader = Test262ModuleLoader;
         compiler
             .compile_module(&program, path.to_string_lossy().as_ref(), &mut loader)
             .map(Arc::new)
     } else {
-        engine.compile(&code)
+        engine.compile_with(&code, &compiler)
     };
 
     let module = match module_result {
