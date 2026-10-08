@@ -7,13 +7,12 @@
 use std::cmp::Ordering;
 
 use num_traits::{ToPrimitive, Zero};
-use oxide_types::mem::P;
 use oxide_types::object::{JsObject, PropAttributes};
 use oxide_types::private_key::make_int_key;
 use oxide_types::shape::EMPTY_SHAPE_ID;
 use oxide_types::value::{JsType, JsValue};
 
-use crate::host::VmHost;
+use crate::host::{ProtoKind, VmHost};
 
 /// 拼接 JS 错误消息，格式为 `"{name}: {msg}"`；任一段为空时只取非空段。
 pub fn format_error_message(name: &str, msg: &str) -> String {
@@ -774,17 +773,14 @@ pub fn materialize_string_box<H: VmHost>(host: &mut H, obj: &mut JsObject, str_v
     let len = units.len();
     obj.set_boxed_value(str_val);
     for (i, &unit) in units.iter().enumerate() {
-        let shape_id = host
-            .kernel_core()
-            .shape_forge()
-            .make_shape(obj.shape_id(), make_int_key(i as u32));
+        let shape_id = host.make_shape(obj.shape_id(), make_int_key(i as u32));
         obj.set_shape_id(shape_id);
         let ch = host.single_unit(unit).unwrap_or_else(|| host.new_string_units(&[unit]));
         obj.push_prop(ch);
         obj.set_data_meta(i as u32, PropAttributes::new(false, true, false));
     }
-    let length_si = host.kernel_core().perm_interner().intern("length").0;
-    let shape_id = host.kernel_core().shape_forge().make_shape(obj.shape_id(), length_si);
+    let length_si = host.perm_intern("length");
+    let shape_id = host.make_shape(obj.shape_id(), length_si);
     obj.set_shape_id(shape_id);
     obj.push_prop(JsValue::int(len as i32));
     obj.set_data_meta(len as u32, PropAttributes::new(false, false, false));
@@ -803,22 +799,18 @@ pub fn to_object<H: VmHost>(val: JsValue, host: &mut H) -> Result<JsValue, Strin
     if val.is_null() || val.is_undefined() {
         return Err(host.error_message_text("TypeError", "Cannot convert null or undefined to object"));
     }
-    let (proto_ptr, type_tag) = {
-        let session = host.session();
-        let world = session.builtin_world();
-        if val.is_string() {
-            (P::as_ptr(&world.string_proto) as *mut JsObject, JsObject::OBJ_TYPE_STRING_OBJ)
-        } else if val.is_int() || val.is_double() {
-            (P::as_ptr(&world.number_proto) as *mut JsObject, JsObject::OBJ_TYPE_NUMBER_OBJ)
-        } else if val.is_bool() {
-            (P::as_ptr(&world.boolean_proto) as *mut JsObject, JsObject::OBJ_TYPE_BOOLEAN_OBJ)
-        } else if val.is_bigint() {
-            (P::as_ptr(&world.bigint_proto) as *mut JsObject, JsObject::OBJ_TYPE_PLAIN)
-        } else if val.is_symbol() {
-            (P::as_ptr(&world.symbol_proto) as *mut JsObject, JsObject::OBJ_TYPE_SYMBOL_OBJ)
-        } else {
-            (P::as_ptr(&world.object_proto) as *mut JsObject, JsObject::OBJ_TYPE_PLAIN)
-        }
+    let (proto_ptr, type_tag) = if val.is_string() {
+        (host.builtin_proto(ProtoKind::StringProto), JsObject::OBJ_TYPE_STRING_OBJ)
+    } else if val.is_int() || val.is_double() {
+        (host.builtin_proto(ProtoKind::NumberProto), JsObject::OBJ_TYPE_NUMBER_OBJ)
+    } else if val.is_bool() {
+        (host.builtin_proto(ProtoKind::BooleanProto), JsObject::OBJ_TYPE_BOOLEAN_OBJ)
+    } else if val.is_bigint() {
+        (host.builtin_proto(ProtoKind::BigIntProto), JsObject::OBJ_TYPE_PLAIN)
+    } else if val.is_symbol() {
+        (host.builtin_proto(ProtoKind::SymbolProto), JsObject::OBJ_TYPE_SYMBOL_OBJ)
+    } else {
+        (host.builtin_proto(ProtoKind::ObjectProto), JsObject::OBJ_TYPE_PLAIN)
     };
     let proto_val = JsValue::from_js_object(proto_ptr);
     let obj = host.alloc_object(JsObject::new_empty(EMPTY_SHAPE_ID, proto_val));

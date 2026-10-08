@@ -1,9 +1,7 @@
 //! `VmHost` trait：builtins 依赖的 `Vm` 能力集合，trait 面向泛型而非对象安全。
 
 use std::ffi::c_void;
-use std::sync::Arc;
 
-use oxide_kernel::kernel::{KernelCore, KernelSession};
 use oxide_types::mem::P;
 use oxide_types::object::{Cell, JsObject, PropAttributes};
 use oxide_types::value::JsValue;
@@ -203,14 +201,6 @@ pub trait VmHost {
     fn new_bigint(&mut self, v: num_bigint::BigInt) -> JsValue;
     /// 读取 BigInt 值；调用方须保证 `val.is_bigint()`。
     fn bigint_value(&mut self, val: JsValue) -> &num_bigint::BigInt;
-
-    // 内核访问器
-    fn kernel_core(&self) -> &Arc<KernelCore>;
-    /// 只读访问当前 session（builtin world 与 global object）。
-    ///
-    /// 返回 `Ref` 守卫（session 入 `RefCell` 后无法再给稳定 `&`）：调用方
-    /// 在单表达式内消费，不跨 `borrow_mut` 长存。
-    fn session(&self) -> std::cell::Ref<'_, KernelSession>;
 
     // 内核能力面（perm interner / shape forge / builtin world / global object）
     /// intern 字符串键，返回其 si（perm interner，零分配共享键空间）。

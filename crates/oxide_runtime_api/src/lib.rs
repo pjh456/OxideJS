@@ -5,7 +5,7 @@
 //! 实现 `VmHost`。这打破了 builtins crate 与 `oxide_vm` 之间本会形成的
 //! 循环依赖：
 //!
-//! `oxide_types ← oxide_kernel ← oxide_runtime_api ← oxide_builtins ← oxide_vm`
+//! `oxide_types ← oxide_runtime_api ← oxide_builtins ← oxide_vm`
 //!
 //! trait 面向泛型而非对象安全：单态化 `H = Vm` 使每个 `host.*()` 调用内联，
 //! 相对 builtins 直接位于 `oxide_vm` 内部没有运行时开销。

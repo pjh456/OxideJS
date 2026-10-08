@@ -3,7 +3,6 @@
 use std::ffi::c_void;
 use std::sync::Arc;
 
-use oxide_kernel::kernel::{KernelCore, KernelSession};
 use oxide_runtime_api::{ProtoKind, ShapeNode};
 use oxide_types::mem::P;
 use oxide_types::object::{Cell, JsObject, PropAttributes};
@@ -44,12 +43,6 @@ impl oxide_runtime_api::VmHost for Vm {
     }
     fn bigint_value(&mut self, val: JsValue) -> &num_bigint::BigInt {
         Vm::bigint_value(self, val)
-    }
-    fn kernel_core(&self) -> &Arc<KernelCore> {
-        self.kernel_core()
-    }
-    fn session(&self) -> std::cell::Ref<'_, KernelSession> {
-        self.session()
     }
     fn perm_intern(&self, s: &str) -> u32 {
         self.kernel_core.perm_interner().intern(s).0
