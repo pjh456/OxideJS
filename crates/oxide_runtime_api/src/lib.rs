@@ -29,5 +29,5 @@ pub use coercion::{
     ToPrimitiveHint,
 };
 pub use compiler_service::CompilerService;
-pub use host::VmHost;
+pub use host::{ProtoKind, ShapeNode, VmHost};
 pub use native_result::NativeResult;

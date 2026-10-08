@@ -1,10 +1,106 @@
 //! `VmHost` trait：builtins 依赖的 `Vm` 能力集合，trait 面向泛型而非对象安全。
 
+use std::ffi::c_void;
 use std::sync::Arc;
 
 use oxide_kernel::kernel::{KernelCore, KernelSession};
+use oxide_types::mem::P;
 use oxide_types::object::{Cell, JsObject, PropAttributes};
 use oxide_types::value::JsValue;
+
+/// shape 节点只读投影：shape forge 节点字段的中立镜像（免跨 crate 引用具体类型）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ShapeNode {
+    /// shape 整数标识。
+    pub id: u32,
+    /// 本节点新增的属性名（字符串键 si；`u32::MAX` 为哨兵，表示无属性）。
+    pub property_name: u32,
+    /// 父 shape id（根节点为 `None`）。
+    pub parent: Option<u32>,
+    /// 根到本 shape 的非哨兵属性数。
+    pub depth: u32,
+}
+
+/// 内建对象种类：session builtin world 中 builtins 读取的原型与构造器槽位。
+///
+/// 变体与 builtin world 字段一一对应，仅覆盖 builtins 实际读取的槽位；
+/// 新增内建读取面时在此追加变体（尾操作，零位移）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProtoKind {
+    // 基础原型
+    ObjectProto,
+    ArrayProto,
+    FunctionProto,
+    StringProto,
+    NumberProto,
+    BooleanProto,
+    SymbolProto,
+    BigIntProto,
+    // 错误族原型
+    ErrorProto,
+    TypeErrorProto,
+    ReferenceErrorProto,
+    RangeErrorProto,
+    SyntaxErrorProto,
+    UriErrorProto,
+    EvalErrorProto,
+    SuppressedErrorProto,
+    // 集合 / 正则 / 日期原型
+    DateProto,
+    SetProto,
+    MapProto,
+    RegExpProto,
+    // 缓冲与视图原型
+    ArrayBufferProto,
+    SharedArrayBufferProto,
+    DataViewProto,
+    TypedArrayProto,
+    Int8ArrayProto,
+    Uint8ArrayProto,
+    Uint8ClampedArrayProto,
+    Int16ArrayProto,
+    Uint16ArrayProto,
+    Int32ArrayProto,
+    Uint32ArrayProto,
+    Float32ArrayProto,
+    Float64ArrayProto,
+    BigInt64ArrayProto,
+    BigUint64ArrayProto,
+    // Temporal 原型
+    InstantProto,
+    PlainDateProto,
+    PlainTimeProto,
+    DurationProto,
+    ZonedDateTimeProto,
+    PlainDateTimeProto,
+    PlainMonthDayProto,
+    PlainYearMonthProto,
+    // 迭代器原型
+    IteratorProto,
+    ArrayIteratorProto,
+    MapIteratorProto,
+    SetIteratorProto,
+    StringIteratorProto,
+    RegExpStringIteratorProto,
+    IteratorHelperProto,
+    DisposableStackProto,
+    AsyncDisposableStackProto,
+    // 构造器
+    RegExpConstructor,
+    ArrayBufferConstructor,
+    SharedArrayBufferConstructor,
+    Int8ArrayConstructor,
+    Uint8ArrayConstructor,
+    Uint8ClampedArrayConstructor,
+    Int16ArrayConstructor,
+    Uint16ArrayConstructor,
+    Int32ArrayConstructor,
+    Uint32ArrayConstructor,
+    Float32ArrayConstructor,
+    Float64ArrayConstructor,
+    BigInt64ArrayConstructor,
+    BigUint64ArrayConstructor,
+}
 
 /// builtins 依赖的 `Vm` 能力集合。
 ///
@@ -115,6 +211,29 @@ pub trait VmHost {
     /// 返回 `Ref` 守卫（session 入 `RefCell` 后无法再给稳定 `&`）：调用方
     /// 在单表达式内消费，不跨 `borrow_mut` 长存。
     fn session(&self) -> std::cell::Ref<'_, KernelSession>;
+
+    // 内核能力面（perm interner / shape forge / builtin world / global object）
+    /// intern 字符串键，返回其 si（perm interner，零分配共享键空间）。
+    fn perm_intern(&self, s: &str) -> u32;
+    /// 由 si 反查字符串键文本（si 非已登记字符串键时为 `None`）。
+    fn perm_lookup(&self, si: u32) -> Option<&str>;
+    /// shape 转换：在 `parent` 上追加属性 `prop_si` 返回新 shape id；
+    /// 相同 (parent, prop_si) 组合恒返回同一 id。
+    fn make_shape(&self, parent: u32, prop_si: u32) -> u32;
+    /// 查 shape `shape_id` 中属性 `prop_si` 的槽位（该 shape 链上无此属性为 `None`）。
+    fn lookup_position(&self, shape_id: u32, prop_si: u32) -> Option<u32>;
+    /// 读 shape 节点（id 非有效 shape 为 `None`）。
+    fn get_shape(&self, id: u32) -> Option<ShapeNode>;
+    /// perm interner 裸指针（调用方解引用读键空间；interner 随 VM 存活）。
+    fn perm_interner_ptr(&self) -> *const c_void;
+    /// shape forge 裸指针（调用方解引用读 shape 链；forge 随 VM 存活）。
+    fn shape_forge_ptr(&self) -> *const c_void;
+    /// 读当前 session builtin world 的内建对象指针（原型 / 构造器）。
+    fn builtin_proto(&self, kind: ProtoKind) -> *mut JsObject;
+    /// 读 String 默认迭代器裸指针（绑定层未捕获时为 null 指针）。
+    fn string_default_iterator(&self) -> *const JsObject;
+    /// 读当前 session 全局对象（引用计数持久指针，跨调用存活）。
+    fn global_object(&self) -> P<JsObject>;
 
     // 属性解析
     fn property_key_si(&mut self, val: JsValue) -> u32;

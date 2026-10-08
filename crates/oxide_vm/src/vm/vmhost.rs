@@ -1,8 +1,11 @@
 //! `oxide_runtime_api::VmHost` 委托实现：宿主接口各项委托到 `Vm` 同名固有方法。
 
+use std::ffi::c_void;
 use std::sync::Arc;
 
 use oxide_kernel::kernel::{KernelCore, KernelSession};
+use oxide_runtime_api::{ProtoKind, ShapeNode};
+use oxide_types::mem::P;
 use oxide_types::object::{Cell, JsObject, PropAttributes};
 use oxide_types::value::JsValue;
 
@@ -47,6 +50,114 @@ impl oxide_runtime_api::VmHost for Vm {
     }
     fn session(&self) -> std::cell::Ref<'_, KernelSession> {
         self.session()
+    }
+    fn perm_intern(&self, s: &str) -> u32 {
+        self.kernel_core.perm_interner().intern(s).0
+    }
+    fn perm_lookup(&self, si: u32) -> Option<&str> {
+        self.kernel_core.perm_interner().lookup(si)
+    }
+    fn make_shape(&self, parent: u32, prop_si: u32) -> u32 {
+        self.kernel_core.shape_forge().make_shape(parent, prop_si)
+    }
+    fn lookup_position(&self, shape_id: u32, prop_si: u32) -> Option<u32> {
+        self.kernel_core.shape_forge().lookup_position(shape_id, prop_si)
+    }
+    fn get_shape(&self, id: u32) -> Option<ShapeNode> {
+        self.kernel_core.shape_forge().get_shape(id).map(|s| ShapeNode {
+            id: s.id,
+            property_name: s.property_name,
+            parent: s.parent,
+            depth: s.depth,
+        })
+    }
+    fn perm_interner_ptr(&self) -> *const c_void {
+        Arc::as_ptr(self.kernel_core.perm_interner()) as *const c_void
+    }
+    fn shape_forge_ptr(&self) -> *const c_void {
+        Arc::as_ptr(self.kernel_core.shape_forge()) as *const c_void
+    }
+    fn builtin_proto(&self, kind: ProtoKind) -> *mut JsObject {
+        // session 守卫存活至方法返回：world 借用不跨语句长存。
+        let session = self.session();
+        let world = session.builtin_world();
+        let p = match kind {
+            ProtoKind::ObjectProto => &world.object_proto,
+            ProtoKind::ArrayProto => &world.array_proto,
+            ProtoKind::FunctionProto => &world.function_proto,
+            ProtoKind::StringProto => &world.string_proto,
+            ProtoKind::NumberProto => &world.number_proto,
+            ProtoKind::BooleanProto => &world.boolean_proto,
+            ProtoKind::SymbolProto => &world.symbol_proto,
+            ProtoKind::BigIntProto => &world.bigint_proto,
+            ProtoKind::ErrorProto => &world.error_proto,
+            ProtoKind::TypeErrorProto => &world.type_error_proto,
+            ProtoKind::ReferenceErrorProto => &world.reference_error_proto,
+            ProtoKind::RangeErrorProto => &world.range_error_proto,
+            ProtoKind::SyntaxErrorProto => &world.syntax_error_proto,
+            ProtoKind::UriErrorProto => &world.uri_error_proto,
+            ProtoKind::EvalErrorProto => &world.eval_error_proto,
+            ProtoKind::SuppressedErrorProto => &world.suppressed_error_proto,
+            ProtoKind::DateProto => &world.date_proto,
+            ProtoKind::SetProto => &world.set_proto,
+            ProtoKind::MapProto => &world.map_proto,
+            ProtoKind::RegExpProto => &world.regexp_proto,
+            ProtoKind::ArrayBufferProto => &world.array_buffer_proto,
+            ProtoKind::SharedArrayBufferProto => &world.shared_array_buffer_proto,
+            ProtoKind::DataViewProto => &world.data_view_proto,
+            ProtoKind::TypedArrayProto => &world.typed_array_proto,
+            ProtoKind::Int8ArrayProto => &world.int8array_proto,
+            ProtoKind::Uint8ArrayProto => &world.uint8array_proto,
+            ProtoKind::Uint8ClampedArrayProto => &world.uint8clampedarray_proto,
+            ProtoKind::Int16ArrayProto => &world.int16array_proto,
+            ProtoKind::Uint16ArrayProto => &world.uint16array_proto,
+            ProtoKind::Int32ArrayProto => &world.int32array_proto,
+            ProtoKind::Uint32ArrayProto => &world.uint32array_proto,
+            ProtoKind::Float32ArrayProto => &world.float32array_proto,
+            ProtoKind::Float64ArrayProto => &world.float64array_proto,
+            ProtoKind::BigInt64ArrayProto => &world.bigint64array_proto,
+            ProtoKind::BigUint64ArrayProto => &world.biguint64array_proto,
+            ProtoKind::InstantProto => &world.instant_proto,
+            ProtoKind::PlainDateProto => &world.plain_date_proto,
+            ProtoKind::PlainTimeProto => &world.plain_time_proto,
+            ProtoKind::DurationProto => &world.duration_proto,
+            ProtoKind::ZonedDateTimeProto => &world.zoned_date_time_proto,
+            ProtoKind::PlainDateTimeProto => &world.plain_date_time_proto,
+            ProtoKind::PlainMonthDayProto => &world.plain_month_day_proto,
+            ProtoKind::PlainYearMonthProto => &world.plain_year_month_proto,
+            ProtoKind::IteratorProto => &world.iterator_proto,
+            ProtoKind::ArrayIteratorProto => &world.array_iterator_proto,
+            ProtoKind::MapIteratorProto => &world.map_iterator_proto,
+            ProtoKind::SetIteratorProto => &world.set_iterator_proto,
+            ProtoKind::StringIteratorProto => &world.string_iterator_proto,
+            ProtoKind::RegExpStringIteratorProto => &world.regexp_string_iterator_proto,
+            ProtoKind::IteratorHelperProto => &world.iterator_helper_proto,
+            ProtoKind::DisposableStackProto => &world.disposable_stack_proto,
+            ProtoKind::AsyncDisposableStackProto => &world.async_disposable_stack_proto,
+            ProtoKind::RegExpConstructor => &world.regexp_constructor,
+            ProtoKind::ArrayBufferConstructor => &world.array_buffer_constructor,
+            ProtoKind::SharedArrayBufferConstructor => &world.shared_array_buffer_constructor,
+            ProtoKind::Int8ArrayConstructor => &world.int8array_constructor,
+            ProtoKind::Uint8ArrayConstructor => &world.uint8array_constructor,
+            ProtoKind::Uint8ClampedArrayConstructor => &world.uint8clampedarray_constructor,
+            ProtoKind::Int16ArrayConstructor => &world.int16array_constructor,
+            ProtoKind::Uint16ArrayConstructor => &world.uint16array_constructor,
+            ProtoKind::Int32ArrayConstructor => &world.int32array_constructor,
+            ProtoKind::Uint32ArrayConstructor => &world.uint32array_constructor,
+            ProtoKind::Float32ArrayConstructor => &world.float32array_constructor,
+            ProtoKind::Float64ArrayConstructor => &world.float64array_constructor,
+            ProtoKind::BigInt64ArrayConstructor => &world.bigint64array_constructor,
+            ProtoKind::BigUint64ArrayConstructor => &world.biguint64array_constructor,
+        };
+        P::as_ptr(p) as *mut JsObject
+    }
+    fn string_default_iterator(&self) -> *const JsObject {
+        let session = self.session();
+        session.builtin_world().string_default_iterator.get()
+    }
+    fn global_object(&self) -> P<JsObject> {
+        let session = self.session();
+        session.global_object().clone()
     }
     fn pc(&self) -> usize {
         self.pc
