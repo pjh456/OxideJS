@@ -1,0 +1,15 @@
+[package]
+name = "oxide_engine"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "OxideJS - compile+run convenience layer (Engine)"
+
+[dependencies]
+oxide_bytecode = { path = "../oxide_bytecode" }
+oxide_parser = { path = "../oxide_parser" }
+oxide_compiler = { path = "../oxide_compiler" }
+oxide_kernel = { path = "../oxide_kernel" }
+oxide_vm = { path = "../oxide_vm" }
+oxide_types = { path = "../oxide_types" }

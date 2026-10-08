@@ -11,8 +11,8 @@ use crate::judge::{
 };
 use crate::meta::{parse_meta, strip_meta, TestMeta};
 use oxide_compiler::compiler::Compiler;
-use oxide_compiler::DefaultCompilerService;
-use oxide_kernel::kernel::{KernelConfig, KernelCore};
+use oxide_engine::Engine;
+use oxide_kernel::kernel::KernelConfig;
 use oxide_types::value::JsValue;
 use oxide_vm::vm::Vm;
 use std::path::{Path, PathBuf};
@@ -38,13 +38,13 @@ fn pc_watch_path() -> Option<&'static PathBuf> {
 /// 在 catch_unwind 保护下运行单个测试，把引擎 panic 记为失败。
 #[expect(clippy::too_many_arguments)]
 fn run_test(
-    path: &Path, source: &str, meta: &TestMeta, kernel: &Arc<KernelCore>, harness: &HarnessSources,
+    path: &Path, source: &str, meta: &TestMeta, engine: &Engine, harness: &HarnessSources,
     harness_cache: &Arc<RwLock<HarnessPrefixCache>>, no_skip: bool, no_regalloc: bool,
 ) -> TestResult {
     let start = std::time::Instant::now();
 
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        run_test_inner(path, source, meta, kernel, harness, harness_cache, no_skip, no_regalloc)
+        run_test_inner(path, source, meta, engine, harness, harness_cache, no_skip, no_regalloc)
     }));
 
     match result {
@@ -96,9 +96,12 @@ impl oxide_emit::module::ModuleSourceLoader for Test262ModuleLoader {
 
 /// 单测执行主流程：拼 harness 前缀 → parse → compile → run；
 /// 依据 `negative` 元数据校验期望错误，未实现特性按 no_skip 选择跳过或失败。
+///
+/// script 臂经 `Engine::compile` 便捷路径（parse + CodeForge 缓存）；module 臂
+/// 保留本模块的 `parse_module` + 依赖加载器（引擎暂不吸收 module 加载器面）。
 #[expect(clippy::too_many_arguments)]
 fn run_test_inner(
-    path: &Path, source: &str, meta: &TestMeta, kernel: &Arc<KernelCore>, harness: &HarnessSources,
+    path: &Path, source: &str, meta: &TestMeta, engine: &Engine, harness: &HarnessSources,
     harness_cache: &Arc<RwLock<HarnessPrefixCache>>, no_skip: bool, no_regalloc: bool,
 ) -> TestResult {
     let start = std::time::Instant::now();
@@ -135,30 +138,31 @@ fn run_test_inner(
         }
     };
 
-    let alloc = oxide_parser::Allocator::default();
-    let program = match if is_module {
-        oxide_parser::parse_module(&alloc, &code)
-    } else {
-        oxide_parser::parse(&alloc, &code)
-    } {
-        Ok(p) => p,
-        Err(errs) => {
-            let dur = start.elapsed().as_millis() as u64;
-            let msg = format!("parse error: {}", errs[0].message);
-            if meta.negative.is_some() {
-                return TestResult::pass(path.to_path_buf(), dur, msg);
+    // module 臂保留本模块的 parse_module + 依赖加载器；script 臂经引擎
+    // 便捷路径（parse + CodeForge 缓存）。
+    let module_result = if is_module {
+        let alloc = oxide_parser::Allocator::default();
+        let program = match oxide_parser::parse_module(&alloc, &code) {
+            Ok(p) => p,
+            Err(errs) => {
+                let dur = start.elapsed().as_millis() as u64;
+                let msg = format!("parse error: {}", errs[0].message);
+                if meta.negative.is_some() {
+                    return TestResult::pass(path.to_path_buf(), dur, msg);
+                }
+                return TestResult::fail(path.to_path_buf(), dur, msg);
             }
-            return TestResult::fail(path.to_path_buf(), dur, msg);
-        }
+        };
+        let compiler = if no_regalloc { Compiler::new().with_regalloc(false) } else { Compiler::new() };
+        let mut loader = Test262ModuleLoader;
+        compiler
+            .compile_module(&program, path.to_string_lossy().as_ref(), &mut loader)
+            .map(Arc::new)
+    } else {
+        engine.compile(&code)
     };
 
-    let compiler = if no_regalloc { Compiler::new().with_regalloc(false) } else { Compiler::new() };
-    let module = match if is_module {
-        let mut loader = Test262ModuleLoader;
-        compiler.compile_module(&program, path.to_string_lossy().as_ref(), &mut loader)
-    } else {
-        compiler.compile(&program)
-    } {
+    let module = match module_result {
         Ok(m) => m,
         Err(e) => {
             let dur = start.elapsed().as_millis() as u64;
@@ -171,14 +175,14 @@ fn run_test_inner(
         }
     };
 
-    let mut vm = Vm::with_kernel_core(Arc::clone(kernel));
-    // test262 语料含 eval / Function 动态编译面，注入真实编译服务。
-    vm.set_compiler_service(Arc::new(DefaultCompilerService));
+    // 独立 Vm 不经池；动态编译服务由 `new_vm` 同口径注入（语料含 eval /
+    // Function 动态编译面）。
+    let mut vm = engine.new_vm();
     // 监督者注入现场文件路径时开启 VM 的 last-pc 定频写（未注入时零开销）。
     if let Some(watch) = pc_watch_path() {
         vm.set_pc_watch(Some(watch.clone()));
     }
-    let run_result = vm.run(&Arc::new(module));
+    let run_result = vm.run(&module);
     let dur = start.elapsed().as_millis() as u64;
 
     if is_async {
@@ -216,9 +220,9 @@ pub(crate) fn read_async_output(vm: &Vm) -> String {
 
 /// 串行与并行执行路径共享的每测试管线：
 /// 读文件、解析元数据、应用跳过过滤，然后运行。恰好返回一个 `TestResult`。
-/// worker 自有状态（`kernel`、`harness_sources`、`harness_cache`）永不跨线程。
+/// worker 自有状态（`engine`、`harness_sources`、`harness_cache`）永不跨线程。
 pub(crate) fn process_path(
-    path: &Path, filter: &Option<String>, no_skip: bool, no_regalloc: bool, kernel: &Arc<KernelCore>,
+    path: &Path, filter: &Option<String>, no_skip: bool, no_regalloc: bool, engine: &Engine,
     harness_sources: &HarnessSources, harness_cache: &Arc<RwLock<HarnessPrefixCache>>,
 ) -> TestResult {
     let source = match std::fs::read_to_string(path) {
@@ -258,14 +262,14 @@ pub(crate) fn process_path(
         }
     }
 
-    run_test(path, &source, &meta, kernel, harness_sources, harness_cache, no_skip, no_regalloc)
+    run_test(path, &source, &meta, engine, harness_sources, harness_cache, no_skip, no_regalloc)
 }
 
-/// 构建带步数上限的 runner kernel。每个并行 worker 拥有自己的 kernel，
+/// 构建带步数上限的 runner 引擎。每个并行 worker 拥有自己的引擎，
 /// 因为 `KernelCore` + session 状态是 `!Send`（持有 `P<JsObject>` =
 /// `Arc<JsObject>`，而 `JsObject` 存有裸 `*mut u8` 属性指针）。任何 kernel
 /// 形态的对象都不能跨线程边界，因此共享不可能；每 worker 自建是唯一正确设计。
-pub(crate) fn build_runner_kernel() -> Arc<KernelCore> {
+pub(crate) fn build_runner_engine() -> Engine {
     // 约束每个测试的执行步数，使单个死循环 / 未支持特性循环失败（或跳过）
     // 而非拖垮整个运行。VM 超限时抛 "VM step limit exceeded" 错误，
     // runner 将其归类为 step-limit 结果（默认 skip，--no-skip 下 fail）。
@@ -283,7 +287,7 @@ pub(crate) fn build_runner_kernel() -> Arc<KernelCore> {
     // character-class 生成大表），512MiB 上限留 ~252MiB 余量；
     // 主要作用是把失控测试的驻留面封顶到上限本身。
     kernel_config.max_alloc_bytes = Some(512 * 1024 * 1024);
-    KernelCore::new(kernel_config)
+    Engine::new(kernel_config)
 }
 
 #[cfg(test)]
@@ -293,6 +297,6 @@ mod tests {
     /// 分配上限常量与错误串单测的字面值机器耦合：改 cap 本钉必红。
     #[test]
     fn runner_alloc_cap_matches_error_string_tests() {
-        assert_eq!(build_runner_kernel().config.max_alloc_bytes, Some(512 * 1024 * 1024));
+        assert_eq!(build_runner_engine().kernel().config.max_alloc_bytes, Some(512 * 1024 * 1024));
     }
 }

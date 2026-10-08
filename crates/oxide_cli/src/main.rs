@@ -3,7 +3,6 @@
 
 use std::fs;
 use std::process::ExitCode;
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use ansi_term::Colour::Red;
@@ -17,18 +16,16 @@ use oxide_cli::server::server::{run_server, run_server_rm, RmServerConfig, Serve
 use oxide_cli::server::sidecar;
 use oxide_cli::server::spawn;
 use oxide_cli::server::watchdog;
-use oxide_compiler::compiler::{compiled_module_hash, Compiler};
+use oxide_compiler::compiler::Compiler;
 use oxide_compiler::compiler_error;
-use oxide_compiler::DefaultCompilerService;
-use oxide_kernel::kernel::{KernelConfig, KernelCore};
+use oxide_engine::Engine;
+use oxide_kernel::kernel::KernelConfig;
 use oxide_kernel::shape_forge::ShapeForge;
 use oxide_kernel::string_forge::PermInterner;
 use oxide_kernel::{kernel_error, kernel_info};
 use oxide_log::{Level, SUBSYSTEM_COUNT};
-use oxide_parser::Allocator;
 use oxide_vm::vm::Vm;
 use oxide_vm::vm_error;
-use oxide_vm::vm_pool::VmPool;
 use oxide_vm::JsValue;
 
 mod bench;
@@ -231,15 +228,13 @@ fn main() -> ExitCode {
 
     match cli.command {
         Some(Commands::Eval { code, trace }) => {
-            let kernel = make_kernel(cli.verbose, cli.quiet);
-            let pool = make_pool(&kernel);
-            eval(&code, &kernel, &pool, trace, cli.profile, true)
+            let engine = make_engine(cli.verbose, cli.quiet);
+            eval(&code, &engine, trace, cli.profile, true)
         }
         Some(Commands::Run { file, repeat, trace }) => {
-            let kernel = make_kernel(cli.verbose, cli.quiet);
-            let pool = make_pool(&kernel);
+            let engine = make_engine(cli.verbose, cli.quiet);
             for n in 0..repeat {
-                let code = run(&file, &kernel, &pool, trace, cli.profile);
+                let code = run(&file, &engine, trace, cli.profile);
                 // 失败即终止并传播退出码，供脚本与 CI 区分成败。
                 if code != ExitCode::SUCCESS {
                     return code;
@@ -255,7 +250,10 @@ fn main() -> ExitCode {
             file,
             no_dce,
             no_regalloc,
-        }) => compile(expr, file, no_dce, no_regalloc),
+        }) => {
+            let engine = make_engine(false, false);
+            compile(&engine, expr, file, no_dce, no_regalloc)
+        }
         Some(Commands::Bench {
             mode,
             filter,
@@ -265,8 +263,7 @@ fn main() -> ExitCode {
             sample,
             sample_top,
         }) => {
-            let kernel = make_kernel(false, false);
-            let pool = make_pool(&kernel);
+            let engine = make_engine(false, false);
             // 采样周期边界检查：须为 0（关闭）或 2 的幂，否则指令边界的
             // `steps & (period - 1) == 0` 判定退化（周期不整除步数序列）。
             if sample != 0 && sample & (sample - 1) != 0 {
@@ -282,7 +279,7 @@ fn main() -> ExitCode {
                 sample_period: sample,
                 sample_top,
             };
-            bench::run_benchmarks(config, kernel, pool)
+            bench::run_benchmarks(config, &engine)
         }
         Some(Commands::Test { .. }) => not_implemented("test"),
         Some(Commands::Server { command }) => server_command(command),
@@ -608,7 +605,8 @@ fn start_result(result: Result<(), oxide_cli::server::server::ServerError>) -> E
     }
 }
 
-fn make_kernel(verbose: bool, quiet: bool) -> Arc<KernelCore> {
+/// 建引擎：`KernelConfig::standard()` 按 -v / -q 填 `log_levels` 后 `Engine::new`。
+fn make_engine(verbose: bool, quiet: bool) -> Engine {
     let mut config = KernelConfig::standard();
     if verbose {
         config.log_levels = [Level::Info; SUBSYSTEM_COUNT];
@@ -617,36 +615,11 @@ fn make_kernel(verbose: bool, quiet: bool) -> Arc<KernelCore> {
     } else {
         config.log_levels = [Level::Error; SUBSYSTEM_COUNT];
     }
-    KernelCore::new(config)
+    Engine::new(config)
 }
 
-fn make_pool(kernel: &Arc<KernelCore>) -> Arc<VmPool> {
-    VmPool::new(
-        Arc::clone(kernel),
-        Arc::new(DefaultCompilerService),
-        kernel.config.min_pool_size,
-        kernel.config.max_pool_size,
-    )
-}
-
-fn eval(
-    code: &str, kernel: &Arc<KernelCore>, pool: &Arc<VmPool>, trace: bool, profile: bool, print_result: bool,
-) -> ExitCode {
-    let allocator = Allocator::default();
-    let program = match oxide_parser::parse(&allocator, code) {
-        Ok(p) => p,
-        Err(errors) => {
-            for err in &errors {
-                compiler_error!("parse error: {}", err);
-                eprintln!("{}", Red.paint(err.to_string()));
-            }
-            return ExitCode::FAILURE;
-        }
-    };
-
-    let compiler = Compiler::new();
-    let hash = compiled_module_hash(&program);
-    let module = match kernel.code_forge().get_or_insert_with(hash, || compiler.compile(&program)) {
+fn eval(code: &str, engine: &Engine, trace: bool, profile: bool, print_result: bool) -> ExitCode {
+    let module = match engine.compile(code) {
         Ok(m) => m,
         Err(err) => {
             compiler_error!("compile error: {}", err);
@@ -655,7 +628,7 @@ fn eval(
         }
     };
 
-    let mut guard = pool.spawn();
+    let mut guard = engine.spawn();
     guard.vm_mut().set_instruction_trace(trace);
     let exec_start = Instant::now();
     match guard.vm_mut().run(&module) {
@@ -669,6 +642,7 @@ fn eval(
             }
             // eval 臂按 REPL 语义打印完成值；run 臂脚本只输出自身产生内容。
             if print_result {
+                let kernel = engine.kernel();
                 format_result(guard.vm(), kernel.perm_interner().as_ref(), kernel.shape_forge().as_ref(), result);
             }
             ExitCode::SUCCESS
@@ -685,9 +659,9 @@ fn format_result(vm: &oxide_vm::vm::Vm, string_forge: &PermInterner, shape_forge
     println!("{}", format_js_value(vm, string_forge, shape_forge, val));
 }
 
-fn run(file: &str, kernel: &Arc<KernelCore>, pool: &Arc<VmPool>, trace: bool, profile: bool) -> ExitCode {
+fn run(file: &str, engine: &Engine, trace: bool, profile: bool) -> ExitCode {
     match fs::read_to_string(file) {
-        Ok(source) => eval(&source, kernel, pool, trace, profile, false),
+        Ok(source) => eval(&source, engine, trace, profile, false),
         Err(err) => {
             kernel_error!("cannot read {}: {}", file, err);
             eprintln!("{}", Red.paint(format!("Cannot read {file}: {err}")));
@@ -696,7 +670,7 @@ fn run(file: &str, kernel: &Arc<KernelCore>, pool: &Arc<VmPool>, trace: bool, pr
     }
 }
 
-fn compile(expr: Option<String>, file: Option<String>, no_dce: bool, no_regalloc: bool) -> ExitCode {
+fn compile(engine: &Engine, expr: Option<String>, file: Option<String>, no_dce: bool, no_regalloc: bool) -> ExitCode {
     let source = if let Some(code) = expr {
         code
     } else if let Some(path) = file {
@@ -714,26 +688,9 @@ fn compile(expr: Option<String>, file: Option<String>, no_dce: bool, no_regalloc
         return ExitCode::FAILURE;
     };
 
-    let allocator = Allocator::default();
-    let program = match oxide_parser::parse(&allocator, &source) {
-        Ok(p) => p,
-        Err(errors) => {
-            for err in &errors {
-                compiler_error!("parse error: {}", err);
-                eprintln!("{}", Red.paint(err.to_string()));
-            }
-            return ExitCode::FAILURE;
-        }
-    };
-
-    let mut compiler = Compiler::new();
-    if no_dce {
-        compiler = compiler.with_dce(false);
-    }
-    if no_regalloc {
-        compiler = compiler.with_regalloc(false);
-    }
-    match compiler.compile(&program) {
+    // 旗标面经自定义编译器透传（无缺省臂，漏传即旗标失效）。
+    let compiler = Compiler::new().with_dce(!no_dce).with_regalloc(!no_regalloc);
+    match engine.compile_with(&source, &compiler) {
         Ok(module) => {
             print!("{module}");
             ExitCode::SUCCESS
@@ -771,10 +728,9 @@ fn repl() -> ExitCode {
         }
     };
 
-    let kernel = make_kernel(false, false);
-    let mut vm = Vm::with_kernel_core(Arc::clone(&kernel));
-    // REPL 源经 eval 路径动态编译（含 `new Function` / eval 内置），注入真实编译服务。
-    vm.set_compiler_service(Arc::new(DefaultCompilerService));
+    let engine = make_engine(false, false);
+    // 常驻 Vm 不经池；动态编译服务由 `new_vm` 同口径注入。
+    let mut vm = engine.new_vm();
     let mut input_buf = String::new();
 
     loop {
@@ -801,7 +757,7 @@ fn repl() -> ExitCode {
                     continue;
                 }
 
-                let result = eval_repl(&input_buf, &kernel, &mut vm);
+                let result = eval_repl(&input_buf, &engine, &mut vm);
                 input_buf.clear();
 
                 if result == ExitCode::FAILURE {
@@ -825,22 +781,10 @@ fn repl() -> ExitCode {
     }
 }
 
-fn eval_repl(code: &str, kernel: &Arc<KernelCore>, vm: &mut Vm) -> ExitCode {
-    let allocator = Allocator::default();
-    let program = match oxide_parser::parse(&allocator, code) {
-        Ok(p) => p,
-        Err(errors) => {
-            for err in &errors {
-                compiler_error!("parse error: {}", err);
-                eprintln!("{}", Red.paint(err.to_string()));
-            }
-            return ExitCode::FAILURE;
-        }
-    };
-
+fn eval_repl(code: &str, engine: &Engine, vm: &mut Vm) -> ExitCode {
+    // REPL 持久模式：顶层 let/const 也写全局对象属性，经缓存编译。
     let compiler = Compiler::new().with_repl_persist(true);
-    let hash = compiled_module_hash(&program);
-    let module = match kernel.code_forge().get_or_insert_with(hash, || compiler.compile(&program)) {
+    let module = match engine.compile_with(code, &compiler) {
         Ok(m) => m,
         Err(err) => {
             compiler_error!("compile error: {}", err);
@@ -851,6 +795,7 @@ fn eval_repl(code: &str, kernel: &Arc<KernelCore>, vm: &mut Vm) -> ExitCode {
 
     match vm.run(&module) {
         Ok(result) => {
+            let kernel = engine.kernel();
             format_result(vm, kernel.perm_interner().as_ref(), kernel.shape_forge().as_ref(), result);
             ExitCode::SUCCESS
         }

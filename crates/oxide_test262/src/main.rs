@@ -25,7 +25,7 @@ use heartbeat::write_heartbeat;
 use judge::{categorize_fail, TestOutcome};
 use oxide_log::{Level, LogConfig, Output, SUBSYSTEM_COUNT};
 use report::{append_fail_log, first_line, format_fail_categories, format_fail_groupings, format_fail_list};
-use runner::{build_runner_kernel, process_path, CURRENT_TEST_PATH};
+use runner::{build_runner_engine, process_path, CURRENT_TEST_PATH};
 use stats::RunStats;
 use supervise::run_supervised;
 
@@ -145,7 +145,7 @@ fn run_tests() -> bool {
 
     // 确定 worker 数。`KernelCore` + session 状态是 `!Send`（它持有
     // 经 Arc 共享的一个 kernel；相反每个 worker 构建并拥有自己的
-    // kernel + harness 源注册表 + 前缀缓存。只有 `PathBuf` 和
+    // 引擎 + harness 源注册表 + 前缀缓存。只有 `PathBuf` 和
     // `TestResult`（均 `Send`）跨线程。worker 从共享原子游标取测试下标，
     // 实现动态负载均衡。
     let default_workers = if config.no_skip {
@@ -228,7 +228,7 @@ fn run_tests() -> bool {
                 std::thread::Builder::new()
                     .stack_size(16 * 1024 * 1024)
                     .spawn_scoped(scope, move || {
-                        let mut kernel = build_runner_kernel();
+                        let mut engine = build_runner_engine();
                         let harness_sources = HARNESS.get_or_init(HarnessSources::new);
                         let mut stats = RunStats::default();
                         let mut tests_since_kernel_reset = 0usize;
@@ -254,7 +254,7 @@ fn run_tests() -> bool {
                                 filter,
                                 no_skip,
                                 no_regalloc,
-                                &kernel,
+                                &engine,
                                 harness_sources,
                                 &harness_cache,
                             );
@@ -302,11 +302,11 @@ fn run_tests() -> bool {
                                 // 重建即全新 forge（结构性必清）：旧核连同其表整体丢弃，
                                 // 先 sweep 是对 doomed 核白做一次 O(50k) 清理。
                                 // 重建边界契约：旧核上无存活 VM（VM 每测试局部，此处作用域外）。
-                                debug_assert!(kernel.active_vms() == 0, "kernel rebuild requires no live VMs");
-                                kernel = build_runner_kernel();
+                                debug_assert!(engine.kernel().active_vms() == 0, "kernel rebuild requires no live VMs");
+                                engine = build_runner_engine();
                                 tests_since_kernel_reset = 0;
                             } else if done % 500 == 0 {
-                                kernel.sweep_runner_forges(); // 批内 50k 兜底（数据依赖）
+                                engine.kernel().sweep_runner_forges(); // 批内 50k 兜底（数据依赖）
                             }
                             if done % 500 == 0 || done == total {
                                 test262_info!("progress: {}/{} ({}%)", done, total, done * 100 / total);

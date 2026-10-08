@@ -17,12 +17,13 @@ members = [
     "crates/oxide_kernel",
     "crates/oxide_runtime_api",
     "crates/oxide_builtins",
+    "crates/oxide_engine",
     "crates/oxide_cli",
     "crates/oxide_test262",
 ]
 
 [workspace.package]
-version = "0.8.69"
+version = "0.8.70"
 edition = "2021"
 license = "MIT"
 rust-version = "1.80"
