@@ -4,7 +4,7 @@ use oxide_kernel::shape_forge::EMPTY_SHAPE_ID;
 use oxide_types::object::{JsObject, MAX_DENSE_PROPS};
 use oxide_types::value::JsValue;
 
-use oxide_runtime_api::{NativeResult, VmHost};
+use oxide_runtime_api::{NativeResult, ProtoKind, VmHost};
 
 use super::from::from_engine_error;
 
@@ -262,7 +262,7 @@ pub(crate) fn require_callback<H: VmHost>(vm: &mut H, callback_val: JsValue) -> 
 }
 
 pub(crate) fn create_new_array<H: VmHost>(vm: &mut H, n: usize) -> *mut JsObject {
-    let proto = vm.session().builtin_world().array_proto.as_ptr() as *mut JsObject;
+    let proto = vm.builtin_proto(ProtoKind::ArrayProto);
     vm.alloc_object(JsObject::new_array(
         EMPTY_SHAPE_ID,
         JsValue::from_js_object(proto),

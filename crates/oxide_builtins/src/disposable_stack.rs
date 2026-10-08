@@ -16,7 +16,7 @@ use oxide_types::object::JsObject;
 use oxide_types::private_key::encode_symbol_key;
 use oxide_types::value::JsValue;
 
-use oxide_runtime_api::{NativeResult, VmHost};
+use oxide_runtime_api::{NativeResult, ProtoKind, VmHost};
 
 /// 分配空状态盒并存入新资源栈对象（proto 与 type_tag 按栈类型传入）。
 fn alloc_disposable_stack<H: VmHost>(vm: &mut H, proto_val: JsValue, type_tag: u8) -> *mut JsObject {
@@ -122,7 +122,7 @@ fn stack_constructor_impl<H: VmHost>(vm: &mut H, args: &[u8], proto_val: JsValue
         let nt_ptr = new_target.as_js_object_ptr();
         // SAFETY: is_object 保证指针非空且对象本 session 存活。
         let nt_obj = unsafe { &*nt_ptr };
-        let proto_si = vm.kernel_core().perm_interner().intern("prototype").0;
+        let proto_si = vm.perm_intern("prototype");
         let proto = match vm.ordinary_get(nt_obj, proto_si, new_target) {
             Ok(v) => v,
             Err(err) => return NativeResult::Err(crate::iterator::engine_error(vm, &err)),
@@ -141,15 +141,13 @@ fn stack_constructor_impl<H: VmHost>(vm: &mut H, args: &[u8], proto_val: JsValue
 
 /// `DisposableStack` 构造函数：创建带空状态盒的 DisposableStack 对象。
 pub fn disposable_stack_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
-    let proto_val =
-        JsValue::from_js_object(vm.session().builtin_world().disposable_stack_proto.as_ptr() as *mut JsObject);
+    let proto_val = JsValue::from_js_object(vm.builtin_proto(ProtoKind::DisposableStackProto));
     stack_constructor_impl(vm, args, proto_val, JsObject::OBJ_TYPE_DISPOSABLE_STACK)
 }
 
 /// `AsyncDisposableStack` 构造函数：创建带空状态盒的 AsyncDisposableStack 对象。
 pub fn async_disposable_stack_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
-    let proto_val =
-        JsValue::from_js_object(vm.session().builtin_world().async_disposable_stack_proto.as_ptr() as *mut JsObject);
+    let proto_val = JsValue::from_js_object(vm.builtin_proto(ProtoKind::AsyncDisposableStackProto));
     stack_constructor_impl(vm, args, proto_val, JsObject::OBJ_TYPE_ASYNC_DISPOSABLE_STACK)
 }
 
@@ -464,8 +462,7 @@ fn stack_move_impl<H: VmHost>(vm: &mut H, this_val: JsValue, proto_val: JsValue,
 /// `DisposableStack.prototype.move()`：把全部 entries 转移到新 DisposableStack。
 pub fn disposable_stack_move<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
-    let proto_val =
-        JsValue::from_js_object(vm.session().builtin_world().disposable_stack_proto.as_ptr() as *mut JsObject);
+    let proto_val = JsValue::from_js_object(vm.builtin_proto(ProtoKind::DisposableStackProto));
     stack_move_impl(vm, this_val, proto_val, JsObject::OBJ_TYPE_DISPOSABLE_STACK)
 }
 
@@ -473,8 +470,7 @@ pub fn disposable_stack_move<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult
 /// AsyncDisposableStack（proto 固定为 AsyncDisposableStack.prototype，非子类）。
 pub fn async_disposable_stack_move<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
-    let proto_val =
-        JsValue::from_js_object(vm.session().builtin_world().async_disposable_stack_proto.as_ptr() as *mut JsObject);
+    let proto_val = JsValue::from_js_object(vm.builtin_proto(ProtoKind::AsyncDisposableStackProto));
     stack_move_impl(vm, this_val, proto_val, JsObject::OBJ_TYPE_ASYNC_DISPOSABLE_STACK)
 }
 

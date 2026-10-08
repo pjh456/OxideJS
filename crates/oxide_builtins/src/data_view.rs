@@ -7,7 +7,7 @@ use num_traits::ToPrimitive;
 
 use crate::array_buffer::{buffer_payload, ArrayBufferPayload};
 
-use oxide_runtime_api::{NativeResult, VmHost};
+use oxide_runtime_api::{NativeResult, ProtoKind, VmHost};
 
 /// DataView 视图状态盒。`byte_length` 语义随 `length_is_auto` 分流：
 /// 定长视图存静态长；auto 视图（构造时 byteLength 缺省且构造期缓冲可 resize）
@@ -205,7 +205,7 @@ fn has_data_view_proto<H: VmHost>(vm: &mut H, this_val: JsValue) -> bool {
     if !this_val.is_object() {
         return false;
     }
-    let target = vm.session().builtin_world().data_view_proto.as_ptr() as *mut JsObject;
+    let target = vm.builtin_proto(ProtoKind::DataViewProto);
     let mut cursor = this_val;
     for _ in 0..1024 {
         if !cursor.is_object() {
@@ -290,11 +290,11 @@ pub fn data_view_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult
     // GetPrototypeFromConstructor：普通读触发原型链上的访问器 getter，
     // 读期用户异常经原值槽恢复后重抛。NewTarget 非对象（直调/缺省面）时
     // 回落默认原型，不抛错。
-    let default_proto = JsValue::from_js_object(vm.session().builtin_world().data_view_proto.as_ptr() as *mut JsObject);
+    let default_proto = JsValue::from_js_object(vm.builtin_proto(ProtoKind::DataViewProto));
     let proto = if new_target.is_object() {
         let nt_ptr = new_target.as_js_object_ptr();
         let nt_obj = unsafe { &*nt_ptr };
-        let proto_si = vm.kernel_core().perm_interner().intern("prototype").0;
+        let proto_si = vm.perm_intern("prototype");
         let proto_val = match vm.ordinary_get(nt_obj, proto_si, new_target) {
             Ok(v) => v,
             Err(e) => return NativeResult::Err(crate::iterator::engine_error(vm, &e)),

@@ -4,7 +4,7 @@ use oxide_kernel::shape_forge::EMPTY_SHAPE_ID;
 use oxide_types::object::JsObject;
 use oxide_types::value::JsValue;
 
-use oxide_runtime_api::{NativeResult, VmHost};
+use oxide_runtime_api::{NativeResult, ProtoKind, VmHost};
 
 fn get_timestamp(obj: &JsObject) -> f64 {
     let v = obj.get_prop_at(0);
@@ -345,7 +345,7 @@ pub fn date_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         if ptr.is_null() {
             false
         } else {
-            let date_proto = vm.session().builtin_world().date_proto.as_ptr() as *mut JsObject;
+            let date_proto = vm.builtin_proto(ProtoKind::DateProto);
             if date_proto.is_null() {
                 false
             } else {
@@ -435,10 +435,7 @@ pub fn date_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         }
     };
 
-    let mut obj = JsObject::new_empty(
-        EMPTY_SHAPE_ID,
-        JsValue::from_js_object(vm.session().builtin_world().date_proto.as_ptr() as *mut JsObject),
-    );
+    let mut obj = JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(vm.builtin_proto(ProtoKind::DateProto)));
     obj.type_tag = JsObject::OBJ_TYPE_DATE;
     obj.set_prop_at(0, JsValue::float(timestamp));
 

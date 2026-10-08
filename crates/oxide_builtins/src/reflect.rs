@@ -6,7 +6,7 @@ use oxide_types::value::JsValue;
 use crate::array::{arraylike_get, from_engine_error, is_constructor_value};
 use crate::object::{delete_own_property, key_si_to_js_value, own_symbol_key_values, walk_own_keys};
 
-use oxide_runtime_api::{to_length, NativeResult, VmHost};
+use oxide_runtime_api::{to_length, NativeResult, ProtoKind, VmHost};
 
 /// 原型链深度上限（与引擎原型链深度上限同值）。
 const MAX_PROTO_CHAIN_DEPTH: usize = 1024;
@@ -32,7 +32,7 @@ pub fn reflect_apply<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let arg_list_obj = unsafe { &*arg_list_ptr };
 
     // CreateListFromArrayLike：规范读 length（访问器异常原值传播），ToLength 纯函数不抛。
-    let length_si = vm.kernel_core().perm_interner().intern("length").0;
+    let length_si = vm.perm_intern("length");
     let len_val = match vm.ordinary_get(arg_list_obj, length_si, arg_list) {
         Ok(v) => v,
         Err(msg) => return NativeResult::Err(from_engine_error(vm, &msg)),
@@ -82,7 +82,7 @@ pub fn reflect_construct<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let arg_list_obj = unsafe { &*arg_list_ptr };
 
     // CreateListFromArrayLike：规范读 length（访问器异常原值传播），ToLength 纯函数不抛。
-    let length_si = vm.kernel_core().perm_interner().intern("length").0;
+    let length_si = vm.perm_intern("length");
     let len_val = match vm.ordinary_get(arg_list_obj, length_si, arg_list) {
         Ok(v) => v,
         Err(msg) => return NativeResult::Err(from_engine_error(vm, &msg)),
@@ -248,14 +248,14 @@ pub fn reflect_own_keys<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     // （创建序第一枚字符串键），存储下标哨兵 u32::MAX = 无槽位（消费端只读
     // si，不读存储下标）。
     if target.is_array() {
-        let length_si = vm.kernel_core().perm_interner().intern("length").0;
+        let length_si = vm.perm_intern("length");
         let insert_at = keys.iter().position(|(si, _)| !is_int_key(*si)).unwrap_or(keys.len());
         keys.insert(insert_at, (length_si, u32::MAX));
     }
     let symbols = own_symbol_key_values(vm, target);
     let n = keys.len() + symbols.len();
 
-    let array_proto = vm.session().builtin_world().array_proto.as_ptr() as *mut JsObject;
+    let array_proto = vm.builtin_proto(ProtoKind::ArrayProto);
     let arr = vm.alloc_object(JsObject::new_array(EMPTY_SHAPE_ID, JsValue::from_js_object(array_proto), n));
     for (i, (si, _)) in keys.iter().enumerate() {
         let key_val = key_si_to_js_value(vm, *si);

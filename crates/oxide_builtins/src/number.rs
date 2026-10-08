@@ -1,6 +1,6 @@
 use oxide_types::value::JsValue;
 
-use oxide_runtime_api::{NativeResult, VmHost};
+use oxide_runtime_api::{NativeResult, ProtoKind, VmHost};
 
 /// 整值且 i32 域内的有限数转 int 表示；-0 排除
 /// （int 表示丢符号，规范要求 `Number(-0)` 得 -0）。
@@ -46,7 +46,7 @@ pub fn number_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     } else {
         0.0
     };
-    let number_proto = vm.session().builtin_world().number_proto.as_ptr() as *mut oxide_types::object::JsObject;
+    let number_proto = vm.builtin_proto(ProtoKind::NumberProto);
     let is_ctor = if let Some(this_reg) = args.first().copied() {
         let this_val = vm.reg(this_reg);
         if this_val.is_object() {
@@ -345,7 +345,7 @@ fn this_number_value<H: VmHost>(vm: &mut H, this_val: JsValue) -> Result<f64, Js
         if !ptr.is_null() {
             // Number.prototype 本身即 [[NumberData]] = +0 的 Number 对象；
             // 与 number_value_of 的 proto 特判同形。
-            let number_proto = vm.session().builtin_world().number_proto.as_ptr() as *mut oxide_types::object::JsObject;
+            let number_proto = vm.builtin_proto(ProtoKind::NumberProto);
             if std::ptr::eq(ptr, number_proto) {
                 return Ok(0.0);
             }
@@ -942,7 +942,7 @@ pub fn number_value_of<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         let ptr = this_val.as_js_object_ptr();
         if !ptr.is_null() {
             // Number.prototype 本身是 Number 对象，其 [[NumberData]] 为 +0。
-            let number_proto = vm.session().builtin_world().number_proto.as_ptr() as *mut oxide_types::object::JsObject;
+            let number_proto = vm.builtin_proto(ProtoKind::NumberProto);
             if ptr == number_proto {
                 return NativeResult::Ok(JsValue::int(0));
             }

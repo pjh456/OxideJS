@@ -237,11 +237,11 @@ pub fn weak_map_insert(obj: &mut JsObject, key: JsValue, value: JsValue) {
 /// `prototype` 槽现值读取（弱族不占 BuiltinWorld 槽，重绑原位更新全局槽，
 /// 经全局路径读恒为当前值）。
 fn weak_map_proto_ptr<H: VmHost>(vm: &mut H) -> Result<*const JsObject, JsValue> {
-    let global_ptr = vm.session().global_object().as_ptr();
+    let global_ptr = vm.global_object().as_ptr();
     // SAFETY: 全局对象为 session 级根，本调用内有效。
     let global = unsafe { &*global_ptr };
     let global_val = JsValue::from_js_object(global_ptr as *mut JsObject);
-    let si_weakmap = vm.kernel_core().perm_interner().intern("WeakMap").0;
+    let si_weakmap = vm.perm_intern("WeakMap");
     let ctor_val = vm
         .ordinary_get(global, si_weakmap, global_val)
         .map_err(|e| crate::iterator::engine_error(vm, &e))?;
@@ -249,7 +249,7 @@ fn weak_map_proto_ptr<H: VmHost>(vm: &mut H) -> Result<*const JsObject, JsValue>
     if ctor_ptr.is_null() {
         return Err(crate::error::create_type_error(vm, "WeakMap constructor unavailable"));
     }
-    let si_prototype = vm.kernel_core().perm_interner().intern("prototype").0;
+    let si_prototype = vm.perm_intern("prototype");
     let proto_val = vm
         .ordinary_get(unsafe { &*ctor_ptr }, si_prototype, ctor_val)
         .map_err(|e| crate::iterator::engine_error(vm, &e))?;
@@ -327,7 +327,7 @@ pub fn weak_map_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult 
         let iterable = vm.reg(args[1]);
         if !iterable.is_undefined() && !iterable.is_null() {
             let map_ref = unsafe { &*map_obj };
-            let set_si = vm.kernel_core().perm_interner().intern("set").0;
+            let set_si = vm.perm_intern("set");
             let adder = match vm.ordinary_get(map_ref, set_si, map_val) {
                 Ok(v) => v,
                 Err(err) => return NativeResult::Err(crate::iterator::engine_error(vm, &err)),

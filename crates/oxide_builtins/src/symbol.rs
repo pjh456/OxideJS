@@ -1,7 +1,6 @@
-use oxide_types::object::JsObject;
 use oxide_types::value::JsValue;
 
-use oxide_runtime_api::{NativeResult, VmHost};
+use oxide_runtime_api::{NativeResult, ProtoKind, VmHost};
 
 /// JS `Symbol()` 构造逻辑：以可选 description 创建一个新的唯一 Symbol。
 /// 当以 new 语义调用（this 原型链指向 Symbol.prototype）时抛 TypeError，与规范一致。
@@ -15,7 +14,7 @@ pub fn symbol_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
             if proto.is_object() {
                 let proto_ptr = proto.as_js_object_ptr();
                 if !proto_ptr.is_null() {
-                    let sp = vm.session().builtin_world().symbol_proto.as_ptr() as *mut JsObject;
+                    let sp = vm.builtin_proto(ProtoKind::SymbolProto);
                     if std::ptr::eq(proto_ptr, sp) {
                         return NativeResult::Err(crate::error::create_type_error(vm, "Symbol is not a constructor"));
                     }
@@ -64,8 +63,7 @@ fn this_symbol_value<H: VmHost>(vm: &mut H, this_val: JsValue) -> Result<JsValue
             let obj = unsafe { &*ptr };
             if obj.proto().is_object() {
                 let proto_ptr = obj.proto().as_js_object_ptr();
-                let symbol_proto =
-                    vm.session().builtin_world().symbol_proto.as_ptr() as *mut oxide_types::object::JsObject;
+                let symbol_proto = vm.builtin_proto(ProtoKind::SymbolProto);
                 if !proto_ptr.is_null() && std::ptr::eq(proto_ptr, symbol_proto) {
                     let v = obj.boxed_value();
                     if v.is_symbol() {
