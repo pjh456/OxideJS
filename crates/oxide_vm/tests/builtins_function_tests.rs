@@ -386,3 +386,67 @@ fn bound_function_length_name_pins() {
     let result = eval(&mut vm, "function target() {} target.bind().bind().name").unwrap();
     assert_eq!(vm.lookup_str(result).unwrap_or_default(), "bound bound target");
 }
+
+/// 执行源码并取顶层结果；Promise 结果 drain 到 settled 值（口径与 async_tests.rs 一致）。
+fn eval_drain(vm: &mut Vm, source: &str) -> Result<JsValue, String> {
+    vm.set_compiler_service(Arc::new(DefaultCompilerService));
+    let result = eval(vm, source)?;
+    if result.is_object() {
+        let obj = unsafe { &*result.as_js_object_ptr() };
+        if obj.is_promise_obj() {
+            match oxide_vm::promise::promise_settled_value(obj) {
+                Some((true, v)) => return Ok(v),
+                Some((false, v)) => return Err(format!("rejected: {v}")),
+                None => return Err("promise pending".to_string()),
+            }
+        }
+    }
+    Ok(result)
+}
+
+#[test]
+fn function_call_apply_bind_async_target_returns_promise() {
+    // call/apply/bind 作用于异步目标：结果是 Promise，drain 后的值与直接调用一致。
+    let mut vm = Vm::new();
+    let result = eval_drain(&mut vm, "async function f(x){ return x; } f.call(null, 1)").unwrap();
+    assert_eq!(result, JsValue::int(1));
+    let result = eval_drain(&mut vm, "async function f(x){ return x; } f.apply(null, [2])").unwrap();
+    assert_eq!(result, JsValue::int(2));
+    let result = eval_drain(&mut vm, "async function f(x){ return x; } var b = f.bind(null); b(3)").unwrap();
+    assert_eq!(result, JsValue::int(3));
+}
+
+#[test]
+fn function_call_async_target_rejection_keeps_value() {
+    // 异步目标抛错：Promise 以原值拒绝，.then 的拒绝臂收到原值。
+    let mut vm = Vm::new();
+    let result = eval_drain(
+        &mut vm,
+        "async function f(){ throw 42; } f.call(null).then(v => 'ok:'+v, e => 'err:'+e)",
+    )
+    .unwrap();
+    assert_eq!(vm.lookup_str(result).unwrap_or_default(), "err:42");
+}
+
+#[test]
+fn function_call_bind_generator_target_returns_iterator() {
+    // call/bind 作用于同步生成器目标：返回迭代器对象（next() 结果对象，非函数体返回值）。
+    let mut vm = Vm::new();
+    // call 结果是迭代器对象，不是函数体返回值 99。
+    let result = eval(&mut vm, "function* g(){ return 99; } typeof g.call(null)").unwrap();
+    assert_eq!(vm.lookup_str(result).unwrap_or_default(), "object");
+    // 迭代器首个 next() 返回 done: true（生成器未 yield 即 return）。
+    let result = eval(&mut vm, "function* g(){ return 99; } g.call(null).next().done").unwrap();
+    assert!(result.as_bool());
+    // bind 作用于生成器目标：包装器调用同样返回迭代器对象。
+    let result = eval(&mut vm, "function* g(){ return 99; } typeof g.bind(null)()").unwrap();
+    assert_eq!(vm.lookup_str(result).unwrap_or_default(), "object");
+}
+
+#[test]
+fn function_bind_async_generator_target_returns_iterator() {
+    // bind 作用于异步生成器目标：返回异步生成器迭代器对象。
+    let mut vm = Vm::new();
+    let result = eval(&mut vm, "async function* g(){ return 99; } typeof g.bind(null)()").unwrap();
+    assert_eq!(vm.lookup_str(result).unwrap_or_default(), "object");
+}

@@ -39,7 +39,8 @@ impl Vm {
     /// 2. `build_native_args` 打包实参下标表。
     /// 3. 经 `native_fn_ptr_to_fn` 取得函数项并执行；执行前后快照/恢复 `regs[254]`。
     /// 4. 按 `NativeResult` 三态回写：`Ok` 写 `regs[0]`；`Err` 以原始值走 `unwind`；
-    ///    `TailCall` 目标为 native 时同步调用，否则压字节码帧。
+    ///    `TailCall` 目标为 native 时同步调用，异步与生成器字节码目标走内联入口，
+    ///    其余压字节码帧。
     ///
     /// # 边界与前提
     /// - 调用方须保证 `obj` 已是 native 函数：`native_fn()` 为空时此处 unwrap 失败。
@@ -126,6 +127,18 @@ impl Vm {
                                 self.exception_value = Some(exc);
                                 self.pending_error_kind = Some(kind);
                                 self.unwind()?;
+                                return Ok(());
+                            }
+                        }
+                    } else {
+                        // 异步与生成器目标：走内联入口（内部创建异步 Promise 或生成器迭代器对象），
+                        // 结果写结果槽，不压同步帧。
+                        if obj.sub_module_index() > 0 {
+                            let sub = self.callee_module(obj);
+                            if matches!(sub, Some(m) if m.is_async || m.is_generator) {
+                                self.constructing_native = false;
+                                let result = self.call_bytecode_function_inline(callee, obj, this, &args)?;
+                                self.regs[0] = result;
                                 return Ok(());
                             }
                         }
