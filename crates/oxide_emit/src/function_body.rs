@@ -826,6 +826,22 @@ impl Emitter {
                 })
                 .map(|u| u.name.clone())
                 .collect();
+            // 捕获函数名不可写信息快照：与 const 快照同口径，供子函数写路径
+            // non_writable 守卫（sloppy 静默 no-op / strict 抛 TypeError）使用。
+            ctx.upvalue_non_writable_flags = ctx
+                .current_upvalue_captures
+                .iter()
+                .filter(|u| u.parent_uv_idx.is_none())
+                .filter(|u| {
+                    parent_ctx
+                        .scopes
+                        .symbols
+                        .lookup_any_binding(u.name.as_str())
+                        .map(|(b, _)| b.non_writable)
+                        .unwrap_or(false)
+                })
+                .map(|u| u.name.clone())
+                .collect();
             // 类字段 computed key 数组等合成捕获：直接追加 upvalue（cell_idx 由父分配）。
             for (name, cell_idx) in extra_upvalue_names {
                 if !ctx.own_bindings.contains(*name) && !ctx.current_upvalue_captures.iter().any(|u| u.name == *name) {

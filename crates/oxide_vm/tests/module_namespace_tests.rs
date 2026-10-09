@@ -391,8 +391,9 @@ fn cross_module_aliased_imports_read_live_value() {
 }
 
 /// 默认导出具名函数体的自引用重赋：函数名 `fn` 在函数作用域登记为不可写
-/// 绑定（15.2.10.1 步 m），遮蔽模块级同名绑定；体内容器 `fn = 2` 落在函数
-/// 作用域名绑定，模块级绑定不被改写，导入方读 default 仍得函数。
+/// 绑定（15.2.10.1 步 m），遮蔽模块级同名绑定；模块恒为严格模式，体内容器
+/// `fn = 2` 对不可写绑定抛 TypeError，模块级绑定不被改写，导入方读 default
+/// 仍得函数。
 #[test]
 fn cross_module_default_export_reads_live_value() {
     let cwd = std::env::current_dir().expect("cwd");
@@ -402,12 +403,16 @@ fn cross_module_default_export_reads_live_value() {
     std::fs::write(
         dir.join("main.mjs"),
         "import val from './dep.mjs';\n \
-         const ret = val();\n \
-         globalThis.__ns = [ret, typeof val].join('|');",
+         let threw = false;\n \
+         try { val(); } catch (e) { threw = e instanceof TypeError; }\n \
+         globalThis.__ns = [threw, typeof val].join('|');",
     )
     .expect("write main");
     let _cleanup = Cleanup(dir.clone());
 
     let result = run_namespace_module(&dir);
-    assert_eq!(result, "1|function", "函数名不可写绑定遮蔽模块级绑定，自引用重赋静默失败");
+    assert_eq!(
+        result, "true|function",
+        "严格模块内函数名不可写绑定自引用重赋抛 TypeError，模块级绑定不被改写"
+    );
 }

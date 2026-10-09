@@ -181,6 +181,14 @@ impl Emitter {
             let _ = self.emit_throw_error("TypeError", "Assignment to constant variable", ctx)?;
             return Ok(());
         }
+        // 函数名不可写绑定：put 永不成功——sloppy 静默跳过写指令（RHS 已求值，副作用保留），
+        // strict 抛 TypeError（与 const 路径同形，值无关）。with 回退写经本入口同形覆盖。
+        if !in_loop_update && ctx.lookup_non_writable_flag(name) {
+            if ctx.is_strict {
+                let _ = self.emit_throw_error("TypeError", "Assignment to constant variable", ctx)?;
+            }
+            return Ok(());
+        }
         // 循环 update 段：被捕获绑定走寄存器而非 cell——C 风格 for 的 let/const
         // 循环变量每迭代新分配一个 cell，update 写寄存器供其拷入，不污染本迭代
         // 闭包捕获的 cell（机制见 `compile_ctx.rs` 的 `register_update_names` 字段文档）。

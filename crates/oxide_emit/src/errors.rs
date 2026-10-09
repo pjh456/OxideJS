@@ -72,10 +72,16 @@ impl Emitter {
     /// const 写检查：已初始化的 const 绑定再赋值编译期抛 TypeError（与槽值无关）。
     /// 简单赋值在 RHS 求值之后、复合/更新在读旧值之前调用；解构赋值在写目标时调用。
     ///
+    /// # 边界与前提
+    /// - 函数名不可写绑定同形拦截：strict 抛 TypeError；sloppy 不抛（put 静默失败），
+    ///   由调用点跳过写指令（值照算）。
+    ///
     /// # 副作用
-    /// - const 命中时发射 THROW 指令序列，其后写指令不可达但保持寄存器良定义。
+    /// - const 或 strict 函数名不可写命中时发射 THROW 指令序列，其后写指令不可达但保持寄存器良定义。
     pub(crate) fn emit_const_write_guard(&self, name: &str, ctx: &mut CompileCtx) -> Result<(), String> {
-        if ctx.lookup_const_flag(name) {
+        // const 与 strict 函数名不可写同形抛 TypeError（值无关）；sloppy 函数名不可写不抛，
+        // 由调用点跳过写指令。
+        if ctx.lookup_const_flag(name) || (ctx.lookup_non_writable_flag(name) && ctx.is_strict) {
             let _ = self.emit_throw_error("TypeError", "Assignment to constant variable", ctx)?;
         }
         Ok(())

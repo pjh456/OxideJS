@@ -116,6 +116,9 @@ pub struct CompileCtx {
     /// 本函数从父函数捕获的 const 绑定名：子 ctx 不继承父函数作用域符号表，
     /// 捕获 const 信息随 upvalue 收集一并快照，供 const 写检查（编译期拦截）使用。
     pub(crate) upvalue_const_flags: HashSet<String>,
+    /// 本函数从父函数捕获的函数名不可写绑定名：子 ctx 不继承父函数作用域符号表，
+    /// 捕获不可写信息随 upvalue 收集一并快照，供写路径 non_writable 守卫（编译期拦截）使用。
+    pub(crate) upvalue_non_writable_flags: HashSet<String>,
     /// 未声明标识符读所分配的全局槽寄存器集合：标识符首次读未命中任何作用域时，
     /// `lookup_or_builtin` 按隐式全局登记并记录其寄存器，后续读取据此发射
     /// LOAD_GLOBAL（运行期查 global object 属性，缺失抛 ReferenceError）。
@@ -286,6 +289,7 @@ impl CompileCtx {
             pending_for_head_names: HashSet::new(),
             global_tier_names: HashSet::new(),
             upvalue_const_flags: HashSet::new(),
+            upvalue_non_writable_flags: HashSet::new(),
             implicit_global_reads: HashSet::new(),
             implicit_global_writes: HashSet::new(),
             function_length: 0,
@@ -566,6 +570,12 @@ impl CompileCtx {
     pub(crate) fn lookup_const_flag(&self, name: &str) -> bool {
         // upvalue 捕获的 const：子 ctx 符号表不含父函数作用域绑定，查快照标志。
         self.scopes.symbols.lookup_is_const(name) || self.upvalue_const_flags.contains(name)
+    }
+
+    /// 写路径 non_writable 守卫查询：名字是否为函数名不可写绑定（本作用域或 upvalue 捕获）。
+    pub(crate) fn lookup_non_writable_flag(&self, name: &str) -> bool {
+        // upvalue 捕获的函数名：子 ctx 符号表不含父函数作用域绑定，查快照标志。
+        self.scopes.symbols.lookup_non_writable(name) || self.upvalue_non_writable_flags.contains(name)
     }
 
     pub(crate) fn init_var(&mut self, name: &str) {

@@ -659,6 +659,41 @@ impl Emitter {
         self.emit_identifier_tdz_guard(name, ctx)?;
         if !ctx.register_update_names.iter().any(|n| n == name) {
             self.emit_const_write_guard(name, ctx)?;
+            // 函数名不可写绑定（sloppy）：put 永不成功，值照算（前缀返回新值、后缀返回
+            // 旧值），跳过槽写；strict 已在 emit_const_write_guard 抛 TypeError（不可达）。
+            if ctx.lookup_non_writable_flag(name) {
+                let uv_idx = ctx.current_upvalue_captures.iter().position(|u| u.name == name);
+                let old_reg = ctx.alloc_reg();
+                if let Some(uv) = uv_idx {
+                    ctx.inst(Inst::new(
+                        OpCode::LOAD_UPVALUE,
+                        Operand::Reg(old_reg),
+                        Operand::Imm(uv as u16),
+                        Operand::None,
+                    ));
+                } else if let Some((cell_idx, binding_reg)) = ctx.visible_cell(name) {
+                    ctx.inst(Inst::new(
+                        OpCode::CELL_GET,
+                        Operand::Reg(old_reg),
+                        Operand::Reg(binding_reg),
+                        Operand::Imm(cell_idx as u16),
+                    ));
+                } else {
+                    let var_reg = ctx.lookup_or_global(name);
+                    ctx.inst(Inst::new(OpCode::LOAD_VAR, Operand::Reg(old_reg), Operand::Reg(var_reg), Operand::None));
+                }
+                let one_idx = ctx.add_constant(Constant::Int(1));
+                let one_reg = ctx.alloc_reg();
+                ctx.inst(Inst::load_const(Operand::Reg(one_reg), one_idx));
+                let op = if update.operator == UpdateOperator::Increment {
+                    OpCode::ADD
+                } else {
+                    OpCode::SUB
+                };
+                let new_reg = ctx.alloc_reg();
+                ctx.inst(Inst::new(op, Operand::Reg(new_reg), Operand::Reg(old_reg), Operand::Reg(one_reg)));
+                return Ok(if update.prefix { new_reg } else { old_reg });
+            }
         }
         let uv_idx = ctx.current_upvalue_captures.iter().position(|u| u.name == name);
         // 循环 update 段：被捕获绑定走寄存器 INC/DEC——C 风格 for 的 let/const

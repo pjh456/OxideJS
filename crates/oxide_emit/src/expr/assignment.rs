@@ -24,6 +24,32 @@ impl Emitter {
         // 循环 update 段的 let/const 循环变量是 per-iteration 可变绑定，复合写同样合法，豁免。
         if !ctx.register_update_names.iter().any(|n| n == name) {
             self.emit_const_write_guard(name, ctx)?;
+            // 函数名不可写绑定：put 永不成功——sloppy 值照算（表达式值 = 运算结果），
+            // 跳过槽写；strict 已在 emit_const_write_guard 抛 TypeError（不可达）。
+            if ctx.lookup_non_writable_flag(name) {
+                let val_reg = ctx.alloc_reg();
+                let uv_idx = ctx.current_upvalue_captures.iter().position(|u| u.name == name);
+                if let Some(uv) = uv_idx {
+                    ctx.inst(Inst::new(
+                        OpCode::LOAD_UPVALUE,
+                        Operand::Reg(val_reg),
+                        Operand::Imm(uv as u16),
+                        Operand::None,
+                    ));
+                } else if let Some((cell_idx, binding_reg)) = ctx.visible_cell(name) {
+                    ctx.inst(Inst::new(
+                        OpCode::CELL_GET,
+                        Operand::Reg(val_reg),
+                        Operand::Reg(binding_reg),
+                        Operand::Imm(cell_idx as u16),
+                    ));
+                } else {
+                    let var_reg = ctx.lookup_or_global(name);
+                    ctx.inst(Inst::new(OpCode::LOAD_VAR, Operand::Reg(val_reg), Operand::Reg(var_reg), Operand::None));
+                }
+                ctx.inst(Inst::new(op, Operand::Reg(val_reg), Operand::Reg(rhs), Operand::None));
+                return Ok(val_reg);
+            }
         }
         // 循环 update 段：被捕获绑定走寄存器 RMW——C 风格 for 的 let/const
         // 循环变量每迭代新分配一个 cell，update 写寄存器供其拷入，不污染本迭代
@@ -433,6 +459,19 @@ impl Emitter {
                     let val_reg = self.emit_expression(&assign.right, ctx)?;
                     // 短路未通过才写：const 目标在此抛 TypeError（编译期拦截，值无关）。
                     self.emit_const_write_guard(name, ctx)?;
+                    // 函数名不可写绑定（sloppy）：put 永不成功，跳过写与命名空间写穿，
+                    // 表达式值 = RHS（短路已通过故取 val_reg）。strict 已在
+                    // emit_const_write_guard 抛 TypeError（不可达）。
+                    if ctx.lookup_non_writable_flag(name) {
+                        ctx.inst(Inst::new(
+                            OpCode::LOAD_VAR,
+                            Operand::Reg(result_reg),
+                            Operand::Reg(val_reg),
+                            Operand::None,
+                        ));
+                        ctx.labels.set_label_pos(end_label, ctx.insts.len());
+                        return Ok(result_reg);
+                    }
                     let const_flag = if ctx.lookup_const_flag(name) { 1 } else { 0 };
                     if let Some(uv) = uv_idx {
                         ctx.inst(Inst::new(
