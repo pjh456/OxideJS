@@ -114,13 +114,18 @@ impl Vm {
     /// （属性 configurable:true，区别于普通脚本顶层的 false）。
     ///
     /// # 步骤
-    /// 1. parse（脚本模式）→ compile（emit_program 置 is_global_scope=true，
+    /// 1. 严格性判定：调用方上下文严格（`current_strict()` 三级回退）时源串前置
+    ///    `"use strict";` 指令，使整串按严格编译（direct eval 字符串的严格性随
+    ///    外层脚本与直接调用函数传播）。
+    /// 2. parse（脚本模式）→ compile（emit_program 置 is_global_scope=true，
     ///    Compiler 置 is_eval_script=true）。
-    /// 2. 整棵模块树（根 flat_id=0 + 嵌套函数）追加进平表：`rehome_subtree(&module, base+1)`，
+    /// 3. 整棵模块树（根 flat_id=0 + 嵌套函数）追加进平表：`rehome_subtree(&module, base+1)`，
     ///    使根落 base、子函数 old→base+old，CREATE_CLOSURE imm16 同步重写。
-    /// 3. 扩容当前代际的常量缓存，建函数对象（sub_module_index = base）返回。
+    /// 4. 扩容当前代际的常量缓存，建函数对象（sub_module_index = base）返回。
     ///
     /// # 边界与前提
+    /// - 严格上下文下整串按严格编译：`this`/`with`/`delete`/赋值语义随严格模式翻转，
+    ///   受限名 catch 参数（eval/arguments）报 SyntaxError。
     /// - 顶层 return 不报 SyntaxError（emit 无此检查，与 CLI 脚本路径一致）——已知偏差。
     /// - 动态模块在函数对象存活期间跨 run 有效（同 create_dynamic_function）。
     /// - 返回函数对象仅供内部同步调用，不设 name/length（用户不可见）。
@@ -130,7 +135,17 @@ impl Vm {
     pub fn create_dynamic_script(&mut self, code: &str) -> Result<JsValue, String> {
         // eval 脚本：顶层 var/function 声明落全局属性 configurable:true。
         // 动态路径源契约同 `create_dynamic_function`（源码域转义形态传源）。
-        let module = self.compiler.compile_eval_script(code)?;
+
+        // direct eval 字符串的严格性随外层脚本与直接调用函数传播（与共识引擎口径一致）：
+        // oxc 的 SourceType 无 strict 入口，调用方严格性只能由引擎前置严格指令承载，
+        // 使 oxc 既有 strict 绑定检查（catch 参数受限名 eval/arguments 等）报 SyntaxError。
+        let source = if self.current_strict() {
+            format!("\"use strict\";\n{code}")
+        } else {
+            code.to_string()
+        };
+
+        let module = self.compiler.compile_eval_script(&source)?;
         // 根模块 flat_id=0 传 base+1，重编号后落 base（避开 sub_module_index()==0
         // 守卫）。make_mut 彼时平表 Arc 强引用唯一持有者是本表，原地扩展不分叉。
         let table = self.current_table_mut();

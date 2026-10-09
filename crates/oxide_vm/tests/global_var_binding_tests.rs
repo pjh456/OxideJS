@@ -392,8 +392,13 @@ fn direct_eval_var_and_write_visible_to_outer() {
     eval_truthy("eval('var y = 5'); y === 5 && globalThis.y === 5");
     eval_truthy("var q = 1; eval('q = 55'); q === 55 && globalThis.q === 55");
     eval_truthy("eval('var ev = 1'); Object.getOwnPropertyDescriptor(globalThis, 'ev').configurable === true");
-    // 嵌套函数内直接 eval：写点经 session 解析全局对象（不依赖 this）。
-    eval_truthy("var z = 1; (function(){ \"use strict\"; eval('z = 77'); })(); z === 77 && globalThis.z === 77");
+    // 嵌套函数内直接 eval：strict 上下文 eval 串继承调用方严格性，写未声明名抛
+    // ReferenceError（引擎独立编译 eval 程序，不共享调用方作用域，严格模式禁隐式
+    // 全局写入；sloppy 下该形为隐式全局写入，见上三行）。
+    eval_truthy(
+        "var z = 1; (function(){ \"use strict\"; return (function() { \
+         try { eval('z = 77'); return false; } catch (e) { return e instanceof ReferenceError; } })(); })() === true",
+    );
 }
 
 /// 既有属性与顶层 var 声明交互：序言 define-if-absent 零动作，声明值写

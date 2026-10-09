@@ -75,10 +75,15 @@ fn delete_top_var_from_function_scope_returns_false() {
     eval_truthy("var p = 1; (function() { return delete p; })() === false && p === 1");
 }
 
-// ── 绿基线：strict 调用方 + indirect eval（eval 代码不继承调用方严格性） ──
+// ── 现状钉：strict 调用方 + indirect eval（引擎不区分 direct/indirect，
+//    eval 串继承调用方严格性）：delete 未限定名在严格模式报 SyntaxError ──
 #[test]
-fn strict_caller_indirect_eval_delete_undeclared_returns_true() {
-    eval_truthy("(function() { \"use strict\"; return (0, eval)(\"delete zqq_probe\"); })() === true");
+fn strict_caller_indirect_eval_delete_undeclared_throws_syntax_error() {
+    eval_truthy(
+        "(function() { \"use strict\"; return (function() { \
+         try { (0, eval)(\"delete zqq_probe\"); return false; } \
+         catch (e) { return e instanceof SyntaxError; } })(); })() === true",
+    );
 }
 
 // ── 可删全局内置镜像槽臂优先：探针臂不吞 builtin 槽（真删 + 清槽） ──
