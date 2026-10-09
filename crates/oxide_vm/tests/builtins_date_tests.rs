@@ -540,6 +540,53 @@ fn date_set_year_four_digit_kept() {
     assert_eq!(r.as_double() as i64, 2020);
 }
 
+// setYear 语义钉：this 值无效取 +0 基准（1970-01-01 全零）不早退、
+// 结果经 TimeClip 包络、年份参数走完整 ToNumber（valueOf 通道、
+// Symbol 抛 TypeError）。
+#[test]
+fn date_set_year_invalid_this_uses_plus_zero_base() {
+    let mut vm = Vm::new();
+    let r = eval(
+        &mut vm,
+        "var d = new Date(NaN); d.setYear(71); d.getTime() == new Date(1971, 0).valueOf() ? 1 : 0",
+    )
+    .unwrap();
+    assert_eq!(r.as_int(), 1);
+}
+
+#[test]
+fn date_set_year_time_clip_returns_nan() {
+    let mut vm = Vm::new();
+    let r = eval(
+        &mut vm,
+        "var d = new Date(1970, 8, 14); var ts = d.setYear(275760); Number.isNaN(ts) && Number.isNaN(d.valueOf()) ? 1 : 0",
+    )
+    .unwrap();
+    assert_eq!(r.as_int(), 1);
+}
+
+#[test]
+fn date_set_year_valueof_channel() {
+    let mut vm = Vm::new();
+    let r = eval(
+        &mut vm,
+        "var d = new Date(0); d.setYear({valueOf: function() { return 20; }}); d.getFullYear()",
+    )
+    .unwrap();
+    assert_eq!(r.as_double() as i64, 1920);
+}
+
+#[test]
+fn date_set_year_symbol_throws_type_error() {
+    let mut vm = Vm::new();
+    let r = eval(
+        &mut vm,
+        "var d = new Date(0); try { d.setYear(Symbol()); 'no' } catch (e) { e instanceof TypeError ? 'yes' : 'no' }",
+    )
+    .unwrap();
+    assert_eq!(str_val(&vm, r), "yes");
+}
+
 // UTC setter 无参数调用此前会索引缺失的参数寄存器（panic / 进程中止）。
 // 缺失的主参数现在产出 NaN 并把日期置为 NaN。
 #[test]

@@ -51,14 +51,15 @@ pub fn global_is_finite<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     NativeResult::Ok(JsValue::bool(n.is_finite()))
 }
 
-/// `escape`/`unescape` 的字符串参数：按规范 `? ToString` 完整转换。
+/// `escape`/`unescape` 的字符串参数：按规范 `? ToString` 完整转换，
+/// 取 UTF-16 单元序列（不 lossy，孤立 surrogate 保真）。
 ///
 /// 对象经 ToPrimitive(string hint) 强制转换，Symbol 抛 TypeError，对象方法
 /// 抛出的原生异常原样传播；缺省参数按 "undefined" 处理。
-fn string_arg_full<H: VmHost>(vm: &mut H, args: &[u8]) -> Result<String, JsValue> {
+fn units_arg_full<H: VmHost>(vm: &mut H, args: &[u8]) -> Result<Vec<u16>, JsValue> {
     if args.len() > 1 {
-        match oxide_runtime_api::to_string_full(vm.reg(args[1]), vm) {
-            Ok(s) => Ok(s),
+        match oxide_runtime_api::to_units_full(vm.reg(args[1]), vm) {
+            Ok(u) => Ok(u),
             Err(_) => {
                 if let Some(exc) = vm.take_uncaught_value() {
                     return Err(exc);
@@ -67,7 +68,7 @@ fn string_arg_full<H: VmHost>(vm: &mut H, args: &[u8]) -> Result<String, JsValue
             }
         }
     } else {
-        Ok("undefined".to_string())
+        Ok("undefined".encode_utf16().collect())
     }
 }
 

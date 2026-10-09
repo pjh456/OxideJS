@@ -2,133 +2,124 @@ use oxide_runtime_api::{NativeResult, VmHost};
 
 const ESCAPE_SAFE: &str = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789@*_+-./";
 
-fn parse_hex_u16(slice: &[u8]) -> Option<u16> {
-    std::str::from_utf8(slice).ok().and_then(|s| u16::from_str_radix(s, 16).ok())
+/// 单个码元的十六进制值（逐位严格匹配，不带符号位）；非十六进制数字返回 None。
+fn hex_val(c: u16) -> Option<u16> {
+    match c {
+        48..=57 => Some(c - 48),
+        97..=102 => Some(c - 97 + 10),
+        65..=70 => Some(c - 65 + 10),
+        _ => None,
+    }
 }
 
-fn escape_string(input: &str) -> String {
-    let mut out = String::with_capacity(input.len());
-    for ch in input.chars() {
-        if ESCAPE_SAFE.contains(ch) {
-            out.push(ch);
+/// escape 核（规范 B.2.1.1 逐码元迭代）：安全集 `A-Za-z0-9@*_+-./` 直留，
+/// <=0xFF 码元产 `%XX`，其余产 `%uXXXX`；孤立 surrogate 码元按码元保真
+/// 输出（不替 U+FFFD）。
+fn escape_units(input: &[u16]) -> Vec<u16> {
+    let mut out = Vec::with_capacity(input.len() * 6);
+    for &u in input {
+        if u < 0x80 && ESCAPE_SAFE.contains(char::from(u as u8)) {
+            out.push(u);
             continue;
         }
-
-        let code = ch as u32;
-        if code <= 0xFF {
-            out.push('%');
-            out.push_str(&format!("{code:02X}"));
-            continue;
-        }
-
-        let mut buf = [0u16; 2];
-        for unit in ch.encode_utf16(&mut buf).iter() {
-            out.push_str(&format!("%u{:04X}", *unit));
-        }
+        // 转义序列恒为全 ASCII，按码元推入。
+        let text = if u <= 0xFF {
+            format!("%{u:02X}")
+        } else {
+            format!("%u{u:04X}")
+        };
+        out.extend(text.encode_utf16());
     }
     out
 }
 
-fn unescape_string(input: &str) -> String {
-    let bytes = input.as_bytes();
-    let mut out = String::with_capacity(input.len());
+/// unescape 核（规范 B.2.1.2 逐码元扫描）：`%uXXXX` 优先于 `%XX` 解码，
+/// 解码值直接推码元（孤立 surrogate 码元按规范合法输出）；无法解析的
+/// 序列原样保留。
+fn unescape_units(input: &[u16]) -> Vec<u16> {
+    let mut out = Vec::with_capacity(input.len());
     let mut i = 0;
-
-    while i < bytes.len() {
-        if bytes[i] == b'%' {
-            if i + 6 <= bytes.len() && bytes[i + 1] == b'u' {
-                if let Some(unit) = parse_hex_u16(&bytes[i + 2..i + 6]) {
-                    if (0xD800..=0xDBFF).contains(&unit)
-                        && i + 12 <= bytes.len()
-                        && bytes[i + 6] == b'%'
-                        && bytes[i + 7] == b'u'
-                    {
-                        if let Some(low) = parse_hex_u16(&bytes[i + 8..i + 12]) {
-                            if (0xDC00..=0xDFFF).contains(&low) {
-                                let pair = [unit, low];
-                                let decoded = char::decode_utf16(pair).next();
-                                match decoded {
-                                    Some(Ok(ch)) => out.push(ch),
-                                    _ => {
-                                        out.push_str(&input[i..i + 12]);
-                                    }
-                                }
-                                i += 12;
-                                continue;
-                            }
-                        }
-                    }
-
-                    if let Some(ch) = char::from_u32(unit as u32) {
-                        out.push(ch);
-                    } else {
-                        out.push_str(&input[i..i + 6]);
-                    }
-                    i += 6;
-                    continue;
-                }
-            } else if i + 3 <= bytes.len() {
-                if let Some(value) = super::parse_hex_u8(&bytes[i + 1..i + 3]) {
-                    out.push(value as char);
-                    i += 3;
-                    continue;
-                }
+    while i < input.len() {
+        if input[i] == b'%' as u16 {
+            // %uXXXX：后跟 4 位十六进制。
+            if i + 6 <= input.len()
+                && input[i + 1] == b'u' as u16
+                && (2..6).all(|k| hex_val(input[i + k]).is_some())
+            {
+                let v = (0..4).fold(0u16, |acc, k| acc * 16 + hex_val(input[i + 2 + k]).unwrap());
+                out.push(v);
+                i += 6;
+                continue;
+            }
+            // %XX：后跟 2 位十六进制。
+            if i + 3 <= input.len() && (1..3).all(|k| hex_val(input[i + k]).is_some()) {
+                out.push(hex_val(input[i + 1]).unwrap() * 16 + hex_val(input[i + 2]).unwrap());
+                i += 3;
+                continue;
             }
         }
-
-        let ch = match input[i..].chars().next() {
-            Some(c) => c,
-            None => break,
-        };
-        out.push(ch);
-        i += ch.len_utf8();
+        out.push(input[i]);
+        i += 1;
     }
-
     out
 }
 
 /// Annex B 的全局 `escape(string)`：除 ASCII 字母数字与 `@*_+-./` 外全部编码。
-/// <=0xFF 字符用 `%XX`，其它按 UTF-16 code unit 用 `%uXXXX` 转义。
+/// <=0xFF 码元用 `%XX`，其它按 UTF-16 码元用 `%uXXXX` 转义。
 /// 参数按 `? ToString` 完整转换：Symbol 抛 TypeError，对象方法抛出的原生
 /// 异常原样传播。
 pub fn js_escape<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
-    let input = match super::string_arg_full(vm, args) {
-        Ok(s) => s,
+    let input = match super::units_arg_full(vm, args) {
+        Ok(u) => u,
         Err(exc) => return NativeResult::Err(exc),
     };
-    NativeResult::Ok(vm.new_string(&escape_string(&input)))
+    NativeResult::Ok(vm.new_string_units_owned(escape_units(&input)))
 }
 
-/// Annex B 的全局 `unescape(string)`：解码 `escape` 生成的 `%XX`/`%uXXXX` 序列，
-/// 支持 surrogate pair 合并；无法解析的序列原样保留。
+/// Annex B 的全局 `unescape(string)`：解码 `escape` 生成的 `%XX`/`%uXXXX`
+/// 序列；无法解析的序列原样保留。
 /// 参数按 `? ToString` 完整转换：Symbol 抛 TypeError，对象方法抛出的原生
 /// 异常原样传播。
 pub fn js_unescape<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
-    let input = match super::string_arg_full(vm, args) {
-        Ok(s) => s,
+    let input = match super::units_arg_full(vm, args) {
+        Ok(u) => u,
         Err(exc) => return NativeResult::Err(exc),
     };
-    NativeResult::Ok(vm.new_string(&unescape_string(&input)))
+    NativeResult::Ok(vm.new_string_units_owned(unescape_units(&input)))
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{escape_string, unescape_string};
+    use super::{escape_units, unescape_units};
+
+    fn units(s: &str) -> Vec<u16> {
+        s.encode_utf16().collect()
+    }
 
     #[test]
     fn escape_encodes_spaces_and_unicode() {
-        assert_eq!(escape_string("hello world"), "hello%20world");
-        assert_eq!(escape_string("AΩ你"), "A%u03A9%u4F60");
+        assert_eq!(escape_units(&units("hello world")), units("hello%20world"));
+        assert_eq!(escape_units(&units("AΩ你")), units("A%u03A9%u4F60"));
     }
 
     #[test]
     fn unescape_decodes_percent_sequences() {
-        assert_eq!(unescape_string("hello%20world"), "hello world");
-        assert_eq!(unescape_string("%u03A9%u4F60"), "Ω你");
+        assert_eq!(unescape_units(&units("hello%20world")), units("hello world"));
+        assert_eq!(unescape_units(&units("%u03A9%u4F60")), units("Ω你"));
     }
 
     #[test]
     fn unescape_keeps_invalid_sequences() {
-        assert_eq!(unescape_string("%uXYZ1%2G"), "%uXYZ1%2G");
+        assert_eq!(unescape_units(&units("%uXYZ1%2G")), units("%uXYZ1%2G"));
+    }
+
+    #[test]
+    fn escape_preserves_lone_surrogates() {
+        assert_eq!(escape_units(&[0xD834, 0xDF06]), units("%uD834%uDF06"));
+    }
+
+    #[test]
+    fn unescape_outputs_lone_surrogate_unit() {
+        assert_eq!(unescape_units(&units("%uD834")), vec![0xD834]);
     }
 }

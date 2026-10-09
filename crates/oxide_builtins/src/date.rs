@@ -1018,37 +1018,40 @@ pub fn date_get_year<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 
 /// Annex B `Date.prototype.setYear(y)`：设置年份，0..99 自动加 1900；
 /// 缺参/NaN 置为 Invalid Date。
+///
+/// 年份参数按完整 ToNumber 强转（对象走 valueOf/toString，Symbol 抛
+/// TypeError）；this 值无效时取 +0 基准分量（1970-01-01 全零）继续，
+/// 结果经 TimeClip 包络收尾。
 pub fn date_set_year<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let obj = unsafe { &mut *native_try!(date_this_mut(vm, args)) };
+    // this 值先于 ToNumber(year) 读取（规范步序）。
     let ms = get_timestamp(obj);
-    // 缺省年份参数强制转为 NaN；按 Annex B 语义，NaN 年份把日期值置为
-    // NaN 并返回 NaN。
-    let arg = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
-    let y_num = oxide_runtime_api::to_number(arg);
-    if y_num.is_nan() {
-        set_timestamp(obj, f64::NAN);
-        return NativeResult::Ok(JsValue::float(f64::NAN));
-    }
-    if !ms.is_finite() {
-        return NativeResult::Ok(JsValue::float(f64::NAN));
-    }
-    let dt = match dt_from_ms_local(ms) {
-        Some(d) => d,
-        None => return NativeResult::Ok(JsValue::float(f64::NAN)),
-    };
-    let y_trunc = y_num.trunc();
-    // f64 截断后可能超出 i32 范围，先做有界转换。
-    let y = if y_trunc >= i32::MIN as f64 && y_trunc <= i32::MAX as f64 {
-        y_trunc as i32
+    let y = native_try!(date_arg_number(vm, if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() }));
+    // 无效 this 值取 +0 基准分量（1970-01-01 时刻全零，与 setFullYear 同口径）。
+    let (_dy, dm, dd, dh, dmin, dsec, dms) = if ms.is_finite() {
+        local_components(ms).unwrap_or((1970, 0, 1, 0, 0, 0, 0))
     } else {
+        (1970, 0, 1, 0, 0, 0, 0)
+    };
+    if y.is_nan() {
         set_timestamp(obj, f64::NAN);
         return NativeResult::Ok(JsValue::float(f64::NAN));
-    };
-    let full_year = if (0..=99).contains(&y) { y + 1900 } else { y };
-    let nd = dt.with_year(full_year).unwrap_or(dt);
-    let ts = nd.timestamp_millis() as f64;
-    set_timestamp(obj, ts);
-    NativeResult::Ok(JsValue::float(ts))
+    }
+    // MakeFullYear：ToIntegerOrInfinity 截断，0..99 映射到 1900..1999。
+    let y_int = y.trunc() as i64;
+    let full_year = if (0..=99).contains(&y_int) { y_int + 1900 } else { y_int };
+    finish_local_setter(
+        obj,
+        make_local_timestamp(
+            full_year as f64,
+            dm as f64,
+            dd as f64,
+            dh as f64,
+            dmin as f64,
+            dsec as f64,
+            dms as f64,
+        ),
+    )
 }
 
 /// `Date.prototype.toGMTString()`：别名 `toUTCString`（GMT 格式）。
