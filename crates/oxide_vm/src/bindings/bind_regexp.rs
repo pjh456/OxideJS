@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
 use crate::bindings::{
-    apply_binding_table, bind_accessor_getter, bind_accessor_getter_key, bind_well_known_method,
-    configure_native_constructor,
+    apply_binding_table, bind_accessor_getter, bind_accessor_getset, bind_accessor_getter_key,
+    bind_well_known_method, configure_native_constructor,
 };
 use oxide_kernel::kernel::{KernelCore, KernelSession};
 use oxide_types::object::JsObject;
@@ -37,8 +37,69 @@ pub fn bind_regexp(core: &Arc<KernelCore>, session: &KernelSession, global: &mut
             ("exec", oxide_builtins::regexp::regexp_exec::<crate::vm::Vm> as *const (), 1),
             ("test", oxide_builtins::regexp::regexp_test::<crate::vm::Vm> as *const (), 1),
             ("toString", oxide_builtins::regexp::regexp_to_string::<crate::vm::Vm> as *const (), 0),
+            ("compile", oxide_builtins::regexp::regexp_compile::<crate::vm::Vm> as *const (), 2),
         ],
     );
+
+    // 遗留静态访问器（Annex B）：15 个访问器落 %RegExp% 构造器，描述符
+    // {enumerable:false, configurable:true}。仅 input/$_ 为 get+set 对（共享
+    // [[RegExpInput]] 槽）；其余 18 个为 getter（set 恒 undefined）：lastMatch/$&、
+    // lastParen/$+、leftContext/$`、rightContext/$' 各共享一槽，index 与 $1-$9 各
+    // 独占一槽。
+    let sf = core.perm_interner().as_ref();
+    let mut bind_getset = |name: &str, getter: *const (), setter: *const ()| {
+        let key = sf.intern(name).0;
+        bind_accessor_getset(
+            core,
+            session,
+            ctor,
+            key,
+            &format!("get {name}"),
+            &format!("set {name}"),
+            getter,
+            setter,
+        );
+    };
+    // input/$_：get+set 对（唯一带 setter 的遗留访问器）。
+    bind_getset(
+        "input",
+        oxide_builtins::regexp::regexp_legacy_get_input::<crate::vm::Vm> as *const (),
+        oxide_builtins::regexp::regexp_legacy_set_input::<crate::vm::Vm> as *const (),
+    );
+    bind_getset(
+        "$_",
+        oxide_builtins::regexp::regexp_legacy_get_input::<crate::vm::Vm> as *const (),
+        oxide_builtins::regexp::regexp_legacy_set_input::<crate::vm::Vm> as *const (),
+    );
+    // 其余 18 个 getter（set 恒 undefined）。
+    for (name, getter) in [
+        ("lastMatch", oxide_builtins::regexp::regexp_legacy_get_last_match::<crate::vm::Vm> as *const ()),
+        ("$&", oxide_builtins::regexp::regexp_legacy_get_last_match::<crate::vm::Vm> as *const ()),
+        ("lastParen", oxide_builtins::regexp::regexp_legacy_get_last_paren::<crate::vm::Vm> as *const ()),
+        ("$+", oxide_builtins::regexp::regexp_legacy_get_last_paren::<crate::vm::Vm> as *const ()),
+        (
+            "leftContext",
+            oxide_builtins::regexp::regexp_legacy_get_left_context::<crate::vm::Vm> as *const (),
+        ),
+        ("$`", oxide_builtins::regexp::regexp_legacy_get_left_context::<crate::vm::Vm> as *const ()),
+        (
+            "rightContext",
+            oxide_builtins::regexp::regexp_legacy_get_right_context::<crate::vm::Vm> as *const (),
+        ),
+        ("$'", oxide_builtins::regexp::regexp_legacy_get_right_context::<crate::vm::Vm> as *const ()),
+        ("index", oxide_builtins::regexp::regexp_legacy_get_index::<crate::vm::Vm> as *const ()),
+        ("$1", oxide_builtins::regexp::regexp_legacy_get_dollar_1::<crate::vm::Vm> as *const ()),
+        ("$2", oxide_builtins::regexp::regexp_legacy_get_dollar_2::<crate::vm::Vm> as *const ()),
+        ("$3", oxide_builtins::regexp::regexp_legacy_get_dollar_3::<crate::vm::Vm> as *const ()),
+        ("$4", oxide_builtins::regexp::regexp_legacy_get_dollar_4::<crate::vm::Vm> as *const ()),
+        ("$5", oxide_builtins::regexp::regexp_legacy_get_dollar_5::<crate::vm::Vm> as *const ()),
+        ("$6", oxide_builtins::regexp::regexp_legacy_get_dollar_6::<crate::vm::Vm> as *const ()),
+        ("$7", oxide_builtins::regexp::regexp_legacy_get_dollar_7::<crate::vm::Vm> as *const ()),
+        ("$8", oxide_builtins::regexp::regexp_legacy_get_dollar_8::<crate::vm::Vm> as *const ()),
+        ("$9", oxide_builtins::regexp::regexp_legacy_get_dollar_9::<crate::vm::Vm> as *const ()),
+    ] {
+        bind_accessor_getter(core, session, ctor, name, getter);
+    }
 
     // source/flags 只读访问器（set 恒 undefined，getter 读实例字段）。
     bind_accessor_getter(

@@ -371,17 +371,6 @@ pub(crate) fn get_substitution_units<H: VmHost>(
     Ok(out)
 }
 
-fn set_prop<H: VmHost>(obj: &mut JsObject, name: &str, val: JsValue, vm: &H) {
-    let si = vm.perm_intern(name);
-    set_prop_by_si(obj, si, val, vm);
-}
-
-fn set_prop_by_si<H: VmHost>(obj: &mut JsObject, prop_name_si: u32, val: JsValue, vm: &H) {
-    let shape_id = vm.make_shape(obj.shape_id(), prop_name_si);
-    obj.set_shape_id(shape_id);
-    obj.ensure_hash_props().push(val);
-}
-
 /// 规范化 flags 顺序为规范序（d g i m s u v y）：同一组 flag 不论书写顺序
 /// 恒得同一串，保证 `flags`/`toString` 输出与 V8 一致。
 fn normalize_flags(flags: &str) -> String {
@@ -490,8 +479,20 @@ pub fn regexp_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         ));
     }
 
-    let mut obj =
-        JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(vm.builtin_proto(ProtoKind::RegExpProto)));
+    // 构造路径（new / Reflect.construct，new.target 为对象）：复用调用方按
+    // newTarget.prototype 预分配的 receiver，原型基由 newTarget 决定（子类实例
+    // proto = 子类 prototype，与 %RegExp.prototype% 不可恒等）；普通调用
+    // （new.target 非对象）自分配 %RegExp.prototype% 基新对象，忽略传入的 this。
+    let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
+    let new_target = vm.reg(255);
+    let this_ptr = if this_val.is_object() && new_target.is_object() {
+        this_val.as_js_object_ptr()
+    } else {
+        vm.alloc_object(JsObject::new_empty(
+            EMPTY_SHAPE_ID,
+            JsValue::from_js_object(vm.builtin_proto(ProtoKind::RegExpProto)),
+        ))
+    };
 
     // regress 用 JS flag 字符串编译：g/i/m/s/y/u/v 原样透传（vendored fork
     // 原生识别 v 标志，u/v 互斥已在上方前置校验）。
@@ -504,7 +505,9 @@ pub fn regexp_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
             // 写入的 `Box<regress::Regex>` 指针。RegExp 对象把 native_fn 字段复用作
             // 已编译 Regex 的存放处——而非 NativeFn 指针。对象存活期间有效；
             // VM 重置经 `drop_regexp_native` 释放该 Box。
-            obj.set_native_fn(Some(unsafe { NativeFnPtr::from_raw(re_ptr as *const ()) }));
+            unsafe {
+                (*this_ptr).set_native_fn(Some(NativeFnPtr::from_raw(re_ptr as *const ())));
+            }
         }
         Err(e) => {
             return NativeResult::Err(crate::error::create_syntax_error(
@@ -514,14 +517,22 @@ pub fn regexp_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         }
     }
 
-    set_prop(&mut obj, "lastIndex", JsValue::int(0), vm);
-    obj.type_tag = JsObject::OBJ_TYPE_REGEXP;
-    // source/flags 存实例字段：原型访问器从本字段读取，不作为自身属性枚举。
-    obj.set_regexp_source(vm.new_string_units_owned(pattern_units));
-    obj.set_regexp_flags(vm.new_string_units_owned(flags_units));
+    // lastIndex 作实例自身属性写入（缺省描述符，与既有构造器口径一致）。
+    {
+        let li_si = vm.perm_intern("lastIndex");
+        let shape_id = vm.make_shape(unsafe { (*this_ptr).shape_id() }, li_si);
+        unsafe {
+            let obj = &mut *this_ptr;
+            obj.set_shape_id(shape_id);
+            obj.push_prop(JsValue::int(0));
+            obj.type_tag = JsObject::OBJ_TYPE_REGEXP;
+            // source/flags 存实例字段：原型访问器从本字段读取，不作为自身属性枚举。
+            obj.set_regexp_source(vm.new_string_units_owned(pattern_units));
+            obj.set_regexp_flags(vm.new_string_units_owned(flags_units));
+        }
+    }
 
-    let obj_ptr = vm.alloc_object(obj);
-    NativeResult::Ok(JsValue::from_js_object(obj_ptr))
+    NativeResult::Ok(JsValue::from_js_object(this_ptr))
 }
 
 /// 只读核算持有编译正则对象（RegExp / matchAll 载体）的正则字节（不释放）。
@@ -741,6 +752,12 @@ pub fn regexp_exec<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         return NativeResult::Ok(JsValue::null());
     };
 
+    // 命中后更新 15 个遗留静态槽（input / lastMatch / lastParen / leftContext /
+    // rightContext / index / $1-$9）：值以非枚举可配置数据属性落 %RegExp% 构造器
+    // （字符串 / 整数，非对象边）。仅 exec 接线——test 不建结果数组，语料不测
+    // test 后的槽值，取舍在此。
+    update_legacy_slots(vm, &m, &text, &haystack);
+
     let range = m.range();
     let group_count = m.captures.len();
     let n = 1 + group_count;
@@ -789,6 +806,311 @@ pub fn regexp_to_string<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let result = format!("/{}/{}", source, flags);
     NativeResult::Ok(vm.new_string_owned(result))
 }
+
+/// `RegExp.prototype.compile(pattern, flags)`（Annex B）：就地重编译本正则并
+/// 将 lastIndex 归零，返回 this。
+///
+/// # 步骤
+/// 1. this 门禁：须为对象、`is_regexp_obj()`、且 proto 与 %RegExp.prototype%
+///    精确恒等（非对象 / 非 RegExp / 子类实例均抛 TypeError）。
+/// 2. pattern 为 RegExp 实例（`is_regexp_obj()`）时：flags 必须为 undefined
+///    （否则 TypeError），且直读 [[OriginalSource]]/[[OriginalFlags]] 槽
+///    （不触发属性访问）。
+/// 3. pattern 非 RegExp 时：undefined → 空串，否则完整 ToString（异常原样
+///    传播）；flags 同。
+/// 4. flags 校验（未知 / 重复 / u-v 互斥 → SyntaxError）→ regress 编译（失败
+///    → SyntaxError）；编译失败时对象状态不变（槽与 lastIndex 均不动）。
+/// 5. 编译成功后才更新 [[OriginalSource]]/[[OriginalFlags]] 槽并替换 native_fn
+///    槽（先释放旧 Box 再写新指针，顺序不可反）。
+/// 6. Set(this, "lastIndex", 0, true)（strict，可抛 TypeError；此时槽已更新）。
+/// 7. 返回 this。
+///
+/// # 边界与前提
+/// - 子类实例（proto = 子类 prototype）在第 1 步即抛 TypeError，不触后续。
+/// - pattern 为 RegExp 时不读任何属性（源 / 旗直取内部槽），访问器计数恒 0。
+///
+/// # 副作用
+/// - 编译成功时更新对象内部槽（source / flags / native_fn）与 lastIndex。
+pub fn regexp_compile<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    // 第 1 步：this 门禁。
+    let this_val = vm.reg(args[0]);
+    if !this_val.is_object() {
+        return NativeResult::Err(crate::error::create_type_error(vm, "RegExp.prototype.compile called on non-object"));
+    }
+    let this_ptr = this_val.as_js_object_ptr();
+    if this_ptr.is_null() {
+        return NativeResult::Err(crate::error::create_type_error(vm, "null object"));
+    }
+    if !unsafe { &*this_ptr }.is_regexp_obj() {
+        return NativeResult::Err(crate::error::create_type_error(vm, "RegExp.prototype.compile called on non-RegExp object"));
+    }
+    // proto 精确恒等：子类实例（proto = 子类 prototype）抛 TypeError。
+    let proto_ptr = vm.builtin_proto(ProtoKind::RegExpProto);
+    if unsafe { &*this_ptr }.proto() != JsValue::from_js_object(proto_ptr) {
+        return NativeResult::Err(crate::error::create_type_error(vm, "RegExp.prototype.compile called on subclass instance"));
+    }
+
+    // 第 2 / 3 步：pattern / flags 取参。
+    let pattern_val = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
+    let flags_val = if args.len() > 2 { vm.reg(args[2]) } else { JsValue::undefined() };
+
+    let (pattern_units, flags_units) = if pattern_val.is_object() {
+        let p_ptr = pattern_val.as_js_object_ptr();
+        if !p_ptr.is_null() && unsafe { &*p_ptr }.is_regexp_obj() {
+            // pattern 为 RegExp 实例：flags 必须为 undefined。
+            if !flags_val.is_undefined() {
+                return NativeResult::Err(crate::error::create_type_error(
+                    vm,
+                    "RegExp.prototype.compile: flags must be undefined when pattern is a RegExp",
+                ));
+            }
+            // 直读 [[OriginalSource]]/[[OriginalFlags]] 槽（不触发属性访问）。
+            let source = unsafe { &*p_ptr }.get_regexp_source();
+            let flags = unsafe { &*p_ptr }.get_regexp_flags();
+            (vm.string_units(source).into_owned(), vm.string_units(flags).into_owned())
+        } else {
+            // pattern 非 RegExp：undefined → 空串，否则完整 ToString。
+            (
+                match to_pattern_units(vm, pattern_val) {
+                    Ok(u) => u,
+                    Err(e) => return NativeResult::Err(e),
+                },
+                match to_pattern_units(vm, flags_val) {
+                    Ok(u) => u,
+                    Err(e) => return NativeResult::Err(e),
+                },
+            )
+        }
+    } else {
+        (
+            match to_pattern_units(vm, pattern_val) {
+                Ok(u) => u,
+                Err(e) => return NativeResult::Err(e),
+            },
+            match to_pattern_units(vm, flags_val) {
+                Ok(u) => u,
+                Err(e) => return NativeResult::Err(e),
+            },
+        )
+    };
+    let pattern = String::from_utf16_lossy(&pattern_units);
+
+    // 第 4 步：flags 校验（未知 / 重复 / u-v 互斥均抛 SyntaxError）。
+    let mut flag_seen = [false; 8];
+    for &unit in &flags_units {
+        let ch = char::from_u32(unit as u32).unwrap_or('\u{FFFD}');
+        let idx = match ch {
+            'd' => 0,
+            'g' => 1,
+            'i' => 2,
+            'm' => 3,
+            's' => 4,
+            'u' => 5,
+            'v' => 6,
+            'y' => 7,
+            _ => {
+                return NativeResult::Err(crate::error::create_syntax_error(
+                    vm,
+                    &format!("Invalid regular expression flags: '{ch}' is not a valid flag"),
+                ));
+            }
+        };
+        if flag_seen[idx] {
+            return NativeResult::Err(crate::error::create_syntax_error(
+                vm,
+                &format!("Invalid regular expression flags: '{ch}' is duplicated"),
+            ));
+        }
+        flag_seen[idx] = true;
+    }
+    let flags = normalize_flags(&String::from_utf16_lossy(&flags_units));
+    let flags_units = flags.encode_utf16().collect::<Vec<u16>>();
+    if flags.contains('u') && flags.contains('v') {
+        return NativeResult::Err(crate::error::create_syntax_error(
+            vm,
+            "Invalid regular expression flags: 'u' and 'v' are mutually exclusive",
+        ));
+    }
+
+    // 第 4 步续：regress 编译（失败 → SyntaxError，对象状态不变）。
+    let re = match regress::Regex::with_flags(&pattern, flags.as_str()) {
+        Ok(re) => re,
+        Err(e) => {
+            return NativeResult::Err(crate::error::create_syntax_error(
+                vm,
+                &format!("Invalid regular expression: {e}"),
+            ));
+        }
+    };
+
+    // 第 5 步：更新槽并替换 native_fn 槽（先释放旧 Box 再写新指针）。
+    let re_ptr = Box::into_raw(Box::new(re));
+    unsafe {
+        let obj = &mut *this_ptr;
+        drop_regexp_native(obj);
+        // SAFETY: re_ptr 为 `Box<regress::Regex>` 指针，同构造器写入口径。
+        obj.set_native_fn(Some(NativeFnPtr::from_raw(re_ptr as *const ())));
+        obj.set_regexp_source(vm.new_string_units_owned(pattern_units));
+        obj.set_regexp_flags(vm.new_string_units_owned(flags_units));
+    }
+
+    // 第 6 步：Set(this, "lastIndex", 0, true)（strict，可抛 TypeError）。
+    if let Err(err) = set_last_index(vm, this_ptr, this_val, 0) {
+        return NativeResult::Err(err);
+    }
+
+    // 第 7 步：返回 this。
+    NativeResult::Ok(this_val)
+}
+
+/// compile 的 pattern / flags 单元序列转换：undefined → 空串，其余完整
+/// ToString（异常原样传播）。
+fn to_pattern_units<H: VmHost>(vm: &mut H, val: JsValue) -> Result<Vec<u16>, JsValue> {
+    if val.is_undefined() {
+        return Ok(Vec::new());
+    }
+    match oxide_runtime_api::to_units_full(val, vm) {
+        Ok(u) => Ok(u),
+        Err(e) => Err(crate::iterator::engine_error(vm, &e)),
+    }
+}
+
+/// 遗留静态访问器门禁：`SameValue(%RegExp%, this)` 为假抛 TypeError（非对象、
+/// 实例、prototype、子类构造器、全部原始值均抛）。
+fn legacy_gate<H: VmHost>(vm: &mut H, args: &[u8]) -> Result<(), JsValue> {
+    let this_val = vm.reg(args[0]);
+    if !this_val.is_object() {
+        return Err(crate::error::create_type_error(vm, "RegExp legacy accessor requires %RegExp% receiver"));
+    }
+    let this_ptr = this_val.as_js_object_ptr();
+    let ctor_ptr = vm.builtin_proto(ProtoKind::RegExpConstructor);
+    if this_ptr != ctor_ptr {
+        return Err(crate::error::create_type_error(vm, "RegExp legacy accessor requires %RegExp% receiver"));
+    }
+    Ok(())
+}
+
+/// 把遗留槽数据属性写入 %RegExp% 构造器：{writable:true, enumerable:false,
+/// configurable:true}，幂等（既有槽原位覆写值，不追加重复槽）。
+fn legacy_slot_write<H: VmHost>(vm: &mut H, slot: &str, val: JsValue) {
+    let ctor_ptr = vm.builtin_proto(ProtoKind::RegExpConstructor);
+    let si = vm.perm_intern(slot);
+    // SAFETY: ctor_ptr 为 builtin world 固定 P 字段，session 独占期间始终有效。
+    unsafe {
+        let ctor = &mut *ctor_ptr;
+        vm.set_or_create_prop_value(ctor, si, val);
+        if let Some(pos) = vm.get_own_property_slot(ctor, si) {
+            ctor.set_data_meta(pos, oxide_types::object::PropAttributes::new(true, false, true));
+        }
+    }
+}
+
+/// 遗留静态 getter：读 %RegExp% 构造器上的槽数据属性（槽未建时返 undefined）。
+fn legacy_get<H: VmHost>(vm: &mut H, args: &[u8], slot: &str) -> NativeResult {
+    if let Err(e) = legacy_gate(vm, args) {
+        return NativeResult::Err(e);
+    }
+    let ctor_ptr = vm.builtin_proto(ProtoKind::RegExpConstructor);
+    let si = vm.perm_intern(slot);
+    // SAFETY: ctor_ptr 为 builtin world 固定 P 字段，session 独占期间始终有效。
+    let val = unsafe {
+        let ctor = &*ctor_ptr;
+        match vm.get_own_property_slot(ctor, si) {
+            Some(pos) => ctor.get_prop_at(pos),
+            None => JsValue::undefined(),
+        }
+    };
+    NativeResult::Ok(val)
+}
+
+/// 遗留静态 setter：把槽数据属性写入 %RegExp% 构造器（幂等数据属性写，不触发
+/// 用户代码）。
+fn legacy_set<H: VmHost>(vm: &mut H, args: &[u8], slot: &str) -> NativeResult {
+    if let Err(e) = legacy_gate(vm, args) {
+        return NativeResult::Err(e);
+    }
+    let val = vm.reg(args[1]);
+    legacy_slot_write(vm, slot, val);
+    NativeResult::Ok(JsValue::undefined())
+}
+
+/// exec 命中后按匹配结果更新 15 个遗留静态槽：input = haystack 文本、
+/// lastMatch = 完整匹配串、lastParen = 末捕获组（无捕获组时 undefined）、
+/// leftContext = 匹配前文本、rightContext = 匹配后文本、index = 匹配起点
+/// （码元口径整数）、$1-$9 = 捕获组 1-9（未参与为 undefined）。
+fn update_legacy_slots<H: VmHost>(vm: &mut H, m: &regress::Match, text: &MatchText, haystack: &OwnedText) {
+    let range = m.range();
+    let group_count = m.captures.len();
+    // 各槽值先落入局部再写入（legacy_slot_write 与值分配均可变借 vm，不可同式）。
+    let input_val = haystack.to_value(vm);
+    legacy_slot_write(vm, "input", input_val);
+    let last_match_val = vm.new_string_units_owned(text.slice(range.start, range.end).into_owned());
+    legacy_slot_write(vm, "lastMatch", last_match_val);
+    let last_paren = if group_count > 0 {
+        match m.group(group_count) {
+            Some(g) => vm.new_string_units_owned(text.slice(g.start, g.end).into_owned()),
+            None => JsValue::undefined(),
+        }
+    } else {
+        JsValue::undefined()
+    };
+    legacy_slot_write(vm, "lastParen", last_paren);
+    let left_val = vm.new_string_units_owned(text.slice(0, range.start).into_owned());
+    legacy_slot_write(vm, "leftContext", left_val);
+    let right_val = vm.new_string_units_owned(text.slice(range.end, text.len_units()).into_owned());
+    legacy_slot_write(vm, "rightContext", right_val);
+    legacy_slot_write(vm, "index", JsValue::int(text.unit_pos(range.start) as i32));
+    for i in 1..=9 {
+        let cap = if i <= group_count {
+            match m.group(i) {
+                Some(g) => vm.new_string_units_owned(text.slice(g.start, g.end).into_owned()),
+                None => JsValue::undefined(),
+            }
+        } else {
+            JsValue::undefined()
+        };
+        legacy_slot_write(vm, &format!("${i}"), cap);
+    }
+}
+
+/// 生成一对遗留 get/set 访问器（共享同一槽名，如 `input` 与 `$_` 同槽）。
+macro_rules! legacy_accessor_pair {
+    ($get:ident, $set:ident, $slot:literal) => {
+        pub fn $get<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+            legacy_get(vm, args, $slot)
+        }
+        pub fn $set<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+            legacy_set(vm, args, $slot)
+        }
+    };
+}
+
+/// 生成单个遗留 getter（set 恒 undefined，如 `index` 与 `$1`-`$9`）。
+macro_rules! legacy_accessor_getter {
+    ($get:ident, $slot:literal) => {
+        pub fn $get<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+            legacy_get(vm, args, $slot)
+        }
+    };
+}
+
+// 仅 input/$_ 为 get+set 对（唯一带 setter 的遗留访问器）；其余共享槽
+// （lastMatch / lastParen / leftContext / rightContext）为 getter-only。
+legacy_accessor_pair!(regexp_legacy_get_input, regexp_legacy_set_input, "input");
+legacy_accessor_getter!(regexp_legacy_get_last_match, "lastMatch");
+legacy_accessor_getter!(regexp_legacy_get_last_paren, "lastParen");
+legacy_accessor_getter!(regexp_legacy_get_left_context, "leftContext");
+legacy_accessor_getter!(regexp_legacy_get_right_context, "rightContext");
+legacy_accessor_getter!(regexp_legacy_get_index, "index");
+legacy_accessor_getter!(regexp_legacy_get_dollar_1, "$1");
+legacy_accessor_getter!(regexp_legacy_get_dollar_2, "$2");
+legacy_accessor_getter!(regexp_legacy_get_dollar_3, "$3");
+legacy_accessor_getter!(regexp_legacy_get_dollar_4, "$4");
+legacy_accessor_getter!(regexp_legacy_get_dollar_5, "$5");
+legacy_accessor_getter!(regexp_legacy_get_dollar_6, "$6");
+legacy_accessor_getter!(regexp_legacy_get_dollar_7, "$7");
+legacy_accessor_getter!(regexp_legacy_get_dollar_8, "$8");
+legacy_accessor_getter!(regexp_legacy_get_dollar_9, "$9");
 
 /// `RegExp.escape(string)`：返回语法字符、其它标点、空白/行终止符、孤立
 /// surrogate、首字符数字/ASCII 字母均被转义的新字符串；参数非字符串抛 TypeError。
