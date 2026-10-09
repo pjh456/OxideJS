@@ -390,8 +390,9 @@ fn cross_module_aliased_imports_read_live_value() {
     assert_eq!(result, "1|1|2|2", "一源两别名未同步读到重赋后的活值");
 }
 
-/// 默认导出具名函数体的自引用重赋：函数体内 `fn = 2` 写模块级绑定，
-/// 导入方再次读 default 得新值（含捕获分析下探 export 声明与共享 cell）。
+/// 默认导出具名函数体的自引用重赋：函数名 `fn` 在函数作用域登记为不可写
+/// 绑定（15.2.10.1 步 m），遮蔽模块级同名绑定；体内容器 `fn = 2` 落在函数
+/// 作用域名绑定，模块级绑定不被改写，导入方读 default 仍得函数。
 #[test]
 fn cross_module_default_export_reads_live_value() {
     let cwd = std::env::current_dir().expect("cwd");
@@ -402,11 +403,11 @@ fn cross_module_default_export_reads_live_value() {
         dir.join("main.mjs"),
         "import val from './dep.mjs';\n \
          const ret = val();\n \
-         globalThis.__ns = [ret, val].join('|');",
+         globalThis.__ns = [ret, typeof val].join('|');",
     )
     .expect("write main");
     let _cleanup = Cleanup(dir.clone());
 
     let result = run_namespace_module(&dir);
-    assert_eq!(result, "1|2", "default 导出的具名函数自引用重赋未活读");
+    assert_eq!(result, "1|function", "函数名不可写绑定遮蔽模块级绑定，自引用重赋静默失败");
 }

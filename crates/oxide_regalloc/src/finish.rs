@@ -58,6 +58,15 @@ pub(super) fn run(f: &mut IRFunction, map: &AllocMap) {
     // 直接槽引用（class field 计算键等）的 escaped vreg 已由预着色恒等保留。
     // 注：cell 捕获变量的父 vreg 可被 RegAlloc 移动（MAKE_CELL 后值入 cell，与寄存器无关），
     // 此处不做恒等断言。
+
+    // 函数名不可写绑定寄存器回写：vreg → 物理槽（与 builtin_reg_map 同口径）。
+    // 映射缺失（名槽无字节码引用，帧槽写入为死写）时置 None，VM 侧跳过写入。
+    if let Some(vreg) = f.function_name_reg {
+        f.function_name_reg = match map.map.get(&vreg) {
+            Some(Alloc::Phys(p)) => Some(*p),
+            _ => None,
+        };
+    }
 }
 
 #[cfg(test)]

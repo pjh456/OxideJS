@@ -34,6 +34,9 @@ pub(crate) struct Binding {
     /// 函数级绑定由捕获分析的名字排序分配回填；块级遮蔽绑定在预声明点
     /// 追加新索引。解析点按绑定实例取索引，同名多绑定各持各的 cell。
     pub(crate) cell_idx: Option<u8>,
+    /// 函数名不可写绑定标志（与 `is_const` 正交）：函数名绑定在 sloppy 模式
+    /// 写静默失败、strict 抛 TypeError，模式相关故独立于 const 的无条件抛错。
+    pub(crate) non_writable: bool,
 }
 
 /// 作用域符号表：名字 → 寄存器号/初始化状态/const 标志。
@@ -120,6 +123,7 @@ impl SymbolTable {
                 lexical: !matches!(kind, VariableDeclarationKind::Var),
                 predeclared: false,
                 cell_idx: None,
+                non_writable: false,
             },
         );
         Ok(())
@@ -196,6 +200,7 @@ impl SymbolTable {
                 lexical: false,
                 predeclared: false,
                 cell_idx: None,
+                non_writable: false,
             },
         );
         reg_for_new
@@ -207,6 +212,19 @@ impl SymbolTable {
             if let Some(b) = scope.bindings.get(name) {
                 if b.initialized {
                     return b.is_const;
+                }
+                return false;
+            }
+        }
+        false
+    }
+
+    /// 返回已初始化绑定是否为函数名不可写绑定（用于写路径守卫）；未初始化/未找到返回 false。
+    pub fn lookup_non_writable(&self, name: &str) -> bool {
+        for scope in self.scopes.iter().rev() {
+            if let Some(b) = scope.bindings.get(name) {
+                if b.initialized {
+                    return b.non_writable;
                 }
                 return false;
             }
@@ -238,6 +256,7 @@ impl SymbolTable {
                 lexical: !matches!(kind, VariableDeclarationKind::Var),
                 predeclared: false,
                 cell_idx: None,
+                non_writable: false,
             },
         );
         Ok(())
@@ -252,6 +271,7 @@ impl SymbolTable {
             lexical: false,
             predeclared: false,
             cell_idx: None,
+            non_writable: false,
         });
     }
 
@@ -278,6 +298,7 @@ impl SymbolTable {
                 lexical: !matches!(kind, VariableDeclarationKind::Var),
                 predeclared: true,
                 cell_idx: None,
+                non_writable: false,
             },
         );
         Ok(())
@@ -339,6 +360,7 @@ impl SymbolTable {
                 lexical: true,
                 predeclared: false,
                 cell_idx: None,
+                non_writable: false,
             },
         );
         self.aliases.insert(local.to_string(), base);

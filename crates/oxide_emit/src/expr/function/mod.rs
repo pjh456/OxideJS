@@ -47,6 +47,7 @@ impl Emitter {
                 is_expr_body,
                 true,
                 arrow.has_use_strict_directive(),
+                None,
             )?
         } else {
             self.compile_function_body(
@@ -56,6 +57,7 @@ impl Emitter {
                 is_expr_body,
                 true,
                 arrow.has_use_strict_directive(),
+                None,
             )?
         };
         sub_module.is_arrow = true;
@@ -98,14 +100,15 @@ impl Emitter {
         let body_stmts: &[Statement] = if let Some(body) = &fe.body { &body.statements } else { &[] };
 
         let own_strict = fe.has_use_strict_directive();
+        let fn_name = fe.id.as_ref().map(|id| id.name.as_str());
         let mut sub_module = if fe.generator && fe.r#async {
-            self.compile_async_generator_body(&param_names, body_stmts, ctx, own_strict)?
+            self.compile_async_generator_body(&param_names, body_stmts, ctx, own_strict, fn_name)?
         } else if fe.generator {
-            self.compile_generator_body(&param_names, body_stmts, ctx, own_strict)?
+            self.compile_generator_body(&param_names, body_stmts, ctx, own_strict, fn_name)?
         } else if fe.r#async {
-            self.compile_async_body(&param_names, body_stmts, ctx, false, false, own_strict)?
+            self.compile_async_body(&param_names, body_stmts, ctx, false, false, own_strict, fn_name)?
         } else {
-            self.compile_function_body(&param_names, body_stmts, ctx, false, false, own_strict)?
+            self.compile_function_body(&param_names, body_stmts, ctx, false, false, own_strict, fn_name)?
         };
         if let Some(id) = &fe.id {
             sub_module.function_name = Some(id.name.to_string());

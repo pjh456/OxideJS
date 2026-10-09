@@ -152,13 +152,13 @@ impl Emitter {
         let body_stmts: &[Statement] = if let Some(body) = &fd.body { &body.statements } else { &[] };
         let own_strict = fd.has_use_strict_directive();
         let mut sub_module = if fd.generator && fd.r#async {
-            self.compile_async_generator_body(&param_names, body_stmts, ctx, own_strict)?
+            self.compile_async_generator_body(&param_names, body_stmts, ctx, own_strict, Some(name))?
         } else if fd.generator {
-            self.compile_generator_body(&param_names, body_stmts, ctx, own_strict)?
+            self.compile_generator_body(&param_names, body_stmts, ctx, own_strict, Some(name))?
         } else if fd.r#async {
-            self.compile_async_body(&param_names, body_stmts, ctx, false, false, own_strict)?
+            self.compile_async_body(&param_names, body_stmts, ctx, false, false, own_strict, Some(name))?
         } else {
-            self.compile_function_body(&param_names, body_stmts, ctx, false, false, own_strict)?
+            self.compile_function_body(&param_names, body_stmts, ctx, false, false, own_strict, Some(name))?
         };
         sub_module.function_name = Some(name.to_string());
         ctx.nested.push(sub_module);

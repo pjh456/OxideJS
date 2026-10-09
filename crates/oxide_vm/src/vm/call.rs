@@ -293,6 +293,13 @@ impl Vm {
             };
             self.regs[sub_param_base + i] = v;
         }
+        // 函数名不可写绑定帧槽写入：把 callee 函数对象写入名槽寄存器（压帧时置位，
+        // 函数体入口的 MAKE_CELL / 读取据此取函数对象）。无名绑定（None）不写。
+        // 须在 this 绑定之前：名槽寄存器与 this 槽（254）互不重叠，但集中在此
+        // 保持帧初始化顺序清晰。
+        if let Some(name_reg) = sub.function_name_reg {
+            self.regs[name_reg as usize] = callee;
+        }
         // this 绑定：箭头函数恒用词法捕获；sloppy 普通函数 this 为 null/undefined 时
         // 替换为全局对象，其余原始值经 ToObject 盒装（ECMA-262 10.4.3）；严格模式
         // this 原样保留。

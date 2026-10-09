@@ -138,6 +138,7 @@ impl Emitter {
             method_value.generator,
             method_value.r#async,
             true,
+            None,
         )?;
         ctx.in_instance_method = saved_instance;
         ctx.in_static_method = saved_static;

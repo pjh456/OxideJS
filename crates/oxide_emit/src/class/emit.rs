@@ -271,6 +271,7 @@ impl Emitter {
                 &field_value_exprs,
                 &extra_upvalue_names,
                 true,
+                None,
             )?
         } else {
             let mut module = self.compile_function_body_with_field_hooks(
@@ -285,6 +286,7 @@ impl Emitter {
                 &field_value_exprs,
                 &extra_upvalue_names,
                 true,
+                None,
             )?;
             if is_derived {
                 module.insts.clear();

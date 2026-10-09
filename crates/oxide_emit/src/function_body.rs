@@ -141,10 +141,12 @@ impl Emitter {
     ///
     /// `is_expression_body` 为 true（箭头表达式体）时返回最后一个表达式的值，
     /// 否则返回 undefined。`is_arrow` 控制 super 相关标志的继承：箭头函数词法
-    /// 继承外层 super，普通函数重置 super 作用域。
+    /// 继承外层 super，普通函数重置 super 作用域。`name` 为函数名（具名函数
+    /// 声明/表达式传名，箭头与匿名传 `None`），用于函数名不可写绑定登记。
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn compile_function_body<'a>(
         &self, param_specs: &[ParamSpec<'a>], body_stmts: &[Statement<'a>], parent_ctx: &CompileCtx,
-        is_expression_body: bool, is_arrow: bool, own_strict: bool,
+        is_expression_body: bool, is_arrow: bool, own_strict: bool, name: Option<&str>,
     ) -> Result<IRFunction, String> {
         self.compile_function_body_with_flags(
             param_specs,
@@ -155,12 +157,14 @@ impl Emitter {
             false,
             false,
             own_strict,
+            name,
         )
     }
 
     /// 编译函数体并显式指定生成器标志（`function*` 走此入口）。
     pub(crate) fn compile_generator_body<'a>(
-        &self, param_specs: &[ParamSpec<'a>], body_stmts: &[Statement<'a>], parent_ctx: &CompileCtx, own_strict: bool,
+        &self, param_specs: &[ParamSpec<'a>], body_stmts: &[Statement<'a>], parent_ctx: &CompileCtx,
+        own_strict: bool, name: Option<&str>,
     ) -> Result<IRFunction, String> {
         self.compile_function_body_with_flags(
             param_specs,
@@ -171,6 +175,7 @@ impl Emitter {
             true,
             false,
             own_strict,
+            name,
         )
     }
 
@@ -178,16 +183,20 @@ impl Emitter {
     /// 同时标记 `is_generator` 与 `is_async`，VM 调用时按异步生成器协议执行
     /// （next 返回 Promise，yield 挂起与 await 挂起共存）。
     pub(crate) fn compile_async_generator_body<'a>(
-        &self, param_specs: &[ParamSpec<'a>], body_stmts: &[Statement<'a>], parent_ctx: &CompileCtx, own_strict: bool,
+        &self, param_specs: &[ParamSpec<'a>], body_stmts: &[Statement<'a>], parent_ctx: &CompileCtx,
+        own_strict: bool, name: Option<&str>,
     ) -> Result<IRFunction, String> {
-        self.compile_function_body_with_flags(param_specs, body_stmts, parent_ctx, false, false, true, true, own_strict)
+        self.compile_function_body_with_flags(
+            param_specs, body_stmts, parent_ctx, false, false, true, true, own_strict, name,
+        )
     }
 
     /// 编译异步函数体（`async function` / async 箭头走此入口）：`is_async` 使
     /// `assemble_ir` 标记模块，VM 调用时按异步函数协议执行。
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn compile_async_body<'a>(
         &self, param_specs: &[ParamSpec<'a>], body_stmts: &[Statement<'a>], parent_ctx: &CompileCtx,
-        is_expression_body: bool, is_arrow: bool, own_strict: bool,
+        is_expression_body: bool, is_arrow: bool, own_strict: bool, name: Option<&str>,
     ) -> Result<IRFunction, String> {
         self.compile_function_body_with_flags(
             param_specs,
@@ -198,6 +207,7 @@ impl Emitter {
             false,
             true,
             own_strict,
+            name,
         )
     }
 
@@ -205,6 +215,7 @@ impl Emitter {
     fn compile_function_body_with_flags<'a>(
         &self, param_specs: &[ParamSpec<'a>], body_stmts: &[Statement<'a>], parent_ctx: &CompileCtx,
         is_expression_body: bool, is_arrow: bool, is_generator: bool, is_async: bool, own_strict: bool,
+        name: Option<&str>,
     ) -> Result<IRFunction, String> {
         let body_context = if is_arrow {
             FunctionBodyContext::Arrow
@@ -221,6 +232,7 @@ impl Emitter {
             is_generator,
             is_async,
             own_strict,
+            name,
         )
     }
 
@@ -228,7 +240,7 @@ impl Emitter {
     pub(crate) fn compile_function_body_with_bindings_gen<'a>(
         &self, param_specs: &[ParamSpec<'a>], body_stmts: &[Statement<'a>], parent_ctx: &CompileCtx,
         is_expression_body: bool, extra_bindings: &[(&str, u32)], body_context: FunctionBodyContext,
-        is_generator: bool, is_async: bool, own_strict: bool,
+        is_generator: bool, is_async: bool, own_strict: bool, name: Option<&str>,
     ) -> Result<IRFunction, String> {
         self.compile_function_body_with_field_hooks_gen(
             param_specs,
@@ -244,6 +256,7 @@ impl Emitter {
             is_generator,
             is_async,
             own_strict,
+            name,
         )
     }
 
@@ -259,7 +272,7 @@ impl Emitter {
         &self, param_specs: &[ParamSpec<'a>], body_stmts: &[Statement<'a>], parent_ctx: &CompileCtx,
         is_expression_body: bool, extra_bindings: &[(&str, u32)], body_context: FunctionBodyContext,
         emit_fields: Option<E>, fields_after_super: bool, extra_capture_exprs: &[&'a Expression<'a>],
-        extra_upvalue_names: &[(&str, u8)], own_strict: bool,
+        extra_upvalue_names: &[(&str, u8)], own_strict: bool, name: Option<&str>,
     ) -> Result<IRFunction, String>
     where
         E: FnMut(&Emitter, &mut CompileCtx) -> Result<(), String>,
@@ -278,6 +291,7 @@ impl Emitter {
             false,
             false,
             own_strict,
+            name,
         )
     }
 
@@ -287,6 +301,7 @@ impl Emitter {
         is_expression_body: bool, extra_bindings: &[(&str, u32)], body_context: FunctionBodyContext,
         mut emit_fields: Option<E>, fields_after_super: bool, extra_capture_exprs: &[&'a Expression<'a>],
         extra_upvalue_names: &[(&str, u8)], is_generator: bool, is_async: bool, own_strict: bool,
+        name: Option<&str>,
     ) -> Result<IRFunction, String>
     where
         E: FnMut(&Emitter, &mut CompileCtx) -> Result<(), String>,
@@ -368,6 +383,7 @@ impl Emitter {
                     // 父层 cell 索引在子帧无效：子帧经 upvalue 路径访问父捕获
                     // 绑定，不复制索引（复制会让解析点误发子帧 cell 表读）。
                     cell_idx: None,
+                    non_writable: binding.non_writable,
                 },
             );
             inherited_reg_start = inherited_reg_start.max(binding.reg.saturating_add(1));
@@ -394,6 +410,7 @@ impl Emitter {
                     lexical: false,
                     predeclared: false,
                     cell_idx: None,
+                    non_writable: false,
                 },
             );
             inherited_reg_start = inherited_reg_start.max(reg.saturating_add(1));
@@ -411,6 +428,7 @@ impl Emitter {
             body_context,
             extra_capture_exprs,
             extra_upvalue_names,
+            name,
         )?;
         // 实例字段 computed key 数组所在 upvalue 下标，供字段初始化 emit 定位。
         ctx.field_keys_uv = ctx
@@ -457,6 +475,22 @@ impl Emitter {
         // 写入前的读取取到调用方遗留的寄存器值。捕获名已由参数 prologue 的
         // MAKE_CELL(undefined) 实例化，此处只补未捕获名。
         self.instantiate_var_bindings(body_stmts, &mut ctx);
+
+        // 被捕获的函数名绑定同样建 cell（MAKE_CELL）：值源是帧槽写入已置位的
+        // 名槽寄存器（函数对象），非 undefined。名槽寄存器此时已知（非抑制面
+        // 在名登记时分配、抑制面在 instantiate_var_bindings 回填）。
+        if let Some(fn_name) = ctx.function_name.as_deref() {
+            if let Some(&cell_idx) = ctx.captured_bindings.get(fn_name) {
+                if let Some(name_reg) = ctx.function_name_reg {
+                    ctx.inst(Inst::new(
+                        OpCode::MAKE_CELL,
+                        Operand::Reg(name_reg),
+                        Operand::Imm(cell_idx as u16),
+                        Operand::None,
+                    ));
+                }
+            }
+        }
 
         // 函数体是释放作用域：仅当体含 using 声明时发 mark/pop（无 using 的体
         // 不发，防早退 return 跳过 POP 留未配对水位错乱外层对齐）。
@@ -596,12 +630,18 @@ impl Emitter {
         true
     }
 
-    /// 参数 prologue：函数作用域 + 参数声明/解构 + 闭包捕获与 upvalue 分析。返回 param_base。
+    /// 参数 prologue：函数作用域 + 参数声明/解构 + 函数名不可写绑定登记 +
+    /// 闭包捕获与 upvalue 分析。返回 param_base。
+    ///
+    /// `name` 为函数名（具名函数声明/表达式传名，箭头与匿名传 `None`）：
+    /// 非抑制面在函数作用域登记不可写绑定并分配名槽寄存器（帧槽写入目标）；
+    /// 抑制面（形参/var 同名、arguments 特例）不建名绑定，var 同名时名槽
+    /// 回填到 var 槽寄存器（`instantiate_var_bindings` 处）。
     #[allow(clippy::too_many_arguments)]
     fn emit_params_prologue<'a>(
         &self, param_specs: &[ParamSpec<'a>], body_stmts: &[Statement<'a>], parent_ctx: &CompileCtx,
         ctx: &mut CompileCtx, body_context: FunctionBodyContext, extra_capture_exprs: &[&'a Expression<'a>],
-        extra_upvalue_names: &[(&str, u8)],
+        extra_upvalue_names: &[(&str, u8)], name: Option<&str>,
     ) -> Result<u32, String> {
         ctx.push_scope_with_kind(ScopeKind::FunctionScope);
         let param_base = ctx.next_reg;
@@ -653,6 +693,48 @@ impl Emitter {
             ctx.declare_initialized("arguments", reg, VariableDeclarationKind::Var, false)?;
             ctx.own_bindings.insert("arguments".to_string());
             arguments_reg = Some(reg);
+        }
+
+        // 函数名不可写绑定（15.2.10.1 步 m）：函数名在函数作用域登记为不可写
+        // 绑定，帧槽写入把它初始化为函数对象。抑制面（形参同名 / 体内容器 var
+        // 同名 / arguments 对象占位）不建名绑定：前两者名解析到参数/var 绑定，
+        // 后者 arguments 绑定占位（var 同名时由帧槽写入初始化为函数对象）。
+        // 名登记须先于 set_captured_bindings：嵌套函数捕获名分析依赖 own_bindings
+        // 完整（名被捕获时须识别为本函数绑定并建 cell）。
+        if let Some(fn_name) = name {
+            let var_names = collect_var_binding_names(body_stmts);
+            let suppressed = ctx.param_names.contains(fn_name)
+                || var_names.contains(fn_name)
+                || (fn_name == "arguments" && arguments_reg.is_some());
+            if !suppressed {
+                let reg = ctx.alloc_reg();
+                ctx.scopes
+                    .symbols
+                    .scopes
+                    .last_mut()
+                    .expect("函数作用域已压入")
+                    .bindings
+                    .insert(
+                        fn_name.to_string(),
+                        Binding {
+                            reg,
+                            initialized: true,
+                            is_const: false,
+                            lexical: false,
+                            predeclared: false,
+                            cell_idx: None,
+                            non_writable: true,
+                        },
+                    );
+                ctx.own_bindings.insert(fn_name.to_string());
+                ctx.function_name = Some(fn_name.to_string());
+                ctx.function_name_reg = Some(reg);
+            } else if var_names.contains(fn_name) {
+                // 抑制面：var 绑定持名槽，帧槽写入把函数对象写入该 var 槽。
+                // var 绑定此时未声明（predeclare_var_declarations 在后），名槽
+                // 寄存器在 instantiate_var_bindings 回填。
+                ctx.function_name = Some(fn_name.to_string());
+            }
         }
 
         // 字段初始化表达式（值表达式）与参数默认值一并纳入捕获分析。
@@ -844,6 +926,9 @@ impl Emitter {
             .into_iter()
             .filter(|n| !param_names.contains(&n.as_str()) && n != "arguments")
             .filter(|n| ctx.captured_bindings.contains_key(n))
+            // 函数名（抑制面 var 同名）由专属 MAKE_CELL 处理（值源是帧槽写入的
+            // 名槽寄存器，非 undefined），此处排除以免误发 undefined 源。
+            .filter(|n| Some(n.as_str()) != ctx.function_name.as_deref())
             .collect();
         // HashSet 迭代序带随机种子，排序后入口 MAKE_CELL 发射序跨进程稳定。
         var_names.sort();
@@ -922,6 +1007,17 @@ impl Emitter {
             for name in self.collect_block_function_names(body_stmts) {
                 if !ctx.block_fn_suppressed.contains(&name) && !labeled_hoisted.contains(name.as_str()) {
                     name_set.insert(name);
+                }
+            }
+        }
+
+        // 抑制面：函数名是 var 绑定，帧槽写入把它初始化为函数对象，入口 undefined
+        // 写须排除该名（否则覆盖帧槽写入的函数对象），并回填名槽寄存器供帧槽写入。
+        // 非抑制面名绑定不是 var（不在 name_set 内），remove 返回 false 不回填。
+        if let Some(fn_name) = ctx.function_name.as_deref() {
+            if name_set.remove(fn_name) {
+                if let Some(reg) = ctx.scopes.symbols.lookup_any(fn_name) {
+                    ctx.function_name_reg = Some(reg);
                 }
             }
         }

@@ -62,6 +62,9 @@ pub struct IRFunction {
     pub is_strict: bool,
     pub captured_this_const_idx: u16,
     pub function_name: Option<String>,
+    /// 函数名不可写绑定的寄存器（帧槽写入目标）：压帧时把 callee 函数对象写入该槽。
+    /// `None` 表示无名绑定（匿名函数 / 形参或 var 同名抑制 / arguments 特例）。
+    pub function_name_reg: Option<u32>,
     /// 函数 `length` 属性值：第一个带默认值/解构默认的形参之前的形参数（rest 不计）。
     pub function_length: u32,
     /// 形参列表是否 simple（全部无初始值标识符且无 rest）：arguments 对象
@@ -99,6 +102,7 @@ impl IRFunction {
             is_strict: false,
             captured_this_const_idx: 0,
             function_name: None,
+            function_name_reg: None,
             function_length: 0,
             has_simple_params: false,
             is_top_level: false,

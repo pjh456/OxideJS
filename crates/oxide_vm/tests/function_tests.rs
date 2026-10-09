@@ -17,6 +17,15 @@ fn assert_num(result: JsValue, expected: f64) {
     assert!((actual - expected).abs() < 0.0001, "expected {expected}, got {actual}");
 }
 
+/// 判断值是否为函数对象：经对象指针解出 header 函数标志，非对象返回假。
+fn is_function_value(v: JsValue) -> bool {
+    let ptr = v.as_js_object_ptr();
+    if ptr.is_null() {
+        return false;
+    }
+    unsafe { (*ptr).is_function() }
+}
+
 // --- Function Declaration Basics ---
 
 #[test]
@@ -217,4 +226,62 @@ fn function_default_prototype_accepts_member_assignment() {
     .unwrap();
     let rendered = vm.lookup_str(result).unwrap_or_default();
     assert_eq!(rendered, "ok");
+}
+
+// ── 函数名不可写局部绑定（函数作用域内读回函数对象）──
+
+#[test]
+fn fn_name_binding_readable() {
+    let mut vm = Vm::new();
+    // 函数名登记进函数作用域，体内裸读 f 解析到名绑定，读回函数对象本身。
+    let result = eval(&mut vm, "function f() { return f; } f()").unwrap();
+    assert!(is_function_value(result), "expected the function itself, got: {:?}", result);
+}
+
+#[test]
+fn fn_name_binding_shadows_outer_var() {
+    let mut vm = Vm::new();
+    // 外层 var f 持 'x'；函数表达式名绑定 f 在函数作用域内优先，体内读回函数对象而非 'x'。
+    let result = eval(&mut vm, "var f = 'x'; var g = function f() { return typeof f; }; g()").unwrap();
+    assert_eq!(vm.lookup_str(result).unwrap_or_default(), "function");
+}
+
+#[test]
+fn fn_name_var_suppression() {
+    let mut vm = Vm::new();
+    // 体内容器 var f 同名：不建不可写绑定，var 绑定由帧槽写入初始化为函数对象。
+    let result = eval(&mut vm, "function f() { var f; return f; } f()").unwrap();
+    assert!(is_function_value(result), "expected the function, got: {:?}", result);
+}
+
+#[test]
+fn fn_name_param_priority() {
+    let mut vm = Vm::new();
+    // 形参同名：形参绑定持有实参，名绑定被抑制，读回实参值。
+    let result = eval(&mut vm, "function f(f) { return f; } f(1)").unwrap();
+    assert_eq!(result.as_int(), 1);
+}
+
+#[test]
+fn fn_name_capture_side() {
+    let mut vm = Vm::new();
+    // 嵌套函数捕获外层名绑定（upvalue），内层读回外层函数对象。
+    let result = eval(&mut vm, "function f() { return function() { return f; }; } f()()").unwrap();
+    assert!(is_function_value(result), "expected the outer function, got: {:?}", result);
+}
+
+#[test]
+fn fn_name_arguments_special_case() {
+    let mut vm = Vm::new();
+    // 名等于 arguments 且 arguments 对象已建：抑制名绑定，arguments 解析到 arguments 对象。
+    let result = eval(&mut vm, "function arguments() { return arguments; } arguments()").unwrap();
+    assert!(result.is_object(), "expected the arguments object, got: {:?}", result);
+}
+
+#[test]
+fn fn_name_recursive_call() {
+    let mut vm = Vm::new();
+    // 递归调用依赖名绑定读回函数对象再调用，覆盖寄存器写回回归面。
+    let result = eval(&mut vm, "function fact(n) { return n <= 1 ? 1 : n * fact(n - 1); } fact(5)").unwrap();
+    assert_num(result, 120.0);
 }

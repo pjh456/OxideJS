@@ -208,6 +208,14 @@ pub struct CompileCtx {
     /// 运行时与模块 flat_id 组成模板对象缓存键，保证同一编译树同 site 恒返回
     /// 同一对象、不同编译树（eval 每次编译）互不共享。
     pub(crate) next_template_site: u32,
+    /// 本函数登记的函数名（非抑制面）：`assemble_ir` 回写到 IR 供调试与
+    /// 帧槽写入判定。抑制面（形参/var 同名）不登记名绑定，此字段仍记名
+    /// 供 `instantiate_var_bindings` 排除入口 undefined 写。
+    pub(crate) function_name: Option<String>,
+    /// 函数名不可写绑定的寄存器（帧槽写入目标）：压帧时把 callee 函数对象
+    /// 写入该槽。非抑制面在名登记时分配；抑制面（var 同名）在
+    /// `instantiate_var_bindings` 回填为 var 槽寄存器。
+    pub(crate) function_name_reg: Option<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -304,6 +312,8 @@ impl CompileCtx {
             module_self_aliases: HashMap::new(),
             module_alias_pairs: Vec::new(),
             next_template_site: 0,
+            function_name: None,
+            function_name_reg: None,
         }
     }
 
@@ -1004,6 +1014,7 @@ impl CompileCtx {
             is_strict: self.is_strict,
             captured_this_const_idx: 0,
             function_name: None,
+            function_name_reg: self.function_name_reg,
             function_length: self.function_length,
             has_simple_params: self.has_simple_params,
             is_top_level: parent_ctx.is_none(),
