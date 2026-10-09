@@ -555,14 +555,21 @@ pub fn string_substr<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         }
         None => 0,
     };
-    // length：负 → 0；+Inf 取剩余全部。
+    // length：显式 undefined → 剩余全部（规范步 8，ToIntegerOrInfinity 会把
+    // NaN 归零，无法区分显式 undefined 与 NaN，须先判值形态）；其余经
+    // ToIntegerOrInfinity 传播式，负/NaN → 0、+Inf → 剩余全部，夹到剩余。
     let length = match length_arg {
+        Some(v) if v.is_undefined() => len - start,
         Some(v) => {
             let p = match to_integer_or_infinity_bounded(vm, v) {
                 Ok(p) => p,
                 Err(exc) => return NativeResult::Err(exc),
             };
-            p.max(0.0) as usize
+            if p > 0.0 && p.is_infinite() {
+                len - start
+            } else {
+                p.max(0.0) as usize
+            }
         }
         None => len - start,
     };
