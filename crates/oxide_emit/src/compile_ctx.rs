@@ -80,6 +80,10 @@ pub struct CompileCtx {
     /// 形参同名时不建外层绑定、不求值写回（规范 paramNames 守卫面）。子函数
     /// ctx 为新建，不继承。
     pub(crate) param_names: HashSet<String>,
+    /// 参数序言默认值发射期的形参名 TDZ 集：当前形参自身名（含解构叶）加其后
+    /// 全部形参名。发射期临时置位，每形参处理完即清空；重名形参不建集（规范
+    /// 变量环境面无 TDZ）。标识符静态读入口命中此集时发射运行时 ReferenceError。
+    pub(crate) param_tdz_names: HashSet<String>,
     /// 块级函数名按 sloppy 模式下与浏览器/web 实现惯例兼容的行为建外层绑定的抑制集
     /// （形参 ∪ 函数作用域树内词法声明名）：抑制集内名字退化为纯块作用域；预声明期定稿，实例化与声明点写回两侧同查。
     pub(crate) block_fn_suppressed: HashSet<String>,
@@ -281,6 +285,7 @@ impl CompileCtx {
             current_upvalue_captures: Vec::new(),
             own_bindings: HashSet::new(),
             param_names: HashSet::new(),
+            param_tdz_names: HashSet::new(),
             block_fn_suppressed: HashSet::new(),
             block_fn_entry_mats: Vec::new(),
             captured_bindings: BTreeMap::new(),

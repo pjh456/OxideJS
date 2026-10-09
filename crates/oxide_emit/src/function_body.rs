@@ -860,7 +860,41 @@ impl Emitter {
             ctx.inst(Inst::create_arguments(Operand::Reg(reg)));
         }
 
-        for spec in param_specs {
+        // 形参名 TDZ 集：按形参序收集每形参绑定名（含解构叶），重名面不建集
+        // （规范变量环境面无 TDZ）。默认值发射期读路径命中此集抛 ReferenceError。
+        let param_bound_names: Vec<Vec<String>> = param_specs
+            .iter()
+            .map(|spec| match spec {
+                ParamSpec::Identifier { name, .. } | ParamSpec::Rest { name } => vec![name.clone()],
+                ParamSpec::Pattern { pattern, .. } => {
+                    let mut names = HashSet::new();
+                    collect_binding_pattern_names(pattern, &mut names);
+                    names.into_iter().collect()
+                }
+            })
+            .collect();
+        let has_param_duplicates = {
+            let total: usize = param_bound_names.iter().map(|v| v.len()).sum();
+            let mut seen = HashSet::new();
+            for names in &param_bound_names {
+                for n in names {
+                    seen.insert(n.clone());
+                }
+            }
+            seen.len() < total
+        };
+
+        for (idx, spec) in param_specs.iter().enumerate() {
+            // 循环首置 TDZ 集：当前形参自身名（含解构叶）加其后全部形参名；
+            // 重名面保持空集。
+            if !has_param_duplicates {
+                ctx.param_tdz_names.clear();
+                ctx.param_tdz_names.extend(param_bound_names[idx].iter().cloned());
+                for subsequent in &param_bound_names[idx + 1..] {
+                    ctx.param_tdz_names.extend(subsequent.iter().cloned());
+                }
+            }
+
             match spec {
                 ParamSpec::Pattern {
                     synthetic_name,
@@ -890,6 +924,9 @@ impl Emitter {
                     ctx.inst(Inst::create_rest_array(Operand::Reg(reg), fixed_count));
                 }
             }
+
+            // 每形参处理完即清空，防 TDZ 集泄漏到 body 读取。
+            ctx.param_tdz_names.clear();
         }
 
         // 被捕获的参数也必须建 cell（MAKE_CELL）：否则子函数经 lazy upvalue 路径读

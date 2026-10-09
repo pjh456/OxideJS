@@ -285,3 +285,83 @@ fn fn_name_recursive_call() {
     let result = eval(&mut vm, "function fact(n) { return n <= 1 ? 1 : n * fact(n - 1); } fact(5)").unwrap();
     assert_num(result, 120.0);
 }
+
+// --- 默认参数自引用 TDZ 守卫 ---
+
+/// 断言运行期抛出未捕获 ReferenceError（默认参数 TDZ 守卫的期望形态）。
+fn assert_dflt_tdz_reference_error(source: &str, msg: &str) {
+    let err = eval(&mut Vm::new(), source).unwrap_err();
+    assert!(
+        err.contains("ReferenceError"),
+        "{msg}: expected an uncaught ReferenceError, got: {err}"
+    );
+}
+
+#[test]
+fn dflt_param_self_ref_throws() {
+    // 默认值自引用当前形参：形参环境未初始化绑定，运行期抛 ReferenceError。
+    assert_dflt_tdz_reference_error("function f(x = x) {} f()", "self-ref");
+}
+
+#[test]
+fn dflt_param_ref_later_throws() {
+    // 默认值引用后位形参：后位形参在默认值求值期尚未初始化，抛 ReferenceError。
+    assert_dflt_tdz_reference_error("function f(x = y, y) {} f()", "ref-later");
+}
+
+#[test]
+fn dflt_param_ref_prior_legal() {
+    // 默认值引用前位形参：前位形参已初始化，读取合法，y 得 x 的值。
+    let mut vm = Vm::new();
+    let result = eval(&mut vm, "function f(x, y = x) { return y; } f(3)").unwrap();
+    assert_eq!(result.as_int(), 3);
+}
+
+#[test]
+fn dflt_param_arg_defined_no_eval() {
+    // 实参非 undefined：默认值不求值，自引用不抛。
+    let mut vm = Vm::new();
+    let result = eval(&mut vm, "function f(x = x) { return x; } f(1)").unwrap();
+    assert_eq!(result.as_int(), 1);
+}
+
+#[test]
+fn dflt_param_object_dstr_self_ref_throws() {
+    // 对象解构自引用抛 ReferenceError。
+    assert_dflt_tdz_reference_error("function f({x = x}) {} f({})", "object-dstr-self");
+}
+
+#[test]
+fn dflt_param_arguments_not_in_tdz() {
+    // arguments 不在 TDZ 集：默认值引用 arguments 合法。
+    let mut vm = Vm::new();
+    let result = eval(&mut vm, "function f(x = arguments[1]) { return x; } f(undefined, 2)").unwrap();
+    assert_eq!(result.as_int(), 2);
+}
+
+#[test]
+fn dflt_param_nested_fn_no_throw() {
+    // 默认值为嵌套函数：嵌套函数体在子 ctx 编译，经 upvalue 读初始化后的值，不抛。
+    // 闭包调用后读回 x 为默认值函数对象本身（非 undefined）。
+    let mut vm = Vm::new();
+    let result = eval(&mut vm, "function f(x = function() { return x; }) { return x; } f()()").unwrap();
+    assert!(is_function_value(result), "expected the default function, got: {:?}", result);
+}
+
+#[test]
+fn dflt_param_typeof_self_ref_throws() {
+    // typeof 对 TDZ 绑定抛 ReferenceError（经 emit_expression 同形）。
+    assert_dflt_tdz_reference_error("function f(x = typeof x) {} f()", "typeof-self");
+}
+
+#[test]
+fn dflt_param_generator_self_ref_throws() {
+    // 生成器默认值自引用抛 ReferenceError（参数初始化在调用时刻）。
+    assert_dflt_tdz_reference_error("function* g(x = x) {} g()", "generator-self");
+}
+
+#[test]
+fn dflt_param_strict_self_ref_throws() {
+    // 严格模式默认值自引用同样抛 ReferenceError（TDZ 与模式无关）。
+    assert_dflt_tdz_reference_error("'use strict'; function f(x = x) {} f()", "strict-self");
+}

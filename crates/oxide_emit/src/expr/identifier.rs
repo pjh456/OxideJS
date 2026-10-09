@@ -16,6 +16,14 @@ impl Emitter {
     /// - 活读映射仅模块顶层 ctx 填充：嵌套函数内读 import 名仍走链接期快照
     ///   （`current_upvalue_captures` 不在此列，闭包内不继承映射）。
     fn emit_static_identifier_read(&self, name: &str, ctx: &mut CompileCtx) -> Result<u32, String> {
+        // 形参名 TDZ：默认值表达式内引用当前形参与其后形参是形参环境未初始化
+        // 绑定，运行期抛 ReferenceError（重名形参无 TDZ，编译期集为空）。判定置于
+        // 读入口最前：被捕获参数在默认值发射期经 visible_cell 回退命中 CELL_GET，
+        // 判定后置即漏判。
+        if ctx.param_tdz_names.contains(name) {
+            return self.emit_tdz_throw(&format!("Cannot access '{name}' before initialization"), ctx);
+        }
+
         // 可重赋依赖的命名/默认导入：读点直接查依赖命名空间当前值，跟随源模块重赋。
         if let Some((dep_ns, exported)) = ctx.module_live_imports.get(name).cloned() {
             let name_reg = self.load_string_const(&exported, ctx);
@@ -107,9 +115,12 @@ impl Emitter {
         ctx.inst(Inst::jmp(end_label));
 
         ctx.labels.set_label_pos(fallback_label, ctx.insts.len());
-        // 回退：upvalue / 被捕获 cell / 静态绑定 / 未定义四选一。
-        // 对象无该属性时才走此处，语义与静态解析一致。
-        if let Some((uv_idx, _)) = ctx.current_upvalue_captures.iter().enumerate().find(|(_, u)| u.name == name) {
+        // 回退：形参名 TDZ / upvalue / 被捕获 cell / 静态绑定 / 未定义五选一。
+        // 对象无该属性时才走此处，语义与静态解析一致。TDZ 判定置于回退入口最前：
+        // 被捕获参数经 visible_cell 回退命中 CELL_GET，判定后置即漏判。
+        if ctx.param_tdz_names.contains(name) {
+            let _ = self.emit_tdz_throw(&format!("Cannot access '{name}' before initialization"), ctx);
+        } else if let Some((uv_idx, _)) = ctx.current_upvalue_captures.iter().enumerate().find(|(_, u)| u.name == name) {
             ctx.inst(Inst::new(
                 OpCode::LOAD_UPVALUE,
                 Operand::Reg(result_reg),
