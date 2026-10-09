@@ -574,9 +574,8 @@ impl Vm {
     /// 续 dispatch 并结算：运行 body 到下一个 AWAIT/RETURN/异常，挂起则快照新状态，
     /// 完成/异常则结算 capability。恢复调用方状态。
     fn dispatch_and_finish_async(
-        &mut self, state_ptr: *mut AsyncState, saved: Box<InlineSyncState>,
-        prev_ctx: Option<JsValue>, prev_dispatch: bool, prev_gen_ctx: Option<JsValue>,
-        prev_gen_dispatch: bool,
+        &mut self, state_ptr: *mut AsyncState, saved: Box<InlineSyncState>, prev_ctx: Option<JsValue>,
+        prev_dispatch: bool, prev_gen_ctx: Option<JsValue>, prev_gen_dispatch: bool,
     ) -> Result<(), String> {
         let result = self.dispatch();
         if std::mem::take(&mut self.async_suspended) {
@@ -695,7 +694,12 @@ impl Vm {
                     return Ok(());
                 }
                 self.dispatch_and_finish_async(
-                    state_ptr, saved, prev_ctx, prev_dispatch, prev_gen_ctx, prev_gen_dispatch,
+                    state_ptr,
+                    saved,
+                    prev_ctx,
+                    prev_dispatch,
+                    prev_gen_ctx,
+                    prev_gen_dispatch,
                 )
             }
             DisposeResumeKind::Unwind(handler) => {
@@ -712,7 +716,12 @@ impl Vm {
                     return Ok(());
                 }
                 self.dispatch_and_finish_async(
-                    state_ptr, saved, prev_ctx, prev_dispatch, prev_gen_ctx, prev_gen_dispatch,
+                    state_ptr,
+                    saved,
+                    prev_ctx,
+                    prev_dispatch,
+                    prev_gen_ctx,
+                    prev_gen_dispatch,
                 )
             }
             DisposeResumeKind::Escape(completion_val) => {
@@ -727,7 +736,12 @@ impl Vm {
                         return Ok(());
                     }
                     self.dispatch_and_finish_async(
-                        state_ptr, saved, prev_ctx, prev_dispatch, prev_gen_ctx, prev_gen_dispatch,
+                        state_ptr,
+                        saved,
+                        prev_ctx,
+                        prev_dispatch,
+                        prev_gen_ctx,
+                        prev_gen_dispatch,
                     )
                 } else {
                     // 无合并错误：执行完成。
@@ -742,13 +756,23 @@ impl Vm {
                                 return Ok(());
                             }
                             self.dispatch_and_finish_async(
-                                state_ptr, saved, prev_ctx, prev_dispatch, prev_gen_ctx, prev_gen_dispatch,
+                                state_ptr,
+                                saved,
+                                prev_ctx,
+                                prev_dispatch,
+                                prev_gen_ctx,
+                                prev_gen_dispatch,
                             )
                         }
                         Completion::Break { target_pc, .. } | Completion::Continue { target_pc, .. } => {
                             self.pc = target_pc;
                             self.dispatch_and_finish_async(
-                                state_ptr, saved, prev_ctx, prev_dispatch, prev_gen_ctx, prev_gen_dispatch,
+                                state_ptr,
+                                saved,
+                                prev_ctx,
+                                prev_dispatch,
+                                prev_gen_ctx,
+                                prev_gen_dispatch,
                             )
                         }
                     }

@@ -946,11 +946,10 @@ pub fn module_defer_object<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let fn_val = vm.reg(args[1]);
     let ns_val = vm.reg(args[2]);
     // fn 为函数或 undefined（哨兵）；其余抛 TypeError。
-    let fn_is_function = fn_val.is_object()
-        && {
-            let ptr = fn_val.as_js_object_ptr();
-            !ptr.is_null() && unsafe { (*ptr).is_function() }
-        };
+    let fn_is_function = fn_val.is_object() && {
+        let ptr = fn_val.as_js_object_ptr();
+        !ptr.is_null() && unsafe { (*ptr).is_function() }
+    };
     if !fn_is_function && !fn_val.is_undefined() {
         return type_error(vm, "__moduleDeferObject: first argument must be a function or undefined");
     }
@@ -1165,11 +1164,7 @@ mod tests {
 
         // 再收集一次：若 error 边漏登，err 被回收、计数回落。
         vm.collect_session_gc();
-        assert_eq!(
-            vm.session_object_count(),
-            steady_count,
-            "失败缓存错误应跨收集存活（GC 边已登记）"
-        );
+        assert_eq!(vm.session_object_count(), steady_count, "失败缓存错误应跨收集存活（GC 边已登记）");
         // 原地 sweep 不搬移：ns 与状态盒原地保留，error 指针稳定。
         let ns_obj = unsafe { &*ns_val.as_js_object_ptr() };
         let state = deferred_state(ns_obj).expect("deferred state 应存活");

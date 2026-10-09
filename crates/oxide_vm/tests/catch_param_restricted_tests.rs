@@ -168,11 +168,7 @@ fn strict_ctx_indirect_eval_catch_arguments_throws() {
 #[test]
 fn sloppy_eval_completion_value_unaffected() {
     // 守卫：sloppy 上下文 eval 完成值不受严格性判定影响。
-    assert_eq!(
-        eval("eval(\"1+2\")"),
-        "3",
-        "sloppy context eval completion value is unaffected"
-    );
+    assert_eq!(eval("eval(\"1+2\")"), "3", "sloppy context eval completion value is unaffected");
 }
 
 #[test]

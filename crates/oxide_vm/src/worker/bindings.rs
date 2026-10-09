@@ -86,12 +86,7 @@ pub(crate) fn worker_constructor(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let url_val = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
     let url = match vm.lookup_str(url_val) {
         Some(u) => u,
-        None => {
-            return NativeResult::Err(oxide_builtins::error::create_type_error(
-                vm,
-                "Worker url must be a string",
-            ))
-        }
+        None => return NativeResult::Err(oxide_builtins::error::create_type_error(vm, "Worker url must be a string")),
     };
 
     // 主线程侧读 url 文件（worker 脚本源码）。
@@ -120,9 +115,11 @@ pub(crate) fn worker_constructor(vm: &mut Vm, args: &[u8]) -> NativeResult {
 
     // onmessage / onerror / onmessageerror：普通 own 数据属性（非枚举），初值 undefined。
     let si_onmessage = vm.perm_intern("onmessage");
-    let _ = vm.define_data_property(worker_obj, si_onmessage, JsValue::undefined(), PropAttributes::new(true, false, true));
+    let _ =
+        vm.define_data_property(worker_obj, si_onmessage, JsValue::undefined(), PropAttributes::new(true, false, true));
     let si_onerror = vm.perm_intern("onerror");
-    let _ = vm.define_data_property(worker_obj, si_onerror, JsValue::undefined(), PropAttributes::new(true, false, true));
+    let _ =
+        vm.define_data_property(worker_obj, si_onerror, JsValue::undefined(), PropAttributes::new(true, false, true));
     let si_onmessageerror = vm.perm_intern("onmessageerror");
     let _ = vm.define_data_property(
         worker_obj,
@@ -133,7 +130,12 @@ pub(crate) fn worker_constructor(vm: &mut Vm, args: &[u8]) -> NativeResult {
 
     // workerId：非枚举数据属性（值为 worker 编号，数值表示无 GC 边）。
     let si_worker_id = vm.perm_intern("workerId");
-    let _ = vm.define_data_property(worker_obj, si_worker_id, JsValue::float(id as f64), PropAttributes::new(true, false, true));
+    let _ = vm.define_data_property(
+        worker_obj,
+        si_worker_id,
+        JsValue::float(id as f64),
+        PropAttributes::new(true, false, true),
+    );
 
     // 登记 Worker 对象进注册表（GC 根，主线程事件循环据编号反查 onmessage）。
     vm.worker_objects.insert(id, JsValue::from_js_object(ptr));

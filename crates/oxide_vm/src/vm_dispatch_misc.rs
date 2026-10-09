@@ -1,6 +1,6 @@
 use crate::vm::{
-    Completion, DisposeResumeKind, ForInIter, FrameArgs, FrameContinuation, PendingAsyncDispose,
-    TryHandler, Vm, MAX_PROTO_CHAIN_DEPTH,
+    Completion, DisposeResumeKind, ForInIter, FrameArgs, FrameContinuation, PendingAsyncDispose, TryHandler, Vm,
+    MAX_PROTO_CHAIN_DEPTH,
 };
 use crate::vm_trace;
 use oxide_builtins::iterator::is_callable;
@@ -817,18 +817,14 @@ impl Vm {
     /// 异常穿越释放：逆序释放 `depth` 以上资源。在途异常作 completion 种子（被折叠
     /// 进 suppressed）。挂起时携 `Unwind(handler)`（handler 已弹出，恢复时重压再入
     /// unwind）。
-    pub(crate) fn dispose_above(
-        &mut self, depth: usize, handler: Option<TryHandler>,
-    ) -> Result<DisposePhase, String> {
+    pub(crate) fn dispose_above(&mut self, depth: usize, handler: Option<TryHandler>) -> Result<DisposePhase, String> {
         self.dispose_above_core(depth, DisposeResumeKind::Unwind(handler), self.exception_value)
     }
 
     /// 释放栈顶部 `n` 条资源（逃出释放：return/break/continue 完成值逃出作用域时
     /// 逆序释放被逃出的资源）。`n` 超过栈长时按全量释放。在途 completion 初值为
     /// None（完成值非 throw），挂起时携 `Escape(completion)` 供恢复后执行。
-    pub(crate) fn dispose_top_n(
-        &mut self, n: usize, completion: Completion,
-    ) -> Result<DisposePhase, String> {
+    pub(crate) fn dispose_top_n(&mut self, n: usize, completion: Completion) -> Result<DisposePhase, String> {
         let depth = self.dispose_stack.len().saturating_sub(n);
         self.dispose_above_core(depth, DisposeResumeKind::Escape(completion), None)
     }
@@ -896,16 +892,16 @@ impl Vm {
         let dispose_key = encode_symbol_key(self.realm_id(), WELL_KNOWN_SYMBOL_DISPOSE);
         let method = if hint == 1 {
             let async_key = encode_symbol_key(self.realm_id(), WELL_KNOWN_SYMBOL_ASYNC_DISPOSE);
-            let async_method = self
-                .ordinary_get(val_obj, async_key, value)
-                .map_err(|e| self.dispose_exc(e))?;
+            let async_method = self.ordinary_get(val_obj, async_key, value).map_err(|e| self.dispose_exc(e))?;
             if async_method.is_undefined() {
-                self.ordinary_get(val_obj, dispose_key, value).map_err(|e| self.dispose_exc(e))?
+                self.ordinary_get(val_obj, dispose_key, value)
+                    .map_err(|e| self.dispose_exc(e))?
             } else {
                 async_method
             }
         } else {
-            self.ordinary_get(val_obj, dispose_key, value).map_err(|e| self.dispose_exc(e))?
+            self.ordinary_get(val_obj, dispose_key, value)
+                .map_err(|e| self.dispose_exc(e))?
         };
         Ok(method)
     }

@@ -24,8 +24,7 @@ use oxide_ir::operand::Operand;
 use oxide_ir::{IRFunction, ParamLayout};
 use oxide_parser::{
     BindingPattern, Declaration, ExportDefaultDeclarationKind, Expression, ImportAttributeKey,
-    ImportDeclarationSpecifier, ImportPhase, ModuleExportName, Statement, VariableDeclarationKind,
-    WithClause,
+    ImportDeclarationSpecifier, ImportPhase, ModuleExportName, Statement, VariableDeclarationKind, WithClause,
 };
 use oxide_types::MODULE_NAMESPACE_BINDING;
 
@@ -501,9 +500,11 @@ impl Emitter {
                 _ => continue,
             };
             let is_new = !phase_map.contains_key(&spec);
-            let entry = phase_map
-                .entry(spec.clone())
-                .or_insert_with(|| DepPhase { eager: false, defer: false, attrs });
+            let entry = phase_map.entry(spec.clone()).or_insert_with(|| DepPhase {
+                eager: false,
+                defer: false,
+                attrs,
+            });
             if is_new {
                 defer_order.push(spec.clone());
             }
@@ -772,8 +773,7 @@ impl Emitter {
                                     );
                                 }
                                 let bind_reg = if is_defer {
-                                    *ctx
-                                        .module_defer_ns_regs
+                                    *ctx.module_defer_ns_regs
                                         .get(&dep_spec)
                                         .ok_or_else(|| format!("module dependency missing: {dep_spec}"))?
                                 } else {

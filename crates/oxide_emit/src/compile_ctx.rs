@@ -974,10 +974,7 @@ impl CompileCtx {
     ) -> IRFunction {
         // 编译期不变式：每个 DISPOSE_MARK 都有配对的 DISPOSE_POP，函数体收尾
         // 释放作用域全部关闭（早 return 跳过 POP 归穿越面，不在此列）。
-        debug_assert!(
-            self.labels.dispose_depth == 0,
-            "函数体收尾释放作用域深度须归零（mark/pop 未配对）"
-        );
+        debug_assert!(self.labels.dispose_depth == 0, "函数体收尾释放作用域深度须归零（mark/pop 未配对）");
         let upvalue_captures = self
             .current_upvalue_captures
             .iter()

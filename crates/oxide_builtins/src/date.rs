@@ -1042,15 +1042,7 @@ pub fn date_set_year<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let full_year = if (0..=99).contains(&y_int) { y_int + 1900 } else { y_int };
     finish_local_setter(
         obj,
-        make_local_timestamp(
-            full_year as f64,
-            dm as f64,
-            dd as f64,
-            dh as f64,
-            dmin as f64,
-            dsec as f64,
-            dms as f64,
-        ),
+        make_local_timestamp(full_year as f64, dm as f64, dd as f64, dh as f64, dmin as f64, dsec as f64, dms as f64),
     )
 }
 

@@ -420,11 +420,8 @@ fn function_call_apply_bind_async_target_returns_promise() {
 fn function_call_async_target_rejection_keeps_value() {
     // 异步目标抛错：Promise 以原值拒绝，.then 的拒绝臂收到原值。
     let mut vm = Vm::new();
-    let result = eval_drain(
-        &mut vm,
-        "async function f(){ throw 42; } f.call(null).then(v => 'ok:'+v, e => 'err:'+e)",
-    )
-    .unwrap();
+    let result =
+        eval_drain(&mut vm, "async function f(){ throw 42; } f.call(null).then(v => 'ok:'+v, e => 'err:'+e)").unwrap();
     assert_eq!(vm.lookup_str(result).unwrap_or_default(), "err:42");
 }
 

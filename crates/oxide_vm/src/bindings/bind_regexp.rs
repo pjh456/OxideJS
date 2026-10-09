@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
 use crate::bindings::{
-    apply_binding_table, bind_accessor_getter, bind_accessor_getset, bind_accessor_getter_key,
-    bind_well_known_method, configure_native_constructor,
+    apply_binding_table, bind_accessor_getset, bind_accessor_getter, bind_accessor_getter_key, bind_well_known_method,
+    configure_native_constructor,
 };
 use oxide_kernel::kernel::{KernelCore, KernelSession};
 use oxide_types::object::JsObject;
@@ -50,16 +50,7 @@ pub fn bind_regexp(core: &Arc<KernelCore>, session: &KernelSession, global: &mut
     let sf = core.perm_interner().as_ref();
     let mut bind_getset = |name: &str, getter: *const (), setter: *const ()| {
         let key = sf.intern(name).0;
-        bind_accessor_getset(
-            core,
-            session,
-            ctor,
-            key,
-            &format!("get {name}"),
-            &format!("set {name}"),
-            getter,
-            setter,
-        );
+        bind_accessor_getset(core, session, ctor, key, &format!("get {name}"), &format!("set {name}"), getter, setter);
     };
     // input/$_：get+set 对（唯一带 setter 的遗留访问器）。
     bind_getset(
@@ -74,9 +65,15 @@ pub fn bind_regexp(core: &Arc<KernelCore>, session: &KernelSession, global: &mut
     );
     // 其余 18 个 getter（set 恒 undefined）。
     for (name, getter) in [
-        ("lastMatch", oxide_builtins::regexp::regexp_legacy_get_last_match::<crate::vm::Vm> as *const ()),
+        (
+            "lastMatch",
+            oxide_builtins::regexp::regexp_legacy_get_last_match::<crate::vm::Vm> as *const (),
+        ),
         ("$&", oxide_builtins::regexp::regexp_legacy_get_last_match::<crate::vm::Vm> as *const ()),
-        ("lastParen", oxide_builtins::regexp::regexp_legacy_get_last_paren::<crate::vm::Vm> as *const ()),
+        (
+            "lastParen",
+            oxide_builtins::regexp::regexp_legacy_get_last_paren::<crate::vm::Vm> as *const (),
+        ),
         ("$+", oxide_builtins::regexp::regexp_legacy_get_last_paren::<crate::vm::Vm> as *const ()),
         (
             "leftContext",
@@ -87,7 +84,10 @@ pub fn bind_regexp(core: &Arc<KernelCore>, session: &KernelSession, global: &mut
             "rightContext",
             oxide_builtins::regexp::regexp_legacy_get_right_context::<crate::vm::Vm> as *const (),
         ),
-        ("$'", oxide_builtins::regexp::regexp_legacy_get_right_context::<crate::vm::Vm> as *const ()),
+        (
+            "$'",
+            oxide_builtins::regexp::regexp_legacy_get_right_context::<crate::vm::Vm> as *const (),
+        ),
         ("index", oxide_builtins::regexp::regexp_legacy_get_index::<crate::vm::Vm> as *const ()),
         ("$1", oxide_builtins::regexp::regexp_legacy_get_dollar_1::<crate::vm::Vm> as *const ()),
         ("$2", oxide_builtins::regexp::regexp_legacy_get_dollar_2::<crate::vm::Vm> as *const ()),

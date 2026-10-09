@@ -446,10 +446,7 @@ fn ancestor_defer_back_edge_sentinel() {
     let (ir, _) = emit_module(
         main_src,
         "./main.js",
-        &[
-            ("./main.js", ModuleKind::Js, main_src),
-            ("./dep.js", ModuleKind::Js, dep_src),
-        ],
+        &[("./main.js", ModuleKind::Js, main_src), ("./dep.js", ModuleKind::Js, dep_src)],
     )
     .expect("祖先 defer 回边应编译成功");
     // main：1 个 eager 依赖（dep）求值。

@@ -163,8 +163,8 @@ impl Emitter {
 
     /// 编译函数体并显式指定生成器标志（`function*` 走此入口）。
     pub(crate) fn compile_generator_body<'a>(
-        &self, param_specs: &[ParamSpec<'a>], body_stmts: &[Statement<'a>], parent_ctx: &CompileCtx,
-        own_strict: bool, name: Option<&str>,
+        &self, param_specs: &[ParamSpec<'a>], body_stmts: &[Statement<'a>], parent_ctx: &CompileCtx, own_strict: bool,
+        name: Option<&str>,
     ) -> Result<IRFunction, String> {
         self.compile_function_body_with_flags(
             param_specs,
@@ -183,11 +183,19 @@ impl Emitter {
     /// 同时标记 `is_generator` 与 `is_async`，VM 调用时按异步生成器协议执行
     /// （next 返回 Promise，yield 挂起与 await 挂起共存）。
     pub(crate) fn compile_async_generator_body<'a>(
-        &self, param_specs: &[ParamSpec<'a>], body_stmts: &[Statement<'a>], parent_ctx: &CompileCtx,
-        own_strict: bool, name: Option<&str>,
+        &self, param_specs: &[ParamSpec<'a>], body_stmts: &[Statement<'a>], parent_ctx: &CompileCtx, own_strict: bool,
+        name: Option<&str>,
     ) -> Result<IRFunction, String> {
         self.compile_function_body_with_flags(
-            param_specs, body_stmts, parent_ctx, false, false, true, true, own_strict, name,
+            param_specs,
+            body_stmts,
+            parent_ctx,
+            false,
+            false,
+            true,
+            true,
+            own_strict,
+            name,
         )
     }
 
@@ -300,8 +308,7 @@ impl Emitter {
         &self, param_specs: &[ParamSpec<'a>], body_stmts: &[Statement<'a>], parent_ctx: &CompileCtx,
         is_expression_body: bool, extra_bindings: &[(&str, u32)], body_context: FunctionBodyContext,
         mut emit_fields: Option<E>, fields_after_super: bool, extra_capture_exprs: &[&'a Expression<'a>],
-        extra_upvalue_names: &[(&str, u8)], is_generator: bool, is_async: bool, own_strict: bool,
-        name: Option<&str>,
+        extra_upvalue_names: &[(&str, u8)], is_generator: bool, is_async: bool, own_strict: bool, name: Option<&str>,
     ) -> Result<IRFunction, String>
     where
         E: FnMut(&Emitter, &mut CompileCtx) -> Result<(), String>,
@@ -708,24 +715,18 @@ impl Emitter {
                 || (fn_name == "arguments" && arguments_reg.is_some());
             if !suppressed {
                 let reg = ctx.alloc_reg();
-                ctx.scopes
-                    .symbols
-                    .scopes
-                    .last_mut()
-                    .expect("函数作用域已压入")
-                    .bindings
-                    .insert(
-                        fn_name.to_string(),
-                        Binding {
-                            reg,
-                            initialized: true,
-                            is_const: false,
-                            lexical: false,
-                            predeclared: false,
-                            cell_idx: None,
-                            non_writable: true,
-                        },
-                    );
+                ctx.scopes.symbols.scopes.last_mut().expect("函数作用域已压入").bindings.insert(
+                    fn_name.to_string(),
+                    Binding {
+                        reg,
+                        initialized: true,
+                        is_const: false,
+                        lexical: false,
+                        predeclared: false,
+                        cell_idx: None,
+                        non_writable: true,
+                    },
+                );
                 ctx.own_bindings.insert(fn_name.to_string());
                 ctx.function_name = Some(fn_name.to_string());
                 ctx.function_name_reg = Some(reg);

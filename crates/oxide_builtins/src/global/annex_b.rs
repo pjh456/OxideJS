@@ -23,11 +23,7 @@ fn escape_units(input: &[u16]) -> Vec<u16> {
             continue;
         }
         // 转义序列恒为全 ASCII，按码元推入。
-        let text = if u <= 0xFF {
-            format!("%{u:02X}")
-        } else {
-            format!("%u{u:04X}")
-        };
+        let text = if u <= 0xFF { format!("%{u:02X}") } else { format!("%u{u:04X}") };
         out.extend(text.encode_utf16());
     }
     out
@@ -42,10 +38,7 @@ fn unescape_units(input: &[u16]) -> Vec<u16> {
     while i < input.len() {
         if input[i] == b'%' as u16 {
             // %uXXXX：后跟 4 位十六进制。
-            if i + 6 <= input.len()
-                && input[i + 1] == b'u' as u16
-                && (2..6).all(|k| hex_val(input[i + k]).is_some())
-            {
+            if i + 6 <= input.len() && input[i + 1] == b'u' as u16 && (2..6).all(|k| hex_val(input[i + k]).is_some()) {
                 let v = (0..4).fold(0u16, |acc, k| acc * 16 + hex_val(input[i + 2 + k]).unwrap());
                 out.push(v);
                 i += 6;

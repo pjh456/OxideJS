@@ -6,8 +6,7 @@ use oxide_bytecode::opcode::OpCode;
 use oxide_ir::inst::Inst;
 use oxide_ir::operand::Operand;
 use oxide_parser::{
-    BindingPattern, ForStatementInit, ForStatementLeft, Statement, VariableDeclaration,
-    VariableDeclarationKind,
+    BindingPattern, ForStatementInit, ForStatementLeft, Statement, VariableDeclaration, VariableDeclarationKind,
 };
 
 impl Emitter {
@@ -137,9 +136,7 @@ impl Emitter {
 
     /// using/await using 声明登记释放栈：把资源值（val_reg）压入释放栈。非
     /// using/await using 声明不登记。a 槽为释放提示（0 = 同步、1 = 异步）。
-    pub(crate) fn emit_dispose_register(
-        &self, val_reg: u32, kind: VariableDeclarationKind, ctx: &mut CompileCtx,
-    ) {
+    pub(crate) fn emit_dispose_register(&self, val_reg: u32, kind: VariableDeclarationKind, ctx: &mut CompileCtx) {
         if !matches!(kind, VariableDeclarationKind::Using | VariableDeclarationKind::AwaitUsing) {
             return;
         }

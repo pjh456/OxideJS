@@ -914,80 +914,57 @@ fn test_filter_boxed_string_this() {
 // 引擎钉：reduce 装箱串 this——从左到右累计，初值空串。
 #[test]
 fn test_reduce_boxed_string_this() {
-    let out = eval_str(
-        "(() => { return Array.prototype.reduce.call('ab', (a, b) => a + b, ''); })()",
-    )
-    .unwrap();
+    let out = eval_str("(() => { return Array.prototype.reduce.call('ab', (a, b) => a + b, ''); })()").unwrap();
     assert_eq!(out, "ab");
 }
 
 // 引擎钉：reduceRight 装箱串 this——从右到左累计。
 #[test]
 fn test_reduce_right_boxed_string_this() {
-    let out = eval_str(
-        "(() => { return Array.prototype.reduceRight.call('ab', (a, b) => a + b, ''); })()",
-    )
-    .unwrap();
+    let out = eval_str("(() => { return Array.prototype.reduceRight.call('ab', (a, b) => a + b, ''); })()").unwrap();
     assert_eq!(out, "ba");
 }
 
 // 引擎钉：find 装箱串 this——返回首个真值单元。
 #[test]
 fn test_find_boxed_string_this() {
-    let out = eval_str(
-        "(() => { return Array.prototype.find.call('ab', c => c === 'b'); })()",
-    )
-    .unwrap();
+    let out = eval_str("(() => { return Array.prototype.find.call('ab', c => c === 'b'); })()").unwrap();
     assert_eq!(out, "b");
 }
 
 // 引擎钉：findIndex 装箱串 this——返回首个真值下标。
 #[test]
 fn test_find_index_boxed_string_this() {
-    let out = eval_str(
-        "(() => { return String(Array.prototype.findIndex.call('ab', c => c === 'a')); })()",
-    )
-    .unwrap();
+    let out = eval_str("(() => { return String(Array.prototype.findIndex.call('ab', c => c === 'a')); })()").unwrap();
     assert_eq!(out, "0");
 }
 
 // 引擎钉：findLast 装箱串 this——返回末个真值单元。
 #[test]
 fn test_find_last_boxed_string_this() {
-    let out = eval_str(
-        "(() => { return Array.prototype.findLast.call('ab', c => c === 'b'); })()",
-    )
-    .unwrap();
+    let out = eval_str("(() => { return Array.prototype.findLast.call('ab', c => c === 'b'); })()").unwrap();
     assert_eq!(out, "b");
 }
 
 // 引擎钉：findLastIndex 装箱串 this——返回末个真值下标。
 #[test]
 fn test_find_last_index_boxed_string_this() {
-    let out = eval_str(
-        "(() => { return String(Array.prototype.findLastIndex.call('ab', c => c === 'b')); })()",
-    )
-    .unwrap();
+    let out =
+        eval_str("(() => { return String(Array.prototype.findLastIndex.call('ab', c => c === 'b')); })()").unwrap();
     assert_eq!(out, "1");
 }
 
 // 引擎钉：some 装箱串 this——任一单元真值即 true。
 #[test]
 fn test_some_boxed_string_this() {
-    let out = eval_str(
-        "(() => { return String(Array.prototype.some.call('ab', c => c === 'b')); })()",
-    )
-    .unwrap();
+    let out = eval_str("(() => { return String(Array.prototype.some.call('ab', c => c === 'b')); })()").unwrap();
     assert_eq!(out, "true");
 }
 
 // 引擎钉：every 装箱串 this——全单元真值才 true。
 #[test]
 fn test_every_boxed_string_this() {
-    let out = eval_str(
-        "(() => { return String(Array.prototype.every.call('ab', c => c !== 'x')); })()",
-    )
-    .unwrap();
+    let out = eval_str("(() => { return String(Array.prototype.every.call('ab', c => c !== 'x')); })()").unwrap();
     assert_eq!(out, "true");
 }
 

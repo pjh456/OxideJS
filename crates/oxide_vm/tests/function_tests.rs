@@ -291,10 +291,7 @@ fn fn_name_recursive_call() {
 /// 断言运行期抛出未捕获 ReferenceError（默认参数 TDZ 守卫的期望形态）。
 fn assert_dflt_tdz_reference_error(source: &str, msg: &str) {
     let err = eval(&mut Vm::new(), source).unwrap_err();
-    assert!(
-        err.contains("ReferenceError"),
-        "{msg}: expected an uncaught ReferenceError, got: {err}"
-    );
+    assert!(err.contains("ReferenceError"), "{msg}: expected an uncaught ReferenceError, got: {err}");
 }
 
 #[test]

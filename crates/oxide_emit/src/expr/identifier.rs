@@ -120,7 +120,8 @@ impl Emitter {
         // 被捕获参数经 visible_cell 回退命中 CELL_GET，判定后置即漏判。
         if ctx.param_tdz_names.contains(name) {
             let _ = self.emit_tdz_throw(&format!("Cannot access '{name}' before initialization"), ctx);
-        } else if let Some((uv_idx, _)) = ctx.current_upvalue_captures.iter().enumerate().find(|(_, u)| u.name == name) {
+        } else if let Some((uv_idx, _)) = ctx.current_upvalue_captures.iter().enumerate().find(|(_, u)| u.name == name)
+        {
             ctx.inst(Inst::new(
                 OpCode::LOAD_UPVALUE,
                 Operand::Reg(result_reg),

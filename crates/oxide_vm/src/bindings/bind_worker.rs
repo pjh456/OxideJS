@@ -45,11 +45,7 @@ pub fn bind_worker(core: &Arc<KernelCore>, session: &KernelSession, global: &mut
             let function_proto = world.function_proto.as_ptr() as *mut JsObject;
             let mut ctor = JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(function_proto));
             ctor.set_function(true);
-            configure_native_constructor(
-                &mut ctor,
-                crate::worker::bindings::worker_constructor as *const (),
-                1,
-            );
+            configure_native_constructor(&mut ctor, crate::worker::bindings::worker_constructor as *const (), 1);
             let ptr = Box::into_raw(Box::new(ctor));
             world.track_leaked_object(ptr);
             ptr
@@ -63,7 +59,8 @@ pub fn bind_worker(core: &Arc<KernelCore>, session: &KernelSession, global: &mut
         if sh.lookup_position(ctor.shape_id(), si_name).is_none() {
             let shape = sh.make_shape(ctor.shape_id(), si_name);
             ctor.set_shape_id(shape);
-            ctor.ensure_hash_props().push(JsValue::perm_string(sf.string_ptr(sf.intern("Worker").0)));
+            ctor.ensure_hash_props()
+                .push(JsValue::perm_string(sf.string_ptr(sf.intern("Worker").0)));
             let pos = ctor.hash_props_vec().map_or(0, |v| v.len() as u32).saturating_sub(1);
             ctor.set_data_meta(pos, PropAttributes::new(false, false, true));
             ctor.bump_generation();
@@ -116,11 +113,7 @@ pub fn bind_worker(core: &Arc<KernelCore>, session: &KernelSession, global: &mut
                 proto,
                 core,
                 &[
-                    (
-                        "postMessage",
-                        crate::worker::bindings::worker_post_message as *const (),
-                        1,
-                    ),
+                    ("postMessage", crate::worker::bindings::worker_post_message as *const (), 1),
                     ("terminate", crate::worker::bindings::worker_terminate as *const (), 0),
                 ],
             );
@@ -147,11 +140,7 @@ pub fn bind_worker(core: &Arc<KernelCore>, session: &KernelSession, global: &mut
             global,
             core,
             &[
-                (
-                    "postMessage",
-                    crate::worker::bindings::self_post_message as *const (),
-                    1,
-                ),
+                ("postMessage", crate::worker::bindings::self_post_message as *const (), 1),
                 ("close", crate::worker::bindings::self_close as *const (), 0),
             ],
         );

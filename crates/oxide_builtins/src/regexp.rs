@@ -842,12 +842,18 @@ pub fn regexp_compile<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         return NativeResult::Err(crate::error::create_type_error(vm, "null object"));
     }
     if !unsafe { &*this_ptr }.is_regexp_obj() {
-        return NativeResult::Err(crate::error::create_type_error(vm, "RegExp.prototype.compile called on non-RegExp object"));
+        return NativeResult::Err(crate::error::create_type_error(
+            vm,
+            "RegExp.prototype.compile called on non-RegExp object",
+        ));
     }
     // proto 精确恒等：子类实例（proto = 子类 prototype）抛 TypeError。
     let proto_ptr = vm.builtin_proto(ProtoKind::RegExpProto);
     if unsafe { &*this_ptr }.proto() != JsValue::from_js_object(proto_ptr) {
-        return NativeResult::Err(crate::error::create_type_error(vm, "RegExp.prototype.compile called on subclass instance"));
+        return NativeResult::Err(crate::error::create_type_error(
+            vm,
+            "RegExp.prototype.compile called on subclass instance",
+        ));
     }
 
     // 第 2 / 3 步：pattern / flags 取参。

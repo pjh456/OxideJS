@@ -87,33 +87,34 @@ impl Emitter {
     pub(crate) fn emit_continue_statement(
         &self, stmt: &oxide_parser::ContinueStatement, ctx: &mut CompileCtx,
     ) -> Result<Option<u32>, String> {
-        let (continue_label, fd_at_open, fod_at_open, fid_at_open, dd_at_open, target_v_reg) =
-            if let Some(label) = &stmt.label {
-                let name = label.name.as_str();
-                let scope = ctx
-                    .find_label(name)
-                    .ok_or_else(|| format!("SyntaxError: Undefined label '{name}'"))?;
-                (
-                    scope.continue_label.ok_or_else(|| {
-                        format!("SyntaxError: Illegal continue statement: '{name}' does not denote an iteration statement")
-                    })?,
-                    scope.finally_depth_at_open,
-                    scope.for_of_depth_at_open,
-                    scope.for_in_depth_at_open,
-                    scope.dispose_depth_at_open,
-                    scope.completion_reg,
-                )
-            } else {
-                let entry = ctx.current_loop().ok_or("continue outside loop".to_string())?;
-                (
-                    entry.continue_label,
-                    entry.finally_depth_at_open,
-                    entry.for_of_depth_at_open,
-                    entry.for_in_depth_at_open,
-                    entry.dispose_depth_at_open,
-                    Some(entry.v_reg),
-                )
-            };
+        let (continue_label, fd_at_open, fod_at_open, fid_at_open, dd_at_open, target_v_reg) = if let Some(label) =
+            &stmt.label
+        {
+            let name = label.name.as_str();
+            let scope = ctx
+                .find_label(name)
+                .ok_or_else(|| format!("SyntaxError: Undefined label '{name}'"))?;
+            (
+                scope.continue_label.ok_or_else(|| {
+                    format!("SyntaxError: Illegal continue statement: '{name}' does not denote an iteration statement")
+                })?,
+                scope.finally_depth_at_open,
+                scope.for_of_depth_at_open,
+                scope.for_in_depth_at_open,
+                scope.dispose_depth_at_open,
+                scope.completion_reg,
+            )
+        } else {
+            let entry = ctx.current_loop().ok_or("continue outside loop".to_string())?;
+            (
+                entry.continue_label,
+                entry.finally_depth_at_open,
+                entry.for_of_depth_at_open,
+                entry.for_in_depth_at_open,
+                entry.dispose_depth_at_open,
+                Some(entry.v_reg),
+            )
+        };
         if let Some(target_v_reg) = target_v_reg {
             self.emit_completion_carry(ctx, target_v_reg);
         }

@@ -876,10 +876,7 @@ impl Vm {
             // 异常穿越释放：逆序释放该作用域内登记的资源（规范序 IteratorClose 先、
             // DisposeResources 后）。释放方法抛错时新错误替代在途异常继续向外展开；
             // 异步释放挂起时登记在途状态并让出（恢复方重压 handler 再入本函数）。
-            if matches!(
-                self.dispose_above(handler.dispose_depth, Some(handler))?,
-                DisposePhase::Suspended
-            ) {
+            if matches!(self.dispose_above(handler.dispose_depth, Some(handler))?, DisposePhase::Suspended) {
                 return Ok(());
             }
             if let Some(finally_pc) = handler.finally_pc {

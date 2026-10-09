@@ -191,8 +191,7 @@ pub(crate) fn unit_string_value<H: VmHost>(vm: &mut H, unit: u16) -> JsValue {
 pub(crate) fn arraylike_index_present<H: VmHost>(vm: &mut H, ptr: *mut JsObject, i: usize) -> bool {
     // SAFETY: ptr 来自 this/参数对象，指向存活对象。
     let key_si = vm.string_key_si(&i.to_string());
-    vm.has_property(unsafe { &*ptr }, key_si)
-        .unwrap_or(false)
+    vm.has_property(unsafe { &*ptr }, key_si).unwrap_or(false)
 }
 
 /// 元素读取失败时直接把异常作为 NativeResult::Err 返回。

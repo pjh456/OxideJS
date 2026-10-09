@@ -56,8 +56,6 @@ pub mod bind_shared_array_buffer;
 pub mod bind_string;
 /// 未实现内置（Proxy/BigInt/WeakMap 等）的 stub 构造器绑定。
 pub mod bind_stubs;
-/// Worker 构造器绑定（Box 分配，不占 BuiltinWorld P 字段）。
-pub mod bind_worker;
 /// Symbol 构造器与原型的 native 方法绑定。
 pub mod bind_symbol;
 /// Temporal 命名空间对象（Now/Instant/PlainDate/PlainTime）绑定。
@@ -66,6 +64,8 @@ pub mod bind_temporal;
 pub mod bind_typed_array;
 /// WeakMap 构造器与原型四方法的 native 绑定（弱族不占 BuiltinWorld 槽）。
 pub mod bind_weak;
+/// Worker 构造器绑定（Box 分配，不占 BuiltinWorld P 字段）。
+pub mod bind_worker;
 
 use std::sync::Arc;
 
