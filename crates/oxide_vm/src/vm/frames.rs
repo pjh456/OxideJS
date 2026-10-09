@@ -44,6 +44,9 @@ impl FrameArgs<'_> {
 pub struct CallFrame {
     pub return_addr: usize,
     pub function_name: u32,
+    /// 帧身份（VM 级单调计数器，压帧时分配）：mapped arguments 状态盒按此判定
+    /// 创建帧是否仍在栈上（帧弹出后映射失效）。
+    pub frame_id: u64,
     /// 压帧保存的调用方寄存器窗口长度（= save_stack 中本帧段大小）。
     /// 普通字节码调用按调用点存活上界截断；运行时发起（accessor/内联）为
     /// 调用方 `active_reg_limit` 全量。
@@ -61,6 +64,9 @@ pub struct CallFrame {
     pub saved_this: JsValue,
     pub saved_new_target: JsValue,
     pub callee: JsValue,
+    /// 本帧的 mapped arguments 对象（参数寄存器与存储值双向同步的锚点）；
+    /// 无 mapped arguments 时为 undefined。GC 根（帧遍历期标记）。
+    pub arguments_obj: JsValue,
     pub construct_result_reg: Option<u8>,
     pub constructed_this: Option<JsValue>,
     pub is_derived_constructor: bool,

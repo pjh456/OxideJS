@@ -253,6 +253,12 @@ pub trait VmHost {
     /// 守卫抛 TypeError / 失败缓存原值重抛），触发失败以 `Err` 返回。
     fn has_property(&mut self, obj: &JsObject, prop_name_si: u32) -> Result<bool, String>;
     fn get_own_property_slot(&self, obj: &JsObject, prop_name_si: u32) -> Option<u32>;
+    /// 判定 mapped arguments 映射是否存活：创建帧仍在帧栈上且帧身份匹配。
+    ///
+    /// # 边界与前提
+    /// - `state` 为 arguments 对象 `native_data` 中的同步状态盒；`frame_depth`
+    ///   为创建帧下标，帧弹出后映射失效。
+    fn arguments_mapping_alive(&self, state: &oxide_types::arguments_map::ArgumentsMapState) -> bool;
 
     // 属性访问
     fn ordinary_get(&mut self, obj: &JsObject, prop_name_si: u32, receiver: JsValue) -> Result<JsValue, String>;

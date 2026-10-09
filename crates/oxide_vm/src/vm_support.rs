@@ -67,6 +67,7 @@ impl Vm {
             bytecode: Arc::default(),
             active_immutables: std::ptr::slice_from_raw_parts(std::ptr::null(), 0),
             frames: smallvec::SmallVec::new(),
+            next_frame_id: 0,
             kernel_core: core,
             // 缺省 no-op 编译服务：动态编译返 Err，生产 entry points 与
             // 动态编译测试经 set_compiler_service 注入真实实现。
@@ -232,6 +233,7 @@ impl Vm {
             bytecode: Arc::default(),
             active_immutables: std::ptr::slice_from_raw_parts(std::ptr::null(), 0),
             frames: smallvec::SmallVec::new(),
+            next_frame_id: 0,
             kernel_core: core,
             // 缺省 no-op 编译服务：动态编译返 Err，生产 entry points 与
             // 动态编译测试经 set_compiler_service 注入真实实现。

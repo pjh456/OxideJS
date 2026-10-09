@@ -53,6 +53,8 @@ pub(crate) enum NativeBoxFamily {
     MessagePort,
     /// BroadcastChannel 通道对象（tag 34，mpsc 发送/接收对与通道名，无对象边）。
     BroadcastChannel,
+    /// mapped arguments 对象（tag 20，同步状态盒存 `native_data`，无引用边）。
+    Arguments,
 }
 
 /// 一个家族的边操作集（每家族函数引用，单一注册面）。
@@ -114,7 +116,7 @@ pub(crate) fn classify_by_tag(tag: u8) -> NativeBoxFamily {
         JsObject::OBJ_TYPE_DURATION => NativeBoxFamily::None,
         JsObject::OBJ_TYPE_ZONED_DATE_TIME => NativeBoxFamily::None,
         JsObject::OBJ_TYPE_PLAIN_DATE_TIME => NativeBoxFamily::None,
-        JsObject::OBJ_TYPE_ARGUMENTS => NativeBoxFamily::None,
+        JsObject::OBJ_TYPE_ARGUMENTS => NativeBoxFamily::Arguments,
         JsObject::OBJ_TYPE_SYMBOL_OBJ => NativeBoxFamily::None,
         JsObject::OBJ_TYPE_ERROR => NativeBoxFamily::None,
         JsObject::OBJ_TYPE_BOUND => NativeBoxFamily::None,
@@ -221,6 +223,13 @@ pub(crate) fn ops_for(family: NativeBoxFamily) -> NativeBoxOps {
             string_edges: None,
             cell_edges: None,
         },
+        // mapped arguments 同步状态盒：无引用边（位图与帧身份均为原始值），
+        // 三边函数全空，仅 size/drop 链消费。
+        NativeBoxFamily::Arguments => NativeBoxOps {
+            object_edges: None,
+            string_edges: None,
+            cell_edges: None,
+        },
     }
 }
 
@@ -252,6 +261,7 @@ mod tests {
             JsObject::OBJ_TYPE_REGEXP | JsObject::OBJ_TYPE_REGEX_STUB => NativeBoxFamily::RegExp,
             JsObject::OBJ_TYPE_MESSAGE_PORT => NativeBoxFamily::MessagePort,
             JsObject::OBJ_TYPE_BROADCAST_CHANNEL => NativeBoxFamily::BroadcastChannel,
+            JsObject::OBJ_TYPE_ARGUMENTS => NativeBoxFamily::Arguments,
             _ => NativeBoxFamily::None,
         }
     }

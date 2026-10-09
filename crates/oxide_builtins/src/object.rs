@@ -1,5 +1,6 @@
 use oxide_kernel::shape_forge::{ShapeForge, EMPTY_SHAPE_ID};
 use oxide_kernel::string_forge::PermInterner;
+use oxide_types::arguments_map::ArgumentsMapState;
 use oxide_types::object::{JsObject, PropAttributes, PropMetaEntry};
 use oxide_types::private_key::{
     decode_symbol_key, encode_symbol_key, int_key_value, is_int_key, is_private_name_key, is_symbol_key, make_int_key,
@@ -362,6 +363,33 @@ pub fn delete_own_property_outcome<H: VmHost>(
                 return Ok(DeleteOutcome::Missing);
             }
             crate::typed_array::TaIndexGate::Ordinary => {}
+        }
+    }
+
+    // mapped arguments exotic [[Delete]]：整数索引且映射存活时，属性不可配置返回
+    // NonConfigurable（严格抛 TypeError、sloppy 返回 false）；可配置时移除映射并
+    // 落穿普通删除路径。accessor 属性不移除映射（无参数寄存器同步）。
+    if obj.is_arguments_obj() {
+        let state_ptr = obj.native_data() as *mut ArgumentsMapState;
+        if !state_ptr.is_null() {
+            // SAFETY: native_data 由创建期 Box::into_raw 分配，生命周期与对象一致。
+            let state = unsafe { &mut *state_ptr };
+            if vm.arguments_mapping_alive(state) {
+                if let Some(index) = array_index_of(vm, key_si) {
+                    if (index as u16) < state.param_count && state.is_mapped(index as u16) {
+                        let pos = vm.get_own_property_slot(obj, key_si);
+                        let meta = pos.and_then(|p| obj.prop_meta_at(p));
+                        let is_accessor = meta.is_some_and(|m| m.is_accessor);
+                        let configurable = meta.map(|m| m.attributes.configurable()).unwrap_or(true);
+                        if !configurable {
+                            return Ok(DeleteOutcome::NonConfigurable);
+                        }
+                        if !is_accessor {
+                            state.unmap(index as u16);
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -952,6 +980,38 @@ pub(crate) fn define_from_descriptor<H: VmHost>(
                 ));
             }
             crate::typed_array::TaIndexGate::Ordinary => {}
+        }
+    }
+
+    // mapped arguments exotic [[DefineOwnProperty]]：整数索引且映射存活时，旧描述符
+    // 可写且新描述符不可写则移除映射，新描述符含 value 则写参数寄存器；随后落穿
+    // 普通 define 路径（描述符收窄校验由 define_data_property 承担）。
+    if unsafe { &*obj_ptr }.is_arguments_obj() {
+        let state_ptr = unsafe { &*obj_ptr }.native_data() as *mut ArgumentsMapState;
+        if !state_ptr.is_null() {
+            // SAFETY: native_data 由创建期 Box::into_raw 分配，生命周期与对象一致。
+            let state = unsafe { &mut *state_ptr };
+            if vm.arguments_mapping_alive(state) {
+                if let Some(index) = array_index_of(vm, key_si) {
+                    if (index as u16) < state.param_count && state.is_mapped(index as u16) {
+                        let old_writable = existing_meta.map(|m| m.attributes.writable()).unwrap_or(true);
+                        let new_writable = if has_existing {
+                            writable_field
+                                .map(oxide_runtime_api::to_boolean)
+                                .unwrap_or_else(|| existing_meta.map(|m| m.attributes.writable()).unwrap_or(false))
+                        } else {
+                            writable_field.map(oxide_runtime_api::to_boolean).unwrap_or(false)
+                        };
+                        if old_writable && !new_writable {
+                            state.unmap(index as u16);
+                        }
+                        if let Some(v) = value_field {
+                            let reg = (state.param_base as u16 + index as u16) as u8;
+                            vm.set_reg(reg, v);
+                        }
+                    }
+                }
+            }
         }
     }
 

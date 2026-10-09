@@ -1,5 +1,7 @@
 #![doc = "OxideJS 共享核心类型：ECMAScript 值、对象模型、形状存储、内存抽象与运行时错误类型。"]
 
+/// mapped arguments 对象同步状态盒（参数寄存器与 arguments 存储值双向同步）。
+pub mod arguments_map;
 /// 运行时错误类型（[`JsError`] / [`JsErrorKind`]）。
 pub mod error;
 /// 内存抽象：持久指针、arena 分配（epoch）与持久堆。

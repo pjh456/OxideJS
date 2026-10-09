@@ -332,9 +332,14 @@ impl Vm {
         // 压帧时固化 callee 的 upvalue 表（非闭包为 null 空切片）：热路径免
         // 每指令重查 callee 对象，指针跨 GC 恒有效（callee 是 GC 根）。
         let up = obj.upvalues_slice() as *const [*mut Cell];
+        // 帧身份单调递增：mapped arguments 状态盒按 (帧下标, 帧身份) 判定创建帧
+        // 是否仍在栈上，帧弹出后身份不复用，映射随之失效。
+        self.next_frame_id += 1;
+        let frame_id = self.next_frame_id;
         self.frames.push(CallFrame {
             return_addr: self.pc,
             function_name,
+            frame_id,
             caller_reg_limit,
             caller_active_reg_limit,
             saved_reg_offset,
@@ -344,6 +349,7 @@ impl Vm {
             saved_this,
             saved_new_target,
             callee,
+            arguments_obj: JsValue::undefined(),
             construct_result_reg,
             constructed_this,
             is_derived_constructor: obj.is_derived_constructor(),

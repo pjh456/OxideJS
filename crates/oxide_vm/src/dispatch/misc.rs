@@ -2,6 +2,7 @@ use crate::vm::Vm;
 use crate::{vm_error, vm_trace};
 use oxide_bytecode::opcode;
 use oxide_kernel::shape_forge::EMPTY_SHAPE_ID;
+use oxide_types::arguments_map::ArgumentsMapState;
 use oxide_types::object::{JsObject, PropAttributes};
 use oxide_types::private_key::{encode_symbol_key, make_int_key};
 use oxide_types::value::{JsType, JsValue};
@@ -153,7 +154,61 @@ impl Vm {
             }
         }
         self.regs[rd] = self.regs[a];
+        // mapped arguments 参数直写同步：目标寄存器是创建帧的存活映射参数时，
+        // 把新值回写 arguments 存储值（读路径权威源），嵌套调用覆盖寄存器后
+        // 存储值仍正确。
+        self.sync_mapped_arguments_param(rd);
         Ok(false)
+    }
+
+    /// mapped arguments 参数寄存器直写同步：目标寄存器是顶帧 mapped arguments 的
+    /// 存活映射参数时，把新值回写 arguments 对象存储值（读路径权威源）。
+    ///
+    /// # 边界与前提
+    /// - 仅顶帧带 mapped arguments 对象（`frame.arguments_obj` 非 undefined）时
+    ///   生效；其余帧首检即返回（热路径零开销）。
+    /// - 映射失效（创建帧已弹出）或索引已 unmapped（收窄不可写 / 删除）时不同步。
+    ///
+    /// # 副作用
+    /// - 写 arguments 对象存储值槽（shape 槽已存在，无 shape 变更）。
+    pub(crate) fn sync_mapped_arguments_param(&mut self, rd: usize) {
+        let Some(frame) = self.frames.last() else {
+            return;
+        };
+        if frame.arguments_obj.is_undefined() {
+            return;
+        }
+        let obj_ptr = frame.arguments_obj.as_js_object_ptr();
+        if obj_ptr.is_null() {
+            return;
+        }
+        // SAFETY: arguments_obj 是 GC 根（帧遍历期标记），session 内指针有效。
+        if !unsafe { (*obj_ptr).is_arguments_obj() } {
+            return;
+        }
+        let state_ptr = unsafe { (*obj_ptr).native_data() } as *const ArgumentsMapState;
+        if state_ptr.is_null() {
+            return;
+        }
+        // SAFETY: native_data 由创建期 Box::into_raw 分配，生命周期与对象一致。
+        let state = unsafe { &*state_ptr };
+        if !self.arguments_mapping_alive(state) {
+            return;
+        }
+        let param_base = state.param_base as usize;
+        let param_count = state.param_count as usize;
+        if rd < param_base || rd >= param_base + param_count {
+            return;
+        }
+        let index = (rd - param_base) as u16;
+        if !state.is_mapped(index) {
+            return;
+        }
+        let si = make_int_key(index as u32);
+        let val = self.regs[rd];
+        // SAFETY: obj_ptr 是有效对象指针（GC 根）。
+        let obj_mut = unsafe { &mut *obj_ptr };
+        self.set_or_create_prop_value(obj_mut, si, val);
     }
 
     /// SPILL：`regs[rd]` → `spill_stack[帧基址 + slot]`。
@@ -287,6 +342,40 @@ impl Vm {
         let obj = unsafe { &mut *obj_ptr };
         obj.type_tag = JsObject::OBJ_TYPE_ARGUMENTS;
 
+        // mapped 判定：sloppy 且 simple（strict ‖ !simple → unmapped）。mapped 时
+        // 建同步状态盒（存 native_data）：参数寄存器与 arguments 存储值双向同步，
+        // 帧身份经 (帧下标, 帧身份) 判定创建帧是否仍在栈上。unmapped 时 native_data
+        // 保持 null，exotic 四臂短路，行为与现树一致。
+        let strict = self.current_strict();
+        let simple = self.active_module().is_some_and(|m| m.has_simple_params);
+        if !strict && simple {
+            if let (Some(frame_id), Some(module)) = (self.frames.last().map(|f| f.frame_id), self.active_module()) {
+                let param_base = module.param_base;
+                let param_count = module.n_args as u16;
+                let words = (param_count as usize).div_ceil(64).max(1);
+                let mut mapped_mask = vec![u64::MAX; words];
+                let valid_bits = param_count as usize % 64;
+                if valid_bits != 0 {
+                    mapped_mask[words - 1] &= (1u64 << valid_bits) - 1;
+                } else if param_count == 0 {
+                    mapped_mask[0] = 0;
+                }
+                let state = ArgumentsMapState {
+                    param_base,
+                    param_count,
+                    mapped_mask,
+                    frame_depth: (self.frames.len() - 1) as u32,
+                    frame_id,
+                };
+                obj.set_native_data(Box::into_raw(Box::new(state)) as *mut u8);
+                // 帧锚点：参数寄存器直写（STORE_VAR）据此同步 arguments 存储值，
+                // 使嵌套调用期参数寄存器被覆盖时存储值仍为权威读源。
+                if let Some(frame) = self.frames.last_mut() {
+                    frame.arguments_obj = JsValue::from_js_object(obj_ptr);
+                }
+            }
+        }
+
         // 索引属性：按实参下标写入 shape 槽，属性描述符为默认（可写/可枚举/可配置）。
         // 下标走整数键，保证 `arguments[0]`（property_key_si(int 0)）键等价命中。
         for i in 0..count as usize {
@@ -312,8 +401,6 @@ impl Vm {
         // 函数本身，可写、不可枚举、可配置）。
         let callee_si = self.kernel_core.perm_interner().intern("callee").0;
         let callee = self.current_callee().unwrap_or(JsValue::undefined());
-        let strict = self.current_strict();
-        let simple = self.active_module().is_some_and(|m| m.has_simple_params);
         if strict || !simple {
             // SAFETY: 指针由绑定层在 session 构造期写入，session 存活期内有效。
             let thrower_ptr = self.realm.session.borrow().builtin_world().throw_type_error.get();

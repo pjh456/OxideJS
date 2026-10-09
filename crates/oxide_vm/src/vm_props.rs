@@ -4,10 +4,22 @@ use oxide_kernel::prop_forge::PropTemplate;
 use oxide_kernel::shape_forge::EMPTY_SHAPE_ID;
 use oxide_runtime_api as coercion;
 use oxide_runtime_api::VmHost;
+use oxide_types::arguments_map::ArgumentsMapState;
 use oxide_types::object::{JsObject, PropAttributes, PropMetaEntry};
 use oxide_types::value::JsValue;
 
 impl Vm {
+    /// 判定 mapped arguments 映射是否存活：创建帧仍在帧栈上且帧身份匹配。
+    ///
+    /// # 边界与前提
+    /// - `frame_depth` 为创建帧在帧栈中的下标；帧弹出后 `frames.len() <= frame_depth`，
+    ///   映射失效（参数寄存器已被外层帧复用）。
+    /// - 帧身份（`frame_id`）单调递增不复用，防帧下标复用误判。
+    pub(crate) fn arguments_mapping_alive(&self, state: &ArgumentsMapState) -> bool {
+        let depth = state.frame_depth as usize;
+        self.frames.len() > depth && self.frames[depth].frame_id == state.frame_id
+    }
+
     /// 属性读入口：解析 `obj[prop_name_si]`，依次尝试数组 length 虚拟属性、
     /// 数组元素区、TypedArray 整数索引、命名属性槽，最后沿原型链查找。
     ///
@@ -377,6 +389,39 @@ impl Vm {
                 return self.write_protection_failure(builtin, "Cannot assign to a module namespace export");
             }
             return Ok(());
+        }
+        // mapped arguments exotic [[Set]]：整数索引且映射存活时同步存储值（读路径
+        // 权威源）并写参数寄存器；accessor 属性落穿普通 setter 路径。参数寄存器
+        // 仅在创建帧为顶帧时写——嵌套调用期寄存器被被调方占用，写之串值，参数值
+        // 在 save_stack。
+        if obj.is_arguments_obj() {
+            let state_ptr = obj.native_data() as *const ArgumentsMapState;
+            if !state_ptr.is_null() {
+                // SAFETY: native_data 由创建期 Box::into_raw 分配，生命周期与对象一致。
+                let state = unsafe { &*state_ptr };
+                if self.arguments_mapping_alive(state) {
+                    if let Some(index) = self.array_index_from_property_key(prop_name_si) {
+                        if (index as u16) < state.param_count && state.is_mapped(index as u16) {
+                            let pos = self.get_own_property_slot(obj, prop_name_si);
+                            let meta = pos.and_then(|p| obj.prop_meta_at(p));
+                            let is_accessor = meta.is_some_and(|m| m.is_accessor);
+                            if !is_accessor {
+                                let writable = meta.map(|m| m.attributes.writable()).unwrap_or(true);
+                                if !writable {
+                                    return self
+                                        .write_protection_failure(builtin, "cannot assign to read-only property");
+                                }
+                                self.set_or_create_prop_value(obj, prop_name_si, val);
+                                if self.frames.len() == state.frame_depth as usize + 1 {
+                                    let reg = state.param_base as usize + index as usize;
+                                    self.regs[reg] = val;
+                                }
+                                return Ok(());
+                            }
+                        }
+                    }
+                }
+            }
         }
         // 统一数值键门（exotic [[Set]]）：界内规范键写底层 buffer（自臂界内
         // 写 / 越界静默；他臂先按自身判界再按 receiver 分类）；数字无效键强转
@@ -2029,7 +2074,10 @@ mod tests {
         let ns = unsafe { &*ns_ptr };
         assert!(vm.ordinary_get(ns, x_si, ns_val).is_err(), "首次读应抛错");
         let ns = unsafe { &*ns_ptr };
-        let cached_err = oxide_builtins::module::deferred_state(ns).unwrap().error.expect("失败应缓存错误");
+        let cached_err = oxide_builtins::module::deferred_state(ns)
+            .unwrap()
+            .error
+            .expect("失败应缓存错误");
 
         // 再读：重抛同一错误对象（sameValue 身份）。
         let ns = unsafe { &*ns_ptr };
@@ -2055,7 +2103,10 @@ mod tests {
 
         // 求值未触发：[[Evaluated]] 仍为 false。
         let ns = unsafe { &*ns_ptr };
-        assert!(!oxide_builtins::module::deferred_state(ns).unwrap().evaluated, "symbol-like 键不应触发求值");
+        assert!(
+            !oxide_builtins::module::deferred_state(ns).unwrap().evaluated,
+            "symbol-like 键不应触发求值"
+        );
     }
 
     #[test]

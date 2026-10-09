@@ -797,6 +797,7 @@ fn reset_clears_runtime_state_like_rerun() {
     vm.frames.push(crate::vm::CallFrame {
         return_addr: 1,
         function_name: 0,
+        frame_id: 0,
         caller_reg_limit: 2,
         caller_active_reg_limit: 2,
         saved_reg_offset: 0,
@@ -806,6 +807,7 @@ fn reset_clears_runtime_state_like_rerun() {
         saved_this: JsValue::undefined(),
         saved_new_target: JsValue::undefined(),
         callee: JsValue::undefined(),
+        arguments_obj: JsValue::undefined(),
         construct_result_reg: None,
         strict: false,
         constructed_this: None,

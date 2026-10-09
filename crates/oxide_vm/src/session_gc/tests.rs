@@ -89,6 +89,7 @@ fn gc_roots_contains_registers_frames_and_root_roots() {
     vm.frames.push(CallFrame {
         return_addr: 0,
         function_name: 0,
+        frame_id: 0,
         caller_reg_limit: 1,
         caller_active_reg_limit: 1,
         saved_reg_offset: 0,
@@ -98,6 +99,7 @@ fn gc_roots_contains_registers_frames_and_root_roots() {
         saved_this: JsValue::from_js_object(this_session),
         saved_new_target: JsValue::from_js_object(child_session),
         callee: JsValue::from_js_object(child_session),
+        arguments_obj: JsValue::undefined(),
         construct_result_reg: None,
         strict: false,
         constructed_this: Some(JsValue::from_js_object(child_session)),

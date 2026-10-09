@@ -190,6 +190,7 @@ impl SuspendedFrame {
             f(frame.saved_this);
             f(frame.saved_new_target);
             f(frame.callee);
+            f(frame.arguments_obj);
             if let Some(ct) = frame.constructed_this {
                 f(ct);
             }
@@ -294,6 +295,7 @@ mod tests {
         CallFrame {
             return_addr: 7,
             function_name: 1,
+            frame_id: 0,
             caller_reg_limit: 2,
             caller_active_reg_limit: 2,
             saved_reg_offset: 3,
@@ -303,6 +305,7 @@ mod tests {
             saved_this: tag,
             saved_new_target: tag,
             callee: tag,
+            arguments_obj: JsValue::undefined(),
             construct_result_reg: None,
             constructed_this: Some(tag),
             is_derived_constructor: false,

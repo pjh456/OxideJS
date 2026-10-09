@@ -215,6 +215,9 @@ impl oxide_runtime_api::VmHost for Vm {
     fn get_own_property_slot(&self, obj: &JsObject, prop_name_si: u32) -> Option<u32> {
         self.get_own_property_slot(obj, prop_name_si)
     }
+    fn arguments_mapping_alive(&self, state: &oxide_types::arguments_map::ArgumentsMapState) -> bool {
+        self.arguments_mapping_alive(state)
+    }
     fn ordinary_get(&mut self, obj: &JsObject, prop_name_si: u32, receiver: JsValue) -> Result<JsValue, String> {
         self.ordinary_get(obj, prop_name_si, receiver)
     }

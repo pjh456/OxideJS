@@ -132,6 +132,7 @@ impl SessionGc {
         bytes += weak_map::weak_map_native_size(obj);
         bytes += message_channel::message_port_native_size(obj);
         bytes += broadcast_channel::broadcast_channel_native_size(obj);
+        bytes += crate::arguments_gc::arguments_native_size(obj);
 
         bytes
     }
@@ -573,6 +574,7 @@ impl SessionGc {
             freed_bytes += weak_map::drop_weak_map_native(obj);
             freed_bytes += message_channel::drop_message_port_native(obj);
             freed_bytes += broadcast_channel::drop_broadcast_channel_native(obj);
+            freed_bytes += crate::arguments_gc::drop_arguments_native(obj);
 
             freed_bytes
         }

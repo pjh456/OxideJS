@@ -201,6 +201,9 @@ pub struct Vm {
     /// 用胖 `*const`：常量 Vec 归表代际所有且 OnceLock 只填一次（堆分配地址稳定）。
     pub(crate) active_immutables: *const [JsValue],
     pub(crate) frames: SmallVec<[CallFrame; 16]>,
+    /// 帧身份单调计数器：压帧时分配 `CallFrame.frame_id`（mapped arguments 状态盒
+    /// 按此判定创建帧是否仍在栈上）。
+    pub(crate) next_frame_id: u64,
     pub(crate) kernel_core: Arc<KernelCore>,
     /// 动态编译服务句柄：`Function` 构造器 / eval / `$262.evalScript` 经它编译
     /// 源码（`dynamic.rs` 三方法）。缺省为 no-op stub（返 `Err`），生产 entry
