@@ -864,15 +864,131 @@ fn test_flat_arraylike_undefined_length() {
     assert_eq!(out, "|0");
 }
 
-// 引擎钉：flat 装箱基元 this——ToObject 后长度为 0，结果空真数组。
+// 引擎钉：flat 装箱基元 this——ToObject 后长度为 0，结果空真数组；装箱串
+// 长度 2，按单元遍历。
 #[test]
 fn test_flat_boxed_primitive_this() {
     let out = eval_str(
-        "(() => { const r = Array.prototype.flat.call(true); \
-         return r.length + '|' + Array.isArray(r); })()",
+        "(() => { const r1 = Array.prototype.flat.call(true); \
+         const r2 = Array.prototype.flat.call('ab'); \
+         return r1.length + '|' + Array.isArray(r1) + '|' + r2.join(',') + '|' + r2.length; })()",
     )
     .unwrap();
-    assert_eq!(out, "0|true");
+    assert_eq!(out, "0|true|a,b|2");
+}
+
+// 引擎钉：map 装箱串 this——ToObject 装箱后按单元遍历，结果真数组。
+#[test]
+fn test_map_boxed_string_this() {
+    let out = eval_str(
+        "(() => { const r = Array.prototype.map.call('ab', c => c); \
+         return r.join(',') + '|' + r.length; })()",
+    )
+    .unwrap();
+    assert_eq!(out, "a,b|2");
+}
+
+// 引擎钉：forEach 装箱串 this——回调按序接收单元，返回 undefined。
+#[test]
+fn test_for_each_boxed_string_this() {
+    let out = eval_str(
+        "(() => { const seen = []; \
+         const r = Array.prototype.forEach.call('ab', c => seen.push(c)); \
+         return seen.join(',') + '|' + (r === undefined); })()",
+    )
+    .unwrap();
+    assert_eq!(out, "a,b|true");
+}
+
+// 引擎钉：filter 装箱串 this——仅保留真值单元。
+#[test]
+fn test_filter_boxed_string_this() {
+    let out = eval_str(
+        "(() => { const r = Array.prototype.filter.call('ab', c => c === 'a'); \
+         return r.join(',') + '|' + r.length; })()",
+    )
+    .unwrap();
+    assert_eq!(out, "a|1");
+}
+
+// 引擎钉：reduce 装箱串 this——从左到右累计，初值空串。
+#[test]
+fn test_reduce_boxed_string_this() {
+    let out = eval_str(
+        "(() => { return Array.prototype.reduce.call('ab', (a, b) => a + b, ''); })()",
+    )
+    .unwrap();
+    assert_eq!(out, "ab");
+}
+
+// 引擎钉：reduceRight 装箱串 this——从右到左累计。
+#[test]
+fn test_reduce_right_boxed_string_this() {
+    let out = eval_str(
+        "(() => { return Array.prototype.reduceRight.call('ab', (a, b) => a + b, ''); })()",
+    )
+    .unwrap();
+    assert_eq!(out, "ba");
+}
+
+// 引擎钉：find 装箱串 this——返回首个真值单元。
+#[test]
+fn test_find_boxed_string_this() {
+    let out = eval_str(
+        "(() => { return Array.prototype.find.call('ab', c => c === 'b'); })()",
+    )
+    .unwrap();
+    assert_eq!(out, "b");
+}
+
+// 引擎钉：findIndex 装箱串 this——返回首个真值下标。
+#[test]
+fn test_find_index_boxed_string_this() {
+    let out = eval_str(
+        "(() => { return String(Array.prototype.findIndex.call('ab', c => c === 'a')); })()",
+    )
+    .unwrap();
+    assert_eq!(out, "0");
+}
+
+// 引擎钉：findLast 装箱串 this——返回末个真值单元。
+#[test]
+fn test_find_last_boxed_string_this() {
+    let out = eval_str(
+        "(() => { return Array.prototype.findLast.call('ab', c => c === 'b'); })()",
+    )
+    .unwrap();
+    assert_eq!(out, "b");
+}
+
+// 引擎钉：findLastIndex 装箱串 this——返回末个真值下标。
+#[test]
+fn test_find_last_index_boxed_string_this() {
+    let out = eval_str(
+        "(() => { return String(Array.prototype.findLastIndex.call('ab', c => c === 'b')); })()",
+    )
+    .unwrap();
+    assert_eq!(out, "1");
+}
+
+// 引擎钉：some 装箱串 this——任一单元真值即 true。
+#[test]
+fn test_some_boxed_string_this() {
+    let out = eval_str(
+        "(() => { return String(Array.prototype.some.call('ab', c => c === 'b')); })()",
+    )
+    .unwrap();
+    assert_eq!(out, "true");
+}
+
+// 引擎钉：every 装箱串 this——全单元真值才 true。
+#[test]
+fn test_every_boxed_string_this() {
+    let out = eval_str(
+        "(() => { return String(Array.prototype.every.call('ab', c => c !== 'x')); })()",
+    )
+    .unwrap();
+    assert_eq!(out, "true");
 }
 
 // 引擎钉：flat 负 depth——ToIntegerOrInfinity 后归 0，不展开。

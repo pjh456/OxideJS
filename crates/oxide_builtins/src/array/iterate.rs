@@ -2,7 +2,7 @@
 
 use oxide_types::value::JsValue;
 
-use oxide_runtime_api::{to_object, NativeResult, VmHost};
+use oxide_runtime_api::{NativeResult, VmHost};
 
 use crate::builtins_debug;
 use crate::builtins_error;
@@ -12,13 +12,12 @@ use super::common::{
     check_array_create_len, get_this_arraylike, invoke_native_callback, js_array_index, require_callback,
     unexpected_tail_call_error,
 };
-use super::from::{array_species_create, create_data_property_or_throw, from_engine_error};
+use super::from::{array_species_create, create_data_property_or_throw};
 
 /// `Array.prototype.forEach(callback, thisArg)`：对每个元素调用 callback，返回 undefined。
 pub fn array_for_each<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("Array.prototype.forEach called with {} args", args.len());
-    let (arr_ptr, n, _is_array) = array_ptr_len3!(vm, args);
-    let o_val = vm.reg(args[0]);
+    let (arr_ptr, n, _is_array, o_val) = array_ptr_len3!(vm, args);
     if args.len() < 2 {
         return NativeResult::Err(array_type_error(vm, "callback is not a function"));
     }
@@ -57,8 +56,7 @@ pub fn array_for_each<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 ///   可按规范抛 TypeError。
 pub fn array_map<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("Array.prototype.map called with {} args", args.len());
-    let (arr_ptr, n, is_array) = array_ptr_len3!(vm, args);
-    let o_val = vm.reg(args[0]);
+    let (arr_ptr, n, is_array, o_val) = array_ptr_len3!(vm, args);
     if args.len() < 2 {
         return NativeResult::Err(array_type_error(vm, "callback is not a function"));
     }
@@ -117,8 +115,7 @@ pub fn array_map<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 ///   可按规范抛 TypeError。
 pub fn array_filter<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("Array.prototype.filter called with {} args", args.len());
-    let (arr_ptr, n, is_array) = array_ptr_len3!(vm, args);
-    let o_val = vm.reg(args[0]);
+    let (arr_ptr, n, is_array, o_val) = array_ptr_len3!(vm, args);
     if args.len() < 2 {
         builtins_error!("Array.prototype.filter: invalid receiver");
         return NativeResult::Err(array_type_error(vm, "callback is not a function"));
@@ -168,8 +165,7 @@ pub fn array_filter<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 /// 空数组且无初始值抛 TypeError。
 pub fn array_reduce<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("Array.prototype.reduce called with {} args", args.len());
-    let (arr_ptr, n, _is_array) = array_ptr_len3!(vm, args);
-    let o_val = vm.reg(args[0]);
+    let (arr_ptr, n, _is_array, o_val) = array_ptr_len3!(vm, args);
     if args.len() < 2 {
         builtins_error!("Array.prototype.reduce: invalid receiver");
         return NativeResult::Err(array_type_error(vm, "callback is not a function"));
@@ -231,8 +227,7 @@ pub fn array_reduce<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 /// `Array.prototype.find(callback, thisArg)`：返回首个 callback 为真的元素，否则 undefined。
 pub fn array_find<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("Array.prototype.find called with {} args", args.len());
-    let (arr_ptr, n, _is_array) = array_ptr_len3!(vm, args);
-    let o_val = vm.reg(args[0]);
+    let (arr_ptr, n, _is_array, o_val) = array_ptr_len3!(vm, args);
     if args.len() < 2 {
         builtins_error!("Array.prototype.find: invalid receiver");
         return NativeResult::Err(array_type_error(vm, "callback is not a function"));
@@ -269,8 +264,7 @@ pub fn array_find<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 /// `Array.prototype.some(callback, thisArg)`：任一元素满足 callback 返回 true。
 pub fn array_some<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("Array.prototype.some called with {} args", args.len());
-    let (arr_ptr, n, _is_array) = array_ptr_len3!(vm, args);
-    let o_val = vm.reg(args[0]);
+    let (arr_ptr, n, _is_array, o_val) = array_ptr_len3!(vm, args);
     if args.len() < 2 {
         builtins_error!("Array.prototype.some: invalid receiver");
         return NativeResult::Err(array_type_error(vm, "callback is not a function"));
@@ -311,8 +305,7 @@ pub fn array_some<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 /// `Array.prototype.every(callback, thisArg)`：所有元素满足 callback 才返回 true。
 pub fn array_every<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("Array.prototype.every called with {} args", args.len());
-    let (arr_ptr, n, _is_array) = array_ptr_len3!(vm, args);
-    let o_val = vm.reg(args[0]);
+    let (arr_ptr, n, _is_array, o_val) = array_ptr_len3!(vm, args);
     if args.len() < 2 {
         builtins_error!("Array.prototype.every: invalid receiver");
         return NativeResult::Err(array_type_error(vm, "callback is not a function"));
@@ -367,23 +360,8 @@ pub fn array_every<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 ///   可按规范抛 TypeError。
 pub fn array_flat_map<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("Array.prototype.flatMap called with {} args", args.len());
-    // ToObject：基元 this 装箱（null/undefined 抛 TypeError）。
-    let this_val = match to_object(vm.reg(args[0]), vm) {
-        Ok(v) => v,
-        Err(msg) => return NativeResult::Err(from_engine_error(vm, &msg)),
-    };
-    // 装箱体钉入返回寄存器：它只存于 Rust 局部，跨 length getter / species
-    // 用户窗口须保 GC 根。call 转发形态的实参寄存器集可占该槽，占位时跳过钉位
-    // （装箱体按接收者值传递保活）。结果 A 钉入后此槽让位，循环期装箱体按
-    // 接收者值传递保活。
-    if !args.contains(&0) {
-        vm.set_reg(0, this_val);
-    }
-    let (arr_ptr, n, is_array) = match get_this_arraylike(vm, this_val) {
-        Ok(v) => v,
-        Err(err) => return NativeResult::Err(err),
-    };
-    let o_val = this_val;
+    // 接收者 ToObject 装箱并钉位 reg0（宏内收口），第四返回值作 o_val。
+    let (arr_ptr, n, is_array, o_val) = array_ptr_len3!(vm, args);
     if args.len() < 2 {
         builtins_error!("Array.prototype.flatMap: invalid receiver");
         return NativeResult::Err(array_type_error(vm, "callback is not a function"));
@@ -471,8 +449,7 @@ pub fn array_flat_map<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 /// `Array.prototype.findIndex(callback, thisArg)`：返回首个 callback 为真的索引，否则 -1。
 pub fn array_find_index<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("Array.prototype.findIndex called with {} args", args.len());
-    let (arr_ptr, n, _is_array) = array_ptr_len3!(vm, args);
-    let o_val = vm.reg(args[0]);
+    let (arr_ptr, n, _is_array, o_val) = array_ptr_len3!(vm, args);
     if args.len() < 2 {
         builtins_error!("Array.prototype.findIndex: invalid receiver");
         return NativeResult::Err(array_type_error(vm, "callback is not a function"));
@@ -509,11 +486,10 @@ pub fn array_find_index<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 /// `Array.prototype.findLast(callback, thisArg)`：从后往前返回首个 callback 为真的元素。
 pub fn array_find_last<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("Array.prototype.findLast called with {} args", args.len());
-    let (arr_ptr, n) = {
-        let (arr_ptr, len, _is_array) = array_ptr_len3!(vm, args);
-        (arr_ptr, len as i32)
+    let (arr_ptr, n, o_val) = {
+        let (arr_ptr, len, _is_array, o_val) = array_ptr_len3!(vm, args);
+        (arr_ptr, len as i32, o_val)
     };
-    let o_val = vm.reg(args[0]);
     if args.len() < 2 {
         builtins_error!("Array.prototype.findLast: invalid receiver");
         return NativeResult::Err(array_type_error(vm, "callback is not a function"));
@@ -550,8 +526,7 @@ pub fn array_find_last<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 /// `Array.prototype.reduceRight(callback, initialValue)`：从右到左累计归约。
 pub fn array_reduce_right<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("Array.prototype.reduceRight called with {} args", args.len());
-    let (arr_ptr, n, _is_array) = array_ptr_len3!(vm, args);
-    let o_val = vm.reg(args[0]);
+    let (arr_ptr, n, _is_array, o_val) = array_ptr_len3!(vm, args);
     if args.len() < 2 {
         builtins_error!("Array.prototype.reduceRight: invalid receiver");
         return NativeResult::Err(array_type_error(vm, "callback is not a function"));
@@ -612,8 +587,7 @@ pub fn array_reduce_right<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 /// Array.prototype.findLastIndex(callback, thisArg)：从后往前返回首个 callback 为真的下标。
 pub fn array_find_last_index<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     builtins_debug!("Array.prototype.findLastIndex called with {} args", args.len());
-    let (arr_ptr, n, _is_array) = array_ptr_len3!(vm, args);
-    let o_val = vm.reg(args[0]);
+    let (arr_ptr, n, _is_array, o_val) = array_ptr_len3!(vm, args);
     if args.len() < 2 {
         builtins_error!("Array.prototype.findLastIndex: invalid receiver");
         return NativeResult::Err(array_type_error(vm, "callback is not a function"));

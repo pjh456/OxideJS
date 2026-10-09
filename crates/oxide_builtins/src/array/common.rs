@@ -40,7 +40,15 @@ pub(crate) use array_ptr_len;
 
 macro_rules! array_ptr_len3 {
     ($vm:expr, $args:expr) => {{
-        let this_val = $vm.reg($args[0]);
+        // ToObject 装箱加 reg0 钉位：装箱体跨回调窗保 GC 根。call 转发形态的实参
+        // 寄存器集可占 reg0，占位时跳过钉位（装箱体按接收者值传递保活）。
+        let this_val = match oxide_runtime_api::to_object($vm.reg($args[0]), $vm) {
+            Ok(v) => v,
+            Err(msg) => return NativeResult::Err(crate::array::from::from_engine_error($vm, &msg)),
+        };
+        if !$args.contains(&0) {
+            $vm.set_reg(0, this_val);
+        }
         let (arr_ptr, len, is_arr) = match get_this_arraylike($vm, this_val) {
             Ok(v) => v,
             Err(err) => {
@@ -48,7 +56,7 @@ macro_rules! array_ptr_len3 {
                 return NativeResult::Err(err);
             }
         };
-        (arr_ptr, len, is_arr)
+        (arr_ptr, len, is_arr, this_val)
     }};
 }
 pub(crate) use array_ptr_len3;
