@@ -390,6 +390,11 @@ pub struct Vm {
     pub(crate) worker_registry: std::collections::HashMap<u64, crate::worker::WorkerHandle>,
     /// 下一个 worker 编号（单调递增，首个为 0）。
     pub(crate) worker_next_id: u64,
+    /// Worker 对象注册表：键 = worker 编号，值 = Worker 对象（主 realm session
+    /// 对象）。主线程事件循环据编号反查 Worker 对象读 `onmessage`。Worker 对象
+    /// 是 GC 根（`for_each_value` 遍历），注册表保活至 `worker_terminate` /
+    /// `full_reset` 清表，无悬垂风险。
+    pub(crate) worker_objects: std::collections::HashMap<u64, JsValue>,
 }
 
 impl Drop for Vm {
@@ -438,6 +443,10 @@ impl Drop for Vm {
 //    poll_worker_messages 访问、不跨线程移动；MessageValue 是 Send 中间表示
 //    （无 realm 局部指针）。跨线程移动 Vm 时 worker_registry 整体迁移，
 //    其中无指向 session 堆的裸指针，不引入别名。
+//
+// 6. worker_objects 字段（HashMap<u64, JsValue>）持本 Vm session 堆的 Worker
+//    对象指针，归不变量 1 覆盖：对象由本 Vm 独占分配、地址稳定、随 Vm 整体
+//    迁移，跨线程移动不悬垂。
 unsafe impl Send for Vm {}
 
 impl Vm {

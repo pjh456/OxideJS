@@ -13,15 +13,15 @@
 
 pub mod bindings;
 
-use std::collections::HashSet;
 use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::Duration;
 
-use oxide_builtins::message_value::{detach_message, rehydrate_message, MessageValue};
+use oxide_builtins::message_value::{rehydrate_message, MessageValue};
 use oxide_kernel::kernel::KernelCore;
 use oxide_kernel::message_queue::{channel, Receiver, Sender, Timeout};
-use oxide_runtime_api::CompilerService;
+use oxide_runtime_api::{CompilerService, NativeResult, VmHost};
+use oxide_types::object::JsObject;
 use oxide_types::value::JsValue;
 
 use crate::vm::Vm;
@@ -108,13 +108,9 @@ fn worker_event_loop(
         }
         match rx.recv_timeout(Duration::from_millis(100)) {
             Ok(WorkerMail::Message(value)) => {
-                // rehydrate → execute_task → drain_microtasks，再回显处理值。
-                let value = rehydrate_message(&mut vm, &value);
-                let _ = vm.execute_task(|_vm| Ok(value));
-                vm.drain_microtasks();
-                if let Ok(mv) = detach_message(&mut vm, value, &HashSet::new()) {
-                    let _ = out_tx.send(mv);
-                }
+                // rehydrate → 建 MessageEvent → 交付 self.onmessage → drain 微任务
+                // （onmessage 语义替换早期回显语义）。
+                vm.deliver_self_message(value);
             }
             Ok(WorkerMail::Error(err)) => {
                 // 主线程上报的错误记入 last_uncaught_value。
@@ -196,13 +192,14 @@ impl Vm {
     /// 1. 发 `WorkerMail::Terminate`（worker 收到即退出事件循环）。
     /// 2. 从 `worker_registry` 移除（取走 `WorkerHandle`）。
     /// 3. join 线程（须在句柄 drop 前完成，防线程泄漏）。
+    /// 4. 从 `worker_objects` 移除 Worker 对象注册表条目（GC 根解除）。
     ///
     /// # 边界与前提
     /// - `id` 不存在时返回 `Err`。
     /// - 线程 panic 时返回 `Err`。
     ///
     /// # 副作用
-    /// - 移除一个 `WorkerHandle`；join 一个 OS 线程。
+    /// - 移除一个 `WorkerHandle` 与一条 Worker 对象注册表条目；join 一个 OS 线程。
     pub fn worker_terminate(&mut self, id: u64) -> Result<(), String> {
         // 发关停信号（worker 收到即退出事件循环）。
         if let Some(worker) = self.worker_registry.get_mut(&id) {
@@ -211,6 +208,8 @@ impl Vm {
         // 从注册表移除并 join 线程（句柄 drop 前必须 join）。
         let worker = self.worker_registry.remove(&id).ok_or_else(|| format!("worker {id} 不存在"))?;
         worker.handle.join().map_err(|_| format!("worker {id} 线程异常退出"))?;
+        // 解除 Worker 对象注册表条目（GC 根解除，对象可被回收）。
+        self.worker_objects.remove(&id);
         Ok(())
     }
 
@@ -266,6 +265,160 @@ impl Vm {
             let _ = self.worker_terminate(id);
         }
     }
+
+    /// 按 worker 编号反查 Worker 对象（注册表查找，GC 根）。
+    ///
+    /// # 返回值
+    /// 注册表中该编号的 Worker 对象值；编号不存在时 `None`。
+    pub(crate) fn worker_object(&self, id: u64) -> Option<JsValue> {
+        self.worker_objects.get(&id).copied()
+    }
+
+    /// 主线程事件循环消息交付：排空 worker → 主线程通道、rehydrate 进主 realm，
+    /// 交付到 Worker 对象的 `onmessage`。
+    ///
+    /// # 步骤
+    /// 1. 遍历活跃 worker 编号。
+    /// 2. 对每个 worker `poll_worker_messages` 排空通道并 rehydrate 进主 realm。
+    /// 3. 反查 Worker 对象、读 `onmessage` 属性。
+    /// 4. `onmessage` 可调用时，逐条消息建 MessageEvent 经 `execute_task` +
+    ///    `call_function_sync` 触发，后 `drain_microtasks`。
+    ///
+    /// # 返回值
+    /// 本轮是否交付了消息（false 时调用方 1ms 轮询，避免忙等）。
+    ///
+    /// # 边界与前提
+    /// - `onmessage` 缺失或非可调用时静默跳过（消息已消费，符合浏览器
+    ///   "无 handler 即丢弃"语义）。
+    /// - 交付前二次 `worker_object` 校验存活（GC 防护）：worker 在事件循环中
+    ///   被终止（注册表条目移除）即停止交付。
+    ///
+    /// # 副作用
+    /// - 消费 worker → 主线程通道消息；触发 `onmessage` 回调与微任务 drain。
+    pub fn deliver_worker_messages(&mut self) -> bool {
+        let mut any = false;
+        for id in self.active_workers() {
+            let messages = self.poll_worker_messages(id);
+            if messages.is_empty() {
+                continue;
+            }
+            any = true;
+            // Worker 对象注册表反查（GC 根，注册即存活）。
+            let Some(worker_obj) = self.worker_object(id) else {
+                continue;
+            };
+            // 读 onmessage 属性（undefined 或非可调用即静默跳过）。
+            let si_onmessage = self.perm_intern("onmessage");
+            let handler = match self.ordinary_get(unsafe { &*worker_obj.as_js_object_ptr() }, si_onmessage, worker_obj)
+            {
+                Ok(h) => h,
+                Err(_) => continue,
+            };
+            if !is_callable(handler) {
+                continue;
+            }
+            for data in messages {
+                // 交付前二次校验存活（GC 防护）：worker 在事件循环中被终止
+                // （注册表条目移除）即停止交付。
+                if self.worker_object(id).is_none() {
+                    break;
+                }
+                let event = self.build_message_event(data, "message");
+                let _ = self.execute_task(|vm| vm.call_function_sync(handler, worker_obj, &[event]));
+                self.drain_microtasks();
+            }
+        }
+        any
+    }
+
+    /// 建 MessageEvent 对象（`data` + `type` 属性），委托 935.4 构造辅助。
+    ///
+    /// # 步骤
+    /// 1. `type` 串物化为 session 串。
+    /// 2. `data` 与 `type` 写入寄存器 1 / 2，委托 `message_event_constructor`
+    ///    （按寄存器下标读取）建对象。
+    ///
+    /// # 返回值
+    /// 新建的 MessageEvent 对象值（构造失败时返回错误对象值）。
+    ///
+    /// # 副作用
+    /// - 新建一个 MessageEvent 对象（经 `alloc_object` 入对象表）。
+    fn build_message_event(&mut self, data: JsValue, type_str: &str) -> JsValue {
+        let type_val = self.new_string(type_str);
+        self.set_reg(1, data);
+        self.set_reg(2, type_val);
+        match bindings::message_event_constructor(self, &[0, 1, 2]) {
+            NativeResult::Ok(v) => v,
+            NativeResult::Err(e) => e,
+            // 构造辅助只建对象，不产生尾调用（防御臂，不可达）。
+            NativeResult::TailCall { .. } => JsValue::undefined(),
+        }
+    }
+
+    /// 清理已断开 worker：通道断开即 worker 线程已退出，join 并移除。
+    ///
+    /// # 步骤
+    /// 1. 遍历活跃 worker 编号。
+    /// 2. 对每个 worker 查 `rx_out.is_disconnected()`（worker 线程退出后其
+    ///    发送端 drop，接收端转断开）。
+    /// 3. 断开者 `worker_terminate`（发 `Terminate` + join + 移除注册表条目）。
+    ///
+    /// # 副作用
+    /// - 移除已断开 worker 的注册表条目；join 其 OS 线程。
+    pub fn cleanup_disconnected_workers(&mut self) {
+        for id in self.active_workers() {
+            let disconnected = self.worker_registry.get(&id).is_some_and(|w| w.rx_out.is_disconnected());
+            if disconnected {
+                let _ = self.worker_terminate(id);
+            }
+        }
+    }
+
+    /// worker 侧消息交付：rehydrate 进 worker realm、建 MessageEvent、交付到
+    /// `self.onmessage`（worker global 的 `onmessage` 属性）。
+    ///
+    /// # 步骤
+    /// 1. rehydrate 消息值进 worker realm。
+    /// 2. 建 MessageEvent（data + type "message"）。
+    /// 3. 读 worker global 的 `onmessage` 属性。
+    /// 4. 可调用时经 `execute_task` + `call_function_sync` 触发，后 `drain_microtasks`。
+    ///
+    /// # 边界与前提
+    /// - `onmessage` 缺失或非可调用时静默跳过（消息已消费，符合浏览器
+    ///   "无 handler 即丢弃"语义）。
+    ///
+    /// # 副作用
+    /// - 触发 `self.onmessage` 回调与微任务 drain。
+    pub(crate) fn deliver_self_message(&mut self, value: MessageValue) {
+        let data = rehydrate_message(self, &value);
+        let event = self.build_message_event(data, "message");
+        // 取 worker global 对象指针（Ref 守卫在语句块内消费，不跨 &mut 借用长存）。
+        let global_ptr = {
+            let session = self.realm.session.borrow();
+            session.global_object().as_ptr() as *mut JsObject
+        };
+        // SAFETY: global_ptr 是当前 session 的 global 对象，存活。
+        let global_obj = unsafe { &*global_ptr };
+        let si_onmessage = self.perm_intern("onmessage");
+        let handler = match self.ordinary_get(global_obj, si_onmessage, JsValue::from_js_object(global_ptr)) {
+            Ok(h) => h,
+            Err(_) => return,
+        };
+        if !is_callable(handler) {
+            return;
+        }
+        let _ = self.execute_task(|vm| vm.call_function_sync(handler, JsValue::from_js_object(global_ptr), &[event]));
+        self.drain_microtasks();
+    }
+}
+
+/// 判定值是否可调用（对象且函数对象，header bit 31）。
+///
+/// # 边界与前提
+/// - 非对象值恒不可调用。
+/// - 对象经 `as_js_object_ptr` 解引用读函数位（unsafe，惯例形态）。
+fn is_callable(val: JsValue) -> bool {
+    val.is_object() && unsafe { &*val.as_js_object_ptr() }.is_function()
 }
 
 #[cfg(test)]
@@ -273,8 +426,10 @@ mod tests {
     use super::*;
     use std::time::Instant;
 
+    use oxide_compiler::compiler::Compiler;
     use oxide_compiler::DefaultCompilerService;
     use oxide_kernel::kernel::KernelConfig;
+    use oxide_parser::Allocator;
 
     /// 建一个带真实编译服务的 Vm（worker 脚本编译需要）。
     fn vm_with_compiler() -> Vm {
@@ -296,12 +451,15 @@ mod tests {
         }
     }
 
-    /// 端到端：spawn → post → 回显 → terminate，验证 worker 基础设施闭环。
+    /// 端到端：spawn → post → onmessage 回显 → terminate，验证 worker 基础设施闭环。
     #[test]
     fn worker_round_trip() {
         let mut vm = vm_with_compiler();
 
-        let id = vm.spawn_worker("1 + 1").expect("worker 应派生成功");
+        // worker 脚本设 onmessage 回显（onmessage 语义替换早期回显语义）。
+        let id = vm
+            .spawn_worker("self.onmessage = function(e) { self.postMessage(e.data); };")
+            .expect("worker 应派生成功");
         assert_eq!(vm.active_workers(), vec![id], "应有唯一活跃 worker");
 
         vm.worker_post_message(id, MessageValue::Number(42.0)).expect("投递应成功");
@@ -332,8 +490,13 @@ mod tests {
     fn multiple_workers_isolated() {
         let mut vm = vm_with_compiler();
 
-        let id_a = vm.spawn_worker("1").expect("worker A 应派生成功");
-        let id_b = vm.spawn_worker("2").expect("worker B 应派生成功");
+        // 两 worker 各设 onmessage 回显（onmessage 语义）。
+        let id_a = vm
+            .spawn_worker("self.onmessage = function(e) { self.postMessage(e.data); };")
+            .expect("worker A 应派生成功");
+        let id_b = vm
+            .spawn_worker("self.onmessage = function(e) { self.postMessage(e.data); };")
+            .expect("worker B 应派生成功");
         assert_eq!(vm.active_workers(), vec![id_a, id_b], "应有两个活跃 worker");
 
         vm.worker_post_message(id_a, MessageValue::Number(1.0)).expect("投递 A 应成功");
@@ -346,5 +509,146 @@ mod tests {
 
         vm.shutdown_workers();
         assert!(vm.active_workers().is_empty(), "shutdown 后无活跃 worker");
+    }
+
+    /// 编译主脚本源码为 `CompiledModule`（测试驱动主 Vm 执行）。
+    fn compile_script(source: &str) -> oxide_bytecode::module::CompiledModule {
+        let allocator = Allocator::default();
+        let program = oxide_parser::parse(&allocator, source).expect("parse 应成功");
+        Compiler::new().compile(&program).expect("compile 应成功")
+    }
+
+    /// 写 worker 脚本到临时文件（进程 id 加纳秒唯一名防并发单测冲突），返回路径。
+    fn write_worker_script(content: &str) -> std::path::PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("系统时间应有效")
+            .as_nanos();
+        let name = format!("oxide_worker_{}_{}.js", std::process::id(), nanos);
+        let path = std::env::temp_dir().join(name);
+        std::fs::write(&path, content).expect("应能写 worker 脚本临时文件");
+        path
+    }
+
+    /// 读全局属性（缺失返 None）。
+    fn global_value_opt(vm: &Vm, name: &str) -> Option<JsValue> {
+        let session = vm.realm.session.borrow();
+        let global = session.global_object();
+        let si = vm.kernel_core().perm_interner().intern(name).0;
+        vm.resolve_property(global, si)
+    }
+
+    /// 数值值转 f64（int 与 double 两表示）。
+    fn as_number(v: &JsValue) -> f64 {
+        if v.is_int() {
+            v.as_int() as f64
+        } else {
+            v.as_double()
+        }
+    }
+
+    /// 端到端：主 → worker → main 双向消息（onmessage 交付、e.data 值）。
+    ///
+    /// 主脚本建 Worker、设 onmessage、投递 21；worker 脚本收到翻倍回发 42；
+    /// 事件循环交付到主 onmessage 置 `globalThis.received`。
+    #[test]
+    fn worker_e2e_onmessage_round_trip() {
+        let mut vm = vm_with_compiler();
+
+        // worker 脚本：收到消息翻倍后回发。
+        let worker_path = write_worker_script("self.onmessage = function(e) { self.postMessage(e.data * 2); };");
+        // 主脚本：建 Worker、设 onmessage、投递 21。
+        let main_script = format!(
+            "var w = new Worker('{}'); w.onmessage = function(e) {{ globalThis.received = e.data; }}; w.postMessage(21);",
+            worker_path.display()
+        );
+        vm.run(&Arc::new(compile_script(&main_script))).expect("主脚本应运行");
+
+        // 事件循环轮询至 globalThis.received === 42（带截止，防 flaky）。
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            vm.deliver_worker_messages();
+            vm.cleanup_disconnected_workers();
+            if let Some(v) = global_value_opt(&vm, "received") {
+                if as_number(&v) == 42.0 {
+                    break;
+                }
+            }
+            if Instant::now() >= deadline {
+                panic!("5 秒内未收到回显消息 42");
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(
+            as_number(&global_value_opt(&vm, "received").expect("received 应被设置")),
+            42.0,
+            "回显值应为 42"
+        );
+
+        vm.shutdown_workers();
+        let _ = std::fs::remove_file(&worker_path);
+    }
+
+    /// 端到端：terminate 后注册表清空、二次 postMessage 返 Err。
+    #[test]
+    fn worker_e2e_terminate() {
+        let mut vm = vm_with_compiler();
+
+        let id = vm.spawn_worker("1").expect("worker 应派生成功");
+        assert_eq!(vm.active_workers(), vec![id], "应有唯一活跃 worker");
+
+        vm.worker_terminate(id).expect("终止应成功");
+        assert!(vm.active_workers().is_empty(), "终止后无活跃 worker");
+
+        let result = vm.worker_post_message(id, MessageValue::Number(1.0));
+        assert!(result.is_err(), "二次 postMessage 应返 Err");
+    }
+
+    /// 端到端：realm 回收计数配对（spawn +1、terminate 回基线）。
+    #[test]
+    fn worker_e2e_realm_reclaimed() {
+        let mut vm = vm_with_compiler();
+        // 克隆 Arc 解耦借用（kernel_core 返回 &Arc，长存会阻塞后续 &mut 借用）。
+        let core = Arc::clone(vm.kernel_core());
+        let baseline = core.active_vms();
+
+        let id = vm.spawn_worker("1").expect("worker 应派生成功");
+        // worker 线程异步建 Vm：轮询至 realm 计数 +1（带截止，防 flaky）。
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while core.active_vms() < baseline + 1 {
+            if Instant::now() >= deadline {
+                panic!("5 秒内 worker realm 未创建");
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(core.active_vms(), baseline + 1, "spawn 后应 +1 realm");
+
+        vm.worker_terminate(id).expect("终止应成功");
+        assert_eq!(core.active_vms(), baseline, "terminate 后应回基线");
+    }
+
+    /// 端到端：postMessage 不可克隆值抛 DataCloneError、事件循环不挂死。
+    #[test]
+    fn worker_e2e_data_clone_error() {
+        let mut vm = vm_with_compiler();
+
+        let worker_path = write_worker_script("1");
+        // 主脚本：建 Worker、postMessage 函数（不可克隆），捕获 DataCloneError。
+        let main_script = format!(
+            "var w = new Worker('{}'); try {{ w.postMessage(function(){{}}); globalThis.cloneError = false; }} catch (e) {{ globalThis.cloneError = true; }}",
+            worker_path.display()
+        );
+        vm.run(&Arc::new(compile_script(&main_script))).expect("主脚本应运行");
+
+        assert_eq!(
+            global_value_opt(&vm, "cloneError"),
+            Some(JsValue::bool(true)),
+            "postMessage 函数应抛 DataCloneError"
+        );
+        // worker 仍存活（postMessage 失败不影响 worker）。
+        assert!(!vm.active_workers().is_empty(), "worker 应仍存活");
+
+        vm.shutdown_workers();
+        let _ = std::fs::remove_file(&worker_path);
     }
 }

@@ -8,7 +8,7 @@ use super::frames::Completion;
 use super::Vm;
 use crate::session_gc::SessionGc;
 
-/// GC 根组来源：`for_each_value` 枚举的 24 个根组，变体顺序与根清单
+/// GC 根组来源：`for_each_value` 枚举的 25 个根组，变体顺序与根清单
 /// 的枚举顺序一致。
 ///
 /// 变体下标是逐组计数数组（`SessionGc::root_counts`）的下标；`COUNT` 与
@@ -39,19 +39,20 @@ pub(crate) enum RootGroup {
     AtomicsWaiters,
     ForInIters,
     Global,
+    WorkerObjects,
 }
 
 impl RootGroup {
     /// 根组总数（与变体数同源，绑定逐组计数数组的长度）。
-    pub const COUNT: usize = 24;
+    pub const COUNT: usize = 25;
 }
 
 impl Vm {
     /// GC 根收集的统一遍历（对象与字符串都产出）。
     /// 覆盖执行核心的全部 JsValue 持有点：regs/帧/各栈段/cell/在途异常与完成/
-    /// 挂起信号/迭代器/微任务/global。
+    /// 挂起信号/迭代器/微任务/global/Worker 对象注册表。
     ///
-    /// 闭包接收根组来源（`RootGroup`）与根值：组是枚举顺序中的 24 根组之一，
+    /// 闭包接收根组来源（`RootGroup`）与根值：组是枚举顺序中的 25 根组之一，
     /// 调用方按组计数（如 `SessionGc` 的逐组计数）。
     pub(crate) fn for_each_value(&self, mut f: impl FnMut(RootGroup, JsValue)) {
         for value in &self.regs {
@@ -157,6 +158,11 @@ impl Vm {
             RootGroup::Global,
             JsValue::from_js_object(self.realm.session.borrow().global_object().as_ptr() as *mut JsObject),
         );
+        // Worker 对象注册表：Worker 对象是 GC 根（注册表保活至 terminate /
+        // full_reset 清表），漏根 → sweep 释放 → 事件循环反查悬垂。
+        for &worker_obj in self.worker_objects.values() {
+            f(RootGroup::WorkerObjects, worker_obj);
+        }
     }
 
     /// GC 根统一枚举入口：遍历的字段清单与 `for_each_value` 相同。

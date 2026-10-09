@@ -645,12 +645,36 @@ fn eval(code: &str, engine: &Engine, trace: bool, profile: bool, print_result: b
                 let kernel = engine.kernel();
                 format_result(guard.vm(), kernel.perm_interner().as_ref(), kernel.shape_forge().as_ref(), result);
             }
+            // 主线程事件循环：消费 worker 消息、清理已断开 worker，直至无活跃
+            // worker（脚本建了 Worker 不 terminate 时恒转，符合页面寿命语义）。
+            run_worker_event_loop(guard.vm_mut());
             ExitCode::SUCCESS
         }
         Err(err) => {
             vm_error!("runtime error: {}", err);
             eprintln!("{}", Red.paint(err));
             ExitCode::FAILURE
+        }
+    }
+}
+
+/// 主线程事件循环：消费 worker 消息并清理已断开 worker，循环直至无活跃 worker。
+///
+/// # 步骤
+/// 1. 循环条件：仍有活跃 worker。
+/// 2. `deliver_worker_messages` 交付 worker 消息到 `onmessage`。
+/// 3. `cleanup_disconnected_workers` 清理已退出 worker（通道断开即 join 加移除）。
+/// 4. 本轮未交付消息时 1ms 轮询（避免忙等）。
+///
+/// # 边界与前提
+/// - 终止条件为无活跃 worker；用户脚本建 Worker 不 terminate 时恒转（有意，
+///   页面寿命 = worker 寿命）。
+fn run_worker_event_loop(vm: &mut Vm) {
+    while !vm.active_workers().is_empty() {
+        let delivered = vm.deliver_worker_messages();
+        vm.cleanup_disconnected_workers();
+        if !delivered {
+            std::thread::sleep(Duration::from_millis(1));
         }
     }
 }

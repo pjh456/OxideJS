@@ -72,7 +72,8 @@ pub(crate) fn worker_close_requested() -> bool {
 /// - Worker 对象经 `alloc_object` 入对象表即成 GC 根；`workerId` 是数值（无 GC 边）。
 ///
 /// # 副作用
-/// - 派生一个 OS 线程（`spawn_worker`）；登记一个 `WorkerHandle`。
+/// - 派生一个 OS 线程（`spawn_worker`）；登记一个 `WorkerHandle` 与一条
+///   Worker 对象注册表条目（GC 根）。
 pub(crate) fn worker_constructor(vm: &mut Vm, args: &[u8]) -> NativeResult {
     // 构造形态校验（HTML 规范只有 [[Construct]]）。
     if !vm.constructing_native {
@@ -131,6 +132,9 @@ pub(crate) fn worker_constructor(vm: &mut Vm, args: &[u8]) -> NativeResult {
     // workerId：非枚举数据属性（值为 worker 编号，数值表示无 GC 边）。
     let si_worker_id = vm.perm_intern("workerId");
     let _ = vm.define_data_property(worker_obj, si_worker_id, JsValue::float(id as f64), PropAttributes::new(true, false, true));
+
+    // 登记 Worker 对象进注册表（GC 根，主线程事件循环据编号反查 onmessage）。
+    vm.worker_objects.insert(id, JsValue::from_js_object(ptr));
 
     NativeResult::Ok(JsValue::from_js_object(ptr))
 }
@@ -293,7 +297,6 @@ pub(crate) fn self_location(vm: &mut Vm, _args: &[u8]) -> NativeResult {
 ///
 /// # 副作用
 /// - 新建一个 MessageEvent 对象（经 `alloc_object` 入对象表）。
-#[expect(dead_code)] // 供 935.5 主线程事件循环消费（onmessage 交付），935.4 未接线
 pub(crate) fn message_event_constructor(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let data_val = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
     let type_val = if args.len() > 2 { vm.reg(args[2]) } else { JsValue::undefined() };

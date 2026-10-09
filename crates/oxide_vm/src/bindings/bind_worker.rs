@@ -156,6 +156,18 @@ pub fn bind_worker(core: &Arc<KernelCore>, session: &KernelSession, global: &mut
             ],
         );
     }
+    // self 全局属性：值为 global 对象本身（worker realm 经 self === global 可达，
+    // self.onmessage / self.postMessage 由此成立）。幂等守卫。
+    let si_self = sf.intern("self").0;
+    if sh.lookup_position(global.shape_id(), si_self).is_none() {
+        let global_ptr = global as *mut JsObject;
+        let shape = sh.make_shape(global.shape_id(), si_self);
+        global.set_shape_id(shape);
+        global.ensure_hash_props().push(JsValue::from_js_object(global_ptr));
+        let pos = global.hash_props_vec().map_or(0, |v| v.len() as u32).saturating_sub(1);
+        global.set_data_meta(pos, PropAttributes::new(true, false, true));
+        global.bump_generation();
+    }
     // name / location getter（幂等守卫）。
     // let si_name_global = sf.intern("name").0;
     // if sh.lookup_position(global.shape_id(), si_name_global).is_none() {

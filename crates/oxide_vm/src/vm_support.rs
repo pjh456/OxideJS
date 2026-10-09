@@ -193,6 +193,7 @@ impl Vm {
             max_steps_override: None,
             worker_registry: std::collections::HashMap::new(),
             worker_next_id: 0,
+            worker_objects: std::collections::HashMap::new(),
         };
         vm.init_generator_intrinsics();
         vm.init_promise_intrinsics();
@@ -352,6 +353,7 @@ impl Vm {
             max_steps_override: None,
             worker_registry: std::collections::HashMap::new(),
             worker_next_id: 0,
+            worker_objects: std::collections::HashMap::new(),
         };
         vm.init_generator_intrinsics();
         vm.init_promise_intrinsics();
@@ -392,6 +394,9 @@ impl Vm {
     ///
     /// 用于在多次 JS 执行之间达到完全隔离：session 内未被污染的 builtin 保留原指针。
     pub fn full_reset(&mut self) {
+        // 池回收路径：若有活跃 worker，先终止并 join 全部（防线程泄漏与注册表
+        // 残留：worker 线程各持自有 Vm，不 join 则线程孤儿、registry 条目残留）。
+        self.shutdown_workers();
         // 防御兜底：属性值写原语已推进 generation，常规覆盖写由快照对比发现；
         // 若未来出现绕过属性写原语的裸属性区改写，session 对象会被 session GC 回收，
         // 保留 global 将持悬垂指针，故带 session 对象时强制 bump 保证 global 重建。
@@ -473,6 +478,9 @@ impl Vm {
         // BroadcastChannel 注册表持 session 对象裸指针：teardown 释放全部
         // session 对象前须清表，否则残留悬垂指针。
         self.realm.gc.borrow_mut().broadcast_channels.clear();
+        // Worker 对象注册表持 session 对象指针：teardown 释放全部 session 对象
+        // 前须清表，否则残留悬垂指针。
+        self.worker_objects.clear();
         self.realm.teardown_session_heap_data();
         self.realm.gc.borrow_mut().session_bytes_allocated = 0;
         self.realm.gc.borrow_mut().session_bytes_peak = 0;
