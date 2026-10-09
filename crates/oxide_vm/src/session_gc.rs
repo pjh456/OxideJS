@@ -10,7 +10,9 @@ use rustc_hash::FxBuildHasher;
 use crate::native_box_dispatch;
 use crate::vm::RootGroup;
 use crate::vm::Vm;
-use oxide_builtins::{array_buffer, data_view, disposable_stack, map, module, regexp, set, typed_array, weak_map};
+use oxide_builtins::{
+    array_buffer, data_view, disposable_stack, map, message_channel, module, regexp, set, typed_array, weak_map,
+};
 
 /// session 级 mark-sweep GC 的状态与统计。
 ///
@@ -127,6 +129,7 @@ impl SessionGc {
         bytes += crate::async_func::async_native_size(obj);
         bytes += crate::async_generator::async_generator_native_size(obj);
         bytes += weak_map::weak_map_native_size(obj);
+        bytes += message_channel::message_port_native_size(obj);
 
         bytes
     }
@@ -566,6 +569,7 @@ impl SessionGc {
             freed_bytes += crate::async_func::drop_async_native(obj);
             freed_bytes += crate::async_generator::drop_async_generator_native(obj);
             freed_bytes += weak_map::drop_weak_map_native(obj);
+            freed_bytes += message_channel::drop_message_port_native(obj);
 
             freed_bytes
         }

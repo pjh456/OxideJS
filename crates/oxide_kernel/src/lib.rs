@@ -13,6 +13,8 @@ pub mod code_forge;
 pub mod kernel;
 /// kernel 层日志宏。
 pub mod kernel_log;
+/// 通用消息队列：`std::sync::mpsc` 的薄封装，提供命名发送端/接收端类型与统一入口。
+pub mod message_queue;
 /// 属性模板缓存：按 shape 缓存属性槽位布局，加速属性查找。
 pub mod prop_forge;
 /// hidden class（shape）共享存储：把对象结构映射为整数 id。

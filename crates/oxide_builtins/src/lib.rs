@@ -44,6 +44,8 @@ pub mod json;
 pub mod map;
 /// Math 内置对象实现（数学函数）。
 pub mod math;
+/// MessagePort 载荷盒（mpsc 双端与对端端口边，GC 三自由函数族）。
+pub mod message_channel;
 /// MessageValue 跨 realm 值传递抽象（`detach_message` / `rehydrate_message` 与
 /// `Send` 中间表示，供 worker 调度跨线程消息复用）。
 pub mod message_value;

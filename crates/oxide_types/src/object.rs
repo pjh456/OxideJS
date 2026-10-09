@@ -220,6 +220,9 @@ impl JsObject {
     /// Raw JSON 对象（`JSON.rawJSON` 产物）：null 原型、frozen，唯一自身属性
     /// `rawJSON` 存原始 JSON 文本（不可写、不可配置）；无原生载荷盒。
     pub const OBJ_TYPE_RAW_JSON: u8 = 32;
+    /// MessagePort 对象：mpsc 双端（发往对端 / 收自对端）与对端端口裸指针
+    /// 存于 `native_fn` 槽的载荷盒（`MessagePortInner`），对端端口为双向 GC 边。
+    pub const OBJ_TYPE_MESSAGE_PORT: u8 = 33;
     /// `is_session_epoch` 字段中的 session 标记位。
     pub const SESSION_EPOCH_BIT: u8 = 0x01;
     /// `is_session_epoch` 字段中的 GC 标记位。
@@ -296,6 +299,11 @@ impl JsObject {
     #[inline]
     pub fn is_raw_json_obj(&self) -> bool {
         self.type_tag == Self::OBJ_TYPE_RAW_JSON
+    }
+    /// 是否 MessagePort 对象（`native_fn` 槽存 mpsc 双端与对端端口边）。
+    #[inline]
+    pub fn is_message_port(&self) -> bool {
+        self.type_tag == Self::OBJ_TYPE_MESSAGE_PORT
     }
     /// 是否 DataView 对象。
     #[inline]

@@ -17,8 +17,9 @@ pub mod bindings;
 mod dispatch;
 mod generator;
 mod ic_helper;
-/// 通用消息队列：`std::sync::mpsc` 的薄封装，提供命名发送端/接收端类型与统一入口。
-pub mod message_queue;
+/// 通用消息队列：`std::sync::mpsc` 的薄封装，提供命名发送端/接收端类型与统一入口
+/// （本体在 `oxide_kernel`，此处再导出保持既有路径有效）。
+pub use oxide_kernel::message_queue;
 /// native 函数签名类型（[`native::NativeFn`]），builtin 绑定与 VM 调用约定依赖它。
 pub mod native;
 /// native 载荷家族单点分类与每家族边函数引用（家族表，GC 各链注册面）。
