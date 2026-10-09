@@ -5,7 +5,8 @@
 //! - `write_range` 经 `&self` 裸写（字节区归本结构独占，类型不暴露 `&mut [u8]`），多线程并发写安全。
 //! - 账目单位是预分配真实上限：构造时计入 `KernelCore::shared_buffer_bytes`，`Drop` 减同值。
 
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::mem::size_of;
+use std::sync::atomic::{AtomicU16, AtomicU32, AtomicU64, AtomicU8, AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use crate::KernelCore;
@@ -30,6 +31,89 @@ pub struct SharedBuffer {
     max_length: usize,
     /// 账目入口。
     core: Arc<KernelCore>,
+}
+
+// 九操作乘四宽度 SeqCst 原子方法生成宏。
+//
+// 对齐前提：`AtomicU{16,32,64}::from_ptr` 要求指针按宽度对齐。字节区经全局
+// 分配器分配（实返 16 字节对齐块），偏移恒为元素字节数倍数（规范保证视图
+// byte_offset 是元素字节数倍数、索引为整数），与既有元素读写路径（`read_element`
+// / `write_element` 对 u8 切片做按对齐读）同一前提。
+macro_rules! impl_atomic_width {
+    ($atomic:ty, $ty:ty,
+     $load:ident, $store:ident, $swap:ident, $cas:ident,
+     $fadd:ident, $fsub:ident, $fand:ident, $for:ident, $fxor:ident) => {
+        /// 读取 `offset` 处的位宽整数值（SeqCst 序）。
+        pub fn $load(&self, offset: usize) -> $ty {
+            debug_assert!(offset + size_of::<$ty>() <= self.len(), "atomic load 越界");
+            let ptr = unsafe { self.bytes.as_ptr().add(offset) as *mut $ty };
+            // SAFETY: 字节区归本结构独占且类型不暴露 `&mut [u8]`，`from_ptr`
+            // 不引入别名；对齐前提见宏注记。
+            unsafe { <$atomic>::from_ptr(ptr).load(Ordering::SeqCst) }
+        }
+
+        /// 向 `offset` 处写入位宽整数值（SeqCst 序）。
+        pub fn $store(&self, offset: usize, value: $ty) {
+            debug_assert!(offset + size_of::<$ty>() <= self.len(), "atomic store 越界");
+            let ptr = unsafe { self.bytes.as_ptr().add(offset) as *mut $ty };
+            unsafe { <$atomic>::from_ptr(ptr).store(value, Ordering::SeqCst) }
+        }
+
+        /// 交换 `offset` 处值：写入 `value` 并返回操作前旧值（SeqCst 序）。
+        pub fn $swap(&self, offset: usize, value: $ty) -> $ty {
+            debug_assert!(offset + size_of::<$ty>() <= self.len(), "atomic swap 越界");
+            let ptr = unsafe { self.bytes.as_ptr().add(offset) as *mut $ty };
+            unsafe { <$atomic>::from_ptr(ptr).swap(value, Ordering::SeqCst) }
+        }
+
+        /// 比较交换：`offset` 处等于 `expected` 时写入 `replacement` 返
+        /// `Ok(replacement)`，否则返 `Err(旧值)`（SeqCst 序）。
+        pub fn $cas(&self, offset: usize, expected: $ty, replacement: $ty) -> Result<$ty, $ty> {
+            debug_assert!(offset + size_of::<$ty>() <= self.len(), "atomic compare_exchange 越界");
+            let ptr = unsafe { self.bytes.as_ptr().add(offset) as *mut $ty };
+            match unsafe {
+                <$atomic>::from_ptr(ptr).compare_exchange(expected, replacement, Ordering::SeqCst, Ordering::SeqCst)
+            } {
+                Ok(_) => Ok(replacement),
+                Err(actual) => Err(actual),
+            }
+        }
+
+        /// 原子加：返回操作前旧值（SeqCst 序，环绕语义）。
+        pub fn $fadd(&self, offset: usize, value: $ty) -> $ty {
+            debug_assert!(offset + size_of::<$ty>() <= self.len(), "atomic fetch_add 越界");
+            let ptr = unsafe { self.bytes.as_ptr().add(offset) as *mut $ty };
+            unsafe { <$atomic>::from_ptr(ptr).fetch_add(value, Ordering::SeqCst) }
+        }
+
+        /// 原子减：返回操作前旧值（SeqCst 序，环绕语义）。
+        pub fn $fsub(&self, offset: usize, value: $ty) -> $ty {
+            debug_assert!(offset + size_of::<$ty>() <= self.len(), "atomic fetch_sub 越界");
+            let ptr = unsafe { self.bytes.as_ptr().add(offset) as *mut $ty };
+            unsafe { <$atomic>::from_ptr(ptr).fetch_sub(value, Ordering::SeqCst) }
+        }
+
+        /// 原子按位与：返回操作前旧值（SeqCst 序）。
+        pub fn $fand(&self, offset: usize, value: $ty) -> $ty {
+            debug_assert!(offset + size_of::<$ty>() <= self.len(), "atomic fetch_and 越界");
+            let ptr = unsafe { self.bytes.as_ptr().add(offset) as *mut $ty };
+            unsafe { <$atomic>::from_ptr(ptr).fetch_and(value, Ordering::SeqCst) }
+        }
+
+        /// 原子按位或：返回操作前旧值（SeqCst 序）。
+        pub fn $for(&self, offset: usize, value: $ty) -> $ty {
+            debug_assert!(offset + size_of::<$ty>() <= self.len(), "atomic fetch_or 越界");
+            let ptr = unsafe { self.bytes.as_ptr().add(offset) as *mut $ty };
+            unsafe { <$atomic>::from_ptr(ptr).fetch_or(value, Ordering::SeqCst) }
+        }
+
+        /// 原子按位异或：返回操作前旧值（SeqCst 序）。
+        pub fn $fxor(&self, offset: usize, value: $ty) -> $ty {
+            debug_assert!(offset + size_of::<$ty>() <= self.len(), "atomic fetch_xor 越界");
+            let ptr = unsafe { self.bytes.as_ptr().add(offset) as *mut $ty };
+            unsafe { <$atomic>::from_ptr(ptr).fetch_xor(value, Ordering::SeqCst) }
+        }
+    };
 }
 
 impl SharedBuffer {
@@ -135,6 +219,60 @@ impl SharedBuffer {
             }
         }
     }
+
+    // 九操作乘四宽度（u8 / u16 / u32 / u64）SeqCst 原子方法，宏生成。
+    impl_atomic_width!(
+        AtomicU8,
+        u8,
+        load_u8,
+        store_u8,
+        swap_u8,
+        compare_exchange_u8,
+        fetch_add_u8,
+        fetch_sub_u8,
+        fetch_and_u8,
+        fetch_or_u8,
+        fetch_xor_u8
+    );
+    impl_atomic_width!(
+        AtomicU16,
+        u16,
+        load_u16,
+        store_u16,
+        swap_u16,
+        compare_exchange_u16,
+        fetch_add_u16,
+        fetch_sub_u16,
+        fetch_and_u16,
+        fetch_or_u16,
+        fetch_xor_u16
+    );
+    impl_atomic_width!(
+        AtomicU32,
+        u32,
+        load_u32,
+        store_u32,
+        swap_u32,
+        compare_exchange_u32,
+        fetch_add_u32,
+        fetch_sub_u32,
+        fetch_and_u32,
+        fetch_or_u32,
+        fetch_xor_u32
+    );
+    impl_atomic_width!(
+        AtomicU64,
+        u64,
+        load_u64,
+        store_u64,
+        swap_u64,
+        compare_exchange_u64,
+        fetch_add_u64,
+        fetch_sub_u64,
+        fetch_and_u64,
+        fetch_or_u64,
+        fetch_xor_u64
+    );
 }
 
 impl Drop for SharedBuffer {
@@ -243,5 +381,82 @@ mod tests {
         let len = child.join().unwrap();
         assert_eq!(len, 8);
         assert_eq!(buf.as_slice(), &[0, 0, 0, 0, 0xAB, 0xCD, 0, 0]);
+    }
+
+    #[test]
+    fn fetch_add_atomicity_8_threads() {
+        let core = new_core();
+        let buf = Arc::new(SharedBuffer::new(core, vec![0u8; 4]));
+        let handles: Vec<_> = (0..8)
+            .map(|_| {
+                let buf = Arc::clone(&buf);
+                std::thread::spawn(move || {
+                    for _ in 0..1000 {
+                        buf.fetch_add_u32(0, 1);
+                    }
+                })
+            })
+            .collect();
+        for h in handles {
+            h.join().unwrap();
+        }
+        // 真原子性判别：8 线程各 1000 次自增，终值恰为 8000（读-改-写会丢更新）。
+        assert_eq!(buf.load_u32(0), 8000);
+    }
+
+    #[test]
+    fn compare_exchange_contention_exactly_one_wins() {
+        let core = new_core();
+        let buf = Arc::new(SharedBuffer::new(core, vec![0u8; 4]));
+        let handles: Vec<_> = (0..2)
+            .map(|_| {
+                let buf = Arc::clone(&buf);
+                std::thread::spawn(move || match buf.compare_exchange_u32(0, 0, 1) {
+                    Ok(_) => true,
+                    Err(_) => false,
+                })
+            })
+            .collect();
+        let winners = handles.into_iter().map(|h| h.join().unwrap()).filter(|won| *won).count();
+        assert_eq!(winners, 1);
+        assert_eq!(buf.load_u32(0), 1);
+    }
+
+    #[test]
+    fn load_store_cross_thread_visibility() {
+        let core = new_core();
+        let buf = Arc::new(SharedBuffer::new(core, vec![0u8; 8]));
+        let child = {
+            let buf = Arc::clone(&buf);
+            std::thread::spawn(move || {
+                buf.store_u64(0, 0x1122_3344_5566_7788);
+            })
+        };
+        child.join().unwrap();
+        assert_eq!(buf.load_u64(0), 0x1122_3344_5566_7788);
+    }
+
+    #[test]
+    fn fetch_add_wraps_u8() {
+        let core = new_core();
+        let buf = SharedBuffer::new(core, vec![255u8; 1]);
+        // 255 + 255 环绕：返回操作前旧值 255，槽值 254。
+        let old = buf.fetch_add_u8(0, 255);
+        assert_eq!(old, 255);
+        assert_eq!(buf.load_u8(0), 254);
+    }
+
+    #[test]
+    fn fetch_add_all_widths() {
+        let core = new_core();
+        let buf = SharedBuffer::new(core, vec![0u8; 16]);
+        assert_eq!(buf.fetch_add_u8(0, 5), 0);
+        assert_eq!(buf.fetch_add_u16(2, 7), 0);
+        assert_eq!(buf.fetch_add_u32(4, 9), 0);
+        assert_eq!(buf.fetch_add_u64(8, 11), 0);
+        assert_eq!(buf.load_u8(0), 5);
+        assert_eq!(buf.load_u16(2), 7);
+        assert_eq!(buf.load_u32(4), 9);
+        assert_eq!(buf.load_u64(8), 11);
     }
 }
