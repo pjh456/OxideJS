@@ -87,6 +87,27 @@ fn import_expression_distinguished() {
 }
 
 #[test]
+fn import_defer_distinguished() {
+    // import defer 与普通 namespace import 语义不同（defer 不触发依赖求值）：
+    // 修复前 phase 不入 hash，两者哈希相同 → 缓存碰撞复用错误字节码。
+    assert_ne!(
+        compiled("import defer * as ns from './x.js'"),
+        compiled("import * as ns from './x.js'"),
+        "import defer vs plain namespace import must differ"
+    );
+    assert_ne!(
+        structural("import defer * as ns from './x.js'"),
+        structural("import * as ns from './x.js'"),
+        "defer flag must be part of the structural key too"
+    );
+    // 同源等价回归
+    assert_eq!(
+        compiled("import defer * as ns from './x.js'"),
+        compiled("import defer * as ns from './x.js'")
+    );
+}
+
+#[test]
 fn structural_hash_ignores_binding_names() {
     // 结构哈希忽略绑定名：仅参数/变量改名后哈希相等。
     assert_eq!(structural("function f(x){ return x }"), structural("function f(y){ return y }"));

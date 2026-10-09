@@ -98,6 +98,9 @@ pub(super) fn hash_statement(stmt: &Statement, h: &mut rustc_hash::FxHasher, inc
         }
         Statement::ImportDeclaration(imp) => {
             imp.source.value.hash(h);
+            // import 阶段标志（import defer / source-phase imports）：同源声明
+            // 语义不同，须区分缓存键，防 defer 与非 defer 碰撞复用错误字节码。
+            imp.phase.map(|p| p as u8).hash(h);
             if let Some(specifiers) = &imp.specifiers {
                 (specifiers.len() as u32).hash(h);
                 for spec in specifiers {
