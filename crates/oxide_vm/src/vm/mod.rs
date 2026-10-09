@@ -237,6 +237,9 @@ pub struct Vm {
     /// 作用域水位栈：DISPOSE_MARK 压入当前释放栈深度，DISPOSE_POP 弹出并只释放
     /// 水位以上条目。与释放栈同生共死（run 边界一并清空）。
     pub(crate) dispose_marks: Vec<usize>,
+    /// 释放循环在飞标记：`dispose_above`/`dispatch_dispose_pop` 期间置位，防释放
+    /// 方法抛错触发的嵌套 `unwind` 重入 `dispose_above` 重复释放与合并。
+    pub(crate) disposing: bool,
     /// 本次 native 调用的 spill 溢出实参区：`spill_stack[base..base+count)`。
     /// 实参数超过寄存器窗口（253）时，窗口外的实参转存 spill 栈（GC 根），
     /// native 侧经 `VmHost::native_arg_count`/`native_arg_at` 读取。仅在一次

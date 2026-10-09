@@ -132,6 +132,7 @@ impl Vm {
             spill_stack: Vec::new(),
             dispose_stack: Vec::new(),
             dispose_marks: Vec::new(),
+            disposing: false,
             native_overflow_base: 0,
             native_overflow_count: 0,
             try_stack: Vec::new(),
@@ -295,6 +296,7 @@ impl Vm {
             spill_stack: Vec::new(),
             dispose_stack: Vec::new(),
             dispose_marks: Vec::new(),
+            disposing: false,
             native_overflow_base: 0,
             native_overflow_count: 0,
             try_stack: Vec::new(),
@@ -523,6 +525,7 @@ impl Vm {
         // 被误释放或悬垂，随执行状态一并清空；水位栈同清，防陈旧水位误截断。
         self.dispose_stack.clear();
         self.dispose_marks.clear();
+        self.disposing = false;
         self.native_overflow_base = 0;
         self.native_overflow_count = 0;
         // native pack 实参区上界与溢出描述符同构：仅一次 native 调用期间有效，
