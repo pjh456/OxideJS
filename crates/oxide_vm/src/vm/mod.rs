@@ -242,6 +242,11 @@ pub struct Vm {
     /// String 后，for-of 需要重新抛出原值。放在 VM 顶层字段（不在 InlineSyncState 中）
     /// 以便跨内联调用的恢复过程存活。
     pub(crate) last_uncaught_value: Option<JsValue>,
+    /// 「正在求值模块」cyclic 守卫标记（deferred namespace 求值触发用）：
+    /// `run` 在 dispatch 前置 `Some(undefined)`（入口模块哨兵）、`module_eval`
+    /// 在 `call_function_sync` 前置 `Some(fn)`，两者均 save/restore（嵌套安全）。
+    /// 触发点据此判自求值/祖先求值中的 cyclic 并抛 TypeError。
+    pub(crate) evaluating_module: Option<JsValue>,
     /// 数组 length define 强转期用户代码抛出的原始异常：与 `last_uncaught_value`
     /// 分离，避免入口误取其它操作忽略调用残留的值。仅 `define_array_length` 写入，
     /// 由 Object/Reflect define 入口消费。

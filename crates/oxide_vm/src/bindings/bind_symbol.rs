@@ -70,9 +70,11 @@ pub fn bind_symbol(core: &Arc<KernelCore>, session: &KernelSession, global: &mut
 
     // well-known symbol 以符号原语绑定，下标与内建符号表（0..WELL_KNOWN_SYMBOL_COUNT）
     // 一一对应；名称表是 id/名映射的唯一来源，属性名去掉 `Symbol.` 前缀。
+    // 原语按 (realm 编号, 局部下标) 编码，与键空间 `encode_symbol_key` 同口径，
+    // 非零 realm 下与键物化值保持同一符号。
     for (id, full_name) in oxide_types::private_key::WELL_KNOWN_SYMBOL_NAMES.iter().enumerate() {
         let name = full_name.strip_prefix("Symbol.").unwrap_or(full_name);
-        bind_well_known_symbol(core, ctor, name, JsValue::symbol(id as u32));
+        bind_well_known_symbol(core, ctor, name, JsValue::symbol_realm(realm_id, id as u32));
     }
 
     bind_constructor!(core, global, "Symbol", ctor_ptr, oxide_builtins::symbol::symbol_constructor::<crate::vm::Vm>, 0, hash: true);

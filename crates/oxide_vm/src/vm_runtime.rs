@@ -519,7 +519,26 @@ impl Vm {
             sub.n_args,
             sub.is_arrow
         );
-        let result = self.dispatch();
+        // 体自身 try 处理器基线：异常逃出体内时先由体内处理器捕获
+        // （catch_pc 在体字节码内，状态还原后指向调用方字节码即悬空）。
+        let try_base = self.try_stack.len();
+        let mut result = self.dispatch();
+        loop {
+            if result.is_ok() || self.try_stack.len() <= try_base {
+                break;
+            }
+            // 体内处理器捕获：pc 落体字节码 catch/finally，继续执行体余部。
+            // 捕获体再抛（re-throw）时展开会消费外层处理器并跳外字节码 catch_pc，
+            // 与活动字节码不一致——re-dispatch 返回 Err 即该形态，还原状态后由
+            // 调用边界按外层处理器正常展开（与修复前同口径）。
+            if self.unwind().is_err() {
+                break;
+            }
+            result = self.dispatch();
+            if result.is_err() {
+                break;
+            }
+        }
         self.native_call_depth -= 1;
 
         vm_trace!("call_bytecode: restoring state pc={} result={:?}", saved.pc, result.as_ref().ok());
@@ -724,7 +743,14 @@ impl Vm {
         self.top_level_this = this_val;
         self.regs[254] = this_val;
 
+        // 「正在求值模块」cyclic 守卫标记：入口模块函数对象在 run 不可得（顶层
+        // CREATE_CLOSURE 产物），用 undefined 哨兵——sentinel 检查只看 is_some()，
+        // 依赖模块的 real-function 检查恒不匹配 undefined，安全。save/restore 保
+        // 嵌套/重入安全，dispatch 返回即还原（微任务 drain 前模块已非求值中）。
+        let saved_evaluating = self.evaluating_module.take();
+        self.evaluating_module = Some(JsValue::undefined());
         let result = self.execute_task(|vm| vm.dispatch());
+        self.evaluating_module = saved_evaluating;
         // 顶层执行结束后 drain 微任务队列：Promise reactions 与 thenable 委托在此执行。
         self.drain_microtasks();
         // 指令周期采样：run 末聚合本 run 的样本并输出 top-K 直方图（关闭时零开销

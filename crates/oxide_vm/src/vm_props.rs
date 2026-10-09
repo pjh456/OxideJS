@@ -3,6 +3,7 @@ use crate::{ic_trace, vm_trace};
 use oxide_kernel::prop_forge::PropTemplate;
 use oxide_kernel::shape_forge::EMPTY_SHAPE_ID;
 use oxide_runtime_api as coercion;
+use oxide_runtime_api::VmHost;
 use oxide_types::object::{JsObject, PropAttributes, PropMetaEntry};
 use oxide_types::value::JsValue;
 
@@ -54,7 +55,15 @@ impl Vm {
             // 模块命名空间 exotic [[Get]]：条目表是权威状态，预注册但未初始化的
             // 导出读抛 ReferenceError；非 live ns（无表）落普通属性路径零行为变化。
             if obj.is_module_namespace() {
-                if let Some(state) = oxide_builtins::module::module_ns_export(obj, prop_name_si) {
+                // deferred namespace 求值触发（symbol-like 键内部 no-op）；触发
+                // 失败（cyclic / 失败缓存重抛）走可捕获异常展开，外围 try/catch
+                // 可收到原错误值。
+                if let Err(msg) = self.ensure_deferred_ns_evaluation(obj, Some(prop_name_si)) {
+                    return self.raise_call_error(&msg);
+                }
+                // 求值后活值在真实 ns 条目表，deferred 对象自身槽位是预注册占位。
+                let target = oxide_builtins::module::deferred_ns_read_target(obj);
+                if let Some(state) = oxide_builtins::module::module_ns_export(target, prop_name_si) {
                     return match state {
                         oxide_builtins::module::ModuleNsQuery::Initialized(v) => Ok(v),
                         oxide_builtins::module::ModuleNsQuery::Uninitialized => {
@@ -360,8 +369,9 @@ impl Vm {
             prop_name_si,
             use_frame_push
         );
-        // 模块命名空间 exotic [[Set]] 恒 false（规范 10.4.6.8）：严格抛 TypeError，
-        // sloppy 静默 no-op；Reflect.set 以 strict=true 调用并投影为 false。
+        // 模块命名空间 exotic [[Set]] 恒 false（规范 10.4.6.8，deferred 形态同口径
+        // 不触发求值）：严格抛 TypeError，sloppy 静默 no-op；Reflect.set 以
+        // strict=true 调用并投影为 false。
         if obj.is_module_namespace() {
             if strict {
                 return self.write_protection_failure(builtin, "Cannot assign to a module namespace export");
@@ -1713,7 +1723,7 @@ mod tests {
         assert_eq!(obj.logical_len(), 2_000_001, "length 扩到 index+1");
         assert_eq!(obj.array_prop_count, 1, "物理区不物化");
         assert_eq!(vm.ordinary_get(obj, si, a).expect("get"), JsValue::int(9));
-        assert!(vm.has_property(obj, si), "in 为 true");
+        assert!(vm.has_property(obj, si).expect("has_property"), "in 为 true");
         let keys = oxide_builtins::object::walk_own_keys(&vm, obj);
         assert!(keys.iter().any(|(k, _)| *k == si), "枚举含大索引键");
     }
@@ -1729,7 +1739,7 @@ mod tests {
         let obj = unsafe { &*b.as_js_object_ptr() };
         assert_eq!(obj.logical_len(), 0, "2^32-1 不扩展 length");
         assert_eq!(vm.ordinary_get(obj, si, b).expect("get"), JsValue::int(9));
-        assert!(vm.has_property(obj, si));
+        assert!(vm.has_property(obj, si).expect("has_property"));
     }
 
     #[test]
@@ -1763,7 +1773,7 @@ mod tests {
 
         let obj = unsafe { &*d.as_js_object_ptr() };
         assert_eq!(obj.logical_len(), 5);
-        assert!(!vm.has_property(obj, si), "截断后 3000000 键被删");
+        assert!(!vm.has_property(obj, si).expect("has_property"), "截断后 3000000 键被删");
         assert_eq!(vm.ordinary_get(obj, si, d).expect("get"), JsValue::undefined());
     }
 
@@ -1839,11 +1849,12 @@ mod tests {
             .expect("set");
 
         let outcome =
-            oxide_builtins::object::delete_own_property_outcome(&mut vm, unsafe { &mut *a.as_js_object_ptr() }, si);
+            oxide_builtins::object::delete_own_property_outcome(&mut vm, unsafe { &mut *a.as_js_object_ptr() }, si)
+                .expect("delete");
         assert_eq!(outcome, oxide_builtins::object::DeleteOutcome::Deleted);
         let obj = unsafe { &*a.as_js_object_ptr() };
         assert_eq!(obj.logical_len(), 2_000_001, "length 不变");
-        assert!(!vm.has_property(obj, si));
+        assert!(!vm.has_property(obj, si).expect("has_property"));
     }
 
     #[test]
@@ -1940,5 +1951,110 @@ mod tests {
         assert!(err.contains("cannot redefine"), "实际: {err}");
         let obj = unsafe { &*boxed.as_js_object_ptr() };
         assert_eq!(vm.ordinary_get(obj, length_si, boxed).expect("get"), JsValue::int(4), "length 不变");
+    }
+
+    // ---- deferred namespace 求值触发测试 ----
+
+    use std::sync::Arc;
+
+    /// 建带编译服务的 VM 与一个依赖模块函数（deferred ns 的 `[[Module]]` 载荷）。
+    fn deferred_vm_with_function() -> (Vm, JsValue) {
+        let mut vm = Vm::new();
+        vm.set_compiler_service(Arc::new(oxide_compiler::DefaultCompilerService));
+        let fn_val = vm
+            .create_dynamic_function(&[], "return 42;", false, false)
+            .expect("create function");
+        (vm, fn_val)
+    }
+
+    /// 建 deferred namespace 对象（`fn_val` 为依赖模块函数，未求值态）。
+    fn make_deferred_ns(vm: &mut Vm, fn_val: JsValue) -> JsValue {
+        vm.set_reg(1, fn_val);
+        vm.set_reg(2, JsValue::undefined());
+        oxide_builtins::module::module_defer_object(vm, &[0, 1, 2]).unwrap()
+    }
+
+    #[test]
+    fn deferred_ns_get_triggers_evaluation() {
+        let (mut vm, fn_val) = deferred_vm_with_function();
+        let ns_val = make_deferred_ns(&mut vm, fn_val);
+        let ns_ptr = ns_val.as_js_object_ptr();
+        // 未求值态。
+        let ns = unsafe { &*ns_ptr };
+        assert!(!oxide_builtins::module::deferred_state(ns).unwrap().evaluated, "求值前应为 false");
+
+        // 读属性触发求值（模块函数返回 42，非对象无妨，只求值完成）。
+        let x_si = vm.kernel_core.perm_interner().intern("x").0;
+        let ns = unsafe { &*ns_ptr };
+        let _ = vm.ordinary_get(ns, x_si, ns_val);
+
+        // 求值后 [[Evaluated]] 置真。
+        let ns = unsafe { &*ns_ptr };
+        assert!(oxide_builtins::module::deferred_state(ns).unwrap().evaluated, "求值后应为 true");
+    }
+
+    #[test]
+    fn deferred_ns_cyclic_get_throws_type_error() {
+        let (mut vm, _fn_val) = deferred_vm_with_function();
+        // 哨兵形态：[[Module]] = undefined（自导入/祖先 defer）。
+        vm.set_reg(1, JsValue::undefined());
+        vm.set_reg(2, JsValue::undefined());
+        let ns_val = oxide_builtins::module::module_defer_object(&mut vm, &[0, 1, 2]).unwrap();
+        let ns_ptr = ns_val.as_js_object_ptr();
+
+        // 模拟「正在求值模块」：置 cyclic 守卫标记。
+        vm.set_evaluating_module(Some(JsValue::undefined()));
+
+        // 读属性触发 cyclic 守卫 → TypeError（builtin 上下文返 Err）。
+        let x_si = vm.kernel_core.perm_interner().intern("x").0;
+        let ns = unsafe { &*ns_ptr };
+        let result = vm.ordinary_get(ns, x_si, ns_val);
+        assert!(result.is_err(), "cyclic 应抛 TypeError");
+    }
+
+    #[test]
+    fn deferred_ns_failure_rethrows_same_error() {
+        let (mut vm, _fn_val) = deferred_vm_with_function();
+        // 模块函数抛错。
+        let throwing_fn = vm
+            .create_dynamic_function(&[], "throw new Error('boom');", false, false)
+            .expect("create function");
+        vm.set_reg(1, throwing_fn);
+        vm.set_reg(2, JsValue::undefined());
+        let ns_val = oxide_builtins::module::module_defer_object(&mut vm, &[0, 1, 2]).unwrap();
+        let ns_ptr = ns_val.as_js_object_ptr();
+        let x_si = vm.kernel_core.perm_interner().intern("x").0;
+
+        // 首次读：触发求值，模块函数抛错，缓存错误。
+        let ns = unsafe { &*ns_ptr };
+        assert!(vm.ordinary_get(ns, x_si, ns_val).is_err(), "首次读应抛错");
+        let ns = unsafe { &*ns_ptr };
+        let cached_err = oxide_builtins::module::deferred_state(ns).unwrap().error.expect("失败应缓存错误");
+
+        // 再读：重抛同一错误对象（sameValue 身份）。
+        let ns = unsafe { &*ns_ptr };
+        assert!(vm.ordinary_get(ns, x_si, ns_val).is_err(), "再读应再抛");
+        // 重抛经 uncaught 侧通道还原，取回验证指针身份。
+        let rethrown = vm.take_uncaught_value().expect("重抛应还原 uncaught 侧通道");
+        assert!(
+            std::ptr::eq(rethrown.as_js_object_ptr(), cached_err.as_js_object_ptr()),
+            "再读应重抛同一错误对象"
+        );
+    }
+
+    #[test]
+    fn deferred_ns_symbol_like_key_does_not_trigger() {
+        let (mut vm, fn_val) = deferred_vm_with_function();
+        let ns_val = make_deferred_ns(&mut vm, fn_val);
+        let ns_ptr = ns_val.as_js_object_ptr();
+
+        // 读 "then" 键（deferred 的 symbol-like 键）不触发求值。
+        let then_si = vm.kernel_core.perm_interner().intern("then").0;
+        let ns = unsafe { &*ns_ptr };
+        let _ = vm.ordinary_get(ns, then_si, ns_val);
+
+        // 求值未触发：[[Evaluated]] 仍为 false。
+        let ns = unsafe { &*ns_ptr };
+        assert!(!oxide_builtins::module::deferred_state(ns).unwrap().evaluated, "symbol-like 键不应触发求值");
     }
 }

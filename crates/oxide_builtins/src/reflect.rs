@@ -157,7 +157,11 @@ pub fn reflect_delete_property<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResu
         Err(e) => return NativeResult::Err(from_engine_error(vm, &e)),
     };
     let target = unsafe { &mut *target_ptr };
-    NativeResult::Ok(JsValue::bool(delete_own_property(vm, target, key_si)))
+    match delete_own_property(vm, target, key_si) {
+        Ok(deleted) => NativeResult::Ok(JsValue::bool(deleted)),
+        // deferred namespace 求值触发失败（cyclic / 失败缓存重抛）原值上抛。
+        Err(exc) => NativeResult::Err(exc),
+    }
 }
 
 /// `Reflect.get(target, key, receiver)`：读取属性（含原型链与 accessor）。
@@ -213,7 +217,11 @@ pub fn reflect_has<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         Ok(si) => si,
         Err(e) => return NativeResult::Err(from_engine_error(vm, &e)),
     };
-    NativeResult::Ok(JsValue::bool(vm.has_property(unsafe { &*target_ptr }, key_si)))
+    // deferred namespace 目标先触发求值（cyclic 抛错 / 失败缓存重抛）。
+    match vm.has_property(unsafe { &*target_ptr }, key_si) {
+        Ok(found) => NativeResult::Ok(JsValue::bool(found)),
+        Err(msg) => NativeResult::Err(from_engine_error(vm, &msg)),
+    }
 }
 
 /// `Reflect.isExtensible(target)`：对象是否可扩展。
@@ -240,6 +248,13 @@ pub fn reflect_own_keys<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         return type_error(vm, "Reflect.ownKeys target is not an object");
     };
     let target = unsafe { &*target_ptr };
+    // [[OwnPropertyKeys]] 触发（deferred namespace 先求值，cyclic 抛错）。
+    if let Err(msg) = vm.ensure_deferred_ns_evaluation(target, None) {
+        let exc = vm
+            .take_uncaught_value()
+            .unwrap_or_else(|| crate::error::create_from_text(vm, &msg));
+        return NativeResult::Err(exc);
+    }
 
     // Symbol 键分流在消费端追加：底层字符串枚举源（Object.keys / JSON / for-in）
     // 语义不变，不泄漏 Symbol 键。

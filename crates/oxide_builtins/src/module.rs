@@ -70,11 +70,14 @@ pub struct DeferredNsState {
     /// undefined（哨兵：自导入/祖先引用，模块函数在导入方 prelude 期不可得）。
     pub module: JsValue,
     /// `[[Evaluated]]`：依赖模块是否已求值（mixed 依赖构造时即为真；
-    /// 首次触发成功后置真，不回退）。
+    /// 求值完成（成功或失败）后置真，不回退）。
     pub evaluated: bool,
     /// `[[Namespace]]`：求值后返回的命名空间对象（mixed 依赖构造时即为真实 ns；
     /// 求值前为 undefined）。
     pub namespace: JsValue,
+    /// 求值失败时缓存的原始错误值（再读再抛同一错误对象，保身份）；
+    /// 成功求值与求值前恒 `None`。
+    pub error: Option<JsValue>,
 }
 
 /// 模块命名空间条目表：挂在 ns 对象 `native_data` 上，是 exotic [[Get]] 的权威
@@ -123,6 +126,52 @@ pub fn deferred_state(obj: &JsObject) -> Option<&DeferredNsState> {
     // SAFETY: table 归本 ns 对象持有，生命周期见 `module_ns_export`。
     let table_ref = unsafe { &*table };
     table_ref.deferred.as_ref()
+}
+
+/// 可变访问 deferred namespace 状态盒（求值触发点写回 `[[Evaluated]]` /
+/// `[[Namespace]]` / 失败错误缓存）。
+///
+/// # 边界与前提
+/// - 返回 `None`：非 module namespace / 无条目表 / 非 deferred 对象（`deferred` 为 `None`）。
+/// - 返回 `Some`：deferred 对象且已安装状态盒，供求值触发点读写内部槽。
+///
+/// # 注意事项
+/// - 经 `native_data` 裸指针取 `&mut`（Box 堆分配、GC 不搬移，指针跨调用稳定），
+///   不借 `&mut JsObject` 本体。
+#[expect(clippy::mut_from_ref)]
+pub fn deferred_state_mut(obj: &JsObject) -> Option<&mut DeferredNsState> {
+    let table = ns_table_ptr(obj);
+    if table.is_null() {
+        return None;
+    }
+    // SAFETY: table 归本 ns 对象持有，生命周期见 `deferred_state`。
+    let table_ref = unsafe { &mut *table };
+    table_ref.deferred.as_mut()
+}
+
+/// deferred namespace 读路径的权威命名空间对象：已求值且 `[[Namespace]]` 为
+/// 对象时返回真实 ns（活值与真实槽位都在真实 ns 的条目表，deferred 对象自身
+/// 槽位是逐名预注册占位）；其余形态（非 deferred / 未求值 / 哨兵）返回对象自身。
+///
+/// # 边界与前提
+/// - 非 deferred 对象恒返回自身，调用方无需先判 deferred 标志。
+/// - 求值成功后 `[[Namespace]]` 为 `__moduleEval` 返回的真实 ns 对象；求值失败
+///   或哨兵（自导入/祖先）形态下无真实 ns，读路径回落对象自身。
+pub fn deferred_ns_read_target(obj: &JsObject) -> &JsObject {
+    if let Some(state) = deferred_state(obj) {
+        if state.evaluated {
+            let ns = state.namespace;
+            if ns.is_object() {
+                let ptr = ns.as_js_object_ptr();
+                if !ptr.is_null() {
+                    // SAFETY: ns 由 [[Namespace]] 槽持有（GC 边已登记），
+                    // 与 deferred 对象同代存活。
+                    return unsafe { &*ptr };
+                }
+            }
+        }
+    }
+    obj
 }
 
 /// 在条目表中按 interned 键定位条目下标。
@@ -232,9 +281,10 @@ pub fn module_ns_export(obj: &JsObject, key_si: u32) -> Option<ModuleNsQuery> {
 
 /// 收集条目表持有的 JsValue 边（已初始化 `Value` 与全部 `Cell` 内值），供 GC mark。
 ///
-/// deferred namespace 对象额外持有 `[[Module]]` 与 `[[Namespace]]` 两条边：
-/// 依赖模块函数与求值后命名空间对象须经本单一注册点入 mark，漏登则函数在
-/// deferred ns 存活期间被回收，触发点解引用悬垂。
+/// deferred namespace 对象额外持有 `[[Module]]`、`[[Namespace]]` 与失败缓存
+/// `error`（Some 时）三条边：依赖模块函数、求值后命名空间对象与失败错误对象
+/// 须经本单一注册点入 mark，漏登则对应值在 deferred ns 存活期间被回收，
+/// 触发点解引用悬垂。
 pub fn module_ns_native_edges(obj: &JsObject) -> Vec<JsValue> {
     let table = ns_table_ptr(obj);
     if table.is_null() {
@@ -261,6 +311,10 @@ pub fn module_ns_native_edges(obj: &JsObject) -> Vec<JsValue> {
     if let Some(deferred) = &table_ref.deferred {
         edges.push(deferred.module);
         edges.push(deferred.namespace);
+        // 失败缓存的错误对象是 GC 边：漏登则 deferred ns 存活期被回收，再读解引用悬垂。
+        if let Some(err) = &deferred.error {
+            edges.push(*err);
+        }
     }
     edges
 }
@@ -844,6 +898,10 @@ pub fn module_seal<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 }
 
 /// `__moduleEval(fn)`：同步执行依赖模块（fn 为编译期 CREATE_CLOSURE 的函数对象），返回其命名空间。
+///
+/// # 副作用
+/// - 调用前置「正在求值模块」标记为 `Some(fn)`、返回后还原（save/restore，嵌套
+///   `__moduleEval` 安全）：deferred namespace 求值触发的 cyclic 守卫据此判自求值。
 pub fn module_eval<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     if args.len() < 2 {
         return type_error(vm, "__moduleEval: 1 argument required");
@@ -856,10 +914,15 @@ pub fn module_eval<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     if ptr.is_null() || !unsafe { (*ptr).is_function() } {
         return type_error(vm, "__moduleEval: target is not a function");
     }
-    match vm.call_function_sync(fn_val, JsValue::undefined(), &[]) {
+    // 置位标记，调用返回后无条件还原（异常展开亦不残留）。
+    let saved = vm.evaluating_module();
+    vm.set_evaluating_module(Some(fn_val));
+    let result = match vm.call_function_sync(fn_val, JsValue::undefined(), &[]) {
         Ok(v) => NativeResult::Ok(v),
         Err(e) => NativeResult::Err(crate::error::create_error(vm, &e)),
-    }
+    };
+    vm.set_evaluating_module(saved);
+    result
 }
 
 /// `__moduleDeferObject(fn, real_ns)`：创建 deferred namespace 对象（`import defer * as` 产物）。
@@ -871,7 +934,7 @@ pub fn module_eval<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 /// 2. 建 null 原型对象，定义 `@@toStringTag` = "Deferred Module"（不可写不可枚举不可配置）。
 /// 3. 置 module namespace + deferred 双标志，置 non-extensible。
 /// 4. 安装条目表并写状态盒：`[[Module]]` = fn、`[[Evaluated]]` = `real_ns` 为对象、
-///    `[[Namespace]]` = `real_ns`（或 undefined）。
+///    `[[Namespace]]` = `real_ns`（或 undefined）、失败错误缓存恒 `None`。
 ///
 /// # 副作用
 /// - 新对象创建起即标记 module namespace exotic 并置 non-extensible（同 `__moduleObject`）；
@@ -912,6 +975,7 @@ pub fn module_defer_object<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
             module: fn_val,
             evaluated: ns_val.is_object(),
             namespace: ns_val,
+            error: None,
         });
     }
     NativeResult::Ok(JsValue::from_js_object(obj))
@@ -1068,5 +1132,47 @@ mod tests {
         let ns_obj = unsafe { &*ns_val.as_js_object_ptr() };
         let state = deferred_state(ns_obj).expect("deferred state 应存活");
         assert_eq!(state.module.as_js_object_ptr(), fn_ptr, "[[Module]] 指针应稳定");
+    }
+
+    #[test]
+    fn module_defer_ns_gc_edge_keeps_error_alive() {
+        let (mut vm, _fn_val) = vm_with_function();
+        // 失败缓存的错误对象（模拟求值失败后缓存的原值）。
+        let err_val = crate::error::create_type_error(&mut vm, "cached failure");
+        let err_ptr = err_val.as_js_object_ptr();
+
+        // 创建 deferred ns（哨兵形态）。
+        vm.set_reg(1, JsValue::undefined());
+        vm.set_reg(2, JsValue::undefined());
+        let ns_val = module_defer_object(&mut vm, &[0, 1, 2]).unwrap();
+
+        // 直接写入 error 字段（模拟失败缓存），置已求值。
+        {
+            let ns_obj = unsafe { &*ns_val.as_js_object_ptr() };
+            let state = deferred_state_mut(ns_obj).expect("deferred state 应已安装");
+            state.error = Some(err_val);
+            state.evaluated = true;
+        }
+
+        // 仅 ns 为根：清掉持有 err 与 fn 的寄存器，err 唯一可达路径是 ns 的 error 边。
+        vm.set_reg(0, ns_val);
+        vm.set_reg(1, JsValue::undefined());
+        vm.set_reg(2, JsValue::undefined());
+
+        // 首收集达稳态（fn 无根被回收），记录稳态计数。
+        vm.collect_session_gc();
+        let steady_count = vm.session_object_count();
+
+        // 再收集一次：若 error 边漏登，err 被回收、计数回落。
+        vm.collect_session_gc();
+        assert_eq!(
+            vm.session_object_count(),
+            steady_count,
+            "失败缓存错误应跨收集存活（GC 边已登记）"
+        );
+        // 原地 sweep 不搬移：ns 与状态盒原地保留，error 指针稳定。
+        let ns_obj = unsafe { &*ns_val.as_js_object_ptr() };
+        let state = deferred_state(ns_obj).expect("deferred state 应存活");
+        assert_eq!(state.error.unwrap().as_js_object_ptr(), err_ptr, "error 指针应稳定");
     }
 }

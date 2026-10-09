@@ -248,7 +248,10 @@ pub trait VmHost {
     fn resolve_property(&self, obj: &JsObject, prop_name_si: u32) -> Option<JsValue>;
     /// 存在性判定（规范 HasProperty）：自身与原型链任一层 P 为自有属性即存在；
     /// 数组元素区 hole 视同缺失，TypedArray 整数索引按视图长度判在界。
-    fn has_property(&self, obj: &JsObject, prop_name_si: u32) -> bool;
+    ///
+    /// deferred namespace 目标先触发 `EnsureDeferredNamespaceEvaluation`（cyclic
+    /// 守卫抛 TypeError / 失败缓存原值重抛），触发失败以 `Err` 返回。
+    fn has_property(&mut self, obj: &JsObject, prop_name_si: u32) -> Result<bool, String>;
     fn get_own_property_slot(&self, obj: &JsObject, prop_name_si: u32) -> Option<u32>;
 
     // 属性访问
@@ -284,6 +287,30 @@ pub trait VmHost {
 
     // 调用基础设施
     fn call_function_sync(&mut self, callee: JsValue, receiver: JsValue, args: &[JsValue]) -> Result<JsValue, String>;
+    /// deferred namespace 求值触发（`EnsureDeferredNamespaceEvaluation`）：
+    /// 对 deferred 且未求值的 module namespace 同步执行依赖模块函数，缓存结果
+    /// 命名空间或失败错误对象。
+    ///
+    /// # 步骤
+    /// 1. 非 module namespace / 非 deferred / 无状态盒 → no-op（`Ok`）。
+    /// 2. symbol-like 键（Symbol 或 deferred 的 `"then"`）→ no-op（走 Ordinary* 路径）。
+    /// 3. 已求值：失败缓存原值重抛（`Err`），成功 no-op。
+    /// 4. cyclic 守卫：`[[Module]]` 为 undefined 哨兵且标记在场 → TypeError；
+    ///    标记等于 `[[Module]]` 函数（自求值中）→ TypeError。
+    /// 5. 求值：`call_function_sync([[Module]])`，成功缓存 `[[Namespace]]`，
+    ///    失败缓存原错误值（还原 uncaught 侧通道供调用方原值重抛）。
+    ///
+    /// # 边界与前提
+    /// - `key_si` 为 `None` 表示 `[[OwnPropertyKeys]]` 触发（无键，恒触发）。
+    ///
+    /// # 副作用
+    /// - 写状态盒 `[[Evaluated]]` / `[[Namespace]]` / 失败错误缓存；可能执行用户
+    ///   模块代码（含分配与 GC）。
+    fn ensure_deferred_ns_evaluation(&mut self, obj: &JsObject, key_si: Option<u32>) -> Result<(), String>;
+    /// 读「正在求值模块」cyclic 守卫标记（`None` = 无模块求值中）。
+    fn evaluating_module(&self) -> Option<JsValue>;
+    /// 置「正在求值模块」cyclic 守卫标记（save/restore 由调用方负责）。
+    fn set_evaluating_module(&mut self, val: Option<JsValue>);
     /// 构造调用（Construct(C, args)）：native 构造器以新对象为 receiver 值传递调用，
     /// bytecode 构造器压构造帧执行（含 derived 构造器 super() 语义与 new.target
     /// 传播），返回值非对象时回退到新对象。

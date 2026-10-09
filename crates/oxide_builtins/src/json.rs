@@ -627,6 +627,8 @@ fn same_value_number(a: f64, b: f64) -> bool {
 /// 均静默不抛（规范明注）。
 fn apply_child_result<H: VmHost>(vm: &mut H, child_ptr: *mut JsObject, child_si: u32, new_val: JsValue) {
     if new_val.is_undefined() {
+        // 子节点为 JSON.parse 新建的 plain 对象（非 deferred namespace），触发
+        // 恒 no-op；删除失败静默不抛（规范明注）。
         let _ = crate::object::delete_own_property(vm, unsafe { &mut *child_ptr }, child_si);
     } else {
         let _ = vm.define_data_property(

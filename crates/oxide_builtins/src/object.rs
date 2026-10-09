@@ -259,6 +259,12 @@ pub fn object_get_own_property_symbols<H: VmHost>(vm: &mut H, args: &[u8]) -> Na
         Err(err) => return NativeResult::Err(err),
     };
 
+    // [[OwnPropertyKeys]] 触发（deferred namespace 先求值，cyclic 抛错）。
+    let obj = unsafe { &*obj_ptr };
+    if let Err(exc) = ensure_deferred_own_keys(vm, obj) {
+        return NativeResult::Err(exc);
+    }
+
     let symbols: Vec<JsValue> = {
         let obj = unsafe { &*obj_ptr };
         own_symbol_key_values(vm, obj)
@@ -332,17 +338,28 @@ pub enum DeleteOutcome {
 /// # 注意事项
 /// - 数组元素存在性以 `prop_meta_at` 的 hole 标记判定，删除后重新写入元素
 ///   会自动清除 hole 标记恢复存在
-pub fn delete_own_property_outcome<H: VmHost>(vm: &mut H, obj: &mut JsObject, key_si: u32) -> DeleteOutcome {
+pub fn delete_own_property_outcome<H: VmHost>(
+    vm: &mut H, obj: &mut JsObject, key_si: u32,
+) -> Result<DeleteOutcome, JsValue> {
+    // deferred namespace 求值触发（[[Delete]]，symbol-like 键内部 no-op）：
+    // 触发失败（cyclic / 失败缓存重抛）以异常值上抛，由调用边界恢复。
+    // uncaught 侧通道已还原为原错误值，原值重抛保身份。
+    if let Err(msg) = vm.ensure_deferred_ns_evaluation(obj, Some(key_si)) {
+        let exc = vm
+            .take_uncaught_value()
+            .unwrap_or_else(|| crate::error::create_from_text(vm, &msg));
+        return Err(exc);
+    }
     // TA 数值键：界内索引不可配置（删除失败，元素零修改、镜像槽不同步）；
     // 数字无效键视为缺失（删除成功，镜像槽同步 undefined，对非全局内置 TA
     // 为 no-op）；非数字串 / symbol 键落下方普通属性路径。live 长 0
     // （detach / 收缩越界）时全数值键自然归数字无效，与读 / 写 / 定义面同口径。
     if obj.is_typed_array_obj() {
         match crate::typed_array::ta_index_gate(vm, obj, key_si) {
-            crate::typed_array::TaIndexGate::NumericValid(_) => return DeleteOutcome::NonConfigurable,
+            crate::typed_array::TaIndexGate::NumericValid(_) => return Ok(DeleteOutcome::NonConfigurable),
             crate::typed_array::TaIndexGate::NumericInvalid => {
                 vm.sync_global_builtin_mirror(obj, key_si, JsValue::undefined());
-                return DeleteOutcome::Missing;
+                return Ok(DeleteOutcome::Missing);
             }
             crate::typed_array::TaIndexGate::Ordinary => {}
         }
@@ -355,21 +372,21 @@ pub fn delete_own_property_outcome<H: VmHost>(vm: &mut H, obj: &mut JsObject, ke
                 let meta = obj.prop_meta_at(index);
                 // 已是 hole 视为不存在；非 configurable 不可删。
                 if meta.is_some_and(|m| m.is_hole()) {
-                    return DeleteOutcome::Missing;
+                    return Ok(DeleteOutcome::Missing);
                 }
                 if meta.is_some_and(|m| !m.attributes.configurable()) {
-                    return DeleteOutcome::NonConfigurable;
+                    return Ok(DeleteOutcome::NonConfigurable);
                 }
                 obj.mark_hole_at(index);
                 obj.bump_generation();
-                return DeleteOutcome::Deleted;
+                return Ok(DeleteOutcome::Deleted);
             }
             // 大索引越出元素区时是命名属性（shape 链），落穿下方查删路径。
         }
         // 非下标键：length 是虚拟属性（无 shape 槽、不在元素区），但描述符声明
         // configurable:false，删除恒失败。
         if key_si == vm.perm_intern("length") {
-            return DeleteOutcome::NonConfigurable;
+            return Ok(DeleteOutcome::NonConfigurable);
         }
     }
 
@@ -383,7 +400,7 @@ pub fn delete_own_property_outcome<H: VmHost>(vm: &mut H, obj: &mut JsObject, ke
         // 属性缺失：delete 按规范返 true，镜像槽同步 undefined 保持
         // "槽 = A 侧原始存储"不变式（与入口预载缺位语义幂等）。
         vm.sync_global_builtin_mirror(obj, key_si, JsValue::undefined());
-        return DeleteOutcome::Missing;
+        return Ok(DeleteOutcome::Missing);
     };
     // walk_own_keys 已返回绝对存储索引（数组含元素区偏移），直接使用。
     if obj
@@ -391,7 +408,7 @@ pub fn delete_own_property_outcome<H: VmHost>(vm: &mut H, obj: &mut JsObject, ke
         .map(|meta| !meta.attributes.configurable())
         .unwrap_or(false)
     {
-        return DeleteOutcome::NonConfigurable;
+        return Ok(DeleteOutcome::NonConfigurable);
     }
 
     // 数组重建前保存元素区（值 + meta），重建后恢复到命名属性之前。
@@ -456,13 +473,13 @@ pub fn delete_own_property_outcome<H: VmHost>(vm: &mut H, obj: &mut JsObject, ke
     // 删除成功：镜像槽同步 undefined（成员形删除 / Reflect.deleteProperty /
     // 0x9C 清槽同源收口，后两者对此幂等）。
     vm.sync_global_builtin_mirror(obj, key_si, JsValue::undefined());
-    DeleteOutcome::Deleted
+    Ok(DeleteOutcome::Deleted)
 }
 
 /// 删除对象自身属性并投影为布尔（`Reflect.deleteProperty` 语义）：成功返回 true，
-/// 属性不可配置返回 false，恒不抛错。
-pub fn delete_own_property<H: VmHost>(vm: &mut H, obj: &mut JsObject, key_si: u32) -> bool {
-    delete_own_property_outcome(vm, obj, key_si) != DeleteOutcome::NonConfigurable
+/// 属性不可配置返回 false；deferred namespace 求值触发失败以异常值上抛。
+pub fn delete_own_property<H: VmHost>(vm: &mut H, obj: &mut JsObject, key_si: u32) -> Result<bool, JsValue> {
+    Ok(delete_own_property_outcome(vm, obj, key_si)? != DeleteOutcome::NonConfigurable)
 }
 
 /// JS `Object()` 构造逻辑：创建空对象（prototype 为 null，由 VM 补装内置原型）。
@@ -533,7 +550,9 @@ fn namespace_export_get(obj: &JsObject, key_si: u32) -> Result<Option<JsValue>, 
     if is_symbol_key(key_si) {
         return Ok(None);
     }
-    match crate::module::module_ns_export(obj, key_si) {
+    // deferred namespace 求值后活值在真实 ns 条目表，读路径按权威对象查询。
+    let target = crate::module::deferred_ns_read_target(obj);
+    match crate::module::module_ns_export(target, key_si) {
         None => Ok(None),
         Some(crate::module::ModuleNsQuery::Initialized(v)) => Ok(Some(v)),
         Some(crate::module::ModuleNsQuery::Uninitialized) => Err(crate::module::NS_UNINITIALIZED_MESSAGE),
@@ -580,6 +599,10 @@ pub fn object_keys<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     };
 
     let obj = unsafe { &*obj_ptr };
+    // [[OwnPropertyKeys]] 触发（deferred namespace 先求值，cyclic 抛错）。
+    if let Err(exc) = ensure_deferred_own_keys(vm, obj) {
+        return NativeResult::Err(exc);
+    }
     let owned_keys: Vec<(u32, u32)> = walk_own_keys(vm, obj)
         .into_iter()
         .filter(|(_si, offset)| {
@@ -685,6 +708,10 @@ pub fn object_assign<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         if source_ptr.is_null() {
             continue;
         }
+        // [[OwnPropertyKeys]] 触发（源对象，deferred namespace 先求值，cyclic 抛错）。
+        if let Err(exc) = ensure_deferred_own_keys(vm, unsafe { &*source_ptr }) {
+            return NativeResult::Err(exc);
+        }
         let source_keys: Vec<(u32, u32)> = {
             let source = unsafe { &*source_ptr };
             walk_own_keys(vm, source)
@@ -769,6 +796,15 @@ impl From<JsValue> for DefineDescFailure {
 pub(crate) fn define_from_descriptor<H: VmHost>(
     vm: &mut H, obj_ptr: *mut JsObject, key_si: u32, desc_val: JsValue,
 ) -> Result<(), DefineDescFailure> {
+    // [[DefineOwnProperty]] 触发（deferred namespace 先求值，不经 GOP 传导；
+    // symbol-like 键内部 no-op）。触发失败时 uncaught 侧通道已还原为原错误值，
+    // 原值重抛保身份（cyclic 无原值时按文本重建）。
+    if let Err(msg) = vm.ensure_deferred_ns_evaluation(unsafe { &*obj_ptr }, Some(key_si)) {
+        let exc = vm
+            .take_uncaught_value()
+            .unwrap_or_else(|| crate::error::create_from_text(vm, &msg));
+        return Err(DefineDescFailure::User(exc));
+    }
     if !desc_val.is_object() {
         return Err(DefineDescFailure::Engine("Property description must be an object".to_string()));
     }
@@ -1060,6 +1096,16 @@ pub fn object_define_property<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResul
 /// # 副作用
 /// - 在 epoch 分配一个描述符对象
 fn own_descriptor_of<H: VmHost>(vm: &mut H, obj: &JsObject, key_si: u32) -> Result<Option<JsValue>, JsValue> {
+    // deferred namespace 求值触发（[[GetOwnProperty]]，symbol-like 键内部 no-op）。
+    // 触发失败时 uncaught 侧通道已还原为原错误值，原值重抛保身份。
+    if let Err(msg) = vm.ensure_deferred_ns_evaluation(obj, Some(key_si)) {
+        let exc = vm
+            .take_uncaught_value()
+            .unwrap_or_else(|| crate::error::create_from_text(vm, &msg));
+        return Err(exc);
+    }
+    // 求值后描述符读真实 ns（deferred 对象自身槽位是预注册占位，活值在真实 ns）。
+    let obj = crate::module::deferred_ns_read_target(obj);
     // TA 数值键：界内索引返回元素值 + 常量四字段描述符（writable/enumerable/
     // configurable 恒真）；数字无效与非数字串键落下方槽位路径（真实 own 属性
     // 原样返回，无属性则 None）。
@@ -1194,6 +1240,10 @@ pub fn object_get_own_property_descriptors<H: VmHost>(vm: &mut H, args: &[u8]) -
     };
 
     let obj = unsafe { &*obj_ptr };
+    // [[OwnPropertyKeys]] 触发（deferred namespace 先求值，cyclic 抛错）。
+    if let Err(exc) = ensure_deferred_own_keys(vm, obj) {
+        return NativeResult::Err(exc);
+    }
 
     // 三段自身键序：字符串/整数键（整键升序在前）后接 Symbol 键插入序。
     let mut keys = walk_own_keys(vm, obj);
@@ -1243,6 +1293,20 @@ fn push_desc_prop(obj: &mut JsObject, shape_forge: &ShapeForge, prop_si: u32, va
     let shape_id = shape_forge.make_shape(obj.shape_id(), prop_si);
     obj.set_shape_id(shape_id);
     obj.push_prop(val);
+}
+
+/// deferred namespace [[OwnPropertyKeys]] 触发（无键）：失败时 uncaught 侧通道
+/// 已还原为原错误值，原值重抛保身份（cyclic 无原值时按文本重建）。
+fn ensure_deferred_own_keys<H: VmHost>(vm: &mut H, obj: &JsObject) -> Result<(), JsValue> {
+    match vm.ensure_deferred_ns_evaluation(obj, None) {
+        Ok(()) => Ok(()),
+        Err(msg) => {
+            let exc = vm
+                .take_uncaught_value()
+                .unwrap_or_else(|| crate::error::create_from_text(vm, &msg));
+            Err(exc)
+        }
+    }
 }
 
 /// 校验并取出 Object 类方法的目标对象：`args[0]` 为接收者，`args[1]` 为待转换值，
@@ -1313,6 +1377,10 @@ pub fn object_freeze<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         return NativeResult::Ok(val);
     }
     let obj_ptr = val.as_js_object_ptr();
+    // [[OwnPropertyKeys]] 触发（deferred namespace 先求值，cyclic 抛错）。
+    if let Err(exc) = ensure_deferred_own_keys(vm, unsafe { &*obj_ptr }) {
+        return NativeResult::Err(exc);
+    }
     {
         let obj = unsafe { &*obj_ptr };
         // 模块命名空间导出保持 writable:true，冻结须失败（规范 SetIntegrityLevel）。
@@ -1363,6 +1431,10 @@ pub fn object_seal<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         return NativeResult::Ok(val);
     }
     let obj_ptr = val.as_js_object_ptr();
+    // [[OwnPropertyKeys]] 触发（deferred namespace 先求值，cyclic 抛错）。
+    if let Err(exc) = ensure_deferred_own_keys(vm, unsafe { &*obj_ptr }) {
+        return NativeResult::Err(exc);
+    }
     {
         let obj = unsafe { &mut *obj_ptr };
         let keys = walk_own_keys(vm, obj);
@@ -1418,6 +1490,10 @@ pub fn object_is_frozen<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         return NativeResult::Ok(JsValue::bool(true));
     }
     let obj = unsafe { &*obj_ptr };
+    // [[OwnPropertyKeys]] 触发（deferred namespace 先求值，cyclic 抛错）。
+    if let Err(exc) = ensure_deferred_own_keys(vm, obj) {
+        return NativeResult::Err(exc);
+    }
     if obj.is_frozen() {
         return NativeResult::Ok(JsValue::bool(true));
     }
@@ -1454,6 +1530,10 @@ pub fn object_is_sealed<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         return NativeResult::Ok(JsValue::bool(true));
     }
     let obj = unsafe { &*obj_ptr };
+    // [[OwnPropertyKeys]] 触发（deferred namespace 先求值，cyclic 抛错）。
+    if let Err(exc) = ensure_deferred_own_keys(vm, obj) {
+        return NativeResult::Err(exc);
+    }
     if obj.is_sealed() {
         return NativeResult::Ok(JsValue::bool(true));
     }
@@ -1500,6 +1580,10 @@ pub fn object_get_own_property_names<H: VmHost>(vm: &mut H, args: &[u8]) -> Nati
     let obj_ptr = native_try!(require_obj_arg(vm, args, "getOwnPropertyNames"));
 
     let obj = unsafe { &*obj_ptr };
+    // [[OwnPropertyKeys]] 触发（deferred namespace 先求值，cyclic 抛错）。
+    if let Err(exc) = ensure_deferred_own_keys(vm, obj) {
+        return NativeResult::Err(exc);
+    }
     let keys = walk_own_keys(vm, obj);
     let n = keys.len();
     let array_proto = vm.builtin_proto(ProtoKind::ArrayProto);
@@ -2121,6 +2205,10 @@ pub fn object_proto_define_getter<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeR
 pub fn object_entries<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let obj_ptr = native_try!(require_obj_arg(vm, args, "entries"));
     let obj = unsafe { &*obj_ptr };
+    // [[OwnPropertyKeys]] 触发（deferred namespace 先求值，cyclic 抛错）。
+    if let Err(exc) = ensure_deferred_own_keys(vm, obj) {
+        return NativeResult::Err(exc);
+    }
     let keys = walk_own_keys(vm, obj);
     let owned_keys: Vec<(u32, u32)> = keys
         .into_iter()
@@ -2296,6 +2384,10 @@ pub fn object_group_by<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 pub fn object_values<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let obj_ptr = native_try!(require_obj_arg(vm, args, "values"));
     let obj = unsafe { &*obj_ptr };
+    // [[OwnPropertyKeys]] 触发（deferred namespace 先求值，cyclic 抛错）。
+    if let Err(exc) = ensure_deferred_own_keys(vm, obj) {
+        return NativeResult::Err(exc);
+    }
     let keys = walk_own_keys(vm, obj);
     let owned_keys: Vec<(u32, u32)> = keys
         .into_iter()

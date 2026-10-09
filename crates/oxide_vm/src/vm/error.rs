@@ -126,9 +126,11 @@ impl Vm {
     /// 使外围 try/catch 可捕获（native 函数抛错时原值存于 `last_uncaught_value`）。
     ///
     /// # 注意事项
-    /// 仅在主 dispatch（`native_call_depth == 0`）下展开——此时 try_stack 只含当前
+    /// 主 dispatch（`native_call_depth == 0`）就地展开——此时 try_stack 只含当前
     /// 字节码的处理器，展开后 pc/regs[0] 不会被中途的原生调用栈覆盖。原生 builtin
-    /// 内部（depth > 0）必须传播错误，由其调用边界（dispatch_native_call）转换。
+    /// 内部（depth > 0）传播错误，由其调用边界（dispatch_native_call）转换；异常值
+    /// 同步物化入异常通道（不取 uncaught 侧通道，builtin 边界 `from_engine_error`
+    /// 仍须从侧通道还原原值），供内联字节码体在状态还原前由体内 try 处理器捕获。
     pub(crate) fn raise_call_error(&mut self, err: &str) -> Result<JsValue, String> {
         if self.native_call_depth == 0 {
             let exc = self
@@ -141,27 +143,34 @@ impl Vm {
             self.unwind()?;
             return Ok(JsValue::undefined());
         }
+        let exc = self
+            .last_uncaught_value
+            .unwrap_or_else(|| oxide_builtins::error::create_from_text(self, err));
+        let kind = self.thrown_error_kind(exc);
+        self.exception_value = Some(exc);
+        self.pending_error_kind = Some(kind);
         Err(err.to_string())
     }
 
     /// 恢复已捕获的原始异常值（强转失败载荷）并走异常展开，保原值 kind：
     /// 深度 0 置原值入异常通道就地展开到外围 catch；深度 >0 返回 kind 前缀
-    /// 文本 `Err`，由原生调用边界恢复为异常对象。
+    /// 文本 `Err`，由原生调用边界恢复为异常对象，异常值同步物化入异常通道
+    /// （供内联字节码体在状态还原前由体内 try 处理器捕获）。
     ///
     /// # 步骤
     /// 1. 深度 0：原值与 kind 写入异常通道，就地 `unwind`。
-    /// 2. 深度 >0：以 `Kind: message` 文本 `Err` 返回，不就地展开。
+    /// 2. 深度 >0：原值与 kind 写入异常通道，以 `Kind: message` 文本 `Err` 返回。
     ///
     /// # 边界与前提
     /// - `exc` 为调用方已提取的原始异常值；本入口不重取 uncaught 槽。
     ///
     /// # 副作用
-    /// - 深度 0 写 `exception_value`/`pending_error_kind`，pc 经展开改写。
+    /// - 写 `exception_value`/`pending_error_kind`；深度 0 时 pc 经展开改写。
     pub(crate) fn raise_captured(&mut self, exc: JsValue) -> Result<(), String> {
+        let kind = self.thrown_error_kind(exc);
+        self.exception_value = Some(exc);
+        self.pending_error_kind = Some(kind);
         if self.native_call_depth == 0 {
-            let kind = self.thrown_error_kind(exc);
-            self.exception_value = Some(exc);
-            self.pending_error_kind = Some(kind);
             return self.unwind();
         }
         Err(oxide_builtins::typed_array::element_error_text(self, exc))

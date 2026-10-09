@@ -209,7 +209,7 @@ impl oxide_runtime_api::VmHost for Vm {
     fn resolve_property(&self, obj: &JsObject, prop_name_si: u32) -> Option<JsValue> {
         self.resolve_property(obj, prop_name_si)
     }
-    fn has_property(&self, obj: &JsObject, prop_name_si: u32) -> bool {
+    fn has_property(&mut self, obj: &JsObject, prop_name_si: u32) -> Result<bool, String> {
         self.has_property(obj, prop_name_si)
     }
     fn get_own_property_slot(&self, obj: &JsObject, prop_name_si: u32) -> Option<u32> {
@@ -251,6 +251,71 @@ impl oxide_runtime_api::VmHost for Vm {
     }
     fn call_function_sync(&mut self, callee: JsValue, receiver: JsValue, args: &[JsValue]) -> Result<JsValue, String> {
         self.call_function_sync(callee, receiver, args)
+    }
+    fn ensure_deferred_ns_evaluation(&mut self, obj: &JsObject, key_si: Option<u32>) -> Result<(), String> {
+        // 非 deferred module namespace 直接 no-op（热路径零成本）。
+        if !obj.is_module_namespace() || !obj.is_deferred() {
+            return Ok(());
+        }
+        // symbol-like 键（Symbol 或 deferred 的 "then"）走 Ordinary* 路径，不触发。
+        if let Some(key) = key_si {
+            if oxide_types::private_key::is_symbol_key(key) {
+                return Ok(());
+            }
+            if key == self.perm_intern("then") {
+                return Ok(());
+            }
+        }
+        // 读状态盒（经 native_data 裸指针，Box 堆分配 GC 不搬移，指针稳定）。
+        let Some(state) = oxide_builtins::module::deferred_state_mut(obj) else {
+            return Ok(());
+        };
+        if state.evaluated {
+            // 已求值：失败缓存原值重抛（保错误对象身份），成功 no-op。
+            if let Some(err) = state.error {
+                // 还原 uncaught 侧通道为缓存的原错误值，调用方（[[Get]] 等）
+                // 经 raise_call_error 原值重抛，保 sameValue 身份。
+                self.last_uncaught_value = Some(err);
+                return Err(self.error_text(err));
+            }
+            return Ok(());
+        }
+        // cyclic 守卫：[[Module]] 为 undefined 哨兵（自导入/祖先 defer）时，
+        // 标记在场即求值中 → TypeError；标记已清（祖先已求值完毕）按已求值处理。
+        if state.module.is_undefined() {
+            if self.evaluating_module.is_some() {
+                return Err(self.error_message_text("TypeError", "cyclic module evaluation"));
+            }
+            state.evaluated = true;
+            return Ok(());
+        }
+        // [[Module]] 为函数：标记等于本函数即自求值中（安全网）→ TypeError。
+        if self.evaluating_module == Some(state.module) {
+            return Err(self.error_message_text("TypeError", "cyclic module evaluation"));
+        }
+        // EvaluateSync：调依赖模块函数，缓存结果命名空间或失败错误。
+        match self.call_function_sync(state.module, JsValue::undefined(), &[]) {
+            Ok(ns) => {
+                state.namespace = ns;
+                state.evaluated = true;
+            }
+            Err(text) => {
+                // 原错误值经 uncaught 侧通道取走存入状态盒，并还原侧通道供
+                // 调用方（[[Get]] 等）原值重抛。
+                let exc = self.last_uncaught_value.take();
+                state.error = exc;
+                state.evaluated = true;
+                self.last_uncaught_value = exc;
+                return Err(text);
+            }
+        }
+        Ok(())
+    }
+    fn evaluating_module(&self) -> Option<JsValue> {
+        self.evaluating_module
+    }
+    fn set_evaluating_module(&mut self, val: Option<JsValue>) {
+        self.evaluating_module = val;
     }
     fn construct_ctor(&mut self, ctor: JsValue, args: &[JsValue]) -> Result<JsValue, JsValue> {
         Vm::construct_ctor(self, ctor, args)

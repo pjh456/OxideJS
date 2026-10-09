@@ -1,6 +1,6 @@
 use crate::vm::{ForInIter, FrameArgs, FrameContinuation, Vm, MAX_PROTO_CHAIN_DEPTH};
 use crate::vm_trace;
-use oxide_runtime_api::{push_units_to, to_boolean, to_units_full};
+use oxide_runtime_api::{push_units_to, to_boolean, to_units_full, VmHost};
 use oxide_types::object::{JsObject, PropAttributes};
 use oxide_types::private_key::{
     encode_symbol_key, int_key_value, is_int_key, is_private_name_key, is_symbol_key, make_int_key, INT_KEY_COUNT,
@@ -453,8 +453,8 @@ impl Vm {
         let obj = unsafe { &*obj_ptr };
         let prop_name_si = self.property_key_si(key_val)?;
         // `in` 即 HasProperty：原型链各层都要看数组元素区与 TypedArray 整数索引，
-        // 读值解析不覆盖这两处。
-        let found = self.has_property(obj, prop_name_si);
+        // 读值解析不覆盖这两处。deferred namespace 目标先触发求值（cyclic 抛错）。
+        let found = self.has_property(obj, prop_name_si)?;
         self.regs[rd] = JsValue::bool(found);
         Ok(())
     }
@@ -471,6 +471,17 @@ impl Vm {
         if !obj_val.is_object() {
             // ToObject：字符串盒构造期已物化索引属性面，其余原始值盒无自身可枚举属性。
             obj_val = oxide_runtime_api::to_object(obj_val, self)?;
+        }
+
+        // [[OwnPropertyKeys]] 触发（for-in 枚举源）：deferred namespace 先求值，
+        // cyclic 守卫抛 TypeError，触发失败走可捕获异常展开。
+        let obj_ptr = obj_val.as_js_object_ptr();
+        if !obj_ptr.is_null() {
+            let obj = unsafe { &*obj_ptr };
+            if let Err(msg) = self.ensure_deferred_ns_evaluation(obj, None) {
+                self.raise_call_error(&msg)?;
+                return Ok(());
+            }
         }
 
         let mut keys_vec: Vec<(JsValue, u32)> = Vec::new();
@@ -569,7 +580,8 @@ impl Vm {
         // 模块命名空间 exotic：EnumerateObjectProperties 构建键表时逐键走
         // `? [[GetOwnProperty]]`，未初始化导出抛 ReferenceError。校验须在排序与
         // 迭代器建立之前（INIT 期），不遗留 for-in 迭代器；非 live ns 无条目表，
-        // `module_ns_export` 返回 None，落普通路径零行为变化。
+        // `module_ns_export` 返回 None，落普通路径零行为变化。deferred 对象求值后
+        // 校验按真实 ns 条目表（deferred 自身槽位是预注册占位）。
         if obj_val.is_object() {
             let ns_obj = unsafe { &*obj_val.as_js_object_ptr() };
             if ns_obj.is_module_namespace() {
@@ -577,8 +589,9 @@ impl Vm {
                     if is_symbol_key(*si) {
                         continue;
                     }
+                    let target = oxide_builtins::module::deferred_ns_read_target(ns_obj);
                     if let Some(oxide_builtins::module::ModuleNsQuery::Uninitialized) =
-                        oxide_builtins::module::module_ns_export(ns_obj, *si)
+                        oxide_builtins::module::module_ns_export(target, *si)
                     {
                         return self
                             .raise_error_kind("ReferenceError", oxide_builtins::module::NS_UNINITIALIZED_MESSAGE);

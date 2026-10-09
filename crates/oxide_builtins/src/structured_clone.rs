@@ -335,6 +335,14 @@ fn fill_object_props<H: VmHost>(
     vm: &mut H, state: &mut CloneState, src: &JsObject, clone_ptr: *mut JsObject,
 ) -> Result<(), JsValue> {
     let src_val = JsValue::from_js_object(src as *const JsObject as *mut JsObject);
+    // [[OwnPropertyKeys]] 触发（源对象，deferred namespace 先求值，cyclic 抛错）。
+    // plain 对象判定已排除 module namespace，此触发对实际可达路径恒 no-op。
+    if let Err(msg) = vm.ensure_deferred_ns_evaluation(src, None) {
+        let exc = vm
+            .take_uncaught_value()
+            .unwrap_or_else(|| crate::error::create_from_text(vm, &msg));
+        return Err(exc);
+    }
     let str_keys = walk_own_keys(vm, src);
     let sym_keys = walk_own_symbol_keys(vm, src);
     for (si, store) in str_keys {

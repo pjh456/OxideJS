@@ -1,6 +1,7 @@
 use crate::vm::{Completion, FrameArgs, FrameContinuation, PendingAsyncEscape, TryHandler, Vm};
 use crate::vm_trace;
 use oxide_bytecode::opcode;
+use oxide_runtime_api::VmHost;
 use oxide_types::object::{JsObject, PropAttributes};
 use oxide_types::private_key::make_private_name_id;
 use oxide_types::value::JsValue;
@@ -233,6 +234,12 @@ impl Vm {
         let prop_name_si = self.property_key_si(self.regs[b])?;
         let value = self.regs[a];
         let obj = unsafe { &mut *obj_val.as_js_object_ptr() };
+        // [[DefineOwnProperty]] 触发（类字段初始化 CreateDataPropertyOrThrow 路径）：
+        // deferred namespace 先求值，触发失败走可捕获异常展开。
+        if let Err(msg) = self.ensure_deferred_ns_evaluation(obj, Some(prop_name_si)) {
+            self.raise_call_error(&msg)?;
+            return Ok(());
+        }
         match self.define_data_property(obj, prop_name_si, value, PropAttributes::DEFAULT_DATA) {
             Ok(()) => Ok(()),
             Err(msg) => self.raise_error_kind("TypeError", &msg),
@@ -251,6 +258,11 @@ impl Vm {
         let prop_name_si = self.property_key_si(self.regs[b])?;
         let value = self.regs[a];
         let obj = unsafe { &mut *obj_val.as_js_object_ptr() };
+        // [[DefineOwnProperty]] 触发（同 `dispatch_define_prop`，带描述符形态）。
+        if let Err(msg) = self.ensure_deferred_ns_evaluation(obj, Some(prop_name_si)) {
+            self.raise_call_error(&msg)?;
+            return Ok(());
+        }
         match self.define_data_property(obj, prop_name_si, value, PropAttributes(attrs)) {
             Ok(()) => Ok(()),
             Err(msg) => self.raise_error_kind("TypeError", &msg),

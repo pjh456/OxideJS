@@ -26,7 +26,8 @@ fn gated_get<H: VmHost>(
     vm: &mut H, arr_ptr: *mut JsObject, index: usize, recv: JsValue,
 ) -> Result<Option<JsValue>, JsValue> {
     let key_si = vm.string_key_si(&index.to_string());
-    if !vm.has_property(unsafe { &*arr_ptr }, key_si) {
+    // 数组目标非 deferred namespace，触发恒 no-op；错误按缺失处理（不可达）。
+    if !vm.has_property(unsafe { &*arr_ptr }, key_si).unwrap_or(false) {
         return Ok(None);
     }
     let val = match vm.ordinary_get(unsafe { &*arr_ptr }, key_si, recv) {
@@ -40,7 +41,9 @@ fn gated_get<H: VmHost>(
 /// 成功。数组元素区与命名属性双路径交由 delete_own_property_outcome 判定。
 fn delete_prop_or_throw<H: VmHost>(vm: &mut H, obj: &mut JsObject, key_si: u32) -> Result<(), JsValue> {
     match crate::object::delete_own_property_outcome(vm, obj, key_si) {
-        crate::object::DeleteOutcome::NonConfigurable => Err(array_type_error(vm, "Cannot delete property")),
+        // deferred namespace 求值触发失败（cyclic / 失败缓存重抛）原值上抛。
+        Err(exc) => Err(exc),
+        Ok(crate::object::DeleteOutcome::NonConfigurable) => Err(array_type_error(vm, "Cannot delete property")),
         _ => Ok(()),
     }
 }
@@ -769,7 +772,8 @@ pub fn array_reverse<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         let lower_si = vm.string_key_si(&lower.to_string());
         let upper_si = vm.string_key_si(&upper.to_string());
         // 先下后上读值（getter 副作用序对齐规范）；hole 与原型缺失判端不存在。
-        let lower_val = if vm.has_property(unsafe { &*arr_ptr }, lower_si) {
+        // 数组目标非 deferred namespace，触发恒 no-op；错误按缺失处理（不可达）。
+        let lower_val = if vm.has_property(unsafe { &*arr_ptr }, lower_si).unwrap_or(false) {
             match vm.ordinary_get(unsafe { &*arr_ptr }, lower_si, recv) {
                 Ok(v) => Some(v),
                 Err(msg) => return NativeResult::Err(from_engine_error(vm, &msg)),
@@ -782,7 +786,7 @@ pub fn array_reverse<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         if let Some(v) = lower_val {
             vm.set_reg(0, v);
         }
-        let upper_val = if vm.has_property(unsafe { &*arr_ptr }, upper_si) {
+        let upper_val = if vm.has_property(unsafe { &*arr_ptr }, upper_si).unwrap_or(false) {
             match vm.ordinary_get(unsafe { &*arr_ptr }, upper_si, recv) {
                 Ok(v) => Some(v),
                 Err(msg) => return NativeResult::Err(from_engine_error(vm, &msg)),

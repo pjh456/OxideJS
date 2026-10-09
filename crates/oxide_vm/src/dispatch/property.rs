@@ -283,6 +283,11 @@ impl Vm {
         self.pc += 1;
         let value = self.regs[a];
         let obj = unsafe { &mut *obj_ptr };
+        // 规范 PrivateFieldAdd 步 1：对象不可扩展时拒加私有字段（模块命名空间
+        // 等 exotic 对象创建起即 non-extensible）。
+        if !obj.is_extensible() {
+            return self.raise_type_error("Cannot add private field to a non-extensible object");
+        }
         if self
             .kernel_core
             .shape_forge()
@@ -720,7 +725,11 @@ impl Vm {
         // 统一走共享删除逻辑（与 Reflect.deleteProperty 同源）；严格模式分派见
         // finish_member_delete。
         let outcome = oxide_builtins::object::delete_own_property_outcome(self, obj, prop_name_si);
-        self.finish_member_delete(rd, outcome)
+        match outcome {
+            // deferred namespace 求值触发失败（cyclic / 失败缓存重抛）原值重抛。
+            Err(exc) => self.raise_captured(exc).map(|_| true),
+            Ok(outcome) => self.finish_member_delete(rd, outcome),
+        }
     }
 
     pub(crate) fn dispatch_delete_prop_dynamic(&mut self, rd: usize, b: usize) -> Result<bool, String> {
@@ -738,7 +747,11 @@ impl Vm {
         // 统一走共享删除逻辑（与 Reflect.deleteProperty 同源）；严格模式分派见
         // finish_member_delete。
         let outcome = oxide_builtins::object::delete_own_property_outcome(self, obj, prop_name_si);
-        self.finish_member_delete(rd, outcome)
+        match outcome {
+            // deferred namespace 求值触发失败（cyclic / 失败缓存重抛）原值重抛。
+            Err(exc) => self.raise_captured(exc).map(|_| true),
+            Ok(outcome) => self.finish_member_delete(rd, outcome),
+        }
     }
 
     /// 成员形 delete 的结果分派：不可配置属性在严格模式抛 TypeError（规范要求
@@ -794,8 +807,11 @@ impl Vm {
         // SAFETY: 全局对象钉在 session 永久区，指针在 VM 生命周期内有效。
         let obj = unsafe { &mut *global_ptr };
         // 统一走共享删除逻辑（与 Reflect.deleteProperty 同源）；不可配置返回
-        // false 且属性保留。
-        let deleted = oxide_builtins::object::delete_own_property(self, obj, si);
+        // false 且属性保留。全局对象非 deferred namespace，触发恒 no-op。
+        let deleted = match oxide_builtins::object::delete_own_property(self, obj, si) {
+            Ok(d) => d,
+            Err(exc) => return self.raise_captured(exc),
+        };
         // 仅删除成功才清镜像槽（无槽 0 不写，reg 0 是返回槽不可误写）。
         if deleted && slot > 0 {
             self.regs[slot] = JsValue::undefined();

@@ -2,6 +2,7 @@
 //! 数组下标反解、非对象基删除与属性解析及自身属性槽查找。
 
 use oxide_runtime_api as coercion;
+use oxide_runtime_api::VmHost;
 
 use oxide_types::object::JsObject;
 use oxide_types::private_key::{encode_symbol_key, int_key_value, is_int_key, make_int_key, INT_KEY_COUNT};
@@ -212,25 +213,35 @@ impl Vm {
     /// 与 `resolve_property` 的差异：原型链上每层都检查数组元素区
     /// （`resolve_property` 只在顶层检查元素区，链上仅走 shape 槽），
     /// 继承自父数组的索引属性在此判存在。
-    pub(crate) fn has_property(&self, obj: &JsObject, prop_name_si: u32) -> bool {
+    ///
+    /// deferred namespace 目标在原型链每层触发 `EnsureDeferredNamespaceEvaluation`
+    /// （`in` 运算符逐级走 HasProperty；非 deferred 对象触发为 no-op），触发失败
+    /// （cyclic 守卫抛 TypeError / 失败缓存原值重抛）走可捕获异常展开。
+    pub(crate) fn has_property(&mut self, obj: &JsObject, prop_name_si: u32) -> Result<bool, String> {
         let length_si = self.length_si;
         let mut current = Some(obj);
         let mut depth = 0usize;
         while let Some(obj) = current {
+            // deferred namespace 求值触发（symbol-like 键内部 no-op）：链上每层
+            // 独立判定，`key in obj`（obj 原型为 deferred ns）在 ns 层触发。
+            if let Err(msg) = self.ensure_deferred_ns_evaluation(obj, Some(prop_name_si)) {
+                self.raise_call_error(&msg)?;
+                return Ok(false);
+            }
             if obj.is_array() && prop_name_si == length_si {
-                return true;
+                return Ok(true);
             }
             // 统一数值键门（exotic [[HasProperty]]）：同 `ordinary_get_inner`
             // 的口径，链上每层同口径判定。
             if obj.is_typed_array_obj() {
                 match oxide_builtins::typed_array::ta_index_gate(self, obj, prop_name_si) {
-                    oxide_builtins::typed_array::TaIndexGate::NumericValid(_) => return true,
-                    oxide_builtins::typed_array::TaIndexGate::NumericInvalid => return false,
+                    oxide_builtins::typed_array::TaIndexGate::NumericValid(_) => return Ok(true),
+                    oxide_builtins::typed_array::TaIndexGate::NumericInvalid => return Ok(false),
                     oxide_builtins::typed_array::TaIndexGate::Ordinary => {}
                 }
             }
             if self.get_own_property_slot(obj, prop_name_si).is_some() {
-                return true;
+                return Ok(true);
             }
             if depth >= MAX_PROTO_CHAIN_DEPTH {
                 break;
@@ -239,7 +250,7 @@ impl Vm {
             let proto = obj.proto();
             current = proto.is_object().then(|| unsafe { &*proto.as_js_object_ptr() });
         }
-        false
+        Ok(false)
     }
 
     /// 查找自身属性槽下标：数组 length 虚拟属性返回 `None`，元素区返回下标
