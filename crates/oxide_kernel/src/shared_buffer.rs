@@ -411,10 +411,7 @@ mod tests {
         let handles: Vec<_> = (0..2)
             .map(|_| {
                 let buf = Arc::clone(&buf);
-                std::thread::spawn(move || match buf.compare_exchange_u32(0, 0, 1) {
-                    Ok(_) => true,
-                    Err(_) => false,
-                })
+                std::thread::spawn(move || buf.compare_exchange_u32(0, 0, 1).is_ok())
             })
             .collect();
         let winners = handles.into_iter().map(|h| h.join().unwrap()).filter(|won| *won).count();
