@@ -657,10 +657,7 @@ impl Vm {
     ///
     /// # 副作用
     /// - 任务体对 `self` 的全部改写（寄存器 / 帧栈 / 对象表 / 异常侧通道）原样保留。
-    pub fn execute_task(
-        &mut self,
-        task: impl FnOnce(&mut Self) -> Result<JsValue, String>,
-    ) -> Result<JsValue, String> {
+    pub fn execute_task(&mut self, task: impl FnOnce(&mut Self) -> Result<JsValue, String>) -> Result<JsValue, String> {
         task(self)
     }
 
@@ -1081,11 +1078,7 @@ mod tests {
         assert!(!vm.job_queue.is_empty(), "反应应已入队");
         vm.drain_microtasks();
         assert!(vm.job_queue.is_empty(), "drain 后队列应清空");
-        assert_eq!(
-            global_value(&mut vm, "done"),
-            JsValue::bool(true),
-            "promise 反应应已置 done = true"
-        );
+        assert_eq!(global_value(&mut vm, "done"), JsValue::bool(true), "promise 反应应已置 done = true");
     }
 
     #[test]

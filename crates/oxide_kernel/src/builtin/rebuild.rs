@@ -415,10 +415,7 @@ impl BuiltinWorld {
                 P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
             )
         } else {
-            (
-                current.broadcast_channel_proto.clone(),
-                current.broadcast_channel_constructor.clone(),
-            )
+            (current.broadcast_channel_proto.clone(), current.broadcast_channel_constructor.clone())
         };
 
         // 迭代器原型与资源栈原型依赖 Object.prototype（链到其上）：object 家族重建时

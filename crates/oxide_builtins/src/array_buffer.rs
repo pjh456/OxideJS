@@ -467,11 +467,7 @@ pub fn shared_array_buffer_max_byte_length<H: VmHost>(vm: &mut H, args: &[u8]) -
     let payload_ptr = native_try!(shared_array_buffer_payload(vm, this_val));
     // SAFETY: payload_ptr 经 shared_array_buffer_payload 校验为合法 SAB 载荷。
     let payload = unsafe { &*payload_ptr };
-    let value = if payload.growable {
-        payload.buffer.max_len()
-    } else {
-        payload.buffer.len()
-    };
+    let value = if payload.growable { payload.buffer.max_len() } else { payload.buffer.len() };
     NativeResult::Ok(JsValue::int(value as i32))
 }
 

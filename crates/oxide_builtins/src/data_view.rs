@@ -5,9 +5,7 @@ use oxide_types::value::JsValue;
 use num_bigint::BigInt;
 use num_traits::ToPrimitive;
 
-use crate::array_buffer::{
-    buffer_store, buffer_store_mut_ptr, buffer_store_ptr, BufferStore, BufferStoreMut,
-};
+use crate::array_buffer::{buffer_store, buffer_store_mut_ptr, buffer_store_ptr, BufferStore, BufferStoreMut};
 
 use oxide_runtime_api::{NativeResult, ProtoKind, VmHost};
 
@@ -116,9 +114,7 @@ fn get_data_view_data<H: VmHost>(vm: &mut H, this_val: JsValue) -> Result<DataVi
 /// detach（AB 臂 detached 标志）、auto 视图 offset 超 live、定长视图
 /// offset + 静态长超 live（含溢出）→ TypeError；通过时返回视图长
 /// （auto 视图现算 live − offset，定长视图返静态长）。
-fn dv_view_bounds<H: VmHost>(
-    vm: &mut H, store: &BufferStore, view: DataViewData,
-) -> Result<usize, JsValue> {
+fn dv_view_bounds<H: VmHost>(vm: &mut H, store: &BufferStore, view: DataViewData) -> Result<usize, JsValue> {
     if store.is_detached() {
         return Err(crate::error::create_type_error(vm, "ArrayBuffer internal state invalid"));
     }

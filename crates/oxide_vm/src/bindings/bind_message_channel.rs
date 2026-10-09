@@ -48,7 +48,8 @@ pub fn bind_message_channel(core: &Arc<KernelCore>, session: &KernelSession, glo
     if sh.lookup_position(ctor.shape_id(), si_name).is_none() {
         let shape = sh.make_shape(ctor.shape_id(), si_name);
         ctor.set_shape_id(shape);
-        ctor.ensure_hash_props().push(JsValue::perm_string(sf.string_ptr(sf.intern("MessageChannel").0)));
+        ctor.ensure_hash_props()
+            .push(JsValue::perm_string(sf.string_ptr(sf.intern("MessageChannel").0)));
         let pos = ctor.hash_props_vec().map_or(0, |v| v.len() as u32).saturating_sub(1);
         ctor.set_data_meta(pos, PropAttributes::new(false, false, true));
         ctor.bump_generation();
@@ -101,8 +102,16 @@ pub fn bind_message_channel(core: &Arc<KernelCore>, session: &KernelSession, glo
                     oxide_builtins::message_channel::message_port_post_message::<crate::vm::Vm> as *const (),
                     2,
                 ),
-                ("close", oxide_builtins::message_channel::message_port_close::<crate::vm::Vm> as *const (), 0),
-                ("start", oxide_builtins::message_channel::message_port_start::<crate::vm::Vm> as *const (), 0),
+                (
+                    "close",
+                    oxide_builtins::message_channel::message_port_close::<crate::vm::Vm> as *const (),
+                    0,
+                ),
+                (
+                    "start",
+                    oxide_builtins::message_channel::message_port_start::<crate::vm::Vm> as *const (),
+                    0,
+                ),
             ],
         );
     }

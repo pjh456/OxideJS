@@ -72,10 +72,7 @@ pub struct WorkerHandle {
 /// - 每条 `Message` 经 rehydrate → execute_task → drain_microtasks 处理后，把处理
 ///   值 detach 回 worker → 主线程通道（935.3 的回显语义，935.4 的 onmessage 替换之）。
 fn worker_event_loop(
-    core: Arc<KernelCore>,
-    compiler: Arc<dyn CompilerService>,
-    script: String,
-    rx: Receiver<WorkerMail>,
+    core: Arc<KernelCore>, compiler: Arc<dyn CompilerService>, script: String, rx: Receiver<WorkerMail>,
     out_tx: Sender<MessageValue>,
 ) {
     let mut vm = Vm::with_kernel_core(core);
@@ -164,12 +161,7 @@ impl Vm {
             worker_event_loop(core, compiler, script_owned, rx, out_tx);
         });
 
-        let worker = WorkerHandle {
-            id,
-            tx,
-            rx_out: out_rx,
-            handle,
-        };
+        let worker = WorkerHandle { id, tx, rx_out: out_rx, handle };
         self.worker_registry.insert(id, worker);
         Ok(id)
     }
@@ -183,10 +175,7 @@ impl Vm {
     /// # 返回值
     /// 投递成功 `Ok(())`，失败 `Err`（含错误描述）。
     pub fn worker_post_message(&mut self, id: u64, msg: MessageValue) -> Result<(), String> {
-        let worker = self
-            .worker_registry
-            .get_mut(&id)
-            .ok_or_else(|| format!("worker {id} 不存在"))?;
+        let worker = self.worker_registry.get_mut(&id).ok_or_else(|| format!("worker {id} 不存在"))?;
         worker
             .tx
             .send(WorkerMail::Message(msg))
@@ -212,14 +201,8 @@ impl Vm {
             let _ = worker.tx.send(WorkerMail::Terminate);
         }
         // 从注册表移除并 join 线程（句柄 drop 前必须 join）。
-        let worker = self
-            .worker_registry
-            .remove(&id)
-            .ok_or_else(|| format!("worker {id} 不存在"))?;
-        worker
-            .handle
-            .join()
-            .map_err(|_| format!("worker {id} 线程异常退出"))?;
+        let worker = self.worker_registry.remove(&id).ok_or_else(|| format!("worker {id} 不存在"))?;
+        worker.handle.join().map_err(|_| format!("worker {id} 线程异常退出"))?;
         Ok(())
     }
 
@@ -313,8 +296,7 @@ mod tests {
         let id = vm.spawn_worker("1 + 1").expect("worker 应派生成功");
         assert_eq!(vm.active_workers(), vec![id], "应有唯一活跃 worker");
 
-        vm.worker_post_message(id, MessageValue::Number(42.0))
-            .expect("投递应成功");
+        vm.worker_post_message(id, MessageValue::Number(42.0)).expect("投递应成功");
         let messages = poll_until_message(&mut vm, id);
         assert_eq!(messages.len(), 1, "应回显一条消息");
         // 整数值经 number_to_js 归为 Int 表示。
@@ -329,9 +311,7 @@ mod tests {
     fn worker_script_compile_failure_reports_error() {
         let mut vm = vm_with_compiler();
 
-        let id = vm
-            .spawn_worker("function { 语法错误")
-            .expect("worker 应派生成功");
+        let id = vm.spawn_worker("function { 语法错误").expect("worker 应派生成功");
         let messages = poll_until_message(&mut vm, id);
         assert!(!messages.is_empty(), "编译失败应上报错误串");
         assert!(messages[0].is_string(), "错误串应为字符串值");
@@ -348,10 +328,8 @@ mod tests {
         let id_b = vm.spawn_worker("2").expect("worker B 应派生成功");
         assert_eq!(vm.active_workers(), vec![id_a, id_b], "应有两个活跃 worker");
 
-        vm.worker_post_message(id_a, MessageValue::Number(1.0))
-            .expect("投递 A 应成功");
-        vm.worker_post_message(id_b, MessageValue::Number(2.0))
-            .expect("投递 B 应成功");
+        vm.worker_post_message(id_a, MessageValue::Number(1.0)).expect("投递 A 应成功");
+        vm.worker_post_message(id_b, MessageValue::Number(2.0)).expect("投递 B 应成功");
 
         let messages_a = poll_until_message(&mut vm, id_a);
         assert_eq!(messages_a[0], JsValue::int(1), "A 应回显 1");

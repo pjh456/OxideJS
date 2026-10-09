@@ -372,12 +372,6 @@ impl oxide_runtime_api::VmHost for Vm {
         }
     }
     fn bc_lookup(&self, name: &str) -> Vec<*mut JsObject> {
-        self.realm
-            .gc
-            .borrow()
-            .broadcast_channels
-            .get(name)
-            .cloned()
-            .unwrap_or_default()
+        self.realm.gc.borrow().broadcast_channels.get(name).cloned().unwrap_or_default()
     }
 }

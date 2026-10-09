@@ -110,10 +110,7 @@ pub fn drop_message_port_native(obj: &mut JsObject) -> u64 {
 /// - 构造器不占 BuiltinWorld P 字段（绑定层就地填充占位）。
 pub fn message_channel_constructor<H: VmHost>(vm: &mut H, _args: &[u8]) -> NativeResult {
     if !vm.constructing_native() {
-        return NativeResult::Err(crate::error::create_type_error(
-            vm,
-            "MessageChannel constructor requires new",
-        ));
+        return NativeResult::Err(crate::error::create_type_error(vm, "MessageChannel constructor requires new"));
     }
 
     let (a_to_b_tx, b_rx) = message_queue::channel::<MessageValue>();
@@ -135,19 +132,9 @@ pub fn message_channel_constructor<H: VmHost>(vm: &mut H, _args: &[u8]) -> Nativ
     // SAFETY: a_ptr / b_ptr 是本函数刚 alloc_object 的端口对象，存活且本段无别名。
     unsafe {
         let a_obj = &mut *a_ptr;
-        let _ = vm.define_data_property(
-            a_obj,
-            si_onmessage,
-            JsValue::null(),
-            PropAttributes::new(true, false, true),
-        );
+        let _ = vm.define_data_property(a_obj, si_onmessage, JsValue::null(), PropAttributes::new(true, false, true));
         let b_obj = &mut *b_ptr;
-        let _ = vm.define_data_property(
-            b_obj,
-            si_onmessage,
-            JsValue::null(),
-            PropAttributes::new(true, false, true),
-        );
+        let _ = vm.define_data_property(b_obj, si_onmessage, JsValue::null(), PropAttributes::new(true, false, true));
     }
 
     // 结果对象：plain 对象（proto = %Object.prototype%），两枚可枚举 port1 / port2。
@@ -156,27 +143,15 @@ pub fn message_channel_constructor<H: VmHost>(vm: &mut H, _args: &[u8]) -> Nativ
     // SAFETY: result_ptr 是本函数刚 alloc_object 的对象，存活且本段无别名。
     let result_obj = unsafe { &mut *result_ptr };
     let si_port1 = vm.perm_intern("port1");
-    let _ = vm.define_data_property(
-        result_obj,
-        si_port1,
-        JsValue::from_js_object(a_ptr),
-        PropAttributes::DEFAULT_DATA,
-    );
+    let _ = vm.define_data_property(result_obj, si_port1, JsValue::from_js_object(a_ptr), PropAttributes::DEFAULT_DATA);
     let si_port2 = vm.perm_intern("port2");
-    let _ = vm.define_data_property(
-        result_obj,
-        si_port2,
-        JsValue::from_js_object(b_ptr),
-        PropAttributes::DEFAULT_DATA,
-    );
+    let _ = vm.define_data_property(result_obj, si_port2, JsValue::from_js_object(b_ptr), PropAttributes::DEFAULT_DATA);
     NativeResult::Ok(JsValue::from_js_object(result_ptr))
 }
 
 /// 建单枚端口对象：空形状对象挂载荷盒，`alloc_object` 入对象表。
 fn make_port_object<H: VmHost>(
-    vm: &mut H,
-    proto_val: JsValue,
-    peer: message_queue::Sender<MessageValue>,
+    vm: &mut H, proto_val: JsValue, peer: message_queue::Sender<MessageValue>,
     rx: message_queue::Receiver<MessageValue>,
 ) -> (*mut JsObject, *mut MessagePortInner) {
     let mut obj = JsObject::new_empty(EMPTY_SHAPE_ID, proto_val);

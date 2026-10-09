@@ -7,9 +7,8 @@ use oxide_types::private_key::{encode_symbol_key, int_key_value, is_int_key, WEL
 use oxide_types::value::JsValue;
 
 use crate::array_buffer::{
-    array_buffer_payload_ptr, buffer_store, buffer_store_mut_ptr, buffer_store_ptr,
-    default_array_buffer_proto, new_array_buffer, BufferStore, BufferStoreMut,
-    MAX_ARRAY_BUFFER_LENGTH,
+    array_buffer_payload_ptr, buffer_store, buffer_store_mut_ptr, buffer_store_ptr, default_array_buffer_proto,
+    new_array_buffer, BufferStore, BufferStoreMut, MAX_ARRAY_BUFFER_LENGTH,
 };
 
 use oxide_runtime_api::{NativeResult, ProtoKind, VmHost};
@@ -2806,32 +2805,20 @@ pub fn uint8array_set_from_base64<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeR
     };
     let (read, written) = match store {
         BufferStoreMut::Ab(bytes) => {
-            native_try!(ta_decode_base64(
-                vm,
-                string,
-                options,
-                Some(ta_live_length(view)),
-                &mut |idx, b| {
-                    // 缓冲可被 resize 收缩：目标字节越界时静默不写（live 视图越界语义）。
-                    if start + idx < bytes.len() {
-                        bytes[start + idx] = b;
-                    }
-                },
-            ))
+            native_try!(ta_decode_base64(vm, string, options, Some(ta_live_length(view)), &mut |idx, b| {
+                // 缓冲可被 resize 收缩：目标字节越界时静默不写（live 视图越界语义）。
+                if start + idx < bytes.len() {
+                    bytes[start + idx] = b;
+                }
+            },))
         }
         BufferStoreMut::Sab(buffer) => {
-            native_try!(ta_decode_base64(
-                vm,
-                string,
-                options,
-                Some(ta_live_length(view)),
-                &mut |idx, b| {
-                    // 活长可被并发推进：目标字节越界时静默不写（live 视图越界语义）。
-                    if start + idx < buffer.len() {
-                        let _ = buffer.write_range(start + idx, &[b]);
-                    }
-                },
-            ))
+            native_try!(ta_decode_base64(vm, string, options, Some(ta_live_length(view)), &mut |idx, b| {
+                // 活长可被并发推进：目标字节越界时静默不写（live 视图越界语义）。
+                if start + idx < buffer.len() {
+                    let _ = buffer.write_range(start + idx, &[b]);
+                }
+            },))
         }
     };
     NativeResult::Ok(ta_read_written_result(vm, read, written))
@@ -2943,8 +2930,8 @@ pub fn uint8array_from_hex<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Arc;
     use crate::array_buffer::{ArrayBufferPayload, SharedArrayBufferPayload};
+    use std::sync::Arc;
 
     fn gate(text: &str, length: usize) -> TaIndexGate {
         ta_index_gate_from_text(text, length)
@@ -2974,10 +2961,7 @@ mod tests {
         obj.type_tag = JsObject::OBJ_TYPE_SHARED_ARRAY_BUFFER;
         let core = oxide_kernel::KernelCore::new(oxide_kernel::KernelConfig::minimal());
         let buffer = Arc::new(SharedBuffer::new(core, data.unwrap_or_default()));
-        let payload = SharedArrayBufferPayload {
-            buffer,
-            growable: false,
-        };
+        let payload = SharedArrayBufferPayload { buffer, growable: false };
         let payload_ptr = Arc::into_raw(Arc::new(payload));
         // SAFETY: 载荷盒形态与 new_shared_array_buffer 的 native_fn 槽存储一致，测试结束前恰好释放一次。
         obj.set_native_fn(Some(unsafe { NativeFnPtr::from_raw(payload_ptr as *const ()) }));
