@@ -100,6 +100,8 @@ pub enum ProtoKind {
     Float64ArrayConstructor,
     BigInt64ArrayConstructor,
     BigUint64ArrayConstructor,
+    // 消息通道原型
+    MessagePortProto,
 }
 
 /// builtins 依赖的 `Vm` 能力集合。

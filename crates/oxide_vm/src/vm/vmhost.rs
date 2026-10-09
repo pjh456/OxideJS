@@ -142,6 +142,7 @@ impl oxide_runtime_api::VmHost for Vm {
             ProtoKind::Float64ArrayConstructor => &world.float64array_constructor,
             ProtoKind::BigInt64ArrayConstructor => &world.bigint64array_constructor,
             ProtoKind::BigUint64ArrayConstructor => &world.biguint64array_constructor,
+            ProtoKind::MessagePortProto => &world.message_port_proto,
         };
         P::as_ptr(p) as *mut JsObject
     }

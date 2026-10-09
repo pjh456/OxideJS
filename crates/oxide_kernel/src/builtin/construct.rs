@@ -502,6 +502,12 @@ impl BuiltinWorld {
 
         let console_object = P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()));
 
+        // MessagePort 原型与 MessageChannel 构造器的内核接线占位（空对象）：
+        // 真实原型/构造器本体与原型链连线由绑定层后续任务填充，本处只预留
+        // 槽位使快照/脏检查/收尾枚举覆盖到这两枚 P 字段。
+        let message_port_proto = P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()));
+        let message_channel_constructor = P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()));
+
         let (date_proto, date_constructor) = make_named_pair(string_forge, shape_forge, labels, "Date");
         let (set_proto, set_constructor) = make_named_pair(string_forge, shape_forge, labels, "Set");
         let (map_proto, map_constructor) = make_named_pair(string_forge, shape_forge, labels, "Map");
@@ -649,6 +655,8 @@ impl BuiltinWorld {
             async_disposable_stack_proto,
             stub_objects,
             console_object,
+            message_port_proto,
+            message_channel_constructor,
             leaked_objects: std::cell::RefCell::new(Vec::new()),
         };
         wire_builtin_world_links(&world);

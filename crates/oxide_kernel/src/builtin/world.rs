@@ -1,5 +1,5 @@
-//! 注册表职责：BuiltinWorld 结构（95 固定 P 字段 + stub 族 + Box::into_raw
-//! 登记表）、get_by_id 派发、all_p_fields 95 元组枚举（新增 P 字段四处同步
+//! 注册表职责：BuiltinWorld 结构（97 固定 P 字段 + stub 族 + Box::into_raw
+//! 登记表）、get_by_id 派发、all_p_fields 97 元组枚举（新增 P 字段四处同步
 //! 约束载体）与登记表 track/find/inherit/teardown。
 
 use oxide_types::mem::P;
@@ -138,6 +138,12 @@ pub struct BuiltinWorld {
     pub async_disposable_stack_proto: P<JsObject>,
     pub stub_objects: Vec<P<JsObject>>,
     pub console_object: P<JsObject>,
+    /// `MessagePort.prototype` 槽位：纯内核接线占位（空对象），真实原型本体
+    /// 与构造器对由绑定层后续任务填充；脏家族位为 `message_channel`。
+    pub message_port_proto: P<JsObject>,
+    /// `MessageChannel` 构造器槽位：纯内核接线占位（空对象），真实构造器
+    /// 本体由绑定层后续任务填充。
+    pub message_channel_constructor: P<JsObject>,
     /// 释放登记表（`Box::into_raw` 对象的清单，session 收尾统一释放，非内存泄漏）：
     /// 绑定层经 `Box::into_raw` 持有的函数/宿主对象（方法 wrapper、访问器、
     /// 错误构造器、Reflect/Iterator、内建原型构造器、`$262` 宿主等）。
@@ -368,7 +374,7 @@ impl BuiltinWorld {
     /// session 收尾（`teardown_heap_data`）与选择性重建收尾（`retire_replaced`）
     /// 的 P 字段枚举唯一入口：`BuiltinWorld` 新增 P 字段须在此同步补一行，否则
     /// 收尾时该字段属性区无法释放、重建原型槽改写/释放漏掉该字段。
-    pub(crate) fn all_p_fields(&self) -> [&P<JsObject>; 95] {
+    pub(crate) fn all_p_fields(&self) -> [&P<JsObject>; 97] {
         [
             &self.object_proto,
             &self.array_proto,
@@ -465,6 +471,8 @@ impl BuiltinWorld {
             &self.disposable_stack_proto,
             &self.async_disposable_stack_proto,
             &self.console_object,
+            &self.message_port_proto,
+            &self.message_channel_constructor,
         ]
     }
 
@@ -598,6 +606,8 @@ impl BuiltinWorld {
             BuiltinId::BigIntProto => &self.bigint_proto,
             BuiltinId::Console => &self.console_object,
             BuiltinId::AsyncIteratorProto => &self.async_iterator_proto,
+            BuiltinId::MessagePortProto => &self.message_port_proto,
+            BuiltinId::MessageChannelCtor => &self.message_channel_constructor,
         }
     }
 }
