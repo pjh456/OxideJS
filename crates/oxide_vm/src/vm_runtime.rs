@@ -664,7 +664,8 @@ impl Vm {
     /// 加载并执行一个已编译模块，返回模块顶层执行结果或未捕获异常消息。
     ///
     /// 模块以 `Arc` 与调用方共享（如 CodeForge 缓存条目）：平表装载只做
-    /// Arc::clone，run 期零模块拷贝。内部初始化寄存器/bytecode/immutables 与
+    /// Arc::clone，顶层字节码按引用计数条件复制（共享时装载期显式深拷贝，
+    /// 独占时零拷贝）。内部初始化寄存器/bytecode/immutables 与
     /// builtin 寄存器预绑定，然后进入 dispatch 主循环；执行完成或异常展开后返回。
     pub fn run(&mut self, module: &Arc<CompiledModule>) -> Result<JsValue, String> {
         vm_debug!("run: starting bytecode execution, {} instructions", module.bytecode.len());
@@ -696,7 +697,15 @@ impl Vm {
         self.active_table_gen = self.current_gen;
         // 顶层脚本严格模式：无帧且无 inline 时写路径的 strict/sloppy 判定来源。
         self.top_level_strict = module.is_strict;
-        self.bytecode = Arc::clone(&module.bytecode);
+        // 顶层字节码按模块引用计数条件复制：模块被宿主共享（外层 Arc 计数 > 1，
+        // 如 CodeForge 缓存条目与调用方各持一份）时装载期显式深拷贝，把 COW 深拷贝
+        // 从 dispatch 主循环热路径挪到 run 装载期（批量、可预测）；模块独占（计数 1，
+        // 如 worker 新编译模块）保持 Arc::clone，无宿主共享缓冲需保护，复制无收益。
+        if Arc::strong_count(module) > 1 {
+            self.bytecode = Arc::from(&module.bytecode[..]);
+        } else {
+            self.bytecode = Arc::clone(&module.bytecode);
+        }
         self.activate_immutables(self.current_gen, 0, &module.constants);
         self.root_reg_limit = module.n_registers.max(1);
         self.active_reg_limit = self.root_reg_limit;
@@ -929,6 +938,22 @@ mod tests {
         assert!(
             !Arc::ptr_eq(&module.bytecode, &vm.bytecode),
             "Vm.bytecode 须为 COW 私有拷贝，写回不得落宿主缓冲"
+        );
+        assert_eq!(vm.bytecode.len(), module.bytecode.len());
+    }
+
+    #[test]
+    fn run_copies_bytecode_when_shared() {
+        // 顶层字节码装载期显式副本：共享模块（引用计数 > 1）在 run 装载期即深拷贝，
+        // 即使零 IC miss（无写回触发惰性 COW）Vm.bytecode 也须是私有 Arc 实例。
+        // 本钉在惰性 COW 行为下必失败（无写回则不拷贝，保持与宿主同一实例）。
+        let mut vm = Vm::new();
+        let module = Arc::new(compile("var x = 1; x + 1"));
+        let shared = Arc::clone(&module); // 双 Arc 计数，模拟宿主缓存共享
+        vm.run(&shared).expect("run");
+        assert!(
+            !Arc::ptr_eq(&module.bytecode, &vm.bytecode),
+            "共享模块装载期须显式复制，Vm.bytecode 不得与宿主共享同一 Arc"
         );
         assert_eq!(vm.bytecode.len(), module.bytecode.len());
     }

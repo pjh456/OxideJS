@@ -168,7 +168,8 @@ pub struct Vm {
     pub(crate) regs: [JsValue; 256],
     pub(crate) pc: usize,
     /// 当前活动字节码。以 `Arc<[Instr]>` 共享：函数调用经 `Arc::clone` 换帧（O(1)），
-    /// 不再逐帧深拷贝。与子模块平表源共享同一缓冲，IC 写回经 `bytecode_mut` 的
+    /// 不再逐帧深拷贝。顶层装载期按引用计数条件复制（共享时显式深拷贝，独占时
+    /// 零拷贝），子模块平表源保持惰性 COW，IC 写回经 `bytecode_mut` 的
     /// `Arc::make_mut` 写时复制，保证独占后才改写（miss 时才深拷贝，频率低）。
     pub(crate) bytecode: Arc<[opcode::Instr]>,
     /// 当前活动模块已转换不可变常量的只读视图（指向当前表代际的 immutables 内部）。
