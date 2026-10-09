@@ -36,6 +36,8 @@ pub mod bind_json;
 pub mod bind_map;
 /// Math 单例对象及其 native 方法绑定。
 pub mod bind_math;
+/// MessageChannel 构造器与 MessagePort 原型方法的 native 绑定（就地填充占位）。
+pub mod bind_message_channel;
 /// Number 构造器与原型的 native 方法绑定（含常量属性）。
 pub mod bind_number;
 /// Object 构造器与原型的 native 方法绑定。
@@ -1050,6 +1052,11 @@ pub fn bind_global_builtin_slots(
         oxide_builtins::symbol::symbol_constructor::<crate::vm::Vm> as *const (),
         1,
     );
+    configure_existing_ctor(
+        &world.message_channel_constructor,
+        oxide_builtins::message_channel::message_channel_constructor::<crate::vm::Vm> as *const (),
+        0,
+    );
 
     for (name, value) in [
         ("Object", JsValue::from_js_object(world.object_constructor.as_ptr() as *mut JsObject)),
@@ -1073,6 +1080,10 @@ pub fn bind_global_builtin_slots(
         ("Function", JsValue::from_js_object(world.function_constructor.as_ptr() as *mut JsObject)),
         ("RegExp", JsValue::from_js_object(world.regexp_constructor.as_ptr() as *mut JsObject)),
         ("Symbol", JsValue::from_js_object(world.symbol_constructor.as_ptr() as *mut JsObject)),
+        (
+            "MessageChannel",
+            JsValue::from_js_object(world.message_channel_constructor.as_ptr() as *mut JsObject),
+        ),
         ("Math", JsValue::from_js_object(world.math_object.as_ptr() as *mut JsObject)),
         ("JSON", JsValue::from_js_object(world.json_object.as_ptr() as *mut JsObject)),
         ("Temporal", JsValue::from_js_object(world.temporal_object.as_ptr() as *mut JsObject)),
@@ -1311,6 +1322,9 @@ pub fn rebind_dirty_builtins(
     }
     if dirty.map_or(true, |d| d.stubs) {
         bind_bigint::bind_bigint(core, session, global, realm_id);
+    }
+    if dirty.map_or(true, |d| d.message_channel) {
+        bind_message_channel::bind_message_channel(core, session, global, realm_id);
     }
     if dirty.map_or(true, |d| d.console) {
         bind_console::bind_console(core, session, global);
