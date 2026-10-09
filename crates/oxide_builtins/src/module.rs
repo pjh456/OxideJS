@@ -60,10 +60,28 @@ pub struct ModuleNsEntry {
     pub state: ModuleNsState,
 }
 
+/// deferred namespace 状态盒：`[[Module]]`/`[[Evaluated]]`/`[[Namespace]]` 三内部槽。
+///
+/// 以 `Option` 内嵌进 `ModuleNsTable`（`native_data` 的唯一分配），不新建 JsObject
+/// 字段、不建第二个 Box——GC 边、字节核算、释放全部复用 `ModuleNamespace` 家族链，
+/// 零新增注册点。
+pub struct DeferredNsState {
+    /// `[[Module]]`：依赖模块函数（编译期 CREATE_CLOSURE 的闭包对象）。
+    pub module: JsValue,
+    /// `[[Evaluated]]`：依赖模块是否已求值（首次触发成功后置真，不回退）。
+    pub evaluated: bool,
+    /// `[[Namespace]]`：求值后返回的命名空间对象（求值前为 undefined）。
+    pub namespace: JsValue,
+}
+
 /// 模块命名空间条目表：挂在 ns 对象 `native_data` 上，是 exotic [[Get]] 的权威
 /// 状态。键为 `PermInterner` interned 键，线性查找（导出名通常少于 50）。
+///
+/// `deferred` 仅对 deferred namespace 对象为 `Some`（`__moduleDeferObject` 安装），
+/// 其余 ns 对象恒 `None`；求值触发点（后续轮次）经 `deferred_state` 只读消费。
 pub struct ModuleNsTable {
     entries: Vec<ModuleNsEntry>,
+    deferred: Option<DeferredNsState>,
 }
 
 /// 导出名状态查询结果。
@@ -86,6 +104,24 @@ fn ns_table_ptr(obj: &JsObject) -> *mut ModuleNsTable {
     obj.native_data() as *mut ModuleNsTable
 }
 
+/// 只读访问 deferred namespace 状态盒（`[[Module]]`/`[[Evaluated]]`/`[[Namespace]]`）。
+///
+/// # 边界与前提
+/// - 返回 `None`：非 module namespace / 无条目表 / 非 deferred 对象（`deferred` 为 `None`）。
+/// - 返回 `Some`：deferred 对象且已安装状态盒，供求值触发点消费三内部槽。
+///
+/// # 注意事项
+/// - 写入点唯一（`module_defer_object` 安装），本访问器只读，不改状态盒。
+pub fn deferred_state(obj: &JsObject) -> Option<&DeferredNsState> {
+    let table = ns_table_ptr(obj);
+    if table.is_null() {
+        return None;
+    }
+    // SAFETY: table 归本 ns 对象持有，生命周期见 `module_ns_export`。
+    let table_ref = unsafe { &*table };
+    table_ref.deferred.as_ref()
+}
+
 /// 在条目表中按 interned 键定位条目下标。
 fn entry_index(table: &ModuleNsTable, key_si: u32) -> Option<usize> {
     table.entries.iter().position(|e| e.name_si == key_si)
@@ -93,7 +129,10 @@ fn entry_index(table: &ModuleNsTable, key_si: u32) -> Option<usize> {
 
 /// 分配空条目表并挂到 ns 对象的 `native_data`。
 fn install_ns_table(obj: &mut JsObject) -> *mut ModuleNsTable {
-    let table = Box::into_raw(Box::new(ModuleNsTable { entries: Vec::new() }));
+    let table = Box::into_raw(Box::new(ModuleNsTable {
+        entries: Vec::new(),
+        deferred: None,
+    }));
     obj.set_native_data(table as *mut u8);
     table
 }
@@ -189,6 +228,10 @@ pub fn module_ns_export(obj: &JsObject, key_si: u32) -> Option<ModuleNsQuery> {
 }
 
 /// 收集条目表持有的 JsValue 边（已初始化 `Value` 与全部 `Cell` 内值），供 GC mark。
+///
+/// deferred namespace 对象额外持有 `[[Module]]` 与 `[[Namespace]]` 两条边：
+/// 依赖模块函数与求值后命名空间对象须经本单一注册点入 mark，漏登则函数在
+/// deferred ns 存活期间被回收，触发点解引用悬垂。
 pub fn module_ns_native_edges(obj: &JsObject) -> Vec<JsValue> {
     let table = ns_table_ptr(obj);
     if table.is_null() {
@@ -211,6 +254,10 @@ pub fn module_ns_native_edges(obj: &JsObject) -> Vec<JsValue> {
                 }
             }
         }
+    }
+    if let Some(deferred) = &table_ref.deferred {
+        edges.push(deferred.module);
+        edges.push(deferred.namespace);
     }
     edges
 }
@@ -812,6 +859,52 @@ pub fn module_eval<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     }
 }
 
+/// `__moduleDeferObject(fn)`：创建 deferred namespace 对象（`import defer * as` 产物）。
+///
+/// # 步骤
+/// 1. 校验 `fn` 为函数对象（依赖模块函数，编译期 CREATE_CLOSURE 的闭包对象）。
+/// 2. 建 null 原型对象，定义 `@@toStringTag` = "Deferred Module"（不可写不可枚举不可配置）。
+/// 3. 置 module namespace + deferred 双标志，置 non-extensible。
+/// 4. 安装条目表并写状态盒：`[[Module]]` = fn、`[[Evaluated]]` = false、
+///    `[[Namespace]]` = undefined。
+///
+/// # 副作用
+/// - 新对象创建起即标记 module namespace exotic 并置 non-extensible（同 `__moduleObject`）；
+///   状态盒三内部槽由本入口唯一安装。
+pub fn module_defer_object<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    if args.len() < 2 {
+        return type_error(vm, "__moduleDeferObject: 1 argument required");
+    }
+    let fn_val = vm.reg(args[1]);
+    if !fn_val.is_object() {
+        return type_error(vm, "__moduleDeferObject: target is not a function");
+    }
+    let ptr = fn_val.as_js_object_ptr();
+    if ptr.is_null() || !unsafe { (*ptr).is_function() } {
+        return type_error(vm, "__moduleDeferObject: target is not a function");
+    }
+    let obj = vm.alloc_object(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()));
+    let tag_si = encode_symbol_key(vm.realm_id(), TO_STRING_TAG_SYMBOL_ID);
+    let tag_val = vm.new_string("Deferred Module");
+    let obj_ref = unsafe { &mut *obj };
+    if let Err(e) = vm.define_data_property(obj_ref, tag_si, tag_val, PropAttributes::new(false, false, false)) {
+        return NativeResult::Err(crate::error::create_error(vm, &e));
+    }
+    obj_ref.set_module_namespace(true);
+    obj_ref.set_deferred(true);
+    obj_ref.set_extensible(false);
+    let table = install_ns_table(obj_ref);
+    // SAFETY: table 由 install_ns_table 的 Box::into_raw 分配，本处恰好写入一次。
+    unsafe {
+        (*table).deferred = Some(DeferredNsState {
+            module: fn_val,
+            evaluated: false,
+            namespace: JsValue::undefined(),
+        });
+    }
+    NativeResult::Ok(JsValue::from_js_object(obj))
+}
+
 /// `__moduleData(kind, content)`：构造数据模块命名空间（json/text；bytes 未支持）。
 ///
 /// # 副作用
@@ -852,4 +945,74 @@ pub fn module_data<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     obj_ref.set_module_namespace(true);
     obj_ref.set_extensible(false);
     NativeResult::Ok(JsValue::from_js_object(obj))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use oxide_compiler::DefaultCompilerService;
+    use oxide_vm::vm::Vm;
+    use std::sync::Arc;
+
+    /// 建一个带编译服务的 VM 与一个依赖模块函数（deferred ns 的 `[[Module]]` 载荷）。
+    fn vm_with_function() -> (Vm, JsValue) {
+        let mut vm = Vm::new();
+        vm.set_compiler_service(Arc::new(DefaultCompilerService));
+        let fn_val = vm
+            .create_dynamic_function(&[], "return 42;", false, false)
+            .expect("create function");
+        (vm, fn_val)
+    }
+
+    #[test]
+    fn module_defer_object_installs_state_box() {
+        let (mut vm, fn_val) = vm_with_function();
+        vm.set_reg(1, fn_val);
+        let ns_val = module_defer_object(&mut vm, &[0, 1]).unwrap();
+        assert!(ns_val.is_object());
+        let ns_ptr = ns_val.as_js_object_ptr();
+        assert!(!ns_ptr.is_null());
+        let ns_obj = unsafe { &*ns_ptr };
+        assert!(ns_obj.is_module_namespace(), "deferred ns 应标记 module namespace");
+        assert!(ns_obj.is_deferred(), "deferred ns 应标记 deferred");
+        assert!(!ns_obj.is_extensible(), "deferred ns 应 non-extensible");
+
+        // 状态盒三内部槽安装正确：[[Module]] = fn、[[Evaluated]] = false、[[Namespace]] = undefined。
+        let state = deferred_state(ns_obj).expect("deferred state 应已安装");
+        assert_eq!(state.module, fn_val, "[[Module]] 应存依赖模块函数");
+        assert!(!state.evaluated, "[[Evaluated]] 初始应为 false");
+        assert_eq!(state.namespace, JsValue::undefined(), "[[Namespace]] 求值前应为 undefined");
+    }
+
+    #[test]
+    fn module_defer_object_rejects_non_function() {
+        let (mut vm, _) = vm_with_function();
+        vm.set_reg(1, JsValue::int(42));
+        let result = module_defer_object(&mut vm, &[0, 1]);
+        assert!(matches!(result, NativeResult::Err(_)), "非函数应抛 TypeError");
+    }
+
+    #[test]
+    fn module_defer_ns_gc_edge_keeps_module_function_alive() {
+        let (mut vm, fn_val) = vm_with_function();
+        let fn_ptr = fn_val.as_js_object_ptr();
+
+        // 创建 deferred ns（持有 fn）；fn + ns 两个 session 对象。
+        vm.set_reg(1, fn_val);
+        let ns_val = module_defer_object(&mut vm, &[0, 1]).unwrap();
+        let count_after_ns = vm.session_object_count();
+
+        // 仅 ns 为根：清掉持有 fn 的寄存器，fn 唯一可达路径是 ns 的 [[Module]] 边。
+        vm.set_reg(1, JsValue::undefined());
+        vm.set_reg(0, ns_val);
+
+        // 完整收集：若 [[Module]] 边漏登，fn 被回收、计数回落。
+        vm.collect_session_gc();
+
+        assert_eq!(vm.session_object_count(), count_after_ns, "依赖模块函数应跨收集存活（GC 边已登记）");
+        // 原地 sweep 不搬移：ns 与状态盒原地保留，[[Module]] 指针稳定。
+        let ns_obj = unsafe { &*ns_val.as_js_object_ptr() };
+        let state = deferred_state(ns_obj).expect("deferred state 应存活");
+        assert_eq!(state.module.as_js_object_ptr(), fn_ptr, "[[Module]] 指针应稳定");
+    }
 }

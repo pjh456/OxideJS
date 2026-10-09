@@ -85,8 +85,9 @@ pub const MAX_DENSE_PROPS: usize = 1_000_000;
 ///   regexp_source: JsValue (8 字节，RegExp 实例的 source 字符串)
 ///   regexp_flags: JsValue (8 字节，RegExp 实例的 flags 字符串)
 ///   upvalues: *mut u8 (8 字节，指向闭包的 Box<Vec<*mut Cell>>)
+///   deferred_flags: u8 (1 字节，bit 0 = is_deferred，deferred namespace 标志)
 ///
-///   字段自和：132 字节，另有 4 字节尾部对齐填充
+///   字段自和：133 字节，另有 3 字节尾部对齐填充
 ///   总计：136 字节
 ///   对齐：8 字节
 pub struct JsObject {
@@ -138,6 +139,10 @@ pub struct JsObject {
     /// RegExp 实例的 flags 字符串（RegExp.prototype.flags 访问器的数据源）。
     regexp_flags: JsValue,
     pub upvalues: *mut u8,
+    /// deferred namespace 标志位：bit 0 = is_deferred。仅对 module namespace
+    /// 对象有语义（deferred ns 同时置 module_namespace 与本位）；其余对象恒 0。
+    /// 占尾部对齐填充 1 字节，136B 布局钉不变。
+    deferred_flags: u8,
 }
 
 impl JsObject {
@@ -435,6 +440,7 @@ impl JsObject {
             regexp_source: JsValue::undefined(),
             regexp_flags: JsValue::undefined(),
             upvalues: std::ptr::null_mut(),
+            deferred_flags: 0,
         }
     }
 
@@ -464,6 +470,7 @@ impl JsObject {
             regexp_source: JsValue::undefined(),
             regexp_flags: JsValue::undefined(),
             upvalues: std::ptr::null_mut(),
+            deferred_flags: 0,
         };
         let vec = Box::new(vec![JsValue::undefined(); n_elements.min(MAX_DENSE_PROPS)]);
         obj.array_elements = Box::into_raw(vec) as *mut u8;
@@ -677,6 +684,25 @@ impl JsObject {
             self._pad |= 1 << 2;
         } else {
             self._pad &= !(1 << 2);
+        }
+    }
+
+    /// 是否 deferred namespace 对象（`import defer * as` 产物）。
+    ///
+    /// # 边界与前提
+    /// - 仅当 `is_module_namespace()` 为真时有语义；deferred ns 同时置
+    ///   module_namespace 位与本位，两维独立。
+    /// - 读 `deferred_flags` bit 0；其余对象恒 0。
+    pub fn is_deferred(&self) -> bool {
+        self.deferred_flags & 1 != 0
+    }
+
+    /// 设置 deferred namespace 标志（写 `deferred_flags` bit 0）。
+    pub fn set_deferred(&mut self, value: bool) {
+        if value {
+            self.deferred_flags |= 1;
+        } else {
+            self.deferred_flags &= !1;
         }
     }
 

@@ -54,6 +54,11 @@ pub fn bind_global(core: &Arc<KernelCore>, session: &KernelSession, global: &mut
             ("__moduleStar", oxide_builtins::module::module_star::<crate::vm::Vm> as *const (), 3),
             ("__moduleSeal", oxide_builtins::module::module_seal::<crate::vm::Vm> as *const (), 1),
             ("__moduleEval", oxide_builtins::module::module_eval::<crate::vm::Vm> as *const (), 1),
+            (
+                "__moduleDeferObject",
+                oxide_builtins::module::module_defer_object::<crate::vm::Vm> as *const (),
+                1,
+            ),
             ("__moduleData", oxide_builtins::module::module_data::<crate::vm::Vm> as *const (), 2),
             ("eval", oxide_builtins::eval::eval::<crate::vm::Vm> as *const (), 1),
             (

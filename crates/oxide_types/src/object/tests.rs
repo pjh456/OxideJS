@@ -9,10 +9,20 @@ fn object_size_bounds() {
 
 #[test]
 fn js_object_exact_size() {
-    // 精确钉当前布局：字段自和 132 字节 + 4 字节尾部对齐填充。
+    // 精确钉当前布局：字段自和 133 字节 + 3 字节尾部对齐填充。
     // 对象头尺寸是 GC 账目与内存基线的锚，静默膨胀须在此显式失败。
     let sz = std::mem::size_of::<JsObject>();
     assert_eq!(sz, 136, "JsObject size drifted: {sz}B");
+}
+
+#[test]
+fn deferred_flag_roundtrip() {
+    let mut obj = JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null());
+    assert!(!obj.is_deferred());
+    obj.set_deferred(true);
+    assert!(obj.is_deferred());
+    obj.set_deferred(false);
+    assert!(!obj.is_deferred());
 }
 
 #[test]
