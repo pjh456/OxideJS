@@ -676,6 +676,24 @@ impl SessionGc {
             }
         }
 
+        // 注册表剪枝：按 mark 位移除死通道对象（此刻全部对象仍分配、位域可读，
+        // 与弱键定夺同时序）。死通道对象在随后的分流循环被释放，注册表已先移除
+        // 其条目，无悬垂；空列表删键。
+        for channels in vm.realm.gc.borrow_mut().broadcast_channels.values_mut() {
+            channels.retain(|&ptr| {
+                if ptr.is_null() {
+                    return false;
+                }
+                // SAFETY: ptr 来自 session 对象表登记，sweep 运行期间有效。
+                unsafe { (*ptr).is_gc_marked() }
+            });
+        }
+        vm.realm
+            .gc
+            .borrow_mut()
+            .broadcast_channels
+            .retain(|_, channels| !channels.is_empty());
+
         // 按 mark 位分流：存活保留清位，死对象释放本体、堆区与 upvalue 出表。
         let mut dead = 0u64;
         let mut freed_bytes = 0u64;

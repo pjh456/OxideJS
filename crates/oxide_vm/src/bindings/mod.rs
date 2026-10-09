@@ -14,6 +14,8 @@ pub mod bind_atomics;
 pub mod bind_bigint;
 /// Boolean 构造器与原型的 native 方法绑定。
 pub mod bind_boolean;
+/// BroadcastChannel 构造器与原型方法的 native 绑定（就地填充占位）。
+pub mod bind_broadcast_channel;
 /// Console 单例对象及其方法绑定。
 pub mod bind_console;
 /// DataView 构造器与原型的 native 方法绑定。
@@ -1057,6 +1059,11 @@ pub fn bind_global_builtin_slots(
         oxide_builtins::message_channel::message_channel_constructor::<crate::vm::Vm> as *const (),
         0,
     );
+    configure_existing_ctor(
+        &world.broadcast_channel_constructor,
+        oxide_builtins::broadcast_channel::broadcast_channel_constructor::<crate::vm::Vm> as *const (),
+        1,
+    );
 
     for (name, value) in [
         ("Object", JsValue::from_js_object(world.object_constructor.as_ptr() as *mut JsObject)),
@@ -1083,6 +1090,10 @@ pub fn bind_global_builtin_slots(
         (
             "MessageChannel",
             JsValue::from_js_object(world.message_channel_constructor.as_ptr() as *mut JsObject),
+        ),
+        (
+            "BroadcastChannel",
+            JsValue::from_js_object(world.broadcast_channel_constructor.as_ptr() as *mut JsObject),
         ),
         ("Math", JsValue::from_js_object(world.math_object.as_ptr() as *mut JsObject)),
         ("JSON", JsValue::from_js_object(world.json_object.as_ptr() as *mut JsObject)),
@@ -1325,6 +1336,9 @@ pub fn rebind_dirty_builtins(
     }
     if dirty.map_or(true, |d| d.message_channel) {
         bind_message_channel::bind_message_channel(core, session, global, realm_id);
+    }
+    if dirty.map_or(true, |d| d.broadcast_channel) {
+        bind_broadcast_channel::bind_broadcast_channel(core, session, global, realm_id);
     }
     if dirty.map_or(true, |d| d.console) {
         bind_console::bind_console(core, session, global);
