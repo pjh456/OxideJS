@@ -7,9 +7,9 @@
 //! - 跨线程消息经 `MessageValue`（Send 中间表示，detach/rehydrate），`JsValue` 不
 //!   跨线程（session 堆指针是 realm 局部地址，跨线程无效）。
 //! - 主线程 → worker 通道载 `WorkerMail`（数据 / 错误 / 关停三面）；worker → 主线程
-//!   通道载 `MessageValue`，主线程轮询时 rehydrate 进主 realm。
-//! - worker 脚本编译失败不 panic：经 worker → 主线程通道上报错误串，worker 继续
-//!   事件循环（可被干净终止）。
+//!   通道载 `WorkerOutMail`（数据 / 错误两面），主线程轮询时 rehydrate 进主 realm。
+//! - worker 脚本编译或执行失败不 panic：经 worker → 主线程通道错误面上报错误串
+//!   （主线程交付 onerror），worker 继续事件循环（可被干净终止）。
 
 pub mod bindings;
 
@@ -40,18 +40,39 @@ pub enum WorkerMail {
     Terminate,
 }
 
+/// worker 出站邮件（worker 线程 → 主线程）：数据面与错误面分离。
+///
+/// `Send`（`MessageValue` 与 `String` 均 Send），可经 `Sender<WorkerOutMail>` 跨线程投递。
+pub enum WorkerOutMail {
+    /// 数据面：一条结构化克隆消息值，主线程 rehydrate 后交付 onmessage。
+    Message(MessageValue),
+    /// 错误面：worker 脚本编译或执行失败错误串，主线程交付 onerror。
+    Error(String),
+}
+
+/// 轮询结果：数据面（rehydrate 后的消息值）、错误面（错误串）与消息交付失败面分离。
+pub struct WorkerPoll {
+    /// 数据面：rehydrate 进主 realm 的消息值列表。
+    pub messages: Vec<JsValue>,
+    /// 错误面：worker 脚本编译或执行失败错误串列表（交付 onerror）。
+    pub errors: Vec<String>,
+    /// 消息交付失败面：rehydrate 失败的消息描述列表（交付 onmessageerror）。
+    /// 当前架构 rehydrate 不可失败，此面恒空（SAB 真传递的前向钩子）。
+    pub message_errors: Vec<String>,
+}
+
 /// worker 句柄：主线程对单个 worker 的持有。
 ///
 /// `id` 是单调递增的 worker 编号（主线程分配）；`tx` 是主线程 → worker 通道
-/// （发 `WorkerMail`）；`rx_out` 是 worker → 主线程消息通道（收 `MessageValue`，
+/// （发 `WorkerMail`）；`rx_out` 是 worker → 主线程消息通道（收 `WorkerOutMail`，
 /// 轮询时 rehydrate 进主 realm）；`handle` 是 OS 线程句柄（终止时 join）。
 pub struct WorkerHandle {
     /// worker 编号（主线程分配，单调递增）。
     pub id: u64,
     /// 主线程 → worker 通道（发 `WorkerMail`）。
     pub tx: Sender<WorkerMail>,
-    /// worker → 主线程消息通道（收 `MessageValue`）。
-    pub(crate) rx_out: Receiver<MessageValue>,
+    /// worker → 主线程消息通道（收 `WorkerOutMail`）。
+    pub(crate) rx_out: Receiver<WorkerOutMail>,
     /// OS 线程句柄（终止时 join）。
     pub(crate) handle: JoinHandle<()>,
 }
@@ -60,9 +81,9 @@ pub struct WorkerHandle {
 ///
 /// # 步骤
 /// 1. 经 `Vm::with_kernel_core` 建专属 Vm（新 realm）并注入编译服务。
-/// 2. 编译 worker 脚本（worker 的程序）；失败则经 worker → 主线程通道上报错误串，
-///    不 panic，worker 继续事件循环（可被干净终止）。
-/// 3. 编译成功则运行脚本（worker 的程序）。
+/// 2. 编译 worker 脚本（worker 的程序）；失败则经 worker → 主线程通道错误面上报
+///    错误串，不 panic，worker 继续事件循环（可被干净终止）。
+/// 3. 编译成功则运行脚本（worker 的程序）；运行期未捕获异常同样经错误面上报。
 /// 4. 循环 `recv_timeout(100ms)`：处理 `Message` / `Error` / `Terminate` / 超时。
 ///
 /// # 边界与前提
@@ -71,32 +92,31 @@ pub struct WorkerHandle {
 ///
 /// # 副作用
 /// - 创建并 drop 一个 Vm（退出时 drop 触发 `Drop for Vm` → `Drop for Realm`）。
-/// - 每条 `Message` 经 rehydrate → execute_task → drain_microtasks 处理后，把处理
-///   值 detach 回 worker → 主线程通道（935.3 的回显语义，935.4 的 onmessage 替换之）。
+/// - 每条 `Message` 经 rehydrate → onmessage 交付 → drain_microtasks 处理；
+///   编译或执行失败经 `WorkerOutMail::Error` 上报主线程（主线程交付 onerror）。
 fn worker_event_loop(
     core: Arc<KernelCore>, compiler: Arc<dyn CompilerService>, script: String, rx: Receiver<WorkerMail>,
-    out_tx: Sender<MessageValue>,
+    out_tx: Sender<WorkerOutMail>,
 ) {
     let mut vm = Vm::with_kernel_core(core);
     vm.set_compiler_service(Arc::clone(&compiler));
     // 注入 worker → 主线程输出通道（self.postMessage 经 thread-local 发回主线程）。
     bindings::set_worker_out_tx(out_tx.clone());
 
-    // 编译 worker 脚本（worker 的程序）。失败不 panic：上报错误串后继续循环。
+    // 编译 worker 脚本（worker 的程序）。失败不 panic：经错误面上报后继续循环。
     let script_module = match compiler.compile_script(&script) {
         Ok(module) => Some(module),
         Err(err) => {
             vm_warn!("worker: script compile failed: {err}");
-            let units: Box<[u16]> = err.encode_utf16().collect::<Vec<u16>>().into();
-            let _ = out_tx.send(MessageValue::String(units));
+            let _ = out_tx.send(WorkerOutMail::Error(err));
             None
         }
     };
 
-    // 运行脚本（worker 的程序）。运行期错误记入 last_uncaught_value，不中断循环。
+    // 运行脚本（worker 的程序）。运行期未捕获异常经错误面上报，不中断循环。
     if let Some(module) = script_module {
         if let Err(err) = vm.run(&Arc::new(module)) {
-            vm.last_uncaught_value = Some(vm.new_string(&err));
+            let _ = out_tx.send(WorkerOutMail::Error(err));
         }
     }
 
@@ -155,7 +175,7 @@ impl Vm {
         self.worker_next_id += 1;
 
         let (tx, rx) = channel::<WorkerMail>();
-        let (out_tx, out_rx) = channel::<MessageValue>();
+        let (out_tx, out_rx) = channel::<WorkerOutMail>();
 
         let core = Arc::clone(&self.kernel_core);
         let compiler = Arc::clone(&self.compiler);
@@ -213,35 +233,50 @@ impl Vm {
         Ok(())
     }
 
-    /// 轮询 worker 消息：排空 worker → 主线程通道，rehydrate 进主 realm。
+    /// 轮询 worker 消息：排空 worker → 主线程通道，数据面 rehydrate 进主 realm。
     ///
     /// # 步骤
-    /// 1. 取 `WorkerHandle`（`id` 不存在时返回空列表）。
-    /// 2. `try_recv` 循环排空 `rx_out`，每条 rehydrate 进主 realm。
+    /// 1. 取 `WorkerHandle`（`id` 不存在时返回空轮询结果）。
+    /// 2. `try_recv` 循环排空 `rx_out`，逐条按信封分面：
+    ///    - `Message` 臂 rehydrate 进主 realm 归数据面。
+    ///    - `Error` 臂错误串原样透传归错误面。
     ///
     /// # 返回值
-    /// 本批排空的消息值列表（无消息时为空列表）。
+    /// 本批排空的轮询结果（数据 / 错误 / 消息交付失败三面，无消息时各面为空）。
     ///
     /// # 边界与前提
     /// - 非阻塞（`try_recv`），不等待新消息。
-    pub fn poll_worker_messages(&mut self, id: u64) -> Vec<JsValue> {
+    /// - rehydrate 当前架构不可失败；若未来变可失败，失败面进 `message_errors`
+    ///   （SAB 真传递的前向钩子）。
+    pub fn poll_worker_messages(&mut self, id: u64) -> WorkerPoll {
+        let mut poll = WorkerPoll {
+            messages: Vec::new(),
+            errors: Vec::new(),
+            message_errors: Vec::new(),
+        };
         // 先排空 worker → 主线程通道到本地列表（注册表借用与 rehydrate 借用
         // 不重叠，避免对 self 的双重可变借用）。
-        let drained: Vec<MessageValue> = {
+        let drained: Vec<WorkerOutMail> = {
             let Some(worker) = self.worker_registry.get_mut(&id) else {
-                return Vec::new();
+                return poll;
             };
             let mut drained = Vec::new();
-            while let Ok(mv) = worker.rx_out.try_recv() {
-                drained.push(mv);
+            while let Ok(mail) = worker.rx_out.try_recv() {
+                drained.push(mail);
             }
             drained
         };
-        let mut out = Vec::new();
-        for mv in &drained {
-            out.push(rehydrate_message(self, mv));
+        for mail in &drained {
+            match mail {
+                WorkerOutMail::Message(mv) => {
+                    poll.messages.push(rehydrate_message(self, mv));
+                }
+                WorkerOutMail::Error(err) => {
+                    poll.errors.push(err.clone());
+                }
+            }
         }
-        out
+        poll
     }
 
     /// 列出活跃 worker 编号（升序）。
@@ -274,32 +309,35 @@ impl Vm {
         self.worker_objects.get(&id).copied()
     }
 
-    /// 主线程事件循环消息交付：排空 worker → 主线程通道、rehydrate 进主 realm，
-    /// 交付到 Worker 对象的 `onmessage`。
+    /// 主线程事件循环消息交付：排空 worker → 主线程通道，数据面 rehydrate 进主
+    /// realm 交付到 Worker 对象的 `onmessage`，错误面交付到 `onerror`，消息交付
+    /// 失败面交付到 `onmessageerror`。
     ///
     /// # 步骤
     /// 1. 遍历活跃 worker 编号。
-    /// 2. 对每个 worker `poll_worker_messages` 排空通道并 rehydrate 进主 realm。
-    /// 3. 反查 Worker 对象、读 `onmessage` 属性。
-    /// 4. `onmessage` 可调用时，逐条消息建 MessageEvent 经 `execute_task` +
-    ///    `call_function_sync` 触发，后 `drain_microtasks`。
+    /// 2. 对每个 worker `poll_worker_messages` 排空通道（数据面 rehydrate 进主 realm）。
+    /// 3. 反查 Worker 对象（GC 根）。
+    /// 4. 错误面逐条交付 `onerror`；消息交付失败面逐条交付 `onmessageerror`。
+    /// 5. 数据面读 `onmessage` 属性，可调用时逐条建 MessageEvent 经
+    ///    `execute_task` + `call_function_sync` 触发，后 `drain_microtasks`。
     ///
     /// # 返回值
-    /// 本轮是否交付了消息（false 时调用方 1ms 轮询，避免忙等）。
+    /// 本轮是否交付了任何面（false 时调用方 1ms 轮询，避免忙等）。
     ///
     /// # 边界与前提
-    /// - `onmessage` 缺失或非可调用时静默跳过（消息已消费，符合浏览器
+    /// - 各 handler 缺失或非可调用时静默跳过（邮件已消费，符合浏览器
     ///   "无 handler 即丢弃"语义）。
     /// - 交付前二次 `worker_object` 校验存活（GC 防护）：worker 在事件循环中
     ///   被终止（注册表条目移除）即停止交付。
     ///
     /// # 副作用
-    /// - 消费 worker → 主线程通道消息；触发 `onmessage` 回调与微任务 drain。
+    /// - 消费 worker → 主线程通道邮件；触发 `onmessage` / `onerror` /
+    ///   `onmessageerror` 回调与微任务 drain。
     pub fn deliver_worker_messages(&mut self) -> bool {
         let mut any = false;
         for id in self.active_workers() {
-            let messages = self.poll_worker_messages(id);
-            if messages.is_empty() {
+            let poll = self.poll_worker_messages(id);
+            if poll.messages.is_empty() && poll.errors.is_empty() && poll.message_errors.is_empty() {
                 continue;
             }
             any = true;
@@ -307,7 +345,21 @@ impl Vm {
             let Some(worker_obj) = self.worker_object(id) else {
                 continue;
             };
-            // 读 onmessage 属性（undefined 或非可调用即静默跳过）。
+            // 错误面：逐条交付 onerror（编译 / 执行失败）。
+            for err in &poll.errors {
+                if self.worker_object(id).is_none() {
+                    break;
+                }
+                self.deliver_error_event(worker_obj, "onerror", "error", err);
+            }
+            // 消息交付失败面：逐条交付 onmessageerror（当前架构不可达，前向钩子）。
+            for msg_err in &poll.message_errors {
+                if self.worker_object(id).is_none() {
+                    break;
+                }
+                self.deliver_error_event(worker_obj, "onmessageerror", "messageerror", msg_err);
+            }
+            // 数据面：读 onmessage 属性（undefined 或非可调用即静默跳过）。
             let si_onmessage = self.perm_intern("onmessage");
             let handler = match self.ordinary_get(unsafe { &*worker_obj.as_js_object_ptr() }, si_onmessage, worker_obj)
             {
@@ -317,13 +369,13 @@ impl Vm {
             if !is_callable(handler) {
                 continue;
             }
-            for data in messages {
+            for data in poll.messages {
                 // 交付前二次校验存活（GC 防护）：worker 在事件循环中被终止
                 // （注册表条目移除）即停止交付。
                 if self.worker_object(id).is_none() {
                     break;
                 }
-                let event = self.build_message_event(data, "message");
+                let event = self.build_message_event(data, "message", None);
                 let _ = self.execute_task(|vm| vm.call_function_sync(handler, worker_obj, &[event]));
                 self.drain_microtasks();
             }
@@ -331,23 +383,60 @@ impl Vm {
         any
     }
 
-    /// 建 MessageEvent 对象（`data` + `type` 属性），委托 935.4 构造辅助。
+    /// 交付错误事件：读 handler 属性、建事件、调用（不可调用时静默）。
     ///
     /// # 步骤
-    /// 1. `type` 串物化为 session 串。
-    /// 2. `data` 与 `type` 写入寄存器 1 / 2，委托 `message_event_constructor`
-    ///    （按寄存器下标读取）建对象。
+    /// 1. 读 `worker_obj` 的 `handler_name` 属性。
+    /// 2. 不可调用时静默返回（浏览器语义：无 handler 即丢弃）。
+    /// 3. 建错误事件（`type` = `event_type`、`message` = `message`）。
+    /// 4. 经 `execute_task` + `call_function_sync` 触发，后 `drain_microtasks`。
     ///
-    /// # 返回值
-    /// 新建的 MessageEvent 对象值（构造失败时返回错误对象值）。
+    /// # 边界与前提
+    /// - `handler_name` 是 `onerror` 或 `onmessageerror`。
+    /// - `event_type` 是 `"error"` 或 `"messageerror"`。
+    /// - `worker_obj` 与 handler 均为 `JsValue`（Copy），在 `execute_task` 前提取，
+    ///   不跨 `&mut self` 持引用。
     ///
     /// # 副作用
-    /// - 新建一个 MessageEvent 对象（经 `alloc_object` 入对象表）。
-    fn build_message_event(&mut self, data: JsValue, type_str: &str) -> JsValue {
+    /// - 触发 handler 回调与微任务 drain。
+    fn deliver_error_event(&mut self, worker_obj: JsValue, handler_name: &str, event_type: &str, message: &str) {
+        let si_handler = self.perm_intern(handler_name);
+        let handler = match self.ordinary_get(unsafe { &*worker_obj.as_js_object_ptr() }, si_handler, worker_obj) {
+            Ok(h) => h,
+            Err(_) => return,
+        };
+        if !is_callable(handler) {
+            return;
+        }
+        let event = self.build_message_event(JsValue::undefined(), event_type, Some(message));
+        let _ = self.execute_task(|vm| vm.call_function_sync(handler, worker_obj, &[event]));
+        self.drain_microtasks();
+    }
+
+    /// 建事件对象（`data` + `type` + `message` 属性），委托 `message_event_constructor`
+    /// 构造辅助。消息事件 `message` 为 `None`（undefined），错误事件 `data` 为
+    /// undefined、`message` 为错误串。
+    ///
+    /// # 步骤
+    /// 1. `type` 与 `message` 串物化为 session 串（`message` 为 `None` 时 undefined）。
+    /// 2. `data` / `type` / `message` 写入寄存器 1 / 2 / 3，委托
+    ///    `message_event_constructor`（按寄存器下标读取）建对象。
+    ///
+    /// # 返回值
+    /// 新建的事件对象值（构造失败时返回错误对象值）。
+    ///
+    /// # 副作用
+    /// - 新建一个事件对象（经 `alloc_object` 入对象表）。
+    fn build_message_event(&mut self, data: JsValue, type_str: &str, message: Option<&str>) -> JsValue {
         let type_val = self.new_string(type_str);
+        let message_val = match message {
+            Some(m) => self.new_string(m),
+            None => JsValue::undefined(),
+        };
         self.set_reg(1, data);
         self.set_reg(2, type_val);
-        match bindings::message_event_constructor(self, &[0, 1, 2]) {
+        self.set_reg(3, message_val);
+        match bindings::message_event_constructor(self, &[0, 1, 2, 3]) {
             NativeResult::Ok(v) => v,
             NativeResult::Err(e) => e,
             // 构造辅助只建对象，不产生尾调用（防御臂，不可达）。
@@ -391,7 +480,7 @@ impl Vm {
     /// - 触发 `self.onmessage` 回调与微任务 drain。
     pub(crate) fn deliver_self_message(&mut self, value: MessageValue) {
         let data = rehydrate_message(self, &value);
-        let event = self.build_message_event(data, "message");
+        let event = self.build_message_event(data, "message", None);
         // 取 worker global 对象指针（Ref 守卫在语句块内消费，不跨 &mut 借用长存）。
         let global_ptr = {
             let session = self.realm.session.borrow();
@@ -439,13 +528,13 @@ mod tests {
         vm
     }
 
-    /// 轮询至 worker 回显一条消息（带截止，防 flaky）。
-    fn poll_until_message(vm: &mut Vm, id: u64) -> Vec<JsValue> {
+    /// 轮询至 worker 上报任意一面邮件（带截止，防 flaky）。
+    fn poll_until_mail(vm: &mut Vm, id: u64) -> WorkerPoll {
         let deadline = Instant::now() + Duration::from_secs(2);
         loop {
-            let messages = vm.poll_worker_messages(id);
-            if !messages.is_empty() || Instant::now() >= deadline {
-                return messages;
+            let poll = vm.poll_worker_messages(id);
+            if !poll.messages.is_empty() || !poll.errors.is_empty() || Instant::now() >= deadline {
+                return poll;
             }
             std::thread::sleep(Duration::from_millis(10));
         }
@@ -463,24 +552,26 @@ mod tests {
         assert_eq!(vm.active_workers(), vec![id], "应有唯一活跃 worker");
 
         vm.worker_post_message(id, MessageValue::Number(42.0)).expect("投递应成功");
-        let messages = poll_until_message(&mut vm, id);
-        assert_eq!(messages.len(), 1, "应回显一条消息");
+        let poll = poll_until_mail(&mut vm, id);
+        assert_eq!(poll.messages.len(), 1, "应回显一条消息");
         // 整数值经 number_to_js 归为 Int 表示。
-        assert_eq!(messages[0], JsValue::int(42), "回显值应为 42");
+        assert_eq!(poll.messages[0], JsValue::int(42), "回显值应为 42");
 
         vm.worker_terminate(id).expect("终止应成功");
         assert!(vm.active_workers().is_empty(), "终止后无活跃 worker");
     }
 
-    /// 编译失败不 panic：worker 上报错误串，主线程可经轮询取回。
+    /// 编译失败不 panic：worker 经错误面上报错误串，主线程可经轮询取回。
     #[test]
     fn worker_script_compile_failure_reports_error() {
         let mut vm = vm_with_compiler();
 
         let id = vm.spawn_worker("function { 语法错误").expect("worker 应派生成功");
-        let messages = poll_until_message(&mut vm, id);
-        assert!(!messages.is_empty(), "编译失败应上报错误串");
-        assert!(messages[0].is_string(), "错误串应为字符串值");
+        let poll = poll_until_mail(&mut vm, id);
+        assert!(!poll.errors.is_empty(), "编译失败应经错误面上报错误串");
+        assert!(!poll.errors[0].is_empty(), "错误串应非空");
+        // 编译失败不再产数据面消息（错误串不伪装成数据）。
+        assert!(poll.messages.is_empty(), "编译失败不应产数据面消息");
 
         vm.worker_terminate(id).expect("终止应成功");
     }
@@ -502,10 +593,10 @@ mod tests {
         vm.worker_post_message(id_a, MessageValue::Number(1.0)).expect("投递 A 应成功");
         vm.worker_post_message(id_b, MessageValue::Number(2.0)).expect("投递 B 应成功");
 
-        let messages_a = poll_until_message(&mut vm, id_a);
-        assert_eq!(messages_a[0], JsValue::int(1), "A 应回显 1");
-        let messages_b = poll_until_message(&mut vm, id_b);
-        assert_eq!(messages_b[0], JsValue::int(2), "B 应回显 2");
+        let poll_a = poll_until_mail(&mut vm, id_a);
+        assert_eq!(poll_a.messages[0], JsValue::int(1), "A 应回显 1");
+        let poll_b = poll_until_mail(&mut vm, id_b);
+        assert_eq!(poll_b.messages[0], JsValue::int(2), "B 应回显 2");
 
         vm.shutdown_workers();
         assert!(vm.active_workers().is_empty(), "shutdown 后无活跃 worker");
@@ -647,6 +738,121 @@ mod tests {
         );
         // worker 仍存活（postMessage 失败不影响 worker）。
         assert!(!vm.active_workers().is_empty(), "worker 应仍存活");
+
+        vm.shutdown_workers();
+        let _ = std::fs::remove_file(&worker_path);
+    }
+
+    /// 端到端：worker 脚本编译失败，主线程 onerror 被调用（message 非空、type 为 "error"）。
+    #[test]
+    fn worker_e2e_onerror_compile_failure() {
+        let mut vm = vm_with_compiler();
+
+        // worker 脚本：语法错误（编译失败）。
+        let worker_path = write_worker_script("function { 语法错误");
+        // 主脚本：建 Worker、设 onerror，记录 e.message 与 e.type 是否为 "error"。
+        let main_script = format!(
+            "var w = new Worker('{}'); w.onerror = function(e) {{ globalThis.err = e.message; globalThis.errIsErrorType = (e.type === \"error\"); }};",
+            worker_path.display()
+        );
+        vm.run(&Arc::new(compile_script(&main_script))).expect("主脚本应运行");
+
+        // 事件循环轮询至 globalThis.err 为字符串（带截止，防 flaky）。
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            vm.deliver_worker_messages();
+            vm.cleanup_disconnected_workers();
+            if let Some(v) = global_value_opt(&vm, "err") {
+                if v.is_string() {
+                    break;
+                }
+            }
+            if Instant::now() >= deadline {
+                panic!("5 秒内 onerror 未被调用");
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        // message 非空。
+        let err = global_value_opt(&vm, "err").expect("err 应被设置");
+        assert!(err.is_string(), "err 应为字符串");
+        let err_text = vm.lookup_str(err).expect("err 应可读");
+        assert!(!err_text.is_empty(), "err 应非空");
+        // type 为 "error"。
+        assert_eq!(
+            global_value_opt(&vm, "errIsErrorType"),
+            Some(JsValue::bool(true)),
+            "事件 type 应为 \"error\""
+        );
+
+        vm.shutdown_workers();
+        let _ = std::fs::remove_file(&worker_path);
+    }
+
+    /// 端到端：worker 脚本顶层 throw（执行失败），主线程 onerror 被调用（message 含错误文本）。
+    #[test]
+    fn worker_e2e_onerror_runtime_failure() {
+        let mut vm = vm_with_compiler();
+
+        // worker 脚本：顶层 throw（执行失败）。
+        let worker_path = write_worker_script("throw new Error('boom');");
+        // 主脚本：建 Worker、设 onerror，记录 e.message。
+        let main_script = format!(
+            "var w = new Worker('{}'); w.onerror = function(e) {{ globalThis.err = e.message; }};",
+            worker_path.display()
+        );
+        vm.run(&Arc::new(compile_script(&main_script))).expect("主脚本应运行");
+
+        // 事件循环轮询至 globalThis.err 为字符串（带截止，防 flaky）。
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            vm.deliver_worker_messages();
+            vm.cleanup_disconnected_workers();
+            if let Some(v) = global_value_opt(&vm, "err") {
+                if v.is_string() {
+                    break;
+                }
+            }
+            if Instant::now() >= deadline {
+                panic!("5 秒内 onerror 未被调用");
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        // message 含错误文本 "boom"。
+        let err = global_value_opt(&vm, "err").expect("err 应被设置");
+        let err_text = vm.lookup_str(err).expect("err 应可读");
+        assert!(err_text.contains("boom"), "err 应含错误文本 \"boom\"，实际为 {err_text}");
+
+        vm.shutdown_workers();
+        let _ = std::fs::remove_file(&worker_path);
+    }
+
+    /// onmessageerror 交付辅助：无自然触发，直接单测交付辅助（handler 被调用、
+    /// 事件 type 为 "messageerror"）。不钉触发可达性（当前架构不可达）。
+    #[test]
+    fn onmessageerror_delivery_helper() {
+        let mut vm = vm_with_compiler();
+
+        // 建 Worker 对象、设 onmessageerror handler（记录 e.message 与 e.type）。
+        let worker_path = write_worker_script("1");
+        let main_script = format!(
+            "var w = new Worker('{}'); w.onmessageerror = function(e) {{ globalThis.me = e.message; globalThis.meIsMessageErrorType = (e.type === \"messageerror\"); }}; globalThis.w = w;",
+            worker_path.display()
+        );
+        vm.run(&Arc::new(compile_script(&main_script))).expect("主脚本应运行");
+
+        // 取 Worker 对象，直接调交付辅助（模拟 rehydrate 失败）。
+        let worker_obj = global_value_opt(&vm, "w").expect("w 应被设置");
+        vm.deliver_error_event(worker_obj, "onmessageerror", "messageerror", "合成 rehydrate 失败");
+
+        // 断言 handler 被调用、message 为错误串、type 为 "messageerror"。
+        let me = global_value_opt(&vm, "me").expect("me 应被设置");
+        let me_text = vm.lookup_str(me).expect("me 应可读");
+        assert_eq!(me_text, "合成 rehydrate 失败", "message 应为错误串");
+        assert_eq!(
+            global_value_opt(&vm, "meIsMessageErrorType"),
+            Some(JsValue::bool(true)),
+            "事件 type 应为 \"messageerror\""
+        );
 
         vm.shutdown_workers();
         let _ = std::fs::remove_file(&worker_path);

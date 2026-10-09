@@ -14,7 +14,7 @@
 
 use std::cell::{Cell, RefCell};
 
-use oxide_builtins::message_value::{detach_message, MessageValue};
+use oxide_builtins::message_value::detach_message;
 use oxide_kernel::message_queue::Sender;
 use oxide_kernel::shape_forge::EMPTY_SHAPE_ID;
 use oxide_runtime_api::{NativeResult, ProtoKind, VmHost};
@@ -23,10 +23,12 @@ use oxide_types::value::JsValue;
 
 use crate::vm::Vm;
 
+use super::WorkerOutMail;
+
 // worker → 主线程输出通道（worker realm 专用，`worker_event_loop` 建 Vm 后注入）。
 // thread-local：worker 线程独占，不跨线程共享。主 realm 的 Vm 不注入（恒 `None`）。
 thread_local! {
-    static WORKER_OUT_TX: RefCell<Option<Sender<MessageValue>>> = const { RefCell::new(None) };
+    static WORKER_OUT_TX: RefCell<Option<Sender<WorkerOutMail>>> = const { RefCell::new(None) };
 }
 
 // worker 自关停请求位（`self.close()` 置位，事件循环每轮检查）。
@@ -38,7 +40,7 @@ thread_local! {
 ///
 /// # 副作用
 /// - 覆盖本线程的 `WORKER_OUT_TX`（worker 线程内恰好一次）。
-pub(crate) fn set_worker_out_tx(tx: Sender<MessageValue>) {
+pub(crate) fn set_worker_out_tx(tx: Sender<WorkerOutMail>) {
     WORKER_OUT_TX.with(|slot| *slot.borrow_mut() = Some(tx));
 }
 
@@ -256,7 +258,7 @@ pub(crate) fn self_post_message(vm: &mut Vm, args: &[u8]) -> NativeResult {
     };
     WORKER_OUT_TX.with(|slot| {
         if let Some(tx) = slot.borrow().as_ref() {
-            let _ = tx.send(mv);
+            let _ = tx.send(WorkerOutMail::Message(mv));
         }
     });
     NativeResult::Ok(JsValue::undefined())
@@ -283,23 +285,29 @@ pub(crate) fn self_location(vm: &mut Vm, _args: &[u8]) -> NativeResult {
     NativeResult::Ok(vm.new_string(""))
 }
 
-/// `MessageEvent` 构造辅助：建 MessageEvent 对象（`data` 属性 + `type` 属性）。
+/// 事件构造辅助：建事件对象（`data` + `type` + `message` 属性）。
+///
+/// 消息事件与错误事件同型，共用本辅助：消息事件 `message` 为 undefined，
+/// 错误事件 `data` 为 undefined、`message` 为错误串。
 ///
 /// # 步骤
 /// 1. 建 PLAIN 对象（`[[Prototype]]` → `%Object.prototype%`）。
 /// 2. define `data` 属性（rehydrate 后的消息值，可枚举）。
 /// 3. define `type` 属性（事件类型串，可枚举）。
-/// 4. 返回对象。
+/// 4. define `message` 属性（错误消息串，可枚举；消息事件为 undefined）。
+/// 5. 返回对象。
 ///
 /// # 边界与前提
 /// - `data` 是 rehydrate 后的消息值（GC 边，经 `alloc_object` 入对象表即成根）。
 /// - `type` 是事件类型串（`"message"`/`"error"`/`"messageerror"`）。
+/// - `message` 是错误消息串（仅错误事件定义，消息事件为 undefined）。
 ///
 /// # 副作用
-/// - 新建一个 MessageEvent 对象（经 `alloc_object` 入对象表）。
+/// - 新建一个事件对象（经 `alloc_object` 入对象表）。
 pub(crate) fn message_event_constructor(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let data_val = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
     let type_val = if args.len() > 2 { vm.reg(args[2]) } else { JsValue::undefined() };
+    let message_val = if args.len() > 3 { vm.reg(args[3]) } else { JsValue::undefined() };
 
     let object_proto = JsValue::from_js_object(vm.builtin_proto(ProtoKind::ObjectProto));
     let obj = JsObject::new_empty(EMPTY_SHAPE_ID, object_proto);
@@ -311,6 +319,8 @@ pub(crate) fn message_event_constructor(vm: &mut Vm, args: &[u8]) -> NativeResul
     let _ = vm.define_data_property(event_obj, si_data, data_val, PropAttributes::DEFAULT_DATA);
     let si_type = vm.perm_intern("type");
     let _ = vm.define_data_property(event_obj, si_type, type_val, PropAttributes::DEFAULT_DATA);
+    let si_message = vm.perm_intern("message");
+    let _ = vm.define_data_property(event_obj, si_message, message_val, PropAttributes::DEFAULT_DATA);
 
     NativeResult::Ok(JsValue::from_js_object(ptr))
 }
