@@ -408,4 +408,25 @@ pub trait VmHost {
     /// 唤醒 (缓冲, 偏移) 处登记的前 `count` 个 waiter（`<= 0` 不唤醒、`+Inf`
     /// 全唤醒），逐个以 "ok" 结算（反应入队随 run 收尾 drain）；返回唤醒数。
     fn atomics_wake_waiters(&mut self, buffer: *mut JsObject, offset: usize, count: f64) -> usize;
+
+    // BroadcastChannel 注册表（per-realm 弱引用）
+    /// 把通道对象指针按通道名登记进 per-realm 注册表（弱引用，不保活）。
+    ///
+    /// # 边界与前提
+    /// - `port` 为构造器登记后的 session 对象指针；同一指针的重复登记由
+    ///   调用方保证不发生。
+    /// # 副作用
+    /// - 写注册表（内部可变）；同名通道追加到该名下。
+    fn bc_register(&self, name: &str, port: *mut JsObject);
+    /// 从注册表移除通道对象指针（close 注销）；指针不在表内时 no-op。
+    ///
+    /// # 副作用
+    /// - 写注册表（内部可变）；幂等，重复注销不报错。
+    fn bc_unregister(&self, name: &str, port: *mut JsObject);
+    /// 查同名通道对象指针列表（返回克隆；无匹配为空列表）。
+    ///
+    /// # 边界与前提
+    /// - 列表元素为弱引用裸指针，调用方不得跨用户调用持有（GC 可释放
+    ///   通道对象，须在下一次使用前重新查表校验）。
+    fn bc_lookup(&self, name: &str) -> Vec<*mut JsObject>;
 }

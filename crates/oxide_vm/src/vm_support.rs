@@ -466,6 +466,9 @@ impl Vm {
         // 否则下次命中返回悬垂指针。
         self.number_to_string_cache_keys = [0u64; 16];
         self.number_to_string_cache_vals = [JsValue::undefined(); 16];
+        // BroadcastChannel 注册表持 session 对象裸指针：teardown 释放全部
+        // session 对象前须清表，否则残留悬垂指针。
+        self.realm.gc.borrow_mut().broadcast_channels.clear();
         self.realm.teardown_session_heap_data();
         self.realm.gc.borrow_mut().session_bytes_allocated = 0;
         self.realm.gc.borrow_mut().session_bytes_peak = 0;

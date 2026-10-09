@@ -357,4 +357,27 @@ impl oxide_runtime_api::VmHost for Vm {
     fn atomics_wake_waiters(&mut self, buffer: *mut JsObject, offset: usize, count: f64) -> usize {
         self.atomics_wake_waiters(buffer, offset, count)
     }
+    fn bc_register(&self, name: &str, port: *mut JsObject) {
+        self.realm
+            .gc
+            .borrow_mut()
+            .broadcast_channels
+            .entry(name.to_string())
+            .or_default()
+            .push(port);
+    }
+    fn bc_unregister(&self, name: &str, port: *mut JsObject) {
+        if let Some(v) = self.realm.gc.borrow_mut().broadcast_channels.get_mut(name) {
+            v.retain(|p| *p != port);
+        }
+    }
+    fn bc_lookup(&self, name: &str) -> Vec<*mut JsObject> {
+        self.realm
+            .gc
+            .borrow()
+            .broadcast_channels
+            .get(name)
+            .cloned()
+            .unwrap_or_default()
+    }
 }

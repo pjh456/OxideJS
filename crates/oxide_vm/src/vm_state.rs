@@ -63,8 +63,7 @@ pub(crate) struct GcState {
     pub(crate) gc_pressure_mode: bool,
     /// BroadcastChannel per-realm 弱引用注册表：通道名 → 通道对象裸指针列表
     /// （弱引用，不保活）。构造器分配后登记、close 注销、GC sweep 按 mark 位
-    /// 剪枝。当前仅声明，不填不读（登记与剪枝由后续任务接线）。
-    #[allow(dead_code)]
+    /// 剪枝、full_reset 随 session 对象一并清表。
     pub(crate) broadcast_channels: HashMap<String, Vec<*mut JsObject>>,
 }
 
