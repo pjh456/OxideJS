@@ -45,5 +45,7 @@ mod vm_props;
 mod vm_runtime;
 mod vm_state;
 mod vm_support;
+/// worker 线程基础设施：WorkerMail 消息通道、WorkerHandle 句柄与 worker 事件循环。
+pub mod worker;
 /// JS 值类型再导出（来自 `oxide_types`），作为本 crate 公共 API 的一部分。
 pub use oxide_types::value::JsValue;

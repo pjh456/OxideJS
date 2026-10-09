@@ -93,6 +93,20 @@ impl<T> Receiver<T> {
         })
     }
 
+    /// 带超时接收：在 `duration` 内返回一个值，否则返回超时错误。
+    ///
+    /// # 边界与前提
+    /// - `duration` 内无值到达且队列未断开时返回 `Err(Timeout)`。
+    /// - 队列已断开（全部发送端 drop）且无值可取时同样返回 `Err(Timeout)`
+    ///   （与 std `recv_timeout` 语义一致，不区分超时与断开；断开判定经
+    ///   [`Receiver::is_disconnected`] 单独查询）。
+    ///
+    /// # 注意事项
+    /// - 透传 std `mpsc::Receiver::recv_timeout` 语义。
+    pub fn recv_timeout(&self, duration: std::time::Duration) -> Result<T, Timeout> {
+        self.inner.recv_timeout(duration).map_err(|_| Timeout)
+    }
+
     /// 队列是否已断开（全部发送端已 drop）。
     ///
     /// 与 std 断开语义一致：不取决于队列是否还有待取值。断开是单向状态：
@@ -116,6 +130,9 @@ pub enum TryRecvError {
     Disconnected,
 }
 
+/// 带超时接收失败：指定时间内无值到达且队列未断开（或已断开且无值可取）。
+pub struct Timeout;
+
 impl<T: std::fmt::Debug> std::fmt::Debug for SendError<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_tuple("SendError").field(&self.0).finish()
@@ -134,6 +151,12 @@ impl std::fmt::Debug for TryRecvError {
             TryRecvError::Empty => write!(f, "TryRecvError::Empty"),
             TryRecvError::Disconnected => write!(f, "TryRecvError::Disconnected"),
         }
+    }
+}
+
+impl std::fmt::Debug for Timeout {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Timeout")
     }
 }
 
@@ -158,9 +181,16 @@ impl std::fmt::Display for TryRecvError {
     }
 }
 
+impl std::fmt::Display for Timeout {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "接收超时")
+    }
+}
+
 impl<T> std::error::Error for SendError<T> where T: std::fmt::Debug {}
 impl std::error::Error for RecvError {}
 impl std::error::Error for TryRecvError {}
+impl std::error::Error for Timeout {}
 
 #[cfg(test)]
 mod tests {
@@ -253,6 +283,27 @@ mod tests {
         drop(rx);
         let err = tx.send(7).unwrap_err();
         assert_eq!(err.0, 7);
+    }
+
+    #[test]
+    fn recv_timeout_returns_value_in_time() {
+        let (tx, rx) = channel::<i32>();
+        tx.send(42).unwrap();
+        assert_eq!(rx.recv_timeout(std::time::Duration::from_millis(50)).unwrap(), 42);
+    }
+
+    #[test]
+    fn recv_timeout_empty_returns_timeout() {
+        let (_tx, rx) = channel::<i32>();
+        assert!(rx.recv_timeout(std::time::Duration::from_millis(50)).is_err());
+    }
+
+    #[test]
+    fn recv_timeout_disconnected_returns_timeout() {
+        let (tx, rx) = channel::<i32>();
+        drop(tx);
+        assert!(rx.recv_timeout(std::time::Duration::from_millis(50)).is_err());
+        assert!(rx.is_disconnected());
     }
 
     #[test]

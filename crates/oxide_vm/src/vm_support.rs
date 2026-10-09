@@ -191,6 +191,8 @@ impl Vm {
             trace_instructions: false,
             pc_watch: None,
             max_steps_override: None,
+            worker_registry: std::collections::HashMap::new(),
+            worker_next_id: 0,
         };
         vm.init_generator_intrinsics();
         vm.init_promise_intrinsics();
@@ -348,6 +350,8 @@ impl Vm {
             trace_instructions: false,
             pc_watch: None,
             max_steps_override: None,
+            worker_registry: std::collections::HashMap::new(),
+            worker_next_id: 0,
         };
         vm.init_generator_intrinsics();
         vm.init_promise_intrinsics();

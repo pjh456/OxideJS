@@ -384,10 +384,19 @@ pub struct Vm {
     /// 池回收的 `full_reset` 路径清位；`run()` 入口的 `clear_execution_state`
     /// 刻意不清（清在那会把执行路径刚设的覆盖抹掉）。
     pub(crate) max_steps_override: Option<u64>,
+    /// worker 注册表：键 = worker 编号，值 = `WorkerHandle`（主线程 → worker
+    /// 通道 + worker → 主线程通道 + OS 线程句柄）。worker 对象被 GC 不终止
+    /// worker 线程，条目孤儿至 `shutdown_workers()`（`Drop for Vm` 调用）。
+    pub(crate) worker_registry: std::collections::HashMap<u64, crate::worker::WorkerHandle>,
+    /// 下一个 worker 编号（单调递增，首个为 0）。
+    pub(crate) worker_next_id: u64,
 }
 
 impl Drop for Vm {
     fn drop(&mut self) {
+        // 先终止全部 worker 并 join（防线程泄漏）：worker 线程各持自有 Vm，
+        // 其收尾独立于本 Vm，join 后线程不再引用本 Vm 的 kernel_core。
+        self.shutdown_workers();
         // 边界守卫计数：与构造器登记恰好配对（Rust 所有权保证恰好一次）。
         self.kernel_core.note_vm_ended();
         // 活跃 for-in / for-of 迭代器是 per-VM 执行态：收尾路径逐条释放，
@@ -422,6 +431,13 @@ impl Drop for Vm {
 // realm 字段为 Arc<Realm>：Realm 的 session 堆不跨线程共享，Arc 引用计数为
 // 原子操作，跨线程移动 Arc 安全；Realm 只经 Vm（单线程 &mut）访问，
 // 其非 Sync 性对 Send 无碍。
+//
+// 5. worker_registry 字段（HashMap<u64, WorkerHandle>）不持 session 堆指针：
+//    WorkerHandle 的 tx（Sender<WorkerMail>）与 handle（JoinHandle<()>）均 Send，
+//    rx_out（Receiver<MessageValue>）虽非 Send 但只在主线程（Vm 属主线程）经
+//    poll_worker_messages 访问、不跨线程移动；MessageValue 是 Send 中间表示
+//    （无 realm 局部指针）。跨线程移动 Vm 时 worker_registry 整体迁移，
+//    其中无指向 session 堆的裸指针，不引入别名。
 unsafe impl Send for Vm {}
 
 impl Vm {
