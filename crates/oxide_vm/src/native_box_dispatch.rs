@@ -1,7 +1,7 @@
 //! native 载荷家族的单点分类与每家族边函数引用（家族表）。
 //!
 //! 分类是复合谓词：header 位（map/set/module_ns）优先于 `type_tag`，
-//! 两维互斥、一个对象至多归入一个家族。tag 维显式枚举全部 0..=33，
+//! 两维互斥、一个对象至多归入一个家族。tag 维显式枚举全部 0..=34，
 //! 未登记 tag panic。
 //!
 //! 关键约定：
@@ -16,7 +16,7 @@ use oxide_types::value::JsValue;
 
 /// native 载荷家族。
 ///
-/// 14 个 native 家族 + 空家族；空家族是无 native 盒类型的显式归类结果。
+/// 15 个 native 家族 + 空家族；空家族是无 native 盒类型的显式归类结果。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum NativeBoxFamily {
     /// 无 native 载荷盒。
@@ -51,6 +51,8 @@ pub(crate) enum NativeBoxFamily {
     RegExp,
     /// MessagePort 端口对象（tag 33，mpsc 双端与对端端口边）。
     MessagePort,
+    /// BroadcastChannel 通道对象（tag 34，mpsc 发送/接收对与通道名，无对象边）。
+    BroadcastChannel,
 }
 
 /// 一个家族的边操作集（每家族函数引用，单一注册面）。
@@ -83,7 +85,7 @@ pub(crate) fn classify(obj: &JsObject) -> NativeBoxFamily {
 /// 按类型 tag 分类 native 载荷家族。
 ///
 /// # 边界与前提
-/// - 0..=33 全 tag 显式枚举；未登记 tag（34 及以上）panic。
+/// - 0..=34 全 tag 显式枚举；未登记 tag（35 及以上）panic。
 pub(crate) fn classify_by_tag(tag: u8) -> NativeBoxFamily {
     match tag {
         JsObject::OBJ_TYPE_ARRAY_BUFFER => NativeBoxFamily::ArrayBuffer,
@@ -121,6 +123,7 @@ pub(crate) fn classify_by_tag(tag: u8) -> NativeBoxFamily {
         JsObject::OBJ_TYPE_HTML_DDA => NativeBoxFamily::None,
         JsObject::OBJ_TYPE_RAW_JSON => NativeBoxFamily::None,
         JsObject::OBJ_TYPE_MESSAGE_PORT => NativeBoxFamily::MessagePort,
+        JsObject::OBJ_TYPE_BROADCAST_CHANNEL => NativeBoxFamily::BroadcastChannel,
         _ => panic!("unregistered type tag: {tag}"),
     }
 }
@@ -211,6 +214,13 @@ pub(crate) fn ops_for(family: NativeBoxFamily) -> NativeBoxOps {
             string_edges: None,
             cell_edges: None,
         },
+        // BroadcastChannel 载荷盒：无对象边（mpsc 非 GC 边、通道名为 Rust String），
+        // 三边函数全空，仅 size/drop 链消费。
+        NativeBoxFamily::BroadcastChannel => NativeBoxOps {
+            object_edges: None,
+            string_edges: None,
+            cell_edges: None,
+        },
     }
 }
 
@@ -241,13 +251,14 @@ mod tests {
             JsObject::OBJ_TYPE_SHARED_ARRAY_BUFFER => NativeBoxFamily::SharedArrayBuffer,
             JsObject::OBJ_TYPE_REGEXP | JsObject::OBJ_TYPE_REGEX_STUB => NativeBoxFamily::RegExp,
             JsObject::OBJ_TYPE_MESSAGE_PORT => NativeBoxFamily::MessagePort,
+            JsObject::OBJ_TYPE_BROADCAST_CHANNEL => NativeBoxFamily::BroadcastChannel,
             _ => NativeBoxFamily::None,
         }
     }
 
     #[test]
     fn tag_dimension_every_tag_hits_exactly_one_family() {
-        for tag in 0..=33u8 {
+        for tag in 0..=34u8 {
             let obj = obj_with_tag(tag);
             let family = classify(&obj);
             assert_eq!(family, expected_family_for_tag(tag), "tag {tag} 家族不一致");
@@ -281,7 +292,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "unregistered type tag")]
     fn unregistered_tag_panics() {
-        let obj = obj_with_tag(34);
+        let obj = obj_with_tag(35);
         classify(&obj);
     }
 }

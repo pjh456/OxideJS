@@ -223,6 +223,10 @@ impl JsObject {
     /// MessagePort 对象：mpsc 双端（发往对端 / 收自对端）与对端端口裸指针
     /// 存于 `native_fn` 槽的载荷盒（`MessagePortInner`），对端端口为双向 GC 边。
     pub const OBJ_TYPE_MESSAGE_PORT: u8 = 33;
+    /// BroadcastChannel 对象：mpsc 发送/接收对与通道名存于 `native_fn` 槽的
+    /// 载荷盒（`BroadcastChannelInner`），无对象边（mpsc 非 GC 边、通道名为
+    /// Rust `String`）。
+    pub const OBJ_TYPE_BROADCAST_CHANNEL: u8 = 34;
     /// `is_session_epoch` 字段中的 session 标记位。
     pub const SESSION_EPOCH_BIT: u8 = 0x01;
     /// `is_session_epoch` 字段中的 GC 标记位。
@@ -304,6 +308,11 @@ impl JsObject {
     #[inline]
     pub fn is_message_port(&self) -> bool {
         self.type_tag == Self::OBJ_TYPE_MESSAGE_PORT
+    }
+    /// 是否 BroadcastChannel 对象（`native_fn` 槽存 mpsc 发送/接收对与通道名）。
+    #[inline]
+    pub fn is_broadcast_channel(&self) -> bool {
+        self.type_tag == Self::OBJ_TYPE_BROADCAST_CHANNEL
     }
     /// 是否 DataView 对象。
     #[inline]

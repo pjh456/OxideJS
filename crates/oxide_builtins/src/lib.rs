@@ -18,6 +18,8 @@ pub mod atomics;
 pub mod bigint;
 /// Boolean 内置对象实现（constructor 与 prototype 的 valueOf/toString）。
 pub mod boolean;
+/// BroadcastChannel 载荷盒（mpsc 发送/接收对与通道名，GC size/drop 两自由函数）。
+pub mod broadcast_channel;
 /// builtins 层日志宏（`builtins_error`/`builtins_info` 等），target 为 `oxide::builtins`。
 pub mod builtins_log;
 /// Console 全局对象实现（log/warn/error/info/debug/trace 方法）。
