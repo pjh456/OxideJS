@@ -286,6 +286,9 @@ impl Vm {
                 OpCode::MAKE_CELL_FRESH => {
                     self.dispatch_make_cell_fresh(rd, instr)?;
                 }
+                OpCode::DISPOSE_REGISTER => {
+                    self.dispatch_dispose_register(rd, a);
+                }
                 OpCode::CELL_GET => {
                     self.dispatch_cell_get(rd, a, b)?;
                 }

@@ -1143,4 +1143,23 @@ mod tests {
         vm.drain_microtasks();
         assert!(vm.job_queue.is_empty());
     }
+
+    #[test]
+    fn using_declaration_registers_dispose_stack() {
+        // using 声明经 DISPOSE_REGISTER 把资源值压入释放栈；run 边界（下次 run
+        // 入口）清栈，上一 run 的残留条目不得跨 run 可见。
+        let mut vm = Vm::new();
+        let module = Arc::new(compile("function f() { using x = { a: 1 }; } f();"));
+        vm.run(&module).expect("run");
+        assert_eq!(vm.dispose_stack.len(), 1, "using 声明应登记一个资源值");
+        assert!(vm.dispose_stack[0].is_object(), "登记值应为资源对象");
+
+        // 二次 run 入口清栈后重新登记：残留条目不跨 run 存活。
+        vm.run(&module).expect("run2");
+        assert_eq!(vm.dispose_stack.len(), 1, "二次 run 应恰好登记一条新条目");
+
+        // 执行状态清空同样清释放栈。
+        vm.clear_execution_state();
+        assert!(vm.dispose_stack.is_empty(), "执行状态清空应清空释放栈");
+    }
 }

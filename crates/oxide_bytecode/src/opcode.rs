@@ -297,6 +297,12 @@ define_opcodes! {
     FOR_IN_DONE = 0x2B => "FOR_IN_DONE",
         def = Some(SlotSpec::Slot(Slot::Rd)), uses = [],
         pure = false, jump = false, term = false, ic = false,
+    // using/await using 声明登记：rd = 资源值寄存器，a = 释放提示（0 = 同步、1 = 异步）。
+    // 无寄存器 def（值压入 VM 释放栈，释放时机由作用域出口点决定）；
+    // pure = false 防 DCE 删除压栈副作用。
+    DISPOSE_REGISTER = 0x2C => "DISPOSE_REGISTER",
+        def = None, uses = [SlotSpec::Slot(Slot::Rd)],
+        pure = false, jump = false, term = false, ic = false,
     FOR_IN_CLEANUP = 0x2D => "FOR_IN_CLEANUP",
         def = None, uses = [],
         pure = false, jump = false, term = false, ic = false,

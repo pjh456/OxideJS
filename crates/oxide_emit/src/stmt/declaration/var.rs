@@ -43,6 +43,17 @@ impl Emitter {
                         }
                     }
                 }
+                // using/await using 声明登记：把资源值压入 VM 释放栈（释放时机由
+                // 作用域出口点决定，本指令只登记）。a 槽为释放提示：0 = 同步、1 = 异步。
+                if matches!(decl.kind, VariableDeclarationKind::Using | VariableDeclarationKind::AwaitUsing) {
+                    let hint = u16::from(matches!(decl.kind, VariableDeclarationKind::AwaitUsing));
+                    ctx.inst(Inst::new(
+                        OpCode::DISPOSE_REGISTER,
+                        Operand::Reg(val_reg),
+                        Operand::Imm(hint),
+                        Operand::None,
+                    ));
+                }
             } else {
                 let BindingPattern::BindingIdentifier(bi) = &d.id else {
                     return Err("destructuring declaration requires an initializer".into());

@@ -649,6 +649,18 @@ impl Vm {
         self.iters.pop_for_in();
     }
 
+    /// using/await using 声明登记：把资源值（rd 槽）压入释放栈。
+    ///
+    /// a 槽是释放提示（0 = 同步、1 = 异步），登记期原样保留供释放点分派；
+    /// 本指令只登记，释放时机由作用域出口点决定。
+    ///
+    /// # 副作用
+    /// - 释放栈增长（栈内 JsValue 是 GC 根，run 边界清空）。
+    pub(crate) fn dispatch_dispose_register(&mut self, rd: usize, a: usize) {
+        vm_trace!("DISPOSE_REGISTER rd={} hint={}", rd, a);
+        self.dispose_stack.push(self.regs[rd]);
+    }
+
     pub(crate) fn dispatch_for_of_init(&mut self, a: usize) -> Result<(), String> {
         vm_trace!("FOR_OF_INIT r{}={:?}", a, self.regs[a]);
         let iterable = self.regs[a];

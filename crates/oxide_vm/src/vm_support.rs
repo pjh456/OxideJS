@@ -130,6 +130,7 @@ impl Vm {
             saved_immutables_stack: Vec::new(),
             save_stack: Vec::new(),
             spill_stack: Vec::new(),
+            dispose_stack: Vec::new(),
             native_overflow_base: 0,
             native_overflow_count: 0,
             try_stack: Vec::new(),
@@ -291,6 +292,7 @@ impl Vm {
             saved_immutables_stack: Vec::new(),
             save_stack: Vec::new(),
             spill_stack: Vec::new(),
+            dispose_stack: Vec::new(),
             native_overflow_base: 0,
             native_overflow_count: 0,
             try_stack: Vec::new(),
@@ -515,6 +517,9 @@ impl Vm {
         self.saved_immutables_stack.clear();
         self.save_stack.clear();
         self.spill_stack.clear();
+        // 释放栈条目持资源值（session 对象指针）：跨 run/reset 残留会在下一 run
+        // 被误释放或悬垂，随执行状态一并清空。
+        self.dispose_stack.clear();
         self.native_overflow_base = 0;
         self.native_overflow_count = 0;
         // native pack 实参区上界与溢出描述符同构：仅一次 native 调用期间有效，
