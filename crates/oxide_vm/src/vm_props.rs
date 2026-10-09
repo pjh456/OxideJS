@@ -2057,4 +2057,29 @@ mod tests {
         let ns = unsafe { &*ns_ptr };
         assert!(!oxide_builtins::module::deferred_state(ns).unwrap().evaluated, "symbol-like 键不应触发求值");
     }
+
+    #[test]
+    fn inline_bytecode_body_catch_captures_native_throw() {
+        let (mut vm, _fn_val) = deferred_vm_with_function();
+        // 字节码函数：try 体内调 native（JSON.parse 抛 SyntaxError），catch 捕获原值。
+        // 经 call_function_sync（inline 路径，native_call_depth > 0）调用，钉住
+        // raise_call_error 深度 >0 物化 + 内联体内 try 处理器捕获路径。
+        let f = vm
+            .create_dynamic_function(&[], "try { JSON.parse('not json'); } catch (e) { return e; }", false, false)
+            .expect("create function");
+        let result = vm.call_function_sync(f, JsValue::undefined(), &[]).expect("f 应正常返回");
+        // 捕获值应为原 SyntaxError 对象（物化后由体内 catch 捕获，非空/非 undefined）。
+        assert!(result.is_object(), "捕获值应为错误对象");
+        let err_ptr = result.as_js_object_ptr();
+        assert!(!err_ptr.is_null());
+        let err = unsafe { &*err_ptr };
+        let name_si = vm.kernel_core.perm_interner().intern("name").0;
+        let name = vm.ordinary_get(err, name_si, result).expect("read name");
+        let expected = JsValue::perm_string(
+            vm.kernel_core
+                .perm_interner()
+                .string_ptr(vm.kernel_core.perm_interner().intern("SyntaxError").0),
+        );
+        assert_eq!(name, expected, "捕获值应为 SyntaxError");
+    }
 }

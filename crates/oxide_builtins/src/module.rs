@@ -1175,4 +1175,50 @@ mod tests {
         let state = deferred_state(ns_obj).expect("deferred state 应存活");
         assert_eq!(state.error.unwrap().as_js_object_ptr(), err_ptr, "error 指针应稳定");
     }
+
+    #[test]
+    fn deferred_ns_read_target_falls_back_for_non_object_namespace() {
+        let (mut vm, fn_val) = vm_with_function();
+        // 模块函数返回非对象（42）：求值成功后 [[Namespace]] 为非对象值。
+        vm.set_reg(1, fn_val);
+        vm.set_reg(2, JsValue::undefined());
+        let ns_val = module_defer_object(&mut vm, &[0, 1, 2]).unwrap();
+        let ns_ptr = ns_val.as_js_object_ptr();
+
+        // 模拟求值完成：[[Evaluated]] 置真、[[Namespace]] 为非对象值 42。
+        {
+            let ns_obj = unsafe { &*ns_ptr };
+            let state = deferred_state_mut(ns_obj).expect("deferred state 应已安装");
+            state.evaluated = true;
+            state.namespace = JsValue::int(42);
+        }
+
+        // 权威读目标回落对象自身（预注册占位槽），非对象 [[Namespace]] 不作读目标。
+        let ns_obj = unsafe { &*ns_ptr };
+        let target = deferred_ns_read_target(ns_obj);
+        assert!(
+            std::ptr::eq(target as *const JsObject, ns_ptr as *const JsObject),
+            "非对象 [[Namespace]] 应回落对象自身"
+        );
+    }
+
+    #[test]
+    fn deferred_ns_read_target_returns_real_ns_for_object_namespace() {
+        let (mut vm, fn_val) = vm_with_function();
+        // 真实 ns 对象（求值成功且 [[Namespace]] 为对象，mixed 形态）。
+        let real_ns = vm.alloc_object(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()));
+        let real_ns_val = JsValue::from_js_object(real_ns);
+        vm.set_reg(1, fn_val);
+        vm.set_reg(2, real_ns_val);
+        let ns_val = module_defer_object(&mut vm, &[0, 1, 2]).unwrap();
+        let ns_ptr = ns_val.as_js_object_ptr();
+
+        // 权威读目标返回真实 ns（活值与真实槽位在真实 ns 条目表）。
+        let ns_obj = unsafe { &*ns_ptr };
+        let target = deferred_ns_read_target(ns_obj);
+        assert!(
+            std::ptr::eq(target as *const JsObject, real_ns as *const JsObject),
+            "对象 [[Namespace]] 应返回真实 ns"
+        );
+    }
 }
