@@ -723,15 +723,17 @@ impl Vm {
             .iter()
             .filter(|h| h.frame_depth == self.frames.len() && h.finally_pc.is_some())
             .count();
-        // .return()/.throw() 注入时生成器挂起快照中打开的全部迭代器一并逃出
-        // （栈上迭代器属于本生成器），完成恢复处统一关闭。
+        // .return()/.throw() 注入时生成器挂起快照中打开的全部迭代器与资源一并逃出
+        // （栈上迭代器/资源属于本生成器），完成恢复处统一关闭/释放。
         let for_of_count = self.iters.for_of_iters.len();
         let for_in_count = self.iters.for_in_iters.len();
+        let dispose_count = self.dispose_stack.len();
         let completion = crate::vm::Completion::Return {
             value,
             remaining_finally: crossed,
             for_of_count,
             for_in_count,
+            dispose_count,
         };
         if let Some(finally_pc) = self.record_completion(completion) {
             self.pc = finally_pc;

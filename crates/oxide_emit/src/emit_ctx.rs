@@ -50,7 +50,6 @@ pub(crate) struct LoopEntry {
     pub(crate) v_reg: u32,
     /// 循环打开时已打开的释放作用域数（break/continue/return 逃出时据此
     /// 计算需穿越释放的作用域层数）。
-    #[allow(dead_code)]
     pub(crate) dispose_depth_at_open: usize,
 }
 
@@ -88,7 +87,6 @@ pub struct LabelScope {
     /// 标签打开时已打开的 for-in 循环数。
     pub(crate) for_in_depth_at_open: usize,
     /// 标签打开时已打开的释放作用域数（break 逃出时据此计算需穿越释放的层数）。
-    #[allow(dead_code)]
     pub(crate) dispose_depth_at_open: usize,
     /// 标签目标出口结果寄存器：迭代标签取所包裹循环的 `v_reg`；非迭代标签仅当
     /// 体含指向本标签的 break 时分配（体正常完成回写、break 携值写入）。
@@ -104,7 +102,6 @@ pub(crate) struct SwitchEntry {
     pub(crate) for_of_depth_at_open: usize,
     pub(crate) for_in_depth_at_open: usize,
     /// switch 打开时已打开的释放作用域数（switch 内 break 逃出时据此计算穿越层数）。
-    #[allow(dead_code)]
     pub(crate) dispose_depth_at_open: usize,
     pub(crate) result_reg: u32,
 }

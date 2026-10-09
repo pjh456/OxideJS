@@ -509,18 +509,18 @@ impl Emitter {
         }
         if is_expression_body {
             if let Some(reg) = last_result_reg {
-                ctx.inst(Inst::ret(Operand::Reg(reg), 0, 0));
+                ctx.inst(Inst::ret(Operand::Reg(reg), 0, 0, 0));
             } else {
                 let undef_idx = ctx.add_constant(Constant::Undefined);
                 let undef_reg = ctx.alloc_reg();
                 ctx.inst(Inst::load_const(Operand::Reg(undef_reg), undef_idx));
-                ctx.inst(Inst::ret(Operand::Reg(undef_reg), 0, 0));
+                ctx.inst(Inst::ret(Operand::Reg(undef_reg), 0, 0, 0));
             }
         } else {
             let undef_idx = ctx.add_constant(Constant::Undefined);
             let undef_reg = ctx.alloc_reg();
             ctx.inst(Inst::load_const(Operand::Reg(undef_reg), undef_idx));
-            ctx.inst(Inst::ret(Operand::Reg(undef_reg), 0, 0));
+            ctx.inst(Inst::ret(Operand::Reg(undef_reg), 0, 0, 0));
         }
 
         // 调用契约参数段只含固定形参：rest 是函数体内普通变量，不在 VM 实参传递区。

@@ -631,7 +631,7 @@ impl Vm {
     /// ext 字携带逃出的迭代器层数：无 finally 穿越时立即关闭后跳转，有 finally
     /// 时计数随 Completion 悬挂，由 TRY_FINALLY_END 在穿越完成后消费。
     pub(crate) fn dispatch_break(&mut self, instr: u32) -> Result<(), String> {
-        let (for_of_count, for_in_count) = self.read_escape_counts();
+        let (for_of_count, for_in_count, dispose_count) = self.read_escape_counts();
         let offset = opcode::offset16(instr) as isize;
         let target_pc = ((self.pc as isize) + offset - 1) as usize;
         let crossed = opcode::rd(instr) as usize;
@@ -640,6 +640,7 @@ impl Vm {
             remaining_finally: crossed,
             for_of_count,
             for_in_count,
+            dispose_count,
         };
         if let Some(finally_pc) = self.record_completion(completion) {
             self.pc = finally_pc;
@@ -658,7 +659,7 @@ impl Vm {
 
     /// continue 完成：同 break，目标为循环继续位置。
     pub(crate) fn dispatch_continue(&mut self, instr: u32) -> Result<(), String> {
-        let (for_of_count, for_in_count) = self.read_escape_counts();
+        let (for_of_count, for_in_count, dispose_count) = self.read_escape_counts();
         let offset = opcode::offset16(instr) as isize;
         let target_pc = ((self.pc as isize) + offset - 1) as usize;
         let crossed = opcode::rd(instr) as usize;
@@ -667,6 +668,7 @@ impl Vm {
             remaining_finally: crossed,
             for_of_count,
             for_in_count,
+            dispose_count,
         };
         if let Some(finally_pc) = self.record_completion(completion) {
             self.pc = finally_pc;
@@ -683,19 +685,21 @@ impl Vm {
         Ok(())
     }
 
-    /// 读取 BREAK/CONTINUE/RETURN 的 ext 字逃出计数（低 16 位 for-of，高 16 位
-    /// for-in）。调用时机：主循环已把 pc 推进到 ext 字位置；两条跳转/返回路径
-    /// 都会覆盖 pc，此处无需再推进。
+    /// 读取 BREAK/CONTINUE/RETURN 的 ext 字逃出计数：第一字低 16 位 for-of、
+    /// 高 16 位 for-in，第二字为 dispose_count（逃出资源条数）。调用时机：主循环
+    /// 已把 pc 推进到 ext 字位置；两条跳转/返回路径都会覆盖 pc，此处无需再推进。
     ///
     /// # 边界与前提
     /// - 手工构造的 IR 可能让 RETURN/BREAK/CONTINUE 落在末位且无 ext 字（pc == len），
-    ///   此时按 (0, 0) 处理：无迭代器逃出，语义正确。
-    fn read_escape_counts(&self) -> (usize, usize) {
+    ///   此时按 (0, 0, 0) 处理：无迭代器/资源逃出，语义正确。第二字缺失（pc+1 == len）
+    ///   同样按 0 兜底。
+    fn read_escape_counts(&self) -> (usize, usize, usize) {
         if self.pc >= self.bytecode.len() {
-            return (0, 0);
+            return (0, 0, 0);
         }
         let packed = self.bytecode[self.pc];
-        ((packed & 0xFFFF) as usize, (packed >> 16) as usize)
+        let dispose = self.bytecode.get(self.pc + 1).copied().unwrap_or(0) as usize;
+        ((packed & 0xFFFF) as usize, (packed >> 16) as usize, dispose)
     }
 
     /// 记录一次控制流完成：穿越 `remaining_finally` 个 finally 体后执行完成本身。
@@ -752,7 +756,7 @@ impl Vm {
     pub(crate) fn dispatch_return(&mut self, instr: u32) -> Result<Option<JsValue>, String> {
         let rd = opcode::rd(instr) as usize;
         let result = self.regs[rd];
-        let (for_of_count, for_in_count) = self.read_escape_counts();
+        let (for_of_count, for_in_count, dispose_count) = self.read_escape_counts();
         crate::vm_debug!(
             "RETURN depth={} saved_pc={}",
             self.frames.len(),
@@ -772,6 +776,7 @@ impl Vm {
             remaining_finally: crossed,
             for_of_count,
             for_in_count,
+            dispose_count,
         };
         if let Some(finally_pc) = self.record_completion(completion) {
             self.pc = finally_pc;
@@ -903,6 +908,7 @@ impl Vm {
             finally_active: false,
             frame_depth: self.frames.len(),
             for_of_depth: self.iters.for_of_iters.len(),
+            dispose_depth: self.dispose_stack.len(),
         });
     }
 
@@ -921,6 +927,7 @@ impl Vm {
             finally_active: false,
             frame_depth: self.frames.len(),
             for_of_depth: self.iters.for_of_iters.len(),
+            dispose_depth: self.dispose_stack.len(),
         });
     }
 
@@ -1028,6 +1035,12 @@ impl Vm {
             if self.pc != pc_before || self.pending_exception.is_some() {
                 return Ok(CloseEscapeOutcome::Handled);
             }
+        }
+        // 逃出资源释放（规范序：IteratorClose 先、DisposeResources 后）：逆序释放
+        // 顶部 dispose_count 条。释放方法抛错时新错误替代完成值，展开到外围处理器。
+        if self.dispose_top_n(completion.dispose_count()) {
+            self.unwind()?;
+            return Ok(CloseEscapeOutcome::Handled);
         }
         // 异步条目逐层关闭：首个有 return 方法的登记挂起，其余入 remaining；无
         // return 方法时继续下一层。

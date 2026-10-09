@@ -347,7 +347,7 @@ mod tests {
     use super::*;
 
     /// 手工构造反汇编夹具：顶层 5 条指令（NEW_OBJECT 1 字键表、CALL 1 ext 字、
-    /// IC_GET_PROP 8 ext 字），子模块 1 个（3 条指令，RETURN 带 1 个逃出计数 ext 字）。
+    /// IC_GET_PROP 8 ext 字），子模块 1 个（3 条指令，RETURN 带 2 个逃出计数 ext 字）。
     fn fixture() -> CompiledModule {
         let sub = CompiledModule {
             function_name: Some("f".into()),
@@ -357,7 +357,8 @@ mod tests {
             bytecode: Arc::from([
                 opcode::encode(OpCode::LOAD_CONST, 1, 0, 0),
                 opcode::encode(OpCode::RETURN, 1, 0, 0),
-                0, // RETURN 逃出计数 ext 字
+                0, // RETURN 迭代器打包 ext 字
+                0, // RETURN dispose_count ext 字
                 opcode::encode(OpCode::HALT, 0, 0, 0),
             ]),
             ..Default::default()
@@ -404,7 +405,7 @@ mod tests {
             "  0014  HALT r0",
             "    0000  LOAD_CONST r1, const[0]",
             "    0001  RETURN r1",
-            "    0003  HALT r0",
+            "    0004  HALT r0",
         ];
         for line in &expected {
             assert!(lines.contains(line), "missing line: {line}\n{text}");

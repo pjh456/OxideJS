@@ -824,10 +824,11 @@ pub fn ext_word_count(bytecode: &[Instr], pc: usize) -> usize {
         | OpCode::GET_PRIVATE
         | OpCode::SET_PRIVATE
         | OpCode::PRIVATE_BRAND_IN => 2,
-        // 逃出计数 ext：BREAK/CONTINUE/RETURN 恒带 1 个 pack_escape_counts 字
-        // （for-of/for-in 逃出层数打包）；lower 对这三条无条件落 ext 字，
-        // dispatch 经 read_escape_counts 消费，扫描必须同步跳过以免错位。
-        OpCode::BREAK | OpCode::CONTINUE | OpCode::RETURN => 1,
+        // 逃出计数 ext：BREAK/CONTINUE/RETURN 恒带 2 个字——第一字
+        // pack_escape_counts（for-of/for-in 逃出层数打包），第二字 dispose_count
+        // （逃出资源条数）；lower 对这三条无条件落 ext 字，dispatch 经
+        // read_escape_counts 消费，扫描必须同步跳过以免错位。
+        OpCode::BREAK | OpCode::CONTINUE | OpCode::RETURN => 2,
         OpCode::CALL_SPREAD | OpCode::NEW_EXPRESSION_SPREAD | OpCode::SUPER_CALL_SPREAD => {
             let header = bytecode.get(pc + 1).copied().unwrap_or(0);
             1 + (header & 0xFF) as usize + ((header >> 8) & 0xFF) as usize
@@ -972,11 +973,11 @@ mod tests {
         // IC 族固定 8 字。
         let ic = [encode(OpCode::IC_GET_PROP, 0, 0, 0); IC_EXT_WORDS + 1];
         assert_eq!(ext_word_count(&ic, 0), IC_EXT_WORDS);
-        // 1 字族（含 BREAK/CONTINUE/RETURN 逃出计数）。
+        // 1 字族。
         assert_eq!(ext_word_count(&[encode(OpCode::CALL, 0, 0, 0), 3], 0), 1);
-        assert_eq!(ext_word_count(&[encode(OpCode::BREAK, 0, 0, 0), 1], 0), 1);
-        assert_eq!(ext_word_count(&[encode(OpCode::RETURN, 0, 0, 0), 1], 0), 1);
-        // 2 字族。
+        // 2 字族（含 BREAK/CONTINUE/RETURN 逃出计数：迭代器打包字 + dispose_count 字）。
+        assert_eq!(ext_word_count(&[encode(OpCode::BREAK, 0, 0, 0), 1, 2], 0), 2);
+        assert_eq!(ext_word_count(&[encode(OpCode::RETURN, 0, 0, 0), 1, 2], 0), 2);
         assert_eq!(ext_word_count(&[encode(OpCode::GET_PRIVATE, 0, 0, 0), 1, 2], 0), 2);
         // 变长族：spread 首字 nstatic|nspread、TEMPLATE_STR 段数、GET_TEMPLATE_OBJECT 2+2n、
         // CONCAT_N=n、NEW_OBJECT=a 槽属性数。

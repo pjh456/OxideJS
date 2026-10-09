@@ -285,16 +285,19 @@ mod tests {
     }
 
     #[test]
-    fn break_ret_ext_word_count_is_one() {
-        // BREAK/CONTINUE/RETURN 恒带 1 个逃出计数 ext 字（pack_escape_counts）。
+    fn break_ret_ext_word_count_is_two() {
+        // BREAK/CONTINUE/RETURN 恒带 2 个逃出计数 ext 字：第一字
+        // pack_escape_counts（迭代器层数打包），第二字 dispose_count（资源条数）。
         let bytecode = vec![
             opcode::encode(OpCode::BREAK, 0, 0, 0),
             0x0000_0040,
+            0x0000_0002,
             opcode::encode(OpCode::RETURN, 1, 0, 0),
             0x1234_5678,
+            0x0000_0003,
         ];
-        assert_eq!(ext_word_count(&bytecode, 0), 1, "BREAK ext 字数 = 1");
-        assert_eq!(ext_word_count(&bytecode, 2), 1, "RETURN ext 字数 = 1");
+        assert_eq!(ext_word_count(&bytecode, 0), 2, "BREAK ext 字数 = 2");
+        assert_eq!(ext_word_count(&bytecode, 3), 2, "RETURN ext 字数 = 2");
     }
 
     #[test]
@@ -331,12 +334,14 @@ mod tests {
 
     #[test]
     fn clear_ic_caches_skips_break_ext_word() {
-        // BREAK 的逃出计数 ext 字必须原样保留；其低 8 位 = for_of_count，取 0x40
-        // （CALL 指令号，带 ext）——未登记时扫描会把它当 CALL 指令解析，越过后续
-        // IC 指令导致扩展字漏清，本用例可抓住该错位。
+        // BREAK 的逃出计数 ext 字（2 个：迭代器打包字 + dispose_count 字）必须原样
+        // 保留；第一字低 8 位 = for_of_count，取 0x40（CALL 指令号，带 ext）——未
+        // 登记时扫描会把它当 CALL 指令解析，越过后续 IC 指令导致扩展字漏清，本用例
+        // 可抓住该错位。
         let mut bytecode = vec![
             opcode::encode(OpCode::BREAK, 0, 0, 0),
             0x0000_0040,
+            0x0000_0002,
             opcode::encode(OpCode::IC_GET_PROP, 1, 2, 3),
             0xAAAA_AAAA,
             0xBBBB_BBBB,
@@ -348,8 +353,9 @@ mod tests {
             0x2222_2222,
         ];
         clear_ic_caches(&mut bytecode);
-        assert_eq!(bytecode[1], 0x0000_0040, "BREAK ext 字保持原值");
-        assert_eq!(&bytecode[3..=10], &[0; 8], "后续 IC 扩展字被清零");
+        assert_eq!(bytecode[1], 0x0000_0040, "BREAK 第一 ext 字保持原值");
+        assert_eq!(bytecode[2], 0x0000_0002, "BREAK 第二 ext 字保持原值");
+        assert_eq!(&bytecode[4..=11], &[0; 8], "后续 IC 扩展字被清零");
     }
 
     #[test]

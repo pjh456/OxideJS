@@ -841,6 +841,7 @@ fn reset_clears_runtime_state_like_rerun() {
         finally_active: false,
         frame_depth: 0,
         for_of_depth: 0,
+        dispose_depth: 0,
     });
     vm.exception_value = Some(JsValue::int(2));
     vm.pending_exception = Some(JsValue::int(3));

@@ -689,6 +689,57 @@ impl Vm {
         Ok(())
     }
 
+    /// 逆序释放 `depth` 以上资源并截断释放栈到 `depth`，同步弹出水位栈中
+    /// `>= depth` 的基线条目（保两栈一致，防异常路径基线泄漏）。
+    ///
+    /// # 步骤
+    /// 1. 逐条弹出并释放（`dispose_value`）。
+    /// 2. 释放方法抛错时，新错误替代在途异常向外传播（`exception_value` 改写），
+    ///    剩余资源继续释放（其错误被抑制，多错合并归后续任务）。
+    /// 3. 截断释放栈后，弹出水位栈中 `>= depth` 的基线条目。
+    ///
+    /// # 返回值
+    /// `true` = 有释放方法抛错（新错误已写入 `exception_value`）；`false` = 全部正常。
+    ///
+    /// # 副作用
+    /// - 释放栈截断到 `depth`、水位栈弹出 `>= depth` 的基线。
+    /// - 有释放方法抛错时改写 `exception_value`/`pending_error_kind`。
+    pub(crate) fn dispose_above(&mut self, depth: usize) -> bool {
+        let mut threw = false;
+        let truncated = self.dispose_stack.len() > depth;
+        while self.dispose_stack.len() > depth {
+            let (value, hint) = self.dispose_stack.pop().expect("水位以上必有条目");
+            if let Err(e) = self.dispose_value(value, hint) {
+                let exc = self
+                    .last_uncaught_value
+                    .take()
+                    .unwrap_or_else(|| oxide_builtins::error::create_from_text(self, &e));
+                let kind = self.thrown_error_kind(exc);
+                self.exception_value = Some(exc);
+                self.pending_error_kind = Some(kind);
+                threw = true;
+            }
+        }
+        // 仅在实际截断释放栈时同步弹基线，防 no-op 调用（如 dispose_top_n(0)）
+        // 误弹外层作用域的水位。
+        if truncated {
+            while self.dispose_marks.last().is_some_and(|&m| m >= depth) {
+                self.dispose_marks.pop();
+            }
+        }
+        threw
+    }
+
+    /// 释放栈顶部 `n` 条资源（逃出释放：return/break/continue 完成值逃出作用域时
+    /// 逆序释放被逃出的资源）。`n` 超过栈长时按全量释放。
+    ///
+    /// # 返回值
+    /// 同 `dispose_above`：`true` = 有释放方法抛错。
+    pub(crate) fn dispose_top_n(&mut self, n: usize) -> bool {
+        let depth = self.dispose_stack.len().saturating_sub(n);
+        self.dispose_above(depth)
+    }
+
     /// 单资源释放（规范 Dispose 语义）：非对象跳过；按释放提示取方法（同步只取
     /// Symbol.dispose；异步先取 Symbol.asyncDispose，未定义回退 Symbol.dispose），
     /// 不可调用跳过；以资源自身为 this 零参调用。

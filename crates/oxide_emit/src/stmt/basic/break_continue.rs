@@ -33,46 +33,51 @@ impl Emitter {
     pub(crate) fn emit_break_statement(
         &self, stmt: &oxide_parser::BreakStatement, ctx: &mut CompileCtx,
     ) -> Result<Option<u32>, String> {
-        let (break_label, fd_at_open, fod_at_open, fid_at_open, target_v_reg) = if let Some(label) = &stmt.label {
-            let name = label.name.as_str();
-            let scope = ctx
-                .find_label(name)
-                .ok_or_else(|| format!("SyntaxError: Undefined label '{name}'"))?;
-            (
-                scope.break_label,
-                scope.finally_depth_at_open,
-                scope.for_of_depth_at_open,
-                scope.for_in_depth_at_open,
-                scope.completion_reg,
-            )
-        } else if let Some(sw) = ctx.current_switch() {
-            // switch 内 break：目标为 switch 出口。逃出计数以 switch 打开时的
-            // 深度快照为基准——switch 之前已打开的循环不属于本次逃出，仅当
-            // case 内新打开了迭代循环（并逃出）时才需关闭。
-            (
-                sw.break_label,
-                sw.finally_depth_at_open,
-                sw.for_of_depth_at_open,
-                sw.for_in_depth_at_open,
-                Some(sw.result_reg),
-            )
-        } else {
-            let entry = ctx.current_loop().ok_or("break outside switch or loop".to_string())?;
-            (
-                entry.break_label,
-                entry.finally_depth_at_open,
-                entry.for_of_depth_at_open,
-                entry.for_in_depth_at_open,
-                Some(entry.v_reg),
-            )
-        };
+        let (break_label, fd_at_open, fod_at_open, fid_at_open, dd_at_open, target_v_reg) =
+            if let Some(label) = &stmt.label {
+                let name = label.name.as_str();
+                let scope = ctx
+                    .find_label(name)
+                    .ok_or_else(|| format!("SyntaxError: Undefined label '{name}'"))?;
+                (
+                    scope.break_label,
+                    scope.finally_depth_at_open,
+                    scope.for_of_depth_at_open,
+                    scope.for_in_depth_at_open,
+                    scope.dispose_depth_at_open,
+                    scope.completion_reg,
+                )
+            } else if let Some(sw) = ctx.current_switch() {
+                // switch 内 break：目标为 switch 出口。逃出计数以 switch 打开时的
+                // 深度快照为基准——switch 之前已打开的循环不属于本次逃出，仅当
+                // case 内新打开了迭代循环（并逃出）时才需关闭。
+                (
+                    sw.break_label,
+                    sw.finally_depth_at_open,
+                    sw.for_of_depth_at_open,
+                    sw.for_in_depth_at_open,
+                    sw.dispose_depth_at_open,
+                    Some(sw.result_reg),
+                )
+            } else {
+                let entry = ctx.current_loop().ok_or("break outside switch or loop".to_string())?;
+                (
+                    entry.break_label,
+                    entry.finally_depth_at_open,
+                    entry.for_of_depth_at_open,
+                    entry.for_in_depth_at_open,
+                    entry.dispose_depth_at_open,
+                    Some(entry.v_reg),
+                )
+            };
         if let Some(target_v_reg) = target_v_reg {
             self.emit_completion_carry(ctx, target_v_reg);
         }
         let crossed = ctx.labels.finally_depth.saturating_sub(fd_at_open) as u16;
         let (for_of_count, for_in_count) = escape_iter_counts(ctx, fod_at_open, fid_at_open);
-        if crossed > 0 || for_of_count > 0 || for_in_count > 0 {
-            ctx.inst(Inst::brk(break_label, crossed, for_of_count, for_in_count));
+        let dispose_count = ctx.labels.dispose_depth.saturating_sub(dd_at_open);
+        if crossed > 0 || for_of_count > 0 || for_in_count > 0 || dispose_count > 0 {
+            ctx.inst(Inst::brk(break_label, crossed, for_of_count, for_in_count, dispose_count));
         } else {
             ctx.inst(Inst::jmp(break_label));
         }
@@ -82,37 +87,41 @@ impl Emitter {
     pub(crate) fn emit_continue_statement(
         &self, stmt: &oxide_parser::ContinueStatement, ctx: &mut CompileCtx,
     ) -> Result<Option<u32>, String> {
-        let (continue_label, fd_at_open, fod_at_open, fid_at_open, target_v_reg) = if let Some(label) = &stmt.label {
-            let name = label.name.as_str();
-            let scope = ctx
-                .find_label(name)
-                .ok_or_else(|| format!("SyntaxError: Undefined label '{name}'"))?;
-            (
-                scope.continue_label.ok_or_else(|| {
-                    format!("SyntaxError: Illegal continue statement: '{name}' does not denote an iteration statement")
-                })?,
-                scope.finally_depth_at_open,
-                scope.for_of_depth_at_open,
-                scope.for_in_depth_at_open,
-                scope.completion_reg,
-            )
-        } else {
-            let entry = ctx.current_loop().ok_or("continue outside loop".to_string())?;
-            (
-                entry.continue_label,
-                entry.finally_depth_at_open,
-                entry.for_of_depth_at_open,
-                entry.for_in_depth_at_open,
-                Some(entry.v_reg),
-            )
-        };
+        let (continue_label, fd_at_open, fod_at_open, fid_at_open, dd_at_open, target_v_reg) =
+            if let Some(label) = &stmt.label {
+                let name = label.name.as_str();
+                let scope = ctx
+                    .find_label(name)
+                    .ok_or_else(|| format!("SyntaxError: Undefined label '{name}'"))?;
+                (
+                    scope.continue_label.ok_or_else(|| {
+                        format!("SyntaxError: Illegal continue statement: '{name}' does not denote an iteration statement")
+                    })?,
+                    scope.finally_depth_at_open,
+                    scope.for_of_depth_at_open,
+                    scope.for_in_depth_at_open,
+                    scope.dispose_depth_at_open,
+                    scope.completion_reg,
+                )
+            } else {
+                let entry = ctx.current_loop().ok_or("continue outside loop".to_string())?;
+                (
+                    entry.continue_label,
+                    entry.finally_depth_at_open,
+                    entry.for_of_depth_at_open,
+                    entry.for_in_depth_at_open,
+                    entry.dispose_depth_at_open,
+                    Some(entry.v_reg),
+                )
+            };
         if let Some(target_v_reg) = target_v_reg {
             self.emit_completion_carry(ctx, target_v_reg);
         }
         let crossed = ctx.labels.finally_depth.saturating_sub(fd_at_open) as u16;
         let (for_of_count, for_in_count) = escape_iter_counts(ctx, fod_at_open, fid_at_open);
-        if crossed > 0 || for_of_count > 0 || for_in_count > 0 {
-            ctx.inst(Inst::cont(continue_label, crossed, for_of_count, for_in_count));
+        let dispose_count = ctx.labels.dispose_depth.saturating_sub(dd_at_open);
+        if crossed > 0 || for_of_count > 0 || for_in_count > 0 || dispose_count > 0 {
+            ctx.inst(Inst::cont(continue_label, crossed, for_of_count, for_in_count, dispose_count));
         } else {
             ctx.inst(Inst::jmp(continue_label));
         }

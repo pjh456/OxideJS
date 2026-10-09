@@ -316,7 +316,7 @@ impl Emitter {
                 module.insts.extend(field_ctx.insts);
                 module.constants = field_ctx.constants;
                 module.n_registers = field_ctx.max_regs.max(1);
-                module.insts.push(Inst::ret(Operand::Reg(undef_reg), 0, 0));
+                module.insts.push(Inst::ret(Operand::Reg(undef_reg), 0, 0, 0));
             }
             module
         };

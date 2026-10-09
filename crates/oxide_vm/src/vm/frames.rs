@@ -109,14 +109,18 @@ pub struct TryHandler {
     pub frame_depth: usize,
     /// try 入口时 for_of_iters 的长度，界定异常展开时哪些迭代器需要 IteratorClose。
     pub for_of_depth: usize,
+    /// try 入口时释放栈（dispose_stack）的长度，界定异常展开时哪些资源需要
+    /// DisposeResources（逆序释放并截断到本水位）。
+    pub dispose_depth: usize,
 }
 
 /// 控制流完成：break/continue/return 逃出 finally 域时暂存的完成目标。
 ///
 /// 仿 `pending_exception` 的侧通道：finally 执行期间悬挂在此，由 TRY_FINALLY_END
 /// 逐个恢复（`remaining_finally` 为仍需穿越的 finally 体数，进入一个递减一个）。
-/// `for_of_count`/`for_in_count` 为逃出时需关闭的迭代器层数：在全部 finally 穿越
-/// 之后、跳转/返回之前执行（规范 §13.7.5.4 的 IteratorClose 在完成值之后）。
+/// `for_of_count`/`for_in_count` 为逃出时需关闭的迭代器层数，`dispose_count` 为
+/// 逃出时需释放的资源条数：在全部 finally 穿越之后、跳转/返回之前执行（规范序
+/// IteratorClose 先、DisposeResources 后）。
 #[derive(Debug, Clone, Copy)]
 pub enum Completion {
     Break {
@@ -124,18 +128,21 @@ pub enum Completion {
         remaining_finally: usize,
         for_of_count: usize,
         for_in_count: usize,
+        dispose_count: usize,
     },
     Continue {
         target_pc: usize,
         remaining_finally: usize,
         for_of_count: usize,
         for_in_count: usize,
+        dispose_count: usize,
     },
     Return {
         value: JsValue,
         remaining_finally: usize,
         for_of_count: usize,
         for_in_count: usize,
+        dispose_count: usize,
     },
 }
 
@@ -167,6 +174,15 @@ impl Completion {
         }
     }
 
+    /// 逃出时需释放的资源条数（释放栈顶部连续条数）。
+    pub fn dispose_count(&self) -> usize {
+        match *self {
+            Completion::Break { dispose_count, .. }
+            | Completion::Continue { dispose_count, .. }
+            | Completion::Return { dispose_count, .. } => dispose_count,
+        }
+    }
+
     /// 复制并改写剩余 finally 计数（进入一个 finally 后递减）。
     pub fn with_remaining(&self, remaining: usize) -> Completion {
         match *self {
@@ -174,34 +190,40 @@ impl Completion {
                 target_pc,
                 for_of_count,
                 for_in_count,
+                dispose_count,
                 ..
             } => Completion::Break {
                 target_pc,
                 remaining_finally: remaining,
                 for_of_count,
                 for_in_count,
+                dispose_count,
             },
             Completion::Continue {
                 target_pc,
                 for_of_count,
                 for_in_count,
+                dispose_count,
                 ..
             } => Completion::Continue {
                 target_pc,
                 remaining_finally: remaining,
                 for_of_count,
                 for_in_count,
+                dispose_count,
             },
             Completion::Return {
                 value,
                 for_of_count,
                 for_in_count,
+                dispose_count,
                 ..
             } => Completion::Return {
                 value,
                 remaining_finally: remaining,
                 for_of_count,
                 for_in_count,
+                dispose_count,
             },
         }
     }

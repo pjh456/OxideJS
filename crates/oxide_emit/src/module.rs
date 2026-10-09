@@ -938,9 +938,9 @@ impl Emitter {
             let undef_idx = ctx.add_constant(Constant::Undefined);
             let r = ctx.alloc_reg();
             ctx.inst(Inst::load_const(Operand::Reg(r), undef_idx));
-            ctx.inst(Inst::ret(Operand::Reg(r), 0, 0));
+            ctx.inst(Inst::ret(Operand::Reg(r), 0, 0, 0));
         } else {
-            ctx.inst(Inst::ret(Operand::Reg(ns_reg), 0, 0));
+            ctx.inst(Inst::ret(Operand::Reg(ns_reg), 0, 0, 0));
         }
         Ok(())
     }
@@ -1003,7 +1003,7 @@ impl Emitter {
         let kind_reg = self.load_string_const(kind, &mut ctx);
         let content_reg = self.load_string_const(content, &mut ctx);
         let val_reg = self.emit_module_call(&mut ctx, "__moduleData", &[kind_reg, content_reg])?;
-        ctx.inst(Inst::ret(Operand::Reg(val_reg), 0, 0));
+        ctx.inst(Inst::ret(Operand::Reg(val_reg), 0, 0, 0));
         Ok(ctx.assemble_ir(ParamLayout { base: 0, count: 0 }, None))
     }
 

@@ -870,6 +870,9 @@ impl Vm {
             }
             // 对该处理器作用域内被中断的 for-of 循环执行 IteratorClose。
             self.close_for_of_above(handler.for_of_depth);
+            // 异常穿越释放：逆序释放该作用域内登记的资源（规范序 IteratorClose 先、
+            // DisposeResources 后）。释放方法抛错时新错误替代在途异常继续向外展开。
+            self.dispose_above(handler.dispose_depth);
             if let Some(finally_pc) = handler.finally_pc {
                 if handler.finally_active {
                     // 新异常在 finally 体内抛出：覆盖在途异常与完成，继续向外展开，
@@ -899,6 +902,8 @@ impl Vm {
             }
         }
         self.close_for_of_above(0);
+        // 未捕获兜底：释放栈上全部资源（异常穿越全作用域）。
+        self.dispose_above(0);
         while let Some(frame) = self.frames.pop() {
             self.cell_stack.pop();
             self.restore_frame(frame);
@@ -1003,6 +1008,7 @@ mod tests {
             remaining_finally: 1,
             for_of_count: 0,
             for_in_count: 0,
+            dispose_count: 0,
         });
         vm.iters.for_of_iters.push(crate::vm_state::ForOfEntry {
             iterator: JsValue::float(8.5),
@@ -1146,19 +1152,17 @@ mod tests {
 
     #[test]
     fn using_declaration_registers_dispose_stack() {
-        // using 声明经 DISPOSE_REGISTER 把资源值压入释放栈。早 return 跳过函数
-        // 体 POP（穿越面，归后续任务），资源残留栈上；run 边界（下次 run 入口）
-        // 清栈，残留条目不得跨 run 可见。
+        // using 声明经 DISPOSE_REGISTER 把资源值压入释放栈。早 return 经逃出释放
+        // （dispose_top_n）逆序释放本作用域资源，函数返回后栈空；run 边界清栈防
+        // 跨 run 残留。
         let mut vm = Vm::new();
         let module = Arc::new(compile("function f() { using x = { a: 1 }; return 42; } f();"));
         vm.run(&module).expect("run");
-        assert_eq!(vm.dispose_stack.len(), 1, "早 return 跳过 POP，资源残留栈上");
-        assert!(vm.dispose_stack[0].0.is_object(), "登记值应为资源对象");
-        assert_eq!(vm.dispose_stack[0].1, 0, "using 声明释放提示应为同步");
+        assert!(vm.dispose_stack.is_empty(), "早 return 经逃出释放，函数返回后栈空");
 
-        // 二次 run 入口清栈后重新登记：残留条目不跨 run 存活。
+        // 二次 run 入口清栈：残留条目不跨 run 存活。
         vm.run(&module).expect("run2");
-        assert_eq!(vm.dispose_stack.len(), 1, "二次 run 应恰好登记一条新条目");
+        assert!(vm.dispose_stack.is_empty(), "二次 run 后栈仍空");
 
         // 执行状态清空同样清释放栈。
         vm.clear_execution_state();

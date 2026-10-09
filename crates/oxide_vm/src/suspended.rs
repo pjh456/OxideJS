@@ -312,6 +312,7 @@ mod tests {
             remaining_finally: 1,
             for_of_count: 0,
             for_in_count: 0,
+            dispose_count: 0,
         });
 
         let mut frame = SuspendedFrame::new_empty();
