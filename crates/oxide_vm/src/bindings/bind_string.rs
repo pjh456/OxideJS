@@ -86,7 +86,10 @@ pub fn bind_string(core: &Arc<KernelCore>, session: &KernelSession, global: &mut
         session.builtin_world(),
         proto,
         core,
-        &[("toString", oxide_builtins::string::string_to_string::<crate::vm::Vm> as *const (), 0)],
+        &[
+            ("toString", oxide_builtins::string::string_to_string::<crate::vm::Vm> as *const (), 0),
+            ("toSource", oxide_builtins::to_source::to_source_string::<crate::vm::Vm> as *const (), 0),
+        ],
     );
     // String.prototype[@@iterator]：逐 code point 迭代字符；name 属性按规范
     // 落 "[Symbol.iterator]"。

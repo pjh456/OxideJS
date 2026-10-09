@@ -6,6 +6,7 @@ use oxide_kernel::shape_forge::EMPTY_SHAPE_ID;
 use oxide_types::object::{JsObject, NativeFnPtr, PropAttributes};
 use oxide_types::value::JsValue;
 
+use super::apply_binding_table;
 use super::bind_global_value;
 use super::configure_native_constructor;
 
@@ -65,6 +66,15 @@ pub fn bind_function(core: &Arc<KernelCore>, session: &KernelSession, global: &m
     // caller/arguments 受限访问器：两属性 get/set 共用同一 %ThrowTypeError%
     // 函数对象，任何访问抛 TypeError（AddRestrictedFunctionProperties 语义）。
     bind_function_proto_restricted(core, session, proto);
+
+    // toSource 遗留扩展（Function 原型方法不走 kernel 侧 bind_function_methods，
+    // 此处独立经 apply_binding_table 安装，描述符非枚举由绑定器内置）。
+    apply_binding_table(
+        session.builtin_world(),
+        proto,
+        core,
+        &[("toSource", oxide_builtins::to_source::to_source_function::<crate::vm::Vm> as *const (), 0)],
+    );
 
     bind_global_value(core, global, "Function", JsValue::from_js_object(function_ctor));
 }

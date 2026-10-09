@@ -59,6 +59,7 @@ pub fn bind_number(core: &Arc<KernelCore>, session: &KernelSession, global: &mut
                 0,
             ),
             ("valueOf", oxide_builtins::number::number_value_of::<crate::vm::Vm> as *const (), 0),
+            ("toSource", oxide_builtins::to_source::to_source_number::<crate::vm::Vm> as *const (), 0),
         ],
     );
 

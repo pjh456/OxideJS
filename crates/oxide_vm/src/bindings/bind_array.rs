@@ -67,7 +67,10 @@ pub fn bind_array(core: &Arc<KernelCore>, session: &KernelSession, global: &mut 
         session.builtin_world(),
         array_proto,
         core,
-        &[("toString", oxide_builtins::array::array_to_string::<crate::vm::Vm> as *const (), 0)],
+        &[
+            ("toString", oxide_builtins::array::array_to_string::<crate::vm::Vm> as *const (), 0),
+            ("toSource", oxide_builtins::to_source::to_source_array::<crate::vm::Vm> as *const (), 0),
+        ],
     );
     // 内置原型方法不可枚举（否则会泄漏进 for-in）。
     let si = core.perm_interner().intern("toString").0;

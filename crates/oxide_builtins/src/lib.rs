@@ -75,6 +75,8 @@ pub mod symbol;
 pub mod ta_codec;
 /// Temporal 内置对象实现（目录模块树：Now / Instant / PlainDate / PlainTime / PlainDateTime / PlainMonthDay / PlainYearMonth / ZonedDateTime / Duration）。
 pub mod temporal;
+/// toSource 遗留扩展（九原型 own 方法与 null/undefined this 门禁）。
+pub mod to_source;
 /// TypedArray 内置对象实现（元素访问、fill/slice/subarray/set 等）。
 pub mod typed_array;
 /// WeakMap 条目表实现（弱键 → 强值盒与 GC 六站点接线函数族）。

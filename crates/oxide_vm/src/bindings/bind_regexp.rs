@@ -38,6 +38,7 @@ pub fn bind_regexp(core: &Arc<KernelCore>, session: &KernelSession, global: &mut
             ("test", oxide_builtins::regexp::regexp_test::<crate::vm::Vm> as *const (), 1),
             ("toString", oxide_builtins::regexp::regexp_to_string::<crate::vm::Vm> as *const (), 0),
             ("compile", oxide_builtins::regexp::regexp_compile::<crate::vm::Vm> as *const (), 2),
+            ("toSource", oxide_builtins::to_source::to_source_regexp::<crate::vm::Vm> as *const (), 0),
         ],
     );
 

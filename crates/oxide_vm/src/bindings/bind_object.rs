@@ -86,6 +86,7 @@ pub fn bind_object(core: &Arc<KernelCore>, session: &KernelSession, global: &mut
                 oxide_builtins::object::object_proto_lookup_setter::<crate::vm::Vm> as *const (),
                 1,
             ),
+            ("toSource", oxide_builtins::to_source::to_source_object::<crate::vm::Vm> as *const (), 0),
         ],
     );
     // 内置原型方法不可枚举（否则会泄漏进 for-in）。
@@ -98,6 +99,7 @@ pub fn bind_object(core: &Arc<KernelCore>, session: &KernelSession, global: &mut
         "__defineSetter__",
         "__lookupGetter__",
         "__lookupSetter__",
+        "toSource",
     ] {
         let si = core.perm_interner().intern(name).0;
         if let Some(pos) = core.shape_forge().lookup_position(object_proto.shape_id(), si) {

@@ -139,6 +139,7 @@ pub fn bind_date(core: &Arc<KernelCore>, session: &KernelSession, global: &mut J
                 0,
             ),
             ("valueOf", oxide_builtins::date::date_value_of::<crate::vm::Vm> as *const (), 0),
+            ("toSource", oxide_builtins::to_source::to_source_date::<crate::vm::Vm> as *const (), 0),
         ],
     );
 

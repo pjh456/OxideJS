@@ -29,6 +29,7 @@ pub fn bind_boolean(core: &Arc<KernelCore>, session: &KernelSession, global: &mu
                 oxide_builtins::boolean::boolean_prototype_to_string::<crate::vm::Vm> as *const (),
                 0,
             ),
+            ("toSource", oxide_builtins::to_source::to_source_boolean::<crate::vm::Vm> as *const (), 0),
         ],
     );
 

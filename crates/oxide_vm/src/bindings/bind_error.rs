@@ -135,6 +135,20 @@ pub fn bind_error(core: &Arc<KernelCore>, session: &KernelSession, global: &mut 
         );
     }
 
+    // toSource 遗留扩展（Error 原型方法不走 kernel 侧 bind_error_methods，
+    // 此处独立经 apply_binding_table 安装，描述符非枚举由绑定器内置）。
+    {
+        let proto_ptr = session.builtin_world().error_proto.as_ptr() as *mut JsObject;
+        // SAFETY: error_proto 由 session 持有，存活整个 session；本块内只改其 shape/属性区，无 reset。
+        let proto = unsafe { &mut *proto_ptr };
+        super::apply_binding_table(
+            session.builtin_world(),
+            proto,
+            core,
+            &[("toSource", oxide_builtins::to_source::to_source_error::<crate::vm::Vm> as *const (), 0)],
+        );
+    }
+
     // 全局 Error 槽位既有槽原位更新（旧家族构造器指针不得滞留在属性 vec），
     // 无槽时开新槽；描述符非枚举（规范 { writable:true, enumerable:false, configurable:true }）。
     let si_err = core.perm_interner().intern("Error").0;
