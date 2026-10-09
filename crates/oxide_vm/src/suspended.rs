@@ -11,7 +11,7 @@ use oxide_bytecode::opcode;
 use oxide_types::object::Cell;
 use oxide_types::value::JsValue;
 
-use crate::vm::{CallFrame, Completion, ForInIter, PendingAsyncEscape, TryHandler, Vm};
+use crate::vm::{CallFrame, Completion, ForInIter, PendingAsyncDispose, PendingAsyncEscape, TryHandler, Vm};
 use crate::vm_state::ForOfEntry;
 
 /// 挂起执行上下文快照（三份状态结构体共享的执行核心）。
@@ -42,6 +42,8 @@ pub(crate) struct SuspendedFrame {
     pub pending_completion: Option<Completion>,
     /// 逃出 for-await-of 的异步关闭在途状态（随挂起快照跨微任务存活）。
     pub pending_async_escape: Option<PendingAsyncEscape>,
+    /// `await using` 资源释放的异步挂起在途状态（随挂起快照跨微任务存活）。
+    pub pending_async_dispose: Option<PendingAsyncDispose>,
 }
 
 impl SuspendedFrame {
@@ -69,6 +71,7 @@ impl SuspendedFrame {
             pending_error_kind: None,
             pending_completion: None,
             pending_async_escape: None,
+            pending_async_dispose: None,
         }
     }
 
@@ -109,6 +112,7 @@ impl SuspendedFrame {
         self.pending_error_kind = vm.pending_error_kind.take();
         self.pending_completion = vm.pending_completion.take();
         self.pending_async_escape = std::mem::take(&mut vm.pending_async_escape);
+        self.pending_async_dispose = std::mem::take(&mut vm.pending_async_dispose);
         Ok(())
     }
 
@@ -173,6 +177,7 @@ impl SuspendedFrame {
         vm.pending_error_kind = self.pending_error_kind.take();
         vm.pending_completion = self.pending_completion.take();
         vm.pending_async_escape = std::mem::take(&mut self.pending_async_escape);
+        vm.pending_async_dispose = std::mem::take(&mut self.pending_async_dispose);
         Ok(())
     }
 
@@ -229,6 +234,15 @@ impl SuspendedFrame {
             }
             for &v in &pend.remaining {
                 f(v);
+            }
+        }
+        if let Some(pend) = &self.pending_async_dispose {
+            f(pend.dispose_promise);
+            if let Some(v) = pend.completion {
+                f(v);
+            }
+            if let crate::vm::DisposeResumeKind::Escape(Completion::Return { value, .. }) = pend.kind {
+                f(value);
             }
         }
         for iter in &self.for_in_iters {

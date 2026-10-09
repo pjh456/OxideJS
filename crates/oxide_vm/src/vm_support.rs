@@ -144,6 +144,7 @@ impl Vm {
             pending_error_kind: None,
             pending_completion: None,
             pending_async_escape: None,
+            pending_async_dispose: None,
             root_reg_limit: 0,
             active_reg_limit: 0,
             native_call_depth: 0,
@@ -308,6 +309,7 @@ impl Vm {
             pending_error_kind: None,
             pending_completion: None,
             pending_async_escape: None,
+            pending_async_dispose: None,
             root_reg_limit: 0,
             active_reg_limit: 0,
             native_call_depth: 0,
@@ -543,6 +545,8 @@ impl Vm {
         self.pending_completion = None;
         // 在途异步逃出是执行期状态：跨 run/reset 不保留，残留将悬垂。
         self.pending_async_escape = None;
+        // 在途异步释放同属执行期状态：跨 run/reset 不保留，残留将悬垂。
+        self.pending_async_dispose = None;
         self.generator_suspended = None;
         self.delegated_iterator = None;
         self.generator_dispatch = false;

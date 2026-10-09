@@ -1,4 +1,5 @@
 use crate::vm::{Completion, FrameArgs, FrameContinuation, PendingAsyncEscape, TryHandler, Vm};
+use crate::vm_dispatch_misc::DisposePhase;
 use crate::vm_trace;
 use oxide_bytecode::opcode;
 use oxide_runtime_api::VmHost;
@@ -1037,10 +1038,15 @@ impl Vm {
             }
         }
         // 逃出资源释放（规范序：IteratorClose 先、DisposeResources 后）：逆序释放
-        // 顶部 dispose_count 条。释放方法抛错时新错误替代完成值，展开到外围处理器。
-        if self.dispose_top_n(completion.dispose_count()) {
-            self.unwind()?;
-            return Ok(CloseEscapeOutcome::Handled);
+        // 顶部 dispose_count 条。释放方法抛错时新错误替代完成值，展开到外围处理器；
+        // 异步释放挂起时登记在途状态并让出（结算闭包续）。
+        match self.dispose_top_n(completion.dispose_count(), completion)? {
+            DisposePhase::Threw => {
+                self.unwind()?;
+                return Ok(CloseEscapeOutcome::Handled);
+            }
+            DisposePhase::Suspended => return Ok(CloseEscapeOutcome::Suspended),
+            DisposePhase::Clean => {}
         }
         // 异步条目逐层关闭：首个有 return 方法的登记挂起，其余入 remaining；无
         // return 方法时继续下一层。

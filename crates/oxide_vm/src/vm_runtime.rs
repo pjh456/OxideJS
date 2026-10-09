@@ -5,6 +5,7 @@ use oxide_bytecode::module::CompiledModule;
 use oxide_bytecode::opcode::OpCode;
 
 use crate::vm::{CallFrame, FrameArgs, FrameContinuation, InlineSyncState, TableGen, Vm};
+use crate::vm_dispatch_misc::DisposePhase;
 use crate::{vm_debug, vm_info, vm_trace, vm_warn};
 use oxide_types::object::{Cell, JsObject};
 use oxide_types::value::JsValue;
@@ -329,9 +330,10 @@ impl Vm {
     ///   （`n_registers ≤ 254`，含 RegAlloc 最高合法物理槽 253）。
     pub(crate) fn save_inline_state(&mut self, regs_end: usize) -> Box<InlineSyncState> {
         vm_trace!("save_inline_state: pc={} depth={}", self.pc, self.frames.len());
-        // 固化不变量：内联 state-swap 边界不携带在途异步逃出（挂起态快照前已搬入
-        // 状态盒，settle 前恒为 None）。
+        // 固化不变量：内联 state-swap 边界不携带在途异步逃出/释放（挂起态快照前
+        // 已搬入状态盒，settle 前恒为 None）。
         debug_assert!(self.pending_async_escape.is_none());
+        debug_assert!(self.pending_async_dispose.is_none());
         let window = regs_end.min(254);
         let mut window_regs = self.inline_reg_pool.take().unwrap_or_default();
         window_regs.clear();
@@ -344,8 +346,9 @@ impl Vm {
     /// 单回，窗口外寄存器 callee 未触碰无需恢复。
     pub(crate) fn restore_inline_state(&mut self, mut saved: Box<InlineSyncState>) {
         vm_trace!("restore_inline_state: pc={}", saved.pc);
-        // 固化不变量：内联 state-swap 边界不携带在途异步逃出（与 save 侧同）。
+        // 固化不变量：内联 state-swap 边界不携带在途异步逃出/释放（与 save 侧同）。
         debug_assert!(self.pending_async_escape.is_none());
+        debug_assert!(self.pending_async_dispose.is_none());
         let vm = self;
         let _window_regs: Vec<JsValue> = Vec::new();
         inline_core_fields!(vm, saved, inline_restore, _window_regs);
@@ -871,8 +874,14 @@ impl Vm {
             // 对该处理器作用域内被中断的 for-of 循环执行 IteratorClose。
             self.close_for_of_above(handler.for_of_depth);
             // 异常穿越释放：逆序释放该作用域内登记的资源（规范序 IteratorClose 先、
-            // DisposeResources 后）。释放方法抛错时新错误替代在途异常继续向外展开。
-            self.dispose_above(handler.dispose_depth);
+            // DisposeResources 后）。释放方法抛错时新错误替代在途异常继续向外展开；
+            // 异步释放挂起时登记在途状态并让出（恢复方重压 handler 再入本函数）。
+            if matches!(
+                self.dispose_above(handler.dispose_depth, Some(handler))?,
+                DisposePhase::Suspended
+            ) {
+                return Ok(());
+            }
             if let Some(finally_pc) = handler.finally_pc {
                 if handler.finally_active {
                     // 新异常在 finally 体内抛出：覆盖在途异常与完成，继续向外展开，
@@ -902,8 +911,11 @@ impl Vm {
             }
         }
         self.close_for_of_above(0);
-        // 未捕获兜底：释放栈上全部资源（异常穿越全作用域）。
-        self.dispose_above(0);
+        // 未捕获兜底：释放栈上全部资源（异常穿越全作用域）。无 handler（未捕获路径）；
+        // 异步释放挂起时登记在途状态并让出（恢复方直接再入本函数走未捕获路径）。
+        if matches!(self.dispose_above(0, None)?, DisposePhase::Suspended) {
+            return Ok(());
+        }
         while let Some(frame) = self.frames.pop() {
             self.cell_stack.pop();
             self.restore_frame(frame);

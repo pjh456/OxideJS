@@ -159,6 +159,31 @@ pub(crate) struct PendingAsyncEscape {
     pub(crate) remaining: Vec<JsValue>,
 }
 
+/// `await using` 资源释放的异步挂起在途状态：释放方法的 promise 挂起等待结算，
+/// 结算闭包（微任务）恢复挂起帧后继续释放剩余条目并执行完成。
+#[derive(Debug)]
+pub(crate) struct PendingAsyncDispose {
+    /// 正在等待的释放方法 promise（结算闭包陈旧防御校验用）。
+    pub(crate) dispose_promise: JsValue,
+    /// 作用域水位：恢复后继续释放水位以上条目（LIFO）。
+    pub(crate) mark: usize,
+    /// 在途合并错误（SuppressedError 链跨挂起累积）。
+    pub(crate) completion: Option<JsValue>,
+    /// 释放循环结束后的恢复动作类别。
+    pub(crate) kind: DisposeResumeKind,
+}
+
+/// 释放循环结束后的恢复动作类别（三穿越点）。
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum DisposeResumeKind {
+    /// 作用域出口正常完成：有合并错误则展开，否则续行。
+    Pop,
+    /// 异常穿越：handler 已弹出，恢复时重压后再入 unwind。
+    Unwind(Option<TryHandler>),
+    /// return/break/continue 穿越：有合并错误则丢弃完成值并展开，否则执行完成。
+    Escape(Completion),
+}
+
 /// 基于寄存器的 JS 虚拟机：持有执行状态、寄存器文件、调用栈与 session 内存。
 ///
 /// 执行入口为 [`Vm::run`]（见 `vm_runtime` 模块）；内存模型为统一入口分配 +
@@ -268,6 +293,9 @@ pub struct Vm {
     /// 逃出 for-await-of 的异步关闭在途状态：return() 的 promise 挂起等待结算，
     /// 结算闭包（微任务）恢复挂起帧后继续关闭剩余条目并执行完成。
     pub(crate) pending_async_escape: Option<PendingAsyncEscape>,
+    /// `await using` 资源释放的异步挂起在途状态：释放方法的 promise 挂起等待
+    /// 结算，结算闭包（微任务）恢复挂起帧后继续释放剩余条目并执行完成。
+    pub(crate) pending_async_dispose: Option<PendingAsyncDispose>,
     pub(crate) root_reg_limit: u8,
     pub(crate) active_reg_limit: u8,
     pub(crate) native_call_depth: usize,

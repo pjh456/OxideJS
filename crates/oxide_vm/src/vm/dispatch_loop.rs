@@ -118,6 +118,14 @@ impl Vm {
         }
         loop {
             steps += 1;
+            // 异步释放挂起：unwind 经 dispose_above 挂起时须让内嵌 dispatch 返回
+            // （挂起信号由 register_dispose_suspend 置位，此处统一消费，覆盖 THROW
+            // 与各错误处理器路径；AWAIT/BREAK/CONTINUE/RETURN/DISPOSE_POP 各臂已
+            // 就地返回，此处为兜底）。
+            if self.async_suspended || self.async_gen_suspended {
+                self.profiling.set_instruction_count(steps);
+                return Ok(JsValue::undefined());
+            }
             // 执行期 GC 安全点：仅在顶层 dispatch（native_call_depth == 0）
             // 的指令边界触发——嵌套 dispatch（builtin 经 call_function_sync 重入
             // 执行 JS 回调、generator/async 恢复）期间，调用方寄存器窗口副本存于
@@ -294,6 +302,12 @@ impl Vm {
                 }
                 OpCode::DISPOSE_POP => {
                     self.dispatch_dispose_pop()?;
+                    // `await using` 释放的异步挂起：挂起时须像 AWAIT 一样让内嵌
+                    // dispatch 返回，由恢复方快照状态。
+                    if self.async_suspended || self.async_gen_suspended {
+                        self.profiling.set_instruction_count(steps);
+                        return Ok(JsValue::undefined());
+                    }
                 }
                 OpCode::CELL_GET => {
                     self.dispatch_cell_get(rd, a, b)?;

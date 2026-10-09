@@ -1,5 +1,9 @@
-use crate::vm::{ForInIter, FrameArgs, FrameContinuation, Vm, MAX_PROTO_CHAIN_DEPTH};
+use crate::vm::{
+    Completion, DisposeResumeKind, ForInIter, FrameArgs, FrameContinuation, PendingAsyncDispose,
+    TryHandler, Vm, MAX_PROTO_CHAIN_DEPTH,
+};
 use crate::vm_trace;
+use oxide_builtins::iterator::is_callable;
 use oxide_runtime_api::{push_units_to, to_boolean, to_units_full, VmHost};
 use oxide_types::object::{JsObject, PropAttributes};
 use oxide_types::private_key::{
@@ -9,11 +13,23 @@ use oxide_types::private_key::{
 use oxide_types::value::JsValue;
 
 /// 单资源释放结局（规范 Dispose 语义）：`Done` = 释放成功；`NoMethod` = 无释放方法
-/// （非对象 / 方法未定义 / 不可调用，跳过）；`Err(v)` = 释放方法抛错（v 为原始异常值）。
+/// （非对象 / 方法未定义 / 不可调用，跳过）；`Err(v)` = 释放方法抛错（v 为原始异常值）；
+/// `Suspended(promise)` = 异步释放已挂起（promise 为释放方法结果经 PromiseResolve 包装
+/// 后登记的结算 promise，调用方据此登记 `PendingAsyncDispose`）。
 enum DisposeOutcome {
     Done,
     NoMethod,
     Err(JsValue),
+    Suspended(JsValue),
+}
+
+/// 批量释放（`dispose_above` / `dispose_top_n`）结局：`Clean` = 全部正常；
+/// `Threw` = 有释放方法抛错（合并错误已写入 `exception_value`）；`Suspended` =
+/// 异步挂起已登记（`PendingAsyncDispose` 已置，调用方须快照并早退）。
+pub(crate) enum DisposePhase {
+    Clean,
+    Threw,
+    Suspended,
 }
 
 impl Vm {
@@ -705,10 +721,22 @@ impl Vm {
         let mut completion: Option<JsValue> = None;
         while self.dispose_stack.len() > mark {
             let (value, hint) = self.dispose_stack.pop().expect("水位以上必有条目");
-            match self.dispose_value(value, hint) {
+            match self.dispose_value(value, hint)? {
                 DisposeOutcome::Done | DisposeOutcome::NoMethod => {}
                 DisposeOutcome::Err(exc) => {
                     completion = oxide_builtins::disposable_stack::merge_dispose_error(self, completion, exc);
+                }
+                DisposeOutcome::Suspended(promise) => {
+                    // 异步挂起：登记在途状态（水位已在循环前弹出，恢复后续循环不
+                    // 重复弹），置挂起信号让派发循环退出由恢复方快照。
+                    self.pending_async_dispose = Some(PendingAsyncDispose {
+                        dispose_promise: promise,
+                        mark,
+                        completion,
+                        kind: DisposeResumeKind::Pop,
+                    });
+                    self.disposing = false;
+                    return Ok(());
                 }
             }
         }
@@ -721,40 +749,51 @@ impl Vm {
         Ok(())
     }
 
-    /// 逆序释放 `depth` 以上资源并截断释放栈到 `depth`，同步弹出水位栈中
-    /// `>= depth` 的基线条目（保两栈一致，防异常路径基线泄漏）。
+    /// 批量释放核心：逆序释放 `depth` 以上条目并截断释放栈到 `depth`，同步弹出
+    /// 水位栈中 `>= depth` 的基线条目（保两栈一致，防异常路径基线泄漏）。
     ///
     /// # 步骤
-    /// 1. 在途异常作 completion 种子（异常穿越时被折叠进 suppressed）。
+    /// 1. 在途异常作 completion 种子（`seed`，异常穿越时被折叠进 suppressed）。
     /// 2. 逐条弹出并释放（`dispose_value`）；多个释放方法抛错时按规范折叠成
     ///    SuppressedError 链（后抛为 error、前值为 suppressed），循环不因错中断。
-    /// 3. 收尾写回 completion：有合并错误则替代在途异常并更新错误类型；无合并
+    /// 3. 异步挂起时登记 `PendingAsyncDispose`（携给定 `kind` 与在途合并错误）并
+    ///    返回 `Suspended`。
+    /// 4. 收尾写回 completion：有合并错误则替代在途异常并更新错误类型；无合并
     ///    错误则还原在途异常（类型不变）。
-    /// 4. 截断释放栈后，弹出水位栈中 `>= depth` 的基线条目。
+    /// 5. 截断释放栈后，弹出水位栈中 `>= depth` 的基线条目。
     ///
-    /// # 返回值
-    /// `true` = 有释放方法抛错（合并错误已写入 `exception_value`）；`false` = 全部正常。
-    ///
-    /// # 副作用
-    /// - 释放栈截断到 `depth`、水位栈弹出 `>= depth` 的基线。
-    /// - 有释放方法抛错时改写 `exception_value`/`pending_error_kind`。
-    pub(crate) fn dispose_above(&mut self, depth: usize) -> bool {
-        // 重入守卫：释放方法抛错触发的嵌套 unwind 会重入本函数，置位时直接返回，
-        // 防重复释放与合并（合并链会被二次折叠）。
+    /// # 边界与前提
+    /// - 重入守卫：释放方法抛错触发的嵌套 unwind 会重入本函数，`disposing` 置位时
+    ///   直接返回（防重复释放与合并，合并链会被二次折叠）。
+    /// - 挂起路径基线水位暂不弹（恢复续循环后统一弹）。
+    pub(crate) fn dispose_above_core(
+        &mut self, depth: usize, kind: DisposeResumeKind, seed: Option<JsValue>,
+    ) -> Result<DisposePhase, String> {
         if self.disposing {
-            return false;
+            return Ok(DisposePhase::Clean);
         }
         self.disposing = true;
-        let mut completion: Option<JsValue> = self.exception_value;
+        let mut completion: Option<JsValue> = seed;
         let mut threw = false;
         let truncated = self.dispose_stack.len() > depth;
         while self.dispose_stack.len() > depth {
             let (value, hint) = self.dispose_stack.pop().expect("水位以上必有条目");
-            match self.dispose_value(value, hint) {
+            match self.dispose_value(value, hint)? {
                 DisposeOutcome::Done | DisposeOutcome::NoMethod => {}
                 DisposeOutcome::Err(exc) => {
                     completion = oxide_builtins::disposable_stack::merge_dispose_error(self, completion, exc);
                     threw = true;
+                }
+                DisposeOutcome::Suspended(promise) => {
+                    // 异步挂起：登记在途状态，基线水位暂不弹（恢复续循环后统一弹）。
+                    self.pending_async_dispose = Some(PendingAsyncDispose {
+                        dispose_promise: promise,
+                        mark: depth,
+                        completion,
+                        kind,
+                    });
+                    self.disposing = false;
+                    return Ok(DisposePhase::Suspended);
                 }
             }
         }
@@ -772,77 +811,139 @@ impl Vm {
             }
         }
         self.disposing = false;
-        threw
+        Ok(if threw { DisposePhase::Threw } else { DisposePhase::Clean })
+    }
+
+    /// 异常穿越释放：逆序释放 `depth` 以上资源。在途异常作 completion 种子（被折叠
+    /// 进 suppressed）。挂起时携 `Unwind(handler)`（handler 已弹出，恢复时重压再入
+    /// unwind）。
+    pub(crate) fn dispose_above(
+        &mut self, depth: usize, handler: Option<TryHandler>,
+    ) -> Result<DisposePhase, String> {
+        self.dispose_above_core(depth, DisposeResumeKind::Unwind(handler), self.exception_value)
     }
 
     /// 释放栈顶部 `n` 条资源（逃出释放：return/break/continue 完成值逃出作用域时
-    /// 逆序释放被逃出的资源）。`n` 超过栈长时按全量释放。
-    ///
-    /// # 返回值
-    /// 同 `dispose_above`：`true` = 有释放方法抛错。
-    pub(crate) fn dispose_top_n(&mut self, n: usize) -> bool {
+    /// 逆序释放被逃出的资源）。`n` 超过栈长时按全量释放。在途 completion 初值为
+    /// None（完成值非 throw），挂起时携 `Escape(completion)` 供恢复后执行。
+    pub(crate) fn dispose_top_n(
+        &mut self, n: usize, completion: Completion,
+    ) -> Result<DisposePhase, String> {
         let depth = self.dispose_stack.len().saturating_sub(n);
-        self.dispose_above(depth)
+        self.dispose_above_core(depth, DisposeResumeKind::Escape(completion), None)
     }
 
-    /// 单资源释放（规范 Dispose 语义）：非对象跳过；按释放提示取方法（同步只取
-    /// Symbol.dispose；异步先取 Symbol.asyncDispose，未定义回退 Symbol.dispose），
-    /// 不可调用跳过；以资源自身为 this 零参调用。
+    /// 单资源释放（规范 Dispose 语义）：按释放提示取方法（同步只取 Symbol.dispose；
+    /// 异步先取 Symbol.asyncDispose，未定义回退 Symbol.dispose），以资源自身为 this
+    /// 零参调用。
     ///
     /// # 返回值
     /// `Done` = 释放成功；`NoMethod` = 无释放方法（跳过）；`Err(v)` = 释放方法抛错
-    /// （v 为原始异常值，经 `last_uncaught_value` 恢复，无则按错误文本建普通 Error）。
+    /// （v 为原始异常值，经 `last_uncaught_value` 恢复，无则按错误文本建普通 Error）；
+    /// `Suspended(promise)` = 异步释放已挂起（promise 为释放方法结果经 PromiseResolve
+    /// 包装后登记的结算 promise，调用方据此登记 `PendingAsyncDispose`）。
     ///
     /// # 边界与前提
     /// - 取方法 / 调用方法任一步抛错均归入 `Err`（getter 抛错与调用抛错同处置）。
-    /// - 异步方法结果为对象时须 Await 挂起，归后续任务；本期同步调用，结果丢弃。
-    fn dispose_value(&mut self, value: JsValue, hint: u16) -> DisposeOutcome {
+    /// - 异步提示恒挂起：方法未定义时结果取 undefined，仍经 PromiseResolve 包成新
+    ///   promise 让出一次微任务（规范 `await using` 的 Await 步无条件执行）。
+    fn dispose_value(&mut self, value: JsValue, hint: u16) -> Result<DisposeOutcome, String> {
+        // 取方法抛错（getter 抛错）归入 Err 结局（合并进链）。
+        let method = match self.lookup_dispose_method(value, hint) {
+            Ok(m) => m,
+            Err(exc) => return Ok(DisposeOutcome::Err(exc)),
+        };
+        // 异步提示且有异步上下文：调用方法（未定义时结果取 undefined），结果无条件
+        // Await 挂起。无异步上下文（顶层 await using）回退同步释放。
+        if hint == 1 && (self.async_context.is_some() || self.async_gen_context.is_some()) {
+            let result = if is_callable(method) {
+                match self.call_function_sync(method, value, &[]) {
+                    Ok(v) => v,
+                    Err(e) => return Ok(DisposeOutcome::Err(self.dispose_exc(e))),
+                }
+            } else {
+                JsValue::undefined()
+            };
+            let promise = match self.promise_resolve(result) {
+                Ok(p) => p,
+                Err(exc) => {
+                    let (p, _, _) = self.new_promise_capability();
+                    let _ = self.reject_promise(p, exc);
+                    p
+                }
+            };
+            self.register_dispose_suspend(promise)?;
+            return Ok(DisposeOutcome::Suspended(promise));
+        }
+        // 同步（或无异步上下文的异步提示）：不可调用跳过；调用成功 Done，抛错 Err。
+        if !is_callable(method) {
+            return Ok(DisposeOutcome::NoMethod);
+        }
+        match self.call_function_sync(method, value, &[]) {
+            Ok(_) => Ok(DisposeOutcome::Done),
+            Err(e) => Ok(DisposeOutcome::Err(self.dispose_exc(e))),
+        }
+    }
+
+    /// 取释放方法：异步提示先取 Symbol.asyncDispose，未定义回退 Symbol.dispose；
+    /// 同步提示只取 Symbol.dispose。非对象取 undefined。getter 抛错时返回原始
+    /// 异常值（经 `last_uncaught_value` 恢复，无则按错误文本建普通 Error）。
+    fn lookup_dispose_method(&mut self, value: JsValue, hint: u16) -> Result<JsValue, JsValue> {
         if !value.is_object() {
-            return DisposeOutcome::NoMethod;
+            return Ok(JsValue::undefined());
         }
         let val_obj = unsafe { &*value.as_js_object_ptr() };
         let dispose_key = encode_symbol_key(self.realm_id(), WELL_KNOWN_SYMBOL_DISPOSE);
         let method = if hint == 1 {
             let async_key = encode_symbol_key(self.realm_id(), WELL_KNOWN_SYMBOL_ASYNC_DISPOSE);
-            let async_method = match self.ordinary_get(val_obj, async_key, value) {
-                Ok(m) => m,
-                Err(e) => return self.dispose_thrown(e),
-            };
+            let async_method = self
+                .ordinary_get(val_obj, async_key, value)
+                .map_err(|e| self.dispose_exc(e))?;
             if async_method.is_undefined() {
-                match self.ordinary_get(val_obj, dispose_key, value) {
-                    Ok(m) => m,
-                    Err(e) => return self.dispose_thrown(e),
-                }
+                self.ordinary_get(val_obj, dispose_key, value).map_err(|e| self.dispose_exc(e))?
             } else {
                 async_method
             }
         } else {
-            match self.ordinary_get(val_obj, dispose_key, value) {
-                Ok(m) => m,
-                Err(e) => return self.dispose_thrown(e),
-            }
+            self.ordinary_get(val_obj, dispose_key, value).map_err(|e| self.dispose_exc(e))?
         };
-        if !method.is_object() {
-            return DisposeOutcome::NoMethod;
-        }
-        let method_obj = unsafe { &*method.as_js_object_ptr() };
-        if !method_obj.is_function() {
-            return DisposeOutcome::NoMethod;
-        }
-        match self.call_function_sync(method, value, &[]) {
-            Ok(_) => DisposeOutcome::Done,
-            Err(e) => self.dispose_thrown(e),
-        }
+        Ok(method)
     }
 
-    /// 释放方法抛错时恢复原始异常值（经 `last_uncaught_value`，无则按错误文本建
-    /// 普通 Error），归入 `Err` 结局。
-    fn dispose_thrown(&mut self, e: String) -> DisposeOutcome {
-        let exc = self
-            .last_uncaught_value
+    /// 登记异步释放挂起：按派发上下文（异步生成器 / 普通异步函数）构造结算闭包，
+    /// 登记 fulfill/reject 恢复反应并置挂起信号。
+    ///
+    /// # 边界与前提
+    /// - 异步生成器派发（`async_gen_dispatch`）走异步生成器状态盒与结算闭包，置
+    ///   `async_gen_suspended`；普通异步函数走异步上下文，置 `async_suspended`。
+    /// - 无对应上下文（非异步上下文内的异步释放）返回 Err，不静默降级。
+    fn register_dispose_suspend(&mut self, promise: JsValue) -> Result<(), String> {
+        if self.async_gen_dispatch {
+            let Some(ctx) = self.async_gen_context else {
+                return Err("async dispose in async generator without context".into());
+            };
+            let fulfill_fn = self.make_async_gen_dispose_resume_fn(ctx, promise, false);
+            let reject_fn = self.make_async_gen_dispose_resume_fn(ctx, promise, true);
+            let _ = self.perform_promise_then(promise, fulfill_fn, reject_fn);
+            self.async_gen_suspended = true;
+            return Ok(());
+        }
+        let Some(ctx) = self.async_context else {
+            return Err("async dispose outside async function".into());
+        };
+        let fulfill_fn = self.make_async_dispose_resume_fn(ctx, promise, false);
+        let reject_fn = self.make_async_dispose_resume_fn(ctx, promise, true);
+        let _ = self.perform_promise_then(promise, fulfill_fn, reject_fn);
+        self.async_suspended = true;
+        Ok(())
+    }
+
+    /// 释放路径抛错时恢复原始异常值（经 `last_uncaught_value`，无则按错误文本建
+    /// 普通 Error）。
+    fn dispose_exc(&mut self, e: String) -> JsValue {
+        self.last_uncaught_value
             .take()
-            .unwrap_or_else(|| oxide_builtins::error::create_from_text(self, &e));
-        DisposeOutcome::Err(exc)
+            .unwrap_or_else(|| oxide_builtins::error::create_from_text(self, &e))
     }
 
     pub(crate) fn dispatch_for_of_init(&mut self, a: usize) -> Result<(), String> {

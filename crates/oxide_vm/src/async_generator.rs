@@ -21,7 +21,8 @@ use oxide_types::object::{Cell, JsObject, NativeFnPtr, PropAttributes};
 use oxide_types::value::JsValue;
 
 use crate::generator::{DelegateOutcome, GeneratorResumeMode};
-use crate::vm::{Completion, Vm};
+use crate::vm::{Completion, DisposeResumeKind, Vm};
+use crate::vm_dispatch_misc::DisposePhase;
 
 /// 异步生成器执行阶段。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -93,6 +94,8 @@ const AG_YIELD_PROMISE_PROP: &str = "__oxide_async_gen_yield_promise__";
 const AG_YIELD_RAW_PROP: &str = "__oxide_async_gen_yield_raw__";
 /// 委托步进取续闭包上存协议步的属性名。
 const AG_STEP_PROP: &str = "__oxide_async_gen_delegate_step__";
+/// 异步释放结算闭包上存释放方法 promise 的属性名（陈旧防御校验用）。
+const AG_DISPOSE_PROMISE_PROP: &str = "__oxide_async_gen_dispose_promise__";
 
 impl Vm {
     /// 调用异步生成器函数返回的迭代器对象：创建异步生成器实例、挂状态并执行
@@ -793,6 +796,29 @@ impl Vm {
         JsValue::from_js_object(ptr)
     }
 
+    /// 构造异步释放结算闭包（异步生成器）：携带目标异步生成器上下文对象与
+    /// 释放方法 promise，区分 fulfill/reject 角色。
+    pub(crate) fn make_async_gen_dispose_resume_fn(
+        &mut self, ctx: JsValue, promise: JsValue, reject_role: bool,
+    ) -> JsValue {
+        let fn_proto = self.realm.session.borrow().builtin_world().fn_proto_val();
+        let mut func = JsObject::new_empty(EMPTY_SHAPE_ID, fn_proto);
+        func.set_function(true);
+        // SAFETY: async_gen_dispose_closure 是 NativeFn 函数项。
+        func.set_native_fn(Some(unsafe { NativeFnPtr::from_raw(async_gen_dispose_closure as *const ()) }));
+        func.set_native_arg_count(1);
+        let ptr = self.alloc_object(func);
+        let obj = unsafe { &mut *ptr };
+        let ctx_si = self.kernel_core.perm_interner().intern(crate::async_func::ASYNC_CTX_PROP).0;
+        self.set_or_create_prop_value(obj, ctx_si, ctx);
+        let role_si = self.kernel_core.perm_interner().intern(AG_REJECT_PROP).0;
+        self.set_or_create_prop_value(obj, role_si, JsValue::bool(reject_role));
+        let promise_si = self.kernel_core.perm_interner().intern(AG_DISPOSE_PROMISE_PROP).0;
+        self.set_or_create_prop_value(obj, promise_si, promise);
+        self.add_fn_name_length(obj, "", 1);
+        JsValue::from_js_object(ptr)
+    }
+
     /// 恢复逃出 for-await-of 的异步生成器：return() 的 promise 结算后继续关闭剩余
     /// 条目并执行完成。
     ///
@@ -913,6 +939,151 @@ impl Vm {
                 let result = self.dispatch();
                 self.restore_async_gen_flags(prev_ctx, prev_gen_ctx, prev_gd, prev_ad, prev_agd);
                 self.post_dispatch_async_gen(state_ptr, saved, ctx, result)
+            }
+        }
+    }
+
+    /// 恢复 `await using` 释放挂起的异步生成器：释放方法 promise 结算后继续释放
+    /// 剩余条目并执行完成。
+    ///
+    /// # 步骤
+    /// 1. 陈旧防御：状态盒 `pending_async_dispose.dispose_promise` 须与本闭包 promise
+    ///    匹配，不匹配则不处理（防同一 promise 被双结算）。
+    /// 2. 把挂起快照灌回 VM，取出水位 / 合并错误 / 恢复类别并清除
+    ///    `pending_async_dispose`。
+    /// 3. 拒绝角色：拒绝值合并进合并错误。
+    /// 4. 从水位续释放循环（复用批量释放核心）；再挂起则重新登记 + 快照 + 返回。
+    /// 5. 循环后执行类别：`Pop` 有合并错误则展开否则续行；`Unwind` 重压 handler 再入
+    ///    unwind；`Escape` 有合并错误则丢弃完成值展开否则执行完成。
+    /// 6. 再挂起则快照新状态；完成 / 异常则结算当前请求。恢复调用方状态。
+    pub(crate) fn resume_async_gen_dispose(
+        &mut self, ctx: JsValue, promise: JsValue, is_reject: bool, value: JsValue,
+    ) -> Result<(), String> {
+        let state_ptr = self.async_gen_state_ptr(ctx);
+        let saved = self.save_inline_state(256);
+        // 清上一轮残留的挂起信号（防陈旧信号误消费）。
+        self.generator_suspended = None;
+        self.async_gen_suspended = false;
+        let prev_ctx = self.async_context.take();
+        let prev_gd = self.generator_dispatch;
+        let prev_ad = self.async_dispatch;
+        let prev_gen_ctx = self.async_gen_context.take();
+        let prev_agd = self.async_gen_dispatch;
+        self.generator_dispatch = true;
+        self.async_dispatch = true;
+        self.async_gen_dispatch = true;
+        self.async_context = Some(ctx);
+        self.async_gen_context = Some(ctx);
+        self.native_call_depth += 1;
+
+        {
+            let state = unsafe { &mut *state_ptr };
+            // 陈旧防御：dispose_promise 须匹配，陈旧闭包不处理。
+            let is_stale = !matches!(
+                state.suspended.pending_async_dispose.as_ref(),
+                Some(p) if p.dispose_promise == promise
+            );
+            if is_stale {
+                self.restore_async_gen_flags(prev_ctx, prev_gen_ctx, prev_gd, prev_ad, prev_agd);
+                self.restore_inline_state(saved);
+                return Ok(());
+            }
+            let restore_res = state.suspended.restore_into(self, state.callee);
+            if restore_res.is_err() {
+                self.restore_async_gen_flags(prev_ctx, prev_gen_ctx, prev_gd, prev_ad, prev_agd);
+                self.restore_inline_state(saved);
+                return Err("async generator suspended across runs is no longer valid".into());
+            }
+            state.phase = AsyncGenPhase::Running;
+        }
+
+        // 取出水位 / 合并错误 / 恢复类别并清除 pending_async_dispose。
+        let (mark, completion, kind) = match self.pending_async_dispose.take() {
+            Some(p) => (p.mark, p.completion, p.kind),
+            // 陈旧防御已早退，正常路径此处必为 Some；防御性兜底。
+            None => {
+                self.restore_async_gen_flags(prev_ctx, prev_gen_ctx, prev_gd, prev_ad, prev_agd);
+                self.restore_inline_state(saved);
+                return Ok(());
+            }
+        };
+
+        // 拒绝角色：拒绝值合并进合并错误。
+        let completion = if is_reject {
+            oxide_builtins::disposable_stack::merge_dispose_error(self, completion, value)
+        } else {
+            completion
+        };
+
+        // 从水位续释放循环（复用批量释放核心）；再挂起则重新登记 + 快照 + 返回。
+        if matches!(self.dispose_above_core(mark, kind, completion)?, DisposePhase::Suspended) {
+            unsafe { (*state_ptr).phase = AsyncGenPhase::AwaitSuspended };
+            self.snapshot_async_generator(state_ptr)?;
+            self.restore_async_gen_flags(prev_ctx, prev_gen_ctx, prev_gd, prev_ad, prev_agd);
+            self.restore_inline_state(saved);
+            return Ok(());
+        }
+
+        // 循环后执行类别。
+        match kind {
+            DisposeResumeKind::Pop => {
+                // 有合并错误则展开（无处理器则 reject 当前请求），否则续行。
+                if self.exception_value.is_some() && self.unwind().is_err() {
+                    let exc = self.last_uncaught_value.take().unwrap_or(JsValue::undefined());
+                    self.restore_async_gen_flags(prev_ctx, prev_gen_ctx, prev_gd, prev_ad, prev_agd);
+                    return self.finish_async_gen_exc(state_ptr, saved, ctx, exc);
+                }
+                let result = self.dispatch();
+                self.restore_async_gen_flags(prev_ctx, prev_gen_ctx, prev_gd, prev_ad, prev_agd);
+                self.post_dispatch_async_gen(state_ptr, saved, ctx, result)
+            }
+            DisposeResumeKind::Unwind(handler) => {
+                // 重压 handler 再入 unwind（handler 已弹出，不重压则 catch/finally 丢失）。
+                if let Some(h) = handler {
+                    self.try_stack.push(h);
+                }
+                if self.unwind().is_err() {
+                    let exc = self.last_uncaught_value.take().unwrap_or(JsValue::undefined());
+                    self.restore_async_gen_flags(prev_ctx, prev_gen_ctx, prev_gd, prev_ad, prev_agd);
+                    return self.finish_async_gen_exc(state_ptr, saved, ctx, exc);
+                }
+                let result = self.dispatch();
+                self.restore_async_gen_flags(prev_ctx, prev_gen_ctx, prev_gd, prev_ad, prev_agd);
+                self.post_dispatch_async_gen(state_ptr, saved, ctx, result)
+            }
+            DisposeResumeKind::Escape(completion_val) => {
+                if self.exception_value.is_some() {
+                    // 有合并错误：丢弃完成值，展开到外围处理器（无处理器则 reject）。
+                    if self.unwind().is_err() {
+                        let exc = self.last_uncaught_value.take().unwrap_or(JsValue::undefined());
+                        self.restore_async_gen_flags(prev_ctx, prev_gen_ctx, prev_gd, prev_ad, prev_agd);
+                        return self.finish_async_gen_exc(state_ptr, saved, ctx, exc);
+                    }
+                    let result = self.dispatch();
+                    self.restore_async_gen_flags(prev_ctx, prev_gen_ctx, prev_gd, prev_ad, prev_agd);
+                    self.post_dispatch_async_gen(state_ptr, saved, ctx, result)
+                } else {
+                    // 无合并错误：执行完成。
+                    match completion_val {
+                        Completion::Return { value: ret_val, .. } => {
+                            let result = self.do_return(ret_val)?;
+                            if let Some(result) = result {
+                                self.restore_async_gen_flags(prev_ctx, prev_gen_ctx, prev_gd, prev_ad, prev_agd);
+                                return self.finish_async_gen_ok(state_ptr, saved, ctx, result);
+                            }
+                            // 嵌套帧未弹空：续 dispatch。
+                            let result = self.dispatch();
+                            self.restore_async_gen_flags(prev_ctx, prev_gen_ctx, prev_gd, prev_ad, prev_agd);
+                            self.post_dispatch_async_gen(state_ptr, saved, ctx, result)
+                        }
+                        Completion::Break { target_pc, .. } | Completion::Continue { target_pc, .. } => {
+                            self.pc = target_pc;
+                            let result = self.dispatch();
+                            self.restore_async_gen_flags(prev_ctx, prev_gen_ctx, prev_gd, prev_ad, prev_agd);
+                            self.post_dispatch_async_gen(state_ptr, saved, ctx, result)
+                        }
+                    }
+                }
             }
         }
     }
@@ -1238,6 +1409,29 @@ fn async_gen_escape_closure(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let promise = vm.resolve_property(callee_obj, promise_si).unwrap_or(JsValue::undefined());
     let value = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
     match vm.resume_async_gen_escape(ctx, promise, is_reject, value) {
+        Ok(()) => NativeResult::Ok(JsValue::undefined()),
+        Err(e) => NativeResult::Err(oxide_builtins::error::create_from_text(vm, &e)),
+    }
+}
+
+/// 异步释放结算闭包（异步生成器）：读自身 prop 的异步生成器上下文、释放方法
+/// promise 与角色，恢复挂起帧并继续释放剩余条目、执行完成。
+fn async_gen_dispose_closure(vm: &mut Vm, args: &[u8]) -> NativeResult {
+    let callee = vm.reg(254);
+    if !callee.is_object() {
+        return NativeResult::Err(oxide_builtins::error::create_type_error(vm, "dispose resume handler is invalid"));
+    }
+    let callee_obj = unsafe { &*callee.as_js_object_ptr() };
+    let ctx_si = vm.kernel_core.perm_interner().intern(crate::async_func::ASYNC_CTX_PROP).0;
+    let ctx = vm.resolve_property(callee_obj, ctx_si).unwrap_or(JsValue::undefined());
+    let role_si = vm.kernel_core.perm_interner().intern(AG_REJECT_PROP).0;
+    let is_reject = vm
+        .resolve_property(callee_obj, role_si)
+        .is_some_and(oxide_runtime_api::to_boolean);
+    let promise_si = vm.kernel_core.perm_interner().intern(AG_DISPOSE_PROMISE_PROP).0;
+    let promise = vm.resolve_property(callee_obj, promise_si).unwrap_or(JsValue::undefined());
+    let value = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
+    match vm.resume_async_gen_dispose(ctx, promise, is_reject, value) {
         Ok(()) => NativeResult::Ok(JsValue::undefined()),
         Err(e) => NativeResult::Err(oxide_builtins::error::create_from_text(vm, &e)),
     }

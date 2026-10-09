@@ -8,7 +8,7 @@ use super::frames::Completion;
 use super::Vm;
 use crate::session_gc::SessionGc;
 
-/// GC 根组来源：`for_each_value` 枚举的 26 个根组，变体顺序与根清单
+/// GC 根组来源：`for_each_value` 枚举的 27 个根组，变体顺序与根清单
 /// 的枚举顺序一致。
 ///
 /// 变体下标是逐组计数数组（`SessionGc::root_counts`）的下标；`COUNT` 与
@@ -31,6 +31,7 @@ pub(crate) enum RootGroup {
     AsyncContext,
     AsyncGenContext,
     PendingAsyncEscape,
+    PendingAsyncDispose,
     InlineCallee,
     TemplateObjects,
     NumberToStringCache,
@@ -45,7 +46,7 @@ pub(crate) enum RootGroup {
 
 impl RootGroup {
     /// 根组总数（与变体数同源，绑定逐组计数数组的长度）。
-    pub const COUNT: usize = 26;
+    pub const COUNT: usize = 27;
 }
 
 impl Vm {
@@ -53,7 +54,7 @@ impl Vm {
     /// 覆盖执行核心的全部 JsValue 持有点：regs/帧/各栈段/cell/在途异常与完成/
     /// 挂起信号/迭代器/微任务/global/Worker 对象注册表。
     ///
-    /// 闭包接收根组来源（`RootGroup`）与根值：组是枚举顺序中的 26 根组之一，
+    /// 闭包接收根组来源（`RootGroup`）与根值：组是枚举顺序中的 27 根组之一，
     /// 调用方按组计数（如 `SessionGc` 的逐组计数）。
     pub(crate) fn for_each_value(&self, mut f: impl FnMut(RootGroup, JsValue)) {
         for value in &self.regs {
@@ -119,6 +120,16 @@ impl Vm {
             }
             for &v in &pend.remaining {
                 f(RootGroup::PendingAsyncEscape, v);
+            }
+        }
+        // 在途异步释放的 promise/合并错误/完成值都是 GC 根。
+        if let Some(pend) = &self.pending_async_dispose {
+            f(RootGroup::PendingAsyncDispose, pend.dispose_promise);
+            if let Some(v) = pend.completion {
+                f(RootGroup::PendingAsyncDispose, v);
+            }
+            if let super::DisposeResumeKind::Escape(Completion::Return { value, .. }) = pend.kind {
+                f(RootGroup::PendingAsyncDispose, value);
             }
         }
         f(RootGroup::InlineCallee, self.inline_callee.unwrap_or(JsValue::undefined()));
