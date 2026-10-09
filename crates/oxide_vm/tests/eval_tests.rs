@@ -328,6 +328,50 @@ fn compound_statement_completion_values() {
     assert_num(result, 5.0);
     let result = eval(&mut vm, "a: { try { throw 1; } catch (e) { 5; break a; } }").unwrap();
     assert_num(result, 5.0);
+    // try 边界帧：空 catch/finally 体 break/continue 携值物化 undefined（无 if
+    // 守卫独立验收形），非空 finally 体值穿透。
+    let result = eval(
+        &mut vm,
+        "for (var i = 0; i < 2; ++i) { try { throw null; } catch (e) { break; } 'bad completion'; }",
+    )
+    .unwrap();
+    assert_eq!(result, JsValue::undefined());
+    let result = eval(
+        &mut vm,
+        "for (var i = 0; i < 2; ++i) { try { throw null; } catch (e) { continue; } 'bad completion'; }",
+    )
+    .unwrap();
+    assert_eq!(result, JsValue::undefined());
+    let result = eval(&mut vm, "for (var i = 0; i < 2; ++i) { try {} finally { break; } 'bad completion'; }").unwrap();
+    assert_eq!(result, JsValue::undefined());
+    let result =
+        eval(&mut vm, "for (var i = 0; i < 2; ++i) { try {} finally { continue; } 'bad completion'; }").unwrap();
+    assert_eq!(result, JsValue::undefined());
+    let result = eval(
+        &mut vm,
+        "for (var i = 0; i < 2; ++i) { try { throw null; } catch (e) {} finally { break; } 'bad completion'; }",
+    )
+    .unwrap();
+    assert_eq!(result, JsValue::undefined());
+    let result = eval(
+        &mut vm,
+        "for (var i = 0; i < 2; ++i) { try { throw null; } catch (e) {} finally { continue; } 'bad completion'; }",
+    )
+    .unwrap();
+    assert_eq!(result, JsValue::undefined());
+    // 跨 finally 值通道守卫：非空 finally 体值穿透，空 finally 体物化 undefined。
+    let result = eval(
+        &mut vm,
+        "99; do { -99; try { 39 } catch (e) { -1 } finally { 42; break; -2 }; } while (false);",
+    )
+    .unwrap();
+    assert_num(result, 42.0);
+    let result = eval(
+        &mut vm,
+        "99; do { -99; try { 39 } catch (e) { -1 } finally { break; -2 }; } while (false);",
+    )
+    .unwrap();
+    assert_eq!(result, JsValue::undefined());
     // for 泄漏形完成值：体不读循环变量加常量尾，取末次迭代体值，前值不沿用。
     let result = eval(&mut vm, "for (var i = 0; i < 2; ++i) { 42 }").unwrap();
     assert_num(result, 42.0);

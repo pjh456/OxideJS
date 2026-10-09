@@ -19,6 +19,10 @@ impl Emitter {
         let has_catch = ts.handler.is_some();
         let has_finally = ts.finalizer.is_some();
         let result_reg = ctx.alloc_reg();
+        // try 语句整体是 `UpdateEmpty(_, undefined)` 站点：压边界帧，位于
+        // try/catch/finally 三个体列表帧之外，非空内层列表值穿透、空内层体
+        // 携值物化 undefined。
+        ctx.push_completion_boundary();
         if has_finally {
             // finally 域跨整个语句（try 体 + catch 体 + finally 体）：期间 break/continue
             // 逃出语句时须穿越本 finally，词法上记录域深度供跨越计数。
@@ -144,6 +148,7 @@ impl Emitter {
             ctx.pop_finally_domain();
         }
         ctx.labels.set_label_pos(try_end_label, ctx.insts.len());
+        ctx.pop_completion_boundary();
         Ok(Some(result_reg))
     }
 }
