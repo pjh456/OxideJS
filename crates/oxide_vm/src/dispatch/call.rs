@@ -137,8 +137,14 @@ impl Vm {
                             let sub = self.callee_module(obj);
                             if matches!(sub, Some(m) if m.is_async || m.is_generator) {
                                 self.constructing_native = false;
+                                let gen_pc = self.pc;
                                 let result = self.call_bytecode_function_inline(callee, obj, this, &args)?;
-                                self.regs[0] = result;
+                                // 参数初始化抛错已就地展开（unwind 改写 pc 至 catch）：异常值已
+                                // 写入 catch 参数，再写结果寄存器会覆盖之——仅在初始化成功（pc 未动）
+                                // 时交付结果。
+                                if self.pc == gen_pc {
+                                    self.regs[0] = result;
+                                }
                                 return Ok(());
                             }
                         }

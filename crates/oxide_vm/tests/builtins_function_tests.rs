@@ -450,3 +450,28 @@ fn function_bind_async_generator_target_returns_iterator() {
     let result = eval(&mut vm, "async function* g(){ return 99; } typeof g.bind(null)()").unwrap();
     assert_eq!(vm.lookup_str(result).unwrap_or_default(), "object");
 }
+
+#[test]
+fn function_call_generator_param_default_throw_keeps_catch_value() {
+    // 生成器目标带抛错的参数默认值，经 call/apply/bind 调用且调用点在 try/catch 内：
+    // catch 参数须是抛出的原值 42，不得被占位迭代器对象覆盖。
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "function* g(x = (function(){ throw 42; })()) { yield 1; } try { g.call(null); } catch (e) { e; }",
+    )
+    .unwrap();
+    assert_eq!(result, JsValue::int(42));
+    let result = eval(
+        &mut vm,
+        "function* g(x = (function(){ throw 42; })()) { yield 1; } try { g.apply(null, []); } catch (e) { e; }",
+    )
+    .unwrap();
+    assert_eq!(result, JsValue::int(42));
+    let result = eval(
+        &mut vm,
+        "function* g(x = (function(){ throw 42; })()) { yield 1; } try { g.bind(null)(); } catch (e) { e; }",
+    )
+    .unwrap();
+    assert_eq!(result, JsValue::int(42));
+}
