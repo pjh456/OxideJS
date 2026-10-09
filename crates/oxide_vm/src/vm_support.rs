@@ -101,6 +101,7 @@ impl Vm {
                     gc_watermark: gc_threshold,
                     pending_forced_collect: false,
                     gc_pressure_mode: gc_pressure_mode_from_env(),
+                    broadcast_channels: std::collections::HashMap::new(),
                 }),
                 symbols: RefCell::new(SymbolState {
                     symbol_descriptions: Vec::new(),
@@ -257,6 +258,7 @@ impl Vm {
                     gc_watermark: gc_threshold,
                     pending_forced_collect: false,
                     gc_pressure_mode: gc_pressure_mode_from_env(),
+                    broadcast_channels: std::collections::HashMap::new(),
                 }),
                 symbols: RefCell::new(SymbolState {
                     symbol_descriptions: Vec::new(),

@@ -198,6 +198,9 @@ impl KernelSession {
             console: gen(BuiltinId::Console) != snap(BuiltinId::Console),
             message_channel: gen(BuiltinId::MessagePortProto) != snap(BuiltinId::MessagePortProto)
                 || gen(BuiltinId::MessageChannelCtor) != snap(BuiltinId::MessageChannelCtor),
+            broadcast_channel: gen(BuiltinId::BroadcastChannelProto)
+                != snap(BuiltinId::BroadcastChannelProto)
+                || gen(BuiltinId::BroadcastChannelCtor) != snap(BuiltinId::BroadcastChannelCtor),
         };
         // wrapper 本体被写不落在任何家族位上（写的是 wrapper 自身而非所属 P
         // 对象）：收缩为全脏，强制重建全部家族与 global，使被写的可复用

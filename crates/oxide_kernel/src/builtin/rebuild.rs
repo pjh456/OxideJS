@@ -407,6 +407,20 @@ impl BuiltinWorld {
             (current.message_port_proto.clone(), current.message_channel_constructor.clone())
         };
 
+        // BroadcastChannel 原型与构造器：脏则换新空对象占位（与全量构造同形），
+        // 未脏沿用旧指针。
+        let (broadcast_channel_proto, broadcast_channel_constructor) = if dirty.broadcast_channel {
+            (
+                P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
+                P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
+            )
+        } else {
+            (
+                current.broadcast_channel_proto.clone(),
+                current.broadcast_channel_constructor.clone(),
+            )
+        };
+
         // 迭代器原型与资源栈原型依赖 Object.prototype（链到其上）：object 家族重建时
         // 一并重建，否则旧原型链指向已释放的 object_proto。
         let (
@@ -559,6 +573,8 @@ impl BuiltinWorld {
             console_object,
             message_port_proto,
             message_channel_constructor,
+            broadcast_channel_proto,
+            broadcast_channel_constructor,
             leaked_objects: std::cell::RefCell::new(Vec::new()),
         };
         wire_builtin_world_links(&world);

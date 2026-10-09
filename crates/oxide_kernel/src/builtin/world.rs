@@ -144,6 +144,12 @@ pub struct BuiltinWorld {
     /// `MessageChannel` 构造器槽位：纯内核接线占位（空对象），真实构造器
     /// 本体由绑定层后续任务填充。
     pub message_channel_constructor: P<JsObject>,
+    /// `BroadcastChannel.prototype` 槽位：纯内核接线占位（空对象），真实
+    /// 原型本体与构造器对由绑定层后续任务填充；脏家族位为 `broadcast_channel`。
+    pub broadcast_channel_proto: P<JsObject>,
+    /// `BroadcastChannel` 构造器槽位：纯内核接线占位（空对象），真实构造器
+    /// 本体由绑定层后续任务填充。
+    pub broadcast_channel_constructor: P<JsObject>,
     /// 释放登记表（`Box::into_raw` 对象的清单，session 收尾统一释放，非内存泄漏）：
     /// 绑定层经 `Box::into_raw` 持有的函数/宿主对象（方法 wrapper、访问器、
     /// 错误构造器、Reflect/Iterator、内建原型构造器、`$262` 宿主等）。
@@ -374,7 +380,7 @@ impl BuiltinWorld {
     /// session 收尾（`teardown_heap_data`）与选择性重建收尾（`retire_replaced`）
     /// 的 P 字段枚举唯一入口：`BuiltinWorld` 新增 P 字段须在此同步补一行，否则
     /// 收尾时该字段属性区无法释放、重建原型槽改写/释放漏掉该字段。
-    pub(crate) fn all_p_fields(&self) -> [&P<JsObject>; 97] {
+    pub(crate) fn all_p_fields(&self) -> [&P<JsObject>; 99] {
         [
             &self.object_proto,
             &self.array_proto,
@@ -473,6 +479,8 @@ impl BuiltinWorld {
             &self.console_object,
             &self.message_port_proto,
             &self.message_channel_constructor,
+            &self.broadcast_channel_proto,
+            &self.broadcast_channel_constructor,
         ]
     }
 
@@ -608,6 +616,8 @@ impl BuiltinWorld {
             BuiltinId::AsyncIteratorProto => &self.async_iterator_proto,
             BuiltinId::MessagePortProto => &self.message_port_proto,
             BuiltinId::MessageChannelCtor => &self.message_channel_constructor,
+            BuiltinId::BroadcastChannelProto => &self.broadcast_channel_proto,
+            BuiltinId::BroadcastChannelCtor => &self.broadcast_channel_constructor,
         }
     }
 }
