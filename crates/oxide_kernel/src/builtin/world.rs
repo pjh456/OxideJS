@@ -1,5 +1,5 @@
-//! 注册表职责：BuiltinWorld 结构（97 固定 P 字段 + stub 族 + Box::into_raw
-//! 登记表）、get_by_id 派发、all_p_fields 97 元组枚举（新增 P 字段四处同步
+//! 注册表职责：BuiltinWorld 结构（99 固定 P 字段 + stub 族 + Box::into_raw
+//! 登记表）、get_by_id 派发、all_p_fields 99 元组枚举（新增 P 字段四处同步
 //! 约束载体）与登记表 track/find/inherit/teardown。
 
 use oxide_types::mem::P;
