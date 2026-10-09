@@ -230,10 +230,13 @@ pub struct Vm {
     /// VM 级 spill 栈。`CallFrame.spill_offset` 定位本帧区：调用子函数时从边界后分配，
     /// 帧恢复时截断到边界，子函数 spill 数据随帧丢弃。
     pub(crate) spill_stack: Vec<JsValue>,
-    /// using/await using 声明的资源释放栈：DISPOSE_REGISTER 把资源值压入，
-    /// 作用域出口点逆序释放（释放点由后续指令族承担）。栈内 JsValue 是 GC 根
+    /// using/await using 声明的资源释放栈：DISPOSE_REGISTER 把（资源值，释放提示）
+    /// 压入，DISPOSE_POP 按水位逆序释放并截断。栈内 JsValue 是 GC 根
     /// （`for_each_value` 遍历）；run 边界清空，防跨 run 残留条目在下一 run 被误释放。
-    pub(crate) dispose_stack: Vec<JsValue>,
+    pub(crate) dispose_stack: Vec<(JsValue, u16)>,
+    /// 作用域水位栈：DISPOSE_MARK 压入当前释放栈深度，DISPOSE_POP 弹出并只释放
+    /// 水位以上条目。与释放栈同生共死（run 边界一并清空）。
+    pub(crate) dispose_marks: Vec<usize>,
     /// 本次 native 调用的 spill 溢出实参区：`spill_stack[base..base+count)`。
     /// 实参数超过寄存器窗口（253）时，窗口外的实参转存 spill 栈（GC 根），
     /// native 侧经 `VmHost::native_arg_count`/`native_arg_at` 读取。仅在一次

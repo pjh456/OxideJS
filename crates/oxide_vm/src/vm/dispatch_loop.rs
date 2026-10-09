@@ -289,6 +289,12 @@ impl Vm {
                 OpCode::DISPOSE_REGISTER => {
                     self.dispatch_dispose_register(rd, a);
                 }
+                OpCode::DISPOSE_MARK => {
+                    self.dispatch_dispose_mark();
+                }
+                OpCode::DISPOSE_POP => {
+                    self.dispatch_dispose_pop()?;
+                }
                 OpCode::CELL_GET => {
                     self.dispatch_cell_get(rd, a, b)?;
                 }

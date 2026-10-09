@@ -7,6 +7,7 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use oxide_bytecode::module::{Constant, UpvalueCapture};
+use oxide_bytecode::opcode::OpCode;
 use oxide_ir::inst::Inst;
 use oxide_ir::operand::{LabelId, Operand};
 use oxide_ir::IRFunction;
@@ -238,6 +239,7 @@ impl CompileCtx {
                 finally_depth: 0,
                 for_of_depth: 0,
                 for_in_depth: 0,
+                dispose_depth: 0,
                 label_counter: 0,
             },
             scopes: ScopeCtx {
@@ -588,6 +590,7 @@ impl CompileCtx {
         }
         let fod = self.labels.for_of_depth;
         let fid = self.labels.for_in_depth;
+        let dd = self.labels.dispose_depth;
         let v_reg = self.alloc_reg();
         let undef_idx = self.add_constant(Constant::Undefined);
         self.inst(Inst::load_const(Operand::Reg(v_reg), undef_idx));
@@ -597,6 +600,7 @@ impl CompileCtx {
             finally_depth_at_open: fd,
             for_of_depth_at_open: fod,
             for_in_depth_at_open: fid,
+            dispose_depth_at_open: dd,
             kind,
             v_reg,
         });
@@ -622,11 +626,13 @@ impl CompileCtx {
         let fd = self.labels.finally_depth;
         let fod = self.labels.for_of_depth;
         let fid = self.labels.for_in_depth;
+        let dd = self.labels.dispose_depth;
         self.labels.switch_stack.push(SwitchEntry {
             break_label,
             finally_depth_at_open: fd,
             for_of_depth_at_open: fod,
             for_in_depth_at_open: fid,
+            dispose_depth_at_open: dd,
             result_reg,
         });
     }
@@ -711,6 +717,22 @@ impl CompileCtx {
         self.labels.finally_depth -= 1;
     }
 
+    /// 发 DISPOSE_MARK：作用域入口登记释放栈水位，dispose_depth 递增。
+    ///
+    /// # 边界与前提
+    /// - 与 `emit_dispose_pop` 成对；编译期不变式是函数体收尾 dispose_depth 归零
+    ///   （`assemble_ir` 前 debug_assert 校验）。
+    pub(crate) fn emit_dispose_mark(&mut self) {
+        self.inst(Inst::new(OpCode::DISPOSE_MARK, Operand::None, Operand::None, Operand::None));
+        self.labels.dispose_depth += 1;
+    }
+
+    /// 发 DISPOSE_POP：作用域出口逆序释放水位以上资源，dispose_depth 递减。
+    pub(crate) fn emit_dispose_pop(&mut self) {
+        self.inst(Inst::new(OpCode::DISPOSE_POP, Operand::None, Operand::None, Operand::None));
+        self.labels.dispose_depth -= 1;
+    }
+
     /// 记录一个纯 catch handler 打开（对应 emit try_begin 后的运行时 TRY_BEGIN）。
     pub(crate) fn push_open_catch_handler(&mut self) {
         self.open_try_handlers.push(true);
@@ -743,6 +765,7 @@ impl CompileCtx {
         let fd = self.labels.finally_depth;
         let fod = self.labels.for_of_depth;
         let fid = self.labels.for_in_depth;
+        let dd = self.labels.dispose_depth;
         self.labels.label_scopes.push(LabelScope {
             name: name.to_string(),
             break_label,
@@ -750,6 +773,7 @@ impl CompileCtx {
             finally_depth_at_open: fd,
             for_of_depth_at_open: fod,
             for_in_depth_at_open: fid,
+            dispose_depth_at_open: dd,
             completion_reg,
         });
         Ok(())
@@ -785,6 +809,7 @@ impl CompileCtx {
         let fd = self.labels.finally_depth;
         let fod = self.labels.for_of_depth;
         let fid = self.labels.for_in_depth;
+        let dd = self.labels.dispose_depth;
         for name in names {
             self.labels.label_scopes.push(LabelScope {
                 name,
@@ -793,6 +818,7 @@ impl CompileCtx {
                 finally_depth_at_open: fd,
                 for_of_depth_at_open: fod,
                 for_in_depth_at_open: fid,
+                dispose_depth_at_open: dd,
                 completion_reg: Some(completion_reg),
             });
         }
@@ -921,6 +947,12 @@ impl CompileCtx {
     pub(crate) fn assemble_ir(
         &mut self, param_layout: oxide_ir::ParamLayout, parent_ctx: Option<&CompileCtx>,
     ) -> IRFunction {
+        // 编译期不变式：每个 DISPOSE_MARK 都有配对的 DISPOSE_POP，函数体收尾
+        // 释放作用域全部关闭（早 return 跳过 POP 归穿越面，不在此列）。
+        debug_assert!(
+            self.labels.dispose_depth == 0,
+            "函数体收尾释放作用域深度须归零（mark/pop 未配对）"
+        );
         let upvalue_captures = self
             .current_upvalue_captures
             .iter()

@@ -84,8 +84,8 @@ impl Vm {
             f(RootGroup::SpillStack, v);
         }
         // 释放栈持 using 声明的资源值：漏根 → sweep 释放 → 释放点解引用悬垂。
-        for &v in &self.dispose_stack {
-            f(RootGroup::DisposeStack, v);
+        for (v, _) in &self.dispose_stack {
+            f(RootGroup::DisposeStack, *v);
         }
         for cell_vec in &self.cell_stack {
             for &cell_ptr in cell_vec {

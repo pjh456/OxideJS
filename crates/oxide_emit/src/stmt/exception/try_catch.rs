@@ -38,6 +38,12 @@ impl Emitter {
         // try block 是独立块作用域：lexical 声明（let/const/class）限定于 try 内，
         // 与外层同名绑定互不干扰；块级预声明使声明点前读取编译为 TDZ 抛错。
         ctx.push_scope();
+        // try 体是独立释放环境：仅当体含 using 声明时入口登记水位、体尾正常
+        // 完成逆序释放（异常穿越跳过本点，归穿越面）。
+        let try_has_using = Self::scope_contains_using(&ts.block.body);
+        if try_has_using {
+            ctx.emit_dispose_mark();
+        }
         // 函数预声明先于 lexical：同名 let 命中已有函数绑定报重复声明错。
         self.predeclare_block_function_declarations(&ts.block.body, ctx, false);
         // try 块 lexical 声明是局部绑定：不做受限全局名检查（重复声明错在 emit 期报）。
@@ -58,6 +64,10 @@ impl Emitter {
         }
         ctx.pop_completion_list();
         ctx.block_fn_entry_mats.pop();
+        // try 体正常完成出口：逆序释放本体声明的资源。
+        if try_has_using {
+            ctx.emit_dispose_pop();
+        }
         ctx.pop_scope();
         ctx.inst(Inst::new(
             OpCode::LOAD_VAR,
@@ -77,6 +87,12 @@ impl Emitter {
         ctx.labels.set_label_pos(catch_label, ctx.insts.len());
         if let Some(catch) = &ts.handler {
             ctx.push_scope();
+            // catch 体是独立释放环境：仅当体含 using 声明时入口登记水位、体尾
+            // 正常完成逆序释放。
+            let catch_has_using = Self::scope_contains_using(&catch.body.body);
+            if catch_has_using {
+                ctx.emit_dispose_mark();
+            }
             if let Some(param) = &catch.param {
                 let src_reg = ctx.alloc_reg();
                 // 异常值在 VM 物理 regs[0]（unwind 展开处写入），STORE_VAR a=None 读回。
@@ -111,6 +127,10 @@ impl Emitter {
                 Operand::Reg(last_catch_result.unwrap_or(result_reg)),
                 Operand::None,
             ));
+            // catch 体正常完成出口：逆序释放本体声明的资源。
+            if catch_has_using {
+                ctx.emit_dispose_pop();
+            }
             ctx.pop_scope();
         }
         if has_finally {
@@ -124,6 +144,12 @@ impl Emitter {
             // try/catch 收敛值保持 try 体或 catch 体值，finally 值不渗入。
             // finally block 同为独立块作用域，lexical 声明互不泄漏。
             ctx.push_scope();
+            // finally 体是独立释放环境：仅当体含 using 声明时入口登记水位、
+            // 体尾正常完成逆序释放。
+            let finally_has_using = Self::scope_contains_using(&ts.finalizer.as_ref().unwrap().body);
+            if finally_has_using {
+                ctx.emit_dispose_mark();
+            }
             // finally 块函数预声明先于 lexical，块入口物化与 try/普通块同口径。
             self.predeclare_block_function_declarations(&ts.finalizer.as_ref().unwrap().body, ctx, false);
             // finally 块 lexical 声明同为局部绑定：不做受限全局名检查。
@@ -142,6 +168,10 @@ impl Emitter {
             }
             ctx.pop_completion_list();
             ctx.block_fn_entry_mats.pop();
+            // finally 体正常完成出口：逆序释放本体声明的资源。
+            if finally_has_using {
+                ctx.emit_dispose_pop();
+            }
             ctx.pop_scope();
             ctx.inst(Inst::new(OpCode::TRY_FINALLY_END, Operand::None, Operand::None, Operand::None));
             ctx.pop_open_try_handler();

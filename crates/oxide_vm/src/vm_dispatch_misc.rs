@@ -4,7 +4,7 @@ use oxide_runtime_api::{push_units_to, to_boolean, to_units_full, VmHost};
 use oxide_types::object::{JsObject, PropAttributes};
 use oxide_types::private_key::{
     encode_symbol_key, int_key_value, is_int_key, is_private_name_key, is_symbol_key, make_int_key, INT_KEY_COUNT,
-    WELL_KNOWN_SYMBOL_HAS_INSTANCE,
+    WELL_KNOWN_SYMBOL_ASYNC_DISPOSE, WELL_KNOWN_SYMBOL_DISPOSE, WELL_KNOWN_SYMBOL_HAS_INSTANCE,
 };
 use oxide_types::value::JsValue;
 
@@ -649,16 +649,78 @@ impl Vm {
         self.iters.pop_for_in();
     }
 
-    /// using/await using 声明登记：把资源值（rd 槽）压入释放栈。
+    /// using/await using 声明登记：把资源值（rd 槽）与释放提示（a 槽）压入释放栈。
     ///
-    /// a 槽是释放提示（0 = 同步、1 = 异步），登记期原样保留供释放点分派；
+    /// 释放提示 0 = 同步、1 = 异步，登记期原样保留供释放点分派；
     /// 本指令只登记，释放时机由作用域出口点决定。
     ///
     /// # 副作用
     /// - 释放栈增长（栈内 JsValue 是 GC 根，run 边界清空）。
     pub(crate) fn dispatch_dispose_register(&mut self, rd: usize, a: usize) {
         vm_trace!("DISPOSE_REGISTER rd={} hint={}", rd, a);
-        self.dispose_stack.push(self.regs[rd]);
+        self.dispose_stack.push((self.regs[rd], a as u16));
+    }
+
+    /// 作用域入口水位：把当前释放栈深度压入水位栈（DISPOSE_POP 的配对入口）。
+    ///
+    /// # 副作用
+    /// - 水位栈增长。
+    pub(crate) fn dispatch_dispose_mark(&mut self) {
+        vm_trace!("DISPOSE_MARK depth={}", self.dispose_stack.len());
+        self.dispose_marks.push(self.dispose_stack.len());
+    }
+
+    /// 作用域出口：弹出水位，逆序释放水位以上资源并截断释放栈（规范
+    /// DisposeResources）。释放方法自身抛错按第一错误向外传播。
+    ///
+    /// # 副作用
+    /// - 释放栈截断到水位、水位栈弹出；释放方法是任意 JS 调用（可再入，
+    ///   嵌套 using 声明会在其内再压释放栈）。
+    pub(crate) fn dispatch_dispose_pop(&mut self) -> Result<(), String> {
+        let mark = match self.dispose_marks.pop() {
+            Some(m) => m,
+            None => return Ok(()),
+        };
+        vm_trace!("DISPOSE_POP mark={} depth={}", mark, self.dispose_stack.len());
+        while self.dispose_stack.len() > mark {
+            let (value, hint) = self.dispose_stack.pop().expect("水位以上必有条目");
+            self.dispose_value(value, hint)?;
+        }
+        Ok(())
+    }
+
+    /// 单资源释放（规范 Dispose 语义）：非对象跳过；按释放提示取方法（同步只取
+    /// Symbol.dispose；异步先取 Symbol.asyncDispose，未定义回退 Symbol.dispose），
+    /// 不可调用跳过；以资源自身为 this 零参调用。
+    ///
+    /// # 边界与前提
+    /// - 异步方法结果为对象时须 Await 挂起，归后续任务；本期同步调用，结果丢弃。
+    fn dispose_value(&mut self, value: JsValue, hint: u16) -> Result<(), String> {
+        if !value.is_object() {
+            return Ok(());
+        }
+        let val_obj = unsafe { &*value.as_js_object_ptr() };
+        let dispose_key = encode_symbol_key(self.realm_id(), WELL_KNOWN_SYMBOL_DISPOSE);
+        let method = if hint == 1 {
+            let async_key = encode_symbol_key(self.realm_id(), WELL_KNOWN_SYMBOL_ASYNC_DISPOSE);
+            let async_method = self.ordinary_get(val_obj, async_key, value)?;
+            if async_method.is_undefined() {
+                self.ordinary_get(val_obj, dispose_key, value)?
+            } else {
+                async_method
+            }
+        } else {
+            self.ordinary_get(val_obj, dispose_key, value)?
+        };
+        if !method.is_object() {
+            return Ok(());
+        }
+        let method_obj = unsafe { &*method.as_js_object_ptr() };
+        if !method_obj.is_function() {
+            return Ok(());
+        }
+        let _ = self.call_function_sync(method, value, &[])?;
+        Ok(())
     }
 
     pub(crate) fn dispatch_for_of_init(&mut self, a: usize) -> Result<(), String> {

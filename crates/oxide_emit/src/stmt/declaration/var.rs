@@ -5,7 +5,10 @@ use oxide_bytecode::module::Constant;
 use oxide_bytecode::opcode::OpCode;
 use oxide_ir::inst::Inst;
 use oxide_ir::operand::Operand;
-use oxide_parser::{BindingPattern, Statement, VariableDeclaration, VariableDeclarationKind};
+use oxide_parser::{
+    BindingPattern, ForStatementInit, ForStatementLeft, Statement, VariableDeclaration,
+    VariableDeclarationKind,
+};
 
 impl Emitter {
     pub(crate) fn emit_variable_declaration_statement(
@@ -44,16 +47,8 @@ impl Emitter {
                     }
                 }
                 // using/await using 声明登记：把资源值压入 VM 释放栈（释放时机由
-                // 作用域出口点决定，本指令只登记）。a 槽为释放提示：0 = 同步、1 = 异步。
-                if matches!(decl.kind, VariableDeclarationKind::Using | VariableDeclarationKind::AwaitUsing) {
-                    let hint = u16::from(matches!(decl.kind, VariableDeclarationKind::AwaitUsing));
-                    ctx.inst(Inst::new(
-                        OpCode::DISPOSE_REGISTER,
-                        Operand::Reg(val_reg),
-                        Operand::Imm(hint),
-                        Operand::None,
-                    ));
-                }
+                // 作用域出口点决定，本指令只登记）。
+                self.emit_dispose_register(val_reg, decl.kind, ctx);
             } else {
                 let BindingPattern::BindingIdentifier(bi) = &d.id else {
                     return Err("destructuring declaration requires an initializer".into());
@@ -96,5 +91,88 @@ impl Emitter {
             }
         }
         Ok(None)
+    }
+
+    /// 递归扫描语句列表是否含 using/await using 声明（含嵌套复合语句，不进入
+    /// 函数/类体——那是独立作用域，其 using 声明不属本作用域）。释放作用域的
+    /// mark/pop 仅在有资源声明时发射：无 using 的作用域若发 mark/pop，其早退
+    /// （return/break/continue/throw）跳过 POP 会留下未配对水位，错乱外层作用域
+    /// 的 mark/pop 对齐。
+    pub(crate) fn scope_contains_using(stmts: &[Statement]) -> bool {
+        stmts.iter().any(Self::statement_contains_using)
+    }
+
+    pub(crate) fn statement_contains_using(stmt: &Statement) -> bool {
+        match stmt {
+            Statement::VariableDeclaration(decl) => {
+                matches!(decl.kind, VariableDeclarationKind::Using | VariableDeclarationKind::AwaitUsing)
+            }
+            Statement::BlockStatement(block) => Self::scope_contains_using(&block.body),
+            Statement::IfStatement(if_) => {
+                Self::statement_contains_using(&if_.consequent)
+                    || if_.alternate.as_ref().is_some_and(|s| Self::statement_contains_using(s))
+            }
+            Statement::WhileStatement(while_) => Self::statement_contains_using(&while_.body),
+            Statement::DoWhileStatement(do_) => Self::statement_contains_using(&do_.body),
+            Statement::ForStatement(for_) => Self::statement_contains_using(&for_.body),
+            Statement::ForOfStatement(for_) => Self::statement_contains_using(&for_.body),
+            Statement::ForInStatement(for_) => Self::statement_contains_using(&for_.body),
+            Statement::LabeledStatement(labeled) => Self::statement_contains_using(&labeled.body),
+            Statement::WithStatement(with_) => Self::statement_contains_using(&with_.body),
+            Statement::SwitchStatement(switch_) => {
+                switch_.cases.iter().any(|case| Self::scope_contains_using(&case.consequent))
+            }
+            Statement::TryStatement(try_) => {
+                Self::scope_contains_using(&try_.block.body)
+                    || try_
+                        .handler
+                        .as_deref()
+                        .is_some_and(|h| Self::scope_contains_using(&h.body.body))
+                    || try_.finalizer.as_deref().is_some_and(|f| Self::scope_contains_using(&f.body))
+            }
+            // 函数/类声明是独立作用域，其 using 声明不属本作用域；其余语句无嵌套。
+            _ => false,
+        }
+    }
+
+    /// using/await using 声明登记释放栈：把资源值（val_reg）压入释放栈。非
+    /// using/await using 声明不登记。a 槽为释放提示（0 = 同步、1 = 异步）。
+    pub(crate) fn emit_dispose_register(
+        &self, val_reg: u32, kind: VariableDeclarationKind, ctx: &mut CompileCtx,
+    ) {
+        if !matches!(kind, VariableDeclarationKind::Using | VariableDeclarationKind::AwaitUsing) {
+            return;
+        }
+        let hint = u16::from(matches!(kind, VariableDeclarationKind::AwaitUsing));
+        ctx.inst(Inst::new(
+            OpCode::DISPOSE_REGISTER,
+            Operand::Reg(val_reg),
+            Operand::Imm(hint),
+            Operand::None,
+        ));
+    }
+
+    /// C 风格 for 头是否含 using 声明（init 为 using/await using 变量声明）。
+    pub(crate) fn for_init_contains_using(init: &Option<ForStatementInit>) -> bool {
+        matches!(
+            init,
+            Some(ForStatementInit::VariableDeclaration(decl))
+                if matches!(
+                    decl.kind,
+                    VariableDeclarationKind::Using | VariableDeclarationKind::AwaitUsing
+                )
+        )
+    }
+
+    /// for-of/for-in 左侧是否含 using 声明（头为 using/await using 变量声明）。
+    pub(crate) fn for_left_contains_using(left: &ForStatementLeft) -> bool {
+        matches!(
+            left,
+            ForStatementLeft::VariableDeclaration(decl)
+                if matches!(
+                    decl.kind,
+                    VariableDeclarationKind::Using | VariableDeclarationKind::AwaitUsing
+                )
+        )
     }
 }

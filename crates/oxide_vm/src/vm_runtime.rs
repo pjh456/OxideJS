@@ -1146,13 +1146,15 @@ mod tests {
 
     #[test]
     fn using_declaration_registers_dispose_stack() {
-        // using 声明经 DISPOSE_REGISTER 把资源值压入释放栈；run 边界（下次 run
-        // 入口）清栈，上一 run 的残留条目不得跨 run 可见。
+        // using 声明经 DISPOSE_REGISTER 把资源值压入释放栈。早 return 跳过函数
+        // 体 POP（穿越面，归后续任务），资源残留栈上；run 边界（下次 run 入口）
+        // 清栈，残留条目不得跨 run 可见。
         let mut vm = Vm::new();
-        let module = Arc::new(compile("function f() { using x = { a: 1 }; } f();"));
+        let module = Arc::new(compile("function f() { using x = { a: 1 }; return 42; } f();"));
         vm.run(&module).expect("run");
-        assert_eq!(vm.dispose_stack.len(), 1, "using 声明应登记一个资源值");
-        assert!(vm.dispose_stack[0].is_object(), "登记值应为资源对象");
+        assert_eq!(vm.dispose_stack.len(), 1, "早 return 跳过 POP，资源残留栈上");
+        assert!(vm.dispose_stack[0].0.is_object(), "登记值应为资源对象");
+        assert_eq!(vm.dispose_stack[0].1, 0, "using 声明释放提示应为同步");
 
         // 二次 run 入口清栈后重新登记：残留条目不跨 run 存活。
         vm.run(&module).expect("run2");
@@ -1161,5 +1163,108 @@ mod tests {
         // 执行状态清空同样清释放栈。
         vm.clear_execution_state();
         assert!(vm.dispose_stack.is_empty(), "执行状态清空应清空释放栈");
+    }
+
+    #[test]
+    fn using_disposed_at_end_of_block() {
+        // using 声明在块尾正常释放：Symbol.dispose 以资源自身为 this 调用一次。
+        let mut vm = Vm::new();
+        let module = Arc::new(compile(
+            "var count = 0, thisOk = false; \
+             function make() { return { [Symbol.dispose]: function () { count++; thisOk = (this === r); } }; } \
+             var r = make(); \
+             { using x = r; }",
+        ));
+        vm.run(&module).expect("run");
+        assert_eq!(global_value(&mut vm, "count"), JsValue::int(1), "块尾应释放一次");
+        assert_eq!(global_value(&mut vm, "thisOk"), JsValue::bool(true), "释放方法 this 应为资源自身");
+    }
+
+    #[test]
+    fn using_disposed_in_reverse_order() {
+        // 多资源按声明逆序释放（后声明者先释放）：释放序拼成数字 321。
+        let mut vm = Vm::new();
+        let module = Arc::new(compile(
+            "var seq = 0; \
+             function m(a) { return { [Symbol.dispose]: function () { seq = seq * 10 + a; } }; } \
+             { using a = m(1); using b = m(2); using c = m(3); }",
+        ));
+        vm.run(&module).expect("run");
+        assert_eq!(as_number(&global_value(&mut vm, "seq")), 321.0, "逆序释放拼成 321");
+    }
+
+    #[test]
+    fn using_disposed_at_end_of_function_body() {
+        // 函数体尾释放：每次调用各释放一次，早 return 不释放（归穿越面）。
+        let mut vm = Vm::new();
+        let module = Arc::new(compile(
+            "var count = 0; \
+             function make() { return { [Symbol.dispose]: function () { count++; } }; } \
+             function f() { using x = make(); } \
+             f(); f();",
+        ));
+        vm.run(&module).expect("run");
+        assert_eq!(global_value(&mut vm, "count"), JsValue::int(2), "两次调用各释放一次");
+    }
+
+    #[test]
+    fn using_disposed_at_end_of_for_statement() {
+        // C 风格 for 是整语句单一环境：每迭代的块尾释放，循环尾不重复释放。
+        let mut vm = Vm::new();
+        let module = Arc::new(compile(
+            "var count = 0; \
+             function make() { return { [Symbol.dispose]: function () { count++; } }; } \
+             for (var i = 0; i < 3; i++) { using x = make(); }",
+        ));
+        vm.run(&module).expect("run");
+        assert_eq!(global_value(&mut vm, "count"), JsValue::int(3), "每迭代块尾各释放一次");
+    }
+
+    #[test]
+    fn using_disposed_each_iteration_of_for_of() {
+        // for-of 每迭代独立环境：每迭代 mark/pop，迭代器关闭与释放互不干扰。
+        let mut vm = Vm::new();
+        let module = Arc::new(compile(
+            "var count = 0; \
+             function make() { return { [Symbol.dispose]: function () { count++; } }; } \
+             for (using x of [make(), make(), make()]) { }",
+        ));
+        vm.run(&module).expect("run");
+        assert_eq!(global_value(&mut vm, "count"), JsValue::int(3), "每迭代各释放一次");
+    }
+
+    #[test]
+    fn using_disposed_at_end_of_switch_and_try() {
+        // switch CaseBlock 单一环境、try/catch/finally 各体独立环境：各体出口
+        // 释放本体检证（catch 体未触发不释放）。
+        let mut vm = Vm::new();
+        let module = Arc::new(compile(
+            "var count = 0; \
+             function make() { return { [Symbol.dispose]: function () { count++; } }; } \
+             switch (1) { case 1: { using a = make(); break; } } \
+             try { using b = make(); } catch (e) { using c = make(); } finally { using d = make(); }",
+        ));
+        vm.run(&module).expect("run");
+        assert_eq!(
+            global_value(&mut vm, "count"),
+            JsValue::int(3),
+            "switch 体、try 体、finally 体各释放一次（catch 未触发）"
+        );
+    }
+
+    #[test]
+    fn await_using_prefers_async_dispose_falls_back_to_dispose() {
+        // await using 释放：有 Symbol.asyncDispose 用之，未定义回退 Symbol.dispose。
+        let mut vm = Vm::new();
+        let module = Arc::new(compile(
+            "var asyncUsed = 0, syncUsed = 0; \
+             var withAsync = { [Symbol.asyncDispose]: function () { asyncUsed++; } }; \
+             var withSync = { [Symbol.dispose]: function () { syncUsed++; } }; \
+             { await using a = withAsync; } \
+             { await using b = withSync; }",
+        ));
+        vm.run(&module).expect("run");
+        assert_eq!(global_value(&mut vm, "asyncUsed"), JsValue::int(1), "asyncDispose 优先");
+        assert_eq!(global_value(&mut vm, "syncUsed"), JsValue::int(1), "asyncDispose 未定义回退 dispose");
     }
 }

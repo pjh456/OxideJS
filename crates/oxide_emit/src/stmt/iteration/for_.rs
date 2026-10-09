@@ -44,6 +44,12 @@ impl Emitter {
             return Ok(None);
         };
         ctx.push_scope();
+        // C 风格 for 是整语句单一释放环境（非每迭代）：仅当头/体含 using 声明
+        // 时入口登记水位、出口（end_label 后）逆序释放。
+        let has_using = Self::for_init_contains_using(&fr.init) || Self::statement_contains_using(&fr.body);
+        if has_using {
+            ctx.emit_dispose_mark();
+        }
         let start_label = ctx.next_label_id();
         let update_label = ctx.next_label_id();
         let end_label = ctx.next_label_id();
@@ -98,6 +104,8 @@ impl Emitter {
                         // 捕获头名的寄存器补写在 `emit_bind_target` 经
                         // `for_head_store_registers` 完成（解构叶用各自的叶值，不用整头 RHS）。
                         self.emit_binding_pattern(&d.id, val_reg, decl.kind, is_const, false, ctx)?;
+                        // using/await using 头声明登记释放栈（资源值即 init 表达式结果）。
+                        self.emit_dispose_register(val_reg, decl.kind, ctx);
                     } else if let BindingPattern::BindingIdentifier(bi) = &d.id {
                         let idx = ctx.add_constant(Constant::Undefined);
                         let tmp = ctx.alloc_reg();
@@ -222,6 +230,10 @@ impl Emitter {
         }
         ctx.inst(Inst::jmp(start_label));
         ctx.labels.set_label_pos(end_label, ctx.insts.len());
+        // 循环正常完成出口：逆序释放本 for 语句声明的资源。
+        if has_using {
+            ctx.emit_dispose_pop();
+        }
         ctx.pop_label_scopes(n_labeled);
         ctx.pop_loop();
         ctx.pop_scope();

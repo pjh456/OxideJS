@@ -11,6 +11,13 @@ impl Emitter {
             return Ok(None);
         };
         ctx.push_scope();
+        // 块是释放作用域：仅当块含 using 声明时入口登记水位、块尾正常完成逆序
+        // 释放本块声明的资源（无 using 的块不发 mark/pop，防早退跳过 POP 留
+        // 未配对水位）。
+        let has_using = Self::scope_contains_using(&block.body);
+        if has_using {
+            ctx.emit_dispose_mark();
+        }
         // 函数预声明先于 lexical：`{ let g; function g(){} }` 时 lexical 的预声明
         // 命中已存在的函数绑定自然报重复声明错，不被静默覆盖破坏 TDZ。
         self.predeclare_block_function_declarations(&block.body, ctx, false);
@@ -35,6 +42,10 @@ impl Emitter {
         }
         ctx.pop_completion_list();
         ctx.block_fn_entry_mats.pop();
+        // 块尾正常完成：逆序释放本块声明的资源（异常/return 穿越跳过本点）。
+        if has_using {
+            ctx.emit_dispose_pop();
+        }
         ctx.pop_scope();
         Ok(r)
     }

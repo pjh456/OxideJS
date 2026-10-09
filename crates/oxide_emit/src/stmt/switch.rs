@@ -32,6 +32,12 @@ impl Emitter {
         // 块函数预声明先于 lexical，使 `case 0: let g; function g(){}` 的 lexical
         // 占位命中已存在的函数绑定，报重复声明错。
         ctx.push_scope();
+        // CaseBlock 是单一释放环境（非逐 case）：穿落不跨环境，仅当 case 体含
+        // using 声明时入口登记水位、出口逆序释放。
+        let has_using = cases.iter().any(|case| Self::scope_contains_using(&case.consequent));
+        if has_using {
+            ctx.emit_dispose_mark();
+        }
         for case in cases.iter() {
             self.predeclare_block_function_declarations(&case.consequent, ctx, false);
             self.predeclare_lexical_declarations(&case.consequent, ctx)?;
@@ -84,6 +90,10 @@ impl Emitter {
         }
         ctx.block_fn_entry_mats.pop();
         ctx.labels.set_label_pos(end_label, ctx.insts.len());
+        // CaseBlock 正常完成出口：逆序释放本块声明的资源。
+        if has_using {
+            ctx.emit_dispose_pop();
+        }
         ctx.pop_scope();
         ctx.pop_completion_target();
         ctx.pop_switch();

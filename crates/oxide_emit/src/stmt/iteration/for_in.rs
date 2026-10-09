@@ -189,6 +189,12 @@ impl Emitter {
         ctx.labels.set_label_pos(continue_label, ctx.insts.len());
         let key_reg = ctx.alloc_reg();
         ctx.inst(Inst::new(OpCode::FOR_IN_NEXT, Operand::Reg(key_reg), Operand::None, Operand::None));
+        // for-in 每迭代独立环境（规范 iterationEnv）：仅当头/体含 using 声明时
+        // 本迭代 mark/pop。
+        let has_using = Self::for_left_contains_using(&fi.left) || Self::statement_contains_using(&fi.body);
+        if has_using {
+            ctx.emit_dispose_mark();
+        }
         match &fi.left {
             ForStatementLeft::VariableDeclaration(decl) => {
                 // let/const 声明对被捕获绑定用 fresh cell（每迭代新 cell）；var 单绑定。
@@ -253,6 +259,8 @@ impl Emitter {
                         _ => self.emit_binding_pattern(&d.id, key_reg, decl.kind, is_const, fresh_cell, ctx)?,
                     }
                 }
+                // using/await using 头声明登记释放栈（资源值即本迭代键）。
+                self.emit_dispose_register(key_reg, decl.kind, ctx);
             }
             ForStatementLeft::AssignmentTargetIdentifier(id_ref) => {
                 let name = id_ref.name.as_str();
@@ -283,6 +291,10 @@ impl Emitter {
         let body_result = self.emit_statement(&fi.body, ctx)?;
         if let Some(env) = head_env {
             self.restore_for_head_env(env, ctx);
+        }
+        // 本迭代正常完成：逆序释放本迭代声明的资源。
+        if has_using {
+            ctx.emit_dispose_pop();
         }
         ctx.inst(Inst::jmp(start_label));
         ctx.labels.set_label_pos(end_label, ctx.insts.len());

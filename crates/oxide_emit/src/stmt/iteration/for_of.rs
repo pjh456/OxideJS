@@ -49,10 +49,20 @@ impl Emitter {
         ctx.inst(Inst::jmp_if_false(has_reg, end_label));
         let val_reg = ctx.alloc_reg();
         ctx.inst(Inst::new(OpCode::FOR_OF_NEXT, Operand::Reg(val_reg), Operand::None, Operand::None));
+        // for-of 每迭代独立环境（规范 iterationEnv）：仅当头/体含 using 声明时
+        // 本迭代 mark/pop，迭代器关闭（FOR_OF_CLOSE）与释放互不干扰。
+        let has_using = Self::for_left_contains_using(&fo.left) || Self::statement_contains_using(&fo.body);
+        if has_using {
+            ctx.emit_dispose_mark();
+        }
         self.emit_for_of_left_assignment(&fo.left, val_reg, ctx)?;
         let body_result = self.emit_statement(&fo.body, ctx)?;
         if let Some(env) = head_env {
             self.restore_for_head_env(env, ctx);
+        }
+        // 本迭代正常完成：逆序释放本迭代声明的资源。
+        if has_using {
+            ctx.emit_dispose_pop();
         }
         ctx.inst(Inst::jmp(start_label));
         ctx.labels.set_label_pos(end_label, ctx.insts.len());
@@ -115,10 +125,20 @@ impl Emitter {
         ctx.inst(Inst::jmp_if_false(has_reg, end_label));
         let val_reg = ctx.alloc_reg();
         ctx.inst(Inst::new(OpCode::FOR_OF_NEXT, Operand::Reg(val_reg), Operand::None, Operand::None));
+        // for-await-of 同同步 for-of：每迭代独立环境，仅当头/体含 using 声明时
+        // 本迭代 mark/pop。
+        let has_using = Self::for_left_contains_using(&fo.left) || Self::statement_contains_using(&fo.body);
+        if has_using {
+            ctx.emit_dispose_mark();
+        }
         self.emit_for_of_left_assignment(&fo.left, val_reg, ctx)?;
         let body_result = self.emit_statement(&fo.body, ctx)?;
         if let Some(env) = head_env {
             self.restore_for_head_env(env, ctx);
+        }
+        // 本迭代正常完成：逆序释放本迭代声明的资源。
+        if has_using {
+            ctx.emit_dispose_pop();
         }
         ctx.inst(Inst::jmp(start_label));
         ctx.labels.set_label_pos(end_label, ctx.insts.len());
@@ -147,6 +167,8 @@ impl Emitter {
                 for d in &decl.declarations {
                     self.emit_binding_pattern(&d.id, val_reg, decl.kind, false, fresh_cell, ctx)?;
                 }
+                // using/await using 头声明登记释放栈（资源值即本迭代值）。
+                self.emit_dispose_register(val_reg, decl.kind, ctx);
             }
             ForStatementLeft::AssignmentTargetIdentifier(id_ref) => {
                 let name = id_ref.name.as_str();

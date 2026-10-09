@@ -458,10 +458,21 @@ impl Emitter {
         // MAKE_CELL(undefined) 实例化，此处只补未捕获名。
         self.instantiate_var_bindings(body_stmts, &mut ctx);
 
+        // 函数体是释放作用域：仅当体含 using 声明时发 mark/pop（无 using 的体
+        // 不发，防早退 return 跳过 POP 留未配对水位错乱外层对齐）。
+        let has_using = Self::scope_contains_using(body_stmts);
         // 生成器：body 起点标记——调用时参数初始化（emit_params_prologue）结束后挂起于此，
         // 参数副作用/异常在 `g()` 调用时刻生效，首次 next() 从这继续执行 body。
         if is_generator {
             ctx.inst(Inst::suspend_body());
+            // 生成器体环境在 `g()` 调用时建立、首次 next() 从挂起点后继续：水位登记
+            // 在挂起点之后，体声明的资源只在体尾（生成器完成）释放。
+            if has_using {
+                ctx.emit_dispose_mark();
+            }
+        } else if has_using {
+            // 普通函数体环境在参数 prologue 后建立：body 语句发射前登记水位。
+            ctx.emit_dispose_mark();
         }
 
         if let Some(emit) = emit_fields.as_mut() {
@@ -492,6 +503,10 @@ impl Emitter {
 
         // 隐式 RETURN：表达式体返回最后表达式，语句体返回 undefined。
         // 函数尾词法上不在任何循环内，迭代器逃出计数恒 0。
+        // 函数尾正常完成：逆序释放体声明的资源（早 return 跳过本点，归穿越面）。
+        if has_using {
+            ctx.emit_dispose_pop();
+        }
         if is_expression_body {
             if let Some(reg) = last_result_reg {
                 ctx.inst(Inst::ret(Operand::Reg(reg), 0, 0));

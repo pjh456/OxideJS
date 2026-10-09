@@ -525,6 +525,18 @@ define_opcodes! {
         def = Some(SlotSpec::Slot(Slot::Rd)), uses = [],
         pure = false, jump = false, term = false, ic = false,
 
+    // ── using/await using 释放 (0x6A, 0x6B) ──
+    // 作用域入口水位：把当前释放栈深度压入水位栈（DISPOSE_REGISTER 的配对出口），
+    // 无寄存器 def/use；pure = false 防 DCE 删除水位副作用。
+    DISPOSE_MARK = 0x6A => "DISPOSE_MARK",
+        def = None, uses = [],
+        pure = false, jump = false, term = false, ic = false,
+    // 作用域出口：弹出水位，逆序释放水位以上资源并截断释放栈（规范
+    // DisposeResources），无寄存器 def/use。
+    DISPOSE_POP = 0x6B => "DISPOSE_POP",
+        def = None, uses = [],
+        pure = false, jump = false, term = false, ic = false,
+
     // ── define 语义属性写入 (0x6D, 0x6F) ──
     DEFINE_PROP = 0x6D => "DEFINE_PROP",
         def = None, uses = [SlotSpec::Slot(Slot::Rd), SlotSpec::Slot(Slot::A), SlotSpec::Slot(Slot::B)],

@@ -48,6 +48,10 @@ pub(crate) struct LoopEntry {
     /// 循环出口结果寄存器：入口初始 undefined，体正常完成回写，break/continue
     /// 携值写入（空携值不写，保持前次累积值）。
     pub(crate) v_reg: u32,
+    /// 循环打开时已打开的释放作用域数（break/continue/return 逃出时据此
+    /// 计算需穿越释放的作用域层数）。
+    #[allow(dead_code)]
+    pub(crate) dispose_depth_at_open: usize,
 }
 
 /// 完成值帧：编译期帧栈元素，承载「每语句列表独立累积」语义。
@@ -83,6 +87,9 @@ pub struct LabelScope {
     pub(crate) for_of_depth_at_open: usize,
     /// 标签打开时已打开的 for-in 循环数。
     pub(crate) for_in_depth_at_open: usize,
+    /// 标签打开时已打开的释放作用域数（break 逃出时据此计算需穿越释放的层数）。
+    #[allow(dead_code)]
+    pub(crate) dispose_depth_at_open: usize,
     /// 标签目标出口结果寄存器：迭代标签取所包裹循环的 `v_reg`；非迭代标签仅当
     /// 体含指向本标签的 break 时分配（体正常完成回写、break 携值写入）。
     pub(crate) completion_reg: Option<u32>,
@@ -96,6 +103,9 @@ pub(crate) struct SwitchEntry {
     pub(crate) finally_depth_at_open: usize,
     pub(crate) for_of_depth_at_open: usize,
     pub(crate) for_in_depth_at_open: usize,
+    /// switch 打开时已打开的释放作用域数（switch 内 break 逃出时据此计算穿越层数）。
+    #[allow(dead_code)]
+    pub(crate) dispose_depth_at_open: usize,
     pub(crate) result_reg: u32,
 }
 
@@ -119,6 +129,10 @@ pub(crate) struct LabelCtx {
     pub(crate) for_of_depth: usize,
     /// 当前打开的 for-in 循环数（逃出计数基数）。
     pub(crate) for_in_depth: usize,
+    /// 当前打开的释放作用域数（DISPOSE_MARK 已发未 POP 的嵌套层数）：
+    /// 编译期不变式是函数体收尾归零，break/continue/return 逃出穿越层数以此
+    /// 与打开点快照之差计算。
+    pub(crate) dispose_depth: usize,
     pub(crate) label_counter: u32,
 }
 
