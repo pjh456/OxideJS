@@ -173,6 +173,10 @@ pub struct CompileCtx {
     pub(crate) module_local_export_regs: HashMap<u32, Vec<String>>,
     /// 已求值依赖模块的命名空间对象寄存器（按 import/export source 字符串索引）。
     pub(crate) module_dep_ns_regs: HashMap<String, u32>,
+    /// defer 依赖的 deferred namespace 对象寄存器（按 import source 字符串索引）：
+    /// `import defer * as ns` 绑定此对象（`__moduleDeferObject` 产物），eager 命名空间
+    /// 绑定仍走 `module_dep_ns_regs`。仅含 defer 导入的 spec 登记。
+    pub(crate) module_defer_ns_regs: HashMap<String, u32>,
     /// 依赖模块规范路径（按 import/export source 字符串索引）：再导出来源身份用。
     pub(crate) module_dep_paths: HashMap<String, String>,
     /// 非自导入的导入局部名 → (依赖模块规范路径, 导入名)。命名空间导入的导入名为
@@ -287,6 +291,7 @@ impl CompileCtx {
             module_ns_reg: None,
             module_local_export_regs: HashMap::new(),
             module_dep_ns_regs: HashMap::new(),
+            module_defer_ns_regs: HashMap::new(),
             module_dep_paths: HashMap::new(),
             module_import_origins: HashMap::new(),
             module_dep_reassignable: HashMap::new(),

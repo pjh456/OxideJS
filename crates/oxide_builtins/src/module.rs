@@ -66,11 +66,14 @@ pub struct ModuleNsEntry {
 /// 字段、不建第二个 Box——GC 边、字节核算、释放全部复用 `ModuleNamespace` 家族链，
 /// 零新增注册点。
 pub struct DeferredNsState {
-    /// `[[Module]]`：依赖模块函数（编译期 CREATE_CLOSURE 的闭包对象）。
+    /// `[[Module]]`：依赖模块函数（编译期 CREATE_CLOSURE 的闭包对象），或
+    /// undefined（哨兵：自导入/祖先引用，模块函数在导入方 prelude 期不可得）。
     pub module: JsValue,
-    /// `[[Evaluated]]`：依赖模块是否已求值（首次触发成功后置真，不回退）。
+    /// `[[Evaluated]]`：依赖模块是否已求值（mixed 依赖构造时即为真；
+    /// 首次触发成功后置真，不回退）。
     pub evaluated: bool,
-    /// `[[Namespace]]`：求值后返回的命名空间对象（求值前为 undefined）。
+    /// `[[Namespace]]`：求值后返回的命名空间对象（mixed 依赖构造时即为真实 ns；
+    /// 求值前为 undefined）。
     pub namespace: JsValue,
 }
 
@@ -859,29 +862,38 @@ pub fn module_eval<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     }
 }
 
-/// `__moduleDeferObject(fn)`：创建 deferred namespace 对象（`import defer * as` 产物）。
+/// `__moduleDeferObject(fn, real_ns)`：创建 deferred namespace 对象（`import defer * as` 产物）。
 ///
 /// # 步骤
-/// 1. 校验 `fn` 为函数对象（依赖模块函数，编译期 CREATE_CLOSURE 的闭包对象）。
+/// 1. 校验 `fn` 为函数对象（依赖模块函数，编译期 CREATE_CLOSURE 的闭包对象）
+///    或 undefined（哨兵：自导入/祖先引用，模块函数在导入方 prelude 期不可得）；
+///    校验 `real_ns` 为对象（mixed：模块已急切求值）或 undefined。
 /// 2. 建 null 原型对象，定义 `@@toStringTag` = "Deferred Module"（不可写不可枚举不可配置）。
 /// 3. 置 module namespace + deferred 双标志，置 non-extensible。
-/// 4. 安装条目表并写状态盒：`[[Module]]` = fn、`[[Evaluated]]` = false、
-///    `[[Namespace]]` = undefined。
+/// 4. 安装条目表并写状态盒：`[[Module]]` = fn、`[[Evaluated]]` = `real_ns` 为对象、
+///    `[[Namespace]]` = `real_ns`（或 undefined）。
 ///
 /// # 副作用
 /// - 新对象创建起即标记 module namespace exotic 并置 non-extensible（同 `__moduleObject`）；
 ///   状态盒三内部槽由本入口唯一安装。
 pub fn module_defer_object<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
-    if args.len() < 2 {
-        return type_error(vm, "__moduleDeferObject: 1 argument required");
+    if args.len() < 3 {
+        return type_error(vm, "__moduleDeferObject: 2 arguments required");
     }
     let fn_val = vm.reg(args[1]);
-    if !fn_val.is_object() {
-        return type_error(vm, "__moduleDeferObject: target is not a function");
+    let ns_val = vm.reg(args[2]);
+    // fn 为函数或 undefined（哨兵）；其余抛 TypeError。
+    let fn_is_function = fn_val.is_object()
+        && {
+            let ptr = fn_val.as_js_object_ptr();
+            !ptr.is_null() && unsafe { (*ptr).is_function() }
+        };
+    if !fn_is_function && !fn_val.is_undefined() {
+        return type_error(vm, "__moduleDeferObject: first argument must be a function or undefined");
     }
-    let ptr = fn_val.as_js_object_ptr();
-    if ptr.is_null() || !unsafe { (*ptr).is_function() } {
-        return type_error(vm, "__moduleDeferObject: target is not a function");
+    // real_ns 为对象（mixed 已求值态）或 undefined；其余抛 TypeError。
+    if !ns_val.is_object() && !ns_val.is_undefined() {
+        return type_error(vm, "__moduleDeferObject: second argument must be an object or undefined");
     }
     let obj = vm.alloc_object(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()));
     let tag_si = encode_symbol_key(vm.realm_id(), TO_STRING_TAG_SYMBOL_ID);
@@ -898,8 +910,8 @@ pub fn module_defer_object<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     unsafe {
         (*table).deferred = Some(DeferredNsState {
             module: fn_val,
-            evaluated: false,
-            namespace: JsValue::undefined(),
+            evaluated: ns_val.is_object(),
+            namespace: ns_val,
         });
     }
     NativeResult::Ok(JsValue::from_js_object(obj))
@@ -968,7 +980,8 @@ mod tests {
     fn module_defer_object_installs_state_box() {
         let (mut vm, fn_val) = vm_with_function();
         vm.set_reg(1, fn_val);
-        let ns_val = module_defer_object(&mut vm, &[0, 1]).unwrap();
+        vm.set_reg(2, JsValue::undefined());
+        let ns_val = module_defer_object(&mut vm, &[0, 1, 2]).unwrap();
         assert!(ns_val.is_object());
         let ns_ptr = ns_val.as_js_object_ptr();
         assert!(!ns_ptr.is_null());
@@ -985,11 +998,51 @@ mod tests {
     }
 
     #[test]
+    fn module_defer_object_mixed_carries_evaluated_state() {
+        let (mut vm, fn_val) = vm_with_function();
+        // 真实 ns 对象（mixed：模块已急切求值）。
+        let real_ns = vm.alloc_object(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()));
+        let ns_val = JsValue::from_js_object(real_ns);
+        vm.set_reg(1, fn_val);
+        vm.set_reg(2, ns_val);
+        let defer_ns = module_defer_object(&mut vm, &[0, 1, 2]).unwrap();
+        let ns_obj = unsafe { &*defer_ns.as_js_object_ptr() };
+        let state = deferred_state(ns_obj).expect("deferred state 应已安装");
+        assert_eq!(state.module, fn_val, "[[Module]] 应存依赖模块函数");
+        assert!(state.evaluated, "mixed 依赖 [[Evaluated]] 构造时应为 true");
+        assert_eq!(state.namespace, ns_val, "[[Namespace]] 应存真实 ns");
+    }
+
+    #[test]
+    fn module_defer_object_sentinel_accepts_undefined_module() {
+        let (mut vm, _) = vm_with_function();
+        // 哨兵形态：fn 与 real_ns 均为 undefined（自导入/祖先 defer）。
+        vm.set_reg(1, JsValue::undefined());
+        vm.set_reg(2, JsValue::undefined());
+        let ns_val = module_defer_object(&mut vm, &[0, 1, 2]).unwrap();
+        let ns_obj = unsafe { &*ns_val.as_js_object_ptr() };
+        let state = deferred_state(ns_obj).expect("deferred state 应已安装");
+        assert_eq!(state.module, JsValue::undefined(), "哨兵 [[Module]] 应为 undefined");
+        assert!(!state.evaluated, "哨兵 [[Evaluated]] 应为 false");
+        assert_eq!(state.namespace, JsValue::undefined(), "哨兵 [[Namespace]] 应为 undefined");
+    }
+
+    #[test]
     fn module_defer_object_rejects_non_function() {
         let (mut vm, _) = vm_with_function();
         vm.set_reg(1, JsValue::int(42));
-        let result = module_defer_object(&mut vm, &[0, 1]);
+        vm.set_reg(2, JsValue::undefined());
+        let result = module_defer_object(&mut vm, &[0, 1, 2]);
         assert!(matches!(result, NativeResult::Err(_)), "非函数应抛 TypeError");
+    }
+
+    #[test]
+    fn module_defer_object_rejects_non_object_ns() {
+        let (mut vm, fn_val) = vm_with_function();
+        vm.set_reg(1, fn_val);
+        vm.set_reg(2, JsValue::int(42));
+        let result = module_defer_object(&mut vm, &[0, 1, 2]);
+        assert!(matches!(result, NativeResult::Err(_)), "非对象 real_ns 应抛 TypeError");
     }
 
     #[test]
@@ -999,7 +1052,8 @@ mod tests {
 
         // 创建 deferred ns（持有 fn）；fn + ns 两个 session 对象。
         vm.set_reg(1, fn_val);
-        let ns_val = module_defer_object(&mut vm, &[0, 1]).unwrap();
+        vm.set_reg(2, JsValue::undefined());
+        let ns_val = module_defer_object(&mut vm, &[0, 1, 2]).unwrap();
         let count_after_ns = vm.session_object_count();
 
         // 仅 ns 为根：清掉持有 fn 的寄存器，fn 唯一可达路径是 ns 的 [[Module]] 边。

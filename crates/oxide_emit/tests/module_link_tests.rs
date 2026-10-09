@@ -1,6 +1,7 @@
 //! 模块链接面的 IR 级断言：内存版 `ModuleSourceLoader` +
 //! `emit_program_module`，钉死 import prelude / export 就地注册 / star 再导出 /
-//! 循环导入编译期报错 / 数据模块的现状行为。
+//! 循环导入编译期报错 / 数据模块 / defer 依赖（不求值、mixed eager 序、
+//! 自导入与祖先回边哨兵）的现状行为。
 //!
 //! 路径口径：加载器 `path` 回填表键原样字符串，与入口 `module_path` 入参逐字符
 //! 一致（虚拟路径 canonicalize 失败保留原路径），自导入身份比较与循环检测依赖
@@ -365,4 +366,113 @@ fn entry_module_reassignable_export_not_pre_registered() {
     let (ir, _) = emit_module("export let x = 1; x = 2;", "./entry.js", &[]).expect("入口模块应编译成功");
     assert_eq!(native_calls_to(&ir, "__modulePreRegister"), 0, "入口模块不得预注册");
     assert_eq!(native_calls_to(&ir, "__moduleSetCell"), 0, "入口模块不得挂 cell");
+}
+
+/// 面 14：defer-only 依赖不求值——无 `__moduleEval`，发 `__moduleDeferObject`
+/// 构造 deferred 对象，逐名 `__modulePreRegister` 预注册静态导出名。
+#[test]
+fn defer_only_dep_not_evaluated() {
+    let (ir, _) = emit_module(
+        "import defer * as ns from \"./dep.js\"; ns;",
+        "./entry.js",
+        &[("./dep.js", ModuleKind::Js, "export var a = 1; export const b = 2;")],
+    )
+    .expect("defer-only 依赖应编译成功");
+    assert_eq!(native_calls_to(&ir, "__moduleEval"), 0, "defer-only 依赖不得求值");
+    assert_eq!(native_calls_to(&ir, "__moduleDeferObject"), 1, "deferred 对象应构造一次");
+    assert_eq!(native_calls_to(&ir, "__modulePreRegister"), 2, "a 与 b 各预注册一次");
+    let pool = pool_strings(&ir);
+    assert!(pool.contains("a") && pool.contains("b"), "导出名应入池: {pool:?}");
+    assert_eq!(ir.nested.len(), 1, "依赖模块应编入子模块树");
+}
+
+/// 面 15：mixed 依赖按 eager 语句序求值，defer 语句不计入求值序。
+/// 入口的 eager 序为 [setup, dep-2, dep-1]（dep-1 为 mixed）；dep-1 内的
+/// defer-only dep-1.2 不求值。
+#[test]
+fn mixed_dep_evaluates_in_eager_order() {
+    let (ir, _) = emit_module(
+        "import \"./setup.js\"; import defer * as ns1 from \"./dep-1.js\"; import \"./dep-2.js\"; import \"./dep-1.js\";",
+        "./entry.js",
+        &[
+            ("./setup.js", ModuleKind::Js, "globalThis.evaluations = [];"),
+            (
+                "./dep-1.js",
+                ModuleKind::Js,
+                "import \"./dep-1.1.js\"; import defer * as ns_1_2 from \"./dep-1.2.js\"; globalThis.evaluations.push(1); export { ns_1_2 };",
+            ),
+            ("./dep-2.js", ModuleKind::Js, "globalThis.evaluations.push(2);"),
+            ("./dep-1.1.js", ModuleKind::Js, "globalThis.evaluations.push(1.1);"),
+            ("./dep-1.2.js", ModuleKind::Js, "globalThis.evaluations.push(1.2);"),
+        ],
+    )
+    .expect("mixed 依赖应编译成功");
+    // 入口：3 个 eager 依赖（setup, dep-2, dep-1）各求值一次。
+    assert_eq!(native_calls_to(&ir, "__moduleEval"), 3, "入口应求值 3 个 eager 依赖");
+    // 入口：dep-1 为 mixed，deferred 对象构造一次。
+    assert_eq!(native_calls_to(&ir, "__moduleDeferObject"), 1, "mixed dep-1 应构造 deferred 对象一次");
+    // dep-1 是第 3 个 nested 模块（eager_order = [setup, dep-2, dep-1]）。
+    let dep1 = &ir.nested[2];
+    // dep-1：1 个 eager 依赖（dep-1.1）求值，defer-only 依赖（dep-1.2）不求值。
+    assert_eq!(native_calls_to(dep1, "__moduleEval"), 1, "dep-1 应只求值 dep-1.1");
+    // dep-1：dep-1.2 为 defer-only，deferred 对象构造一次。
+    assert_eq!(native_calls_to(dep1, "__moduleDeferObject"), 1, "dep-1.2 应构造 deferred 对象一次");
+    // dep-1.2 是 dep-1 的第 2 个 nested 模块（eager_order = [dep-1.1], defer_order = [dep-1.1, dep-1.2]）。
+    let dep12 = &dep1.nested[1];
+    assert_eq!(native_calls_to(dep12, "__moduleEval"), 0, "dep-1.2 不得求值");
+}
+
+/// 面 16：自导入 defer 走哨兵分支——不递归、无环检测 Err、发
+/// `__moduleDeferObject(undefined, undefined)`。
+#[test]
+fn self_import_defer_sentinel() {
+    let (ir, _) = emit_module(
+        "import defer * as self from \"./self.js\"; self;",
+        "./self.js",
+        &[("./self.js", ModuleKind::Js, "export var foo = 1;")],
+    )
+    .expect("自导入 defer 应编译成功");
+    assert_eq!(native_calls_to(&ir, "__moduleEval"), 0, "自导入 defer 不得求值");
+    assert_eq!(native_calls_to(&ir, "__moduleDeferObject"), 1, "哨兵 deferred 对象应构造一次");
+    assert_eq!(ir.nested.len(), 0, "自导入 defer 不得递归");
+}
+
+/// 面 17：祖先 defer 回边（dep → main）走哨兵分支——编译成功、无环检测 Err、
+/// 不递归。main eager 导入 dep，dep defer 导入 main（导入图含环）。
+#[test]
+fn ancestor_defer_back_edge_sentinel() {
+    let main_src = "import \"./dep.js\"; globalThis.result = 1;";
+    let dep_src = "import defer * as main from \"./main.js\"; main.foo;";
+    let (ir, _) = emit_module(
+        main_src,
+        "./main.js",
+        &[
+            ("./main.js", ModuleKind::Js, main_src),
+            ("./dep.js", ModuleKind::Js, dep_src),
+        ],
+    )
+    .expect("祖先 defer 回边应编译成功");
+    // main：1 个 eager 依赖（dep）求值。
+    assert_eq!(native_calls_to(&ir, "__moduleEval"), 1, "main 应求值 dep");
+    // main：无 defer，无 deferred 对象。
+    assert_eq!(native_calls_to(&ir, "__moduleDeferObject"), 0, "main 不得构造 deferred 对象");
+    // dep（nested）：1 个 defer-only 依赖（main）哨兵，不求值。
+    let dep = &ir.nested[0];
+    assert_eq!(native_calls_to(dep, "__moduleEval"), 0, "dep 不得求值 main");
+    assert_eq!(native_calls_to(dep, "__moduleDeferObject"), 1, "dep 应为 main 构造哨兵 deferred 对象");
+    // dep：不递归（main 未编入 dep 的 nested）。
+    assert_eq!(dep.nested.len(), 0, "dep 不得递归进 main");
+}
+
+/// 面 18：零 diff 守卫——非 defer 模块无 `__moduleDeferObject`、无依赖预注册。
+#[test]
+fn no_defer_object_for_non_defer_modules() {
+    let (ir, _) = emit_module(
+        "import * as ns from \"./dep.js\"; ns;",
+        "./entry.js",
+        &[("./dep.js", ModuleKind::Js, "export var z = 1;")],
+    )
+    .expect("非 defer 模块应编译成功");
+    assert_eq!(native_calls_to(&ir, "__moduleDeferObject"), 0, "非 defer 模块不得构造 deferred 对象");
+    assert_eq!(native_calls_to(&ir, "__modulePreRegister"), 0, "非 defer 模块不得预注册依赖");
 }

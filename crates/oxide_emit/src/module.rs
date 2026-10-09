@@ -4,8 +4,11 @@
 //! `__moduleGet` 活读，其余退化为快照；被闭包捕获的导出挂共享 cell，闭包内写
 //! 随活读可见。自导入（`import ... from 自身`）的局部名解析为本模块源绑定的活
 //! 别名，TDZ/提升/活值/不可变四语义全部委托源绑定。`export` 语句就地注册导出值。
-//! 未支持：嵌套闭包内读 import 名（仍为链接期快照）、defer（延迟求值）、
-//! source-phase；star 转发与经再导出链的活值仍为快照；循环导入在编译期跳过。
+//! defer 导入（`import defer * as ns`）的依赖不求值：编译入子模块树并发
+//! `__moduleDeferObject` 构造 deferred namespace 对象（逐名预注册静态导出名），
+//! 绑定该对象；自导入/祖先 defer 回边发哨兵形态（不递归、不编译）。
+//! 未支持：嵌套闭包内读 import 名（仍为链接期快照）、source-phase；
+//! star 转发与经再导出链的活值仍为快照；eager 环导入在编译期跳过。
 
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -21,7 +24,8 @@ use oxide_ir::operand::Operand;
 use oxide_ir::{IRFunction, ParamLayout};
 use oxide_parser::{
     BindingPattern, Declaration, ExportDefaultDeclarationKind, Expression, ImportAttributeKey,
-    ImportDeclarationSpecifier, ModuleExportName, Statement, VariableDeclarationKind, WithClause,
+    ImportDeclarationSpecifier, ImportPhase, ModuleExportName, Statement, VariableDeclarationKind,
+    WithClause,
 };
 use oxide_types::MODULE_NAMESPACE_BINDING;
 
@@ -42,6 +46,16 @@ pub struct ResolvedModule {
     pub path: String,
     /// 模块种类。
     pub kind: ModuleKind,
+}
+
+/// 单个依赖 spec 的 phase 跟踪：eager/defer 双标志与首次出现的导入属性。
+///
+/// `eager` 为真表示该 spec 被任一非 defer 语句（导入或再导出）引用；
+/// `defer` 为真表示被任一 `import defer * as` 引用。两标志可并存（mixed 依赖）。
+struct DepPhase {
+    eager: bool,
+    defer: bool,
+    attrs: Vec<(String, String)>,
 }
 
 /// 模块加载器：由调用方（test262 runner / CLI）提供文件解析。
@@ -457,50 +471,84 @@ impl Emitter {
         let ns_reg = self.emit_module_call(ctx, "__moduleObject", &[])?;
         ctx.module_ns_reg = Some(ns_reg);
 
-        // —— 依赖收集（import + re-export/star 的 source，按首次出现去重）——
+        // —— 依赖收集（import + re-export/star 的 source，按首次出现去重，记 phase）——
+        // eager_order 为各 spec 首个 eager 语句的出现序（求值序）；defer_order 为各 spec
+        // 首次出现序（defer-only 组发射序）。无 defer 的模块两序与首次出现序恒等，
+        // 发射产物与现态逐字节一致。
         let base_dir = Path::new(module_path)
             .parent()
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_default();
-        let mut deps: Vec<(String, Vec<(String, String)>)> = Vec::new();
+        let mut phase_map: HashMap<String, DepPhase> = HashMap::new();
+        let mut eager_order: Vec<String> = Vec::new();
+        let mut defer_order: Vec<String> = Vec::new();
         for stmt in body {
-            let (spec, attrs) = match stmt {
+            let (spec, attrs, is_defer) = match stmt {
                 Statement::ImportDeclaration(imp) => {
-                    (imp.source.value.to_string(), module_attributes(&imp.with_clause))
+                    let is_defer = imp.phase == Some(ImportPhase::Defer);
+                    (imp.source.value.to_string(), module_attributes(&imp.with_clause), is_defer)
                 }
                 Statement::ExportNamedDeclaration(exp) => {
                     if let Some(src) = &exp.source {
-                        (src.value.to_string(), module_attributes(&exp.with_clause))
+                        (src.value.to_string(), module_attributes(&exp.with_clause), false)
                     } else {
                         continue;
                     }
                 }
                 Statement::ExportAllDeclaration(exp) => {
-                    (exp.source.value.to_string(), module_attributes(&exp.with_clause))
+                    (exp.source.value.to_string(), module_attributes(&exp.with_clause), false)
                 }
                 _ => continue,
             };
-            if !deps.iter().any(|(s, _)| *s == spec) {
-                deps.push((spec, attrs));
+            let is_new = !phase_map.contains_key(&spec);
+            let entry = phase_map
+                .entry(spec.clone())
+                .or_insert_with(|| DepPhase { eager: false, defer: false, attrs });
+            if is_new {
+                defer_order.push(spec.clone());
+            }
+            if !is_defer && !entry.eager {
+                entry.eager = true;
+                eager_order.push(spec.clone());
+            }
+            if is_defer {
+                entry.defer = true;
             }
         }
 
-        // —— 编译并求值依赖 ——
-        for (spec, attrs) in deps {
-            let attr_refs: Vec<(&str, &str)> = attrs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+        // 本模块自身导出名与 var 作用域导出名：自导入 mixed 的 defer 预注册复用，
+        // 亦供下方绑定循环与 live 预注册消费。
+        let own_export_names = module_own_export_names(body);
+        let var_scoped_export_names = module_var_scoped_export_names(body);
+
+        // —— 编译并求值依赖：eager 组先行（按 eager 语句序），defer-only 组随后 ——
+        for spec in eager_order {
+            let phase = &phase_map[&spec];
+            let attr_refs: Vec<(&str, &str)> = phase.attrs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
             let resolved = loader.resolve(&base_dir, &spec, &attr_refs)?;
-            let dep_ns_reg = if resolved.path == module_path {
+            let is_self = resolved.path == module_path;
+            let (dep_ns_reg, fn_reg, dep_own_names, dep_var_scoped) = if is_self {
                 // 自导入：读自身命名空间（依赖即本模块，勿递归）。
-                ns_reg
+                (ns_reg, None, own_export_names.clone(), var_scoped_export_names.clone())
             } else {
                 if path_stack.contains(&resolved.path) {
                     return Err(format!("circular module import not supported: {}", resolved.path));
                 }
                 path_stack.push(resolved.path.clone());
-                let (dep_ir, dep_reassignable) = match resolved.kind {
+                let (dep_ir, dep_reassignable, dep_own_names, dep_var_scoped) = match resolved.kind {
                     ModuleKind::Js => self.compile_js_dep(&resolved, loader, path_stack)?,
-                    ModuleKind::Json => (self.compile_data_dep("json", &resolved.source)?, false),
-                    ModuleKind::Text => (self.compile_data_dep("text", &resolved.source)?, false),
+                    ModuleKind::Json => (
+                        self.compile_data_dep("json", &resolved.source)?,
+                        false,
+                        HashSet::from([DEFAULT_EXPORT_NAME.to_string()]),
+                        HashSet::from([DEFAULT_EXPORT_NAME.to_string()]),
+                    ),
+                    ModuleKind::Text => (
+                        self.compile_data_dep("text", &resolved.source)?,
+                        false,
+                        HashSet::from([DEFAULT_EXPORT_NAME.to_string()]),
+                        HashSet::from([DEFAULT_EXPORT_NAME.to_string()]),
+                    ),
                     ModuleKind::Bytes => return Err("bytes module not supported".into()),
                 };
                 path_stack.pop();
@@ -508,20 +556,84 @@ impl Emitter {
                 ctx.module_dep_reassignable.insert(spec.clone(), dep_reassignable);
                 let fn_reg = ctx.alloc_reg();
                 ctx.inst(Inst::create_closure(Operand::Reg(fn_reg), ctx.nested.len() as u16));
-                self.emit_module_call(ctx, "__moduleEval", &[fn_reg])?
+                let real_ns = self.emit_module_call(ctx, "__moduleEval", &[fn_reg])?;
+                (real_ns, Some(fn_reg), dep_own_names, dep_var_scoped)
             };
             ctx.module_dep_ns_regs.insert(spec.clone(), dep_ns_reg);
             ctx.module_dep_paths.insert(spec.clone(), resolved.path.clone());
-            if resolved.path == module_path {
+            if is_self {
                 // 自导入：绑定走别名语义（源导出在 body 执行中才就绪），
                 // 不能像普通依赖那样链接期快照。
                 ctx.module_self_import_specs.insert(spec.clone());
             }
+            if phase.defer {
+                // mixed 依赖：模块已急切求值，deferred 对象承载已求值态
+                // （[[Evaluated]]=true、[[Namespace]]=真实 ns）。
+                let fn_or_sentinel = if is_self {
+                    // 自导入 mixed：模块函数在导入方 prelude 期不可得，发哨兵形态。
+                    self.emit_undefined(ctx)
+                } else {
+                    fn_reg.expect("非自导入 eager 依赖必有闭包寄存器")
+                };
+                let defer_ns = self.emit_module_call(ctx, "__moduleDeferObject", &[fn_or_sentinel, dep_ns_reg])?;
+                ctx.module_defer_ns_regs.insert(spec.clone(), defer_ns);
+                self.emit_defer_pre_register(ctx, defer_ns, &dep_own_names, &dep_var_scoped)?;
+            }
+        }
+
+        // defer-only 组（eager == false 的 spec，按 defer_order）：不求值、不发
+        // __moduleEval。祖先判定（自导入或父链回边）命中时发哨兵形态
+        // __moduleDeferObject(undefined, undefined)——不递归、不压 path_stack、不编译；
+        // 否则正常编译并发 __moduleDeferObject(fn, undefined) + 逐名预注册。
+        for spec in defer_order {
+            let phase = &phase_map[&spec];
+            if phase.eager {
+                continue;
+            }
+            let attr_refs: Vec<(&str, &str)> = phase.attrs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+            let resolved = loader.resolve(&base_dir, &spec, &attr_refs)?;
+            let is_ancestor = resolved.path == module_path || path_stack.contains(&resolved.path);
+            if is_ancestor {
+                // 哨兵：模块函数在导入方 prelude 期不可得（自导入是自身、祖先是
+                // 父链），defer 回边在导入图上成环，编译期不得报循环。
+                let undef = self.emit_undefined(ctx);
+                let defer_ns = self.emit_module_call(ctx, "__moduleDeferObject", &[undef, undef])?;
+                ctx.module_dep_ns_regs.insert(spec.clone(), defer_ns);
+                ctx.module_defer_ns_regs.insert(spec.clone(), defer_ns);
+                ctx.module_dep_paths.insert(spec.clone(), resolved.path.clone());
+            } else {
+                path_stack.push(resolved.path.clone());
+                let (dep_ir, _dep_reassignable, dep_own_names, dep_var_scoped) = match resolved.kind {
+                    ModuleKind::Js => self.compile_js_dep(&resolved, loader, path_stack)?,
+                    ModuleKind::Json => (
+                        self.compile_data_dep("json", &resolved.source)?,
+                        false,
+                        HashSet::from([DEFAULT_EXPORT_NAME.to_string()]),
+                        HashSet::from([DEFAULT_EXPORT_NAME.to_string()]),
+                    ),
+                    ModuleKind::Text => (
+                        self.compile_data_dep("text", &resolved.source)?,
+                        false,
+                        HashSet::from([DEFAULT_EXPORT_NAME.to_string()]),
+                        HashSet::from([DEFAULT_EXPORT_NAME.to_string()]),
+                    ),
+                    ModuleKind::Bytes => return Err("bytes module not supported".into()),
+                };
+                path_stack.pop();
+                ctx.nested.push(dep_ir);
+                let fn_reg = ctx.alloc_reg();
+                ctx.inst(Inst::create_closure(Operand::Reg(fn_reg), ctx.nested.len() as u16));
+                let undef = self.emit_undefined(ctx);
+                let defer_ns = self.emit_module_call(ctx, "__moduleDeferObject", &[fn_reg, undef])?;
+                ctx.module_dep_ns_regs.insert(spec.clone(), defer_ns);
+                ctx.module_defer_ns_regs.insert(spec.clone(), defer_ns);
+                ctx.module_dep_paths.insert(spec.clone(), resolved.path.clone());
+                self.emit_defer_pre_register(ctx, defer_ns, &dep_own_names, &dep_var_scoped)?;
+            }
         }
 
         // —— 导入绑定初始化（普通依赖为链接期快照；命名空间绑定直接引用 ns 对象；
-        // 自导入绑定解析为本模块源绑定的活别名）——
-        let own_export_names = module_own_export_names(body);
+        // defer 命名空间绑定引用 deferred 对象；自导入绑定解析为本模块源绑定的活别名）——
         // 无命名 `export * from 'x'` 会把依赖的全部导出转发给自身；自导入名可能来自
         // star 再导出，编译期无法静态判定该名是否存在于自身导出，故链接校验放宽。
         let has_unnamed_star = body
@@ -647,19 +759,29 @@ impl Emitter {
                                 }
                             }
                             ImportDeclarationSpecifier::ImportNamespaceSpecifier(s) => {
+                                let is_defer = imp.phase == Some(ImportPhase::Defer);
                                 // 命名空间绑定引用 ns 对象本身：自导入时同一对象，
-                                // body 执行后导出自然可见。
-                                if is_self {
+                                // body 执行后导出自然可见；defer 绑定 deferred 对象。
+                                // defer 自导入不得激活 live ns（不置 has_self_ns_import）。
+                                if is_self && !is_defer {
                                     has_self_ns_import = true;
-                                } else {
+                                } else if !is_self {
                                     ctx.module_import_origins.insert(
                                         s.local.name.to_string(),
                                         (dep_path.clone(), MODULE_NAMESPACE_BINDING.to_string()),
                                     );
                                 }
+                                let bind_reg = if is_defer {
+                                    *ctx
+                                        .module_defer_ns_regs
+                                        .get(&dep_spec)
+                                        .ok_or_else(|| format!("module dependency missing: {dep_spec}"))?
+                                } else {
+                                    dep_ns_reg
+                                };
                                 self.emit_bind_target(
                                     s.local.name.as_str(),
-                                    dep_ns_reg,
+                                    bind_reg,
                                     VariableDeclarationKind::Const,
                                     true,
                                     false,
@@ -698,12 +820,11 @@ impl Emitter {
         // var/函数类导出（VarScopedDeclarations）在实例化期即初始化为 undefined，
         // lexical/class 保持未初始化（TDZ）。 ——
         if live_active {
-            let var_scoped = module_var_scoped_export_names(body);
             let mut export_names: Vec<String> = own_export_names.into_iter().collect();
             export_names.sort();
             for name in export_names {
                 let name_reg = self.load_string_const(&name, ctx);
-                let var_like_reg = self.load_bool_const(var_scoped.contains(&name), ctx);
+                let var_like_reg = self.load_bool_const(var_scoped_export_names.contains(&name), ctx);
                 self.emit_module_call(ctx, "__modulePreRegister", &[ns_reg, name_reg, var_like_reg])?;
             }
         }
@@ -824,17 +945,19 @@ impl Emitter {
         Ok(())
     }
 
-    /// 编译 JS 依赖模块（递归），回传 IR 与「是否含可重赋导出」标志。
+    /// 编译 JS 依赖模块（递归），回传 IR、「是否含可重赋导出」标志、
+    /// 自身静态导出名集与 var 作用域导出名集。
     ///
     /// # 边界与前提
-    /// - 标志取自依赖 ctx 的 `module_live_dep`；入口模块不参与，依赖模块恒按
+    /// - 可重赋标志取自依赖 ctx 的 `module_live_dep`；入口模块不参与，依赖模块恒按
     ///   `!top_level` 判定，故 const-only 依赖回传 false。
+    /// - 导出名集在函数内对解析产物就地计算，供导入方 defer 预注册消费。
     ///
     /// # 注意事项
     /// - 导入方据标志决定是否登记活读映射；标志不改变本模块 IR。
     fn compile_js_dep(
         &self, resolved: &ResolvedModule, loader: &mut dyn ModuleSourceLoader, path_stack: &mut Vec<String>,
-    ) -> Result<(IRFunction, bool), String> {
+    ) -> Result<(IRFunction, bool, HashSet<String>, HashSet<String>), String> {
         let alloc = oxide_parser::Allocator::default();
         let program = oxide_parser::parse_module(&alloc, &resolved.source).map_err(|errs| {
             format!(
@@ -848,7 +971,30 @@ impl Emitter {
         ctx.is_strict = true;
         self.emit_module_into_ctx(&program, &resolved.path, loader, path_stack, &mut ctx, false)?;
         let reassignable = ctx.module_live_dep;
-        Ok((ctx.assemble_ir(ParamLayout { base: 0, count: 0 }, None), reassignable))
+        let own_export_names = module_own_export_names(&program.body);
+        let var_scoped = module_var_scoped_export_names(&program.body);
+        Ok((
+            ctx.assemble_ir(ParamLayout { base: 0, count: 0 }, None),
+            reassignable,
+            own_export_names,
+            var_scoped,
+        ))
+    }
+
+    /// 发 defer 预注册：对 deferred namespace 对象逐名 `__modulePreRegister`，
+    /// 名字按字典序排序保证发射序确定。var 作用域导出名（var/function）
+    /// 预注册为已初始化（undefined），lexical/class 保持未初始化（TDZ）。
+    fn emit_defer_pre_register(
+        &self, ctx: &mut CompileCtx, defer_ns_reg: u32, export_names: &HashSet<String>, var_scoped: &HashSet<String>,
+    ) -> Result<(), String> {
+        let mut names: Vec<&String> = export_names.iter().collect();
+        names.sort();
+        for name in names {
+            let name_reg = self.load_string_const(name, ctx);
+            let var_like_reg = self.load_bool_const(var_scoped.contains(name), ctx);
+            self.emit_module_call(ctx, "__modulePreRegister", &[defer_ns_reg, name_reg, var_like_reg])?;
+        }
+        Ok(())
     }
 
     /// 编译数据模块（json/text）：body 仅为 __moduleData 调用 + RETURN。
