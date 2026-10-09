@@ -1457,4 +1457,137 @@ mod tests {
         .unwrap();
         assert_eq!(vm.lookup_str(r).unwrap(), "TypeError");
     }
+
+    /// growable 构造器预分配账目钉：byteLength 读活长、maxByteLength 读真实
+    /// 上限、growable 为真；核的 `shared_buffer_bytes` 增量等于真实上限
+    /// （预分配一次性到位），而非初始活长。定长对照臂：增量即活长、
+    /// growable 为假、maxByteLength 解码取活长。
+    #[test]
+    fn growable_constructor_preallocates_to_max() {
+        let mut vm = Vm::new();
+        let before = vm.kernel_core().shared_buffer_bytes();
+        let r = eval_ab(
+            &mut vm,
+            "var sab = new SharedArrayBuffer(2, {maxByteLength: 8}); \
+             globalThis.__sab = sab; \
+             [sab.byteLength, sab.maxByteLength, sab.growable].join(',')",
+        )
+        .unwrap();
+        assert_eq!(vm.lookup_str(r).unwrap(), "2,8,true");
+        assert_eq!(
+            vm.kernel_core().shared_buffer_bytes() - before,
+            8,
+            "growable 预分配账目是真实上限而非初始活长"
+        );
+        // 定长对照臂：账目即活长，growable 为假，maxByteLength 解码取活长。
+        let before_fixed = vm.kernel_core().shared_buffer_bytes();
+        let r = eval_ab(
+            &mut vm,
+            "var fixed = new SharedArrayBuffer(4); \
+             globalThis.__fixed = fixed; \
+             [fixed.byteLength, fixed.maxByteLength, fixed.growable].join(',')",
+        )
+        .unwrap();
+        assert_eq!(vm.lookup_str(r).unwrap(), "4,4,false");
+        assert_eq!(vm.kernel_core().shared_buffer_bytes() - before_fixed, 4);
+    }
+
+    /// grow 前缀保留与零填充钉：写入前缀后 grow，前缀字节不变、增补区
+    /// 全零、活长推进到目标值。
+    #[test]
+    fn grow_preserves_prefix_and_zero_fills() {
+        let mut vm = Vm::new();
+        let r = eval_ab(
+            &mut vm,
+            "(function () { var sab = new SharedArrayBuffer(2, {maxByteLength: 8}); \
+             var v = new Uint8Array(sab); v[0] = 0xAA; v[1] = 0xBB; \
+             sab.grow(6); \
+             var v2 = new Uint8Array(sab); \
+             return v2[0] === 0xAA && v2[1] === 0xBB && v2[2] === 0 && v2[3] === 0 \
+               && v2[4] === 0 && v2[5] === 0 && sab.byteLength === 6; })()",
+        )
+        .unwrap();
+        assert!(r.as_bool());
+    }
+
+    /// grow-only 与超上限 RangeError 钉：缩长（当前活长以下任意值）与超
+    /// 真实上限各抛 RangeError，恰好到上限成功；恰好等于当前活长是 no-op
+    /// 成功（只增不缩，相等放行）。
+    #[test]
+    fn grow_only_and_over_max_range_errors() {
+        let mut vm = Vm::new();
+        let r = eval_ab(
+            &mut vm,
+            "(function () { var sab = new SharedArrayBuffer(4, {maxByteLength: 8}); \
+             var out = ''; \
+             try { sab.grow(3); out += 'no-throw'; } \
+             catch (e) { out += (e.name === 'RangeError' ? 'R' : 'X'); } \
+             try { sab.grow(4); out += 'ok'; } \
+             catch (e) { out += 'X'; } \
+             try { sab.grow(9); out += 'no-throw'; } \
+             catch (e) { out += (e.name === 'RangeError' ? 'R' : 'X'); } \
+             try { sab.grow(8); out += 'ok'; } \
+             catch (e) { out += 'X'; } \
+             return out + '|' + sab.byteLength; })()",
+        )
+        .unwrap();
+        assert_eq!(vm.lookup_str(r).unwrap(), "RokRok|8");
+    }
+
+    /// grow 非 growable 守卫钉：定长 SAB 调 grow 抛 TypeError，守卫先于
+    /// 参数强转（valueOf 副作用不运行）。
+    #[test]
+    fn grow_non_growable_guard_before_coercion() {
+        let mut vm = Vm::new();
+        let r = eval_ab(
+            &mut vm,
+            "(function () { var calls = 0; \
+             var sab = new SharedArrayBuffer(4); \
+             try { sab.grow({ valueOf() { calls++; return 8; } }); \
+                   return 'no-throw' + calls; } \
+             catch (err) { return (err.name === 'TypeError' ? 'T' : 'X') + calls; } })()",
+        )
+        .unwrap();
+        assert_eq!(vm.lookup_str(r).unwrap(), "T0");
+    }
+
+    /// grow 强转窗口重取钉：界判消费强转后重取的活长——valueOf 内先
+    /// grow 推进活长，外层 grow 到重取活长之下抛 RangeError（若消费
+    /// 求值前快照则会成功）。
+    #[test]
+    fn grow_coercion_window_refetch() {
+        let mut vm = Vm::new();
+        let r = eval_ab(
+            &mut vm,
+            "(function () { var sab = new SharedArrayBuffer(4, {maxByteLength: 8}); \
+             try { sab.grow({ valueOf() { sab.grow(6); return 5; } }); \
+                   return 'no-throw|' + sab.byteLength; } \
+             catch (e) { return (e.name === 'RangeError' ? 'R' : 'X') + '|' + sab.byteLength; } })()",
+        )
+        .unwrap();
+        assert_eq!(vm.lookup_str(r).unwrap(), "R|6");
+    }
+
+    /// SAB 无 detach 面钉：$262.detachArrayBuffer 对 SAB 抛 TypeError
+    /// （读入口标签校验臂），SAB 原型无 AB 专属方法（transfer / resize /
+    /// markImmutable / sliceToImmutable 均 undefined），detach 失败后缓冲
+    /// 状态不变。
+    #[test]
+    fn sab_has_no_detach_surface() {
+        let mut vm = Vm::new();
+        let r = eval_ab(
+            &mut vm,
+            "(function () { var sab = new SharedArrayBuffer(4, {maxByteLength: 8}); \
+             var out = ''; \
+             try { $262.detachArrayBuffer(sab); out += 'no-throw'; } \
+             catch (e) { out += (e.name === 'TypeError' ? 'T' : 'X'); } \
+             out += ',' + (sab.transfer === undefined ? 'u' : 'x') \
+                  + '|' + (sab.resize === undefined ? 'u' : 'x') \
+                  + '|' + (sab.markImmutable === undefined ? 'u' : 'x') \
+                  + '|' + (sab.sliceToImmutable === undefined ? 'u' : 'x'); \
+             return out + '|' + sab.byteLength + '|' + sab.growable; })()",
+        )
+        .unwrap();
+        assert_eq!(vm.lookup_str(r).unwrap(), "T,u|u|u|u|4|true");
+    }
 }
