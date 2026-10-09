@@ -19,16 +19,19 @@ const INNER_PROP: &str = "__inner__";
 /// `@@asyncIterator` 的 well-known symbol 键序号。
 const ASYNC_ITERATOR_SYMBOL_ID: u32 = 8;
 
-/// GetAsyncIterator（ECMA-262）：取 `value[@@asyncIterator]`，不可调用时回退同步
-/// 迭代器并包 AsyncFromSyncIterator。
+/// GetAsyncIterator（ECMA-262）：取 `value[@@asyncIterator]`，可调用则调用；
+/// undefined/null 时回退同步迭代器并包 AsyncFromSyncIterator；
+/// 已定义但不可调用时抛 TypeError。
 ///
 /// # 步骤
 /// 1. ToObject 后读取 `@@asyncIterator`，可调用则调用并校验结果为对象。
-/// 2. 否则经同步迭代协议取迭代器包装器，包成 AsyncFromSyncIterator。
+/// 2. 已定义但不可调用时抛 TypeError（GetMethod 步 4）。
+/// 3. undefined/null 时经同步迭代协议取迭代器包装器，包成 AsyncFromSyncIterator。
 ///
 /// # 返回值
 /// - `Ok(iterator)`：异步迭代器对象；
-/// - `Err`：`@@asyncIterator` getter/调用抛错或 ToObject 失败，透传原异常值。
+/// - `Err`：`@@asyncIterator` getter/调用抛错或 ToObject 失败（透传原异常值），
+///   或已定义但不可调用（构造 TypeError）。
 pub(crate) fn make_async_iterator(vm: &mut Vm, value: JsValue) -> Result<JsValue, JsValue> {
     let obj_value = if value.is_object() {
         value
@@ -68,6 +71,10 @@ pub(crate) fn make_async_iterator(vm: &mut Vm, value: JsValue) -> Result<JsValue
             ));
         }
         return Ok(iterator);
+    }
+    if !method.is_null() && !method.is_undefined() {
+        // GetMethod 步 4：已定义非可调用方法 → TypeError，不落入同步回退。
+        return Err(oxide_builtins::error::create_type_error(vm, "value is not async iterable"));
     }
     let sync = oxide_builtins::iterator::make_iterator_for_value(vm, value)?;
     Ok(vm.create_async_from_sync_iterator(sync))

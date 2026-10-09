@@ -409,3 +409,80 @@ fn t21_async_gen_multi_layer_escape_no_signal_leak_into_async_func() {
         .to_string();
     assert_eq!(eval(&source), "\"body,c2,c1,f-body,f-finally|f-done|g:true:42\"");
 }
+
+// T22：`@@asyncIterator` 已定义但不可调用（对象形）——GetMethod 步 4 抛 TypeError
+// 入委托 body，可捕获；同步 `@@iterator` getter 不得被触发（若触发，拒绝原因会是
+// getter 抛值而非 TypeError）。
+#[test]
+fn t22_async_iterator_not_callable_object_typeerror() {
+    assert_eq!(
+        eval(
+            "async function* g() { try { yield* { \
+             get [Symbol.iterator]() { throw 'no-sync-iter'; }, \
+             [Symbol.asyncIterator]: {} }; } \
+             catch (e) { return 'caught:' + e.name; } } \
+             (async function run() { const it = g(); const r = await it.next(); \
+             return r.value + ':' + r.done; })()"
+        ),
+        "\"caught:TypeError:true\""
+    );
+}
+
+// T23：`@@asyncIterator` 为 null——null/undefined 形保持同步回退，元素正常让出。
+#[test]
+fn t23_async_iterator_null_sync_fallback() {
+    assert_eq!(
+        eval(
+            "async function* g() { yield* { [Symbol.asyncIterator]: null, \
+             [Symbol.iterator]: function* () { yield 1; yield 2; } }; } \
+             (async function run() { const it = g(); \
+             const a = (await it.next()).value; const b = (await it.next()).value; \
+             const c = (await it.next()).done; return a + ',' + b + ',' + c; })()"
+        ),
+        "\"1,2,true\""
+    );
+}
+
+// T24：`@@asyncIterator` 为 undefined——undefined/null 形保持同步回退，元素正常让出。
+#[test]
+fn t24_async_iterator_undefined_sync_fallback() {
+    assert_eq!(
+        eval(
+            "async function* g() { yield* { [Symbol.asyncIterator]: undefined, \
+             [Symbol.iterator]: function* () { yield 3; } }; } \
+             (async function run() { const it = g(); \
+             const a = (await it.next()).value; const b = (await it.next()).done; \
+             return a + ':' + b; })()"
+        ),
+        "\"3:true\""
+    );
+}
+
+// T25：for-await-of 臂——`@@asyncIterator` 已定义但不可调用，TypeError 被外围
+// try/catch 捕获（验证 Err 臂经 unwind 透传原异常值）。
+#[test]
+fn t25_for_await_of_not_callable_typeerror_caught() {
+    assert_eq!(
+        eval(
+            "async function f() { try { for await (const x of { [Symbol.asyncIterator]: {} }) { } } \
+             catch (e) { return 'caught:' + e.name; } } \
+             (async function run() { return await f(); })()"
+        ),
+        "\"caught:TypeError\""
+    );
+}
+
+// T26：`@@asyncIterator` 在原型上不可调用（boolean 形）——ToObject 装箱后读原型，
+// GetMethod 步 4 抛 TypeError，可捕获（覆盖原始值走原型链的形态）。
+#[test]
+fn t26_async_iterator_not_callable_boolean_primitive() {
+    assert_eq!(
+        eval(
+            "Boolean.prototype[Symbol.asyncIterator] = {}; \
+             async function* g() { try { yield* true; } catch (e) { return 'caught:' + e.name; } } \
+             (async function run() { const it = g(); const r = await it.next(); \
+             return r.value + ':' + r.done; })()"
+        ),
+        "\"caught:TypeError:true\""
+    );
+}
