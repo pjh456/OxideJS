@@ -11,6 +11,8 @@
 //! - worker 脚本编译失败不 panic：经 worker → 主线程通道上报错误串，worker 继续
 //!   事件循环（可被干净终止）。
 
+pub mod bindings;
+
 use std::collections::HashSet;
 use std::sync::Arc;
 use std::thread::JoinHandle;
@@ -77,6 +79,8 @@ fn worker_event_loop(
 ) {
     let mut vm = Vm::with_kernel_core(core);
     vm.set_compiler_service(Arc::clone(&compiler));
+    // 注入 worker → 主线程输出通道（self.postMessage 经 thread-local 发回主线程）。
+    bindings::set_worker_out_tx(out_tx.clone());
 
     // 编译 worker 脚本（worker 的程序）。失败不 panic：上报错误串后继续循环。
     let script_module = match compiler.compile_script(&script) {
@@ -98,6 +102,10 @@ fn worker_event_loop(
 
     // 事件循环：recv_timeout 驱动，超时查断开。
     loop {
+        // 自关停请求（self.close()）：事件循环每轮检查，置位即退出。
+        if bindings::worker_close_requested() {
+            break;
+        }
         match rx.recv_timeout(Duration::from_millis(100)) {
             Ok(WorkerMail::Message(value)) => {
                 // rehydrate → execute_task → drain_microtasks，再回显处理值。

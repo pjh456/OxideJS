@@ -56,6 +56,8 @@ pub mod bind_shared_array_buffer;
 pub mod bind_string;
 /// 未实现内置（Proxy/BigInt/WeakMap 等）的 stub 构造器绑定。
 pub mod bind_stubs;
+/// Worker 构造器绑定（Box 分配，不占 BuiltinWorld P 字段）。
+pub mod bind_worker;
 /// Symbol 构造器与原型的 native 方法绑定。
 pub mod bind_symbol;
 /// Temporal 命名空间对象（Now/Instant/PlainDate/PlainTime）绑定。
@@ -1233,6 +1235,7 @@ pub fn bind_global_builtin_slots(
 
     bind_reflect_global(core, session, global);
     bind_iterator_global(core, session, global);
+    bind_worker::bind_worker(core, session, global, realm_id);
     bind_disposable_stack::bind_disposable_stack(core, session, global, realm_id);
     bind_async_disposable_stack::bind_async_disposable_stack(core, session, global, realm_id);
     bind_stub_globals(core, session, global);
@@ -1343,6 +1346,9 @@ pub fn rebind_dirty_builtins(
     if dirty.map_or(true, |d| d.console) {
         bind_console::bind_console(core, session, global);
     }
+    // worker 构造器是 Box 分配对象（不在 BuiltinWorld 快照内），不占脏位：
+    // 无条件重绑（构造器经 lookup_position 守卫复用，幂等）。
+    bind_worker::bind_worker(core, session, global, realm_id);
     // tag 目标横跨多个脏分组（Map/Set/DataView/Math/JSON/迭代器原型），
     // 各组各自重绑后统一补装；安装点自带幂等检查。
     install_to_string_tags(core, session, realm_id);
