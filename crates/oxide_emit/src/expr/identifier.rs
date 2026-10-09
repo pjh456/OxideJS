@@ -272,7 +272,8 @@ impl Emitter {
     /// # 边界与前提
     /// - 仅在 `with_stack` 非空且名字非 with 内部绑定时调用。
     /// - 对象属性存在性判定与动态读取一致（`in` 含原型链）。
-    /// - 回退目标未在静态作用域声明时不登记全局（with 外不应可见）。
+    /// - 回退目标未在静态作用域声明时落隐式全局（sloppy 物化全局属性，
+    ///   strict 抛 ReferenceError），与静态写路径同形。
     pub(crate) fn emit_with_dynamic_write(
         &self, name: &str, val_reg: u32, const_flag: u16, ctx: &mut CompileCtx,
     ) -> Result<(), String> {
@@ -297,10 +298,9 @@ impl Emitter {
         ctx.inst(Inst::jmp(end_label));
 
         ctx.labels.set_label_pos(fallback_label, ctx.insts.len());
-        // 回退只写静态作用域已声明的绑定；未声明时丢弃值（隐式全局在 with 外不可解析）。
-        if ctx.scopes.symbols.lookup_any(name).is_some() {
-            self.emit_identifier_store(name, val_reg, const_flag, ctx)?;
-        }
+        // 回退写静态作用域：已声明绑定走常规写路径；未声明名是隐式全局
+        // （sloppy 物化全局属性、strict 抛 ReferenceError），与静态写路径同形。
+        self.emit_identifier_store(name, val_reg, const_flag, ctx)?;
         ctx.labels.set_label_pos(end_label, ctx.insts.len());
         Ok(())
     }
