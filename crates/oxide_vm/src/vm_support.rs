@@ -103,6 +103,7 @@ impl Vm {
                     pending_forced_collect: false,
                     gc_pressure_mode: gc_pressure_mode_from_env(),
                     broadcast_channels: std::collections::HashMap::new(),
+                    event_targets: std::collections::HashMap::new(),
                 }),
                 symbols: RefCell::new(SymbolState {
                     symbol_descriptions: Vec::new(),
@@ -269,6 +270,7 @@ impl Vm {
                     pending_forced_collect: false,
                     gc_pressure_mode: gc_pressure_mode_from_env(),
                     broadcast_channels: std::collections::HashMap::new(),
+                    event_targets: std::collections::HashMap::new(),
                 }),
                 symbols: RefCell::new(SymbolState {
                     symbol_descriptions: Vec::new(),
@@ -490,6 +492,9 @@ impl Vm {
         // BroadcastChannel 注册表持 session 对象裸指针：teardown 释放全部
         // session 对象前须清表，否则残留悬垂指针。
         self.realm.gc.borrow_mut().broadcast_channels.clear();
+        // EventTarget 监听器注册表同持 session 对象裸指针（弱键）：teardown 释放
+        // 全部 session 对象前须清表，否则残留悬垂指针。
+        self.realm.gc.borrow_mut().event_targets.clear();
         // Worker 对象注册表持 session 对象指针：teardown 释放全部 session 对象
         // 前须清表，否则残留悬垂指针。
         self.worker_objects.clear();

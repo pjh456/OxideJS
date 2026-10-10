@@ -42,11 +42,12 @@ pub(crate) enum RootGroup {
     Global,
     WorkerObjects,
     DisposeStack,
+    EventTargets,
 }
 
 impl RootGroup {
     /// 根组总数（与变体数同源，绑定逐组计数数组的长度）。
-    pub const COUNT: usize = 27;
+    pub const COUNT: usize = 28;
 }
 
 impl Vm {
@@ -179,6 +180,14 @@ impl Vm {
         // full_reset 清表），漏根 → sweep 释放 → 事件循环反查悬垂。
         for &worker_obj in self.worker_objects.values() {
             f(RootGroup::WorkerObjects, worker_obj);
+        }
+        // EventTarget 监听器注册表：监听器回调是 GC 根（存活目标的回调随目标存活，
+        // 漏根 → 回调被 sweep 释放 → 派发解引用悬垂）。弱键剪枝见 sweep；此处
+        // 无条件标活全部回调（死目标的回调多活一轮收集，非泄漏，sweep 已剪其条目）。
+        for state in self.realm.gc.borrow().event_targets.values() {
+            for entry in &state.listeners {
+                f(RootGroup::EventTargets, entry.callback);
+            }
         }
     }
 

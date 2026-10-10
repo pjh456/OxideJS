@@ -20,7 +20,7 @@ use std::time::Duration;
 use oxide_builtins::message_value::{rehydrate_message, MessageValue};
 use oxide_kernel::kernel::KernelCore;
 use oxide_kernel::message_queue::{channel, Receiver, Sender, Timeout};
-use oxide_runtime_api::{CompilerService, NativeResult, VmHost};
+use oxide_runtime_api::{CompilerService, NativeResult};
 use oxide_types::object::JsObject;
 use oxide_types::value::JsValue;
 
@@ -345,30 +345,23 @@ impl Vm {
             let Some(worker_obj) = self.worker_object(id) else {
                 continue;
             };
-            // 错误面：逐条交付 onerror（编译 / 执行失败）。
+            // 错误面：逐条经 dispatchEvent 交付 error 事件（编译 / 执行失败）。
             for err in &poll.errors {
                 if self.worker_object(id).is_none() {
                     break;
                 }
-                self.deliver_error_event(worker_obj, "onerror", "error", err);
+                self.deliver_error_event(worker_obj, "error", err);
             }
-            // 消息交付失败面：逐条交付 onmessageerror（当前架构不可达，前向钩子）。
+            // 消息交付失败面：逐条经 dispatchEvent 交付 messageerror 事件
+            // （当前架构不可达，前向钩子）。
             for msg_err in &poll.message_errors {
                 if self.worker_object(id).is_none() {
                     break;
                 }
-                self.deliver_error_event(worker_obj, "onmessageerror", "messageerror", msg_err);
+                self.deliver_error_event(worker_obj, "messageerror", msg_err);
             }
-            // 数据面：读 onmessage 属性（undefined 或非可调用即静默跳过）。
-            let si_onmessage = self.perm_intern("onmessage");
-            let handler = match self.ordinary_get(unsafe { &*worker_obj.as_js_object_ptr() }, si_onmessage, worker_obj)
-            {
-                Ok(h) => h,
-                Err(_) => continue,
-            };
-            if !is_callable(handler) {
-                continue;
-            }
+            // 数据面：经 dispatchEvent 交付（注册表查监听器，addEventListener 与
+            // 属性 handler 同权；首版属性 handler 尚不支持，8.7 完成）。
             for data in poll.messages {
                 // 交付前二次校验存活（GC 防护）：worker 在事件循环中被终止
                 // （注册表条目移除）即停止交付。
@@ -376,40 +369,46 @@ impl Vm {
                     break;
                 }
                 let event = self.build_message_event(data, "message", None);
-                let _ = self.execute_task(|vm| vm.call_function_sync(handler, worker_obj, &[event]));
+                self.dispatch_event_on(worker_obj, event);
                 self.drain_microtasks();
             }
         }
         any
     }
 
-    /// 交付错误事件：读 handler 属性、建事件、调用（不可调用时静默）。
+    /// 经 `dispatchEvent` 交付事件到目标对象（注册表查监听器，按登记序调用）。
     ///
     /// # 步骤
-    /// 1. 读 `worker_obj` 的 `handler_name` 属性。
-    /// 2. 不可调用时静默返回（浏览器语义：无 handler 即丢弃）。
-    /// 3. 建错误事件（`type` = `event_type`、`message` = `message`）。
-    /// 4. 经 `execute_task` + `call_function_sync` 触发，后 `drain_microtasks`。
+    /// 1. 目标与事件钉入寄存器 0 / 1（GC 根，防交付窗口内被回收）。
+    /// 2. 调 `event_target_dispatch_event`（this = 目标，实参 = 事件）。
     ///
     /// # 边界与前提
-    /// - `handler_name` 是 `onerror` 或 `onmessageerror`。
-    /// - `event_type` 是 `"error"` 或 `"messageerror"`。
-    /// - `worker_obj` 与 handler 均为 `JsValue`（Copy），在 `execute_task` 前提取，
-    ///   不跨 `&mut self` 持引用。
+    /// - 监听器回调的异常原值上抛（不吞）；无监听器时 no-op（返回 true）。
     ///
     /// # 副作用
-    /// - 触发 handler 回调与微任务 drain。
-    fn deliver_error_event(&mut self, worker_obj: JsValue, handler_name: &str, event_type: &str, message: &str) {
-        let si_handler = self.perm_intern(handler_name);
-        let handler = match self.ordinary_get(unsafe { &*worker_obj.as_js_object_ptr() }, si_handler, worker_obj) {
-            Ok(h) => h,
-            Err(_) => return,
-        };
-        if !is_callable(handler) {
-            return;
-        }
+    /// - 触发监听器回调与 `once` 条目移除；写事件载荷盒（target / 阶段）。
+    fn dispatch_event_on(&mut self, target: JsValue, event: JsValue) {
+        self.set_reg(0, target);
+        self.set_reg(1, event);
+        let _ = oxide_builtins::event_target::event_target_dispatch_event(self, &[0, 1]);
+    }
+
+    /// 交付错误事件：建事件、经 `dispatchEvent` 交付（注册表查监听器）。
+    ///
+    /// # 步骤
+    /// 1. 建错误事件（`type` = `event_type`、`message` = `message`、`data` = undefined）。
+    /// 2. 经 `dispatch_event_on` 交付到 `worker_obj`，后 `drain_microtasks`。
+    ///
+    /// # 边界与前提
+    /// - `event_type` 是 `"error"` 或 `"messageerror"`。
+    /// - `worker_obj` 是 `JsValue`（Copy），不跨 `&mut self` 持引用。
+    /// - 无监听器时 `dispatchEvent` 返回 true（no-op）。
+    ///
+    /// # 副作用
+    /// - 触发监听器回调与微任务 drain。
+    fn deliver_error_event(&mut self, worker_obj: JsValue, event_type: &str, message: &str) {
         let event = self.build_message_event(JsValue::undefined(), event_type, Some(message));
-        let _ = self.execute_task(|vm| vm.call_function_sync(handler, worker_obj, &[event]));
+        self.dispatch_event_on(worker_obj, event);
         self.drain_microtasks();
     }
 
@@ -463,21 +462,20 @@ impl Vm {
         }
     }
 
-    /// worker 侧消息交付：rehydrate 进 worker realm、建 MessageEvent、交付到
-    /// `self.onmessage`（worker global 的 `onmessage` 属性）。
+    /// worker 侧消息交付：rehydrate 进 worker realm、建 MessageEvent、经
+    /// `dispatchEvent` 交付到 worker global（注册表查监听器）。
     ///
     /// # 步骤
     /// 1. rehydrate 消息值进 worker realm。
     /// 2. 建 MessageEvent（data + type "message"）。
-    /// 3. 读 worker global 的 `onmessage` 属性。
-    /// 4. 可调用时经 `execute_task` + `call_function_sync` 触发，后 `drain_microtasks`。
+    /// 3. 取 worker global 对象，经 `dispatch_event_on` 交付，后 `drain_microtasks`。
     ///
     /// # 边界与前提
-    /// - `onmessage` 缺失或非可调用时静默跳过（消息已消费，符合浏览器
+    /// - 无监听器时 `dispatchEvent` 返回 true（消息已消费，符合浏览器
     ///   "无 handler 即丢弃"语义）。
     ///
     /// # 副作用
-    /// - 触发 `self.onmessage` 回调与微任务 drain。
+    /// - 触发监听器回调与微任务 drain。
     pub(crate) fn deliver_self_message(&mut self, value: MessageValue) {
         let data = rehydrate_message(self, &value);
         let event = self.build_message_event(data, "message", None);
@@ -487,27 +485,11 @@ impl Vm {
             session.global_object().as_ptr() as *mut JsObject
         };
         // SAFETY: global_ptr 是当前 session 的 global 对象，存活。
-        let global_obj = unsafe { &*global_ptr };
-        let si_onmessage = self.perm_intern("onmessage");
-        let handler = match self.ordinary_get(global_obj, si_onmessage, JsValue::from_js_object(global_ptr)) {
-            Ok(h) => h,
-            Err(_) => return,
-        };
-        if !is_callable(handler) {
-            return;
-        }
-        let _ = self.execute_task(|vm| vm.call_function_sync(handler, JsValue::from_js_object(global_ptr), &[event]));
+        let global_val = JsValue::from_js_object(global_ptr);
+        // 经 dispatchEvent 交付（注册表查监听器，属性 handler 与 addEventListener 同权）。
+        self.dispatch_event_on(global_val, event);
         self.drain_microtasks();
     }
-}
-
-/// 判定值是否可调用（对象且函数对象，header bit 31）。
-///
-/// # 边界与前提
-/// - 非对象值恒不可调用。
-/// - 对象经 `as_js_object_ptr` 解引用读函数位（unsafe，惯例形态）。
-fn is_callable(val: JsValue) -> bool {
-    val.is_object() && unsafe { &*val.as_js_object_ptr() }.is_function()
 }
 
 #[cfg(test)]
@@ -545,9 +527,9 @@ mod tests {
     fn worker_round_trip() {
         let mut vm = vm_with_compiler();
 
-        // worker 脚本设 onmessage 回显（onmessage 语义替换早期回显语义）。
+        // worker 脚本设 addEventListener 回显（注册表交付替换早期 onmessage 属性语义）。
         let id = vm
-            .spawn_worker("self.onmessage = function(e) { self.postMessage(e.data); };")
+            .spawn_worker("self.addEventListener('message', function(e) { self.postMessage(e.data); });")
             .expect("worker 应派生成功");
         assert_eq!(vm.active_workers(), vec![id], "应有唯一活跃 worker");
 
@@ -581,12 +563,12 @@ mod tests {
     fn multiple_workers_isolated() {
         let mut vm = vm_with_compiler();
 
-        // 两 worker 各设 onmessage 回显（onmessage 语义）。
+        // 两 worker 各设 addEventListener 回显（注册表交付语义）。
         let id_a = vm
-            .spawn_worker("self.onmessage = function(e) { self.postMessage(e.data); };")
+            .spawn_worker("self.addEventListener('message', function(e) { self.postMessage(e.data); });")
             .expect("worker A 应派生成功");
         let id_b = vm
-            .spawn_worker("self.onmessage = function(e) { self.postMessage(e.data); };")
+            .spawn_worker("self.addEventListener('message', function(e) { self.postMessage(e.data); });")
             .expect("worker B 应派生成功");
         assert_eq!(vm.active_workers(), vec![id_a, id_b], "应有两个活跃 worker");
 
@@ -647,10 +629,11 @@ mod tests {
         let mut vm = vm_with_compiler();
 
         // worker 脚本：收到消息翻倍后回发。
-        let worker_path = write_worker_script("self.onmessage = function(e) { self.postMessage(e.data * 2); };");
-        // 主脚本：建 Worker、设 onmessage、投递 21。
+        let worker_path =
+            write_worker_script("self.addEventListener('message', function(e) { self.postMessage(e.data * 2); });");
+        // 主脚本：建 Worker、设 addEventListener、投递 21。
         let main_script = format!(
-            "var w = new Worker('{}'); w.onmessage = function(e) {{ globalThis.received = e.data; }}; w.postMessage(21);",
+            "var w = new Worker('{}'); w.addEventListener('message', function(e) {{ globalThis.received = e.data; }}); w.postMessage(21);",
             worker_path.display()
         );
         vm.run(&Arc::new(compile_script(&main_script))).expect("主脚本应运行");
@@ -750,9 +733,9 @@ mod tests {
 
         // worker 脚本：语法错误（编译失败）。
         let worker_path = write_worker_script("function { 语法错误");
-        // 主脚本：建 Worker、设 onerror，记录 e.message 与 e.type 是否为 "error"。
+        // 主脚本：建 Worker、设 addEventListener('error')，记录 e.message 与 e.type 是否为 "error"。
         let main_script = format!(
-            "var w = new Worker('{}'); w.onerror = function(e) {{ globalThis.err = e.message; globalThis.errIsErrorType = (e.type === \"error\"); }};",
+            "var w = new Worker('{}'); w.addEventListener('error', function(e) {{ globalThis.err = e.message; globalThis.errIsErrorType = (e.type === \"error\"); }});",
             worker_path.display()
         );
         vm.run(&Arc::new(compile_script(&main_script))).expect("主脚本应运行");
@@ -795,9 +778,9 @@ mod tests {
 
         // worker 脚本：顶层 throw（执行失败）。
         let worker_path = write_worker_script("throw new Error('boom');");
-        // 主脚本：建 Worker、设 onerror，记录 e.message。
+        // 主脚本：建 Worker、设 addEventListener('error')，记录 e.message。
         let main_script = format!(
-            "var w = new Worker('{}'); w.onerror = function(e) {{ globalThis.err = e.message; }};",
+            "var w = new Worker('{}'); w.addEventListener('error', function(e) {{ globalThis.err = e.message; }});",
             worker_path.display()
         );
         vm.run(&Arc::new(compile_script(&main_script))).expect("主脚本应运行");
@@ -832,17 +815,17 @@ mod tests {
     fn onmessageerror_delivery_helper() {
         let mut vm = vm_with_compiler();
 
-        // 建 Worker 对象、设 onmessageerror handler（记录 e.message 与 e.type）。
+        // 建 Worker 对象、设 addEventListener('messageerror')（记录 e.message 与 e.type）。
         let worker_path = write_worker_script("1");
         let main_script = format!(
-            "var w = new Worker('{}'); w.onmessageerror = function(e) {{ globalThis.me = e.message; globalThis.meIsMessageErrorType = (e.type === \"messageerror\"); }}; globalThis.w = w;",
+            "var w = new Worker('{}'); w.addEventListener('messageerror', function(e) {{ globalThis.me = e.message; globalThis.meIsMessageErrorType = (e.type === \"messageerror\"); }}); globalThis.w = w;",
             worker_path.display()
         );
         vm.run(&Arc::new(compile_script(&main_script))).expect("主脚本应运行");
 
-        // 取 Worker 对象，直接调交付辅助（模拟 rehydrate 失败）。
+        // 取 Worker 对象，直接调交付辅助（模拟 rehydrate 失败，经 dispatchEvent 交付）。
         let worker_obj = global_value_opt(&vm, "w").expect("w 应被设置");
-        vm.deliver_error_event(worker_obj, "onmessageerror", "messageerror", "合成 rehydrate 失败");
+        vm.deliver_error_event(worker_obj, "messageerror", "合成 rehydrate 失败");
 
         // 断言 handler 被调用、message 为错误串、type 为 "messageerror"。
         let me = global_value_opt(&vm, "me").expect("me 应被设置");

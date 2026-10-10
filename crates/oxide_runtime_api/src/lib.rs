@@ -14,6 +14,8 @@
 mod coercion;
 /// 动态编译服务接口（`Vm` 经它解耦对编译器的直接依赖）。
 pub mod compiler_service;
+/// EventTarget 监听器注册表数据类型（`ListenerEntry` / `EventTargetState`）。
+pub mod event_target;
 /// builtins 依赖的 `VmHost` 能力面。
 mod host;
 /// builtin native 函数的三态返回值。
@@ -29,5 +31,6 @@ pub use coercion::{
     ToPrimitiveHint,
 };
 pub use compiler_service::CompilerService;
+pub use event_target::{EventTargetState, ListenerEntry};
 pub use host::{ProtoKind, ShapeNode, VmHost};
 pub use native_result::NativeResult;

@@ -162,4 +162,39 @@ pub fn bind_event(core: &Arc<KernelCore>, session: &KernelSession, global: &mut 
             bind_accessor_getter(core, session, proto, name, fn_ptr);
         }
     }
+
+    // ---- 填 EventTarget 原型占位（无构造器，仅暴露原型与三方法）----
+    // 幂等：三方法经 lookup_position 守卫，[[Prototype]] 裸写槽幂等。
+    let et_proto_ptr = world.event_target_proto.as_ptr() as *mut JsObject;
+    let et_proto = unsafe { &mut *et_proto_ptr };
+    // [[Prototype]] → Object.prototype（幂等，裸写槽）。
+    let object_proto_val = JsValue::from_js_object(world.object_proto.as_ptr() as *mut JsObject);
+    let _ = et_proto.set_proto(object_proto_val);
+    // 三方法：addEventListener / removeEventListener / dispatchEvent（每方法先
+    // lookup_position 守卫）。
+    let si_add = sf.intern("addEventListener").0;
+    if sh.lookup_position(et_proto.shape_id(), si_add).is_none() {
+        apply_binding_table(
+            world,
+            et_proto,
+            core,
+            &[
+                (
+                    "addEventListener",
+                    oxide_builtins::event_target::event_target_add_event_listener::<crate::vm::Vm> as *const (),
+                    3,
+                ),
+                (
+                    "removeEventListener",
+                    oxide_builtins::event_target::event_target_remove_event_listener::<crate::vm::Vm> as *const (),
+                    3,
+                ),
+                (
+                    "dispatchEvent",
+                    oxide_builtins::event_target::event_target_dispatch_event::<crate::vm::Vm> as *const (),
+                    1,
+                ),
+            ],
+        );
+    }
 }

@@ -8,6 +8,8 @@ use oxide_types::mem::P;
 use oxide_types::object::{Cell, JsObject, PropAttributes};
 use oxide_types::value::JsValue;
 
+use super::event_target::ListenerEntry;
+
 /// shape 节点只读投影：shape forge 节点字段的中立镜像（免跨 crate 引用具体类型）。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ShapeNode {
@@ -473,4 +475,26 @@ pub trait VmHost {
     /// - 列表元素为弱引用裸指针，调用方不得跨用户调用持有（GC 可释放
     ///   通道对象，须在下一次使用前重新查表校验）。
     fn bc_lookup(&self, name: &str) -> Vec<*mut JsObject>;
+
+    // EventTarget 监听器注册表（per-realm 弱引用，目标对象裸指针为键）
+    /// 把一条监听器登记追加到目标对象的注册表条目（无条目时新建）。
+    ///
+    /// # 边界与前提
+    /// - `target` 为登记时刻的目标对象指针（弱引用，不保活）；重复登记
+    ///   （同 type + callback + capture）由调用方保证不发生。
+    /// # 副作用
+    /// - 写注册表（内部可变）；`entry` 的 callback 是 GC 对象边，mark 期经根枚举标活。
+    fn et_register(&self, target: *mut JsObject, entry: ListenerEntry);
+    /// 从目标对象的注册表移除同 type + callback + capture 的监听器条目；
+    /// 不存在时 no-op。空集合条目随移除删除（不留空壳）。
+    ///
+    /// # 副作用
+    /// - 写注册表（内部可变）；幂等，重复移除不报错。
+    fn et_unregister(&self, target: *mut JsObject, type_si: u32, callback: JsValue, capture: bool);
+    /// 查目标对象的监听器条目列表（返回克隆；无条目为空列表）。
+    ///
+    /// # 边界与前提
+    /// - 列表元素含 callback 的 GC 对象边，调用方不得跨用户调用持有
+    ///   （GC 可回收目标对象，须在下一次使用前重新查表校验）。
+    fn et_lookup(&self, target: *mut JsObject) -> Vec<ListenerEntry>;
 }

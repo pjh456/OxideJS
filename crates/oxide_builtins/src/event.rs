@@ -86,6 +86,56 @@ pub fn drop_event_native(obj: &mut JsObject) -> u64 {
     bytes
 }
 
+/// 读事件类型串（GC 字符串边）。非 Event 对象或无载荷盒返回 None。
+///
+/// 供派发路径（`dispatchEvent`）取事件类型串、intern 后查监听器。
+pub fn event_type_value(obj: &JsObject) -> Option<JsValue> {
+    let ptr = event_payload_ptr(obj)?;
+    if ptr.is_null() {
+        return None;
+    }
+    // SAFETY: ptr 指向有效载荷盒（构造期写入、释放时置空），只读字段。
+    Some(unsafe { &*ptr }.r#type)
+}
+
+/// 设派发目标与阶段：`target` / `current_target` 置 `target`、`event_phase` 置
+/// `phase`。非 Event 对象或无载荷盒时 no-op。
+///
+/// 供派发路径（`dispatchEvent`）在调用监听器前设目标与 AT_TARGET 阶段。
+pub fn event_set_dispatch(obj: &mut JsObject, target: JsValue, phase: u32) {
+    let Some(ptr) = event_payload_ptr(obj) else {
+        return;
+    };
+    if ptr.is_null() {
+        return;
+    }
+    // SAFETY: ptr 指向有效载荷盒，写入派发字段（无 GC 窗口）。
+    let inner = unsafe { &mut *ptr };
+    inner.target = target;
+    inner.current_target = target;
+    inner.event_phase = phase;
+}
+
+/// 读 `defaultPrevented` 标志。非 Event 对象或无载荷盒返回 None。
+pub fn event_default_prevented(obj: &JsObject) -> Option<bool> {
+    let ptr = event_payload_ptr(obj)?;
+    if ptr.is_null() {
+        return None;
+    }
+    // SAFETY: ptr 指向有效载荷盒，只读字段。
+    Some(unsafe { &*ptr }.default_prevented)
+}
+
+/// 读 `stopImmediatePropagation` 标志。非 Event 对象或无载荷盒返回 None。
+pub fn event_immediate_stopped(obj: &JsObject) -> Option<bool> {
+    let ptr = event_payload_ptr(obj)?;
+    if ptr.is_null() {
+        return None;
+    }
+    // SAFETY: ptr 指向有效载荷盒，只读字段。
+    Some(unsafe { &*ptr }.immediate_stopped)
+}
+
 /// 解析 this 为 Event 载荷盒共享引用：非 Event 对象或无载荷盒返回 None。
 ///
 /// # 注意事项
@@ -233,6 +283,40 @@ pub fn event_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     obj.type_tag = JsObject::OBJ_TYPE_EVENT;
     obj.set_native_fn(Some(unsafe { NativeFnPtr::from_raw(inner as *const ()) }));
     NativeResult::Ok(this_val)
+}
+
+/// 建一个 Event 载荷盒对象（type 为 `type_str`），返回对象指针。
+///
+/// 供交付路径（消息事件 / 错误事件）建真实 Event 盒，使 `dispatchEvent` 品牌守卫
+/// 通过。盒的 `target` / `currentTarget` 初始 null、`eventPhase` 初始 0（派发时设）；
+/// `[[Prototype]]` 指向 `Event.prototype`（`e instanceof Event` 成立）。
+///
+/// # 副作用
+/// - 新建一个 Event 盒对象（经 `alloc_object` 入对象表）。
+pub fn create_event_box<H: VmHost>(vm: &mut H, type_str: &str) -> *mut JsObject {
+    let type_js = vm.new_string(type_str);
+    let inner = Box::into_raw(Box::new(EventInner {
+        r#type: type_js,
+        target: JsValue::null(),
+        current_target: JsValue::null(),
+        event_phase: 0,
+        is_trusted: false,
+        bubbles: false,
+        cancelable: false,
+        default_prevented: false,
+        propagation_stopped: false,
+        immediate_stopped: false,
+        composed: false,
+    }));
+    let event_proto = JsValue::from_js_object(vm.builtin_proto(ProtoKind::EventProto));
+    let obj = JsObject::new_empty(EMPTY_SHAPE_ID, event_proto);
+    let ptr = vm.alloc_object(obj);
+    // SAFETY: ptr 是本函数刚 alloc_object 的对象，存活且本段无别名；native_fn 存
+    // 不透明 `Box<EventInner>` 指针，与 ArrayBuffer / RegExp 的类型化存储模式一致。
+    let event_obj = unsafe { &mut *ptr };
+    event_obj.type_tag = JsObject::OBJ_TYPE_EVENT;
+    event_obj.set_native_fn(Some(unsafe { NativeFnPtr::from_raw(inner as *const ()) }));
+    ptr
 }
 
 /// `Event.prototype.type`：返回事件类型串。

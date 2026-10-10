@@ -75,8 +75,10 @@ pub fn bind_worker(core: &Arc<KernelCore>, session: &KernelSession, global: &mut
         match sh.lookup_position(ctor.shape_id(), si_prototype) {
             Some(pos) if ctor.get_prop_at(pos).is_object() => ctor.get_prop_at(pos).as_js_object_ptr(),
             _ => {
-                let object_proto = world.object_proto.as_ptr() as *mut JsObject;
-                let proto = JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(object_proto));
+                // Worker.prototype 的 [[Prototype]] 指向 EventTarget.prototype
+                // （事件三方法经原型链可达；EventTarget 无构造器，仅暴露原型）。
+                let et_proto = world.event_target_proto.as_ptr() as *mut JsObject;
+                let proto = JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(et_proto));
                 let ptr = Box::into_raw(Box::new(proto));
                 world.track_leaked_object(ptr);
                 // 回填构造器 prototype 槽（描述符 { f,f,f }）。
@@ -142,6 +144,33 @@ pub fn bind_worker(core: &Arc<KernelCore>, session: &KernelSession, global: &mut
             &[
                 ("postMessage", crate::worker::bindings::self_post_message as *const (), 1),
                 ("close", crate::worker::bindings::self_close as *const (), 0),
+            ],
+        );
+    }
+    // EventTarget 三方法直绑全局（worker realm 经 self === global 可达；全局原型链
+    // 是 Object.prototype，首版不改全局原型，三方法直绑全局等价可见）。幂等守卫。
+    let si_self_add = sf.intern("addEventListener").0;
+    if sh.lookup_position(global.shape_id(), si_self_add).is_none() {
+        apply_binding_table(
+            world,
+            global,
+            core,
+            &[
+                (
+                    "addEventListener",
+                    oxide_builtins::event_target::event_target_add_event_listener::<crate::vm::Vm> as *const (),
+                    3,
+                ),
+                (
+                    "removeEventListener",
+                    oxide_builtins::event_target::event_target_remove_event_listener::<crate::vm::Vm> as *const (),
+                    3,
+                ),
+                (
+                    "dispatchEvent",
+                    oxide_builtins::event_target::event_target_dispatch_event::<crate::vm::Vm> as *const (),
+                    1,
+                ),
             ],
         );
     }

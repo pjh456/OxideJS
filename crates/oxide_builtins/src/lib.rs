@@ -36,6 +36,9 @@ pub mod error;
 pub mod eval;
 /// Event 基类实现（构造器、原型 getter 与传播方法，载荷盒与 GC 三自由函数族）。
 pub mod event;
+/// EventTarget 实现（addEventListener / removeEventListener / dispatchEvent 三原型
+/// 方法与 per-realm 弱引用监听器注册表）。
+pub mod event_target;
 /// Function 内置对象实现（call/apply/bind/toString）。
 pub mod function;
 /// 全局函数模块（URI 编解码与 Annex B 的 escape/unescape）。

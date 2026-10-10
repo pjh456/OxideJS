@@ -85,9 +85,9 @@ pub fn bind_message_channel(core: &Arc<KernelCore>, session: &KernelSession, glo
         proto.bump_generation();
     }
 
-    // [[Prototype]] → Object.prototype（幂等，裸写槽）。
-    let object_proto_val = JsValue::from_js_object(world.object_proto.as_ptr() as *mut JsObject);
-    let _ = proto.set_proto(object_proto_val);
+    // [[Prototype]] → EventTarget.prototype（事件三方法经原型链可达；幂等，裸写槽）。
+    let et_proto_val = JsValue::from_js_object(world.event_target_proto.as_ptr() as *mut JsObject);
+    let _ = proto.set_proto(et_proto_val);
 
     // 原型方法：postMessage / close / start（每方法先 lookup_position 守卫）。
     let si_post_message = sf.intern("postMessage").0;

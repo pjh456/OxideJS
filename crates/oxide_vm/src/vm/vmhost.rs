@@ -4,7 +4,7 @@ use std::ffi::c_void;
 use std::sync::Arc;
 
 use oxide_kernel::KernelCore;
-use oxide_runtime_api::{ProtoKind, ShapeNode};
+use oxide_runtime_api::{ListenerEntry, ProtoKind, ShapeNode};
 use oxide_types::mem::P;
 use oxide_types::object::{Cell, JsObject, PropAttributes};
 use oxide_types::value::JsValue;
@@ -448,5 +448,28 @@ impl oxide_runtime_api::VmHost for Vm {
     }
     fn bc_lookup(&self, name: &str) -> Vec<*mut JsObject> {
         self.realm.gc.borrow().broadcast_channels.get(name).cloned().unwrap_or_default()
+    }
+    fn et_register(&self, target: *mut JsObject, entry: ListenerEntry) {
+        self.realm
+            .gc
+            .borrow_mut()
+            .event_targets
+            .entry(target)
+            .or_default()
+            .listeners
+            .push(entry);
+    }
+    fn et_unregister(&self, target: *mut JsObject, type_si: u32, callback: JsValue, capture: bool) {
+        let mut gc = self.realm.gc.borrow_mut();
+        let should_remove = gc.event_targets.get_mut(&target).is_some_and(|state| {
+            state.listeners.retain(|e| !(e.type_si == type_si && e.capture == capture && e.callback == callback));
+            state.listeners.is_empty()
+        });
+        if should_remove {
+            gc.event_targets.remove(&target);
+        }
+    }
+    fn et_lookup(&self, target: *mut JsObject) -> Vec<ListenerEntry> {
+        self.realm.gc.borrow().event_targets.get(&target).map(|s| s.listeners.clone()).unwrap_or_default()
     }
 }

@@ -706,6 +706,21 @@ impl SessionGc {
             .broadcast_channels
             .retain(|_, channels| !channels.is_empty());
 
+        // EventTarget 监听器注册表剪枝：按 mark 位移除死目标对象（弱键，同
+        // broadcast_channels 时序——死目标在随后的分流循环被释放，注册表已先
+        // 移除其条目，无悬垂）。
+        vm.realm
+            .gc
+            .borrow_mut()
+            .event_targets
+            .retain(|&ptr, _| {
+                if ptr.is_null() {
+                    return false;
+                }
+                // SAFETY: ptr 来自 session 对象表登记，sweep 运行期间有效。
+                unsafe { (*ptr).is_gc_marked() }
+            });
+
         // 按 mark 位分流：存活保留清位，死对象释放本体、堆区与 upvalue 出表。
         let mut dead = 0u64;
         let mut freed_bytes = 0u64;

@@ -14,6 +14,7 @@ use std::collections::HashMap;
 use crate::session_gc::SessionGc;
 use crate::vm::ForInIter;
 use oxide_builtins::iterator::BuiltinIterKind;
+use oxide_runtime_api::EventTargetState;
 use oxide_types::object::{Cell as UpvalueCell, JsObject, JsString};
 use oxide_types::private_key::WELL_KNOWN_SYMBOL_COUNT;
 use oxide_types::value::JsValue;
@@ -65,6 +66,11 @@ pub(crate) struct GcState {
     /// （弱引用，不保活）。构造器分配后登记、close 注销、GC sweep 按 mark 位
     /// 剪枝、full_reset 随 session 对象一并清表。
     pub(crate) broadcast_channels: HashMap<String, Vec<*mut JsObject>>,
+    /// EventTarget per-realm 弱引用监听器注册表：目标对象裸指针 → 监听器集合
+    /// （弱键，不保活）。addEventListener 登记、removeEventListener 注销、GC
+    /// sweep 按 mark 位剪枝、full_reset 随 session 对象一并清表。值持监听器
+    /// 回调的 GC 对象边，mark 期经根枚举标活（存活目标的回调随目标存活）。
+    pub(crate) event_targets: HashMap<*mut JsObject, EventTargetState>,
 }
 
 impl GcState {
