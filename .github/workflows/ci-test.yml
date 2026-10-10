@@ -8,14 +8,16 @@ on:
   workflow_call:
 
 jobs:
-# === AUTO-GENERATED: CI test jobs（gen_ci_test_jobs.sh 生成，勿手改）===
   test:
     name: Test (${{ matrix.os }} / ${{ matrix.group.name }})
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest]  # 960 跨平台完成后加 windows-latest 与 macos-latest
+        # os 列表静态：960 跨平台时手改加 windows-latest 与 macos-latest。在生成段
+        # 之外，钩子重生成 group 条目时不会覆盖它。
+        os: [ubuntu-latest]
         group:
+# === AUTO-GENERATED: group 条目（gen_ci_test_jobs.sh 生成，勿手改）===
           - name: oxide_builtins-1
             args: "-p oxide_builtins --partition 2/1"
           - name: oxide_builtins-2
@@ -32,6 +34,7 @@ jobs:
             args: "-p oxide_test262 -p oxide_emit -p oxide_dce -p oxide_liveness -p oxide_runtime_api"
           - name: light-2
             args: "-p oxide_kernel -p oxide_regalloc -p oxide_cfg -p oxide_bytecode -p oxide_engine -p oxide_compiler -p oxide_parser -p oxide_log -p oxide_ir -p oxide_code_cache"
+# === END AUTO-GENERATED ===
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -45,4 +48,3 @@ jobs:
         run: curl -sSf https://raw.githubusercontent.com/nextest-rs/nextest/main/scripts/install.sh | bash
       - name: Test
         run: cargo nextest run ${{ matrix.group.args }}
-# === END AUTO-GENERATED ===
