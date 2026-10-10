@@ -28,3 +28,6 @@ num-traits = "0.2"
 oxide_vm = { path = "../oxide_vm" }
 oxide_compiler = { path = "../oxide_compiler" }
 oxide_parser = { path = "../oxide_parser" }
+
+[lints]
+workspace = true

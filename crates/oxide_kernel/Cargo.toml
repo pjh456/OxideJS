@@ -15,3 +15,6 @@ bumpalo.workspace = true
 hashbrown.workspace = true
 dashmap.workspace = true
 rustc-hash.workspace = true
+
+[lints]
+workspace = true

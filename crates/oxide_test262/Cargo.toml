@@ -23,3 +23,6 @@ oxide_log = { path = "../oxide_log" }
 serde = { version = "1", features = ["derive"] }
 serde_yaml = "0.9"
 walkdir = "2"
+
+[lints]
+workspace = true

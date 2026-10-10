@@ -14,3 +14,6 @@ num-bigint = "0.4"
 num-traits = "0.2"
 oxide_log = { path = "../oxide_log" }
 ryu.workspace = true
+
+[lints]
+workspace = true

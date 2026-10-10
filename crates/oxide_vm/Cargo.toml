@@ -55,3 +55,6 @@ harness = false
 [[bench]]
 name = "call"
 harness = false
+
+[lints]
+workspace = true

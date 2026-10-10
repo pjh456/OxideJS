@@ -14,3 +14,6 @@ oxide_log = { path = "../oxide_log" }
 [dev-dependencies]
 oxide_parser = { path = "../oxide_parser" }
 oxide_emit = { path = "../oxide_emit" }
+
+[lints]
+workspace = true

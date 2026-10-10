@@ -10,3 +10,6 @@ description = "OxideJS - Structured logging subsystem (tracing-based)"
 tracing = { workspace = true, features = ["max_level_trace", "release_max_level_debug"] }
 tracing-subscriber = { workspace = true, features = ["env-filter", "registry"] }
 tracing-appender = "0.2.5"
+
+[lints]
+workspace = true

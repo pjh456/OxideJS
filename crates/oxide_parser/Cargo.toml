@@ -16,3 +16,6 @@ oxc_span.workspace = true
 oxc_diagnostics.workspace = true
 oxc_syntax.workspace = true
 oxc_semantic = "0.134.0"
+
+[lints]
+workspace = true

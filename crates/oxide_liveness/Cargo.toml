@@ -15,3 +15,6 @@ oxide_log = { path = "../oxide_log" }
 oxide_parser = { path = "../oxide_parser" }
 oxide_emit = { path = "../oxide_emit" }
 oxide_bytecode = { path = "../oxide_bytecode" }
+
+[lints]
+workspace = true

@@ -64,9 +64,14 @@ tracing = { version = "0.1.44", features = ["max_level_trace", "release_max_leve
 tracing-subscriber = { version = "0.3.23", features = ["env-filter", "registry"] }
 tracing-appender = "0.2.5"
 
+# 工作区 lint：各 crate 需在自身 Cargo.toml 写 `[lints] workspace = true` 才继承。
+# rust 表把 rustc 告警升为错误（只作用于 workspace crate，依赖不受影响）；clippy
+# 表在 clippy 下生效。
+[workspace.lints.rust]
+warnings = "deny"
+
 [workspace.lints.clippy]
 all = { level = "deny", priority = -1 }
-warnings = { level = "deny", priority = -1 }
 
 [profile.release]
 # 快速 release：日常墙时间 A/B 与 test262 release 回测用。opt-level 2 与 3 的

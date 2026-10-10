@@ -16,3 +16,6 @@ num-bigint = "0.4"
 
 [dev-dependencies]
 proptest.workspace = true
+
+[lints]
+workspace = true

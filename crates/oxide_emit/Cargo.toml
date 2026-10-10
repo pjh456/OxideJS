@@ -17,3 +17,6 @@ regex.workspace = true
 regress.workspace = true
 num-bigint = "0.4"
 
+
+[lints]
+workspace = true
