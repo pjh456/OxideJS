@@ -60,19 +60,10 @@ jobs:
       - name: Build
         run: cargo build --verbose
 
+  # test 是单一 job：经 workflow_call 调用 ci-test.yml，外观上主 CI 只有一个 test
+  # （全过才绿），点进去才见内部 matrix（os × group）并行图。needs build 复用产物。
   test:
     name: Test
-    # 依赖 build：等 build 编译完成后才启动，经共享 rust-cache 复用 build 的
-    # target/ 产物（同缓存键 = OS + Cargo.lock），cargo test 只补编 test harness。
     needs: [build]
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: true
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - name: Install sccache and mold
-        run: sudo apt-get update -y && sudo apt-get install -y sccache mold
-      - name: Test
-        run: cargo test --verbose
+    uses: ./.github/workflows/ci-test.yml
+    secrets: inherit

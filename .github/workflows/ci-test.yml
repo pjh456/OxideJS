@@ -1,0 +1,48 @@
+name: CI Test
+
+# 可复用工作流：主 ci.yml 的 test job 经 workflow_call 调用本文件。外观上主 CI
+# 只有一个 test job（全过才绿），点进去才看到内部 matrix（os × group）并行图。
+# 产物复用：rust-cache 按「OS + Cargo.lock」键在仓库级共享，本 workflow 的 test
+# job 能 restore 主 ci.yml build job 存的 target/ 缓存（跨 workflow 边界有效）。
+on:
+  workflow_call:
+
+jobs:
+# === AUTO-GENERATED: CI test jobs（gen_ci_test_jobs.sh 生成，勿手改）===
+  test:
+    name: Test (${{ matrix.os }} / ${{ matrix.group.name }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest]  # 960 跨平台完成后加 windows-latest 与 macos-latest
+        group:
+          - name: oxide_builtins-1
+            args: "-p oxide_builtins --partition 2/1"
+          - name: oxide_builtins-2
+            args: "-p oxide_builtins --partition 2/2"
+          - name: oxide_vm-1
+            args: "-p oxide_vm --partition 2/1"
+          - name: oxide_vm-2
+            args: "-p oxide_vm --partition 2/2"
+          - name: oxide_cli
+            args: "-p oxide_cli"
+          - name: oxide_types
+            args: "-p oxide_types"
+          - name: light-1
+            args: "-p oxide_test262 -p oxide_emit -p oxide_dce -p oxide_liveness -p oxide_runtime_api"
+          - name: light-2
+            args: "-p oxide_kernel -p oxide_regalloc -p oxide_cfg -p oxide_bytecode -p oxide_engine -p oxide_compiler -p oxide_parser -p oxide_log -p oxide_ir -p oxide_code_cache"
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install sccache and mold
+        run: sudo apt-get update -y && sudo apt-get install -y sccache mold
+      - name: Install cargo-nextest
+        run: curl -sSf https://raw.githubusercontent.com/nextest-rs/nextest/main/scripts/install.sh | bash
+      - name: Test
+        run: cargo nextest run ${{ matrix.group.args }}
+# === END AUTO-GENERATED ===
