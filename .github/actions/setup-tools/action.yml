@@ -12,7 +12,7 @@ runs:
   steps:
     - name: Restore tool cache
       id: tool-cache
-      uses: actions/cache/restore@v4
+      uses: actions/cache/restore@v6
       with:
         path: ~/oxide-tools-cache
         key: oxide-tools-ubuntu-v1
@@ -50,7 +50,7 @@ runs:
 
     - name: Save tool cache
       if: steps.tool-cache.outputs.cache-hit != 'true'
-      uses: actions/cache/save@v4
+      uses: actions/cache/save@v6
       with:
         path: ~/oxide-tools-cache
         key: oxide-tools-ubuntu-v1
