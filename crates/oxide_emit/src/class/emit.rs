@@ -147,12 +147,8 @@ impl Emitter {
         let saved_private_names = ctx.scopes.private_name_map.clone();
         let saved_private_kinds = ctx.scopes.private_element_kinds.clone();
         let saved_brand_id = ctx.scopes.private_brand_id;
+        let saved_brand_chain = ctx.brand_chain.clone();
         ctx.in_derived_constructor = is_derived;
-        ctx.scopes.private_name_map = private_names.iter().map(|(n, id, _, _)| (n.clone(), *id)).collect();
-        ctx.scopes.private_element_kinds = private_names
-            .iter()
-            .map(|(n, _, kind, is_static)| (n.clone(), *kind, *is_static))
-            .collect();
 
         // 类 brand：有私有元素时分配 brand 私有名 id，并创建 brand 对象（= 类原型）。
         // 构造器把 brand 槽写入实例 own；私有方法/访问器/静态字段访问（GET/SET）据
@@ -165,6 +161,19 @@ impl Emitter {
             None
         };
         ctx.scopes.private_brand_id = private_brand_id;
+
+        // 私有名环境是词法环境链：内类条目遮蔽外类同名条目，外类其余名字保持
+        // 可解析（内类方法体可访问外类声明的私有名）。
+        let mut stacked_names = saved_private_names.clone();
+        let mut stacked_kinds = saved_private_kinds.clone();
+        for (n, id, kind, is_static) in &private_names {
+            stacked_names.retain(|(en, _)| en != n);
+            stacked_kinds.retain(|(en, _, _, _)| en != n);
+            stacked_names.push((n.clone(), *id));
+            stacked_kinds.push((n.clone(), *kind, *is_static, private_brand_id.unwrap_or(0)));
+        }
+        ctx.scopes.private_name_map = stacked_names;
+        ctx.scopes.private_element_kinds = stacked_kinds;
 
         // 实例公有字段 computed key 求值于构造器帧外，须类定义期存入数组。构造器以
         // upvalue 捕获该数组：父作用域登记 `@@field_keys`（索引经共享计数器追加，
@@ -181,9 +190,12 @@ impl Emitter {
             None
         };
         // 类 brand 对象（= proto）由类定义期 MAKE_CELL 写入，构造器经 upvalue 捕获。
-        let brand_cell: Option<u8> = private_brand_id.map(|_| {
+        // 捕获名按本类 brand id 编号：嵌套类各自登记 brand，内类方法体沿 brand 链
+        // 保持外类 brand 条目可见，跨类 brand 检查据此定位声明类的 brand 对象。
+        let brand_cell: Option<u8> = private_brand_id.map(|bid| {
             let cell_idx = ctx.alloc_cell_idx();
-            ctx.captured_bindings.insert("@@class_brand".to_string(), cell_idx);
+            ctx.captured_bindings.insert(format!("@@class_brand_{bid}"), cell_idx);
+            ctx.brand_chain.push((bid, cell_idx, None));
             cell_idx
         });
         // 字段值表达式运行于构造器帧：其自由变量须纳入构造器 upvalue 捕获。
@@ -194,13 +206,15 @@ impl Emitter {
                 _ => None,
             })
             .collect();
-        let mut extra_upvalue_names: Vec<(&str, u8)> =
-            field_key_cell.map(|c| ("@@field_keys", c)).into_iter().collect();
-        if let Some(c) = brand_cell {
-            extra_upvalue_names.push(("@@class_brand", c));
+        let mut extra_upvalue_names: Vec<(String, u8)> = Vec::new();
+        if let Some(c) = field_key_cell {
+            extra_upvalue_names.push(("@@field_keys".to_string(), c));
+        }
+        if let (Some(c), Some(bid)) = (brand_cell, private_brand_id) {
+            extra_upvalue_names.push((format!("@@class_brand_{bid}"), c));
         }
         if let (Some(name), Some(c)) = (ctor_name.as_deref(), class_self_cell) {
-            extra_upvalue_names.push((name, c));
+            extra_upvalue_names.push((name.to_string(), c));
         }
 
         let emit_instance_fields = |compiler: &Emitter, field_ctx: &mut CompileCtx| -> Result<(), String> {
@@ -210,10 +224,11 @@ impl Emitter {
                     return Err("class brand cell missing".into());
                 }
                 let brand_reg = field_ctx.alloc_reg();
+                let brand_name = format!("@@class_brand_{bid}");
                 let uv_idx = field_ctx
                     .current_upvalue_captures
                     .iter()
-                    .position(|u| u.name == "@@class_brand")
+                    .position(|u| u.name == brand_name)
                     .ok_or("class brand upvalue missing")? as u16;
                 field_ctx.inst(Inst::new(
                     OpCode::LOAD_UPVALUE,
@@ -299,9 +314,13 @@ impl Emitter {
                 // 字段初始化直接重发：构造器 upvalue/内置槽引用须与首轮编译产物对齐。
                 let mut field_ctx = CompileCtx::new();
                 // 字段表达式运行于构造器帧，构造器恒 strict，字段 ctx 同步置位。
+                // 私有名环境按堆叠口径整表继承（字段初始化器内的嵌套类需要外类
+                // 私有名与 brand 链保持可解析）。
                 field_ctx.is_strict = true;
-                field_ctx.scopes.private_name_map =
-                    private_names.iter().map(|(n, id, _, _)| (n.clone(), *id)).collect();
+                field_ctx.scopes.private_name_map = ctx.scopes.private_name_map.clone();
+                field_ctx.scopes.private_element_kinds = ctx.scopes.private_element_kinds.clone();
+                field_ctx.scopes.private_brand_id = ctx.scopes.private_brand_id;
+                field_ctx.brand_chain = ctx.brand_chain.clone();
                 field_ctx.scopes.builtin_reg_map = module.builtin_reg_map.clone();
                 field_ctx.current_upvalue_captures = module.upvalue_captures.clone();
                 field_ctx.field_keys_uv = module
@@ -443,6 +462,7 @@ impl Emitter {
         ctx.scopes.private_name_map = saved_private_names;
         ctx.scopes.private_element_kinds = saved_private_kinds;
         ctx.scopes.private_brand_id = saved_brand_id;
+        ctx.brand_chain = saved_brand_chain;
         // 类编译结束恢复外层 strict 标志：类在 sloppy 上下文时不得泄漏 strict 到类后代码。
         ctx.is_strict = saved_strict;
         Ok(ctor_reg)

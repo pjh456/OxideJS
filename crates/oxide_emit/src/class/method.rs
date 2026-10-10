@@ -109,16 +109,17 @@ impl Emitter {
         let saved_static = ctx.in_static_method;
         ctx.in_instance_method = !method.r#static;
         ctx.in_static_method = method.r#static;
-        // 私有方法/访问器访问需对接收者做 brand 检查：方法函数捕获类 brand 对象
-        // （@@class_brand upvalue，值 = 类原型）。
-        let mut extra_uv: Vec<(&str, u8)> = ctx
-            .captured_bindings
-            .get("@@class_brand")
-            .map(|c| ("@@class_brand", *c))
-            .into_iter()
-            .collect();
+        // 私有方法/访问器访问需对接收者做 brand 检查：方法函数捕获本类 brand 对象
+        // （@@class_brand_<id> upvalue，值 = 类原型）。
+        let mut extra_uv: Vec<(String, u8)> = Vec::new();
+        if let Some(bid) = ctx.scopes.private_brand_id {
+            let brand_name = format!("@@class_brand_{bid}");
+            if let Some(&cell_idx) = ctx.captured_bindings.get(&brand_name) {
+                extra_uv.push((brand_name, cell_idx));
+            }
+        }
         if let (Some((name, _)), Some(c)) = (self_binding.first(), class_self_cell) {
-            extra_uv.push((name, c));
+            extra_uv.push(((*name).to_string(), c));
         }
         let method_value = method.value.as_ref();
         // 生成器/异步/异步生成器方法与普通方法统一走带标志入口：`*m` 置 is_generator，

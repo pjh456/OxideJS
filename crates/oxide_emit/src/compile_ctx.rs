@@ -74,6 +74,12 @@ pub struct CompileCtx {
     /// 类定义期全部 computed key 数组寄存器（方法/静态字段阶段按 slot 读取）。
     pub(crate) class_keys_reg: Option<u32>,
     pub(crate) current_upvalue_captures: Vec<UpvalueCapture>,
+    /// 嵌套类私有 brand 链：每类一条 `(brand_id, cell_idx, parent_uv_idx)`，
+    /// 描述本帧如何到达该类的 brand cell——`parent_uv_idx` 为 None 时 cell 在
+    /// 本帧 own cell 表（cell_idx），为 Some(k) 时经本帧第 k 个 upvalue 可达。
+    /// 子函数体编译时按父链逐条追加为链式 upvalue 捕获，使内类方法能对
+    /// 外类声明的私有名做跨类 brand 检查。
+    pub(crate) brand_chain: Vec<(u32, u8, Option<u8>)>,
     /// 本函数作用域声明的绑定名（参数 + 变量/函数声明，AST 收集，emit 前确定）。
     pub(crate) own_bindings: HashSet<String>,
     /// 本函数形参名集（含解构形参叶子与 rest，编译入口收集）：块级函数名与
@@ -283,6 +289,7 @@ impl CompileCtx {
             field_keys_uv: None,
             class_keys_reg: None,
             current_upvalue_captures: Vec::new(),
+            brand_chain: Vec::new(),
             own_bindings: HashSet::new(),
             param_names: HashSet::new(),
             param_tdz_names: HashSet::new(),

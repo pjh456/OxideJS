@@ -29,20 +29,23 @@ impl Emitter {
     /// dispatch 做 brand 检查。
     ///
     /// instance 字段：dispatch 靠 own 槽存在性 + 不跨原型判定（PrivateFieldFind 只查 own），
-    /// 不需要 brand 值比较（返回 `(0,0)`）；方法/访问器/静态字段须验证接收者属于当前类
-    /// （brand 对象同一性），返回 brand 编码。brand 对象由方法函数捕获的 `@@class_brand`
-    /// upvalue 提供；嵌套函数未捕获该 upvalue 时跳过检查（保持语法合法，brand 语义受限）。
+    /// 不需要 brand 值比较（返回 `(0,0)`）；方法/访问器/静态字段须验证接收者属于声明类
+    /// （brand 对象同一性），返回 brand 编码。brand 对象按声明类的 brand id 定位
+    /// （`@@class_brand_<id>` upvalue，跨类访问时即外类 brand）；当前函数未捕获该
+    /// upvalue 时跳过检查（保持语法合法，brand 语义受限）。
     pub(crate) fn private_access_brand(
         &self, _obj_reg: u32, name: &str, ctx: &mut CompileCtx,
     ) -> Result<(u32, u32), String> {
-        let Some(brand_id) = ctx.scopes.private_brand_id else { return Ok((0, 0)) };
-        let Some((_, kind, is_static)) = ctx.scopes.private_element_kinds.iter().find(|(n, _, _)| n == name) else {
+        let entry = ctx.scopes.private_element_kinds.iter().find(|(n, _, _, _)| n == name);
+        let Some((_, kind, is_static, brand_id)) = entry else {
             return Ok((0, 0));
         };
         if kind.is_none() && !is_static {
             return Ok((0, 0));
         }
-        let Some(uv_idx) = ctx.current_upvalue_captures.iter().position(|u| u.name == "@@class_brand") else {
+        let brand_id = *brand_id;
+        let brand_name = format!("@@class_brand_{brand_id}");
+        let Some(uv_idx) = ctx.current_upvalue_captures.iter().position(|u| u.name == brand_name) else {
             return Ok((0, 0));
         };
         let brand_reg = ctx.alloc_reg();

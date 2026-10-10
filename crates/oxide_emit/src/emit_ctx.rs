@@ -148,9 +148,11 @@ pub(crate) struct ScopeCtx {
     pub(crate) symbols: SymbolTable,
     pub(crate) builtin_reg_map: Vec<(String, u32)>,
     pub(crate) private_name_map: Vec<(String, u32)>,
-    /// 私有元素类型（name, kind，static 标志）。kind=None 表示字段；
-    /// instance 字段的私有访问走 PrivateFieldFind 原型链查找，不加 brand 检查。
-    pub(crate) private_element_kinds: Vec<(String, Option<MethodDefinitionKind>, bool)>,
+    /// 私有元素类型（name, kind，static 标志，声明类 brand id）。kind=None 表示
+    /// 字段；instance 字段的私有访问走 PrivateFieldFind 原型链查找，不加 brand
+    /// 检查。brand_id 是声明该私有名的类的 brand id：跨类访问时 brand 检查须
+    /// 定位声明类（而非访问发生处类）的 brand 对象。
+    pub(crate) private_element_kinds: Vec<(String, Option<MethodDefinitionKind>, bool, u32)>,
     /// 当前类的私有 brand 私有名 id：私有方法/访问器访问时对实例做 brand 检查。
     pub(crate) private_brand_id: Option<u32>,
     pub(crate) next_private_name_id: u32,

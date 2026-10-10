@@ -280,7 +280,7 @@ impl Emitter {
         &self, param_specs: &[ParamSpec<'a>], body_stmts: &[Statement<'a>], parent_ctx: &CompileCtx,
         is_expression_body: bool, extra_bindings: &[(&str, u32)], body_context: FunctionBodyContext,
         emit_fields: Option<E>, fields_after_super: bool, extra_capture_exprs: &[&'a Expression<'a>],
-        extra_upvalue_names: &[(&str, u8)], own_strict: bool, name: Option<&str>,
+        extra_upvalue_names: &[(String, u8)], own_strict: bool, name: Option<&str>,
     ) -> Result<IRFunction, String>
     where
         E: FnMut(&Emitter, &mut CompileCtx) -> Result<(), String>,
@@ -308,7 +308,7 @@ impl Emitter {
         &self, param_specs: &[ParamSpec<'a>], body_stmts: &[Statement<'a>], parent_ctx: &CompileCtx,
         is_expression_body: bool, extra_bindings: &[(&str, u32)], body_context: FunctionBodyContext,
         mut emit_fields: Option<E>, fields_after_super: bool, extra_capture_exprs: &[&'a Expression<'a>],
-        extra_upvalue_names: &[(&str, u8)], is_generator: bool, is_async: bool, own_strict: bool, name: Option<&str>,
+        extra_upvalue_names: &[(String, u8)], is_generator: bool, is_async: bool, own_strict: bool, name: Option<&str>,
     ) -> Result<IRFunction, String>
     where
         E: FnMut(&Emitter, &mut CompileCtx) -> Result<(), String>,
@@ -655,7 +655,7 @@ impl Emitter {
     fn emit_params_prologue<'a>(
         &self, param_specs: &[ParamSpec<'a>], body_stmts: &[Statement<'a>], parent_ctx: &CompileCtx,
         ctx: &mut CompileCtx, body_context: FunctionBodyContext, extra_capture_exprs: &[&'a Expression<'a>],
-        extra_upvalue_names: &[(&str, u8)], name: Option<&str>,
+        extra_upvalue_names: &[(String, u8)], name: Option<&str>,
     ) -> Result<u32, String> {
         ctx.push_scope_with_kind(ScopeKind::FunctionScope);
         let param_base = ctx.next_reg;
@@ -852,15 +852,43 @@ impl Emitter {
                 .collect();
             // 类字段 computed key 数组等合成捕获：直接追加 upvalue（cell_idx 由父分配）。
             for (name, cell_idx) in extra_upvalue_names {
-                if !ctx.own_bindings.contains(*name) && !ctx.current_upvalue_captures.iter().any(|u| u.name == *name) {
+                if !ctx.own_bindings.contains(name) && !ctx.current_upvalue_captures.iter().any(|u| u.name == *name) {
                     ctx.current_upvalue_captures.push(UpvalueCapture {
-                        name: (*name).to_string(),
+                        name: name.clone(),
                         enclosing_reg: 0,
                         cell_idx: *cell_idx,
                         parent_uv_idx: None,
                     });
                 }
             }
+            // 私有 brand 链随函数体继承：父帧每条 brand 链条目按同形态追加为
+            // upvalue 捕获（父条目描述父帧如何到达 brand cell，子帧 upvalue 以
+            // 同一方式指向父帧）。子帧 brand 链记录各条目在子捕获列表中的位置，
+            // 嵌套类逐层继承，跨类 brand 检查据此定位声明类的 brand 对象。
+            for (brand_id, cell_idx, parent_uv_idx) in &parent_ctx.brand_chain {
+                let name = format!("@@class_brand_{brand_id}");
+                if !ctx.own_bindings.contains(&name) && !ctx.current_upvalue_captures.iter().any(|u| u.name == name) {
+                    ctx.current_upvalue_captures.push(UpvalueCapture {
+                        name,
+                        enclosing_reg: 0,
+                        cell_idx: *cell_idx,
+                        parent_uv_idx: *parent_uv_idx,
+                    });
+                }
+            }
+            ctx.brand_chain = parent_ctx
+                .brand_chain
+                .iter()
+                .map(|(brand_id, _, _)| {
+                    let name = format!("@@class_brand_{brand_id}");
+                    let pos = ctx
+                        .current_upvalue_captures
+                        .iter()
+                        .position(|u| u.name == name)
+                        .expect("brand 链条目已追加或已存在捕获列表");
+                    (*brand_id, 0, Some(pos as u8))
+                })
+                .collect();
         }
 
         // 创建 arguments 对象：指令须在默认参数求值前发出（默认参数可引用 arguments）。

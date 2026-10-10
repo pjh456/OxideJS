@@ -75,7 +75,10 @@ impl Emitter {
             return Err("expected private method key".into());
         };
         let name = private.name.as_str();
-        let method_reg = self.emit_class_method_function(method, name, home_reg, ctx, self_binding, class_self_cell)?;
+        // 私有方法/访问器的函数名带 `#` 前缀（SetFunctionName 语义：私有键的
+        // 字符串值即 `#name`，访问器另加 `get `/`set ` 前缀）。
+        let method_reg =
+            self.emit_class_method_function(method, &format!("#{name}"), home_reg, ctx, self_binding, class_self_cell)?;
         match method.kind {
             MethodDefinitionKind::Method => {
                 let key_reg = self.emit_private_id_reg(name, ctx)?;

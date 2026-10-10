@@ -1044,3 +1044,90 @@ fn computed_accessor_symbol_key() {
     .unwrap();
     assert_num(result, 43.0);
 }
+
+// ── 嵌套类私有名作用域：内类方法可访问外类声明的私有名 ──
+
+// 内类方法访问外类私有字段：字段走 PrivateFieldFind 原型链查找，不加 brand 检查。
+#[test]
+fn nested_class_method_reads_outer_private_field() {
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "var C = class { #x = 1; B = class { method(o) { return o.#x; } } }; var c = new C(); new c.B().method(c)",
+    )
+    .unwrap();
+    assert_eq!(result.as_int(), 1);
+}
+
+// 内类方法访问外类私有方法：brand 检查经外类 brand upvalue（跨类定位声明类 brand 对象）。
+#[test]
+fn nested_class_method_calls_outer_private_method() {
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "var C = class { #m() { return 4; } B = class { method(o) { return o.#m(); } } }; var c = new C(); new c.B().method(c)",
+    )
+    .unwrap();
+    assert_eq!(result.as_int(), 4);
+}
+
+// 内类自有同名私有名遮蔽外类：内类方法解析到内类 id，外类方法不受影响。
+#[test]
+fn nested_class_same_name_private_shadows_outer() {
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "var C = class { #v = 1; outer() { return this.#v; } B = class { #v = 2; get() { return this.#v; } } }; var c = new C(); var b = new c.B(); b.get() * 10 + c.outer()",
+    )
+    .unwrap();
+    assert_num(result, 21.0);
+}
+
+// 跨类 brand 负例：内类对象访问外类私有方法抛 TypeError（brand 对象不同一）。
+#[test]
+fn nested_class_cross_brand_access_throws_type_error() {
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "var C = class { #m() { return 1; } B = class { method(o) { return o.#m(); } } }; var c = new C(); var b = new c.B(); var r = 0; try { b.method(b); } catch (e) { r = (e.name === 'TypeError') ? 1 : 2; } r",
+    )
+    .unwrap();
+    assert_eq!(result.as_int(), 1);
+}
+
+// 私有方法函数名带 `#` 前缀（SetFunctionName 语义）。
+#[test]
+fn private_method_name_has_hash_prefix() {
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "var C = class { static #m() {} static getM() { return this.#m; } }; C.getM().name",
+    )
+    .unwrap();
+    let name = vm.lookup_str(result).expect("name should be string");
+    assert_eq!(name, "#m");
+}
+
+// 私有访问器行为：getter 读、setter 写，经内类方法跨类访问外类私有访问器。
+#[test]
+fn nested_class_method_uses_outer_private_accessor() {
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "var C = class { #v = 0; get #x() { return this.#v; } set #x(v) { this.#v = v; } B = class { use(o) { o.#x = 5; return o.#x; } } }; var c = new C(); new c.B().use(c)",
+    )
+    .unwrap();
+    assert_eq!(result.as_int(), 5);
+}
+
+// 三级类嵌套（类内类内类）：brand 链经多层类编译保存/恢复后仍指向最外层声明类。
+#[test]
+fn triple_nested_class_reaches_outermost_private_method() {
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "var C = class { #m() { return 7; } B = class { D = class { method(o) { return o.#m(); } } } }; var c = new C(); var b = new c.B(); var d = new b.D(); d.method(c)",
+    )
+    .unwrap();
+    assert_eq!(result.as_int(), 7);
+}
