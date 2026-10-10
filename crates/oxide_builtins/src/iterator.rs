@@ -1230,11 +1230,13 @@ pub(crate) fn try_make_iterator_inner_proto<H: VmHost>(
 ///    `@@iterator` 返回自身）。
 /// 2. 写入 `__inner__`/`__index__` 槽；鸭子回退路径把创建时读到的 `next` 闭包
 ///    缓存进 `__next__` 槽，消费期直读槽不重触发 getter。
-/// 3. 挂 `next` 方法；`bind_return` 且内层有可调用 `return` 时条件暴露 `return`。
+/// 3. 挂 `next` 方法；`bind_return` 且内层是对象时恒挂 `return` 方法
+///    （内层 return 在关闭期惰性读取，构造期不触碰其 getter）。
 ///
 /// # 边界
 /// - `bind_return` 控制是否暴露 `return` 方法（for-of/解构的 IteratorClose 需要，
-///   `yield*` 委托不需要且须避免创建时访问内层 return getter）。
+///   `yield*` 委托不需要）；内层 return 一律关闭期惰性 GetMethod，构造期不触碰
+///   其 getter，getter 抛错与不可调用判定在关闭期发生。
 /// - 本函数不解析 `@@iterator`：`get_iterator` 派生内层，或默认迭代器函数直接以
 ///   已 ToString 的串为内层构造（其语义只由 `this` 决定，与属性表状态解耦）。
 pub(crate) fn build_iterator_wrapper<H: VmHost>(
@@ -1264,22 +1266,28 @@ pub(crate) fn build_iterator_wrapper<H: VmHost>(
     let wrapper_next = make_native_function(vm, "next", iterator_wrapper_next::<H> as *const (), 0);
     vm.set_or_create_prop_value(wrapper_obj, next_si, wrapper_next);
 
-    // for-of/解构的 IteratorClose 需要 return 方法：条件暴露（内层有可调用 return 时）。
+    // for-of/解构的 IteratorClose 需要 return 方法：bind_return 且内层是对象时恒挂，
+    // 内层 return 由包装器 return 方法在关闭期惰性 GetMethod（getter 抛错传播、
+    // 不可调用抛 TypeError、undefined/null 无操作）。
     // `yield*` 委托（bind_return=false）不绑定，转发时对内层延迟 GetMethod。
     let return_si = vm.perm_intern("return");
     if bind_return && inner.is_object() {
-        let inner_obj = unsafe { &*inner.as_js_object_ptr() };
-        if let Ok(return_fn) = vm.ordinary_get(inner_obj, return_si, inner) {
-            if is_callable(return_fn) {
-                let wrapper_return = make_native_function(vm, "return", iterator_wrapper_return::<H> as *const (), 0);
-                vm.set_or_create_prop_value(wrapper_obj, return_si, wrapper_return);
-            }
-        }
+        let wrapper_return = make_native_function(vm, "return", iterator_wrapper_return::<H> as *const (), 0);
+        vm.set_or_create_prop_value(wrapper_obj, return_si, wrapper_return);
     }
 
     JsValue::from_js_object(wrapper)
 }
 
+/// 迭代器包装器的 `return` 方法：关闭期惰性读取内层 `return`（完整 GetMethod
+/// 步序）并转发调用，默认零参。
+///
+/// # 步骤
+/// 1. 读 `__inner__` 槽；this 非对象或槽缺失/非对象时返回 undefined（无操作）。
+/// 2. GetMethod(inner, "return")：getter 抛错透传原异常；undefined/null 返回空
+///    对象（无操作，使调用方步 7 的对象校验通过）；已定义不可调用值抛 TypeError。
+/// 3. 调用方显式传参时转发该实参（Iterator.prototype.return 的 return(v) 语义），
+///    否则零参调用（IteratorClose 步 4c）；结果原样返回，步 7 由调用方执行。
 fn iterator_wrapper_return<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
     if !this_val.is_object() {
@@ -1291,16 +1299,29 @@ fn iterator_wrapper_return<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         Ok(inner) if inner.is_object() => inner,
         _ => return NativeResult::Ok(JsValue::undefined()),
     };
-    // 延迟 GetMethod：内层无 return 方法时返回 undefined（IteratorClose 跳过）。
+    // 延迟 GetMethod：内层 return 在关闭期读取，getter 抛错透传原异常。
     let inner_obj = unsafe { &*inner.as_js_object_ptr() };
     let return_si = vm.perm_intern("return");
     let return_fn = match vm.ordinary_get(inner_obj, return_si, inner) {
         Ok(f) if is_callable(f) => f,
-        _ => return NativeResult::Ok(JsValue::undefined()),
+        // undefined/null：GetMethod 返回 unused，无操作，返空对象使调用方步 7 通过。
+        Ok(f) if f.is_undefined() || f.is_null() => {
+            let object_proto = vm.builtin_proto(ProtoKind::ObjectProto);
+            let obj = vm.alloc_object(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(object_proto)));
+            return NativeResult::Ok(JsValue::from_js_object(obj));
+        }
+        // 已定义不可调用值：GetMethod 抛 TypeError。
+        Ok(_) => return NativeResult::Err(crate::error::create_type_error(vm, "iterator return is not a function")),
+        Err(err) => return NativeResult::Err(engine_error(vm, &err)),
     };
-    // 转发调用实参（`yield*` 委托的 return(v) 语义），缺省为 undefined。
-    let arg = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
-    match vm.call_function_sync(return_fn, inner, &[arg]) {
+    // 默认零参（IteratorClose 步 4c）；调用方显式传参时转发（Iterator.prototype.return
+    // 的 return(v) 语义）。结果原样返回，步 7 由调用方 IteratorClose 执行。
+    let result = if args.len() > 1 {
+        vm.call_function_sync(return_fn, inner, &[vm.reg(args[1])])
+    } else {
+        vm.call_function_sync(return_fn, inner, &[])
+    };
+    match result {
         Ok(result) => NativeResult::Ok(result),
         Err(err) => match vm.take_uncaught_value() {
             Some(original) => NativeResult::Err(original),
@@ -1363,9 +1384,14 @@ pub fn iterator_wrapper_next<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult
                 }
             }
         };
-        // 转发调用实参（`yield*` 委托的 next(v) 语义），缺省为 undefined。
-        let arg = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
-        return match vm.call_function_sync(next, inner, &[arg]) {
+        // 默认零参（IteratorNext 步 4 零参调用）；调用方显式传参时转发（Iterator.
+        // prototype.next 的 next(v) 语义）。
+        let result = if args.len() > 1 {
+            vm.call_function_sync(next, inner, &[vm.reg(args[1])])
+        } else {
+            vm.call_function_sync(next, inner, &[])
+        };
+        return match result {
             Ok(result) => NativeResult::Ok(result),
             // 透传原始抛出的值（任意类型）而非重新包装成 TypeError，
             // 使外围 try/catch 能看到真正的错误。
