@@ -32,7 +32,12 @@ impl Emitter {
             if let Some(sub_mod) = ctx.nested.last_mut() {
                 sub_mod.needs_home_object = true;
             }
-            ctx.inst(Inst::new(OpCode::SET_HOME_OBJECT, Operand::Reg(val_reg), Operand::Reg(obj_reg), Operand::None));
+            ctx.inst(Inst::new(
+                OpCode::SET_HOME_OBJECT,
+                Operand::Reg(val_reg),
+                Operand::Reg(obj_reg),
+                Operand::None,
+            ));
         }
         Ok(val_reg)
     }
