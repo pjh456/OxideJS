@@ -39,3 +39,10 @@ perf: 字符串拼接消除冗余拷贝
   ```
 
   以 runner 二进制 mtime 为界，只删早于最近一次构建的测试二进制；删除须先于任何构建动作，否则 runner 刷新后陈旧面会扩大。
+
+- 清理中断链接遗留的临时文件（`*.tmp<哈希>`，构建被杀或内存不足时留下的半成品，
+  cargo 永不复用，单个可达上百 MB）：
+
+  ```bash
+  find target/debug/deps -maxdepth 1 -name '*.tmp*' -delete
+  ```
