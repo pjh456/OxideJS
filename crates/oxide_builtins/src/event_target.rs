@@ -72,10 +72,7 @@ pub fn event_target_add_event_listener<H: VmHost>(vm: &mut H, args: &[u8]) -> Na
             if let Some(exc) = vm.take_uncaught_value() {
                 return NativeResult::Err(exc);
             }
-            return NativeResult::Err(crate::error::create_type_error(
-                vm,
-                "Cannot convert event type to a string",
-            ));
+            return NativeResult::Err(crate::error::create_type_error(vm, "Cannot convert event type to a string"));
         }
     };
     if type_str.is_empty() {
@@ -86,10 +83,7 @@ pub fn event_target_add_event_listener<H: VmHost>(vm: &mut H, args: &[u8]) -> Na
     // callback 须为函数（首版不支持对象形 handleEvent）。
     let callback = if args.len() > 2 { vm.reg(args[2]) } else { JsValue::undefined() };
     if !crate::iterator::is_callable(callback) {
-        return NativeResult::Err(crate::error::create_type_error(
-            vm,
-            "Event listener callback must be a function",
-        ));
+        return NativeResult::Err(crate::error::create_type_error(vm, "Event listener callback must be a function"));
     }
 
     // options：布尔（capture）或对象（once / capture）。
@@ -99,9 +93,18 @@ pub fn event_target_add_event_listener<H: VmHost>(vm: &mut H, args: &[u8]) -> Na
     };
 
     // 重复登记（同 type + callback + capture）为 no-op；否则追加。
-    let entry = ListenerEntry { type_si, callback, capture, once, is_attribute: false };
+    let entry = ListenerEntry {
+        type_si,
+        callback,
+        capture,
+        once,
+        is_attribute: false,
+    };
     let existing = vm.et_lookup(this_ptr);
-    if existing.iter().any(|e| e.type_si == type_si && e.capture == capture && e.callback == callback) {
+    if existing
+        .iter()
+        .any(|e| e.type_si == type_si && e.capture == capture && e.callback == callback)
+    {
         return NativeResult::Ok(JsValue::undefined());
     }
     vm.et_register(this_ptr, entry);
@@ -132,10 +135,7 @@ pub fn event_target_remove_event_listener<H: VmHost>(vm: &mut H, args: &[u8]) ->
             if let Some(exc) = vm.take_uncaught_value() {
                 return NativeResult::Err(exc);
             }
-            return NativeResult::Err(crate::error::create_type_error(
-                vm,
-                "Cannot convert event type to a string",
-            ));
+            return NativeResult::Err(crate::error::create_type_error(vm, "Cannot convert event type to a string"));
         }
     };
     let type_si = vm.perm_intern(&type_str);
@@ -206,11 +206,7 @@ pub fn event_target_dispatch_event<H: VmHost>(vm: &mut H, args: &[u8]) -> Native
     };
     let type_si = vm.perm_intern(&type_text);
     // 注册表按目标对象存全部监听器，此处按事件类型过滤（同型才派发）。
-    let listeners: Vec<ListenerEntry> = vm
-        .et_lookup(this_ptr)
-        .into_iter()
-        .filter(|e| e.type_si == type_si)
-        .collect();
+    let listeners: Vec<ListenerEntry> = vm.et_lookup(this_ptr).into_iter().filter(|e| e.type_si == type_si).collect();
     if listeners.is_empty() {
         return NativeResult::Ok(JsValue::bool(true));
     }
