@@ -29,6 +29,10 @@ use runner::{build_runner_engine, process_path, CURRENT_TEST_PATH};
 use stats::RunStats;
 use supervise::run_supervised;
 
+/// kernel 重建批次的上界：realm 编号受属性键符号空间约束须小于 512，
+/// 单个 kernel 生命周期至多创建 512 个 Vm；用户配置超此值时钳到该上界。
+const MAX_KERNEL_BATCH: usize = 512;
+
 /// 程序入口：安装带当前测试路径的 panic hook，并在大栈线程上运行测试。
 fn main() {
     // 安装 panic hook，打印崩溃发生时正在运行的测试。
@@ -174,11 +178,13 @@ fn run_tests() -> bool {
         .map(|n| n.min(total))
         .unwrap_or(total);
     // 缺省 256：每 kernel 生命周期 realm 计数不超 512 上界（属性键符号空间约束），
-    // 留一倍余量防重建边界 off-by-one 触发 debug 断言。
+    // 留一倍余量防重建边界 off-by-one 触发 debug 断言；用户配置超上界时钳到
+    // MAX_KERNEL_BATCH（断言要求编号 < 512，即每 kernel 生命周期至多 512 个 Vm）。
     let kernel_batch = std::env::var("OXIDE_TEST262_KERNEL_BATCH")
         .ok()
         .and_then(|s| s.parse::<usize>().ok())
         .filter(|&n| n > 0)
+        .map(|n| n.min(MAX_KERNEL_BATCH))
         .unwrap_or(256);
     let chunk_size = std::env::var("OXIDE_TEST262_CHUNK_SIZE")
         .ok()
