@@ -54,6 +54,11 @@ jobs:
           submodules: true
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+        with:
+          # 与 ci-test.yml 的 test job 同键：test 复用 build 的 target/ 缓存，
+          # 只补编 test harness、不重编整个 workspace。自定义键避免按 profile
+          # 自动分键（build/test 各一）导致 test 恢复陈旧缓存。
+          key: oxide-target-ubuntu-v1
       - uses: ./.github/actions/setup-tools
       - name: Build
         run: cargo build --verbose
