@@ -305,7 +305,7 @@ fn run_tests() -> bool {
                                 debug_assert!(engine.kernel().active_vms() == 0, "kernel rebuild requires no live VMs");
                                 engine = build_runner_engine();
                                 tests_since_kernel_reset = 0;
-                            } else if done % 500 == 0 {
+                            } else if tests_since_kernel_reset % 500 == 0 {
                                 engine.kernel().sweep_runner_forges(); // 批内 50k 兜底（数据依赖）
                             }
                             if done % 500 == 0 || done == total {
