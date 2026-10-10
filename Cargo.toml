@@ -78,9 +78,6 @@ lto = false
 codegen-units = 256
 debug = 0
 panic = "abort"
-# 本机 CPU 指令集（AVX2 等）：解释器热路径墙时间再挤 5 至 15%。产物绑定本机
-# 微架构，不可跨机移植（本机开发机与 CI 各自源码构建，无影响）。
-target-cpu = "native"
 
 [profile.dev]
 # 行表级调试信息：产物体积降 5 至 10 倍（单个 oxide CLI 约 160M 降到 30M 量级），

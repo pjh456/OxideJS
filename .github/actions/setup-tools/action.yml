@@ -33,10 +33,9 @@ runs:
     - name: Configure build cache
       shell: bash
       run: |
-        # CI 链接器统一走默认 lld：sccache 包装 rustc 时，链接子进程定位不到 mold、
-        # 回退默认 ld 报 cannot find ld。只删工作副本的 mold 行，本地提交的 config
-        # 保留 mold 提速。
-        sed -i '/link-arg=-fuse-ld=mold/d' .cargo/config.toml
+        # CI 链接器走默认 ld：sccache 包装 rustc 时链接子进程定位不到 mold，回退默认
+        # ld 报 cannot find ld。只改工作副本，本地提交的 config 保留 mold 提速。
+        sed -i '/^rustflags = .*fuse-ld=mold/d' .cargo/config.toml
 
     - name: Verify tools in PATH
       shell: bash
