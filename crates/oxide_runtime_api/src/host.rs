@@ -104,6 +104,12 @@ pub enum ProtoKind {
     MessagePortProto,
     // 广播通道原型
     BroadcastChannelProto,
+    // 事件体系原型（EventTarget 原型不占 ProtoKind：builtins 不读它，
+    // 绑定层直接访问 world 的 event_target_proto 槽）
+    EventProto,
+    MessageEventProto,
+    ErrorEventProto,
+    CustomEventProto,
 }
 
 /// builtins 依赖的 `Vm` 能力集合。

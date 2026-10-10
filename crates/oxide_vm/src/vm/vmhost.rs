@@ -144,6 +144,10 @@ impl oxide_runtime_api::VmHost for Vm {
             ProtoKind::BigUint64ArrayConstructor => &world.biguint64array_constructor,
             ProtoKind::MessagePortProto => &world.message_port_proto,
             ProtoKind::BroadcastChannelProto => &world.broadcast_channel_proto,
+            ProtoKind::EventProto => &world.event_proto,
+            ProtoKind::MessageEventProto => &world.message_event_proto,
+            ProtoKind::ErrorEventProto => &world.error_event_proto,
+            ProtoKind::CustomEventProto => &world.custom_event_proto,
         };
         P::as_ptr(p) as *mut JsObject
     }

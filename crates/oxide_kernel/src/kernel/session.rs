@@ -200,6 +200,15 @@ impl KernelSession {
                 || gen(BuiltinId::MessageChannelCtor) != snap(BuiltinId::MessageChannelCtor),
             broadcast_channel: gen(BuiltinId::BroadcastChannelProto) != snap(BuiltinId::BroadcastChannelProto)
                 || gen(BuiltinId::BroadcastChannelCtor) != snap(BuiltinId::BroadcastChannelCtor),
+            event: gen(BuiltinId::EventProto) != snap(BuiltinId::EventProto)
+                || gen(BuiltinId::EventCtor) != snap(BuiltinId::EventCtor)
+                || gen(BuiltinId::MessageEventProto) != snap(BuiltinId::MessageEventProto)
+                || gen(BuiltinId::MessageEventCtor) != snap(BuiltinId::MessageEventCtor)
+                || gen(BuiltinId::ErrorEventProto) != snap(BuiltinId::ErrorEventProto)
+                || gen(BuiltinId::ErrorEventCtor) != snap(BuiltinId::ErrorEventCtor)
+                || gen(BuiltinId::CustomEventProto) != snap(BuiltinId::CustomEventProto)
+                || gen(BuiltinId::CustomEventCtor) != snap(BuiltinId::CustomEventCtor)
+                || gen(BuiltinId::EventTargetProto) != snap(BuiltinId::EventTargetProto),
         };
         // wrapper 本体被写不落在任何家族位上（写的是 wrapper 自身而非所属 P
         // 对象）：收缩为全脏，强制重建全部家族与 global，使被写的可复用

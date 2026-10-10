@@ -514,6 +514,20 @@ impl BuiltinWorld {
         let broadcast_channel_proto = P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()));
         let broadcast_channel_constructor = P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()));
 
+        // Event 体系九个内核接线占位（空对象）：Event / MessageEvent /
+        // ErrorEvent / CustomEvent 四枚原型与构造器对加 EventTarget 原型，
+        // 真实本体与原型链连线由绑定层后续任务填充，本处只预留槽位使快照/
+        // 脏检查/收尾枚举覆盖到这九枚 P 字段。
+        let event_proto = P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()));
+        let event_constructor = P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()));
+        let message_event_proto = P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()));
+        let message_event_constructor = P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()));
+        let error_event_proto = P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()));
+        let error_event_constructor = P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()));
+        let custom_event_proto = P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()));
+        let custom_event_constructor = P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()));
+        let event_target_proto = P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()));
+
         let (date_proto, date_constructor) = make_named_pair(string_forge, shape_forge, labels, "Date");
         let (set_proto, set_constructor) = make_named_pair(string_forge, shape_forge, labels, "Set");
         let (map_proto, map_constructor) = make_named_pair(string_forge, shape_forge, labels, "Map");
@@ -665,6 +679,15 @@ impl BuiltinWorld {
             message_channel_constructor,
             broadcast_channel_proto,
             broadcast_channel_constructor,
+            event_proto,
+            event_constructor,
+            message_event_proto,
+            message_event_constructor,
+            error_event_proto,
+            error_event_constructor,
+            custom_event_proto,
+            custom_event_constructor,
+            event_target_proto,
             leaked_objects: std::cell::RefCell::new(Vec::new()),
         };
         wire_builtin_world_links(&world);

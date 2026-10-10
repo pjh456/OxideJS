@@ -418,6 +418,43 @@ impl BuiltinWorld {
             (current.broadcast_channel_proto.clone(), current.broadcast_channel_constructor.clone())
         };
 
+        // Event 体系九个占位：脏则换新空对象（与全量构造同形），未脏沿用旧指针。
+        let (
+            event_proto,
+            event_constructor,
+            message_event_proto,
+            message_event_constructor,
+            error_event_proto,
+            error_event_constructor,
+            custom_event_proto,
+            custom_event_constructor,
+            event_target_proto,
+        ) = if dirty.event {
+            (
+                P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
+                P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
+                P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
+                P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
+                P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
+                P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
+                P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
+                P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
+                P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
+            )
+        } else {
+            (
+                current.event_proto.clone(),
+                current.event_constructor.clone(),
+                current.message_event_proto.clone(),
+                current.message_event_constructor.clone(),
+                current.error_event_proto.clone(),
+                current.error_event_constructor.clone(),
+                current.custom_event_proto.clone(),
+                current.custom_event_constructor.clone(),
+                current.event_target_proto.clone(),
+            )
+        };
+
         // 迭代器原型与资源栈原型依赖 Object.prototype（链到其上）：object 家族重建时
         // 一并重建，否则旧原型链指向已释放的 object_proto。
         let (
@@ -572,6 +609,15 @@ impl BuiltinWorld {
             message_channel_constructor,
             broadcast_channel_proto,
             broadcast_channel_constructor,
+            event_proto,
+            event_constructor,
+            message_event_proto,
+            message_event_constructor,
+            error_event_proto,
+            error_event_constructor,
+            custom_event_proto,
+            custom_event_constructor,
+            event_target_proto,
             leaked_objects: std::cell::RefCell::new(Vec::new()),
         };
         wire_builtin_world_links(&world);

@@ -26,6 +26,8 @@ pub mod bind_date;
 pub mod bind_disposable_stack;
 /// Error 家族构造器与原型的 native 方法绑定（含各子类型构造器创建）。
 pub mod bind_error;
+/// Event 体系绑定入口（当前为空占位，九枚 P 字段由后续任务就地填充）。
+pub mod bind_event;
 /// Function 构造器与原型的 native 方法绑定。
 pub mod bind_function;
 /// global 对象上的普通全局函数（parseInt、isNaN 等）绑定。
@@ -1342,6 +1344,9 @@ pub fn rebind_dirty_builtins(
     }
     if dirty.map_or(true, |d| d.broadcast_channel) {
         bind_broadcast_channel::bind_broadcast_channel(core, session, global, realm_id);
+    }
+    if dirty.map_or(true, |d| d.event) {
+        bind_event::bind_event(core, session, global, realm_id);
     }
     if dirty.map_or(true, |d| d.console) {
         bind_console::bind_console(core, session, global);
