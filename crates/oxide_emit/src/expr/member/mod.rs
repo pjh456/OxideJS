@@ -10,27 +10,43 @@ use oxide_ir::operand::Operand;
 use oxide_parser::Expression;
 
 impl Emitter {
+    /// super 属性读门判定与 this 装载（GetThisBinding）：this 未初始化时
+    /// 运行期抛 ReferenceError（VM 侧）。返回 this 寄存器。
+    ///
+    /// 键装载须在本方法之后（规范序：GetThisBinding 先于键表达式求值）。
+    pub(crate) fn emit_super_this(&self, ctx: &mut CompileCtx) -> Result<u32, String> {
+        if !ctx.in_instance_method && !ctx.in_static_method && !ctx.in_derived_constructor {
+            return Err("super property only supported in class methods".into());
+        }
+        let this_reg = ctx.alloc_reg();
+        ctx.inst(Inst::new(OpCode::LOAD_VAR, Operand::Reg(this_reg), Operand::This, Operand::None));
+        Ok(this_reg)
+    }
+
+    /// super 属性读：给定 this 寄存器与键寄存器，发 `SUPER_GET_PROP` /
+    /// `SUPER_STATIC_GET_PROP`（GetSuperBase + RequireObjectCoercible +
+    /// ToPropertyKey + Get 在运行期完成）。返回结果寄存器。
+    pub(crate) fn emit_super_get(&self, this_reg: u32, key_reg: u32, ctx: &mut CompileCtx) -> u32 {
+        let result_reg = ctx.alloc_reg();
+        let op = if ctx.in_static_method {
+            OpCode::SUPER_STATIC_GET_PROP
+        } else {
+            OpCode::SUPER_GET_PROP
+        };
+        ctx.inst(Inst::new(op, Operand::Reg(result_reg), Operand::Reg(this_reg), Operand::Reg(key_reg)));
+        result_reg
+    }
+
     fn emit_static_member_expression(
         &self, member: &oxide_parser::StaticMemberExpression, ctx: &mut CompileCtx,
     ) -> Result<u32, String> {
         if matches!(&member.object, Expression::Super(_)) {
-            if !ctx.in_instance_method && !ctx.in_static_method && !ctx.in_derived_constructor {
-                return Err("super property only supported in class methods".into());
-            }
+            let this_reg = self.emit_super_this(ctx)?;
             let prop_name = member.property.name.as_str();
             let idx = ctx.add_constant(Constant::String(prop_name.to_string()));
             let key_reg = ctx.alloc_reg();
             ctx.inst(Inst::load_const(Operand::Reg(key_reg), idx));
-            let this_reg = ctx.alloc_reg();
-            ctx.inst(Inst::new(OpCode::LOAD_VAR, Operand::Reg(this_reg), Operand::This, Operand::None));
-            let result_reg = ctx.alloc_reg();
-            let op = if ctx.in_static_method {
-                OpCode::SUPER_STATIC_GET_PROP
-            } else {
-                OpCode::SUPER_GET_PROP
-            };
-            ctx.inst(Inst::new(op, Operand::Reg(result_reg), Operand::Reg(this_reg), Operand::Reg(key_reg)));
-            return Ok(result_reg);
+            return Ok(self.emit_super_get(this_reg, key_reg, ctx));
         }
         let obj_reg = self.emit_expression(&member.object, ctx)?;
         let prop_name = member.property.name.as_str();
@@ -44,6 +60,13 @@ impl Emitter {
     fn emit_computed_member_expression(
         &self, member: &oxide_parser::ComputedMemberExpression, ctx: &mut CompileCtx,
     ) -> Result<u32, String> {
+        // super['x']：this 先装载（GetThisBinding），键表达式后求值（规范序），
+        // 后走 super 读。
+        if matches!(&member.object, Expression::Super(_)) {
+            let this_reg = self.emit_super_this(ctx)?;
+            let key_reg = self.emit_expression(&member.expression, ctx)?;
+            return Ok(self.emit_super_get(this_reg, key_reg, ctx));
+        }
         // 常量字符串键折叠为 IC 静态路径：免去运行期键 interning 与慢路径 ordinary_get。
         if let Some(key) = computed_const_key(&member.expression) {
             let obj_reg = self.emit_expression(&member.object, ctx)?;

@@ -53,45 +53,18 @@ impl Emitter {
                 (callee_reg, obj_reg)
             }
             Expression::StaticMemberExpression(member) => {
-                let is_super_member = matches!(&member.object, Expression::Super(_));
-                let obj_reg = if is_super_member {
-                    let this_reg = ctx.alloc_reg();
-                    ctx.inst(Inst::new(OpCode::LOAD_VAR, Operand::Reg(this_reg), Operand::This, Operand::None));
-                    this_reg
+                if matches!(&member.object, Expression::Super(_)) {
+                    let this_reg = self.emit_super_this(ctx)?;
+                    let prop_name = member.property.name.as_str();
+                    let idx = ctx.add_constant(Constant::String(prop_name.to_string()));
+                    let key_reg = ctx.alloc_reg();
+                    ctx.inst(Inst::load_const(Operand::Reg(key_reg), idx));
+                    let callee_reg = self.emit_super_get(this_reg, key_reg, ctx);
+                    (callee_reg, this_reg)
                 } else {
-                    self.emit_expression(&member.object, ctx)?
-                };
-                let prop_name = member.property.name.as_str();
-                let idx = ctx.add_constant(Constant::String(prop_name.to_string()));
-                let key_reg = ctx.alloc_reg();
-                ctx.inst(Inst::load_const(Operand::Reg(key_reg), idx));
-                let callee_reg = ctx.alloc_reg();
-                if is_super_member {
-                    if !ctx.in_instance_method && !ctx.in_static_method && !ctx.in_derived_constructor {
-                        return Err("super property only supported in class methods".into());
-                    }
-                    let op = if ctx.in_static_method {
-                        OpCode::SUPER_STATIC_GET_PROP
-                    } else {
-                        OpCode::SUPER_GET_PROP
-                    };
-                    ctx.inst(Inst::new(op, Operand::Reg(callee_reg), Operand::Reg(obj_reg), Operand::Reg(key_reg)));
-                } else {
-                    ctx.inst(Inst::new(
-                        OpCode::LOAD_VAR,
-                        Operand::Reg(callee_reg),
-                        Operand::Reg(obj_reg),
-                        Operand::None,
-                    ));
-                    ctx.inst(Inst::ic_get(Operand::Reg(callee_reg), Operand::Reg(key_reg)));
-                }
-                (callee_reg, obj_reg)
-            }
-            Expression::ComputedMemberExpression(member) => {
-                let obj_reg = self.emit_expression(&member.object, ctx)?;
-                // 常量字符串键折叠为 IC 静态路径：callee 寄存器独立于对象，this 保留对象。
-                if let Some(key) = crate::expr::member::computed_const_key(&member.expression) {
-                    let idx = ctx.add_constant(Constant::String(key));
+                    let obj_reg = self.emit_expression(&member.object, ctx)?;
+                    let prop_name = member.property.name.as_str();
+                    let idx = ctx.add_constant(Constant::String(prop_name.to_string()));
                     let key_reg = ctx.alloc_reg();
                     ctx.inst(Inst::load_const(Operand::Reg(key_reg), idx));
                     let callee_reg = ctx.alloc_reg();
@@ -103,16 +76,41 @@ impl Emitter {
                     ));
                     ctx.inst(Inst::ic_get(Operand::Reg(callee_reg), Operand::Reg(key_reg)));
                     (callee_reg, obj_reg)
-                } else {
+                }
+            }
+            Expression::ComputedMemberExpression(member) => {
+                if matches!(&member.object, Expression::Super(_)) {
+                    let this_reg = self.emit_super_this(ctx)?;
                     let key_reg = self.emit_expression(&member.expression, ctx)?;
-                    let callee_reg = ctx.alloc_reg();
-                    ctx.inst(Inst::new(
-                        OpCode::GET_PROP_DYNAMIC,
-                        Operand::Reg(obj_reg),
-                        Operand::Reg(key_reg),
-                        Operand::Reg(callee_reg),
-                    ));
-                    (callee_reg, obj_reg)
+                    let callee_reg = self.emit_super_get(this_reg, key_reg, ctx);
+                    (callee_reg, this_reg)
+                } else {
+                    let obj_reg = self.emit_expression(&member.object, ctx)?;
+                    // 常量字符串键折叠为 IC 静态路径：callee 寄存器独立于对象，this 保留对象。
+                    if let Some(key) = crate::expr::member::computed_const_key(&member.expression) {
+                        let idx = ctx.add_constant(Constant::String(key));
+                        let key_reg = ctx.alloc_reg();
+                        ctx.inst(Inst::load_const(Operand::Reg(key_reg), idx));
+                        let callee_reg = ctx.alloc_reg();
+                        ctx.inst(Inst::new(
+                            OpCode::LOAD_VAR,
+                            Operand::Reg(callee_reg),
+                            Operand::Reg(obj_reg),
+                            Operand::None,
+                        ));
+                        ctx.inst(Inst::ic_get(Operand::Reg(callee_reg), Operand::Reg(key_reg)));
+                        (callee_reg, obj_reg)
+                    } else {
+                        let key_reg = self.emit_expression(&member.expression, ctx)?;
+                        let callee_reg = ctx.alloc_reg();
+                        ctx.inst(Inst::new(
+                            OpCode::GET_PROP_DYNAMIC,
+                            Operand::Reg(obj_reg),
+                            Operand::Reg(key_reg),
+                            Operand::Reg(callee_reg),
+                        ));
+                        (callee_reg, obj_reg)
+                    }
                 }
             }
             _ => {

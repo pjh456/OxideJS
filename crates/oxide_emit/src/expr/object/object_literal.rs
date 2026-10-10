@@ -8,6 +8,35 @@ use oxide_ir::operand::Operand;
 use oxide_parser::{ObjectPropertyKind, PropertyKind};
 
 impl Emitter {
+    /// 对象方法值发射：体编译期置 `in_instance_method`（清静态/派生构造器标志，
+    /// 与类方法同形），闭包物化后给方法函数挂 home object（home = 对象字面量本身）
+    /// 并置 `needs_home_object`。
+    ///
+    /// 仅箭头/函数表达式值挂 home（类表达式排除：类表达式方法由类自身 emit 挂
+    /// home object，外层对象不作 home）；非函数值只作普通值发射。
+    fn emit_object_method_value(
+        &self, value: &oxide_parser::Expression, obj_reg: u32, ctx: &mut CompileCtx,
+    ) -> Result<u32, String> {
+        let saved_instance = ctx.in_instance_method;
+        let saved_static = ctx.in_static_method;
+        let saved_derived = ctx.in_derived_constructor;
+        ctx.in_instance_method = true;
+        ctx.in_static_method = false;
+        ctx.in_derived_constructor = false;
+        let val_reg = self.emit_expression(value, ctx);
+        ctx.in_instance_method = saved_instance;
+        ctx.in_static_method = saved_static;
+        ctx.in_derived_constructor = saved_derived;
+        let val_reg = val_reg?;
+        if is_object_method_fn(value) {
+            if let Some(sub_mod) = ctx.nested.last_mut() {
+                sub_mod.needs_home_object = true;
+            }
+            ctx.inst(Inst::new(OpCode::SET_HOME_OBJECT, Operand::Reg(val_reg), Operand::Reg(obj_reg), Operand::None));
+        }
+        Ok(val_reg)
+    }
+
     pub(crate) fn emit_object_expression(
         &self, obj: &oxide_parser::ObjectExpression, ctx: &mut CompileCtx,
     ) -> Result<u32, String> {
@@ -37,7 +66,7 @@ impl Emitter {
                 let ObjectPropertyKind::ObjectProperty(p) = prop else {
                     unreachable!("批量前缀必为 ObjectProperty");
                 };
-                let val_reg = self.emit_expression(&p.value, ctx)?;
+                let val_reg = self.emit_object_method_value(&p.value, obj_reg, ctx)?;
                 if crate::is_anonymous_function_definition(&p.value) {
                     if let Some(sub_mod) = ctx.nested.last_mut() {
                         sub_mod.function_name = Some(self.class_property_name(&p.key).expect("批量前缀键为静态名"));
@@ -112,7 +141,7 @@ impl Emitter {
                 } else {
                     None
                 };
-                let accessor_reg = self.emit_expression(&p.value, ctx)?;
+                let accessor_reg = self.emit_object_method_value(&p.value, obj_reg, ctx)?;
                 if !computed {
                     if let Some(sub_mod) = ctx.nested.last_mut() {
                         // 访问器函数名带 "get "/"set " 前缀（SetFunctionName 语义）。
@@ -162,7 +191,7 @@ impl Emitter {
                     ctx.inst(Inst::load_const(Operand::Reg(reg), idx));
                     reg
                 };
-                let val_reg = self.emit_expression(&p.value, ctx)?;
+                let val_reg = self.emit_object_method_value(&p.value, obj_reg, ctx)?;
                 if crate::is_anonymous_function_definition(&p.value) {
                     if let Some(sub_mod) = ctx.nested.last_mut() {
                         sub_mod.function_name = Some(prop_name.to_string());
@@ -178,5 +207,15 @@ impl Emitter {
             }
         }
         Ok(())
+    }
+}
+
+/// 对象方法函数值（剥括号）：箭头/函数表达式。类表达式排除——其方法由类自身
+/// emit 挂 home object，外层对象不作 home。
+fn is_object_method_fn(value: &oxide_parser::Expression) -> bool {
+    match value {
+        oxide_parser::Expression::ArrowFunctionExpression(_) | oxide_parser::Expression::FunctionExpression(_) => true,
+        oxide_parser::Expression::ParenthesizedExpression(p) => is_object_method_fn(&p.expression),
+        _ => false,
     }
 }

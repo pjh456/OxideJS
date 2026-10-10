@@ -276,6 +276,37 @@ fn class_nested_flags() {
     assert!(tree_count(&ir, OpCode::GET_PRIVATE) >= 1, "私有成员读面应存在");
 }
 
+/// 面 9：对象字面量方法挂 home object（模块标 needs_home_object 且树内存在
+/// SET_HOME_OBJECT），计算型 super 成员发 SUPER_GET_PROP 且 this 装载先于键表达式。
+#[test]
+fn object_method_home_object_and_computed_super() {
+    let src = "var o = { m() { return super.x; }, g() { return super[k]; } };";
+    let ir = emit_ir(src);
+    let (mut _base, mut _derived, mut home) = (false, false, false);
+    class_flags_scan(&ir, &mut _base, &mut _derived, &mut home);
+    assert!(home, "对象方法应标 needs_home_object");
+    assert!(tree_count(&ir, OpCode::SET_HOME_OBJECT) >= 2, "对象方法应挂 SET_HOME_OBJECT");
+    assert!(tree_count(&ir, OpCode::SUPER_GET_PROP) >= 2, "super 读应发 SUPER_GET_PROP");
+
+    // 计算型 super 成员：this 装载（LOAD_VAR This）先于键表达式求值（规范序）。
+    let m_body = ir
+        .nested
+        .iter()
+        .find(|f| f.function_name.as_deref() == Some("g"))
+        .expect("方法 g 应存在");
+    let this_pos = m_body
+        .insts
+        .iter()
+        .position(|i| i.op == OpCode::LOAD_VAR && matches!(i.a, Operand::This))
+        .expect("应存在 LOAD_VAR This");
+    let super_pos = m_body
+        .insts
+        .iter()
+        .position(|i| i.op == OpCode::SUPER_GET_PROP)
+        .expect("应存在 SUPER_GET_PROP");
+    assert!(this_pos < super_pos, "this 装载应先于 SUPER_GET_PROP");
+}
+
 /// 面 8：严格模式标志在函数体内与脚本顶层的继承口径。
 #[test]
 fn strict_flag_inherited() {

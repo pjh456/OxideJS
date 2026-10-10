@@ -202,6 +202,19 @@ impl Vm {
             is_derived_constructor,
             needs_home_object,
         );
+        // 箭头函数词法继承 super 上下文：home object 从外层函数（当前 callee）
+        // 继承。类方法由 SET_HOME_OBJECT 显式挂接，不经此路径。
+        if is_arrow && needs_home_object {
+            if let Some(callee) = self.current_callee() {
+                if callee.is_object() {
+                    let home = unsafe { &*callee.as_js_object_ptr() }.home_object();
+                    if home.is_object() {
+                        let func_obj = unsafe { &mut *result.as_js_object_ptr() };
+                        func_obj.set_home_object(home);
+                    }
+                }
+            }
+        }
         // 函数名推断：emit 端在变量声明/对象属性赋值点设置 function_name。
         let func_obj = unsafe { &mut *result.as_js_object_ptr() };
         let length_si = self.length_si;
@@ -642,18 +655,25 @@ impl Vm {
             return Ok(true);
         }
         let super_obj = unsafe { &*super_ctor.as_js_object_ptr() };
-        if !super_obj.is_function() {
-            self.raise_error_kind("TypeError", "super constructor is not a function")?;
-            return Ok(true);
-        }
 
         if super_obj.native_fn().is_some() {
-            // 实参先物化再走同步调用收口：native 调用协议把 253/254 槽固定为
+            // 实参先物化再走 IsConstructor 检查（规范序：ArgumentListEvaluation
+            // 先于 IsConstructor）；native 调用协议把 253/254 槽固定为
             // receiver/callee，实参寄存器（颜色 ≤253）占位 253 时裸引用会被覆写
             // （与 SUPER_CALL_SPREAD 路径同形）。
             let args: Vec<JsValue> = (0..arg_count)
                 .map(|i| self.regs[first_arg_reg.wrapping_add(i as u8) as usize])
                 .collect();
+            if !super_obj.is_function() {
+                self.raise_error_kind("TypeError", "super constructor is not a function")?;
+                return Ok(true);
+            }
+            // native 函数仅带构造器类型标时可构造（与 NEW 路径同口径）：
+            // 非构造器 proto 的 super 调用在实参求值后抛 TypeError。
+            if super_obj.type_tag != JsObject::OBJ_TYPE_CONSTRUCTOR {
+                self.raise_error_kind("TypeError", "super constructor is not a constructor")?;
+                return Ok(true);
+            }
             // 构造形态标记夹持（SUPER native 臂不写 reg255，new.target 继承
             // 外层类构造器帧，形态判定只能靠本标记）。
             let saved_constructing = self.constructing_native;
@@ -742,8 +762,6 @@ impl Vm {
 
     pub(crate) fn dispatch_super_get_prop(&mut self, rd: usize, a: usize, b: usize) -> Result<bool, String> {
         vm_trace!("SUPER_GET_PROP rd={} a={} b={}", rd, a, b);
-        let key_val = self.regs[b];
-        let prop_name_si = self.property_key_si(key_val)?;
         let Some(frame) = self.frames.last() else {
             self.raise_error_kind("ReferenceError", "super property used outside function")?;
             return Ok(true);
@@ -759,15 +777,19 @@ impl Vm {
             return Ok(true);
         }
         let home_obj = unsafe { &*home_object.as_js_object_ptr() };
+        // 规范步序：GetSuperBase 先于 ToPropertyKey；基非对象可强转时抛
+        // TypeError（RequireObjectCoercible 面）。
         let super_base = home_obj.proto();
         if !super_base.is_object() {
-            self.regs[rd] = JsValue::undefined();
-        } else {
-            let super_obj = unsafe { &*super_base.as_js_object_ptr() };
-            let val = self.ordinary_get_with_target(super_obj, prop_name_si, self.regs[a], rd as u8)?;
-            if self.accessor_frame_target_reg.take().is_none() {
-                self.regs[rd] = val;
-            }
+            self.raise_type_error("Cannot convert null or undefined to object")?;
+            return Ok(true);
+        }
+        let key_val = self.regs[b];
+        let prop_name_si = self.property_key_si(key_val)?;
+        let super_obj = unsafe { &*super_base.as_js_object_ptr() };
+        let val = self.ordinary_get_with_target(super_obj, prop_name_si, self.regs[a], rd as u8)?;
+        if self.accessor_frame_target_reg.take().is_none() {
+            self.regs[rd] = val;
         }
         Ok(false)
     }
@@ -1174,17 +1196,26 @@ impl Vm {
             return Ok(true);
         }
         let super_obj = unsafe { &*super_ctor.as_js_object_ptr() };
-        if !super_obj.is_function() {
-            self.raise_error_kind("TypeError", "super constructor is not a function")?;
-            return Ok(true);
-        }
 
         let args = match self.materialize_spread_args(&words)? {
             Some(args) => args,
             None => return Ok(true),
         };
 
+        // IsConstructor 检查在实参物化之后（规范序：ArgumentListEvaluation
+        // 先于 IsConstructor）。
+        if !super_obj.is_function() {
+            self.raise_error_kind("TypeError", "super constructor is not a function")?;
+            return Ok(true);
+        }
+
         if super_obj.native_fn().is_some() {
+            // native 函数仅带构造器类型标时可构造（与 NEW 路径同口径）：
+            // 非构造器 proto 的 super 调用在实参求值后抛 TypeError。
+            if super_obj.type_tag != JsObject::OBJ_TYPE_CONSTRUCTOR {
+                self.raise_error_kind("TypeError", "super constructor is not a constructor")?;
+                return Ok(true);
+            }
             // 构造形态标记夹持（SUPER native 臂不写 reg255，new.target 继承
             // 外层类构造器帧，形态判定只能靠本标记）。
             let saved_constructing = self.constructing_native;

@@ -366,7 +366,14 @@ impl Emitter {
         ctx.source_encoded = parent_ctx.source_encoded;
 
         // 箭头函数词法继承 super；类方法体顶层编译也需要类提供的 super 上下文。
-        if matches!(body_context, FunctionBodyContext::Arrow | FunctionBodyContext::ClassElement) {
+        // 对象方法体（Ordinary 上下文）在父带任一 super 上下文时同样继承：对象方法
+        // 发射期已置父 ctx 的 in_instance_method，其内嵌套箭头/普通函数经此继承。
+        // 非法 super 位置（嵌套普通函数内等）由解析器前置拒绝，emit 侧只收到合法程序。
+        if matches!(body_context, FunctionBodyContext::Arrow | FunctionBodyContext::ClassElement)
+            || parent_ctx.in_derived_constructor
+            || parent_ctx.in_instance_method
+            || parent_ctx.in_static_method
+        {
             ctx.in_derived_constructor = parent_ctx.in_derived_constructor;
             ctx.in_instance_method = parent_ctx.in_instance_method;
             ctx.in_static_method = parent_ctx.in_static_method;

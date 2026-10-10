@@ -61,6 +61,11 @@ impl Emitter {
             )?
         };
         sub_module.is_arrow = true;
+        // 箭头函数词法继承 super 上下文：父带任一 super 标志时，本箭头须挂
+        // home object（运行期从外层函数继承，见 CREATE_CLOSURE 分发）。
+        if ctx.in_instance_method || ctx.in_static_method || ctx.in_derived_constructor {
+            sub_module.needs_home_object = true;
+        }
 
         ctx.nested.push(sub_module);
         // 子模块下标 1 起始：0 保留为无子模块哨兵
