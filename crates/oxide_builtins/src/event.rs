@@ -1,12 +1,15 @@
-//! Event 基类与 MessageEvent 派生类行为面：`Event` 构造器（`new Event(type,
-//! init)`）、原型 getter（type / target / currentTarget / eventPhase /
-//! isTrusted / bubbles / cancelable / defaultPrevented / composed）与原型方法
-//! （preventDefault / stopPropagation / stopImmediatePropagation /
-//! composedPath）；`MessageEvent` 构造器（`new MessageEvent(type, init)`）与
-//! 原型 getter（data / origin / lastEpoch / source / ports）。
+//! Event 基类与 MessageEvent / ErrorEvent 派生类行为面：`Event` 构造器
+//! （`new Event(type, init)`）、原型 getter（type / target / currentTarget /
+//! eventPhase / isTrusted / bubbles / cancelable / defaultPrevented /
+//! composed）与原型方法（preventDefault / stopPropagation /
+//! stopImmediatePropagation / composedPath）；`MessageEvent` 构造器
+//! （`new MessageEvent(type, init)`）与原型 getter（data / origin / lastEpoch /
+//! source / ports）；`ErrorEvent` 构造器（`new ErrorEvent(type, init)`）与
+//! 原型 getter（message / filename / lineno / colno / error）。
 //!
 //! 事件载荷盒（type 串与九项状态位，MessageEvent 加 data / origin /
-//! lastEpoch / source / ports 五字段）存于对象 `native_fn` 槽，向 GC 家族表
+//! lastEpoch / source / ports 五字段，ErrorEvent 加 message / filename /
+//! lineno / colno / error 五字段）存于对象 `native_fn` 槽，向 GC 家族表
 //! 暴露 edges/size/drop 三自由函数。
 
 use std::mem;
@@ -52,6 +55,22 @@ struct MessageEventInner {
     last_epoch: u32,
     source: JsValue,
     ports: Vec<JsValue>,
+}
+
+/// ErrorEvent 载荷盒：事件基类字段（`EventInner` 嵌入，位于偏移 0）加错误
+/// 五字段（message / filename / lineno / colno / error）。存于对象
+/// `native_fn` 槽（`Box::into_raw`，realm 局部单线程）。
+///
+/// `#[repr(C)]` 固定 `base` 位于偏移 0：派生类盒指针转基类指针读首字段依赖该
+/// 偏移稳定（与 `EventInner` 同型约束）。
+#[repr(C)]
+struct ErrorEventInner {
+    base: EventInner,
+    message: JsValue,
+    filename: JsValue,
+    lineno: u32,
+    colno: u32,
+    error: JsValue,
 }
 
 /// 是否事件系对象（Event / MessageEvent / ErrorEvent / CustomEvent 四标签）。
@@ -881,4 +900,336 @@ pub fn message_event_ports_getter<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeR
         }
     }
     NativeResult::Ok(JsValue::from_js_object(arr))
+}
+
+// —— ErrorEvent 派生类 ——
+
+/// 取 ErrorEvent 载荷盒指针：仅 ErrorEvent 标签对象返回 `Some`，其余标签
+/// 返回 `None`。
+fn error_event_payload_ptr(obj: &JsObject) -> Option<*mut ErrorEventInner> {
+    if obj.type_tag != JsObject::OBJ_TYPE_ERROR_EVENT {
+        return None;
+    }
+    obj.native_fn().map(|ptr| ptr.as_ptr() as *mut ErrorEventInner)
+}
+
+/// 收集 ErrorEvent 的引用边（基类 type / target / current_target 边加
+/// message / filename / error 边）。
+///
+/// `target` / `current_target` 空窗口（构造期回填之前）为 null，边函数自守，
+/// 语义自含。
+pub fn error_event_native_edges(obj: &JsObject) -> Vec<JsValue> {
+    let Some(ptr) = error_event_payload_ptr(obj) else {
+        return Vec::new();
+    };
+    if ptr.is_null() {
+        return Vec::new();
+    }
+    // SAFETY: ptr 指向有效载荷盒（槽位仅构造期写入、释放时置空），只读字段。
+    let inner = unsafe { &*ptr };
+    let mut edges = vec![inner.base.r#type, inner.base.target, inner.base.current_target];
+    edges.push(inner.message);
+    edges.push(inner.filename);
+    edges.push(inner.error);
+    edges
+}
+
+/// 只读核算 ErrorEvent 载荷盒字节（不释放）。
+pub fn error_event_native_size(obj: &JsObject) -> u64 {
+    let Some(ptr) = error_event_payload_ptr(obj) else {
+        return 0;
+    };
+    if ptr.is_null() {
+        return 0;
+    }
+    mem::size_of::<ErrorEventInner>() as u64
+}
+
+/// 释放 ErrorEvent 载荷盒（`Box<ErrorEventInner>`），返回释放字节数。
+///
+/// 盒 drop 时基类字段与 message / filename / error 的 JsValue 边随盒释放
+/// （GC 已判定死对象）；槽置空保证重复调用零释放（幂等）。
+pub fn drop_error_event_native(obj: &mut JsObject) -> u64 {
+    let bytes = error_event_native_size(obj);
+    if bytes == 0 {
+        return 0;
+    }
+    let Some(ptr) = error_event_payload_ptr(obj) else {
+        return 0;
+    };
+    // SAFETY: ptr 非空（error_event_native_size 已验证），Box::from_raw 恰好
+    // 释放一次。
+    unsafe {
+        drop(Box::from_raw(ptr));
+    }
+    obj.set_native_fn(None);
+    bytes
+}
+
+/// 建一个 ErrorEvent 载荷盒对象（`type` 串与 `message` 串），返回对象指针。
+///
+/// 供交付路径（错误事件）建真实 ErrorEvent 盒，使 `dispatchEvent` 品牌守卫
+/// 通过。盒的 `filename` 为空串、`lineno` 与 `colno` 为 0、`error` 为 null；
+/// `[[Prototype]]` 指向 `ErrorEvent.prototype`（`e instanceof ErrorEvent` 与
+/// `e instanceof Event` 均成立）。
+///
+/// # 副作用
+/// - 新建一个 ErrorEvent 盒对象（经 `alloc_object` 入对象表）。
+pub fn create_error_event_box<H: VmHost>(vm: &mut H, message: &str, type_str: &str) -> *mut JsObject {
+    let type_js = vm.new_string(type_str);
+    let message_js = vm.new_string(message);
+    let filename_js = vm.new_string("");
+    let inner = Box::into_raw(Box::new(ErrorEventInner {
+        base: EventInner {
+            r#type: type_js,
+            target: JsValue::null(),
+            current_target: JsValue::null(),
+            event_phase: 0,
+            is_trusted: false,
+            bubbles: false,
+            cancelable: false,
+            default_prevented: false,
+            propagation_stopped: false,
+            immediate_stopped: false,
+            composed: false,
+        },
+        message: message_js,
+        filename: filename_js,
+        lineno: 0,
+        colno: 0,
+        error: JsValue::null(),
+    }));
+    let ee_proto = JsValue::from_js_object(vm.builtin_proto(ProtoKind::ErrorEventProto));
+    let obj = JsObject::new_empty(EMPTY_SHAPE_ID, ee_proto);
+    let ptr = vm.alloc_object(obj);
+    // SAFETY: ptr 是本函数刚 alloc_object 的对象，存活且本段无别名；native_fn 存
+    // 不透明 `Box<ErrorEventInner>` 指针，与 ArrayBuffer / RegExp 的类型化
+    // 存储模式一致。
+    let ee_obj = unsafe { &mut *ptr };
+    ee_obj.type_tag = JsObject::OBJ_TYPE_ERROR_EVENT;
+    ee_obj.set_native_fn(Some(unsafe { NativeFnPtr::from_raw(inner as *const ()) }));
+    ptr
+}
+
+/// ErrorEvent 构造器：`new ErrorEvent(type, init)`。
+///
+/// # 步骤
+/// 1. 非构造形态（`!constructing_native`）抛 TypeError（HTML 规范只有
+///    [[Construct]]，无 [[Call]]）
+/// 2. type 经完整 ToString 转串；空串抛 SyntaxError
+/// 3. init 字典读 message / filename / lineno / colno / error（缺省：message
+///    为空串、filename 为空串、lineno 为 0、colno 为 0、error 为 null）
+/// 4. 建载荷盒入 receiver 的 `native_fn` 槽，置 type_tag
+/// 5. 返回 receiver
+///
+/// # 边界与前提
+/// - receiver（`args[0]`）是 VM 按构造器 prototype 新分配的对象，proto 已
+///   指向 %ErrorEvent.prototype%；
+/// - init 缺省（undefined）或非对象时对应字段取缺省。
+///
+/// # 副作用
+/// - receiver 的 `native_fn` 槽写入载荷盒、`type_tag` 置 ErrorEvent 标签。
+pub fn error_event_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    if !vm.constructing_native() {
+        return NativeResult::Err(crate::error::create_type_error(vm, "ErrorEvent constructor requires new"));
+    }
+
+    let this_val = vm.reg(args[0]);
+    if !this_val.is_object() {
+        return NativeResult::Err(crate::error::create_type_error(vm, "ErrorEvent constructor requires new"));
+    }
+
+    // type 经完整 ToString 转串（对象经 ToPrimitive，Symbol 抛 TypeError）。
+    let type_val = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
+    let type_str = match oxide_runtime_api::to_string_full(type_val, vm) {
+        Ok(s) => s,
+        Err(_) => {
+            if let Some(exc) = vm.take_uncaught_value() {
+                return NativeResult::Err(exc);
+            }
+            return NativeResult::Err(crate::error::create_type_error(vm, "Cannot convert value to a string"));
+        }
+    };
+    if type_str.is_empty() {
+        return NativeResult::Err(crate::error::create_syntax_error(vm, "The provided type is empty"));
+    }
+
+    // init 字典读 message / filename / lineno / colno / error（缺省或非对象
+    // 时取缺省）。
+    let mut message = JsValue::undefined();
+    let mut filename = JsValue::undefined();
+    let mut lineno = 0u32;
+    let mut colno = 0u32;
+    let mut error = JsValue::null();
+    if args.len() > 2 {
+        let init_val = vm.reg(args[2]);
+        if init_val.is_object() {
+            let init_ptr = init_val.as_js_object_ptr();
+            // SAFETY: init_val 已确认是对象值，借用即时消费。
+            let init_obj = unsafe { &*init_ptr };
+
+            // message / filename / error 直读属性（getter 副作用与异常原值传播）。
+            for (name, slot) in [("message", &mut message), ("filename", &mut filename), ("error", &mut error)] {
+                let si = vm.perm_intern(name);
+                match vm.ordinary_get(init_obj, si, init_val) {
+                    Ok(v) => *slot = v,
+                    Err(_) => {
+                        if let Some(exc) = vm.take_uncaught_value() {
+                            return NativeResult::Err(exc);
+                        }
+                        return NativeResult::Err(crate::error::create_type_error(
+                            vm,
+                            "ErrorEvent init property getter failed",
+                        ));
+                    }
+                }
+            }
+
+            // lineno / colno 读数值（非有限非负数归 0）。
+            for (name, slot) in [("lineno", &mut lineno), ("colno", &mut colno)] {
+                let si = vm.perm_intern(name);
+                match vm.ordinary_get(init_obj, si, init_val) {
+                    Ok(v) => {
+                        let n = oxide_runtime_api::to_number(v);
+                        *slot = if n.is_finite() && n >= 0.0 { n as u32 } else { 0 };
+                    }
+                    Err(_) => {
+                        if let Some(exc) = vm.take_uncaught_value() {
+                            return NativeResult::Err(exc);
+                        }
+                        return NativeResult::Err(crate::error::create_type_error(
+                            vm,
+                            "ErrorEvent init property getter failed",
+                        ));
+                    }
+                }
+            }
+        }
+    }
+
+    // message / filename 缺省为空串、error 缺省为 null（init 缺属性时
+    // ordinary_get 返回 undefined，须归回缺省）。
+    if message.is_undefined() {
+        message = vm.new_string("");
+    }
+    if filename.is_undefined() {
+        filename = vm.new_string("");
+    }
+    if error.is_undefined() {
+        error = JsValue::null();
+    }
+
+    // 建载荷盒入 receiver 的 native_fn 槽，置 ErrorEvent 标签。
+    let type_js = vm.new_string(&type_str);
+    let inner = Box::into_raw(Box::new(ErrorEventInner {
+        base: EventInner {
+            r#type: type_js,
+            target: JsValue::null(),
+            current_target: JsValue::null(),
+            event_phase: 0,
+            is_trusted: false,
+            bubbles: false,
+            cancelable: false,
+            default_prevented: false,
+            propagation_stopped: false,
+            immediate_stopped: false,
+            composed: false,
+        },
+        message,
+        filename,
+        lineno,
+        colno,
+        error,
+    }));
+    // SAFETY: receiver 不可调用，native_fn 存不透明 `Box<ErrorEventInner>`
+    // 指针，与 ArrayBuffer / RegExp 的类型化存储模式一致。
+    let obj = unsafe { &mut *this_val.as_js_object_ptr() };
+    obj.type_tag = JsObject::OBJ_TYPE_ERROR_EVENT;
+    obj.set_native_fn(Some(unsafe { NativeFnPtr::from_raw(inner as *const ()) }));
+    NativeResult::Ok(this_val)
+}
+
+/// 解析 this 为 ErrorEvent 载荷盒共享引用：非 ErrorEvent 对象或无载荷盒
+/// 返回 None。
+///
+/// # 注意事项
+/// 返回引用按 `'a` 声称为存活，实际存活至载荷盒被 GC 释放；调用方须在无 GC
+/// 窗口的单 native 函数内消费，不得跨用户调用窗口持有。
+fn error_event_inner_of<'a>(this_val: JsValue) -> Option<&'a ErrorEventInner> {
+    if !this_val.is_object() {
+        return None;
+    }
+    let obj_ptr = this_val.as_js_object_ptr();
+    if obj_ptr.is_null() {
+        return None;
+    }
+    // SAFETY: this_val 已确认是对象值，obj_ptr 指向合法 JsObject。
+    let obj = unsafe { &*obj_ptr };
+    let box_ptr = error_event_payload_ptr(obj)?;
+    if box_ptr.is_null() {
+        return None;
+    }
+    // SAFETY: box_ptr 指向有效载荷盒（构造期写入、释放时置空）；'a 存活由
+    // 调用方「无 GC 窗口内消费」约定保证。
+    Some(unsafe { &*box_ptr })
+}
+
+/// `ErrorEvent.prototype.message`：返回错误消息串（缺省为空串）。
+pub fn error_event_message_getter<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
+    let Some(inner) = error_event_inner_of(this_val) else {
+        return NativeResult::Err(crate::error::create_type_error(
+            vm,
+            "ErrorEvent.prototype.message getter called on non-ErrorEvent object",
+        ));
+    };
+    NativeResult::Ok(inner.message)
+}
+
+/// `ErrorEvent.prototype.filename`：返回错误发生文件名（缺省为空串）。
+pub fn error_event_filename_getter<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
+    let Some(inner) = error_event_inner_of(this_val) else {
+        return NativeResult::Err(crate::error::create_type_error(
+            vm,
+            "ErrorEvent.prototype.filename getter called on non-ErrorEvent object",
+        ));
+    };
+    NativeResult::Ok(inner.filename)
+}
+
+/// `ErrorEvent.prototype.lineno`：返回错误发生行号（缺省为 0）。
+pub fn error_event_lineno_getter<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
+    let Some(inner) = error_event_inner_of(this_val) else {
+        return NativeResult::Err(crate::error::create_type_error(
+            vm,
+            "ErrorEvent.prototype.lineno getter called on non-ErrorEvent object",
+        ));
+    };
+    NativeResult::Ok(JsValue::int(inner.lineno as i32))
+}
+
+/// `ErrorEvent.prototype.colno`：返回错误发生列号（缺省为 0）。
+pub fn error_event_colno_getter<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
+    let Some(inner) = error_event_inner_of(this_val) else {
+        return NativeResult::Err(crate::error::create_type_error(
+            vm,
+            "ErrorEvent.prototype.colno getter called on non-ErrorEvent object",
+        ));
+    };
+    NativeResult::Ok(JsValue::int(inner.colno as i32))
+}
+
+/// `ErrorEvent.prototype.error`：返回错误对象（缺省为 null）。
+pub fn error_event_error_getter<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
+    let Some(inner) = error_event_inner_of(this_val) else {
+        return NativeResult::Err(crate::error::create_type_error(
+            vm,
+            "ErrorEvent.prototype.error getter called on non-ErrorEvent object",
+        ));
+    };
+    NativeResult::Ok(inner.error)
 }

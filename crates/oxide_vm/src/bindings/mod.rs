@@ -26,7 +26,8 @@ pub mod bind_date;
 pub mod bind_disposable_stack;
 /// Error 家族构造器与原型的 native 方法绑定（含各子类型构造器创建）。
 pub mod bind_error;
-/// Event 体系绑定入口（当前为空占位，九枚 P 字段由后续任务就地填充）。
+/// Event 体系绑定入口（Event / MessageEvent / ErrorEvent 构造器与原型就地
+/// 填充，CustomEvent 一对由后续任务填充）。
 pub mod bind_event;
 /// Function 构造器与原型的 native 方法绑定。
 pub mod bind_function;

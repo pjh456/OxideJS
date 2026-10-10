@@ -316,41 +316,32 @@ pub(crate) fn message_event_constructor(vm: &mut Vm, args: &[u8]) -> NativeResul
     NativeResult::Ok(JsValue::from_js_object(ptr))
 }
 
-/// 错误事件构造辅助（临时形态）：建真实 Event 盒（`type` 字段）加 `data` /
-/// `message` 普通属性。
+/// 错误事件构造辅助：建真实 ErrorEvent 盒（`message` 为错误串、`filename`
+/// 空串、`lineno` 与 `colno` 为 0、`error` 为 null）。
 ///
-/// 错误路径（`deliver_error_event`）经本辅助建错误事件：`data` 为 undefined、
-/// `message` 为错误串，供 onerror 处理器读取。
+/// 错误路径（`deliver_error_event`）经本辅助建真实 ErrorEvent，
+/// `e instanceof ErrorEvent` 与 `e instanceof Event` 均成立，`e.message`
+/// 经原型 getter 读盒字段。
 ///
 /// # 步骤
 /// 1. 读 `type`（`args[1]`）与 `message`（`args[2]`）。
-/// 2. 经 `create_event_box` 建真实 Event 盒（`type` 取 `type_val` 的字符串
-///    形态，`[[Prototype]]` → `Event.prototype`），使 `dispatchEvent` 品牌守卫
-///    通过。
-/// 3. define `data` 属性（undefined，可枚举）与 `message` 属性（错误消息串，
-///    可枚举）。
-/// 4. 返回对象。
+/// 2. 委托 `create_error_event_box` 建真实 ErrorEvent 盒（`[[Prototype]]` →
+///    `ErrorEvent.prototype`），使 `dispatchEvent` 品牌守卫通过。
+/// 3. 返回对象。
 ///
 /// # 边界与前提
 /// - `type` 是事件类型串（`"error"`/`"messageerror"`）。
-/// - `message` 是错误消息串。
+/// - `message` 是错误消息串（GC 边，经盒边入 mark）。
 ///
 /// # 副作用
-/// - 新建一个 Event 盒对象（经 `alloc_object` 入对象表）。
+/// - 新建一个 ErrorEvent 盒对象（经 `alloc_object` 入对象表）。
 pub(crate) fn build_error_event(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let type_val = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
     let message_val = if args.len() > 2 { vm.reg(args[2]) } else { JsValue::undefined() };
 
-    // 建真实 Event 盒（type 取 type_val 的字符串形态）。
+    // 建真实 ErrorEvent 盒（type 与 message 取实参的字符串形态）。
     let type_text = vm.lookup_str(type_val).unwrap_or_default();
-    let ptr = oxide_builtins::event::create_event_box(vm, &type_text);
-    // SAFETY: ptr 是 create_event_box 刚 alloc_object 的对象，存活且本段无别名。
-    let event_obj = unsafe { &mut *ptr };
-
-    let si_data = vm.perm_intern("data");
-    let _ = vm.define_data_property(event_obj, si_data, JsValue::undefined(), PropAttributes::DEFAULT_DATA);
-    let si_message = vm.perm_intern("message");
-    let _ = vm.define_data_property(event_obj, si_message, message_val, PropAttributes::DEFAULT_DATA);
-
+    let message_text = vm.lookup_str(message_val).unwrap_or_default();
+    let ptr = oxide_builtins::event::create_error_event_box(vm, &message_text, &type_text);
     NativeResult::Ok(JsValue::from_js_object(ptr))
 }

@@ -396,7 +396,7 @@ impl Vm {
     /// 交付错误事件：建事件、经 `dispatchEvent` 交付（注册表查监听器）。
     ///
     /// # 步骤
-    /// 1. 建错误事件（`type` = `event_type`、`message` = `message`、`data` = undefined）。
+    /// 1. 建错误事件（`type` = `event_type`、`message` = `message`）。
     /// 2. 经 `dispatch_event_on` 交付到 `worker_obj`，后 `drain_microtasks`。
     ///
     /// # 边界与前提
@@ -437,8 +437,9 @@ impl Vm {
         }
     }
 
-    /// 错误路径建事件对象（临时形态）：建真实 Event 盒（`type` 字段）加
-    /// `data` / `message` 普通属性，委托 `build_error_event` 构造辅助。
+    /// 错误路径建事件对象：建真实 ErrorEvent（`message` 为错误串、`filename`
+    /// 空串、`lineno` 与 `colno` 为 0、`error` 为 null），委托
+    /// `build_error_event` 构造辅助。
     ///
     /// # 步骤
     /// 1. `type` 与 `message` 串物化为 session 串。
@@ -449,7 +450,7 @@ impl Vm {
     /// 新建的事件对象值（构造失败时返回错误对象值）。
     ///
     /// # 副作用
-    /// - 新建一个 Event 盒对象（经 `alloc_object` 入对象表）。
+    /// - 新建一个 ErrorEvent 盒对象（经 `alloc_object` 入对象表）。
     fn build_error_event(&mut self, type_str: &str, message: &str) -> JsValue {
         let type_val = self.new_string(type_str);
         let message_val = self.new_string(message);
@@ -824,6 +825,49 @@ mod tests {
         let err = global_value_opt(&vm, "err").expect("err 应被设置");
         let err_text = vm.lookup_str(err).expect("err 应可读");
         assert!(err_text.contains("boom"), "err 应含错误文本 \"boom\"，实际为 {err_text}");
+
+        vm.shutdown_workers();
+        let _ = std::fs::remove_file(&worker_path);
+    }
+
+    /// 端到端：worker 脚本编译失败，主线程 onerror 收到真实 ErrorEvent
+    /// （e instanceof ErrorEvent 与 e instanceof Event 均真）。
+    #[test]
+    fn worker_e2e_onerror_is_error_event() {
+        let mut vm = vm_with_compiler();
+
+        // worker 脚本：语法错误（编译失败）。
+        let worker_path = write_worker_script("function { 语法错误");
+        // 主脚本：建 Worker、设 addEventListener('error')，记录 instanceof 结果。
+        let main_script = format!(
+            "var w = new Worker('{}'); w.addEventListener('error', function(e) {{ globalThis.isEE = e instanceof ErrorEvent; globalThis.isE = e instanceof Event; }});",
+            worker_path.display()
+        );
+        vm.run(&Arc::new(compile_script(&main_script))).expect("主脚本应运行");
+
+        // 事件循环轮询至 globalThis.isEE 被设置（带截止，防 flaky）。
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            vm.deliver_worker_messages();
+            vm.cleanup_disconnected_workers();
+            if global_value_opt(&vm, "isEE").is_some() {
+                break;
+            }
+            if Instant::now() >= deadline {
+                panic!("5 秒内 onerror 未被调用");
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(
+            global_value_opt(&vm, "isEE"),
+            Some(JsValue::bool(true)),
+            "事件应 instanceof ErrorEvent"
+        );
+        assert_eq!(
+            global_value_opt(&vm, "isE"),
+            Some(JsValue::bool(true)),
+            "事件应 instanceof Event"
+        );
 
         vm.shutdown_workers();
         let _ = std::fs::remove_file(&worker_path);

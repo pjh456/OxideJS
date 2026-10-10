@@ -1,10 +1,12 @@
 //! Event 体系绑定：就地填充 `event_constructor` / `event_proto` 两枚 P 字段
 //! 占位（构造器本体、原型方法、原型 getter 与 Event 常量），并绑全局 `Event`；
 //! 就地填充 `message_event_constructor` / `message_event_proto` 两枚 P 字段
-//! 占位（构造器本体与原型 getter），并绑全局 `MessageEvent`。
+//! 占位（构造器本体与原型 getter），并绑全局 `MessageEvent`；就地填充
+//! `error_event_constructor` / `error_event_proto` 两枚 P 字段占位（构造器
+//! 本体与原型 getter），并绑全局 `ErrorEvent`。
 //!
-//! 九枚 P 字段中其余四枚（ErrorEvent / CustomEvent 两对）由后续子任务就地
-//! 填充，本函数不读不写。
+//! 九枚 P 字段中其余两枚（CustomEvent 一对）由后续子任务就地填充，本函数
+//! 不读不写。
 
 use std::sync::Arc;
 
@@ -14,11 +16,12 @@ use oxide_kernel::kernel::{KernelCore, KernelSession};
 use oxide_types::object::{JsObject, PropAttributes};
 use oxide_types::value::JsValue;
 
-/// 把 Event 与 MessageEvent 构造器及原型方法绑定到 global。
+/// 把 Event / MessageEvent / ErrorEvent 构造器及原型方法绑定到 global。
 ///
-/// `event_constructor` / `event_proto` 与 `message_event_constructor` /
-/// `message_event_proto` 四枚 P 字段是空对象占位，本函数就地填充（不新建
-/// 对象——P 字段本身就是槽位，快照/脏检查/收尾枚举已覆盖）。
+/// `event_constructor` / `event_proto`、`message_event_constructor` /
+/// `message_event_proto` 与 `error_event_constructor` / `error_event_proto`
+/// 六枚 P 字段是空对象占位，本函数就地填充（不新建对象——P 字段本身就是
+/// 槽位，快照/脏检查/收尾枚举已覆盖）。
 ///
 /// # 幂等
 /// 本函数从三条路径到达：`init_kernel_builtins`（占位是空对象）、
@@ -236,6 +239,75 @@ pub fn bind_event(core: &Arc<KernelCore>, session: &KernelSession, global: &mut 
         let si = sf.intern(name).0;
         if sh.lookup_position(me_proto.shape_id(), si).is_none() {
             bind_accessor_getter(core, session, me_proto, name, fn_ptr);
+        }
+    }
+
+    // ---- 填 ErrorEvent 构造器与原型占位 ----
+    let ee_ctor_ptr = world.error_event_constructor.as_ptr() as *mut JsObject;
+    let ee_ctor = unsafe { &mut *ee_ctor_ptr };
+    let ee_proto_ptr = world.error_event_proto.as_ptr() as *mut JsObject;
+    let ee_proto = unsafe { &mut *ee_proto_ptr };
+
+    // 构造器：function 标志、prototype 槽、name 槽、[[Prototype]] →
+    // Function.prototype（幂等，裸写槽）。
+    ee_ctor.set_function(true);
+    if sh.lookup_position(ee_ctor.shape_id(), si_prototype).is_none() {
+        let shape = sh.make_shape(ee_ctor.shape_id(), si_prototype);
+        ee_ctor.set_shape_id(shape);
+        let pos = ee_ctor.push_prop(JsValue::from_js_object(ee_proto_ptr));
+        ee_ctor.set_data_meta(pos, PropAttributes::new(false, false, false));
+        ee_ctor.bump_generation();
+    }
+    if sh.lookup_position(ee_ctor.shape_id(), si_name).is_none() {
+        let shape = sh.make_shape(ee_ctor.shape_id(), si_name);
+        ee_ctor.set_shape_id(shape);
+        ee_ctor
+            .ensure_hash_props()
+            .push(JsValue::perm_string(sf.string_ptr(sf.intern("ErrorEvent").0)));
+        let pos = ee_ctor.hash_props_vec().map_or(0, |v| v.len() as u32).saturating_sub(1);
+        ee_ctor.set_data_meta(pos, PropAttributes::new(false, false, true));
+        ee_ctor.bump_generation();
+    }
+    let _ = ee_ctor.set_proto(fn_proto_val);
+
+    configure_native_constructor(
+        ee_ctor,
+        oxide_builtins::event::error_event_constructor::<crate::vm::Vm> as *const (),
+        2,
+    );
+    bind_constructor!(
+        core,
+        global,
+        "ErrorEvent",
+        ee_ctor_ptr,
+        oxide_builtins::event::error_event_constructor::<crate::vm::Vm>,
+        2,
+        hash: true
+    );
+
+    // 原型：constructor 槽、[[Prototype]] → Event.prototype、五个 getter
+    // （message / filename / lineno / colno / error，每 getter 先
+    // lookup_position 守卫）。
+    if sh.lookup_position(ee_proto.shape_id(), si_constructor).is_none() {
+        let shape = sh.make_shape(ee_proto.shape_id(), si_constructor);
+        ee_proto.set_shape_id(shape);
+        let pos = ee_proto.push_prop(JsValue::from_js_object(ee_ctor_ptr));
+        ee_proto.set_data_meta(pos, PropAttributes::new(true, false, true));
+        ee_proto.bump_generation();
+    }
+    let _ = ee_proto.set_proto(event_proto_val);
+
+    let ee_getter_fns: [(&str, *const ()); 5] = [
+        ("message", oxide_builtins::event::error_event_message_getter::<crate::vm::Vm> as *const ()),
+        ("filename", oxide_builtins::event::error_event_filename_getter::<crate::vm::Vm> as *const ()),
+        ("lineno", oxide_builtins::event::error_event_lineno_getter::<crate::vm::Vm> as *const ()),
+        ("colno", oxide_builtins::event::error_event_colno_getter::<crate::vm::Vm> as *const ()),
+        ("error", oxide_builtins::event::error_event_error_getter::<crate::vm::Vm> as *const ()),
+    ];
+    for (name, fn_ptr) in ee_getter_fns {
+        let si = sf.intern(name).0;
+        if sh.lookup_position(ee_proto.shape_id(), si).is_none() {
+            bind_accessor_getter(core, session, ee_proto, name, fn_ptr);
         }
     }
 

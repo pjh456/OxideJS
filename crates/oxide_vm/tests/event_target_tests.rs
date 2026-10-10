@@ -237,3 +237,60 @@ fn registry_pruned_after_target_collected() {
         "ok"
     );
 }
+
+/// ErrorEvent 构造器：init 的 message 经原型 getter 可读。
+#[test]
+fn error_event_constructor_message() {
+    assert_eq!(
+        eval("new ErrorEvent('error', { message: 'boom' }).message;"),
+        "boom"
+    );
+}
+
+/// ErrorEvent 缺省字段：message 空串、filename 空串、lineno 与 colno 为 0、
+/// error 为 null。
+#[test]
+fn error_event_defaults() {
+    assert_eq!(
+        eval(
+            "var e = new ErrorEvent('error'); \
+             e.message === '' && e.filename === '' && e.lineno === 0 && e.colno === 0 && e.error === null;"
+        ),
+        "true"
+    );
+}
+
+/// ErrorEvent 原型链：instanceof ErrorEvent 与 instanceof Event 均真，
+/// 原型双亲为 Event.prototype。
+#[test]
+fn error_event_proto_chain() {
+    assert_eq!(
+        eval(
+            "var e = new ErrorEvent('error'); \
+             e instanceof ErrorEvent && e instanceof Event && \
+             Object.getPrototypeOf(e) === ErrorEvent.prototype && \
+             Object.getPrototypeOf(ErrorEvent.prototype) === Event.prototype;"
+        ),
+        "true"
+    );
+}
+
+/// ErrorEvent 非构造形态抛 TypeError。
+#[test]
+fn error_event_requires_new() {
+    assert_eq!(
+        eval("try { ErrorEvent('error'); 'no-throw'; } catch (e) { e instanceof TypeError; }"),
+        "true"
+    );
+}
+
+/// ErrorEvent 盒边 GC 保活：error 字段引用对象经完整收集后仍存活。
+#[test]
+fn error_event_box_edge_survives_gc() {
+    let mut vm = vm_with_script(
+        "globalThis.e = new ErrorEvent('error', { error: { tag: 1 } });",
+    );
+    // 强制完整收集：error 字段是盒内 GC 边，对象应保活。
+    vm.collect_session_gc();
+    assert_eq!(vm_eval(&mut vm, "globalThis.e.error.tag;"), "1");
+}
