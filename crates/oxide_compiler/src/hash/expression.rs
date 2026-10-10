@@ -16,9 +16,19 @@ pub(super) fn hash_expression(expr: &Expression, h: &mut rustc_hash::FxHasher, i
         Expression::CallExpression(call) => {
             (call.arguments.len() as u32).hash(h);
             hash_expression(&call.callee, h, include_binding_names);
+            // spread 实参改指令形态（CALL 变 CALL_SPREAD）与装载方式，逐位打形态标记。
             for arg in &call.arguments {
-                if let Some(expr) = arg.as_expression() {
-                    hash_expression(expr, h, include_binding_names);
+                match arg {
+                    Argument::SpreadElement(sp) => {
+                        1u8.hash(h);
+                        hash_expression(&sp.argument, h, include_binding_names);
+                    }
+                    other => {
+                        0u8.hash(h);
+                        if let Some(expr) = other.as_expression() {
+                            hash_expression(expr, h, include_binding_names);
+                        }
+                    }
                 }
             }
         }
@@ -69,6 +79,11 @@ pub(super) fn hash_expression(expr: &Expression, h: &mut rustc_hash::FxHasher, i
         }
         Expression::TemplateLiteral(tl) => {
             (tl.quasis.len() as u32).hash(h);
+            // 段值是字节码依赖（发射侧把 cooked 写入常量池）；cooked 为 None 与
+            // Some(空串) 的池键都是空串，字节码相同，口径上合并。
+            for q in &tl.quasis {
+                q.value.cooked.as_deref().unwrap_or("").hash(h);
+            }
             for expr in &tl.expressions {
                 hash_expression(expr, h, include_binding_names);
             }
@@ -76,6 +91,12 @@ pub(super) fn hash_expression(expr: &Expression, h: &mut rustc_hash::FxHasher, i
         Expression::TaggedTemplateExpression(tt) => {
             hash_expression(&tt.tag, h, include_binding_names);
             (tt.quasi.quasis.len() as u32).hash(h);
+            // 发射侧同时消费 cooked 与 raw；cooked 为 None 时写标记字，与
+            // Some(空串) 的常量下标字不同，须保留 None 区分。
+            for q in &tt.quasi.quasis {
+                q.value.cooked.hash(h);
+                q.value.raw.hash(h);
+            }
             for expr in &tt.quasi.expressions {
                 hash_expression(expr, h, include_binding_names);
             }
@@ -128,9 +149,19 @@ pub(super) fn hash_expression(expr: &Expression, h: &mut rustc_hash::FxHasher, i
         Expression::NewExpression(ne) => {
             hash_expression(&ne.callee, h, include_binding_names);
             (ne.arguments.len() as u32).hash(h);
+            // spread 实参改指令形态（NEW_EXPRESSION 变 NEW_EXPRESSION_SPREAD），逐位打形态标记。
             for arg in &ne.arguments {
-                if let Some(expr) = arg.as_expression() {
-                    hash_expression(expr, h, include_binding_names);
+                match arg {
+                    Argument::SpreadElement(sp) => {
+                        1u8.hash(h);
+                        hash_expression(&sp.argument, h, include_binding_names);
+                    }
+                    other => {
+                        0u8.hash(h);
+                        if let Some(expr) = other.as_expression() {
+                            hash_expression(expr, h, include_binding_names);
+                        }
+                    }
                 }
             }
         }
@@ -169,15 +200,19 @@ pub(super) fn hash_expression(expr: &Expression, h: &mut rustc_hash::FxHasher, i
         }
         Expression::ArrayExpression(arr) => {
             (arr.elements.len() as u32).hash(h);
+            // 元素形态（spread / 省略 / 值）逐位打标记：spread 源改变装载指令，
+            // 位置敏感，`[...a]` 与 `[a]` 不得同键。
             for element in &arr.elements {
                 match element {
                     ArrayExpressionElement::SpreadElement(spread) => {
+                        1u8.hash(h);
                         hash_expression(&spread.argument, h, include_binding_names);
                     }
                     ArrayExpressionElement::Elision(_) => {
-                        1u8.hash(h);
+                        2u8.hash(h);
                     }
                     other => {
+                        0u8.hash(h);
                         if let Some(expr) = other.as_expression() {
                             hash_expression(expr, h, include_binding_names);
                         }
@@ -262,9 +297,19 @@ pub(super) fn hash_chain_element(element: &ChainElement, h: &mut rustc_hash::FxH
             hash_expression(&call.callee, h, include_binding_names);
             call.optional.hash(h);
             (call.arguments.len() as u32).hash(h);
+            // spread 实参改指令形态（CALL_SPREAD），逐位打形态标记。
             for arg in &call.arguments {
-                if let Some(expr) = arg.as_expression() {
-                    hash_expression(expr, h, include_binding_names);
+                match arg {
+                    Argument::SpreadElement(sp) => {
+                        1u8.hash(h);
+                        hash_expression(&sp.argument, h, include_binding_names);
+                    }
+                    other => {
+                        0u8.hash(h);
+                        if let Some(expr) = other.as_expression() {
+                            hash_expression(expr, h, include_binding_names);
+                        }
+                    }
                 }
             }
         }

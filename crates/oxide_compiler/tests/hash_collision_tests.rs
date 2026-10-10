@@ -227,3 +227,44 @@ fn function_async_generator_flags_distinguished() {
     // 同源等价回归
     assert_eq!(compiled("async function f(){ return 1 }"), compiled("async function f(){ return 1 }"));
 }
+
+#[test]
+fn template_segment_values_distinguished() {
+    // 模板段值是字节码依赖（发射侧把 cooked 写入常量池）：段值不入哈希时
+    // 同键异码，缓存命中复用错误字节码。
+    assert_ne!(compiled("`${a}x`"), compiled("`${a}y`"));
+    assert_ne!(compiled("t`${a}x`"), compiled("t`${a}y`"));
+    // 段值在两种哈希粒度下都计入（非绑定名输入）。
+    assert_ne!(structural("`${a}x`"), structural("`${a}y`"));
+    // 同源等价回归。
+    assert_eq!(compiled("`${a}x`"), compiled("`${a}x`"));
+}
+
+#[test]
+fn call_spread_arguments_distinguished() {
+    assert_ne!(compiled("f(...a)"), compiled("f(...b)"));
+    assert_ne!(compiled("new F(...a)"), compiled("new F(...b)"));
+    assert_ne!(compiled("o.m(...a)"), compiled("o.m(...b)"));
+    // spread 与非 spread 同长同表达式须区分（逐位形态标记）。
+    assert_ne!(compiled("f(a, ...b)"), compiled("f(a, b)"));
+    // spread 形态标记在两种哈希粒度下都计入（标记本身非绑定名输入）。
+    assert_ne!(structural("f(...a, 1)"), structural("f(a, 1)"));
+}
+
+#[test]
+fn array_spread_elements_distinguished() {
+    // spread 元素与值元素同位置须区分（形态标记逐位计入）。
+    assert_ne!(compiled("[...a]"), compiled("[a]"), "spread vs value element must differ");
+    assert_ne!(structural("[...a, 1]"), structural("[a, 1]"), "spread element shape must be in both granularities");
+}
+
+#[test]
+fn assignment_target_member_names_distinguished() {
+    // 赋值目标静态成员属性名是字节码依赖（发射侧写入常量池）：属性名不入哈希时
+    // 同键异码。覆盖赋值、自增减与 for 头三个调用点。
+    assert_ne!(compiled("a.x = 1"), compiled("a.y = 1"));
+    assert_ne!(compiled("a.x++"), compiled("a.y++"));
+    assert_ne!(compiled("for (a.x of iter) {}"), compiled("for (a.y of iter) {}"));
+    // 属性名在两种哈希粒度下都计入。
+    assert_ne!(structural("a.x = 1"), structural("a.y = 1"));
+}

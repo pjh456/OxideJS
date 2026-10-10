@@ -13,14 +13,20 @@ pub(super) fn hash_simple_assignment_target(
         }
         SimpleAssignmentTarget::StaticMemberExpression(member) => {
             expression::hash_expression(&member.object, h, include_binding_names);
+            // 属性名是字节码依赖（发射侧写入常量池作 IC_SET 等键）；optional 与
+            // 读侧口径对齐（写侧发射当前忽略该标志，防未来写侧开始区分时再漏）。
+            member.property.name.as_str().hash(h);
+            member.optional.hash(h);
         }
         SimpleAssignmentTarget::ComputedMemberExpression(member) => {
             expression::hash_expression(&member.object, h, include_binding_names);
             expression::hash_expression(&member.expression, h, include_binding_names);
+            member.optional.hash(h);
         }
         SimpleAssignmentTarget::PrivateFieldExpression(member) => {
             expression::hash_expression(&member.object, h, include_binding_names);
             member.field.name.as_str().hash(h);
+            member.optional.hash(h);
         }
         SimpleAssignmentTarget::TSAsExpression(ts) => {
             expression::hash_expression(&ts.expression, h, include_binding_names);
