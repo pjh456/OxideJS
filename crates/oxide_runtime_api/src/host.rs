@@ -259,6 +259,11 @@ pub trait VmHost {
     /// - `state` 为 arguments 对象 `native_data` 中的同步状态盒；`frame_depth`
     ///   为创建帧下标，帧弹出后映射失效。
     fn arguments_mapping_alive(&self, state: &oxide_types::arguments_map::ArgumentsMapState) -> bool;
+    /// 判定帧栈下标 `frame_depth` 处的帧是否为顶帧（当前帧）。
+    ///
+    /// # 边界与前提
+    /// - `frame_depth` 为创建帧在帧栈中的下标；帧弹出后下标越界返回 `false`。
+    fn is_top_frame(&self, frame_depth: u32) -> bool;
 
     // 属性访问
     fn ordinary_get(&mut self, obj: &JsObject, prop_name_si: u32, receiver: JsValue) -> Result<JsValue, String>;

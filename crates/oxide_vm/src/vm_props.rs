@@ -20,6 +20,14 @@ impl Vm {
         self.frames.len() > depth && self.frames[depth].frame_id == state.frame_id
     }
 
+    /// 判定帧栈下标 `frame_depth` 处的帧是否为顶帧（当前帧）。
+    ///
+    /// # 边界与前提
+    /// - `frame_depth` 为创建帧在帧栈中的下标；帧弹出后下标越界返回 `false`。
+    pub(crate) fn is_top_frame(&self, frame_depth: u32) -> bool {
+        self.frames.len() == frame_depth as usize + 1
+    }
+
     /// 属性读入口：解析 `obj[prop_name_si]`，依次尝试数组 length 虚拟属性、
     /// 数组元素区、TypedArray 整数索引、命名属性槽，最后沿原型链查找。
     ///

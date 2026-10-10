@@ -984,8 +984,9 @@ pub(crate) fn define_from_descriptor<H: VmHost>(
     }
 
     // mapped arguments exotic [[DefineOwnProperty]]：整数索引且映射存活时，旧描述符
-    // 可写且新描述符不可写则移除映射，新描述符含 value 则写参数寄存器；随后落穿
-    // 普通 define 路径（描述符收窄校验由 define_data_property 承担）。
+    // 可写且新描述符不可写则移除映射，新描述符含 value 且创建帧为顶帧时写参数
+    // 寄存器；随后落穿普通 define 路径（描述符收窄校验由 define_data_property
+    // 承担）。
     if unsafe { &*obj_ptr }.is_arguments_obj() {
         let state_ptr = unsafe { &*obj_ptr }.native_data() as *mut ArgumentsMapState;
         if !state_ptr.is_null() {
@@ -1006,8 +1007,13 @@ pub(crate) fn define_from_descriptor<H: VmHost>(
                             state.unmap(index as u16);
                         }
                         if let Some(v) = value_field {
-                            let reg = (state.param_base as u16 + index as u16) as u8;
-                            vm.set_reg(reg, v);
+                            // 参数寄存器仅创建帧为顶帧时写——嵌套调用期寄存器被被调方
+                            // 占用，写之串值，参数值在 save_stack，存储值仍为权威
+                            // 读源（与 [[Set]] 臂同口径）。
+                            if vm.is_top_frame(state.frame_depth) {
+                                let reg = (state.param_base as u16 + index as u16) as u8;
+                                vm.set_reg(reg, v);
+                            }
                         }
                     }
                 }

@@ -218,6 +218,9 @@ impl oxide_runtime_api::VmHost for Vm {
     fn arguments_mapping_alive(&self, state: &oxide_types::arguments_map::ArgumentsMapState) -> bool {
         self.arguments_mapping_alive(state)
     }
+    fn is_top_frame(&self, frame_depth: u32) -> bool {
+        self.is_top_frame(frame_depth)
+    }
     fn ordinary_get(&mut self, obj: &JsObject, prop_name_si: u32, receiver: JsValue) -> Result<JsValue, String> {
         self.ordinary_get(obj, prop_name_si, receiver)
     }

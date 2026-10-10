@@ -204,3 +204,28 @@ fn global_self_decrement_preserves_arguments() {
     let result = eval(&mut vm, "var c=1; function f(a){c--; return arguments.length} f(1)").unwrap();
     assert_eq!(result.as_int(), 1);
 }
+
+#[test]
+fn define_property_nested_call_does_not_clobber_callee_param() {
+    // 嵌套调用期对外层函数 arguments 索引属性 defineProperty 不写被调方帧的
+    // 参数寄存器（顶帧守卫）：被调方形参值不被串改。
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "function a(x){function b(y){Object.defineProperty(a.arguments,0,{value:5}); return y} return b(7)} a(1)",
+    )
+    .unwrap();
+    assert_eq!(result.as_int(), 7);
+}
+
+#[test]
+fn define_property_nested_call_updates_stored_value() {
+    // 嵌套调用期 defineProperty 更新存储值（读路径权威源）：回到顶帧后读为新值。
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "function a(x){function b(){Object.defineProperty(a.arguments,0,{value:5})} b(); return a.arguments[0]} a(1)",
+    )
+    .unwrap();
+    assert_eq!(result.as_int(), 5);
+}
