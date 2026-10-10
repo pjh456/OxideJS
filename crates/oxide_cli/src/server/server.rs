@@ -1317,6 +1317,9 @@ mod tests {
     /// 正常退出，socket 文件被删除，全局 well-known 路径前后不变。
     #[test]
     fn rm_eval_then_eof_exits() {
+        // 跨进程文件锁：与写全局路径的集成测试二进制串行，保证前后不变断言
+        // 不被并发写污染。
+        let _file_lock = sidecar::WellKnownLock::acquire().expect("全局路径文件锁应可取");
         let config = rm_config("eval_eof");
         let well_known_sidecar = sidecar::well_known_sidecar_path();
         let well_known_socket = sidecar::well_known_socket_path();

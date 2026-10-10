@@ -4,20 +4,39 @@
 //!
 //! start / restart / watchdog 端到端与 cleanup 走 well-known 全局路径
 //! （每用户单例）：测试先探活，socket 存活即 panic 不抢占存活 server；
-//! 触碰全局路径的测试经同一把锁串行，避免相互干扰。
+//! 触碰全局路径的测试经双重锁（进程内互斥加跨进程文件锁）串行，避免相互
+//! 干扰（含与单测二进制的并行干扰）。
 
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
 use std::process::{Command, Output};
-use std::sync::Mutex;
+use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 use oxide_cli::server::client::send_control_request;
 use oxide_cli::server::protocol::{self, FrameReader, ServerRequest, ServerResponse};
 use oxide_cli::server::sidecar;
 
-/// well-known 全局路径互斥锁：同测试二进制内触碰全局路径的测试串行执行。
+/// well-known 全局路径进程内互斥锁：同测试二进制内触碰全局路径的测试串行
+/// 执行（fcntl 锁以进程为单位，不覆盖同进程多线程）。
 static WELL_KNOWN_LOCK: Mutex<()> = Mutex::new(());
+
+/// well-known 全局路径双重锁守卫：进程内互斥（同二进制线程串行）加跨进程
+/// fcntl 文件锁（nextest 并行独立进程串行）。
+struct WellKnownGuard {
+    _in_process: MutexGuard<'static, ()>,
+    _cross_process: sidecar::WellKnownLock,
+}
+
+/// 取 well-known 全局路径双重锁，守卫随 drop 释放。
+fn lock_well_known() -> WellKnownGuard {
+    let in_process = WELL_KNOWN_LOCK.lock().expect("全局路径锁不应中毒");
+    let cross_process = sidecar::WellKnownLock::acquire().expect("全局路径文件锁应可取");
+    WellKnownGuard {
+        _in_process: in_process,
+        _cross_process: cross_process,
+    }
+}
 
 /// 运行 oxide 二进制并返回输出。
 fn oxide(args: &[&str]) -> Output {
@@ -93,7 +112,7 @@ fn server_help_lists_subcommands() {
 /// well-known 日志文件（无存活 server 时删除安全）。
 #[test]
 fn server_log_no_file_exit_1() {
-    let _guard = WELL_KNOWN_LOCK.lock().expect("全局路径锁不应中毒");
+    let _guard = lock_well_known();
     assert!(
         !sidecar::is_server_alive(&sidecar::well_known_socket_path()),
         "存活 server 占用 well-known 路径，测试不抢占"
@@ -113,7 +132,7 @@ fn server_log_no_file_exit_1() {
 /// 走 well-known 全局路径：先探活，存活 server 占用时 panic 不抢占。
 #[test]
 fn server_control_arms_no_server_exit_1() {
-    let _guard = WELL_KNOWN_LOCK.lock().expect("全局路径锁不应中毒");
+    let _guard = lock_well_known();
     assert!(
         !sidecar::is_server_alive(&sidecar::well_known_socket_path()),
         "存活 server 占用 well-known 路径，测试不抢占"
@@ -132,7 +151,7 @@ fn server_control_arms_no_server_exit_1() {
 /// 走 well-known 全局路径：先探活，存活 server 占用时 panic 不抢占。
 #[test]
 fn server_forge_no_server_exit_1() {
-    let _guard = WELL_KNOWN_LOCK.lock().expect("全局路径锁不应中毒");
+    let _guard = lock_well_known();
     assert!(
         !sidecar::is_server_alive(&sidecar::well_known_socket_path()),
         "存活 server 占用 well-known 路径，测试不抢占"
@@ -147,7 +166,7 @@ fn server_forge_no_server_exit_1() {
 /// cleanup 退 0（幂等：有残留则清理、无残留则报无残留），事后全局路径无文件。
 #[test]
 fn server_cleanup_exit_0() {
-    let _guard = WELL_KNOWN_LOCK.lock().expect("全局路径锁不应中毒");
+    let _guard = lock_well_known();
     assert!(
         !sidecar::is_server_alive(&sidecar::well_known_socket_path()),
         "存活 server 占用 well-known 路径，测试不抢占"
@@ -164,7 +183,7 @@ fn server_cleanup_exit_0() {
 /// 进程退出，socket 与 sidecar 文件被删。
 #[test]
 fn server_start_e2e() {
-    let _guard = WELL_KNOWN_LOCK.lock().expect("全局路径锁不应中毒");
+    let _guard = lock_well_known();
     let socket = sidecar::well_known_socket_path();
     let sidecar_path = sidecar::well_known_sidecar_path();
 
@@ -213,7 +232,7 @@ fn server_start_e2e() {
 /// server 即通过）。
 #[test]
 fn server_start_when_running() {
-    let _guard = WELL_KNOWN_LOCK.lock().expect("全局路径锁不应中毒");
+    let _guard = lock_well_known();
     let socket = sidecar::well_known_socket_path();
     let sidecar_path = sidecar::well_known_sidecar_path();
 
@@ -251,7 +270,7 @@ fn server_start_when_running() {
 /// 进程号不同且版本为构建期版本，新 server 健康与版本请求正常，收尾关闭后文件被删。
 #[test]
 fn server_restart_e2e() {
-    let _guard = WELL_KNOWN_LOCK.lock().expect("全局路径锁不应中毒");
+    let _guard = lock_well_known();
     let socket = sidecar::well_known_socket_path();
     let sidecar_path = sidecar::well_known_sidecar_path();
 
@@ -331,7 +350,7 @@ fn server_restart_e2e() {
 /// （Info 级无 ERROR 行），关闭后日志文件有意保留。
 #[test]
 fn server_log_e2e() {
-    let _guard = WELL_KNOWN_LOCK.lock().expect("全局路径锁不应中毒");
+    let _guard = lock_well_known();
     let socket = sidecar::well_known_socket_path();
     let sidecar_path = sidecar::well_known_sidecar_path();
     let log_path = sidecar::well_known_log_path();
@@ -412,7 +431,7 @@ fn server_log_e2e() {
 /// 打印 gc 与清缓存行；关闭后 socket 与 sidecar 文件被删。
 #[test]
 fn server_forge_e2e() {
-    let _guard = WELL_KNOWN_LOCK.lock().expect("全局路径锁不应中毒");
+    let _guard = lock_well_known();
     let socket = sidecar::well_known_socket_path();
     let sidecar_path = sidecar::well_known_sidecar_path();
 
@@ -471,7 +490,7 @@ fn server_forge_e2e() {
 /// 关闭后 watchdog 退 0 且 stdout 含崩溃提示与日志尾部。
 #[test]
 fn server_watchdog_e2e() {
-    let _guard = WELL_KNOWN_LOCK.lock().expect("全局路径锁不应中毒");
+    let _guard = lock_well_known();
     let socket = sidecar::well_known_socket_path();
     let sidecar_path = sidecar::well_known_sidecar_path();
 
@@ -574,7 +593,7 @@ fn server_watchdog_e2e() {
 /// sidecar 消失、server 进程已退出（停 watchdog 即优雅停 server）。
 #[test]
 fn server_watchdog_sigint_stops_server() {
-    let _guard = WELL_KNOWN_LOCK.lock().expect("全局路径锁不应中毒");
+    let _guard = lock_well_known();
     let socket = sidecar::well_known_socket_path();
     let sidecar_path = sidecar::well_known_sidecar_path();
 

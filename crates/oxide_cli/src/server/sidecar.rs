@@ -11,8 +11,9 @@
 //! - 日志文件由 sidecar 路径按扩展名派生（`.log`），与 sidecar、socket 同主名
 //!   同目录；有意不随退出删除（跨重启的诊断工件），不在清理命令范围内。
 
-use std::fs::{self, OpenOptions};
+use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
+use std::os::unix::io::AsRawFd;
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -91,6 +92,59 @@ pub fn well_known_socket_path() -> PathBuf {
 /// well-known 日志文件路径：`$TMPDIR/oxide-<uid>.log`（与 sidecar 同主名）。
 pub fn well_known_log_path() -> PathBuf {
     well_known_sidecar_path().with_extension("log")
+}
+
+/// well-known 全局路径排他锁文件：`$TMPDIR/oxide-<uid>.lock`（与 sidecar 同主名）。
+pub fn well_known_lock_path() -> PathBuf {
+    well_known_sidecar_path().with_extension("lock")
+}
+
+/// well-known 全局路径排他锁：fcntl 文件锁，跨进程互斥。
+///
+/// 持锁期间保护 well-known 全局路径（sidecar、socket、日志）的读写；
+/// 锁随文件描述符关闭（Drop）自动释放，进程消亡时内核一并释放。
+///
+/// # 边界与前提
+/// - fcntl 锁以进程为单位：同进程多线程并发取锁不互斥，进程内串行化
+///   由调用方自己的进程内互斥负责。
+///
+/// # 副作用
+/// - 创建锁文件（不存在时）。
+///
+/// # 注意事项
+/// - 锁文件不随释放删除：删除会破坏他进程已打开描述符上的锁，互斥失效。
+pub struct WellKnownLock {
+    /// 持有文件描述符：锁随描述符关闭（Drop）释放，字段存在即保活。
+    #[allow(dead_code)]
+    file: File,
+}
+
+impl WellKnownLock {
+    /// 取 well-known 全局路径排他锁（阻塞直至持有）。
+    ///
+    /// # 步骤
+    /// 1. 打开锁文件（不存在则创建）。
+    /// 2. fcntl 阻塞取排他锁（F_SETLKW）。
+    pub fn acquire() -> io::Result<Self> {
+        let file = OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open(well_known_lock_path())?;
+        // SAFETY: 文件描述符在 file 生命周期内有效，锁结构体按值传给内核只读。
+        let lock = libc::flock {
+            l_type: libc::F_WRLCK as _,
+            l_whence: libc::SEEK_SET as _,
+            l_start: 0,
+            l_len: 0,
+            l_pid: 0,
+        };
+        let rc = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_SETLKW, &lock) };
+        if rc < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(WellKnownLock { file })
+    }
 }
 
 /// O_EXCL 原子创建 sidecar（文件已存在时创建失败）。
@@ -476,5 +530,24 @@ mod tests {
         assert_eq!(log.extension().and_then(|e| e.to_str()), Some("log"), "日志路径应以 .log 结尾");
         assert_eq!(log.file_stem(), sidecar.file_stem(), "日志与 sidecar 应同主名");
         assert_eq!(log.parent(), sidecar.parent(), "日志与 sidecar 应同目录");
+    }
+
+    /// 锁路径：`.lock` 扩展名，与 sidecar 路径同主名同目录。
+    #[test]
+    fn well_known_lock_path_derives_from_sidecar() {
+        let lock = well_known_lock_path();
+        let sidecar = well_known_sidecar_path();
+        assert_eq!(lock.extension().and_then(|e| e.to_str()), Some("lock"), "锁路径应以 .lock 结尾");
+        assert_eq!(lock.file_stem(), sidecar.file_stem(), "锁与 sidecar 应同主名");
+        assert_eq!(lock.parent(), sidecar.parent(), "锁与 sidecar 应同目录");
+    }
+
+    /// 全局路径锁：取锁与释放后重取均成功（fcntl 锁以进程为单位，
+    /// 同进程重取不自我阻塞）。
+    #[test]
+    fn well_known_lock_acquire_release_reacquire() {
+        let lock = WellKnownLock::acquire().expect("取锁应成功");
+        drop(lock);
+        let _again = WellKnownLock::acquire().expect("释放后重取应成功");
     }
 }

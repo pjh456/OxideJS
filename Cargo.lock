@@ -1160,7 +1160,7 @@ dependencies = [
 
 [[package]]
 name = "oxide_builtins"
-version = "0.14.11"
+version = "0.14.12"
 dependencies = [
  "chrono",
  "fast-float",
@@ -1185,7 +1185,7 @@ dependencies = [
 
 [[package]]
 name = "oxide_bytecode"
-version = "0.14.11"
+version = "0.14.12"
 dependencies = [
  "num-bigint",
  "oxide_log",
@@ -1193,7 +1193,7 @@ dependencies = [
 
 [[package]]
 name = "oxide_cfg"
-version = "0.14.11"
+version = "0.14.12"
 dependencies = [
  "oxide_bytecode",
  "oxide_emit",
@@ -1204,12 +1204,13 @@ dependencies = [
 
 [[package]]
 name = "oxide_cli"
-version = "0.14.11"
+version = "0.14.12"
 dependencies = [
  "ansi_term",
  "bumpalo",
  "clap",
  "ctrlc",
+ "libc",
  "oxide_bytecode",
  "oxide_code_cache",
  "oxide_compiler",
@@ -1226,7 +1227,7 @@ dependencies = [
 
 [[package]]
 name = "oxide_code_cache"
-version = "0.14.11"
+version = "0.14.12"
 dependencies = [
  "lru",
  "oxide_bytecode",
@@ -1235,7 +1236,7 @@ dependencies = [
 
 [[package]]
 name = "oxide_compiler"
-version = "0.14.11"
+version = "0.14.12"
 dependencies = [
  "oxide_bytecode",
  "oxide_cfg",
@@ -1255,7 +1256,7 @@ dependencies = [
 
 [[package]]
 name = "oxide_dce"
-version = "0.14.11"
+version = "0.14.12"
 dependencies = [
  "oxide_bytecode",
  "oxide_cfg",
@@ -1269,7 +1270,7 @@ dependencies = [
 
 [[package]]
 name = "oxide_emit"
-version = "0.14.11"
+version = "0.14.12"
 dependencies = [
  "num-bigint",
  "oxc_allocator",
@@ -1284,7 +1285,7 @@ dependencies = [
 
 [[package]]
 name = "oxide_engine"
-version = "0.14.11"
+version = "0.14.12"
 dependencies = [
  "oxide_bytecode",
  "oxide_compiler",
@@ -1296,7 +1297,7 @@ dependencies = [
 
 [[package]]
 name = "oxide_ir"
-version = "0.14.11"
+version = "0.14.12"
 dependencies = [
  "oxide_bytecode",
  "oxide_log",
@@ -1305,7 +1306,7 @@ dependencies = [
 
 [[package]]
 name = "oxide_kernel"
-version = "0.14.11"
+version = "0.14.12"
 dependencies = [
  "bumpalo",
  "dashmap",
@@ -1319,7 +1320,7 @@ dependencies = [
 
 [[package]]
 name = "oxide_liveness"
-version = "0.14.11"
+version = "0.14.12"
 dependencies = [
  "oxide_bytecode",
  "oxide_cfg",
@@ -1331,7 +1332,7 @@ dependencies = [
 
 [[package]]
 name = "oxide_log"
-version = "0.14.11"
+version = "0.14.12"
 dependencies = [
  "tracing",
  "tracing-appender",
@@ -1340,7 +1341,7 @@ dependencies = [
 
 [[package]]
 name = "oxide_parser"
-version = "0.14.11"
+version = "0.14.12"
 dependencies = [
  "oxc_allocator",
  "oxc_ast",
@@ -1355,7 +1356,7 @@ dependencies = [
 
 [[package]]
 name = "oxide_regalloc"
-version = "0.14.11"
+version = "0.14.12"
 dependencies = [
  "oxide_bytecode",
  "oxide_cfg",
@@ -1371,7 +1372,7 @@ dependencies = [
 
 [[package]]
 name = "oxide_runtime_api"
-version = "0.14.11"
+version = "0.14.12"
 dependencies = [
  "num-bigint",
  "num-traits",
@@ -1384,7 +1385,7 @@ dependencies = [
 
 [[package]]
 name = "oxide_test262"
-version = "0.14.11"
+version = "0.14.12"
 dependencies = [
  "oxide_bytecode",
  "oxide_compiler",
@@ -1402,7 +1403,7 @@ dependencies = [
 
 [[package]]
 name = "oxide_types"
-version = "0.14.11"
+version = "0.14.12"
 dependencies = [
  "bumpalo",
  "dashmap",
@@ -1415,7 +1416,7 @@ dependencies = [
 
 [[package]]
 name = "oxide_vm"
-version = "0.14.11"
+version = "0.14.12"
 dependencies = [
  "bumpalo",
  "chrono",
