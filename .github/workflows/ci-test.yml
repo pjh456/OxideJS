@@ -22,23 +22,21 @@ jobs:
         # 之外，钩子重生成 group 条目时不会覆盖它。
         os: [ubuntu-latest]
         group:
-# === AUTO-GENERATED: group 条目（gen_ci_test_jobs.sh 生成，勿手改）===
-          - name: oxide_builtins-1
-            args: "-p oxide_builtins --partition count:1/2"
-          - name: oxide_builtins-2
-            args: "-p oxide_builtins --partition count:2/2"
+# === AUTO-GENERATED: group 条目（gen_ci_test_jobs.py 生成，勿手改）===
           - name: oxide_vm-1
-            args: "-p oxide_vm --partition count:1/2"
+            args: "-p oxide_vm --test builtins_temporal_tests --test builtins_regexp_tests --test builtins_error_tests --test builtins_array_tests --test builtins_symbol_tests --test destructuring_tests --test promise_tests --test readonly_global_builtin_tests --test value_tests --test gc_runtime_tests --test arguments_tests --test builtins_atomics_wait_tests --test delete_builtin_assign_tests --test array_length_define_tests --test array_length_set_tests --test block_fn_async_gen_tests --test catch_param_capture_tests --test for_head_lex_tests --test undeclared_read_tests --test builtins_globals_tests --test switch_case_fn_tests --test const_guard_tests --test block_scope_leave_tests --test for_in_dstr_head_tdz_tests --test native_mirror_reload_tests --test concat_n_tests --test loop_closure_binding_tests --test array_literal_elision_tests --test mem_tests --test compiler_alignment_class_tests --test ic_polymorphic_tests --test for_in_ordering_tests --test for_in_array_named_enum_tests --test eval_script_global_tests --test builtins_stubs_tests --test rest_params_tests --test for_in_null_undefined_tests --test tdz_named_message_tests --test self_import_path_tests --test gc_stress_tests"
           - name: oxide_vm-2
-            args: "-p oxide_vm --partition count:2/2"
-          - name: oxide_cli
-            args: "-p oxide_cli"
-          - name: oxide_types
-            args: "-p oxide_types"
-          - name: light-1
-            args: "-p oxide_test262 -p oxide_emit -p oxide_dce -p oxide_liveness -p oxide_runtime_api"
-          - name: light-2
-            args: "-p oxide_kernel -p oxide_regalloc -p oxide_cfg -p oxide_bytecode -p oxide_engine -p oxide_compiler -p oxide_parser -p oxide_log -p oxide_ir -p oxide_code_cache"
+            args: "-p oxide_vm --test builtins_string_tests --test builtins_arraybuffer_state_tests --test global_var_binding_tests --test control_flow_tests --test coercion_tests --test builtins_map_tests --test builtins_number_tests --test arithmetic_tests --test builtins_disposable_stack_tests --test scoping_tests --test eval_tests --test delete_eval_var_env_tests --test for_of_abrupt_completion_tests --test comparison_tests --test block_fn_var_head_tests --test block_function_decl_tests --test string_iterator_removed_tests --test global_builtin_constant_descriptor_tests --test var_entry_undefined_tests --test global_builtin_writable_tests --test switch_default_tests --test exception_channel_tests --test builtins_typed_array_base64_tests --test for_of_builtin_iter_tests --test native_pack_window_tests --test delete_prop_primitive_base_tests --test microbench --test builtins_boolean_tests --test module_namespace_tests --test function_length_tests --test session_arena_tests --test generator_yield_star_tests --test property_receiver_tests --test property_keys_order_tests --test compiler_alignment_binding_tests --test with_delete_result_tests --test match_all_native_leak_tests --test bare_return_tests --test var_binding_tests --test object_graph_retention_tests"
+          - name: oxide_vm-3
+            args: "-p oxide_vm --test builtins_typed_array_tests --test builtins_iterator_tests --test builtins_object_tests --test object_tests --test function_tests --test builtins_math_tests --test builtins_function_tests --test builtins_async_disposable_stack_tests --test tdz_upvalue_capture_tests --test async_gen_delegation_tests --test global_lexical_shadow_builtin_tests --test regression_tests --test property_array_fastpath_tests --test logical_tests --test builtins_set_tests --test call_frame_window_tests --test this_binding_tests --test builtins_data_view_tests --test array_growth_holes_tests --test member_write_ic_tests --test boxed_primitive_prop_tests --test for_dstr_var_head_tests --test catch_param_restricted_tests --test iterator_from_primitives_tests --test sloppy_assignment_silent_tests --test event_target_tests --test si0_prototype_key_tests --test call_spread_tests --test update_tests --test global_mirror_sync_tests --test vm_tests --test global_builtin_delete_tests --test builtins_array_buffer_tests --test test262_host_tests --test module_star_export_tests --test builtins_weak_map_tests --test module_top_completion_tests --test for_in_var_head_fn_merge_tests --test with_fallback_implicit_global_tests"
+          - name: oxide_vm-4
+            args: "-p oxide_vm --lib --test class_tests --test builtins_date_tests --test try_finally_control_flow_tests --test json_tests --test async_tests --test delete_builtin_read_tests --test builtins_reflect_tests --test proto_chain_tests --test boxed_string_exotic_tests --test decl_lex_restricted_global_tests --test implicit_global_write_tests --test builtins_dataview_live_tests --test super_property_tests --test new_target_tests --test class_species_construct_tests --test property_write_protection_tests --test block_fn_if_arm_var_shadow_tests --test function_body_label_fn_tests --test builtins_atomics_tests --test property_delete_tests --test compiler_alignment_expr_tests --test template_tests --test eval_block_fn_tests --test loop_body_lex_capture_tests --test arrow_tests --test global_fn_decl_builtin_tests --test string_rope_tests --test gdi_func_decl_nonconfig_tests --test write_barrier_identity_tests --test global_prop_desc_tests --test builtins_tosource_tests --test block_fn_outer_var_entry_tests --test define_property_descriptor_tests --test builtins_species_tests --test probe_b154_tests --test for_in_head_lex_tests --test spill_stack_tests --test inline_dispatch_scoping_tests --test generator_gc_tests"
+          - name: pack-1
+            args: "-p oxide_builtins -p oxide_types -p oxide_bytecode"
+          - name: pack-2
+            args: "-p oxide_compiler -p oxide_cli -p oxide_kernel -p oxide_regalloc -p oxide_ir -p oxide_emit -p oxide_test262 -p oxide_parser -p oxide_dce -p oxide_runtime_api"
+          - name: pack-3
+            args: "-p oxide_cfg -p oxide_liveness -p oxide_code_cache -p oxide_engine"
 # === END AUTO-GENERATED ===
     runs-on: ${{ matrix.os }}
     timeout-minutes: 40
