@@ -23,7 +23,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.14.9"
+version = "0.14.10"
 edition = "2021"
 license = "MIT"
 rust-version = "1.80"
@@ -69,10 +69,23 @@ all = { level = "deny", priority = -1 }
 warnings = { level = "deny", priority = -1 }
 
 [profile.release]
-opt-level = 3
-lto = true
-codegen-units = 1
+# 快速 release：日常墙时间 A/B 与 test262 release 回测用。opt-level 2 与 3 的
+# 运行时差距对解释器可忽略，但 lto 关闭加 codegen 并行把编译时间从数十分钟
+# 压到分钟级。性能基线重锚（release 全量 bench）时如需最优码再临时切回
+# opt-level=3 / lto=true / codegen-units=1。
+opt-level = 2
+lto = false
+codegen-units = 256
+debug = 0
 panic = "abort"
+# 本机 CPU 指令集（AVX2 等）：解释器热路径墙时间再挤 5 至 15%。产物绑定本机
+# 微架构，不可跨机移植（本机开发机与 CI 各自源码构建，无影响）。
+target-cpu = "native"
+
+[profile.dev]
+# 行表级调试信息：产物体积降 5 至 10 倍（单个 oxide CLI 约 160M 降到 30M 量级），
+# 堆栈回溯仍带行号，日常单测与断点不受影响。
+debug = 1
 
 # 上游 0.11.1 的 Unicode 表缺 Script/Script_Extensions 的 Unknown（Zzzz，未分配
 # 码点集）取值，规范合法模式 \p{Script=Unknown} 无法编译。vendor 补丁在 0.11.1

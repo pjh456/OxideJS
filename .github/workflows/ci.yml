@@ -23,6 +23,12 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
+      # .cargo/config.toml 依赖 sccache（rustc-wrapper）与 mold（-fuse-ld=mold），
+      # 两者均在 Ubuntu 仓库中。CI 同样受益：sccache 配合 rust-cache 命中缓存，
+      # mold 并行链接。
+      - name: Install sccache and mold
+        run: sudo apt-get update -y && sudo apt-get install -y sccache mold
+
       - name: Check formatting
         run: cargo fmt --all -- --check
 
