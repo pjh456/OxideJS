@@ -189,3 +189,161 @@ fn super_call_native_constructor_still_works() {
     .unwrap();
     assert!(result.is_bool() && result.as_bool(), "super() 后实例应为 Object 实例");
 }
+
+// 对象方法 super.x 写（静态成员）：写经 proto 链落基（super base），receiver 为方法接收者。
+#[test]
+fn object_method_super_put_static_member() {
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "var base = { x: 'a' }; \
+         var obj = { __proto__: base, method() { super.x = 'written'; return base.x; } }; \
+         obj.method()",
+    )
+    .unwrap();
+    assert_eq!(vm.lookup_str(result).unwrap(), "written");
+}
+
+// 对象方法 super['x'] 写（计算成员）：键运行期求值，写经 proto 链落基。
+#[test]
+fn object_method_super_put_computed_member() {
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "var base = { x: 'a' }; \
+         var obj = { __proto__: base, method() { super['x'] = 'written'; return base.x; } }; \
+         obj.method()",
+    )
+    .unwrap();
+    assert_eq!(vm.lookup_str(result).unwrap(), "written");
+}
+
+// 严格模式 super 写失败（基对象冻结）抛 TypeError。
+#[test]
+fn object_method_super_put_strict_frozen_throws_type_error() {
+    let mut vm = Vm::new();
+    let err = eval(
+        &mut vm,
+        "'use strict'; \
+         var base = { y: 0 }; Object.freeze(base); \
+         var obj = { __proto__: base, method() { super.y = 9; } }; \
+         try { obj.method(); } catch (e) { e.name; }",
+    )
+    .unwrap();
+    assert_eq!(vm.lookup_str(err).unwrap(), "TypeError");
+}
+
+// 非严格模式 super 写失败（基对象冻结）静默跳过，不抛错。
+#[test]
+fn object_method_super_put_non_strict_frozen_silent() {
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "var base = { y: 0 }; Object.freeze(base); \
+         var obj = { __proto__: base, method() { super.y = 9; return 'done'; } }; \
+         obj.method()",
+    )
+    .unwrap();
+    assert_eq!(vm.lookup_str(result).unwrap(), "done");
+}
+
+// 键对象 toString 副作用换 proto：GetSuperBase 先于 ToPropertyKey，写旧 proto。
+#[test]
+fn object_method_super_put_getsuperbase_before_topropertykey() {
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "var proto = { p: 1 }; var proto2 = { p: -1 }; \
+         var obj = { __proto__: proto, m() { super[key] = 10; } }; \
+         var key = { toString() { Object.setPrototypeOf(obj, proto2); return 'p'; } }; \
+         obj.m(); proto.p + '|' + proto2.p",
+    )
+    .unwrap();
+    assert_eq!(vm.lookup_str(result).unwrap(), "10|-1");
+}
+
+// 复合赋值 GetSuperBase 先于 ToPropertyKey：读旧值、运算、写回均用旧 proto 基。
+#[test]
+fn object_method_super_put_compound_getsuperbase_before_topropertykey() {
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "var proto = { p: 1 }; var proto2 = { p: -1 }; \
+         var obj = { __proto__: proto, m() { return super[key] += 1; } }; \
+         var key = { toString() { Object.setPrototypeOf(obj, proto2); return 'p'; } }; \
+         String(obj.m())",
+    )
+    .unwrap();
+    assert_eq!(vm.lookup_str(result).unwrap(), "2");
+}
+
+// 自增 GetSuperBase 先于 ToPropertyKey：前缀自增返回新值。
+#[test]
+fn object_method_super_put_increment_getsuperbase_before_topropertykey() {
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "var proto = { p: 1 }; var proto2 = { p: -1 }; \
+         var obj = { __proto__: proto, m() { return ++super[key]; } }; \
+         var key = { toString() { Object.setPrototypeOf(obj, proto2); return 'p'; } }; \
+         String(obj.m())",
+    )
+    .unwrap();
+    assert_eq!(vm.lookup_str(result).unwrap(), "2");
+}
+
+// 派生构造器 this 未初始化时 super[键] = 值：GetThisBinding 先于键求值，抛 ReferenceError。
+#[test]
+fn derived_ctor_super_put_uninitialized_this_throws_reference_error() {
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "class Base { constructor() { throw new Error('base constructor'); } } \
+         class Derived extends Base { constructor() { super[super()] = 0; } } \
+         try { new Derived(); } catch (e) { e.name; }",
+    )
+    .unwrap();
+    assert_eq!(vm.lookup_str(result).unwrap(), "ReferenceError");
+}
+
+// 派生构造器 this 未初始化时 super[键] += 值：GetThisBinding 先于键求值，抛 ReferenceError。
+#[test]
+fn derived_ctor_super_put_compound_uninitialized_this_throws_reference_error() {
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "class Base { constructor() { throw new Error('base constructor'); } } \
+         class Derived extends Base { constructor() { super[super()] += 0; } } \
+         try { new Derived(); } catch (e) { e.name; }",
+    )
+    .unwrap();
+    assert_eq!(vm.lookup_str(result).unwrap(), "ReferenceError");
+}
+
+// 派生构造器 this 未初始化时 ++super[键]：GetThisBinding 先于键求值，抛 ReferenceError。
+#[test]
+fn derived_ctor_super_put_increment_uninitialized_this_throws_reference_error() {
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "class Base { constructor() { throw new Error('base constructor'); } } \
+         class Derived extends Base { constructor() { ++super[super()]; } } \
+         try { new Derived(); } catch (e) { e.name; }",
+    )
+    .unwrap();
+    assert_eq!(vm.lookup_str(result).unwrap(), "ReferenceError");
+}
+
+// home proto 为 null 时 super 写抛 TypeError（RequireObjectCoercible 面）。
+#[test]
+fn object_method_super_put_null_proto_throws_type_error() {
+    let mut vm = Vm::new();
+    let err = eval(
+        &mut vm,
+        "var obj = { method() { super.x = 1; } }; \
+         Object.setPrototypeOf(obj, null); \
+         try { obj.method(); } catch (e) { e.name; }",
+    )
+    .unwrap();
+    assert_eq!(vm.lookup_str(err).unwrap(), "TypeError");
+}

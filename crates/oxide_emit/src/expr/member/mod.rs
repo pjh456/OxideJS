@@ -37,6 +37,18 @@ impl Emitter {
         result_reg
     }
 
+    /// super 属性写：给定 this 寄存器、键寄存器与值寄存器，发 `SUPER_PUT_PROP`
+    /// （GetSuperBase + RequireObjectCoercible + ToPropertyKey + Set 在运行期完成，
+    /// 步序与 super 读对齐）。
+    pub(crate) fn emit_super_put(&self, this_reg: u32, key_reg: u32, val_reg: u32, ctx: &mut CompileCtx) {
+        ctx.inst(Inst::new(
+            OpCode::SUPER_PUT_PROP,
+            Operand::Reg(val_reg),
+            Operand::Reg(this_reg),
+            Operand::Reg(key_reg),
+        ));
+    }
+
     fn emit_static_member_expression(
         &self, member: &oxide_parser::StaticMemberExpression, ctx: &mut CompileCtx,
     ) -> Result<u32, String> {

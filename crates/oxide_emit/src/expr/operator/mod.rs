@@ -579,6 +579,41 @@ impl Emitter {
                 self.emit_identifier_update_static(name, update, ctx)
             }
             SimpleAssignmentTarget::StaticMemberExpression(member) => {
+                // super 属性自增/自减：this 先装载（GetThisBinding），键常量装载，
+                // 读旧值（SUPER_GET_PROP），运算，写回（SUPER_PUT_PROP）。
+                if matches!(&member.object, Expression::Super(_)) {
+                    let this_reg = self.emit_super_this(ctx)?;
+                    let prop_name = member.property.name.as_str();
+                    let key_idx = ctx.add_constant(Constant::String(prop_name.to_string()));
+                    let key_reg = ctx.alloc_reg();
+                    ctx.inst(Inst::load_const(Operand::Reg(key_reg), key_idx));
+                    let old_reg = ctx.alloc_reg();
+                    ctx.inst(Inst::new(
+                        OpCode::SUPER_GET_PROP,
+                        Operand::Reg(old_reg),
+                        Operand::Reg(this_reg),
+                        Operand::Reg(key_reg),
+                    ));
+                    let one_idx = ctx.add_constant(Constant::Int(1));
+                    let one_reg = ctx.alloc_reg();
+                    ctx.inst(Inst::load_const(Operand::Reg(one_reg), one_idx));
+                    let new_reg = ctx.alloc_reg();
+                    let op = if update.operator == UpdateOperator::Increment {
+                        OpCode::ADD
+                    } else {
+                        OpCode::SUB
+                    };
+                    ctx.inst(Inst::new(op, Operand::Reg(new_reg), Operand::Reg(old_reg), Operand::Reg(one_reg)));
+                    self.emit_super_put(this_reg, key_reg, new_reg, ctx);
+                    let result_reg = ctx.alloc_reg();
+                    ctx.inst(Inst::new(
+                        OpCode::LOAD_VAR,
+                        Operand::Reg(result_reg),
+                        Operand::Reg(if update.prefix { new_reg } else { old_reg }),
+                        Operand::None,
+                    ));
+                    return Ok(result_reg);
+                }
                 let obj_reg = self.emit_expression(&member.object, ctx)?;
                 let prop_name = member.property.name.as_str();
                 let key_idx = ctx.add_constant(Constant::String(prop_name.to_string()));
@@ -601,6 +636,38 @@ impl Emitter {
                 Ok(val_reg)
             }
             SimpleAssignmentTarget::ComputedMemberExpression(member) => {
+                // super 计算成员自增/自减：this 先装载（GetThisBinding），键表达式
+                // 后求值，读旧值（SUPER_GET_PROP），运算，写回（SUPER_PUT_PROP）。
+                if matches!(&member.object, Expression::Super(_)) {
+                    let this_reg = self.emit_super_this(ctx)?;
+                    let key_reg = self.emit_expression(&member.expression, ctx)?;
+                    let old_reg = ctx.alloc_reg();
+                    ctx.inst(Inst::new(
+                        OpCode::SUPER_GET_PROP,
+                        Operand::Reg(old_reg),
+                        Operand::Reg(this_reg),
+                        Operand::Reg(key_reg),
+                    ));
+                    let one_idx = ctx.add_constant(Constant::Int(1));
+                    let one_reg = ctx.alloc_reg();
+                    ctx.inst(Inst::load_const(Operand::Reg(one_reg), one_idx));
+                    let new_reg = ctx.alloc_reg();
+                    let op = if update.operator == UpdateOperator::Increment {
+                        OpCode::ADD
+                    } else {
+                        OpCode::SUB
+                    };
+                    ctx.inst(Inst::new(op, Operand::Reg(new_reg), Operand::Reg(old_reg), Operand::Reg(one_reg)));
+                    self.emit_super_put(this_reg, key_reg, new_reg, ctx);
+                    let result_reg = ctx.alloc_reg();
+                    ctx.inst(Inst::new(
+                        OpCode::LOAD_VAR,
+                        Operand::Reg(result_reg),
+                        Operand::Reg(if update.prefix { new_reg } else { old_reg }),
+                        Operand::None,
+                    ));
+                    return Ok(result_reg);
+                }
                 let obj_reg = self.emit_expression(&member.object, ctx)?;
                 // 常量字符串键折叠为 IC 静态路径：MEMBER_INC/DEC 携带 IC 扩展字。
                 if let Some(key) = crate::expr::member::computed_const_key(&member.expression) {

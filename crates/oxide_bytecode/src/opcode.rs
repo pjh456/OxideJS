@@ -536,6 +536,12 @@ define_opcodes! {
     DISPOSE_POP = 0x6B => "DISPOSE_POP",
         def = None, uses = [],
         pure = false, jump = false, term = false, ic = false,
+    // super 属性写：rd=值、a=this（receiver）、b=键。运行期 GetSuperBase 先于
+    // ToPropertyKey（与 SUPER_GET_PROP 同步序），基非对象抛 TypeError，写经
+    // ordinary_set（strict 由 current_strict 判定，失败抛 TypeError）。
+    SUPER_PUT_PROP = 0x6C => "SUPER_PUT_PROP",
+        def = None, uses = [SlotSpec::Slot(Slot::Rd), SlotSpec::Slot(Slot::A), SlotSpec::Slot(Slot::B)],
+        pure = false, jump = false, term = false, ic = false,
 
     // ── define 语义属性写入 (0x6D, 0x6F) ──
     DEFINE_PROP = 0x6D => "DEFINE_PROP",

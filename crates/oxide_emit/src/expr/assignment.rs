@@ -6,7 +6,7 @@ use oxide_bytecode::module::Constant;
 use oxide_bytecode::opcode::OpCode;
 use oxide_ir::inst::Inst;
 use oxide_ir::operand::Operand;
-use oxide_parser::AssignmentOperator;
+use oxide_parser::{AssignmentOperator, Expression};
 
 impl Emitter {
     /// 标识符复合赋值的静态路径：upvalue / 被捕获 cell 走显式读取-运算-写回
@@ -168,10 +168,63 @@ impl Emitter {
         }
     }
 
+    /// 复合赋值运算符映射到二元运算指令（super 属性写与计算成员动态路径共用）。
+    fn super_compound_op(&self, op: AssignmentOperator) -> Result<OpCode, String> {
+        Ok(match op {
+            AssignmentOperator::Addition => OpCode::ADD,
+            AssignmentOperator::Subtraction => OpCode::SUB,
+            AssignmentOperator::Multiplication => OpCode::MUL,
+            AssignmentOperator::Division => OpCode::DIV,
+            AssignmentOperator::Remainder => OpCode::MOD,
+            AssignmentOperator::Exponential => OpCode::COMPOUND_EXP,
+            AssignmentOperator::BitwiseAnd => OpCode::BIT_AND,
+            AssignmentOperator::BitwiseOR => OpCode::BIT_OR,
+            AssignmentOperator::BitwiseXOR => OpCode::BIT_XOR,
+            AssignmentOperator::ShiftLeft => OpCode::SHL,
+            AssignmentOperator::ShiftRight => OpCode::SHR,
+            AssignmentOperator::ShiftRightZeroFill => OpCode::USHR,
+            _ => return Err(format!("compound assignment operator {:?} not supported", op)),
+        })
+    }
+
     pub(crate) fn emit_assignment_expression(
         &self, assign: &oxide_parser::AssignmentExpression, ctx: &mut CompileCtx,
     ) -> Result<u32, String> {
         if let oxide_parser::AssignmentTarget::StaticMemberExpression(member) = &assign.left {
+            // super 属性写：this 先装载（GetThisBinding），键常量装载，后发 SUPER_PUT_PROP
+            // （运行期 GetSuperBase 先于 ToPropertyKey，步序与 super 读对齐）。
+            if matches!(&member.object, Expression::Super(_)) {
+                if assign.operator.to_logical_operator().is_some() {
+                    return Err("logical assignment to super property not supported".into());
+                }
+                let this_reg = self.emit_super_this(ctx)?;
+                let prop_name = member.property.name.as_str();
+                let idx = ctx.add_constant(Constant::String(prop_name.to_string()));
+                let key_reg = ctx.alloc_reg();
+                ctx.inst(Inst::load_const(Operand::Reg(key_reg), idx));
+                if assign.operator != AssignmentOperator::Assign {
+                    // 复合赋值：先读旧值（SUPER_GET_PROP），求值 RHS，运算，后写回。
+                    let val_reg = ctx.alloc_reg();
+                    ctx.inst(Inst::new(
+                        OpCode::SUPER_GET_PROP,
+                        Operand::Reg(val_reg),
+                        Operand::Reg(this_reg),
+                        Operand::Reg(key_reg),
+                    ));
+                    let rhs = self.emit_expression(&assign.right, ctx)?;
+                    let op = self.super_compound_op(assign.operator)?;
+                    if assign.operator == AssignmentOperator::Exponential {
+                        ctx.inst(Inst::new(op, Operand::Reg(val_reg), Operand::Reg(rhs), Operand::None));
+                    } else {
+                        ctx.inst(Inst::new(op, Operand::Reg(val_reg), Operand::Reg(val_reg), Operand::Reg(rhs)));
+                    }
+                    self.emit_super_put(this_reg, key_reg, val_reg, ctx);
+                    return Ok(val_reg);
+                }
+                let val_reg = self.emit_expression(&assign.right, ctx)?;
+                self.emit_super_put(this_reg, key_reg, val_reg, ctx);
+                return Ok(val_reg);
+            }
             if let Some(logical_op) = assign.operator.to_logical_operator() {
                 let store_label = ctx.next_label_id();
                 let end_label = ctx.next_label_id();
@@ -232,6 +285,37 @@ impl Emitter {
                 Ok(val_reg)
             }
         } else if let oxide_parser::AssignmentTarget::ComputedMemberExpression(member) = &assign.left {
+            // super 计算成员写：this 先装载（GetThisBinding），键表达式后求值，
+            // 后发 SUPER_PUT_PROP（运行期 GetSuperBase 先于 ToPropertyKey）。
+            if matches!(&member.object, Expression::Super(_)) {
+                if assign.operator.to_logical_operator().is_some() {
+                    return Err("logical assignment to super property not supported".into());
+                }
+                let this_reg = self.emit_super_this(ctx)?;
+                let key_reg = self.emit_expression(&member.expression, ctx)?;
+                if assign.operator != AssignmentOperator::Assign {
+                    // 复合赋值：先读旧值（SUPER_GET_PROP），求值 RHS，运算，后写回。
+                    let val_reg = ctx.alloc_reg();
+                    ctx.inst(Inst::new(
+                        OpCode::SUPER_GET_PROP,
+                        Operand::Reg(val_reg),
+                        Operand::Reg(this_reg),
+                        Operand::Reg(key_reg),
+                    ));
+                    let rhs = self.emit_expression(&assign.right, ctx)?;
+                    let op = self.super_compound_op(assign.operator)?;
+                    if assign.operator == AssignmentOperator::Exponential {
+                        ctx.inst(Inst::new(op, Operand::Reg(val_reg), Operand::Reg(rhs), Operand::None));
+                    } else {
+                        ctx.inst(Inst::new(op, Operand::Reg(val_reg), Operand::Reg(val_reg), Operand::Reg(rhs)));
+                    }
+                    self.emit_super_put(this_reg, key_reg, val_reg, ctx);
+                    return Ok(val_reg);
+                }
+                let val_reg = self.emit_expression(&assign.right, ctx)?;
+                self.emit_super_put(this_reg, key_reg, val_reg, ctx);
+                return Ok(val_reg);
+            }
             // 常量字符串键折叠为 IC 静态路径，与 StaticMemberExpression 分支同构。
             if let Some(key) = crate::expr::member::computed_const_key(&member.expression) {
                 if let Some(logical_op) = assign.operator.to_logical_operator() {

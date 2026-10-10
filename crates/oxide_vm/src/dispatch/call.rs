@@ -794,6 +794,42 @@ impl Vm {
         Ok(false)
     }
 
+    /// super 属性写：GetSuperBase 先于 ToPropertyKey（与 super 读同步序），基非对象
+    /// 抛 TypeError（RequireObjectCoercible 面），写经 ordinary_set（strict 由
+    /// current_strict 判定，失败抛 TypeError）。rd=值、a=this（receiver）、b=键。
+    pub(crate) fn dispatch_super_put_prop(&mut self, rd: usize, a: usize, b: usize) -> Result<bool, String> {
+        vm_trace!("SUPER_PUT_PROP rd={} a={} b={}", rd, a, b);
+        let Some(frame) = self.frames.last() else {
+            self.raise_error_kind("ReferenceError", "super property used outside function")?;
+            return Ok(true);
+        };
+        if !frame.callee.is_object() {
+            self.raise_error_kind("ReferenceError", "super property has no home object")?;
+            return Ok(true);
+        }
+        let callee_obj = unsafe { &*frame.callee.as_js_object_ptr() };
+        let home_object = callee_obj.home_object();
+        if !home_object.is_object() {
+            self.raise_error_kind("ReferenceError", "super property has no home object")?;
+            return Ok(true);
+        }
+        let home_obj = unsafe { &*home_object.as_js_object_ptr() };
+        // 规范步序：GetSuperBase 先于 ToPropertyKey；基非对象可强转时抛
+        // TypeError（RequireObjectCoercible 面）。
+        let super_base = home_obj.proto();
+        if !super_base.is_object() {
+            self.raise_type_error("Cannot convert null or undefined to object")?;
+            return Ok(true);
+        }
+        let key_val = self.regs[b];
+        let prop_name_si = self.property_key_si(key_val)?;
+        let super_obj = unsafe { &mut *super_base.as_js_object_ptr() };
+        let value = self.regs[rd];
+        let receiver = self.regs[a];
+        self.ordinary_set_dispatch(super_obj, prop_name_si, value, receiver, self.current_strict())?;
+        Ok(false)
+    }
+
     pub(crate) fn dispatch_set_home_object(&mut self, rd: usize, a: usize) -> Result<bool, String> {
         vm_trace!("SET_HOME_OBJECT rd={} a={}", rd, a);
         let func_val = self.regs[rd];

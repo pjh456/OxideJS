@@ -531,6 +531,12 @@ impl Vm {
                     }
                 }
 
+                OpCode::SUPER_PUT_PROP => match self.dispatch_super_put_prop(rd, a, b) {
+                    Ok(true) => continue,
+                    Ok(false) => {}
+                    Err(e) => return Err(e),
+                },
+
                 OpCode::SET_HOME_OBJECT => match self.dispatch_set_home_object(rd, a) {
                     Ok(true) => continue,
                     Ok(false) => {}
