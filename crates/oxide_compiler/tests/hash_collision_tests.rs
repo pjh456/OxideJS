@@ -255,7 +255,11 @@ fn call_spread_arguments_distinguished() {
 fn array_spread_elements_distinguished() {
     // spread 元素与值元素同位置须区分（形态标记逐位计入）。
     assert_ne!(compiled("[...a]"), compiled("[a]"), "spread vs value element must differ");
-    assert_ne!(structural("[...a, 1]"), structural("[a, 1]"), "spread element shape must be in both granularities");
+    assert_ne!(
+        structural("[...a, 1]"),
+        structural("[a, 1]"),
+        "spread element shape must be in both granularities"
+    );
 }
 
 #[test]

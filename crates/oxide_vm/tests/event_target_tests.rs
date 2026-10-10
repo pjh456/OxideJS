@@ -62,22 +62,17 @@ const TARGET: &str = "var mc = new MessageChannel(); var t = mc.port1;";
 /// dispatchEvent(new Event('x')) 返回 true（无 preventDefault）。
 #[test]
 fn dispatch_event_returns_true() {
-    assert_eq!(
-        eval(&format!("{TARGET} t.dispatchEvent(new Event('x'));")),
-        "true"
-    );
+    assert_eq!(eval(&format!("{TARGET} t.dispatchEvent(new Event('x'));")), "true");
 }
 
 /// preventDefault() 后 dispatchEvent 返回 false（cancelable 事件）。
 #[test]
 fn dispatch_event_returns_false_after_prevent_default() {
     assert_eq!(
-        eval(
-            &format!(
-                "{TARGET} t.addEventListener('x', function(e) {{ e.preventDefault(); }}); \
+        eval(&format!(
+            "{TARGET} t.addEventListener('x', function(e) {{ e.preventDefault(); }}); \
                  t.dispatchEvent(new Event('x', {{ cancelable: true }}));"
-            )
-        ),
+        )),
         "false"
     );
 }
@@ -86,12 +81,10 @@ fn dispatch_event_returns_false_after_prevent_default() {
 #[test]
 fn dispatch_event_non_cancelable_stays_true() {
     assert_eq!(
-        eval(
-            &format!(
-                "{TARGET} t.addEventListener('x', function(e) {{ e.preventDefault(); }}); \
+        eval(&format!(
+            "{TARGET} t.addEventListener('x', function(e) {{ e.preventDefault(); }}); \
                  t.dispatchEvent(new Event('x'));"
-            )
-        ),
+        )),
         "true"
     );
 }
@@ -100,16 +93,14 @@ fn dispatch_event_non_cancelable_stays_true() {
 #[test]
 fn remove_event_listener_works() {
     assert_eq!(
-        eval(
-            &format!(
-                "{TARGET} var calls = 0; \
+        eval(&format!(
+            "{TARGET} var calls = 0; \
                  var fn = function(e) {{ calls++; }}; \
                  t.addEventListener('x', fn); \
                  t.removeEventListener('x', fn); \
                  t.dispatchEvent(new Event('x')); \
                  calls;"
-            )
-        ),
+        )),
         "0"
     );
 }
@@ -118,16 +109,14 @@ fn remove_event_listener_works() {
 #[test]
 fn duplicate_add_event_listener_is_noop() {
     assert_eq!(
-        eval(
-            &format!(
-                "{TARGET} var calls = 0; \
+        eval(&format!(
+            "{TARGET} var calls = 0; \
                  var fn = function(e) {{ calls++; }}; \
                  t.addEventListener('x', fn); \
                  t.addEventListener('x', fn); \
                  t.dispatchEvent(new Event('x')); \
                  calls;"
-            )
-        ),
+        )),
         "1"
     );
 }
@@ -136,16 +125,14 @@ fn duplicate_add_event_listener_is_noop() {
 #[test]
 fn once_listener_removed_after_call() {
     assert_eq!(
-        eval(
-            &format!(
-                "{TARGET} var calls = 0; \
+        eval(&format!(
+            "{TARGET} var calls = 0; \
                  var fn = function(e) {{ calls++; }}; \
                  t.addEventListener('x', fn, {{ once: true }}); \
                  t.dispatchEvent(new Event('x')); \
                  t.dispatchEvent(new Event('x')); \
                  calls;"
-            )
-        ),
+        )),
         "1"
     );
 }
@@ -154,15 +141,13 @@ fn once_listener_removed_after_call() {
 #[test]
 fn stop_immediate_propagation_truncates() {
     assert_eq!(
-        eval(
-            &format!(
-                "{TARGET} var calls = 0; \
+        eval(&format!(
+            "{TARGET} var calls = 0; \
                  t.addEventListener('x', function(e) {{ calls++; e.stopImmediatePropagation(); }}); \
                  t.addEventListener('x', function(e) {{ calls++; }}); \
                  t.dispatchEvent(new Event('x')); \
                  calls;"
-            )
-        ),
+        )),
         "1"
     );
 }
@@ -171,14 +156,12 @@ fn stop_immediate_propagation_truncates() {
 #[test]
 fn listener_receives_target_this_and_event() {
     assert_eq!(
-        eval(
-            &format!(
-                "{TARGET} var gotThis = null; var gotType = null; \
+        eval(&format!(
+            "{TARGET} var gotThis = null; var gotType = null; \
                  t.addEventListener('x', function(e) {{ gotThis = (this === t); gotType = e.type; }}); \
                  t.dispatchEvent(new Event('x')); \
                  gotThis + ':' + gotType;"
-            )
-        ),
+        )),
         "true:x"
     );
 }
@@ -237,27 +220,20 @@ fn listener_survives_gc_while_target_live() {
     // 强制完整收集：目标存活（globalThis.t），监听器回调应保活。
     vm.collect_session_gc();
     // 收集后派发：监听器仍应被调用（无悬垂）。
-    assert_eq!(
-        vm_eval(&mut vm, "globalThis.t.dispatchEvent(new Event('x')); globalThis.calls;"),
-        "1"
-    );
+    assert_eq!(vm_eval(&mut vm, "globalThis.t.dispatchEvent(new Event('x')); globalThis.calls;"), "1");
 }
 
 /// 目标对象被回收后注册表剪枝（GC 后无悬垂指针）。
 #[test]
 fn registry_pruned_after_target_collected() {
     // t 是局部变量，脚本结束后无引用 → 目标死亡。
-    let mut vm = vm_with_script(
-        "var mc = new MessageChannel(); var t = mc.port1; t.addEventListener('x', function() {});",
-    );
+    let mut vm =
+        vm_with_script("var mc = new MessageChannel(); var t = mc.port1; t.addEventListener('x', function() {});");
     // 强制完整收集：注册表应按 mark 位剪枝死目标条目。
     vm.collect_session_gc();
     // 剪枝后无悬垂：新建同型目标派发不触发旧监听器（旧条目已剪），无崩溃。
     assert_eq!(
-        vm_eval(
-            &mut vm,
-            "var mc2 = new MessageChannel(); mc2.port1.dispatchEvent(new Event('x')); 'ok';"
-        ),
+        vm_eval(&mut vm, "var mc2 = new MessageChannel(); mc2.port1.dispatchEvent(new Event('x')); 'ok';"),
         "ok"
     );
 }

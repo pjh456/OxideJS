@@ -76,7 +76,8 @@ impl CodeForge {
                     // 整结构比较（递归覆盖子模块树）：只比顶层字节码会漏检嵌套
                     // 函数体内的同键异码。
                     debug_assert_eq!(
-                        module.as_ref(), &fresh,
+                        module.as_ref(),
+                        &fresh,
                         "structural hash collision: cached module differs from recompiled for hash {hash}",
                     );
                 }

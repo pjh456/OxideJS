@@ -10,7 +10,7 @@
 //! 其内部绑定名仅精确键计入。
 
 use oxide_parser::{
-    ArrayAssignmentTarget, ArrayExpressionElement, Argument, AssignmentTarget, AssignmentTargetMaybeDefault,
+    Argument, ArrayAssignmentTarget, ArrayExpressionElement, AssignmentTarget, AssignmentTargetMaybeDefault,
     AssignmentTargetProperty, BindingPattern, ChainElement, Class, ClassElement, Declaration,
     ExportDefaultDeclarationKind, Expression, ForStatementInit, ForStatementLeft, Function, ImportDeclarationSpecifier,
     ModuleExportName, ObjectAssignmentTarget, ObjectPropertyKind, PropertyKey, SimpleAssignmentTarget, Statement,

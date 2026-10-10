@@ -462,7 +462,9 @@ impl oxide_runtime_api::VmHost for Vm {
     fn et_unregister(&self, target: *mut JsObject, type_si: u32, callback: JsValue, capture: bool) {
         let mut gc = self.realm.gc.borrow_mut();
         let should_remove = gc.event_targets.get_mut(&target).is_some_and(|state| {
-            state.listeners.retain(|e| !(e.type_si == type_si && e.capture == capture && e.callback == callback));
+            state
+                .listeners
+                .retain(|e| !(e.type_si == type_si && e.capture == capture && e.callback == callback));
             state.listeners.is_empty()
         });
         if should_remove {
@@ -470,6 +472,12 @@ impl oxide_runtime_api::VmHost for Vm {
         }
     }
     fn et_lookup(&self, target: *mut JsObject) -> Vec<ListenerEntry> {
-        self.realm.gc.borrow().event_targets.get(&target).map(|s| s.listeners.clone()).unwrap_or_default()
+        self.realm
+            .gc
+            .borrow()
+            .event_targets
+            .get(&target)
+            .map(|s| s.listeners.clone())
+            .unwrap_or_default()
     }
 }
