@@ -19,13 +19,13 @@ jobs:
         group:
 # === AUTO-GENERATED: group 条目（gen_ci_test_jobs.sh 生成，勿手改）===
           - name: oxide_builtins-1
-            args: "-p oxide_builtins --partition 2/1"
+            args: "-p oxide_builtins --partition count:2/1"
           - name: oxide_builtins-2
-            args: "-p oxide_builtins --partition 2/2"
+            args: "-p oxide_builtins --partition count:2/2"
           - name: oxide_vm-1
-            args: "-p oxide_vm --partition 2/1"
+            args: "-p oxide_vm --partition count:2/1"
           - name: oxide_vm-2
-            args: "-p oxide_vm --partition 2/2"
+            args: "-p oxide_vm --partition count:2/2"
           - name: oxide_cli
             args: "-p oxide_cli"
           - name: oxide_types
