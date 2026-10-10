@@ -1,10 +1,10 @@
 name: Setup tools (sccache / mold / nextest)
 
-# 工具缓存：sccache、mold、nextest 统一装到 ~/oxide-tools/bin，按固定 key 跨 run
-# 持久缓存。首跑各 job 各装一次（冗余但一次性），之后每个 run 直接 restore、
-# 秒级。nextest 走官方预编译二进制直下，不依赖 main 分支安装脚本（脚本会被移动
-# 而 404）。sccache 与 mold 经 apt 装到 /usr/bin 后拷入 ~/oxide-tools/bin，
-# 使缓存路径落在用户可写目录（/usr/bin 缓存受权限限制）。
+# 工具缓存：sccache、mold、nextest 统一装到 ~/.cargo/bin（rustup 已将其加入 PATH，
+# 无需额外 GITHUB_PATH 修改），按固定 key 跨 run 持久缓存。首跑各 job 各装一次
+# （冗余但一次性），之后每个 run 直接 restore、秒级。nextest 走官方预编译二进制
+# 直下，不依赖 main 分支安装脚本（脚本会被移动而 404）。sccache 与 mold 经 apt
+# 装到 /usr/bin 后拷入 ~/.cargo/bin，使缓存路径落在用户可写且已在 PATH 的目录。
 description: 恢复工具缓存；缺失时安装 sccache、mold、nextest 并存缓存
 
 runs:
@@ -14,8 +14,11 @@ runs:
       id: tool-cache
       uses: actions/cache/restore@v4
       with:
-        path: ~/oxide-tools/bin
-        key: oxide-tools-ubuntu-v1
+        path: |
+          ~/.cargo/bin/sccache
+          ~/.cargo/bin/mold
+          ~/.cargo/bin/cargo-nextest
+        key: oxide-tools-cargobin-v1
 
     - name: Install tools (cache miss)
       if: steps.tool-cache.outputs.cache-hit != 'true'
@@ -23,17 +26,22 @@ runs:
       run: |
         sudo apt-get update -y
         sudo apt-get install -y sccache mold
-        mkdir -p "$HOME/oxide-tools/bin"
-        cp /usr/bin/sccache /usr/bin/mold "$HOME/oxide-tools/bin/"
-        curl -LsSf https://get.nexte.st/latest/linux | tar zxf - -C "$HOME/oxide-tools/bin"
+        cp /usr/bin/sccache /usr/bin/mold "$HOME/.cargo/bin/"
+        curl -LsSf https://get.nexte.st/latest/linux | tar zxf - -C "$HOME/.cargo/bin"
 
-    - name: Add tools to PATH
+    - name: Verify tools in PATH
       shell: bash
-      run: echo "$HOME/oxide-tools/bin" >> "$GITHUB_PATH"
+      run: |
+        which sccache mold cargo-nextest
+        sccache --version
+        mold --version
 
     - name: Save tool cache
       if: steps.tool-cache.outputs.cache-hit != 'true'
       uses: actions/cache/save@v4
       with:
-        path: ~/oxide-tools/bin
-        key: oxide-tools-ubuntu-v1
+        path: |
+          ~/.cargo/bin/sccache
+          ~/.cargo/bin/mold
+          ~/.cargo/bin/cargo-nextest
+        key: oxide-tools-cargobin-v1
