@@ -9,34 +9,70 @@ on:
 env:
   CARGO_TERM_COLOR: always
 
+# job 拓扑：fmt / clippy / build 三者并行独立；test 依赖 build（needs），在
+# build 编译完成后启动，复用 build 的产物（经共享 rust-cache 传递 target/），
+# 只补编 test harness、不重编整个 workspace。各 job 单独状态，一个挂了不阻塞
+# 无关者，GitHub 界面一眼看出哪个红。clippy 走 check 模式、产物与 build 不同，
+# 无法复用 build 产物，故保持独立并行。
+#
+# sccache 与 mold：.cargo/config.toml 全局引用（rustc-wrapper 与 -fuse-ld=mold），
+# 凡跑 rustc 的 job（clippy/build/test）必须先装，否则构建直接失败。fmt 只跑
+# rustfmt、不跑 rustc，无需安装。
 jobs:
-  build:
+  fmt:
+    name: Format
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+  clippy:
+    name: Clippy
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
           submodules: true
-
       - uses: dtolnay/rust-toolchain@stable
         with:
-          components: clippy, rustfmt
-
+          components: clippy
       - uses: Swatinem/rust-cache@v2
-
-      # .cargo/config.toml 依赖 sccache（rustc-wrapper）与 mold（-fuse-ld=mold），
-      # 两者均在 Ubuntu 仓库中。CI 同样受益：sccache 配合 rust-cache 命中缓存，
-      # mold 并行链接。
       - name: Install sccache and mold
         run: sudo apt-get update -y && sudo apt-get install -y sccache mold
-
-      - name: Check formatting
-        run: cargo fmt --all -- --check
-
       - name: Clippy
         run: cargo clippy --all-targets -- -D warnings
 
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install sccache and mold
+        run: sudo apt-get update -y && sudo apt-get install -y sccache mold
       - name: Build
         run: cargo build --verbose
 
+  test:
+    name: Test
+    # 依赖 build：等 build 编译完成后才启动，经共享 rust-cache 复用 build 的
+    # target/ 产物（同缓存键 = OS + Cargo.lock），cargo test 只补编 test harness。
+    needs: [build]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install sccache and mold
+        run: sudo apt-get update -y && sudo apt-get install -y sccache mold
       - name: Test
         run: cargo test --verbose
