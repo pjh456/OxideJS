@@ -2,10 +2,15 @@ name: CI Test
 
 # 可复用工作流：主 ci.yml 的 test job 经 workflow_call 调用本文件。外观上主 CI
 # 只有一个 test job（全过才绿），点进去才看到内部 matrix（os × group）并行图。
-# 产物复用：rust-cache 按「OS + Cargo.lock」键在仓库级共享，本 workflow 的 test
-# job 能 restore 主 ci.yml build job 存的 target/ 缓存（跨 workflow 边界有效）。
+# 产物复用：test 依赖主 workflow 的 build job 先把 workspace 编译一遍并写入
+# sccache（GitHub Actions 缓存后端），各分区随后经 sccache 命中已编产物，只补编
+# 自己的 test harness；rust-cache 负责依赖源码与 registry 的缓存。
 on:
   workflow_call:
+
+env:
+  # 与主 ci.yml 一致：sccache 走 GitHub Actions 缓存后端，编译产物跨 run 复用。
+  SCCACHE_GHA_ENABLED: "true"
 
 jobs:
   test:
@@ -36,6 +41,7 @@ jobs:
             args: "-p oxide_kernel -p oxide_regalloc -p oxide_cfg -p oxide_bytecode -p oxide_engine -p oxide_compiler -p oxide_parser -p oxide_log -p oxide_ir -p oxide_code_cache"
 # === END AUTO-GENERATED ===
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v7
         with:
@@ -43,9 +49,9 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
-          # 与 ci.yml 的 build job 同键：复用 build 的 target/ 缓存，只补编
-          # test harness。自定义键避免按 profile 自动分键（build/test 各一）
-          # 导致 test 恢复陈旧缓存、重链接时走默认 ld 报 cannot find ld。
+          # 与 ci.yml build job 同名后缀的稳定键；rust-cache 自动键附 job 名，
+          # 故与 build 仍是两份独立缓存，跨 job 的 workspace 产物复用由 sccache
+          # 承担（见本文件头注释）。
           key: oxide-target-ubuntu-v1
       - uses: ./.github/actions/setup-tools
       - name: Test

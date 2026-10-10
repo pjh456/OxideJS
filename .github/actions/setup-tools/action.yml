@@ -1,11 +1,10 @@
-name: Setup tools (sccache / mold / nextest)
+name: Setup tools (sccache / nextest)
 
-# 工具缓存：sccache、mold、nextest 缓存到用户可写的 ~/oxide-tools-cache，恢复后
-# sudo cp 到 /usr/bin（sccache、mold）与 ~/.cargo/bin（nextest）。mold 必须落
-# /usr/bin（默认 PATH）——落 ~/.cargo/bin 时 sccache 包装 rustc 的链接子进程不
-# 继承 GITHUB_PATH 加的 PATH，链接器找不到 mold 报 cannot find ld。nextest 走
-# 官方预编译二进制直下，不依赖 main 分支安装脚本（脚本会被移动而 404）。
-description: 恢复工具缓存；缺失时安装 sccache、mold、nextest 并落系统目录
+# 工具缓存：nextest 缓存到用户可写的 ~/oxide-tools-cache，恢复后 cp 到 ~/.cargo/bin。
+# sccache 改用官方 sccache-action 安装，它带 GitHub Actions 缓存后端；apt 版 sccache
+# 无该后端，本地磁盘缓存每个 job 用完即弃、跨 run 零命中，等于只付包装开销。
+# mold 目前在 CI 统一禁用（见下方配置步骤），故不安装。
+description: 恢复 nextest 工具缓存；安装 nextest 与 sccache（GHA 缓存后端）
 
 runs:
   using: composite
@@ -15,42 +14,39 @@ runs:
       uses: actions/cache/restore@v6
       with:
         path: ~/oxide-tools-cache
-        key: oxide-tools-ubuntu-v1
+        key: oxide-tools-ubuntu-v2
 
-    - name: Install tools (cache miss)
+    - name: Install nextest (cache miss)
       if: steps.tool-cache.outputs.cache-hit != 'true'
       shell: bash
       run: |
-        sudo apt-get update -y
-        sudo apt-get install -y sccache mold
         mkdir -p "$HOME/oxide-tools-cache"
-        cp /usr/bin/sccache /usr/bin/mold "$HOME/oxide-tools-cache/"
         curl -LsSf https://get.nexte.st/latest/linux | tar zxf - -C "$HOME/oxide-tools-cache"
 
-    - name: Install tools to system dirs
+    - name: Install nextest to cargo bin
       shell: bash
-      run: |
-        sudo cp "$HOME/oxide-tools-cache/sccache" "$HOME/oxide-tools-cache/mold" /usr/bin/
-        cp "$HOME/oxide-tools-cache/cargo-nextest" "$HOME/.cargo/bin/"
+      run: cp "$HOME/oxide-tools-cache/cargo-nextest" "$HOME/.cargo/bin/"
 
-    - name: Disable mold in CI
+    - name: Setup sccache
+      uses: mozilla-actions/sccache-action@v0.0.11
+
+    - name: Configure build cache
       shell: bash
       run: |
-        # mold 在主 workflow 正常，但在可复用 workflow 里 sccache 包装 rustc 的
-        # 链接子进程定位不到 mold、回退默认 ld 报 cannot find ld。CI 统一走默认
-        # lld；只删工作副本的 mold 行，本地提交的 config 保留 mold 提速。
+        # CI 链接器统一走默认 lld：sccache 包装 rustc 时，链接子进程定位不到 mold、
+        # 回退默认 ld 报 cannot find ld。只删工作副本的 mold 行，本地提交的 config
+        # 保留 mold 提速。
         sed -i '/link-arg=-fuse-ld=mold/d' .cargo/config.toml
 
     - name: Verify tools in PATH
       shell: bash
       run: |
-        which sccache mold cargo-nextest
+        which cargo-nextest sccache
         sccache --version
-        mold --version
 
     - name: Save tool cache
       if: steps.tool-cache.outputs.cache-hit != 'true'
       uses: actions/cache/save@v6
       with:
         path: ~/oxide-tools-cache
-        key: oxide-tools-ubuntu-v1
+        key: oxide-tools-ubuntu-v2

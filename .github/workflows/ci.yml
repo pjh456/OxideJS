@@ -6,22 +6,37 @@ on:
   pull_request:
     branches: [main]
 
+# 同一 PR 的新推送取消上一轮未完成的 run：一轮 CI 数十分钟，过期 run 继续跑纯浪费
+# runner 分钟，且其状态已无意义。main 分支的推送不取消，保留每个提交的完整记录。
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+# 最小权限：CI 只读仓库内容，不需要写 token。
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
+  # sccache 走 GitHub Actions 缓存后端：编译产物跨 run 复用。本地磁盘缓存无后端、
+  # 每个 job 用完即弃，跨 run 零命中，等于白装。须在 sccache 服务启动前设置。
+  SCCACHE_GHA_ENABLED: "true"
 
-# job 拓扑：fmt / clippy / build 三者并行独立；test 依赖 build（needs），在
-# build 编译完成后启动，复用 build 的产物（经共享 rust-cache 传递 target/），
-# 只补编 test harness、不重编整个 workspace。各 job 单独状态，一个挂了不阻塞
-# 无关者，GitHub 界面一眼看出哪个红。clippy 走 check 模式、产物与 build 不同，
-# 无法复用 build 产物，故保持独立并行。
+# job 拓扑：fmt / clippy / build 三者并行独立；test 依赖 build（needs），在 build
+# 编译完成后启动。build 先编译 workspace 依赖，并把每个编译单元写进 sccache
+# （GitHub Actions 缓存后端）；test 各分区随后经 sccache 命中这些已编产物，只需
+# 补编自己的 test harness，不重编整个 workspace。各 job 单独状态，一个挂了不阻塞
+# 无关者，GitHub 界面一眼看出哪个红。
 #
-# sccache 与 mold：.cargo/config.toml 全局引用（rustc-wrapper 与 -fuse-ld=mold），
-# 凡跑 rustc 的 job（clippy/build/test）必须先装，否则构建直接失败。fmt 只跑
-# rustfmt、不跑 rustc，无需安装。
+# sccache 与 mold：.cargo/config.toml 全局引用 rustc-wrapper=sccache，凡跑 rustc
+# 的 job（clippy/build/test）都要经 setup-tools 装好 sccache，否则构建直接失败；
+# mold 由 setup-tools 从工作副本剥掉，CI 链接统一走默认 ld。fmt 只跑 rustfmt、
+# 不跑 rustc，无需 setup-tools。
 jobs:
   fmt:
     name: Format
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
@@ -33,6 +48,7 @@ jobs:
   clippy:
     name: Clippy
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
         with:
@@ -48,6 +64,7 @@ jobs:
   build:
     name: Build
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
         with:
@@ -55,16 +72,18 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
-          # 与 ci-test.yml 的 test job 同键：test 复用 build 的 target/ 缓存，
-          # 只补编 test harness、不重编整个 workspace。自定义键避免按 profile
-          # 自动分键（build/test 各一）导致 test 恢复陈旧缓存。
+          # 稳定键后缀：让 build 的依赖产物缓存跨 run 固定在同一命名空间。
+          # rust-cache 的自动键会附 job 名，故 build 与 test 仍是两份独立缓存；
+          # 且它只缓存依赖、不缓存 workspace 自身，workspace 产物的跨 job 复用
+          # 由 sccache 承担。
           key: oxide-target-ubuntu-v1
       - uses: ./.github/actions/setup-tools
       - name: Build
         run: cargo build --verbose
 
   # test 是单一 job：经 workflow_call 调用 ci-test.yml，外观上主 CI 只有一个 test
-  # （全过才绿），点进去才见内部 matrix（os × group）并行图。needs build 复用产物。
+  # （全过才绿），点进去才见内部 matrix（os × group）并行图。build 先编 workspace
+  # 并填充 sccache，test 经 sccache 命中已编产物。
   test:
     name: Test
     needs: [build]
