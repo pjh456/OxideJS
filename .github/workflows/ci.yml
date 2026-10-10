@@ -41,8 +41,7 @@ jobs:
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
-      - name: Install sccache and mold
-        run: sudo apt-get update -y && sudo apt-get install -y sccache mold
+      - uses: ./.github/actions/setup-tools
       - name: Clippy
         run: cargo clippy --all-targets -- -D warnings
 
@@ -55,8 +54,7 @@ jobs:
           submodules: true
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - name: Install sccache and mold
-        run: sudo apt-get update -y && sudo apt-get install -y sccache mold
+      - uses: ./.github/actions/setup-tools
       - name: Build
         run: cargo build --verbose
 
