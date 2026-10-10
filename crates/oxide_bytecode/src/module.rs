@@ -30,7 +30,7 @@ pub enum Constant {
 /// `enclosing_reg` 是外层函数中该变量的寄存器位；`cell_idx` 是父函数 own cell
 /// 表下标（`parent_uv_idx` 为 None 时）。多级闭包（外层变量本身就是父函数从更
 /// 外层捕获的 upvalue）时 `parent_uv_idx` 给出父闭包 `upvalues` 数组下标。
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct UpvalueCapture {
     pub name: String,
     pub enclosing_reg: u32,
@@ -50,6 +50,10 @@ pub struct UpvalueCapture {
 /// - `is_arrow` / `captured_this_const_idx` — 箭头函数词法 `this`；
 /// - `is_class_constructor` / `is_derived_constructor` / `needs_home_object` — 类相关；
 /// - `upvalue_captures` / `cells_needed` — 闭包捕获描述。
+///
+/// 派生 `PartialEq` 供缓存 debug 重编译校验做整结构比较（递归覆盖子模块树）；
+/// `Debug` 供校验失败时输出整棵模块树（与 `Display` 反汇编互补）。
+#[derive(Debug, PartialEq)]
 pub struct CompiledModule {
     pub bytecode: Arc<[opcode::Instr]>,
     pub constants: Vec<Constant>,

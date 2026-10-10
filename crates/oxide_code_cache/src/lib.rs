@@ -59,7 +59,7 @@ impl CodeForge {
     }
 
     /// 命中返回缓存模块，未命中则调用 `compile` 编译后缓存并返回。
-    /// debug 构建下命中时会重编译校验 bytecode，检测结构哈希碰撞。
+    /// debug 构建下命中时会重编译校验整模块（含子模块树），检测结构哈希碰撞。
     pub fn get_or_insert_with<F>(&self, hash: u64, compile: F) -> Result<Arc<CompiledModule>, String>
     where
         F: Fn() -> Result<CompiledModule, String>,
@@ -73,9 +73,11 @@ impl CodeForge {
                 #[cfg(debug_assertions)]
                 {
                     let fresh = compile()?;
+                    // 整结构比较（递归覆盖子模块树）：只比顶层字节码会漏检嵌套
+                    // 函数体内的同键异码。
                     debug_assert_eq!(
-                        module.bytecode, fresh.bytecode,
-                        "structural hash collision: cached bytecode differs from recompiled for hash {hash}",
+                        module.as_ref(), &fresh,
+                        "structural hash collision: cached module differs from recompiled for hash {hash}",
                     );
                 }
                 return Ok(module);

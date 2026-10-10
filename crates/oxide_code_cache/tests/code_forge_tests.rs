@@ -85,6 +85,67 @@ fn cache_hit_debug_verifies_bytecode() {
         .unwrap();
 }
 
+/// 构造带指定字节码的子模块（嵌套函数体夹具）。
+fn submodule(bytecode: Vec<u32>) -> CompiledModule {
+    let mut m = CompiledModule::new();
+    m.bytecode = Arc::from(bytecode);
+    m
+}
+
+#[test]
+fn cache_hit_debug_verifies_nested_submodules_identical() {
+    let forge = forge(16);
+    let mut m1 = CompiledModule::new();
+    m1.bytecode = Arc::from(vec![1, 2, 3]);
+    m1.sub_modules = vec![Arc::new(submodule(vec![4, 5, 6]))];
+    let cached = forge.insert(7, m1);
+    let result = forge
+        .get_or_insert_with(7, || {
+            let mut m = CompiledModule::new();
+            m.bytecode = Arc::from(vec![1, 2, 3]);
+            m.sub_modules = vec![Arc::new(submodule(vec![4, 5, 6]))];
+            Ok(m)
+        })
+        .unwrap();
+    assert!(Arc::ptr_eq(&cached, &result));
+}
+
+#[test]
+#[cfg_attr(debug_assertions, should_panic(expected = "structural hash collision"))]
+fn cache_hit_debug_verifies_nested_submodule_differs() {
+    let forge = forge(16);
+    let mut m1 = CompiledModule::new();
+    m1.bytecode = Arc::from(vec![1, 2, 3]);
+    m1.sub_modules = vec![Arc::new(submodule(vec![4, 5, 6]))];
+    forge.insert(8, m1);
+    let _ = forge
+        .get_or_insert_with(8, || {
+            let mut m = CompiledModule::new();
+            m.bytecode = Arc::from(vec![1, 2, 3]);
+            m.sub_modules = vec![Arc::new(submodule(vec![7, 8, 9]))];
+            Ok(m)
+        })
+        .unwrap();
+}
+
+#[test]
+#[cfg_attr(debug_assertions, should_panic(expected = "structural hash collision"))]
+fn cache_hit_debug_verifies_top_level_differs_keeps_prefix() {
+    let forge = forge(16);
+    let mut m1 = CompiledModule::new();
+    m1.bytecode = Arc::from(vec![1, 2, 3]);
+    m1.sub_modules = vec![Arc::new(submodule(vec![4, 5, 6]))];
+    forge.insert(9, m1);
+    let _ = forge
+        .get_or_insert_with(9, || {
+            let mut m = CompiledModule::new();
+            m.bytecode = Arc::from(vec![9, 8, 7]);
+            m.sub_modules = vec![Arc::new(submodule(vec![4, 5, 6]))];
+            Ok(m)
+        })
+        .unwrap();
+}
+
 #[test]
 fn cache_hit_returns_cached_not_recompiled() {
     let forge = forge(16);

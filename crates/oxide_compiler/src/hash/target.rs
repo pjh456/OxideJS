@@ -118,14 +118,16 @@ fn hash_assignment_target_maybe_default(
     }
 }
 
-/// 哈希对象赋值目标属性：标识符形态计绑定名与默认值（若有），
+/// 哈希对象赋值目标属性：标识符形态计绑定名（仅精确键）与默认值（若有），
 /// 属性形态计键与绑定递归。
 fn hash_assignment_target_property(
     prop: &AssignmentTargetProperty, h: &mut rustc_hash::FxHasher, include_binding_names: bool,
 ) {
     match prop {
         AssignmentTargetProperty::AssignmentTargetPropertyIdentifier(id) => {
-            id.binding.name.as_str().hash(h);
+            if include_binding_names {
+                id.binding.name.as_str().hash(h);
+            }
             if let Some(init) = &id.init {
                 expression::hash_expression(init, h, include_binding_names);
             }
