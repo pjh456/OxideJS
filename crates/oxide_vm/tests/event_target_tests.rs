@@ -241,10 +241,7 @@ fn registry_pruned_after_target_collected() {
 /// ErrorEvent 构造器：init 的 message 经原型 getter 可读。
 #[test]
 fn error_event_constructor_message() {
-    assert_eq!(
-        eval("new ErrorEvent('error', { message: 'boom' }).message;"),
-        "boom"
-    );
+    assert_eq!(eval("new ErrorEvent('error', { message: 'boom' }).message;"), "boom");
 }
 
 /// ErrorEvent 缺省字段：message 空串、filename 空串、lineno 与 colno 为 0、
@@ -287,9 +284,7 @@ fn error_event_requires_new() {
 /// ErrorEvent 盒边 GC 保活：error 字段引用对象经完整收集后仍存活。
 #[test]
 fn error_event_box_edge_survives_gc() {
-    let mut vm = vm_with_script(
-        "globalThis.e = new ErrorEvent('error', { error: { tag: 1 } });",
-    );
+    let mut vm = vm_with_script("globalThis.e = new ErrorEvent('error', { error: { tag: 1 } });");
     // 强制完整收集：error 字段是盒内 GC 边，对象应保活。
     vm.collect_session_gc();
     assert_eq!(vm_eval(&mut vm, "globalThis.e.error.tag;"), "1");

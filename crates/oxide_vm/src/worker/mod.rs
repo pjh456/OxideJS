@@ -858,16 +858,8 @@ mod tests {
             }
             std::thread::sleep(Duration::from_millis(10));
         }
-        assert_eq!(
-            global_value_opt(&vm, "isEE"),
-            Some(JsValue::bool(true)),
-            "事件应 instanceof ErrorEvent"
-        );
-        assert_eq!(
-            global_value_opt(&vm, "isE"),
-            Some(JsValue::bool(true)),
-            "事件应 instanceof Event"
-        );
+        assert_eq!(global_value_opt(&vm, "isEE"), Some(JsValue::bool(true)), "事件应 instanceof ErrorEvent");
+        assert_eq!(global_value_opt(&vm, "isE"), Some(JsValue::bool(true)), "事件应 instanceof Event");
 
         vm.shutdown_workers();
         let _ = std::fs::remove_file(&worker_path);

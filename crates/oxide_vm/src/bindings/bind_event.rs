@@ -299,7 +299,10 @@ pub fn bind_event(core: &Arc<KernelCore>, session: &KernelSession, global: &mut 
 
     let ee_getter_fns: [(&str, *const ()); 5] = [
         ("message", oxide_builtins::event::error_event_message_getter::<crate::vm::Vm> as *const ()),
-        ("filename", oxide_builtins::event::error_event_filename_getter::<crate::vm::Vm> as *const ()),
+        (
+            "filename",
+            oxide_builtins::event::error_event_filename_getter::<crate::vm::Vm> as *const (),
+        ),
         ("lineno", oxide_builtins::event::error_event_lineno_getter::<crate::vm::Vm> as *const ()),
         ("colno", oxide_builtins::event::error_event_colno_getter::<crate::vm::Vm> as *const ()),
         ("error", oxide_builtins::event::error_event_error_getter::<crate::vm::Vm> as *const ()),
