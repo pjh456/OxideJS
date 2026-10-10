@@ -58,9 +58,8 @@ pub(super) fn hash_expression(expr: &Expression, h: &mut rustc_hash::FxHasher, i
         }
         Expression::AssignmentExpression(assign) => {
             std::mem::discriminant(&assign.operator).hash(h);
-            if let Some(target) = assign.left.as_simple_assignment_target() {
-                target::hash_simple_assignment_target(target, h, include_binding_names);
-            }
+            // 全量分派：简单目标与数组/对象解构目标都计入，左值整体不得漏哈希。
+            target::hash_assignment_target(&assign.left, h, include_binding_names);
             hash_expression(&assign.right, h, include_binding_names);
         }
         Expression::UpdateExpression(update) => {

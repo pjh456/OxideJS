@@ -252,10 +252,23 @@ fn hash_module_export_name(name: &ModuleExportName<'_>, h: &mut rustc_hash::FxHa
 
 fn hash_for_statement_left(left: &ForStatementLeft<'_>, h: &mut rustc_hash::FxHasher, include_binding_names: bool) {
     std::mem::discriminant(left).hash(h);
-    if let ForStatementLeft::VariableDeclaration(decl) = left {
-        hash_variable_declaration(decl, h, include_binding_names);
-    } else if let Some(target) = left.as_simple_assignment_target() {
-        target::hash_simple_assignment_target(target, h, include_binding_names);
+    match left {
+        ForStatementLeft::VariableDeclaration(decl) => {
+            hash_variable_declaration(decl, h, include_binding_names);
+        }
+        // 解构赋值头与赋值目标同构，分派到共享助手。
+        ForStatementLeft::ArrayAssignmentTarget(ap) => {
+            target::hash_array_assignment_target(ap, h, include_binding_names);
+        }
+        ForStatementLeft::ObjectAssignmentTarget(op) => {
+            target::hash_object_assignment_target(op, h, include_binding_names);
+        }
+        // 简单目标（标识符/成员/TS 断言）走既有分派。
+        _ => {
+            if let Some(simple) = left.as_simple_assignment_target() {
+                target::hash_simple_assignment_target(simple, h, include_binding_names);
+            }
+        }
     }
 }
 

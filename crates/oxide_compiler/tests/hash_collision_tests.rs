@@ -108,6 +108,36 @@ fn import_defer_distinguished() {
 }
 
 #[test]
+fn destructuring_binding_names_distinguished() {
+    // 声明侧：解构绑定名、键、rest 与嵌套结构全量计入精确键。
+    assert_ne!(compiled("var [a, b] = [1, 2]"), compiled("var [p, q] = [1, 2]"));
+    assert_ne!(compiled("var {x: a} = o"), compiled("var {y: b} = o"));
+    assert_ne!(compiled("var [a, ...r] = o"), compiled("var [a, ...s] = o"));
+    assert_ne!(
+        compiled("var [{p: a}, b] = o"),
+        compiled("var [a, b] = o"),
+        "nested pattern structure must be part of the hash"
+    );
+    // 默认值侧：默认值表达式计入哈希。
+    assert_ne!(compiled("var [a = f()] = o"), compiled("var [a = g()] = o"));
+
+    // 赋值目标侧：解构赋值左值整体不得漏哈希。
+    assert_ne!(compiled("[a, b] = [1, 2]"), compiled("[p, q] = [1, 2]"));
+    assert_ne!(compiled("({a} = o)"), compiled("({b} = o)"));
+
+    // for 头侧：声明形态与赋值形态的解构头都计入哈希。
+    assert_ne!(compiled("for (var [a, b] of xs) {}"), compiled("for (var [p, q] of xs) {}"));
+    assert_ne!(compiled("for ({a} of xs) {}"), compiled("for ({b} of xs) {}"));
+
+    // 函数参数与 catch 侧：解构参数名计入哈希。
+    assert_ne!(compiled("function f([a, b]) {}"), compiled("function f([p, q]) {}"));
+    assert_ne!(compiled("try {} catch ([a]) {}"), compiled("try {} catch ([p]) {}"));
+
+    // 同源等价回归。
+    assert_eq!(compiled("var [a, b] = [1, 2]"), compiled("var [a, b] = [1, 2]"));
+}
+
+#[test]
 fn structural_hash_ignores_binding_names() {
     // 结构哈希忽略绑定名：仅参数/变量改名后哈希相等。
     assert_eq!(structural("function f(x){ return x }"), structural("function f(y){ return y }"));
