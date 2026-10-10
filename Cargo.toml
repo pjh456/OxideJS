@@ -89,6 +89,11 @@ panic = "abort"
 # 堆栈回溯仍带行号，日常单测与断点不受影响。
 debug = 1
 
+[profile.dev.package."*"]
+# 外部依赖不带调试信息：测试二进制体积的大头是依赖与 std 的调试信息，裁掉后大幅缩短
+# 链接时间与磁盘占用；工作区 crate 自身的行表（上方 debug = 1）保留，便于调试。
+debug = false
+
 # 上游 0.11.1 的 Unicode 表缺 Script/Script_Extensions 的 Unknown（Zzzz，未分配
 # 码点集）取值，规范合法模式 \p{Script=Unknown} 无法编译。vendor 补丁在 0.11.1
 # 上补齐该取值，其余行为与上游 0.11.1 逐位一致。
