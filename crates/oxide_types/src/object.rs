@@ -232,6 +232,14 @@ impl JsObject {
     /// 载荷盒（`BroadcastChannelInner`），无对象边（mpsc 非 GC 边、通道名为
     /// Rust `String`）。
     pub const OBJ_TYPE_BROADCAST_CHANNEL: u8 = 34;
+    /// Event 对象：事件基类载荷盒（type 串与九项状态位）存于 `native_fn` 槽。
+    pub const OBJ_TYPE_EVENT: u8 = 35;
+    /// MessageEvent 对象：事件派生类载荷盒（data 与 ports 边）存于 `native_fn` 槽。
+    pub const OBJ_TYPE_MESSAGE_EVENT: u8 = 36;
+    /// ErrorEvent 对象：事件派生类载荷盒（message 与 error 边）存于 `native_fn` 槽。
+    pub const OBJ_TYPE_ERROR_EVENT: u8 = 37;
+    /// CustomEvent 对象：事件派生类载荷盒（detail 边）存于 `native_fn` 槽。
+    pub const OBJ_TYPE_CUSTOM_EVENT: u8 = 38;
     /// `is_session_epoch` 字段中的 session 标记位。
     pub const SESSION_EPOCH_BIT: u8 = 0x01;
     /// `is_session_epoch` 字段中的 GC 标记位。
@@ -318,6 +326,11 @@ impl JsObject {
     #[inline]
     pub fn is_broadcast_channel(&self) -> bool {
         self.type_tag == Self::OBJ_TYPE_BROADCAST_CHANNEL
+    }
+    /// 是否 Event 对象（`native_fn` 槽存事件基类载荷盒）。
+    #[inline]
+    pub fn is_event_obj(&self) -> bool {
+        self.type_tag == Self::OBJ_TYPE_EVENT
     }
     /// 是否 DataView 对象。
     #[inline]

@@ -1,7 +1,7 @@
 //! native 载荷家族的单点分类与每家族边函数引用（家族表）。
 //!
 //! 分类是复合谓词：header 位（map/set/module_ns）优先于 `type_tag`，
-//! 两维互斥、一个对象至多归入一个家族。tag 维显式枚举全部 0..=34，
+//! 两维互斥、一个对象至多归入一个家族。tag 维显式枚举全部 0..=38，
 //! 未登记 tag panic。
 //!
 //! 关键约定：
@@ -10,13 +10,13 @@
 //! - 注册面集中在 `ops_for` 的家族表，mark/size/drop/clone/rewrite 各链
 //!   由同一张表驱动，新增家族只在此登记。
 
-use oxide_builtins::{data_view, disposable_stack, map, message_channel, module, set, typed_array, weak_map};
+use oxide_builtins::{data_view, disposable_stack, event, map, message_channel, module, set, typed_array, weak_map};
 use oxide_types::object::{Cell, JsObject, JsString};
 use oxide_types::value::JsValue;
 
 /// native 载荷家族。
 ///
-/// 15 个 native 家族 + 空家族；空家族是无 native 盒类型的显式归类结果。
+/// 21 个 native 家族 + 空家族；空家族是无 native 盒类型的显式归类结果。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum NativeBoxFamily {
     /// 无 native 载荷盒。
@@ -53,6 +53,14 @@ pub(crate) enum NativeBoxFamily {
     MessagePort,
     /// BroadcastChannel 通道对象（tag 34，mpsc 发送/接收对与通道名，无对象边）。
     BroadcastChannel,
+    /// Event 事件基类对象（tag 35，type 串与九项状态位载荷盒）。
+    Event,
+    /// MessageEvent 事件派生类对象（tag 36，data 与 ports 边）。
+    MessageEvent,
+    /// ErrorEvent 事件派生类对象（tag 37，message 与 error 边）。
+    ErrorEvent,
+    /// CustomEvent 事件派生类对象（tag 38，detail 边）。
+    CustomEvent,
     /// mapped arguments 对象（tag 20，同步状态盒存 `native_data`，无引用边）。
     Arguments,
 }
@@ -87,7 +95,7 @@ pub(crate) fn classify(obj: &JsObject) -> NativeBoxFamily {
 /// 按类型 tag 分类 native 载荷家族。
 ///
 /// # 边界与前提
-/// - 0..=34 全 tag 显式枚举；未登记 tag（35 及以上）panic。
+/// - 0..=38 全 tag 显式枚举；未登记 tag（39 及以上）panic。
 pub(crate) fn classify_by_tag(tag: u8) -> NativeBoxFamily {
     match tag {
         JsObject::OBJ_TYPE_ARRAY_BUFFER => NativeBoxFamily::ArrayBuffer,
@@ -126,6 +134,10 @@ pub(crate) fn classify_by_tag(tag: u8) -> NativeBoxFamily {
         JsObject::OBJ_TYPE_RAW_JSON => NativeBoxFamily::None,
         JsObject::OBJ_TYPE_MESSAGE_PORT => NativeBoxFamily::MessagePort,
         JsObject::OBJ_TYPE_BROADCAST_CHANNEL => NativeBoxFamily::BroadcastChannel,
+        JsObject::OBJ_TYPE_EVENT => NativeBoxFamily::Event,
+        JsObject::OBJ_TYPE_MESSAGE_EVENT => NativeBoxFamily::MessageEvent,
+        JsObject::OBJ_TYPE_ERROR_EVENT => NativeBoxFamily::ErrorEvent,
+        JsObject::OBJ_TYPE_CUSTOM_EVENT => NativeBoxFamily::CustomEvent,
         _ => panic!("unregistered type tag: {tag}"),
     }
 }
@@ -223,6 +235,19 @@ pub(crate) fn ops_for(family: NativeBoxFamily) -> NativeBoxOps {
             string_edges: None,
             cell_edges: None,
         },
+        // Event 基类载荷盒：type 串边与 target / current_target 对象边。
+        NativeBoxFamily::Event => NativeBoxOps {
+            object_edges: Some(event::event_native_edges),
+            string_edges: None,
+            cell_edges: None,
+        },
+        // 事件派生类（MessageEvent / ErrorEvent / CustomEvent）载荷盒由后续子
+        // 任务填充；本臂当前无引用边，仅 size/drop 链消费。
+        NativeBoxFamily::MessageEvent | NativeBoxFamily::ErrorEvent | NativeBoxFamily::CustomEvent => NativeBoxOps {
+            object_edges: None,
+            string_edges: None,
+            cell_edges: None,
+        },
         // mapped arguments 同步状态盒：无引用边（位图与帧身份均为原始值），
         // 三边函数全空，仅 size/drop 链消费。
         NativeBoxFamily::Arguments => NativeBoxOps {
@@ -261,6 +286,10 @@ mod tests {
             JsObject::OBJ_TYPE_REGEXP | JsObject::OBJ_TYPE_REGEX_STUB => NativeBoxFamily::RegExp,
             JsObject::OBJ_TYPE_MESSAGE_PORT => NativeBoxFamily::MessagePort,
             JsObject::OBJ_TYPE_BROADCAST_CHANNEL => NativeBoxFamily::BroadcastChannel,
+            JsObject::OBJ_TYPE_EVENT => NativeBoxFamily::Event,
+            JsObject::OBJ_TYPE_MESSAGE_EVENT => NativeBoxFamily::MessageEvent,
+            JsObject::OBJ_TYPE_ERROR_EVENT => NativeBoxFamily::ErrorEvent,
+            JsObject::OBJ_TYPE_CUSTOM_EVENT => NativeBoxFamily::CustomEvent,
             JsObject::OBJ_TYPE_ARGUMENTS => NativeBoxFamily::Arguments,
             _ => NativeBoxFamily::None,
         }
@@ -268,7 +297,7 @@ mod tests {
 
     #[test]
     fn tag_dimension_every_tag_hits_exactly_one_family() {
-        for tag in 0..=34u8 {
+        for tag in 0..=38u8 {
             let obj = obj_with_tag(tag);
             let family = classify(&obj);
             assert_eq!(family, expected_family_for_tag(tag), "tag {tag} 家族不一致");
@@ -302,7 +331,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "unregistered type tag")]
     fn unregistered_tag_panics() {
-        let obj = obj_with_tag(35);
+        let obj = obj_with_tag(39);
         classify(&obj);
     }
 }

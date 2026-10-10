@@ -11,7 +11,7 @@ use crate::native_box_dispatch;
 use crate::vm::RootGroup;
 use crate::vm::Vm;
 use oxide_builtins::{
-    array_buffer, broadcast_channel, data_view, disposable_stack, map, message_channel, module, regexp, set,
+    array_buffer, broadcast_channel, data_view, disposable_stack, event, map, message_channel, module, regexp, set,
     typed_array, weak_map,
 };
 
@@ -132,6 +132,7 @@ impl SessionGc {
         bytes += weak_map::weak_map_native_size(obj);
         bytes += message_channel::message_port_native_size(obj);
         bytes += broadcast_channel::broadcast_channel_native_size(obj);
+        bytes += event::event_native_size(obj);
         bytes += crate::arguments_gc::arguments_native_size(obj);
 
         bytes
@@ -375,6 +376,14 @@ impl SessionGc {
                 Self::mark_string_live(live, obj.get_regexp_flags().as_string_ptr_mut());
             }
         }
+        // Event 载荷盒 type 字段持有字符串边。
+        if obj.is_event_obj() {
+            for value in event::event_native_edges(obj) {
+                if value.is_string() {
+                    Self::mark_string_live(live, value.as_string_ptr_mut());
+                }
+            }
+        }
     }
 
     /// 从 VM roots 标记存活 session 对象、字符串与 BigInt，供 `sweep` 判定。
@@ -574,6 +583,7 @@ impl SessionGc {
             freed_bytes += weak_map::drop_weak_map_native(obj);
             freed_bytes += message_channel::drop_message_port_native(obj);
             freed_bytes += broadcast_channel::drop_broadcast_channel_native(obj);
+            freed_bytes += event::drop_event_native(obj);
             freed_bytes += crate::arguments_gc::drop_arguments_native(obj);
 
             freed_bytes
