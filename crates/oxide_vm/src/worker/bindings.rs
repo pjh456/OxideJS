@@ -1,6 +1,6 @@
 //! Worker API 的 concrete `&mut Vm` native 函数：构造器、`postMessage`/`terminate`
 //! 原型方法、`self` 面（`self.postMessage`/`self.close`/`self.name`/`self.location`）
-//! 与 `MessageEvent` 构造辅助。
+//! 与 `MessageEvent` / 错误事件构造辅助。
 //!
 //! 关键约定：
 //! - 函数是 concrete `&mut Vm` 形态（`NativeFn`），不挂 `VmHost` trait（trait 是单
@@ -287,30 +287,59 @@ pub(crate) fn self_location(vm: &mut Vm, _args: &[u8]) -> NativeResult {
     NativeResult::Ok(vm.new_string(""))
 }
 
-/// 事件构造辅助：建真实 Event 盒（`type` 字段）加 `data` / `message` 普通属性。
+/// 消息事件构造辅助：建真实 MessageEvent 盒（`data` + `type`，`ports` 空数组）。
 ///
-/// 消息事件与错误事件同型，共用本辅助：消息事件 `message` 为 undefined，
-/// 错误事件 `data` 为 undefined、`message` 为错误串。
+/// 消息路径（`deliver_worker_messages` / `deliver_self_message`）经本辅助建
+/// 真实 MessageEvent，`e instanceof MessageEvent` 与 `e instanceof Event` 均
+/// 成立，`e.data` 经原型 getter 读盒字段。
 ///
 /// # 步骤
-/// 1. 经 `create_event_box` 建真实 Event 盒（`type` 取 `type_val` 的字符串形态，
-///    `[[Prototype]]` → `Event.prototype`），使 `dispatchEvent` 品牌守卫通过。
-/// 2. define `data` 属性（rehydrate 后的消息值，可枚举；GC 边）。
-/// 3. `message` 非 undefined 时 define `message` 属性（错误消息串，可枚举）。
-/// 4. 返回对象。
+/// 1. 读 `data`（`args[1]`）与 `type`（`args[2]`）。
+/// 2. 委托 `create_message_event_box` 建真实 MessageEvent 盒（`origin` 空串、
+///    `lastEpoch` 0、`source` null、`ports` 空数组，`[[Prototype]]` →
+///    `MessageEvent.prototype`），使 `dispatchEvent` 品牌守卫通过。
+/// 3. 返回对象。
 ///
 /// # 边界与前提
-/// - `data` 是 rehydrate 后的消息值（GC 边，经属性区入 mark）。
-/// - `type` 是事件类型串（`"message"`/`"error"`/`"messageerror"`）。
-/// - `message` 是错误消息串（仅错误事件定义，消息事件为 undefined）。
-/// - Event 盒无 `data` 字段（8.4 的 MessageEvent 才补），`data` 作盒对象普通属性。
+/// - `data` 是 rehydrate 后的消息值（GC 边，经盒边入 mark）。
+/// - `type` 是事件类型串（`"message"`）。
 ///
 /// # 副作用
-/// - 新建一个 Event 盒对象（经 `alloc_object` 入对象表）。
+/// - 新建一个 MessageEvent 盒对象（经 `alloc_object` 入对象表）。
 pub(crate) fn message_event_constructor(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let data_val = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
     let type_val = if args.len() > 2 { vm.reg(args[2]) } else { JsValue::undefined() };
-    let message_val = if args.len() > 3 { vm.reg(args[3]) } else { JsValue::undefined() };
+
+    // 建真实 MessageEvent 盒（type 取 type_val 的字符串形态）。
+    let type_text = vm.lookup_str(type_val).unwrap_or_default();
+    let ptr = oxide_builtins::event::create_message_event_box(vm, data_val, &type_text);
+    NativeResult::Ok(JsValue::from_js_object(ptr))
+}
+
+/// 错误事件构造辅助（临时形态）：建真实 Event 盒（`type` 字段）加 `data` /
+/// `message` 普通属性。
+///
+/// 错误路径（`deliver_error_event`）经本辅助建错误事件：`data` 为 undefined、
+/// `message` 为错误串，供 onerror 处理器读取。
+///
+/// # 步骤
+/// 1. 读 `type`（`args[1]`）与 `message`（`args[2]`）。
+/// 2. 经 `create_event_box` 建真实 Event 盒（`type` 取 `type_val` 的字符串
+///    形态，`[[Prototype]]` → `Event.prototype`），使 `dispatchEvent` 品牌守卫
+///    通过。
+/// 3. define `data` 属性（undefined，可枚举）与 `message` 属性（错误消息串，
+///    可枚举）。
+/// 4. 返回对象。
+///
+/// # 边界与前提
+/// - `type` 是事件类型串（`"error"`/`"messageerror"`）。
+/// - `message` 是错误消息串。
+///
+/// # 副作用
+/// - 新建一个 Event 盒对象（经 `alloc_object` 入对象表）。
+pub(crate) fn build_error_event(vm: &mut Vm, args: &[u8]) -> NativeResult {
+    let type_val = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
+    let message_val = if args.len() > 2 { vm.reg(args[2]) } else { JsValue::undefined() };
 
     // 建真实 Event 盒（type 取 type_val 的字符串形态）。
     let type_text = vm.lookup_str(type_val).unwrap_or_default();
@@ -319,11 +348,9 @@ pub(crate) fn message_event_constructor(vm: &mut Vm, args: &[u8]) -> NativeResul
     let event_obj = unsafe { &mut *ptr };
 
     let si_data = vm.perm_intern("data");
-    let _ = vm.define_data_property(event_obj, si_data, data_val, PropAttributes::DEFAULT_DATA);
-    if !message_val.is_undefined() {
-        let si_message = vm.perm_intern("message");
-        let _ = vm.define_data_property(event_obj, si_message, message_val, PropAttributes::DEFAULT_DATA);
-    }
+    let _ = vm.define_data_property(event_obj, si_data, JsValue::undefined(), PropAttributes::DEFAULT_DATA);
+    let si_message = vm.perm_intern("message");
+    let _ = vm.define_data_property(event_obj, si_message, message_val, PropAttributes::DEFAULT_DATA);
 
     NativeResult::Ok(JsValue::from_js_object(ptr))
 }

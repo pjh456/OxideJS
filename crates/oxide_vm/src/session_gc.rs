@@ -133,6 +133,7 @@ impl SessionGc {
         bytes += message_channel::message_port_native_size(obj);
         bytes += broadcast_channel::broadcast_channel_native_size(obj);
         bytes += event::event_native_size(obj);
+        bytes += event::message_event_native_size(obj);
         bytes += crate::arguments_gc::arguments_native_size(obj);
 
         bytes
@@ -376,9 +377,16 @@ impl SessionGc {
                 Self::mark_string_live(live, obj.get_regexp_flags().as_string_ptr_mut());
             }
         }
-        // Event 载荷盒 type 字段持有字符串边。
-        if obj.is_event_obj() {
-            for value in event::event_native_edges(obj) {
+        // 事件系载荷盒（Event / MessageEvent / ErrorEvent / CustomEvent）字符串
+        // 边标记：按标签取对应边函数；ErrorEvent / CustomEvent 载荷盒由后续子
+        // 任务填充，当前取空边。
+        if event::is_event_family_obj(obj) {
+            let edges = match obj.type_tag {
+                JsObject::OBJ_TYPE_EVENT => event::event_native_edges(obj),
+                JsObject::OBJ_TYPE_MESSAGE_EVENT => event::message_event_native_edges(obj),
+                _ => Vec::new(),
+            };
+            for value in edges {
                 if value.is_string() {
                     Self::mark_string_live(live, value.as_string_ptr_mut());
                 }
@@ -584,6 +592,7 @@ impl SessionGc {
             freed_bytes += message_channel::drop_message_port_native(obj);
             freed_bytes += broadcast_channel::drop_broadcast_channel_native(obj);
             freed_bytes += event::drop_event_native(obj);
+            freed_bytes += event::drop_message_event_native(obj);
             freed_bytes += crate::arguments_gc::drop_arguments_native(obj);
 
             freed_bytes

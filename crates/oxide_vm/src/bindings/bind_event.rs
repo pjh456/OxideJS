@@ -1,8 +1,10 @@
-//! Event 基类绑定：就地填充 `event_constructor` / `event_proto` 两枚 P 字段
-//! 占位（构造器本体、原型方法、原型 getter 与 Event 常量），并绑全局 `Event`。
+//! Event 体系绑定：就地填充 `event_constructor` / `event_proto` 两枚 P 字段
+//! 占位（构造器本体、原型方法、原型 getter 与 Event 常量），并绑全局 `Event`；
+//! 就地填充 `message_event_constructor` / `message_event_proto` 两枚 P 字段
+//! 占位（构造器本体与原型 getter），并绑全局 `MessageEvent`。
 //!
-//! 九枚 P 字段中其余七枚（MessageEvent / ErrorEvent / CustomEvent 四对加
-//! EventTarget 原型）由后续子任务就地填充，本函数不读不写。
+//! 九枚 P 字段中其余四枚（ErrorEvent / CustomEvent 两对）由后续子任务就地
+//! 填充，本函数不读不写。
 
 use std::sync::Arc;
 
@@ -12,10 +14,11 @@ use oxide_kernel::kernel::{KernelCore, KernelSession};
 use oxide_types::object::{JsObject, PropAttributes};
 use oxide_types::value::JsValue;
 
-/// 把 Event 构造器与原型方法绑定到 global。
+/// 把 Event 与 MessageEvent 构造器及原型方法绑定到 global。
 ///
-/// `event_constructor` / `event_proto` 两枚 P 字段是空对象占位，本函数就地
-/// 填充（不新建对象——P 字段本身就是槽位，快照/脏检查/收尾枚举已覆盖）。
+/// `event_constructor` / `event_proto` 与 `message_event_constructor` /
+/// `message_event_proto` 四枚 P 字段是空对象占位，本函数就地填充（不新建
+/// 对象——P 字段本身就是槽位，快照/脏检查/收尾枚举已覆盖）。
 ///
 /// # 幂等
 /// 本函数从三条路径到达：`init_kernel_builtins`（占位是空对象）、
@@ -160,6 +163,79 @@ pub fn bind_event(core: &Arc<KernelCore>, session: &KernelSession, global: &mut 
         let si = sf.intern(name).0;
         if sh.lookup_position(proto.shape_id(), si).is_none() {
             bind_accessor_getter(core, session, proto, name, fn_ptr);
+        }
+    }
+
+    // ---- 填 MessageEvent 构造器与原型占位 ----
+    let me_ctor_ptr = world.message_event_constructor.as_ptr() as *mut JsObject;
+    let me_ctor = unsafe { &mut *me_ctor_ptr };
+    let me_proto_ptr = world.message_event_proto.as_ptr() as *mut JsObject;
+    let me_proto = unsafe { &mut *me_proto_ptr };
+
+    // 构造器：function 标志、prototype 槽、name 槽、[[Prototype]] →
+    // Function.prototype（幂等，裸写槽）。
+    me_ctor.set_function(true);
+    if sh.lookup_position(me_ctor.shape_id(), si_prototype).is_none() {
+        let shape = sh.make_shape(me_ctor.shape_id(), si_prototype);
+        me_ctor.set_shape_id(shape);
+        let pos = me_ctor.push_prop(JsValue::from_js_object(me_proto_ptr));
+        me_ctor.set_data_meta(pos, PropAttributes::new(false, false, false));
+        me_ctor.bump_generation();
+    }
+    if sh.lookup_position(me_ctor.shape_id(), si_name).is_none() {
+        let shape = sh.make_shape(me_ctor.shape_id(), si_name);
+        me_ctor.set_shape_id(shape);
+        me_ctor
+            .ensure_hash_props()
+            .push(JsValue::perm_string(sf.string_ptr(sf.intern("MessageEvent").0)));
+        let pos = me_ctor.hash_props_vec().map_or(0, |v| v.len() as u32).saturating_sub(1);
+        me_ctor.set_data_meta(pos, PropAttributes::new(false, false, true));
+        me_ctor.bump_generation();
+    }
+    let _ = me_ctor.set_proto(fn_proto_val);
+
+    configure_native_constructor(
+        me_ctor,
+        oxide_builtins::event::message_event_constructor::<crate::vm::Vm> as *const (),
+        2,
+    );
+    bind_constructor!(
+        core,
+        global,
+        "MessageEvent",
+        me_ctor_ptr,
+        oxide_builtins::event::message_event_constructor::<crate::vm::Vm>,
+        2,
+        hash: true
+    );
+
+    // 原型：constructor 槽、[[Prototype]] → Event.prototype、五个 getter
+    // （data / origin / lastEpoch / source / ports，每 getter 先 lookup_position
+    // 守卫）。
+    if sh.lookup_position(me_proto.shape_id(), si_constructor).is_none() {
+        let shape = sh.make_shape(me_proto.shape_id(), si_constructor);
+        me_proto.set_shape_id(shape);
+        let pos = me_proto.push_prop(JsValue::from_js_object(me_ctor_ptr));
+        me_proto.set_data_meta(pos, PropAttributes::new(true, false, true));
+        me_proto.bump_generation();
+    }
+    let event_proto_val = JsValue::from_js_object(world.event_proto.as_ptr() as *mut JsObject);
+    let _ = me_proto.set_proto(event_proto_val);
+
+    let me_getter_fns: [(&str, *const ()); 5] = [
+        ("data", oxide_builtins::event::message_event_data_getter::<crate::vm::Vm> as *const ()),
+        ("origin", oxide_builtins::event::message_event_origin_getter::<crate::vm::Vm> as *const ()),
+        (
+            "lastEpoch",
+            oxide_builtins::event::message_event_last_epoch_getter::<crate::vm::Vm> as *const (),
+        ),
+        ("source", oxide_builtins::event::message_event_source_getter::<crate::vm::Vm> as *const ()),
+        ("ports", oxide_builtins::event::message_event_ports_getter::<crate::vm::Vm> as *const ()),
+    ];
+    for (name, fn_ptr) in me_getter_fns {
+        let si = sf.intern(name).0;
+        if sh.lookup_position(me_proto.shape_id(), si).is_none() {
+            bind_accessor_getter(core, session, me_proto, name, fn_ptr);
         }
     }
 

@@ -241,9 +241,16 @@ pub(crate) fn ops_for(family: NativeBoxFamily) -> NativeBoxOps {
             string_edges: None,
             cell_edges: None,
         },
-        // 事件派生类（MessageEvent / ErrorEvent / CustomEvent）载荷盒由后续子
-        // 任务填充；本臂当前无引用边，仅 size/drop 链消费。
-        NativeBoxFamily::MessageEvent | NativeBoxFamily::ErrorEvent | NativeBoxFamily::CustomEvent => NativeBoxOps {
+        // MessageEvent 派生类载荷盒：基类 type / target / current_target 边加
+        // data / source / ports 边。
+        NativeBoxFamily::MessageEvent => NativeBoxOps {
+            object_edges: Some(event::message_event_native_edges),
+            string_edges: None,
+            cell_edges: None,
+        },
+        // ErrorEvent / CustomEvent 载荷盒由后续子任务填充；本两臂当前无引用
+        // 边，仅 size/drop 链消费。
+        NativeBoxFamily::ErrorEvent | NativeBoxFamily::CustomEvent => NativeBoxOps {
             object_edges: None,
             string_edges: None,
             cell_edges: None,

@@ -318,8 +318,8 @@ impl Vm {
     /// 2. 对每个 worker `poll_worker_messages` 排空通道（数据面 rehydrate 进主 realm）。
     /// 3. 反查 Worker 对象（GC 根）。
     /// 4. 错误面逐条交付 `onerror`；消息交付失败面逐条交付 `onmessageerror`。
-    /// 5. 数据面读 `onmessage` 属性，可调用时逐条建 MessageEvent 经
-    ///    `execute_task` + `call_function_sync` 触发，后 `drain_microtasks`。
+    /// 5. 数据面逐条建真实 MessageEvent 经 `dispatchEvent` 交付（注册表查
+    ///    监听器），后 `drain_microtasks`。
     ///
     /// # 返回值
     /// 本轮是否交付了任何面（false 时调用方 1ms 轮询，避免忙等）。
@@ -368,7 +368,7 @@ impl Vm {
                 if self.worker_object(id).is_none() {
                     break;
                 }
-                let event = self.build_message_event(data, "message", None);
+                let event = self.build_message_event(data, "message");
                 self.dispatch_event_on(worker_obj, event);
                 self.drain_microtasks();
             }
@@ -407,35 +407,55 @@ impl Vm {
     /// # 副作用
     /// - 触发监听器回调与微任务 drain。
     fn deliver_error_event(&mut self, worker_obj: JsValue, event_type: &str, message: &str) {
-        let event = self.build_message_event(JsValue::undefined(), event_type, Some(message));
+        let event = self.build_error_event(event_type, message);
         self.dispatch_event_on(worker_obj, event);
         self.drain_microtasks();
     }
 
-    /// 建事件对象（`data` + `type` + `message` 属性），委托 `message_event_constructor`
-    /// 构造辅助。消息事件 `message` 为 `None`（undefined），错误事件 `data` 为
-    /// undefined、`message` 为错误串。
+    /// 消息路径建事件对象：建真实 MessageEvent（`data` + `type`，`ports` 空
+    /// 数组），委托 `message_event_constructor` 构造辅助。
     ///
     /// # 步骤
-    /// 1. `type` 与 `message` 串物化为 session 串（`message` 为 `None` 时 undefined）。
-    /// 2. `data` / `type` / `message` 写入寄存器 1 / 2 / 3，委托
-    ///    `message_event_constructor`（按寄存器下标读取）建对象。
+    /// 1. `type` 串物化为 session 串。
+    /// 2. `data` / `type` 写入寄存器 1 / 2，委托 `message_event_constructor`
+    ///    （按寄存器下标读取）建对象。
     ///
     /// # 返回值
     /// 新建的事件对象值（构造失败时返回错误对象值）。
     ///
     /// # 副作用
-    /// - 新建一个事件对象（经 `alloc_object` 入对象表）。
-    fn build_message_event(&mut self, data: JsValue, type_str: &str, message: Option<&str>) -> JsValue {
+    /// - 新建一个 MessageEvent 盒对象（经 `alloc_object` 入对象表）。
+    fn build_message_event(&mut self, data: JsValue, type_str: &str) -> JsValue {
         let type_val = self.new_string(type_str);
-        let message_val = match message {
-            Some(m) => self.new_string(m),
-            None => JsValue::undefined(),
-        };
         self.set_reg(1, data);
         self.set_reg(2, type_val);
-        self.set_reg(3, message_val);
-        match bindings::message_event_constructor(self, &[0, 1, 2, 3]) {
+        match bindings::message_event_constructor(self, &[0, 1, 2]) {
+            NativeResult::Ok(v) => v,
+            NativeResult::Err(e) => e,
+            // 构造辅助只建对象，不产生尾调用（防御臂，不可达）。
+            NativeResult::TailCall { .. } => JsValue::undefined(),
+        }
+    }
+
+    /// 错误路径建事件对象（临时形态）：建真实 Event 盒（`type` 字段）加
+    /// `data` / `message` 普通属性，委托 `build_error_event` 构造辅助。
+    ///
+    /// # 步骤
+    /// 1. `type` 与 `message` 串物化为 session 串。
+    /// 2. `type` / `message` 写入寄存器 1 / 2，委托 `build_error_event`
+    ///    （按寄存器下标读取）建对象。
+    ///
+    /// # 返回值
+    /// 新建的事件对象值（构造失败时返回错误对象值）。
+    ///
+    /// # 副作用
+    /// - 新建一个 Event 盒对象（经 `alloc_object` 入对象表）。
+    fn build_error_event(&mut self, type_str: &str, message: &str) -> JsValue {
+        let type_val = self.new_string(type_str);
+        let message_val = self.new_string(message);
+        self.set_reg(1, type_val);
+        self.set_reg(2, message_val);
+        match bindings::build_error_event(self, &[0, 1, 2]) {
             NativeResult::Ok(v) => v,
             NativeResult::Err(e) => e,
             // 构造辅助只建对象，不产生尾调用（防御臂，不可达）。
@@ -478,7 +498,7 @@ impl Vm {
     /// - 触发监听器回调与微任务 drain。
     pub(crate) fn deliver_self_message(&mut self, value: MessageValue) {
         let data = rehydrate_message(self, &value);
-        let event = self.build_message_event(data, "message", None);
+        let event = self.build_message_event(data, "message");
         // 取 worker global 对象指针（Ref 守卫在语句块内消费，不跨 &mut 借用长存）。
         let global_ptr = {
             let session = self.realm.session.borrow();

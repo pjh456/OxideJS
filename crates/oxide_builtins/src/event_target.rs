@@ -174,7 +174,7 @@ pub fn event_target_dispatch_event<H: VmHost>(vm: &mut H, args: &[u8]) -> Native
     }
     let this_ptr = this_val.as_js_object_ptr();
 
-    // event 品牌守卫：须为 Event 系对象（首版仅 Event 标签，派生类由后续任务接入）。
+    // event 品牌守卫：须为事件系对象（Event 基类或派生类标签）。
     let event_val = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
     if !event_val.is_object() {
         return NativeResult::Err(crate::error::create_type_error(vm, "dispatchEvent requires an Event"));
@@ -185,7 +185,7 @@ pub fn event_target_dispatch_event<H: VmHost>(vm: &mut H, args: &[u8]) -> Native
     }
     // SAFETY: event_val 已确认是对象值，event_ptr 指向合法 JsObject。
     let event_obj = unsafe { &*event_ptr };
-    if !event_obj.is_event_obj() {
+    if !event::is_event_family_obj(event_obj) {
         return NativeResult::Err(crate::error::create_type_error(vm, "dispatchEvent requires an Event"));
     }
 
