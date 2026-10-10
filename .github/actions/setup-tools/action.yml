@@ -1,11 +1,11 @@
 name: Setup tools (sccache / mold / nextest)
 
-# 工具缓存：sccache、mold、nextest 统一装到 ~/.cargo/bin（rustup 已将其加入 PATH，
-# 无需额外 GITHUB_PATH 修改），按固定 key 跨 run 持久缓存。首跑各 job 各装一次
-# （冗余但一次性），之后每个 run 直接 restore、秒级。nextest 走官方预编译二进制
-# 直下，不依赖 main 分支安装脚本（脚本会被移动而 404）。sccache 与 mold 经 apt
-# 装到 /usr/bin 后拷入 ~/.cargo/bin，使缓存路径落在用户可写且已在 PATH 的目录。
-description: 恢复工具缓存；缺失时安装 sccache、mold、nextest 并存缓存
+# 工具缓存：sccache、mold、nextest 缓存到用户可写的 ~/oxide-tools-cache，恢复后
+# sudo cp 到 /usr/bin（sccache、mold）与 ~/.cargo/bin（nextest）。mold 必须落
+# /usr/bin（默认 PATH）——落 ~/.cargo/bin 时 sccache 包装 rustc 的链接子进程不
+# 继承 GITHUB_PATH 加的 PATH，链接器找不到 mold 报 cannot find ld。nextest 走
+# 官方预编译二进制直下，不依赖 main 分支安装脚本（脚本会被移动而 404）。
+description: 恢复工具缓存；缺失时安装 sccache、mold、nextest 并落系统目录
 
 runs:
   using: composite
@@ -14,11 +14,8 @@ runs:
       id: tool-cache
       uses: actions/cache/restore@v4
       with:
-        path: |
-          ~/.cargo/bin/sccache
-          ~/.cargo/bin/mold
-          ~/.cargo/bin/cargo-nextest
-        key: oxide-tools-cargobin-v1
+        path: ~/oxide-tools-cache
+        key: oxide-tools-ubuntu-v1
 
     - name: Install tools (cache miss)
       if: steps.tool-cache.outputs.cache-hit != 'true'
@@ -26,8 +23,15 @@ runs:
       run: |
         sudo apt-get update -y
         sudo apt-get install -y sccache mold
-        cp /usr/bin/sccache /usr/bin/mold "$HOME/.cargo/bin/"
-        curl -LsSf https://get.nexte.st/latest/linux | tar zxf - -C "$HOME/.cargo/bin"
+        mkdir -p "$HOME/oxide-tools-cache"
+        cp /usr/bin/sccache /usr/bin/mold "$HOME/oxide-tools-cache/"
+        curl -LsSf https://get.nexte.st/latest/linux | tar zxf - -C "$HOME/oxide-tools-cache"
+
+    - name: Install tools to system dirs
+      shell: bash
+      run: |
+        sudo cp "$HOME/oxide-tools-cache/sccache" "$HOME/oxide-tools-cache/mold" /usr/bin/
+        cp "$HOME/oxide-tools-cache/cargo-nextest" "$HOME/.cargo/bin/"
 
     - name: Verify tools in PATH
       shell: bash
@@ -40,8 +44,5 @@ runs:
       if: steps.tool-cache.outputs.cache-hit != 'true'
       uses: actions/cache/save@v4
       with:
-        path: |
-          ~/.cargo/bin/sccache
-          ~/.cargo/bin/mold
-          ~/.cargo/bin/cargo-nextest
-        key: oxide-tools-cargobin-v1
+        path: ~/oxide-tools-cache
+        key: oxide-tools-ubuntu-v1
