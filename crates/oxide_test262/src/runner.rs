@@ -281,7 +281,7 @@ pub(crate) fn build_runner_engine() -> Engine {
     // 防止 test262 递归测试在 VM 把深层 JS 调用转成可捕获的 RangeError 之前
     // 触及 Rust 原生栈。
     kernel_config.max_call_depth = 256;
-    kernel_config.min_pool_size = 1;
+    kernel_config.min_pool_size = 0;
     kernel_config.max_pool_size = Some(1);
     // 单测试分配上限：死循环类测试触步数上限时持续分配，arena 高水位可达 GB
     // 级；多 worker 并发下进程 RSS 包络被各 worker 当前高水位顶起，全量运行
