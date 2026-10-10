@@ -33,6 +33,14 @@ runs:
         sudo cp "$HOME/oxide-tools-cache/sccache" "$HOME/oxide-tools-cache/mold" /usr/bin/
         cp "$HOME/oxide-tools-cache/cargo-nextest" "$HOME/.cargo/bin/"
 
+    - name: Disable mold in CI
+      shell: bash
+      run: |
+        # mold 在主 workflow 正常，但在可复用 workflow 里 sccache 包装 rustc 的
+        # 链接子进程定位不到 mold、回退默认 ld 报 cannot find ld。CI 统一走默认
+        # lld；只删工作副本的 mold 行，本地提交的 config 保留 mold 提速。
+        sed -i '/link-arg=-fuse-ld=mold/d' .cargo/config.toml
+
     - name: Verify tools in PATH
       shell: bash
       run: |
