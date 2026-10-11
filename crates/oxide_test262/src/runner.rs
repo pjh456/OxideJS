@@ -262,7 +262,8 @@ pub(crate) fn read_async_output(vm: &Vm) -> String {
 }
 
 /// 串行与并行执行路径共享的每测试管线：
-/// 读文件、解析元数据、应用跳过过滤，然后运行。恰好返回一个 `TestResult`。
+/// 先应用只看路径串的跳过过滤，再读文件、解析元数据、应用依赖内容的跳过过滤，然后运行。
+/// 恰好返回一个 `TestResult`。
 /// worker 自有状态（`engine`、`harness_sources`、`harness_cache`、`harness_module_cache`）永不跨线程。
 #[expect(clippy::too_many_arguments)]
 pub(crate) fn process_path(
@@ -270,6 +271,30 @@ pub(crate) fn process_path(
     harness_sources: &HarnessSources, harness_cache: &Arc<RwLock<HarnessPrefixCache>>,
     harness_module_cache: &Arc<RwLock<HarnessModuleCache>>,
 ) -> TestResult {
+    let path_str = path.to_string_lossy().replace('\\', "/");
+
+    if let Some(filter_str) = filter {
+        if !path_str.contains(filter_str.as_str()) {
+            return TestResult::skip(path.to_path_buf(), "filtered".into());
+        }
+    }
+
+    if path_str.contains("staging") {
+        return TestResult::skip(path.to_path_buf(), "staging tests excluded".into());
+    }
+
+    if !no_skip {
+        if path_str.contains("/function-ctor/") || path_str.contains("/realm/") {
+            return TestResult::skip(path.to_path_buf(), "unsupported class/eval feature excluded".into());
+        }
+        if let Some(reason) = eval_family_excluded(&path_str) {
+            return TestResult::skip(path.to_path_buf(), reason.into());
+        }
+        if let Some(reason) = pre_existing_excluded(&path_str) {
+            return TestResult::skip(path.to_path_buf(), reason.into());
+        }
+    }
+
     let source = match std::fs::read_to_string(path) {
         Ok(s) => s,
         Err(e) => return TestResult::skip(path.to_path_buf(), format!("read error: {e}")),
@@ -280,28 +305,7 @@ pub(crate) fn process_path(
         None => return TestResult::skip(path.to_path_buf(), String::from("no YAML metadata")),
     };
 
-    if let Some(filter_str) = filter {
-        let path_str = path.to_string_lossy().replace('\\', "/");
-        if !path_str.contains(filter_str.as_str()) {
-            return TestResult::skip(path.to_path_buf(), "filtered".into());
-        }
-    }
-
-    if path.to_string_lossy().contains("staging") {
-        return TestResult::skip(path.to_path_buf(), "staging tests excluded".into());
-    }
-
     if !no_skip {
-        let path_str = path.to_string_lossy().replace('\\', "/");
-        if path_str.contains("/function-ctor/") || path_str.contains("/realm/") {
-            return TestResult::skip(path.to_path_buf(), "unsupported class/eval feature excluded".into());
-        }
-        if let Some(reason) = eval_family_excluded(&path_str) {
-            return TestResult::skip(path.to_path_buf(), reason.into());
-        }
-        if let Some(reason) = pre_existing_excluded(&path_str) {
-            return TestResult::skip(path.to_path_buf(), reason.into());
-        }
         if let Some(reason) = is_skipped(&meta) {
             return TestResult::skip(path.to_path_buf(), reason);
         }
