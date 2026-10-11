@@ -84,6 +84,37 @@ impl DetachState {
     }
 }
 
+/// 解析 postMessage 的 transfer 参数为 ArrayBuffer 指针集合。
+///
+/// # 步骤
+/// 1. undefined 返空集
+/// 2. ToList 迭代一切可迭代（数组 / 字符串 / 生成器 / Map / Set）
+/// 3. 每元素须为 ArrayBuffer，重复元素报 DataCloneError
+///
+/// # 边界
+/// - 不可迭代对象经 GetIterator 抛 TypeError（原值透传）；
+/// - 迭代中途抛错经 IteratorClose 后透传原异常；
+/// - 非 AB 元素 / 重复元素报 DataCloneError（与 structuredClone 口径统一）。
+pub fn parse_transfer_list<H: VmHost>(vm: &mut H, transfer: JsValue) -> Result<HashSet<*const JsObject>, JsValue> {
+    let mut set = HashSet::new();
+    if transfer.is_undefined() {
+        return Ok(set);
+    }
+    crate::iterator::iterate_elements(vm, transfer, |vm, e| {
+        if !e.is_object() || !unsafe { &*e.as_js_object_ptr() }.is_array_buffer_obj() {
+            return Err(crate::structured_clone::data_clone_error(
+                vm,
+                "transfer list element is not an ArrayBuffer",
+            ));
+        }
+        if !set.insert(e.as_js_object_ptr() as *const JsObject) {
+            return Err(crate::structured_clone::data_clone_error(vm, "duplicate buffer in transfer list"));
+        }
+        Ok(())
+    })?;
+    Ok(set)
+}
+
 /// 源 realm 侧：遍历源值产出 `MessageValue`。
 ///
 /// # 步骤

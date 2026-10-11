@@ -9,7 +9,7 @@
 use std::sync::Arc;
 
 use crate::bind_constructor;
-use crate::bindings::{apply_binding_table, configure_native_constructor};
+use crate::bindings::{apply_binding_table, bind_accessor_getset, configure_native_constructor};
 use oxide_kernel::kernel::{KernelCore, KernelSession};
 use oxide_kernel::shape_forge::EMPTY_SHAPE_ID;
 use oxide_types::object::{JsObject, PropAttributes};
@@ -120,6 +120,24 @@ pub fn bind_worker(core: &Arc<KernelCore>, session: &KernelSession, global: &mut
                 ],
             );
         }
+
+        // onmessage / onerror / onmessageerror 访问器属性（getter 读注册表属性条目、
+        // setter 写）。幂等守卫。
+        for name in ["onmessage", "onerror", "onmessageerror"] {
+            let key = sf.intern(name).0;
+            if sh.lookup_position(proto.shape_id(), key).is_none() {
+                bind_accessor_getset(
+                    core,
+                    session,
+                    proto,
+                    key,
+                    &format!("get {name}"),
+                    &format!("set {name}"),
+                    crate::worker::bindings::worker_event_handler_getter as *const (),
+                    crate::worker::bindings::worker_event_handler_setter as *const (),
+                );
+            }
+        }
     }
 
     // 全局 `Worker` 槽（bind_constructor! 自带既有槽原位更新、无槽新开）。
@@ -185,6 +203,24 @@ pub fn bind_worker(core: &Arc<KernelCore>, session: &KernelSession, global: &mut
         let pos = global.hash_props_vec().map_or(0, |v| v.len() as u32).saturating_sub(1);
         global.set_data_meta(pos, PropAttributes::new(true, false, true));
         global.bump_generation();
+    }
+    // onmessage / onmessageerror / onerror 直绑全局（访问器，worker realm 经
+    // self === global 可达，self.onmessage = fn 由此成立；主 realm 为无害占位）。
+    // 幂等守卫。
+    for name in ["onmessage", "onmessageerror", "onerror"] {
+        let key = sf.intern(name).0;
+        if sh.lookup_position(global.shape_id(), key).is_none() {
+            bind_accessor_getset(
+                core,
+                session,
+                global,
+                key,
+                &format!("get {name}"),
+                &format!("set {name}"),
+                crate::worker::bindings::worker_event_handler_getter as *const (),
+                crate::worker::bindings::worker_event_handler_setter as *const (),
+            );
+        }
     }
     // name / location getter（幂等守卫）。
     // let si_name_global = sf.intern("name").0;

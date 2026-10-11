@@ -5,7 +5,6 @@
 //! 端口载荷盒（mpsc 双端与对端端口边）存于对象 `native_fn` 槽，向 GC 家族表
 //! 暴露 edges/size/drop 三自由函数。
 
-use std::collections::HashSet;
 use std::mem;
 
 use oxide_kernel::message_queue;
@@ -15,7 +14,7 @@ use oxide_types::value::JsValue;
 
 use oxide_runtime_api::{NativeResult, ProtoKind, VmHost};
 
-use crate::message_value::{detach_message, rehydrate_message, MessageValue};
+use crate::message_value::{detach_message, parse_transfer_list, rehydrate_message, MessageValue};
 
 /// MessagePort 载荷盒：存于对象 `native_fn` 槽（`Box::into_raw`，realm 局部
 /// 单线程）。`peer` 是发往对端的 mpsc 发送端（无 GC 边），`rx` 是收自对端的
@@ -167,37 +166,6 @@ fn make_port_object<H: VmHost>(
     obj.set_native_fn(Some(unsafe { NativeFnPtr::from_raw(inner as *const ()) }));
     let ptr = vm.alloc_object(obj);
     (ptr, inner)
-}
-
-/// 解析 postMessage 的 transfer 参数为 ArrayBuffer 指针集合。
-///
-/// # 步骤
-/// 1. undefined 返空集
-/// 2. ToList 迭代一切可迭代（数组 / 字符串 / 生成器 / Map / Set）
-/// 3. 每元素须为 ArrayBuffer，重复元素报 DataCloneError
-///
-/// # 边界
-/// - 不可迭代对象经 GetIterator 抛 TypeError（原值透传）；
-/// - 迭代中途抛错经 IteratorClose 后透传原异常；
-/// - 非 AB 元素 / 重复元素报 DataCloneError（与 structuredClone 口径统一）。
-fn parse_transfer_list<H: VmHost>(vm: &mut H, transfer: JsValue) -> Result<HashSet<*const JsObject>, JsValue> {
-    let mut set = HashSet::new();
-    if transfer.is_undefined() {
-        return Ok(set);
-    }
-    crate::iterator::iterate_elements(vm, transfer, |vm, e| {
-        if !e.is_object() || !unsafe { &*e.as_js_object_ptr() }.is_array_buffer_obj() {
-            return Err(crate::structured_clone::data_clone_error(
-                vm,
-                "transfer list element is not an ArrayBuffer",
-            ));
-        }
-        if !set.insert(e.as_js_object_ptr() as *const JsObject) {
-            return Err(crate::structured_clone::data_clone_error(vm, "duplicate buffer in transfer list"));
-        }
-        Ok(())
-    })?;
-    Ok(set)
 }
 
 /// MessagePort.postMessage(message, transfer)：detach 消息、入队对端 mpsc、

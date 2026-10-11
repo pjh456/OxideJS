@@ -14,10 +14,10 @@
 
 use std::cell::{Cell, RefCell};
 
-use oxide_builtins::message_value::detach_message;
+use oxide_builtins::message_value::{detach_message, parse_transfer_list};
 use oxide_kernel::message_queue::Sender;
 use oxide_kernel::shape_forge::EMPTY_SHAPE_ID;
-use oxide_runtime_api::{NativeResult, ProtoKind, VmHost};
+use oxide_runtime_api::{ListenerEntry, NativeResult, ProtoKind, VmHost};
 use oxide_types::object::{JsObject, PropAttributes};
 use oxide_types::value::JsValue;
 
@@ -65,8 +65,8 @@ pub(crate) fn worker_close_requested() -> bool {
 /// 3. 主线程侧读 url 文件（`std::fs::read_to_string`），失败抛 TypeError。
 /// 4. `vm.spawn_worker(source)` 派生 worker，得 worker 编号。
 /// 5. 建 Worker 对象：PLAIN 对象（`[[Prototype]]` → Worker.prototype）加非枚举
-///    `workerId` 数据属性（值为 worker 编号）与 `onmessage`/`onerror`/
-///    `onmessageerror` 普通 own 属性（初值 undefined）。无 native 盒、无 GC 家族。
+///    `workerId` 数据属性（值为 worker 编号）。`onmessage`/`onerror`/
+///    `onmessageerror` 不在对象上建自有属性（改原型访问器属性）。无 native 盒、无 GC 家族。
 /// 6. 返回 Worker 对象。
 ///
 /// # 边界与前提
@@ -113,20 +113,8 @@ pub(crate) fn worker_constructor(vm: &mut Vm, args: &[u8]) -> NativeResult {
     // SAFETY: ptr 是本函数刚 alloc_object 的对象，存活且本段无别名。
     let worker_obj = unsafe { &mut *ptr };
 
-    // onmessage / onerror / onmessageerror：普通 own 数据属性（非枚举），初值 undefined。
-    let si_onmessage = vm.perm_intern("onmessage");
-    let _ =
-        vm.define_data_property(worker_obj, si_onmessage, JsValue::undefined(), PropAttributes::new(true, false, true));
-    let si_onerror = vm.perm_intern("onerror");
-    let _ =
-        vm.define_data_property(worker_obj, si_onerror, JsValue::undefined(), PropAttributes::new(true, false, true));
-    let si_onmessageerror = vm.perm_intern("onmessageerror");
-    let _ = vm.define_data_property(
-        worker_obj,
-        si_onmessageerror,
-        JsValue::undefined(),
-        PropAttributes::new(true, false, true),
-    );
+    // onmessage / onerror / onmessageerror 不在对象上建自有属性：改 Worker.prototype
+    // 访问器属性（getter 读注册表属性条目、setter 写），经既有 dispatchEvent 路径交付。
 
     // workerId：非枚举数据属性（值为 worker 编号，数值表示无 GC 边）。
     let si_worker_id = vm.perm_intern("workerId");
@@ -198,15 +186,17 @@ fn read_worker_id(vm: &mut Vm, this_val: JsValue) -> Result<u64, JsValue> {
     Ok(n.max(0.0) as u64)
 }
 
-/// `worker.postMessage(msg)`：读 `workerId`、detach 消息、投递到 worker。
+/// `worker.postMessage(msg, transfer)`：读 `workerId`、解析 transfer、detach 消息、投递到 worker。
 ///
 /// # 步骤
 /// 1. 读 `this`（`args[0]`）的 `workerId` 自有属性（快路径）。
-/// 2. 读 `args[1]` 为 msg，经 `detach_message` 转 `MessageValue`（空 transfer 集合）。
-/// 3. 委托 `vm.worker_post_message(id, mv)`（935.3 固有方法，内部 `send`）。
+/// 2. 读 `args[1]` 为 msg、`args[2]` 为 transfer，经 `parse_transfer_list` 解析
+///    transfer 集合（undefined 返空集、违例报 DataCloneError）。
+/// 3. 经 `detach_message` 转 `MessageValue`（transfer 命中的缓冲源 detach）。
+/// 4. 委托 `vm.worker_post_message(id, mv)`（935.3 固有方法，内部 `send`）。
 ///
 /// # 边界
-/// - DataCloneError 经 `detach_message` 的 `Err` 臂抛出。
+/// - DataCloneError 经 `parse_transfer_list` 与 `detach_message` 的 `Err` 臂抛出。
 /// - worker 通道已断开（worker 线程退出）时 `vm.worker_post_message` 返 `Err`。
 pub(crate) fn worker_post_message(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
@@ -215,7 +205,11 @@ pub(crate) fn worker_post_message(vm: &mut Vm, args: &[u8]) -> NativeResult {
         Err(e) => return NativeResult::Err(e),
     };
     let msg_val = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
-    let transfer: std::collections::HashSet<*const JsObject> = std::collections::HashSet::new();
+    let transfer_val = if args.len() > 2 { vm.reg(args[2]) } else { JsValue::undefined() };
+    let transfer = match parse_transfer_list(vm, transfer_val) {
+        Ok(s) => s,
+        Err(e) => return NativeResult::Err(e),
+    };
     let mv = match detach_message(vm, msg_val, &transfer) {
         Ok(mv) => mv,
         Err(e) => return NativeResult::Err(e),
@@ -242,18 +236,24 @@ pub(crate) fn worker_terminate(vm: &mut Vm, args: &[u8]) -> NativeResult {
     }
 }
 
-/// `self.postMessage(msg)`（worker 侧）：detach 消息、发回主线程。
+/// `self.postMessage(msg, transfer)`（worker 侧）：解析 transfer、detach 消息、发回主线程。
 ///
 /// # 步骤
-/// 1. 读 `args[1]` 为 msg，经 `detach_message` 转 `MessageValue`（空 transfer 集合）。
-/// 2. 经 thread-local `WORKER_OUT_TX` 发回主线程（主 realm 无通道时静默丢弃）。
+/// 1. 读 `args[1]` 为 msg、`args[2]` 为 transfer，经 `parse_transfer_list` 解析
+///    transfer 集合（undefined 返空集、违例报 DataCloneError）。
+/// 2. 经 `detach_message` 转 `MessageValue`（transfer 命中的缓冲源 detach）。
+/// 3. 经 thread-local `WORKER_OUT_TX` 发回主线程（主 realm 无通道时静默丢弃）。
 ///
 /// # 边界
-/// - DataCloneError 经 `detach_message` 的 `Err` 臂抛出。
+/// - DataCloneError 经 `parse_transfer_list` 与 `detach_message` 的 `Err` 臂抛出。
 /// - 主 realm（无 `WORKER_OUT_TX`）或主线程已 drop 接收端时静默丢弃。
 pub(crate) fn self_post_message(vm: &mut Vm, args: &[u8]) -> NativeResult {
     let msg_val = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
-    let transfer: std::collections::HashSet<*const JsObject> = std::collections::HashSet::new();
+    let transfer_val = if args.len() > 2 { vm.reg(args[2]) } else { JsValue::undefined() };
+    let transfer = match parse_transfer_list(vm, transfer_val) {
+        Ok(s) => s,
+        Err(e) => return NativeResult::Err(e),
+    };
     let mv = match detach_message(vm, msg_val, &transfer) {
         Ok(mv) => mv,
         Err(e) => return NativeResult::Err(e),
@@ -285,6 +285,103 @@ pub(crate) fn self_name(vm: &mut Vm, _args: &[u8]) -> NativeResult {
 #[expect(dead_code)]
 pub(crate) fn self_location(vm: &mut Vm, _args: &[u8]) -> NativeResult {
     NativeResult::Ok(vm.new_string(""))
+}
+
+/// 从当前函数对象的 `name` 读事件类型（`get onmessage` / `set onmessage` →
+/// `"message"`）。
+///
+/// # 步骤
+/// 1. 读 callee 槽（寄存器 254）为当前函数对象（native 调用收口置位）。
+/// 2. 读函数对象 `name` 自有属性，剥 `get ` / `set ` 前缀与 `on` 前缀得事件类型串。
+/// 3. intern 事件类型串返 si。
+///
+/// # 边界
+/// - callee 非对象、无 `name` 属性、或非 `get on<type>` / `set on<type>` 形态时返 `None`。
+fn read_event_type_si(vm: &mut Vm) -> Option<u32> {
+    let callee = vm.reg(254);
+    if !callee.is_object() {
+        return None;
+    }
+    let callee_ptr = callee.as_js_object_ptr();
+    // SAFETY: callee 是当前函数对象，native 调用期间存活。
+    let callee_obj = unsafe { &*callee_ptr };
+    let si_name = vm.perm_intern("name");
+    let store = vm.get_own_property_slot(callee_obj, si_name)?;
+    let name_val = callee_obj.get_prop_at(store);
+    let name = vm.lookup_str(name_val)?;
+    let rest = name.strip_prefix("get ").or_else(|| name.strip_prefix("set "))?;
+    let type_text = rest.strip_prefix("on")?;
+    Some(vm.perm_intern(type_text))
+}
+
+/// `onmessage` / `onerror` / `onmessageerror` 访问器 getter（Worker.prototype 与
+/// worker global 共用）：读注册表属性条目返回调，无则 null。
+///
+/// # 步骤
+/// 1. 读 `this`（`args[0]`）为目标对象（非对象返 null）。
+/// 2. 从函数对象 `name` 读事件类型 si。
+/// 3. 查注册表取该目标同类型属性监听器条目，返其回调（无则 null）。
+///
+/// # 边界
+/// - 注册表条目按目标对象裸指针为键（弱引用，不保活）。
+pub(crate) fn worker_event_handler_getter(vm: &mut Vm, args: &[u8]) -> NativeResult {
+    let this_val = vm.reg(args[0]);
+    if !this_val.is_object() {
+        return NativeResult::Ok(JsValue::null());
+    }
+    let this_ptr = this_val.as_js_object_ptr();
+    let Some(type_si) = read_event_type_si(vm) else {
+        return NativeResult::Ok(JsValue::null());
+    };
+    for entry in vm.et_lookup(this_ptr) {
+        if entry.is_attribute && entry.type_si == type_si {
+            return NativeResult::Ok(entry.callback);
+        }
+    }
+    NativeResult::Ok(JsValue::null())
+}
+
+/// `onmessage` / `onerror` / `onmessageerror` 访问器 setter（Worker.prototype 与
+/// worker global 共用）：写注册表属性条目（可调用则登记、null / undefined 则移除）。
+///
+/// # 步骤
+/// 1. 读 `this`（`args[0]`）为目标对象（非对象 no-op）。
+/// 2. 从函数对象 `name` 读事件类型 si。
+/// 3. 移除该目标同类型的既有属性监听器条目（若有）。
+/// 4. 值为可调用时登记新属性监听器条目（`is_attribute` 置位）；null / undefined 不登记。
+///
+/// # 副作用
+/// - 写注册表（`et_unregister` / `et_register`）。
+pub(crate) fn worker_event_handler_setter(vm: &mut Vm, args: &[u8]) -> NativeResult {
+    let this_val = vm.reg(args[0]);
+    if !this_val.is_object() {
+        return NativeResult::Ok(JsValue::undefined());
+    }
+    let this_ptr = this_val.as_js_object_ptr();
+    let Some(type_si) = read_event_type_si(vm) else {
+        return NativeResult::Ok(JsValue::undefined());
+    };
+    let value = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
+    // 移除该目标同类型的既有属性监听器条目（若有）。
+    for entry in vm.et_lookup(this_ptr) {
+        if entry.is_attribute && entry.type_si == type_si {
+            vm.et_unregister(this_ptr, entry.type_si, entry.callback, entry.capture);
+        }
+    }
+    // 值为可调用时登记新属性监听器条目。
+    if oxide_builtins::iterator::is_callable(value) {
+        vm.et_register(
+            this_ptr,
+            ListenerEntry {
+                type_si,
+                callback: value,
+                capture: false,
+                once: false,
+                is_attribute: true,
+            },
+        );
+    }
+    NativeResult::Ok(JsValue::undefined())
 }
 
 /// 消息事件构造辅助：建真实 MessageEvent 盒（`data` + `type`，`ports` 空数组）。
