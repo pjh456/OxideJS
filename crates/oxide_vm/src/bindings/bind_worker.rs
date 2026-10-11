@@ -175,11 +175,7 @@ pub fn bind_worker(core: &Arc<KernelCore>, session: &KernelSession, global: &mut
             world,
             global,
             core,
-            &[(
-                "importScripts",
-                crate::worker::bindings::import_scripts as *const (),
-                1,
-            )],
+            &[("importScripts", crate::worker::bindings::import_scripts as *const (), 1)],
         );
     }
     // EventTarget 三方法直绑全局（worker realm 经 self === global 可达；全局原型链

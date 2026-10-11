@@ -977,8 +977,7 @@ mod tests {
         let got = global_value_opt(&vm, "got").expect("got 应被设置");
         let got_text = vm.lookup_str(got).expect("got 应可读");
         assert_eq!(
-            got_text,
-            "7|function|true",
+            got_text, "7|function|true",
             "lib.js 应同步执行、importScripts 应为 function 且经 self 可达"
         );
 
@@ -1072,8 +1071,7 @@ mod tests {
         let got = global_value_opt(&vm, "got").expect("got 应被设置");
         let got_text = vm.lookup_str(got).expect("got 应可读");
         assert_eq!(
-            got_text,
-            "TypeError|SyntaxError|boom",
+            got_text, "TypeError|SyntaxError|boom",
             "文件不存在应抛 TypeError、语法错误应抛 SyntaxError、运行期异常应原值透传"
         );
 
