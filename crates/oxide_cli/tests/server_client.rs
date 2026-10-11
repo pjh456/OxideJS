@@ -73,12 +73,16 @@ fn control_client_end_to_end() {
         other => panic!("应得 Status 帧，实得 {other:?}"),
     }
 
-    // 健康请求：healthy 为真。
-    let response = send_control_request_from(&config.sidecar_path, &ServerRequest::Health).expect("健康请求应成功");
-    assert!(
-        matches!(response, ServerResponse::Health { healthy: true }),
-        "healthy 应为真：{response:?}"
-    );
+    // 健康请求：池预热异步，轮询至 healthy 为真（预热完成）。
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let response = send_control_request_from(&config.sidecar_path, &ServerRequest::Health).expect("健康请求应成功");
+        if matches!(response, ServerResponse::Health { healthy: true }) {
+            break;
+        }
+        assert!(Instant::now() < deadline, "worker 池预热应完成");
+        std::thread::sleep(Duration::from_millis(10));
+    }
 
     // 信息请求：socket 路径与配置一致、监听地址与配置一致、进程号为当前进程号。
     let response = send_control_request_from(&config.sidecar_path, &ServerRequest::Info).expect("信息请求应成功");
@@ -144,12 +148,16 @@ fn control_client_tcp_arm_end_to_end() {
         other => panic!("应得 Version 帧，实得 {other:?}"),
     }
 
-    // 健康请求：healthy 为真。
-    let response = send_control_request_from(&config.sidecar_path, &ServerRequest::Health).expect("健康请求应成功");
-    assert!(
-        matches!(response, ServerResponse::Health { healthy: true }),
-        "healthy 应为真：{response:?}"
-    );
+    // 健康请求：池预热异步，轮询至 healthy 为真（预热完成）。
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let response = send_control_request_from(&config.sidecar_path, &ServerRequest::Health).expect("健康请求应成功");
+        if matches!(response, ServerResponse::Health { healthy: true }) {
+            break;
+        }
+        assert!(Instant::now() < deadline, "worker 池预热应完成");
+        std::thread::sleep(Duration::from_millis(10));
+    }
 
     // 信息请求：endpoint 值与配置一致（host:port 文本形态）、监听地址与配置一致、
     // 进程号为当前进程号。

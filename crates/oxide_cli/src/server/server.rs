@@ -903,7 +903,8 @@ fn dispatch_forge(
 
 /// 控制请求分派：六类控制请求直接应答，不占 worker。
 ///
-/// Status 响应读全体 worker 池的共享聚合计数器。
+/// Status 响应读全体 worker 池的共享聚合计数器；Health 响应反映真实健康
+/// （池预热完成加未进入关闭序列），不是「活着即健康」。
 fn dispatch_control(request: &ServerRequest, ctx: &ServerContext) -> ServerResponse {
     match request {
         ServerRequest::Version => ServerResponse::Version {
@@ -915,7 +916,11 @@ fn dispatch_control(request: &ServerRequest, ctx: &ServerContext) -> ServerRespo
             pool_peak: ctx.pool_counters.peak(),
             uptime_ms: ctx.started_at.elapsed().as_millis() as u64,
         },
-        ServerRequest::Health => ServerResponse::Health { healthy: true },
+        // 真实健康：池预热完成（全体 worker 池聚合计数不小于 1）加未进入
+        // 关闭序列（排水进行中不再健康）。
+        ServerRequest::Health => ServerResponse::Health {
+            healthy: !ctx.shutdown.load(Ordering::SeqCst) && ctx.pool_counters.total() >= 1,
+        },
         ServerRequest::Info => ServerResponse::Info {
             version: env!("CARGO_PKG_VERSION").to_string(),
             socket_path: ctx.socket_path.clone(),
@@ -1175,17 +1180,23 @@ mod tests {
         stop_server(&mut stream, handle);
     }
 
-    /// 健康请求得 Health 帧（骨架阶段活着即健康）。
+    /// 健康请求得 Health 帧：池预热完成加未进入关闭序列时 healthy 为真。
     #[test]
     fn health_response() {
         let config = unique_paths("health");
         let handle = start_server(config.clone());
         let mut stream = connect_auth(&config);
-        let response = send_and_recv(&mut stream, &ServerRequest::Health);
-        assert!(
-            matches!(response, ServerResponse::Health { healthy: true }),
-            "healthy 应为真：{response:?}"
-        );
+
+        // worker 池异步预热：轮询至 healthy 为真（预热完成）。
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let response = send_and_recv(&mut stream, &ServerRequest::Health);
+            if matches!(response, ServerResponse::Health { healthy: true }) {
+                break;
+            }
+            assert!(Instant::now() < deadline, "worker 池预热应完成");
+            std::thread::sleep(Duration::from_millis(10));
+        }
         stop_server(&mut stream, handle);
     }
 
@@ -1239,12 +1250,17 @@ mod tests {
         let response = protocol::parse_response(&frame).expect("响应帧解析应成功");
         assert!(matches!(response, ServerResponse::Error { .. }), "应得 Error 帧：{response:?}");
 
-        // 连接保持可用：后续健康请求正常应答。
-        let response = send_and_recv(&mut stream, &ServerRequest::Health);
-        assert!(
-            matches!(response, ServerResponse::Health { healthy: true }),
-            "连接应保持可用：{response:?}"
-        );
+        // 连接保持可用：后续健康请求正常应答（池预热异步，轮询至 healthy
+        // 为真）。
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let response = send_and_recv(&mut stream, &ServerRequest::Health);
+            if matches!(response, ServerResponse::Health { healthy: true }) {
+                break;
+            }
+            assert!(Instant::now() < deadline, "worker 池预热应完成");
+            std::thread::sleep(Duration::from_millis(10));
+        }
         stop_server(&mut stream, handle);
     }
 
@@ -1739,11 +1755,16 @@ mod tests {
         let handle = start_rm_server(config.clone());
         let mut stream = Conn::Unix(UnixStream::connect(unix_path(&config.endpoint)).expect("首个连接应成功"));
         authenticate(&mut stream, &config.token);
-        let response = send_and_recv(&mut stream, &ServerRequest::Health);
-        assert!(
-            matches!(response, ServerResponse::Health { healthy: true }),
-            "应得 Health 帧：{response:?}"
-        );
+        // 池预热异步：轮询至 healthy 为真（预热完成）。
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let response = send_and_recv(&mut stream, &ServerRequest::Health);
+            if matches!(response, ServerResponse::Health { healthy: true }) {
+                break;
+            }
+            assert!(Instant::now() < deadline, "worker 池预热应完成");
+            std::thread::sleep(Duration::from_millis(10));
+        }
 
         // 监听器已丢弃：第二个连接得连接被拒绝。轮询至拒绝，容忍连接线程
         // 建立与监听器丢弃之间的极小时序窗口（并发套件下调度延迟放大窗口）。
@@ -1814,11 +1835,16 @@ mod tests {
         let handle = start_server(config.clone());
         let mut stream = connect(&config);
         authenticate(&mut stream, &read_token(&config));
-        let response = send_and_recv(&mut stream, &ServerRequest::Health);
-        assert!(
-            matches!(response, ServerResponse::Health { healthy: true }),
-            "认证后应正常应答：{response:?}"
-        );
+        // 池预热异步：轮询至 healthy 为真（预热完成）。
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let response = send_and_recv(&mut stream, &ServerRequest::Health);
+            if matches!(response, ServerResponse::Health { healthy: true }) {
+                break;
+            }
+            assert!(Instant::now() < deadline, "worker 池预热应完成");
+            std::thread::sleep(Duration::from_millis(10));
+        }
         stop_server(&mut stream, handle);
     }
 

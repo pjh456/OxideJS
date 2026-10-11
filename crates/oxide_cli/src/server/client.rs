@@ -1,7 +1,7 @@
 //! 控制客户端：读 sidecar、连接 server、发一帧控制请求、读回一帧响应。
 //!
 //! 关键约定：
-//! - 连接超时 5 秒（安全网）：本地 Unix socket 连接立即完成或立即失败，
+//! - 连接超时 5 秒（安全网）：本地连接立即完成或立即失败，
 //!   超时分支只覆盖 server 挂起等异常情形。
 //! - 读超时 5 秒（与交接路径的读超时同值）：server 不回应即判连接失败，
 //!   不挂死。
@@ -52,25 +52,19 @@ pub fn send_control_request(request: &ServerRequest) -> Result<ServerResponse, C
     send_control_request_from(&sidecar::well_known_sidecar_path(), request)
 }
 
-/// 注入 sidecar 路径的入口（测试与复用）：读 sidecar 取 socket 路径与 token，
-/// 连接、发认证帧、读 AuthOk、发请求、读响应，三分支错误映射。
+/// 注入 sidecar 路径的入口（测试与复用）：读 sidecar 取 endpoint 与 token，
+/// 转调端点级入口。
 ///
 /// # 步骤
 /// 1. 读 sidecar；缺失或损坏（解析失败）同归连接失败分支。
-/// 2. 连接 socket（5 秒超时安全网）。
-/// 3. 设读超时与写超时各 5 秒。
-/// 4. 发认证帧（token 取 sidecar），读回 `AuthOk`；非 `AuthOk` 判 server
-///    错误（server 版本过旧需重启）。
-/// 5. 写请求帧。
-/// 6. 读响应帧；io 错误或 server 未应答即关闭（EOF）判连接失败。
-/// 7. 解析响应帧；畸形判协议错误，Error 帧判 server 错误，其余返回。
+/// 2. 取 sidecar 记录的 endpoint 文本形态（host:port 或路径）与 token，
+///    转调 `send_control_request_at`。
 ///
 /// # 边界与前提
 /// - sidecar 路径由调用方注入，生产入口用 well-known 路径。
-/// - 响应帧为 Error 变体时不视为成功，message 原样带出。
 ///
 /// # 副作用
-/// - 建立并关闭一条 Unix socket 连接。
+/// - 建立并关闭一条连接（Unix socket 或 TCP）。
 pub fn send_control_request_from(sidecar_path: &Path, request: &ServerRequest) -> Result<ServerResponse, ClientError> {
     // 读 sidecar：缺失或损坏都判连接失败，消息提示先启动 server。
     let identity = sidecar::read_identity(sidecar_path).ok_or_else(|| {
@@ -80,9 +74,31 @@ pub fn send_control_request_from(sidecar_path: &Path, request: &ServerRequest) -
         ))
     })?;
 
-    // 连接：5 秒超时是安全网，本地连接立即完成或立即失败。endpoint 取 sidecar
-    // 记录的文本形态（host:port 或路径），撤掉 Unix 过渡包装。
-    let stream = connect_with_timeout(&sidecar::parse_endpoint(&identity.socket_path), CONNECT_TIMEOUT)?;
+    // endpoint 取 sidecar 记录的文本形态（host:port 或路径），token 取 sidecar。
+    send_control_request_at(&sidecar::parse_endpoint(&identity.socket_path), &identity.token, request)
+}
+
+/// 端点级控制请求入口：连接给定 endpoint、发认证帧（token 由调用方注入）、
+/// 发请求帧、读响应帧，三分支错误映射。
+///
+/// # 步骤
+/// 1. 连接 endpoint（5 秒超时安全网）。
+/// 2. 设读超时与写超时各 5 秒。
+/// 3. 发认证帧（token 由调用方注入），读回 `AuthOk`；非 `AuthOk` 判 server
+///    错误（server 版本过旧需重启）。
+/// 4. 写请求帧。
+/// 5. 读响应帧；io 错误或 server 未应答即关闭（EOF）判连接失败。
+/// 6. 解析响应帧；畸形判协议错误，Error 帧判 server 错误，其余返回。
+///
+/// # 边界与前提
+/// - endpoint 与 token 均由调用方注入：远程场景的 token 由拉起方传入。
+/// - 响应帧为 Error 变体时不视为成功，message 原样带出。
+///
+/// # 副作用
+/// - 建立并关闭一条连接（Unix socket 或 TCP）。
+pub fn send_control_request_at(endpoint: &Endpoint, token: &str, request: &ServerRequest) -> Result<ServerResponse, ClientError> {
+    // 连接：5 秒超时是安全网，本地连接立即完成或立即失败。
+    let stream = connect_with_timeout(endpoint, CONNECT_TIMEOUT)?;
 
     // 读写超时各 5 秒：server 挂起（不回应）时不无限阻塞。
     let _ = stream.set_read_timeout(Some(CONNECT_TIMEOUT));
@@ -93,9 +109,9 @@ pub fn send_control_request_from(sidecar_path: &Path, request: &ServerRequest) -
         .try_clone()
         .map_err(|e| ClientError::Connect(format!("克隆流失败：{e}")))?;
 
-    // 发认证帧：token 取 sidecar，server 侧逐字节异或判等。
+    // 发认证帧：token 由调用方注入，server 侧逐字节异或判等。
     writer
-        .write_all(protocol::encode_request(&ServerRequest::Auth { token: identity.token }).as_bytes())
+        .write_all(protocol::encode_request(&ServerRequest::Auth { token: token.to_string() }).as_bytes())
         .map_err(|e| ClientError::Connect(format!("写认证帧失败：{e}")))?;
 
     let mut reader = FrameReader::new(BufReader::new(stream));
