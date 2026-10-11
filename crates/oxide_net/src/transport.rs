@@ -93,6 +93,22 @@ impl Listener {
             Listener::Tcp(l) => Ok(Conn::Tcp(l.accept()?.0)),
         }
     }
+
+    /// 取监听者绑定的本地地址文本形态。
+    ///
+    /// # 边界与前提
+    /// - 两臂委托标准库同名方法后取文本形态（Unix 臂为套接字路径，TCP 臂为
+    ///   host:port）；TCP 臂绑 0 端口时返回操作系统分配的实际端口。
+    pub fn local_addr(&self) -> io::Result<String> {
+        match self {
+            Listener::Unix(l) => {
+                let addr = l.local_addr()?;
+                let text = addr.as_pathname().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
+                Ok(text)
+            }
+            Listener::Tcp(l) => Ok(l.local_addr()?.to_string()),
+        }
+    }
 }
 
 impl Conn {
@@ -221,6 +237,30 @@ mod tests {
         let mut buf = [0u8; 11];
         client.read_exact(&mut buf).unwrap();
         assert_eq!(&buf, b"hello-oxide");
+    }
+
+    /// 动态端口：TCP 臂绑 0 端口后 `local_addr` 文本形态含操作系统分配的非 0 端口。
+    #[test]
+    fn tcp_local_addr_dynamic_port() {
+        let listener = Listener::Tcp(TcpListener::bind("127.0.0.1:0").unwrap());
+        let text = listener.local_addr().unwrap();
+        let port: u16 = text.rsplit(':').next().expect("应含端口").parse().expect("端口应可解析");
+        assert_ne!(port, 0, "操作系统应分配非 0 端口：{text}");
+    }
+
+    /// Unix 臂 `local_addr` 返回套接字路径的文本形态（非空）。
+    #[test]
+    fn unix_local_addr() {
+        let dir = std::env::temp_dir().join(format!("oxide_net_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("unix_addr.sock");
+        let _ = std::fs::remove_file(&path);
+
+        let listener = Listener::Unix(UnixListener::bind(&path).unwrap());
+        let text = listener.local_addr().unwrap();
+        assert!(!text.is_empty(), "Unix 臂应得非空路径文本：{text}");
+
+        let _ = std::fs::remove_file(&path);
     }
 
     /// 非阻塞 accept 空轮：置非阻塞后无连接时 accept 应返回 `WouldBlock`（两臂各验一次）。

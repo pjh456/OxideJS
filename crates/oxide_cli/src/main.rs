@@ -125,9 +125,10 @@ enum ServerCommands {
         /// 常驻 worker 线程数；缺省取宿主核数。
         #[arg(long)]
         workers: Option<u32>,
-        /// TCP 监听端口；缺省取 well-known 端口。
-        #[arg(long, default_value_t = sidecar::WELL_KNOWN_PORT, conflicts_with = "rm")]
-        port: u16,
+        /// TCP 监听端口；0 表示动态端口（操作系统分配空闲端口），缺省取
+        /// well-known 端口。
+        #[arg(long)]
+        port: Option<u16>,
         /// 前台形态：当前进程直接运行持久 server（守护形态 spawn 的子进程用，
         /// 不向用户暴露）。
         #[arg(long, hide = true)]
@@ -340,8 +341,15 @@ fn server_command(command: ServerCommands) -> ExitCode {
                 if let Some(n) = workers {
                     config.worker_count = n as usize;
                 }
+                // 显式端口映射 TCP 端点（回环地址硬编码）：0 为动态端口，
+                // 由操作系统在绑定后分配空闲端口；不带端口旗标时保持 Unix
+                // 缺省。
+                if let Some(port) = port {
+                    config.endpoint = Endpoint::Tcp(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port));
+                }
                 start_result(run_server_rm(&config))
             } else if foreground {
+                let port = port.unwrap_or(sidecar::WELL_KNOWN_PORT);
                 let mut config = ServerConfig {
                     endpoint: Endpoint::Tcp(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port)),
                     ..ServerConfig::well_known()
@@ -351,7 +359,7 @@ fn server_command(command: ServerCommands) -> ExitCode {
                 }
                 start_result(run_server(&config))
             } else {
-                start_daemon(workers, port)
+                start_daemon(workers, port.unwrap_or(sidecar::WELL_KNOWN_PORT))
             }
         }
         ServerCommands::Cleanup => match well_known_cleanup() {

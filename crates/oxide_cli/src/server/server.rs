@@ -272,7 +272,9 @@ pub fn run_server(config: &ServerConfig) -> Result<(), ServerError> {
 ///
 /// # 步骤
 /// 1. 建关闭标志并注册信号处理器（幂等）；失败直接返回（无 sidecar 可回滚）。
-/// 2. 绑定监听器（进程唯一路径，与持久路径共用同一绑定函数）。
+/// 2. 绑定监听器（进程唯一路径，与持久路径共用同一绑定函数）；TCP 臂取实际
+///    本地地址、向前台标准输出打印端点（就绪信号的一部分），上下文端点文本
+///    取实际地址。
 /// 3. 建内核（标准配置）、共享聚合计数器，派生 worker（参数与持久 server 一致）。
 /// 4. 空闲窗口一：等首个连接；空闲超时内无连接即干净退出（正常退出，非错误）。
 /// 5. 首个连接派生连接线程：处理完毕（EOF 或读超时）后置关闭标志并减在途计数。
@@ -289,6 +291,7 @@ pub fn run_server(config: &ServerConfig) -> Result<(), ServerError> {
 ///
 /// # 副作用
 /// - 创建 socket 文件（Unix 臂），正常退出时删除；不写 sidecar。
+/// - TCP 臂向前台标准输出打印实际监听端点（host:port）。
 /// - 注册进程级信号处理器（SIGINT、SIGTERM，termination 特性下含 SIGHUP）。
 /// - 派生 N 个常驻 worker 线程与每连接一个 I/O 线程。
 ///
@@ -306,6 +309,18 @@ pub fn run_server_rm(config: &RmServerConfig) -> Result<(), ServerError> {
     // 绑定监听器：进程唯一路径不存在 stale 文件竞争，与持久路径共用同一
     // 绑定函数（删除重试逻辑保留只为共用）。
     let listener = bind_listener_endpoint(&config.endpoint)?;
+
+    // TCP 臂：取操作系统分配的实际端口（绑 0 端口时由内核分配），向前台
+    // 标准输出打印实际端点（打印在空闲窗口之前，是就绪信号的一部分），
+    // 上下文端点文本取实际地址（Info 响应不暴露未绑定的 0 端口）。
+    let socket_path = match &listener {
+        Listener::Tcp(_) => {
+            let text = listener.local_addr().map_err(|e| ServerError::BindFailed(e.to_string()))?;
+            println!("rm server 监听：{text}");
+            text
+        }
+        Listener::Unix(_) => config.endpoint.describe(),
+    };
 
     // 建内核（标准配置）与共享聚合计数器（全体 worker 池的增减累加到同一聚合）。
     let kernel = KernelCore::new(KernelConfig::standard());
@@ -327,7 +342,7 @@ pub fn run_server_rm(config: &RmServerConfig) -> Result<(), ServerError> {
         shutdown: Arc::clone(&shutdown),
         in_flight: Arc::new(AtomicUsize::new(0)),
         pool_counters: counters,
-        socket_path: config.endpoint.describe(),
+        socket_path,
     });
 
     // 空闲窗口一：等首个连接；空闲超时内无连接即干净退出。
@@ -809,7 +824,7 @@ fn wait_in_flight_drained(in_flight: &AtomicUsize, timeout: Duration) {
 mod tests {
     use super::*;
     use std::io::Write;
-    use std::net::TcpStream;
+    use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpStream};
     use std::thread::JoinHandle;
 
     /// 测试全部用 Unix 端点；直接取 socket 路径。
@@ -890,6 +905,49 @@ mod tests {
             std::thread::sleep(Duration::from_millis(10));
         }
         handle
+    }
+
+    /// 预取空闲端口：临时 `TcpListener` 绑 0 端口取操作系统分配的端口后释放。
+    fn free_tcp_port() -> u16 {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("临时监听者绑定应成功");
+        let port = listener.local_addr().expect("取端口应成功").port();
+        drop(listener);
+        port
+    }
+
+    /// --rm TCP 配置：固定空闲端口、worker 数 1、300 毫秒空闲超时（与 Unix
+    /// 配置同口径，不依赖真实超时值，断言带 5 秒裕量）。
+    fn rm_tcp_config() -> RmServerConfig {
+        RmServerConfig {
+            endpoint: Endpoint::Tcp(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), free_tcp_port())),
+            worker_count: 1,
+            idle_timeout: Duration::from_millis(300),
+        }
+    }
+
+    /// 后台线程起真实 run_server_rm（TCP 臂）。
+    ///
+    /// TCP 无 socket 文件可等，就绪由调用方轮询 `TcpStream::connect` 判定；
+    /// 首个成功连接即 server 服务的单连接（监听器随后被丢弃），调用方须保留
+    /// 该连接、不得探后即弃。
+    fn start_rm_server_tcp(config: RmServerConfig) -> JoinHandle<Result<(), ServerError>> {
+        let server_config = config.clone();
+        std::thread::spawn(move || run_server_rm(&server_config))
+    }
+
+    /// 连接 TCP rm server：轮询 connect 至成功（首个成功连接即 server 服务的
+    /// 单连接，返回后由调用方保留使用）。
+    fn connect_rm_tcp(addr: SocketAddr) -> TcpStream {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            match TcpStream::connect(addr) {
+                Ok(stream) => return stream,
+                Err(_) => {
+                    assert!(Instant::now() < deadline, "TCP rm server 应在 10 秒内就绪");
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+            }
+        }
     }
 
     /// 信号处理器体：置位关闭标志。
@@ -1488,5 +1546,39 @@ mod tests {
         let mut stream = Conn::Unix(UnixStream::connect(unix_path(&config.endpoint)).expect("连接 rm server 应成功"));
         stop_server(&mut stream, handle);
         assert!(!unix_path(&config.endpoint).exists(), "socket 文件应被删除");
+    }
+
+    /// --rm TCP 臂：eval 得完成值后客户端断开，server 在有界时间内正常退出
+    /// （走绑定、打印、空闲窗口、单连接的完整 TCP 代码路径）。
+    #[test]
+    fn rm_tcp_eval_then_eof_exits() {
+        let config = rm_tcp_config();
+        let handle = start_rm_server_tcp(config.clone());
+        let addr = match &config.endpoint {
+            Endpoint::Tcp(addr) => *addr,
+            _ => panic!("应为 TCP 端点"),
+        };
+        let mut stream = Conn::Tcp(connect_rm_tcp(addr));
+        let response = send_and_recv(
+            &mut stream,
+            &ServerRequest::Eval {
+                code: "1 + 1".into(),
+                max_steps: None,
+            },
+        );
+        assert!(
+            matches!(response, ServerResponse::EvalResult { ref value, .. } if value.as_deref() == Some("2")),
+            "应得完成值为 2 的 EvalResult 帧：{response:?}"
+        );
+
+        // 客户端断开：连接线程读到 EOF 退出，server 应在空闲超时加裕量内正常退出。
+        drop(stream);
+        let deadline = Instant::now() + config.idle_timeout + Duration::from_secs(5);
+        while !handle.is_finished() {
+            assert!(Instant::now() < deadline, "rm server 应在空闲超时加裕量内退出");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let result = handle.join().expect("rm server 线程应正常退出");
+        assert!(result.is_ok(), "rm server 应正常退出：{result:?}");
     }
 }
