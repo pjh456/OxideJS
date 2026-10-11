@@ -937,6 +937,152 @@ mod tests {
         let _ = std::fs::remove_file(&path_b);
     }
 
+    /// 端到端：importScripts 同步执行文件（lib.js 设全局变量，importScripts 后
+    /// 立即可读）；worker 脚本内 typeof importScripts 为 "function"、
+    /// self.importScripts === importScripts。
+    #[test]
+    fn worker_e2e_import_scripts() {
+        let mut vm = vm_with_compiler();
+
+        // lib.js：设全局变量。
+        let lib_path = write_worker_script("globalThis.libValue = 7;");
+        // worker 脚本：顶层 importScripts，收到消息后回发读取结果。
+        let worker_script = format!(
+            "importScripts('{lib}'); \
+             self.addEventListener('message', function(e) {{ self.postMessage(\
+             globalThis.libValue + '|' + (typeof importScripts) + '|' + (self.importScripts === importScripts)); }});",
+            lib = lib_path.display()
+        );
+        let worker_path = write_worker_script(&worker_script);
+        // 主脚本：建 Worker、投递消息触发回发。
+        let main_script = format!(
+            "var w = new Worker('{path}'); w.addEventListener('message', function(e) {{ globalThis.got = e.data; }}); w.postMessage('go');",
+            path = worker_path.display()
+        );
+        vm.run(&Arc::new(compile_script(&main_script))).expect("主脚本应运行");
+
+        // 事件循环轮询至 globalThis.got 被设置（带截止，防 flaky）。
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            vm.deliver_worker_messages();
+            vm.cleanup_disconnected_workers();
+            if global_value_opt(&vm, "got").is_some() {
+                break;
+            }
+            if Instant::now() >= deadline {
+                panic!("5 秒内未收到 importScripts 回发");
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let got = global_value_opt(&vm, "got").expect("got 应被设置");
+        let got_text = vm.lookup_str(got).expect("got 应可读");
+        assert_eq!(
+            got_text,
+            "7|function|true",
+            "lib.js 应同步执行、importScripts 应为 function 且经 self 可达"
+        );
+
+        vm.shutdown_workers();
+        let _ = std::fs::remove_file(&worker_path);
+        let _ = std::fs::remove_file(&lib_path);
+    }
+
+    /// 端到端：importScripts 多 URL 按序执行（a 先于 b）。
+    #[test]
+    fn worker_e2e_import_scripts_multiple_urls_in_order() {
+        let mut vm = vm_with_compiler();
+
+        // a.js 与 b.js 各向 globalThis.order 追加一段。
+        let path_a = write_worker_script("globalThis.order = (globalThis.order || '') + 'a';");
+        let path_b = write_worker_script("globalThis.order = (globalThis.order || '') + 'b';");
+        let worker_script = format!(
+            "importScripts('{a}', '{b}'); \
+             self.addEventListener('message', function(e) {{ self.postMessage(globalThis.order); }});",
+            a = path_a.display(),
+            b = path_b.display()
+        );
+        let worker_path = write_worker_script(&worker_script);
+        let main_script = format!(
+            "var w = new Worker('{path}'); w.addEventListener('message', function(e) {{ globalThis.got = e.data; }}); w.postMessage('go');",
+            path = worker_path.display()
+        );
+        vm.run(&Arc::new(compile_script(&main_script))).expect("主脚本应运行");
+
+        // 事件循环轮询至 globalThis.got 被设置（带截止，防 flaky）。
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            vm.deliver_worker_messages();
+            vm.cleanup_disconnected_workers();
+            if global_value_opt(&vm, "got").is_some() {
+                break;
+            }
+            if Instant::now() >= deadline {
+                panic!("5 秒内未收到 importScripts 回发");
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let got = global_value_opt(&vm, "got").expect("got 应被设置");
+        let got_text = vm.lookup_str(got).expect("got 应可读");
+        assert_eq!(got_text, "ab", "多 URL 应按实参顺序执行");
+
+        vm.shutdown_workers();
+        let _ = std::fs::remove_file(&worker_path);
+        let _ = std::fs::remove_file(&path_a);
+        let _ = std::fs::remove_file(&path_b);
+    }
+
+    /// 端到端：importScripts 文件不存在抛 TypeError、语法错误抛 SyntaxError、
+    /// 脚本运行期异常原值透传。
+    #[test]
+    fn worker_e2e_import_scripts_errors() {
+        let mut vm = vm_with_compiler();
+
+        // bad.js：语法错误（编译失败）；throw.js：顶层抛字符串（运行期异常）。
+        let bad_path = write_worker_script("function { 语法错误");
+        let throw_path = write_worker_script("throw 'boom';");
+        let worker_script = format!(
+            "var r1 = 'none'; try {{ importScripts('{missing}'); }} catch (e) {{ r1 = e.constructor.name; }} \
+             var r2 = 'none'; try {{ importScripts('{bad}'); }} catch (e) {{ r2 = e.constructor.name; }} \
+             var r3 = 'none'; try {{ importScripts('{throw}'); }} catch (e) {{ r3 = String(e); }} \
+             self.addEventListener('message', function(e) {{ self.postMessage(r1 + '|' + r2 + '|' + r3); }});",
+            missing = "/nonexistent/oxide_import_scripts_missing.js",
+            bad = bad_path.display(),
+            throw = throw_path.display()
+        );
+        let worker_path = write_worker_script(&worker_script);
+        let main_script = format!(
+            "var w = new Worker('{path}'); w.addEventListener('message', function(e) {{ globalThis.got = e.data; }}); w.postMessage('go');",
+            path = worker_path.display()
+        );
+        vm.run(&Arc::new(compile_script(&main_script))).expect("主脚本应运行");
+
+        // 事件循环轮询至 globalThis.got 被设置（带截止，防 flaky）。
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            vm.deliver_worker_messages();
+            vm.cleanup_disconnected_workers();
+            if global_value_opt(&vm, "got").is_some() {
+                break;
+            }
+            if Instant::now() >= deadline {
+                panic!("5 秒内未收到 importScripts 回发");
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let got = global_value_opt(&vm, "got").expect("got 应被设置");
+        let got_text = vm.lookup_str(got).expect("got 应可读");
+        assert_eq!(
+            got_text,
+            "TypeError|SyntaxError|boom",
+            "文件不存在应抛 TypeError、语法错误应抛 SyntaxError、运行期异常应原值透传"
+        );
+
+        vm.shutdown_workers();
+        let _ = std::fs::remove_file(&worker_path);
+        let _ = std::fs::remove_file(&bad_path);
+        let _ = std::fs::remove_file(&throw_path);
+    }
+
     /// onmessageerror 交付辅助：无自然触发，直接单测交付辅助（handler 被调用、
     /// 事件 type 为 "messageerror"）。不钉触发可达性（当前架构不可达）。
     #[test]

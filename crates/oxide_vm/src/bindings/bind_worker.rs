@@ -28,8 +28,9 @@ use oxide_types::value::JsValue;
 /// # 副作用
 /// - 构造器与原型对象经 `Box::into_raw` 登记 world 释放登记表（session 收尾统一
 ///   释放）；全局 `Worker` 槽经 `bind_constructor!` 原位安装。
-/// - self 面方法（`postMessage`/`close` 方法、`name`/`location` getter）绑 global
-///   （worker realm 经 `self` === global 可达，主 realm 无 `self` 时为无害占位）。
+/// - self 面方法（`postMessage`/`close` 方法、`name`/`location` getter）与
+///   `importScripts` 绑 global（worker realm 经 `self` === global 可达，
+///   主 realm 无 `self` 时为无害占位）。
 ///
 /// `realm_id` 未使用（Worker 无 well-known 符号键），保留签名与其他绑定函数一致。
 pub fn bind_worker(core: &Arc<KernelCore>, session: &KernelSession, global: &mut JsObject, _realm_id: u32) {
@@ -164,6 +165,21 @@ pub fn bind_worker(core: &Arc<KernelCore>, session: &KernelSession, global: &mut
                 ("postMessage", crate::worker::bindings::self_post_message as *const (), 1),
                 ("close", crate::worker::bindings::self_close as *const (), 0),
             ],
+        );
+    }
+    // importScripts（worker 全局，逐 URL 同步读文件、编译、执行；主 realm 为无害占位）。
+    // 幂等守卫。
+    let si_import_scripts = sf.intern("importScripts").0;
+    if sh.lookup_position(global.shape_id(), si_import_scripts).is_none() {
+        apply_binding_table(
+            world,
+            global,
+            core,
+            &[(
+                "importScripts",
+                crate::worker::bindings::import_scripts as *const (),
+                1,
+            )],
         );
     }
     // EventTarget 三方法直绑全局（worker realm 经 self === global 可达；全局原型链

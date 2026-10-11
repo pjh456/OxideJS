@@ -1,6 +1,6 @@
 //! Worker API 的 concrete `&mut Vm` native 函数：构造器、`postMessage`/`terminate`
-//! 原型方法、`self` 面（`self.postMessage`/`self.close`/`self.name`/`self.location`）
-//! 与 `MessageEvent` / 错误事件构造辅助。
+//! 原型方法、`self` 面（`self.postMessage`/`self.close`/`self.name`/`self.location`）、
+//! `importScripts` 与 `MessageEvent` / 错误事件构造辅助。
 //!
 //! 关键约定：
 //! - 函数是 concrete `&mut Vm` 形态（`NativeFn`），不挂 `VmHost` trait（trait 是单
@@ -317,6 +317,72 @@ pub(crate) fn self_post_message(vm: &mut Vm, args: &[u8]) -> NativeResult {
 /// - 置位本线程的 `WORKER_CLOSE_REQUESTED`（事件循环下一轮检查后退出）。
 pub(crate) fn self_close(_vm: &mut Vm, _args: &[u8]) -> NativeResult {
     request_worker_close();
+    NativeResult::Ok(JsValue::undefined())
+}
+
+/// `importScripts(...urls)`（worker 全局）：逐 URL 同步读文件、编译、执行。
+///
+/// # 步骤
+/// 1. 逐个 URL 实参（`args[1..]`）：读文件（`std::fs::read_to_string`，失败抛
+///    TypeError）。
+/// 2. 经 `create_plain_dynamic_script` 编译（失败抛 SyntaxError）。
+/// 3. 经 `call_function_sync` 以 global 为 this 同步执行（运行异常原值透传）。
+/// 4. 全部成功后返回 undefined。
+///
+/// # 边界与前提
+/// - URL 是脚本文件路径（worker 线程侧读取，与 worker 脚本同一线程）。
+/// - 主 realm 的 Vm 未注入编译服务时编译抛「未安装编译服务」错误（无害占位，
+///   与 self 侧 postMessage/close 在主 realm 的占位同一模式）。
+///
+/// # 副作用
+/// - 每个 URL 扩展当前代际平表（动态脚本模块）并同步执行一段脚本
+///   （顶层 var/function 声明落全局对象）。
+pub(crate) fn import_scripts(vm: &mut Vm, args: &[u8]) -> NativeResult {
+    for i in 1..args.len() {
+        let url_val = vm.reg(args[i]);
+        let url = match vm.lookup_str(url_val) {
+            Some(u) => u,
+            None => {
+                return NativeResult::Err(oxide_builtins::error::create_type_error(
+                    vm,
+                    "importScripts url must be a string",
+                ))
+            }
+        };
+
+        // 读文件（脚本源码）。
+        let source = match std::fs::read_to_string(&url) {
+            Ok(s) => s,
+            Err(e) => {
+                return NativeResult::Err(oxide_builtins::error::create_type_error(
+                    vm,
+                    &format!("failed to read importScripts script: {e}"),
+                ))
+            }
+        };
+
+        // 动态路径源契约：源码域转义形态传源（Rust String 无孤立 surrogate，
+        // 转义为恒等映射）。
+        let units: Vec<u16> = source.encode_utf16().collect();
+        let code = oxide_kernel::string_forge::source_escape(&units);
+
+        // 编译（失败抛 SyntaxError）。
+        let func = match vm.create_plain_dynamic_script(&code) {
+            Ok(f) => f,
+            Err(e) => return NativeResult::Err(oxide_builtins::error::create_syntax_error(vm, &e)),
+        };
+
+        // 以 global 为 this 同步执行（运行异常原值透传）。
+        let global = JsValue::from_js_object(vm.realm.session.borrow().global_object().as_ptr() as *mut JsObject);
+        if let Err(e) = vm.call_function_sync(func, global, &[]) {
+            // 原异常值在 last_uncaught_value（Err 文本是展平形态）；槽空时
+            // （内部不变量违例）按文本恢复错误对象兜底。
+            return NativeResult::Err(
+                vm.take_uncaught_value()
+                    .unwrap_or_else(|| oxide_builtins::error::create_from_text(vm, &e)),
+            );
+        }
+    }
     NativeResult::Ok(JsValue::undefined())
 }
 
