@@ -9,9 +9,12 @@ use crate::heartbeat::merge_heartbeat;
 use crate::print_fail_categories;
 use crate::report::{format_fail_groupings, format_fail_list};
 use crate::stats::RunStats;
+use crate::tcp_window_transport::TcpWindowTransport;
 use crate::window_transport::{LocalFileWindowTransport, PollResult, WindowTransport};
+use oxide_net::Listener;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 /// 超时/崩溃后把 sidecar 日志的末 ~20 行打到父进程 stderr，供现场重建。
@@ -186,6 +189,7 @@ fn supervise_window(
 /// 从不持有 `KernelCore`，因此按引用共享 `paths`/`args` 是安全的。
 pub(crate) fn run_supervised(
     args: &[String], skip_until: usize, end_index: usize, no_skip: bool, paths: &[PathBuf],
+    remote_supervise: Option<(String, usize)>,
 ) -> bool {
     let exe = match std::env::current_exe() {
         Ok(path) => path,
@@ -195,14 +199,19 @@ pub(crate) fn run_supervised(
         }
     };
 
-    // 路径清单文件：派生窗口前写一次（每行一路径，与父扫描同序），跨窗口只读
-    // 共享；子进程读文件代替全量重扫目录。运行结束删除，防临时目录残留。
-    let paths_file = std::env::temp_dir().join(format!("oxide_t262_paths_{}.txt", std::process::id()));
-    let list = paths.iter().map(|p| p.to_string_lossy()).collect::<Vec<_>>().join("\n");
-    if let Err(err) = std::fs::write(&paths_file, list) {
-        eprintln!("failed to write paths file {}: {err}", paths_file.display());
-        return false;
-    }
+    // 路径清单文件：仅本地模式需要（子进程读文件代替全量重扫目录）；远程模式
+    // 路径随 assign 帧携带，不写文件。运行结束删除，防临时目录残留。
+    let paths_file: Option<PathBuf> = if remote_supervise.is_none() {
+        let pf = std::env::temp_dir().join(format!("oxide_t262_paths_{}.txt", std::process::id()));
+        let list = paths.iter().map(|p| p.to_string_lossy()).collect::<Vec<_>>().join("\n");
+        if let Err(err) = std::fs::write(&pf, list) {
+            eprintln!("failed to write paths file {}: {err}", pf.display());
+            return false;
+        }
+        Some(pf)
+    } else {
+        None
+    };
 
     let window = std::env::var("OXIDE_TEST262_WINDOW")
         .ok()
@@ -234,68 +243,140 @@ pub(crate) fn run_supervised(
         id += 1;
     }
 
-    // 缺省 16：全量复测验证过的安全并发；未经复测不得抬高。
-    let supervisors = std::env::var("OXIDE_TEST262_SUPERVISORS")
-        .ok()
-        .and_then(|s| s.parse::<usize>().ok())
-        .filter(|&n| n > 0)
-        .unwrap_or(16)
-        .min(windows.len().max(1));
-
-    eprintln!(
-        "supervised mode: {} window(s) of up to {window} test(s), {supervisors} supervisor(s), per-test timeout {}s",
-        windows.len(),
-        timeout.as_secs()
-    );
+    // 缺省 16：全量复测验证过的安全并发；未经复测不得抬高。远程模式用旗标 worker 数。
+    let (supervisors, endpoint) = match &remote_supervise {
+        Some((endpoint, workers)) => ((*workers).min(windows.len().max(1)), Some(endpoint.clone())),
+        None => (
+            std::env::var("OXIDE_TEST262_SUPERVISORS")
+                .ok()
+                .and_then(|s| s.parse::<usize>().ok())
+                .filter(|&n| n > 0)
+                .unwrap_or(16)
+                .min(windows.len().max(1)),
+            None,
+        ),
+    };
 
     let next = AtomicUsize::new(0);
     let next = &next;
     let windows = &windows;
     let exe = &exe;
-    let paths_file = &paths_file;
 
-    let partials: Vec<RunStats> = std::thread::scope(|scope| {
-        let handles: Vec<_> = (0..supervisors)
-            .map(|_| {
-                scope.spawn(move || {
-                    let mut stats = RunStats::default();
-                    loop {
-                        let wi = next.fetch_add(1, Ordering::Relaxed);
-                        if wi >= windows.len() {
-                            break;
-                        }
-                        let (window_id, wstart, wend) = windows[wi];
-                        // 每窗口一个传输实例（跨该窗口内子进程重启存活），
-                        // 已消费偏移等窗口级状态随之保留。
-                        let window_stats = supervise_window(
-                            no_skip,
-                            wstart,
-                            wend,
-                            timeout,
-                            startup_grace,
-                            paths,
-                            window_id,
-                            &mut LocalFileWindowTransport::new(exe, args, paths_file, window_id),
-                        );
-                        stats.merge(window_stats);
-                    }
-                    stats
-                })
+    let partials: Vec<RunStats> = match &endpoint {
+        Some(endpoint) => {
+            // 远程分支：bind 监听端点，每窗口 accept 一条 worker 连接，worker 数控制
+            // 并发线程数。路径随 assign 帧携带，不写 paths_file。
+            let listener = match std::net::TcpListener::bind(endpoint) {
+                Ok(l) => Arc::new(Listener::Tcp(l)),
+                Err(err) => {
+                    eprintln!("failed to bind remote supervisor endpoint {endpoint}: {err}");
+                    return false;
+                }
+            };
+            let bound = listener.local_addr().unwrap_or_else(|_| endpoint.clone());
+            eprintln!(
+                "remote supervised mode: {} window(s) of up to {window} test(s), {supervisors} worker(s), endpoint {bound}, per-test timeout {}s",
+                windows.len(),
+                timeout.as_secs()
+            );
+            // 路径清单经 Arc 跨监督线程共享（每窗口克隆一份随 assign 帧携带）。
+            let paths_vec: Arc<Vec<String>> =
+                Arc::new(paths.iter().map(|p| p.to_string_lossy().into_owned()).collect());
+            let timeout_secs = timeout.as_secs();
+            let listener_ref = &listener;
+            let paths_vec_ref = &paths_vec;
+            std::thread::scope(|scope| {
+                let handles: Vec<_> = (0..supervisors)
+                    .map(|_| {
+                        scope.spawn(move || {
+                            let mut stats = RunStats::default();
+                            loop {
+                                let wi = next.fetch_add(1, Ordering::Relaxed);
+                                if wi >= windows.len() {
+                                    break;
+                                }
+                                let (window_id, wstart, wend) = windows[wi];
+                                // 每窗口一个传输实例（跨该窗口内 worker 重启存活）。
+                                let window_stats = supervise_window(
+                                    no_skip,
+                                    wstart,
+                                    wend,
+                                    timeout,
+                                    startup_grace,
+                                    paths,
+                                    window_id,
+                                    &mut TcpWindowTransport::new(
+                                        Arc::clone(listener_ref),
+                                        (**paths_vec_ref).clone(),
+                                        timeout_secs,
+                                    ),
+                                );
+                                stats.merge(window_stats);
+                            }
+                            stats
+                        })
+                    })
+                    .collect();
+                handles
+                    .into_iter()
+                    .map(|h| h.join().expect("supervisor thread panicked"))
+                    .collect()
             })
-            .collect();
-        handles
-            .into_iter()
-            .map(|h| h.join().expect("supervisor thread panicked"))
-            .collect()
-    });
+        }
+        None => {
+            // 本地分支：现状不变（写 paths_file、LocalFileWindowTransport、缺省 16）。
+            let paths_file = paths_file.as_ref().expect("本地模式已写 paths_file");
+            eprintln!(
+                "supervised mode: {} window(s) of up to {window} test(s), {supervisors} supervisor(s), per-test timeout {}s",
+                windows.len(),
+                timeout.as_secs()
+            );
+            std::thread::scope(|scope| {
+                let handles: Vec<_> = (0..supervisors)
+                    .map(|_| {
+                        scope.spawn(move || {
+                            let mut stats = RunStats::default();
+                            loop {
+                                let wi = next.fetch_add(1, Ordering::Relaxed);
+                                if wi >= windows.len() {
+                                    break;
+                                }
+                                let (window_id, wstart, wend) = windows[wi];
+                                // 每窗口一个传输实例（跨该窗口内子进程重启存活），
+                                // 已消费偏移等窗口级状态随之保留。
+                                let window_stats = supervise_window(
+                                    no_skip,
+                                    wstart,
+                                    wend,
+                                    timeout,
+                                    startup_grace,
+                                    paths,
+                                    window_id,
+                                    &mut LocalFileWindowTransport::new(exe, args, paths_file, window_id),
+                                );
+                                stats.merge(window_stats);
+                            }
+                            stats
+                        })
+                    })
+                    .collect();
+                handles
+                    .into_iter()
+                    .map(|h| h.join().expect("supervisor thread panicked"))
+                    .collect()
+            })
+        }
+    };
 
     let mut stats = RunStats::default();
     for partial_stats in partials {
         stats.merge(partial_stats);
     }
 
-    // 全部窗口结束、子进程已读完清单，删除路径清单文件防临时目录残留。
-    let _ = std::fs::remove_file(paths_file);
+    // 全部窗口结束、子进程已读完清单，删除路径清单文件防临时目录残留（远程模式无文件）。
+    if let Some(pf) = &paths_file {
+        let _ = std::fs::remove_file(pf);
+    }
 
     let total = stats.pass + stats.fail + stats.skip;
     println!();

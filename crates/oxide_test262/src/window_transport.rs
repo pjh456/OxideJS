@@ -10,10 +10,11 @@ use crate::heartbeat::{read_heartbeat, Heartbeat};
 use crate::report::parse_fail_log;
 use crate::stats::RunStats;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, ExitStatus};
+use std::process::{Child, Command};
 
 /// 派生窗口子进程失败：spawn 的 io 错误。
-pub(crate) struct SpawnError(std::io::Error);
+#[derive(Debug)]
+pub(crate) struct SpawnError(pub(crate) std::io::Error);
 
 impl std::fmt::Display for SpawnError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -21,11 +22,12 @@ impl std::fmt::Display for SpawnError {
     }
 }
 
-/// 子进程等待三态：死亡（带退出状态）/ 存活 / 等待错误。
+/// 子进程等待三态：死亡（带退出码）/ 存活 / 等待错误。
 /// 三臂在监督策略里处理不同（死亡走心跳裁决、存活继续轮询、错误走 kill 加
-/// 记账），不得压扁。
+/// 记账），不得压扁。退出码仅用于打印（`ExitStatus` 无公开构造器，远程断连
+/// 合成码 1 走同一打印路径，不参与逻辑分支）。
 pub(crate) enum PollResult {
-    Exited(ExitStatus),
+    Exited(usize),
     Alive,
     WaitError(std::io::Error),
 }
@@ -150,7 +152,8 @@ impl WindowTransport for LocalFileWindowTransport {
             return PollResult::Alive;
         };
         match child.try_wait() {
-            Ok(Some(status)) => PollResult::Exited(status),
+            // 退出码仅用于打印：正常退出取 code，信号杀死取缺省 1。
+            Ok(Some(status)) => PollResult::Exited(status.code().unwrap_or(1) as usize),
             Ok(None) => PollResult::Alive,
             Err(err) => PollResult::WaitError(err),
         }

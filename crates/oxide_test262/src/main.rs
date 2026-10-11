@@ -16,6 +16,7 @@ mod runner;
 mod shard_protocol;
 mod stats;
 mod supervise;
+mod tcp_window_transport;
 mod test262_log;
 mod window_transport;
 mod worker;
@@ -311,7 +312,7 @@ fn run_tests() -> bool {
     if config.supervised(is_chunk_child) {
         test262_info!("supervised mode enabled");
         eprintln!("supervised mode enabled: child-window execution with per-test timeout + auto-resume");
-        return run_supervised(&args, skip_until, end_index, config.no_skip, &paths);
+        return run_supervised(&args, skip_until, end_index, config.no_skip, &paths, config.remote_supervise.clone());
     }
 
     if let Some(chunk_size) = chunk_size {

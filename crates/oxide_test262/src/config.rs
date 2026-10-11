@@ -12,6 +12,9 @@ pub(crate) struct RunConfig {
     pub(crate) supervise: bool,
     /// 远程分片 worker 模式：连监督者端点收窗口指派帧，in-process 执行并发帧。
     pub(crate) worker: bool,
+    /// 远程监督模式：（端点文本, worker 数）。监督者 bind 端点、每窗口 accept 一条
+    /// worker 连接，经 Tcp 传输执行窗口。
+    pub(crate) remote_supervise: Option<(String, usize)>,
     /// 关闭 liveness/精确 DCE/RegAlloc 链（开关对比：关优化链 vs 开优化链各跑一遍）。
     pub(crate) no_regalloc: bool,
     /// 逐测试打印 PASS/FAIL/SKIP（开关对比时对比两轮结果集合用）。
@@ -29,24 +32,28 @@ impl RunConfig {
             no_skip: false,
             supervise: false,
             worker: false,
+            remote_supervise: None,
             no_regalloc: false,
             verbose: false,
             no_fail_list: false,
         }
     }
 
-    /// 监督模式判定：`--supervise` 且非监督派生的子进程（子进程不重入监督）。
-    /// 路径 filter 不参与判定——filter 在子进程内逐测试应用，不构成监督屏障。
+    /// 监督模式判定：`--supervise` 或 `--remote-supervise` 且非监督派生的子进程
+    /// （子进程不重入监督）。路径 filter 不参与判定——filter 在子进程内逐测试
+    /// 应用，不构成监督屏障。
     pub(crate) fn supervised(&self, is_chunk_child: bool) -> bool {
-        self.supervise && !is_chunk_child
+        (self.supervise || self.remote_supervise.is_some()) && !is_chunk_child
     }
 
-    /// 解析命令行参数为运行配置；未知选项或参数过多返回错误。
+    /// 解析命令行参数为运行配置；未知选项、参数过多或 `--remote-supervise`
+    /// 缺实参 / worker 数非法返回错误。
     pub(crate) fn parse(args: &[String]) -> Result<Self, String> {
         let mut config = Self::new();
         let mut positional = Vec::new();
-
-        for arg in args.iter().skip(1) {
+        let mut i = 1;
+        while i < args.len() {
+            let arg = &args[i];
             match arg.as_str() {
                 "--no-skip" => config.no_skip = true,
                 "--no-regalloc" => config.no_regalloc = true,
@@ -54,16 +61,38 @@ impl RunConfig {
                 "--supervise" => config.supervise = true,
                 "--worker" => config.worker = true,
                 "--no-fail-list" => config.no_fail_list = true,
+                // --remote-supervise 消费后两个实参：端点文本与 worker 数。
+                "--remote-supervise" => {
+                    let endpoint = args
+                        .get(i + 1)
+                        .ok_or_else(|| format!("--remote-supervise requires an endpoint\n\n{}", Self::usage()))?;
+                    let workers_str = args
+                        .get(i + 2)
+                        .ok_or_else(|| format!("--remote-supervise requires a worker count\n\n{}", Self::usage()))?;
+                    let workers = workers_str
+                        .parse::<usize>()
+                        .map_err(|_| format!("invalid worker count: {workers_str}\n\n{}", Self::usage()))?;
+                    config.remote_supervise = Some((endpoint.clone(), workers));
+                    i += 2;
+                }
                 "--help" | "-h" => return Err(Self::usage()),
                 _ if arg.starts_with("--") => return Err(format!("unknown option: {arg}\n\n{}", Self::usage())),
                 _ => positional.push(arg.clone()),
             }
+            i += 1;
         }
 
         // worker 与 supervise 互斥：前者是远程分片的执行半区（连监督者端点），
         // 后者是本地子进程监督，两者不共存。
         if config.worker && config.supervise {
             return Err(format!("--worker and --supervise are mutually exclusive\n\n{}", Self::usage()));
+        }
+        // remote-supervise 是远程监督半区，与 worker（执行半区）及本地 supervise 互斥。
+        if config.worker && config.remote_supervise.is_some() {
+            return Err(format!("--worker and --remote-supervise are mutually exclusive\n\n{}", Self::usage()));
+        }
+        if config.supervise && config.remote_supervise.is_some() {
+            return Err(format!("--supervise and --remote-supervise are mutually exclusive\n\n{}", Self::usage()));
         }
 
         if let Some(root) = positional.first() {
@@ -81,7 +110,7 @@ impl RunConfig {
 
     /// 打印用法说明。
     pub(crate) fn usage() -> String {
-        "usage: test262-runner [--no-skip] [--no-regalloc] [--verbose] [--supervise] [--worker] [--version] [test262-root] [path-filter]\n\
+        "usage: test262-runner [--no-skip] [--no-regalloc] [--verbose] [--supervise] [--worker] [--remote-supervise <endpoint> <workers>] [--version] [test262-root] [path-filter]\n\
           \n\
           --no-skip    Run capability-excluded tests and count unsupported compile/runtime results as failures.\n\
           --no-regalloc  Disable the liveness/precise-DCE/RegAlloc compiler chain (vregs stay as physical numbers).\n\
@@ -94,6 +123,11 @@ impl RunConfig {
           --worker     Run as a remote shard worker: connect to the supervisor endpoint and execute assigned\n\
           \x20            test windows in-process, sending heartbeat/fail/scene/DONE frames over the connection.\n\
           \x20            Mutually exclusive with --supervise.\n\
+          --remote-supervise  Run as a remote supervisor: bind <endpoint> (host:port) and execute test\n\
+          \x20            windows on <workers> remote workers, sending assign frames and receiving\n\
+          \x20            heartbeat/fail/scene/DONE frames over the accepted connections. A worker\n\
+          \x20            disconnect is recovered as a child-process death. Mutually exclusive with\n\
+          \x20            --supervise and --worker.\n\
           \n\
           env tunables (all optional):\n\
           \x20  OXIDE_LOG                          per-subsystem log levels (default off)\n\
@@ -161,6 +195,47 @@ mod tests {
         let err =
             RunConfig::parse(&args(&["--worker", "--supervise"])).expect_err("worker+supervise must be exclusive");
         assert!(err.contains("mutually exclusive"), "应提示互斥：{err}");
+    }
+
+    /// --remote-supervise 正常解析端点与 worker 数；缺实参、worker 数非法返回错误。
+    #[test]
+    fn parse_remote_supervise_flag() {
+        let cfg = RunConfig::parse(&args(&["--remote-supervise", "127.0.0.1:8080", "4"]))
+            .expect("remote-supervise 应解析成功");
+        assert_eq!(cfg.remote_supervise, Some(("127.0.0.1:8080".to_string(), 4)));
+        assert!(!cfg.supervise, "remote-supervise 不应置位 supervise");
+        assert!(!cfg.worker, "remote-supervise 不应置位 worker");
+
+        let err = RunConfig::parse(&args(&["--remote-supervise"])).expect_err("缺端点应报错");
+        assert!(err.contains("--remote-supervise requires an endpoint"), "应提示缺端点：{err}");
+
+        let err = RunConfig::parse(&args(&["--remote-supervise", "127.0.0.1:8080"])).expect_err("缺 worker 数应报错");
+        assert!(err.contains("--remote-supervise requires a worker count"), "应提示缺 worker 数：{err}");
+
+        let err =
+            RunConfig::parse(&args(&["--remote-supervise", "127.0.0.1:8080", "abc"])).expect_err("worker 数非法应报错");
+        assert!(err.contains("invalid worker count"), "应提示 worker 数非法：{err}");
+    }
+
+    /// --remote-supervise 与 --worker、--supervise 互斥。
+    #[test]
+    fn parse_remote_supervise_exclusive() {
+        let err = RunConfig::parse(&args(&["--remote-supervise", "127.0.0.1:8080", "4", "--worker"]))
+            .expect_err("worker+remote-supervise 应互斥");
+        assert!(err.contains("mutually exclusive"), "应提示互斥：{err}");
+
+        let err = RunConfig::parse(&args(&["--remote-supervise", "127.0.0.1:8080", "4", "--supervise"]))
+            .expect_err("supervise+remote-supervise 应互斥");
+        assert!(err.contains("mutually exclusive"), "应提示互斥：{err}");
+    }
+
+    /// remote_supervise 置位也触发 supervised()（非子进程）；子进程不重入。
+    #[test]
+    fn supervised_predicate_with_remote_supervise() {
+        let mut cfg = RunConfig::new();
+        cfg.remote_supervise = Some(("127.0.0.1:8080".to_string(), 4));
+        assert!(cfg.supervised(false), "remote_supervise 应触发 supervised");
+        assert!(!cfg.supervised(true), "子进程不应重入 supervised");
     }
 
     /// 未知选项返回含 "unknown option" 的错误；--help 的错误文案与 usage 逐字相等。
