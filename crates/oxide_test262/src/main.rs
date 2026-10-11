@@ -93,9 +93,7 @@ struct WorkerParams {
 /// kernel 重建与批内 sweep 时机与并行模式逐位一致（每 `kernel_batch` 测试重建，
 /// 批内每 500 测试 sweep）。
 fn run_worker_window(
-    start: usize,
-    end: usize,
-    params: &WorkerParams,
+    start: usize, end: usize, params: &WorkerParams,
     on_heartbeat: &mut impl FnMut(usize, &TestResult, &RunStats) -> usize,
 ) -> RunStats {
     let mut engine = build_runner_engine();
@@ -380,7 +378,8 @@ fn run_tests() -> bool {
                                 if let TestOutcome::Fail(msg) = &result.outcome {
                                     // 旁路行携带真 subkey，父进程并入 fail_records 后直接生效 subkey 分组。
                                     let (cat, subkey) = categorize_fail(msg);
-                                    if let Err(e) = append_fail_log(&hb.with_extension("fails"), i, &cat, &subkey, msg) {
+                                    if let Err(e) = append_fail_log(&hb.with_extension("fails"), i, &cat, &subkey, msg)
+                                    {
                                         errors += 1;
                                         eprintln!("  [warn] fail log append failed at #{i}: {e}");
                                     }

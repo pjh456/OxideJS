@@ -158,7 +158,8 @@ mod tests {
         assert!(cfg.worker, "worker 旗标应置位");
         assert!(!cfg.supervise, "supervise 旗标不应置位");
 
-        let err = RunConfig::parse(&args(&["--worker", "--supervise"])).expect_err("worker+supervise must be exclusive");
+        let err =
+            RunConfig::parse(&args(&["--worker", "--supervise"])).expect_err("worker+supervise must be exclusive");
         assert!(err.contains("mutually exclusive"), "应提示互斥：{err}");
     }
 

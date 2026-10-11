@@ -71,7 +71,12 @@ pub(crate) fn run_worker(config: &RunConfig) -> bool {
         loop {
             match reader.read_frame() {
                 Ok(Some(frame)) => match parse_command(&frame) {
-                    Ok(ShardCommand::Assign { wstart, wend: _, paths, timeout_secs: _ }) => {
+                    Ok(ShardCommand::Assign {
+                        wstart,
+                        wend: _,
+                        paths,
+                        timeout_secs: _,
+                    }) => {
                         let _ = watchdog_tx.send(ChannelMsg::Assign(AssignWindow { wstart, paths }));
                     }
                     Ok(ShardCommand::Kill) => {
@@ -222,7 +227,10 @@ fn send_scene_frame(conn: &mut Conn) {
     if last.is_empty() {
         return;
     }
-    let event = ShardEvent::Scene { line: last.to_string(), log_tail: None };
+    let event = ShardEvent::Scene {
+        line: last.to_string(),
+        log_tail: None,
+    };
     if let Err(e) = send_event_frame(conn, &event) {
         eprintln!("worker: failed to send scene frame: {e}");
     }
