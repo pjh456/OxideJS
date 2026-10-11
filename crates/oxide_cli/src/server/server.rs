@@ -89,11 +89,11 @@ pub struct ServerConfig {
 }
 
 impl ServerConfig {
-    /// 生产默认配置：endpoint 与 sidecar 取 well-known 位置，worker 数取宿主
-    /// 核数，版本取构建期版本。
+    /// 生产默认配置：endpoint 取 well-known TCP 端口，sidecar 取 well-known
+    /// 位置，worker 数取宿主核数，版本取构建期版本。
     pub fn well_known() -> Self {
         ServerConfig {
-            endpoint: Endpoint::Unix(sidecar::well_known_socket_path()),
+            endpoint: sidecar::well_known_endpoint(),
             sidecar_path: sidecar::well_known_sidecar_path(),
             worker_count: default_worker_count(),
             version: env!("CARGO_PKG_VERSION").to_string(),
@@ -207,27 +207,23 @@ pub fn run_server(config: &ServerConfig) -> Result<(), ServerError> {
         levels: [Level::Info; SUBSYSTEM_COUNT],
     });
 
-    // liveness 扫描、sidecar 认领与交接协议都在 Unix 文件面上；TCP 臂跳过
-    // sidecar 注册，同端口裁决交给绑定失败。
-    if let Endpoint::Unix(socket_path) = &config.endpoint {
-        // 启动时 liveness 扫描：认领裁决前清掉陈旧残留（僵尸态自动恢复）。
-        // 杀进程失败映射既有的 ClaimRefused(RefusedAmbiguous)，诊断指向人工
-        // 清理命令。
-        match liveness::liveness_scan(&config.sidecar_path, socket_path) {
-            liveness::LivenessOutcome::Noop | liveness::LivenessOutcome::Cleaned => {}
-            liveness::LivenessOutcome::KillFailed => {
-                return Err(ServerError::ClaimRefused(ClaimResult::RefusedAmbiguous))
-            }
+    // 启动时 liveness 扫描：认领裁决前清掉陈旧残留（僵尸态自动恢复）。
+    // 杀进程失败映射既有的 ClaimRefused(RefusedAmbiguous)，诊断指向人工
+    // 清理命令。两臂通用：TCP server 也写 sidecar，同端口裁决交给绑定失败。
+    match liveness::liveness_scan(&config.sidecar_path, &config.endpoint) {
+        liveness::LivenessOutcome::Noop | liveness::LivenessOutcome::Cleaned => {}
+        liveness::LivenessOutcome::KillFailed => {
+            return Err(ServerError::ClaimRefused(ClaimResult::RefusedAmbiguous))
         }
+    }
 
-        // 认领 sidecar（启动顺序契约：先写 sidecar 再绑定监听器）：同版本
-        // 拒绝启动，异版本走交接路径，存活证据不足即返回错误。
-        match sidecar::claim_sidecar(&config.sidecar_path, socket_path, &config.version) {
-            ClaimResult::Registered => {}
-            ClaimResult::AlreadyRunning => return Err(ServerError::ClaimRefused(ClaimResult::AlreadyRunning)),
-            ClaimResult::VersionMismatch => yield_and_takeover(config)?,
-            ClaimResult::RefusedAmbiguous => return Err(ServerError::ClaimRefused(ClaimResult::RefusedAmbiguous)),
-        }
+    // 认领 sidecar（启动顺序契约：先写 sidecar 再绑定监听器）：同版本
+    // 拒绝启动，异版本走交接路径，存活证据不足即返回错误。
+    match sidecar::claim_sidecar(&config.sidecar_path, &config.endpoint, &config.version) {
+        ClaimResult::Registered => {}
+        ClaimResult::AlreadyRunning => return Err(ServerError::ClaimRefused(ClaimResult::AlreadyRunning)),
+        ClaimResult::VersionMismatch => yield_and_takeover(config)?,
+        ClaimResult::RefusedAmbiguous => return Err(ServerError::ClaimRefused(ClaimResult::RefusedAmbiguous)),
     }
 
     // 关闭标志提前创建并注册信号处理器：在绑定 socket 之前，socket 文件
@@ -460,18 +456,15 @@ fn finish_shutdown(
 /// 2. 设 5 秒读超时，写 yield 请求帧。
 /// 3. 读一帧应答：读超时（旧 server 挂起）或应答非 yield 确认（旧版本
 ///    binary 无该变体时以错误帧答复未知类型）判 `YieldFailed`。
-/// 4. 关闭连接，按 endpoint 形态等旧 server 退出：Unix 臂轮询 sidecar 文件
-///    消失，TCP 臂以端口释放（连接被拒）为退出信号；均 50 毫秒间隔、
-///    10 秒上限，超时判 `YieldFailed`。
-/// 5. Unix 臂重新认领 sidecar；得 `Registered` 即接管成功，其余态判
-///    `YieldFailed`。TCP 臂无 sidecar 文件，不重认领。
+/// 4. 关闭连接，轮询 sidecar 文件消失（50 毫秒间隔、10 秒上限）判旧 server
+///    退出；超时判 `YieldFailed`。
+/// 5. 重新认领 sidecar；得 `Registered` 即接管成功，其余态判 `YieldFailed`。
 ///
 /// # 边界与前提
 /// - 交接等待 10 秒长于旧 server 的排水安全超时 5 秒，正常路径必然先于
 ///   等待上限完成。
-/// - Unix 臂：旧 server 先删 socket 文件后删 sidecar，sidecar 消失时
-///   socket 文件必已删除，接管绑定无竞态。
-/// - TCP 臂：监听者 drop 即端口释放，连接被拒即旧 server 已退出。
+/// - 两臂统一以 sidecar 消失为退出信号：旧 server 先删 socket 文件（Unix
+///   臂）后删 sidecar，sidecar 消失时接管绑定无竞态。
 ///
 /// # 副作用
 /// - 失败时不触碰旧 server 的文件（socket 与 sidecar），人工兜底归清理命令。
@@ -479,7 +472,7 @@ fn finish_shutdown(
 /// # 注意事项
 /// - 纯函数式入口：版本管理路径（版本不匹配强制交接）与显式交接路径调用
 ///   同一入口。
-/// - 退出信号源按形态分：Unix 臂是 sidecar 文件消失，TCP 臂是端口释放。
+/// - 退出信号源是 sidecar 文件消失（两臂同源，TCP server 也写 sidecar）。
 pub fn yield_and_takeover(config: &ServerConfig) -> Result<(), ServerError> {
     // 连接旧 server：连接成功是交接的前提，两臂按 endpoint 形态分支。
     let mut stream = match &config.endpoint {
@@ -511,36 +504,20 @@ pub fn yield_and_takeover(config: &ServerConfig) -> Result<(), ServerError> {
     // 关闭连接：旧 server 已受理，交接进入退出等待阶段。
     drop(reader);
 
-    match &config.endpoint {
-        // Unix 臂：轮询 sidecar 消失（旧 server 的退出序列以 sidecar 最后
-        // 删除收口），消失后重新认领。
-        Endpoint::Unix(path) => {
-            let deadline = Instant::now() + Duration::from_secs(10);
-            while config.sidecar_path.exists() {
-                if Instant::now() >= deadline {
-                    return Err(ServerError::YieldFailed("旧 server 10 秒内未退出，sidecar 文件未消失".into()));
-                }
-                std::thread::sleep(Duration::from_millis(50));
-            }
+    // 轮询 sidecar 消失（旧 server 的退出序列以 sidecar 最后删除收口），
+    // 消失后重新认领。两臂统一：TCP server 也写 sidecar，退出信号同源。
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while config.sidecar_path.exists() {
+        if Instant::now() >= deadline {
+            return Err(ServerError::YieldFailed("旧 server 10 秒内未退出，sidecar 文件未消失".into()));
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
 
-            // 重新认领：sidecar 已消失，O_EXCL 创建应成功；其余态判交接失败。
-            match sidecar::claim_sidecar(&config.sidecar_path, path, &config.version) {
-                ClaimResult::Registered => Ok(()),
-                other => Err(ServerError::YieldFailed(format!("交接后重新认领未通过：{other:?}"))),
-            }
-        }
-        // TCP 臂：无 sidecar 文件可轮询，以端口释放（连接被拒）为旧 server
-        // 退出信号，10 秒上限，不重认领。
-        Endpoint::Tcp(addr) => {
-            let deadline = Instant::now() + Duration::from_secs(10);
-            while TcpStream::connect(*addr).is_ok() {
-                if Instant::now() >= deadline {
-                    return Err(ServerError::YieldFailed("旧 server 10 秒内未退出，端口仍被占用".into()));
-                }
-                std::thread::sleep(Duration::from_millis(50));
-            }
-            Ok(())
-        }
+    // 重新认领：sidecar 已消失，O_EXCL 创建应成功；其余态判交接失败。
+    match sidecar::claim_sidecar(&config.sidecar_path, &config.endpoint, &config.version) {
+        ClaimResult::Registered => Ok(()),
+        other => Err(ServerError::YieldFailed(format!("交接后重新认领未通过：{other:?}"))),
     }
 }
 
@@ -1316,7 +1293,7 @@ mod tests {
         // VersionMismatch）。
         let listener = UnixListener::bind(unix_path(&config.endpoint)).expect("绑定模拟旧 server 应成功");
         sidecar::write_exclusive(
-            &sidecar::ServerIdentity::new(unix_path(&config.endpoint).to_str().unwrap(), "0.0.0"),
+            &sidecar::ServerIdentity::new(&config.endpoint, "0.0.0"),
             &config.sidecar_path,
         )
         .expect("写模拟 sidecar 应成功");
@@ -1349,7 +1326,7 @@ mod tests {
 
         let listener = UnixListener::bind(unix_path(&config.endpoint)).expect("绑定模拟旧 server 应成功");
         sidecar::write_exclusive(
-            &sidecar::ServerIdentity::new(unix_path(&config.endpoint).to_str().unwrap(), "0.0.0"),
+            &sidecar::ServerIdentity::new(&config.endpoint, "0.0.0"),
             &config.sidecar_path,
         )
         .expect("写模拟 sidecar 应成功");
@@ -1372,7 +1349,7 @@ mod tests {
     }
 
     /// 交接 TCP 臂：假 server 回 yield 确认帧后 drop 监听器（端口释放），
-    /// 交接以端口释放为退出信号返回成功（不重认领）。
+    /// 无 sidecar 可轮询（轮询即跳过），重新认领 O_EXCL 创建成功，交接返回成功。
     #[test]
     fn yield_takeover_tcp_arm() {
         let listener = TcpListener::bind("127.0.0.1:0").expect("绑定假 server 应成功");

@@ -11,7 +11,7 @@
 use std::io::BufReader;
 use std::net::TcpStream;
 use std::os::unix::net::UnixStream;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::mpsc::RecvTimeoutError;
 use std::time::Duration;
 
@@ -78,8 +78,9 @@ pub fn send_control_request_from(sidecar_path: &Path, request: &ServerRequest) -
         ))
     })?;
 
-    // 连接：5 秒超时是安全网，本地 socket 连接立即完成或立即失败。
-    let mut stream = connect_with_timeout(&Endpoint::Unix(PathBuf::from(identity.socket_path)), CONNECT_TIMEOUT)?;
+    // 连接：5 秒超时是安全网，本地连接立即完成或立即失败。endpoint 取 sidecar
+    // 记录的文本形态（host:port 或路径），撤掉 Unix 过渡包装。
+    let mut stream = connect_with_timeout(&sidecar::parse_endpoint(&identity.socket_path), CONNECT_TIMEOUT)?;
 
     // 读写超时各 5 秒：server 挂起（不回应）时不无限阻塞。
     let _ = stream.set_read_timeout(Some(CONNECT_TIMEOUT));
@@ -181,7 +182,7 @@ mod tests {
 
     /// 写一个指向给定 socket 路径的合法 sidecar。
     fn write_sidecar(sidecar: &Path, socket: &Path) {
-        let identity = sidecar::ServerIdentity::new(socket.to_str().unwrap(), "0.0.0");
+        let identity = sidecar::ServerIdentity::new(&Endpoint::Unix(socket.to_path_buf()), "0.0.0");
         sidecar::write_exclusive(&identity, sidecar).expect("写 sidecar 应成功");
     }
 

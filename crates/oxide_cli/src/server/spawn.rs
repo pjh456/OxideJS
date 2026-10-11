@@ -10,23 +10,25 @@ use std::time::{Duration, Instant};
 use super::client::send_control_request;
 use super::protocol::{ServerRequest, ServerResponse};
 
-/// spawn 脱离的前台 server 子进程（`server start --foreground`）：标准流全空，不等待。
+/// spawn 脱离的前台 server 子进程（`server start --foreground --port N`）：
+/// 标准流全空，不等待。
 ///
 /// # 步骤
 /// 1. 取当前可执行文件路径。
-/// 2. 构造命令 `server start --foreground` 加可选 `--workers N`。
+/// 2. 构造命令 `server start --foreground --port N` 加可选 `--workers N`。
 /// 3. 三个标准流置空并 spawn。
 ///
 /// # 边界与前提
 /// - 必须带 `--foreground`：守护形态 spawn 的是前台 server 入口，不带该旗标会
 ///   再次进入守护形态形成递归 spawn。
+/// - `port` 是 TCP 监听端口；缺省取 well-known 端口（调用方传入）。
 ///
 /// # 副作用
 /// - 创建脱离的子进程，调用方退出后由 init 收领继续运行。
-pub fn spawn_detached_server(workers: Option<u32>) -> std::io::Result<std::process::Child> {
+pub fn spawn_detached_server(workers: Option<u32>, port: u16) -> std::io::Result<std::process::Child> {
     let exe = std::env::current_exe()?;
     let mut cmd = Command::new(exe);
-    cmd.args(["server", "start", "--foreground"]);
+    cmd.args(["server", "start", "--foreground", "--port", &port.to_string()]);
     if let Some(n) = workers {
         cmd.args(["--workers", &n.to_string()]);
     }

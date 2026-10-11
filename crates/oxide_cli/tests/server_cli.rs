@@ -7,7 +7,8 @@
 //! 触碰全局路径的测试经双重锁（进程内互斥加跨进程文件锁）串行，避免相互
 //! 干扰（含与单测二进制的并行干扰）。
 
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader};
+use std::net::TcpStream;
 use std::os::unix::net::UnixStream;
 use std::process::{Command, Output};
 use std::sync::{Mutex, MutexGuard};
@@ -16,7 +17,7 @@ use std::time::{Duration, Instant};
 use oxide_cli::server::client::send_control_request;
 use oxide_cli::server::protocol::{self, FrameReader, ServerRequest, ServerResponse};
 use oxide_cli::server::sidecar;
-use oxide_net::Endpoint;
+use oxide_net::{Conn, Endpoint};
 
 /// well-known 全局路径进程内互斥锁：同测试二进制内触碰全局路径的测试串行
 /// 执行（fcntl 锁以进程为单位，不覆盖同进程多线程）。
@@ -85,13 +86,22 @@ fn wait_pid_dead(pid: u32, deadline: Duration) {
 }
 
 /// 发送请求帧并读回一帧响应。
-fn send_and_recv(stream: &mut UnixStream, request: &ServerRequest) -> ServerResponse {
+fn send_and_recv(stream: &mut Conn, request: &ServerRequest) -> ServerResponse {
     stream
         .write_all(protocol::encode_request(request).as_bytes())
         .expect("写请求应成功");
     let mut reader = FrameReader::new(BufReader::new(stream));
     let frame = reader.read_frame().expect("读响应应成功").expect("应读到响应帧");
     protocol::parse_response(&frame).expect("响应帧解析应成功")
+}
+
+/// 读 well-known sidecar 取 endpoint 并连接 server（两臂按形态分支）。
+fn connect_well_known() -> Conn {
+    let id = sidecar::read_identity(&sidecar::well_known_sidecar_path()).expect("读 sidecar 应成功");
+    match sidecar::parse_endpoint(&id.socket_path) {
+        Endpoint::Unix(path) => Conn::Unix(UnixStream::connect(&path).expect("连接 server 应成功")),
+        Endpoint::Tcp(addr) => Conn::Tcp(TcpStream::connect(addr).expect("连接 server 应成功")),
+    }
 }
 
 /// help 列全部十一个子命令。
@@ -115,7 +125,7 @@ fn server_help_lists_subcommands() {
 fn server_log_no_file_exit_1() {
     let _guard = lock_well_known();
     assert!(
-        !sidecar::is_server_alive(&Endpoint::Unix(sidecar::well_known_socket_path())),
+        !sidecar::is_server_alive(&sidecar::well_known_endpoint()),
         "存活 server 占用 well-known 路径，测试不抢占"
     );
 
@@ -135,7 +145,7 @@ fn server_log_no_file_exit_1() {
 fn server_control_arms_no_server_exit_1() {
     let _guard = lock_well_known();
     assert!(
-        !sidecar::is_server_alive(&Endpoint::Unix(sidecar::well_known_socket_path())),
+        !sidecar::is_server_alive(&sidecar::well_known_endpoint()),
         "存活 server 占用 well-known 路径，测试不抢占"
     );
 
@@ -154,7 +164,7 @@ fn server_control_arms_no_server_exit_1() {
 fn server_forge_no_server_exit_1() {
     let _guard = lock_well_known();
     assert!(
-        !sidecar::is_server_alive(&Endpoint::Unix(sidecar::well_known_socket_path())),
+        !sidecar::is_server_alive(&sidecar::well_known_endpoint()),
         "存活 server 占用 well-known 路径，测试不抢占"
     );
 
@@ -169,7 +179,7 @@ fn server_forge_no_server_exit_1() {
 fn server_cleanup_exit_0() {
     let _guard = lock_well_known();
     assert!(
-        !sidecar::is_server_alive(&Endpoint::Unix(sidecar::well_known_socket_path())),
+        !sidecar::is_server_alive(&sidecar::well_known_endpoint()),
         "存活 server 占用 well-known 路径，测试不抢占"
     );
 
@@ -185,12 +195,11 @@ fn server_cleanup_exit_0() {
 #[test]
 fn server_start_e2e() {
     let _guard = lock_well_known();
-    let socket = sidecar::well_known_socket_path();
     let sidecar_path = sidecar::well_known_sidecar_path();
 
     // 探活先行：存活 server 占用全局路径时 panic，不抢占。
     assert!(
-        !sidecar::is_server_alive(&Endpoint::Unix(socket.clone())),
+        !sidecar::is_server_alive(&sidecar::well_known_endpoint()),
         "存活 server 占用 well-known 路径，测试不抢占"
     );
 
@@ -205,7 +214,7 @@ fn server_start_e2e() {
     let id = sidecar::read_identity(&sidecar_path).expect("读 sidecar 应成功");
 
     // 版本请求帧：版本应等于构建期版本。
-    let mut stream = UnixStream::connect(&socket).expect("连接 server 应成功");
+    let mut stream = connect_well_known();
     let response = send_and_recv(&mut stream, &ServerRequest::Version);
     match response {
         ServerResponse::Version { version } => {
@@ -226,7 +235,6 @@ fn server_start_e2e() {
         std::thread::sleep(Duration::from_millis(50));
     }
 
-    assert!(!socket.exists(), "socket 文件应被删除");
     assert!(!sidecar_path.exists(), "sidecar 文件应被删除");
     wait_pid_dead(id.pid, Duration::from_secs(30));
 }
@@ -237,12 +245,11 @@ fn server_start_e2e() {
 #[test]
 fn server_start_when_running() {
     let _guard = lock_well_known();
-    let socket = sidecar::well_known_socket_path();
     let sidecar_path = sidecar::well_known_sidecar_path();
 
     // 探活先行：存活 server 占用全局路径时 panic，不抢占。
     assert!(
-        !sidecar::is_server_alive(&Endpoint::Unix(socket.clone())),
+        !sidecar::is_server_alive(&sidecar::well_known_endpoint()),
         "存活 server 占用 well-known 路径，测试不抢占"
     );
 
@@ -259,7 +266,7 @@ fn server_start_when_running() {
     assert!(stdout.contains("已启动"), "二次 start 应打印「已启动」：{stdout}");
 
     // 收尾：发关闭请求，等 sidecar 消失。
-    let mut stream = UnixStream::connect(&socket).expect("连接 server 应成功");
+    let mut stream = connect_well_known();
     let response = send_and_recv(&mut stream, &ServerRequest::Shutdown);
     assert!(matches!(response, ServerResponse::Shutdown), "应得关闭确认帧：{response:?}");
     drop(stream);
@@ -268,7 +275,6 @@ fn server_start_when_running() {
         assert!(Instant::now() < deadline, "server 应在有界时间内退出");
         std::thread::sleep(Duration::from_millis(50));
     }
-    assert!(!socket.exists(), "socket 文件应被删除");
     assert!(!sidecar_path.exists(), "sidecar 文件应被删除");
 }
 
@@ -278,23 +284,22 @@ fn server_start_when_running() {
 #[test]
 fn server_restart_e2e() {
     let _guard = lock_well_known();
-    let socket = sidecar::well_known_socket_path();
     let sidecar_path = sidecar::well_known_sidecar_path();
 
     // 探活先行：存活 server 占用全局路径时 panic，不抢占。
     assert!(
-        !sidecar::is_server_alive(&Endpoint::Unix(socket.clone())),
+        !sidecar::is_server_alive(&sidecar::well_known_endpoint()),
         "存活 server 占用 well-known 路径，测试不抢占"
     );
 
-    // 起子进程 A：worker 数压到 2，轮询 socket 文件出现（10 秒截止）判就绪。
+    // 起子进程 A：worker 数压到 2，轮询 sidecar 出现（10 秒截止）判就绪。
     let mut child = Command::new(env!("CARGO_BIN_EXE_oxide"))
         .args(["server", "start", "--workers", "2"])
         .spawn()
         .expect("oxide server start 应可启动");
     let deadline = Instant::now() + Duration::from_secs(10);
-    while !socket.exists() {
-        assert!(Instant::now() < deadline, "socket 文件未出现");
+    while sidecar::read_identity(&sidecar_path).is_none() {
+        assert!(Instant::now() < deadline, "sidecar 未出现");
         std::thread::sleep(Duration::from_millis(10));
     }
 
@@ -329,7 +334,7 @@ fn server_restart_e2e() {
     assert_eq!(new_id.version, env!("CARGO_PKG_VERSION"), "新 sidecar 版本应与构建期版本一致");
 
     // 连接新 server：健康请求得 healthy，版本请求得构建期版本。
-    let mut stream = UnixStream::connect(&socket).expect("连接新 server 应成功");
+    let mut stream = connect_well_known();
     match send_and_recv(&mut stream, &ServerRequest::Health) {
         ServerResponse::Health { healthy } => assert!(healthy, "新 server 应健康"),
         other => panic!("应得 Health 帧，实得 {other:?}"),
@@ -341,7 +346,7 @@ fn server_restart_e2e() {
         other => panic!("应得 Version 帧，实得 {other:?}"),
     }
 
-    // 收尾：发关闭请求，等新 server 退出，断言 socket 与 sidecar 文件被删。
+    // 收尾：发关闭请求，等新 server 退出，断言 sidecar 文件被删。
     let response = send_and_recv(&mut stream, &ServerRequest::Shutdown);
     assert!(matches!(response, ServerResponse::Shutdown), "应得关闭确认帧：{response:?}");
     drop(stream);
@@ -350,7 +355,6 @@ fn server_restart_e2e() {
         assert!(Instant::now() < deadline, "新 server 应在有界时间内退出");
         std::thread::sleep(Duration::from_millis(50));
     }
-    assert!(!socket.exists(), "socket 文件应被删除");
     assert!(!sidecar_path.exists(), "sidecar 文件应被删除");
 }
 
@@ -361,13 +365,12 @@ fn server_restart_e2e() {
 #[test]
 fn server_log_e2e() {
     let _guard = lock_well_known();
-    let socket = sidecar::well_known_socket_path();
     let sidecar_path = sidecar::well_known_sidecar_path();
     let log_path = sidecar::well_known_log_path();
 
     // 探活先行：存活 server 占用全局路径时 panic，不抢占。
     assert!(
-        !sidecar::is_server_alive(&Endpoint::Unix(socket.clone())),
+        !sidecar::is_server_alive(&sidecar::well_known_endpoint()),
         "存活 server 占用 well-known 路径，测试不抢占"
     );
 
@@ -419,7 +422,7 @@ fn server_log_e2e() {
     );
 
     // 关闭请求帧：读回关闭确认帧。
-    let mut stream = UnixStream::connect(&socket).expect("连接 server 应成功");
+    let mut stream = connect_well_known();
     let response = send_and_recv(&mut stream, &ServerRequest::Shutdown);
     assert!(matches!(response, ServerResponse::Shutdown), "应得关闭确认帧：{response:?}");
     drop(stream);
@@ -445,22 +448,21 @@ fn server_log_e2e() {
 #[test]
 fn server_forge_e2e() {
     let _guard = lock_well_known();
-    let socket = sidecar::well_known_socket_path();
     let sidecar_path = sidecar::well_known_sidecar_path();
 
     // 探活先行：存活 server 占用全局路径时 panic，不抢占。
     assert!(
-        !sidecar::is_server_alive(&Endpoint::Unix(socket.clone())),
+        !sidecar::is_server_alive(&sidecar::well_known_endpoint()),
         "存活 server 占用 well-known 路径，测试不抢占"
     );
 
-    // start 为守护形态：CLI 即刻返回，server 是脱离的孙进程；轮询 socket 文件
+    // start 为守护形态：CLI 即刻返回，server 是脱离的孙进程；轮询 sidecar
     // 出现判就绪（worker 数压到 2 避免按宿主核数预热的成本）。
     let output = oxide(&["server", "start", "--workers", "2"]);
     assert_eq!(output.status.code(), Some(0), "start 应退 0");
     let deadline = Instant::now() + Duration::from_secs(10);
-    while !socket.exists() {
-        assert!(Instant::now() < deadline, "socket 文件未出现");
+    while sidecar::read_identity(&sidecar_path).is_none() {
+        assert!(Instant::now() < deadline, "sidecar 未出现");
         std::thread::sleep(Duration::from_millis(10));
     }
 
@@ -485,7 +487,7 @@ fn server_forge_e2e() {
     assert!(stdout.contains("cache cleared"), "forge --clear-cache 应打印清缓存行：{stdout}");
 
     // 关闭请求帧：读回关闭确认帧。
-    let mut stream = UnixStream::connect(&socket).expect("连接 server 应成功");
+    let mut stream = connect_well_known();
     let response = send_and_recv(&mut stream, &ServerRequest::Shutdown);
     assert!(matches!(response, ServerResponse::Shutdown), "应得关闭确认帧：{response:?}");
     drop(stream);
@@ -497,7 +499,6 @@ fn server_forge_e2e() {
         std::thread::sleep(Duration::from_millis(50));
     }
 
-    assert!(!socket.exists(), "socket 文件应被删除");
     assert!(!sidecar_path.exists(), "sidecar 文件应被删除");
 }
 
@@ -507,12 +508,11 @@ fn server_forge_e2e() {
 #[test]
 fn server_watchdog_e2e() {
     let _guard = lock_well_known();
-    let socket = sidecar::well_known_socket_path();
     let sidecar_path = sidecar::well_known_sidecar_path();
 
     // 探活先行：存活 server 占用全局路径时 panic，不抢占。
     assert!(
-        !sidecar::is_server_alive(&Endpoint::Unix(socket.clone())),
+        !sidecar::is_server_alive(&sidecar::well_known_endpoint()),
         "存活 server 占用 well-known 路径，测试不抢占"
     );
 
@@ -582,7 +582,7 @@ fn server_watchdog_e2e() {
         .expect("watchdog 应在有界时间内完成重启探测");
 
     // 连接新 server：健康请求得 healthy。
-    let mut stream = UnixStream::connect(&socket).expect("连接新 server 应成功");
+    let mut stream = connect_well_known();
     match send_and_recv(&mut stream, &ServerRequest::Health) {
         ServerResponse::Health { healthy } => assert!(healthy, "新 server 应健康"),
         other => panic!("应得 Health 帧，实得 {other:?}"),
@@ -613,12 +613,11 @@ fn server_watchdog_e2e() {
 #[test]
 fn server_watchdog_sigint_stops_server() {
     let _guard = lock_well_known();
-    let socket = sidecar::well_known_socket_path();
     let sidecar_path = sidecar::well_known_sidecar_path();
 
     // 探活先行：存活 server 占用全局路径时 panic，不抢占。
     assert!(
-        !sidecar::is_server_alive(&Endpoint::Unix(socket.clone())),
+        !sidecar::is_server_alive(&sidecar::well_known_endpoint()),
         "存活 server 占用 well-known 路径，测试不抢占"
     );
 

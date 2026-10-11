@@ -113,7 +113,7 @@ pub fn decide(
 /// 清理入口：扫 sidecar、探活、杀 PID、删孤儿文件。
 ///
 /// # 步骤
-/// 1. 采集五个探活信号（sidecar 可解析性、socket 存活、socket 文件存在、
+/// 1. 采集五个探活信号（sidecar 可解析性、endpoint 存活、sidecar 文件存在、
 ///    PID 存活、刻度匹配）。
 /// 2. 调 `decide` 得决策。
 /// 3. 按决策落地（无操作 / 只删文件 / 先杀后删 / 拒绝）。
@@ -125,22 +125,24 @@ pub fn decide(
 /// - 可能向 sidecar 记录的进程发 SIGTERM；可能删除 socket 与 sidecar 文件。
 ///
 /// # 注意事项
-/// - 两条保守拒绝底线：socket 存活但 PID 无法可靠确定、杀进程超时，均不
+/// - 两条保守拒绝底线：endpoint 存活但 PID 无法可靠确定、杀进程超时，均不
 ///   触碰文件。
-pub fn cleanup(sidecar_path: &Path, socket_path: &Path) -> CleanupOutcome {
-    cleanup_with_wait(sidecar_path, socket_path, DEFAULT_KILL_WAIT)
+pub fn cleanup(sidecar_path: &Path, endpoint: &Endpoint) -> CleanupOutcome {
+    cleanup_with_wait(sidecar_path, endpoint, DEFAULT_KILL_WAIT)
 }
 
 /// 清理入口（可注入杀进程等待，测试注入短超时）。
 ///
 /// # 步骤
-/// 1. 采集信号：`read_identity`（缺失与损坏同归 `None`）、socket 文件存在、
-///    `is_server_alive`（仅文件存在时探活）、`pid_alive`、`process_starttime`
-///    与 sidecar 记录值比对（PID 死时匹配位恒假）。
+/// 1. 采集信号：`read_identity`（缺失与损坏同归 `None`）、sidecar 文件存在、
+///    `is_server_alive`（探 sidecar 记录的 endpoint，不可读时探调用方
+///    endpoint 兜底）、`pid_alive`、`process_starttime` 与 sidecar 记录值比对
+///    （PID 死时匹配位恒假）。
 /// 2. 调 `decide` 得决策。
-/// 3. 按决策落地：无操作返回 `Clean`；只删文件返回 `Removed`；先杀后删在
-///    信号发送失败或等待超时时返回 `KillFailed`（文件不碰）、成功返回
-///    `Removed`；拒绝返回 `RefusedLiveServer`（文件不碰）。
+/// 3. 按决策落地：无操作返回 `Clean`（Unix 臂 sidecar 缺失而 socket 文件存在时
+///    按孤儿删除返回 `Removed`）；只删文件返回 `Removed`；先杀后删在信号发送
+///    失败或等待超时时返回 `KillFailed`（文件不碰）、成功返回 `Removed`；拒绝
+///    返回 `RefusedLiveServer`（文件不碰）。
 ///
 /// # 边界与前提
 /// - `kill_wait` 是 SIGTERM 送达后等进程退出的窗口；server 走信号处理的
@@ -148,12 +150,17 @@ pub fn cleanup(sidecar_path: &Path, socket_path: &Path) -> CleanupOutcome {
 ///
 /// # 副作用
 /// - 可能向 sidecar 记录的进程发 SIGTERM；可能删除 socket 与 sidecar 文件。
-pub fn cleanup_with_wait(sidecar_path: &Path, socket_path: &Path, kill_wait: Duration) -> CleanupOutcome {
-    // 采集信号：sidecar 可解析性（缺失与损坏同归 None）、socket 存活、
-    // PID 存活与刻度匹配（PID 死时匹配位恒假）。
+pub fn cleanup_with_wait(sidecar_path: &Path, endpoint: &Endpoint, kill_wait: Duration) -> CleanupOutcome {
+    // 采集信号：sidecar 可解析性（缺失与损坏同归 None）、endpoint 存活、
+    // PID 存活与刻度匹配（PID 死时匹配位恒假）。endpoint 探活目标取 sidecar
+    // 记录的 endpoint（正确性红线），不可读时取调用方 endpoint（防御性兜底）。
     let identity = sidecar::read_identity(sidecar_path);
-    let socket_exists = socket_path.exists();
-    let socket_alive = socket_exists && sidecar::is_server_alive(&Endpoint::Unix(socket_path.to_path_buf()));
+    let registry_exists = sidecar_path.exists();
+    let probe = match &identity {
+        Some(id) => sidecar::parse_endpoint(&id.socket_path),
+        None => endpoint.clone(),
+    };
+    let endpoint_alive = sidecar::is_server_alive(&probe);
     let (pid_alive, starttime_match) = match &identity {
         Some(id) => {
             let alive = sidecar::pid_alive(id.pid);
@@ -163,13 +170,22 @@ pub fn cleanup_with_wait(sidecar_path: &Path, socket_path: &Path, kill_wait: Dur
     };
 
     // 裁决：五个信号映射到四态决策。
-    let decision = decide(identity.as_ref(), socket_exists, socket_alive, pid_alive, starttime_match);
+    let decision = decide(identity.as_ref(), registry_exists, endpoint_alive, pid_alive, starttime_match);
 
     // 按决策落地。
     match decision {
-        Decision::None => CleanupOutcome::Clean,
+        Decision::None => {
+            // 遗留信号：Unix 臂 sidecar 缺失而 socket 文件存在，按孤儿删除。
+            if let Some(path) = endpoint.socket_path() {
+                if !registry_exists && path.exists() {
+                    let _ = fs::remove_file(path);
+                    return CleanupOutcome::Removed;
+                }
+            }
+            CleanupOutcome::Clean
+        }
         Decision::DeleteOnly => {
-            remove_files(sidecar_path, socket_path);
+            remove_files(sidecar_path, endpoint);
             CleanupOutcome::Removed
         }
         Decision::Kill => {
@@ -183,20 +199,19 @@ pub fn cleanup_with_wait(sidecar_path: &Path, socket_path: &Path, kill_wait: Dur
                 return CleanupOutcome::KillFailed;
             }
             // server 自身退出序列已删文件时删除报错被忽略（尽力而为的残留兜底）。
-            remove_files(sidecar_path, socket_path);
+            remove_files(sidecar_path, endpoint);
             CleanupOutcome::Removed
         }
         Decision::Refuse => CleanupOutcome::RefusedLiveServer,
     }
 }
 
-/// well-known 路径清理入口：解析 well-known sidecar 与 socket 路径后调
-/// `cleanup`。
+/// well-known 路径清理入口：解析 well-known sidecar 与 endpoint 后调 `cleanup`。
 ///
 /// # 注意事项
 /// - CLI 分派臂与启动 liveness 扫描的稳定入口。
 pub fn well_known_cleanup() -> CleanupOutcome {
-    cleanup(&sidecar::well_known_sidecar_path(), &sidecar::well_known_socket_path())
+    cleanup(&sidecar::well_known_sidecar_path(), &sidecar::well_known_endpoint())
 }
 
 /// 发送 SIGTERM：`kill -TERM`，与 `pid_alive` 的 `kill -0` 同一 `Command` 路径。
@@ -227,13 +242,16 @@ pub fn wait_pid_exit(pid: u32, timeout: Duration) -> bool {
 }
 
 /// 删除残留文件：socket 先、sidecar 后（与交接退出序列同一定序：新 server
-/// 以 sidecar 消失为接管信号，届时 socket 文件必已删除）。
+/// 以 sidecar 消失为接管信号，届时 socket 文件必已删除）。TCP 臂无文件可删，
+/// 只删 sidecar。
 ///
 /// # 副作用
-/// - 可能删除 socket 文件与 sidecar 文件；文件已不存在不视为错误（server
-///   自身退出序列可能已删过）。
-pub fn remove_files(sidecar_path: &Path, socket_path: &Path) {
-    let _ = fs::remove_file(socket_path);
+/// - 可能删除 socket 文件（Unix 臂）与 sidecar 文件；文件已不存在不视为
+///   错误（server 自身退出序列可能已删过）。
+pub fn remove_files(sidecar_path: &Path, endpoint: &Endpoint) {
+    if let Some(path) = endpoint.socket_path() {
+        let _ = fs::remove_file(path);
+    }
     let _ = fs::remove_file(sidecar_path);
 }
 
@@ -338,7 +356,7 @@ mod tests {
     #[test]
     fn cleanup_no_files_clean() {
         let dir = TestDir::new();
-        let outcome = cleanup(&dir.path("sidecar.json"), &dir.path("server.sock"));
+        let outcome = cleanup(&dir.path("sidecar.json"), &Endpoint::Unix(dir.path("server.sock")));
         assert_eq!(outcome, CleanupOutcome::Clean, "无文件应判无残留");
     }
 
@@ -349,7 +367,7 @@ mod tests {
         let sidecar = dir.path("sidecar.json");
         let socket = dir.path("server.sock");
         fs::write(&socket, b"stale").expect("写陈旧 socket 文件应成功");
-        let outcome = cleanup(&sidecar, &socket);
+        let outcome = cleanup(&sidecar, &Endpoint::Unix(socket.clone()));
         assert_eq!(outcome, CleanupOutcome::Removed, "孤儿 socket 文件应判已清理");
         assert!(!socket.exists(), "socket 文件应被删除");
         assert!(!sidecar.exists(), "sidecar 不应被创建");
@@ -362,7 +380,7 @@ mod tests {
         let sidecar = dir.path("sidecar.json");
         let socket = dir.path("server.sock");
         sidecar::write_exclusive(&test_identity(dead_pid(), 0, &socket), &sidecar).expect("写 sidecar 应成功");
-        let outcome = cleanup(&sidecar, &socket);
+        let outcome = cleanup(&sidecar, &Endpoint::Unix(socket.clone()));
         assert_eq!(outcome, CleanupOutcome::Removed, "死 PID 残留应判已清理");
         assert!(!sidecar.exists(), "sidecar 应被删除");
     }
@@ -375,7 +393,7 @@ mod tests {
         let socket = dir.path("server.sock");
         fs::write(&sidecar, "not json at all").expect("写损坏文件应成功");
         fs::write(&socket, b"stale").expect("写陈旧 socket 文件应成功");
-        let outcome = cleanup(&sidecar, &socket);
+        let outcome = cleanup(&sidecar, &Endpoint::Unix(socket.clone()));
         assert_eq!(outcome, CleanupOutcome::Removed, "损坏 sidecar 加陈旧 socket 应判已清理");
         assert!(!sidecar.exists(), "sidecar 应被删除");
         assert!(!socket.exists(), "socket 文件应被删除");
@@ -389,7 +407,7 @@ mod tests {
         let socket = dir.path("server.sock");
         let listener = UnixListener::bind(&socket).expect("绑定监听者应成功");
         fs::write(&sidecar, "not json at all").expect("写损坏文件应成功");
-        let outcome = cleanup(&sidecar, &socket);
+        let outcome = cleanup(&sidecar, &Endpoint::Unix(socket.clone()));
         assert_eq!(outcome, CleanupOutcome::RefusedLiveServer, "损坏 sidecar 加存活 socket 应判拒绝");
         assert!(sidecar.exists(), "sidecar 应原样");
         assert!(socket.exists(), "socket 文件应原样");
@@ -404,7 +422,7 @@ mod tests {
         let sidecar = dir.path("sidecar.json");
         let socket = dir.path("server.sock");
         sidecar::write_exclusive(&test_identity(std::process::id(), 0, &socket), &sidecar).expect("写 sidecar 应成功");
-        let outcome = cleanup(&sidecar, &socket);
+        let outcome = cleanup(&sidecar, &Endpoint::Unix(socket.clone()));
         assert_eq!(outcome, CleanupOutcome::Removed, "刻度失配残留应判已清理");
         assert!(!sidecar.exists(), "sidecar 应被删除");
         assert!(sidecar::pid_alive(std::process::id()), "本进程应不受影响");
@@ -419,7 +437,7 @@ mod tests {
         let socket = dir.path("server.sock");
         let listener = UnixListener::bind(&socket).expect("绑定监听者应成功");
         sidecar::write_exclusive(&test_identity(std::process::id(), 0, &socket), &sidecar).expect("写 sidecar 应成功");
-        let outcome = cleanup(&sidecar, &socket);
+        let outcome = cleanup(&sidecar, &Endpoint::Unix(socket.clone()));
         assert_eq!(outcome, CleanupOutcome::RefusedLiveServer, "存活 socket 加刻度失配应判拒绝");
         assert!(sidecar.exists(), "sidecar 应原样");
         assert!(socket.exists(), "socket 文件应原样");
@@ -442,7 +460,7 @@ mod tests {
         });
         let id = test_identity(pid, sidecar::process_starttime(pid).expect("子进程启动刻度应可读"), &socket);
         sidecar::write_exclusive(&id, &sidecar).expect("写 sidecar 应成功");
-        let outcome = cleanup_with_wait(&sidecar, &socket, Duration::from_secs(3));
+        let outcome = cleanup_with_wait(&sidecar, &Endpoint::Unix(socket.clone()), Duration::from_secs(3));
         assert_eq!(outcome, CleanupOutcome::Removed, "刻度匹配的存活进程应被杀且文件被删");
         // 有界等待回收线程：子进程被杀后收尸即退出，不无限阻塞。
         let deadline = Instant::now() + Duration::from_secs(5);
@@ -469,7 +487,7 @@ mod tests {
         let pid = child.id();
         let id = test_identity(pid, sidecar::process_starttime(pid).expect("子进程启动刻度应可读"), &socket);
         sidecar::write_exclusive(&id, &sidecar).expect("写 sidecar 应成功");
-        let outcome = cleanup_with_wait(&sidecar, &socket, Duration::from_millis(300));
+        let outcome = cleanup_with_wait(&sidecar, &Endpoint::Unix(socket.clone()), Duration::from_millis(300));
         assert_eq!(outcome, CleanupOutcome::KillFailed, "忽略 SIGTERM 应判杀进程失败");
         assert!(sidecar.exists(), "sidecar 应原样");
         assert!(!socket.exists(), "socket 文件应保持不存在");

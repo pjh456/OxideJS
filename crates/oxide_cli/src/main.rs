@@ -2,12 +2,14 @@
 #![allow(dead_code)]
 
 use std::fs;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::process::ExitCode;
 use std::time::{Duration, Instant};
 
 use ansi_term::Colour::Red;
 use clap::{Parser, Subcommand};
 use oxide_cli::format_js_value;
+use oxide_net::Endpoint;
 use oxide_cli::server::cleanup::{well_known_cleanup, CleanupOutcome};
 use oxide_cli::server::client::send_control_request;
 use oxide_cli::server::log as server_log;
@@ -123,6 +125,9 @@ enum ServerCommands {
         /// 常驻 worker 线程数；缺省取宿主核数。
         #[arg(long)]
         workers: Option<u32>,
+        /// TCP 监听端口；缺省取 well-known 端口。
+        #[arg(long, default_value_t = sidecar::WELL_KNOWN_PORT, conflicts_with = "rm")]
+        port: u16,
         /// 前台形态：当前进程直接运行持久 server（守护形态 spawn 的子进程用，
         /// 不向用户暴露）。
         #[arg(long, hide = true)]
@@ -324,6 +329,7 @@ fn server_command(command: ServerCommands) -> ExitCode {
             rm,
             idle_timeout,
             workers,
+            port,
             foreground,
         } => {
             if rm {
@@ -336,13 +342,16 @@ fn server_command(command: ServerCommands) -> ExitCode {
                 }
                 start_result(run_server_rm(&config))
             } else if foreground {
-                let mut config = ServerConfig::well_known();
+                let mut config = ServerConfig {
+                    endpoint: Endpoint::Tcp(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port)),
+                    ..ServerConfig::well_known()
+                };
                 if let Some(n) = workers {
                     config.worker_count = n as usize;
                 }
                 start_result(run_server(&config))
             } else {
-                start_daemon(workers)
+                start_daemon(workers, port)
             }
         }
         ServerCommands::Cleanup => match well_known_cleanup() {
@@ -382,7 +391,7 @@ fn server_command(command: ServerCommands) -> ExitCode {
         }),
         ServerCommands::Info => control_arm(&ServerRequest::Info, |response| match response {
             ServerResponse::Info { version, socket_path, pid } => {
-                Some(format!("版本：{version}\nsocket：{socket_path}\n进程号：{pid}"))
+                Some(format!("版本：{version}\nendpoint：{socket_path}\n进程号：{pid}"))
             }
             _ => None,
         }),
@@ -491,9 +500,9 @@ fn control_arm(request: &ServerRequest, render: fn(&ServerResponse) -> Option<St
 ///
 /// # 副作用
 /// - server 为脱离进程，CLI 退出后由 init 收领继续运行。
-fn start_daemon(workers: Option<u32>) -> ExitCode {
+fn start_daemon(workers: Option<u32>, port: u16) -> ExitCode {
     // spawn：脱离子进程，标准流全空，不等待。
-    if let Err(err) = spawn::spawn_detached_server(workers) {
+    if let Err(err) = spawn::spawn_detached_server(workers, port) {
         eprintln!("{}", Red.paint(format!("spawn server 进程失败：{err}")));
         return ExitCode::FAILURE;
     }
@@ -545,8 +554,9 @@ fn restart_command() -> ExitCode {
         std::thread::sleep(Duration::from_millis(50));
     }
 
-    // 拉起新 server：脱离进程，标准流全空，不等待。
-    if let Err(err) = spawn::spawn_detached_server(None) {
+    // 拉起新 server：脱离进程，标准流全空，不等待。新 server 按缺省配置拉起
+    // （well-known 端口，不继承旧旗标）。
+    if let Err(err) = spawn::spawn_detached_server(None, sidecar::WELL_KNOWN_PORT) {
         eprintln!("{}", Red.paint(format!("拉起新 server 失败：{err}")));
         return ExitCode::FAILURE;
     }

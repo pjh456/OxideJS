@@ -99,3 +99,67 @@ fn control_client_end_to_end() {
     );
     assert!(!config.sidecar_path.exists(), "sidecar 文件应被删除");
 }
+
+/// TCP 臂端到端：bind 127.0.0.1:0 取空闲端口、drop 监听器、以该端口起 server，
+/// 经控制客户端走五类请求加关闭，sidecar 记 host:port 文本形态且被删。
+#[test]
+fn control_client_tcp_arm_end_to_end() {
+    // bind 127.0.0.1:0 取空闲端口，drop 监听器释放端口。
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("取空闲端口应成功");
+    let addr = listener.local_addr().expect("取端口应成功");
+    drop(listener);
+
+    // TCP 配置：临时 sidecar 路径、worker 数 2、版本取构建期版本。
+    let dir = std::env::temp_dir().join(format!("oxide_server_client_tcp_{}_{}", std::process::id(), "tcp"));
+    fs::create_dir_all(&dir).expect("测试目录创建应成功");
+    let config = ServerConfig {
+        endpoint: Endpoint::Tcp(addr),
+        sidecar_path: dir.join("sidecar.json"),
+        worker_count: 2,
+        version: env!("CARGO_PKG_VERSION").to_string(),
+    };
+
+    // 后台线程起真实 run_server，等 sidecar 出现（TCP 臂无 socket 文件，
+    // sidecar 是就绪信号）。
+    let server_config = config.clone();
+    let handle = std::thread::spawn(move || run_server(&server_config));
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while oxide_cli::server::sidecar::read_identity(&config.sidecar_path).is_none() {
+        assert!(Instant::now() < deadline, "sidecar 未出现");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+
+    // 版本请求：版本与构建期版本一致。
+    let response = send_control_request_from(&config.sidecar_path, &ServerRequest::Version).expect("版本请求应成功");
+    match response {
+        ServerResponse::Version { version } => {
+            assert_eq!(version, env!("CARGO_PKG_VERSION"), "版本应与构建期版本一致");
+        }
+        other => panic!("应得 Version 帧，实得 {other:?}"),
+    }
+
+    // 健康请求：healthy 为真。
+    let response = send_control_request_from(&config.sidecar_path, &ServerRequest::Health).expect("健康请求应成功");
+    assert!(
+        matches!(response, ServerResponse::Health { healthy: true }),
+        "healthy 应为真：{response:?}"
+    );
+
+    // 信息请求：endpoint 值与配置一致（host:port 文本形态）、进程号为当前进程号。
+    let response = send_control_request_from(&config.sidecar_path, &ServerRequest::Info).expect("信息请求应成功");
+    match response {
+        ServerResponse::Info { socket_path, pid, .. } => {
+            assert_eq!(socket_path, config.endpoint.describe(), "endpoint 值应与配置一致");
+            assert_eq!(pid, std::process::id(), "进程号应为当前进程号");
+        }
+        other => panic!("应得 Info 帧，实得 {other:?}"),
+    }
+
+    // 关闭请求：得确认帧，server 线程正常退出，sidecar 文件被删（TCP 臂无
+    // socket 文件）。
+    let response = send_control_request_from(&config.sidecar_path, &ServerRequest::Shutdown).expect("关闭请求应成功");
+    assert!(matches!(response, ServerResponse::Shutdown), "应得关闭确认帧：{response:?}");
+    let result = handle.join().expect("server 线程应正常退出");
+    assert!(result.is_ok(), "server 应正常退出：{result:?}");
+    assert!(!config.sidecar_path.exists(), "sidecar 文件应被删除");
+}

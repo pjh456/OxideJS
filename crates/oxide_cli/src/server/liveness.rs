@@ -44,16 +44,16 @@ pub enum LivenessOutcome {
     KillFailed,
 }
 
-/// 启动时 liveness 扫描入口：扫 sidecar 与 socket，清理陈旧残留，僵尸态自动恢复。
+/// 启动时 liveness 扫描入口：扫 sidecar 与 endpoint，清理陈旧残留，僵尸态自动恢复。
 ///
 /// # 步骤
-/// 1. 采集五个探活信号（sidecar 可解析性、socket 存活、socket 文件存在、
+/// 1. 采集五个探活信号（sidecar 可解析性、endpoint 存活、sidecar 文件存在、
 ///    PID 存活、刻度匹配）。
-/// 2. socket 存活守卫：存活即无操作（自动扫描绝不杀存活 server）。
+/// 2. endpoint 存活守卫：存活即无操作（自动扫描绝不杀存活 server）。
 /// 3. 按 `decide` 裁决表分派：无操作 / 只删文件 / 僵尸分支 / 拒绝。
 ///
 /// # 边界与前提
-/// - 只删 `config` 注入的 sidecar 与 socket 两条路径；日志文件不碰。
+/// - 只删 `config` 注入的 sidecar 与 socket 两条路径（Unix 臂）；日志文件不碰。
 /// - 杀进程等待取缺省 10 秒（长于 server 的在途排水安全超时 5 秒）。
 ///
 /// # 副作用
@@ -61,20 +61,21 @@ pub enum LivenessOutcome {
 ///
 /// # 注意事项
 /// - 须在 `claim_sidecar` 之前调用（认领裁决前清掉陈旧状态）。
-pub fn liveness_scan(sidecar_path: &Path, socket_path: &Path) -> LivenessOutcome {
-    liveness_scan_with_waits(sidecar_path, socket_path, ZOMBIE_EXIT_WINDOW, cleanup::DEFAULT_KILL_WAIT)
+pub fn liveness_scan(sidecar_path: &Path, endpoint: &Endpoint) -> LivenessOutcome {
+    liveness_scan_with_waits(sidecar_path, endpoint, ZOMBIE_EXIT_WINDOW, cleanup::DEFAULT_KILL_WAIT)
 }
 
 /// 启动时 liveness 扫描（可注入两个超时，测试注入短窗口）。
 ///
 /// # 步骤
-/// 1. 采集信号：`read_identity`（缺失与损坏同归 `None`）、socket 文件存在、
-///    `is_server_alive`（仅文件存在时探活）、`pid_alive`、`process_starttime`
-///    与 sidecar 记录值比对（PID 死时匹配位恒假）。
-/// 2. socket 存活守卫：存活即无操作。
+/// 1. 采集信号：`read_identity`（缺失与损坏同归 `None`）、sidecar 文件存在、
+///    `is_server_alive`（探 sidecar 记录的 endpoint，不可读时探调用方
+///    endpoint 兜底）、`pid_alive`、`process_starttime` 与 sidecar 记录值比对
+///    （PID 死时匹配位恒假）。
+/// 2. endpoint 存活守卫：存活即无操作。
 /// 3. 按 `decide` 裁决表分派：
-///    - `None` 无操作。
-///    - `DeleteOnly` 删文件（socket 先、sidecar 后）。
+///    - `None` 无操作（Unix 臂 sidecar 缺失而 socket 文件存在时按孤儿删除）。
+///    - `DeleteOnly` 删文件（socket 先、sidecar 后，Unix 臂）。
 ///    - `Kill` 僵尸分支：有界等待 sidecar 消失，仍在则杀进程后删文件。
 ///    - `Refuse` 无操作（文件不碰，归 `claim_sidecar` 裁决）。
 ///
@@ -88,13 +89,18 @@ pub fn liveness_scan(sidecar_path: &Path, socket_path: &Path) -> LivenessOutcome
 /// - 可能向 sidecar 记录的进程发 SIGTERM；可能删除 socket 与 sidecar 文件。
 /// - 杀进程决策与失败记入跨重启保留的日志文件（守护形态 stderr 是 null）。
 pub fn liveness_scan_with_waits(
-    sidecar_path: &Path, socket_path: &Path, zombie_exit_window: Duration, kill_wait: Duration,
+    sidecar_path: &Path, endpoint: &Endpoint, zombie_exit_window: Duration, kill_wait: Duration,
 ) -> LivenessOutcome {
-    // 采集信号：sidecar 可解析性（缺失与损坏同归 None）、socket 存活、
-    // PID 存活与刻度匹配（PID 死时匹配位恒假）。
+    // 采集信号：sidecar 可解析性（缺失与损坏同归 None）、endpoint 存活、
+    // PID 存活与刻度匹配（PID 死时匹配位恒假）。endpoint 探活目标取 sidecar
+    // 记录的 endpoint（正确性红线），不可读时取调用方 endpoint（防御性兜底）。
     let identity = sidecar::read_identity(sidecar_path);
-    let socket_exists = socket_path.exists();
-    let socket_alive = socket_exists && sidecar::is_server_alive(&Endpoint::Unix(socket_path.to_path_buf()));
+    let registry_exists = sidecar_path.exists();
+    let probe = match &identity {
+        Some(id) => sidecar::parse_endpoint(&id.socket_path),
+        None => endpoint.clone(),
+    };
+    let endpoint_alive = sidecar::is_server_alive(&probe);
     let (pid_alive, starttime_match) = match &identity {
         Some(id) => {
             let alive = sidecar::pid_alive(id.pid);
@@ -103,19 +109,28 @@ pub fn liveness_scan_with_waits(
         None => (false, false),
     };
 
-    // socket 存活守卫：存活 server 的处置归 `claim_sidecar` 裁决（同版本
+    // endpoint 存活守卫：存活 server 的处置归 `claim_sidecar` 裁决（同版本
     // AlreadyRunning 拒绝、异版本 VersionMismatch 走交接）。自动扫描绝不杀
     // 存活 server：`decide` 表的 Kill 行人工清理语义，杀存活 server 等于抢占，
     // 违反单例交接协议。
-    if socket_alive {
+    if endpoint_alive {
         return LivenessOutcome::Noop;
     }
 
     // 按裁决表分派。
-    match cleanup::decide(identity.as_ref(), socket_exists, socket_alive, pid_alive, starttime_match) {
-        Decision::None => LivenessOutcome::Noop,
+    match cleanup::decide(identity.as_ref(), registry_exists, endpoint_alive, pid_alive, starttime_match) {
+        Decision::None => {
+            // 遗留信号：Unix 臂 sidecar 缺失而 socket 文件存在，按孤儿删除。
+            if let Some(path) = endpoint.socket_path() {
+                if !registry_exists && path.exists() {
+                    let _ = std::fs::remove_file(path);
+                    return LivenessOutcome::Cleaned;
+                }
+            }
+            LivenessOutcome::Noop
+        }
         Decision::DeleteOnly => {
-            cleanup::remove_files(sidecar_path, socket_path);
+            cleanup::remove_files(sidecar_path, endpoint);
             LivenessOutcome::Cleaned
         }
         Decision::Kill => {
@@ -124,7 +139,7 @@ pub fn liveness_scan_with_waits(
             let Some(id) = identity else {
                 return LivenessOutcome::Noop;
             };
-            kill_zombie(&id, sidecar_path, socket_path, zombie_exit_window, kill_wait)
+            kill_zombie(&id, sidecar_path, endpoint, zombie_exit_window, kill_wait)
         }
         Decision::Refuse => LivenessOutcome::Noop,
     }
@@ -148,7 +163,7 @@ pub fn liveness_scan_with_waits(
 /// - 可能向 sidecar 记录的进程发 SIGTERM；可能删除 socket 与 sidecar 文件。
 /// - 杀进程决策与失败记入跨重启保留的日志文件。
 fn kill_zombie(
-    id: &sidecar::ServerIdentity, sidecar_path: &Path, socket_path: &Path, zombie_exit_window: Duration,
+    id: &sidecar::ServerIdentity, sidecar_path: &Path, endpoint: &Endpoint, zombie_exit_window: Duration,
     kill_wait: Duration,
 ) -> LivenessOutcome {
     // 有界等待 sidecar 消失：覆盖旧 server 退出序列窗口（排水 5 秒，sidecar
@@ -184,7 +199,7 @@ fn kill_zombie(
     }
 
     // 进程已退出：删文件（尽力而为；旧 server 的退出序列自己删文件，此处兜底）。
-    cleanup::remove_files(sidecar_path, socket_path);
+    cleanup::remove_files(sidecar_path, endpoint);
     oxide_log::__log_event!(
         "oxide::kernel",
         oxide_log::tracing::Level::INFO,
@@ -250,7 +265,7 @@ mod tests {
     #[test]
     fn no_residue_noop() {
         let dir = TestDir::new();
-        let outcome = liveness_scan(&dir.path("sidecar.json"), &dir.path("server.sock"));
+        let outcome = liveness_scan(&dir.path("sidecar.json"), &Endpoint::Unix(dir.path("server.sock")));
         assert_eq!(outcome, LivenessOutcome::Noop, "无文件应判无操作");
     }
 
@@ -261,7 +276,7 @@ mod tests {
         let sidecar = dir.path("sidecar.json");
         let socket = dir.path("server.sock");
         fs::write(&socket, b"stale").expect("写陈旧 socket 文件应成功");
-        let outcome = liveness_scan(&sidecar, &socket);
+        let outcome = liveness_scan(&sidecar, &Endpoint::Unix(socket.clone()));
         assert_eq!(outcome, LivenessOutcome::Cleaned, "孤儿 socket 文件应判已清理");
         assert!(!socket.exists(), "socket 文件应被删除");
         assert!(!sidecar.exists(), "sidecar 不应被创建");
@@ -274,7 +289,7 @@ mod tests {
         let sidecar = dir.path("sidecar.json");
         let socket = dir.path("server.sock");
         sidecar::write_exclusive(&test_identity(dead_pid(), 0, &socket), &sidecar).expect("写 sidecar 应成功");
-        let outcome = liveness_scan(&sidecar, &socket);
+        let outcome = liveness_scan(&sidecar, &Endpoint::Unix(socket.clone()));
         assert_eq!(outcome, LivenessOutcome::Cleaned, "死 PID 残留应判已清理");
         assert!(!sidecar.exists(), "sidecar 应被删除");
         assert!(!socket.exists(), "socket 文件应保持不存在");
@@ -288,7 +303,7 @@ mod tests {
         let sidecar = dir.path("sidecar.json");
         let socket = dir.path("server.sock");
         sidecar::write_exclusive(&test_identity(std::process::id(), 0, &socket), &sidecar).expect("写 sidecar 应成功");
-        let outcome = liveness_scan(&sidecar, &socket);
+        let outcome = liveness_scan(&sidecar, &Endpoint::Unix(socket.clone()));
         assert_eq!(outcome, LivenessOutcome::Cleaned, "刻度失配残留应判已清理");
         assert!(!sidecar.exists(), "sidecar 应被删除");
         assert!(sidecar::pid_alive(std::process::id()), "本进程应不受影响");
@@ -302,7 +317,7 @@ mod tests {
         let socket = dir.path("server.sock");
         fs::write(&sidecar, "not json at all").expect("写损坏文件应成功");
         fs::write(&socket, b"stale").expect("写陈旧 socket 文件应成功");
-        let outcome = liveness_scan(&sidecar, &socket);
+        let outcome = liveness_scan(&sidecar, &Endpoint::Unix(socket.clone()));
         assert_eq!(outcome, LivenessOutcome::Cleaned, "损坏 sidecar 加陈旧 socket 应判已清理");
         assert!(!sidecar.exists(), "sidecar 应被删除");
         assert!(!socket.exists(), "socket 文件应被删除");
@@ -316,9 +331,9 @@ mod tests {
         let sidecar = dir.path("sidecar.json");
         let socket = dir.path("server.sock");
         let listener = UnixListener::bind(&socket).expect("绑定监听者应成功");
-        sidecar::write_exclusive(&sidecar::ServerIdentity::new(socket.to_str().unwrap(), "0.0.0"), &sidecar)
+        sidecar::write_exclusive(&sidecar::ServerIdentity::new(&Endpoint::Unix(socket.clone()), "0.0.0"), &sidecar)
             .expect("写 sidecar 应成功");
-        let outcome = liveness_scan(&sidecar, &socket);
+        let outcome = liveness_scan(&sidecar, &Endpoint::Unix(socket.clone()));
         assert_eq!(outcome, LivenessOutcome::Noop, "存活 socket 应判无操作");
         assert!(sidecar.exists(), "sidecar 应原样");
         assert!(socket.exists(), "socket 文件应原样");
@@ -333,13 +348,13 @@ mod tests {
         let sidecar = dir.path("sidecar.json");
         let socket = dir.path("server.sock");
         // sidecar 记本进程 PID 加真实刻度（进程活且刻度匹配）、无 socket。
-        let id = sidecar::ServerIdentity::new(socket.to_str().unwrap(), "0.0.0");
+        let id = sidecar::ServerIdentity::new(&Endpoint::Unix(socket.clone()), "0.0.0");
         sidecar::write_exclusive(&id, &sidecar).expect("写 sidecar 应成功");
         // 扫描线程：sidecar 存在时进入僵尸分支，有界等待 sidecar 消失。
         let sidecar_scan = sidecar.clone();
         let socket_scan = socket.clone();
         let scan_handle = std::thread::spawn(move || {
-            liveness_scan_with_waits(&sidecar_scan, &socket_scan, Duration::from_secs(5), Duration::from_secs(1))
+            liveness_scan_with_waits(&sidecar_scan, &Endpoint::Unix(socket_scan), Duration::from_secs(5), Duration::from_secs(1))
         });
         // 主线程在窗口内删 sidecar（模拟旧 server 退出序列），扫描应判无操作。
         std::thread::sleep(Duration::from_millis(200));
@@ -366,7 +381,7 @@ mod tests {
         sidecar::write_exclusive(&id, &sidecar).expect("写 sidecar 应成功");
         // 注入短僵尸退出窗口（500 毫秒）加短杀进程等待（3 秒）：子进程存活，
         // sidecar 不消失，扫描等窗口后杀进程。
-        let outcome = liveness_scan_with_waits(&sidecar, &socket, Duration::from_millis(500), Duration::from_secs(3));
+        let outcome = liveness_scan_with_waits(&sidecar, &Endpoint::Unix(socket.clone()), Duration::from_millis(500), Duration::from_secs(3));
         assert_eq!(outcome, LivenessOutcome::Cleaned, "刻度匹配的存活进程应被杀且文件被删");
         // 有界等待回收线程：子进程被杀后收尸即退出，不无限阻塞。
         let deadline = Instant::now() + Duration::from_secs(5);
@@ -396,7 +411,7 @@ mod tests {
         // 注入短僵尸退出窗口（500 毫秒）加短杀进程等待（300 毫秒）：子进程忽略
         // SIGTERM，扫描判杀进程失败，文件原样。
         let outcome =
-            liveness_scan_with_waits(&sidecar, &socket, Duration::from_millis(500), Duration::from_millis(300));
+            liveness_scan_with_waits(&sidecar, &Endpoint::Unix(socket.clone()), Duration::from_millis(500), Duration::from_millis(300));
         assert_eq!(outcome, LivenessOutcome::KillFailed, "忽略 SIGTERM 应判杀进程失败");
         assert!(sidecar.exists(), "sidecar 应原样");
         assert!(!socket.exists(), "socket 文件应保持不存在");

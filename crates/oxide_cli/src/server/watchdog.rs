@@ -158,8 +158,9 @@ pub fn run_watchdog(workers: Option<u32>) -> ExitCode {
         return ExitCode::FAILURE;
     }
 
-    // 初始 spawn 与就绪探测：失败即退 1，不进入监控循环。
-    let mut child = match spawn_detached_server(workers) {
+    // 初始 spawn 与就绪探测：失败即退 1，不进入监控循环。watchdog 子进程用
+    // well-known 端口（范围控制：不加 --port 旗标）。
+    let mut child = match spawn_detached_server(workers, sidecar::WELL_KNOWN_PORT) {
         Ok(child) => child,
         Err(err) => {
             eprintln!("spawn server 进程失败：{err}");
@@ -245,7 +246,7 @@ pub fn run_watchdog(workers: Option<u32>) -> ExitCode {
                     return ExitCode::FAILURE;
                 }
                 std::thread::sleep(CRASH_BACKOFF);
-                match spawn_detached_server(workers) {
+                match spawn_detached_server(workers, sidecar::WELL_KNOWN_PORT) {
                     Ok(new_child) => {
                         child = new_child;
                         child_exited = None;
