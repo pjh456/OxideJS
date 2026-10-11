@@ -6,6 +6,8 @@
 //!   `Arc<KernelCore>` 是 Send/Sync，由全体 worker 共享（字节码缓存跨 worker 命中）。
 //! - 标准库 mpsc 的接收端不是 Send，不能跨线程共享给多个 worker，
 //!   因此每 worker 一条独立通道，发送端收进 `WorkerRouter` 按轮询投递。
+//! - 每条任务通道有界（每 worker 容量 8）：队列满时投递阻塞形成背压，
+//!   待执行任务内存有界。
 //! - 关闭序列固定：`close` 清空发送端 → worker 的 recv 断开退出 →
 //!   主线程逐一 join → 再 drop 内核。
 
@@ -20,6 +22,10 @@ use oxide_vm::vm_pool::{PoolCounters, VmPool};
 use super::eval;
 use super::forge;
 use super::protocol::{ForgeTarget, ServerResponse};
+
+/// 任务队列容量（每 worker 一条，非全局共享）：队列满时投递阻塞形成背压，
+/// 待执行任务内存有界（每任务至多一帧长上限的源码字符串）。
+const QUEUE_CAPACITY: usize = 8;
 
 /// worker 任务：执行请求加一次性回复通道。
 #[derive(Debug)]
@@ -40,17 +46,18 @@ pub enum WorkerTask {
     },
 }
 
-/// worker 路由器：N 条独立任务通道的发送端加轮询计数。
+/// worker 路由器：N 条独立有界任务通道的发送端加轮询计数。
 ///
 /// 发送端收进互斥锁：连接线程可能存活超过主线程的关闭序列（在途排水超时后
 /// 仍有余留连接），`close` 清空发送端后它们的投递立即失败，不挂起、不悬垂。
+/// 锁只保护发送端的索引与克隆，投递（可能因队列满而阻塞）在锁外进行。
 pub struct WorkerRouter {
-    senders: Mutex<Vec<mpsc::Sender<WorkerTask>>>,
+    senders: Mutex<Vec<mpsc::SyncSender<WorkerTask>>>,
     next: AtomicUsize,
 }
 
 impl WorkerRouter {
-    fn from_senders(senders: Vec<mpsc::Sender<WorkerTask>>) -> Self {
+    fn from_senders(senders: Vec<mpsc::SyncSender<WorkerTask>>) -> Self {
         WorkerRouter {
             senders: Mutex::new(senders),
             next: AtomicUsize::new(0),
@@ -60,18 +67,26 @@ impl WorkerRouter {
     /// 轮询投递任务到 worker。
     ///
     /// # 步骤
-    /// 1. 计数加一取模 N 选发送端。
-    /// 2. 投递；发送端已清空（关闭序列进行中）或接收端已断开时归还任务。
+    /// 1. 锁内计数加一取模 N 克隆发送端，随即释放锁。
+    /// 2. 锁外投递；队列满时阻塞等待空位（背压）。
+    /// 3. 发送端已清空（关闭序列进行中）或接收端已断开时归还任务。
     ///
     /// # 边界与前提
     /// - 返回 `Err` 时任务未被任何 worker 接收，调用方须以错误帧应答，不得阻塞等待。
+    /// - 队列满时调用线程阻塞至空位腾出；阻塞期间不持有发送端锁，
+    ///   其余连接线程的投递不被串行卡死。
     pub fn route(&self, task: WorkerTask) -> Result<(), WorkerTask> {
-        let senders = self.senders.lock().unwrap();
-        if senders.is_empty() {
-            return Err(task);
-        }
-        let idx = self.next.fetch_add(1, Ordering::Relaxed) % senders.len();
-        match senders[idx].send(task) {
+        // 锁内克隆发送端、锁外投递：队列满时 send 阻塞，若持锁阻塞会把
+        // 全体连接线程的投递串行卡死。
+        let sender = {
+            let senders = self.senders.lock().unwrap();
+            if senders.is_empty() {
+                return Err(task);
+            }
+            let idx = self.next.fetch_add(1, Ordering::Relaxed) % senders.len();
+            senders[idx].clone()
+        };
+        match sender.send(task) {
             Ok(()) => Ok(()),
             Err(sent) => Err(sent.0),
         }
@@ -87,7 +102,8 @@ impl WorkerRouter {
 /// 并进入任务循环。
 ///
 /// # 步骤
-/// 1. 建 N 对通道，接收端各移入一个 worker 线程。
+/// 1. 建 N 对有界通道（每 worker 容量 `QUEUE_CAPACITY`），接收端各移入一个
+///    worker 线程。
 /// 2. worker 线程内按内核配置的池规模建池（共享聚合计数器）。
 /// 3. 各 worker 进入任务循环：recv → 执行 → 经回复通道送回响应帧。
 ///
@@ -107,7 +123,8 @@ pub fn spawn_workers(
     let mut senders = Vec::with_capacity(n);
     let mut handles = Vec::with_capacity(n);
     for _ in 0..n {
-        let (tx, rx) = mpsc::channel();
+        // 有界通道：队列满时投递阻塞（背压），待执行任务内存有界。
+        let (tx, rx) = mpsc::sync_channel(QUEUE_CAPACITY);
         let kernel = Arc::clone(&kernel);
         let counters = Arc::clone(&counters);
         handles.push(std::thread::spawn(move || {
@@ -153,6 +170,7 @@ fn worker_loop(receiver: mpsc::Receiver<WorkerTask>, kernel: Arc<KernelCore>, po
 mod tests {
     use super::*;
     use oxide_kernel::kernel::KernelConfig;
+    use std::time::Duration;
 
     /// 建一个哑任务（回复通道只挂不读）。
     fn dummy_task() -> WorkerTask {
@@ -176,14 +194,38 @@ mod tests {
     /// 轮询分发：N 等于 2，投 4 个任务，两个 worker 各收到 2 个。
     #[test]
     fn round_robin_distribution() {
-        let (tx1, rx1) = mpsc::channel();
-        let (tx2, rx2) = mpsc::channel();
+        let (tx1, rx1) = mpsc::sync_channel(QUEUE_CAPACITY);
+        let (tx2, rx2) = mpsc::sync_channel(QUEUE_CAPACITY);
         let router = WorkerRouter::from_senders(vec![tx1, tx2]);
         for _ in 0..4 {
             router.route(dummy_task()).expect("投递应成功");
         }
         assert_eq!(drain_count(&rx1), 2, "第一个 worker 应收到 2 个任务");
         assert_eq!(drain_count(&rx2), 2, "第二个 worker 应收到 2 个任务");
+    }
+
+    /// 队列满时投递阻塞、队列腾出后投递成功：有界队列的背压语义。
+    #[test]
+    fn route_blocks_when_queue_full() {
+        let (tx, rx) = mpsc::sync_channel(QUEUE_CAPACITY);
+        let router = Arc::new(WorkerRouter::from_senders(vec![tx]));
+
+        // 填满队列至容量。
+        for _ in 0..QUEUE_CAPACITY {
+            router.route(dummy_task()).expect("队列未满时投递应成功");
+        }
+
+        // 队列已满：投递阻塞。在独立线程中经共享路由器投递，主线程验证其
+        // 未在有界时间内完成（防挂死的超时断言）。
+        let router_for_send = Arc::clone(&router);
+        let send_handle = std::thread::spawn(move || router_for_send.route(dummy_task()).is_ok());
+        std::thread::sleep(Duration::from_millis(200));
+        assert!(!send_handle.is_finished(), "队列满时投递应阻塞");
+
+        // 腾出一个空位：阻塞的投递应完成。
+        let _ = rx.try_recv();
+        let delivered = send_handle.join().expect("投递线程应正常退出");
+        assert!(delivered, "腾出空位后投递应成功");
     }
 
     /// 关闭序列：清空发送端后 worker 线程退出，join 在有界时间内返回。
@@ -201,7 +243,7 @@ mod tests {
     /// 发送端清空后投递归还任务：调用方不挂起，可立即以错误帧应答。
     #[test]
     fn route_after_close_returns_task() {
-        let (tx, _rx) = mpsc::channel();
+        let (tx, _rx) = mpsc::sync_channel(QUEUE_CAPACITY);
         let router = WorkerRouter::from_senders(vec![tx]);
         router.close();
         assert!(router.route(dummy_task()).is_err(), "清空后投递应归还任务");

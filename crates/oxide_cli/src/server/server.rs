@@ -10,9 +10,9 @@
 //! - accept 循环为非阻塞 accept 加 10 毫秒轮询加原子关闭标志：唤醒路径
 //!   确定、无锁、无唤醒丢失。
 //! - 并发模型：主线程只跑 accept 循环；每连接一个标准库线程只做 I/O
-//!   （帧读写）；六类控制请求由连接线程直接应答、不占 worker；执行请求与
-//!   forge 查询经 mpsc 路由到固定 N 个常驻 worker 执行（各持自己线程上的
-//!   VM 池）。
+//!   （帧读写）；accept 循环带并发连接上限（超限连接立即关闭）；六类控制
+//!   请求由连接线程直接应答、不占 worker；执行请求与 forge 查询经 mpsc
+//!   路由到固定 N 个常驻 worker 执行（各持自己线程上的 VM 池）。
 //! - 优雅退出顺序：关闭请求、SIGINT/SIGTERM 信号或 yield 请求置位关闭标志
 //!   → 在途归零 → 清空发送端 → join worker → drop 内核 → 先删 socket 文件
 //!   （Unix 臂）后删 sidecar（新 server 以 sidecar 消失为接管信号）。
@@ -112,6 +112,10 @@ fn default_worker_count() -> usize {
 
 /// --rm 模式缺省空闲超时：30 秒。
 const RM_DEFAULT_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// 并发连接上限：accept 循环容忍的在途连接线程数上限；超限连接立即关闭
+/// （客户端表现为连接建立随即被关，不发协议帧）。
+const MAX_CONCURRENT_CONNECTIONS: usize = 64;
 
 /// --rm 独立模式运行配置：监听端点、worker 数、空闲超时、共享 token。
 ///
@@ -708,8 +712,13 @@ fn bind_listener(config: &ServerConfig) -> Result<Listener, ServerError> {
 ///
 /// # 步骤
 /// 1. 检查关闭标志（原子布尔，序一致排序）。
-/// 2. accept：成功则派生连接线程（在途计数加一）；WouldBlock 睡 10 毫秒再查；
-///    其余错误以 `AcceptFailed` 返回。
+/// 2. accept：成功则先查并发连接上限，未超限派生连接线程（在途计数加一）、
+///    超限立即关闭该流；WouldBlock 睡 10 毫秒再查；其余错误以 `AcceptFailed`
+///    返回。
+///
+/// # 边界与前提
+/// - 上限检查与派生同在单线程 accept 循环内，无竞态；在途计数是既有的
+///   连接线程生命周期计数，直接复用。
 ///
 /// # 副作用
 /// - 每连接派生一个标准库线程（只做 I/O），线程结束时减一在途计数。
@@ -726,6 +735,12 @@ fn accept_loop(listener: &Listener, ctx: &Arc<ServerContext>, router: &Arc<Worke
 
         match listener.accept() {
             Ok(stream) => {
+                // 并发连接上限：在途计数达上限时立即关闭该流（客户端表现为
+                // 连接建立随即被关，不发协议帧），不派生线程、不加计数。
+                if ctx.in_flight.load(Ordering::SeqCst) >= MAX_CONCURRENT_CONNECTIONS {
+                    drop(stream);
+                    continue;
+                }
                 ctx.in_flight.fetch_add(1, Ordering::SeqCst);
                 let ctx = Arc::clone(ctx);
                 let router = Arc::clone(router);
@@ -1364,6 +1379,60 @@ mod tests {
 
         drop(stream_a);
         stop_server(&mut stream_b, handle);
+    }
+
+    /// 认证探针：发 Auth 帧并检查是否读到 AuthOk 帧；连接被关时返回假
+    /// （不 panic），供连接上限类测试探活。
+    fn auth_probe(stream: &mut Conn, token: &str) -> bool {
+        if stream
+            .write_all(protocol::encode_request(&ServerRequest::Auth { token: token.to_string() }).as_bytes())
+            .is_err()
+        {
+            return false;
+        }
+        let mut reader = FrameReader::new(io::BufReader::new(stream));
+        match reader.read_frame() {
+            Ok(Some(frame)) => matches!(protocol::parse_response(&frame).ok(), Some(ServerResponse::AuthOk)),
+            _ => false,
+        }
+    }
+
+    /// 连接上限：开满上限条连接后，下一条连接被立即关闭（读首帧得 EOF）；
+    /// 释放一条连接后，新连接恢复正常受理。
+    #[test]
+    fn accept_loop_enforces_concurrent_limit() {
+        let config = unique_paths("conn_limit");
+        let handle = start_server(config.clone());
+        let token = read_token(&config);
+
+        // 开满上限：每条连接的连接线程存活，在途计数达上限。
+        let mut streams: Vec<Conn> = (0..MAX_CONCURRENT_CONNECTIONS).map(|_| connect(&config)).collect();
+
+        // 第 N+1 条连接：server 立即关闭，读首帧得 EOF。
+        let mut extra = connect(&config);
+        assert!(!auth_probe(&mut extra, &token), "超限连接应被立即关闭（EOF）");
+
+        // 释放一条连接后，新连接恢复正常受理（轮询容忍连接线程退出延迟）。
+        drop(streams.pop().expect("应有一条连接可释放"));
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut admitted = false;
+        while !admitted {
+            assert!(Instant::now() < deadline, "上限释放后新连接应被受理");
+            let mut probe = connect(&config);
+            admitted = auth_probe(&mut probe, &token);
+            if !admitted {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        }
+
+        // 清理：关闭全部连接，再以一条已认证连接发关闭请求停 server。
+        let mut stop_stream = streams.pop().expect("应有一条连接用于停 server");
+        authenticate(&mut stop_stream, &token);
+        for stream in streams {
+            drop(stream);
+        }
+        drop(extra);
+        stop_server(&mut stop_stream, handle);
     }
 
     /// 控制请求不占 worker：一条连接发长 eval 占住 worker 期间，
