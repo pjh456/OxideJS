@@ -1,5 +1,5 @@
 //! test262 runner 运行配置：`RunConfig` 结构、CLI 解析（`parse`）与用法输出（`usage`）。
-//! 7 字段与 3 关联函数放宽为 `pub(crate)`；`usage` 全文即 `--help` 用户可见输出，逐字保留。
+//! 8 字段与 3 关联函数放宽为 `pub(crate)`；`usage` 全文即 `--help` 用户可见输出，逐字保留。
 
 use std::path::PathBuf;
 
@@ -10,6 +10,8 @@ pub(crate) struct RunConfig {
     pub(crate) filter: Option<String>,
     pub(crate) no_skip: bool,
     pub(crate) supervise: bool,
+    /// 远程分片 worker 模式：连监督者端点收窗口指派帧，in-process 执行并发帧。
+    pub(crate) worker: bool,
     /// 关闭 liveness/精确 DCE/RegAlloc 链（开关对比：关优化链 vs 开优化链各跑一遍）。
     pub(crate) no_regalloc: bool,
     /// 逐测试打印 PASS/FAIL/SKIP（开关对比时对比两轮结果集合用）。
@@ -26,6 +28,7 @@ impl RunConfig {
             filter: None,
             no_skip: false,
             supervise: false,
+            worker: false,
             no_regalloc: false,
             verbose: false,
             no_fail_list: false,
@@ -49,11 +52,18 @@ impl RunConfig {
                 "--no-regalloc" => config.no_regalloc = true,
                 "--verbose" => config.verbose = true,
                 "--supervise" => config.supervise = true,
+                "--worker" => config.worker = true,
                 "--no-fail-list" => config.no_fail_list = true,
                 "--help" | "-h" => return Err(Self::usage()),
                 _ if arg.starts_with("--") => return Err(format!("unknown option: {arg}\n\n{}", Self::usage())),
                 _ => positional.push(arg.clone()),
             }
+        }
+
+        // worker 与 supervise 互斥：前者是远程分片的执行半区（连监督者端点），
+        // 后者是本地子进程监督，两者不共存。
+        if config.worker && config.supervise {
+            return Err(format!("--worker and --supervise are mutually exclusive\n\n{}", Self::usage()));
         }
 
         if let Some(root) = positional.first() {
@@ -71,7 +81,7 @@ impl RunConfig {
 
     /// 打印用法说明。
     pub(crate) fn usage() -> String {
-        "usage: test262-runner [--no-skip] [--no-regalloc] [--verbose] [--supervise] [--version] [test262-root] [path-filter]\n\
+        "usage: test262-runner [--no-skip] [--no-regalloc] [--verbose] [--supervise] [--worker] [--version] [test262-root] [path-filter]\n\
           \n\
           --no-skip    Run capability-excluded tests and count unsupported compile/runtime results as failures.\n\
           --no-regalloc  Disable the liveness/precise-DCE/RegAlloc compiler chain (vregs stay as physical numbers).\n\
@@ -81,6 +91,9 @@ impl RunConfig {
           --supervise  Run the suite as single-worker child-process windows with a hard per-test timeout and\n\
           \x20            automatic resume past any hanging/crashing test. A hang or crash is reported by path.\n\
           \x20            Combines with [path-filter]: the filter is applied per-test inside each child window.\n\
+          --worker     Run as a remote shard worker: connect to the supervisor endpoint and execute assigned\n\
+          \x20            test windows in-process, sending heartbeat/fail/scene/DONE frames over the connection.\n\
+          \x20            Mutually exclusive with --supervise.\n\
           \n\
           env tunables (all optional):\n\
           \x20  OXIDE_LOG                          per-subsystem log levels (default off)\n\
@@ -95,6 +108,7 @@ impl RunConfig {
           \x20  OXIDE_TEST262_CHUNK_SIZE             tests per child in chunked mode\n\
           \x20  OXIDE_TEST262_CHILD_CHUNK            marks a spawned child as chunk worker (any value)\n\
           \x20  OXIDE_TEST262_ALLOW_FAIL_EXIT        child may exit 1 on fail (any value)\n\
+          \x20  OXIDE_TEST262_WORKER_ENDPOINT       supervisor endpoint for --worker mode (host:port)\n\
           \x20  OXIDE_TEST262_KERNEL_BATCH           kernel rebuilds every N tests (default 256, clamped to the 512 realm bound)\n\
           \x20  OXIDE_TEST262_LOG_LEVEL              runner log level (default info)\n\
           \x20  OXIDE_SKIP_UNTIL                      skip test indexes below N (chunking/supervise resume)\n\
@@ -135,6 +149,17 @@ mod tests {
         assert!(cfg.no_fail_list);
         assert_eq!(cfg.test262_root, Some(PathBuf::from("tests/test262")));
         assert_eq!(cfg.filter.as_deref(), Some("language"));
+    }
+
+    /// --worker 旗标置位；与 --supervise 同时给返回互斥错误。
+    #[test]
+    fn parse_worker_flag_and_supervise_exclusive() {
+        let cfg = RunConfig::parse(&args(&["--worker"])).expect("worker flag should parse");
+        assert!(cfg.worker, "worker 旗标应置位");
+        assert!(!cfg.supervise, "supervise 旗标不应置位");
+
+        let err = RunConfig::parse(&args(&["--worker", "--supervise"])).expect_err("worker+supervise must be exclusive");
+        assert!(err.contains("mutually exclusive"), "应提示互斥：{err}");
     }
 
     /// 未知选项返回含 "unknown option" 的错误；--help 的错误文案与 usage 逐字相等。

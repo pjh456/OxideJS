@@ -20,6 +20,7 @@ oxide_kernel = { path = "../oxide_kernel" }
 oxide_engine = { path = "../oxide_engine" }
 oxide_types = { path = "../oxide_types" }
 oxide_log = { path = "../oxide_log" }
+oxide_net = { path = "../oxide_net" }
 serde = { version = "1", features = ["derive"] }
 serde_json.workspace = true
 serde_yaml = "0.9"

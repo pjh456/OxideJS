@@ -1,7 +1,6 @@
 #![allow(clippy::arc_with_non_send_sync)]
 
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
@@ -19,12 +18,13 @@ mod stats;
 mod supervise;
 mod test262_log;
 mod window_transport;
+mod worker;
 use chunked::run_chunked;
 use config::RunConfig;
 use discovery::discover_tests;
 use harness::{HarnessModuleCache, HarnessPrefixCache, HarnessSources, HARNESS};
 use heartbeat::write_heartbeat;
-use judge::{categorize_fail, TestOutcome};
+use judge::{categorize_fail, TestOutcome, TestResult};
 use oxide_log::{Level, LogConfig, Output, SUBSYSTEM_COUNT};
 use report::{append_fail_log, first_line, format_fail_categories, format_fail_groupings, format_fail_list};
 use runner::{build_runner_engine, process_path, CURRENT_TEST_PATH};
@@ -71,6 +71,95 @@ fn print_fail_categories(stats: &RunStats, paths: &[PathBuf]) {
     }
 }
 
+/// 单 worker 窗口执行参数：路径清单、过滤器、各开关、kernel 批次与共享缓存。
+/// `harness_cache` 与 `harness_module_cache` 在并行模式跨 worker 共享，
+/// worker 模式单 worker 独享。
+struct WorkerParams {
+    paths: Vec<PathBuf>,
+    filter: Option<String>,
+    no_skip: bool,
+    no_regalloc: bool,
+    verbose: bool,
+    log_running_tests: bool,
+    kernel_batch: usize,
+    harness_cache: Arc<RwLock<HarnessPrefixCache>>,
+    harness_module_cache: Arc<RwLock<HarnessModuleCache>>,
+}
+
+/// 在窗口 `[start, end)` 上顺序执行测试，返回窗口聚合统计。
+///
+/// 窗口区间是测试下标范围；引擎参数经 `WorkerParams` 传入；心跳回调在每个测试
+/// 完成后（`stats.record` 之后）调用，返回需累加到 `hb_write_errors` 的写失败数。
+/// kernel 重建与批内 sweep 时机与并行模式逐位一致（每 `kernel_batch` 测试重建，
+/// 批内每 500 测试 sweep）。
+fn run_worker_window(
+    start: usize,
+    end: usize,
+    params: &WorkerParams,
+    on_heartbeat: &mut impl FnMut(usize, &TestResult, &RunStats) -> usize,
+) -> RunStats {
+    let mut engine = build_runner_engine();
+    let harness_sources = HARNESS.get_or_init(HarnessSources::new);
+    let mut stats = RunStats::default();
+    let mut tests_since_kernel_reset = 0usize;
+
+    for i in start..end {
+        let path_str = params.paths[i].display().to_string();
+        // 始终记录当前测试路径，使 panic hook 能标识 Rust panic。
+        // 诊断需要最后一行 stderr 的 OS 级崩溃时设置 OXIDE_TEST262_RUNNING_LOG=1。
+        CURRENT_TEST_PATH.with(|p| *p.borrow_mut() = path_str.clone());
+        if params.log_running_tests {
+            test262_debug!("running: {}", path_str);
+            eprintln!("  [worker] running: {path_str}");
+        }
+
+        let result = process_path(
+            &params.paths[i],
+            &params.filter,
+            params.no_skip,
+            params.no_regalloc,
+            &engine,
+            harness_sources,
+            &params.harness_cache,
+            &params.harness_module_cache,
+        );
+        stats.record(i, &result);
+        // COMPLETED 心跳：先写心跳再追加旁路失败行（崩溃恢复
+        // 无漏项、无双计的写序契约）。
+        stats.hb_write_errors += on_heartbeat(i, &result, &stats);
+        if params.verbose {
+            match &result.outcome {
+                TestOutcome::Pass(_) => println!("PASS {}", params.paths[i].display()),
+                TestOutcome::Fail(msg) => {
+                    let (cat, _) = categorize_fail(msg);
+                    println!("FAIL {} [{}] {}", params.paths[i].display(), cat, first_line(msg));
+                }
+                TestOutcome::Skip(_) => println!("SKIP {}", params.paths[i].display()),
+            }
+        }
+        tests_since_kernel_reset += 1;
+
+        if tests_since_kernel_reset >= params.kernel_batch {
+            // 重建即全新 forge（结构性必清）：旧核连同其表整体丢弃，
+            // 先 sweep 是对 doomed 核白做一次 O(50k) 清理。
+            // 重建边界契约：旧核上无存活 VM（VM 每测试局部，此处作用域外）。
+            debug_assert!(engine.kernel().active_vms() == 0, "kernel rebuild requires no live VMs");
+            engine = build_runner_engine();
+            tests_since_kernel_reset = 0;
+        } else if tests_since_kernel_reset % 500 == 0 {
+            engine.kernel().sweep_runner_forges(); // 批内 50k 兜底（数据依赖）
+        }
+        let done = i - start + 1;
+        let total = end - start;
+        if done % 500 == 0 || done == total {
+            test262_info!("progress: {}/{} ({}%)", done, total, done * 100 / total);
+            eprintln!("  progress: {done}/{total} ({}%)", done * 100 / total);
+        }
+    }
+
+    stats
+}
+
 /// 测试主流程：解析配置 → 发现测试 → 按 supervise/chunked/并行 三种模式执行 →
 /// 汇总并打印统计；任何失败使返回值为 false（进程退出码 1）。
 fn run_tests() -> bool {
@@ -110,6 +199,14 @@ fn run_tests() -> bool {
         output,
         levels: [log_level; SUBSYSTEM_COUNT],
     });
+
+    // worker 模式：远程分片的执行半区，连监督者端点收窗口指派帧，in-process
+    // 执行并发帧。不依赖本地 test262 根目录与路径发现（路径随指派帧携带）。
+    if config.worker {
+        test262_info!("worker mode enabled");
+        eprintln!("worker mode enabled: remote shard worker, in-process window execution");
+        return worker::run_worker(&config);
+    }
 
     let test262_root = if let Some(root) = config.test262_root.clone() {
         root
@@ -231,65 +328,41 @@ fn run_tests() -> bool {
     eprintln!("running on {workers} worker thread(s)");
     test262_info!("kernel reset batch: {} test(s)", kernel_batch);
     eprintln!("kernel reset batch: {kernel_batch} test(s)");
-    let cursor = AtomicUsize::new(skip_until);
-    let progress = AtomicUsize::new(skip_until);
-    let filter = &filter;
-    let no_skip = config.no_skip;
-    let no_regalloc = config.no_regalloc;
-    let verbose = config.verbose;
-    let paths_ref = &paths;
+
+    let params = WorkerParams {
+        paths: paths.clone(),
+        filter: filter.clone(),
+        no_skip: config.no_skip,
+        no_regalloc: config.no_regalloc,
+        verbose: config.verbose,
+        log_running_tests,
+        kernel_batch,
+        harness_cache: Arc::new(RwLock::new(HarnessPrefixCache::new())),
+        harness_module_cache: Arc::new(RwLock::new(HarnessModuleCache::new())),
+    };
     let heartbeat_ref = &heartbeat_path;
-    let harness_cache = Arc::new(RwLock::new(HarnessPrefixCache::new()));
-    let harness_module_cache = Arc::new(RwLock::new(HarnessModuleCache::new()));
+
+    // 静态窗口划分：把 [skip_until, end_index) 切成 workers 个连续窗口，
+    // 每 worker 顺序处理一个窗口（动态负载均衡改静态窗口，测试结果不变）。
+    let total_window = end_index - skip_until;
+    let base = total_window / workers;
+    let rem = total_window % workers;
 
     // 保持内存平稳：worker 只返回聚合统计。保留数万个 `TestResult` 会使
     // `--no-skip` 运行在套件末尾附近累积 path/error 字符串直至进程 OOM。
     let partials: Vec<RunStats> = std::thread::scope(|scope| {
         let handles: Vec<_> = (0..workers)
-            .map(|_| {
-                let cursor = &cursor;
-                let progress = &progress;
-                let harness_cache = Arc::clone(&harness_cache);
-                let harness_module_cache = Arc::clone(&harness_module_cache);
+            .map(|w| {
+                let start = skip_until + w * base + w.min(rem);
+                let end = start + base + if w < rem { 1 } else { 0 };
+                let params_ref = &params;
                 // 与 main() 的 16MB 栈一致：VM 在深层嵌套测试程序上递归，
                 // 默认 worker 栈会溢出。
                 std::thread::Builder::new()
                     .stack_size(16 * 1024 * 1024)
                     .spawn_scoped(scope, move || {
-                        let mut engine = build_runner_engine();
-                        let harness_sources = HARNESS.get_or_init(HarnessSources::new);
-                        let mut stats = RunStats::default();
-                        let mut tests_since_kernel_reset = 0usize;
-
-                        let tid = std::thread::current().id();
-                        loop {
-                            let i = cursor.fetch_add(1, Ordering::Relaxed);
-                            if i >= end_index {
-                                break;
-                            }
-                            let path_str = paths_ref[i].display().to_string();
-                            // 始终记录当前测试路径，使 panic hook 能标识 Rust panic。
-                            // 诊断需要最后一行 stderr 的 OS 级崩溃时设置
-                            // OXIDE_TEST262_RUNNING_LOG=1。
-                            CURRENT_TEST_PATH.with(|p| *p.borrow_mut() = path_str.clone());
-                            if log_running_tests {
-                                test262_debug!("running: {}", path_str);
-                                eprintln!("  [{tid:?}] running: {path_str}");
-                            }
-
-                            let result = process_path(
-                                &paths_ref[i],
-                                filter,
-                                no_skip,
-                                no_regalloc,
-                                &engine,
-                                harness_sources,
-                                &harness_cache,
-                                &harness_module_cache,
-                            );
-                            stats.record(i, &result);
-                            // COMPLETED 心跳：先写心跳再追加旁路失败行（崩溃恢复
-                            // 无漏项、无双计的写序契约）。
+                        let mut on_heartbeat = |i: usize, result: &TestResult, stats: &RunStats| -> usize {
+                            let mut errors = 0;
                             if let Some(hb) = heartbeat_ref {
                                 if let Err(e) = write_heartbeat(
                                     hb,
@@ -301,49 +374,21 @@ fn run_tests() -> bool {
                                     &stats.fail_categories,
                                     stats.hb_write_errors,
                                 ) {
-                                    stats.hb_write_errors += 1;
+                                    errors += 1;
                                     eprintln!("  [warn] heartbeat write failed at #{i}: {e}");
                                 }
                                 if let TestOutcome::Fail(msg) = &result.outcome {
                                     // 旁路行携带真 subkey，父进程并入 fail_records 后直接生效 subkey 分组。
                                     let (cat, subkey) = categorize_fail(msg);
-                                    if let Err(e) = append_fail_log(&hb.with_extension("fails"), i, &cat, &subkey, msg)
-                                    {
-                                        stats.hb_write_errors += 1;
+                                    if let Err(e) = append_fail_log(&hb.with_extension("fails"), i, &cat, &subkey, msg) {
+                                        errors += 1;
                                         eprintln!("  [warn] fail log append failed at #{i}: {e}");
                                     }
                                 }
                             }
-                            if verbose {
-                                match &result.outcome {
-                                    TestOutcome::Pass(_) => println!("PASS {}", paths_ref[i].display()),
-                                    TestOutcome::Fail(msg) => {
-                                        let (cat, _) = categorize_fail(msg);
-                                        println!("FAIL {} [{}] {}", paths_ref[i].display(), cat, first_line(msg));
-                                    }
-                                    TestOutcome::Skip(_) => println!("SKIP {}", paths_ref[i].display()),
-                                }
-                            }
-                            tests_since_kernel_reset += 1;
-
-                            let done = progress.fetch_add(1, Ordering::Relaxed) + 1;
-                            if tests_since_kernel_reset >= kernel_batch {
-                                // 重建即全新 forge（结构性必清）：旧核连同其表整体丢弃，
-                                // 先 sweep 是对 doomed 核白做一次 O(50k) 清理。
-                                // 重建边界契约：旧核上无存活 VM（VM 每测试局部，此处作用域外）。
-                                debug_assert!(engine.kernel().active_vms() == 0, "kernel rebuild requires no live VMs");
-                                engine = build_runner_engine();
-                                tests_since_kernel_reset = 0;
-                            } else if tests_since_kernel_reset % 500 == 0 {
-                                engine.kernel().sweep_runner_forges(); // 批内 50k 兜底（数据依赖）
-                            }
-                            if done % 500 == 0 || done == total {
-                                test262_info!("progress: {}/{} ({}%)", done, total, done * 100 / total);
-                                eprintln!("  progress: {done}/{total} ({}%)", done * 100 / total);
-                            }
-                        }
-
-                        stats
+                            errors
+                        };
+                        run_worker_window(start, end, params_ref, &mut on_heartbeat)
                     })
                     .expect("failed to spawn test262 worker thread")
             })
