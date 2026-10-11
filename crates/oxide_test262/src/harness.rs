@@ -139,9 +139,7 @@ fn demote_top_level_lexical(source: &str) -> String {
 ///
 /// `demote` 为真时把顶层 let/const 降级为 var（供两模块方案跨 run 共享），
 /// 为假时保留原样（供单模块方案，同模块内 let/const 本可见）。
-fn build_harness_source(
-    meta: &TestMeta, harness: &HarnessSources, demote: bool,
-) -> Result<String, String> {
+fn build_harness_source(meta: &TestMeta, harness: &HarnessSources, demote: bool) -> Result<String, String> {
     let mut source = String::new();
     // onlyStrict 测试在严格模式下运行：指令必须位于脚本最前（harness 之前）。
     if meta.flags.iter().any(|f| f == "onlyStrict") {

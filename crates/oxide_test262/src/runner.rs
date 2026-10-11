@@ -6,8 +6,7 @@
 
 use crate::discovery::{eval_family_excluded, is_skipped, pre_existing_excluded};
 use crate::harness::{
-    append_source_chunk, get_harness_module, get_harness_prefix, HarnessModuleCache,
-    HarnessPrefixCache, HarnessSources,
+    append_source_chunk, get_harness_module, get_harness_prefix, HarnessModuleCache, HarnessPrefixCache, HarnessSources,
 };
 use crate::judge::{
     classify_compile_error, judge_async_result, judge_vm_error, panic_payload_str, TestOutcome, TestResult,
@@ -42,14 +41,21 @@ fn pc_watch_path() -> Option<&'static PathBuf> {
 #[expect(clippy::too_many_arguments)]
 fn run_test(
     path: &Path, source: &str, meta: &TestMeta, engine: &Engine, harness: &HarnessSources,
-    harness_cache: &Arc<RwLock<HarnessPrefixCache>>,
-    harness_module_cache: &Arc<RwLock<HarnessModuleCache>>, no_skip: bool, no_regalloc: bool,
+    harness_cache: &Arc<RwLock<HarnessPrefixCache>>, harness_module_cache: &Arc<RwLock<HarnessModuleCache>>,
+    no_skip: bool, no_regalloc: bool,
 ) -> TestResult {
     let start = std::time::Instant::now();
 
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         run_test_inner(
-            path, source, meta, engine, harness, harness_cache, harness_module_cache, no_skip,
+            path,
+            source,
+            meta,
+            engine,
+            harness,
+            harness_cache,
+            harness_module_cache,
+            no_skip,
             no_regalloc,
         )
     }));
@@ -111,8 +117,8 @@ impl oxide_emit::module::ModuleSourceLoader for Test262ModuleLoader {
 #[expect(clippy::too_many_arguments)]
 fn run_test_inner(
     path: &Path, source: &str, meta: &TestMeta, engine: &Engine, harness: &HarnessSources,
-    harness_cache: &Arc<RwLock<HarnessPrefixCache>>,
-    harness_module_cache: &Arc<RwLock<HarnessModuleCache>>, no_skip: bool, no_regalloc: bool,
+    harness_cache: &Arc<RwLock<HarnessPrefixCache>>, harness_module_cache: &Arc<RwLock<HarnessModuleCache>>,
+    no_skip: bool, no_regalloc: bool,
 ) -> TestResult {
     let start = std::time::Instant::now();
 
@@ -167,8 +173,7 @@ fn run_test_inner(
     } else {
         // script 臂两模块方案：前缀模块按 includes 组合缓存（免每测试重解析重编译），
         // 测试体模块每测试编译。onlyStrict 测试给测试体补 "use strict" 保持严格性。
-        let harness_module = match get_harness_module(meta, harness, engine, &compiler, harness_module_cache)
-        {
+        let harness_module = match get_harness_module(meta, harness, engine, &compiler, harness_module_cache) {
             Ok(m) => m,
             Err(e) => {
                 let dur = start.elapsed().as_millis() as u64;
@@ -203,8 +208,8 @@ fn run_test_inner(
 /// 同口径注入（语料含 eval / Function 动态编译面）。任一模块失败即停，不跑后续模块。
 /// 完成值取最后一个模块的结果（script 臂即测试体模块）。
 fn run_and_judge(
-    path: &Path, meta: &TestMeta, engine: &Engine, modules: &[Arc<oxide_bytecode::CompiledModule>],
-    is_async: bool, no_skip: bool, start: &std::time::Instant,
+    path: &Path, meta: &TestMeta, engine: &Engine, modules: &[Arc<oxide_bytecode::CompiledModule>], is_async: bool,
+    no_skip: bool, start: &std::time::Instant,
 ) -> TestResult {
     let mut vm = engine.new_vm();
     // 监督者注入现场文件路径时开启 VM 的 last-pc 定频写（未注入时零开销）。
@@ -303,8 +308,15 @@ pub(crate) fn process_path(
     }
 
     run_test(
-        path, &source, &meta, engine, harness_sources, harness_cache, harness_module_cache,
-        no_skip, no_regalloc,
+        path,
+        &source,
+        &meta,
+        engine,
+        harness_sources,
+        harness_cache,
+        harness_module_cache,
+        no_skip,
+        no_regalloc,
     )
 }
 
