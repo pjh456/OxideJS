@@ -1,67 +1,22 @@
 //! 监督模式子进程监督与聚合：把测试区间切窗口，监督线程并行派生/轮询/杀死单 worker
 //! 子进程；心跳并入累计统计，旁路失败行按已消费偏移并入；超时/崩溃杀肇事者自其后续跑（默认计 skip，--no-skip 计 fail）。
+//!
+//! 文件协议（心跳/旁路失败行/last-pc 现场/sidecar 日志/子进程派生与杀死）收口在
+//! window_transport 的 WindowTransport 传输接口，本模块只保留监督策略：超时判定、
+//! 重启循环、记账。
 
-use crate::heartbeat::{merge_heartbeat, read_heartbeat};
+use crate::heartbeat::merge_heartbeat;
 use crate::print_fail_categories;
-use crate::report::{format_fail_groupings, format_fail_list, parse_fail_log};
+use crate::report::{format_fail_groupings, format_fail_list};
 use crate::stats::RunStats;
-use std::path::{Path, PathBuf};
-use std::process::Command;
+use crate::window_transport::{LocalFileWindowTransport, PollResult, WindowTransport};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
-/// 把 supervise 旁路失败行文件并入统计：逐行重建 FailRecord（类别经本表 id
-/// 重映射 + push_fail_record 的 cap 逻辑）。
-///
-/// # 边界与前提
-/// - 失败计数（fail_categories）已由对应心跳合并覆盖，此处只补 fail_records，
-///   不得再累计计数，避免双计。worker 循环先写心跳后追加旁路，故"无心跳退出"
-///   分支旁路必为空（防御性 no-op）。
-/// - 旁路文件跨子进程重启追加保留，本函数只解析自上次消费以来的新增段
-///   （`consumed` 由调用方按窗口持有）；文件缩至已消费偏移之下（删除/重建）
-///   回绕到文件头重读，避免丢记录。
-fn merge_fail_log(stats: &mut RunStats, hb_path: &Path, consumed: &mut usize) {
-    let content = match std::fs::read_to_string(hb_path.with_extension("fails")) {
-        Ok(c) => c,
-        Err(_) => return,
-    };
-    if content.len() < *consumed {
-        *consumed = 0;
-    }
-    let fresh = &content[*consumed..];
-    *consumed = content.len();
-    for (index, cat, subkey, message) in parse_fail_log(fresh) {
-        stats.push_fail_record(index, cat, subkey, message);
-    }
-}
-
-/// 读子进程被杀前留下的 last-pc 现场行：取文件末行，须含 pc/op/frames 三字段
-/// 才接受（缺文件 / 空文件 / 残行均返回 None）。
-fn read_pc_scene(path: &Path) -> Option<String> {
-    let content = std::fs::read_to_string(path).ok()?;
-    let last = content.lines().last()?.trim();
-    if last.starts_with("pc=") && last.contains(" op=") && last.contains(" frames=") {
-        Some(last.to_string())
-    } else {
-        None
-    }
-}
-
-/// 读 sidecar 日志的末 `n` 行：文件缺失/空返回 None，有内容时返回整文件或
-/// 末 N 行（超时/崩溃后供现场重建）。
-fn tail_lines(path: &Path, n: usize) -> Option<String> {
-    let content = std::fs::read_to_string(path).ok()?;
-    let lines: Vec<&str> = content.lines().collect();
-    let start = lines.len().saturating_sub(n);
-    if start == lines.len() {
-        return None;
-    }
-    Some(lines[start..].join("\n"))
-}
-
 /// 超时/崩溃后把 sidecar 日志的末 ~20 行打到父进程 stderr，供现场重建。
-fn print_log_tail(window_id: usize, path: &Path) {
-    if let Some(tail) = tail_lines(path, 20) {
+fn print_log_tail(window_id: usize, transport: &dyn WindowTransport) {
+    if let Some(tail) = transport.log_tail() {
         eprintln!("  [log tail] window {window_id}:\n{tail}");
     }
 }
@@ -93,23 +48,18 @@ fn record_timeout_or_crash(stats: &mut RunStats, no_skip: bool, index: usize, el
 /// 读取旁路失败行并入 fail_records。超时/崩溃默认计为 skip，`--no-skip` 下计为失败。
 ///
 /// # 注意事项
-/// - `paths_file` 是父进程写出的全量路径清单文件（每行一路径，与父扫描同序），
-///   经 `OXIDE_TEST262_PATHS_FILE` 环境变量传给子进程，子进程读文件代替全量重扫
-///   目录；文件在窗口内子进程多次重启间只读共享，不得按 spawn 删除。
+/// - `transport` 是窗口级传输实例（跨子进程重启存活），六操作与文件生命周期
+///   都经它调用；路径清单文件由传输持有并经 `OXIDE_TEST262_PATHS_FILE` 传给
+///   子进程，在窗口内子进程多次重启间只读共享，不得按 spawn 删除。
+/// - `paths` 是父进程的全量路径清单（每行一路径，与父扫描同序），仅供肇事者
+///   路径描述。
 #[expect(clippy::too_many_arguments)]
 fn supervise_window(
-    exe: &Path, args: &[String], no_skip: bool, wstart: usize, wend: usize, timeout: Duration, startup_grace: Duration,
-    paths: &[PathBuf], paths_file: &Path, window_id: usize,
+    no_skip: bool, wstart: usize, wend: usize, timeout: Duration, startup_grace: Duration, paths: &[PathBuf],
+    window_id: usize, transport: &mut dyn WindowTransport,
 ) -> RunStats {
     let mut stats = RunStats::default();
     let mut cur = wstart;
-    // 旁路失败行已消费字节偏移：跨重启只并入新增段（见 merge_fail_log）。
-    let mut fails_consumed: usize = 0;
-    let hb_path = std::env::temp_dir().join(format!("oxide_t262_hb_{}_{}.txt", std::process::id(), window_id));
-    // sidecar 日志：子进程 stdout/stderr 双写此文件（与 .fails 同目录同生命周期）。
-    let log_path = hb_path.with_extension("log");
-    // last-pc 现场文件：子进程运行期定频追加写，监督者杀子进程后读回末行。
-    let pc_path = std::env::temp_dir().join(format!("oxide_t262_pc_{}_{}.txt", std::process::id(), window_id));
 
     let describe = |idx: usize| -> String {
         paths
@@ -121,76 +71,43 @@ fn supervise_window(
     while cur < wend {
         // 心跳文件每子进程重开；旁路失败行与 sidecar 日志跨重启保留（追加而非
         // 清空）：超时/崩溃重启若删旁路会丢掉此前子进程的全部失败记录与输出，
-        // 收尾差分只剩末段。merge_fail_log 按已消费字节偏移只并入新增段（每行恰
+        // 收尾差分只剩末段。merge_fail 按已消费字节偏移只并入新增段（每行恰
         // 并入一次）；重跑测试至多重录一条（心跳先写、旁路后追加的写序），
         // 新行是真实新事件而非重复并入。
-        let _ = std::fs::remove_file(&hb_path);
-        let _ = std::fs::remove_file(format!("{}.tmp", hb_path.display()));
-        let _ = std::fs::remove_file(&pc_path);
-        let max_tests = wend - cur;
+        transport.reset_round();
 
-        // sidecar 日志经手：子进程 stdout/stderr 双写此文件（直接文件写，无
-        // pipe 缓冲死锁面）；打开失败回退丢弃，不中断运行。
-        let (stdout, stderr) = match std::fs::OpenOptions::new().create(true).append(true).open(&log_path) {
-            Ok(file) => {
-                // 文件经手克隆：底层 fd 复制，stdout/stderr 各持一份。
-                let err_file = file.try_clone().expect("sidecar 日志经手克隆失败");
-                let out = std::process::Stdio::from(file);
-                let err = std::process::Stdio::from(err_file);
-                (out, err)
-            }
-            Err(_) => (std::process::Stdio::null(), std::process::Stdio::null()),
-        };
-
-        let mut child = match Command::new(exe)
-            .args(args.iter().skip(1))
-            .env("OXIDE_SKIP_UNTIL", cur.to_string())
-            .env("OXIDE_MAX_TESTS", max_tests.to_string())
-            .env("OXIDE_TEST262_WORKERS", "1")
-            .env("OXIDE_TEST262_HEARTBEAT", &hb_path)
-            .env("OXIDE_TEST262_PC_WATCH", &pc_path)
-            .env("OXIDE_TEST262_PATHS_FILE", paths_file)
-            .env("OXIDE_TEST262_CHILD_CHUNK", "1")
-            .env("OXIDE_TEST262_ALLOW_FAIL_EXIT", "1")
-            .env_remove("OXIDE_TEST262_CHUNK_SIZE")
-            .stdout(stdout)
-            .stderr(stderr)
-            .spawn()
-        {
-            Ok(child) => child,
-            Err(err) => {
-                eprintln!("  window {window_id}: failed to spawn child at index {cur}: {err}");
-                stats.spawn_errors += 1;
-                record_timeout_or_crash(&mut stats, no_skip, cur, 0, None);
-                cur += 1;
-                continue;
-            }
-        };
-
-        let spawn_time = Instant::now();
         let mut last_index: Option<usize> = None;
         let mut last_change = Instant::now();
 
+        if let Err(err) = transport.assign(cur, wend) {
+            eprintln!("  window {window_id}: failed to spawn child at index {cur}: {err}");
+            stats.spawn_errors += 1;
+            record_timeout_or_crash(&mut stats, no_skip, cur, 0, None);
+            cur += 1;
+            continue;
+        }
+        let spawn_time = Instant::now();
+
         loop {
-            match child.try_wait() {
-                Ok(Some(status)) => {
-                    match read_heartbeat(&hb_path) {
+            match transport.poll() {
+                PollResult::Exited(status) => {
+                    match transport.heartbeat() {
                         Some(hb) if hb.phase == "DONE" => {
                             merge_heartbeat(&mut stats, &hb);
-                            merge_fail_log(&mut stats, &hb_path, &mut fails_consumed);
+                            transport.merge_fail(&mut stats);
                             cur = wend;
                         }
                         Some(hb) => {
                             merge_heartbeat(&mut stats, &hb);
                             let culprit = hb.index + 1;
-                            merge_fail_log(&mut stats, &hb_path, &mut fails_consumed);
-                            let scene = read_pc_scene(&pc_path);
+                            transport.merge_fail(&mut stats);
+                            let scene = transport.scene();
                             eprintln!(
                                 "  [warn] window {window_id}: child exited ({status}) mid-test #{}: {}",
                                 culprit,
                                 describe(culprit)
                             );
-                            print_log_tail(window_id, &log_path);
+                            print_log_tail(window_id, transport);
                             record_timeout_or_crash(&mut stats, no_skip, culprit, 0, scene.as_deref());
                             cur = culprit;
                         }
@@ -198,31 +115,30 @@ fn supervise_window(
                             eprintln!(
                                 "  [warn] window {window_id}: child exited ({status}) with no heartbeat at index {cur}; skipping one"
                             );
-                            merge_fail_log(&mut stats, &hb_path, &mut fails_consumed);
-                            let scene = read_pc_scene(&pc_path);
-                            print_log_tail(window_id, &log_path);
+                            transport.merge_fail(&mut stats);
+                            let scene = transport.scene();
+                            print_log_tail(window_id, transport);
                             record_timeout_or_crash(&mut stats, no_skip, cur, 0, scene.as_deref());
                             cur += 1;
                         }
                     }
                     break;
                 }
-                Ok(None) => {}
-                Err(err) => {
+                PollResult::Alive => {}
+                PollResult::WaitError(err) => {
                     eprintln!("  window {window_id}: try_wait error: {err}");
                     stats.wait_errors += 1;
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    merge_fail_log(&mut stats, &hb_path, &mut fails_consumed);
-                    let scene = read_pc_scene(&pc_path);
-                    print_log_tail(window_id, &log_path);
+                    transport.kill();
+                    transport.merge_fail(&mut stats);
+                    let scene = transport.scene();
+                    print_log_tail(window_id, transport);
                     record_timeout_or_crash(&mut stats, no_skip, cur, 0, scene.as_deref());
                     cur += 1;
                     break;
                 }
             }
 
-            if let Some(hb) = read_heartbeat(&hb_path) {
+            if let Some(hb) = transport.heartbeat() {
                 if Some(hb.index) != last_index {
                     last_index = Some(hb.index);
                     last_change = Instant::now();
@@ -237,22 +153,21 @@ fn supervise_window(
 
             if elapsed > deadline {
                 // 先杀再读：心跳、旁路失败行与 last-pc 现场都须在子进程死亡后取最终状态。
-                let _ = child.kill();
-                let _ = child.wait();
-                let hb = read_heartbeat(&hb_path);
+                transport.kill();
+                let hb = transport.heartbeat();
                 let culprit = hb.as_ref().map(|h| h.index + 1).unwrap_or(cur);
                 if let Some(h) = &hb {
                     merge_heartbeat(&mut stats, h);
                 }
-                merge_fail_log(&mut stats, &hb_path, &mut fails_consumed);
-                let scene = read_pc_scene(&pc_path);
+                transport.merge_fail(&mut stats);
+                let scene = transport.scene();
                 eprintln!(
                     "  [timeout] window {window_id}: TIMEOUT ({}s) on test #{culprit}: {}{}",
                     deadline.as_secs(),
                     describe(culprit),
                     scene.as_deref().map(|s| format!("  [{s}]")).unwrap_or_default()
                 );
-                print_log_tail(window_id, &log_path);
+                print_log_tail(window_id, transport);
                 record_timeout_or_crash(&mut stats, no_skip, culprit, elapsed.as_millis() as u64, scene.as_deref());
                 cur = culprit + 1;
                 break;
@@ -262,14 +177,7 @@ fn supervise_window(
         }
     }
 
-    let _ = std::fs::remove_file(&hb_path);
-    let _ = std::fs::remove_file(format!("{}.tmp", hb_path.display()));
-    let _ = std::fs::remove_file(&pc_path);
-    // 旁路失败行归档而非删除：统计已由心跳合并入父进程，此文件是收尾逐文件
-    // 差分的终态依据（删除即永久丢记录）。
-    let _ = std::fs::rename(hb_path.with_extension("fails"), hb_path.with_extension("fails.done"));
-    // sidecar 日志同式归档：整窗子进程输出是现场重建的终态依据。
-    let _ = std::fs::rename(&log_path, log_path.with_extension("log.done"));
+    transport.archive_window();
     stats
 }
 
@@ -357,17 +265,17 @@ pub(crate) fn run_supervised(
                             break;
                         }
                         let (window_id, wstart, wend) = windows[wi];
+                        // 每窗口一个传输实例（跨该窗口内子进程重启存活），
+                        // 已消费偏移等窗口级状态随之保留。
                         let window_stats = supervise_window(
-                            exe,
-                            args,
                             no_skip,
                             wstart,
                             wend,
                             timeout,
                             startup_grace,
                             paths,
-                            paths_file,
                             window_id,
+                            &mut LocalFileWindowTransport::new(exe, args, paths_file, window_id),
                         );
                         stats.merge(window_stats);
                     }
@@ -444,7 +352,6 @@ pub(crate) fn run_supervised(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::report::append_fail_log;
 
     /// 超时/崩溃记账：计数（no_skip 转 fail）与 timeout_crashes 入列（scene 原样
     /// 存串，缺现场为 None）。
@@ -461,97 +368,5 @@ mod tests {
             stats.timeout_crashes,
             vec![(3, 2500, Some("pc=1 op=ADD flat_id=0 frames=1".to_string())), (4, 0, None)]
         );
-    }
-
-    /// read_pc_scene 防御解析：缺文件 / 空文件 / 残行（缺 frames 字段）均 None，
-    /// 末行完整时接受（忽略中间行）。
-    #[test]
-    fn read_pc_scene_defensive_parse() {
-        let dir = std::env::temp_dir();
-        let path = dir.join(format!("oxide_t262_pc_test_{}.txt", std::process::id()));
-        assert_eq!(read_pc_scene(&path), None, "缺文件返回 None");
-        std::fs::write(&path, "").expect("写失败");
-        assert_eq!(read_pc_scene(&path), None, "空文件返回 None");
-        std::fs::write(&path, "pc=1 op=ADD flat_id=0 frames=1\npc=2 op=ADD flat_id=0 frames=1\n").expect("写失败");
-        assert_eq!(read_pc_scene(&path), Some("pc=2 op=ADD flat_id=0 frames=1".to_string()));
-        // 残行：末行缺 frames 字段，返回 None。
-        std::fs::write(&path, "pc=1 op=ADD flat_id=0 frames=1\npc=2 op=AD").expect("写失败");
-        assert_eq!(read_pc_scene(&path), None, "残行返回 None");
-        let _ = std::fs::remove_file(&path);
-    }
-
-    /// tail_lines 防御解析：缺文件 / 空文件返回 None，不足 N 行返回整文件，
-    /// 超出 N 行只取末 N 行。
-    #[test]
-    fn tail_lines_defensive_parse() {
-        let dir = std::env::temp_dir();
-        let path = dir.join(format!("oxide_t262_log_test_{}.log", std::process::id()));
-        assert_eq!(tail_lines(&path, 20), None, "缺文件返回 None");
-        std::fs::write(&path, "").expect("写失败");
-        assert_eq!(tail_lines(&path, 20), None, "空文件返回 None");
-        std::fs::write(&path, "a\nb\n").expect("写失败");
-        assert_eq!(tail_lines(&path, 20), Some("a\nb".to_string()), "不足 N 行返回整文件");
-        std::fs::write(&path, "1\n2\n3\n4\n").expect("写失败");
-        assert_eq!(tail_lines(&path, 2), Some("3\n4".to_string()), "超出 N 行取末 N 行");
-        let _ = std::fs::remove_file(&path);
-    }
-
-    /// merge_fail_log 重建 fail_records：类别经 id 表重映射、消息 cap；
-    /// fail_categories 保持空（计数不双计契约）。
-    #[test]
-    fn merge_fail_log_reconstructs_fail_records() {
-        let dir = std::env::temp_dir();
-        let hb_path = dir.join(format!("oxide_t262_hb_test_mrg_{}.txt", std::process::id()));
-        let sidecar = hb_path.with_extension("fails");
-        append_fail_log(&sidecar, 2, "vm: not callable", "", "x is not callable").expect("追加失败");
-        append_fail_log(&sidecar, 7, "compile: unsupported", "", "y").expect("追加失败");
-        let mut stats = RunStats::default();
-        let mut fails_consumed = 0usize;
-        merge_fail_log(&mut stats, &hb_path, &mut fails_consumed);
-        assert_eq!(stats.fail_records.len(), 2);
-        // 无新增内容的二次合并不产生重复记录（已消费偏移）。
-        merge_fail_log(&mut stats, &hb_path, &mut fails_consumed);
-        assert_eq!(stats.fail_records.len(), 2);
-        assert_eq!(stats.fail_records[0].index, 2);
-        assert_eq!(stats.categories[stats.fail_records[0].category_id as usize], "vm: not callable");
-        assert_eq!(stats.fail_records[0].message, "x is not callable");
-        assert_eq!(stats.fail_records[1].index, 7);
-        assert_eq!(stats.categories[stats.fail_records[1].category_id as usize], "compile: unsupported");
-        assert!(stats.fail_categories.is_empty(), "计数不双计：fail_categories 必须保持空");
-        let _ = std::fs::remove_file(&sidecar);
-        let _ = std::fs::remove_file(&hb_path);
-    }
-
-    /// 跨重启合并序列：旁路文件两次"子进程死亡"间追加保留，第二次合并只并入
-    /// 新增段（不重复并入前段行）；重跑测试的新行是真实新事件；文件重建得比
-    /// 已消费偏移更短时回绕重读。
-    #[test]
-    fn merge_fail_log_restart_sequence_no_reread_duplicates() {
-        let dir = std::env::temp_dir();
-        let hb_path = dir.join(format!("oxide_t262_hb_test_rst_{}.txt", std::process::id()));
-        let sidecar = hb_path.with_extension("fails");
-        // 段 1：首个子进程死亡前的失败行。
-        append_fail_log(&sidecar, 10, "vm: not callable", "", "a").expect("追加失败");
-        append_fail_log(&sidecar, 11, "vm: not callable", "", "b").expect("追加失败");
-        let mut stats = RunStats::default();
-        let mut fails_consumed = 0usize;
-        merge_fail_log(&mut stats, &hb_path, &mut fails_consumed);
-        assert_eq!(stats.fail_records.len(), 2);
-        // 段 2：第二个子进程追加（重跑的测试 11 至多重录一条 + 新测试 12）。
-        append_fail_log(&sidecar, 11, "vm: not callable", "", "b again").expect("追加失败");
-        append_fail_log(&sidecar, 12, "compile: unsupported", "", "c").expect("追加失败");
-        merge_fail_log(&mut stats, &hb_path, &mut fails_consumed);
-        assert_eq!(stats.fail_records.len(), 4, "只应并入新增段: {:?}", stats.fail_records);
-        assert_eq!(stats.fail_records.iter().map(|r| r.index).collect::<Vec<_>>(), vec![10, 11, 11, 12]);
-        // 段 3：无新增内容的合并幂等。
-        merge_fail_log(&mut stats, &hb_path, &mut fails_consumed);
-        assert_eq!(stats.fail_records.len(), 4);
-        // 文件重建得比已消费偏移短：回绕到文件头重读。
-        std::fs::write(&sidecar, "20\tvm: not callable\t\td\n").expect("重写失败");
-        merge_fail_log(&mut stats, &hb_path, &mut fails_consumed);
-        assert_eq!(stats.fail_records.len(), 5);
-        assert_eq!(stats.fail_records[4].index, 20);
-        let _ = std::fs::remove_file(&sidecar);
-        let _ = std::fs::remove_file(&hb_path);
     }
 }

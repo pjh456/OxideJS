@@ -17,6 +17,7 @@ mod runner;
 mod stats;
 mod supervise;
 mod test262_log;
+mod window_transport;
 use chunked::run_chunked;
 use config::RunConfig;
 use discovery::discover_tests;
