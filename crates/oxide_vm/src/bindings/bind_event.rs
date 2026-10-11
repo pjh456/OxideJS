@@ -3,10 +3,9 @@
 //! 就地填充 `message_event_constructor` / `message_event_proto` 两枚 P 字段
 //! 占位（构造器本体与原型 getter），并绑全局 `MessageEvent`；就地填充
 //! `error_event_constructor` / `error_event_proto` 两枚 P 字段占位（构造器
-//! 本体与原型 getter），并绑全局 `ErrorEvent`。
-//!
-//! 九枚 P 字段中其余两枚（CustomEvent 一对）由后续子任务就地填充，本函数
-//! 不读不写。
+//! 本体与原型 getter），并绑全局 `ErrorEvent`；就地填充
+//! `custom_event_constructor` / `custom_event_proto` 两枚 P 字段占位（构造器
+//! 本体与原型 getter），并绑全局 `CustomEvent`。
 
 use std::sync::Arc;
 
@@ -16,12 +15,14 @@ use oxide_kernel::kernel::{KernelCore, KernelSession};
 use oxide_types::object::{JsObject, PropAttributes};
 use oxide_types::value::JsValue;
 
-/// 把 Event / MessageEvent / ErrorEvent 构造器及原型方法绑定到 global。
+/// 把 Event / MessageEvent / ErrorEvent / CustomEvent 构造器及原型方法绑定到
+/// global。
 ///
 /// `event_constructor` / `event_proto`、`message_event_constructor` /
-/// `message_event_proto` 与 `error_event_constructor` / `error_event_proto`
-/// 六枚 P 字段是空对象占位，本函数就地填充（不新建对象——P 字段本身就是
-/// 槽位，快照/脏检查/收尾枚举已覆盖）。
+/// `message_event_proto`、`error_event_constructor` / `error_event_proto` 与
+/// `custom_event_constructor` / `custom_event_proto` 八枚 P 字段是空对象占位，
+/// 本函数就地填充（不新建对象——P 字段本身就是槽位，快照/脏检查/收尾枚举已
+/// 覆盖）。
 ///
 /// # 幂等
 /// 本函数从三条路径到达：`init_kernel_builtins`（占位是空对象）、
@@ -311,6 +312,69 @@ pub fn bind_event(core: &Arc<KernelCore>, session: &KernelSession, global: &mut 
         let si = sf.intern(name).0;
         if sh.lookup_position(ee_proto.shape_id(), si).is_none() {
             bind_accessor_getter(core, session, ee_proto, name, fn_ptr);
+        }
+    }
+
+    // ---- 填 CustomEvent 构造器与原型占位 ----
+    let ce_ctor_ptr = world.custom_event_constructor.as_ptr() as *mut JsObject;
+    let ce_ctor = unsafe { &mut *ce_ctor_ptr };
+    let ce_proto_ptr = world.custom_event_proto.as_ptr() as *mut JsObject;
+    let ce_proto = unsafe { &mut *ce_proto_ptr };
+
+    // 构造器：function 标志、prototype 槽、name 槽、[[Prototype]] →
+    // Function.prototype（幂等，裸写槽）。
+    ce_ctor.set_function(true);
+    if sh.lookup_position(ce_ctor.shape_id(), si_prototype).is_none() {
+        let shape = sh.make_shape(ce_ctor.shape_id(), si_prototype);
+        ce_ctor.set_shape_id(shape);
+        let pos = ce_ctor.push_prop(JsValue::from_js_object(ce_proto_ptr));
+        ce_ctor.set_data_meta(pos, PropAttributes::new(false, false, false));
+        ce_ctor.bump_generation();
+    }
+    if sh.lookup_position(ce_ctor.shape_id(), si_name).is_none() {
+        let shape = sh.make_shape(ce_ctor.shape_id(), si_name);
+        ce_ctor.set_shape_id(shape);
+        ce_ctor
+            .ensure_hash_props()
+            .push(JsValue::perm_string(sf.string_ptr(sf.intern("CustomEvent").0)));
+        let pos = ce_ctor.hash_props_vec().map_or(0, |v| v.len() as u32).saturating_sub(1);
+        ce_ctor.set_data_meta(pos, PropAttributes::new(false, false, true));
+        ce_ctor.bump_generation();
+    }
+    let _ = ce_ctor.set_proto(fn_proto_val);
+
+    configure_native_constructor(
+        ce_ctor,
+        oxide_builtins::event::custom_event_constructor::<crate::vm::Vm> as *const (),
+        2,
+    );
+    bind_constructor!(
+        core,
+        global,
+        "CustomEvent",
+        ce_ctor_ptr,
+        oxide_builtins::event::custom_event_constructor::<crate::vm::Vm>,
+        2,
+        hash: true
+    );
+
+    // 原型：constructor 槽、[[Prototype]] → Event.prototype、一个 getter
+    // （detail，先 lookup_position 守卫）。
+    if sh.lookup_position(ce_proto.shape_id(), si_constructor).is_none() {
+        let shape = sh.make_shape(ce_proto.shape_id(), si_constructor);
+        ce_proto.set_shape_id(shape);
+        let pos = ce_proto.push_prop(JsValue::from_js_object(ce_ctor_ptr));
+        ce_proto.set_data_meta(pos, PropAttributes::new(true, false, true));
+        ce_proto.bump_generation();
+    }
+    let _ = ce_proto.set_proto(event_proto_val);
+
+    let ce_getter_fns: [(&str, *const ()); 1] =
+        [("detail", oxide_builtins::event::custom_event_detail_getter::<crate::vm::Vm> as *const ())];
+    for (name, fn_ptr) in ce_getter_fns {
+        let si = sf.intern(name).0;
+        if sh.lookup_position(ce_proto.shape_id(), si).is_none() {
+            bind_accessor_getter(core, session, ce_proto, name, fn_ptr);
         }
     }
 

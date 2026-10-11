@@ -1,16 +1,17 @@
-//! Event 基类与 MessageEvent / ErrorEvent 派生类行为面：`Event` 构造器
-//! （`new Event(type, init)`）、原型 getter（type / target / currentTarget /
-//! eventPhase / isTrusted / bubbles / cancelable / defaultPrevented /
-//! composed）与原型方法（preventDefault / stopPropagation /
+//! Event 基类与 MessageEvent / ErrorEvent / CustomEvent 派生类行为面：
+//! `Event` 构造器（`new Event(type, init)`）、原型 getter（type / target /
+//! currentTarget / eventPhase / isTrusted / bubbles / cancelable /
+//! defaultPrevented / composed）与原型方法（preventDefault / stopPropagation /
 //! stopImmediatePropagation / composedPath）；`MessageEvent` 构造器
 //! （`new MessageEvent(type, init)`）与原型 getter（data / origin / lastEpoch /
 //! source / ports）；`ErrorEvent` 构造器（`new ErrorEvent(type, init)`）与
-//! 原型 getter（message / filename / lineno / colno / error）。
+//! 原型 getter（message / filename / lineno / colno / error）；`CustomEvent`
+//! 构造器（`new CustomEvent(type, init)`）与原型 getter（detail）。
 //!
 //! 事件载荷盒（type 串与九项状态位，MessageEvent 加 data / origin /
 //! lastEpoch / source / ports 五字段，ErrorEvent 加 message / filename /
-//! lineno / colno / error 五字段）存于对象 `native_fn` 槽，向 GC 家族表
-//! 暴露 edges/size/drop 三自由函数。
+//! lineno / colno / error 五字段，CustomEvent 加 detail 一字段）存于对象
+//! `native_fn` 槽，向 GC 家族表暴露 edges/size/drop 三自由函数。
 
 use std::mem;
 
@@ -71,6 +72,18 @@ struct ErrorEventInner {
     lineno: u32,
     colno: u32,
     error: JsValue,
+}
+
+/// CustomEvent 载荷盒：事件基类字段（`EventInner` 嵌入，位于偏移 0）加详情
+/// 字段（detail）。存于对象 `native_fn` 槽（`Box::into_raw`，realm 局部
+/// 单线程）。
+///
+/// `#[repr(C)]` 固定 `base` 位于偏移 0：派生类盒指针转基类指针读首字段依赖该
+/// 偏移稳定（与 `EventInner` 同型约束）。
+#[repr(C)]
+struct CustomEventInner {
+    base: EventInner,
+    detail: JsValue,
 }
 
 /// 是否事件系对象（Event / MessageEvent / ErrorEvent / CustomEvent 四标签）。
@@ -1232,4 +1245,199 @@ pub fn error_event_error_getter<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeRes
         ));
     };
     NativeResult::Ok(inner.error)
+}
+
+// —— CustomEvent 派生类 ——
+
+/// 取 CustomEvent 载荷盒指针：仅 CustomEvent 标签对象返回 `Some`，其余标签
+/// 返回 `None`。
+fn custom_event_payload_ptr(obj: &JsObject) -> Option<*mut CustomEventInner> {
+    if obj.type_tag != JsObject::OBJ_TYPE_CUSTOM_EVENT {
+        return None;
+    }
+    obj.native_fn().map(|ptr| ptr.as_ptr() as *mut CustomEventInner)
+}
+
+/// 收集 CustomEvent 的引用边（基类 type / target / current_target 边加
+/// detail 边）。
+///
+/// `target` / `current_target` 空窗口（构造期回填之前）为 null，边函数自守，
+/// 语义自含。
+pub fn custom_event_native_edges(obj: &JsObject) -> Vec<JsValue> {
+    let Some(ptr) = custom_event_payload_ptr(obj) else {
+        return Vec::new();
+    };
+    if ptr.is_null() {
+        return Vec::new();
+    }
+    // SAFETY: ptr 指向有效载荷盒（槽位仅构造期写入、释放时置空），只读字段。
+    let inner = unsafe { &*ptr };
+    let mut edges = vec![inner.base.r#type, inner.base.target, inner.base.current_target];
+    edges.push(inner.detail);
+    edges
+}
+
+/// 只读核算 CustomEvent 载荷盒字节（不释放）。
+pub fn custom_event_native_size(obj: &JsObject) -> u64 {
+    let Some(ptr) = custom_event_payload_ptr(obj) else {
+        return 0;
+    };
+    if ptr.is_null() {
+        return 0;
+    }
+    mem::size_of::<CustomEventInner>() as u64
+}
+
+/// 释放 CustomEvent 载荷盒（`Box<CustomEventInner>`），返回释放字节数。
+///
+/// 盒 drop 时基类字段与 detail 的 JsValue 边随盒释放（GC 已判定死对象）；
+/// 槽置空保证重复调用零释放（幂等）。
+pub fn drop_custom_event_native(obj: &mut JsObject) -> u64 {
+    let bytes = custom_event_native_size(obj);
+    if bytes == 0 {
+        return 0;
+    }
+    let Some(ptr) = custom_event_payload_ptr(obj) else {
+        return 0;
+    };
+    // SAFETY: ptr 非空（custom_event_native_size 已验证），Box::from_raw 恰好
+    // 释放一次。
+    unsafe {
+        drop(Box::from_raw(ptr));
+    }
+    obj.set_native_fn(None);
+    bytes
+}
+
+/// CustomEvent 构造器：`new CustomEvent(type, init)`。
+///
+/// # 步骤
+/// 1. 非构造形态（`!constructing_native`）抛 TypeError（HTML 规范只有
+///    [[Construct]]，无 [[Call]]）
+/// 2. type 经完整 ToString 转串；空串抛 SyntaxError
+/// 3. init 字典读 detail（缺省 null）
+/// 4. 建载荷盒入 receiver 的 `native_fn` 槽，置 type_tag
+/// 5. 返回 receiver
+///
+/// # 边界与前提
+/// - receiver（`args[0]`）是 VM 按构造器 prototype 新分配的对象，proto 已
+///   指向 %CustomEvent.prototype%；
+/// - init 缺省（undefined）或非对象时 detail 取缺省。
+///
+/// # 副作用
+/// - receiver 的 `native_fn` 槽写入载荷盒、`type_tag` 置 CustomEvent 标签。
+pub fn custom_event_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    if !vm.constructing_native() {
+        return NativeResult::Err(crate::error::create_type_error(vm, "CustomEvent constructor requires new"));
+    }
+
+    let this_val = vm.reg(args[0]);
+    if !this_val.is_object() {
+        return NativeResult::Err(crate::error::create_type_error(vm, "CustomEvent constructor requires new"));
+    }
+
+    // type 经完整 ToString 转串（对象经 ToPrimitive，Symbol 抛 TypeError）。
+    let type_val = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
+    let type_str = match oxide_runtime_api::to_string_full(type_val, vm) {
+        Ok(s) => s,
+        Err(_) => {
+            if let Some(exc) = vm.take_uncaught_value() {
+                return NativeResult::Err(exc);
+            }
+            return NativeResult::Err(crate::error::create_type_error(vm, "Cannot convert value to a string"));
+        }
+    };
+    if type_str.is_empty() {
+        return NativeResult::Err(crate::error::create_syntax_error(vm, "The provided type is empty"));
+    }
+
+    // init 字典读 detail（缺省或非对象时取缺省）。
+    let mut detail = JsValue::null();
+    if args.len() > 2 {
+        let init_val = vm.reg(args[2]);
+        if init_val.is_object() {
+            let init_ptr = init_val.as_js_object_ptr();
+            // SAFETY: init_val 已确认是对象值，借用即时消费。
+            let init_obj = unsafe { &*init_ptr };
+            let si = vm.perm_intern("detail");
+            match vm.ordinary_get(init_obj, si, init_val) {
+                Ok(v) => {
+                    if !v.is_undefined() {
+                        detail = v;
+                    }
+                }
+                Err(_) => {
+                    if let Some(exc) = vm.take_uncaught_value() {
+                        return NativeResult::Err(exc);
+                    }
+                    return NativeResult::Err(crate::error::create_type_error(
+                        vm,
+                        "CustomEvent init property getter failed",
+                    ));
+                }
+            }
+        }
+    }
+
+    // 建载荷盒入 receiver 的 native_fn 槽，置 CustomEvent 标签。
+    let type_js = vm.new_string(&type_str);
+    let inner = Box::into_raw(Box::new(CustomEventInner {
+        base: EventInner {
+            r#type: type_js,
+            target: JsValue::null(),
+            current_target: JsValue::null(),
+            event_phase: 0,
+            is_trusted: false,
+            bubbles: false,
+            cancelable: false,
+            default_prevented: false,
+            propagation_stopped: false,
+            immediate_stopped: false,
+            composed: false,
+        },
+        detail,
+    }));
+    // SAFETY: receiver 不可调用，native_fn 存不透明 `Box<CustomEventInner>`
+    // 指针，与 ArrayBuffer / RegExp 的类型化存储模式一致。
+    let obj = unsafe { &mut *this_val.as_js_object_ptr() };
+    obj.type_tag = JsObject::OBJ_TYPE_CUSTOM_EVENT;
+    obj.set_native_fn(Some(unsafe { NativeFnPtr::from_raw(inner as *const ()) }));
+    NativeResult::Ok(this_val)
+}
+
+/// 解析 this 为 CustomEvent 载荷盒共享引用：非 CustomEvent 对象或无载荷盒
+/// 返回 None。
+///
+/// # 注意事项
+/// 返回引用按 `'a` 声称为存活，实际存活至载荷盒被 GC 释放；调用方须在无 GC
+/// 窗口的单 native 函数内消费，不得跨用户调用窗口持有。
+fn custom_event_inner_of<'a>(this_val: JsValue) -> Option<&'a CustomEventInner> {
+    if !this_val.is_object() {
+        return None;
+    }
+    let obj_ptr = this_val.as_js_object_ptr();
+    if obj_ptr.is_null() {
+        return None;
+    }
+    // SAFETY: this_val 已确认是对象值，obj_ptr 指向合法 JsObject。
+    let obj = unsafe { &*obj_ptr };
+    let box_ptr = custom_event_payload_ptr(obj)?;
+    if box_ptr.is_null() {
+        return None;
+    }
+    // SAFETY: box_ptr 指向有效载荷盒（构造期写入、释放时置空）；'a 存活由
+    // 调用方「无 GC 窗口内消费」约定保证。
+    Some(unsafe { &*box_ptr })
+}
+
+/// `CustomEvent.prototype.detail`：返回事件详情（缺省为 null）。
+pub fn custom_event_detail_getter<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
+    let Some(inner) = custom_event_inner_of(this_val) else {
+        return NativeResult::Err(crate::error::create_type_error(
+            vm,
+            "CustomEvent.prototype.detail getter called on non-CustomEvent object",
+        ));
+    };
+    NativeResult::Ok(inner.detail)
 }

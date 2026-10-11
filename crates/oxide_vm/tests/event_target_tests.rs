@@ -289,3 +289,48 @@ fn error_event_box_edge_survives_gc() {
     vm.collect_session_gc();
     assert_eq!(vm_eval(&mut vm, "globalThis.e.error.tag;"), "1");
 }
+
+/// CustomEvent 构造器：init 的 detail 经原型 getter 可读。
+#[test]
+fn custom_event_constructor_detail() {
+    assert_eq!(eval("new CustomEvent('x', { detail: { a: 1 } }).detail.a;"), "1");
+}
+
+/// CustomEvent 缺省字段：detail 为 null。
+#[test]
+fn custom_event_detail_defaults_null() {
+    assert_eq!(eval("new CustomEvent('x').detail === null;"), "true");
+}
+
+/// CustomEvent 原型链：instanceof CustomEvent 与 instanceof Event 均真，
+/// 原型双亲为 Event.prototype。
+#[test]
+fn custom_event_proto_chain() {
+    assert_eq!(
+        eval(
+            "var e = new CustomEvent('x'); \
+             e instanceof CustomEvent && e instanceof Event && \
+             Object.getPrototypeOf(e) === CustomEvent.prototype && \
+             Object.getPrototypeOf(CustomEvent.prototype) === Event.prototype;"
+        ),
+        "true"
+    );
+}
+
+/// CustomEvent 非构造形态抛 TypeError。
+#[test]
+fn custom_event_requires_new() {
+    assert_eq!(
+        eval("try { CustomEvent('x'); 'no-throw'; } catch (e) { e instanceof TypeError; }"),
+        "true"
+    );
+}
+
+/// CustomEvent 盒边 GC 保活：detail 字段引用对象经完整收集后仍存活。
+#[test]
+fn custom_event_box_edge_survives_gc() {
+    let mut vm = vm_with_script("globalThis.e = new CustomEvent('x', { detail: { a: 1 } });");
+    // 强制完整收集：detail 字段是盒内 GC 边，对象应保活。
+    vm.collect_session_gc();
+    assert_eq!(vm_eval(&mut vm, "globalThis.e.detail.a;"), "1");
+}

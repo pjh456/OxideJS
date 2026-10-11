@@ -255,10 +255,10 @@ pub(crate) fn ops_for(family: NativeBoxFamily) -> NativeBoxOps {
             string_edges: None,
             cell_edges: None,
         },
-        // CustomEvent 载荷盒由后续子任务填充；本臂当前无引用边，仅 size/drop
-        // 链消费。
+        // CustomEvent 派生类载荷盒：基类 type / target / current_target 边加
+        // detail 边。
         NativeBoxFamily::CustomEvent => NativeBoxOps {
-            object_edges: None,
+            object_edges: Some(event::custom_event_native_edges),
             string_edges: None,
             cell_edges: None,
         },
