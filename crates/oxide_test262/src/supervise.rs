@@ -12,10 +12,43 @@ use crate::stats::RunStats;
 use crate::tcp_window_transport::TcpWindowTransport;
 use crate::window_transport::{LocalFileWindowTransport, PollResult, WindowTransport};
 use oxide_net::Listener;
+use std::io::Read;
+use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+/// 生成 worker 认证 token：读 `/dev/urandom` 32 字节转 64 位小写十六进制。
+///
+/// # 边界与前提
+/// - 非 Linux 宿主（`/dev/urandom` 缺位）或读取失败时回落时间加进程号混合熵
+///   （本宿主恒为 Linux，回落臂仅保编译）。
+fn generate_token() -> String {
+    let mut bytes = [0u8; 32];
+    let ok = std::fs::File::open("/dev/urandom")
+        .and_then(|mut file| file.read_exact(&mut bytes))
+        .is_ok();
+    if !ok {
+        bytes = fallback_entropy();
+    }
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// 非 Linux 熵回落：纳秒时间加进程号经 xorshift 混合出 32 字节。
+fn fallback_entropy() -> [u8; 32] {
+    let ns = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos() as u64;
+    let pid = std::process::id() as u64;
+    let mut seed = ns ^ (pid << 32);
+    let mut out = [0u8; 32];
+    for byte in out.iter_mut() {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        *byte = (seed & 0xff) as u8;
+    }
+    out
+}
 
 /// 超时/崩溃后把 sidecar 日志的末 ~20 行打到父进程 stderr，供现场重建。
 fn print_log_tail(window_id: usize, transport: &dyn WindowTransport) {
@@ -266,6 +299,20 @@ pub(crate) fn run_supervised(
         Some(endpoint) => {
             // 远程分支：bind 监听端点，每窗口 accept 一条 worker 连接，worker 数控制
             // 并发线程数。路径随 assign 帧携带，不写 paths_file。
+            // 绑定门：与 config 解析期拒绝双保险，非 loopback 拒绝 bind——worker
+            // 执行不可信测试内容，非 loopback 绑定会把窗口指派面（含本地路径
+            // 执行）暴露到网络。
+            let addr: SocketAddr = match endpoint.parse() {
+                Ok(a) => a,
+                Err(_) => {
+                    eprintln!("failed to parse remote supervisor endpoint {endpoint}");
+                    return false;
+                }
+            };
+            if !addr.ip().is_loopback() {
+                eprintln!("refusing to bind non-loopback remote supervisor endpoint {endpoint}");
+                return false;
+            }
             let listener = match std::net::TcpListener::bind(endpoint) {
                 Ok(l) => Arc::new(Listener::Tcp(l)),
                 Err(err) => {
@@ -273,6 +320,10 @@ pub(crate) fn run_supervised(
                     return false;
                 }
             };
+            // 认证 token：启动时生成、打印前台 stderr，用户带外注入 worker 进程
+            // （token 不经网络分发，与 server 独立模式同型）。
+            let token = generate_token();
+            eprintln!("remote supervisor worker token: {token} (inject into workers via OXIDE_TEST262_WORKER_TOKEN)");
             let bound = listener.local_addr().unwrap_or_else(|_| endpoint.clone());
             eprintln!(
                 "remote supervised mode: {} window(s) of up to {window} test(s), {supervisors} worker(s), endpoint {bound}, per-test timeout {}s",
@@ -285,6 +336,7 @@ pub(crate) fn run_supervised(
             let timeout_secs = timeout.as_secs();
             let listener_ref = &listener;
             let paths_vec_ref = &paths_vec;
+            let token_ref = &token;
             std::thread::scope(|scope| {
                 let handles: Vec<_> = (0..supervisors)
                     .map(|_| {
@@ -309,6 +361,7 @@ pub(crate) fn run_supervised(
                                         Arc::clone(listener_ref),
                                         (**paths_vec_ref).clone(),
                                         timeout_secs,
+                                        token_ref.clone(),
                                     ),
                                 );
                                 stats.merge(window_stats);

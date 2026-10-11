@@ -2,8 +2,8 @@
 //!
 //! 帧约定：每帧一行 JSON，以换行符（U+000A）终止，UTF-8 编码。
 //! 两个方向的帧均由 `type` 字段区分类型（tagged 枚举，snake_case 取值）：
-//! `ShardCommand` 是监督者到 worker 方向（assign / kill），`ShardEvent` 是
-//! worker 到监督者方向（heartbeat / fail / scene / done）。
+//! `ShardCommand` 是监督者到 worker 方向（assign / kill / auth_ok），
+//! `ShardEvent` 是 worker 到监督者方向（auth / heartbeat / fail / scene / done）。
 //! 帧长上限 `MAX_FRAME_BYTES`；超限帧读侧提前停止，避免无界内存增长。
 //! 畸形帧（非法 JSON、未知类型、载荷不匹配、空帧）统一返回 `ShardProtocolError`，
 //! 任何路径不 panic。
@@ -12,18 +12,23 @@
 //! assign 帧携带窗口路径清单切片：worker 读不到监督者本机临时文件，窗口内容
 //! 必须随帧携带。
 //!
-//! 本模块是纯协议定义层，调用方（worker 模式与远程监督者）尚未接线，
-//! 豁免死代码告警。
-#![allow(dead_code)]
+//! 认证门契约：worker 连接后首帧必须是 `Auth` 事件帧（携带 token），监督者
+//! 异或判等匹配后写回 `AuthOk` 命令帧才进入窗口循环；不匹配或首帧非 `Auth`
+//! 直接断连、不回帧。读首帧带 `AUTH_READ_TIMEOUT` 读超时，半开连接不永久
+//! 占线程。
 
 use std::collections::HashMap;
 use std::io::BufRead;
+use std::time::Duration;
 
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
 /// 帧长上限（字节，1 MiB）：超过即判 `FrameTooLarge`，调用方应关闭连接。
 pub(crate) const MAX_FRAME_BYTES: usize = 1024 * 1024;
+
+/// 认证门读超时（30 秒）：半开连接不发认证帧不永久占线程或进程。
+pub(crate) const AUTH_READ_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// 协议错误：畸形帧或未知类型，统一返回、不 panic。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -69,6 +74,8 @@ pub(crate) enum ShardCommand {
     },
     /// kill：无载荷。
     Kill,
+    /// 认证通过确认：无载荷。监督者认证门匹配后写回，worker 据此进入主循环。
+    AuthOk,
 }
 
 /// 事件帧（worker 到监督者）：心跳、失败记录、现场、窗口结束。
@@ -103,13 +110,16 @@ pub(crate) enum ShardEvent {
     },
     /// 窗口结束：无载荷（窗口结束下标由 assign 帧的 wend 隐含）。
     Done,
+    /// 认证：worker 连接后的首帧，携带共享 token（监督者前台打印、
+    /// 用户带外注入，不经网络分发）。
+    Auth { token: String },
 }
 
 /// 命令帧可取的 `type` 值（须与 `ShardCommand` 变体保持同步）。
-const COMMAND_TAGS: &[&str] = &["assign", "kill"];
+const COMMAND_TAGS: &[&str] = &["assign", "kill", "auth_ok"];
 
 /// 事件帧可取的 `type` 值（须与 `ShardEvent` 变体保持同步）。
-const EVENT_TAGS: &[&str] = &["heartbeat", "fail", "scene", "done"];
+const EVENT_TAGS: &[&str] = &["heartbeat", "fail", "scene", "done", "auth"];
 
 /// 序列化命令为帧字符串（含结尾换行）。
 ///
@@ -192,6 +202,15 @@ impl<R: BufRead> FrameReader<R> {
     /// 以底层流构造读取器。
     pub(crate) fn new(inner: R) -> Self {
         FrameReader { inner, pending: Vec::new() }
+    }
+
+    /// 暴露底层读流（供调用方设读超时或克隆写句柄）。
+    ///
+    /// # 注意事项
+    /// - 调用方不得绕过读取器直接读底层流（余量缓冲会丢数据）；
+    ///   只允许经此取句柄做超时设置与写侧克隆。
+    pub(crate) fn get_mut(&mut self) -> &mut R {
+        &mut self.inner
     }
 
     /// 读取一帧（跳过空行）。
@@ -293,6 +312,7 @@ mod tests {
             timeout_secs: 10,
         });
         roundtrip_command(&ShardCommand::Kill);
+        roundtrip_command(&ShardCommand::AuthOk);
     }
 
     /// 事件 round-trip：心跳（带失败类别）、失败记录、现场（带与不带日志尾）、窗口结束。
@@ -324,6 +344,9 @@ mod tests {
             log_tail: Some("line a\nline b".into()),
         });
         roundtrip_event(&ShardEvent::Done);
+        roundtrip_event(&ShardEvent::Auth {
+            token: "0123456789abcdef".into(),
+        });
     }
 
     /// 序列化形态：钉住精确 JSON 字符串，含 categories 键带冒号与空格的形态。
@@ -340,6 +363,7 @@ mod tests {
             r#"{"type":"assign","wstart":0,"wend":10,"paths":["a/b.js","c/d.js"],"timeout_secs":10}"#
         );
         assert_eq!(serde_json::to_string(&ShardCommand::Kill).unwrap(), r#"{"type":"kill"}"#);
+        assert_eq!(serde_json::to_string(&ShardCommand::AuthOk).unwrap(), r#"{"type":"auth_ok"}"#);
 
         let mut categories = HashMap::new();
         categories.insert("vm: not callable".to_string(), 1);
@@ -383,6 +407,13 @@ mod tests {
             r#"{"type":"scene","line":"pc=1 op=ADD frames=1","log_tail":"a\nb"}"#
         );
         assert_eq!(serde_json::to_string(&ShardEvent::Done).unwrap(), r#"{"type":"done"}"#);
+        assert_eq!(
+            serde_json::to_string(&ShardEvent::Auth {
+                token: "0123456789abcdef".into()
+            })
+            .unwrap(),
+            r#"{"type":"auth","token":"0123456789abcdef"}"#
+        );
     }
 
     /// 非法 JSON：判 `InvalidJson`，不 panic。

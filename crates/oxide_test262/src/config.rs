@@ -1,6 +1,7 @@
 //! test262 runner 运行配置：`RunConfig` 结构、CLI 解析（`parse`）与用法输出（`usage`）。
 //! 8 字段与 3 关联函数放宽为 `pub(crate)`；`usage` 全文即 `--help` 用户可见输出，逐字保留。
 
+use std::net::SocketAddr;
 use std::path::PathBuf;
 
 /// 运行配置：test262 根目录、路径过滤器及各选项开关。
@@ -46,8 +47,41 @@ impl RunConfig {
         (self.supervise || self.remote_supervise.is_some()) && !is_chunk_child
     }
 
+    /// 解析 `--remote-supervise` 端点：缺省补 loopback、解析期拒绝非 loopback。
+    ///
+    /// # 步骤
+    /// 1. `:port` 形态补 `127.0.0.1` 前缀，裸端口（无冒号）补 `127.0.0.1:` 前缀。
+    /// 2. 解析为 `SocketAddr`；失败（含主机名形态）返回错误。
+    /// 3. 非 loopback 地址（0.0.0.0、局域网 IP）返回错误。
+    ///
+    /// # 边界与前提
+    /// - 端点只接受 `[IP]:port` 形态；主机名不解析（无法在解析期验证 loopback）。
+    /// - 比 server 的「0.0.0.0 可配置但不受支持」更严：worker 执行不可信测试
+    ///   内容，非 loopback 绑定会把窗口指派面（含本地路径执行）暴露到网络。
+    ///
+    /// # 副作用
+    /// - 无（纯函数，返回归一化后的端点文本）。
+    fn parse_remote_supervise_endpoint(raw: &str) -> Result<String, String> {
+        let normalized = if raw.starts_with(':') {
+            format!("127.0.0.1{raw}")
+        } else if !raw.contains(':') {
+            format!("127.0.0.1:{raw}")
+        } else {
+            raw.to_string()
+        };
+        let addr: SocketAddr = normalized
+            .parse()
+            .map_err(|_| format!("invalid remote-supervise endpoint: {raw} (expected [IP]:port, loopback only)"))?;
+        if !addr.ip().is_loopback() {
+            return Err(format!(
+                "remote-supervise endpoint must bind to loopback only: {raw} (workers execute untrusted test content; non-loopback binding exposes the window assignment surface to the network)"
+            ));
+        }
+        Ok(normalized)
+    }
+
     /// 解析命令行参数为运行配置；未知选项、参数过多或 `--remote-supervise`
-    /// 缺实参 / worker 数非法返回错误。
+    /// 缺实参 / 端点非 loopback / worker 数非法返回错误。
     pub(crate) fn parse(args: &[String]) -> Result<Self, String> {
         let mut config = Self::new();
         let mut positional = Vec::new();
@@ -62,17 +96,20 @@ impl RunConfig {
                 "--worker" => config.worker = true,
                 "--no-fail-list" => config.no_fail_list = true,
                 // --remote-supervise 消费后两个实参：端点文本与 worker 数。
+                // 端点解析期归一化：缺省补 loopback，非 loopback 拒绝。
                 "--remote-supervise" => {
-                    let endpoint = args
+                    let endpoint_raw = args
                         .get(i + 1)
                         .ok_or_else(|| format!("--remote-supervise requires an endpoint\n\n{}", Self::usage()))?;
+                    let endpoint = Self::parse_remote_supervise_endpoint(endpoint_raw)
+                        .map_err(|e| format!("{e}\n\n{}", Self::usage()))?;
                     let workers_str = args
                         .get(i + 2)
                         .ok_or_else(|| format!("--remote-supervise requires a worker count\n\n{}", Self::usage()))?;
                     let workers = workers_str
                         .parse::<usize>()
                         .map_err(|_| format!("invalid worker count: {workers_str}\n\n{}", Self::usage()))?;
-                    config.remote_supervise = Some((endpoint.clone(), workers));
+                    config.remote_supervise = Some((endpoint, workers));
                     i += 2;
                 }
                 "--help" | "-h" => return Err(Self::usage()),
@@ -122,8 +159,10 @@ impl RunConfig {
           \x20            Combines with [path-filter]: the filter is applied per-test inside each child window.\n\
           --worker     Run as a remote shard worker: connect to the supervisor endpoint and execute assigned\n\
           \x20            test windows in-process, sending heartbeat/fail/scene/DONE frames over the connection.\n\
-          \x20            Mutually exclusive with --supervise.\n\
-          --remote-supervise  Run as a remote supervisor: bind <endpoint> (host:port) and execute test\n\
+          \x20            Authenticates with the token from OXIDE_TEST262_WORKER_TOKEN (out-of-band from the\n\
+          \x20            supervisor's foreground print). Mutually exclusive with --supervise.\n\
+          --remote-supervise  Run as a remote supervisor: bind <endpoint> (loopback [IP]:port; a bare port\n\
+          \x20            defaults to 127.0.0.1, non-loopback addresses are rejected) and execute test\n\
           \x20            windows on <workers> remote workers, sending assign frames and receiving\n\
           \x20            heartbeat/fail/scene/DONE frames over the accepted connections. A worker\n\
           \x20            disconnect is recovered as a child-process death. Mutually exclusive with\n\
@@ -143,6 +182,7 @@ impl RunConfig {
           \x20  OXIDE_TEST262_CHILD_CHUNK            marks a spawned child as chunk worker (any value)\n\
           \x20  OXIDE_TEST262_ALLOW_FAIL_EXIT        child may exit 1 on fail (any value)\n\
           \x20  OXIDE_TEST262_WORKER_ENDPOINT       supervisor endpoint for --worker mode (host:port)\n\
+          \x20  OXIDE_TEST262_WORKER_TOKEN          worker auth token for --worker mode (out-of-band from the supervisor's foreground print)\n\
           \x20  OXIDE_TEST262_KERNEL_BATCH           kernel rebuilds every N tests (default 256, clamped to the 512 realm bound)\n\
           \x20  OXIDE_TEST262_LOG_LEVEL              runner log level (default info)\n\
           \x20  OXIDE_SKIP_UNTIL                      skip test indexes below N (chunking/supervise resume)\n\
@@ -215,6 +255,34 @@ mod tests {
         let err =
             RunConfig::parse(&args(&["--remote-supervise", "127.0.0.1:8080", "abc"])).expect_err("worker 数非法应报错");
         assert!(err.contains("invalid worker count"), "应提示 worker 数非法：{err}");
+    }
+
+    /// --remote-supervise 端点缺省补 loopback：裸端口与 `:port` 形态归一化为
+    /// 127.0.0.1 前缀，显式 loopback 地址原样保留。
+    #[test]
+    fn parse_remote_supervise_endpoint_defaults_loopback() {
+        let cfg = RunConfig::parse(&args(&["--remote-supervise", ":4243", "2"])).expect(":port 形态应补 loopback");
+        assert_eq!(cfg.remote_supervise, Some(("127.0.0.1:4243".to_string(), 2)));
+
+        let cfg = RunConfig::parse(&args(&["--remote-supervise", "4243", "2"])).expect("裸端口应补 loopback");
+        assert_eq!(cfg.remote_supervise, Some(("127.0.0.1:4243".to_string(), 2)));
+
+        let cfg =
+            RunConfig::parse(&args(&["--remote-supervise", "127.0.0.1:4243", "2"])).expect("显式 loopback 应保留");
+        assert_eq!(cfg.remote_supervise, Some(("127.0.0.1:4243".to_string(), 2)));
+    }
+
+    /// --remote-supervise 端点解析期拒绝非 loopback（0.0.0.0、局域网 IP）与
+    /// 非法形态（主机名、非端口文本）。
+    #[test]
+    fn parse_remote_supervise_endpoint_rejects_non_loopback() {
+        for raw in ["0.0.0.0:4243", "192.168.1.5:4243", "localhost:4243", "notanendpoint"] {
+            let err = RunConfig::parse(&args(&["--remote-supervise", raw, "2"])).expect_err("应拒绝：{raw}");
+            assert!(
+                err.contains("loopback") || err.contains("invalid remote-supervise endpoint"),
+                "拒绝文案应说明 loopback 口径或端点非法：{err}"
+            );
+        }
     }
 
     /// --remote-supervise 与 --worker、--supervise 互斥。

@@ -14,14 +14,19 @@
 //! 非阻塞读陷阱：`set_read_timeout(0)` 后 `WouldBlock` 必须判「无数据、仍存活」
 //! 而非断连，否则正常窗口被误杀重启；仅真实 io 错误与 EOF 判断连。残行留在
 //! `FrameReader` 余量缓冲，跨 poll 不丢。
+//!
+//! 认证门：`accept` 后、发 assign 帧前，读首帧（带读超时，半开连接不永久占
+//! 线程），必须是 `Auth` 事件帧且 token 异或判等匹配，才写回 `AuthOk` 帧进
+//! 窗口循环；不匹配或首帧非 `Auth` 直接断连、不回帧（不向攻击者泄露差异）。
 
 use std::collections::HashMap;
 use std::io::BufReader;
 use std::io::ErrorKind;
 use std::sync::Arc;
+use std::time::Duration;
 
 use crate::heartbeat::Heartbeat;
-use crate::shard_protocol::{encode_command, parse_event, FrameReader, ShardCommand, ShardEvent};
+use crate::shard_protocol::{encode_command, parse_event, FrameReader, ShardCommand, ShardEvent, AUTH_READ_TIMEOUT};
 use crate::stats::RunStats;
 use crate::window_transport::{PollResult, SpawnError, WindowTransport};
 use oxide_net::{Conn, Listener};
@@ -34,6 +39,10 @@ pub(crate) struct TcpWindowTransport {
     writer: Option<Conn>,
     /// 读侧（含余量缓冲，跨 poll 保留残行）。
     reader: Option<FrameReader<BufReader<Conn>>>,
+    /// worker 认证 token（监督者启动时生成、前台打印，用户带外注入 worker）。
+    token: String,
+    /// 认证门读超时（缺省 30 秒，半开连接不永久占线程）。
+    auth_read_timeout: Duration,
     /// 最近一次心跳帧（中间 COMPLETED 只跟踪不合并；Done 帧改 phase 为 DONE）。
     last_heartbeat: Option<Heartbeat>,
     /// 待并入的失败记录帧（一测试失败一帧，按序消费，无偏移态，天然无双计）。
@@ -48,8 +57,9 @@ pub(crate) struct TcpWindowTransport {
 
 impl TcpWindowTransport {
     /// 构造传输：`listener` 是监督者绑定端点后的监听句柄（跨重启 `accept` 用），
-    /// `paths` 是全量路径文本，`timeout_secs` 随 assign 帧携带。
-    pub(crate) fn new(listener: Arc<Listener>, paths: Vec<String>, timeout_secs: u64) -> Self {
+    /// `paths` 是全量路径文本，`timeout_secs` 随 assign 帧携带，`token` 是 worker
+    /// 认证 token（认证门异或判等基准）。
+    pub(crate) fn new(listener: Arc<Listener>, paths: Vec<String>, timeout_secs: u64, token: String) -> Self {
         Self {
             listener,
             writer: None,
@@ -59,6 +69,8 @@ impl TcpWindowTransport {
             last_scene: None,
             paths,
             timeout_secs,
+            token,
+            auth_read_timeout: AUTH_READ_TIMEOUT,
         }
     }
 
@@ -90,19 +102,62 @@ impl TcpWindowTransport {
     }
 }
 
+/// 共享 token 判等：逐字节异或累加，避免逐字节短路带来的时序侧信道。
+///
+/// # 边界与前提
+/// - 长度不等直接判不等（生产 token 长度固定 64 位十六进制）。
+fn tokens_match(expected: &str, given: &str) -> bool {
+    if expected.len() != given.len() {
+        return false;
+    }
+    let mut diff = 0u8;
+    for (x, y) in expected.bytes().zip(given.bytes()) {
+        diff |= x ^ y;
+    }
+    diff == 0
+}
+
 impl WindowTransport for TcpWindowTransport {
     fn assign(&mut self, wstart: usize, wend: usize) -> Result<(), SpawnError> {
         // 无连接时阻塞 `accept` 取一条 worker 连接（io 错误包成 SpawnError）。
         if self.writer.is_none() {
             let base = self.listener.accept().map_err(SpawnError)?;
-            // 读侧置非阻塞：std 拒绝 0 时长读超时，改用 `set_nonblocking` 使无数据
-            // 读返回 `WouldBlock`（判「无数据、仍存活」，不误杀正常窗口）。
-            match &base {
+            // 认证门：读超时内读首帧（半开连接不永久占线程），必须是 Auth 事件
+            // 帧且 token 异或判等匹配，才写回 AuthOk；不匹配或首帧非 Auth 直接
+            // 断连、不回帧（reader 连同底层连接一起 drop，连接即关）。
+            base.set_read_timeout(Some(self.auth_read_timeout)).map_err(SpawnError)?;
+            let mut reader = FrameReader::new(BufReader::new(base));
+            let first = match reader.read_frame() {
+                Ok(Some(frame)) => frame,
+                _ => {
+                    return Err(SpawnError(std::io::Error::new(
+                        ErrorKind::ConnectionAborted,
+                        "worker auth failed or timed out",
+                    )))
+                }
+            };
+            let auth_ok = match parse_event(&first) {
+                Ok(ShardEvent::Auth { token }) => tokens_match(&self.token, &token),
+                _ => false,
+            };
+            if !auth_ok {
+                return Err(SpawnError(std::io::Error::new(
+                    ErrorKind::ConnectionAborted,
+                    "worker auth token mismatch",
+                )));
+            }
+            // 写回 AuthOk：worker 据以继续收发。
+            let mut writer = reader.get_mut().get_mut().try_clone().map_err(SpawnError)?;
+            let frame = encode_command(&ShardCommand::AuthOk);
+            writer.write_all(frame.as_bytes()).map_err(SpawnError)?;
+            // 握手完成：清读超时，读侧置非阻塞（主循环 poll 用非阻塞读，
+            // std 拒绝 0 时长读超时，改用 `set_nonblocking` 使无数据读返回
+            // `WouldBlock`，判「无数据、仍存活」，不误杀正常窗口）。
+            reader.get_mut().get_mut().set_read_timeout(None).map_err(SpawnError)?;
+            match reader.get_mut().get_mut() {
                 Conn::Tcp(s) => s.set_nonblocking(true).map_err(SpawnError)?,
                 Conn::Unix(s) => s.set_nonblocking(true).map_err(SpawnError)?,
             }
-            let writer = base.try_clone().map_err(SpawnError)?;
-            let reader = FrameReader::new(BufReader::new(base));
             self.writer = Some(writer);
             self.reader = Some(reader);
         }
@@ -199,6 +254,12 @@ impl WindowTransport for TcpWindowTransport {
                     self.mark_done();
                     return PollResult::Exited(1);
                 }
+                Ok(ShardEvent::Auth { .. }) => {
+                    // Auth 只应作首帧且在认证门消费；此处到达是协议违例，
+                    // 判断连（同畸形帧同构恢复）。
+                    self.drop_conn();
+                    return PollResult::Exited(1);
+                }
                 Err(_) => {
                     // 畸形帧：对端状态不定，判断连（同 EOF 同构恢复）。
                     self.drop_conn();
@@ -247,59 +308,95 @@ mod tests {
     use std::net::TcpStream;
     use std::time::{Duration, Instant};
 
-    use crate::shard_protocol::encode_event;
+    use crate::shard_protocol::{encode_event, parse_command};
 
-    /// TcpWindowTransport 回环：bind 动态端口，客户端连接后发 Heartbeat / Fail /
-    /// Scene 帧，断言 heartbeat / scene / log_tail / merge_fail 读回正确；
-    /// 客户端断连后 poll 返回 Exited（合成码）。
-    #[test]
-    fn tcp_transport_loopback() {
+    const TEST_TOKEN: &str = "test-token-0123456789abcdef";
+
+    /// 回环测试建监听：bind 动态端口，返回监听句柄与本地地址。
+    fn bind_test_listener() -> (Arc<Listener>, std::net::SocketAddr) {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind 失败");
         let addr = listener.local_addr().expect("local_addr 失败");
-        let listener = Arc::new(Listener::Tcp(listener));
+        (Arc::new(Listener::Tcp(listener)), addr)
+    }
 
-        let mut transport =
-            TcpWindowTransport::new(Arc::clone(&listener), vec!["a/b.js".to_string(), "c/d.js".to_string()], 10);
+    /// 派生客户端线程过认证门：客户端线程连接、发 Auth 帧、阻塞读 AuthOk 帧，
+    /// 主线程调用 `assign`（accept 加读 Auth 加写回 AuthOk）使其解除阻塞，
+    /// 客户端线程把读侧经通道送回（assign 帧留在余量缓冲，测试无需消费）。
+    ///
+    /// # 注意事项
+    /// - 客户端必须在独立线程：主线程阻塞读 AuthOk 时 `assign` 无人调用即死锁。
+    fn spawn_authed_client(addr: std::net::SocketAddr) -> std::sync::mpsc::Receiver<FrameReader<BufReader<TcpStream>>> {
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let mut client = TcpStream::connect(addr).expect("客户端连接失败");
+            client
+                .write_all(encode_event(&ShardEvent::Auth { token: TEST_TOKEN.to_string() }).as_bytes())
+                .expect("写 Auth 帧失败");
+            let mut reader = FrameReader::new(BufReader::new(client));
+            let first = reader.read_frame().expect("读帧失败").expect("应读到帧");
+            assert!(matches!(parse_command(&first), Ok(ShardCommand::AuthOk)), "首帧应是 AuthOk：{first}");
+            tx.send(reader).expect("送回读侧失败");
+        });
+        rx
+    }
 
-        // assign：accept 客户端连接并发 assign 帧。
-        let mut client = TcpStream::connect(addr).expect("客户端连接失败");
+    /// 经客户端读侧句柄写事件帧（写侧与读侧共享底层套接字）。
+    fn client_write(reader: &mut FrameReader<BufReader<TcpStream>>, event: &ShardEvent) {
+        reader
+            .get_mut()
+            .get_mut()
+            .write_all(encode_event(event).as_bytes())
+            .expect("写事件帧失败");
+    }
+
+    /// TcpWindowTransport 回环：bind 动态端口，客户端连接过认证门后发
+    /// Heartbeat / Fail / Scene 帧，断言 heartbeat / scene / log_tail /
+    /// merge_fail 读回正确；客户端断连后 poll 返回 Exited（合成码）。
+    #[test]
+    fn tcp_transport_loopback() {
+        let (listener, addr) = bind_test_listener();
+
+        let mut transport = TcpWindowTransport::new(
+            Arc::clone(&listener),
+            vec!["a/b.js".to_string(), "c/d.js".to_string()],
+            10,
+            TEST_TOKEN.to_string(),
+        );
+
+        // assign：accept 客户端连接、过认证门、发 assign 帧。
+        let client_rx = spawn_authed_client(addr);
         transport.assign(0, 2).expect("assign 应成功");
+        let mut client = client_rx.recv().expect("收回客户端读侧失败");
 
         // 发 Heartbeat / Fail / Scene 帧（按序，一测试失败一帧）。
-        client
-            .write_all(
-                encode_event(&ShardEvent::Heartbeat {
-                    phase: "COMPLETED".into(),
-                    index: 0,
-                    pass: 1,
-                    fail: 0,
-                    skip: 0,
-                    categories: HashMap::new(),
-                    hb_write_errors: 0,
-                })
-                .as_bytes(),
-            )
-            .expect("写心跳帧失败");
-        client
-            .write_all(
-                encode_event(&ShardEvent::Fail {
-                    index: 0,
-                    category: "vm: not callable".into(),
-                    subkey: "x".into(),
-                    message: "x is not callable".into(),
-                })
-                .as_bytes(),
-            )
-            .expect("写失败帧失败");
-        client
-            .write_all(
-                encode_event(&ShardEvent::Scene {
-                    line: "pc=1 op=ADD frames=1".into(),
-                    log_tail: Some("log line".into()),
-                })
-                .as_bytes(),
-            )
-            .expect("写现场帧失败");
+        client_write(
+            &mut client,
+            &ShardEvent::Heartbeat {
+                phase: "COMPLETED".into(),
+                index: 0,
+                pass: 1,
+                fail: 0,
+                skip: 0,
+                categories: HashMap::new(),
+                hb_write_errors: 0,
+            },
+        );
+        client_write(
+            &mut client,
+            &ShardEvent::Fail {
+                index: 0,
+                category: "vm: not callable".into(),
+                subkey: "x".into(),
+                message: "x is not callable".into(),
+            },
+        );
+        client_write(
+            &mut client,
+            &ShardEvent::Scene {
+                line: "pc=1 op=ADD frames=1".into(),
+                log_tail: Some("log line".into()),
+            },
+        );
 
         // 读帧：poll 逐帧消费，直到 Scene（末帧）读回。
         let deadline = Instant::now() + Duration::from_secs(5);
@@ -343,37 +440,33 @@ mod tests {
     /// Done 前无 Heartbeat 时合成零计数 DONE。
     #[test]
     fn tcp_transport_done_frame_keeps_counts() {
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind 失败");
-        let addr = listener.local_addr().expect("local_addr 失败");
-        let listener = Arc::new(Listener::Tcp(listener));
+        let (listener, addr) = bind_test_listener();
 
-        let mut transport = TcpWindowTransport::new(Arc::clone(&listener), vec!["a/b.js".to_string()], 10);
-        let mut client = TcpStream::connect(addr).expect("客户端连接失败");
+        let mut transport =
+            TcpWindowTransport::new(Arc::clone(&listener), vec!["a/b.js".to_string()], 10, TEST_TOKEN.to_string());
+        let client_rx = spawn_authed_client(addr);
         transport.assign(0, 1).expect("assign 应成功");
+        let mut client = client_rx.recv().expect("收回客户端读侧失败");
 
         // 先发一条带计数的心跳，再发 Done：Done 应把 phase 改 DONE 并保留计数。
-        client
-            .write_all(
-                encode_event(&ShardEvent::Heartbeat {
-                    phase: "COMPLETED".into(),
-                    index: 0,
-                    pass: 5,
-                    fail: 2,
-                    skip: 1,
-                    categories: HashMap::new(),
-                    hb_write_errors: 0,
-                })
-                .as_bytes(),
-            )
-            .expect("写心跳帧失败");
+        client_write(
+            &mut client,
+            &ShardEvent::Heartbeat {
+                phase: "COMPLETED".into(),
+                index: 0,
+                pass: 5,
+                fail: 2,
+                skip: 1,
+                categories: HashMap::new(),
+                hb_write_errors: 0,
+            },
+        );
         let deadline = Instant::now() + Duration::from_secs(5);
         while transport.heartbeat().is_none() && Instant::now() < deadline {
             let _ = transport.poll();
             std::thread::sleep(Duration::from_millis(10));
         }
-        client
-            .write_all(encode_event(&ShardEvent::Done).as_bytes())
-            .expect("写 Done 帧失败");
+        client_write(&mut client, &ShardEvent::Done);
 
         // poll 读到 Done 帧应返回 Exited，且心跳 phase 改 DONE、计数保留。
         let mut exited = false;
@@ -395,17 +488,15 @@ mod tests {
     /// Done 帧前无 Heartbeat：合成零计数 DONE（不 panic、计数全零）。
     #[test]
     fn tcp_transport_done_without_heartbeat_synthesizes_zero() {
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind 失败");
-        let addr = listener.local_addr().expect("local_addr 失败");
-        let listener = Arc::new(Listener::Tcp(listener));
+        let (listener, addr) = bind_test_listener();
 
-        let mut transport = TcpWindowTransport::new(Arc::clone(&listener), vec!["a/b.js".to_string()], 10);
-        let mut client = TcpStream::connect(addr).expect("客户端连接失败");
+        let mut transport =
+            TcpWindowTransport::new(Arc::clone(&listener), vec!["a/b.js".to_string()], 10, TEST_TOKEN.to_string());
+        let client_rx = spawn_authed_client(addr);
         transport.assign(0, 1).expect("assign 应成功");
+        let mut client = client_rx.recv().expect("收回客户端读侧失败");
 
-        client
-            .write_all(encode_event(&ShardEvent::Done).as_bytes())
-            .expect("写 Done 帧失败");
+        client_write(&mut client, &ShardEvent::Done);
         let mut exited = false;
         let deadline = Instant::now() + Duration::from_secs(5);
         while !exited && Instant::now() < deadline {
@@ -421,5 +512,64 @@ mod tests {
         assert_eq!(hb.fail, 0);
         assert_eq!(hb.skip, 0);
         assert!(hb.categories.is_empty());
+    }
+
+    /// 认证门：token 不匹配时 assign 报错，客户端读首帧得 EOF（断连不回帧）。
+    #[test]
+    fn tcp_transport_auth_mismatch_disconnects() {
+        let (listener, addr) = bind_test_listener();
+
+        let mut transport =
+            TcpWindowTransport::new(Arc::clone(&listener), vec!["a/b.js".to_string()], 10, TEST_TOKEN.to_string());
+        let mut client = TcpStream::connect(addr).expect("客户端连接失败");
+        client
+            .write_all(
+                encode_event(&ShardEvent::Auth {
+                    token: "wrong-token".to_string(),
+                })
+                .as_bytes(),
+            )
+            .expect("写 Auth 帧失败");
+        let err = transport.assign(0, 1).expect_err("token 不匹配应报错");
+        assert!(err.0.to_string().contains("mismatch"), "错误应说明 token 不匹配：{err:?}");
+
+        // 断连不回帧：客户端读首帧得 EOF。
+        let mut reader = FrameReader::new(BufReader::new(client));
+        assert_eq!(reader.read_frame().expect("读帧应成功"), None, "断连后应得 EOF");
+    }
+
+    /// 认证门：首帧非 Auth（发心跳帧）时 assign 报错，客户端读首帧得 EOF。
+    #[test]
+    fn tcp_transport_auth_first_frame_not_auth_disconnects() {
+        let (listener, addr) = bind_test_listener();
+
+        let mut transport =
+            TcpWindowTransport::new(Arc::clone(&listener), vec!["a/b.js".to_string()], 10, TEST_TOKEN.to_string());
+        let mut client = TcpStream::connect(addr).expect("客户端连接失败");
+        client
+            .write_all(encode_event(&ShardEvent::Done).as_bytes())
+            .expect("写首帧失败");
+        let err = transport.assign(0, 1).expect_err("首帧非 Auth 应报错");
+        assert!(err.0.to_string().contains("mismatch"), "错误应说明认证失败：{err:?}");
+
+        let mut reader = FrameReader::new(BufReader::new(client));
+        assert_eq!(reader.read_frame().expect("读帧应成功"), None, "断连后应得 EOF");
+    }
+
+    /// 认证门：静默连接（不发首帧）在读超时后 assign 报错，客户端读首帧得 EOF。
+    #[test]
+    fn tcp_transport_auth_silence_times_out() {
+        let (listener, addr) = bind_test_listener();
+
+        let mut transport =
+            TcpWindowTransport::new(Arc::clone(&listener), vec!["a/b.js".to_string()], 10, TEST_TOKEN.to_string());
+        // 测试用短读超时：半开连接 200 ms 内即断，不占满 30 秒缺省值。
+        transport.auth_read_timeout = Duration::from_millis(200);
+        let client = TcpStream::connect(addr).expect("客户端连接失败");
+        let err = transport.assign(0, 1).expect_err("静默连接应读超时");
+        assert!(err.0.kind() == ErrorKind::ConnectionAborted, "错误应是连接中止：{err:?}");
+
+        let mut reader = FrameReader::new(BufReader::new(client));
+        assert_eq!(reader.read_frame().expect("读帧应成功"), None, "断连后应得 EOF");
     }
 }
