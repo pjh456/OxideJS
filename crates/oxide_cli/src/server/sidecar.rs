@@ -437,7 +437,11 @@ mod tests {
     #[test]
     fn parse_endpoint_two_forms() {
         let tcp = parse_endpoint("127.0.0.1:4242");
-        assert_eq!(tcp, Endpoint::Tcp(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 4242)), "host:port 应得 TCP 臂");
+        assert_eq!(
+            tcp,
+            Endpoint::Tcp(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 4242)),
+            "host:port 应得 TCP 臂"
+        );
         let unix = parse_endpoint("/tmp/oxide-test.sock");
         assert_eq!(unix, Endpoint::Unix(PathBuf::from("/tmp/oxide-test.sock")), "路径形态应得 Unix 臂");
     }
@@ -463,8 +467,12 @@ mod tests {
         let socket = dir.path("server.sock");
         // 存活 server 必有 sidecar（启动顺序契约：先写 sidecar 再 bind endpoint）。
         let listener = UnixListener::bind(&socket).expect("绑定监听者应成功");
-        write_exclusive(&ServerIdentity::new(&Endpoint::Unix(socket.clone()), "0.0.0"), &sidecar).expect("写 sidecar 应成功");
-        assert_eq!(claim_sidecar(&sidecar, &Endpoint::Unix(socket.clone()), "0.0.0"), ClaimResult::AlreadyRunning);
+        write_exclusive(&ServerIdentity::new(&Endpoint::Unix(socket.clone()), "0.0.0"), &sidecar)
+            .expect("写 sidecar 应成功");
+        assert_eq!(
+            claim_sidecar(&sidecar, &Endpoint::Unix(socket.clone()), "0.0.0"),
+            ClaimResult::AlreadyRunning
+        );
         drop(listener);
     }
 
@@ -477,8 +485,12 @@ mod tests {
         let socket = dir.path("server.sock");
         let listener = UnixListener::bind(&socket).expect("绑定监听者应成功");
         // 旧 sidecar 版本与本进程版本不同：比对判不匹配。
-        write_exclusive(&ServerIdentity::new(&Endpoint::Unix(socket.clone()), "0.0.0"), &sidecar).expect("写 sidecar 应成功");
-        assert_eq!(claim_sidecar(&sidecar, &Endpoint::Unix(socket.clone()), "0.0.1"), ClaimResult::VersionMismatch);
+        write_exclusive(&ServerIdentity::new(&Endpoint::Unix(socket.clone()), "0.0.0"), &sidecar)
+            .expect("写 sidecar 应成功");
+        assert_eq!(
+            claim_sidecar(&sidecar, &Endpoint::Unix(socket.clone()), "0.0.1"),
+            ClaimResult::VersionMismatch
+        );
         drop(listener);
     }
 
@@ -514,7 +526,10 @@ mod tests {
         // PID 与启动时刻刻度都是本进程的：进程活且刻度匹配。
         let id = ServerIdentity::new(&Endpoint::Unix(socket.clone()), "0.0.0");
         write_exclusive(&id, &sidecar).expect("写 sidecar 应成功");
-        assert_eq!(claim_sidecar(&sidecar, &Endpoint::Unix(socket.clone()), "0.0.0"), ClaimResult::RefusedAmbiguous);
+        assert_eq!(
+            claim_sidecar(&sidecar, &Endpoint::Unix(socket.clone()), "0.0.0"),
+            ClaimResult::RefusedAmbiguous
+        );
     }
 
     /// 认领分支：损坏文件加死 socket 判陈旧，sidecar 重建。
@@ -555,7 +570,10 @@ mod tests {
         let socket = dir.path("server.sock");
         let listener = UnixListener::bind(&socket).expect("绑定监听者应成功");
         fs::write(&sidecar, "not json at all").expect("写损坏文件应成功");
-        assert_eq!(claim_sidecar(&sidecar, &Endpoint::Unix(socket.clone()), "0.0.0"), ClaimResult::VersionMismatch);
+        assert_eq!(
+            claim_sidecar(&sidecar, &Endpoint::Unix(socket.clone()), "0.0.0"),
+            ClaimResult::VersionMismatch
+        );
         drop(listener);
     }
 

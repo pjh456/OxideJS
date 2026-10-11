@@ -212,9 +212,7 @@ pub fn run_server(config: &ServerConfig) -> Result<(), ServerError> {
     // 清理命令。两臂通用：TCP server 也写 sidecar，同端口裁决交给绑定失败。
     match liveness::liveness_scan(&config.sidecar_path, &config.endpoint) {
         liveness::LivenessOutcome::Noop | liveness::LivenessOutcome::Cleaned => {}
-        liveness::LivenessOutcome::KillFailed => {
-            return Err(ServerError::ClaimRefused(ClaimResult::RefusedAmbiguous))
-        }
+        liveness::LivenessOutcome::KillFailed => return Err(ServerError::ClaimRefused(ClaimResult::RefusedAmbiguous)),
     }
 
     // 认领 sidecar（启动顺序契约：先写 sidecar 再绑定监听器）：同版本
@@ -1292,11 +1290,8 @@ mod tests {
         // sidecar（PID 存活且启动时刻刻度匹配，版本不匹配，认领判
         // VersionMismatch）。
         let listener = UnixListener::bind(unix_path(&config.endpoint)).expect("绑定模拟旧 server 应成功");
-        sidecar::write_exclusive(
-            &sidecar::ServerIdentity::new(&config.endpoint, "0.0.0"),
-            &config.sidecar_path,
-        )
-        .expect("写模拟 sidecar 应成功");
+        sidecar::write_exclusive(&sidecar::ServerIdentity::new(&config.endpoint, "0.0.0"), &config.sidecar_path)
+            .expect("写模拟 sidecar 应成功");
 
         // 模拟连接处理：接受循环，逐连接读一帧后回 Error 帧。须保持监听
         // （真实 server 是 accept 循环）：启动时 liveness 扫描与认领探活各
@@ -1325,11 +1320,8 @@ mod tests {
         let config = unique_paths("yield_hang");
 
         let listener = UnixListener::bind(unix_path(&config.endpoint)).expect("绑定模拟旧 server 应成功");
-        sidecar::write_exclusive(
-            &sidecar::ServerIdentity::new(&config.endpoint, "0.0.0"),
-            &config.sidecar_path,
-        )
-        .expect("写模拟 sidecar 应成功");
+        sidecar::write_exclusive(&sidecar::ServerIdentity::new(&config.endpoint, "0.0.0"), &config.sidecar_path)
+            .expect("写模拟 sidecar 应成功");
 
         // 模拟连接处理：接受连接后挂住不回应（模拟挂起的旧 server）。
         std::thread::spawn(move || {

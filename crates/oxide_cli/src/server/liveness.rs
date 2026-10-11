@@ -354,7 +354,12 @@ mod tests {
         let sidecar_scan = sidecar.clone();
         let socket_scan = socket.clone();
         let scan_handle = std::thread::spawn(move || {
-            liveness_scan_with_waits(&sidecar_scan, &Endpoint::Unix(socket_scan), Duration::from_secs(5), Duration::from_secs(1))
+            liveness_scan_with_waits(
+                &sidecar_scan,
+                &Endpoint::Unix(socket_scan),
+                Duration::from_secs(5),
+                Duration::from_secs(1),
+            )
         });
         // 主线程在窗口内删 sidecar（模拟旧 server 退出序列），扫描应判无操作。
         std::thread::sleep(Duration::from_millis(200));
@@ -381,7 +386,12 @@ mod tests {
         sidecar::write_exclusive(&id, &sidecar).expect("写 sidecar 应成功");
         // 注入短僵尸退出窗口（500 毫秒）加短杀进程等待（3 秒）：子进程存活，
         // sidecar 不消失，扫描等窗口后杀进程。
-        let outcome = liveness_scan_with_waits(&sidecar, &Endpoint::Unix(socket.clone()), Duration::from_millis(500), Duration::from_secs(3));
+        let outcome = liveness_scan_with_waits(
+            &sidecar,
+            &Endpoint::Unix(socket.clone()),
+            Duration::from_millis(500),
+            Duration::from_secs(3),
+        );
         assert_eq!(outcome, LivenessOutcome::Cleaned, "刻度匹配的存活进程应被杀且文件被删");
         // 有界等待回收线程：子进程被杀后收尸即退出，不无限阻塞。
         let deadline = Instant::now() + Duration::from_secs(5);
@@ -410,8 +420,12 @@ mod tests {
         sidecar::write_exclusive(&id, &sidecar).expect("写 sidecar 应成功");
         // 注入短僵尸退出窗口（500 毫秒）加短杀进程等待（300 毫秒）：子进程忽略
         // SIGTERM，扫描判杀进程失败，文件原样。
-        let outcome =
-            liveness_scan_with_waits(&sidecar, &Endpoint::Unix(socket.clone()), Duration::from_millis(500), Duration::from_millis(300));
+        let outcome = liveness_scan_with_waits(
+            &sidecar,
+            &Endpoint::Unix(socket.clone()),
+            Duration::from_millis(500),
+            Duration::from_millis(300),
+        );
         assert_eq!(outcome, LivenessOutcome::KillFailed, "忽略 SIGTERM 应判杀进程失败");
         assert!(sidecar.exists(), "sidecar 应原样");
         assert!(!socket.exists(), "socket 文件应保持不存在");
