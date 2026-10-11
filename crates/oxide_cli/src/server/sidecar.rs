@@ -35,6 +35,9 @@ use serde::{Deserialize, Serialize};
 ///   PID 复用判定用。
 /// - `port`：TCP 监听端口（机器可读形态），Unix 臂为 0；旧 sidecar 无该
 ///   字段时读回为 0（serde 缺省），探活裁决仍走 `socket_path` 文本。
+/// - `listen_addr`：监听地址（网络身份——server 可达的网络接口，安全边界
+///   关注点：loopback-only 与 all-interfaces 的区分）；旧 sidecar 无该字段
+///   时读回为空串（serde 缺省）。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ServerIdentity {
     pub pid: u32,
@@ -46,6 +49,11 @@ pub struct ServerIdentity {
     /// 读回为 0（serde 缺省），探活裁决走 socket_path 文本，行为不变。
     #[serde(default)]
     pub port: u16,
+    /// 监听地址（网络身份：server 可达的网络接口，loopback-only 与
+    /// all-interfaces 的区分）；旧 sidecar 无该字段时读回为空串（serde
+    /// 缺省），探活裁决仍走 socket_path 文本，行为不变。
+    #[serde(default)]
+    pub listen_addr: String,
 }
 
 impl ServerIdentity {
@@ -57,6 +65,8 @@ impl ServerIdentity {
     /// - `socket_path` 字段记监听端点的文本形态（`endpoint.describe()`），
     ///   字段名与 JSON 模式不变，旧 sidecar 可读。
     /// - `port` 取端点的 TCP 端口（Unix 臂无端口，记 0）。
+    /// - `listen_addr` 取端点的文本形态（`endpoint.describe()`），与
+    ///   `socket_path` 同源同时机（认领时、bind 之前），记配置监听地址。
     /// - 非 Linux 宿主（`/proc` 缺位）时 `starttime` 填 0，交叉核对退化，
     ///   liveness 由 endpoint 探活裁决。
     pub fn new(endpoint: &Endpoint, version: &str) -> Self {
@@ -66,13 +76,15 @@ impl ServerIdentity {
             Endpoint::Tcp(addr) => addr.port(),
             Endpoint::Unix(_) => 0,
         };
+        let socket_path = endpoint.describe();
         ServerIdentity {
             pid,
-            socket_path: endpoint.describe(),
+            socket_path: socket_path.clone(),
             version: version.to_string(),
             started_at,
             starttime: process_starttime(pid).unwrap_or(0),
             port,
+            listen_addr: socket_path,
         }
     }
 }
@@ -424,6 +436,7 @@ mod tests {
             started_at: 0,
             starttime: 0,
             port: 0,
+            listen_addr: String::new(),
         }
     }
 
@@ -435,7 +448,7 @@ mod tests {
         let id = ServerIdentity::new(&Endpoint::Unix(PathBuf::from("/tmp/oxide-test.sock")), "0.0.0");
         write_exclusive(&id, &path).expect("写 sidecar 应成功");
         let read = read_identity(&path).expect("读回 sidecar 应成功");
-        assert_eq!(read, id, "五字段应逐字段一致");
+        assert_eq!(read, id, "六字段应逐字段一致");
     }
 
     /// 端口字段：TCP 端点记端点端口（机器可读形态），Unix 臂记 0。
@@ -458,6 +471,7 @@ mod tests {
         let read = read_identity(&path).expect("读回 sidecar 应成功");
         assert_eq!(read, id, "字段应逐字段一致");
         assert_eq!(read.port, 4242, "port 字段应记端点端口");
+        assert_eq!(read.listen_addr, "127.0.0.1:4242", "listen_addr 字段应记端点地址");
     }
 
     /// 旧 sidecar（无 port 字段）读回：serde 缺省补 0，读回成功不判损坏。
@@ -472,6 +486,7 @@ mod tests {
         .expect("写旧 sidecar 应成功");
         let id = read_identity(&path).expect("旧 sidecar 应可读回");
         assert_eq!(id.port, 0, "无 port 字段应读回 0");
+        assert_eq!(id.listen_addr, "", "无 listen_addr 字段应读回空串");
     }
 
     /// O_EXCL 排他：同路径二次 create_new 必得 AlreadyExists。

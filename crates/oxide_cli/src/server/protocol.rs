@@ -172,8 +172,15 @@ pub enum ServerResponse {
     },
     /// 健康检查响应。
     Health { healthy: bool },
-    /// 信息响应：版本、socket 路径、进程号。
-    Info { version: String, socket_path: String, pid: u32 },
+    /// 信息响应：版本、socket 路径、进程号、监听地址。
+    Info {
+        version: String,
+        socket_path: String,
+        pid: u32,
+        /// 实际监听地址（bind 后的网络端点，控制客户端经协议层发现 server
+        /// 可达接口；TCP 臂为 host:port，Unix 臂为 socket 路径）。
+        listen_addr: String,
+    },
     /// 关闭确认。
     Shutdown,
     /// 交接确认：旧 server 已受理，开始排空退出。
@@ -434,6 +441,7 @@ mod tests {
                 version: "0.8.23".into(),
                 socket_path: "/tmp/oxide-server.sock".into(),
                 pid: 1234,
+                listen_addr: "127.0.0.1:4242".into(),
             },
             ServerResponse::Shutdown,
             ServerResponse::Yield,

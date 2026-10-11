@@ -403,9 +403,14 @@ fn server_command(command: ServerCommands) -> ExitCode {
             _ => None,
         }),
         ServerCommands::Info => control_arm(&ServerRequest::Info, |response| match response {
-            ServerResponse::Info { version, socket_path, pid } => {
-                Some(format!("版本：{version}\nendpoint：{socket_path}\n进程号：{pid}"))
-            }
+            ServerResponse::Info {
+                version,
+                socket_path,
+                pid,
+                listen_addr,
+            } => Some(format!(
+                "版本：{version}\nendpoint：{socket_path}\n监听地址：{listen_addr}\n进程号：{pid}"
+            )),
             _ => None,
         }),
         ServerCommands::Version => control_arm(&ServerRequest::Version, |response| match response {

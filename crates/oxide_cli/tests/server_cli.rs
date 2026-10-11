@@ -715,8 +715,14 @@ fn server_start_port_e2e() {
     }
     let response = send_control_request(&ServerRequest::Info).expect("信息臂应成功");
     match response {
-        ServerResponse::Info { version, socket_path, pid } => {
+        ServerResponse::Info {
+            version,
+            socket_path,
+            pid,
+            listen_addr,
+        } => {
             assert_eq!(socket_path, format!("127.0.0.1:{port}"), "Info 端点应为自定义端口");
+            assert_eq!(listen_addr, format!("127.0.0.1:{port}"), "Info 监听地址应为自定义端口");
             assert_eq!(version, env!("CARGO_PKG_VERSION"), "版本应与构建期版本一致");
             assert_eq!(pid, id.pid, "Info 进程号应与 sidecar 一致");
         }

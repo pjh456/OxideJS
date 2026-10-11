@@ -153,6 +153,9 @@ struct ServerContext {
     pool_counters: Arc<PoolCounters>,
     // 监听端点文本形态（Unix 臂为路径、TCP 臂为 host:port），Info 响应用。
     socket_path: String,
+    // 实际监听地址（bind 后取值：TCP 臂为 host:port、Unix 臂为 socket 路径），
+    // Info 响应用，让控制客户端经协议层发现 server 网络端点。
+    listen_addr: String,
 }
 
 /// server 进程主体：初始化日志文件输出 → 启动时 liveness 扫描 → 认领 sidecar →
@@ -240,6 +243,10 @@ pub fn run_server(config: &ServerConfig) -> Result<(), ServerError> {
     // 绑定监听器：stale socket 文件删一次重试，失败回滚 sidecar。
     let listener = bind_listener(config)?;
 
+    // 取实际监听地址（bind 后：TCP 臂为操作系统分配的实际端口，Unix 臂为
+    // socket 路径），Info 响应用，让控制客户端经协议层发现 server 网络端点。
+    let listen_addr = listener.local_addr().map_err(|e| ServerError::BindFailed(e.to_string()))?;
+
     // 建内核（标准配置）与共享聚合计数器（全体 worker 池的增减累加到同一聚合）。
     let kernel = KernelCore::new(KernelConfig::standard());
     let counters = PoolCounters::shared();
@@ -261,6 +268,7 @@ pub fn run_server(config: &ServerConfig) -> Result<(), ServerError> {
         in_flight: Arc::new(AtomicUsize::new(0)),
         pool_counters: counters,
         socket_path: config.endpoint.describe(),
+        listen_addr,
     });
 
     // accept 循环：非阻塞 accept 加 10 毫秒轮询加原子关闭标志。
@@ -346,7 +354,10 @@ pub fn run_server_rm(config: &RmServerConfig) -> Result<(), ServerError> {
         shutdown: Arc::clone(&shutdown),
         in_flight: Arc::new(AtomicUsize::new(0)),
         pool_counters: counters,
-        socket_path,
+        // socket_path 与 listen_addr 同源：--rm 的 socket_path 已取 bind 后的
+        // 实际地址（local_addr），Info 响应的监听地址与之一致。
+        socket_path: socket_path.clone(),
+        listen_addr: socket_path,
     });
 
     // 空闲窗口一：等首个连接；空闲超时内无连接即干净退出。
@@ -794,6 +805,7 @@ fn dispatch_control(request: &ServerRequest, ctx: &ServerContext) -> ServerRespo
             version: env!("CARGO_PKG_VERSION").to_string(),
             socket_path: ctx.socket_path.clone(),
             pid: std::process::id(),
+            listen_addr: ctx.listen_addr.clone(),
         },
         ServerRequest::Shutdown => {
             // 置关闭标志；主循环至多 10 毫秒内退出 accept 循环。
@@ -1043,10 +1055,17 @@ mod tests {
         let mut stream = connect(&config);
         let response = send_and_recv(&mut stream, &ServerRequest::Info);
         match response {
-            ServerResponse::Info { version, socket_path, pid } => {
+            ServerResponse::Info {
+                version,
+                socket_path,
+                pid,
+                listen_addr,
+            } => {
                 assert_eq!(version, env!("CARGO_PKG_VERSION"), "版本应与构建期版本一致");
                 assert_eq!(socket_path, config.endpoint.describe(), "socket 路径应与配置一致");
                 assert_eq!(pid, std::process::id(), "进程号应为当前进程号");
+                // Unix 臂：实际监听地址即 socket 路径，与配置端点一致。
+                assert_eq!(listen_addr, config.endpoint.describe(), "监听地址应与配置一致（Unix 臂）");
             }
             other => panic!("应得 Info 帧，实得 {other:?}"),
         }

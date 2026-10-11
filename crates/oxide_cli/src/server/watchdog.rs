@@ -309,6 +309,7 @@ mod tests {
             started_at: 0,
             starttime: 0,
             port: 0,
+            listen_addr: String::new(),
         }
     }
 
