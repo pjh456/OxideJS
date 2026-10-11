@@ -1388,7 +1388,8 @@ mod tests {
 
         let config = ServerConfig {
             endpoint: Endpoint::Tcp(addr),
-            sidecar_path: std::env::temp_dir().join(format!("oxide_server_tcp_yield_{}_sidecar.json", std::process::id())),
+            sidecar_path: std::env::temp_dir()
+                .join(format!("oxide_server_tcp_yield_{}_sidecar.json", std::process::id())),
             worker_count: 2,
             version: env!("CARGO_PKG_VERSION").to_string(),
         };
