@@ -62,6 +62,13 @@ impl Endpoint {
     }
 }
 
+impl std::fmt::Display for Endpoint {
+    /// 端点文本形态：Unix 臂为路径字符串，TCP 臂为 host:port 字符串。
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.describe())
+    }
+}
+
 impl Listener {
     /// 设置监听者非阻塞模式。
     ///

@@ -8,11 +8,14 @@
 //! - 错误三分支：连接失败、协议错误、server 错误帧，各映射到可读消息，
 //!   不 panic。
 
-use std::io::{BufReader, Write};
+use std::io::BufReader;
+use std::net::TcpStream;
 use std::os::unix::net::UnixStream;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc::RecvTimeoutError;
 use std::time::Duration;
+
+use oxide_net::{Conn, Endpoint};
 
 use super::protocol::{self, FrameReader, ProtocolError, ServerRequest, ServerResponse};
 use super::sidecar;
@@ -76,7 +79,7 @@ pub fn send_control_request_from(sidecar_path: &Path, request: &ServerRequest) -
     })?;
 
     // 连接：5 秒超时是安全网，本地 socket 连接立即完成或立即失败。
-    let mut stream = connect_with_timeout(Path::new(&identity.socket_path), CONNECT_TIMEOUT)?;
+    let mut stream = connect_with_timeout(&Endpoint::Unix(PathBuf::from(identity.socket_path)), CONNECT_TIMEOUT)?;
 
     // 读写超时各 5 秒：server 挂起（不回应）时不无限阻塞。
     let _ = stream.set_read_timeout(Some(CONNECT_TIMEOUT));
@@ -102,29 +105,33 @@ pub fn send_control_request_from(sidecar_path: &Path, request: &ServerRequest) -
     }
 }
 
-/// 带超时的连接：线程内连接、通道上带超时取结果。
+/// 带超时的连接：线程内连接、通道上带超时取结果，两臂按 endpoint 形态分支。
 ///
 /// # 步骤
-/// 1. 派生线程连接 socket。
+/// 1. 派生线程连接 endpoint（Unix 路径或 TCP 地址）。
 /// 2. 通道上带超时取结果；超时判连接失败。
 ///
 /// # 边界与前提
 /// - 超时后连接线程继续存活到连接完成或失败（本地 socket 立即出结果），
 ///   发送端已被接收端丢弃，线程随即退出，无泄漏。
-fn connect_with_timeout(path: &Path, timeout: Duration) -> Result<UnixStream, ClientError> {
+fn connect_with_timeout(endpoint: &Endpoint, timeout: Duration) -> Result<Conn, ClientError> {
     let (tx, rx) = std::sync::mpsc::channel();
-    let spawn_path = path.to_path_buf();
-    let display = path.display().to_string();
+    let spawn = endpoint.clone();
+    let display = endpoint.describe();
     std::thread::spawn(move || {
-        let _ = tx.send(UnixStream::connect(&spawn_path));
+        let result = match &spawn {
+            Endpoint::Unix(path) => UnixStream::connect(path).map(Conn::Unix),
+            Endpoint::Tcp(addr) => TcpStream::connect(*addr).map(Conn::Tcp),
+        };
+        let _ = tx.send(result);
     });
     match rx.recv_timeout(timeout) {
         Ok(Ok(stream)) => Ok(stream),
         Ok(Err(e)) => Err(ClientError::Connect(format!(
-            "连接 server 失败：{e}（socket 路径 {display}，可用 `oxide server cleanup` 清理陈旧文件）"
+            "连接 server 失败：{e}（endpoint {display}，可用 `oxide server cleanup` 清理陈旧文件）"
         ))),
         Err(RecvTimeoutError::Timeout) => Err(ClientError::Connect(format!(
-            "连接 server 超时（{} 秒），socket 路径 {display}",
+            "连接 server 超时（{} 秒），endpoint {display}",
             timeout.as_secs()
         ))),
         Err(RecvTimeoutError::Disconnected) => Err(ClientError::Connect("连接线程异常退出".into())),
@@ -135,6 +142,7 @@ fn connect_with_timeout(path: &Path, timeout: Duration) -> Result<UnixStream, Cl
 mod tests {
     use super::*;
     use std::fs;
+    use std::io::Write;
     use std::os::unix::net::UnixListener;
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};

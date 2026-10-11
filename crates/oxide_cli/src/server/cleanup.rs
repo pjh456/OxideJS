@@ -23,6 +23,8 @@ use std::path::Path;
 use std::process::Command;
 use std::time::{Duration, Instant};
 
+use oxide_net::Endpoint;
+
 use super::sidecar::{self, ServerIdentity};
 
 /// 缺省杀进程等待：10 秒，长于 server 的在途排水安全超时 5 秒，正常优雅
@@ -151,7 +153,7 @@ pub fn cleanup_with_wait(sidecar_path: &Path, socket_path: &Path, kill_wait: Dur
     // PID 存活与刻度匹配（PID 死时匹配位恒假）。
     let identity = sidecar::read_identity(sidecar_path);
     let socket_exists = socket_path.exists();
-    let socket_alive = socket_exists && sidecar::is_server_alive(socket_path);
+    let socket_alive = socket_exists && sidecar::is_server_alive(&Endpoint::Unix(socket_path.to_path_buf()));
     let (pid_alive, starttime_match) = match &identity {
         Some(id) => {
             let alive = sidecar::pid_alive(id.pid);

@@ -21,8 +21,7 @@
 
 use std::fs;
 use std::io;
-use std::io::Write;
-use std::net::TcpListener;
+use std::net::{TcpListener, TcpStream};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -456,19 +455,23 @@ fn finish_shutdown(
 /// 交接接管：连接旧 server、发 yield 请求、等旧 server 排空退出后重新认领。
 ///
 /// # 步骤
-/// 1. 连接旧 server 的 socket；连接失败判 `YieldFailed`。
+/// 1. 连接旧 server 的 endpoint（Unix 路径或 TCP 地址）；连接失败判
+///    `YieldFailed`。
 /// 2. 设 5 秒读超时，写 yield 请求帧。
 /// 3. 读一帧应答：读超时（旧 server 挂起）或应答非 yield 确认（旧版本
 ///    binary 无该变体时以错误帧答复未知类型）判 `YieldFailed`。
-/// 4. 关闭连接，轮询 sidecar 文件消失（50 毫秒间隔、10 秒上限）；超时判
-///    `YieldFailed`。
-/// 5. 重新认领 sidecar；得 `Registered` 即接管成功，其余态判 `YieldFailed`。
+/// 4. 关闭连接，按 endpoint 形态等旧 server 退出：Unix 臂轮询 sidecar 文件
+///    消失，TCP 臂以端口释放（连接被拒）为退出信号；均 50 毫秒间隔、
+///    10 秒上限，超时判 `YieldFailed`。
+/// 5. Unix 臂重新认领 sidecar；得 `Registered` 即接管成功，其余态判
+///    `YieldFailed`。TCP 臂无 sidecar 文件，不重认领。
 ///
 /// # 边界与前提
 /// - 交接等待 10 秒长于旧 server 的排水安全超时 5 秒，正常路径必然先于
 ///   等待上限完成。
-/// - 旧 server 先删 socket 文件后删 sidecar，sidecar 消失时 socket 文件必
-///   已删除，接管绑定无竞态。
+/// - Unix 臂：旧 server 先删 socket 文件后删 sidecar，sidecar 消失时
+///   socket 文件必已删除，接管绑定无竞态。
+/// - TCP 臂：监听者 drop 即端口释放，连接被拒即旧 server 已退出。
 ///
 /// # 副作用
 /// - 失败时不触碰旧 server 的文件（socket 与 sidecar），人工兜底归清理命令。
@@ -476,16 +479,17 @@ fn finish_shutdown(
 /// # 注意事项
 /// - 纯函数式入口：版本管理路径（版本不匹配强制交接）与显式交接路径调用
 ///   同一入口。
-/// - 交接协议在 Unix 文件面上；TCP 端点是防御性分支，不参与交接。
+/// - 退出信号源按形态分：Unix 臂是 sidecar 文件消失，TCP 臂是端口释放。
 pub fn yield_and_takeover(config: &ServerConfig) -> Result<(), ServerError> {
-    let socket_path = match &config.endpoint {
-        Endpoint::Unix(path) => path,
-        Endpoint::Tcp(_) => return Err(ServerError::YieldFailed("TCP 端点不支持交接".into())),
+    // 连接旧 server：连接成功是交接的前提，两臂按 endpoint 形态分支。
+    let mut stream = match &config.endpoint {
+        Endpoint::Unix(path) => Conn::Unix(
+            UnixStream::connect(path).map_err(|e| ServerError::YieldFailed(format!("连接旧 server 失败：{e}")))?,
+        ),
+        Endpoint::Tcp(addr) => Conn::Tcp(
+            TcpStream::connect(*addr).map_err(|e| ServerError::YieldFailed(format!("连接旧 server 失败：{e}")))?,
+        ),
     };
-
-    // 连接旧 server：连接成功是交接的前提。
-    let mut stream =
-        UnixStream::connect(socket_path).map_err(|e| ServerError::YieldFailed(format!("连接旧 server 失败：{e}")))?;
 
     // 5 秒读超时：旧 server 挂起（不回应 yield）不无限阻塞。
     let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
@@ -504,22 +508,39 @@ pub fn yield_and_takeover(config: &ServerConfig) -> Result<(), ServerError> {
     if !matches!(response, ServerResponse::Yield) {
         return Err(ServerError::YieldFailed(format!("旧 server 未受理交接：{response:?}")));
     }
-    // 关闭连接：旧 server 已受理，交接进入文件轮询阶段。
+    // 关闭连接：旧 server 已受理，交接进入退出等待阶段。
     drop(reader);
 
-    // 轮询 sidecar 消失：旧 server 的退出序列以 sidecar 最后删除收口。
-    let deadline = Instant::now() + Duration::from_secs(10);
-    while config.sidecar_path.exists() {
-        if Instant::now() >= deadline {
-            return Err(ServerError::YieldFailed("旧 server 10 秒内未退出，sidecar 文件未消失".into()));
-        }
-        std::thread::sleep(Duration::from_millis(50));
-    }
+    match &config.endpoint {
+        // Unix 臂：轮询 sidecar 消失（旧 server 的退出序列以 sidecar 最后
+        // 删除收口），消失后重新认领。
+        Endpoint::Unix(path) => {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while config.sidecar_path.exists() {
+                if Instant::now() >= deadline {
+                    return Err(ServerError::YieldFailed("旧 server 10 秒内未退出，sidecar 文件未消失".into()));
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
 
-    // 重新认领：sidecar 已消失，O_EXCL 创建应成功；其余态判交接失败。
-    match sidecar::claim_sidecar(&config.sidecar_path, socket_path, &config.version) {
-        ClaimResult::Registered => Ok(()),
-        other => Err(ServerError::YieldFailed(format!("交接后重新认领未通过：{other:?}"))),
+            // 重新认领：sidecar 已消失，O_EXCL 创建应成功；其余态判交接失败。
+            match sidecar::claim_sidecar(&config.sidecar_path, path, &config.version) {
+                ClaimResult::Registered => Ok(()),
+                other => Err(ServerError::YieldFailed(format!("交接后重新认领未通过：{other:?}"))),
+            }
+        }
+        // TCP 臂：无 sidecar 文件可轮询，以端口释放（连接被拒）为旧 server
+        // 退出信号，10 秒上限，不重认领。
+        Endpoint::Tcp(addr) => {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while TcpStream::connect(*addr).is_ok() {
+                if Instant::now() >= deadline {
+                    return Err(ServerError::YieldFailed("旧 server 10 秒内未退出，端口仍被占用".into()));
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            Ok(())
+        }
     }
 }
 
@@ -812,6 +833,7 @@ fn wait_in_flight_drained(in_flight: &AtomicUsize, timeout: Duration) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Write;
     use std::net::TcpStream;
     use std::thread::JoinHandle;
 
@@ -1347,6 +1369,30 @@ mod tests {
         assert!(elapsed >= Duration::from_secs(5), "应命中 5 秒读超时：{elapsed:?}");
         assert!(config.sidecar_path.exists(), "模拟 sidecar 文件不应被删除");
         assert!(unix_path(&config.endpoint).exists(), "模拟 socket 文件不应被删除");
+    }
+
+    /// 交接 TCP 臂：假 server 回 yield 确认帧后 drop 监听器（端口释放），
+    /// 交接以端口释放为退出信号返回成功（不重认领）。
+    #[test]
+    fn yield_takeover_tcp_arm() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("绑定假 server 应成功");
+        let addr = listener.local_addr().expect("取端口应成功");
+        std::thread::spawn(move || {
+            if let Ok((mut stream, _)) = listener.accept() {
+                let mut reader = FrameReader::new(io::BufReader::new(stream.try_clone().expect("克隆流应成功")));
+                let _ = reader.read_frame();
+                let frame = protocol::encode_response(&ServerResponse::Yield);
+                let _ = stream.write_all(frame.as_bytes());
+            }
+        });
+
+        let config = ServerConfig {
+            endpoint: Endpoint::Tcp(addr),
+            sidecar_path: std::env::temp_dir().join(format!("oxide_server_tcp_yield_{}_sidecar.json", std::process::id())),
+            worker_count: 2,
+            version: env!("CARGO_PKG_VERSION").to_string(),
+        };
+        yield_and_takeover(&config).expect("TCP 臂交接应成功");
     }
 
     /// --rm 加断开 EOF：eval 得完成值后客户端断开，server 在有界时间内

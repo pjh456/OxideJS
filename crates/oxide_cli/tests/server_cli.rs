@@ -16,6 +16,7 @@ use std::time::{Duration, Instant};
 use oxide_cli::server::client::send_control_request;
 use oxide_cli::server::protocol::{self, FrameReader, ServerRequest, ServerResponse};
 use oxide_cli::server::sidecar;
+use oxide_net::Endpoint;
 
 /// well-known 全局路径进程内互斥锁：同测试二进制内触碰全局路径的测试串行
 /// 执行（fcntl 锁以进程为单位，不覆盖同进程多线程）。
@@ -114,7 +115,7 @@ fn server_help_lists_subcommands() {
 fn server_log_no_file_exit_1() {
     let _guard = lock_well_known();
     assert!(
-        !sidecar::is_server_alive(&sidecar::well_known_socket_path()),
+        !sidecar::is_server_alive(&Endpoint::Unix(sidecar::well_known_socket_path())),
         "存活 server 占用 well-known 路径，测试不抢占"
     );
 
@@ -134,7 +135,7 @@ fn server_log_no_file_exit_1() {
 fn server_control_arms_no_server_exit_1() {
     let _guard = lock_well_known();
     assert!(
-        !sidecar::is_server_alive(&sidecar::well_known_socket_path()),
+        !sidecar::is_server_alive(&Endpoint::Unix(sidecar::well_known_socket_path())),
         "存活 server 占用 well-known 路径，测试不抢占"
     );
 
@@ -153,7 +154,7 @@ fn server_control_arms_no_server_exit_1() {
 fn server_forge_no_server_exit_1() {
     let _guard = lock_well_known();
     assert!(
-        !sidecar::is_server_alive(&sidecar::well_known_socket_path()),
+        !sidecar::is_server_alive(&Endpoint::Unix(sidecar::well_known_socket_path())),
         "存活 server 占用 well-known 路径，测试不抢占"
     );
 
@@ -168,7 +169,7 @@ fn server_forge_no_server_exit_1() {
 fn server_cleanup_exit_0() {
     let _guard = lock_well_known();
     assert!(
-        !sidecar::is_server_alive(&sidecar::well_known_socket_path()),
+        !sidecar::is_server_alive(&Endpoint::Unix(sidecar::well_known_socket_path())),
         "存活 server 占用 well-known 路径，测试不抢占"
     );
 
@@ -188,7 +189,7 @@ fn server_start_e2e() {
     let sidecar_path = sidecar::well_known_sidecar_path();
 
     // 探活先行：存活 server 占用全局路径时 panic，不抢占。
-    assert!(!sidecar::is_server_alive(&socket), "存活 server 占用 well-known 路径，测试不抢占");
+    assert!(!sidecar::is_server_alive(&Endpoint::Unix(socket.clone())), "存活 server 占用 well-known 路径，测试不抢占");
 
     // start 为守护形态：CLI 即刻返回，server 是脱离的孙进程；worker 数压到 2
     // 避免按宿主核数预热的成本。
@@ -237,7 +238,7 @@ fn server_start_when_running() {
     let sidecar_path = sidecar::well_known_sidecar_path();
 
     // 探活先行：存活 server 占用全局路径时 panic，不抢占。
-    assert!(!sidecar::is_server_alive(&socket), "存活 server 占用 well-known 路径，测试不抢占");
+    assert!(!sidecar::is_server_alive(&Endpoint::Unix(socket.clone())), "存活 server 占用 well-known 路径，测试不抢占");
 
     // 首次 start：CLI 即刻返回，server 是脱离的孙进程。
     let output = oxide(&["server", "start", "--workers", "2"]);
@@ -275,7 +276,7 @@ fn server_restart_e2e() {
     let sidecar_path = sidecar::well_known_sidecar_path();
 
     // 探活先行：存活 server 占用全局路径时 panic，不抢占。
-    assert!(!sidecar::is_server_alive(&socket), "存活 server 占用 well-known 路径，测试不抢占");
+    assert!(!sidecar::is_server_alive(&Endpoint::Unix(socket.clone())), "存活 server 占用 well-known 路径，测试不抢占");
 
     // 起子进程 A：worker 数压到 2，轮询 socket 文件出现（10 秒截止）判就绪。
     let mut child = Command::new(env!("CARGO_BIN_EXE_oxide"))
@@ -356,7 +357,7 @@ fn server_log_e2e() {
     let log_path = sidecar::well_known_log_path();
 
     // 探活先行：存活 server 占用全局路径时 panic，不抢占。
-    assert!(!sidecar::is_server_alive(&socket), "存活 server 占用 well-known 路径，测试不抢占");
+    assert!(!sidecar::is_server_alive(&Endpoint::Unix(socket.clone())), "存活 server 占用 well-known 路径，测试不抢占");
 
     // 删旧日志文件：server 即将全新启动，内容断言不受历史污染。
     let _ = std::fs::remove_file(&log_path);
@@ -436,7 +437,7 @@ fn server_forge_e2e() {
     let sidecar_path = sidecar::well_known_sidecar_path();
 
     // 探活先行：存活 server 占用全局路径时 panic，不抢占。
-    assert!(!sidecar::is_server_alive(&socket), "存活 server 占用 well-known 路径，测试不抢占");
+    assert!(!sidecar::is_server_alive(&Endpoint::Unix(socket.clone())), "存活 server 占用 well-known 路径，测试不抢占");
 
     // start 为守护形态：CLI 即刻返回，server 是脱离的孙进程；轮询 socket 文件
     // 出现判就绪（worker 数压到 2 避免按宿主核数预热的成本）。
@@ -495,7 +496,7 @@ fn server_watchdog_e2e() {
     let sidecar_path = sidecar::well_known_sidecar_path();
 
     // 探活先行：存活 server 占用全局路径时 panic，不抢占。
-    assert!(!sidecar::is_server_alive(&socket), "存活 server 占用 well-known 路径，测试不抢占");
+    assert!(!sidecar::is_server_alive(&Endpoint::Unix(socket.clone())), "存活 server 占用 well-known 路径，测试不抢占");
 
     // 拉起 watchdog 前台进程（stdout 管道捕获崩溃诊断输出）。
     let mut child = Command::new(env!("CARGO_BIN_EXE_oxide"))
@@ -598,7 +599,7 @@ fn server_watchdog_sigint_stops_server() {
     let sidecar_path = sidecar::well_known_sidecar_path();
 
     // 探活先行：存活 server 占用全局路径时 panic，不抢占。
-    assert!(!sidecar::is_server_alive(&socket), "存活 server 占用 well-known 路径，测试不抢占");
+    assert!(!sidecar::is_server_alive(&Endpoint::Unix(socket.clone())), "存活 server 占用 well-known 路径，测试不抢占");
 
     // 拉起 watchdog 前台进程。
     let mut child = Command::new(env!("CARGO_BIN_EXE_oxide"))

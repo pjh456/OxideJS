@@ -13,12 +13,14 @@
 
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
+use std::net::TcpStream;
 use std::os::unix::io::AsRawFd;
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use oxide_net::Endpoint;
 use serde::{Deserialize, Serialize};
 
 /// server 身份快照：单行 JSON sidecar 文件，启动时写入一次。
@@ -174,12 +176,15 @@ pub fn read_identity(path: &Path) -> Option<ServerIdentity> {
     serde_json::from_str(&text).ok()
 }
 
-/// socket 探活：连接成功即存在存活 server。
+/// endpoint 探活：连接成功即存在存活 server，两臂按形态分支。
 ///
 /// 内核只把连接完成给存活监听者，该信号不依赖 PID、不受 PID 复用影响，
 /// 是注册判定的唯一裁决。
-pub fn is_server_alive(socket_path: &Path) -> bool {
-    UnixStream::connect(socket_path).is_ok()
+pub fn is_server_alive(endpoint: &Endpoint) -> bool {
+    match endpoint {
+        Endpoint::Unix(path) => UnixStream::connect(path).is_ok(),
+        Endpoint::Tcp(addr) => TcpStream::connect(*addr).is_ok(),
+    }
 }
 
 /// PID 探活：`kill -0` 退出码 0 即进程存在。
@@ -254,7 +259,7 @@ pub fn claim_sidecar(sidecar_path: &Path, socket_path: &Path, new_version: &str)
     }
 
     // socket 探活是存活的唯一事实源：连接成功即有存活 server。
-    if is_server_alive(socket_path) {
+    if is_server_alive(&Endpoint::Unix(socket_path.to_path_buf())) {
         // 读回旧 sidecar 与本进程版本比对：匹配拒绝启动，不匹配或不可读
         // 交调用方强制交接。
         match read_identity(sidecar_path) {
