@@ -83,10 +83,12 @@ pub fn wait_server_ready(deadline: Duration) -> Result<(), String> {
 /// - 每轮建立并关闭一条连接（Unix socket 或 TCP）。
 pub fn wait_server_ready_remote(endpoint: &Endpoint, token: &str, deadline: Duration) -> Result<(), String> {
     wait_ready_until(
-        || matches!(
-            send_control_request_at(endpoint, token, &ServerRequest::Health),
-            Ok(ServerResponse::Health { healthy: true })
-        ),
+        || {
+            matches!(
+                send_control_request_at(endpoint, token, &ServerRequest::Health),
+                Ok(ServerResponse::Health { healthy: true })
+            )
+        },
         deadline,
     )
 }

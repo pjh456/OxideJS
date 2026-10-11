@@ -96,7 +96,9 @@ pub fn send_control_request_from(sidecar_path: &Path, request: &ServerRequest) -
 ///
 /// # 副作用
 /// - 建立并关闭一条连接（Unix socket 或 TCP）。
-pub fn send_control_request_at(endpoint: &Endpoint, token: &str, request: &ServerRequest) -> Result<ServerResponse, ClientError> {
+pub fn send_control_request_at(
+    endpoint: &Endpoint, token: &str, request: &ServerRequest,
+) -> Result<ServerResponse, ClientError> {
     // 连接：5 秒超时是安全网，本地连接立即完成或立即失败。
     let stream = connect_with_timeout(endpoint, CONNECT_TIMEOUT)?;
 
