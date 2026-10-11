@@ -84,10 +84,7 @@ fn control_client_end_to_end() {
     let response = send_control_request_from(&config.sidecar_path, &ServerRequest::Info).expect("信息请求应成功");
     match response {
         ServerResponse::Info {
-            socket_path,
-            pid,
-            listen_addr,
-            ..
+            socket_path, pid, listen_addr, ..
         } => {
             assert_eq!(socket_path, config.endpoint.describe(), "socket 路径应与配置一致");
             assert_eq!(listen_addr, config.endpoint.describe(), "监听地址应与配置一致（Unix 臂）");
@@ -159,10 +156,7 @@ fn control_client_tcp_arm_end_to_end() {
     let response = send_control_request_from(&config.sidecar_path, &ServerRequest::Info).expect("信息请求应成功");
     match response {
         ServerResponse::Info {
-            socket_path,
-            pid,
-            listen_addr,
-            ..
+            socket_path, pid, listen_addr, ..
         } => {
             assert_eq!(socket_path, config.endpoint.describe(), "endpoint 值应与配置一致");
             assert_eq!(listen_addr, config.endpoint.describe(), "监听地址应与配置一致（TCP 臂）");
