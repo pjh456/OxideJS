@@ -211,7 +211,10 @@ pub fn cleanup_with_wait(sidecar_path: &Path, endpoint: &Endpoint, kill_wait: Du
 /// # 注意事项
 /// - CLI 分派臂与启动 liveness 扫描的稳定入口。
 pub fn well_known_cleanup() -> CleanupOutcome {
-    cleanup(&sidecar::well_known_sidecar_path(), &sidecar::well_known_endpoint())
+    cleanup(
+        &sidecar::well_known_sidecar_path(),
+        &sidecar::well_known_endpoint(sidecar::WELL_KNOWN_BIND_ADDR),
+    )
 }
 
 /// 发送 SIGTERM：`kill -TERM`，与 `pid_alive` 的 `kill -0` 同一 `Command` 路径。
@@ -302,6 +305,7 @@ mod tests {
             version: "0.0.0".into(),
             started_at: 0,
             starttime,
+            port: 0,
         }
     }
 

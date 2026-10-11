@@ -258,6 +258,7 @@ mod tests {
             version: "0.0.0".into(),
             started_at: 0,
             starttime,
+            port: 0,
         }
     }
 

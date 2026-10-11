@@ -4,6 +4,7 @@
 //! 进程级一次性的，信号投递无歧义，测试确定。SIGTERM 路径见
 //! `server_signal_term.rs`（同型，独立进程）。
 
+use std::net::{IpAddr, Ipv4Addr};
 use std::process::Command;
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -21,6 +22,7 @@ fn unique_paths(test_name: &str) -> ServerConfig {
         sidecar_path: dir.join("sidecar.json"),
         worker_count: 2,
         version: env!("CARGO_PKG_VERSION").to_string(),
+        bind_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
     }
 }
 

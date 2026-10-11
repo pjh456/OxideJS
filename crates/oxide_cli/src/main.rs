@@ -2,7 +2,7 @@
 #![allow(dead_code)]
 
 use std::fs;
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::net::{IpAddr, SocketAddr};
 use std::process::ExitCode;
 use std::time::{Duration, Instant};
 
@@ -129,6 +129,9 @@ enum ServerCommands {
         /// well-known 端口。
         #[arg(long)]
         port: Option<u16>,
+        /// TCP 绑定地址；缺省 loopback（127.0.0.1），两臂（--rm 与持久）共享。
+        #[arg(long, default_value = "127.0.0.1")]
+        host: IpAddr,
         /// 前台形态：当前进程直接运行持久 server（守护形态 spawn 的子进程用，
         /// 不向用户暴露）。
         #[arg(long, hide = true)]
@@ -331,6 +334,7 @@ fn server_command(command: ServerCommands) -> ExitCode {
             idle_timeout,
             workers,
             port,
+            host,
             foreground,
         } => {
             if rm {
@@ -341,17 +345,18 @@ fn server_command(command: ServerCommands) -> ExitCode {
                 if let Some(n) = workers {
                     config.worker_count = n as usize;
                 }
-                // 显式端口映射 TCP 端点（回环地址硬编码）：0 为动态端口，
+                // 显式端口映射 TCP 端点（绑定地址取 --host）：0 为动态端口，
                 // 由操作系统在绑定后分配空闲端口；不带端口旗标时保持 Unix
                 // 缺省。
                 if let Some(port) = port {
-                    config.endpoint = Endpoint::Tcp(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port));
+                    config.endpoint = Endpoint::Tcp(SocketAddr::new(host, port));
                 }
                 start_result(run_server_rm(&config))
             } else if foreground {
                 let port = port.unwrap_or(sidecar::WELL_KNOWN_PORT);
                 let mut config = ServerConfig {
-                    endpoint: Endpoint::Tcp(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port)),
+                    endpoint: Endpoint::Tcp(SocketAddr::new(host, port)),
+                    bind_addr: host,
                     ..ServerConfig::well_known()
                 };
                 if let Some(n) = workers {
@@ -359,7 +364,7 @@ fn server_command(command: ServerCommands) -> ExitCode {
                 }
                 start_result(run_server(&config))
             } else {
-                start_daemon(workers, port.unwrap_or(sidecar::WELL_KNOWN_PORT))
+                start_daemon(workers, host, port.unwrap_or(sidecar::WELL_KNOWN_PORT))
             }
         }
         ServerCommands::Cleanup => match well_known_cleanup() {
@@ -491,7 +496,7 @@ fn control_arm(request: &ServerRequest, render: fn(&ServerResponse) -> Option<St
 }
 
 /// start 持久形态：spawn 脱离的前台 server 子进程（`server start
-/// --foreground`），就绪探测通过后打印返回。
+/// --foreground --host H --port N`），就绪探测通过后打印返回。
 ///
 /// # 步骤
 /// 1. spawn 脱离的前台 server 子进程（标准流全空、不等待）；spawn 失败以
@@ -508,9 +513,9 @@ fn control_arm(request: &ServerRequest, render: fn(&ServerResponse) -> Option<St
 ///
 /// # 副作用
 /// - server 为脱离进程，CLI 退出后由 init 收领继续运行。
-fn start_daemon(workers: Option<u32>, port: u16) -> ExitCode {
+fn start_daemon(workers: Option<u32>, host: IpAddr, port: u16) -> ExitCode {
     // spawn：脱离子进程，标准流全空，不等待。
-    if let Err(err) = spawn::spawn_detached_server(workers, port) {
+    if let Err(err) = spawn::spawn_detached_server(workers, host, port) {
         eprintln!("{}", Red.paint(format!("spawn server 进程失败：{err}")));
         return ExitCode::FAILURE;
     }
@@ -563,8 +568,8 @@ fn restart_command() -> ExitCode {
     }
 
     // 拉起新 server：脱离进程，标准流全空，不等待。新 server 按缺省配置拉起
-    // （well-known 端口，不继承旧旗标）。
-    if let Err(err) = spawn::spawn_detached_server(None, sidecar::WELL_KNOWN_PORT) {
+    // （well-known 绑定地址与端口，不继承旧旗标）。
+    if let Err(err) = spawn::spawn_detached_server(None, sidecar::WELL_KNOWN_BIND_ADDR, sidecar::WELL_KNOWN_PORT) {
         eprintln!("{}", Red.paint(format!("拉起新 server 失败：{err}")));
         return ExitCode::FAILURE;
     }
@@ -854,4 +859,42 @@ fn not_implemented(command: &str) -> ExitCode {
     eprintln!("{}", Yellow.paint(format!("'{command}' is not yet implemented")));
     // 2 = 未实现，与 0=成功、1=运行失败区分，供脚本与 CI 识别。
     ExitCode::from(2)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::net::{IpAddr, Ipv4Addr};
+
+    /// 取解析结果的 start 臂 host 字段（两臂共享的 --host 旗标）。
+    fn parsed_host(args: &[&str]) -> IpAddr {
+        let cli = Cli::try_parse_from(args).expect("解析应成功");
+        let Some(Commands::Server { command }) = cli.command else {
+            panic!("应解析出 server 臂");
+        };
+        let ServerCommands::Start { host, .. } = command else {
+            panic!("应解析出 start 臂");
+        };
+        host
+    }
+
+    /// --host 缺省取 loopback：不带旗标解析得 127.0.0.1，显式旗标原样解析，
+    /// 非法取值走 clap 错误。
+    #[test]
+    fn start_host_flag_parses() {
+        assert_eq!(
+            parsed_host(&["oxide", "server", "start"]),
+            IpAddr::V4(Ipv4Addr::LOCALHOST),
+            "缺省 host 应为 loopback"
+        );
+        assert_eq!(
+            parsed_host(&["oxide", "server", "start", "--host", "0.0.0.0"]),
+            "0.0.0.0".parse::<IpAddr>().unwrap(),
+            "显式 host 应原样解析"
+        );
+        assert!(
+            Cli::try_parse_from(["oxide", "server", "start", "--host", "not-an-ip"]).is_err(),
+            "非法 host 应走 clap 错误"
+        );
+    }
 }

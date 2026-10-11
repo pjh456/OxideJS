@@ -142,7 +142,7 @@ fn server_help_lists_subcommands() {
 fn server_log_no_file_exit_1() {
     let _guard = lock_well_known();
     assert!(
-        !sidecar::is_server_alive(&sidecar::well_known_endpoint()),
+        !sidecar::is_server_alive(&sidecar::well_known_endpoint(sidecar::WELL_KNOWN_BIND_ADDR)),
         "存活 server 占用 well-known 路径，测试不抢占"
     );
 
@@ -162,7 +162,7 @@ fn server_log_no_file_exit_1() {
 fn server_control_arms_no_server_exit_1() {
     let _guard = lock_well_known();
     assert!(
-        !sidecar::is_server_alive(&sidecar::well_known_endpoint()),
+        !sidecar::is_server_alive(&sidecar::well_known_endpoint(sidecar::WELL_KNOWN_BIND_ADDR)),
         "存活 server 占用 well-known 路径，测试不抢占"
     );
 
@@ -181,7 +181,7 @@ fn server_control_arms_no_server_exit_1() {
 fn server_forge_no_server_exit_1() {
     let _guard = lock_well_known();
     assert!(
-        !sidecar::is_server_alive(&sidecar::well_known_endpoint()),
+        !sidecar::is_server_alive(&sidecar::well_known_endpoint(sidecar::WELL_KNOWN_BIND_ADDR)),
         "存活 server 占用 well-known 路径，测试不抢占"
     );
 
@@ -196,7 +196,7 @@ fn server_forge_no_server_exit_1() {
 fn server_cleanup_exit_0() {
     let _guard = lock_well_known();
     assert!(
-        !sidecar::is_server_alive(&sidecar::well_known_endpoint()),
+        !sidecar::is_server_alive(&sidecar::well_known_endpoint(sidecar::WELL_KNOWN_BIND_ADDR)),
         "存活 server 占用 well-known 路径，测试不抢占"
     );
 
@@ -216,7 +216,7 @@ fn server_start_e2e() {
 
     // 探活先行：存活 server 占用全局路径时 panic，不抢占。
     assert!(
-        !sidecar::is_server_alive(&sidecar::well_known_endpoint()),
+        !sidecar::is_server_alive(&sidecar::well_known_endpoint(sidecar::WELL_KNOWN_BIND_ADDR)),
         "存活 server 占用 well-known 路径，测试不抢占"
     );
 
@@ -266,7 +266,7 @@ fn server_start_when_running() {
 
     // 探活先行：存活 server 占用全局路径时 panic，不抢占。
     assert!(
-        !sidecar::is_server_alive(&sidecar::well_known_endpoint()),
+        !sidecar::is_server_alive(&sidecar::well_known_endpoint(sidecar::WELL_KNOWN_BIND_ADDR)),
         "存活 server 占用 well-known 路径，测试不抢占"
     );
 
@@ -305,7 +305,7 @@ fn server_restart_e2e() {
 
     // 探活先行：存活 server 占用全局路径时 panic，不抢占。
     assert!(
-        !sidecar::is_server_alive(&sidecar::well_known_endpoint()),
+        !sidecar::is_server_alive(&sidecar::well_known_endpoint(sidecar::WELL_KNOWN_BIND_ADDR)),
         "存活 server 占用 well-known 路径，测试不抢占"
     );
 
@@ -387,7 +387,7 @@ fn server_log_e2e() {
 
     // 探活先行：存活 server 占用全局路径时 panic，不抢占。
     assert!(
-        !sidecar::is_server_alive(&sidecar::well_known_endpoint()),
+        !sidecar::is_server_alive(&sidecar::well_known_endpoint(sidecar::WELL_KNOWN_BIND_ADDR)),
         "存活 server 占用 well-known 路径，测试不抢占"
     );
 
@@ -469,7 +469,7 @@ fn server_forge_e2e() {
 
     // 探活先行：存活 server 占用全局路径时 panic，不抢占。
     assert!(
-        !sidecar::is_server_alive(&sidecar::well_known_endpoint()),
+        !sidecar::is_server_alive(&sidecar::well_known_endpoint(sidecar::WELL_KNOWN_BIND_ADDR)),
         "存活 server 占用 well-known 路径，测试不抢占"
     );
 
@@ -529,7 +529,7 @@ fn server_watchdog_e2e() {
 
     // 探活先行：存活 server 占用全局路径时 panic，不抢占。
     assert!(
-        !sidecar::is_server_alive(&sidecar::well_known_endpoint()),
+        !sidecar::is_server_alive(&sidecar::well_known_endpoint(sidecar::WELL_KNOWN_BIND_ADDR)),
         "存活 server 占用 well-known 路径，测试不抢占"
     );
 
@@ -634,7 +634,7 @@ fn server_watchdog_sigint_stops_server() {
 
     // 探活先行：存活 server 占用全局路径时 panic，不抢占。
     assert!(
-        !sidecar::is_server_alive(&sidecar::well_known_endpoint()),
+        !sidecar::is_server_alive(&sidecar::well_known_endpoint(sidecar::WELL_KNOWN_BIND_ADDR)),
         "存活 server 占用 well-known 路径，测试不抢占"
     );
 
@@ -682,7 +682,7 @@ fn server_start_port_e2e() {
 
     // 探活先行：存活 server 占用全局路径时 panic，不抢占。
     assert!(
-        !sidecar::is_server_alive(&sidecar::well_known_endpoint()),
+        !sidecar::is_server_alive(&sidecar::well_known_endpoint(sidecar::WELL_KNOWN_BIND_ADDR)),
         "存活 server 占用 well-known 路径，测试不抢占"
     );
 
@@ -761,7 +761,7 @@ fn server_start_port_multi_client() {
 
     // 探活先行：存活 server 占用全局路径时 panic，不抢占。
     assert!(
-        !sidecar::is_server_alive(&sidecar::well_known_endpoint()),
+        !sidecar::is_server_alive(&sidecar::well_known_endpoint(sidecar::WELL_KNOWN_BIND_ADDR)),
         "存活 server 占用 well-known 路径，测试不抢占"
     );
 
@@ -824,7 +824,7 @@ fn server_start_port_second_instance_refused() {
 
     // 探活先行：存活 server 占用全局路径时 panic，不抢占。
     assert!(
-        !sidecar::is_server_alive(&sidecar::well_known_endpoint()),
+        !sidecar::is_server_alive(&sidecar::well_known_endpoint(sidecar::WELL_KNOWN_BIND_ADDR)),
         "存活 server 占用 well-known 路径，测试不抢占"
     );
 

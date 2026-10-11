@@ -5,6 +5,7 @@
 //! 全局单例。
 
 use std::fs;
+use std::net::{IpAddr, Ipv4Addr};
 use std::time::{Duration, Instant};
 
 use oxide_cli::server::client::send_control_request_from;
@@ -21,6 +22,7 @@ fn test_config(test_name: &str) -> ServerConfig {
         sidecar_path: dir.join("sidecar.json"),
         worker_count: 2,
         version: env!("CARGO_PKG_VERSION").to_string(),
+        bind_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
     }
 }
 
@@ -117,6 +119,7 @@ fn control_client_tcp_arm_end_to_end() {
         sidecar_path: dir.join("sidecar.json"),
         worker_count: 2,
         version: env!("CARGO_PKG_VERSION").to_string(),
+        bind_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
     };
 
     // 后台线程起真实 run_server，等 sidecar 出现（TCP 臂无 socket 文件，

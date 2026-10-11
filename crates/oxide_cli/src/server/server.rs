@@ -21,7 +21,7 @@
 
 use std::fs;
 use std::io;
-use std::net::{TcpListener, TcpStream};
+use std::net::{IpAddr, TcpListener, TcpStream};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -86,17 +86,21 @@ pub struct ServerConfig {
     pub worker_count: usize,
     /// 本进程构建版本，版本比对与 sidecar 写入用；生产默认取构建期版本。
     pub version: String,
+    /// TCP 绑定地址（loopback 缺省）；端点由 CLI 层按本字段加端口构造，
+    /// Unix 臂不受影响。
+    pub bind_addr: IpAddr,
 }
 
 impl ServerConfig {
-    /// 生产默认配置：endpoint 取 well-known TCP 端口，sidecar 取 well-known
-    /// 位置，worker 数取宿主核数，版本取构建期版本。
+    /// 生产默认配置：endpoint 取 well-known TCP 端口（loopback 绑定地址），
+    /// sidecar 取 well-known 位置，worker 数取宿主核数，版本取构建期版本。
     pub fn well_known() -> Self {
         ServerConfig {
-            endpoint: sidecar::well_known_endpoint(),
+            endpoint: sidecar::well_known_endpoint(sidecar::WELL_KNOWN_BIND_ADDR),
             sidecar_path: sidecar::well_known_sidecar_path(),
             worker_count: default_worker_count(),
             version: env!("CARGO_PKG_VERSION").to_string(),
+            bind_addr: sidecar::WELL_KNOWN_BIND_ADDR,
         }
     }
 }
@@ -842,6 +846,7 @@ mod tests {
             sidecar_path: dir.join("sidecar.json"),
             worker_count: 2,
             version: env!("CARGO_PKG_VERSION").to_string(),
+            bind_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
         }
     }
 
@@ -1419,6 +1424,7 @@ mod tests {
                 .join(format!("oxide_server_tcp_yield_{}_sidecar.json", std::process::id())),
             worker_count: 2,
             version: env!("CARGO_PKG_VERSION").to_string(),
+            bind_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
         };
         yield_and_takeover(&config).expect("TCP 臂交接应成功");
     }
