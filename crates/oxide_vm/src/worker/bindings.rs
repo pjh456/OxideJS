@@ -36,6 +36,16 @@ thread_local! {
     static WORKER_CLOSE_REQUESTED: Cell<bool> = const { Cell::new(false) };
 }
 
+// worker 名称（构造器 options.name，worker 线程独占，主 realm 不置位）。
+thread_local! {
+    static WORKER_NAME: RefCell<Option<String>> = const { RefCell::new(None) };
+}
+
+// worker 位置（构造器 url 字符串，worker 线程独占，主 realm 不置位）。
+thread_local! {
+    static WORKER_LOCATION: RefCell<Option<String>> = const { RefCell::new(None) };
+}
+
 /// 注入 worker → 主线程输出通道（`worker_event_loop` 建 Vm 后调用）。
 ///
 /// # 副作用
@@ -57,17 +67,34 @@ pub(crate) fn worker_close_requested() -> bool {
     WORKER_CLOSE_REQUESTED.with(|flag| flag.get())
 }
 
-/// `new Worker(url)`：读 url 文件、派生 worker、建 Worker 对象。
+/// 注入 worker 名称与位置（`worker_event_loop` 建 Vm 前调用）。
+///
+/// # 副作用
+/// - 覆盖本线程的 `WORKER_NAME` 与 `WORKER_LOCATION`（worker 线程内恰好一次）。
+/// - 建 Vm 前调用：`bind_worker` 据本线程是否置位区分 worker realm 与主 realm。
+pub(crate) fn set_worker_identity(name: String, location: String) {
+    WORKER_NAME.with(|slot| *slot.borrow_mut() = Some(name));
+    WORKER_LOCATION.with(|slot| *slot.borrow_mut() = Some(location));
+}
+
+/// 查询当前线程是否 worker 线程（绑定层区分 worker realm 与主 realm）。
+pub(crate) fn worker_thread() -> bool {
+    WORKER_NAME.with(|slot| slot.borrow().is_some())
+}
+
+/// `new Worker(url, options)`：读 url 文件与 options.name、派生 worker、建 Worker 对象。
 ///
 /// # 步骤
 /// 1. 构造形态校验（HTML 规范只有 `[[Construct]]`，非构造调用抛 TypeError）。
 /// 2. 读 `args[1]` 为 url 字符串（非字符串抛 TypeError）。
-/// 3. 主线程侧读 url 文件（`std::fs::read_to_string`），失败抛 TypeError。
-/// 4. `vm.spawn_worker(source)` 派生 worker，得 worker 编号。
-/// 5. 建 Worker 对象：PLAIN 对象（`[[Prototype]]` → Worker.prototype）加非枚举
+/// 3. 读 `args[2]` 为 options 对象（缺省 undefined）；是对象时经 `ordinary_get`
+///    读 `name` 属性（getter 副作用与异常原值传播），是字符串取之、非字符串取空串。
+/// 4. 主线程侧读 url 文件（`std::fs::read_to_string`），失败抛 TypeError。
+/// 5. `vm.spawn_worker(source, name, url)` 派生 worker，得 worker 编号。
+/// 6. 建 Worker 对象：PLAIN 对象（`[[Prototype]]` → Worker.prototype）加非枚举
 ///    `workerId` 数据属性（值为 worker 编号）。`onmessage`/`onerror`/
 ///    `onmessageerror` 不在对象上建自有属性（改原型访问器属性）。无 native 盒、无 GC 家族。
-/// 6. 返回 Worker 对象。
+/// 7. 返回 Worker 对象。
 ///
 /// # 边界与前提
 /// - `url` 是 worker 脚本的文件路径（主线程侧读取）。
@@ -89,6 +116,24 @@ pub(crate) fn worker_constructor(vm: &mut Vm, args: &[u8]) -> NativeResult {
         None => return NativeResult::Err(oxide_builtins::error::create_type_error(vm, "Worker url must be a string")),
     };
 
+    // 读 options 对象（args[2]，缺省 undefined）。
+    let options_val = if args.len() > 2 { vm.reg(args[2]) } else { JsValue::undefined() };
+    // name：options 是对象时经 ordinary_get 读 name 属性（getter 副作用与异常
+    // 原值传播），是字符串取之，非字符串或缺省取空串。
+    let name = if options_val.is_object() {
+        let opts_ptr = options_val.as_js_object_ptr();
+        // SAFETY: opts_ptr 是 options 对象，native 调用期间存活。
+        let opts_obj = unsafe { &*opts_ptr };
+        let si_name = vm.perm_intern("name");
+        let name_val = match vm.ordinary_get(opts_obj, si_name, options_val) {
+            Ok(v) => v,
+            Err(e) => return NativeResult::Err(oxide_builtins::error::create_type_error(vm, &e)),
+        };
+        vm.lookup_str(name_val).unwrap_or_default()
+    } else {
+        String::new()
+    };
+
     // 主线程侧读 url 文件（worker 脚本源码）。
     let source = match std::fs::read_to_string(&url) {
         Ok(s) => s,
@@ -100,8 +145,8 @@ pub(crate) fn worker_constructor(vm: &mut Vm, args: &[u8]) -> NativeResult {
         }
     };
 
-    // 派生 worker（建 WorkerHandle 并 spawn OS 线程）。
-    let id = match vm.spawn_worker(&source) {
+    // 派生 worker（建 WorkerHandle 并 spawn OS 线程），传 name 与 url（location）。
+    let id = match vm.spawn_worker(&source, &name, &url) {
         Ok(id) => id,
         Err(e) => return NativeResult::Err(oxide_builtins::error::create_type_error(vm, &e)),
     };
@@ -275,16 +320,16 @@ pub(crate) fn self_close(_vm: &mut Vm, _args: &[u8]) -> NativeResult {
     NativeResult::Ok(JsValue::undefined())
 }
 
-/// `self.name` getter（worker 侧）：返空串（首版占位，规范面对齐留后续）。
-#[expect(dead_code)]
+/// `self.name` getter（worker 侧）：读本线程 worker 名称（未置位时返空串）。
 pub(crate) fn self_name(vm: &mut Vm, _args: &[u8]) -> NativeResult {
-    NativeResult::Ok(vm.new_string(""))
+    let name = WORKER_NAME.with(|slot| slot.borrow().as_deref().unwrap_or("").to_string());
+    NativeResult::Ok(vm.new_string(&name))
 }
 
-/// `self.location` getter（worker 侧）：返空串（首版占位，规范面对齐留后续）。
-#[expect(dead_code)]
+/// `self.location` getter（worker 侧）：读本线程 worker 位置（未置位时返空串）。
 pub(crate) fn self_location(vm: &mut Vm, _args: &[u8]) -> NativeResult {
-    NativeResult::Ok(vm.new_string(""))
+    let location = WORKER_LOCATION.with(|slot| slot.borrow().as_deref().unwrap_or("").to_string());
+    NativeResult::Ok(vm.new_string(&location))
 }
 
 /// 从当前函数对象的 `name` 读事件类型（`get onmessage` / `set onmessage` →

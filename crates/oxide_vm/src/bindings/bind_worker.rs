@@ -9,10 +9,11 @@
 use std::sync::Arc;
 
 use crate::bind_constructor;
-use crate::bindings::{apply_binding_table, bind_accessor_getset, configure_native_constructor};
+use crate::bindings::{apply_binding_table, bind_accessor_getset, bind_accessor_getter, configure_native_constructor};
 use oxide_kernel::kernel::{KernelCore, KernelSession};
-use oxide_kernel::shape_forge::EMPTY_SHAPE_ID;
+use oxide_kernel::shape_forge::{ShapeForge, EMPTY_SHAPE_ID};
 use oxide_types::object::{JsObject, PropAttributes};
+use oxide_types::string_forge::PermInterner;
 use oxide_types::value::JsValue;
 
 /// 把 Worker 构造器（Box 分配）与 self 面方法绑定到 global。
@@ -222,19 +223,42 @@ pub fn bind_worker(core: &Arc<KernelCore>, session: &KernelSession, global: &mut
             );
         }
     }
-    // name / location getter（幂等守卫）。
-    // let si_name_global = sf.intern("name").0;
-    // if sh.lookup_position(global.shape_id(), si_name_global).is_none() {
-    //     bind_accessor_getter(core, session, global, "name", crate::worker::bindings::self_name as *const ());
-    // }
-    // let si_location = sf.intern("location").0;
-    // if sh.lookup_position(global.shape_id(), si_location).is_none() {
-    //     bind_accessor_getter(
-    //         core,
-    //         session,
-    //         global,
-    //         "location",
-    //         crate::worker::bindings::self_location as *const (),
-    //     );
-    // }
+    // name / location：worker realm 绑 getter（读 thread-local 真值，规范中
+    // WorkerGlobalScope.name 为只读访问器）；主 realm 绑空串数据属性（与浏览器
+    // window.name 同一形状的无害占位，不挡全局 var name 赋值）。幂等守卫。
+    let worker_realm = crate::worker::bindings::worker_thread();
+    let si_name_global = sf.intern("name").0;
+    if sh.lookup_position(global.shape_id(), si_name_global).is_none() {
+        if worker_realm {
+            bind_accessor_getter(core, session, global, "name", crate::worker::bindings::self_name as *const ());
+        } else {
+            bind_global_empty_string_property(global, sf, sh, si_name_global);
+        }
+    }
+    let si_location = sf.intern("location").0;
+    if sh.lookup_position(global.shape_id(), si_location).is_none() {
+        if worker_realm {
+            bind_accessor_getter(
+                core,
+                session,
+                global,
+                "location",
+                crate::worker::bindings::self_location as *const (),
+            );
+        } else {
+            bind_global_empty_string_property(global, sf, sh, si_location);
+        }
+    }
+}
+
+/// 在 global 上绑一个空串数据属性（主 realm 的 name / location 占位）。
+fn bind_global_empty_string_property(global: &mut JsObject, sf: &PermInterner, sh: &ShapeForge, si: u32) {
+    let shape = sh.make_shape(global.shape_id(), si);
+    global.set_shape_id(shape);
+    global
+        .ensure_hash_props()
+        .push(JsValue::perm_string(sf.string_ptr(sf.intern("").0)));
+    let pos = global.hash_props_vec().map_or(0, |v| v.len() as u32).saturating_sub(1);
+    global.set_data_meta(pos, PropAttributes::new(true, false, true));
+    global.bump_generation();
 }

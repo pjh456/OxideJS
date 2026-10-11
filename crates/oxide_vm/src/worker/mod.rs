@@ -81,23 +81,31 @@ pub struct WorkerHandle {
 ///
 /// # 步骤
 /// 1. 经 `Vm::with_kernel_core` 建专属 Vm（新 realm）并注入编译服务。
-/// 2. 编译 worker 脚本（worker 的程序）；失败则经 worker → 主线程通道错误面上报
+/// 2. 注入 worker → 主线程输出通道与名称、位置（thread-local，模式同 `WORKER_OUT_TX`）。
+/// 3. 编译 worker 脚本（worker 的程序）；失败则经 worker → 主线程通道错误面上报
 ///    错误串，不 panic，worker 继续事件循环（可被干净终止）。
-/// 3. 编译成功则运行脚本（worker 的程序）；运行期未捕获异常同样经错误面上报。
-/// 4. 循环 `recv_timeout(100ms)`：处理 `Message` / `Error` / `Terminate` / 超时。
+/// 4. 编译成功则运行脚本（worker 的程序）；运行期未捕获异常同样经错误面上报。
+/// 5. 循环 `recv_timeout(100ms)`：处理 `Message` / `Error` / `Terminate` / 超时。
 ///
 /// # 边界与前提
 /// - `script` 是 worker 的程序源码（普通脚本），编译与运行均在 worker 线程内完成。
+/// - `name` / `location` 是 worker 的名称与位置（构造器 options.name 与 url），
+///   置入 thread-local 供 `self.name` / `self.location` getter 读取。
 /// - 超时后查 `rx.is_disconnected()`：主线程全部发送端 drop 即断开，worker 退出。
 ///
 /// # 副作用
 /// - 创建并 drop 一个 Vm（退出时 drop 触发 `Drop for Vm` → `Drop for Realm`）。
+/// - 置位本线程的 `WORKER_NAME` / `WORKER_LOCATION` thread-local（模式同
+///   `WORKER_OUT_TX`，线程退出随 thread-local 释放）。
 /// - 每条 `Message` 经 rehydrate → onmessage 交付 → drain_microtasks 处理；
 ///   编译或执行失败经 `WorkerOutMail::Error` 上报主线程（主线程交付 onerror）。
 fn worker_event_loop(
     core: Arc<KernelCore>, compiler: Arc<dyn CompilerService>, script: String, rx: Receiver<WorkerMail>,
-    out_tx: Sender<WorkerOutMail>,
+    out_tx: Sender<WorkerOutMail>, name: String, location: String,
 ) {
+    // 注入 worker 名称与位置（建 Vm 前：bind_worker 据本线程 thread-local 区分
+    // worker realm 与主 realm；self.name / self.location 经 thread-local 读取）。
+    bindings::set_worker_identity(name, location);
     let mut vm = Vm::with_kernel_core(core);
     vm.set_compiler_service(Arc::clone(&compiler));
     // 注入 worker → 主线程输出通道（self.postMessage 经 thread-local 发回主线程）。
@@ -157,12 +165,15 @@ impl Vm {
     /// # 步骤
     /// 1. 分配 worker 编号（`worker_next_id` 自增）。
     /// 2. 建主线程 → worker 与 worker → 主线程两条通道。
-    /// 3. spawn 线程，线程内建专属 Vm 并进入事件循环。
+    /// 3. spawn 线程，线程内建专属 Vm 并进入事件循环（`name` / `location`
+    ///    物化为 `String` 随线程闭包传入，置入 worker 线程 thread-local）。
     /// 4. 把 `WorkerHandle` 登记进 `worker_registry`。
     ///
     /// # 边界与前提
     /// - `script` 是 worker 的程序源码（普通脚本）；编译在 worker 线程内完成，
     ///   编译失败经 worker → 主线程通道上报，不 panic。
+    /// - `name` 是 worker 名称（构造器 options.name，缺省空串）；`location`
+    ///   是 worker 位置（构造器 url 字符串），供 `self.name` / `self.location` 读取。
     /// - realm 计数受 512 上界约束（每 worker 一个 realm），worker 数须远低于 512。
     ///
     /// # 返回值
@@ -170,7 +181,7 @@ impl Vm {
     ///
     /// # 副作用
     /// - 派生一个 OS 线程；登记一个 `WorkerHandle`。
-    pub fn spawn_worker(&mut self, script: &str) -> Result<u64, String> {
+    pub fn spawn_worker(&mut self, script: &str, name: &str, location: &str) -> Result<u64, String> {
         let id = self.worker_next_id;
         self.worker_next_id += 1;
 
@@ -180,9 +191,11 @@ impl Vm {
         let core = Arc::clone(&self.kernel_core);
         let compiler = Arc::clone(&self.compiler);
         let script_owned = script.to_string();
+        let name_owned = name.to_string();
+        let location_owned = location.to_string();
 
         let handle = std::thread::spawn(move || {
-            worker_event_loop(core, compiler, script_owned, rx, out_tx);
+            worker_event_loop(core, compiler, script_owned, rx, out_tx, name_owned, location_owned);
         });
 
         let worker = WorkerHandle { id, tx, rx_out: out_rx, handle };
@@ -550,7 +563,7 @@ mod tests {
 
         // worker 脚本设 addEventListener 回显（注册表交付替换早期 onmessage 属性语义）。
         let id = vm
-            .spawn_worker("self.addEventListener('message', function(e) { self.postMessage(e.data); });")
+            .spawn_worker("self.addEventListener('message', function(e) { self.postMessage(e.data); });", "", "")
             .expect("worker 应派生成功");
         assert_eq!(vm.active_workers(), vec![id], "应有唯一活跃 worker");
 
@@ -569,7 +582,7 @@ mod tests {
     fn worker_script_compile_failure_reports_error() {
         let mut vm = vm_with_compiler();
 
-        let id = vm.spawn_worker("function { 语法错误").expect("worker 应派生成功");
+        let id = vm.spawn_worker("function { 语法错误", "", "").expect("worker 应派生成功");
         let poll = poll_until_mail(&mut vm, id);
         assert!(!poll.errors.is_empty(), "编译失败应经错误面上报错误串");
         assert!(!poll.errors[0].is_empty(), "错误串应非空");
@@ -586,10 +599,10 @@ mod tests {
 
         // 两 worker 各设 addEventListener 回显（注册表交付语义）。
         let id_a = vm
-            .spawn_worker("self.addEventListener('message', function(e) { self.postMessage(e.data); });")
+            .spawn_worker("self.addEventListener('message', function(e) { self.postMessage(e.data); });", "", "")
             .expect("worker A 应派生成功");
         let id_b = vm
-            .spawn_worker("self.addEventListener('message', function(e) { self.postMessage(e.data); });")
+            .spawn_worker("self.addEventListener('message', function(e) { self.postMessage(e.data); });", "", "")
             .expect("worker B 应派生成功");
         assert_eq!(vm.active_workers(), vec![id_a, id_b], "应有两个活跃 worker");
 
@@ -689,7 +702,7 @@ mod tests {
     fn worker_e2e_terminate() {
         let mut vm = vm_with_compiler();
 
-        let id = vm.spawn_worker("1").expect("worker 应派生成功");
+        let id = vm.spawn_worker("1", "", "").expect("worker 应派生成功");
         assert_eq!(vm.active_workers(), vec![id], "应有唯一活跃 worker");
 
         vm.worker_terminate(id).expect("终止应成功");
@@ -707,7 +720,7 @@ mod tests {
         let core = Arc::clone(vm.kernel_core());
         let baseline = core.active_vms();
 
-        let id = vm.spawn_worker("1").expect("worker 应派生成功");
+        let id = vm.spawn_worker("1", "", "").expect("worker 应派生成功");
         // worker 线程异步建 Vm：轮询至 realm 计数 +1（带截止，防 flaky）。
         let deadline = Instant::now() + Duration::from_secs(5);
         while core.active_vms() < baseline + 1 {
@@ -863,6 +876,65 @@ mod tests {
 
         vm.shutdown_workers();
         let _ = std::fs::remove_file(&worker_path);
+    }
+
+    /// 端到端：带 name 的 Worker 内 self.name 为 name、self.location 为 url 字符串；
+    /// 无 options 的 Worker 内 self.name 为空串。
+    #[test]
+    fn worker_e2e_name_and_location() {
+        let mut vm = vm_with_compiler();
+
+        // worker 脚本：收到消息后回发 self.name 与 self.location（以 | 连接）。
+        let worker_script =
+            "self.addEventListener('message', function(e) { self.postMessage(self.name + '|' + self.location); });";
+        let path_a = write_worker_script(worker_script);
+        let path_b = write_worker_script(worker_script);
+        // 主脚本：A 带 options.name 建 Worker、B 无 options，各自回发后记录。
+        let main_script = format!(
+            "var wa = new Worker('{a}', {{ name: 'n' }}); var wb = new Worker('{b}'); \
+             wa.addEventListener('message', function(e) {{ globalThis.idA = e.data; }}); \
+             wb.addEventListener('message', function(e) {{ globalThis.idB = e.data; }}); \
+             wa.postMessage('check'); wb.postMessage('check');",
+            a = path_a.display(),
+            b = path_b.display()
+        );
+        vm.run(&Arc::new(compile_script(&main_script))).expect("主脚本应运行");
+
+        // 事件循环轮询至两个回发都到达（带截止，防 flaky）。
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            vm.deliver_worker_messages();
+            vm.cleanup_disconnected_workers();
+            let a = global_value_opt(&vm, "idA");
+            let b = global_value_opt(&vm, "idB");
+            if a.is_some_and(|v| v.is_string()) && b.is_some_and(|v| v.is_string()) {
+                break;
+            }
+            if Instant::now() >= deadline {
+                panic!("5 秒内未收齐 self.name 与 self.location 回发");
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        // A：self.name 为 "n"、self.location 为 url 字符串。
+        let id_a = global_value_opt(&vm, "idA").expect("idA 应被设置");
+        let id_a_text = vm.lookup_str(id_a).expect("idA 应可读");
+        assert_eq!(
+            id_a_text,
+            format!("n|{}", path_a.display()),
+            "带 name 的 worker 内 self.name 应为 \"n\"、self.location 应为 url 字符串"
+        );
+        // B：无 options 时 self.name 为空串、self.location 仍为 url 字符串。
+        let id_b = global_value_opt(&vm, "idB").expect("idB 应被设置");
+        let id_b_text = vm.lookup_str(id_b).expect("idB 应可读");
+        assert_eq!(
+            id_b_text,
+            format!("|{}", path_b.display()),
+            "无 options 的 worker 内 self.name 应为空串、self.location 应为 url 字符串"
+        );
+
+        vm.shutdown_workers();
+        let _ = std::fs::remove_file(&path_a);
+        let _ = std::fs::remove_file(&path_b);
     }
 
     /// onmessageerror 交付辅助：无自然触发，直接单测交付辅助（handler 被调用、
