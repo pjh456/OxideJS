@@ -91,10 +91,15 @@ fn record_timeout_or_crash(stats: &mut RunStats, no_skip: bool, index: usize, el
 /// 子进程被杀死、按路径报告肇事者，并由全新子进程从肇事者之后续跑；子进程
 /// 在测试中途崩溃也经同路径恢复，恢复基于最后完成下标，无漏项。子进程死亡后
 /// 读取旁路失败行并入 fail_records。超时/崩溃默认计为 skip，`--no-skip` 下计为失败。
+///
+/// # 注意事项
+/// - `paths_file` 是父进程写出的全量路径清单文件（每行一路径，与父扫描同序），
+///   经 `OXIDE_TEST262_PATHS_FILE` 环境变量传给子进程，子进程读文件代替全量重扫
+///   目录；文件在窗口内子进程多次重启间只读共享，不得按 spawn 删除。
 #[expect(clippy::too_many_arguments)]
 fn supervise_window(
     exe: &Path, args: &[String], no_skip: bool, wstart: usize, wend: usize, timeout: Duration, startup_grace: Duration,
-    paths: &[PathBuf], window_id: usize,
+    paths: &[PathBuf], paths_file: &Path, window_id: usize,
 ) -> RunStats {
     let mut stats = RunStats::default();
     let mut cur = wstart;
@@ -144,6 +149,7 @@ fn supervise_window(
             .env("OXIDE_TEST262_WORKERS", "1")
             .env("OXIDE_TEST262_HEARTBEAT", &hb_path)
             .env("OXIDE_TEST262_PC_WATCH", &pc_path)
+            .env("OXIDE_TEST262_PATHS_FILE", paths_file)
             .env("OXIDE_TEST262_CHILD_CHUNK", "1")
             .env("OXIDE_TEST262_ALLOW_FAIL_EXIT", "1")
             .env_remove("OXIDE_TEST262_CHUNK_SIZE")
@@ -281,6 +287,15 @@ pub(crate) fn run_supervised(
         }
     };
 
+    // 路径清单文件：派生窗口前写一次（每行一路径，与父扫描同序），跨窗口只读
+    // 共享；子进程读文件代替全量重扫目录。运行结束删除，防临时目录残留。
+    let paths_file = std::env::temp_dir().join(format!("oxide_t262_paths_{}.txt", std::process::id()));
+    let list = paths.iter().map(|p| p.to_string_lossy()).collect::<Vec<_>>().join("\n");
+    if let Err(err) = std::fs::write(&paths_file, list) {
+        eprintln!("failed to write paths file {}: {err}", paths_file.display());
+        return false;
+    }
+
     let window = std::env::var("OXIDE_TEST262_WINDOW")
         .ok()
         .and_then(|s| s.parse::<usize>().ok())
@@ -329,6 +344,7 @@ pub(crate) fn run_supervised(
     let next = &next;
     let windows = &windows;
     let exe = &exe;
+    let paths_file = &paths_file;
 
     let partials: Vec<RunStats> = std::thread::scope(|scope| {
         let handles: Vec<_> = (0..supervisors)
@@ -350,6 +366,7 @@ pub(crate) fn run_supervised(
                             timeout,
                             startup_grace,
                             paths,
+                            paths_file,
                             window_id,
                         );
                         stats.merge(window_stats);
@@ -368,6 +385,9 @@ pub(crate) fn run_supervised(
     for partial_stats in partials {
         stats.merge(partial_stats);
     }
+
+    // 全部窗口结束、子进程已读完清单，删除路径清单文件防临时目录残留。
+    let _ = std::fs::remove_file(paths_file);
 
     let total = stats.pass + stats.fail + stats.skip;
     println!();

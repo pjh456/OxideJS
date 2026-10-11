@@ -141,7 +141,25 @@ fn run_tests() -> bool {
         test262_info!("no-skip mode enabled");
         eprintln!("no-skip mode: capability filters disabled; unsupported results count as failures");
     }
-    let paths = discover_tests(&test262_root);
+    // 监督模式：监督者把全量路径清单（每行一路径，与父扫描同序）经
+    // OXIDE_TEST262_PATHS_FILE 传下来，子进程读文件代替全量重扫目录。
+    // 文件缺失或不可读时显式报错退出，不静默回退重扫——回退会让
+    // 父扫描与子重扫之间的树变化造成下标错位静默复活。
+    let paths = match std::env::var_os("OXIDE_TEST262_PATHS_FILE") {
+        Some(list_path) => {
+            let list_path = PathBuf::from(list_path);
+            let content = match std::fs::read_to_string(&list_path) {
+                Ok(content) => content,
+                Err(err) => {
+                    test262_error!("paths file unreadable: {}: {err}", list_path.display());
+                    eprintln!("paths file unreadable: {}: {err}", list_path.display());
+                    std::process::exit(1);
+                }
+            };
+            content.lines().map(PathBuf::from).collect()
+        }
+        None => discover_tests(&test262_root),
+    };
     test262_info!("found {} test files", paths.len());
     eprintln!("found {} test files", paths.len());
 
