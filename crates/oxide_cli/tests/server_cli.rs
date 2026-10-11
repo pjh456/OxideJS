@@ -8,7 +8,7 @@
 //! 干扰（含与单测二进制的并行干扰）。
 
 use std::io::{BufRead, BufReader};
-use std::net::TcpStream;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener, TcpStream};
 use std::os::unix::net::UnixStream;
 use std::process::{Command, Output};
 use std::sync::{Mutex, MutexGuard};
@@ -102,6 +102,23 @@ fn connect_well_known() -> Conn {
         Endpoint::Unix(path) => Conn::Unix(UnixStream::connect(&path).expect("连接 server 应成功")),
         Endpoint::Tcp(addr) => Conn::Tcp(TcpStream::connect(addr).expect("连接 server 应成功")),
     }
+}
+
+/// 探测空闲端口：临时 `TcpListener` 绑 0 端口取操作系统分配的端口后释放。
+///
+/// 释放与 server 绑定间的微小竞态窗口可接受（与既有测试对固定端口的容忍
+/// 一致）：发生则 server 绑定失败、测试红，不加重试。
+fn free_port() -> u16 {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("临时监听者绑定应成功");
+    let port = listener.local_addr().expect("取端口应成功").port();
+    drop(listener);
+    port
+}
+
+/// 按端口直连 server：TCP 回环连接包成 `Conn`。
+fn connect_tcp(port: u16) -> Conn {
+    let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port);
+    Conn::Tcp(TcpStream::connect(addr).expect("连接 server 应成功"))
 }
 
 /// help 列全部十一个子命令。
@@ -653,4 +670,273 @@ fn server_watchdog_sigint_stops_server() {
         std::thread::sleep(Duration::from_millis(50));
     }
     wait_pid_dead(id.pid, Duration::from_secs(30));
+}
+
+/// start --port 端到端：自定义端口起守护 server，sidecar 记该端口，控制臂四
+/// 帧（版本 / 状态 / 健康 / 信息）经 sidecar 端点应答，eval 得完成值，关闭帧后
+/// server 进程退出、sidecar 被删。
+#[test]
+fn server_start_port_e2e() {
+    let _guard = lock_well_known();
+    let sidecar_path = sidecar::well_known_sidecar_path();
+
+    // 探活先行：存活 server 占用全局路径时 panic，不抢占。
+    assert!(
+        !sidecar::is_server_alive(&sidecar::well_known_endpoint()),
+        "存活 server 占用 well-known 路径，测试不抢占"
+    );
+
+    // 探测空闲端口起守护 server（worker 数压到 2 避免按宿主核数预热的成本）。
+    let port = free_port();
+    let port_arg = port.to_string();
+    let output = oxide(&["server", "start", "--port", &port_arg, "--workers", "2"]);
+    assert_eq!(output.status.code(), Some(0), "start 应退 0");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("已启动"), "start 应打印「已启动」：{stdout}");
+
+    // 读 sidecar：endpoint 应为自定义端口，记进程号。
+    let id = sidecar::read_identity(&sidecar_path).expect("读 sidecar 应成功");
+    assert_eq!(id.socket_path, format!("127.0.0.1:{port}"), "sidecar 应记自定义端口");
+
+    // 控制臂四帧经 sidecar 端点应答（send_control_request 读 sidecar 取端口）。
+    let response = send_control_request(&ServerRequest::Version).expect("版本臂应成功");
+    match response {
+        ServerResponse::Version { version } => {
+            assert_eq!(version, env!("CARGO_PKG_VERSION"), "版本应与构建期版本一致");
+        }
+        other => panic!("应得 Version 帧，实得 {other:?}"),
+    }
+    let response = send_control_request(&ServerRequest::Status).expect("状态臂应成功");
+    assert!(matches!(response, ServerResponse::Status { .. }), "应得 Status 帧：{response:?}");
+    let response = send_control_request(&ServerRequest::Health).expect("健康臂应成功");
+    match response {
+        ServerResponse::Health { healthy } => assert!(healthy, "server 应健康"),
+        other => panic!("应得 Health 帧，实得 {other:?}"),
+    }
+    let response = send_control_request(&ServerRequest::Info).expect("信息臂应成功");
+    match response {
+        ServerResponse::Info { version, socket_path, pid } => {
+            assert_eq!(socket_path, format!("127.0.0.1:{port}"), "Info 端点应为自定义端口");
+            assert_eq!(version, env!("CARGO_PKG_VERSION"), "版本应与构建期版本一致");
+            assert_eq!(pid, id.pid, "Info 进程号应与 sidecar 一致");
+        }
+        other => panic!("应得 Info 帧，实得 {other:?}"),
+    }
+
+    // eval：1 + 1 得完成值 2。
+    let mut stream = connect_tcp(port);
+    let response = send_and_recv(
+        &mut stream,
+        &ServerRequest::Eval {
+            code: "1 + 1".into(),
+            max_steps: None,
+        },
+    );
+    assert!(
+        matches!(response, ServerResponse::EvalResult { ref value, .. } if value.as_deref() == Some("2")),
+        "应得完成值为 2 的 EvalResult 帧：{response:?}"
+    );
+
+    // 关闭请求帧：读回关闭确认帧。
+    let response = send_and_recv(&mut stream, &ServerRequest::Shutdown);
+    assert!(matches!(response, ServerResponse::Shutdown), "应得关闭确认帧：{response:?}");
+    drop(stream);
+
+    // 轮询 sidecar 文件消失（30 秒截止、50 毫秒间隔）判 server 进程已退出。
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while sidecar_path.exists() {
+        assert!(Instant::now() < deadline, "server 应在有界时间内退出");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(!sidecar_path.exists(), "sidecar 文件应被删除");
+    wait_pid_dead(id.pid, Duration::from_secs(30));
+}
+
+/// start --port 多客户端并发：四线程各建独立连接、各发三枚 eval，逐连接顺序
+/// 与精确完成值断言，汇合后关闭、sidecar 消失、进程退出。
+#[test]
+fn server_start_port_multi_client() {
+    let _guard = lock_well_known();
+    let sidecar_path = sidecar::well_known_sidecar_path();
+
+    // 探活先行：存活 server 占用全局路径时 panic，不抢占。
+    assert!(
+        !sidecar::is_server_alive(&sidecar::well_known_endpoint()),
+        "存活 server 占用 well-known 路径，测试不抢占"
+    );
+
+    // 探测空闲端口起守护 server。
+    let port = free_port();
+    let port_arg = port.to_string();
+    let output = oxide(&["server", "start", "--port", &port_arg, "--workers", "2"]);
+    assert_eq!(output.status.code(), Some(0), "start 应退 0");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("已启动"), "start 应打印「已启动」：{stdout}");
+
+    let id = sidecar::read_identity(&sidecar_path).expect("读 sidecar 应成功");
+
+    // 四线程各建独立连接、各发三枚 eval（代码按线程号构造，常量全非零，
+    // 避开编译缓存键对交换操作数的既有碰撞面）。
+    let handles: Vec<_> = (0u32..4)
+        .map(|i| {
+            std::thread::spawn(move || {
+                let mut stream = connect_tcp(port);
+                for j in 0..3u32 {
+                    let code = format!("{} * 10 + {}", i + 1, j + 1);
+                    let response = send_and_recv(
+                        &mut stream,
+                        &ServerRequest::Eval {
+                            code,
+                            max_steps: None,
+                        },
+                    );
+                    match response {
+                        ServerResponse::EvalResult { ref value, ref error } => {
+                            assert!(error.is_none(), "eval 不应有错误：{response:?}");
+                            let expected = ((i + 1) * 10 + (j + 1)).to_string();
+                            assert_eq!(
+                                value.as_deref(),
+                                Some(expected.as_str()),
+                                "完成值应精确匹配：{response:?}"
+                            );
+                        }
+                        other => panic!("应得 EvalResult 帧：{other:?}"),
+                    }
+                }
+            })
+        })
+        .collect();
+    for handle in handles {
+        handle.join().expect("客户端线程应可汇合");
+    }
+
+    // 收尾：关闭请求帧，轮询 sidecar 消失判 server 进程已退出。
+    let mut stream = connect_tcp(port);
+    let response = send_and_recv(&mut stream, &ServerRequest::Shutdown);
+    assert!(matches!(response, ServerResponse::Shutdown), "应得关闭确认帧：{response:?}");
+    drop(stream);
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while sidecar_path.exists() {
+        assert!(Instant::now() < deadline, "server 应在有界时间内退出");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(!sidecar_path.exists(), "sidecar 文件应被删除");
+    wait_pid_dead(id.pid, Duration::from_secs(30));
+}
+
+/// start --port 同端口第二实例拒绝：首实例守护形态起 server 后，第二实例用
+/// 前台形态起同端口 server，认领判 AlreadyRunning 退 1、stderr 含启动失败与
+/// 认领被拒，首 server 不受影响（版本臂仍应答、sidecar 进程号不变），收尾关闭。
+#[test]
+fn server_start_port_second_instance_refused() {
+    let _guard = lock_well_known();
+    let sidecar_path = sidecar::well_known_sidecar_path();
+
+    // 探活先行：存活 server 占用全局路径时 panic，不抢占。
+    assert!(
+        !sidecar::is_server_alive(&sidecar::well_known_endpoint()),
+        "存活 server 占用 well-known 路径，测试不抢占"
+    );
+
+    // 首实例：守护形态起 server（CLI 即刻返回、就绪探测通过）。
+    let port = free_port();
+    let port_arg = port.to_string();
+    let output = oxide(&["server", "start", "--port", &port_arg, "--workers", "2"]);
+    assert_eq!(output.status.code(), Some(0), "首实例 start 应退 0");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("已启动"), "首实例 start 应打印「已启动」：{stdout}");
+    let id = sidecar::read_identity(&sidecar_path).expect("读 sidecar 应成功");
+
+    // 第二实例：前台形态同端口，认领判 AlreadyRunning 退 1。
+    let output = oxide(&["server", "start", "--foreground", "--port", &port_arg, "--workers", "2"]);
+    assert_eq!(output.status.code(), Some(1), "同端口第二实例（前台形态）应退 1");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("server 启动失败"), "第二实例应打印启动失败：{stderr}");
+    assert!(stderr.contains("认领被拒"), "第二实例应打印认领被拒：{stderr}");
+
+    // 首 server 不受影响：版本臂仍正常应答、sidecar 进程号不变。
+    let response = send_control_request(&ServerRequest::Version).expect("首 server 版本臂应正常应答");
+    assert!(matches!(response, ServerResponse::Version { .. }), "应得 Version 帧：{response:?}");
+    let id_after = sidecar::read_identity(&sidecar_path).expect("读 sidecar 应成功");
+    assert_eq!(id_after.pid, id.pid, "首 server 的 sidecar 进程号应不变");
+
+    // 收尾：关闭首实例，轮询 sidecar 消失判进程已退出。
+    let mut stream = connect_tcp(port);
+    let response = send_and_recv(&mut stream, &ServerRequest::Shutdown);
+    assert!(matches!(response, ServerResponse::Shutdown), "应得关闭确认帧：{response:?}");
+    drop(stream);
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while sidecar_path.exists() {
+        assert!(Instant::now() < deadline, "server 应在有界时间内退出");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(!sidecar_path.exists(), "sidecar 文件应被删除");
+    wait_pid_dead(id.pid, Duration::from_secs(30));
+}
+
+/// --rm 动态端口打印：`--rm --port 0` 绑 0 端口后向前台标准输出打印实际端点，
+/// 解析得非 0 端口，连接发一枚 eval 得完成值，关闭连接（EOF）后单连接模型
+/// 进程干净退出（退 0）。不写 sidecar、不碰 well-known 路径，无需双重锁。
+#[test]
+fn server_rm_dynamic_port_prints() {
+    // 拉起 --rm 前台进程（stdout 管道收集端点打印行）。
+    let mut child = Command::new(env!("CARGO_BIN_EXE_oxide"))
+        .args(["server", "start", "--rm", "--port", "0", "--workers", "2"])
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .expect("oxide server start --rm 应可启动");
+
+    // 后台线程消费 stdout：见到端点打印行即把端口发主线程，收集全部行至 EOF。
+    // 端口解析取稳健形态：只认 `127.0.0.1:` 前缀与紧随数字，不断言完整句子。
+    let stdout_pipe = child.stdout.take().expect("stdout 管道应可取");
+    let (port_tx, port_rx) = std::sync::mpsc::channel::<u16>();
+    let out_handle = std::thread::spawn(move || {
+        let mut reader = BufReader::new(stdout_pipe);
+        let mut lines = Vec::new();
+        let mut line = String::new();
+        loop {
+            line.clear();
+            if reader.read_line(&mut line).unwrap_or(0) == 0 {
+                break;
+            }
+            lines.push(line.clone());
+            if let Some(idx) = line.find("127.0.0.1:") {
+                let rest = &line[idx + "127.0.0.1:".len()..];
+                let digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+                if let Ok(port) = digits.parse::<u16>() {
+                    let _ = port_tx.send(port);
+                }
+            }
+        }
+        lines
+    });
+
+    // 端口行是就绪信号（打印在空闲窗口之前）：有界时间内应得非 0 端口。
+    let port = port_rx
+        .recv_timeout(Duration::from_secs(30))
+        .expect("--rm 进程应在有界时间内打印实际端口");
+    assert_ne!(port, 0, "操作系统应分配非 0 端口");
+
+    // 连接该端口发一枚 eval 得完成值。
+    let mut stream = connect_tcp(port);
+    let response = send_and_recv(
+        &mut stream,
+        &ServerRequest::Eval {
+            code: "1 + 1".into(),
+            max_steps: None,
+        },
+    );
+    assert!(
+        matches!(response, ServerResponse::EvalResult { ref value, .. } if value.as_deref() == Some("2")),
+        "应得完成值为 2 的 EvalResult 帧：{response:?}"
+    );
+
+    // 关闭连接（EOF）：--rm 单连接模型在首个连接处理完毕后干净退出（退 0）。
+    drop(stream);
+    let status = child.wait().expect("等待 --rm 进程应成功");
+    assert_eq!(status.code(), Some(0), "--rm 进程应以退出码 0 退出：{status:?}");
+
+    let lines = out_handle.join().expect("stdout 读取线程应可汇合");
+    let stdout = lines.join("");
+    assert!(stdout.contains("127.0.0.1:"), "stdout 应含端点打印行：{stdout}");
 }
