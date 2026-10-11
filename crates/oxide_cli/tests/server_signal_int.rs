@@ -9,6 +9,7 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use oxide_cli::server::server::{run_server, ServerConfig, ServerError};
+use oxide_net::Endpoint;
 
 /// 唯一临时路径（进程号加测试名）：单进程内唯一，进程间以进程号隔离。
 /// worker 数取小值 2：与既有单测同口径，大值徒增预热成本。
@@ -16,7 +17,7 @@ fn unique_paths(test_name: &str) -> ServerConfig {
     let dir = std::env::temp_dir().join(format!("oxide_server_signal_int_{}_{}", std::process::id(), test_name));
     std::fs::create_dir_all(&dir).expect("测试目录创建应成功");
     ServerConfig {
-        socket_path: dir.join("server.sock"),
+        endpoint: Endpoint::Unix(dir.join("server.sock")),
         sidecar_path: dir.join("sidecar.json"),
         worker_count: 2,
         version: env!("CARGO_PKG_VERSION").to_string(),
@@ -29,7 +30,7 @@ fn start_server(config: ServerConfig) -> JoinHandle<Result<(), ServerError>> {
     let server_config = config.clone();
     let handle = std::thread::spawn(move || run_server(&server_config));
     let deadline = Instant::now() + Duration::from_secs(10);
-    while !config.socket_path.exists() {
+    while !config.endpoint.socket_path().expect("Unix 端点应含 socket 路径").exists() {
         assert!(Instant::now() < deadline, "socket 文件未出现");
         std::thread::sleep(Duration::from_millis(10));
     }
@@ -55,7 +56,10 @@ fn wait_shutdown(config: &ServerConfig, handle: JoinHandle<Result<(), ServerErro
     let result = handle.join().expect("server 线程应正常退出");
     assert!(result.is_ok(), "server 应正常退出：{result:?}");
     assert!(!config.sidecar_path.exists(), "sidecar 文件应被删除");
-    assert!(!config.socket_path.exists(), "socket 文件应被删除");
+    assert!(
+        !config.endpoint.socket_path().expect("Unix 端点应含 socket 路径").exists(),
+        "socket 文件应被删除"
+    );
 }
 
 /// SIGINT 触发优雅退出：在途归零、删 sidecar 与 socket 文件。

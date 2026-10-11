@@ -1,4 +1,5 @@
-//! 传输枚举层：`Conn` 与 `Listener` 各包装 Unix 与 TCP 两臂，统一六个常用操作。
+//! 传输枚举层：`Conn` 与 `Listener` 各包装 Unix 与 TCP 两臂，统一六个常用操作，
+//! `Endpoint` 描述监听目标（Unix 路径或 TCP 地址）。
 //!
 //! 关键约定：
 //! - 两臂映射到 std 同名同语义方法，无行为分叉。
@@ -6,9 +7,10 @@
 //! - 构造面（bind / connect）不含在本模块，调用方先用 std 原语构造句柄再包进枚举。
 
 use std::io;
-use std::io::Write;
-use std::net::{TcpListener, TcpStream};
+use std::io::{Read, Write};
+use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::os::unix::net::{UnixListener, UnixStream};
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 /// 双向连接：Unix 域套接字或 TCP 连接。
@@ -29,6 +31,35 @@ pub enum Listener {
     Unix(UnixListener),
     /// TCP 监听者臂。
     Tcp(TcpListener),
+}
+
+/// 监听端点：Unix 套接字路径或 TCP 地址。
+///
+/// 是 server 配置中监听目标的单一事实源；Unix 臂是文件，TCP 臂不是。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Endpoint {
+    /// Unix 套接字路径臂。
+    Unix(PathBuf),
+    /// TCP 地址臂。
+    Tcp(SocketAddr),
+}
+
+impl Endpoint {
+    /// 返回套接字文件路径：仅 Unix 臂有文件，TCP 臂返回 `None`。
+    pub fn socket_path(&self) -> Option<&Path> {
+        match self {
+            Endpoint::Unix(path) => Some(path),
+            Endpoint::Tcp(_) => None,
+        }
+    }
+
+    /// 返回端点文本形态：Unix 臂为路径字符串，TCP 臂为 host:port 字符串。
+    pub fn describe(&self) -> String {
+        match self {
+            Endpoint::Unix(path) => path.to_string_lossy().into_owned(),
+            Endpoint::Tcp(addr) => addr.to_string(),
+        }
+    }
 }
 
 impl Listener {
@@ -100,6 +131,34 @@ impl Conn {
         match self {
             Conn::Unix(s) => s.write_all(buf),
             Conn::Tcp(s) => s.write_all(buf),
+        }
+    }
+}
+
+impl Read for Conn {
+    /// 从连接读取字节，委托内臂。
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        match self {
+            Conn::Unix(s) => s.read(buf),
+            Conn::Tcp(s) => s.read(buf),
+        }
+    }
+}
+
+impl Write for Conn {
+    /// 向连接写入字节，委托内臂。
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        match self {
+            Conn::Unix(s) => s.write(buf),
+            Conn::Tcp(s) => s.write(buf),
+        }
+    }
+
+    /// 刷新连接，委托内臂。
+    fn flush(&mut self) -> io::Result<()> {
+        match self {
+            Conn::Unix(s) => s.flush(),
+            Conn::Tcp(s) => s.flush(),
         }
     }
 }

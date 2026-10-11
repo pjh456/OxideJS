@@ -10,13 +10,14 @@ use std::time::{Duration, Instant};
 use oxide_cli::server::client::send_control_request_from;
 use oxide_cli::server::protocol::{ServerRequest, ServerResponse};
 use oxide_cli::server::server::{run_server, ServerConfig};
+use oxide_net::Endpoint;
 
 /// 临时路径配置：进程号加测试名唯一，worker 数 2，版本取构建期版本。
 fn test_config(test_name: &str) -> ServerConfig {
     let dir = std::env::temp_dir().join(format!("oxide_server_client_test_{}_{}", std::process::id(), test_name));
     fs::create_dir_all(&dir).expect("测试目录创建应成功");
     ServerConfig {
-        socket_path: dir.join("server.sock"),
+        endpoint: Endpoint::Unix(dir.join("server.sock")),
         sidecar_path: dir.join("sidecar.json"),
         worker_count: 2,
         version: env!("CARGO_PKG_VERSION").to_string(),
@@ -28,7 +29,7 @@ fn start_server(config: ServerConfig) -> std::thread::JoinHandle<Result<(), oxid
     let server_config = config.clone();
     let handle = std::thread::spawn(move || run_server(&server_config));
     let deadline = Instant::now() + Duration::from_secs(10);
-    while !config.socket_path.exists() {
+    while !config.endpoint.socket_path().expect("Unix 端点应含 socket 路径").exists() {
         assert!(Instant::now() < deadline, "socket 文件未出现");
         std::thread::sleep(Duration::from_millis(10));
     }
@@ -81,7 +82,7 @@ fn control_client_end_to_end() {
     let response = send_control_request_from(&config.sidecar_path, &ServerRequest::Info).expect("信息请求应成功");
     match response {
         ServerResponse::Info { socket_path, pid, .. } => {
-            assert_eq!(socket_path, config.socket_path.to_string_lossy().into_owned(), "socket 路径应与配置一致");
+            assert_eq!(socket_path, config.endpoint.describe(), "socket 路径应与配置一致");
             assert_eq!(pid, std::process::id(), "进程号应为当前进程号");
         }
         other => panic!("应得 Info 帧，实得 {other:?}"),
@@ -92,6 +93,9 @@ fn control_client_end_to_end() {
     assert!(matches!(response, ServerResponse::Shutdown), "应得关闭确认帧：{response:?}");
     let result = handle.join().expect("server 线程应正常退出");
     assert!(result.is_ok(), "server 应正常退出：{result:?}");
-    assert!(!config.socket_path.exists(), "socket 文件应被删除");
+    assert!(
+        !config.endpoint.socket_path().expect("Unix 端点应含 socket 路径").exists(),
+        "socket 文件应被删除"
+    );
     assert!(!config.sidecar_path.exists(), "sidecar 文件应被删除");
 }

@@ -7,8 +7,8 @@
 //! 构造面（bind / connect）不含在本 crate：调用方先用 std 原语构造句柄，再包进枚举。
 //! 零外部依赖，纯 `std::net` 与 `std::os::unix::net`。
 
-/// 传输枚举层：`Conn` 与 `Listener` 及统一操作。
+/// 传输枚举层：`Conn`、`Listener` 与 `Endpoint` 及统一操作。
 pub mod transport;
 
-/// 重导出 `transport` 模块的 `Conn` 与 `Listener` 枚举。
-pub use transport::{Conn, Listener};
+/// 重导出 `transport` 模块的 `Conn`、`Listener` 与 `Endpoint` 枚举。
+pub use transport::{Conn, Endpoint, Listener};
