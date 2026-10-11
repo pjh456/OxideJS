@@ -14,6 +14,7 @@ mod judge;
 mod meta;
 mod report;
 mod runner;
+mod shard_protocol;
 mod stats;
 mod supervise;
 mod test262_log;
