@@ -20,7 +20,7 @@ mod test262_log;
 use chunked::run_chunked;
 use config::RunConfig;
 use discovery::discover_tests;
-use harness::{HarnessPrefixCache, HarnessSources, HARNESS};
+use harness::{HarnessModuleCache, HarnessPrefixCache, HarnessSources, HARNESS};
 use heartbeat::write_heartbeat;
 use judge::{categorize_fail, TestOutcome};
 use oxide_log::{Level, LogConfig, Output, SUBSYSTEM_COUNT};
@@ -220,6 +220,7 @@ fn run_tests() -> bool {
     let paths_ref = &paths;
     let heartbeat_ref = &heartbeat_path;
     let harness_cache = Arc::new(RwLock::new(HarnessPrefixCache::new()));
+    let harness_module_cache = Arc::new(RwLock::new(HarnessModuleCache::new()));
 
     // 保持内存平稳：worker 只返回聚合统计。保留数万个 `TestResult` 会使
     // `--no-skip` 运行在套件末尾附近累积 path/error 字符串直至进程 OOM。
@@ -229,6 +230,7 @@ fn run_tests() -> bool {
                 let cursor = &cursor;
                 let progress = &progress;
                 let harness_cache = Arc::clone(&harness_cache);
+                let harness_module_cache = Arc::clone(&harness_module_cache);
                 // 与 main() 的 16MB 栈一致：VM 在深层嵌套测试程序上递归，
                 // 默认 worker 栈会溢出。
                 std::thread::Builder::new()
@@ -263,6 +265,7 @@ fn run_tests() -> bool {
                                 &engine,
                                 harness_sources,
                                 &harness_cache,
+                                &harness_module_cache,
                             );
                             stats.record(i, &result);
                             // COMPLETED 心跳：先写心跳再追加旁路失败行（崩溃恢复

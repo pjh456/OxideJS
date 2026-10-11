@@ -5,7 +5,10 @@
 #![allow(clippy::arc_with_non_send_sync)]
 
 use crate::discovery::{eval_family_excluded, is_skipped, pre_existing_excluded};
-use crate::harness::{append_source_chunk, get_harness_prefix, HarnessPrefixCache, HarnessSources};
+use crate::harness::{
+    append_source_chunk, get_harness_module, get_harness_prefix, HarnessModuleCache,
+    HarnessPrefixCache, HarnessSources,
+};
 use crate::judge::{
     classify_compile_error, judge_async_result, judge_vm_error, panic_payload_str, TestOutcome, TestResult,
 };
@@ -39,12 +42,16 @@ fn pc_watch_path() -> Option<&'static PathBuf> {
 #[expect(clippy::too_many_arguments)]
 fn run_test(
     path: &Path, source: &str, meta: &TestMeta, engine: &Engine, harness: &HarnessSources,
-    harness_cache: &Arc<RwLock<HarnessPrefixCache>>, no_skip: bool, no_regalloc: bool,
+    harness_cache: &Arc<RwLock<HarnessPrefixCache>>,
+    harness_module_cache: &Arc<RwLock<HarnessModuleCache>>, no_skip: bool, no_regalloc: bool,
 ) -> TestResult {
     let start = std::time::Instant::now();
 
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        run_test_inner(path, source, meta, engine, harness, harness_cache, no_skip, no_regalloc)
+        run_test_inner(
+            path, source, meta, engine, harness, harness_cache, harness_module_cache, no_skip,
+            no_regalloc,
+        )
     }));
 
     match result {
@@ -94,56 +101,44 @@ impl oxide_emit::module::ModuleSourceLoader for Test262ModuleLoader {
     }
 }
 
-/// 单测执行主流程：拼 harness 前缀 → parse → compile → run；
-/// 依据 `negative` 元数据校验期望错误，未实现特性按 no_skip 选择跳过或失败。
+/// 单测执行主流程：编译 → run → 判定；依据 `negative` 元数据校验期望错误，
+/// 未实现特性按 no_skip 选择跳过或失败。
 ///
-/// script 臂经 `Engine::compile_with` 便捷路径（parse + CodeForge 缓存）；module 臂
-/// 保留本模块的 `parse_module` + 依赖加载器（引擎暂不吸收 module 加载器面）。
-/// 两臂共享同一 compiler，`no_regalloc` 旗标对两臂同口径生效。
+/// module 臂保留本模块的 `parse_module` + 依赖加载器（引擎暂不吸收 module 加载器面），
+/// 前缀与测试体拼为单模块编译。script 臂走两模块方案：前缀模块按 includes 组合
+/// 缓存（免每测试重解析重编译），测试体模块每测试编译，顺序执行。两臂共享同一
+/// compiler，`no_regalloc` 旗标对两臂同口径生效。
 #[expect(clippy::too_many_arguments)]
 fn run_test_inner(
     path: &Path, source: &str, meta: &TestMeta, engine: &Engine, harness: &HarnessSources,
-    harness_cache: &Arc<RwLock<HarnessPrefixCache>>, no_skip: bool, no_regalloc: bool,
+    harness_cache: &Arc<RwLock<HarnessPrefixCache>>,
+    harness_module_cache: &Arc<RwLock<HarnessModuleCache>>, no_skip: bool, no_regalloc: bool,
 ) -> TestResult {
     let start = std::time::Instant::now();
 
     let is_async = meta.flags.iter().any(|f| f == "async");
     let is_module = meta.flags.iter().any(|f| f == "module");
+    let is_only_strict = meta.flags.iter().any(|f| f == "onlyStrict");
 
-    let code = match get_harness_prefix(meta, harness, harness_cache) {
-        Ok(prefix) => {
-            let mut code = prefix;
-            if is_async {
-                // 异步测试：注入 print 捕获 + $DONE（asyncTests 用 $DONE 报告结果）。
-                // 结果写入 globalThis 全局字符串，run() 结束后由 runner 读取并按 marker 判定。
-                // print 为顶层函数声明，经全局对象反射落 globalThis；此处仅初始化累加器。
-                append_source_chunk(
-                    &mut code,
-                    "async capture",
-                    "globalThis.$__test262_async_result = \"\";\n\
-                     function print(msg) { globalThis.$__test262_async_result += String(msg) + \"\\n\"; }",
-                );
-                if let Some(done_src) = harness.get("doneprintHandle.js") {
-                    append_source_chunk(&mut code, "doneprintHandle.js", done_src);
-                }
-            }
-            append_source_chunk(&mut code, "test source", strip_meta(source));
-            code
-        }
-        Err(e) => {
-            let dur = start.elapsed().as_millis() as u64;
-            if no_skip {
-                return TestResult::fail(path.to_path_buf(), dur, e);
-            }
-            return TestResult::skip(path.to_path_buf(), e);
-        }
-    };
-
-    // module 臂保留本模块的 parse_module + 依赖加载器；script 臂经引擎
-    // 便捷路径（parse + CodeForge 缓存）。compiler 由两臂共享，
-    // no_regalloc 旗标对两臂同口径生效。
+    // compiler 由两臂共享，no_regalloc 旗标对两臂同口径生效。
     let compiler = if no_regalloc { Compiler::new().with_regalloc(false) } else { Compiler::new() };
-    let module_result = if is_module {
+
+    // 编译模块：module 臂单模块（前缀 + 测试体），script 臂两模块（缓存前缀模块 + 测试体模块）。
+    let modules: Vec<Arc<oxide_bytecode::CompiledModule>> = if is_module {
+        let code = match get_harness_prefix(meta, harness, harness_cache) {
+            Ok(prefix) => {
+                let mut code = prefix;
+                append_source_chunk(&mut code, "test source", strip_meta(source));
+                code
+            }
+            Err(e) => {
+                let dur = start.elapsed().as_millis() as u64;
+                if no_skip {
+                    return TestResult::fail(path.to_path_buf(), dur, e);
+                }
+                return TestResult::skip(path.to_path_buf(), e);
+            }
+        };
         let alloc = oxide_parser::Allocator::default();
         let program = match oxide_parser::parse_module(&alloc, &code) {
             Ok(p) => p,
@@ -157,34 +152,75 @@ fn run_test_inner(
             }
         };
         let mut loader = Test262ModuleLoader;
-        compiler
-            .compile_module(&program, path.to_string_lossy().as_ref(), &mut loader)
-            .map(Arc::new)
+        match compiler.compile_module(&program, path.to_string_lossy().as_ref(), &mut loader) {
+            Ok(m) => vec![Arc::new(m)],
+            Err(e) => {
+                let dur = start.elapsed().as_millis() as u64;
+                let msg = format!("compile error: {e}");
+                match classify_compile_error(&msg, meta.negative.is_some(), no_skip) {
+                    TestOutcome::Pass(m) => return TestResult::pass(path.to_path_buf(), dur, m),
+                    TestOutcome::Fail(m) => return TestResult::fail(path.to_path_buf(), dur, m),
+                    TestOutcome::Skip(m) => return TestResult::skip(path.to_path_buf(), m),
+                }
+            }
+        }
     } else {
-        engine.compile_with(&code, &compiler)
-    };
-
-    let module = match module_result {
-        Ok(m) => m,
-        Err(e) => {
-            let dur = start.elapsed().as_millis() as u64;
-            let msg = format!("compile error: {e}");
-            match classify_compile_error(&msg, meta.negative.is_some(), no_skip) {
-                TestOutcome::Pass(m) => return TestResult::pass(path.to_path_buf(), dur, m),
-                TestOutcome::Fail(m) => return TestResult::fail(path.to_path_buf(), dur, m),
-                TestOutcome::Skip(m) => return TestResult::skip(path.to_path_buf(), m),
+        // script 臂两模块方案：前缀模块按 includes 组合缓存（免每测试重解析重编译），
+        // 测试体模块每测试编译。onlyStrict 测试给测试体补 "use strict" 保持严格性。
+        let harness_module = match get_harness_module(meta, harness, engine, &compiler, harness_module_cache)
+        {
+            Ok(m) => m,
+            Err(e) => {
+                let dur = start.elapsed().as_millis() as u64;
+                if no_skip {
+                    return TestResult::fail(path.to_path_buf(), dur, e);
+                }
+                return TestResult::skip(path.to_path_buf(), e);
+            }
+        };
+        let mut test_body = String::from(strip_meta(source));
+        if is_only_strict {
+            test_body = format!("\"use strict\";\n{test_body}");
+        }
+        match engine.compile_with(&test_body, &compiler) {
+            Ok(test_module) => vec![harness_module, test_module],
+            Err(e) => {
+                let dur = start.elapsed().as_millis() as u64;
+                let msg = format!("compile error: {e}");
+                match classify_compile_error(&msg, meta.negative.is_some(), no_skip) {
+                    TestOutcome::Pass(m) => return TestResult::pass(path.to_path_buf(), dur, m),
+                    TestOutcome::Fail(m) => return TestResult::fail(path.to_path_buf(), dur, m),
+                    TestOutcome::Skip(m) => return TestResult::skip(path.to_path_buf(), m),
+                }
             }
         }
     };
 
-    // 独立 Vm 不经池；动态编译服务由 `new_vm` 同口径注入（语料含 eval /
-    // Function 动态编译面）。
+    run_and_judge(path, meta, engine, &modules, is_async, no_skip, &start)
+}
+
+/// 在独立 Vm 上顺序执行各模块并判定。独立 Vm 不经池；动态编译服务由 `new_vm`
+/// 同口径注入（语料含 eval / Function 动态编译面）。任一模块失败即停，不跑后续模块。
+/// 完成值取最后一个模块的结果（script 臂即测试体模块）。
+fn run_and_judge(
+    path: &Path, meta: &TestMeta, engine: &Engine, modules: &[Arc<oxide_bytecode::CompiledModule>],
+    is_async: bool, no_skip: bool, start: &std::time::Instant,
+) -> TestResult {
     let mut vm = engine.new_vm();
     // 监督者注入现场文件路径时开启 VM 的 last-pc 定频写（未注入时零开销）。
     if let Some(watch) = pc_watch_path() {
         vm.set_pc_watch(Some(watch.clone()));
     }
-    let run_result = vm.run(&module);
+    let mut run_result: Result<JsValue, String> = Ok(JsValue::undefined());
+    for module in modules {
+        match vm.run(module) {
+            Ok(v) => run_result = Ok(v),
+            Err(e) => {
+                run_result = Err(e);
+                break;
+            }
+        }
+    }
     let dur = start.elapsed().as_millis() as u64;
 
     if is_async {
@@ -222,10 +258,12 @@ pub(crate) fn read_async_output(vm: &Vm) -> String {
 
 /// 串行与并行执行路径共享的每测试管线：
 /// 读文件、解析元数据、应用跳过过滤，然后运行。恰好返回一个 `TestResult`。
-/// worker 自有状态（`engine`、`harness_sources`、`harness_cache`）永不跨线程。
+/// worker 自有状态（`engine`、`harness_sources`、`harness_cache`、`harness_module_cache`）永不跨线程。
+#[expect(clippy::too_many_arguments)]
 pub(crate) fn process_path(
     path: &Path, filter: &Option<String>, no_skip: bool, no_regalloc: bool, engine: &Engine,
     harness_sources: &HarnessSources, harness_cache: &Arc<RwLock<HarnessPrefixCache>>,
+    harness_module_cache: &Arc<RwLock<HarnessModuleCache>>,
 ) -> TestResult {
     let source = match std::fs::read_to_string(path) {
         Ok(s) => s,
@@ -264,7 +302,10 @@ pub(crate) fn process_path(
         }
     }
 
-    run_test(path, &source, &meta, engine, harness_sources, harness_cache, no_skip, no_regalloc)
+    run_test(
+        path, &source, &meta, engine, harness_sources, harness_cache, harness_module_cache,
+        no_skip, no_regalloc,
+    )
 }
 
 /// 构建带步数上限的 runner 引擎。每个并行 worker 拥有自己的引擎，

@@ -2,6 +2,9 @@
 //! 前缀拼接与缓存。全部 `include_str!` 路径相对上 3 级到仓库根，依赖本文件平铺 `src/` 一级，禁子目录。
 
 use crate::meta::TestMeta;
+use oxide_bytecode::CompiledModule;
+use oxide_compiler::compiler::Compiler;
+use oxide_engine::Engine;
 use std::collections::HashMap;
 use std::sync::{Arc, OnceLock, RwLock};
 
@@ -12,6 +15,10 @@ pub(crate) struct HarnessSources {
 
 /// harness 前缀缓存键：由测试 `includes` 列表唯一确定。
 pub(crate) type HarnessPrefixCache = HashMap<Vec<String>, String>;
+
+/// harness 前缀编译产物缓存：键为 includes 组合（含 onlyStrict / async 旗标），
+/// 值为编译后的前缀模块。命中时直接复用，免每测试重解析重编译前缀。
+pub(crate) type HarnessModuleCache = HashMap<Vec<String>, Arc<CompiledModule>>;
 
 impl HarnessSources {
     /// 构建 harness 源注册表（键为文件名，值为编译期内嵌源码）。
@@ -94,17 +101,47 @@ pub(crate) fn append_source_chunk(out: &mut String, name: &str, source: &str) {
     out.push('\n');
 }
 
-/// 取测试元数据的 harness 缓存键（即其 `includes` 列表）。
+/// 取测试元数据的 harness 缓存键（`includes` 列表 + onlyStrict / async 旗标）。
+/// 旗标入键是因为它们改变前缀内容（use strict 指令 / async 捕获注入）。
 fn harness_key(meta: &TestMeta) -> Vec<String> {
     let mut key = meta.includes.clone();
     if meta.flags.iter().any(|f| f == "onlyStrict") {
         key.push("__onlyStrict__".into());
     }
+    if meta.flags.iter().any(|f| f == "async") {
+        key.push("__async__".into());
+    }
     key
 }
 
+/// 把拼接源码中顶层（行首）let/const 声明改写为 var，使其落全局对象、跨 run 可见。
+///
+/// 引擎的全局词法环境不跨 run 持久化：顶层 let/const 只活在当前 run 的词法环境，
+/// 下一个 run（测试体脚本）看不到。改写为 var 后落全局对象，跨 run 共享。
+/// 仅作用于行首声明：harness 文件内函数体代码均缩进，不受影响。
+fn demote_top_level_lexical(source: &str) -> String {
+    source
+        .lines()
+        .map(|line| {
+            if let Some(rest) = line.strip_prefix("let ") {
+                format!("var {rest}")
+            } else if let Some(rest) = line.strip_prefix("const ") {
+                format!("var {rest}")
+            } else {
+                line.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 /// 按测试元数据拼接完整的 harness 前缀源码（prelude + sta/assert + 各 include）。
-fn build_harness_source(meta: &TestMeta, harness: &HarnessSources) -> Result<String, String> {
+///
+/// `demote` 为真时把顶层 let/const 降级为 var（供两模块方案跨 run 共享），
+/// 为假时保留原样（供单模块方案，同模块内 let/const 本可见）。
+fn build_harness_source(
+    meta: &TestMeta, harness: &HarnessSources, demote: bool,
+) -> Result<String, String> {
     let mut source = String::new();
     // onlyStrict 测试在严格模式下运行：指令必须位于脚本最前（harness 之前）。
     if meta.flags.iter().any(|f| f == "onlyStrict") {
@@ -131,7 +168,24 @@ fn build_harness_source(meta: &TestMeta, harness: &HarnessSources) -> Result<Str
         let include_source = harness.get(include).ok_or_else(|| format!("unknown harness: {include}"))?;
         append_source_chunk(&mut source, include, include_source);
     }
-    Ok(source)
+    // 异步测试：注入 print 捕获 + $DONE（asyncTests 用 $DONE 报告结果）。
+    // 结果写入 globalThis 全局字符串，run() 结束后由 runner 读取并按 marker 判定。
+    if meta.flags.iter().any(|f| f == "async") {
+        append_source_chunk(
+            &mut source,
+            "async capture",
+            "globalThis.$__test262_async_result = \"\";\n\
+             function print(msg) { globalThis.$__test262_async_result += String(msg) + \"\\n\"; }",
+        );
+        if let Some(done_src) = harness.get("doneprintHandle.js") {
+            append_source_chunk(&mut source, "doneprintHandle.js", done_src);
+        }
+    }
+    if demote {
+        Ok(demote_top_level_lexical(&source))
+    } else {
+        Ok(source)
+    }
 }
 
 /// 取得（并缓存）测试所需的 harness 前缀源码；缓存键为 includes 组合。
@@ -146,7 +200,29 @@ pub(crate) fn get_harness_prefix(
         }
     }
 
-    let source = build_harness_source(meta, harness)?;
+    let source = build_harness_source(meta, harness, false)?;
     cache.write().unwrap().insert(key, source.clone());
     Ok(source)
+}
+
+/// 取得（并缓存）测试所需的 harness 前缀编译产物；缓存键为 includes 组合
+/// （含 onlyStrict / async 旗标）。命中直接返回缓存模块，未命中编译后存入。
+///
+/// 前缀经 `demote` 改写（顶层 let/const → var），使其落全局对象、跨 run 共享，
+/// 供两模块方案（前缀模块 + 测试体模块顺序执行）复用。
+pub(crate) fn get_harness_module(
+    meta: &TestMeta, harness: &HarnessSources, engine: &Engine, compiler: &Compiler,
+    cache: &Arc<RwLock<HarnessModuleCache>>,
+) -> Result<Arc<CompiledModule>, String> {
+    let key = harness_key(meta);
+    {
+        let guard = cache.read().unwrap();
+        if let Some(m) = guard.get(&key) {
+            return Ok(Arc::clone(m));
+        }
+    }
+    let source = build_harness_source(meta, harness, true)?;
+    let module = engine.compile_with(&source, compiler)?;
+    cache.write().unwrap().insert(key, Arc::clone(&module));
+    Ok(module)
 }
