@@ -5,6 +5,7 @@ members = [
     "crates/oxide_bytecode",
     "crates/oxide_code_cache",
     "crates/oxide_log",
+    "crates/oxide_net",
     "crates/oxide_compiler",
     "crates/oxide_emit",
     "crates/oxide_ir",
@@ -23,7 +24,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.15.3"
+version = "0.15.4"
 edition = "2021"
 license = "MIT"
 rust-version = "1.80"

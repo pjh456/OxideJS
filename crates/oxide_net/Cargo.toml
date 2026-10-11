@@ -1,0 +1,12 @@
+[package]
+name = "oxide_net"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "OxideJS - Transport enum layer (Unix and TCP)"
+
+[dependencies]
+
+[lints]
+workspace = true
