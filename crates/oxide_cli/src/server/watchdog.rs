@@ -310,6 +310,7 @@ mod tests {
             starttime: 0,
             port: 0,
             listen_addr: String::new(),
+            token: String::new(),
         }
     }
 

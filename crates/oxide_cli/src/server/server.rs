@@ -113,7 +113,7 @@ fn default_worker_count() -> usize {
 /// --rm 模式缺省空闲超时：30 秒。
 const RM_DEFAULT_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// --rm 独立模式运行配置：监听端点、worker 数、空闲超时。
+/// --rm 独立模式运行配置：监听端点、worker 数、空闲超时、共享 token。
 ///
 /// 不含 sidecar 路径字段：「不注册 sidecar」的不变量在类型上成立，
 /// 不需要运行时守卫。
@@ -126,6 +126,8 @@ pub struct RmServerConfig {
     /// 空闲超时：绑定后该时长内无连接、或连接建立后该时长内无数据，
     /// 进程即干净退出。
     pub idle_timeout: Duration,
+    /// 共享 token；空串时启动时生成（生产路径），测试注入已知值。
+    pub token: String,
 }
 
 impl Default for RmServerConfig {
@@ -134,6 +136,7 @@ impl Default for RmServerConfig {
             endpoint: Endpoint::Unix(sidecar::rm_socket_path()),
             worker_count: default_worker_count(),
             idle_timeout: RM_DEFAULT_IDLE_TIMEOUT,
+            token: String::new(),
         }
     }
 }
@@ -156,6 +159,8 @@ struct ServerContext {
     // 实际监听地址（bind 后取值：TCP 臂为 host:port、Unix 臂为 socket 路径），
     // Info 响应用，让控制客户端经协议层发现 server 网络端点。
     listen_addr: String,
+    // 共享 token（十六进制）：连接首帧认证门判等用。
+    token: String,
 }
 
 /// server 进程主体：初始化日志文件输出 → 启动时 liveness 扫描 → 认领 sidecar →
@@ -222,12 +227,15 @@ pub fn run_server(config: &ServerConfig) -> Result<(), ServerError> {
         liveness::LivenessOutcome::KillFailed => return Err(ServerError::ClaimRefused(ClaimResult::RefusedAmbiguous)),
     }
 
+    // 生成共享 token（认领之前：写入 sidecar 供控制客户端读回认证）。
+    let token = sidecar::generate_token();
+
     // 认领 sidecar（启动顺序契约：先写 sidecar 再绑定监听器）：同版本
     // 拒绝启动，异版本走交接路径，存活证据不足即返回错误。
-    match sidecar::claim_sidecar(&config.sidecar_path, &config.endpoint, &config.version) {
+    match sidecar::claim_sidecar(&config.sidecar_path, &config.endpoint, &config.version, &token) {
         ClaimResult::Registered => {}
         ClaimResult::AlreadyRunning => return Err(ServerError::ClaimRefused(ClaimResult::AlreadyRunning)),
-        ClaimResult::VersionMismatch => yield_and_takeover(config)?,
+        ClaimResult::VersionMismatch => yield_and_takeover(config, &token)?,
         ClaimResult::RefusedAmbiguous => return Err(ServerError::ClaimRefused(ClaimResult::RefusedAmbiguous)),
     }
 
@@ -269,6 +277,7 @@ pub fn run_server(config: &ServerConfig) -> Result<(), ServerError> {
         pool_counters: counters,
         socket_path: config.endpoint.describe(),
         listen_addr,
+        token,
     });
 
     // accept 循环：非阻塞 accept 加 10 毫秒轮询加原子关闭标志。
@@ -334,6 +343,16 @@ pub fn run_server_rm(config: &RmServerConfig) -> Result<(), ServerError> {
         Listener::Unix(_) => config.endpoint.describe(),
     };
 
+    // 共享 token：配置注入已知值（测试）时直接用，空串时启动时生成（生产
+    // 路径），向前台标准输出打印（客户端经 CLI 旗标注入，与 TCP 臂打印
+    // 端点同一通道）。
+    let token = if config.token.is_empty() {
+        sidecar::generate_token()
+    } else {
+        config.token.clone()
+    };
+    println!("rm server token：{token}");
+
     // 建内核（标准配置）与共享聚合计数器（全体 worker 池的增减累加到同一聚合）。
     let kernel = KernelCore::new(KernelConfig::standard());
     let counters = PoolCounters::shared();
@@ -358,6 +377,7 @@ pub fn run_server_rm(config: &RmServerConfig) -> Result<(), ServerError> {
         // 实际地址（local_addr），Info 响应的监听地址与之一致。
         socket_path: socket_path.clone(),
         listen_addr: socket_path,
+        token,
     });
 
     // 空闲窗口一：等首个连接；空闲超时内无连接即干净退出。
@@ -476,23 +496,29 @@ fn finish_shutdown(
     Ok(())
 }
 
-/// 交接接管：连接旧 server、发 yield 请求、等旧 server 排空退出后重新认领。
+/// 交接接管：连接旧 server、发认证帧加 yield 请求、等旧 server 排空退出
+/// 后重新认领。
 ///
 /// # 步骤
-/// 1. 连接旧 server 的 endpoint（Unix 路径或 TCP 地址）；连接失败判
+/// 1. 读旧 sidecar 取 token（旧 server 为新版本时 token 非空；旧版本或
+///    sidecar 不可读时 token 为空，跳过认证直接发 yield）。
+/// 2. 连接旧 server 的 endpoint（Unix 路径或 TCP 地址）；连接失败判
 ///    `YieldFailed`。
-/// 2. 设 5 秒读超时，写 yield 请求帧。
-/// 3. 读一帧应答：读超时（旧 server 挂起）或应答非 yield 确认（旧版本
-///    binary 无该变体时以错误帧答复未知类型）判 `YieldFailed`。
-/// 4. 关闭连接，轮询 sidecar 文件消失（50 毫秒间隔、10 秒上限）判旧 server
+/// 3. 设 5 秒读超时；token 非空时先写认证帧并读 `AuthOk`，不匹配判
+///    `YieldFailed`。
+/// 4. 写 yield 请求帧，读一帧应答：读超时（旧 server 挂起）或应答非 yield
+///    确认（旧版本 binary 无该变体时以错误帧答复未知类型）判 `YieldFailed`。
+/// 5. 关闭连接，轮询 sidecar 文件消失（50 毫秒间隔、10 秒上限）判旧 server
 ///    退出；超时判 `YieldFailed`。
-/// 5. 重新认领 sidecar；得 `Registered` 即接管成功，其余态判 `YieldFailed`。
+/// 6. 重新认领 sidecar；得 `Registered` 即接管成功，其余态判 `YieldFailed`。
 ///
 /// # 边界与前提
 /// - 交接等待 10 秒长于旧 server 的排水安全超时 5 秒，正常路径必然先于
 ///   等待上限完成。
 /// - 两臂统一以 sidecar 消失为退出信号：旧 server 先删 socket 文件（Unix
 ///   臂）后删 sidecar，sidecar 消失时接管绑定无竞态。
+/// - token 为空（旧版本 server 无认证门）时跳过认证帧，直接发 yield，
+///   保证从旧版本升级的路径可用。
 ///
 /// # 副作用
 /// - 失败时不触碰旧 server 的文件（socket 与 sidecar），人工兜底归清理命令。
@@ -501,9 +527,15 @@ fn finish_shutdown(
 /// - 纯函数式入口：版本管理路径（版本不匹配强制交接）与显式交接路径调用
 ///   同一入口。
 /// - 退出信号源是 sidecar 文件消失（两臂同源，TCP server 也写 sidecar）。
-pub fn yield_and_takeover(config: &ServerConfig) -> Result<(), ServerError> {
+pub fn yield_and_takeover(config: &ServerConfig, token: &str) -> Result<(), ServerError> {
+    // 读旧 sidecar 取 token：旧 server 为新版本时 token 非空（需认证），
+    // 旧版本或 sidecar 不可读时 token 为空（跳过认证，直接发 yield）。
+    let old_token = sidecar::read_identity(&config.sidecar_path)
+        .map(|id| id.token)
+        .unwrap_or_default();
+
     // 连接旧 server：连接成功是交接的前提，两臂按 endpoint 形态分支。
-    let mut stream = match &config.endpoint {
+    let stream = match &config.endpoint {
         Endpoint::Unix(path) => Conn::Unix(
             UnixStream::connect(path).map_err(|e| ServerError::YieldFailed(format!("连接旧 server 失败：{e}")))?,
         ),
@@ -512,14 +544,42 @@ pub fn yield_and_takeover(config: &ServerConfig) -> Result<(), ServerError> {
         ),
     };
 
-    // 5 秒读超时：旧 server 挂起（不回应 yield）不无限阻塞。
+    // 5 秒读超时：旧 server 挂起（不回应）不无限阻塞。
     let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
-    stream
+
+    // 克隆写端：原流交给帧读取器，写端独立用于请求写回。
+    let mut writer = stream
+        .try_clone()
+        .map_err(|e| ServerError::YieldFailed(format!("克隆流失败：{e}")))?;
+
+    // 认证帧：token 非空时先发 Auth 并读 AuthOk（旧 server 为新版本）。
+    if !old_token.is_empty() {
+        writer
+            .write_all(protocol::encode_request(&ServerRequest::Auth { token: old_token.clone() }).as_bytes())
+            .map_err(|e| ServerError::YieldFailed(format!("写认证帧失败：{e}")))?;
+    }
+
+    // 写 yield 请求帧。
+    writer
         .write_all(protocol::encode_request(&ServerRequest::Yield).as_bytes())
         .map_err(|e| ServerError::YieldFailed(format!("写 yield 请求帧失败：{e}")))?;
 
-    // 读确认帧：只有 yield 确认表示旧 server 已受理交接。
     let mut reader = FrameReader::new(io::BufReader::new(stream));
+
+    // 读认证确认帧：token 非空时首帧是 AuthOk。
+    if !old_token.is_empty() {
+        let frame = reader
+            .read_frame()
+            .map_err(|e| ServerError::YieldFailed(format!("读认证确认帧失败：{e}")))?
+            .ok_or_else(|| ServerError::YieldFailed("旧 server 未应答即关闭连接".into()))?;
+        let response = protocol::parse_response(&frame)
+            .map_err(|e| ServerError::YieldFailed(format!("解析认证确认帧失败：{e}")))?;
+        if !matches!(response, ServerResponse::AuthOk) {
+            return Err(ServerError::YieldFailed(format!("旧 server 未受理认证：{response:?}")));
+        }
+    }
+
+    // 读 yield 确认帧：只有 yield 确认表示旧 server 已受理交接。
     let frame = reader
         .read_frame()
         .map_err(|e| ServerError::YieldFailed(format!("读 yield 确认帧失败：{e}")))?
@@ -543,7 +603,8 @@ pub fn yield_and_takeover(config: &ServerConfig) -> Result<(), ServerError> {
     }
 
     // 重新认领：sidecar 已消失，O_EXCL 创建应成功；其余态判交接失败。
-    match sidecar::claim_sidecar(&config.sidecar_path, &config.endpoint, &config.version) {
+    // token 与上下文一致（run_server 生成），sidecar 与 ctx.token 同源。
+    match sidecar::claim_sidecar(&config.sidecar_path, &config.endpoint, &config.version, token) {
         ClaimResult::Registered => Ok(()),
         other => Err(ServerError::YieldFailed(format!("交接后重新认领未通过：{other:?}"))),
     }
@@ -682,19 +743,39 @@ fn accept_loop(listener: &Listener, ctx: &Arc<ServerContext>, router: &Arc<Worke
     }
 }
 
-/// 每连接处理：帧读取 → 分派 → 响应写回，循环至对端关闭。
+/// 共享 token 判等：逐字节异或累加，避免逐字节短路带来的时序侧信道。
+///
+/// # 边界与前提
+/// - 长度不等直接判不等（token 长度固定 64 位，生产路径长度恒等）。
+fn tokens_match(expected: &str, given: &str) -> bool {
+    if expected.len() != given.len() {
+        return false;
+    }
+    let mut diff = 0u8;
+    for (x, y) in expected.bytes().zip(given.bytes()) {
+        diff |= x ^ y;
+    }
+    diff == 0
+}
+
+/// 每连接处理：认证门 → 帧读取 → 分派 → 响应写回，循环至对端关闭。
 ///
 /// # 步骤
 /// 1. 克隆写端，原流交给帧读取器，设读超时（`read_timeout` 参数）。
-/// 2. 循环读帧：EOF、读超时、非法 UTF-8 退出；帧长超限按协议约定关连接。
-/// 3. 畸形帧以 `Error` 帧答复后继续；执行请求与 forge 查询经 worker 路由
+/// 2. 认证门：读首帧，要求是 `Auth` 且 token 与上下文匹配（逐字节异或
+///    判等，避免时序侧信道）；匹配则写回 `AuthOk` 再进主循环，不匹配
+///    或首帧非 `Auth` 则直接断连（不回帧，避免向攻击者泄露差异）。
+/// 3. 循环读帧：EOF、读超时、非法 UTF-8 退出；帧长超限按协议约定关连接。
+/// 4. 畸形帧以 `Error` 帧答复后继续；执行请求与 forge 查询经 worker 路由
 ///    并阻塞等回复；控制请求直接应答并写回。
-/// 4. 关闭或 yield 确认帧写回即退出循环。
+/// 5. 关闭或 yield 确认帧写回即退出循环。
 ///
 /// # 边界与前提
 /// - 半开连接（对端静默不关）由读超时有界化：持久 server 传 30 秒，
 ///   --rm 独立模式传空闲超时（读超时即空闲语义）。
 /// - 本线程只做 I/O 与分派，不建池（池归 worker 线程所有）。
+/// - 探活连接（只建连接不发帧）在认证门读首帧时得 EOF，直接退出，
+///   不触发任何错误路径。
 ///
 /// # 副作用
 /// - 关闭请求会置位关闭标志。
@@ -709,6 +790,25 @@ fn handle_connection(stream: Conn, ctx: &ServerContext, router: &WorkerRouter, r
     let _ = stream.set_read_timeout(Some(read_timeout));
 
     let mut reader = FrameReader::new(io::BufReader::new(stream));
+
+    // 认证门：首帧必须是 Auth 且 token 匹配，不匹配即断连（不回帧）。
+    let first_frame = match reader.read_frame() {
+        Ok(Some(frame)) => frame,
+        _ => return,
+    };
+    let auth_ok = match protocol::parse_request(&first_frame) {
+        Ok(ServerRequest::Auth { token }) => tokens_match(&ctx.token, &token),
+        _ => false,
+    };
+    if !auth_ok {
+        return;
+    }
+    // 写回 AuthOk：客户端据以继续发真实请求。
+    let encoded = protocol::encode_response(&ServerResponse::AuthOk);
+    if writer.write_all(encoded.as_bytes()).is_err() {
+        return;
+    }
+
     // 读帧：EOF、读超时、非法 UTF-8 均退出。
     while let Ok(Some(frame)) = reader.read_frame() {
         // 分派：帧长超限按协议约定关连接；畸形帧以 Error 帧答复后继续；
@@ -818,9 +918,11 @@ fn dispatch_control(request: &ServerRequest, ctx: &ServerContext) -> ServerRespo
             ServerResponse::Yield
         }
         // 防御性兜底：正常路径 eval 与 forge 查询在调用本函数前已被拦截走
-        // worker 路由；若到达此臂说明上游分流缺失，以错误帧答复而非静默执行。
+        // worker 路由；auth 在认证门消费；若到达此臂说明上游分流缺失，
+        // 以错误帧答复而非静默执行。
         ServerRequest::Eval { .. } => ServerResponse::eval_err("执行请求应经 worker 路由，不应到达控制分派"),
         ServerRequest::ForgeQuery { .. } => ServerResponse::eval_err("forge 查询应经 worker 路由，不应到达控制分派"),
+        ServerRequest::Auth { .. } => ServerResponse::eval_err("认证请求应在认证门消费，不应到达控制分派"),
     }
 }
 
@@ -882,6 +984,29 @@ mod tests {
         }
     }
 
+    /// 读 sidecar 取共享 token。
+    fn read_token(config: &ServerConfig) -> String {
+        sidecar::read_identity(&config.sidecar_path).expect("sidecar 应可读").token
+    }
+
+    /// 在已有连接上发认证帧并读回 AuthOk。
+    fn authenticate(stream: &mut Conn, token: &str) {
+        stream
+            .write_all(protocol::encode_request(&ServerRequest::Auth { token: token.to_string() }).as_bytes())
+            .expect("写认证帧应成功");
+        let mut reader = FrameReader::new(io::BufReader::new(stream));
+        let frame = reader.read_frame().expect("读认证确认应成功").expect("应读到认证确认帧");
+        let response = protocol::parse_response(&frame).expect("认证确认帧解析应成功");
+        assert!(matches!(response, ServerResponse::AuthOk), "应得 AuthOk 帧：{response:?}");
+    }
+
+    /// 连接 server 并完成认证（发 Auth 帧、读 AuthOk）。
+    fn connect_auth(config: &ServerConfig) -> Conn {
+        let mut stream = connect(config);
+        authenticate(&mut stream, &read_token(config));
+        stream
+    }
+
     /// 发送请求帧并读回一帧响应。
     fn send_and_recv(stream: &mut Conn, request: &ServerRequest) -> ServerResponse {
         stream
@@ -901,7 +1026,7 @@ mod tests {
     }
 
     /// --rm 配置：唯一临时路径、worker 数 1、300 毫秒空闲超时（不依赖真实
-    /// 超时值，断言带 5 秒裕量）。
+    /// 超时值，断言带 5 秒裕量）、已知 token（测试注入）。
     fn rm_config(test_name: &str) -> RmServerConfig {
         let dir = std::env::temp_dir().join(format!("oxide_server_rm_test_{}_{}", std::process::id(), test_name));
         fs::create_dir_all(&dir).expect("测试目录创建应成功");
@@ -909,6 +1034,7 @@ mod tests {
             endpoint: Endpoint::Unix(dir.join("rm.sock")),
             worker_count: 1,
             idle_timeout: Duration::from_millis(300),
+            token: "test-rm-token".to_string(),
         }
     }
 
@@ -933,12 +1059,13 @@ mod tests {
     }
 
     /// --rm TCP 配置：固定空闲端口、worker 数 1、300 毫秒空闲超时（与 Unix
-    /// 配置同口径，不依赖真实超时值，断言带 5 秒裕量）。
+    /// 配置同口径，不依赖真实超时值，断言带 5 秒裕量）、已知 token（测试注入）。
     fn rm_tcp_config() -> RmServerConfig {
         RmServerConfig {
             endpoint: Endpoint::Tcp(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), free_tcp_port())),
             worker_count: 1,
             idle_timeout: Duration::from_millis(300),
+            token: "test-rm-token".to_string(),
         }
     }
 
@@ -987,7 +1114,7 @@ mod tests {
     fn version_response() {
         let config = unique_paths("version");
         let handle = start_server(config.clone());
-        let mut stream = connect(&config);
+        let mut stream = connect_auth(&config);
         let response = send_and_recv(&mut stream, &ServerRequest::Version);
         assert!(
             matches!(response, ServerResponse::Version { ref version } if version == env!("CARGO_PKG_VERSION")),
@@ -1001,7 +1128,7 @@ mod tests {
     fn status_response() {
         let config = unique_paths("status");
         let handle = start_server(config.clone());
-        let mut stream = connect(&config);
+        let mut stream = connect_auth(&config);
 
         // worker 池异步预热：轮询至聚合总数不小于 1（预热完成）。
         let deadline = Instant::now() + Duration::from_secs(5);
@@ -1038,7 +1165,7 @@ mod tests {
     fn health_response() {
         let config = unique_paths("health");
         let handle = start_server(config.clone());
-        let mut stream = connect(&config);
+        let mut stream = connect_auth(&config);
         let response = send_and_recv(&mut stream, &ServerRequest::Health);
         assert!(
             matches!(response, ServerResponse::Health { healthy: true }),
@@ -1052,7 +1179,7 @@ mod tests {
     fn info_response() {
         let config = unique_paths("info");
         let handle = start_server(config.clone());
-        let mut stream = connect(&config);
+        let mut stream = connect_auth(&config);
         let response = send_and_recv(&mut stream, &ServerRequest::Info);
         match response {
             ServerResponse::Info {
@@ -1077,7 +1204,7 @@ mod tests {
     fn shutdown_response_and_cleanup() {
         let config = unique_paths("shutdown");
         let handle = start_server(config.clone());
-        let mut stream = connect(&config);
+        let mut stream = connect_auth(&config);
         stop_server(&mut stream, handle);
         assert!(!config.sidecar_path.exists(), "sidecar 文件应被删除");
         assert!(!unix_path(&config.endpoint).exists(), "socket 文件应被删除");
@@ -1088,7 +1215,7 @@ mod tests {
     fn malformed_frame_error_response() {
         let config = unique_paths("malformed");
         let handle = start_server(config.clone());
-        let mut stream = connect(&config);
+        let mut stream = connect_auth(&config);
 
         // 发非 JSON 帧：应得 Error 帧。
         stream.write_all(b"not json at all\n").expect("写畸形帧应成功");
@@ -1111,7 +1238,7 @@ mod tests {
     fn eval_request_returns_value() {
         let config = unique_paths("eval");
         let handle = start_server(config.clone());
-        let mut stream = connect(&config);
+        let mut stream = connect_auth(&config);
         let response = send_and_recv(
             &mut stream,
             &ServerRequest::Eval {
@@ -1133,7 +1260,7 @@ mod tests {
     fn multi_frame_same_connection_and_second_instance_refused() {
         let config = unique_paths("multi");
         let handle = start_server(config.clone());
-        let mut stream = connect(&config);
+        let mut stream = connect_auth(&config);
 
         // 连续两帧逐帧应答，顺序保持。
         let first = send_and_recv(&mut stream, &ServerRequest::Status);
@@ -1170,8 +1297,8 @@ mod tests {
     fn concurrent_evals_across_connections() {
         let config = unique_paths("concurrent_evals");
         let handle = start_server(config.clone());
-        let mut stream_a = connect(&config);
-        let mut stream_b = connect(&config);
+        let mut stream_a = connect_auth(&config);
+        let mut stream_b = connect_auth(&config);
 
         // 两条连接各发 3 个 eval，响应逐帧按请求顺序送达。
         for code in ["1 + 1", "2 * 3", "10 - 4"] {
@@ -1245,8 +1372,8 @@ mod tests {
     fn control_request_not_blocked_by_eval() {
         let config = unique_paths("control_not_blocked");
         let handle = start_server(config.clone());
-        let mut stream_a = connect(&config);
-        let mut stream_b = connect(&config);
+        let mut stream_a = connect_auth(&config);
+        let mut stream_b = connect_auth(&config);
 
         // 连接 A 发长 eval（步数上限使执行有界，占住 worker 数百毫秒）。
         stream_a
@@ -1287,8 +1414,8 @@ mod tests {
     fn shutdown_with_in_flight_eval() {
         let config = unique_paths("shutdown_inflight");
         let handle = start_server(config.clone());
-        let mut stream_a = connect(&config);
-        let mut stream_b = connect(&config);
+        let mut stream_a = connect_auth(&config);
+        let mut stream_b = connect_auth(&config);
 
         // 连接 A 发长 eval（在途）；连接 B 发关闭请求。
         stream_a
@@ -1354,7 +1481,7 @@ mod tests {
         assert_eq!(id.version, "0.0.2", "B 的 sidecar 版本应为 0.0.2");
 
         // B 正常应答版本请求。
-        let mut stream = connect(&config);
+        let mut stream = connect_auth(&config);
         let response = send_and_recv(&mut stream, &ServerRequest::Version);
         assert!(matches!(response, ServerResponse::Version { .. }), "B 应应答版本请求：{response:?}");
         stop_server(&mut stream, handle_b);
@@ -1372,7 +1499,7 @@ mod tests {
         // sidecar（PID 存活且启动时刻刻度匹配，版本不匹配，认领判
         // VersionMismatch）。
         let listener = UnixListener::bind(unix_path(&config.endpoint)).expect("绑定模拟旧 server 应成功");
-        sidecar::write_exclusive(&sidecar::ServerIdentity::new(&config.endpoint, "0.0.0"), &config.sidecar_path)
+        sidecar::write_exclusive(&sidecar::ServerIdentity::new(&config.endpoint, "0.0.0", ""), &config.sidecar_path)
             .expect("写模拟 sidecar 应成功");
 
         // 模拟连接处理：接受循环，逐连接读一帧后回 Error 帧。须保持监听
@@ -1402,7 +1529,7 @@ mod tests {
         let config = unique_paths("yield_hang");
 
         let listener = UnixListener::bind(unix_path(&config.endpoint)).expect("绑定模拟旧 server 应成功");
-        sidecar::write_exclusive(&sidecar::ServerIdentity::new(&config.endpoint, "0.0.0"), &config.sidecar_path)
+        sidecar::write_exclusive(&sidecar::ServerIdentity::new(&config.endpoint, "0.0.0", ""), &config.sidecar_path)
             .expect("写模拟 sidecar 应成功");
 
         // 模拟连接处理：接受连接后挂住不回应（模拟挂起的旧 server）。
@@ -1445,7 +1572,7 @@ mod tests {
             version: env!("CARGO_PKG_VERSION").to_string(),
             bind_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
         };
-        yield_and_takeover(&config).expect("TCP 臂交接应成功");
+        yield_and_takeover(&config, "test-token").expect("TCP 臂交接应成功");
     }
 
     /// --rm 加断开 EOF：eval 得完成值后客户端断开，server 在有界时间内
@@ -1463,6 +1590,7 @@ mod tests {
 
         let handle = start_rm_server(config.clone());
         let mut stream = Conn::Unix(UnixStream::connect(unix_path(&config.endpoint)).expect("连接 rm server 应成功"));
+        authenticate(&mut stream, &config.token);
         let response = send_and_recv(
             &mut stream,
             &ServerRequest::Eval {
@@ -1541,6 +1669,7 @@ mod tests {
         let config = rm_config("second_refused");
         let handle = start_rm_server(config.clone());
         let mut stream = Conn::Unix(UnixStream::connect(unix_path(&config.endpoint)).expect("首个连接应成功"));
+        authenticate(&mut stream, &config.token);
         let response = send_and_recv(&mut stream, &ServerRequest::Health);
         assert!(
             matches!(response, ServerResponse::Health { healthy: true }),
@@ -1569,6 +1698,7 @@ mod tests {
         let config = rm_config("shutdown_req");
         let handle = start_rm_server(config.clone());
         let mut stream = Conn::Unix(UnixStream::connect(unix_path(&config.endpoint)).expect("连接 rm server 应成功"));
+        authenticate(&mut stream, &config.token);
         stop_server(&mut stream, handle);
         assert!(!unix_path(&config.endpoint).exists(), "socket 文件应被删除");
     }
@@ -1584,6 +1714,7 @@ mod tests {
             _ => panic!("应为 TCP 端点"),
         };
         let mut stream = Conn::Tcp(connect_rm_tcp(addr));
+        authenticate(&mut stream, &config.token);
         let response = send_and_recv(
             &mut stream,
             &ServerRequest::Eval {
@@ -1605,5 +1736,64 @@ mod tests {
         }
         let result = handle.join().expect("rm server 线程应正常退出");
         assert!(result.is_ok(), "rm server 应正常退出：{result:?}");
+    }
+
+    /// 认证门：token 匹配时首帧 Auth 得 AuthOk，后续请求正常应答。
+    #[test]
+    fn auth_gate_token_match_passes() {
+        let config = unique_paths("auth_match");
+        let handle = start_server(config.clone());
+        let mut stream = connect(&config);
+        authenticate(&mut stream, &read_token(&config));
+        let response = send_and_recv(&mut stream, &ServerRequest::Health);
+        assert!(
+            matches!(response, ServerResponse::Health { healthy: true }),
+            "认证后应正常应答：{response:?}"
+        );
+        stop_server(&mut stream, handle);
+    }
+
+    /// 认证门：token 不匹配时直接断连（不回帧），读首帧得 EOF。
+    #[test]
+    fn auth_gate_token_mismatch_disconnects() {
+        let config = unique_paths("auth_mismatch");
+        let handle = start_server(config.clone());
+        let mut stream = connect(&config);
+        // 发错误 token 的 Auth 帧。
+        stream
+            .write_all(
+                protocol::encode_request(&ServerRequest::Auth {
+                    token: "wrong-token".to_string(),
+                })
+                .as_bytes(),
+            )
+            .expect("写认证帧应成功");
+        // server 应直接断连：读首帧得 EOF。
+        let mut reader = FrameReader::new(io::BufReader::new(&mut stream));
+        let frame = reader.read_frame().expect("读帧应成功（EOF 不判错）");
+        assert!(frame.is_none(), "token 不匹配应直接断连（EOF）");
+        drop(stream);
+        // 开第二条连接认证后发关闭请求停 server。
+        let mut stop_stream = connect_auth(&config);
+        stop_server(&mut stop_stream, handle);
+    }
+
+    /// 认证门：首帧非 Auth 时直接断连（不回帧），读首帧得 EOF。
+    #[test]
+    fn auth_gate_non_auth_first_frame_disconnects() {
+        let config = unique_paths("auth_non_auth");
+        let handle = start_server(config.clone());
+        let mut stream = connect(&config);
+        // 首帧发 Health（非 Auth）：server 应直接断连。
+        stream
+            .write_all(protocol::encode_request(&ServerRequest::Health).as_bytes())
+            .expect("写请求帧应成功");
+        let mut reader = FrameReader::new(io::BufReader::new(&mut stream));
+        let frame = reader.read_frame().expect("读帧应成功（EOF 不判错）");
+        assert!(frame.is_none(), "首帧非 Auth 应直接断连（EOF）");
+        drop(stream);
+        // 开第二条连接认证后发关闭请求停 server。
+        let mut stop_stream = connect_auth(&config);
+        stop_server(&mut stop_stream, handle);
     }
 }

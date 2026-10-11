@@ -260,6 +260,7 @@ mod tests {
             starttime,
             port: 0,
             listen_addr: String::new(),
+            token: String::new(),
         }
     }
 
@@ -333,8 +334,11 @@ mod tests {
         let sidecar = dir.path("sidecar.json");
         let socket = dir.path("server.sock");
         let listener = UnixListener::bind(&socket).expect("绑定监听者应成功");
-        sidecar::write_exclusive(&sidecar::ServerIdentity::new(&Endpoint::Unix(socket.clone()), "0.0.0"), &sidecar)
-            .expect("写 sidecar 应成功");
+        sidecar::write_exclusive(
+            &sidecar::ServerIdentity::new(&Endpoint::Unix(socket.clone()), "0.0.0", "test-token"),
+            &sidecar,
+        )
+        .expect("写 sidecar 应成功");
         let outcome = liveness_scan(&sidecar, &Endpoint::Unix(socket.clone()));
         assert_eq!(outcome, LivenessOutcome::Noop, "存活 socket 应判无操作");
         assert!(sidecar.exists(), "sidecar 应原样");
@@ -350,7 +354,7 @@ mod tests {
         let sidecar = dir.path("sidecar.json");
         let socket = dir.path("server.sock");
         // sidecar 记本进程 PID 加真实刻度（进程活且刻度匹配）、无 socket。
-        let id = sidecar::ServerIdentity::new(&Endpoint::Unix(socket.clone()), "0.0.0");
+        let id = sidecar::ServerIdentity::new(&Endpoint::Unix(socket.clone()), "0.0.0", "test-token");
         sidecar::write_exclusive(&id, &sidecar).expect("写 sidecar 应成功");
         // 扫描线程：sidecar 存在时进入僵尸分支，有界等待 sidecar 消失。
         let sidecar_scan = sidecar.clone();

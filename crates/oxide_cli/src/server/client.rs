@@ -52,16 +52,18 @@ pub fn send_control_request(request: &ServerRequest) -> Result<ServerResponse, C
     send_control_request_from(&sidecar::well_known_sidecar_path(), request)
 }
 
-/// 注入 sidecar 路径的入口（测试与复用）：读 sidecar 取 socket 路径，
-/// 连接、发请求、读响应，三分支错误映射。
+/// 注入 sidecar 路径的入口（测试与复用）：读 sidecar 取 socket 路径与 token，
+/// 连接、发认证帧、读 AuthOk、发请求、读响应，三分支错误映射。
 ///
 /// # 步骤
 /// 1. 读 sidecar；缺失或损坏（解析失败）同归连接失败分支。
 /// 2. 连接 socket（5 秒超时安全网）。
 /// 3. 设读超时与写超时各 5 秒。
-/// 4. 写请求帧。
-/// 5. 读响应帧；io 错误或 server 未应答即关闭（EOF）判连接失败。
-/// 6. 解析响应帧；畸形判协议错误，Error 帧判 server 错误，其余返回。
+/// 4. 发认证帧（token 取 sidecar），读回 `AuthOk`；非 `AuthOk` 判 server
+///    错误（server 版本过旧需重启）。
+/// 5. 写请求帧。
+/// 6. 读响应帧；io 错误或 server 未应答即关闭（EOF）判连接失败。
+/// 7. 解析响应帧；畸形判协议错误，Error 帧判 server 错误，其余返回。
 ///
 /// # 边界与前提
 /// - sidecar 路径由调用方注入，生产入口用 well-known 路径。
@@ -80,19 +82,42 @@ pub fn send_control_request_from(sidecar_path: &Path, request: &ServerRequest) -
 
     // 连接：5 秒超时是安全网，本地连接立即完成或立即失败。endpoint 取 sidecar
     // 记录的文本形态（host:port 或路径），撤掉 Unix 过渡包装。
-    let mut stream = connect_with_timeout(&sidecar::parse_endpoint(&identity.socket_path), CONNECT_TIMEOUT)?;
+    let stream = connect_with_timeout(&sidecar::parse_endpoint(&identity.socket_path), CONNECT_TIMEOUT)?;
 
     // 读写超时各 5 秒：server 挂起（不回应）时不无限阻塞。
     let _ = stream.set_read_timeout(Some(CONNECT_TIMEOUT));
     let _ = stream.set_write_timeout(Some(CONNECT_TIMEOUT));
 
+    // 克隆写端：原流交给帧读取器，写端独立用于帧写回。
+    let mut writer = stream
+        .try_clone()
+        .map_err(|e| ClientError::Connect(format!("克隆流失败：{e}")))?;
+
+    // 发认证帧：token 取 sidecar，server 侧逐字节异或判等。
+    writer
+        .write_all(protocol::encode_request(&ServerRequest::Auth { token: identity.token }).as_bytes())
+        .map_err(|e| ClientError::Connect(format!("写认证帧失败：{e}")))?;
+
+    let mut reader = FrameReader::new(BufReader::new(stream));
+
+    // 读认证确认帧：只有 AuthOk 表示 server 已受理认证。
+    let frame = reader
+        .read_frame()
+        .map_err(|e| ClientError::Connect(format!("读认证确认帧失败：{e}")))?
+        .ok_or_else(|| ClientError::Connect("server 未应答即关闭连接".into()))?;
+    let auth_response = protocol::parse_response(&frame).map_err(ClientError::Protocol)?;
+    if !matches!(auth_response, ServerResponse::AuthOk) {
+        return Err(ClientError::Server(format!(
+            "server 未受理认证（server 版本可能过旧，需重启）：{auth_response:?}"
+        )));
+    }
+
     // 写请求帧（含结尾换行）。
-    stream
+    writer
         .write_all(protocol::encode_request(request).as_bytes())
         .map_err(|e| ClientError::Connect(format!("写请求帧失败：{e}")))?;
 
     // 读响应帧：io 错误判连接失败，EOF（server 未应答即关闭）判连接失败。
-    let mut reader = FrameReader::new(BufReader::new(stream));
     let frame = reader
         .read_frame()
         .map_err(|e| ClientError::Connect(format!("读响应帧失败：{e}")))?
@@ -180,9 +205,9 @@ mod tests {
         });
     }
 
-    /// 写一个指向给定 socket 路径的合法 sidecar。
+    /// 写一个指向给定 socket 路径的合法 sidecar（含 token）。
     fn write_sidecar(sidecar: &Path, socket: &Path) {
-        let identity = sidecar::ServerIdentity::new(&Endpoint::Unix(socket.to_path_buf()), "0.0.0");
+        let identity = sidecar::ServerIdentity::new(&Endpoint::Unix(socket.to_path_buf()), "0.0.0", "test-token");
         sidecar::write_exclusive(&identity, sidecar).expect("写 sidecar 应成功");
     }
 
@@ -232,7 +257,7 @@ mod tests {
         assert!(matches!(err, ClientError::Protocol(_)), "应判协议错误：{err:?}");
     }
 
-    /// 假 server 回 Error 帧：判 server 错误分支且 message 原样带出。
+    /// 假 server 回 Error 帧（认证确认阶段）：判 server 错误分支。
     #[test]
     fn error_frame_is_server_branch() {
         let dir = TestDir::new();
@@ -248,7 +273,7 @@ mod tests {
             let _ = stream.write_all(frame.as_bytes());
         });
         let err = send_control_request_from(&sidecar, &ServerRequest::Version).unwrap_err();
-        assert_eq!(err, ClientError::Server("server 内部错误".into()), "message 应原样带出：{err:?}");
+        assert!(matches!(err, ClientError::Server(_)), "应判 server 错误分支：{err:?}");
     }
 
     /// 假 server 接受后不回应：5 秒读超时后判连接失败分支。
@@ -269,5 +294,27 @@ mod tests {
         let elapsed = started.elapsed();
         assert!(matches!(err, ClientError::Connect(_)), "应判连接失败：{err:?}");
         assert!(elapsed >= Duration::from_secs(5), "应命中 5 秒读超时：{elapsed:?}");
+    }
+
+    /// 假 server 回 AuthOk 加 Version 响应：认证通过后正常读回响应。
+    #[test]
+    fn auth_then_request_success() {
+        let dir = TestDir::new();
+        let sidecar = dir.path("sidecar.json");
+        let socket = dir.path("server.sock");
+        write_sidecar(&sidecar, &socket);
+        fake_server(&socket, |stream| {
+            let mut reader = FrameReader::new(BufReader::new(stream.try_clone().expect("克隆流应成功")));
+            // 读认证帧，回 AuthOk。
+            let _ = reader.read_frame();
+            let auth_ok = protocol::encode_response(&ServerResponse::AuthOk);
+            stream.write_all(auth_ok.as_bytes()).expect("写 AuthOk 应成功");
+            // 读请求帧，回 Version 响应。
+            let _ = reader.read_frame();
+            let version = protocol::encode_response(&ServerResponse::Version { version: "0.0.0".into() });
+            stream.write_all(version.as_bytes()).expect("写 Version 应成功");
+        });
+        let response = send_control_request_from(&sidecar, &ServerRequest::Version).expect("版本请求应成功");
+        assert!(matches!(response, ServerResponse::Version { .. }), "应得 Version 帧：{response:?}");
     }
 }

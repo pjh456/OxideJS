@@ -126,6 +126,11 @@ pub enum ServerRequest {
     Shutdown,
     /// 交接请求：旧 server 排空在途后退出，让出 socket 路径。
     Yield,
+    /// 认证请求：携带共享 token，连接建立后的首帧。
+    Auth {
+        /// 共享 token（十六进制），server 侧逐字节异或判等。
+        token: String,
+    },
 }
 
 /// server 响应帧：每类请求一个响应，外加协议错误帧。
@@ -185,6 +190,8 @@ pub enum ServerResponse {
     Shutdown,
     /// 交接确认：旧 server 已受理，开始排空退出。
     Yield,
+    /// 认证确认：首帧 token 校验通过，客户端可继续发真实请求。
+    AuthOk,
     /// 协议错误帧：畸形帧或未知类型，server 以该帧答复。
     Error { message: String },
 }
@@ -208,7 +215,8 @@ impl ServerResponse {
 }
 
 /// 请求帧可取的 `type` 值（须与 `ServerRequest` 变体保持同步）。
-const REQUEST_TAGS: &[&str] = &["eval", "forge_query", "version", "status", "health", "info", "shutdown", "yield"];
+const REQUEST_TAGS: &[&str] =
+    &["eval", "forge_query", "version", "status", "health", "info", "shutdown", "yield", "auth"];
 
 /// 响应帧可取的 `type` 值（须与 `ServerResponse` 变体保持同步）。
 const RESPONSE_TAGS: &[&str] = &[
@@ -220,6 +228,7 @@ const RESPONSE_TAGS: &[&str] = &[
     "info",
     "shutdown",
     "yield",
+    "auth_ok",
     "error",
 ];
 
@@ -408,7 +417,7 @@ mod tests {
         });
     }
 
-    /// 六类控制请求 round-trip。
+    /// 六类控制请求加认证请求 round-trip。
     #[test]
     fn control_request_roundtrip() {
         for req in [
@@ -418,6 +427,7 @@ mod tests {
             ServerRequest::Info,
             ServerRequest::Shutdown,
             ServerRequest::Yield,
+            ServerRequest::Auth { token: "ab".into() },
         ] {
             roundtrip_request(&req);
         }
@@ -445,6 +455,7 @@ mod tests {
             },
             ServerResponse::Shutdown,
             ServerResponse::Yield,
+            ServerResponse::AuthOk,
             ServerResponse::Error { message: "boom".into() },
         ] {
             roundtrip_response(&resp);
@@ -548,6 +559,16 @@ mod tests {
             r#"{"type":"eval","code":"1","max_steps":7}"#
         );
         assert_eq!(serde_json::to_string(&ServerRequest::Health).unwrap(), r#"{"type":"health"}"#);
+    }
+
+    /// 序列化形态：auth 请求携带 token 字段，auth_ok 响应无载荷。
+    #[test]
+    fn auth_frame_serialization_shape() {
+        assert_eq!(
+            serde_json::to_string(&ServerRequest::Auth { token: "ab12".into() }).unwrap(),
+            r#"{"type":"auth","token":"ab12"}"#
+        );
+        assert_eq!(serde_json::to_string(&ServerResponse::AuthOk).unwrap(), r#"{"type":"auth_ok"}"#);
     }
 
     /// 序列化形态：eval_result 省略 None 字段。

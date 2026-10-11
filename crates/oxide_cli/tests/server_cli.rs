@@ -95,13 +95,24 @@ fn send_and_recv(stream: &mut Conn, request: &ServerRequest) -> ServerResponse {
     protocol::parse_response(&frame).expect("响应帧解析应成功")
 }
 
-/// 读 well-known sidecar 取 endpoint 并连接 server（两臂按形态分支）。
+/// 读 well-known sidecar 取 endpoint 与 token 并连接 server（两臂按形态分支），
+/// 完成认证（发 Auth 帧、读 AuthOk）。
 fn connect_well_known() -> Conn {
     let id = sidecar::read_identity(&sidecar::well_known_sidecar_path()).expect("读 sidecar 应成功");
-    match sidecar::parse_endpoint(&id.socket_path) {
+    let stream = match sidecar::parse_endpoint(&id.socket_path) {
         Endpoint::Unix(path) => Conn::Unix(UnixStream::connect(&path).expect("连接 server 应成功")),
         Endpoint::Tcp(addr) => Conn::Tcp(TcpStream::connect(addr).expect("连接 server 应成功")),
-    }
+    };
+    let mut stream = stream;
+    // 发认证帧并读回 AuthOk。
+    stream
+        .write_all(protocol::encode_request(&ServerRequest::Auth { token: id.token }).as_bytes())
+        .expect("写认证帧应成功");
+    let mut reader = FrameReader::new(BufReader::new(&mut stream));
+    let frame = reader.read_frame().expect("读认证确认应成功").expect("应读到认证确认帧");
+    let response = protocol::parse_response(&frame).expect("认证确认帧解析应成功");
+    assert!(matches!(response, ServerResponse::AuthOk), "应得 AuthOk 帧：{response:?}");
+    stream
 }
 
 /// 探测空闲端口：临时 `TcpListener` 绑 0 端口取操作系统分配的端口后释放。
@@ -116,9 +127,25 @@ fn free_port() -> u16 {
 }
 
 /// 按端口直连 server：TCP 回环连接包成 `Conn`。
+/// 按端口直连 server：TCP 回环连接包成 `Conn`，完成认证（发 Auth 帧、读 AuthOk）。
+/// token 从 well-known sidecar 读回（非 --rm 形态）。
 fn connect_tcp(port: u16) -> Conn {
+    let id = sidecar::read_identity(&sidecar::well_known_sidecar_path()).expect("读 sidecar 应成功");
+    connect_tcp_with_token(port, &id.token)
+}
+
+/// 按端口直连 server 并以给定 token 认证（--rm 形态无 sidecar，token 经 stdout 传递）。
+fn connect_tcp_with_token(port: u16, token: &str) -> Conn {
     let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port);
-    Conn::Tcp(TcpStream::connect(addr).expect("连接 server 应成功"))
+    let mut stream = Conn::Tcp(TcpStream::connect(addr).expect("连接 server 应成功"));
+    stream
+        .write_all(protocol::encode_request(&ServerRequest::Auth { token: token.to_string() }).as_bytes())
+        .expect("写认证帧应成功");
+    let mut reader = FrameReader::new(BufReader::new(&mut stream));
+    let frame = reader.read_frame().expect("读认证确认应成功").expect("应读到认证确认帧");
+    let response = protocol::parse_response(&frame).expect("认证确认帧解析应成功");
+    assert!(matches!(response, ServerResponse::AuthOk), "应得 AuthOk 帧：{response:?}");
+    stream
 }
 
 /// help 列全部十一个子命令。
@@ -882,10 +909,11 @@ fn server_rm_dynamic_port_prints() {
         .spawn()
         .expect("oxide server start --rm 应可启动");
 
-    // 后台线程消费 stdout：见到端点打印行即把端口发主线程，收集全部行至 EOF。
-    // 端口解析取稳健形态：只认 `127.0.0.1:` 前缀与紧随数字，不断言完整句子。
+    // 后台线程消费 stdout：见到端点打印行即把端口发主线程，见到 token 打印行
+    // 即把 token 发主线程，收集全部行至 EOF。
     let stdout_pipe = child.stdout.take().expect("stdout 管道应可取");
     let (port_tx, port_rx) = std::sync::mpsc::channel::<u16>();
+    let (token_tx, token_rx) = std::sync::mpsc::channel::<String>();
     let out_handle = std::thread::spawn(move || {
         let mut reader = BufReader::new(stdout_pipe);
         let mut lines = Vec::new();
@@ -903,6 +931,12 @@ fn server_rm_dynamic_port_prints() {
                     let _ = port_tx.send(port);
                 }
             }
+            if let Some(idx) = line.find("rm server token：") {
+                let token = line[idx + "rm server token：".len()..].trim().to_string();
+                if !token.is_empty() {
+                    let _ = token_tx.send(token);
+                }
+            }
         }
         lines
     });
@@ -912,9 +946,14 @@ fn server_rm_dynamic_port_prints() {
         .recv_timeout(Duration::from_secs(30))
         .expect("--rm 进程应在有界时间内打印实际端口");
     assert_ne!(port, 0, "操作系统应分配非 0 端口");
+    // token 行与端口行同批打印：有界时间内应得非空 token。
+    let token = token_rx
+        .recv_timeout(Duration::from_secs(30))
+        .expect("--rm 进程应在有界时间内打印 token");
+    assert!(!token.is_empty(), "token 应非空");
 
     // 连接该端口发一枚 eval 得完成值。
-    let mut stream = connect_tcp(port);
+    let mut stream = connect_tcp_with_token(port, &token);
     let response = send_and_recv(
         &mut stream,
         &ServerRequest::Eval {

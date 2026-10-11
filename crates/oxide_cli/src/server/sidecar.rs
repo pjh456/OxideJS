@@ -12,7 +12,7 @@
 //!   同目录；有意不随退出删除（跨重启的诊断工件），不在清理命令范围内。
 
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, Write};
+use std::io::{self, Read, Write};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpStream};
 use std::os::unix::io::AsRawFd;
 use std::os::unix::net::UnixStream;
@@ -38,6 +38,8 @@ use serde::{Deserialize, Serialize};
 /// - `listen_addr`：监听地址（网络身份——server 可达的网络接口，安全边界
 ///   关注点：loopback-only 与 all-interfaces 的区分）；旧 sidecar 无该字段
 ///   时读回为空串（serde 缺省）。
+/// - `token`：共享 token（十六进制），控制客户端认证帧用；旧 sidecar 无该
+///   字段时读回为空串（serde 缺省）。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ServerIdentity {
     pub pid: u32,
@@ -54,6 +56,10 @@ pub struct ServerIdentity {
     /// 缺省），探活裁决仍走 socket_path 文本，行为不变。
     #[serde(default)]
     pub listen_addr: String,
+    /// 共享 token（十六进制）：控制客户端连接后首帧认证用；旧 sidecar
+    /// 无该字段时读回为空串（serde 缺省）。
+    #[serde(default)]
+    pub token: String,
 }
 
 impl ServerIdentity {
@@ -67,9 +73,10 @@ impl ServerIdentity {
     /// - `port` 取端点的 TCP 端口（Unix 臂无端口，记 0）。
     /// - `listen_addr` 取端点的文本形态（`endpoint.describe()`），与
     ///   `socket_path` 同源同时机（认领时、bind 之前），记配置监听地址。
+    /// - `token` 由调用方注入（server 启动时生成），本函数不生成。
     /// - 非 Linux 宿主（`/proc` 缺位）时 `starttime` 填 0，交叉核对退化，
     ///   liveness 由 endpoint 探活裁决。
-    pub fn new(endpoint: &Endpoint, version: &str) -> Self {
+    pub fn new(endpoint: &Endpoint, version: &str, token: &str) -> Self {
         let pid = std::process::id();
         let started_at = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
         let port = match endpoint {
@@ -85,8 +92,40 @@ impl ServerIdentity {
             starttime: process_starttime(pid).unwrap_or(0),
             port,
             listen_addr: socket_path,
+            token: token.to_string(),
         }
     }
+}
+
+/// 生成共享 token：读 `/dev/urandom` 32 字节转十六进制（64 位小写）。
+///
+/// # 边界与前提
+/// - 非 Linux 宿主（`/dev/urandom` 缺位）或读取失败时回落时间加 PID 熵
+///   混合（本宿主恒为 Linux，回落臂仅保编译）。
+pub fn generate_token() -> String {
+    let mut bytes = [0u8; 32];
+    let ok = fs::File::open("/dev/urandom")
+        .and_then(|mut file| file.read_exact(&mut bytes))
+        .is_ok();
+    if !ok {
+        bytes = fallback_entropy();
+    }
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// 非 Linux 熵回落：纳秒时间加 PID 经 xorshift 混合出 32 字节。
+fn fallback_entropy() -> [u8; 32] {
+    let ns = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos() as u64;
+    let pid = std::process::id() as u64;
+    let mut seed = ns ^ (pid << 32);
+    let mut out = [0u8; 32];
+    for byte in out.iter_mut() {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        *byte = (seed & 0xff) as u8;
+    }
+    out
 }
 
 /// 读取当前进程 uid（`/proc/self/status` 的 `Uid:` 行首值）。
@@ -208,12 +247,22 @@ impl WellKnownLock {
 /// # 边界与前提
 /// - 文件已存在时返回 `AlreadyExists`，调用方据此转入读回裁决。
 ///
+/// # 副作用
+/// - Unix 臂写入后显式置 0600（sidecar 含共享 token，仅属主可读写）；
+///   非 Unix 平台该位语义为空操作。
+///
 /// # 注意事项
 /// - 写入不同步磁盘：崩溃残留的半写文件按损坏处理，由 liveness 检查兜底。
 pub fn write_exclusive(identity: &ServerIdentity, path: &Path) -> io::Result<()> {
     let json = serde_json::to_string(identity).expect("身份序列化不会失败");
     let mut file = OpenOptions::new().create_new(true).write(true).open(path)?;
     file.write_all(json.as_bytes())?;
+    // sidecar 含共享 token：显式 0600，仅属主可读写。
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
+    }
     Ok(())
 }
 
@@ -303,9 +352,9 @@ pub enum ClaimResult {
 /// # 注意事项
 /// - 意外 io 错误（权限等）保守判 `RefusedAmbiguous`；方向安全（拒绝注册
 ///   不会双注册）。
-pub fn claim_sidecar(sidecar_path: &Path, endpoint: &Endpoint, new_version: &str) -> ClaimResult {
+pub fn claim_sidecar(sidecar_path: &Path, endpoint: &Endpoint, new_version: &str, token: &str) -> ClaimResult {
     // 先尝试 O_EXCL 创建：sidecar 不存在即成功。
-    match write_exclusive(&ServerIdentity::new(endpoint, new_version), sidecar_path) {
+    match write_exclusive(&ServerIdentity::new(endpoint, new_version, token), sidecar_path) {
         Ok(()) => return ClaimResult::Registered,
         Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {}
         Err(_) => return ClaimResult::RefusedAmbiguous,
@@ -330,22 +379,24 @@ pub fn claim_sidecar(sidecar_path: &Path, endpoint: &Endpoint, new_version: &str
 
     // endpoint 死：按 sidecar 可读性分支。
     match recorded {
-        Some(id) => claim_dead_socket(&id, sidecar_path, endpoint, new_version),
+        Some(id) => claim_dead_socket(&id, sidecar_path, endpoint, new_version, token),
         None => {
             // 损坏文件：删 sidecar 与 socket 文件（Unix 臂）后重建（endpoint
             // 探活已失败，文件无监听者，不会误删存活 server 的 socket）。
             remove_stale(sidecar_path, endpoint);
-            re_register(sidecar_path, endpoint, new_version)
+            re_register(sidecar_path, endpoint, new_version, token)
         }
     }
 }
 
 /// endpoint 死且 sidecar 可解析：按 PID 与启动时刻刻度裁决陈旧性。
-fn claim_dead_socket(id: &ServerIdentity, sidecar_path: &Path, endpoint: &Endpoint, new_version: &str) -> ClaimResult {
+fn claim_dead_socket(
+    id: &ServerIdentity, sidecar_path: &Path, endpoint: &Endpoint, new_version: &str, token: &str,
+) -> ClaimResult {
     // PID 死：陈旧残留，删 sidecar 与 socket 文件（Unix 臂）后重建。
     if !pid_alive(id.pid) {
         remove_stale(sidecar_path, endpoint);
-        return re_register(sidecar_path, endpoint, new_version);
+        return re_register(sidecar_path, endpoint, new_version, token);
     }
 
     // PID 活：交叉核对启动时刻刻度裁决 PID 复用。
@@ -356,7 +407,7 @@ fn claim_dead_socket(id: &ServerIdentity, sidecar_path: &Path, endpoint: &Endpoi
 
     // 刻度失配：PID 已被复用，sidecar 是陈旧残留。
     remove_stale(sidecar_path, endpoint);
-    re_register(sidecar_path, endpoint, new_version)
+    re_register(sidecar_path, endpoint, new_version, token)
 }
 
 /// 删除 sidecar 与 socket 文件（Unix 臂；endpoint 探活已失败，文件无监听者，
@@ -369,8 +420,8 @@ fn remove_stale(sidecar_path: &Path, endpoint: &Endpoint) {
 }
 
 /// 清理后重建 sidecar，重建失败保守拒绝。
-fn re_register(sidecar_path: &Path, endpoint: &Endpoint, new_version: &str) -> ClaimResult {
-    match write_exclusive(&ServerIdentity::new(endpoint, new_version), sidecar_path) {
+fn re_register(sidecar_path: &Path, endpoint: &Endpoint, new_version: &str, token: &str) -> ClaimResult {
+    match write_exclusive(&ServerIdentity::new(endpoint, new_version, token), sidecar_path) {
         Ok(()) => ClaimResult::Registered,
         Err(_) => ClaimResult::RefusedAmbiguous,
     }
@@ -437,6 +488,7 @@ mod tests {
             starttime: 0,
             port: 0,
             listen_addr: String::new(),
+            token: String::new(),
         }
     }
 
@@ -445,18 +497,22 @@ mod tests {
     fn identity_roundtrip() {
         let dir = TestDir::new();
         let path = dir.path("sidecar.json");
-        let id = ServerIdentity::new(&Endpoint::Unix(PathBuf::from("/tmp/oxide-test.sock")), "0.0.0");
+        let id = ServerIdentity::new(&Endpoint::Unix(PathBuf::from("/tmp/oxide-test.sock")), "0.0.0", "test-token");
         write_exclusive(&id, &path).expect("写 sidecar 应成功");
         let read = read_identity(&path).expect("读回 sidecar 应成功");
-        assert_eq!(read, id, "六字段应逐字段一致");
+        assert_eq!(read, id, "字段应逐字段一致");
     }
 
     /// 端口字段：TCP 端点记端点端口（机器可读形态），Unix 臂记 0。
     #[test]
     fn identity_port_per_arm() {
-        let tcp = ServerIdentity::new(&Endpoint::Tcp(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 4242)), "0.0.0");
+        let tcp = ServerIdentity::new(
+            &Endpoint::Tcp(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 4242)),
+            "0.0.0",
+            "test-token",
+        );
         assert_eq!(tcp.port, 4242, "TCP 臂应记端点端口");
-        let unix = ServerIdentity::new(&Endpoint::Unix(PathBuf::from("/tmp/oxide-test.sock")), "0.0.0");
+        let unix = ServerIdentity::new(&Endpoint::Unix(PathBuf::from("/tmp/oxide-test.sock")), "0.0.0", "test-token");
         assert_eq!(unix.port, 0, "Unix 臂应记 0");
     }
 
@@ -466,7 +522,7 @@ mod tests {
         let dir = TestDir::new();
         let path = dir.path("sidecar.json");
         let endpoint = Endpoint::Tcp(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 4242));
-        let id = ServerIdentity::new(&endpoint, "0.0.0");
+        let id = ServerIdentity::new(&endpoint, "0.0.0", "test-token");
         write_exclusive(&id, &path).expect("写 sidecar 应成功");
         let read = read_identity(&path).expect("读回 sidecar 应成功");
         assert_eq!(read, id, "字段应逐字段一致");
@@ -487,6 +543,35 @@ mod tests {
         let id = read_identity(&path).expect("旧 sidecar 应可读回");
         assert_eq!(id.port, 0, "无 port 字段应读回 0");
         assert_eq!(id.listen_addr, "", "无 listen_addr 字段应读回空串");
+        assert_eq!(id.token, "", "无 token 字段应读回空串");
+    }
+
+    /// token 生成：64 位小写十六进制，两次调用取值不同。
+    #[test]
+    fn generate_token_is_64_hex_and_unique() {
+        let a = generate_token();
+        let b = generate_token();
+        assert_eq!(a.len(), 64, "token 应为 64 位十六进制");
+        assert!(
+            a.chars().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()),
+            "token 应全为小写十六进制"
+        );
+        assert_ne!(a, b, "两次生成的 token 应不同");
+    }
+
+    /// sidecar 文件权限：写入后显式 0600（仅属主可读写）。
+    #[test]
+    fn write_exclusive_sets_0600() {
+        let dir = TestDir::new();
+        let path = dir.path("sidecar.json");
+        let id = ServerIdentity::new(&Endpoint::Unix(PathBuf::from("/tmp/oxide-test.sock")), "0.0.0", "test-token");
+        write_exclusive(&id, &path).expect("写 sidecar 应成功");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = fs::metadata(&path).expect("读元数据应成功").permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600, "sidecar 文件权限应为 0600");
+        }
     }
 
     /// O_EXCL 排他：同路径二次 create_new 必得 AlreadyExists。
@@ -494,7 +579,7 @@ mod tests {
     fn write_exclusive_second_create_fails() {
         let dir = TestDir::new();
         let path = dir.path("sidecar.json");
-        let id = ServerIdentity::new(&Endpoint::Unix(PathBuf::from("/tmp/oxide-test.sock")), "0.0.0");
+        let id = ServerIdentity::new(&Endpoint::Unix(PathBuf::from("/tmp/oxide-test.sock")), "0.0.0", "test-token");
         write_exclusive(&id, &path).expect("首次写入应成功");
         let err = write_exclusive(&id, &path).unwrap_err();
         assert_eq!(err.kind(), io::ErrorKind::AlreadyExists, "二次 create_new 必得 AlreadyExists");
@@ -519,7 +604,10 @@ mod tests {
         let dir = TestDir::new();
         let sidecar = dir.path("sidecar.json");
         let socket = dir.path("server.sock");
-        assert_eq!(claim_sidecar(&sidecar, &Endpoint::Unix(socket.clone()), "0.0.0"), ClaimResult::Registered);
+        assert_eq!(
+            claim_sidecar(&sidecar, &Endpoint::Unix(socket.clone()), "0.0.0", "test-token"),
+            ClaimResult::Registered
+        );
         let id = read_identity(&sidecar).expect("sidecar 应已写入");
         assert_eq!(id.pid, std::process::id());
         assert_eq!(id.socket_path, socket.to_str().unwrap());
@@ -534,10 +622,10 @@ mod tests {
         let socket = dir.path("server.sock");
         // 存活 server 必有 sidecar（启动顺序契约：先写 sidecar 再 bind endpoint）。
         let listener = UnixListener::bind(&socket).expect("绑定监听者应成功");
-        write_exclusive(&ServerIdentity::new(&Endpoint::Unix(socket.clone()), "0.0.0"), &sidecar)
+        write_exclusive(&ServerIdentity::new(&Endpoint::Unix(socket.clone()), "0.0.0", "test-token"), &sidecar)
             .expect("写 sidecar 应成功");
         assert_eq!(
-            claim_sidecar(&sidecar, &Endpoint::Unix(socket.clone()), "0.0.0"),
+            claim_sidecar(&sidecar, &Endpoint::Unix(socket.clone()), "0.0.0", "test-token"),
             ClaimResult::AlreadyRunning
         );
         drop(listener);
@@ -552,10 +640,10 @@ mod tests {
         let socket = dir.path("server.sock");
         let listener = UnixListener::bind(&socket).expect("绑定监听者应成功");
         // 旧 sidecar 版本与本进程版本不同：比对判不匹配。
-        write_exclusive(&ServerIdentity::new(&Endpoint::Unix(socket.clone()), "0.0.0"), &sidecar)
+        write_exclusive(&ServerIdentity::new(&Endpoint::Unix(socket.clone()), "0.0.0", "test-token"), &sidecar)
             .expect("写 sidecar 应成功");
         assert_eq!(
-            claim_sidecar(&sidecar, &Endpoint::Unix(socket.clone()), "0.0.1"),
+            claim_sidecar(&sidecar, &Endpoint::Unix(socket.clone()), "0.0.1", "test-token"),
             ClaimResult::VersionMismatch
         );
         drop(listener);
@@ -568,7 +656,10 @@ mod tests {
         let sidecar = dir.path("sidecar.json");
         let socket = dir.path("server.sock");
         write_exclusive(&stale_identity(dead_pid(), &socket), &sidecar).expect("写陈旧 sidecar 应成功");
-        assert_eq!(claim_sidecar(&sidecar, &Endpoint::Unix(socket.clone()), "0.0.0"), ClaimResult::Registered);
+        assert_eq!(
+            claim_sidecar(&sidecar, &Endpoint::Unix(socket.clone()), "0.0.0", "test-token"),
+            ClaimResult::Registered
+        );
         let id = read_identity(&sidecar).expect("重建 sidecar 应可读");
         assert_eq!(id.pid, std::process::id(), "重建 sidecar 应为本进程身份");
     }
@@ -581,7 +672,10 @@ mod tests {
         let socket = dir.path("server.sock");
         // PID 是本进程（存活），启动时刻刻度为占位值：PID 已复用。
         write_exclusive(&stale_identity(std::process::id(), &socket), &sidecar).expect("写陈旧 sidecar 应成功");
-        assert_eq!(claim_sidecar(&sidecar, &Endpoint::Unix(socket.clone()), "0.0.0"), ClaimResult::Registered);
+        assert_eq!(
+            claim_sidecar(&sidecar, &Endpoint::Unix(socket.clone()), "0.0.0", "test-token"),
+            ClaimResult::Registered
+        );
     }
 
     /// 认领分支：存活 PID 加匹配启动时刻保守拒绝。
@@ -591,10 +685,10 @@ mod tests {
         let sidecar = dir.path("sidecar.json");
         let socket = dir.path("server.sock");
         // PID 与启动时刻刻度都是本进程的：进程活且刻度匹配。
-        let id = ServerIdentity::new(&Endpoint::Unix(socket.clone()), "0.0.0");
+        let id = ServerIdentity::new(&Endpoint::Unix(socket.clone()), "0.0.0", "test-token");
         write_exclusive(&id, &sidecar).expect("写 sidecar 应成功");
         assert_eq!(
-            claim_sidecar(&sidecar, &Endpoint::Unix(socket.clone()), "0.0.0"),
+            claim_sidecar(&sidecar, &Endpoint::Unix(socket.clone()), "0.0.0", "test-token"),
             ClaimResult::RefusedAmbiguous
         );
     }
@@ -607,7 +701,10 @@ mod tests {
         let socket = dir.path("server.sock");
         // 损坏文件：半写 JSON。
         fs::write(&sidecar, r#"{"pid":1,"socket_path":""#).expect("写损坏文件应成功");
-        assert_eq!(claim_sidecar(&sidecar, &Endpoint::Unix(socket.clone()), "0.0.0"), ClaimResult::Registered);
+        assert_eq!(
+            claim_sidecar(&sidecar, &Endpoint::Unix(socket.clone()), "0.0.0", "test-token"),
+            ClaimResult::Registered
+        );
         let id = read_identity(&sidecar).expect("重建 sidecar 应可读");
         assert_eq!(id.pid, std::process::id());
     }
@@ -622,7 +719,10 @@ mod tests {
         fs::write(&sidecar, "not json at all").expect("写损坏文件应成功");
         // 陈旧 socket 文件：文件存在但无监听者。
         fs::write(&socket, b"stale").expect("写陈旧 socket 文件应成功");
-        assert_eq!(claim_sidecar(&sidecar, &Endpoint::Unix(socket.clone()), "0.0.0"), ClaimResult::Registered);
+        assert_eq!(
+            claim_sidecar(&sidecar, &Endpoint::Unix(socket.clone()), "0.0.0", "test-token"),
+            ClaimResult::Registered
+        );
         let id = read_identity(&sidecar).expect("重建 sidecar 应可读");
         assert_eq!(id.pid, std::process::id(), "重建 sidecar 应为本进程身份");
         assert!(!socket.exists(), "陈旧 socket 文件应被删除");
@@ -638,7 +738,7 @@ mod tests {
         let listener = UnixListener::bind(&socket).expect("绑定监听者应成功");
         fs::write(&sidecar, "not json at all").expect("写损坏文件应成功");
         assert_eq!(
-            claim_sidecar(&sidecar, &Endpoint::Unix(socket.clone()), "0.0.0"),
+            claim_sidecar(&sidecar, &Endpoint::Unix(socket.clone()), "0.0.0", "test-token"),
             ClaimResult::VersionMismatch
         );
         drop(listener);
@@ -650,7 +750,7 @@ mod tests {
         let dir = TestDir::new();
         let sidecar = dir.path("sidecar.json");
         let endpoint = Endpoint::Tcp(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0));
-        assert_eq!(claim_sidecar(&sidecar, &endpoint, "0.0.0"), ClaimResult::Registered);
+        assert_eq!(claim_sidecar(&sidecar, &endpoint, "0.0.0", "test-token"), ClaimResult::Registered);
         let id = read_identity(&sidecar).expect("sidecar 应已写入");
         assert_eq!(id.pid, std::process::id());
         assert_eq!(id.socket_path, endpoint.describe(), "sidecar 应记 host:port 文本形态");
