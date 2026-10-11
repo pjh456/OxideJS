@@ -783,22 +783,12 @@ fn server_start_port_multi_client() {
                 let mut stream = connect_tcp(port);
                 for j in 0..3u32 {
                     let code = format!("{} * 10 + {}", i + 1, j + 1);
-                    let response = send_and_recv(
-                        &mut stream,
-                        &ServerRequest::Eval {
-                            code,
-                            max_steps: None,
-                        },
-                    );
+                    let response = send_and_recv(&mut stream, &ServerRequest::Eval { code, max_steps: None });
                     match response {
                         ServerResponse::EvalResult { ref value, ref error } => {
                             assert!(error.is_none(), "eval 不应有错误：{response:?}");
                             let expected = ((i + 1) * 10 + (j + 1)).to_string();
-                            assert_eq!(
-                                value.as_deref(),
-                                Some(expected.as_str()),
-                                "完成值应精确匹配：{response:?}"
-                            );
+                            assert_eq!(value.as_deref(), Some(expected.as_str()), "完成值应精确匹配：{response:?}");
                         }
                         other => panic!("应得 EvalResult 帧：{other:?}"),
                     }
