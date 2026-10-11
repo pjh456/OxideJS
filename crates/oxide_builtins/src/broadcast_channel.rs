@@ -1,6 +1,7 @@
 //! BroadcastChannel 行为面：`new BroadcastChannel(name)` 构造器（建通道对象并
 //! 登记 per-realm 注册表）、`postMessage` 原型方法（向同名全部其他通道同步
-//! 广播交付）、`close`（注销并关闭）、`onmessage` 普通 own 属性与 `name` /
+//! 广播交付）、`close`（注销并关闭）、`onmessage` / `onmessageerror` /
+//! `onerror` 原型访问器属性（经 dispatchEvent 交付 MessageEvent）与 `name` /
 //! `readyState` 原型 getter。
 //!
 //! 通道载荷盒（mpsc 对与通道名）存于对象 `native_fn` 槽，向 GC 家族表暴露
@@ -12,7 +13,7 @@ use std::mem;
 use oxide_kernel::message_queue;
 use oxide_kernel::shape_forge::EMPTY_SHAPE_ID;
 use oxide_runtime_api::{to_string_full, NativeResult, ProtoKind, VmHost};
-use oxide_types::object::{JsObject, NativeFnPtr, PropAttributes};
+use oxide_types::object::{JsObject, NativeFnPtr};
 use oxide_types::value::JsValue;
 
 use crate::message_value::{detach_message, rehydrate_message, MessageValue};
@@ -69,8 +70,8 @@ pub fn drop_broadcast_channel_native(obj: &mut JsObject) -> u64 {
     bytes
 }
 
-/// BroadcastChannel 构造器：建通道对象（载荷盒 + onmessage own 属性）并登记
-/// per-realm 注册表，返回通道对象。
+/// BroadcastChannel 构造器：建通道对象（载荷盒）并登记 per-realm 注册表，
+/// 返回通道对象。
 ///
 /// # 步骤
 /// 1. 非构造形态（`!constructing_native`）抛 TypeError（HTML 规范只有
@@ -79,8 +80,10 @@ pub fn drop_broadcast_channel_native(obj: &mut JsObject) -> u64 {
 ///    字符串经 ToPrimitive(string hint)，Symbol 抛 TypeError，不静默降级）
 /// 3. 建 mpsc 通道（载荷类型 `MessageValue`），建通道对象（proto =
 ///    %BroadcastChannel.prototype%，载荷盒入 native_fn 槽）
-/// 4. define onmessage 数据属性 = null（非枚举）
-/// 5. 登记通道对象进 per-realm 注册表（弱引用）
+/// 4. 登记通道对象进 per-realm 注册表（弱引用）
+///
+/// onmessage / onmessageerror / onerror 不在对象上建自有属性（改
+/// BroadcastChannel.prototype 访问器属性）。
 ///
 /// # 副作用
 /// - 通道对象经 `alloc_object` 入对象表即成 GC 根；
@@ -115,14 +118,9 @@ pub fn broadcast_channel_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> Nati
     obj.set_native_fn(Some(unsafe { NativeFnPtr::from_raw(inner as *const ()) }));
     let ptr = vm.alloc_object(obj);
 
-    // onmessage：普通 own 数据属性（非枚举），初值 null。
-    let si_onmessage = vm.perm_intern("onmessage");
-    // SAFETY: ptr 是本函数刚 alloc_object 的通道对象，存活且本段无别名。
-    unsafe {
-        let channel_obj = &mut *ptr;
-        let _ =
-            vm.define_data_property(channel_obj, si_onmessage, JsValue::null(), PropAttributes::new(true, false, true));
-    }
+    // onmessage / onmessageerror / onerror 不在对象上建自有属性：改
+    // BroadcastChannel.prototype 访问器属性（getter 读注册表属性条目、setter 写），
+    // 经既有 dispatchEvent 路径交付。
 
     // 登记 per-realm 注册表（弱引用，不保活通道）。
     // SAFETY: 盒内 name 字段本函数所有，借用短命、不跨 JS 调用。
@@ -202,59 +200,47 @@ pub fn broadcast_channel_post_message<H: VmHost>(vm: &mut H, args: &[u8]) -> Nat
         if !vm.bc_lookup(name).contains(peer_ptr) {
             continue;
         }
-        if let Err(e) = drain_channel(vm, name, *peer_ptr) {
+        if let Err(e) = drain_channel(vm, *peer_ptr) {
             return NativeResult::Err(e);
         }
     }
     NativeResult::Ok(JsValue::undefined())
 }
 
-/// 排空一个通道的队列：逐条 rehydrate 并触发其 onmessage。
+/// 排空一个通道的队列：逐条 rehydrate 建 MessageEvent 并经 `dispatchEvent`
+/// 交付到该通道（注册表查监听器，addEventListener 与属性 handler 同权）。
 ///
 /// # 步骤
 /// 1. 读通道载荷盒（通道必存活——调用前已校验），盒缺失防御性返回 Ok
 /// 2. try_recv 循环：Empty / Disconnected 退出；`rehydrate_message` 得 data；
-///    `ordinary_get` 读 handler（读期用户代码窗口，异常原值透传）；读后二次
-///    校验存活（getter 窗口 GC 防护）；handler 是函数则
-///    `call_function_sync(handler, channel, [data])`（用户异常原值透传，返回
-///    Err 结束 drain）；handler 非函数（null / undefined / 非函数）则静默丢弃该条
+///    建真实 MessageEvent（data + type "message"，ports 空数组）
+/// 3. 经 `dispatchEvent` 交付（this = 通道，实参 = 事件）；监听器异常原值
+///    透传（返回 Err 结束 drain）；无监听器时 no-op
 ///
 /// # 边界与前提
-/// - rehydrate 新对象经 `alloc_object` 入对象表即成根，交付后无引用自然回收；
-/// - 同步重入：handler 内再 postMessage 同通道则嵌套 drain（try_recv 非阻塞，无死锁）。
-fn drain_channel<H: VmHost>(vm: &mut H, name: &str, channel: *mut JsObject) -> Result<(), JsValue> {
+/// - rehydrate 新对象与事件盒经 `alloc_object` 入对象表即成根，交付后无引用自然回收；
+/// - 同步重入：handler 内再 postMessage 同通道则嵌套 drain（try_recv 非阻塞，无死锁）；
+/// - messageerror 交付路径为前向钩子（rehydrate 当前不可失败，触发点不可达）。
+fn drain_channel<H: VmHost>(vm: &mut H, channel: *mut JsObject) -> Result<(), JsValue> {
     // SAFETY: channel 是有效通道对象（调用前已校验存活）。
     let channel_obj = unsafe { &*channel };
     let Some(inner_ptr) = broadcast_channel_payload_ptr(channel_obj) else {
         return Ok(());
     };
     let channel_val = JsValue::from_js_object(channel);
-    let si_onmessage = vm.perm_intern("onmessage");
     // SAFETY: inner_ptr 是有效载荷盒，rx 的 try_recv 非阻塞、不跨 JS 调用。
     while let Ok(mv) = unsafe { (*inner_ptr).rx.try_recv() } {
         let data = rehydrate_message(vm, &mv);
-        let handler = match vm.ordinary_get(channel_obj, si_onmessage, channel_val) {
-            Ok(h) => h,
-            Err(e) => {
-                if let Some(exc) = vm.take_uncaught_value() {
-                    return Err(exc);
-                }
-                return Err(crate::error::create_type_error(vm, &e));
-            }
-        };
-        // getter 窗口二次校验：onmessage 读取是用户代码窗口，期间 GC 可释放本
-        // 通道并剪枝注册表条目；校验失败即停止 drain（data 是根，无悬垂）。
-        if !vm.bc_lookup(name).contains(&channel) {
-            return Ok(());
-        }
-        if !crate::iterator::is_callable(handler) {
-            continue;
-        }
-        if let Err(e) = vm.call_function_sync(handler, channel_val, &[data]) {
-            if let Some(exc) = vm.take_uncaught_value() {
-                return Err(exc);
-            }
-            return Err(crate::iterator::engine_error(vm, &e));
+        // 建真实 MessageEvent（data + type "message"，ports 空数组）。
+        let event_ptr = crate::event::create_message_event_box(vm, data, "message");
+        let event_val = JsValue::from_js_object(event_ptr);
+        // 经 dispatchEvent 交付（注册表查监听器，addEventListener 与属性 handler 同权）。
+        vm.set_reg(0, channel_val);
+        vm.set_reg(1, event_val);
+        match crate::event_target::event_target_dispatch_event(vm, &[0, 1]) {
+            NativeResult::Ok(_) => {}
+            NativeResult::Err(e) => return Err(e),
+            NativeResult::TailCall { .. } => {}
         }
     }
     Ok(())
@@ -433,18 +419,23 @@ mod tests {
     }
 
     #[test]
-    fn channel_onmessage_is_own_non_enumerable() {
+    fn channel_onmessage_is_prototype_accessor() {
+        // onmessage 是原型访问器属性（非自有属性）：getOwnPropertyDescriptor
+        // 返 undefined，原型描述符带 get / set 函数。
         assert_script(
             r#"
             (function() {
                 var ch = new BroadcastChannel("test");
-                var desc = Object.getOwnPropertyDescriptor(ch, 'onmessage');
+                var ownDesc = Object.getOwnPropertyDescriptor(ch, 'onmessage');
+                var protoDesc = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(ch), 'onmessage');
                 return (
-                    desc !== undefined &&
-                    desc.value === null &&
-                    desc.writable === true &&
-                    desc.enumerable === false &&
-                    desc.configurable === true
+                    ownDesc === undefined &&
+                    ch.onmessage === null &&
+                    protoDesc !== undefined &&
+                    typeof protoDesc.get === 'function' &&
+                    typeof protoDesc.set === 'function' &&
+                    protoDesc.enumerable === false &&
+                    protoDesc.configurable === true
                 );
             })()
             "#,
@@ -461,8 +452,8 @@ mod tests {
                 var ch2 = new BroadcastChannel("basic");
                 var received2 = null;
                 var received1 = null;
-                ch1.onmessage = function(d) { received1 = d; };
-                ch2.onmessage = function(d) { received2 = d; };
+                ch1.onmessage = function(e) { received1 = e.data; };
+                ch2.onmessage = function(e) { received2 = e.data; };
                 ch1.postMessage({a: 1});
                 return received2 !== null && received2.a === 1 && received1 === null;
             })()
@@ -478,7 +469,7 @@ mod tests {
                 var ch1 = new BroadcastChannel("roundtrip");
                 var ch2 = new BroadcastChannel("roundtrip");
                 var got = null;
-                ch2.onmessage = function(d) { got = d; };
+                ch2.onmessage = function(e) { got = e.data; };
                 ch1.postMessage({
                     num: 42,
                     neg: -1.5,
@@ -523,7 +514,7 @@ mod tests {
                 var ch2 = new BroadcastChannel("clone");
                 var ab = new ArrayBuffer(4);
                 var received = null;
-                ch2.onmessage = function(d) { received = d; };
+                ch2.onmessage = function(e) { received = e.data; };
                 ch1.postMessage(ab);
                 return ab.byteLength === 4 && received.byteLength === 4 && received !== ab;
             })()
@@ -643,9 +634,9 @@ mod tests {
                 var r1 = null;
                 var r2 = null;
                 var r3 = null;
-                ch1.onmessage = function(d) { r1 = d; };
-                ch2.onmessage = function(d) { r2 = d; };
-                ch3.onmessage = function(d) { r3 = d; };
+                ch1.onmessage = function(e) { r1 = e.data; };
+                ch2.onmessage = function(e) { r2 = e.data; };
+                ch3.onmessage = function(e) { r3 = e.data; };
                 ch1.postMessage({a: 1});
                 return r2 !== null && r2.a === 1 && r3 !== null && r3.a === 1 && r1 === null;
             })()

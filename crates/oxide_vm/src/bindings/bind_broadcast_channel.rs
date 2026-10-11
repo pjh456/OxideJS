@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use crate::bind_constructor;
-use crate::bindings::{apply_binding_table, bind_accessor_getter, configure_native_constructor};
+use crate::bindings::{apply_binding_table, bind_accessor_getset, bind_accessor_getter, configure_native_constructor};
 use oxide_kernel::kernel::{KernelCore, KernelSession};
 use oxide_types::object::{JsObject, PropAttributes};
 use oxide_types::value::JsValue;
@@ -133,5 +133,23 @@ pub fn bind_broadcast_channel(core: &Arc<KernelCore>, session: &KernelSession, g
             "readyState",
             oxide_builtins::broadcast_channel::broadcast_channel_ready_state::<crate::vm::Vm> as *const (),
         );
+    }
+
+    // onmessage / onmessageerror / onerror 访问器属性（getter 读注册表属性条目、
+    // setter 写），lookup_position 守卫。
+    for name in ["onmessage", "onmessageerror", "onerror"] {
+        let key = sf.intern(name).0;
+        if sh.lookup_position(proto.shape_id(), key).is_none() {
+            bind_accessor_getset(
+                core,
+                session,
+                proto,
+                key,
+                &format!("get {name}"),
+                &format!("set {name}"),
+                crate::worker::bindings::worker_event_handler_getter as *const (),
+                crate::worker::bindings::worker_event_handler_setter as *const (),
+            );
+        }
     }
 }
