@@ -1,5 +1,6 @@
 use crate::native::NativeFn;
-use crate::vm::{native_fn_ptr_to_fn, FrameArgs, FrameContinuation, Vm};
+use crate::vm::{native_fn_ptr_to_fn, ConstructArgs, FrameArgs, FrameContinuation, Vm};
+use crate::vm_support::FunctionFlags;
 use crate::{vm_debug, vm_trace};
 use oxide_builtins::iterator::make_iterator_for_value;
 use oxide_builtins::{builtins_debug, builtins_trace};
@@ -156,9 +157,7 @@ impl Vm {
                     callee,
                     this,
                     FrameArgs::Slice(&args),
-                    None,
-                    None,
-                    JsValue::undefined(),
+                    ConstructArgs::none(),
                     FrameContinuation::None,
                     0,
                 )
@@ -197,10 +196,7 @@ impl Vm {
         let result = self.create_function_object(
             sub_idx,
             self.active_table_gen,
-            is_arrow,
-            is_class_constructor,
-            is_derived_constructor,
-            needs_home_object,
+            FunctionFlags::new(is_arrow, is_class_constructor, is_derived_constructor),
         );
         // 箭头函数词法继承 super 上下文：home object 从外层函数（当前 callee）
         // 继承。类方法由 SET_HOME_OBJECT 显式挂接，不经此路径。
@@ -724,9 +720,7 @@ impl Vm {
                     first: first_arg_reg,
                     count: arg_count,
                 },
-                Some(254),
-                Some(derived_this),
-                new_target,
+                ConstructArgs::new(254, derived_this, new_target),
                 FrameContinuation::None,
                 call_window,
             )?;
@@ -1026,9 +1020,7 @@ impl Vm {
                             callee,
                             this_value,
                             FrameArgs::Slice(&args),
-                            None,
-                            None,
-                            JsValue::undefined(),
+                            ConstructArgs::none(),
                             FrameContinuation::None,
                             0,
                         )?;
@@ -1175,9 +1167,7 @@ impl Vm {
                 constructor,
                 this_value,
                 FrameArgs::Slice(&args),
-                Some(rd as u8),
-                Some(new_obj_val),
-                constructor,
+                ConstructArgs::new(rd as u8, new_obj_val, constructor),
                 FrameContinuation::None,
                 0,
             )?;
@@ -1285,9 +1275,7 @@ impl Vm {
                 super_ctor,
                 derived_this,
                 FrameArgs::Slice(&args),
-                Some(254),
-                Some(derived_this),
-                new_target,
+                ConstructArgs::new(254, derived_this, new_target),
                 FrameContinuation::None,
                 0,
             )?;

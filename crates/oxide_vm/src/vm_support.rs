@@ -26,6 +26,56 @@ fn gc_pressure_mode_from_env() -> bool {
     std::env::var_os("OXIDE_GC_PRESSURE").is_some()
 }
 
+/// 函数种类标志位集合：箭头、类构造器、派生构造器，压缩在单个 `u8` 中。
+///
+/// 位定义：bit0 = arrow，bit1 = class_constructor，bit2 = derived_constructor。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct FunctionFlags(pub u8);
+
+impl FunctionFlags {
+    /// 箭头函数标志位（bit0）。
+    pub(crate) const ARROW: u8 = 0b001;
+    /// 类构造器标志位（bit1）。
+    pub(crate) const CLASS_CONSTRUCTOR: u8 = 0b010;
+    /// 派生构造器标志位（bit2）。
+    pub(crate) const DERIVED_CONSTRUCTOR: u8 = 0b100;
+
+    /// 无标志（普通函数）。
+    pub(crate) const fn none() -> Self {
+        Self(0)
+    }
+
+    /// 由三个布尔标志构造位集。
+    pub(crate) const fn new(is_arrow: bool, is_class_constructor: bool, is_derived_constructor: bool) -> Self {
+        let mut bits = 0;
+        if is_arrow {
+            bits |= Self::ARROW;
+        }
+        if is_class_constructor {
+            bits |= Self::CLASS_CONSTRUCTOR;
+        }
+        if is_derived_constructor {
+            bits |= Self::DERIVED_CONSTRUCTOR;
+        }
+        Self(bits)
+    }
+
+    /// 是否箭头函数。
+    pub(crate) const fn is_arrow(self) -> bool {
+        self.0 & Self::ARROW != 0
+    }
+
+    /// 是否类构造器。
+    pub(crate) const fn is_class_constructor(self) -> bool {
+        self.0 & Self::CLASS_CONSTRUCTOR != 0
+    }
+
+    /// 是否派生构造器。
+    pub(crate) const fn is_derived_constructor(self) -> bool {
+        self.0 & Self::DERIVED_CONSTRUCTOR != 0
+    }
+}
+
 impl Vm {
     /// Cons（rope）节点保留的单元阈值：拼接总长（UTF-16 单元数）≤ 该值时
     /// 急切扁平。小链的"链接 + 首次消费扁平化"双重分配高于直接拷贝，直接
@@ -756,16 +806,13 @@ impl Vm {
     }
 
     /// 为 BytecodeFunc 常量创建函数 JsObject。
-    /// 当 `is_arrow` 为 true 时，捕获当前 `this`（regs[254]），供调用时词法 this 绑定。
+    /// 箭头标志置位时，捕获当前 `this`（regs[254]），供调用时词法 this 绑定。
     ///
     /// # 边界与前提
     /// - `gen` 为函数对象所属表代际：`sub_idx` 的口径与对象头的 `table_gen`
     ///   盖写均以它为准（闭包创建传执行帧代际，动态构造传当前代际——动态扩表
     ///   追加进当前代际平表）。
-    pub(crate) fn create_function_object(
-        &mut self, sub_idx: u32, gen: u32, is_arrow: bool, is_class_constructor: bool, is_derived_constructor: bool,
-        needs_home_object: bool,
-    ) -> JsValue {
+    pub(crate) fn create_function_object(&mut self, sub_idx: u32, gen: u32, flags: FunctionFlags) -> JsValue {
         // 生成器函数对象：原型为 %GeneratorFunction.prototype%（constructor 链解析到
         // "GeneratorFunction"），且不像普通函数那样拥有 `prototype` 属性。
         // 标志按函数对象所属代际平表解析：跨 run 调用时执行帧代际可异于当前代际，
@@ -790,10 +837,9 @@ impl Vm {
         // 记录创建期表代际：调用点按 (table_gen, sub_module_index) 解析子模块
         // 平表，跨 run 换表后存活函数仍命中原表（注册表按代际保活）。
         obj.set_table_gen(gen);
-        obj.set_class_constructor(is_class_constructor);
-        obj.set_derived_constructor(is_derived_constructor);
-        let _ = needs_home_object;
-        if is_arrow {
+        obj.set_class_constructor(flags.is_class_constructor());
+        obj.set_derived_constructor(flags.is_derived_constructor());
+        if flags.is_arrow() {
             obj.set_arrow(true);
             obj.set_captured_this(self.regs[254]);
         }
@@ -803,7 +849,7 @@ impl Vm {
         let obj_ptr = self.alloc_session_object(obj);
         let func_val = JsValue::object(obj_ptr as *mut u8);
 
-        if !is_arrow && !(is_async && !is_generator) {
+        if !flags.is_arrow() && !(is_async && !is_generator) {
             // 原型对象自身的 [[Prototype]]：生成器为 %GeneratorPrototype%，普通函数为 Object.prototype。
             // 纯异步函数（非生成器）无 `prototype` 属性：规范不为其建 prototype 子对象。
             let proto_of_proto = if is_async_generator {

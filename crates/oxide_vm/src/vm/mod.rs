@@ -37,6 +37,7 @@ mod props;
 mod tables;
 mod vmhost;
 
+pub(crate) use call::ConstructArgs;
 pub(crate) use dynamic::NoopCompilerService;
 pub(crate) use frames::FrameArgs;
 pub use frames::{CallFrame, Completion, ForInIter, FrameContinuation, TryHandler};

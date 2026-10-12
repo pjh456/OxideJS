@@ -20,6 +20,7 @@ use oxide_runtime_api::{NativeResult, VmHost};
 use oxide_types::object::{Cell, JsObject, NativeFnPtr, PropAttributes};
 use oxide_types::value::JsValue;
 
+use crate::async_func::AsyncDispatchFlags;
 use crate::generator::{DelegateOutcome, GeneratorResumeMode};
 use crate::vm::{Completion, DisposeResumeKind, Vm};
 use crate::vm_dispatch_misc::DisposePhase;
@@ -320,11 +321,13 @@ impl Vm {
         let saved = self.save_inline_state(256);
         self.generator_suspended = None;
         self.async_gen_suspended = false;
-        let prev_ctx = self.async_context.take();
-        let prev_gd = self.generator_dispatch;
-        let prev_ad = self.async_dispatch;
-        let prev_gen_ctx = self.async_gen_context.take();
-        let prev_agd = self.async_gen_dispatch;
+        let prev = AsyncDispatchFlags {
+            ctx: self.async_context.take(),
+            gen_ctx: self.async_gen_context.take(),
+            gd: self.generator_dispatch,
+            ad: self.async_dispatch,
+            agd: self.async_gen_dispatch,
+        };
         self.generator_dispatch = true;
         self.async_dispatch = true;
         self.async_gen_dispatch = true;
@@ -337,11 +340,11 @@ impl Vm {
             let restore_res = state.suspended.restore_into(self, state.callee);
             if restore_res.is_err() {
                 // callee 记录的表代际已被回收（跨 run 且无存活函数引用），无法恢复。
-                self.async_gen_dispatch = prev_agd;
-                self.async_gen_context = prev_gen_ctx;
-                self.generator_dispatch = prev_gd;
-                self.async_dispatch = prev_ad;
-                self.async_context = prev_ctx;
+                self.async_gen_dispatch = prev.agd;
+                self.async_gen_context = prev.gen_ctx;
+                self.generator_dispatch = prev.gd;
+                self.async_dispatch = prev.ad;
+                self.async_context = prev.ctx;
                 self.native_call_depth -= 1;
                 self.restore_inline_state(saved);
                 return Err("async generator suspended across runs is no longer valid".into());
@@ -369,7 +372,7 @@ impl Vm {
                         .last_uncaught_value
                         .take()
                         .unwrap_or_else(|| oxide_builtins::error::create_from_text(self, &e));
-                    self.restore_async_gen_flags(prev_ctx, prev_gen_ctx, prev_gd, prev_ad, prev_agd);
+                    self.restore_async_gen_flags(prev);
                     return self.finish_async_gen_exc(state_ptr, saved, gen_val, exc);
                 }
                 Ok(DelegateOutcome::Suspend { .. }) => {
@@ -378,7 +381,7 @@ impl Vm {
                     // dispatch 之前返回，调度标志须在此恢复（dispatch 后的恢复不会执行）。
                     unsafe { (*state_ptr).phase = AsyncGenPhase::AwaitSuspended };
                     self.snapshot_async_generator(state_ptr)?;
-                    self.restore_async_gen_flags(prev_ctx, prev_gen_ctx, prev_gd, prev_ad, prev_agd);
+                    self.restore_async_gen_flags(prev);
                     self.restore_inline_state(saved);
                     return Ok(());
                 }
@@ -390,7 +393,7 @@ impl Vm {
                     // （return 请求值经 Await 步挂起结算），此臂仅作穷尽防御。
                     let completed = self.complete_generator_return(value);
                     if let Some(completed) = completed? {
-                        self.restore_async_gen_flags(prev_ctx, prev_gen_ctx, prev_gd, prev_ad, prev_agd);
+                        self.restore_async_gen_flags(prev);
                         return self.finish_async_gen_ok(state_ptr, saved, gen_val, completed);
                     }
                     // 进入 finally 穿越：继续 dispatch。
@@ -415,14 +418,14 @@ impl Vm {
                         self.pending_error_kind = Some(self.thrown_error_kind(exc));
                         if self.unwind().is_err() {
                             let thrown = self.last_uncaught_value.take().unwrap_or(exc);
-                            self.restore_async_gen_flags(prev_ctx, prev_gen_ctx, prev_gd, prev_ad, prev_agd);
+                            self.restore_async_gen_flags(prev);
                             return self.finish_async_gen_exc(state_ptr, saved, gen_val, thrown);
                         }
                     }
                     GeneratorResumeMode::Return(value) => {
                         let completed = self.complete_generator_return(value);
                         if let Some(completed) = completed? {
-                            self.restore_async_gen_flags(prev_ctx, prev_gen_ctx, prev_gd, prev_ad, prev_agd);
+                            self.restore_async_gen_flags(prev);
                             return self.finish_async_gen_ok(state_ptr, saved, gen_val, completed);
                         }
                         // 进入 finally 穿越：继续 dispatch。
@@ -432,7 +435,7 @@ impl Vm {
         }
 
         let result = self.dispatch();
-        self.restore_async_gen_flags(prev_ctx, prev_gen_ctx, prev_gd, prev_ad, prev_agd);
+        self.restore_async_gen_flags(prev);
         self.post_dispatch_async_gen(state_ptr, saved, gen_val, result)
     }
 
@@ -605,15 +608,12 @@ impl Vm {
     }
 
     /// 恢复嵌套 dispatch 覆盖的 VM 标志（dispatch 前提前返回的路径用）。
-    fn restore_async_gen_flags(
-        &mut self, prev_ctx: Option<JsValue>, prev_gen_ctx: Option<JsValue>, prev_gd: bool, prev_ad: bool,
-        prev_agd: bool,
-    ) {
-        self.async_gen_dispatch = prev_agd;
-        self.async_gen_context = prev_gen_ctx;
-        self.generator_dispatch = prev_gd;
-        self.async_dispatch = prev_ad;
-        self.async_context = prev_ctx;
+    fn restore_async_gen_flags(&mut self, prev: AsyncDispatchFlags) {
+        self.async_gen_dispatch = prev.agd;
+        self.async_gen_context = prev.gen_ctx;
+        self.generator_dispatch = prev.gd;
+        self.async_dispatch = prev.ad;
+        self.async_context = prev.ctx;
         self.native_call_depth -= 1;
     }
 
@@ -842,11 +842,13 @@ impl Vm {
         // 清上一轮多层关闭残留的挂起信号（多层逐层结算每轮清零，防陈旧信号误消费）。
         self.generator_suspended = None;
         self.async_gen_suspended = false;
-        let prev_ctx = self.async_context.take();
-        let prev_gd = self.generator_dispatch;
-        let prev_ad = self.async_dispatch;
-        let prev_gen_ctx = self.async_gen_context.take();
-        let prev_agd = self.async_gen_dispatch;
+        let prev = AsyncDispatchFlags {
+            ctx: self.async_context.take(),
+            gen_ctx: self.async_gen_context.take(),
+            gd: self.generator_dispatch,
+            ad: self.async_dispatch,
+            agd: self.async_gen_dispatch,
+        };
         self.generator_dispatch = true;
         self.async_dispatch = true;
         self.async_gen_dispatch = true;
@@ -862,13 +864,13 @@ impl Vm {
                 Some(p) if p.close_promise == promise
             );
             if is_stale {
-                self.restore_async_gen_flags(prev_ctx, prev_gen_ctx, prev_gd, prev_ad, prev_agd);
+                self.restore_async_gen_flags(prev);
                 self.restore_inline_state(saved);
                 return Ok(());
             }
             let restore_res = state.suspended.restore_into(self, state.callee);
             if restore_res.is_err() {
-                self.restore_async_gen_flags(prev_ctx, prev_gen_ctx, prev_gd, prev_ad, prev_agd);
+                self.restore_async_gen_flags(prev);
                 self.restore_inline_state(saved);
                 return Err("async generator suspended across runs is no longer valid".into());
             }
@@ -880,7 +882,7 @@ impl Vm {
             Some(p) => (p.completion, p.remaining),
             // 陈旧防御已早退，正常路径此处必为 Some；防御性兜底。
             None => {
-                self.restore_async_gen_flags(prev_ctx, prev_gen_ctx, prev_gd, prev_ad, prev_agd);
+                self.restore_async_gen_flags(prev);
                 self.restore_inline_state(saved);
                 return Ok(());
             }
@@ -897,7 +899,7 @@ impl Vm {
                     self.async_gen_suspended = false;
                     unsafe { (*state_ptr).phase = AsyncGenPhase::AwaitSuspended };
                     self.snapshot_async_generator(state_ptr)?;
-                    self.restore_async_gen_flags(prev_ctx, prev_gen_ctx, prev_gd, prev_ad, prev_agd);
+                    self.restore_async_gen_flags(prev);
                     self.restore_inline_state(saved);
                     return Ok(());
                 }
@@ -913,11 +915,11 @@ impl Vm {
             self.pending_error_kind = Some(self.thrown_error_kind(value));
             if self.unwind().is_err() {
                 let exc = self.last_uncaught_value.take().unwrap_or(value);
-                self.restore_async_gen_flags(prev_ctx, prev_gen_ctx, prev_gd, prev_ad, prev_agd);
+                self.restore_async_gen_flags(prev);
                 return self.finish_async_gen_exc(state_ptr, saved, ctx, exc);
             }
             let result = self.dispatch();
-            self.restore_async_gen_flags(prev_ctx, prev_gen_ctx, prev_gd, prev_ad, prev_agd);
+            self.restore_async_gen_flags(prev);
             return self.post_dispatch_async_gen(state_ptr, saved, ctx, result);
         }
 
@@ -926,18 +928,18 @@ impl Vm {
             Completion::Return { value: ret_val, .. } => {
                 let result = self.do_return(ret_val)?;
                 if let Some(result) = result {
-                    self.restore_async_gen_flags(prev_ctx, prev_gen_ctx, prev_gd, prev_ad, prev_agd);
+                    self.restore_async_gen_flags(prev);
                     return self.finish_async_gen_ok(state_ptr, saved, ctx, result);
                 }
                 // 嵌套帧未弹空：续 dispatch。
                 let result = self.dispatch();
-                self.restore_async_gen_flags(prev_ctx, prev_gen_ctx, prev_gd, prev_ad, prev_agd);
+                self.restore_async_gen_flags(prev);
                 self.post_dispatch_async_gen(state_ptr, saved, ctx, result)
             }
             Completion::Break { target_pc, .. } | Completion::Continue { target_pc, .. } => {
                 self.pc = target_pc;
                 let result = self.dispatch();
-                self.restore_async_gen_flags(prev_ctx, prev_gen_ctx, prev_gd, prev_ad, prev_agd);
+                self.restore_async_gen_flags(prev);
                 self.post_dispatch_async_gen(state_ptr, saved, ctx, result)
             }
         }
@@ -964,11 +966,13 @@ impl Vm {
         // 清上一轮残留的挂起信号（防陈旧信号误消费）。
         self.generator_suspended = None;
         self.async_gen_suspended = false;
-        let prev_ctx = self.async_context.take();
-        let prev_gd = self.generator_dispatch;
-        let prev_ad = self.async_dispatch;
-        let prev_gen_ctx = self.async_gen_context.take();
-        let prev_agd = self.async_gen_dispatch;
+        let prev = AsyncDispatchFlags {
+            ctx: self.async_context.take(),
+            gen_ctx: self.async_gen_context.take(),
+            gd: self.generator_dispatch,
+            ad: self.async_dispatch,
+            agd: self.async_gen_dispatch,
+        };
         self.generator_dispatch = true;
         self.async_dispatch = true;
         self.async_gen_dispatch = true;
@@ -984,13 +988,13 @@ impl Vm {
                 Some(p) if p.dispose_promise == promise
             );
             if is_stale {
-                self.restore_async_gen_flags(prev_ctx, prev_gen_ctx, prev_gd, prev_ad, prev_agd);
+                self.restore_async_gen_flags(prev);
                 self.restore_inline_state(saved);
                 return Ok(());
             }
             let restore_res = state.suspended.restore_into(self, state.callee);
             if restore_res.is_err() {
-                self.restore_async_gen_flags(prev_ctx, prev_gen_ctx, prev_gd, prev_ad, prev_agd);
+                self.restore_async_gen_flags(prev);
                 self.restore_inline_state(saved);
                 return Err("async generator suspended across runs is no longer valid".into());
             }
@@ -1002,7 +1006,7 @@ impl Vm {
             Some(p) => (p.mark, p.completion, p.kind),
             // 陈旧防御已早退，正常路径此处必为 Some；防御性兜底。
             None => {
-                self.restore_async_gen_flags(prev_ctx, prev_gen_ctx, prev_gd, prev_ad, prev_agd);
+                self.restore_async_gen_flags(prev);
                 self.restore_inline_state(saved);
                 return Ok(());
             }
@@ -1019,7 +1023,7 @@ impl Vm {
         if matches!(self.dispose_above_core(mark, kind, completion)?, DisposePhase::Suspended) {
             unsafe { (*state_ptr).phase = AsyncGenPhase::AwaitSuspended };
             self.snapshot_async_generator(state_ptr)?;
-            self.restore_async_gen_flags(prev_ctx, prev_gen_ctx, prev_gd, prev_ad, prev_agd);
+            self.restore_async_gen_flags(prev);
             self.restore_inline_state(saved);
             return Ok(());
         }
@@ -1030,11 +1034,11 @@ impl Vm {
                 // 有合并错误则展开（无处理器则 reject 当前请求），否则续行。
                 if self.exception_value.is_some() && self.unwind().is_err() {
                     let exc = self.last_uncaught_value.take().unwrap_or(JsValue::undefined());
-                    self.restore_async_gen_flags(prev_ctx, prev_gen_ctx, prev_gd, prev_ad, prev_agd);
+                    self.restore_async_gen_flags(prev);
                     return self.finish_async_gen_exc(state_ptr, saved, ctx, exc);
                 }
                 let result = self.dispatch();
-                self.restore_async_gen_flags(prev_ctx, prev_gen_ctx, prev_gd, prev_ad, prev_agd);
+                self.restore_async_gen_flags(prev);
                 self.post_dispatch_async_gen(state_ptr, saved, ctx, result)
             }
             DisposeResumeKind::Unwind(handler) => {
@@ -1044,11 +1048,11 @@ impl Vm {
                 }
                 if self.unwind().is_err() {
                     let exc = self.last_uncaught_value.take().unwrap_or(JsValue::undefined());
-                    self.restore_async_gen_flags(prev_ctx, prev_gen_ctx, prev_gd, prev_ad, prev_agd);
+                    self.restore_async_gen_flags(prev);
                     return self.finish_async_gen_exc(state_ptr, saved, ctx, exc);
                 }
                 let result = self.dispatch();
-                self.restore_async_gen_flags(prev_ctx, prev_gen_ctx, prev_gd, prev_ad, prev_agd);
+                self.restore_async_gen_flags(prev);
                 self.post_dispatch_async_gen(state_ptr, saved, ctx, result)
             }
             DisposeResumeKind::Escape(completion_val) => {
@@ -1056,11 +1060,11 @@ impl Vm {
                     // 有合并错误：丢弃完成值，展开到外围处理器（无处理器则 reject）。
                     if self.unwind().is_err() {
                         let exc = self.last_uncaught_value.take().unwrap_or(JsValue::undefined());
-                        self.restore_async_gen_flags(prev_ctx, prev_gen_ctx, prev_gd, prev_ad, prev_agd);
+                        self.restore_async_gen_flags(prev);
                         return self.finish_async_gen_exc(state_ptr, saved, ctx, exc);
                     }
                     let result = self.dispatch();
-                    self.restore_async_gen_flags(prev_ctx, prev_gen_ctx, prev_gd, prev_ad, prev_agd);
+                    self.restore_async_gen_flags(prev);
                     self.post_dispatch_async_gen(state_ptr, saved, ctx, result)
                 } else {
                     // 无合并错误：执行完成。
@@ -1068,18 +1072,18 @@ impl Vm {
                         Completion::Return { value: ret_val, .. } => {
                             let result = self.do_return(ret_val)?;
                             if let Some(result) = result {
-                                self.restore_async_gen_flags(prev_ctx, prev_gen_ctx, prev_gd, prev_ad, prev_agd);
+                                self.restore_async_gen_flags(prev);
                                 return self.finish_async_gen_ok(state_ptr, saved, ctx, result);
                             }
                             // 嵌套帧未弹空：续 dispatch。
                             let result = self.dispatch();
-                            self.restore_async_gen_flags(prev_ctx, prev_gen_ctx, prev_gd, prev_ad, prev_agd);
+                            self.restore_async_gen_flags(prev);
                             self.post_dispatch_async_gen(state_ptr, saved, ctx, result)
                         }
                         Completion::Break { target_pc, .. } | Completion::Continue { target_pc, .. } => {
                             self.pc = target_pc;
                             let result = self.dispatch();
-                            self.restore_async_gen_flags(prev_ctx, prev_gen_ctx, prev_gd, prev_ad, prev_agd);
+                            self.restore_async_gen_flags(prev);
                             self.post_dispatch_async_gen(state_ptr, saved, ctx, result)
                         }
                     }

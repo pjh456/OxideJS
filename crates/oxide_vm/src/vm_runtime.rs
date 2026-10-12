@@ -4,7 +4,7 @@ use std::sync::{Arc, OnceLock};
 use oxide_bytecode::module::CompiledModule;
 use oxide_bytecode::opcode::OpCode;
 
-use crate::vm::{CallFrame, FrameArgs, FrameContinuation, InlineSyncState, TableGen, Vm};
+use crate::vm::{CallFrame, ConstructArgs, FrameArgs, FrameContinuation, InlineSyncState, TableGen, Vm};
 use crate::vm_dispatch_misc::DisposePhase;
 use crate::{vm_debug, vm_info, vm_trace, vm_warn};
 use oxide_types::object::{Cell, JsObject};
@@ -383,9 +383,7 @@ impl Vm {
             callee,
             this_value,
             FrameArgs::Slice(args),
-            None,
-            None,
-            JsValue::undefined(),
+            ConstructArgs::none(),
             FrameContinuation::None,
             0,
         )

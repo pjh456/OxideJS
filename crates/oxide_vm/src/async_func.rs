@@ -70,6 +70,20 @@ pub(crate) const ASYNC_ESCAPE_PROMISE_PROP: &str = "__oxide_async_escape_promise
 /// 异步释放结算闭包上存释放方法 promise 的属性名（陈旧防御校验用）。
 pub(crate) const ASYNC_DISPOSE_PROMISE_PROP: &str = "__oxide_async_dispose_promise__";
 
+/// 异步 dispatch 标志组：异步上下文、异步生成器上下文与三个 dispatch 标志
+/// （生成器 / 异步 / 异步生成器）。
+///
+/// 按值传递的 Copy 结构体，字段数五；保存点把整组 VM 标志合成一个结构体
+/// 字面量，恢复方整体接参，避免 4 至 5 个保存值散参搬运。
+#[derive(Clone, Copy)]
+pub(crate) struct AsyncDispatchFlags {
+    pub(crate) ctx: Option<JsValue>,
+    pub(crate) gen_ctx: Option<JsValue>,
+    pub(crate) gd: bool,
+    pub(crate) ad: bool,
+    pub(crate) agd: bool,
+}
+
 impl Vm {
     /// 调用异步函数返回的 capability promise：创建上下文对象 + 状态盒，立即压帧
     /// 同步执行 body 到第一个 AWAIT/RETURN/异常，返回 pending promise。
@@ -126,10 +140,13 @@ impl Vm {
         let state_ptr = self.async_state_ptr(ctx_val);
         let saved = self.save_inline_state(256);
         self.async_suspended = false;
-        let prev_ctx = self.async_context.take();
-        let prev_dispatch = self.async_dispatch;
-        let prev_gen_ctx = self.async_gen_context.take();
-        let prev_gen_dispatch = self.async_gen_dispatch;
+        let prev = AsyncDispatchFlags {
+            ctx: self.async_context.take(),
+            gen_ctx: self.async_gen_context.take(),
+            gd: self.generator_dispatch,
+            ad: self.async_dispatch,
+            agd: self.async_gen_dispatch,
+        };
         self.async_dispatch = true;
         // 普通异步函数执行期间 AWAIT 走普通异步恢复路径：屏蔽外层异步生成器上下文。
         self.async_gen_dispatch = false;
@@ -142,7 +159,7 @@ impl Vm {
         let push_res = self.prepare_execution_initial(callee, this_value, &args);
         unsafe { (*state_ptr).args = args };
         if let Err(e) = push_res {
-            self.restore_async_flags(prev_ctx, prev_dispatch, prev_gen_ctx, prev_gen_dispatch);
+            self.restore_async_flags(prev);
             self.native_call_depth -= 1;
             self.restore_inline_state(saved);
             return Err(e);
@@ -150,7 +167,7 @@ impl Vm {
         unsafe { (*state_ptr).phase = AsyncPhase::Running };
 
         let result = self.dispatch();
-        self.restore_async_flags(prev_ctx, prev_dispatch, prev_gen_ctx, prev_gen_dispatch);
+        self.restore_async_flags(prev);
         self.native_call_depth -= 1;
 
         if std::mem::take(&mut self.async_suspended) {
@@ -189,10 +206,13 @@ impl Vm {
         let state_ptr = self.async_state_ptr(ctx_val);
         let saved = self.save_inline_state(256);
         self.async_suspended = false;
-        let prev_ctx = self.async_context.take();
-        let prev_dispatch = self.async_dispatch;
-        let prev_gen_ctx = self.async_gen_context.take();
-        let prev_gen_dispatch = self.async_gen_dispatch;
+        let prev = AsyncDispatchFlags {
+            ctx: self.async_context.take(),
+            gen_ctx: self.async_gen_context.take(),
+            gd: self.generator_dispatch,
+            ad: self.async_dispatch,
+            agd: self.async_gen_dispatch,
+        };
         self.async_dispatch = true;
         // 普通异步函数执行期间 AWAIT 走普通异步恢复路径：屏蔽外层异步生成器上下文。
         self.async_gen_dispatch = false;
@@ -204,7 +224,7 @@ impl Vm {
             let restore_res = state.suspended.restore_into(self, state.callee);
             if restore_res.is_err() {
                 // callee 记录的表代际已被回收（跨 run 且无存活函数引用），无法恢复。
-                self.restore_async_flags(prev_ctx, prev_dispatch, prev_gen_ctx, prev_gen_dispatch);
+                self.restore_async_flags(prev);
                 self.native_call_depth -= 1;
                 self.restore_inline_state(saved);
                 return Err("async function suspended across runs is no longer valid".into());
@@ -218,7 +238,7 @@ impl Vm {
             self.pending_error_kind = Some(self.thrown_error_kind(exc));
             if self.unwind().is_err() {
                 // 异常逃逸出异步帧（无 catch/finally）：结算为 reject。
-                self.restore_async_flags(prev_ctx, prev_dispatch, prev_gen_ctx, prev_gen_dispatch);
+                self.restore_async_flags(prev);
                 self.native_call_depth -= 1;
                 let thrown = self.last_uncaught_value.take().unwrap_or(exc);
                 self.finish_async(state_ptr, Err(thrown))?;
@@ -230,7 +250,7 @@ impl Vm {
         }
 
         let result = self.dispatch();
-        self.restore_async_flags(prev_ctx, prev_dispatch, prev_gen_ctx, prev_gen_dispatch);
+        self.restore_async_flags(prev);
         self.native_call_depth -= 1;
 
         if std::mem::take(&mut self.async_suspended) {
@@ -259,14 +279,14 @@ impl Vm {
     }
 
     /// 恢复嵌套 dispatch 覆盖的 async 上下文标志（含外层异步生成器上下文）。
-    fn restore_async_flags(
-        &mut self, prev_ctx: Option<JsValue>, prev_dispatch: bool, prev_gen_ctx: Option<JsValue>,
-        prev_gen_dispatch: bool,
-    ) {
-        self.async_dispatch = prev_dispatch;
-        self.async_context = prev_ctx;
-        self.async_gen_dispatch = prev_gen_dispatch;
-        self.async_gen_context = prev_gen_ctx;
+    ///
+    /// 注意：`gd` 位（`generator_dispatch`）不写回——普通异步函数执行期间
+    /// 生成器 dispatch 标志不被本路径覆盖，与保存点只存四字段同口径。
+    fn restore_async_flags(&mut self, prev: AsyncDispatchFlags) {
+        self.async_dispatch = prev.ad;
+        self.async_context = prev.ctx;
+        self.async_gen_dispatch = prev.agd;
+        self.async_gen_context = prev.gen_ctx;
     }
 
     /// 结算异步函数：正常结束 resolve capability，异常结束 reject capability。
@@ -437,10 +457,13 @@ impl Vm {
         let saved = self.save_inline_state(256);
         // 清上一轮多层关闭残留的挂起信号（多层逐层结算每轮清零，防陈旧信号误消费）。
         self.async_suspended = false;
-        let prev_ctx = self.async_context.take();
-        let prev_dispatch = self.async_dispatch;
-        let prev_gen_ctx = self.async_gen_context.take();
-        let prev_gen_dispatch = self.async_gen_dispatch;
+        let prev = AsyncDispatchFlags {
+            ctx: self.async_context.take(),
+            gen_ctx: self.async_gen_context.take(),
+            gd: self.generator_dispatch,
+            ad: self.async_dispatch,
+            agd: self.async_gen_dispatch,
+        };
         self.async_dispatch = true;
         self.async_gen_dispatch = false;
         self.async_context = Some(ctx);
@@ -454,14 +477,14 @@ impl Vm {
                 Some(p) if p.close_promise == promise
             );
             if is_stale {
-                self.restore_async_flags(prev_ctx, prev_dispatch, prev_gen_ctx, prev_gen_dispatch);
+                self.restore_async_flags(prev);
                 self.native_call_depth -= 1;
                 self.restore_inline_state(saved);
                 return Ok(());
             }
             let restore_res = state.suspended.restore_into(self, state.callee);
             if restore_res.is_err() {
-                self.restore_async_flags(prev_ctx, prev_dispatch, prev_gen_ctx, prev_gen_dispatch);
+                self.restore_async_flags(prev);
                 self.native_call_depth -= 1;
                 self.restore_inline_state(saved);
                 return Err("async function suspended across runs is no longer valid".into());
@@ -486,7 +509,7 @@ impl Vm {
                 Ok(true) => {
                     self.async_suspended = false;
                     self.snapshot_async(unsafe { &mut *state_ptr })?;
-                    self.restore_async_flags(prev_ctx, prev_dispatch, prev_gen_ctx, prev_gen_dispatch);
+                    self.restore_async_flags(prev);
                     self.native_call_depth -= 1;
                     self.restore_inline_state(saved);
                     return Ok(());
@@ -504,7 +527,7 @@ impl Vm {
             if self.unwind().is_err() {
                 let exc = self.last_uncaught_value.take().unwrap_or(value);
                 self.finish_async(state_ptr, Err(exc))?;
-                self.restore_async_flags(prev_ctx, prev_dispatch, prev_gen_ctx, prev_gen_dispatch);
+                self.restore_async_flags(prev);
                 self.native_call_depth -= 1;
                 self.restore_inline_state(saved);
                 return Ok(());
@@ -513,7 +536,7 @@ impl Vm {
             // 处理器体内再挂起（await）：快照新状态后退出。
             if std::mem::take(&mut self.async_suspended) {
                 self.snapshot_async(unsafe { &mut *state_ptr })?;
-                self.restore_async_flags(prev_ctx, prev_dispatch, prev_gen_ctx, prev_gen_dispatch);
+                self.restore_async_flags(prev);
                 self.native_call_depth -= 1;
                 self.restore_inline_state(saved);
                 return Ok(());
@@ -528,7 +551,7 @@ impl Vm {
                     self.finish_async(state_ptr, Err(exc))?;
                 }
             }
-            self.restore_async_flags(prev_ctx, prev_dispatch, prev_gen_ctx, prev_gen_dispatch);
+            self.restore_async_flags(prev);
             self.native_call_depth -= 1;
             self.restore_inline_state(saved);
             return Ok(());
@@ -548,7 +571,7 @@ impl Vm {
                 // 完成跳转后 body 继续执行到下一个 await/return/异常。
                 if std::mem::take(&mut self.async_suspended) {
                     self.snapshot_async(unsafe { &mut *state_ptr })?;
-                    self.restore_async_flags(prev_ctx, prev_dispatch, prev_gen_ctx, prev_gen_dispatch);
+                    self.restore_async_flags(prev);
                     self.native_call_depth -= 1;
                     self.restore_inline_state(saved);
                     return Ok(());
@@ -565,7 +588,7 @@ impl Vm {
                 }
             }
         }
-        self.restore_async_flags(prev_ctx, prev_dispatch, prev_gen_ctx, prev_gen_dispatch);
+        self.restore_async_flags(prev);
         self.native_call_depth -= 1;
         self.restore_inline_state(saved);
         Ok(())
@@ -574,13 +597,12 @@ impl Vm {
     /// 续 dispatch 并结算：运行 body 到下一个 AWAIT/RETURN/异常，挂起则快照新状态，
     /// 完成/异常则结算 capability。恢复调用方状态。
     fn dispatch_and_finish_async(
-        &mut self, state_ptr: *mut AsyncState, saved: Box<InlineSyncState>, prev_ctx: Option<JsValue>,
-        prev_dispatch: bool, prev_gen_ctx: Option<JsValue>, prev_gen_dispatch: bool,
+        &mut self, state_ptr: *mut AsyncState, saved: Box<InlineSyncState>, prev: AsyncDispatchFlags,
     ) -> Result<(), String> {
         let result = self.dispatch();
         if std::mem::take(&mut self.async_suspended) {
             self.snapshot_async(unsafe { &mut *state_ptr })?;
-            self.restore_async_flags(prev_ctx, prev_dispatch, prev_gen_ctx, prev_gen_dispatch);
+            self.restore_async_flags(prev);
             self.native_call_depth -= 1;
             self.restore_inline_state(saved);
             return Ok(());
@@ -595,7 +617,7 @@ impl Vm {
                 self.finish_async(state_ptr, Err(exc))?;
             }
         }
-        self.restore_async_flags(prev_ctx, prev_dispatch, prev_gen_ctx, prev_gen_dispatch);
+        self.restore_async_flags(prev);
         self.native_call_depth -= 1;
         self.restore_inline_state(saved);
         Ok(())
@@ -621,10 +643,13 @@ impl Vm {
         let saved = self.save_inline_state(256);
         // 清上一轮残留的挂起信号（防陈旧信号误消费）。
         self.async_suspended = false;
-        let prev_ctx = self.async_context.take();
-        let prev_dispatch = self.async_dispatch;
-        let prev_gen_ctx = self.async_gen_context.take();
-        let prev_gen_dispatch = self.async_gen_dispatch;
+        let prev = AsyncDispatchFlags {
+            ctx: self.async_context.take(),
+            gen_ctx: self.async_gen_context.take(),
+            gd: self.generator_dispatch,
+            ad: self.async_dispatch,
+            agd: self.async_gen_dispatch,
+        };
         self.async_dispatch = true;
         self.async_gen_dispatch = false;
         self.async_context = Some(ctx);
@@ -638,14 +663,14 @@ impl Vm {
                 Some(p) if p.dispose_promise == promise
             );
             if is_stale {
-                self.restore_async_flags(prev_ctx, prev_dispatch, prev_gen_ctx, prev_gen_dispatch);
+                self.restore_async_flags(prev);
                 self.native_call_depth -= 1;
                 self.restore_inline_state(saved);
                 return Ok(());
             }
             let restore_res = state.suspended.restore_into(self, state.callee);
             if restore_res.is_err() {
-                self.restore_async_flags(prev_ctx, prev_dispatch, prev_gen_ctx, prev_gen_dispatch);
+                self.restore_async_flags(prev);
                 self.native_call_depth -= 1;
                 self.restore_inline_state(saved);
                 return Err("async function suspended across runs is no longer valid".into());
@@ -658,7 +683,7 @@ impl Vm {
             Some(p) => (p.mark, p.completion, p.kind),
             // 陈旧防御已早退，正常路径此处必为 Some；防御性兜底。
             None => {
-                self.restore_async_flags(prev_ctx, prev_dispatch, prev_gen_ctx, prev_gen_dispatch);
+                self.restore_async_flags(prev);
                 self.native_call_depth -= 1;
                 self.restore_inline_state(saved);
                 return Ok(());
@@ -675,7 +700,7 @@ impl Vm {
         // 从水位续释放循环（复用批量释放核心）；再挂起则重新登记 + 快照 + 返回。
         if matches!(self.dispose_above_core(mark, kind, completion)?, DisposePhase::Suspended) {
             self.snapshot_async(unsafe { &mut *state_ptr })?;
-            self.restore_async_flags(prev_ctx, prev_dispatch, prev_gen_ctx, prev_gen_dispatch);
+            self.restore_async_flags(prev);
             self.native_call_depth -= 1;
             self.restore_inline_state(saved);
             return Ok(());
@@ -688,19 +713,12 @@ impl Vm {
                 if self.exception_value.is_some() && self.unwind().is_err() {
                     let exc = self.last_uncaught_value.take().unwrap_or(JsValue::undefined());
                     self.finish_async(state_ptr, Err(exc))?;
-                    self.restore_async_flags(prev_ctx, prev_dispatch, prev_gen_ctx, prev_gen_dispatch);
+                    self.restore_async_flags(prev);
                     self.native_call_depth -= 1;
                     self.restore_inline_state(saved);
                     return Ok(());
                 }
-                self.dispatch_and_finish_async(
-                    state_ptr,
-                    saved,
-                    prev_ctx,
-                    prev_dispatch,
-                    prev_gen_ctx,
-                    prev_gen_dispatch,
-                )
+                self.dispatch_and_finish_async(state_ptr, saved, prev)
             }
             DisposeResumeKind::Unwind(handler) => {
                 // 重压 handler 再入 unwind（handler 已弹出，不重压则 catch/finally 丢失）。
@@ -710,19 +728,12 @@ impl Vm {
                 if self.unwind().is_err() {
                     let exc = self.last_uncaught_value.take().unwrap_or(JsValue::undefined());
                     self.finish_async(state_ptr, Err(exc))?;
-                    self.restore_async_flags(prev_ctx, prev_dispatch, prev_gen_ctx, prev_gen_dispatch);
+                    self.restore_async_flags(prev);
                     self.native_call_depth -= 1;
                     self.restore_inline_state(saved);
                     return Ok(());
                 }
-                self.dispatch_and_finish_async(
-                    state_ptr,
-                    saved,
-                    prev_ctx,
-                    prev_dispatch,
-                    prev_gen_ctx,
-                    prev_gen_dispatch,
-                )
+                self.dispatch_and_finish_async(state_ptr, saved, prev)
             }
             DisposeResumeKind::Escape(completion_val) => {
                 if self.exception_value.is_some() {
@@ -730,19 +741,12 @@ impl Vm {
                     if self.unwind().is_err() {
                         let exc = self.last_uncaught_value.take().unwrap_or(JsValue::undefined());
                         self.finish_async(state_ptr, Err(exc))?;
-                        self.restore_async_flags(prev_ctx, prev_dispatch, prev_gen_ctx, prev_gen_dispatch);
+                        self.restore_async_flags(prev);
                         self.native_call_depth -= 1;
                         self.restore_inline_state(saved);
                         return Ok(());
                     }
-                    self.dispatch_and_finish_async(
-                        state_ptr,
-                        saved,
-                        prev_ctx,
-                        prev_dispatch,
-                        prev_gen_ctx,
-                        prev_gen_dispatch,
-                    )
+                    self.dispatch_and_finish_async(state_ptr, saved, prev)
                 } else {
                     // 无合并错误：执行完成。
                     match completion_val {
@@ -750,30 +754,16 @@ impl Vm {
                             let result = self.do_return(ret_val)?;
                             if let Some(result) = result {
                                 self.finish_async(state_ptr, Ok(result))?;
-                                self.restore_async_flags(prev_ctx, prev_dispatch, prev_gen_ctx, prev_gen_dispatch);
+                                self.restore_async_flags(prev);
                                 self.native_call_depth -= 1;
                                 self.restore_inline_state(saved);
                                 return Ok(());
                             }
-                            self.dispatch_and_finish_async(
-                                state_ptr,
-                                saved,
-                                prev_ctx,
-                                prev_dispatch,
-                                prev_gen_ctx,
-                                prev_gen_dispatch,
-                            )
+                            self.dispatch_and_finish_async(state_ptr, saved, prev)
                         }
                         Completion::Break { target_pc, .. } | Completion::Continue { target_pc, .. } => {
                             self.pc = target_pc;
-                            self.dispatch_and_finish_async(
-                                state_ptr,
-                                saved,
-                                prev_ctx,
-                                prev_dispatch,
-                                prev_gen_ctx,
-                                prev_gen_dispatch,
-                            )
+                            self.dispatch_and_finish_async(state_ptr, saved, prev)
                         }
                     }
                 }

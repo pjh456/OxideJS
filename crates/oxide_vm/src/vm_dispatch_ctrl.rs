@@ -1,4 +1,4 @@
-use crate::vm::{Completion, FrameArgs, FrameContinuation, PendingAsyncEscape, TryHandler, Vm};
+use crate::vm::{Completion, ConstructArgs, FrameArgs, FrameContinuation, PendingAsyncEscape, TryHandler, Vm};
 use crate::vm_dispatch_misc::DisposePhase;
 use crate::vm_trace;
 use oxide_bytecode::opcode;
@@ -91,9 +91,7 @@ impl Vm {
                                 first: first_arg_reg,
                                 count: arg_count,
                             },
-                            None,
-                            None,
-                            JsValue::undefined(),
+                            ConstructArgs::none(),
                             FrameContinuation::None,
                             call_window,
                         )?;

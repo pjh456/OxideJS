@@ -7,6 +7,7 @@ use oxide_types::value::JsValue;
 
 use crate::ic_helper::{self, ic_get_hit, ic_set_hit, VIRTUAL_LENGTH_SLOT};
 use crate::vm::{Vm, MAX_PROTO_CHAIN_DEPTH};
+use crate::vm_props::SetContract;
 
 #[cold]
 fn prop_cache_miss() {}
@@ -526,7 +527,14 @@ impl Vm {
                 self.ordinary_set_dispatch(obj, prop_name_si, value, receiver, self.current_strict())?;
                 return Ok(());
             }
-            self.create_named_prop_fast(obj, prop_name_si, value, receiver, ic_pc, true, self.current_strict())?;
+            self.create_named_prop_fast(
+                obj,
+                prop_name_si,
+                value,
+                receiver,
+                ic_pc,
+                SetContract::dispatch(self.current_strict()),
+            )?;
         }
 
         Ok(())

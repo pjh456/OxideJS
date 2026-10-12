@@ -1,6 +1,6 @@
 use crate::vm::{
-    Completion, DisposeResumeKind, ForInIter, FrameArgs, FrameContinuation, PendingAsyncDispose, TryHandler, Vm,
-    MAX_PROTO_CHAIN_DEPTH,
+    Completion, ConstructArgs, DisposeResumeKind, ForInIter, FrameArgs, FrameContinuation, PendingAsyncDispose,
+    TryHandler, Vm, MAX_PROTO_CHAIN_DEPTH,
 };
 use crate::vm_trace;
 use oxide_builtins::iterator::is_callable;
@@ -200,9 +200,7 @@ impl Vm {
                     first: first_arg_reg,
                     count: arg_count,
                 },
-                Some(rd as u8),
-                Some(new_obj_val),
-                constructor,
+                ConstructArgs::new(rd as u8, new_obj_val, constructor),
                 FrameContinuation::None,
                 call_window,
             )?;
@@ -346,9 +344,7 @@ impl Vm {
                 target_val,
                 this_value,
                 FrameArgs::Slice(&call_args),
-                Some(rd as u8),
-                Some(new_obj_val),
-                target_val,
+                ConstructArgs::new(rd as u8, new_obj_val, target_val),
                 FrameContinuation::None,
                 call_window,
             )?;
@@ -1586,6 +1582,7 @@ mod tests {
     use oxide_bytecode::opcode;
 
     use crate::vm_state::ForOfEntry;
+    use crate::vm_support::FunctionFlags;
 
     #[test]
     fn for_of_close_pops_iterator_stack() {
@@ -1634,7 +1631,7 @@ mod tests {
         // 调用方实参区 regs[1..3)：arg0=10, arg1=20；regs[2] 同时是 callee 形参槽（param_base=2）
         vm.regs[1] = JsValue::int(10);
         vm.regs[2] = JsValue::int(20);
-        vm.regs[5] = vm.create_function_object(1, vm.current_gen, false, false, false, false);
+        vm.regs[5] = vm.create_function_object(1, vm.current_gen, FunctionFlags::none());
 
         vm.dispatch_new_expression(0, 5, 1).expect("NEW 压帧成功");
 

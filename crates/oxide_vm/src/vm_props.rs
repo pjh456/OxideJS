@@ -1,4 +1,4 @@
-use crate::vm::{FrameArgs, FrameContinuation, Vm, MAX_PROTO_CHAIN_DEPTH};
+use crate::vm::{ConstructArgs, FrameArgs, FrameContinuation, Vm, MAX_PROTO_CHAIN_DEPTH};
 use crate::{ic_trace, vm_trace};
 use oxide_kernel::prop_forge::PropTemplate;
 use oxide_kernel::shape_forge::EMPTY_SHAPE_ID;
@@ -7,6 +7,34 @@ use oxide_runtime_api::VmHost;
 use oxide_types::arguments_map::ArgumentsMapState;
 use oxide_types::object::{JsObject, PropAttributes, PropMetaEntry};
 use oxide_types::value::JsValue;
+
+/// 写路径三布尔调用契约：帧化（setter 压帧）、严格性、builtin 入口。
+///
+/// 按值传递的 Copy 结构体，字段数三；三个入口薄包装各给一个关联构造器，
+/// 调用点整体传值，避免三布尔散参。
+#[derive(Clone, Copy)]
+pub(crate) struct SetContract {
+    use_frame_push: bool,
+    strict: bool,
+    builtin: bool,
+}
+
+impl SetContract {
+    /// 字节码入口（ordinary_set / member 写）：不帧化、非 builtin，严格性由调用点给。
+    pub(crate) const fn bytecode(strict: bool) -> Self {
+        Self { use_frame_push: false, strict, builtin: false }
+    }
+
+    /// builtin 入口（ordinary_set_builtin）：不帧化、builtin，严格性由调用点给。
+    pub(crate) const fn builtin(strict: bool) -> Self {
+        Self { use_frame_push: false, strict, builtin: true }
+    }
+
+    /// 分发入口（ordinary_set_dispatch / IC 写）：帧化、非 builtin，严格性由调用点给。
+    pub(crate) const fn dispatch(strict: bool) -> Self {
+        Self { use_frame_push: true, strict, builtin: false }
+    }
+}
 
 impl Vm {
     /// 判定 mapped arguments 映射是否存活：创建帧仍在帧栈上且帧身份匹配。
@@ -229,9 +257,7 @@ impl Vm {
             getter,
             receiver,
             FrameArgs::Slice(&[]),
-            None,
-            None,
-            JsValue::undefined(),
+            ConstructArgs::none(),
             FrameContinuation::AccessorGet { target_reg },
             0,
         )?;
@@ -356,7 +382,7 @@ impl Vm {
     pub(crate) fn ordinary_set(
         &mut self, obj: &mut JsObject, prop_name_si: u32, val: JsValue, receiver: JsValue, strict: bool,
     ) -> Result<(), String> {
-        self.ordinary_set_inner(obj, prop_name_si, val, receiver, false, strict, false)
+        self.ordinary_set_inner(obj, prop_name_si, val, receiver, SetContract::bytecode(strict))
     }
 
     /// builtin 内部写入口：失败一律返回格式化 `Err` 由调用边界恢复为异常对象，
@@ -365,24 +391,22 @@ impl Vm {
     pub(crate) fn ordinary_set_builtin(
         &mut self, obj: &mut JsObject, prop_name_si: u32, val: JsValue, receiver: JsValue, strict: bool,
     ) -> Result<(), String> {
-        self.ordinary_set_inner(obj, prop_name_si, val, receiver, false, strict, true)
+        self.ordinary_set_inner(obj, prop_name_si, val, receiver, SetContract::builtin(strict))
     }
 
     /// 分发期入口：值直接落位。
     pub(crate) fn ordinary_set_dispatch(
         &mut self, obj: &mut JsObject, prop_name_si: u32, val: JsValue, receiver: JsValue, strict: bool,
     ) -> Result<(), String> {
-        self.ordinary_set_inner(obj, prop_name_si, val, receiver, true, strict, false)
+        self.ordinary_set_inner(obj, prop_name_si, val, receiver, SetContract::dispatch(strict))
     }
 
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "写路径须透传 receiver、帧化与 builtin 三组调用契约标志"
-    )]
     fn ordinary_set_inner(
-        &mut self, obj: &mut JsObject, prop_name_si: u32, val: JsValue, receiver: JsValue, use_frame_push: bool,
-        strict: bool, builtin: bool,
+        &mut self, obj: &mut JsObject, prop_name_si: u32, val: JsValue, receiver: JsValue, contract: SetContract,
     ) -> Result<(), String> {
+        let strict = contract.strict;
+        let builtin = contract.builtin;
+        let use_frame_push = contract.use_frame_push;
         vm_trace!(
             "ordinary_set_inner: shape={} prop_si={} frame_push={}",
             obj.shape_id(),
@@ -448,16 +472,7 @@ impl Vm {
                     if (index as usize) >= live {
                         return Ok(());
                     }
-                    return self.set_to_receiver(
-                        obj,
-                        prop_name_si,
-                        val,
-                        receiver,
-                        index as usize,
-                        use_frame_push,
-                        strict,
-                        builtin,
-                    );
+                    return self.set_to_receiver(prop_name_si, val, receiver, index as usize, builtin);
                 }
                 oxide_builtins::typed_array::TaIndexGate::NumericInvalid => {
                     // 强转（副作用/抛错先触发）后按 live 复判落位；receiver
@@ -681,10 +696,8 @@ impl Vm {
     ///
     /// # 副作用
     /// - 可能写 receiver 的 buffer / 属性存储；强转副作用与自写臂同。
-    #[allow(clippy::too_many_arguments)]
     fn set_to_receiver(
-        &mut self, _ta_obj: &mut JsObject, prop_name_si: u32, val: JsValue, receiver: JsValue, index: usize,
-        _use_frame_push: bool, _strict: bool, builtin: bool,
+        &mut self, prop_name_si: u32, val: JsValue, receiver: JsValue, index: usize, builtin: bool,
     ) -> Result<(), String> {
         let receiver_ptr = receiver.as_js_object_ptr();
         if receiver_ptr.is_null() {
@@ -767,9 +780,7 @@ impl Vm {
             setter,
             receiver,
             FrameArgs::Slice(&[val]),
-            None,
-            None,
-            JsValue::undefined(),
+            ConstructArgs::none(),
             FrameContinuation::AccessorSet,
             0,
         )?;
@@ -877,7 +888,7 @@ impl Vm {
             // 元素区写），与 dispatch_ic_set_prop 对称，防快路径建影子槽破坏数组语义。
             self.ordinary_set(obj, prop_name_si, val, receiver, strict)?;
         } else {
-            self.create_named_prop_fast(obj, prop_name_si, val, receiver, ext_pc, false, strict)?;
+            self.create_named_prop_fast(obj, prop_name_si, val, receiver, ext_pc, SetContract::bytecode(strict))?;
         }
         Ok(())
     }
@@ -888,13 +899,15 @@ impl Vm {
     /// # 边界与前提
     /// - 调用方已确认属性不存在于 shape 链（lookup_position miss）。
     /// - 数组 length / 数组与 TA 整数索引键不进入本路径（调用方先分流到 ordinary_set）。
-    /// - `use_frame_push` 与 ordinary_set* 入口一致（member 写 false / IC_SET 分发 true）。
+    /// - `contract` 与 ordinary_set* 入口一致（member 写 bytecode / IC_SET 分发 dispatch）；
+    ///   builtin 位恒 false，本路径不消费。
     /// - `strict` 为写方的严格模式：原型链只读/无 setter/不可扩展时严格抛错、sloppy 静默 no-op。
-    #[allow(clippy::too_many_arguments)]
     pub(crate) fn create_named_prop_fast(
         &mut self, obj: &mut JsObject, prop_name_si: u32, val: JsValue, receiver: JsValue, ext_pc: usize,
-        use_frame_push: bool, strict: bool,
+        contract: SetContract,
     ) -> Result<(), String> {
+        let strict = contract.strict;
+        let use_frame_push = contract.use_frame_push;
         // 原型链同名 accessor 须触发 setter、只读 data 须报错（与 ordinary_set 一致），
         // 命中时不得创建 own 属性（规范 [[Set]] shadow 语义）。
         if let Some(meta) = self.inherited_property_meta(obj, prop_name_si) {

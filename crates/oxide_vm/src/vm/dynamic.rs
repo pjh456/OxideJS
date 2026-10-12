@@ -11,6 +11,7 @@ use oxide_types::object::PropAttributes;
 use oxide_types::value::JsValue;
 
 use super::Vm;
+use crate::vm_support::FunctionFlags;
 
 /// 缺省 no-op 编译服务：两方法均返 `Err`（错误消息指向「未安装编译服务」）。
 ///
@@ -97,7 +98,7 @@ impl Vm {
         table.immutables.resize(table.modules.len(), OnceLock::new());
         table.si_tables.resize(table.modules.len(), OnceLock::new());
 
-        let func_val = self.create_function_object(base, self.current_gen, false, false, false, false);
+        let func_val = self.create_function_object(base, self.current_gen, FunctionFlags::none());
         let func_obj = unsafe { &mut *func_val.as_js_object_ptr() };
         let length_si = self.kernel_core.perm_interner().intern("length").0;
         let name_si = self.kernel_core.perm_interner().intern("name").0;
@@ -156,7 +157,7 @@ impl Vm {
         // 平表变长后同步扩容常量缓存与 si 侧表，否则激活新模块常量时越界 panic。
         table.immutables.resize(table.modules.len(), OnceLock::new());
         table.si_tables.resize(table.modules.len(), OnceLock::new());
-        Ok(self.create_function_object(base, self.current_gen, false, false, false, false))
+        Ok(self.create_function_object(base, self.current_gen, FunctionFlags::none()))
     }
 
     /// 动态编译脚本（普通脚本模式）：顶层 var/function 声明落全局对象
@@ -195,7 +196,7 @@ impl Vm {
         // 平表变长后同步扩容常量缓存与 si 侧表，否则激活新模块常量时越界 panic。
         table.immutables.resize(table.modules.len(), OnceLock::new());
         table.si_tables.resize(table.modules.len(), OnceLock::new());
-        Ok(self.create_function_object(base, self.current_gen, false, false, false, false))
+        Ok(self.create_function_object(base, self.current_gen, FunctionFlags::none()))
     }
 }
 

@@ -12,6 +12,29 @@ use super::{native_fn_ptr_to_fn, Vm};
 use crate::native::NativeFn;
 use crate::{vm_debug, vm_trace};
 
+/// 压帧构造三元组：构造结果寄存器、构造出的 this、new.target。
+///
+/// 按值传递的 Copy 结构体，字段数三；非构造调用方统一传 `none()`，
+/// 构造调用方传 `new(...)` 三值，避免三元组散参样板。
+#[derive(Clone, Copy)]
+pub(crate) struct ConstructArgs {
+    result_reg: Option<u8>,
+    constructed_this: Option<JsValue>,
+    new_target: JsValue,
+}
+
+impl ConstructArgs {
+    /// 非构造调用：无结果寄存器、无构造 this，new.target 为 undefined。
+    pub(crate) fn none() -> Self {
+        Self { result_reg: None, constructed_this: None, new_target: JsValue::undefined() }
+    }
+
+    /// 构造调用：携带结果寄存器、构造 this 与 new.target。
+    pub(crate) fn new(result_reg: u8, constructed_this: JsValue, new_target: JsValue) -> Self {
+        Self { result_reg: Some(result_reg), constructed_this: Some(constructed_this), new_target }
+    }
+}
+
 impl Vm {
     fn pack_sync_native_call_args(&mut self, receiver: JsValue, callee: JsValue, args: &[JsValue]) -> Vec<u8> {
         self.regs[253] = receiver;
@@ -219,10 +242,14 @@ impl Vm {
     /// # 副作用
     /// - 压入调用帧与各类保存栈，改写 pc / bytecode / 活动寄存器上限与镜像槽；
     ///   `continuation` 决定返回后的续行方式。
-    #[expect(clippy::too_many_arguments)]
     pub(crate) fn push_bytecode_frame(
-        &mut self, callee: JsValue, this_value: JsValue, args: FrameArgs, construct_result_reg: Option<u8>,
-        constructed_this: Option<JsValue>, new_target: JsValue, continuation: FrameContinuation, call_window: u8,
+        &mut self,
+        callee: JsValue,
+        this_value: JsValue,
+        args: FrameArgs,
+        construct: ConstructArgs,
+        continuation: FrameContinuation,
+        call_window: u8,
     ) -> Result<(), String> {
         vm_trace!(
             "push_bytecode_frame: depth={}, args={}, continuation={:?}",
@@ -312,7 +339,7 @@ impl Vm {
         } else {
             oxide_runtime_api::to_object(this_value, self)?
         };
-        self.regs[255] = new_target;
+        self.regs[255] = construct.new_target;
 
         self.saved_bytecode_stack.push(std::mem::take(&mut self.bytecode));
         self.saved_immutables_stack.push(self.active_immutables);
@@ -350,8 +377,8 @@ impl Vm {
             saved_new_target,
             callee,
             arguments_obj: JsValue::undefined(),
-            construct_result_reg,
-            constructed_this,
+            construct_result_reg: construct.result_reg,
+            constructed_this: construct.constructed_this,
             is_derived_constructor: obj.is_derived_constructor(),
             super_called: false,
             strict: sub_is_strict,
@@ -381,6 +408,8 @@ mod tests {
     use oxide_bytecode::opcode;
     use oxide_runtime_api::VmHost;
     use oxide_types::object::NativeFnPtr;
+
+    use crate::vm_support::FunctionFlags;
 
     fn native_return_last_arg(vm: &mut Vm, args: &[u8]) -> NativeResult {
         let reg = *args.last().expect("receiver + args");
@@ -510,7 +539,7 @@ mod tests {
         vm.active_reg_limit = 254;
         vm.regs[253] = JsValue::int(42);
 
-        let callee = vm.create_function_object(1, vm.current_gen, false, false, false, false);
+        let callee = vm.create_function_object(1, vm.current_gen, FunctionFlags::none());
         let callee_obj = unsafe { &*callee.as_js_object_ptr() };
         let result = vm
             .call_bytecode_function_inline(callee, callee_obj, JsValue::undefined(), &[])
@@ -534,7 +563,7 @@ mod tests {
         vm.regs[253] = JsValue::int(7);
         vm.regs[254] = JsValue::int(8);
 
-        let inner_callee = vm.create_function_object(1, vm.current_gen, false, false, false, false);
+        let inner_callee = vm.create_function_object(1, vm.current_gen, FunctionFlags::none());
         let outer_native = native_function(&mut vm, native_nested_inline_254);
         let result = vm
             .call_function_sync(outer_native, JsValue::int(99), &[inner_callee])
@@ -563,14 +592,12 @@ mod tests {
         vm.regs[1] = JsValue::int(10);
         vm.regs[2] = JsValue::int(20);
 
-        let callee = vm.create_function_object(1, vm.current_gen, false, false, false, false);
+        let callee = vm.create_function_object(1, vm.current_gen, FunctionFlags::none());
         vm.push_bytecode_frame(
             callee,
             JsValue::undefined(),
             super::FrameArgs::RegRange { first: 1, count: 2 },
-            None,
-            None,
-            JsValue::undefined(),
+            ConstructArgs::none(),
             super::FrameContinuation::None,
             0,
         )

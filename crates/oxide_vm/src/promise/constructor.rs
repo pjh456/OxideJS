@@ -9,7 +9,7 @@ use oxide_runtime_api::NativeResult;
 use oxide_types::object::{JsObject, NativeFnPtr, PropAttributes};
 use oxide_types::value::JsValue;
 
-use crate::vm::{FrameArgs, FrameContinuation, Vm};
+use crate::vm::{ConstructArgs, FrameArgs, FrameContinuation, Vm};
 
 use super::aggregate::{
     promise_static_all, promise_static_all_keyed, promise_static_all_settled, promise_static_all_settled_keyed,
@@ -233,9 +233,7 @@ impl Vm {
                 ctor,
                 this_value,
                 FrameArgs::Slice(args),
-                Some(0),
-                Some(new_obj_val),
-                new_target,
+                ConstructArgs::new(0, new_obj_val, new_target),
                 FrameContinuation::None,
                 0,
             )

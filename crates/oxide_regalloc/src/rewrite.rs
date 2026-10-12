@@ -90,7 +90,7 @@ pub(super) fn run(f: &mut IRFunction, map: &AllocMap) {
         }
 
         // 重写 inst 本体（含调用点参数连续性 MOV）
-        let (rewritten, arg_movs) = rewrite_inst(f, inst, map, &slot_color, i);
+        let (rewritten, arg_movs) = rewrite_inst(inst, map, &slot_color);
 
         // 发射顺序：UNSPILLs（按 vreg 升序）→ RMW UNSPILL → 连续性 MOVs → 指令 → SPILLs
         for &(vreg, color) in &use_unspills {
@@ -133,9 +133,7 @@ pub(super) fn run(f: &mut IRFunction, map: &AllocMap) {
 }
 
 /// 重写单条指令：槽位映射 + 调用点参数连续性 MOV 补位。返回 (重写后指令, 参数 MOV 列表)。
-fn rewrite_inst(
-    f: &IRFunction, inst: &Inst, map: &AllocMap, slot_color: &BTreeMap<u32, u32>, i: usize,
-) -> (Inst, Vec<(u32, u32)>) {
+fn rewrite_inst(inst: &Inst, map: &AllocMap, slot_color: &BTreeMap<u32, u32>) -> (Inst, Vec<(u32, u32)>) {
     let raw_nargs = inst.ext.first().copied().unwrap_or(0);
     let nargs = raw_nargs;
     let first_arg = match inst.op {
@@ -172,7 +170,6 @@ fn rewrite_inst(
             }
         }
     }
-    let _ = i;
 
     // 槽位重写
     let rewrite = |o: Operand| -> Operand {
@@ -275,7 +272,6 @@ fn rewrite_inst(
             _ => {}
         }
     }
-    let _ = f;
     // 防御：imm16 编码位的操作数必须是 Imm/None，不得是 Reg——
     // 上面的 Reg 重写会改号，若该槽被改写，VM 侧按 imm16 读取会拿到错误值。
     match inst.op {
