@@ -530,10 +530,7 @@ fn module_cache_bigint_readable_after_full_reset() {
     assert!(result.is_bigint());
     vm.full_reset();
     // full_reset 不清装载缓存：条目 BigInt 存储归条目自持，拆除不悬垂。
-    let entry = vm
-        .module_cache
-        .get(&Arc::as_ptr(&module))
-        .expect("full_reset 不得清装载缓存");
+    let entry = vm.module_cache.get(&Arc::as_ptr(&module)).expect("full_reset 不得清装载缓存");
     let v = entry
         .immutables
         .iter()

@@ -77,8 +77,7 @@ impl FunctionFlags {
 }
 
 /// 模块级装载缓存条目三件套：已转换常量池、BigInt 自持存储、si 侧表。
-pub(crate) type ModuleLoadTriple =
-    (Arc<Vec<JsValue>>, Arc<Vec<num_bigint::BigInt>>, Arc<Vec<Option<u32>>>);
+pub(crate) type ModuleLoadTriple = (Arc<Vec<JsValue>>, Arc<Vec<num_bigint::BigInt>>, Arc<Vec<Option<u32>>>);
 
 impl Vm {
     /// Cons（rope）节点保留的单元阈值：拼接总长（UTF-16 单元数）≤ 该值时
@@ -961,11 +960,7 @@ impl Vm {
     ///   `new_bigint` 保持运行时专属（`BigInt(42)` 字面量、算术结果等），
     ///   两表 box 生命周期不相交，full_reset 拆除与条目 Drop 各释各的，无双放。
     pub(crate) fn convert_module_constants(&mut self, module: &CompiledModule) -> ModuleLoadTriple {
-        let bigint_count = module
-            .constants
-            .iter()
-            .filter(|c| matches!(c, Constant::BigInt(_)))
-            .count();
+        let bigint_count = module.constants.iter().filter(|c| matches!(c, Constant::BigInt(_))).count();
         let mut bigint_storage = Vec::with_capacity(bigint_count);
         let mut values = Vec::with_capacity(module.constants.len());
         for constant in &module.constants {
