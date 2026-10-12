@@ -23,9 +23,7 @@ pub(crate) struct CaptureEngine<'a> {
 
 impl<'a> CaptureEngine<'a> {
     /// 构造引擎：`ref_set` 为关注名集，`shadow` 为初始遮蔽名集，`out` 为输出累加器。
-    pub(crate) fn new(
-        ref_set: &'a HashSet<String>, shadow: HashSet<String>, out: &'a mut HashSet<String>,
-    ) -> Self {
+    pub(crate) fn new(ref_set: &'a HashSet<String>, shadow: HashSet<String>, out: &'a mut HashSet<String>) -> Self {
         CaptureEngine { ref_set, shadow, out }
     }
 }
@@ -289,9 +287,7 @@ pub(crate) fn collect_class_capture_names(class_body: &ClassBody, eng: &mut Capt
 
 /// 遍历 catch 参数解构模式：收集模式内表达式引用（默认值等），声明名合并进引擎
 /// 影子集遮蔽 catch 作用域。模式内表达式扫描走外层影子集，不受本模式声明名影响。
-pub(crate) fn collect_capture_names_binding_pattern(
-    pattern: &oxide_parser::BindingPattern, eng: &mut CaptureEngine,
-) {
+pub(crate) fn collect_capture_names_binding_pattern(pattern: &oxide_parser::BindingPattern, eng: &mut CaptureEngine) {
     let mut declared = HashSet::new();
     collect_binding_pattern_refs(pattern, eng, &mut declared);
     eng.shadow.extend(declared);
@@ -336,9 +332,7 @@ fn collect_binding_pattern_refs(
 /// 遍历绑定 pattern 的运行时求值表达式引用：计算键（`{[k]: a}` 的键）与内嵌
 /// 默认值（`{a = x}` 的 x）都是模式内求值的表达式，嵌套函数引用外层绑定时须
 /// 纳入捕获（与赋值侧/对象字面量/类字段键遍历同口径）。
-pub(crate) fn collect_capture_names_binding_keys(
-    pattern: &oxide_parser::BindingPattern, eng: &mut CaptureEngine,
-) {
+pub(crate) fn collect_capture_names_binding_keys(pattern: &oxide_parser::BindingPattern, eng: &mut CaptureEngine) {
     match pattern {
         oxide_parser::BindingPattern::BindingIdentifier(_) => {}
         oxide_parser::BindingPattern::ArrayPattern(ap) => {
@@ -370,9 +364,7 @@ pub(crate) fn collect_capture_names_binding_keys(
 }
 
 /// 扫描赋值目标中的引用（标识符写名，成员目标扫对象/键，解构目标递归元素）。
-pub(crate) fn collect_capture_names_assign_target(
-    target: &oxide_parser::AssignmentTarget, eng: &mut CaptureEngine,
-) {
+pub(crate) fn collect_capture_names_assign_target(target: &oxide_parser::AssignmentTarget, eng: &mut CaptureEngine) {
     match target {
         oxide_parser::AssignmentTarget::AssignmentTargetIdentifier(ati) => {
             let name = ati.name.as_str();
@@ -493,7 +485,8 @@ pub(crate) fn collect_capture_names_maybe_default_target(
         MaybeDefault::ObjectAssignmentTarget(o) => {
             for prop in &o.properties {
                 if let oxide_parser::AssignmentTargetProperty::AssignmentTargetPropertyIdentifier(id) = prop {
-                    if eng.ref_set.contains(id.binding.name.as_str()) && !eng.shadow.contains(id.binding.name.as_str()) {
+                    if eng.ref_set.contains(id.binding.name.as_str()) && !eng.shadow.contains(id.binding.name.as_str())
+                    {
                         eng.out.insert(id.binding.name.to_string());
                     }
                     if let Some(init) = &id.init {
