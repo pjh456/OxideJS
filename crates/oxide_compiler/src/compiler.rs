@@ -98,6 +98,9 @@ impl Compiler {
     /// 零删除返回 `live_reusable`（免第二轮 CFG/活集重建）。
     fn compile_ir(&self, mut ir: oxide_ir::IRFunction) -> Result<CompiledModule, String> {
         crate::compiler_debug!("compile_ir: after emit {} insts", ir.insts.len());
+        // 常量折叠：单向前扫常量传播加就地改写，接在 emit 与 DCE 之间。
+        // 不删指令、不重映射 label，改写造成的 CFG 失效由 DCE 自身的 build_cfg 吸收。
+        oxide_fold::fold(&mut ir);
         // DCE 零删除时返回 Pass A CFG 供 liveness 复用；有删除或 DCE 关闭时为 None（须重建）。
         let dce_cfg: Option<oxide_cfg::Cfg> = if self.enable_dce {
             let cfg = oxide_dce::dce(&mut ir); // 顶层函数；nested 不递归

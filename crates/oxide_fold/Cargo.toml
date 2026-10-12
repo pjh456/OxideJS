@@ -1,0 +1,18 @@
+[package]
+name = "oxide_fold"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "OxideJS - forward constant propagation and constant folding pass over IR"
+
+[dependencies]
+oxide_ir = { path = "../oxide_ir" }
+oxide_bytecode = { path = "../oxide_bytecode" }
+oxide_runtime_api = { path = "../oxide_runtime_api" }
+oxide_types = { path = "../oxide_types" }
+oxide_log = { path = "../oxide_log" }
+num-bigint = "0.4"
+
+[lints]
+workspace = true

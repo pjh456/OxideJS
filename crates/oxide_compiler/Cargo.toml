@@ -17,6 +17,7 @@ oxide_liveness = { path = "../oxide_liveness" }
 oxide_regalloc = { path = "../oxide_regalloc" }
 oxide_ir.workspace = true
 oxide_emit.workspace = true
+oxide_fold.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 rustc-hash.workspace = true
