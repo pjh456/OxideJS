@@ -7,11 +7,8 @@
 //! `custom_event_constructor` / `custom_event_proto` 两枚 P 字段占位（构造器
 //! 本体与原型 getter），并绑全局 `CustomEvent`。
 
-use std::sync::Arc;
-
 use crate::bind_constructor;
-use crate::bindings::{apply_binding_table, bind_accessor_getter, configure_native_constructor};
-use oxide_kernel::kernel::{KernelCore, KernelSession};
+use crate::bindings::{apply_binding_table, bind_accessor_getter, configure_native_constructor, BindEnv};
 use oxide_types::object::{JsObject, PropAttributes};
 use oxide_types::value::JsValue;
 
@@ -31,15 +28,15 @@ use oxide_types::value::JsValue;
 /// `bind_constructor!` 的全局槽臂自带既有槽原位更新，天然幂等。
 ///
 /// `realm_id` 未使用（Event 无 well-known 符号键），保留签名与其他绑定函数一致。
-pub fn bind_event(core: &Arc<KernelCore>, session: &KernelSession, global: &mut JsObject, _realm_id: u32) {
-    let world = session.builtin_world();
+pub fn bind_event(env: BindEnv<'_>, global: &mut JsObject) {
+    let world = env.world();
     let ctor_ptr = world.event_constructor.as_ptr() as *mut JsObject;
     let ctor = unsafe { &mut *ctor_ptr };
     let proto_ptr = world.event_proto.as_ptr() as *mut JsObject;
     let proto = unsafe { &mut *proto_ptr };
 
-    let sf = core.perm_interner().as_ref();
-    let sh = core.shape_forge().as_ref();
+    let sf = env.string_forge();
+    let sh = env.shape_forge();
 
     // ---- 填构造器占位 ----
     ctor.set_function(true);
@@ -72,7 +69,7 @@ pub fn bind_event(core: &Arc<KernelCore>, session: &KernelSession, global: &mut 
 
     configure_native_constructor(ctor, oxide_builtins::event::event_constructor::<crate::vm::Vm> as *const (), 2);
     bind_constructor!(
-        core,
+        env,
         global,
         "Event",
         ctor_ptr,
@@ -115,9 +112,8 @@ pub fn bind_event(core: &Arc<KernelCore>, session: &KernelSession, global: &mut 
     let si_prevent_default = sf.intern("preventDefault").0;
     if sh.lookup_position(proto.shape_id(), si_prevent_default).is_none() {
         apply_binding_table(
-            world,
+            env,
             proto,
-            core,
             &[
                 (
                     "preventDefault",
@@ -166,7 +162,7 @@ pub fn bind_event(core: &Arc<KernelCore>, session: &KernelSession, global: &mut 
     for (name, fn_ptr) in getter_fns {
         let si = sf.intern(name).0;
         if sh.lookup_position(proto.shape_id(), si).is_none() {
-            bind_accessor_getter(core, session, proto, name, fn_ptr);
+            bind_accessor_getter(env, proto, name, fn_ptr);
         }
     }
 
@@ -204,7 +200,7 @@ pub fn bind_event(core: &Arc<KernelCore>, session: &KernelSession, global: &mut 
         2,
     );
     bind_constructor!(
-        core,
+        env,
         global,
         "MessageEvent",
         me_ctor_ptr,
@@ -239,7 +235,7 @@ pub fn bind_event(core: &Arc<KernelCore>, session: &KernelSession, global: &mut 
     for (name, fn_ptr) in me_getter_fns {
         let si = sf.intern(name).0;
         if sh.lookup_position(me_proto.shape_id(), si).is_none() {
-            bind_accessor_getter(core, session, me_proto, name, fn_ptr);
+            bind_accessor_getter(env, me_proto, name, fn_ptr);
         }
     }
 
@@ -277,7 +273,7 @@ pub fn bind_event(core: &Arc<KernelCore>, session: &KernelSession, global: &mut 
         2,
     );
     bind_constructor!(
-        core,
+        env,
         global,
         "ErrorEvent",
         ee_ctor_ptr,
@@ -311,7 +307,7 @@ pub fn bind_event(core: &Arc<KernelCore>, session: &KernelSession, global: &mut 
     for (name, fn_ptr) in ee_getter_fns {
         let si = sf.intern(name).0;
         if sh.lookup_position(ee_proto.shape_id(), si).is_none() {
-            bind_accessor_getter(core, session, ee_proto, name, fn_ptr);
+            bind_accessor_getter(env, ee_proto, name, fn_ptr);
         }
     }
 
@@ -349,7 +345,7 @@ pub fn bind_event(core: &Arc<KernelCore>, session: &KernelSession, global: &mut 
         2,
     );
     bind_constructor!(
-        core,
+        env,
         global,
         "CustomEvent",
         ce_ctor_ptr,
@@ -374,7 +370,7 @@ pub fn bind_event(core: &Arc<KernelCore>, session: &KernelSession, global: &mut 
     for (name, fn_ptr) in ce_getter_fns {
         let si = sf.intern(name).0;
         if sh.lookup_position(ce_proto.shape_id(), si).is_none() {
-            bind_accessor_getter(core, session, ce_proto, name, fn_ptr);
+            bind_accessor_getter(env, ce_proto, name, fn_ptr);
         }
     }
 
@@ -390,9 +386,8 @@ pub fn bind_event(core: &Arc<KernelCore>, session: &KernelSession, global: &mut 
     let si_add = sf.intern("addEventListener").0;
     if sh.lookup_position(et_proto.shape_id(), si_add).is_none() {
         apply_binding_table(
-            world,
+            env,
             et_proto,
-            core,
             &[
                 (
                     "addEventListener",

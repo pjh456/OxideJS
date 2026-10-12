@@ -5,15 +5,12 @@
 //! `$262.*` 的测试真实执行而非一律抛 `ReferenceError` 被 runner 吞为 skip；
 //! 未实现的方法抛 `not supported` 错误，runner 按能力缺失归类。
 
-use std::sync::Arc;
-
-use oxide_kernel::kernel::{KernelCore, KernelSession};
 use oxide_kernel::shape_forge::EMPTY_SHAPE_ID;
 use oxide_runtime_api::{to_units_full, NativeResult};
 use oxide_types::object::{JsObject, NativeFnPtr};
 use oxide_types::value::JsValue;
 
-use crate::bindings::{apply_binding_table, bind_global_value};
+use crate::bindings::{apply_binding_table, bind_global_value, BindEnv};
 use crate::vm::Vm;
 
 /// `$262` 未实现方法统一抛错：消息带 `not supported`，runner 据此按能力缺失跳过。
@@ -111,13 +108,12 @@ pub fn is_html_dda_call(_vm: &mut Vm, _args: &[u8]) -> NativeResult {
 /// - 宿主对象登记进 world 释放表，session 收尾时统一释放（与 Reflect/Iterator
 ///   等全局对象同一约定）；每次调用新建对象，同一 session 内重复绑定会泄漏旧对象
 ///   （全量初始化与 full_reset 频率低，可接受）。
-pub fn bind_test262_host(core: &Arc<KernelCore>, session: &KernelSession, global: &mut JsObject) {
-    let object_proto = session.builtin_world().object_proto.as_ptr() as *mut JsObject;
+pub fn bind_test262_host(env: BindEnv<'_>, global: &mut JsObject) {
+    let object_proto = env.world().object_proto.as_ptr() as *mut JsObject;
     let mut host = JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(object_proto));
     apply_binding_table(
-        session.builtin_world(),
+        env,
         &mut host,
-        core,
         &[
             ("evalScript", eval_script as *const (), 1),
             ("detachArrayBuffer", detach_array_buffer as *const (), 1),
@@ -127,7 +123,7 @@ pub fn bind_test262_host(core: &Arc<KernelCore>, session: &KernelSession, global
         ],
     );
     let global_this = JsValue::from_js_object(global as *mut JsObject);
-    bind_global_value(core, &mut host, "global", global_this);
+    bind_global_value(env.core, &mut host, "global", global_this);
     // [[IsHTMLDDA]] 宿主值（B.3.4）：可调用（被调用时返回 null），
     // ToBoolean/typeof/宽松相等按 undefined 处理，Type 与其余强制转换按普通对象处理。
     let mut dda = JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(object_proto));
@@ -136,9 +132,9 @@ pub fn bind_test262_host(core: &Arc<KernelCore>, session: &KernelSession, global
     dda.set_native_fn(Some(unsafe { NativeFnPtr::from_raw(is_html_dda_call as *const ()) }));
     dda.set_native_arg_count(0);
     let dda_ptr = Box::into_raw(Box::new(dda));
-    session.builtin_world().track_leaked_object(dda_ptr);
-    bind_global_value(core, &mut host, "IsHTMLDDA", JsValue::from_js_object(dda_ptr));
+    env.world().track_leaked_object(dda_ptr);
+    bind_global_value(env.core, &mut host, "IsHTMLDDA", JsValue::from_js_object(dda_ptr));
     let host_ptr = Box::into_raw(Box::new(host));
-    session.builtin_world().track_leaked_object(host_ptr);
-    bind_global_value(core, global, "$262", JsValue::from_js_object(host_ptr));
+    env.world().track_leaked_object(host_ptr);
+    bind_global_value(env.core, global, "$262", JsValue::from_js_object(host_ptr));
 }

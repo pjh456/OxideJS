@@ -1,22 +1,18 @@
-use std::sync::Arc;
-
-use crate::bindings::{apply_binding_table, bind_global_value};
-use oxide_kernel::kernel::{KernelCore, KernelSession};
+use crate::bindings::{apply_binding_table, bind_global_value, BindEnv};
 use oxide_kernel::shape_forge::EMPTY_SHAPE_ID;
 use oxide_types::object::JsObject;
 use oxide_types::value::JsValue;
 
 /// 把 Reflect 单例对象及其方法（get/set/construct/defineProperty 等）绑定到 global。
-pub fn bind_reflect(core: &Arc<KernelCore>, session: &KernelSession, global: &mut JsObject) {
+pub fn bind_reflect(env: BindEnv<'_>, global: &mut JsObject) {
     let mut reflect = Box::new(JsObject::new_empty(
         EMPTY_SHAPE_ID,
-        JsValue::from_js_object(session.builtin_world().object_proto.as_ptr() as *mut JsObject),
+        JsValue::from_js_object(env.world().object_proto.as_ptr() as *mut JsObject),
     ));
 
     apply_binding_table(
-        session.builtin_world(),
+        env,
         &mut reflect,
-        core,
         &[
             ("apply", oxide_builtins::reflect::reflect_apply::<crate::vm::Vm> as *const (), 3),
             ("construct", oxide_builtins::reflect::reflect_construct::<crate::vm::Vm> as *const (), 2),
@@ -64,6 +60,6 @@ pub fn bind_reflect(core: &Arc<KernelCore>, session: &KernelSession, global: &mu
 
     let reflect_ptr = Box::into_raw(reflect);
     // 登记进 world 释放表：session 收尾统一释放对象本体与属性区。
-    session.builtin_world().track_leaked_object(reflect_ptr);
-    bind_global_value(core, global, "Reflect", JsValue::from_js_object(reflect_ptr));
+    env.world().track_leaked_object(reflect_ptr);
+    bind_global_value(env.core, global, "Reflect", JsValue::from_js_object(reflect_ptr));
 }

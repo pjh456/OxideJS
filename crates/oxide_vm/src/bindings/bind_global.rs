@@ -1,16 +1,12 @@
-use std::sync::Arc;
-
-use oxide_kernel::kernel::{KernelCore, KernelSession};
 use oxide_types::object::JsObject;
 
-use crate::bindings::apply_binding_table;
+use crate::bindings::{apply_binding_table, BindEnv};
 
 /// 把普通全局函数（`isNaN`、`parseInt`、`decodeURIComponent` 等）绑定到 global。
-pub fn bind_global(core: &Arc<KernelCore>, session: &KernelSession, global: &mut JsObject) {
+pub fn bind_global(env: BindEnv<'_>, global: &mut JsObject) {
     apply_binding_table(
-        session.builtin_world(),
+        env,
         global,
-        core,
         &[
             ("escape", oxide_builtins::global::js_escape::<crate::vm::Vm> as *const (), 1),
             ("unescape", oxide_builtins::global::js_unescape::<crate::vm::Vm> as *const (), 1),

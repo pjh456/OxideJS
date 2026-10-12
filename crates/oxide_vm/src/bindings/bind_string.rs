@@ -1,8 +1,5 @@
-use std::sync::Arc;
-
-use crate::bindings::{apply_binding_table, configure_native_constructor};
+use crate::bindings::{apply_binding_table, configure_native_constructor, BindEnv};
 use oxide_kernel::builtin::StringMethods;
-use oxide_kernel::kernel::{KernelCore, KernelSession};
 use oxide_types::object::{JsObject, PropAttributes};
 use oxide_types::value::JsValue;
 
@@ -10,7 +7,7 @@ use oxide_types::value::JsValue;
 ///
 /// `realm_id` 是目标所属 realm 的编号：`@@iterator` 符号键按 (realm 编号, 局部
 /// 下标) 编码，realm 编号为 0 时与旧编码逐字节一致。
-pub fn bind_string(core: &Arc<KernelCore>, session: &KernelSession, global: &mut JsObject, realm_id: u32) {
+pub fn bind_string(env: BindEnv<'_>, global: &mut JsObject) {
     let string_methods = StringMethods {
         from_char_code: oxide_builtins::string::string_from_char_code::<crate::vm::Vm> as *const (),
         index_of: oxide_builtins::string::string_index_of::<crate::vm::Vm> as *const (),
@@ -63,29 +60,28 @@ pub fn bind_string(core: &Arc<KernelCore>, session: &KernelSession, global: &mut
         sub: oxide_builtins::string::string_sub::<crate::vm::Vm> as *const (),
         sup: oxide_builtins::string::string_sup::<crate::vm::Vm> as *const (),
     };
-    session.builtin_world().bind_string_methods(
+    env.world().bind_string_methods(
         &string_methods,
-        core.perm_interner().as_ref(),
-        core.shape_forge().as_ref(),
+        env.string_forge(),
+        env.shape_forge(),
     );
 
-    let ctor_ptr = session.builtin_world().string_constructor.as_ptr() as *mut JsObject;
+    let ctor_ptr = env.world().string_constructor.as_ptr() as *mut JsObject;
     let ctor = unsafe { &mut *ctor_ptr };
     configure_native_constructor(ctor, oxide_builtins::string::string_constructor::<crate::vm::Vm> as *const (), 1);
     // String.length = 1，描述符 { writable:false, enumerable:false, configurable:true }。
-    let length_si = core.perm_interner().intern("length").0;
-    let length_shape = core.shape_forge().make_shape(ctor.shape_id(), length_si);
+    let length_si = env.string_forge().intern("length").0;
+    let length_shape = env.shape_forge().make_shape(ctor.shape_id(), length_si);
     ctor.set_shape_id(length_shape);
     ctor.ensure_hash_props().push(JsValue::int(1));
     let length_pos = ctor.hash_props_vec().map_or(0, |v| v.len() as u32).saturating_sub(1);
     ctor.set_data_meta(length_pos, PropAttributes::new(false, false, true));
 
-    let proto_ptr = session.builtin_world().string_proto.as_ptr() as *mut JsObject;
+    let proto_ptr = env.world().string_proto.as_ptr() as *mut JsObject;
     let proto = unsafe { &mut *proto_ptr };
     apply_binding_table(
-        session.builtin_world(),
+        env,
         proto,
-        core,
         &[
             ("toString", oxide_builtins::string::string_to_string::<crate::vm::Vm> as *const (), 0),
             ("toSource", oxide_builtins::to_source::to_source_string::<crate::vm::Vm> as *const (), 0),
@@ -94,23 +90,20 @@ pub fn bind_string(core: &Arc<KernelCore>, session: &KernelSession, global: &mut
     // String.prototype[@@iterator]：逐 code point 迭代字符；name 属性按规范
     // 落 "[Symbol.iterator]"。
     super::bind_well_known_method(
-        session.builtin_world(),
-        core,
+        env,
         proto,
         0,
         "[Symbol.iterator]",
         oxide_builtins::string::string_symbol_iterator::<crate::vm::Vm> as *const (),
         0,
-        realm_id,
     );
     // 捕获默认迭代器函数对象指针写入 world：String 臂覆盖判定以此做指针比较。
     // 此时槽为初始数据属性（用户覆盖尚未可能），读回即默认函数本体。
-    let iter_key = oxide_types::private_key::encode_symbol_key(realm_id, 0);
-    if let Some(pos) = core.shape_forge().lookup_position(proto.shape_id(), iter_key) {
+    let iter_key = oxide_types::private_key::encode_symbol_key(env.realm_id, 0);
+    if let Some(pos) = env.shape_forge().lookup_position(proto.shape_id(), iter_key) {
         let v = proto.get_prop_at(pos);
         if v.is_object() {
-            session
-                .builtin_world()
+            env.world()
                 .string_default_iterator
                 .set(v.as_js_object_ptr() as *const JsObject);
         }
@@ -118,12 +111,12 @@ pub fn bind_string(core: &Arc<KernelCore>, session: &KernelSession, global: &mut
 
     // 全局 String 槽位既有槽原位更新（旧家族构造器指针不得滞留在属性 vec），
     // 无槽时开新槽；描述符非枚举（规范 { writable:true, enumerable:false, configurable:true }）。
-    let si_str = core.perm_interner().intern("String").0;
-    let str_val = JsValue::from_js_object(session.builtin_world().string_constructor.as_ptr() as *mut JsObject);
-    if let Some(pos) = core.shape_forge().lookup_position(global.shape_id(), si_str) {
+    let si_str = env.string_forge().intern("String").0;
+    let str_val = JsValue::from_js_object(env.world().string_constructor.as_ptr() as *mut JsObject);
+    if let Some(pos) = env.shape_forge().lookup_position(global.shape_id(), si_str) {
         global.set_prop_at(pos, str_val);
     } else {
-        let str_shape = core.shape_forge().make_shape(global.shape_id(), si_str);
+        let str_shape = env.shape_forge().make_shape(global.shape_id(), si_str);
         global.set_shape_id(str_shape);
         global.ensure_hash_props().push(str_val);
         let pos = global.prop_vec_len().saturating_sub(1) as u32;

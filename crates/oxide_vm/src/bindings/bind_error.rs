@@ -1,18 +1,17 @@
-use std::sync::Arc;
-
 use oxide_kernel::builtin::ErrorMethods;
-use oxide_kernel::kernel::{KernelCore, KernelSession};
 use oxide_kernel::shape_forge::EMPTY_SHAPE_ID;
 use oxide_types::object::{JsObject, NativeFnPtr, PropAttributes};
 use oxide_types::value::JsValue;
 
+use super::BindEnv;
+
 fn bind_error_subtype_constructor(
-    core: &Arc<KernelCore>, session: &KernelSession, global: &mut JsObject, name: &str, proto_ptr: *mut JsObject,
+    env: BindEnv<'_>, global: &mut JsObject, name: &str, proto_ptr: *mut JsObject,
     ctor_fn: *const (), arg_count: u8,
 ) {
-    let sf = core.perm_interner().as_ref();
-    let sh = core.shape_forge().as_ref();
-    let world = session.builtin_world();
+    let sf = env.string_forge();
+    let sh = env.shape_forge();
+    let world = env.world();
     let name_si = sf.intern(name).0;
     // SAFETY: ctor_fn 是调用方转成 *const () 的 NativeFn 函数项指针。
     let ctor_fn_ptr = unsafe { NativeFnPtr::from_raw(ctor_fn) };
@@ -95,7 +94,7 @@ fn bind_error_subtype_constructor(
 }
 
 /// 把 Error 及各子类型（TypeError/ReferenceError/...）构造器与原型方法绑定到 global。
-pub fn bind_error(core: &Arc<KernelCore>, session: &KernelSession, global: &mut JsObject) {
+pub fn bind_error(env: BindEnv<'_>, global: &mut JsObject) {
     let error_methods = ErrorMethods {
         error: oxide_builtins::error::error_constructor::<crate::vm::Vm> as *const (),
         type_error: oxide_builtins::error::type_error_constructor::<crate::vm::Vm> as *const (),
@@ -109,23 +108,22 @@ pub fn bind_error(core: &Arc<KernelCore>, session: &KernelSession, global: &mut 
         is_error: oxide_builtins::error::error_is_error::<crate::vm::Vm> as *const (),
         to_json: oxide_builtins::error::error_to_json::<crate::vm::Vm> as *const (),
     };
-    session.builtin_world().bind_error_methods(
+    env.world().bind_error_methods(
         &error_methods,
-        core.perm_interner().as_ref(),
-        core.shape_forge().as_ref(),
+        env.string_forge(),
+        env.shape_forge(),
     );
 
     // stack 为访问器成对安装（getter 现算栈串 / setter 走
     // SetterThatIgnoresPrototypeProperties），经 getset 绑定器登记复用键，
     // 选择性重建时同槽迁移旧 wrapper。
     {
-        let proto_ptr = session.builtin_world().error_proto.as_ptr() as *mut JsObject;
+        let proto_ptr = env.world().error_proto.as_ptr() as *mut JsObject;
         // SAFETY: error_proto 由 session 持有，存活整个 session；本块内只改其 shape/属性区，无 reset。
         let proto = unsafe { &mut *proto_ptr };
-        let si_stack = core.perm_interner().intern("stack").0;
+        let si_stack = env.string_forge().intern("stack").0;
         super::bind_accessor_getset(
-            core,
-            session,
+            env,
             proto,
             si_stack,
             "get stack",
@@ -138,25 +136,24 @@ pub fn bind_error(core: &Arc<KernelCore>, session: &KernelSession, global: &mut 
     // toSource 遗留扩展（Error 原型方法不走 kernel 侧 bind_error_methods，
     // 此处独立经 apply_binding_table 安装，描述符非枚举由绑定器内置）。
     {
-        let proto_ptr = session.builtin_world().error_proto.as_ptr() as *mut JsObject;
+        let proto_ptr = env.world().error_proto.as_ptr() as *mut JsObject;
         // SAFETY: error_proto 由 session 持有，存活整个 session；本块内只改其 shape/属性区，无 reset。
         let proto = unsafe { &mut *proto_ptr };
         super::apply_binding_table(
-            session.builtin_world(),
+            env,
             proto,
-            core,
             &[("toSource", oxide_builtins::to_source::to_source_error::<crate::vm::Vm> as *const (), 0)],
         );
     }
 
     // 全局 Error 槽位既有槽原位更新（旧家族构造器指针不得滞留在属性 vec），
     // 无槽时开新槽；描述符非枚举（规范 { writable:true, enumerable:false, configurable:true }）。
-    let si_err = core.perm_interner().intern("Error").0;
-    let err_val = JsValue::from_js_object(session.builtin_world().error_constructor.as_ptr() as *mut JsObject);
-    if let Some(pos) = core.shape_forge().lookup_position(global.shape_id(), si_err) {
+    let si_err = env.string_forge().intern("Error").0;
+    let err_val = JsValue::from_js_object(env.world().error_constructor.as_ptr() as *mut JsObject);
+    if let Some(pos) = env.shape_forge().lookup_position(global.shape_id(), si_err) {
         global.set_prop_at(pos, err_val);
     } else {
-        let err_shape = core.shape_forge().make_shape(global.shape_id(), si_err);
+        let err_shape = env.shape_forge().make_shape(global.shape_id(), si_err);
         global.set_shape_id(err_shape);
         global.ensure_hash_props().push(err_val);
         let err_pos = global.prop_vec_len().saturating_sub(1) as u32;
@@ -165,73 +162,66 @@ pub fn bind_error(core: &Arc<KernelCore>, session: &KernelSession, global: &mut 
     }
 
     bind_error_subtype_constructor(
-        core,
-        session,
+        env,
         global,
         "TypeError",
-        session.builtin_world().type_error_proto.as_ptr() as *mut JsObject,
+        env.world().type_error_proto.as_ptr() as *mut JsObject,
         oxide_builtins::error::type_error_constructor::<crate::vm::Vm> as *const (),
         1,
     );
     bind_error_subtype_constructor(
-        core,
-        session,
+        env,
         global,
         "ReferenceError",
-        session.builtin_world().reference_error_proto.as_ptr() as *mut JsObject,
+        env.world().reference_error_proto.as_ptr() as *mut JsObject,
         oxide_builtins::error::reference_error_constructor::<crate::vm::Vm> as *const (),
         1,
     );
     bind_error_subtype_constructor(
-        core,
-        session,
+        env,
         global,
         "RangeError",
-        session.builtin_world().range_error_proto.as_ptr() as *mut JsObject,
+        env.world().range_error_proto.as_ptr() as *mut JsObject,
         oxide_builtins::error::range_error_constructor::<crate::vm::Vm> as *const (),
         1,
     );
     bind_error_subtype_constructor(
-        core,
-        session,
+        env,
         global,
         "SyntaxError",
-        session.builtin_world().syntax_error_proto.as_ptr() as *mut JsObject,
+        env.world().syntax_error_proto.as_ptr() as *mut JsObject,
         oxide_builtins::error::syntax_error_constructor::<crate::vm::Vm> as *const (),
         1,
     );
     bind_error_subtype_constructor(
-        core,
-        session,
+        env,
         global,
         "URIError",
-        session.builtin_world().uri_error_proto.as_ptr() as *mut JsObject,
+        env.world().uri_error_proto.as_ptr() as *mut JsObject,
         oxide_builtins::error::uri_error_constructor::<crate::vm::Vm> as *const (),
         1,
     );
     bind_error_subtype_constructor(
-        core,
-        session,
+        env,
         global,
         "EvalError",
-        session.builtin_world().eval_error_proto.as_ptr() as *mut JsObject,
+        env.world().eval_error_proto.as_ptr() as *mut JsObject,
         oxide_builtins::error::eval_error_constructor::<crate::vm::Vm> as *const (),
         1,
     );
 
     // SuppressedError 为三参构造器（error, suppressed, message），length=3。
     bind_error_subtype_constructor(
-        core,
-        session,
+        env,
         global,
         "SuppressedError",
-        session.builtin_world().suppressed_error_proto.as_ptr() as *mut JsObject,
+        env.world().suppressed_error_proto.as_ptr() as *mut JsObject,
         oxide_builtins::error::suppressed_error_constructor::<crate::vm::Vm> as *const (),
         3,
     );
 
     {
-        let err_ctor_ptr = session.builtin_world().error_constructor.as_ptr() as *mut JsObject;
+        let err_ctor_ptr = env.world().error_constructor.as_ptr() as *mut JsObject;
         let err_ctor = unsafe { &mut *err_ctor_ptr };
         err_ctor.type_tag = JsObject::OBJ_TYPE_CONSTRUCTOR;
         // SAFETY: error_constructor 是 NativeFn 函数项。
@@ -239,8 +229,8 @@ pub fn bind_error(core: &Arc<KernelCore>, session: &KernelSession, global: &mut 
             NativeFnPtr::from_raw(oxide_builtins::error::error_constructor::<crate::vm::Vm> as *const ())
         }));
         // 主 Error 构造器补 length 槽（值 1，与子类型构造器一致）。
-        let sf = core.perm_interner().as_ref();
-        let sh = core.shape_forge().as_ref();
+        let sf = env.string_forge();
+        let sh = env.shape_forge();
         let si_length = sf.intern("length").0;
         let length_shape = sh.make_shape(err_ctor.shape_id(), si_length);
         err_ctor.set_shape_id(length_shape);

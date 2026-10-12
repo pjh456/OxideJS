@@ -1,7 +1,4 @@
-use std::sync::Arc;
-
 use oxide_kernel::builtin::{FnWrapperKey, FunctionMethods};
-use oxide_kernel::kernel::{KernelCore, KernelSession};
 use oxide_kernel::shape_forge::EMPTY_SHAPE_ID;
 use oxide_types::object::{JsObject, NativeFnPtr, PropAttributes};
 use oxide_types::value::JsValue;
@@ -9,12 +6,13 @@ use oxide_types::value::JsValue;
 use super::apply_binding_table;
 use super::bind_global_value;
 use super::configure_native_constructor;
+use super::BindEnv;
 
 /// 把 Function 构造器与原型方法绑定到 global。
 ///
 /// `realm_id` 是目标所属 realm 的编号：`@@hasInstance` 符号键按 (realm 编号,
 /// 局部下标) 编码，realm 编号为 0 时与旧编码逐字节一致。
-pub fn bind_function(core: &Arc<KernelCore>, session: &KernelSession, global: &mut JsObject, realm_id: u32) {
+pub fn bind_function(env: BindEnv<'_>, global: &mut JsObject) {
     let function_methods = FunctionMethods {
         call: oxide_builtins::function::function_call::<crate::vm::Vm> as *const (),
         apply: oxide_builtins::function::function_apply::<crate::vm::Vm> as *const (),
@@ -22,14 +20,14 @@ pub fn bind_function(core: &Arc<KernelCore>, session: &KernelSession, global: &m
         to_string: oxide_builtins::function::function_to_string::<crate::vm::Vm> as *const (),
         has_instance: oxide_builtins::function::function_symbol_has_instance::<crate::vm::Vm> as *const (),
     };
-    session.builtin_world().bind_function_methods(
+    env.world().bind_function_methods(
         &function_methods,
-        core.perm_interner().as_ref(),
-        core.shape_forge().as_ref(),
-        realm_id,
+        env.string_forge(),
+        env.shape_forge(),
+        env.realm_id,
     );
 
-    let function_ctor = session.builtin_world().function_constructor.as_ptr() as *mut JsObject;
+    let function_ctor = env.world().function_constructor.as_ptr() as *mut JsObject;
     configure_native_constructor(
         unsafe { &mut *function_ctor },
         oxide_builtins::function::function_constructor::<crate::vm::Vm> as *const (),
@@ -37,8 +35,8 @@ pub fn bind_function(core: &Arc<KernelCore>, session: &KernelSession, global: &m
     );
     // 设置 Function.length = 1（configure_native_constructor 不写 length 属性），
     // 属性为不可写不可枚举可配置。
-    let length_si = core.perm_interner().intern("length").0;
-    let length_shape = core.shape_forge().make_shape(unsafe { &*function_ctor }.shape_id(), length_si);
+    let length_si = env.string_forge().intern("length").0;
+    let length_shape = env.shape_forge().make_shape(unsafe { &*function_ctor }.shape_id(), length_si);
     let ctor = unsafe { &mut *function_ctor };
     ctor.set_shape_id(length_shape);
     ctor.ensure_hash_props().push(JsValue::int(1));
@@ -47,36 +45,35 @@ pub fn bind_function(core: &Arc<KernelCore>, session: &KernelSession, global: &m
 
     // Function.prototype 自身属性：length = 0、name = ""（不可写不可枚举可配置），
     // 自身属性名序 length 在 name 之前。
-    let proto_ptr = session.builtin_world().function_proto.as_ptr() as *mut JsObject;
+    let proto_ptr = env.world().function_proto.as_ptr() as *mut JsObject;
     let proto = unsafe { &mut *proto_ptr };
-    let proto_length_shape = core.shape_forge().make_shape(proto.shape_id(), length_si);
+    let proto_length_shape = env.shape_forge().make_shape(proto.shape_id(), length_si);
     proto.set_shape_id(proto_length_shape);
     proto.ensure_hash_props().push(JsValue::int(0));
     let proto_length_pos = proto.hash_props_vec().map_or(0, |v| v.len() as u32).saturating_sub(1);
     proto.set_data_meta(proto_length_pos, PropAttributes::new(false, false, true));
-    let name_si = core.perm_interner().intern("name").0;
-    let name_shape = core.shape_forge().make_shape(proto.shape_id(), name_si);
+    let name_si = env.string_forge().intern("name").0;
+    let name_shape = env.shape_forge().make_shape(proto.shape_id(), name_si);
     proto.set_shape_id(name_shape);
     proto
         .ensure_hash_props()
-        .push(JsValue::perm_string(core.perm_interner().string_ptr(core.perm_interner().intern("").0)));
+        .push(JsValue::perm_string(env.string_forge().string_ptr(env.string_forge().intern("").0)));
     let name_pos = proto.hash_props_vec().map_or(0, |v| v.len() as u32).saturating_sub(1);
     proto.set_data_meta(name_pos, PropAttributes::new(false, false, true));
 
     // caller/arguments 受限访问器：两属性 get/set 共用同一 %ThrowTypeError%
     // 函数对象，任何访问抛 TypeError（AddRestrictedFunctionProperties 语义）。
-    bind_function_proto_restricted(core, session, proto);
+    bind_function_proto_restricted(env, proto);
 
     // toSource 遗留扩展（Function 原型方法不走 kernel 侧 bind_function_methods，
     // 此处独立经 apply_binding_table 安装，描述符非枚举由绑定器内置）。
     apply_binding_table(
-        session.builtin_world(),
+        env,
         proto,
-        core,
         &[("toSource", oxide_builtins::to_source::to_source_function::<crate::vm::Vm> as *const (), 0)],
     );
 
-    bind_global_value(core, global, "Function", JsValue::from_js_object(function_ctor));
+    bind_global_value(env.core, global, "Function", JsValue::from_js_object(function_ctor));
 }
 
 /// 在 Function.prototype 上绑定 caller/arguments 受限访问器：两属性的
@@ -92,10 +89,10 @@ pub fn bind_function(core: &Arc<KernelCore>, session: &KernelSession, global: &m
 /// # 副作用
 /// - 为 caller/arguments 各开 shape 槽位并写入访问器 meta；thrower 函数对象
 ///   登记进 world 释放表（与 `bind_accessor_getter` 的 getter 同一生命周期）。
-fn bind_function_proto_restricted(core: &Arc<KernelCore>, session: &KernelSession, proto: &mut JsObject) {
-    let shape_forge = core.shape_forge().as_ref();
-    let string_forge = core.perm_interner().as_ref();
-    let world = session.builtin_world();
+fn bind_function_proto_restricted(env: BindEnv<'_>, proto: &mut JsObject) {
+    let shape_forge = env.shape_forge();
+    let string_forge = env.string_forge();
+    let world = env.world();
     let family = world.wrapper_family_of(proto as *const JsObject);
     let si_name = string_forge.intern("name").0;
     let si_length = string_forge.intern("length").0;

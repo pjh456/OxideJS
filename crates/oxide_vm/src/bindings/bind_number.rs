@@ -1,24 +1,20 @@
-use std::sync::Arc;
-
 use crate::bind_constructor;
-use crate::bindings::{apply_binding_table, configure_native_constructor};
-use oxide_kernel::kernel::{KernelCore, KernelSession};
+use crate::bindings::{apply_binding_table, configure_native_constructor, BindEnv};
 use oxide_types::object::{JsObject, PropAttributes};
 use oxide_types::value::JsValue;
 
 /// 把 Number 构造器与原型方法绑定到 global（含 NaN/POSITIVE_INFINITY 等常量）。
-pub fn bind_number(core: &Arc<KernelCore>, session: &KernelSession, global: &mut JsObject) {
-    let ctor_ptr = session.builtin_world().number_constructor.as_ptr() as *mut JsObject;
+pub fn bind_number(env: BindEnv<'_>, global: &mut JsObject) {
+    let ctor_ptr = env.world().number_constructor.as_ptr() as *mut JsObject;
     let ctor = unsafe { &mut *ctor_ptr };
-    let proto_ptr = session.builtin_world().number_proto.as_ptr() as *mut JsObject;
+    let proto_ptr = env.world().number_proto.as_ptr() as *mut JsObject;
     let proto = unsafe { &mut *proto_ptr };
 
     configure_native_constructor(ctor, oxide_builtins::number::number_constructor::<crate::vm::Vm> as *const (), 1);
 
     apply_binding_table(
-        session.builtin_world(),
+        env,
         ctor,
-        core,
         &[
             ("isNaN", oxide_builtins::number::number_is_nan::<crate::vm::Vm> as *const (), 1),
             ("isFinite", oxide_builtins::number::number_is_finite::<crate::vm::Vm> as *const (), 1),
@@ -35,9 +31,8 @@ pub fn bind_number(core: &Arc<KernelCore>, session: &KernelSession, global: &mut
     );
 
     apply_binding_table(
-        session.builtin_world(),
+        env,
         proto,
-        core,
         &[
             ("toString", oxide_builtins::number::number_to_string::<crate::vm::Vm> as *const (), 1),
             ("toFixed", oxide_builtins::number::number_to_fixed::<crate::vm::Vm> as *const (), 1),
@@ -75,18 +70,17 @@ pub fn bind_number(core: &Arc<KernelCore>, session: &KernelSession, global: &mut
     ] {
         ctor.ensure_hash_props().push(value);
         let pos = ctor.ensure_hash_props().len() - 1;
-        let prop_si = core.perm_interner().intern(name).0;
-        let next_shape = core.shape_forge().make_shape(ctor.shape_id(), prop_si);
+        let prop_si = env.string_forge().intern(name).0;
+        let next_shape = env.shape_forge().make_shape(ctor.shape_id(), prop_si);
         ctor.set_shape_id(next_shape);
         ctor.set_data_meta(pos, PropAttributes::new(false, false, false));
     }
 
-    bind_constructor!(core, global, "Number", ctor_ptr, oxide_builtins::number::number_constructor::<crate::vm::Vm>, 1, hash: true);
+    bind_constructor!(env, global, "Number", ctor_ptr, oxide_builtins::number::number_constructor::<crate::vm::Vm>, 1, hash: true);
 
     apply_binding_table(
-        session.builtin_world(),
+        env,
         global,
-        core,
         &[
             // parseInt 形式参数为 (string, radix)，length 按规范取 2。
             ("parseInt", oxide_builtins::number::number_parse_int::<crate::vm::Vm> as *const (), 2),
@@ -100,10 +94,10 @@ pub fn bind_number(core: &Arc<KernelCore>, session: &KernelSession, global: &mut
     // 是同一函数对象（SameValue）。ctor 侧绑定先执行、产生独立 wrapper，
     // 此处把 global 侧 wrapper 值原位写回 ctor 同名槽，描述符形态不变。
     for name in ["parseInt", "parseFloat"] {
-        let si = core.perm_interner().intern(name).0;
-        if let Some(global_pos) = core.shape_forge().lookup_position(global.shape_id(), si) {
+        let si = env.string_forge().intern(name).0;
+        if let Some(global_pos) = env.shape_forge().lookup_position(global.shape_id(), si) {
             let val = global.get_prop_at(global_pos);
-            if let Some(ctor_pos) = core.shape_forge().lookup_position(ctor.shape_id(), si) {
+            if let Some(ctor_pos) = env.shape_forge().lookup_position(ctor.shape_id(), si) {
                 ctor.set_prop_at(ctor_pos, val);
             }
         }

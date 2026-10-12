@@ -1,11 +1,8 @@
-use std::sync::Arc;
-
 use crate::bind_constructor;
 use crate::bindings::{
     apply_binding_table, bind_accessor_getter, bind_accessor_getter_key, bind_global_value,
-    bind_well_known_method_alias, configure_native_constructor,
+    bind_well_known_method_alias, configure_native_constructor, BindEnv,
 };
-use oxide_kernel::kernel::{KernelCore, KernelSession};
 use oxide_types::object::{JsObject, PropAttributes};
 use oxide_types::value::JsValue;
 
@@ -14,24 +11,24 @@ use oxide_types::value::JsValue;
 ///
 /// `realm_id` 是目标所属 realm 的编号：`@@species` 符号键按 (realm 编号, 局部
 /// 下标) 编码，realm 编号为 0 时与旧编码逐字节一致。
-fn bind_typed_array_abstract_ctor(core: &Arc<KernelCore>, session: &KernelSession, realm_id: u32) {
-    let ctor_ptr = session.builtin_world().typed_array_constructor.as_ptr() as *mut JsObject;
+fn bind_typed_array_abstract_ctor(env: BindEnv<'_>) {
+    let ctor_ptr = env.world().typed_array_constructor.as_ptr() as *mut JsObject;
     let ctor = unsafe { &mut *ctor_ptr };
     configure_native_constructor(
         ctor,
         oxide_builtins::typed_array::typed_array_abstract_constructor::<crate::vm::Vm> as *const (),
         0,
     );
-    let length_si = core.perm_interner().intern("length").0;
-    let length_shape = core.shape_forge().make_shape(ctor.shape_id(), length_si);
+    let length_si = env.string_forge().intern("length").0;
+    let length_shape = env.shape_forge().make_shape(ctor.shape_id(), length_si);
     ctor.set_shape_id(length_shape);
     ctor.ensure_hash_props().push(JsValue::int(0));
     let pos = ctor.hash_props_vec().map_or(0, |v| v.len() as u32).saturating_sub(1);
     ctor.set_data_meta(pos, PropAttributes::new(false, false, true));
 
-    let sf = core.perm_interner().as_ref();
-    let sh = core.shape_forge().as_ref();
-    let world = session.builtin_world();
+    let sf = env.string_forge();
+    let sh = env.shape_forge();
+    let world = env.world();
     let ctor_ptr = world.typed_array_constructor.as_ptr() as *mut JsObject;
     let ctor = unsafe { &mut *ctor_ptr };
     // SAFETY: of/from 是转成 *const () 的 NativeFn 函数项指针。
@@ -64,11 +61,10 @@ fn bind_typed_array_abstract_ctor(core: &Arc<KernelCore>, session: &KernelSessio
     // （及派生类）沿原型链解析 @@species 得自身（具体构造器无 own 属性）。绑定站
     // 与 TA 构造器后续消费面改造共用，先查槽位防重复绑定追加第二访问器槽。
     let species_key =
-        oxide_types::private_key::encode_symbol_key(realm_id, oxide_types::private_key::WELL_KNOWN_SYMBOL_SPECIES);
-    if core.shape_forge().lookup_position(ctor.shape_id(), species_key).is_none() {
+        oxide_types::private_key::encode_symbol_key(env.realm_id, oxide_types::private_key::WELL_KNOWN_SYMBOL_SPECIES);
+    if env.shape_forge().lookup_position(ctor.shape_id(), species_key).is_none() {
         bind_accessor_getter_key(
-            core,
-            session,
+            env,
             ctor,
             species_key,
             "get [Symbol.species]",
@@ -82,20 +78,20 @@ fn bind_typed_array_abstract_ctor(core: &Arc<KernelCore>, session: &KernelSessio
 /// # 步骤
 /// 1. 构造器走 hash_props 存储（与 `bind_constructor` 的 hash 路径一致）。
 /// 2. 原型走 shape 属性存储（与 `bind_method`/`bind_accessor_getter` 一致）。
-fn set_bypes_per_element(core: &Arc<KernelCore>, ctor_ptr: *mut JsObject, proto_ptr: *mut JsObject, bpe: u32) {
-    let bpe_si = core.perm_interner().intern("BYTES_PER_ELEMENT").0;
+fn set_bypes_per_element(env: BindEnv<'_>, ctor_ptr: *mut JsObject, proto_ptr: *mut JsObject, bpe: u32) {
+    let bpe_si = env.string_forge().intern("BYTES_PER_ELEMENT").0;
     let bpe_val = JsValue::int(bpe as i32);
     let attrs = PropAttributes::new(false, false, false);
 
     let ctor = unsafe { &mut *ctor_ptr };
     ctor.ensure_hash_props().push(bpe_val);
     let ctor_pos = ctor.ensure_hash_props().len() - 1;
-    let ctor_shape = core.shape_forge().make_shape(ctor.shape_id(), bpe_si);
+    let ctor_shape = env.shape_forge().make_shape(ctor.shape_id(), bpe_si);
     ctor.set_shape_id(ctor_shape);
     ctor.set_data_meta(ctor_pos as u32, attrs);
 
     let proto = unsafe { &mut *proto_ptr };
-    let proto_shape = core.shape_forge().make_shape(proto.shape_id(), bpe_si);
+    let proto_shape = env.shape_forge().make_shape(proto.shape_id(), bpe_si);
     proto.set_shape_id(proto_shape);
     let proto_pos = proto.push_prop(bpe_val);
     proto.set_data_meta(proto_pos, attrs);
@@ -103,14 +99,14 @@ fn set_bypes_per_element(core: &Arc<KernelCore>, ctor_ptr: *mut JsObject, proto_
 }
 
 macro_rules! bind_typed_array_constructor {
-    ($core:expr, $global:expr, $name:literal, $ctor_ptr:expr, $proto_ptr:expr, $bpe:expr, $ctor_fn:path) => {{
+    ($env:expr, $global:expr, $name:literal, $ctor_ptr:expr, $proto_ptr:expr, $bpe:expr, $ctor_fn:path) => {{
         let ctor = unsafe { &mut *$ctor_ptr };
         configure_native_constructor(ctor, ($ctor_fn as fn(&mut $crate::vm::Vm, &[u8]) -> oxide_runtime_api::NativeResult) as *const (), 3);
-        bind_constructor!($core, $global, $name, $ctor_ptr, $ctor_fn, 3, hash: true);
+        bind_constructor!($env, $global, $name, $ctor_ptr, $ctor_fn, 3, hash: true);
         // Function.length 描述符：不可写、不可枚举、可配置。
         let len_pos = ctor.hash_props_vec().map_or(0, |v| v.len() as u32).saturating_sub(1);
         ctor.set_data_meta(len_pos, PropAttributes::new(false, false, true));
-        set_bypes_per_element($core, $ctor_ptr, $proto_ptr, $bpe);
+        set_bypes_per_element($env, $ctor_ptr, $proto_ptr, $bpe);
     }};
 }
 
@@ -118,13 +114,12 @@ macro_rules! bind_typed_array_constructor {
 ///
 /// `realm_id` 是目标所属 realm 的编号：well-known 符号键按 (realm 编号, 局部
 /// 下标) 编码，realm 编号为 0 时与旧编码逐字节一致。
-pub fn bind_typed_array(core: &Arc<KernelCore>, session: &KernelSession, global: &mut JsObject, realm_id: u32) {
-    let shared_proto_ptr = session.builtin_world().typed_array_proto.as_ptr() as *mut JsObject;
+pub fn bind_typed_array(env: BindEnv<'_>, global: &mut JsObject) {
+    let shared_proto_ptr = env.world().typed_array_proto.as_ptr() as *mut JsObject;
     let shared_proto = unsafe { &mut *shared_proto_ptr };
     apply_binding_table(
-        session.builtin_world(),
+        env,
         shared_proto,
-        core,
         &[
             ("at", oxide_builtins::typed_array::typed_array_at::<crate::vm::Vm> as *const (), 1),
             ("fill", oxide_builtins::typed_array::typed_array_fill::<crate::vm::Vm> as *const (), 1),
@@ -220,44 +215,39 @@ pub fn bind_typed_array(core: &Arc<KernelCore>, session: &KernelSession, global:
     );
     // `keys` 已由方法表独立绑定（索引流 ≠ 值流）；@@iterator 与 `values`
     // 共享同一函数对象。
-    bind_well_known_method_alias(core, shared_proto, "values", 0, realm_id);
+    bind_well_known_method_alias(env.core, shared_proto, "values", 0, env.realm_id);
 
     // 原型访问器：视图属性（buffer/byteOffset/byteLength/length）读内部数据槽，
     // @@toStringTag 返回具体类型名，供 Object.prototype.toString 区分类型。
     bind_accessor_getter(
-        core,
-        session,
+        env,
         shared_proto,
         "buffer",
         oxide_builtins::typed_array::typed_array_buffer_getter::<crate::vm::Vm> as *const (),
     );
     bind_accessor_getter(
-        core,
-        session,
+        env,
         shared_proto,
         "byteOffset",
         oxide_builtins::typed_array::typed_array_byte_offset_getter::<crate::vm::Vm> as *const (),
     );
     bind_accessor_getter(
-        core,
-        session,
+        env,
         shared_proto,
         "byteLength",
         oxide_builtins::typed_array::typed_array_byte_length_getter::<crate::vm::Vm> as *const (),
     );
     bind_accessor_getter(
-        core,
-        session,
+        env,
         shared_proto,
         "length",
         oxide_builtins::typed_array::typed_array_length_getter::<crate::vm::Vm> as *const (),
     );
     bind_accessor_getter_key(
-        core,
-        session,
+        env,
         shared_proto,
         oxide_types::private_key::encode_symbol_key(
-            realm_id,
+            env.realm_id,
             oxide_types::private_key::WELL_KNOWN_SYMBOL_TO_STRING_TAG,
         ),
         "get [Symbol.toStringTag]",
@@ -266,12 +256,12 @@ pub fn bind_typed_array(core: &Arc<KernelCore>, session: &KernelSession, global:
 
     // 共享原型的 own toString 与 Array.prototype.toString 共享同一函数对象
     // （规范：同一内置函数对象；身份与描述符均按 own 属性验收）。
-    let to_string_si = core.perm_interner().intern("toString").0;
-    let array_proto_ref = unsafe { &*session.builtin_world().array_proto.as_ptr() };
+    let to_string_si = env.string_forge().intern("toString").0;
+    let array_proto_ref = unsafe { &*env.world().array_proto.as_ptr() };
     // SAFETY: array_proto 由 BuiltinWorld 构造期建立，session 存活期内恒有效。
-    if let Some(pos) = core.shape_forge().lookup_position(array_proto_ref.shape_id(), to_string_si) {
+    if let Some(pos) = env.shape_forge().lookup_position(array_proto_ref.shape_id(), to_string_si) {
         let value = array_proto_ref.get_prop_at(pos);
-        let new_shape = core.shape_forge().make_shape(shared_proto.shape_id(), to_string_si);
+        let new_shape = env.shape_forge().make_shape(shared_proto.shape_id(), to_string_si);
         shared_proto.set_shape_id(new_shape);
         let new_pos = shared_proto.push_prop(value);
         shared_proto.set_data_meta(new_pos, PropAttributes::new(true, false, true));
@@ -280,10 +270,10 @@ pub fn bind_typed_array(core: &Arc<KernelCore>, session: &KernelSession, global:
 
     // base64/hex 四原型法挂 Uint8Array 专属原型（Uint8ClampedArray 经链继承、
     // kind 校验拒绝）；两静态法挂 Uint8Array 构造器。
-    let world = session.builtin_world();
-    let sh = core.shape_forge().as_ref();
-    let sf = core.perm_interner().as_ref();
-    let u8_proto_ptr = session.builtin_world().uint8array_proto.as_ptr() as *mut JsObject;
+    let world = env.world();
+    let sh = env.shape_forge();
+    let sf = env.string_forge();
+    let u8_proto_ptr = env.world().uint8array_proto.as_ptr() as *mut JsObject;
     let u8_proto = unsafe { &mut *u8_proto_ptr };
     // SAFETY: 指针来自 session 存活期内的 BuiltinWorld 对象。
     let _ = world.bind_method(
@@ -334,7 +324,7 @@ pub fn bind_typed_array(core: &Arc<KernelCore>, session: &KernelSession, global:
         },
         1,
     );
-    let u8_ctor_ptr = session.builtin_world().uint8array_constructor.as_ptr() as *mut JsObject;
+    let u8_ctor_ptr = env.world().uint8array_constructor.as_ptr() as *mut JsObject;
     let u8_ctor = unsafe { &mut *u8_ctor_ptr };
     let _ = world.bind_method(
         u8_ctor,
@@ -361,109 +351,109 @@ pub fn bind_typed_array(core: &Arc<KernelCore>, session: &KernelSession, global:
         1,
     );
 
-    bind_typed_array_abstract_ctor(core, session, realm_id);
+    bind_typed_array_abstract_ctor(env);
 
     // 把 `%TypedArray%` 抽象构造器暴露为全局 `TypedArray`（具体构造器的 [[Prototype]]）。
     let abstract_ctor_val =
-        JsValue::from_js_object(session.builtin_world().typed_array_constructor.as_ptr() as *mut JsObject);
-    bind_global_value(core, global, "TypedArray", abstract_ctor_val);
+        JsValue::from_js_object(env.world().typed_array_constructor.as_ptr() as *mut JsObject);
+    bind_global_value(env.core, global, "TypedArray", abstract_ctor_val);
 
     bind_typed_array_constructor!(
-        core,
+        env,
         global,
         "Int8Array",
-        session.builtin_world().int8array_constructor.as_ptr() as *mut JsObject,
-        session.builtin_world().int8array_proto.as_ptr() as *mut JsObject,
+        env.world().int8array_constructor.as_ptr() as *mut JsObject,
+        env.world().int8array_proto.as_ptr() as *mut JsObject,
         1,
         oxide_builtins::typed_array::int8array_constructor
     );
     bind_typed_array_constructor!(
-        core,
+        env,
         global,
         "Uint8Array",
-        session.builtin_world().uint8array_constructor.as_ptr() as *mut JsObject,
-        session.builtin_world().uint8array_proto.as_ptr() as *mut JsObject,
+        env.world().uint8array_constructor.as_ptr() as *mut JsObject,
+        env.world().uint8array_proto.as_ptr() as *mut JsObject,
         1,
         oxide_builtins::typed_array::uint8array_constructor
     );
     bind_typed_array_constructor!(
-        core,
+        env,
         global,
         "Uint8ClampedArray",
-        session.builtin_world().uint8clampedarray_constructor.as_ptr() as *mut JsObject,
-        session.builtin_world().uint8clampedarray_proto.as_ptr() as *mut JsObject,
+        env.world().uint8clampedarray_constructor.as_ptr() as *mut JsObject,
+        env.world().uint8clampedarray_proto.as_ptr() as *mut JsObject,
         1,
         oxide_builtins::typed_array::uint8clampedarray_constructor
     );
     bind_typed_array_constructor!(
-        core,
+        env,
         global,
         "Int16Array",
-        session.builtin_world().int16array_constructor.as_ptr() as *mut JsObject,
-        session.builtin_world().int16array_proto.as_ptr() as *mut JsObject,
+        env.world().int16array_constructor.as_ptr() as *mut JsObject,
+        env.world().int16array_proto.as_ptr() as *mut JsObject,
         2,
         oxide_builtins::typed_array::int16array_constructor
     );
     bind_typed_array_constructor!(
-        core,
+        env,
         global,
         "Uint16Array",
-        session.builtin_world().uint16array_constructor.as_ptr() as *mut JsObject,
-        session.builtin_world().uint16array_proto.as_ptr() as *mut JsObject,
+        env.world().uint16array_constructor.as_ptr() as *mut JsObject,
+        env.world().uint16array_proto.as_ptr() as *mut JsObject,
         2,
         oxide_builtins::typed_array::uint16array_constructor
     );
     bind_typed_array_constructor!(
-        core,
+        env,
         global,
         "Int32Array",
-        session.builtin_world().int32array_constructor.as_ptr() as *mut JsObject,
-        session.builtin_world().int32array_proto.as_ptr() as *mut JsObject,
+        env.world().int32array_constructor.as_ptr() as *mut JsObject,
+        env.world().int32array_proto.as_ptr() as *mut JsObject,
         4,
         oxide_builtins::typed_array::int32array_constructor
     );
     bind_typed_array_constructor!(
-        core,
+        env,
         global,
         "Uint32Array",
-        session.builtin_world().uint32array_constructor.as_ptr() as *mut JsObject,
-        session.builtin_world().uint32array_proto.as_ptr() as *mut JsObject,
+        env.world().uint32array_constructor.as_ptr() as *mut JsObject,
+        env.world().uint32array_proto.as_ptr() as *mut JsObject,
         4,
         oxide_builtins::typed_array::uint32array_constructor
     );
     bind_typed_array_constructor!(
-        core,
+        env,
         global,
         "Float32Array",
-        session.builtin_world().float32array_constructor.as_ptr() as *mut JsObject,
-        session.builtin_world().float32array_proto.as_ptr() as *mut JsObject,
+        env.world().float32array_constructor.as_ptr() as *mut JsObject,
+        env.world().float32array_proto.as_ptr() as *mut JsObject,
         4,
         oxide_builtins::typed_array::float32array_constructor
     );
     bind_typed_array_constructor!(
-        core,
+        env,
         global,
         "Float64Array",
-        session.builtin_world().float64array_constructor.as_ptr() as *mut JsObject,
-        session.builtin_world().float64array_proto.as_ptr() as *mut JsObject,
+        env.world().float64array_constructor.as_ptr() as *mut JsObject,
+        env.world().float64array_proto.as_ptr() as *mut JsObject,
         8,
         oxide_builtins::typed_array::float64array_constructor
     );
     bind_typed_array_constructor!(
-        core,
+        env,
         global,
         "BigInt64Array",
-        session.builtin_world().bigint64array_constructor.as_ptr() as *mut JsObject,
-        session.builtin_world().bigint64array_proto.as_ptr() as *mut JsObject,
+        env.world().bigint64array_constructor.as_ptr() as *mut JsObject,
+        env.world().bigint64array_proto.as_ptr() as *mut JsObject,
         8,
         oxide_builtins::typed_array::bigint64array_constructor
     );
     bind_typed_array_constructor!(
-        core,
+        env,
         global,
         "BigUint64Array",
-        session.builtin_world().biguint64array_constructor.as_ptr() as *mut JsObject,
-        session.builtin_world().biguint64array_proto.as_ptr() as *mut JsObject,
+        env.world().biguint64array_constructor.as_ptr() as *mut JsObject,
+        env.world().biguint64array_proto.as_ptr() as *mut JsObject,
         8,
         oxide_builtins::typed_array::biguint64array_constructor
     );

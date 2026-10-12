@@ -1,15 +1,12 @@
-use std::sync::Arc;
-
 use crate::bind_constructor;
-use crate::bindings::{apply_binding_table, bind_accessor_getter, configure_native_constructor};
-use oxide_kernel::kernel::{KernelCore, KernelSession};
+use crate::bindings::{apply_binding_table, bind_accessor_getter, configure_native_constructor, BindEnv};
 use oxide_types::object::{JsObject, PropAttributes};
 
 /// 把 DataView 构造器与原型方法绑定到 global。
-pub fn bind_data_view(core: &Arc<KernelCore>, session: &KernelSession, global: &mut JsObject) {
-    let ctor_ptr = session.builtin_world().data_view_constructor.as_ptr() as *mut JsObject;
+pub fn bind_data_view(env: BindEnv<'_>, global: &mut JsObject) {
+    let ctor_ptr = env.world().data_view_constructor.as_ptr() as *mut JsObject;
     let ctor = unsafe { &mut *ctor_ptr };
-    let proto_ptr = session.builtin_world().data_view_proto.as_ptr() as *mut JsObject;
+    let proto_ptr = env.world().data_view_proto.as_ptr() as *mut JsObject;
     let proto = unsafe { &mut *proto_ptr };
 
     configure_native_constructor(
@@ -19,9 +16,8 @@ pub fn bind_data_view(core: &Arc<KernelCore>, session: &KernelSession, global: &
     );
 
     apply_binding_table(
-        session.builtin_world(),
+        env,
         proto,
-        core,
         &[
             ("getInt8", oxide_builtins::data_view::data_view_get_int8::<crate::vm::Vm> as *const (), 1),
             (
@@ -133,34 +129,31 @@ pub fn bind_data_view(core: &Arc<KernelCore>, session: &KernelSession, global: &
         ],
     );
 
-    bind_constructor!(core, global, "DataView", ctor_ptr, oxide_builtins::data_view::data_view_constructor::<crate::vm::Vm>, 1, hash: true);
+    bind_constructor!(env, global, "DataView", ctor_ptr, oxide_builtins::data_view::data_view_constructor::<crate::vm::Vm>, 1, hash: true);
     // length 属性描述符补 { writable:false, enumerable:false, configurable:true }
     // （bind_constructor! 宏的通用缺省 meta 不可写回，此处理仅覆盖 DataView）。
     {
-        let length_si = core.perm_interner().intern("length").0;
-        if let Some(pos) = core.shape_forge().lookup_position(ctor.shape_id(), length_si) {
+        let length_si = env.string_forge().intern("length").0;
+        if let Some(pos) = env.shape_forge().lookup_position(ctor.shape_id(), length_si) {
             ctor.set_data_meta(pos, PropAttributes::new(false, false, true));
         }
     }
 
     // buffer/byteOffset/byteLength 只读访问器（set 恒 undefined，getter 读视图状态盒）。
     bind_accessor_getter(
-        core,
-        session,
+        env,
         proto,
         "buffer",
         oxide_builtins::data_view::data_view_buffer_getter::<crate::vm::Vm> as *const (),
     );
     bind_accessor_getter(
-        core,
-        session,
+        env,
         proto,
         "byteOffset",
         oxide_builtins::data_view::data_view_byte_offset_getter::<crate::vm::Vm> as *const (),
     );
     bind_accessor_getter(
-        core,
-        session,
+        env,
         proto,
         "byteLength",
         oxide_builtins::data_view::data_view_byte_length_getter::<crate::vm::Vm> as *const (),

@@ -10,7 +10,7 @@
 use std::sync::Arc;
 
 use crate::bind_constructor;
-use crate::bindings::configure_native_constructor;
+use crate::bindings::{configure_native_constructor, BindEnv};
 use oxide_kernel::kernel::{KernelCore, KernelSession};
 use oxide_kernel::shape_forge::EMPTY_SHAPE_ID;
 use oxide_types::mem::P;
@@ -151,8 +151,9 @@ pub fn bind_weak_map(core: &Arc<KernelCore>, session: &mut KernelSession, global
     ctor.set_data_meta(proto_pos, PropAttributes::new(false, false, false));
     world.stub_objects.push(stub);
 
+    let env = BindEnv::new(core, &*session, realm_id);
     bind_constructor!(
-        core,
+        env,
         global,
         "WeakMap",
         ctor_ptr,

@@ -1,14 +1,11 @@
-use std::sync::Arc;
-
 use oxide_kernel::builtin::ObjectMethods;
-use oxide_kernel::kernel::{KernelCore, KernelSession};
 use oxide_types::object::{JsObject, PropAttributes};
 
 use crate::bind_constructor;
-use crate::bindings::apply_binding_table;
+use crate::bindings::{apply_binding_table, BindEnv};
 
 /// 把 Object 构造器与原型方法绑定到 global。
-pub fn bind_object(core: &Arc<KernelCore>, session: &KernelSession, global: &mut JsObject) {
+pub fn bind_object(env: BindEnv<'_>, global: &mut JsObject) {
     let methods = ObjectMethods {
         keys: oxide_builtins::object::object_keys::<crate::vm::Vm> as *const (),
         create: oxide_builtins::object::object_create::<crate::vm::Vm> as *const (),
@@ -39,16 +36,14 @@ pub fn bind_object(core: &Arc<KernelCore>, session: &KernelSession, global: &mut
             as *const (),
         group_by: oxide_builtins::object::object_group_by::<crate::vm::Vm> as *const (),
     };
-    session
-        .builtin_world()
-        .bind_object_methods(&methods, core.perm_interner().as_ref(), core.shape_forge().as_ref());
+    env.world()
+        .bind_object_methods(&methods, env.string_forge(), env.shape_forge());
 
-    let object_proto_ptr = session.builtin_world().object_proto.as_ptr() as *mut JsObject;
+    let object_proto_ptr = env.world().object_proto.as_ptr() as *mut JsObject;
     let object_proto = unsafe { &mut *object_proto_ptr };
     apply_binding_table(
-        session.builtin_world(),
+        env,
         object_proto,
-        core,
         &[
             (
                 "toString",
@@ -101,15 +96,15 @@ pub fn bind_object(core: &Arc<KernelCore>, session: &KernelSession, global: &mut
         "__lookupSetter__",
         "toSource",
     ] {
-        let si = core.perm_interner().intern(name).0;
-        if let Some(pos) = core.shape_forge().lookup_position(object_proto.shape_id(), si) {
+        let si = env.string_forge().intern(name).0;
+        if let Some(pos) = env.shape_forge().lookup_position(object_proto.shape_id(), si) {
             object_proto.set_data_meta(pos, PropAttributes::new(true, false, true));
         }
     }
 
-    let ctor_ptr = session.builtin_world().object_constructor.as_ptr() as *mut JsObject;
+    let ctor_ptr = env.world().object_constructor.as_ptr() as *mut JsObject;
     bind_constructor!(
-        core,
+        env,
         global,
         "Object",
         ctor_ptr,

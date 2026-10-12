@@ -1,17 +1,14 @@
-use std::sync::Arc;
-
 use oxide_kernel::builtin::ArrayMethods;
-use oxide_kernel::kernel::{KernelCore, KernelSession};
 use oxide_types::object::{JsObject, PropAttributes};
 
 use crate::bind_constructor;
-use crate::bindings::apply_binding_table;
+use crate::bindings::{apply_binding_table, BindEnv};
 
 /// 把 Array 构造器与原型方法绑定到 global。
 ///
 /// `realm_id` 是目标所属 realm 的编号：well-known 符号键按 (realm 编号, 局部
 /// 下标) 编码，realm 编号为 0 时与旧编码逐字节一致。
-pub fn bind_array(core: &Arc<KernelCore>, session: &KernelSession, global: &mut JsObject, realm_id: u32) {
+pub fn bind_array(env: BindEnv<'_>, global: &mut JsObject) {
     let _array_methods = ArrayMethods {
         is_array: oxide_builtins::array::array_is_array::<crate::vm::Vm> as *const (),
         from: oxide_builtins::array::array_from::<crate::vm::Vm> as *const (),
@@ -54,42 +51,40 @@ pub fn bind_array(core: &Arc<KernelCore>, session: &KernelSession, global: &mut 
         with_method: oxide_builtins::array::array_with::<crate::vm::Vm> as *const (),
     };
 
-    session.builtin_world().bind_array_methods(
+    env.world().bind_array_methods(
         &_array_methods,
-        core.perm_interner().as_ref(),
-        core.shape_forge().as_ref(),
-        realm_id,
+        env.string_forge(),
+        env.shape_forge(),
+        env.realm_id,
     );
 
-    let array_proto_ptr = session.builtin_world().array_proto.as_ptr() as *mut JsObject;
+    let array_proto_ptr = env.world().array_proto.as_ptr() as *mut JsObject;
     let array_proto = unsafe { &mut *array_proto_ptr };
     apply_binding_table(
-        session.builtin_world(),
+        env,
         array_proto,
-        core,
         &[
             ("toString", oxide_builtins::array::array_to_string::<crate::vm::Vm> as *const (), 0),
             ("toSource", oxide_builtins::to_source::to_source_array::<crate::vm::Vm> as *const (), 0),
         ],
     );
     // 内置原型方法不可枚举（否则会泄漏进 for-in）。
-    let si = core.perm_interner().intern("toString").0;
-    if let Some(pos) = core.shape_forge().lookup_position(array_proto.shape_id(), si) {
+    let si = env.string_forge().intern("toString").0;
+    if let Some(pos) = env.shape_forge().lookup_position(array_proto.shape_id(), si) {
         array_proto.set_data_meta(pos, PropAttributes::new(true, false, true));
     }
     // Array.prototype[@@iterator] 与 values 共享同一函数对象。
-    super::bind_well_known_method_alias(core, array_proto, "values", 0, realm_id);
+    super::bind_well_known_method_alias(env.core, array_proto, "values", 0, env.realm_id);
 
-    let ctor_ptr = session.builtin_world().array_constructor.as_ptr() as *mut JsObject;
-    bind_constructor!(core, global, "Array", ctor_ptr, oxide_builtins::array::array_constructor::<crate::vm::Vm>, 1, hash: true);
+    let ctor_ptr = env.world().array_constructor.as_ptr() as *mut JsObject;
+    bind_constructor!(env, global, "Array", ctor_ptr, oxide_builtins::array::array_constructor::<crate::vm::Vm>, 1, hash: true);
     // Array[Symbol.species] 访问器：getter 返回 receiver，派生类沿静态原型链
     // 解析 @@species 得自身构造器（规范不给 class 默认 static @@species，类上
     // 无 own 属性）。
     super::bind_accessor_getter_key(
-        core,
-        session,
+        env,
         unsafe { &mut *ctor_ptr },
-        oxide_types::private_key::encode_symbol_key(realm_id, oxide_types::private_key::WELL_KNOWN_SYMBOL_SPECIES),
+        oxide_types::private_key::encode_symbol_key(env.realm_id, oxide_types::private_key::WELL_KNOWN_SYMBOL_SPECIES),
         "get [Symbol.species]",
         oxide_builtins::array::array_species_get::<crate::vm::Vm> as *const (),
     );

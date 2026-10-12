@@ -1,20 +1,17 @@
-use std::sync::Arc;
-
 use crate::bind_constructor;
 use crate::bindings::{
-    apply_binding_table, bind_accessor_getter, bind_accessor_getter_key, configure_native_constructor,
+    apply_binding_table, bind_accessor_getter, bind_accessor_getter_key, configure_native_constructor, BindEnv,
 };
-use oxide_kernel::kernel::{KernelCore, KernelSession};
 use oxide_types::object::{JsObject, PropAttributes};
 
 /// 把 ArrayBuffer 构造器与原型方法绑定到 global。
 ///
 /// `realm_id` 是目标所属 realm 的编号：`@@species` 符号键按 (realm 编号, 局部
 /// 下标) 编码，realm 编号为 0 时与旧编码逐字节一致。
-pub fn bind_array_buffer(core: &Arc<KernelCore>, session: &KernelSession, global: &mut JsObject, realm_id: u32) {
-    let ctor_ptr = session.builtin_world().array_buffer_constructor.as_ptr() as *mut JsObject;
+pub fn bind_array_buffer(env: BindEnv<'_>, global: &mut JsObject) {
+    let ctor_ptr = env.world().array_buffer_constructor.as_ptr() as *mut JsObject;
     let ctor = unsafe { &mut *ctor_ptr };
-    let proto_ptr = session.builtin_world().array_buffer_proto.as_ptr() as *mut JsObject;
+    let proto_ptr = env.world().array_buffer_proto.as_ptr() as *mut JsObject;
     let proto = unsafe { &mut *proto_ptr };
 
     configure_native_constructor(
@@ -24,9 +21,8 @@ pub fn bind_array_buffer(core: &Arc<KernelCore>, session: &KernelSession, global
     );
 
     apply_binding_table(
-        session.builtin_world(),
+        env,
         ctor,
-        core,
         &[(
             "isView",
             oxide_builtins::array_buffer::array_buffer_is_view::<crate::vm::Vm> as *const (),
@@ -37,18 +33,16 @@ pub fn bind_array_buffer(core: &Arc<KernelCore>, session: &KernelSession, global
     // ArrayBuffer[Symbol.species] 访问器：getter 返回 receiver，派生类沿静态原型链
     // 解析 @@species 得自身构造器（规范不给 class 默认 static @@species，类上无 own）。
     bind_accessor_getter_key(
-        core,
-        session,
+        env,
         ctor,
-        oxide_types::private_key::encode_symbol_key(realm_id, oxide_types::private_key::WELL_KNOWN_SYMBOL_SPECIES),
+        oxide_types::private_key::encode_symbol_key(env.realm_id, oxide_types::private_key::WELL_KNOWN_SYMBOL_SPECIES),
         "get [Symbol.species]",
         oxide_builtins::array::array_species_get::<crate::vm::Vm> as *const (),
     );
 
     apply_binding_table(
-        session.builtin_world(),
+        env,
         proto,
-        core,
         &[
             (
                 "resize",
@@ -91,8 +85,7 @@ pub fn bind_array_buffer(core: &Arc<KernelCore>, session: &KernelSession, global
 
     // byteLength 原型访问器（set 恒 undefined）：读载荷字节数，实例无 own 属性。
     bind_accessor_getter(
-        core,
-        session,
+        env,
         proto,
         "byteLength",
         oxide_builtins::array_buffer::array_buffer_byte_length::<crate::vm::Vm> as *const (),
@@ -100,8 +93,7 @@ pub fn bind_array_buffer(core: &Arc<KernelCore>, session: &KernelSession, global
 
     // resizable 原型访问器（set 恒 undefined）：读载荷 max_byte_length 状态位。
     bind_accessor_getter(
-        core,
-        session,
+        env,
         proto,
         "resizable",
         oxide_builtins::array_buffer::array_buffer_resizable::<crate::vm::Vm> as *const (),
@@ -110,8 +102,7 @@ pub fn bind_array_buffer(core: &Arc<KernelCore>, session: &KernelSession, global
     // maxByteLength 原型访问器（set 恒 undefined）：detached 回 +0，定长回
     // 当前字节数，resizable 回存储态上限 − 1。
     bind_accessor_getter(
-        core,
-        session,
+        env,
         proto,
         "maxByteLength",
         oxide_builtins::array_buffer::array_buffer_max_byte_length::<crate::vm::Vm> as *const (),
@@ -119,8 +110,7 @@ pub fn bind_array_buffer(core: &Arc<KernelCore>, session: &KernelSession, global
 
     // immutable 原型访问器（set 恒 undefined）：读载荷 immutable 标志。
     bind_accessor_getter(
-        core,
-        session,
+        env,
         proto,
         "immutable",
         oxide_builtins::array_buffer::array_buffer_immutable::<crate::vm::Vm> as *const (),
@@ -128,15 +118,14 @@ pub fn bind_array_buffer(core: &Arc<KernelCore>, session: &KernelSession, global
 
     // detached 原型访问器（set 恒 undefined）：读载荷 data 存活位。
     bind_accessor_getter(
-        core,
-        session,
+        env,
         proto,
         "detached",
         oxide_builtins::array_buffer::array_buffer_detached::<crate::vm::Vm> as *const (),
     );
 
     bind_constructor!(
-        core,
+        env,
         global,
         "ArrayBuffer",
         ctor_ptr,

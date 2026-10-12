@@ -1,18 +1,17 @@
-use std::sync::Arc;
-
 use oxide_kernel::bind_methods;
-use oxide_kernel::kernel::{KernelCore, KernelSession};
 use oxide_types::object::{JsObject, PropAttributes};
 use oxide_types::value::JsValue;
 
+use crate::bindings::BindEnv;
+
 /// 把 Math 单例对象及其方法（abs/floor/max/random 等）绑定到 global。
-pub fn bind_math(core: &Arc<KernelCore>, session: &KernelSession, global: &mut JsObject) {
-    let math_ptr = session.builtin_world().math_object.as_ptr() as *mut JsObject;
+pub fn bind_math(env: BindEnv<'_>, global: &mut JsObject) {
+    let math_ptr = env.world().math_object.as_ptr() as *mut JsObject;
     let math = unsafe { &mut *math_ptr };
 
-    let bw = session.builtin_world();
-    let sf = core.perm_interner().as_ref();
-    let sh = core.shape_forge().as_ref();
+    let bw = env.world();
+    let sf = env.string_forge();
+    let sh = env.shape_forge();
 
     bind_methods!(
         bw,
@@ -68,8 +67,8 @@ pub fn bind_math(core: &Arc<KernelCore>, session: &KernelSession, global: &mut J
         ("SQRT1_2", std::f64::consts::FRAC_1_SQRT_2),
         ("SQRT2", std::f64::consts::SQRT_2),
     ] {
-        let si = core.perm_interner().as_ref().intern(name).0;
-        let sh_c = core.shape_forge().as_ref().make_shape(math.shape_id(), si);
+        let si = env.string_forge().intern(name).0;
+        let sh_c = env.shape_forge().make_shape(math.shape_id(), si);
         math.set_shape_id(sh_c);
         math.ensure_hash_props().push(JsValue::float(val));
         // Math 常量描述符：{ writable:false, enumerable:false, configurable:false }，
@@ -80,12 +79,12 @@ pub fn bind_math(core: &Arc<KernelCore>, session: &KernelSession, global: &mut J
 
     // 全局 Math 槽位既有槽原位更新（旧对象指针不得滞留在属性 vec），无槽时
     // 开新槽；描述符非枚举（规范全局命名空间对象属性均 enumerable:false）。
-    let si_m = core.perm_interner().intern("Math").0;
-    let m_val = JsValue::from_js_object(session.builtin_world().math_object.as_ptr() as *mut JsObject);
-    if let Some(pos) = core.shape_forge().lookup_position(global.shape_id(), si_m) {
+    let si_m = env.string_forge().intern("Math").0;
+    let m_val = JsValue::from_js_object(env.world().math_object.as_ptr() as *mut JsObject);
+    if let Some(pos) = env.shape_forge().lookup_position(global.shape_id(), si_m) {
         global.set_prop_at(pos, m_val);
     } else {
-        let m_shape = core.shape_forge().make_shape(global.shape_id(), si_m);
+        let m_shape = env.shape_forge().make_shape(global.shape_id(), si_m);
         global.set_shape_id(m_shape);
         global.ensure_hash_props().push(m_val);
         let pos = global.prop_vec_len().saturating_sub(1) as u32;

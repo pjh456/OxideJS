@@ -1,9 +1,6 @@
-use std::sync::Arc;
-
 use crate::bindings::{
-    apply_binding_table, bind_accessor_getter, bind_well_known_method, configure_native_constructor,
+    apply_binding_table, bind_accessor_getter, bind_well_known_method, configure_native_constructor, BindEnv,
 };
-use oxide_kernel::kernel::{KernelCore, KernelSession};
 use oxide_types::object::{JsObject, PropAttributes};
 use oxide_types::private_key::{encode_symbol_key, WELL_KNOWN_SYMBOL_TO_PRIMITIVE};
 use oxide_types::value::JsValue;
@@ -14,18 +11,17 @@ use crate::bind_constructor;
 ///
 /// `realm_id` 是目标所属 realm 的编号：well-known 符号键按 (realm 编号, 局部
 /// 下标) 编码，realm 编号为 0 时与旧编码逐字节一致。
-pub fn bind_symbol(core: &Arc<KernelCore>, session: &KernelSession, global: &mut JsObject, realm_id: u32) {
-    let ctor_ptr = session.builtin_world().symbol_constructor.as_ptr() as *mut JsObject;
+pub fn bind_symbol(env: BindEnv<'_>, global: &mut JsObject) {
+    let ctor_ptr = env.world().symbol_constructor.as_ptr() as *mut JsObject;
     let ctor = unsafe { &mut *ctor_ptr };
-    let proto_ptr = session.builtin_world().symbol_proto.as_ptr() as *mut JsObject;
+    let proto_ptr = env.world().symbol_proto.as_ptr() as *mut JsObject;
     let proto = unsafe { &mut *proto_ptr };
 
     configure_native_constructor(ctor, oxide_builtins::symbol::symbol_constructor::<crate::vm::Vm> as *const (), 1);
 
     apply_binding_table(
-        session.builtin_world(),
+        env,
         ctor,
-        core,
         &[
             ("for", oxide_builtins::symbol::symbol_for::<crate::vm::Vm> as *const (), 1),
             ("keyFor", oxide_builtins::symbol::symbol_key_for::<crate::vm::Vm> as *const (), 1),
@@ -33,9 +29,8 @@ pub fn bind_symbol(core: &Arc<KernelCore>, session: &KernelSession, global: &mut
     );
 
     apply_binding_table(
-        session.builtin_world(),
+        env,
         proto,
-        core,
         &[
             ("toString", oxide_builtins::symbol::symbol_to_string::<crate::vm::Vm> as *const (), 0),
             ("valueOf", oxide_builtins::symbol::symbol_value_of::<crate::vm::Vm> as *const (), 0),
@@ -44,8 +39,7 @@ pub fn bind_symbol(core: &Arc<KernelCore>, session: &KernelSession, global: &mut
 
     // description 是访问器 getter（Symbol 原始值成员访问经 Symbol.prototype 链命中）。
     bind_accessor_getter(
-        core,
-        session,
+        env,
         proto,
         "description",
         oxide_builtins::symbol::symbol_description_getter::<crate::vm::Vm> as *const (),
@@ -53,17 +47,15 @@ pub fn bind_symbol(core: &Arc<KernelCore>, session: &KernelSession, global: &mut
 
     // [Symbol.toPrimitive] 方法：bind 默认描述符可写，规范为不可写，绑定后改 meta。
     bind_well_known_method(
-        session.builtin_world(),
-        core,
+        env,
         proto,
         WELL_KNOWN_SYMBOL_TO_PRIMITIVE,
         "[Symbol.toPrimitive]",
         oxide_builtins::symbol::symbol_to_primitive::<crate::vm::Vm> as *const (),
         1,
-        realm_id,
     );
-    let to_prim_key = encode_symbol_key(realm_id, WELL_KNOWN_SYMBOL_TO_PRIMITIVE);
-    if let Some(pos) = core.shape_forge().lookup_position(proto.shape_id(), to_prim_key) {
+    let to_prim_key = encode_symbol_key(env.realm_id, WELL_KNOWN_SYMBOL_TO_PRIMITIVE);
+    if let Some(pos) = env.shape_forge().lookup_position(proto.shape_id(), to_prim_key) {
         proto.set_data_meta(pos, PropAttributes::new(false, false, true));
         proto.bump_generation();
     }
@@ -74,15 +66,15 @@ pub fn bind_symbol(core: &Arc<KernelCore>, session: &KernelSession, global: &mut
     // 非零 realm 下与键物化值保持同一符号。
     for (id, full_name) in oxide_types::private_key::WELL_KNOWN_SYMBOL_NAMES.iter().enumerate() {
         let name = full_name.strip_prefix("Symbol.").unwrap_or(full_name);
-        bind_well_known_symbol(core, ctor, name, JsValue::symbol_realm(realm_id, id as u32));
+        bind_well_known_symbol(env, ctor, name, JsValue::symbol_realm(env.realm_id, id as u32));
     }
 
-    bind_constructor!(core, global, "Symbol", ctor_ptr, oxide_builtins::symbol::symbol_constructor::<crate::vm::Vm>, 0, hash: true);
+    bind_constructor!(env, global, "Symbol", ctor_ptr, oxide_builtins::symbol::symbol_constructor::<crate::vm::Vm>, 0, hash: true);
 }
 
-fn bind_well_known_symbol(core: &Arc<KernelCore>, ctor: &mut JsObject, name: &str, val: JsValue) {
-    let si = core.perm_interner().intern(name).0;
-    let shape_id = core.shape_forge().make_shape(ctor.shape_id(), si);
+fn bind_well_known_symbol(env: BindEnv<'_>, ctor: &mut JsObject, name: &str, val: JsValue) {
+    let si = env.string_forge().intern(name).0;
+    let shape_id = env.shape_forge().make_shape(ctor.shape_id(), si);
     ctor.set_shape_id(shape_id);
     ctor.ensure_hash_props().push(val);
     // well-known symbol 属性按规范 { writable:false, enumerable:false, configurable:false }。

@@ -1,10 +1,7 @@
-use std::sync::Arc;
-
 use crate::bindings::{
     apply_binding_table, bind_accessor_getter, bind_global_value, bind_well_known_data_property,
-    configure_native_constructor,
+    configure_native_constructor, BindEnv,
 };
-use oxide_kernel::kernel::{KernelCore, KernelSession};
 use oxide_types::object::{JsObject, PropAttributes};
 use oxide_types::value::JsValue;
 
@@ -12,8 +9,8 @@ use oxide_types::value::JsValue;
 ///
 /// `realm_id` 是目标所属 realm 的编号：`@@toStringTag` 符号键按 (realm 编号,
 /// 局部下标) 编码，realm 编号为 0 时与旧编码逐字节一致。
-pub fn bind_temporal(core: &Arc<KernelCore>, session: &KernelSession, global: &mut JsObject, realm_id: u32) {
-    let world = session.builtin_world();
+pub fn bind_temporal(env: BindEnv<'_>, global: &mut JsObject) {
+    let world = env.world();
     let temporal_ptr = world.temporal_object.as_ptr() as *mut JsObject;
     let temporal = unsafe { &mut *temporal_ptr };
 
@@ -21,9 +18,8 @@ pub fn bind_temporal(core: &Arc<KernelCore>, session: &KernelSession, global: &m
     let now_ptr = world.temporal_now_object.as_ptr() as *mut JsObject;
     let now = unsafe { &mut *now_ptr };
     apply_binding_table(
-        world,
+        env,
         now,
-        core,
         &[
             ("instant", oxide_builtins::temporal::now_instant::<crate::vm::Vm> as *const (), 0),
             ("timeZoneId", oxide_builtins::temporal::now_time_zone_id::<crate::vm::Vm> as *const (), 0),
@@ -38,8 +34,8 @@ pub fn bind_temporal(core: &Arc<KernelCore>, session: &KernelSession, global: &m
         oxide_builtins::temporal::instant_constructor::<crate::vm::Vm> as *const (),
         1,
     );
-    let length_si = core.perm_interner().intern("length").0;
-    let length_shape = core.shape_forge().make_shape(instant_ctor.shape_id(), length_si);
+    let length_si = env.string_forge().intern("length").0;
+    let length_shape = env.shape_forge().make_shape(instant_ctor.shape_id(), length_si);
     instant_ctor.set_shape_id(length_shape);
     instant_ctor.ensure_hash_props().push(JsValue::int(1));
     let length_pos = instant_ctor
@@ -49,9 +45,8 @@ pub fn bind_temporal(core: &Arc<KernelCore>, session: &KernelSession, global: &m
     instant_ctor.set_data_meta(length_pos, PropAttributes::new(false, false, true));
 
     apply_binding_table(
-        world,
+        env,
         instant_ctor,
-        core,
         &[
             ("from", oxide_builtins::temporal::instant_from::<crate::vm::Vm> as *const (), 1),
             ("compare", oxide_builtins::temporal::instant_compare::<crate::vm::Vm> as *const (), 2),
@@ -70,37 +65,32 @@ pub fn bind_temporal(core: &Arc<KernelCore>, session: &KernelSession, global: &m
     let instant_proto_ptr = world.instant_proto.as_ptr() as *mut JsObject;
     let instant_proto = unsafe { &mut *instant_proto_ptr };
     bind_accessor_getter(
-        core,
-        session,
+        env,
         instant_proto,
         "epochSeconds",
         oxide_builtins::temporal::instant_epoch_seconds::<crate::vm::Vm> as *const (),
     );
     bind_accessor_getter(
-        core,
-        session,
+        env,
         instant_proto,
         "epochMilliseconds",
         oxide_builtins::temporal::instant_epoch_milliseconds::<crate::vm::Vm> as *const (),
     );
     bind_accessor_getter(
-        core,
-        session,
+        env,
         instant_proto,
         "epochMicroseconds",
         oxide_builtins::temporal::instant_epoch_microseconds::<crate::vm::Vm> as *const (),
     );
     bind_accessor_getter(
-        core,
-        session,
+        env,
         instant_proto,
         "epochNanoseconds",
         oxide_builtins::temporal::instant_epoch_nanoseconds::<crate::vm::Vm> as *const (),
     );
     apply_binding_table(
-        world,
+        env,
         instant_proto,
-        core,
         &[
             ("add", oxide_builtins::temporal::instant_add::<crate::vm::Vm> as *const (), 1),
             ("equals", oxide_builtins::temporal::instant_equals::<crate::vm::Vm> as *const (), 1),
@@ -124,15 +114,15 @@ pub fn bind_temporal(core: &Arc<KernelCore>, session: &KernelSession, global: &m
         ],
     );
     bind_well_known_data_property(
-        core,
+        env.core,
         instant_proto,
         9,
         JsValue::perm_string(
-            core.perm_interner()
-                .string_ptr(core.perm_interner().intern("Temporal.Instant").0),
+            env.string_forge()
+                .string_ptr(env.string_forge().intern("Temporal.Instant").0),
         ),
         PropAttributes::new(false, false, true),
-        realm_id,
+        env.realm_id,
     );
 
     // Temporal.ZonedDateTime：最小构造器与三个稳定内部槽 getter。
@@ -143,8 +133,8 @@ pub fn bind_temporal(core: &Arc<KernelCore>, session: &KernelSession, global: &m
         oxide_builtins::temporal::zoned_date_time_constructor::<crate::vm::Vm> as *const (),
         2,
     );
-    let length_si = core.perm_interner().intern("length").0;
-    let length_shape = core.shape_forge().make_shape(zoned_date_time_ctor.shape_id(), length_si);
+    let length_si = env.string_forge().intern("length").0;
+    let length_shape = env.shape_forge().make_shape(zoned_date_time_ctor.shape_id(), length_si);
     zoned_date_time_ctor.set_shape_id(length_shape);
     zoned_date_time_ctor.ensure_hash_props().push(JsValue::int(2));
     let length_pos = zoned_date_time_ctor
@@ -153,9 +143,8 @@ pub fn bind_temporal(core: &Arc<KernelCore>, session: &KernelSession, global: &m
         .saturating_sub(1);
     zoned_date_time_ctor.set_data_meta(length_pos, PropAttributes::new(false, false, true));
     apply_binding_table(
-        world,
+        env,
         zoned_date_time_ctor,
-        core,
         &[
             ("from", oxide_builtins::temporal::zoned_date_time_from::<crate::vm::Vm> as *const (), 1),
             (
@@ -169,230 +158,199 @@ pub fn bind_temporal(core: &Arc<KernelCore>, session: &KernelSession, global: &m
     let zoned_date_time_proto_ptr = world.zoned_date_time_proto.as_ptr() as *mut JsObject;
     let zoned_date_time_proto = unsafe { &mut *zoned_date_time_proto_ptr };
     bind_accessor_getter(
-        core,
-        session,
+        env,
         zoned_date_time_proto,
         "epochNanoseconds",
         oxide_builtins::temporal::zoned_date_time_epoch_nanoseconds::<crate::vm::Vm> as *const (),
     );
     bind_accessor_getter(
-        core,
-        session,
+        env,
         zoned_date_time_proto,
         "timeZoneId",
         oxide_builtins::temporal::zoned_date_time_time_zone_id::<crate::vm::Vm> as *const (),
     );
     bind_accessor_getter(
-        core,
-        session,
+        env,
         zoned_date_time_proto,
         "calendarId",
         oxide_builtins::temporal::zoned_date_time_calendar_id::<crate::vm::Vm> as *const (),
     );
     bind_accessor_getter(
-        core,
-        session,
+        env,
         zoned_date_time_proto,
         "epochSeconds",
         oxide_builtins::temporal::zoned_date_time_epoch_seconds::<crate::vm::Vm> as *const (),
     );
     bind_accessor_getter(
-        core,
-        session,
+        env,
         zoned_date_time_proto,
         "epochMilliseconds",
         oxide_builtins::temporal::zoned_date_time_epoch_milliseconds::<crate::vm::Vm> as *const (),
     );
     bind_accessor_getter(
-        core,
-        session,
+        env,
         zoned_date_time_proto,
         "epochMicroseconds",
         oxide_builtins::temporal::zoned_date_time_epoch_microseconds::<crate::vm::Vm> as *const (),
     );
     bind_accessor_getter(
-        core,
-        session,
+        env,
         zoned_date_time_proto,
         "offset",
         oxide_builtins::temporal::zoned_date_time_offset::<crate::vm::Vm> as *const (),
     );
     bind_accessor_getter(
-        core,
-        session,
+        env,
         zoned_date_time_proto,
         "offsetNanoseconds",
         oxide_builtins::temporal::zoned_date_time_offset_nanoseconds::<crate::vm::Vm> as *const (),
     );
     bind_accessor_getter(
-        core,
-        session,
+        env,
         zoned_date_time_proto,
         "year",
         oxide_builtins::temporal::zoned_date_time_year::<crate::vm::Vm> as *const (),
     );
     bind_accessor_getter(
-        core,
-        session,
+        env,
         zoned_date_time_proto,
         "month",
         oxide_builtins::temporal::zoned_date_time_month::<crate::vm::Vm> as *const (),
     );
     bind_accessor_getter(
-        core,
-        session,
+        env,
         zoned_date_time_proto,
         "day",
         oxide_builtins::temporal::zoned_date_time_day::<crate::vm::Vm> as *const (),
     );
     bind_accessor_getter(
-        core,
-        session,
+        env,
         zoned_date_time_proto,
         "hour",
         oxide_builtins::temporal::zoned_date_time_hour::<crate::vm::Vm> as *const (),
     );
     bind_accessor_getter(
-        core,
-        session,
+        env,
         zoned_date_time_proto,
         "minute",
         oxide_builtins::temporal::zoned_date_time_minute::<crate::vm::Vm> as *const (),
     );
     bind_accessor_getter(
-        core,
-        session,
+        env,
         zoned_date_time_proto,
         "second",
         oxide_builtins::temporal::zoned_date_time_second::<crate::vm::Vm> as *const (),
     );
     bind_accessor_getter(
-        core,
-        session,
+        env,
         zoned_date_time_proto,
         "millisecond",
         oxide_builtins::temporal::zoned_date_time_millisecond::<crate::vm::Vm> as *const (),
     );
     bind_accessor_getter(
-        core,
-        session,
+        env,
         zoned_date_time_proto,
         "microsecond",
         oxide_builtins::temporal::zoned_date_time_microsecond::<crate::vm::Vm> as *const (),
     );
     bind_accessor_getter(
-        core,
-        session,
+        env,
         zoned_date_time_proto,
         "nanosecond",
         oxide_builtins::temporal::zoned_date_time_nanosecond::<crate::vm::Vm> as *const (),
     );
     bind_accessor_getter(
-        core,
-        session,
+        env,
         zoned_date_time_proto,
         "dayOfWeek",
         oxide_builtins::temporal::zoned_date_time_day_of_week::<crate::vm::Vm> as *const (),
     );
     bind_accessor_getter(
-        core,
-        session,
+        env,
         zoned_date_time_proto,
         "dayOfYear",
         oxide_builtins::temporal::zoned_date_time_day_of_year::<crate::vm::Vm> as *const (),
     );
     bind_accessor_getter(
-        core,
-        session,
+        env,
         zoned_date_time_proto,
         "weekOfYear",
         oxide_builtins::temporal::zoned_date_time_week_of_year::<crate::vm::Vm> as *const (),
     );
     bind_accessor_getter(
-        core,
-        session,
+        env,
         zoned_date_time_proto,
         "yearOfWeek",
         oxide_builtins::temporal::zoned_date_time_year_of_week::<crate::vm::Vm> as *const (),
     );
     bind_accessor_getter(
-        core,
-        session,
+        env,
         zoned_date_time_proto,
         "monthCode",
         oxide_builtins::temporal::zoned_date_time_month_code::<crate::vm::Vm> as *const (),
     );
     bind_accessor_getter(
-        core,
-        session,
+        env,
         zoned_date_time_proto,
         "daysInMonth",
         oxide_builtins::temporal::zoned_date_time_days_in_month::<crate::vm::Vm> as *const (),
     );
     bind_accessor_getter(
-        core,
-        session,
+        env,
         zoned_date_time_proto,
         "daysInWeek",
         oxide_builtins::temporal::zoned_date_time_days_in_week::<crate::vm::Vm> as *const (),
     );
     bind_accessor_getter(
-        core,
-        session,
+        env,
         zoned_date_time_proto,
         "daysInYear",
         oxide_builtins::temporal::zoned_date_time_days_in_year::<crate::vm::Vm> as *const (),
     );
     bind_accessor_getter(
-        core,
-        session,
+        env,
         zoned_date_time_proto,
         "monthsInYear",
         oxide_builtins::temporal::zoned_date_time_months_in_year::<crate::vm::Vm> as *const (),
     );
     bind_accessor_getter(
-        core,
-        session,
+        env,
         zoned_date_time_proto,
         "inLeapYear",
         oxide_builtins::temporal::zoned_date_time_in_leap_year::<crate::vm::Vm> as *const (),
     );
     bind_accessor_getter(
-        core,
-        session,
+        env,
         zoned_date_time_proto,
         "era",
         oxide_builtins::temporal::zoned_date_time_era::<crate::vm::Vm> as *const (),
     );
     bind_accessor_getter(
-        core,
-        session,
+        env,
         zoned_date_time_proto,
         "eraYear",
         oxide_builtins::temporal::zoned_date_time_era_year::<crate::vm::Vm> as *const (),
     );
     bind_accessor_getter(
-        core,
-        session,
+        env,
         zoned_date_time_proto,
         "hoursInDay",
         oxide_builtins::temporal::zoned_date_time_hours_in_day::<crate::vm::Vm> as *const (),
     );
     bind_well_known_data_property(
-        core,
+        env.core,
         zoned_date_time_proto,
         9,
         JsValue::perm_string(
-            core.perm_interner()
-                .string_ptr(core.perm_interner().intern("Temporal.ZonedDateTime").0),
+            env.string_forge()
+                .string_ptr(env.string_forge().intern("Temporal.ZonedDateTime").0),
         ),
         PropAttributes::new(false, false, true),
-        realm_id,
+        env.realm_id,
     );
     apply_binding_table(
-        world,
+        env,
         zoned_date_time_proto,
-        core,
         &[
             (
                 "toJSON",
@@ -480,8 +438,8 @@ pub fn bind_temporal(core: &Arc<KernelCore>, session: &KernelSession, global: &m
         oxide_builtins::temporal::plain_date_constructor::<crate::vm::Vm> as *const (),
         3,
     );
-    let length_si = core.perm_interner().intern("length").0;
-    let length_shape = core.shape_forge().make_shape(plain_date_ctor.shape_id(), length_si);
+    let length_si = env.string_forge().intern("length").0;
+    let length_shape = env.shape_forge().make_shape(plain_date_ctor.shape_id(), length_si);
     plain_date_ctor.set_shape_id(length_shape);
     plain_date_ctor.ensure_hash_props().push(JsValue::int(3));
     let length_pos = plain_date_ctor
@@ -491,9 +449,8 @@ pub fn bind_temporal(core: &Arc<KernelCore>, session: &KernelSession, global: &m
     plain_date_ctor.set_data_meta(length_pos, PropAttributes::new(false, false, true));
 
     apply_binding_table(
-        world,
+        env,
         plain_date_ctor,
-        core,
         &[
             ("from", oxide_builtins::temporal::plain_date_from::<crate::vm::Vm> as *const (), 1),
             ("compare", oxide_builtins::temporal::plain_date_compare::<crate::vm::Vm> as *const (), 2),
@@ -502,121 +459,104 @@ pub fn bind_temporal(core: &Arc<KernelCore>, session: &KernelSession, global: &m
     let plain_date_proto_ptr = world.plain_date_proto.as_ptr() as *mut JsObject;
     let plain_date_proto = unsafe { &mut *plain_date_proto_ptr };
     bind_accessor_getter(
-        core,
-        session,
+        env,
         plain_date_proto,
         "year",
         oxide_builtins::temporal::plain_date_year::<crate::vm::Vm> as *const (),
     );
     bind_accessor_getter(
-        core,
-        session,
+        env,
         plain_date_proto,
         "month",
         oxide_builtins::temporal::plain_date_month::<crate::vm::Vm> as *const (),
     );
     bind_accessor_getter(
-        core,
-        session,
+        env,
         plain_date_proto,
         "day",
         oxide_builtins::temporal::plain_date_day::<crate::vm::Vm> as *const (),
     );
     bind_accessor_getter(
-        core,
-        session,
+        env,
         plain_date_proto,
         "dayOfWeek",
         oxide_builtins::temporal::plain_date_day_of_week::<crate::vm::Vm> as *const (),
     );
     bind_accessor_getter(
-        core,
-        session,
+        env,
         plain_date_proto,
         "dayOfYear",
         oxide_builtins::temporal::plain_date_day_of_year::<crate::vm::Vm> as *const (),
     );
     bind_accessor_getter(
-        core,
-        session,
+        env,
         plain_date_proto,
         "daysInMonth",
         oxide_builtins::temporal::plain_date_days_in_month::<crate::vm::Vm> as *const (),
     );
     bind_accessor_getter(
-        core,
-        session,
+        env,
         plain_date_proto,
         "daysInWeek",
         oxide_builtins::temporal::plain_date_days_in_week::<crate::vm::Vm> as *const (),
     );
     bind_accessor_getter(
-        core,
-        session,
+        env,
         plain_date_proto,
         "daysInYear",
         oxide_builtins::temporal::plain_date_days_in_year::<crate::vm::Vm> as *const (),
     );
     bind_accessor_getter(
-        core,
-        session,
+        env,
         plain_date_proto,
         "monthsInYear",
         oxide_builtins::temporal::plain_date_months_in_year::<crate::vm::Vm> as *const (),
     );
     bind_accessor_getter(
-        core,
-        session,
+        env,
         plain_date_proto,
         "inLeapYear",
         oxide_builtins::temporal::plain_date_in_leap_year::<crate::vm::Vm> as *const (),
     );
     bind_accessor_getter(
-        core,
-        session,
+        env,
         plain_date_proto,
         "weekOfYear",
         oxide_builtins::temporal::plain_date_week_of_year::<crate::vm::Vm> as *const (),
     );
     bind_accessor_getter(
-        core,
-        session,
+        env,
         plain_date_proto,
         "yearOfWeek",
         oxide_builtins::temporal::plain_date_year_of_week::<crate::vm::Vm> as *const (),
     );
     bind_accessor_getter(
-        core,
-        session,
+        env,
         plain_date_proto,
         "monthCode",
         oxide_builtins::temporal::plain_date_month_code::<crate::vm::Vm> as *const (),
     );
     bind_accessor_getter(
-        core,
-        session,
+        env,
         plain_date_proto,
         "era",
         oxide_builtins::temporal::plain_date_era::<crate::vm::Vm> as *const (),
     );
     bind_accessor_getter(
-        core,
-        session,
+        env,
         plain_date_proto,
         "eraYear",
         oxide_builtins::temporal::plain_date_era_year::<crate::vm::Vm> as *const (),
     );
     bind_accessor_getter(
-        core,
-        session,
+        env,
         plain_date_proto,
         "calendarId",
         oxide_builtins::temporal::plain_date_calendar_id::<crate::vm::Vm> as *const (),
     );
     apply_binding_table(
-        world,
+        env,
         plain_date_proto,
-        core,
         &[
             (
                 "toString",
@@ -641,8 +581,8 @@ pub fn bind_temporal(core: &Arc<KernelCore>, session: &KernelSession, global: &m
         oxide_builtins::temporal::plain_time_constructor::<crate::vm::Vm> as *const (),
         6,
     );
-    let length_si = core.perm_interner().intern("length").0;
-    let length_shape = core.shape_forge().make_shape(plain_time_ctor.shape_id(), length_si);
+    let length_si = env.string_forge().intern("length").0;
+    let length_shape = env.shape_forge().make_shape(plain_time_ctor.shape_id(), length_si);
     plain_time_ctor.set_shape_id(length_shape);
     plain_time_ctor.ensure_hash_props().push(JsValue::int(0));
     let length_pos = plain_time_ctor
@@ -651,9 +591,8 @@ pub fn bind_temporal(core: &Arc<KernelCore>, session: &KernelSession, global: &m
         .saturating_sub(1);
     plain_time_ctor.set_data_meta(length_pos, PropAttributes::new(false, false, true));
     apply_binding_table(
-        world,
+        env,
         plain_time_ctor,
-        core,
         &[
             ("from", oxide_builtins::temporal::plain_time_from::<crate::vm::Vm> as *const (), 1),
             ("compare", oxide_builtins::temporal::plain_time_compare::<crate::vm::Vm> as *const (), 2),
@@ -663,51 +602,44 @@ pub fn bind_temporal(core: &Arc<KernelCore>, session: &KernelSession, global: &m
     let plain_time_proto_ptr = world.plain_time_proto.as_ptr() as *mut JsObject;
     let plain_time_proto = unsafe { &mut *plain_time_proto_ptr };
     bind_accessor_getter(
-        core,
-        session,
+        env,
         plain_time_proto,
         "hour",
         oxide_builtins::temporal::plain_time_hour::<crate::vm::Vm> as *const (),
     );
     bind_accessor_getter(
-        core,
-        session,
+        env,
         plain_time_proto,
         "minute",
         oxide_builtins::temporal::plain_time_minute::<crate::vm::Vm> as *const (),
     );
     bind_accessor_getter(
-        core,
-        session,
+        env,
         plain_time_proto,
         "second",
         oxide_builtins::temporal::plain_time_second::<crate::vm::Vm> as *const (),
     );
     bind_accessor_getter(
-        core,
-        session,
+        env,
         plain_time_proto,
         "millisecond",
         oxide_builtins::temporal::plain_time_millisecond::<crate::vm::Vm> as *const (),
     );
     bind_accessor_getter(
-        core,
-        session,
+        env,
         plain_time_proto,
         "microsecond",
         oxide_builtins::temporal::plain_time_microsecond::<crate::vm::Vm> as *const (),
     );
     bind_accessor_getter(
-        core,
-        session,
+        env,
         plain_time_proto,
         "nanosecond",
         oxide_builtins::temporal::plain_time_nanosecond::<crate::vm::Vm> as *const (),
     );
     apply_binding_table(
-        world,
+        env,
         plain_time_proto,
-        core,
         &[
             (
                 "toString",
@@ -731,15 +663,15 @@ pub fn bind_temporal(core: &Arc<KernelCore>, session: &KernelSession, global: &m
         ],
     );
     bind_well_known_data_property(
-        core,
+        env.core,
         plain_time_proto,
         9,
         JsValue::perm_string(
-            core.perm_interner()
-                .string_ptr(core.perm_interner().intern("Temporal.PlainTime").0),
+            env.string_forge()
+                .string_ptr(env.string_forge().intern("Temporal.PlainTime").0),
         ),
         PropAttributes::new(false, false, true),
-        realm_id,
+        env.realm_id,
     );
 
     // Temporal.PlainDateTime：ISO 日期时间分量、拆分转换与禁止隐式原始值转换。
@@ -750,8 +682,8 @@ pub fn bind_temporal(core: &Arc<KernelCore>, session: &KernelSession, global: &m
         oxide_builtins::temporal::plain_date_time_constructor::<crate::vm::Vm> as *const (),
         3,
     );
-    let length_si = core.perm_interner().intern("length").0;
-    let length_shape = core.shape_forge().make_shape(plain_date_time_ctor.shape_id(), length_si);
+    let length_si = env.string_forge().intern("length").0;
+    let length_shape = env.shape_forge().make_shape(plain_date_time_ctor.shape_id(), length_si);
     plain_date_time_ctor.set_shape_id(length_shape);
     plain_date_time_ctor.ensure_hash_props().push(JsValue::int(3));
     let length_pos = plain_date_time_ctor
@@ -760,9 +692,8 @@ pub fn bind_temporal(core: &Arc<KernelCore>, session: &KernelSession, global: &m
         .saturating_sub(1);
     plain_date_time_ctor.set_data_meta(length_pos, PropAttributes::new(false, false, true));
     apply_binding_table(
-        world,
+        env,
         plain_date_time_ctor,
-        core,
         &[
             ("from", oxide_builtins::temporal::plain_date_time_from::<crate::vm::Vm> as *const (), 1),
             (
@@ -843,12 +774,11 @@ pub fn bind_temporal(core: &Arc<KernelCore>, session: &KernelSession, global: &m
             oxide_builtins::temporal::plain_date_time_calendar_id::<crate::vm::Vm> as *const (),
         ),
     ] {
-        bind_accessor_getter(core, session, plain_date_time_proto, name, getter);
+        bind_accessor_getter(env, plain_date_time_proto, name, getter);
     }
     apply_binding_table(
-        world,
+        env,
         plain_date_time_proto,
-        core,
         &[
             (
                 "toPlainDate",
@@ -891,15 +821,15 @@ pub fn bind_temporal(core: &Arc<KernelCore>, session: &KernelSession, global: &m
         ],
     );
     bind_well_known_data_property(
-        core,
+        env.core,
         plain_date_time_proto,
         9,
         JsValue::perm_string(
-            core.perm_interner()
-                .string_ptr(core.perm_interner().intern("Temporal.PlainDateTime").0),
+            env.string_forge()
+                .string_ptr(env.string_forge().intern("Temporal.PlainDateTime").0),
         ),
         PropAttributes::new(false, false, true),
-        realm_id,
+        env.realm_id,
     );
 
     // Temporal.Duration：构造器、from、分量 getter 与 ISO 字符串转换。
@@ -910,8 +840,8 @@ pub fn bind_temporal(core: &Arc<KernelCore>, session: &KernelSession, global: &m
         oxide_builtins::temporal::duration_constructor::<crate::vm::Vm> as *const (),
         10,
     );
-    let length_si = core.perm_interner().intern("length").0;
-    let length_shape = core.shape_forge().make_shape(duration_ctor.shape_id(), length_si);
+    let length_si = env.string_forge().intern("length").0;
+    let length_shape = env.shape_forge().make_shape(duration_ctor.shape_id(), length_si);
     duration_ctor.set_shape_id(length_shape);
     duration_ctor.ensure_hash_props().push(JsValue::int(0));
     let length_pos = duration_ctor
@@ -921,9 +851,8 @@ pub fn bind_temporal(core: &Arc<KernelCore>, session: &KernelSession, global: &m
     duration_ctor.set_data_meta(length_pos, PropAttributes::new(false, false, true));
 
     apply_binding_table(
-        world,
+        env,
         duration_ctor,
-        core,
         &[
             ("from", oxide_builtins::temporal::duration_from::<crate::vm::Vm> as *const (), 1),
             ("compare", oxide_builtins::temporal::duration_compare::<crate::vm::Vm> as *const (), 2),
@@ -954,12 +883,11 @@ pub fn bind_temporal(core: &Arc<KernelCore>, session: &KernelSession, global: &m
         ("sign", oxide_builtins::temporal::duration_sign::<crate::vm::Vm> as *const ()),
         ("blank", oxide_builtins::temporal::duration_blank::<crate::vm::Vm> as *const ()),
     ] {
-        bind_accessor_getter(core, session, duration_proto, name, getter);
+        bind_accessor_getter(env, duration_proto, name, getter);
     }
     apply_binding_table(
-        world,
+        env,
         duration_proto,
-        core,
         &[
             ("abs", oxide_builtins::temporal::duration_abs::<crate::vm::Vm> as *const (), 0),
             ("negated", oxide_builtins::temporal::duration_negated::<crate::vm::Vm> as *const (), 0),
@@ -980,15 +908,15 @@ pub fn bind_temporal(core: &Arc<KernelCore>, session: &KernelSession, global: &m
         ],
     );
     bind_well_known_data_property(
-        core,
+        env.core,
         duration_proto,
         9,
         JsValue::perm_string(
-            core.perm_interner()
-                .string_ptr(core.perm_interner().intern("Temporal.Duration").0),
+            env.string_forge()
+                .string_ptr(env.string_forge().intern("Temporal.Duration").0),
         ),
         PropAttributes::new(false, false, true),
-        realm_id,
+        env.realm_id,
     );
 
     // Temporal.PlainMonthDay：构造器、3 个分量 getter 与 toString/toJSON。
@@ -999,8 +927,8 @@ pub fn bind_temporal(core: &Arc<KernelCore>, session: &KernelSession, global: &m
         oxide_builtins::temporal::plain_month_day_constructor::<crate::vm::Vm> as *const (),
         2,
     );
-    let length_si = core.perm_interner().intern("length").0;
-    let length_shape = core.shape_forge().make_shape(plain_month_day_ctor.shape_id(), length_si);
+    let length_si = env.string_forge().intern("length").0;
+    let length_shape = env.shape_forge().make_shape(plain_month_day_ctor.shape_id(), length_si);
     plain_month_day_ctor.set_shape_id(length_shape);
     plain_month_day_ctor.ensure_hash_props().push(JsValue::int(2));
     let length_pos = plain_month_day_ctor
@@ -1009,9 +937,8 @@ pub fn bind_temporal(core: &Arc<KernelCore>, session: &KernelSession, global: &m
         .saturating_sub(1);
     plain_month_day_ctor.set_data_meta(length_pos, PropAttributes::new(false, false, true));
     apply_binding_table(
-        world,
+        env,
         plain_month_day_ctor,
-        core,
         &[("from", oxide_builtins::temporal::plain_month_day_from::<crate::vm::Vm> as *const (), 1)],
     );
 
@@ -1028,12 +955,11 @@ pub fn bind_temporal(core: &Arc<KernelCore>, session: &KernelSession, global: &m
             oxide_builtins::temporal::plain_month_day_calendar_id::<crate::vm::Vm> as *const (),
         ),
     ] {
-        bind_accessor_getter(core, session, plain_month_day_proto, name, getter);
+        bind_accessor_getter(env, plain_month_day_proto, name, getter);
     }
     apply_binding_table(
-        world,
+        env,
         plain_month_day_proto,
-        core,
         &[
             (
                 "toString",
@@ -1069,15 +995,15 @@ pub fn bind_temporal(core: &Arc<KernelCore>, session: &KernelSession, global: &m
         ],
     );
     bind_well_known_data_property(
-        core,
+        env.core,
         plain_month_day_proto,
         9,
         JsValue::perm_string(
-            core.perm_interner()
-                .string_ptr(core.perm_interner().intern("Temporal.PlainMonthDay").0),
+            env.string_forge()
+                .string_ptr(env.string_forge().intern("Temporal.PlainMonthDay").0),
         ),
         PropAttributes::new(false, false, true),
-        realm_id,
+        env.realm_id,
     );
 
     // Temporal.PlainYearMonth：构造器、10 个 getter 与 toString/toJSON。
@@ -1088,8 +1014,8 @@ pub fn bind_temporal(core: &Arc<KernelCore>, session: &KernelSession, global: &m
         oxide_builtins::temporal::plain_year_month_constructor::<crate::vm::Vm> as *const (),
         2,
     );
-    let length_si = core.perm_interner().intern("length").0;
-    let length_shape = core.shape_forge().make_shape(plain_year_month_ctor.shape_id(), length_si);
+    let length_si = env.string_forge().intern("length").0;
+    let length_shape = env.shape_forge().make_shape(plain_year_month_ctor.shape_id(), length_si);
     plain_year_month_ctor.set_shape_id(length_shape);
     plain_year_month_ctor.ensure_hash_props().push(JsValue::int(2));
     let length_pos = plain_year_month_ctor
@@ -1098,9 +1024,8 @@ pub fn bind_temporal(core: &Arc<KernelCore>, session: &KernelSession, global: &m
         .saturating_sub(1);
     plain_year_month_ctor.set_data_meta(length_pos, PropAttributes::new(false, false, true));
     apply_binding_table(
-        world,
+        env,
         plain_year_month_ctor,
-        core,
         &[
             ("from", oxide_builtins::temporal::plain_year_month_from::<crate::vm::Vm> as *const (), 1),
             (
@@ -1146,12 +1071,11 @@ pub fn bind_temporal(core: &Arc<KernelCore>, session: &KernelSession, global: &m
             oxide_builtins::temporal::plain_year_month_era_year::<crate::vm::Vm> as *const (),
         ),
     ] {
-        bind_accessor_getter(core, session, plain_year_month_proto, name, getter);
+        bind_accessor_getter(env, plain_year_month_proto, name, getter);
     }
     apply_binding_table(
-        world,
+        env,
         plain_year_month_proto,
-        core,
         &[
             (
                 "toString",
@@ -1195,26 +1119,26 @@ pub fn bind_temporal(core: &Arc<KernelCore>, session: &KernelSession, global: &m
         ],
     );
     bind_well_known_data_property(
-        core,
+        env.core,
         plain_year_month_proto,
         9,
         JsValue::perm_string(
-            core.perm_interner()
-                .string_ptr(core.perm_interner().intern("Temporal.PlainYearMonth").0),
+            env.string_forge()
+                .string_ptr(env.string_forge().intern("Temporal.PlainYearMonth").0),
         ),
         PropAttributes::new(false, false, true),
-        realm_id,
+        env.realm_id,
     );
 
     // 把子对象挂到 Temporal 命名空间对象上，再把 Temporal 挂到 global。
-    bind_global_value(core, temporal, "Now", JsValue::from_js_object(now_ptr));
-    bind_global_value(core, temporal, "Instant", JsValue::from_js_object(instant_ctor_ptr));
-    bind_global_value(core, temporal, "PlainDate", JsValue::from_js_object(plain_date_ctor_ptr));
-    bind_global_value(core, temporal, "PlainTime", JsValue::from_js_object(plain_time_ctor_ptr));
-    bind_global_value(core, temporal, "PlainDateTime", JsValue::from_js_object(plain_date_time_ctor_ptr));
-    bind_global_value(core, temporal, "Duration", JsValue::from_js_object(duration_ctor_ptr));
-    bind_global_value(core, temporal, "ZonedDateTime", JsValue::from_js_object(zoned_date_time_ctor_ptr));
-    bind_global_value(core, temporal, "PlainMonthDay", JsValue::from_js_object(plain_month_day_ctor_ptr));
-    bind_global_value(core, temporal, "PlainYearMonth", JsValue::from_js_object(plain_year_month_ctor_ptr));
-    bind_global_value(core, global, "Temporal", JsValue::from_js_object(temporal_ptr));
+    bind_global_value(env.core, temporal, "Now", JsValue::from_js_object(now_ptr));
+    bind_global_value(env.core, temporal, "Instant", JsValue::from_js_object(instant_ctor_ptr));
+    bind_global_value(env.core, temporal, "PlainDate", JsValue::from_js_object(plain_date_ctor_ptr));
+    bind_global_value(env.core, temporal, "PlainTime", JsValue::from_js_object(plain_time_ctor_ptr));
+    bind_global_value(env.core, temporal, "PlainDateTime", JsValue::from_js_object(plain_date_time_ctor_ptr));
+    bind_global_value(env.core, temporal, "Duration", JsValue::from_js_object(duration_ctor_ptr));
+    bind_global_value(env.core, temporal, "ZonedDateTime", JsValue::from_js_object(zoned_date_time_ctor_ptr));
+    bind_global_value(env.core, temporal, "PlainMonthDay", JsValue::from_js_object(plain_month_day_ctor_ptr));
+    bind_global_value(env.core, temporal, "PlainYearMonth", JsValue::from_js_object(plain_year_month_ctor_ptr));
+    bind_global_value(env.core, global, "Temporal", JsValue::from_js_object(temporal_ptr));
 }

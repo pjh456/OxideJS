@@ -353,8 +353,7 @@ impl Vm {
         // Promise[Symbol.species] 访问器：getter 返回 receiver，派生类沿静态原型链
         // 解析 @@species 得自身构造器。ctor 经本函数每次调用全新构造，同键槽不累积。
         crate::bindings::bind_accessor_getter_key(
-            &self.kernel_core,
-            &self.realm.session.borrow(),
+            crate::bindings::BindEnv::new(&self.kernel_core, &self.realm.session.borrow(), self.realm_id()),
             ctor_mut,
             oxide_types::private_key::encode_symbol_key(
                 self.realm_id(),

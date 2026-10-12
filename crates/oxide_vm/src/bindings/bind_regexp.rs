@@ -1,10 +1,7 @@
-use std::sync::Arc;
-
 use crate::bindings::{
     apply_binding_table, bind_accessor_getset, bind_accessor_getter, bind_accessor_getter_key, bind_well_known_method,
-    configure_native_constructor,
+    configure_native_constructor, BindEnv,
 };
-use oxide_kernel::kernel::{KernelCore, KernelSession};
 use oxide_types::object::JsObject;
 
 use crate::bind_constructor;
@@ -13,26 +10,24 @@ use crate::bind_constructor;
 ///
 /// `realm_id` 是目标所属 realm 的编号：well-known 符号键按 (realm 编号, 局部
 /// 下标) 编码，realm 编号为 0 时与旧编码逐字节一致。
-pub fn bind_regexp(core: &Arc<KernelCore>, session: &KernelSession, global: &mut JsObject, realm_id: u32) {
-    let ctor_ptr = session.builtin_world().regexp_constructor.as_ptr() as *mut JsObject;
+pub fn bind_regexp(env: BindEnv<'_>, global: &mut JsObject) {
+    let ctor_ptr = env.world().regexp_constructor.as_ptr() as *mut JsObject;
     let ctor = unsafe { &mut *ctor_ptr };
-    let proto_ptr = session.builtin_world().regexp_proto.as_ptr() as *mut JsObject;
+    let proto_ptr = env.world().regexp_proto.as_ptr() as *mut JsObject;
     let proto = unsafe { &mut *proto_ptr };
 
     configure_native_constructor(ctor, oxide_builtins::regexp::regexp_constructor::<crate::vm::Vm> as *const (), 2);
 
     // 静态方法 escape 装到构造器对象（wrapper 的 length/name 与槽属性由 bind_method 统一保证）。
     apply_binding_table(
-        session.builtin_world(),
+        env,
         ctor,
-        core,
         &[("escape", oxide_builtins::regexp::regexp_escape::<crate::vm::Vm> as *const (), 1)],
     );
 
     apply_binding_table(
-        session.builtin_world(),
+        env,
         proto,
-        core,
         &[
             ("exec", oxide_builtins::regexp::regexp_exec::<crate::vm::Vm> as *const (), 1),
             ("test", oxide_builtins::regexp::regexp_test::<crate::vm::Vm> as *const (), 1),
@@ -47,10 +42,10 @@ pub fn bind_regexp(core: &Arc<KernelCore>, session: &KernelSession, global: &mut
     // [[RegExpInput]] 槽）；其余 18 个为 getter（set 恒 undefined）：lastMatch/$&、
     // lastParen/$+、leftContext/$`、rightContext/$' 各共享一槽，index 与 $1-$9 各
     // 独占一槽。
-    let sf = core.perm_interner().as_ref();
+    let sf = env.string_forge();
     let mut bind_getset = |name: &str, getter: *const (), setter: *const ()| {
         let key = sf.intern(name).0;
-        bind_accessor_getset(core, session, ctor, key, &format!("get {name}"), &format!("set {name}"), getter, setter);
+        bind_accessor_getset(env, ctor, key, &format!("get {name}"), &format!("set {name}"), getter, setter);
     };
     // input/$_：get+set 对（唯一带 setter 的遗留访问器）。
     bind_getset(
@@ -99,20 +94,18 @@ pub fn bind_regexp(core: &Arc<KernelCore>, session: &KernelSession, global: &mut
         ("$8", oxide_builtins::regexp::regexp_legacy_get_dollar_8::<crate::vm::Vm> as *const ()),
         ("$9", oxide_builtins::regexp::regexp_legacy_get_dollar_9::<crate::vm::Vm> as *const ()),
     ] {
-        bind_accessor_getter(core, session, ctor, name, getter);
+        bind_accessor_getter(env, ctor, name, getter);
     }
 
     // source/flags 只读访问器（set 恒 undefined，getter 读实例字段）。
     bind_accessor_getter(
-        core,
-        session,
+        env,
         proto,
         "source",
         oxide_builtins::regexp::regexp_get_source::<crate::vm::Vm> as *const (),
     );
     bind_accessor_getter(
-        core,
-        session,
+        env,
         proto,
         "flags",
         oxide_builtins::regexp::regexp_get_flags::<crate::vm::Vm> as *const (),
@@ -120,125 +113,105 @@ pub fn bind_regexp(core: &Arc<KernelCore>, session: &KernelSession, global: &mut
 
     // 8 个单 flag 只读访问器（set 恒 undefined，getter 读实例 flags 串判码元）。
     bind_accessor_getter(
-        core,
-        session,
+        env,
         proto,
         "global",
         oxide_builtins::regexp::regexp_get_global::<crate::vm::Vm> as *const (),
     );
     bind_accessor_getter(
-        core,
-        session,
+        env,
         proto,
         "ignoreCase",
         oxide_builtins::regexp::regexp_get_ignore_case::<crate::vm::Vm> as *const (),
     );
     bind_accessor_getter(
-        core,
-        session,
+        env,
         proto,
         "multiline",
         oxide_builtins::regexp::regexp_get_multiline::<crate::vm::Vm> as *const (),
     );
     bind_accessor_getter(
-        core,
-        session,
+        env,
         proto,
         "dotAll",
         oxide_builtins::regexp::regexp_get_dot_all::<crate::vm::Vm> as *const (),
     );
     bind_accessor_getter(
-        core,
-        session,
+        env,
         proto,
         "sticky",
         oxide_builtins::regexp::regexp_get_sticky::<crate::vm::Vm> as *const (),
     );
     bind_accessor_getter(
-        core,
-        session,
+        env,
         proto,
         "unicode",
         oxide_builtins::regexp::regexp_get_unicode::<crate::vm::Vm> as *const (),
     );
     bind_accessor_getter(
-        core,
-        session,
+        env,
         proto,
         "hasIndices",
         oxide_builtins::regexp::regexp_get_has_indices::<crate::vm::Vm> as *const (),
     );
     bind_accessor_getter(
-        core,
-        session,
+        env,
         proto,
         "unicodeSets",
         oxide_builtins::regexp::regexp_get_unicode_sets::<crate::vm::Vm> as *const (),
     );
 
     // well-known symbol 方法按 Symbol 键安装，name 属性取 `[Symbol.match]` 式标签，供 `re[Symbol.match]` 等读取。
-    let world = session.builtin_world();
     bind_well_known_method(
-        world,
-        core,
+        env,
         proto,
         1,
         "[Symbol.match]",
         oxide_builtins::regexp::regexp_symbol_match::<crate::vm::Vm> as *const (),
         1,
-        realm_id,
     );
     bind_well_known_method(
-        world,
-        core,
+        env,
         proto,
         2,
         "[Symbol.replace]",
         oxide_builtins::regexp::regexp_symbol_replace::<crate::vm::Vm> as *const (),
         2,
-        realm_id,
     );
     bind_well_known_method(
-        world,
-        core,
+        env,
         proto,
         3,
         "[Symbol.search]",
         oxide_builtins::regexp::regexp_symbol_search::<crate::vm::Vm> as *const (),
         1,
-        realm_id,
     );
     bind_well_known_method(
-        world,
-        core,
+        env,
         proto,
         4,
         "[Symbol.split]",
         oxide_builtins::regexp::regexp_symbol_split::<crate::vm::Vm> as *const (),
         2,
-        realm_id,
     );
     bind_well_known_method(
-        world,
-        core,
+        env,
         proto,
         7,
         "[Symbol.matchAll]",
         oxide_builtins::regexp::regexp_symbol_match_all::<crate::vm::Vm> as *const (),
         1,
-        realm_id,
     );
 
     // RegExp[Symbol.species] 访问器：getter 返回 receiver，派生类沿静态原型链解析
     // @@species 得自身构造器（规范不给 class 默认 static @@species，类上无 own）。
     bind_accessor_getter_key(
-        core,
-        session,
+        env,
         ctor,
-        oxide_types::private_key::encode_symbol_key(realm_id, oxide_types::private_key::WELL_KNOWN_SYMBOL_SPECIES),
+        oxide_types::private_key::encode_symbol_key(env.realm_id, oxide_types::private_key::WELL_KNOWN_SYMBOL_SPECIES),
         "get [Symbol.species]",
         oxide_builtins::array::array_species_get::<crate::vm::Vm> as *const (),
     );
 
-    bind_constructor!(core, global, "RegExp", ctor_ptr, oxide_builtins::regexp::regexp_constructor::<crate::vm::Vm>, 2, hash: true);
+    bind_constructor!(env, global, "RegExp", ctor_ptr, oxide_builtins::regexp::regexp_constructor::<crate::vm::Vm>, 2, hash: true);
 }

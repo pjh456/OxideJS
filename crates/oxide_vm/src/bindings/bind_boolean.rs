@@ -1,23 +1,19 @@
-use std::sync::Arc;
-
 use crate::bind_constructor;
-use crate::bindings::{apply_binding_table, configure_native_constructor};
-use oxide_kernel::kernel::{KernelCore, KernelSession};
+use crate::bindings::{apply_binding_table, configure_native_constructor, BindEnv};
 use oxide_types::object::JsObject;
 
 /// 把 Boolean 构造器与原型方法绑定到 global。
-pub fn bind_boolean(core: &Arc<KernelCore>, session: &KernelSession, global: &mut JsObject) {
-    let ctor_ptr = session.builtin_world().boolean_constructor.as_ptr() as *mut JsObject;
+pub fn bind_boolean(env: BindEnv<'_>, global: &mut JsObject) {
+    let ctor_ptr = env.world().boolean_constructor.as_ptr() as *mut JsObject;
     let ctor = unsafe { &mut *ctor_ptr };
-    let proto_ptr = session.builtin_world().boolean_proto.as_ptr() as *mut JsObject;
+    let proto_ptr = env.world().boolean_proto.as_ptr() as *mut JsObject;
     let proto = unsafe { &mut *proto_ptr };
 
     configure_native_constructor(ctor, oxide_builtins::boolean::boolean_constructor::<crate::vm::Vm> as *const (), 1);
 
     apply_binding_table(
-        session.builtin_world(),
+        env,
         proto,
-        core,
         &[
             (
                 "valueOf",
@@ -33,5 +29,5 @@ pub fn bind_boolean(core: &Arc<KernelCore>, session: &KernelSession, global: &mu
         ],
     );
 
-    bind_constructor!(core, global, "Boolean", ctor_ptr, oxide_builtins::boolean::boolean_constructor::<crate::vm::Vm>, 1, hash: true);
+    bind_constructor!(env, global, "Boolean", ctor_ptr, oxide_builtins::boolean::boolean_constructor::<crate::vm::Vm>, 1, hash: true);
 }

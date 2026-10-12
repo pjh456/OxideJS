@@ -1,6 +1,3 @@
-use std::sync::Arc;
-
-use oxide_kernel::kernel::{KernelCore, KernelSession};
 use oxide_kernel::shape_forge::EMPTY_SHAPE_ID;
 use oxide_types::object::{JsObject, NativeFnPtr, PropAttributes};
 use oxide_types::value::JsValue;
@@ -8,7 +5,7 @@ use oxide_types::value::JsValue;
 use crate::async_disposable::dispose_async;
 use crate::bindings::{
     apply_binding_table, bind_accessor_getter, bind_disposable_stack::write_proto_constructor, bind_global_value,
-    bind_well_known_data_property, bind_well_known_method_alias, configure_native_constructor,
+    bind_well_known_data_property, bind_well_known_method_alias, configure_native_constructor, BindEnv,
 };
 
 /// 在 `AsyncDisposableStack.prototype` 上安装方法/别名/访问器/@@toStringTag。
@@ -19,19 +16,18 @@ use crate::bindings::{
 ///
 /// `realm_id` 是目标所属 realm 的编号：well-known 符号键按 (realm 编号, 局部
 /// 下标) 编码，realm 编号为 0 时与旧编码逐字节一致。
-pub fn bind_async_disposable_stack_protos(core: &Arc<KernelCore>, session: &KernelSession, realm_id: u32) {
-    let world = session.builtin_world();
+pub fn bind_async_disposable_stack_protos(env: BindEnv<'_>) {
+    let world = env.world();
     let proto_ptr = world.async_disposable_stack_proto.as_ptr() as *mut JsObject;
     let proto = unsafe { &mut *proto_ptr };
-    let si_use = core.perm_interner().intern("use").0;
-    if core.shape_forge().lookup_position(proto.shape_id(), si_use).is_some() {
+    let si_use = env.string_forge().intern("use").0;
+    if env.shape_forge().lookup_position(proto.shape_id(), si_use).is_some() {
         return;
     }
 
     apply_binding_table(
-        world,
+        env,
         proto,
-        core,
         &[
             (
                 "use",
@@ -57,17 +53,16 @@ pub fn bind_async_disposable_stack_protos(core: &Arc<KernelCore>, session: &Kern
         ],
     );
     bind_accessor_getter(
-        core,
-        session,
+        env,
         proto,
         "disposed",
         oxide_builtins::disposable_stack::async_disposable_stack_disposed_getter::<crate::vm::Vm> as *const (),
     );
     // @@asyncDispose 与 disposeAsync 为同一函数对象（先绑 disposeAsync 再取源槽）。
-    bind_well_known_method_alias(core, proto, "disposeAsync", 11, realm_id);
-    let sf = core.perm_interner().as_ref();
+    bind_well_known_method_alias(env.core, proto, "disposeAsync", 11, env.realm_id);
+    let sf = env.string_forge();
     let tag = JsValue::perm_string(sf.string_ptr(sf.intern("AsyncDisposableStack").0));
-    bind_well_known_data_property(core, proto, 9, tag, PropAttributes::new(false, false, true), realm_id);
+    bind_well_known_data_property(env.core, proto, 9, tag, PropAttributes::new(false, false, true), env.realm_id);
 }
 
 /// 把 `AsyncDisposableStack` 构造器绑定到 global（init 与 full_reset global 重建共用）。
@@ -78,14 +73,12 @@ pub fn bind_async_disposable_stack_protos(core: &Arc<KernelCore>, session: &Kern
 ///
 /// `realm_id` 是目标所属 realm 的编号：well-known 符号键按 (realm 编号, 局部
 /// 下标) 编码，realm 编号为 0 时与旧编码逐字节一致。
-pub fn bind_async_disposable_stack(
-    core: &Arc<KernelCore>, session: &KernelSession, global: &mut JsObject, realm_id: u32,
-) {
-    let world = session.builtin_world();
+pub fn bind_async_disposable_stack(env: BindEnv<'_>, global: &mut JsObject) {
+    let world = env.world();
     let proto_ptr = world.async_disposable_stack_proto.as_ptr() as *mut JsObject;
     let proto = unsafe { &mut *proto_ptr };
-    let si_constructor = core.perm_interner().intern("constructor").0;
-    let ctor_val = match core.shape_forge().lookup_position(proto.shape_id(), si_constructor) {
+    let si_constructor = env.string_forge().intern("constructor").0;
+    let ctor_val = match env.shape_forge().lookup_position(proto.shape_id(), si_constructor) {
         Some(pos) => {
             let existing = proto.get_prop_at(pos);
             if existing.is_object() {
@@ -99,8 +92,8 @@ pub fn bind_async_disposable_stack(
     let ctor_val = if ctor_val.is_object() {
         ctor_val
     } else {
-        let sf = core.perm_interner().as_ref();
-        let sh = core.shape_forge().as_ref();
+        let sf = env.string_forge();
+        let sh = env.shape_forge();
         let name_si = sf.intern("AsyncDisposableStack").0;
         // 选择性重建复用：非 P 目标（家族 0）按键查找前轮旧构造器迁移，避免每轮
         // 新建导致登记表无界累积；槽键取 global 槽名，该命名空间内全局唯一。
@@ -152,9 +145,9 @@ pub fn bind_async_disposable_stack(
         JsValue::from_js_object(ctor_ptr)
     };
 
-    write_proto_constructor(core, proto, ctor_val);
-    bind_async_disposable_stack_protos(core, session, realm_id);
-    bind_global_value(core, global, "AsyncDisposableStack", ctor_val);
+    write_proto_constructor(env, proto, ctor_val);
+    bind_async_disposable_stack_protos(env);
+    bind_global_value(env.core, global, "AsyncDisposableStack", ctor_val);
 }
 
 /// 对齐保留 global 上 `AsyncDisposableStack` 函数对象的 `prototype` 属性：object
@@ -163,9 +156,9 @@ pub fn bind_async_disposable_stack(
 ///
 /// global 同时重建（global dirty）或初始化时无 `AsyncDisposableStack` 属性，
 /// 直接跳过——彼时由 `bind_async_disposable_stack` 以新原型创建函数对象。
-pub fn sync_async_disposable_stack_ctor(core: &Arc<KernelCore>, session: &KernelSession, global: &mut JsObject) {
-    let si_stack = core.perm_interner().intern("AsyncDisposableStack").0;
-    let Some(pos) = core.shape_forge().lookup_position(global.shape_id(), si_stack) else {
+pub fn sync_async_disposable_stack_ctor(env: BindEnv<'_>, global: &mut JsObject) {
+    let si_stack = env.string_forge().intern("AsyncDisposableStack").0;
+    let Some(pos) = env.shape_forge().lookup_position(global.shape_id(), si_stack) else {
         return;
     };
     let stack_val = global.get_prop_at(pos);
@@ -173,14 +166,14 @@ pub fn sync_async_disposable_stack_ctor(core: &Arc<KernelCore>, session: &Kernel
         return;
     }
     let ctor = unsafe { &mut *stack_val.as_js_object_ptr() };
-    let si_prototype = core.perm_interner().intern("prototype").0;
-    let Some(proto_pos) = core.shape_forge().lookup_position(ctor.shape_id(), si_prototype) else {
+    let si_prototype = env.string_forge().intern("prototype").0;
+    let Some(proto_pos) = env.shape_forge().lookup_position(ctor.shape_id(), si_prototype) else {
         return;
     };
     let new_proto =
-        JsValue::from_js_object(session.builtin_world().async_disposable_stack_proto.as_ptr() as *mut JsObject);
+        JsValue::from_js_object(env.world().async_disposable_stack_proto.as_ptr() as *mut JsObject);
     ctor.set_prop_at(proto_pos, new_proto);
 
-    let proto_ptr = session.builtin_world().async_disposable_stack_proto.as_ptr() as *mut JsObject;
-    write_proto_constructor(core, unsafe { &mut *proto_ptr }, stack_val);
+    let proto_ptr = env.world().async_disposable_stack_proto.as_ptr() as *mut JsObject;
+    write_proto_constructor(env, unsafe { &mut *proto_ptr }, stack_val);
 }

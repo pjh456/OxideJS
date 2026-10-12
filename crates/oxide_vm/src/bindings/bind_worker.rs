@@ -6,11 +6,8 @@
 //! 登记表（session 收尾统一释放），全局 `Worker` 槽经 `bind_constructor!` 原位
 //! 安装（既有槽更新槽值、无槽新开）。
 
-use std::sync::Arc;
-
 use crate::bind_constructor;
-use crate::bindings::{apply_binding_table, bind_accessor_getset, bind_accessor_getter, configure_native_constructor};
-use oxide_kernel::kernel::{KernelCore, KernelSession};
+use crate::bindings::{apply_binding_table, bind_accessor_getset, bind_accessor_getter, configure_native_constructor, BindEnv};
 use oxide_kernel::shape_forge::{ShapeForge, EMPTY_SHAPE_ID};
 use oxide_types::object::{JsObject, PropAttributes};
 use oxide_types::string_forge::PermInterner;
@@ -33,10 +30,10 @@ use oxide_types::value::JsValue;
 ///   主 realm 无 `self` 时为无害占位）。
 ///
 /// `realm_id` 未使用（Worker 无 well-known 符号键），保留签名与其他绑定函数一致。
-pub fn bind_worker(core: &Arc<KernelCore>, session: &KernelSession, global: &mut JsObject, _realm_id: u32) {
-    let world = session.builtin_world();
-    let sf = core.perm_interner().as_ref();
-    let sh = core.shape_forge().as_ref();
+pub fn bind_worker(env: BindEnv<'_>, global: &mut JsObject) {
+    let world = env.world();
+    let sf = env.string_forge();
+    let sh = env.shape_forge();
 
     // ---- 构造器本体（Box 分配，不占 P 字段）----
     // 幂等：全局 `Worker` 槽已有构造器时复用（不新建）。
@@ -113,9 +110,8 @@ pub fn bind_worker(core: &Arc<KernelCore>, session: &KernelSession, global: &mut
         let si_post_message = sf.intern("postMessage").0;
         if sh.lookup_position(proto.shape_id(), si_post_message).is_none() {
             apply_binding_table(
-                world,
+                env,
                 proto,
-                core,
                 &[
                     ("postMessage", crate::worker::bindings::worker_post_message as *const (), 1),
                     ("terminate", crate::worker::bindings::worker_terminate as *const (), 0),
@@ -129,8 +125,7 @@ pub fn bind_worker(core: &Arc<KernelCore>, session: &KernelSession, global: &mut
             let key = sf.intern(name).0;
             if sh.lookup_position(proto.shape_id(), key).is_none() {
                 bind_accessor_getset(
-                    core,
-                    session,
+                    env,
                     proto,
                     key,
                     &format!("get {name}"),
@@ -144,7 +139,7 @@ pub fn bind_worker(core: &Arc<KernelCore>, session: &KernelSession, global: &mut
 
     // 全局 `Worker` 槽（bind_constructor! 自带既有槽原位更新、无槽新开）。
     bind_constructor!(
-        core,
+        env,
         global,
         "Worker",
         ctor_ptr,
@@ -158,9 +153,8 @@ pub fn bind_worker(core: &Arc<KernelCore>, session: &KernelSession, global: &mut
     let si_self_post = sf.intern("postMessage").0;
     if sh.lookup_position(global.shape_id(), si_self_post).is_none() {
         apply_binding_table(
-            world,
+            env,
             global,
-            core,
             &[
                 ("postMessage", crate::worker::bindings::self_post_message as *const (), 1),
                 ("close", crate::worker::bindings::self_close as *const (), 0),
@@ -172,9 +166,8 @@ pub fn bind_worker(core: &Arc<KernelCore>, session: &KernelSession, global: &mut
     let si_import_scripts = sf.intern("importScripts").0;
     if sh.lookup_position(global.shape_id(), si_import_scripts).is_none() {
         apply_binding_table(
-            world,
+            env,
             global,
-            core,
             &[("importScripts", crate::worker::bindings::import_scripts as *const (), 1)],
         );
     }
@@ -183,9 +176,8 @@ pub fn bind_worker(core: &Arc<KernelCore>, session: &KernelSession, global: &mut
     let si_self_add = sf.intern("addEventListener").0;
     if sh.lookup_position(global.shape_id(), si_self_add).is_none() {
         apply_binding_table(
-            world,
+            env,
             global,
-            core,
             &[
                 (
                     "addEventListener",
@@ -224,8 +216,7 @@ pub fn bind_worker(core: &Arc<KernelCore>, session: &KernelSession, global: &mut
         let key = sf.intern(name).0;
         if sh.lookup_position(global.shape_id(), key).is_none() {
             bind_accessor_getset(
-                core,
-                session,
+                env,
                 global,
                 key,
                 &format!("get {name}"),
@@ -242,7 +233,7 @@ pub fn bind_worker(core: &Arc<KernelCore>, session: &KernelSession, global: &mut
     let si_name_global = sf.intern("name").0;
     if sh.lookup_position(global.shape_id(), si_name_global).is_none() {
         if worker_realm {
-            bind_accessor_getter(core, session, global, "name", crate::worker::bindings::self_name as *const ());
+            bind_accessor_getter(env, global, "name", crate::worker::bindings::self_name as *const ());
         } else {
             bind_global_empty_string_property(global, sf, sh, si_name_global);
         }
@@ -251,8 +242,7 @@ pub fn bind_worker(core: &Arc<KernelCore>, session: &KernelSession, global: &mut
     if sh.lookup_position(global.shape_id(), si_location).is_none() {
         if worker_realm {
             bind_accessor_getter(
-                core,
-                session,
+                env,
                 global,
                 "location",
                 crate::worker::bindings::self_location as *const (),

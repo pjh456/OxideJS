@@ -1,18 +1,15 @@
-use std::sync::Arc;
-
-use crate::bindings::bind_global_value;
-use oxide_kernel::kernel::{KernelCore, KernelSession};
+use crate::bindings::{bind_global_value, BindEnv};
 use oxide_types::object::JsObject;
 use oxide_types::value::JsValue;
 
 /// 把 Console 单例对象及其方法（log/warn/error/info/debug/trace）绑定到 global。
-pub fn bind_console(core: &Arc<KernelCore>, session: &KernelSession, global: &mut JsObject) {
-    let console_ptr = session.builtin_world().console_object.as_ptr() as *mut JsObject;
+pub fn bind_console(env: BindEnv<'_>, global: &mut JsObject) {
+    let console_ptr = env.world().console_object.as_ptr() as *mut JsObject;
     let console = unsafe { &mut *console_ptr };
 
-    let bw = session.builtin_world();
-    let sf = core.perm_interner().as_ref();
-    let sh = core.shape_forge().as_ref();
+    let bw = env.world();
+    let sf = env.string_forge();
+    let sh = env.shape_forge();
 
     oxide_kernel::bind_methods!(
         bw,
@@ -28,9 +25,9 @@ pub fn bind_console(core: &Arc<KernelCore>, session: &KernelSession, global: &mu
     );
 
     bind_global_value(
-        core,
+        env.core,
         global,
         "console",
-        JsValue::from_js_object(session.builtin_world().console_object.as_ptr() as *mut JsObject),
+        JsValue::from_js_object(env.world().console_object.as_ptr() as *mut JsObject),
     );
 }

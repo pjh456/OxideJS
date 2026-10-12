@@ -1,9 +1,6 @@
-use std::sync::Arc;
-
 use crate::bindings::{
-    apply_binding_table, bind_global_value, bind_well_known_data_property, configure_native_constructor,
+    apply_binding_table, bind_global_value, bind_well_known_data_property, configure_native_constructor, BindEnv,
 };
-use oxide_kernel::kernel::{KernelCore, KernelSession};
 use oxide_types::object::{JsObject, PropAttributes};
 use oxide_types::value::JsValue;
 
@@ -15,8 +12,8 @@ use oxide_types::value::JsValue;
 ///
 /// `realm_id` 是目标所属 realm 的编号：`@@toStringTag` 符号键按 (realm 编号,
 /// 局部下标) 编码，realm 编号为 0 时与旧编码逐字节一致。
-pub fn bind_bigint(core: &Arc<KernelCore>, session: &KernelSession, global: &mut JsObject, realm_id: u32) {
-    let world = session.builtin_world();
+pub fn bind_bigint(env: BindEnv<'_>, global: &mut JsObject) {
+    let world = env.world();
     let ctor_ptr = world.bigint_constructor.as_ptr() as *mut JsObject;
     let ctor = unsafe { &mut *ctor_ptr };
     let proto_ptr = world.bigint_proto.as_ptr() as *mut JsObject;
@@ -24,8 +21,8 @@ pub fn bind_bigint(core: &Arc<KernelCore>, session: &KernelSession, global: &mut
 
     configure_native_constructor(ctor, oxide_builtins::bigint::bigint_constructor::<crate::vm::Vm> as *const (), 1);
     // BigInt.length = 1，属性 { [[Writable]]: false, [[Enumerable]]: false, [[Configurable]]: true }。
-    let length_si = core.perm_interner().intern("length").0;
-    let length_shape = core.shape_forge().make_shape(ctor.shape_id(), length_si);
+    let length_si = env.string_forge().intern("length").0;
+    let length_shape = env.shape_forge().make_shape(ctor.shape_id(), length_si);
     ctor.set_shape_id(length_shape);
     ctor.ensure_hash_props().push(JsValue::int(1));
     let length_pos = ctor.hash_props_vec().map_or(0, |v| v.len() as u32).saturating_sub(1);
@@ -33,9 +30,8 @@ pub fn bind_bigint(core: &Arc<KernelCore>, session: &KernelSession, global: &mut
 
     // 静态方法：asIntN / asUintN（length 均为 2）。
     apply_binding_table(
-        world,
+        env,
         ctor,
-        core,
         &[
             ("asIntN", oxide_builtins::bigint::bigint_as_int_n::<crate::vm::Vm> as *const (), 2),
             ("asUintN", oxide_builtins::bigint::bigint_as_uint_n::<crate::vm::Vm> as *const (), 2),
@@ -43,9 +39,8 @@ pub fn bind_bigint(core: &Arc<KernelCore>, session: &KernelSession, global: &mut
     );
 
     apply_binding_table(
-        world,
+        env,
         proto,
-        core,
         &[
             ("toString", oxide_builtins::bigint::bigint_to_string::<crate::vm::Vm> as *const (), 0),
             (
@@ -58,9 +53,9 @@ pub fn bind_bigint(core: &Arc<KernelCore>, session: &KernelSession, global: &mut
     );
 
     // BigInt.prototype[@@toStringTag] = "BigInt"，属性 { writable:false, enumerable:false, configurable:true }。
-    let tag_si = core.perm_interner().intern("BigInt").0;
-    let tag_value = JsValue::perm_string(core.perm_interner().string_ptr(tag_si));
-    bind_well_known_data_property(core, proto, 9, tag_value, PropAttributes::new(false, false, true), realm_id);
+    let tag_si = env.string_forge().intern("BigInt").0;
+    let tag_value = JsValue::perm_string(env.string_forge().string_ptr(tag_si));
+    bind_well_known_data_property(env.core, proto, 9, tag_value, PropAttributes::new(false, false, true), env.realm_id);
 
-    bind_global_value(core, global, "BigInt", JsValue::from_js_object(ctor_ptr));
+    bind_global_value(env.core, global, "BigInt", JsValue::from_js_object(ctor_ptr));
 }

@@ -85,15 +85,19 @@ use oxide_types::value::JsValue;
 ///
 /// `Copy`：值语义轻量（两个引用加一个 u32），可自由复制传递。
 #[derive(Copy, Clone)]
-pub(crate) struct BindEnv<'a> {
-    core: &'a Arc<KernelCore>,
+pub struct BindEnv<'a> {
+    pub core: &'a Arc<KernelCore>,
     session: &'a KernelSession,
     realm_id: u32,
 }
 
-impl BindEnv<'_> {
+impl<'a> BindEnv<'a> {
+    /// 构造绑定环境。
+    pub(crate) fn new(core: &'a Arc<KernelCore>, session: &'a KernelSession, realm_id: u32) -> Self {
+        BindEnv { core, session, realm_id }
+    }
     /// 当前 session 的 builtin world（共享借用）。
-    fn world(&self) -> &BuiltinWorld {
+    pub fn world(&self) -> &BuiltinWorld {
         self.session.builtin_world()
     }
     /// 共享 shape forge。
@@ -108,18 +112,18 @@ impl BindEnv<'_> {
 
 #[macro_export]
 macro_rules! bind_constructor {
-    ($core:expr, $global:expr, $name:literal, $ctor_ptr:expr, $ctor_fn:path, $nargs:literal) => {{
-        bind_constructor!($core, $global, $name, $ctor_ptr, $ctor_fn, $nargs, hash: false)
+    ($env:expr, $global:expr, $name:literal, $ctor_ptr:expr, $ctor_fn:path, $nargs:literal) => {{
+        bind_constructor!($env, $global, $name, $ctor_ptr, $ctor_fn, $nargs, hash: false)
     }};
-    ($core:expr, $global:expr, $name:literal, $ctor_ptr:expr, $ctor_fn:path, $nargs:literal, hash: $hash:literal) => {{
-        let si = $core.perm_interner().intern($name).0;
+    ($env:expr, $global:expr, $name:literal, $ctor_ptr:expr, $ctor_fn:path, $nargs:literal, hash: $hash:literal) => {{
+        let si = $env.string_forge().intern($name).0;
         let val = $crate::JsValue::from_js_object($ctor_ptr);
-        if let Some(pos) = $core.shape_forge().lookup_position($global.shape_id(), si) {
+        if let Some(pos) = $env.shape_forge().lookup_position($global.shape_id(), si) {
             // 既有槽（重建后保留的 global）：原位更新槽值，不追加新槽——旧家族
             // 构造器指针不得滞留属性 vec，shape 链不得继续增长。
             $global.set_prop_at(pos, val);
         } else {
-            let shape = $core.shape_forge().make_shape($global.shape_id(), si);
+            let shape = $env.shape_forge().make_shape($global.shape_id(), si);
             $global.set_shape_id(shape);
             if $hash {
                 $global.ensure_hash_props().push(val);
@@ -139,8 +143,8 @@ macro_rules! bind_constructor {
         ctor.set_native_arg_count($nargs);
         ctor.type_tag = oxide_types::object::JsObject::OBJ_TYPE_CONSTRUCTOR;
         // 设置 constructor.length (Function.length = formal parameter count)
-        let length_si = $core.perm_interner().intern("length").0;
-        let length_shape = $core.shape_forge().make_shape(ctor.shape_id(), length_si);
+        let length_si = $env.string_forge().intern("length").0;
+        let length_shape = $env.shape_forge().make_shape(ctor.shape_id(), length_si);
         ctor.set_shape_id(length_shape);
         ctor.ensure_hash_props().push($crate::JsValue::int($nargs as i32));
         // length 描述符 { writable:false, enumerable:false, configurable:true }
@@ -180,11 +184,10 @@ fn configure_existing_ctor(ctor: &P<JsObject>, native_fn: *const (), arg_count: 
 /// - 表中所有函数项指针须为合法的 `NativeFn`（转成 `*const ()`），此处经
 ///   `NativeFnPtr::from_raw` 转换。
 /// - `bind_method` 的返回值被丢弃：单条绑定失败不中断后续条目。
-pub(crate) fn apply_binding_table(
-    world: &BuiltinWorld, target: &mut JsObject, core: &Arc<KernelCore>, bindings: &[(&'static str, *const (), u8)],
-) {
-    let shape_forge = core.shape_forge().as_ref();
-    let string_forge = core.perm_interner().as_ref();
+pub(crate) fn apply_binding_table(env: BindEnv<'_>, target: &mut JsObject, bindings: &[(&'static str, *const (), u8)]) {
+    let world = env.world();
+    let shape_forge = env.shape_forge();
+    let string_forge = env.string_forge();
     for (name, func, nargs) in bindings {
         // SAFETY: 绑定表中所有条目都是转成 *const () 的 NativeFn 函数项指针。
         let fn_ptr = unsafe { oxide_types::object::NativeFnPtr::from_raw(*func) };
@@ -201,12 +204,10 @@ pub(crate) fn apply_binding_table(
 /// # 注意事项
 /// getter 函数对象登记进 world 释放表，与 `bind_method` 的方法 wrapper 同一生命周期约定
 /// （session 收尾时统一释放）。
-pub(crate) fn bind_accessor_getter(
-    core: &Arc<KernelCore>, session: &KernelSession, proto: &mut JsObject, name: &str, getter_fn: *const (),
-) {
-    let si = core.perm_interner().intern(name).0;
+pub(crate) fn bind_accessor_getter(env: BindEnv<'_>, proto: &mut JsObject, name: &str, getter_fn: *const ()) {
+    let si = env.string_forge().intern(name).0;
     let getter_name = format!("get {name}");
-    bind_accessor_getter_key(core, session, proto, si, &getter_name, getter_fn)
+    bind_accessor_getter_key(env, proto, si, &getter_name, getter_fn)
 }
 
 /// 在原型上按任意属性键（字符串 intern 键或 well-known symbol 键）绑定一个
@@ -220,12 +221,11 @@ pub(crate) fn bind_accessor_getter(
 /// getter 函数对象登记进 world 释放表，与 `bind_method` 的方法 wrapper 同一生命周期约定
 /// （session 收尾时统一释放）。
 pub(crate) fn bind_accessor_getter_key(
-    core: &Arc<KernelCore>, session: &KernelSession, proto: &mut JsObject, key: u32, getter_label: &str,
-    getter_fn: *const (),
+    env: BindEnv<'_>, proto: &mut JsObject, key: u32, getter_label: &str, getter_fn: *const (),
 ) {
-    let shape_forge = core.shape_forge().as_ref();
-    let string_forge = core.perm_interner().as_ref();
-    let world = session.builtin_world();
+    let shape_forge = env.shape_forge();
+    let string_forge = env.string_forge();
+    let world = env.world();
 
     let si_label = string_forge.intern(getter_label).0;
     // SAFETY: getter_fn 是转成 *const () 的 NativeFn 函数项指针。
@@ -284,14 +284,13 @@ pub(crate) fn bind_accessor_getter_key(
 /// # 注意事项
 /// getter/setter 函数对象登记进 world 释放表，session 收尾时统一释放，
 /// 与 `bind_accessor_getter` 的 getter 及方法 wrapper 同一生命周期约定。
-#[expect(clippy::too_many_arguments)]
 pub(crate) fn bind_accessor_getset(
-    core: &Arc<KernelCore>, session: &KernelSession, proto: &mut JsObject, key: u32, getter_name: &str,
-    setter_name: &str, getter_fn: *const (), setter_fn: *const (),
+    env: BindEnv<'_>, proto: &mut JsObject, key: u32, getter_name: &str, setter_name: &str,
+    getter_fn: *const (), setter_fn: *const (),
 ) {
-    let shape_forge = core.shape_forge().as_ref();
-    let string_forge = core.perm_interner().as_ref();
-    let world = session.builtin_world();
+    let shape_forge = env.shape_forge();
+    let string_forge = env.string_forge();
+    let world = env.world();
     let family = world.wrapper_family_of(proto as *const JsObject);
     let si_length = string_forge.intern("length").0;
     let si_name = string_forge.intern("name").0;
@@ -393,16 +392,15 @@ pub(crate) fn bind_method_alias(core: &Arc<KernelCore>, proto: &mut JsObject, so
 ///
 /// `realm_id` 是目标所属 realm 的编号：符号键按 (realm 编号, 局部下标) 编码，
 /// realm 编号为 0 时与旧编码逐字节一致。
-#[expect(clippy::too_many_arguments)]
 pub(crate) fn bind_well_known_method(
-    world: &BuiltinWorld, core: &Arc<KernelCore>, target: &mut JsObject, well_known_id: u32, method_name: &str,
-    func: *const (), nargs: u8, realm_id: u32,
+    env: BindEnv<'_>, target: &mut JsObject, well_known_id: u32, method_name: &str, func: *const (), nargs: u8,
 ) {
-    let shape_forge = core.shape_forge().as_ref();
-    let string_forge = core.perm_interner().as_ref();
+    let world = env.world();
+    let shape_forge = env.shape_forge();
+    let string_forge = env.string_forge();
     // SAFETY: func 是转成 *const () 的 NativeFn 函数项指针。
     let fn_ptr = unsafe { oxide_types::object::NativeFnPtr::from_raw(func) };
-    let key = oxide_types::private_key::encode_symbol_key(realm_id, well_known_id);
+    let key = oxide_types::private_key::encode_symbol_key(env.realm_id, well_known_id);
     let _ = oxide_kernel::builtin::BuiltinWorld::bind_method_key_static(
         target,
         shape_forge,
@@ -468,12 +466,10 @@ pub(crate) fn bind_well_known_data_property(
 
 /// 在 Iterator 函数对象上绑定 `prototype` 属性 = %IteratorPrototype%（规范形状：
 /// 构造器函数带 prototype 属性；描述符不可写/不可枚举/不可配置）。
-pub(crate) fn bind_iterator_function_prototype(
-    core: &Arc<KernelCore>, session: &KernelSession, iterator: &mut JsObject,
-) {
-    let iter_proto_ptr = session.builtin_world().iterator_proto.as_ptr() as *mut JsObject;
-    let sf = core.perm_interner().as_ref();
-    let sh = core.shape_forge().as_ref();
+pub(crate) fn bind_iterator_function_prototype(env: BindEnv<'_>, iterator: &mut JsObject) {
+    let iter_proto_ptr = env.world().iterator_proto.as_ptr() as *mut JsObject;
+    let sf = env.string_forge();
+    let sh = env.shape_forge();
     let si_prototype = sf.intern("prototype").0;
     let iterator_shape = sh.make_shape(iterator.shape_id(), si_prototype);
     iterator.set_shape_id(iterator_shape);
@@ -485,15 +481,13 @@ pub(crate) fn bind_iterator_function_prototype(
 /// 在集合迭代器原型上绑定 `next` 方法（规范形状：next 挂原型，wrapper 不设 own）。
 ///
 /// `next` 键已存在时跳过：保留原型在 dirty reset 重复经过时不再追加重复属性槽。
-pub(crate) fn bind_iterator_proto_next(
-    core: &Arc<KernelCore>, session: &KernelSession, proto: *mut JsObject, func: *const (),
-) {
+pub(crate) fn bind_iterator_proto_next(env: BindEnv<'_>, proto: *mut JsObject, func: *const ()) {
     let proto = unsafe { &mut *proto };
-    let si_next = core.perm_interner().intern("next").0;
-    if core.shape_forge().lookup_position(proto.shape_id(), si_next).is_some() {
+    let si_next = env.string_forge().intern("next").0;
+    if env.shape_forge().lookup_position(proto.shape_id(), si_next).is_some() {
         return;
     }
-    apply_binding_table(session.builtin_world(), proto, core, &[("next", func, 0)]);
+    apply_binding_table(env, proto, &[("next", func, 0)]);
 }
 
 /// 把迭代器原型方法安装到当前 builtin world 的迭代器原型上：
@@ -508,7 +502,6 @@ pub(crate) fn bind_iterator_proto_next(
 fn bind_iterator_protos(env: BindEnv<'_>) {
     let world = env.world();
     let core = env.core;
-    let session = env.session;
     let realm_id = env.realm_id;
 
     // %IteratorPrototype% 自身可迭代：@@iterator 返回 this，经原型链被全部
@@ -518,14 +511,12 @@ fn bind_iterator_protos(env: BindEnv<'_>) {
     let sym_iter = oxide_types::private_key::encode_symbol_key(realm_id, 0);
     if core.shape_forge().lookup_position(iter_proto.shape_id(), sym_iter).is_none() {
         bind_well_known_method(
-            world,
-            core,
+            env,
             iter_proto,
             0,
             "iterator",
             oxide_builtins::iterator::iterator_symbol_iterator::<crate::vm::Vm> as *const (),
             0,
-            realm_id,
         );
     }
 
@@ -539,8 +530,7 @@ fn bind_iterator_protos(env: BindEnv<'_>) {
         .is_none()
     {
         bind_accessor_getset(
-            core,
-            session,
+            env,
             iter_proto,
             si_constructor,
             "get constructor",
@@ -559,8 +549,7 @@ fn bind_iterator_protos(env: BindEnv<'_>) {
         .is_none()
     {
         bind_accessor_getset(
-            core,
-            session,
+            env,
             iter_proto,
             sym_to_string_tag,
             "get [Symbol.toStringTag]",
@@ -575,14 +564,12 @@ fn bind_iterator_protos(env: BindEnv<'_>) {
     let sym_dispose = oxide_types::private_key::encode_symbol_key(realm_id, dispose_id);
     if core.shape_forge().lookup_position(iter_proto.shape_id(), sym_dispose).is_none() {
         bind_well_known_method(
-            world,
-            core,
+            env,
             iter_proto,
             dispose_id,
             "[Symbol.dispose]",
             oxide_builtins::iterator::iterator_dispose::<crate::vm::Vm> as *const (),
             0,
-            realm_id,
         );
     }
 
@@ -592,9 +579,8 @@ fn bind_iterator_protos(env: BindEnv<'_>) {
     let si_for_each = core.perm_interner().intern("forEach").0;
     if core.shape_forge().lookup_position(iter_proto.shape_id(), si_for_each).is_none() {
         apply_binding_table(
-            world,
+            env,
             iter_proto,
-            core,
             &[
                 ("forEach", oxide_builtins::iterator::iterator_for_each::<crate::vm::Vm> as *const (), 1),
                 ("every", oxide_builtins::iterator::iterator_every::<crate::vm::Vm> as *const (), 1),
@@ -611,9 +597,8 @@ fn bind_iterator_protos(env: BindEnv<'_>) {
     let si_map = core.perm_interner().intern("map").0;
     if core.shape_forge().lookup_position(iter_proto.shape_id(), si_map).is_none() {
         apply_binding_table(
-            world,
+            env,
             iter_proto,
-            core,
             &[
                 ("map", oxide_builtins::iterator::iterator_map::<crate::vm::Vm> as *const (), 1),
                 ("filter", oxide_builtins::iterator::iterator_filter::<crate::vm::Vm> as *const (), 1),
@@ -634,14 +619,12 @@ fn bind_iterator_protos(env: BindEnv<'_>) {
     );
     if core.shape_forge().lookup_position(aiter_proto.shape_id(), sym_aiter).is_none() {
         bind_well_known_method(
-            world,
-            core,
+            env,
             aiter_proto,
             oxide_types::private_key::WELL_KNOWN_SYMBOL_ASYNC_ITERATOR,
             "[Symbol.asyncIterator]",
             crate::async_generator::async_generator_symbol_async_iterator as *const (),
             0,
-            realm_id,
         );
     }
     let sym_adispose = oxide_types::private_key::encode_symbol_key(
@@ -654,14 +637,12 @@ fn bind_iterator_protos(env: BindEnv<'_>) {
         .is_none()
     {
         bind_well_known_method(
-            world,
-            core,
+            env,
             aiter_proto,
             oxide_types::private_key::WELL_KNOWN_SYMBOL_ASYNC_DISPOSE,
             "[Symbol.asyncDispose]",
             crate::async_generator::async_iterator_async_dispose as *const (),
             0,
-            realm_id,
         );
     }
 
@@ -673,9 +654,8 @@ fn bind_iterator_protos(env: BindEnv<'_>) {
     let si_next = core.perm_interner().intern("next").0;
     if core.shape_forge().lookup_position(helper_proto.shape_id(), si_next).is_none() {
         apply_binding_table(
-            world,
+            env,
             helper_proto,
-            core,
             &[
                 ("next", oxide_builtins::iterator::iterator_helper_next::<crate::vm::Vm> as *const (), 0),
                 (
@@ -700,26 +680,22 @@ fn bind_iterator_protos(env: BindEnv<'_>) {
     // %ArrayIteratorPrototype% 服务 Array/TA 两族；Map/Set 共用按 `__mode__`
     // 分发的实现；%RegExpStringIteratorPrototype% 供 matchAll。
     bind_iterator_proto_next(
-        core,
-        session,
+        env,
         world.array_iterator_proto.as_ptr() as *mut JsObject,
         oxide_builtins::array::array_iterator_next::<crate::vm::Vm> as *const (),
     );
     bind_iterator_proto_next(
-        core,
-        session,
+        env,
         world.map_iterator_proto.as_ptr() as *mut JsObject,
         oxide_builtins::iterator::map_set_iterator_next::<crate::vm::Vm> as *const (),
     );
     bind_iterator_proto_next(
-        core,
-        session,
+        env,
         world.set_iterator_proto.as_ptr() as *mut JsObject,
         oxide_builtins::iterator::map_set_iterator_next::<crate::vm::Vm> as *const (),
     );
     bind_iterator_proto_next(
-        core,
-        session,
+        env,
         world.regexp_string_iterator_proto.as_ptr() as *mut JsObject,
         oxide_builtins::string::string_match_all_next::<crate::vm::Vm> as *const (),
     );
@@ -876,9 +852,8 @@ fn bind_error_subtype_global(
 
 fn bind_global_functions(env: BindEnv<'_>, global: &mut JsObject) {
     apply_binding_table(
-        env.world(),
+        env,
         global,
-        env.core,
         &[
             // parseInt 形式参数为 (string, radix)，length 按规范取 2。
             ("parseInt", oxide_builtins::number::number_parse_int::<crate::vm::Vm> as *const (), 2),
@@ -915,9 +890,8 @@ fn bind_reflect_global(env: BindEnv<'_>, global: &mut JsObject) {
         JsValue::from_js_object(env.world().object_proto.as_ptr() as *mut JsObject),
     ));
     apply_binding_table(
-        env.world(),
+        env,
         &mut reflect,
-        env.core,
         &[
             ("apply", oxide_builtins::reflect::reflect_apply::<crate::vm::Vm> as *const (), 3),
             ("construct", oxide_builtins::reflect::reflect_construct::<crate::vm::Vm> as *const (), 2),
@@ -977,11 +951,10 @@ fn bind_iterator_global(env: BindEnv<'_>, global: &mut JsObject) {
         0,
     );
     bind_iterator_ctor_identity(env.core, &mut iterator);
-    bind_iterator_function_prototype(env.core, env.session, &mut iterator);
+    bind_iterator_function_prototype(env, &mut iterator);
     apply_binding_table(
-        env.world(),
+        env,
         &mut iterator,
-        env.core,
         &[("from", oxide_builtins::iterator::iterator_from::<crate::vm::Vm> as *const (), 1)],
     );
     let iterator_ptr = Box::into_raw(iterator);
@@ -1266,13 +1239,13 @@ pub fn bind_global_builtin_slots(
 
     bind_reflect_global(env, global);
     bind_iterator_global(env, global);
-    bind_worker::bind_worker(core, session, global, realm_id);
-    bind_disposable_stack::bind_disposable_stack(core, session, global, realm_id);
-    bind_async_disposable_stack::bind_async_disposable_stack(core, session, global, realm_id);
+    bind_worker::bind_worker(env, global);
+    bind_disposable_stack::bind_disposable_stack(env, global);
+    bind_async_disposable_stack::bind_async_disposable_stack(env, global);
     bind_stub_globals(env, global);
-    bind_bigint::bind_bigint(core, session, global, realm_id);
+    bind_bigint::bind_bigint(env, global);
     bind_global_functions(env, global);
-    crate::test262_host::bind_test262_host(core, session, global);
+    crate::test262_host::bind_test262_host(env, global);
     let global_this = JsValue::from_js_object(global as *mut JsObject);
     bind_existing_global(core, global, "globalThis", global_this);
 }
@@ -1290,111 +1263,114 @@ pub fn rebind_dirty_builtins(
 ) {
     let global_ptr = session.global_object().as_ptr() as *mut JsObject;
     let global = unsafe { &mut *global_ptr };
+    let env = BindEnv {
+        core,
+        session: &*session,
+        realm_id,
+    };
 
     if dirty.map_or(true, |d| d.object) {
-        bind_object::bind_object(core, session, global);
+        bind_object::bind_object(env, global);
         // object 家族重建连带重建 6 个迭代器原型与两资源栈原型（其链到新
         // Object.prototype），须同步安装原型方法并让保留的 global 构造器指向新原型。
-        let env = BindEnv {
-            core,
-            session: &*session,
-            realm_id,
-        };
         bind_iterator_protos(env);
         sync_iterator_function_prototype(env, global);
-        bind_disposable_stack::bind_disposable_stack_protos(core, session, realm_id);
-        bind_disposable_stack::sync_disposable_stack_ctor(core, session, global);
-        bind_async_disposable_stack::bind_async_disposable_stack_protos(core, session, realm_id);
-        bind_async_disposable_stack::sync_async_disposable_stack_ctor(core, session, global);
+        bind_disposable_stack::bind_disposable_stack_protos(env);
+        bind_disposable_stack::sync_disposable_stack_ctor(env, global);
+        bind_async_disposable_stack::bind_async_disposable_stack_protos(env);
+        bind_async_disposable_stack::sync_async_disposable_stack_ctor(env, global);
     }
     if dirty.map_or(true, |d| d.array) {
-        bind_array::bind_array(core, session, global, realm_id);
+        bind_array::bind_array(env, global);
     }
     if dirty.map_or(true, |d| d.array_buffer) {
-        bind_array_buffer::bind_array_buffer(core, session, global, realm_id);
+        bind_array_buffer::bind_array_buffer(env, global);
     }
     if dirty.map_or(true, |d| d.shared_array_buffer) {
-        bind_shared_array_buffer::bind_shared_array_buffer(core, session, global);
+        bind_shared_array_buffer::bind_shared_array_buffer(env, global);
     }
     if dirty.map_or(true, |d| d.data_view) {
-        bind_data_view::bind_data_view(core, session, global);
+        bind_data_view::bind_data_view(env, global);
     }
     if dirty.map_or(true, |d| d.typed_array_family) {
-        bind_typed_array::bind_typed_array(core, session, global, realm_id);
+        bind_typed_array::bind_typed_array(env, global);
     }
     if dirty.map_or(true, |d| d.error_family) {
-        bind_error::bind_error(core, session, global);
+        bind_error::bind_error(env, global);
     }
     if dirty.map_or(true, |d| d.string) {
-        bind_string::bind_string(core, session, global, realm_id);
+        bind_string::bind_string(env, global);
     }
     if dirty.map_or(true, |d| d.number) {
-        bind_number::bind_number(core, session, global);
+        bind_number::bind_number(env, global);
     }
     if dirty.map_or(true, |d| d.math) {
-        bind_math::bind_math(core, session, global);
+        bind_math::bind_math(env, global);
     }
     if dirty.map_or(true, |d| d.atomics) {
-        bind_atomics::bind_atomics(core, session, global);
+        bind_atomics::bind_atomics(env, global);
     }
     if dirty.map_or(true, |d| d.json) {
-        bind_json::bind_json(core, session, global);
+        bind_json::bind_json(env, global);
     }
     if dirty.map_or(true, |d| d.date) {
-        bind_date::bind_date(core, session, global);
+        bind_date::bind_date(env, global);
     }
     if dirty.map_or(true, |d| d.set) {
-        bind_set::bind_set(core, session, global, realm_id);
+        bind_set::bind_set(env, global);
     }
     if dirty.map_or(true, |d| d.map) {
-        bind_map::bind_map(core, session, global, realm_id);
+        bind_map::bind_map(env, global);
     }
     if dirty.map_or(true, |d| d.boolean) {
-        bind_boolean::bind_boolean(core, session, global);
+        bind_boolean::bind_boolean(env, global);
     }
     if dirty.map_or(true, |d| d.function) {
-        bind_function::bind_function(core, session, global, realm_id);
+        bind_function::bind_function(env, global);
     }
     if dirty.map_or(true, |d| d.regexp) {
-        bind_regexp::bind_regexp(core, session, global, realm_id);
+        bind_regexp::bind_regexp(env, global);
     }
     if dirty.map_or(true, |d| d.symbol_family) {
-        bind_symbol::bind_symbol(core, session, global, realm_id);
+        bind_symbol::bind_symbol(env, global);
     }
     if dirty.map_or(true, |d| d.temporal) {
-        bind_temporal::bind_temporal(core, session, global, realm_id);
+        bind_temporal::bind_temporal(env, global);
     }
+    // 独占函数（bind_stubs / bind_weak_map）需要 session 的可变借用，与 env
+    // 的共享借用冲突；env 的最后一次使用在上面的 temporal 分支，独占调用
+    // 之后重建 env 供后续分支使用。
     if dirty.map_or(true, |d| d.stubs) {
         bind_stubs::bind_stubs(core, session, global, realm_id);
         // WeakMap 真构造器面与 stub 族同脏位：原型对象经 leaked 登记表迁移，
         // 重绑时全局槽原位更新，不占 BuiltinWorld 槽。
         bind_weak::bind_weak_map(core, session, global, realm_id);
     }
-    if dirty.map_or(true, |d| d.stubs) {
-        bind_bigint::bind_bigint(core, session, global, realm_id);
-    }
-    if dirty.map_or(true, |d| d.message_channel) {
-        bind_message_channel::bind_message_channel(core, session, global, realm_id);
-    }
-    if dirty.map_or(true, |d| d.broadcast_channel) {
-        bind_broadcast_channel::bind_broadcast_channel(core, session, global, realm_id);
-    }
-    if dirty.map_or(true, |d| d.event) {
-        bind_event::bind_event(core, session, global, realm_id);
-    }
-    if dirty.map_or(true, |d| d.console) {
-        bind_console::bind_console(core, session, global);
-    }
-    // worker 构造器是 Box 分配对象（不在 BuiltinWorld 快照内），不占脏位：
-    // 无条件重绑（构造器经 lookup_position 守卫复用，幂等）。
-    bind_worker::bind_worker(core, session, global, realm_id);
-    // tag 目标横跨多个脏分组（Map/Set/DataView/Math/JSON/迭代器原型），
-    // 各组各自重绑后统一补装；安装点自带幂等检查。
     let env = BindEnv {
         core,
         session: &*session,
         realm_id,
     };
+    if dirty.map_or(true, |d| d.stubs) {
+        bind_bigint::bind_bigint(env, global);
+    }
+    if dirty.map_or(true, |d| d.message_channel) {
+        bind_message_channel::bind_message_channel(env, global);
+    }
+    if dirty.map_or(true, |d| d.broadcast_channel) {
+        bind_broadcast_channel::bind_broadcast_channel(env, global);
+    }
+    if dirty.map_or(true, |d| d.event) {
+        bind_event::bind_event(env, global);
+    }
+    if dirty.map_or(true, |d| d.console) {
+        bind_console::bind_console(env, global);
+    }
+    // worker 构造器是 Box 分配对象（不在 BuiltinWorld 快照内），不占脏位：
+    // 无条件重绑（构造器经 lookup_position 守卫复用，幂等）。
+    bind_worker::bind_worker(env, global);
+    // tag 目标横跨多个脏分组（Map/Set/DataView/Math/JSON/迭代器原型），
+    // 各组各自重绑后统一补装；安装点自带幂等检查。
     install_to_string_tags(env);
 }
 
@@ -1406,13 +1382,18 @@ pub fn init_kernel_builtins(core: &Arc<KernelCore>, session: &mut KernelSession,
     rebind_dirty_builtins(core, session, None, realm_id);
     let global_ptr = session.global_object().as_ptr() as *mut oxide_types::object::JsObject;
     let global = unsafe { &mut *global_ptr };
-    bind_iterator::bind_iterator(core, session, global);
-    bind_disposable_stack::bind_disposable_stack(core, session, global, realm_id);
-    bind_async_disposable_stack::bind_async_disposable_stack(core, session, global, realm_id);
-    bind_reflect::bind_reflect(core, session, global);
-    bind_global::bind_global(core, session, global);
+    let env = BindEnv {
+        core,
+        session: &*session,
+        realm_id,
+    };
+    bind_iterator::bind_iterator(env, global);
+    bind_disposable_stack::bind_disposable_stack(env, global);
+    bind_async_disposable_stack::bind_async_disposable_stack(env, global);
+    bind_reflect::bind_reflect(env, global);
+    bind_global::bind_global(env, global);
     bind_global_value(core, global, "globalThis", JsValue::from_js_object(global_ptr));
-    bind_console::bind_console(core, session, global);
-    crate::test262_host::bind_test262_host(core, session, global);
+    bind_console::bind_console(env, global);
+    crate::test262_host::bind_test262_host(env, global);
     session.record_snapshot();
 }

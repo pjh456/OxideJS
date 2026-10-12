@@ -1,23 +1,20 @@
-use std::sync::Arc;
-
 use oxide_kernel::bind_methods;
-use oxide_kernel::kernel::{KernelCore, KernelSession};
 use oxide_types::object::JsObject;
 use oxide_types::value::JsValue;
 
-use crate::bindings::bind_global_value;
+use crate::bindings::{bind_global_value, BindEnv};
 
 /// 把 Atomics 全局纯对象及其 10 个原子方法绑定到 global。
 ///
 /// Atomics 非函数对象：原型链落 Object.prototype（`wire_builtin_world_links`），
 /// `@@toStringTag` 由 `install_to_string_tags` 统一补装；此处只装方法与全局槽。
-pub fn bind_atomics(core: &Arc<KernelCore>, session: &KernelSession, global: &mut JsObject) {
-    let atomics_ptr = session.builtin_world().atomics_object.as_ptr() as *mut JsObject;
+pub fn bind_atomics(env: BindEnv<'_>, global: &mut JsObject) {
+    let atomics_ptr = env.world().atomics_object.as_ptr() as *mut JsObject;
     let atomics = unsafe { &mut *atomics_ptr };
 
-    let bw = session.builtin_world();
-    let sf = core.perm_interner().as_ref();
-    let sh = core.shape_forge().as_ref();
+    let bw = env.world();
+    let sf = env.string_forge();
+    let sh = env.shape_forge();
 
     bind_methods!(
         bw,
@@ -41,5 +38,5 @@ pub fn bind_atomics(core: &Arc<KernelCore>, session: &KernelSession, global: &mu
     );
 
     let a_val = JsValue::from_js_object(atomics_ptr);
-    bind_global_value(core, global, "Atomics", a_val);
+    bind_global_value(env.core, global, "Atomics", a_val);
 }

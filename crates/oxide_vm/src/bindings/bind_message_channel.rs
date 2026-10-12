@@ -1,8 +1,7 @@
-use std::sync::Arc;
-
 use crate::bind_constructor;
-use crate::bindings::{apply_binding_table, bind_accessor_getset, bind_accessor_getter, configure_native_constructor};
-use oxide_kernel::kernel::{KernelCore, KernelSession};
+use crate::bindings::{
+    apply_binding_table, bind_accessor_getset, bind_accessor_getter, configure_native_constructor, BindEnv,
+};
 use oxide_types::object::{JsObject, PropAttributes};
 use oxide_types::value::JsValue;
 
@@ -20,15 +19,15 @@ use oxide_types::value::JsValue;
 ///
 /// `realm_id` 未使用（MessageChannel 无 well-known 符号键），保留签名与其他
 /// 绑定函数一致。
-pub fn bind_message_channel(core: &Arc<KernelCore>, session: &KernelSession, global: &mut JsObject, _realm_id: u32) {
-    let world = session.builtin_world();
+pub fn bind_message_channel(env: BindEnv<'_>, global: &mut JsObject) {
+    let world = env.world();
     let ctor_ptr = world.message_channel_constructor.as_ptr() as *mut JsObject;
     let ctor = unsafe { &mut *ctor_ptr };
     let proto_ptr = world.message_port_proto.as_ptr() as *mut JsObject;
     let proto = unsafe { &mut *proto_ptr };
 
-    let sf = core.perm_interner().as_ref();
-    let sh = core.shape_forge().as_ref();
+    let sf = env.string_forge();
+    let sh = env.shape_forge();
 
     // ---- 填构造器占位 ----
     ctor.set_function(true);
@@ -65,7 +64,7 @@ pub fn bind_message_channel(core: &Arc<KernelCore>, session: &KernelSession, glo
         0,
     );
     bind_constructor!(
-        core,
+        env,
         global,
         "MessageChannel",
         ctor_ptr,
@@ -93,9 +92,8 @@ pub fn bind_message_channel(core: &Arc<KernelCore>, session: &KernelSession, glo
     let si_post_message = sf.intern("postMessage").0;
     if sh.lookup_position(proto.shape_id(), si_post_message).is_none() {
         apply_binding_table(
-            world,
+            env,
             proto,
-            core,
             &[
                 (
                     "postMessage",
@@ -120,8 +118,7 @@ pub fn bind_message_channel(core: &Arc<KernelCore>, session: &KernelSession, glo
     let si_ready_state = sf.intern("readyState").0;
     if sh.lookup_position(proto.shape_id(), si_ready_state).is_none() {
         bind_accessor_getter(
-            core,
-            session,
+            env,
             proto,
             "readyState",
             oxide_builtins::message_channel::message_port_ready_state::<crate::vm::Vm> as *const (),
@@ -134,8 +131,7 @@ pub fn bind_message_channel(core: &Arc<KernelCore>, session: &KernelSession, glo
         let key = sf.intern(name).0;
         if sh.lookup_position(proto.shape_id(), key).is_none() {
             bind_accessor_getset(
-                core,
-                session,
+                env,
                 proto,
                 key,
                 &format!("get {name}"),
