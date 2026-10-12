@@ -106,8 +106,8 @@ pub(super) fn collect_real_vregs(f: &IRFunction) -> Vec<u32> {
 /// spill_set 中的 vreg 不再是节点（其 fresh 替代品入图）；fresh 按 at==i 并入该指令活集。
 pub(super) fn build(f: &IRFunction, live: &LiveInfo, spill_set: &[u32], fresh: &[FreshVreg]) -> InterferenceGraph {
     let mut real = collect_real_vregs(f);
-    // inst_live_before 长度 = 指令数（逐指令活集索引）
-    let inst_count = live.inst_live_before.len();
+    // inst_live_before 拍平后长度 = 指令数 × words，指令数由 len/words 还原（words 恒 ≥1）
+    let inst_count = live.inst_live_before.len() / live.words;
 
     // 窗口只为参数连续性 MOV 桥预留；spread 调用实参经 ext 逐个读寄存器，无连续性要求。
     let max_nargs = f
@@ -270,7 +270,7 @@ pub(super) fn build(f: &IRFunction, live: &LiveInfo, spill_set: &[u32], fresh: &
         // 替代逐 node 全扫描——活集小（典型 2-4）时每指令从 O(nodes) 降到 O(live)。
         // 升序遍历保证加边顺序与原 node 表升序扫描逐字节一致（确定性不漂移）。
         let mut at_i: Vec<u32> = Vec::new();
-        let before = &live.inst_live_before[i];
+        let before = &live.inst_live_before[i * live.words..(i + 1) * live.words];
         for (word_idx, word) in before.iter().enumerate() {
             let mut bits = *word;
             while bits != 0 {
@@ -298,7 +298,7 @@ pub(super) fn build(f: &IRFunction, live: &LiveInfo, spill_set: &[u32], fresh: &
         // 寄存器同色会覆盖其值（elision 解构返回值被覆盖），须补此干涉边。
         if let Some(d) = f.insts[i].def_reg() {
             if oxide_liveness::bitset_get(&is_node, d as usize) {
-                let after = &live.inst_live_after[i];
+                let after = &live.inst_live_after[i * live.words..(i + 1) * live.words];
                 for (word_idx, word) in after.iter().enumerate() {
                     let mut bits = *word;
                     while bits != 0 {

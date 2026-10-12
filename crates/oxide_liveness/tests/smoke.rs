@@ -16,8 +16,12 @@ fn smoke(src: &str) {
     let (info, cfg, inst_len) = run_liveness(src);
     assert_eq!(info.block_live_in.len(), cfg.blocks.len(), "block 维度一致");
     assert_eq!(info.block_live_out.len(), cfg.blocks.len(), "block 维度一致");
-    assert_eq!(info.inst_live_before.len(), inst_len, "inst 维度一致");
-    assert_eq!(info.inst_live_after.len(), inst_len, "inst 维度一致");
+    assert_eq!(
+        info.inst_live_before.len(),
+        inst_len * info.words,
+        "inst 维度一致（拍平后长度 = N×words）"
+    );
+    assert_eq!(info.inst_live_after.len(), inst_len * info.words, "inst 维度一致（拍平后长度 = N×words）");
 }
 
 #[test]

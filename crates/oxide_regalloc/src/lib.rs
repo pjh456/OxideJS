@@ -48,9 +48,10 @@ pub fn alloc(f: &mut IRFunction, live: &LiveInfo) -> Result<(), String> {
         return Ok(());
     }
     // LiveInfo 维度守卫：删改后的过期 LiveInfo 索引错位会误删活指令。
-    // 维度匹配时借用而非复制——LiveInfo 是稠密 bitset 矩阵（大函数可达数百 MB），
-    // 全量 clone 白白复制一次只读数据。
-    let live = if live.inst_live_before.len() == f.insts.len() && !f.insts.is_empty() {
+    // 拍平后外层长度 = N×words，空 LiveInfo 的 words 为 0（0==N*0 会误判对齐），
+    // 须同时判 words > 0。维度匹配时借用而非复制——LiveInfo 是稠密 bitset 矩阵
+    // （大函数可达数百 MB），全量 clone 白白复制一次只读数据。
+    let live = if live.inst_live_before.len() == f.insts.len() * live.words && live.words > 0 && !f.insts.is_empty() {
         Cow::Borrowed(live)
     } else {
         let cfg = oxide_cfg::build_cfg(f);

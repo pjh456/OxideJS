@@ -32,9 +32,10 @@ pub fn encode_call_window(f: &mut IRFunction, live: &LiveInfo) {
         .insts
         .iter()
         .any(|i| matches!(i.op, OpCode::TRY_BEGIN | OpCode::TRY_FINALLY_BEGIN));
-    // LiveInfo 维度守卫：与 alloc 相同纪律，过期则重算。维度匹配时借用而非复制
-    // （LiveInfo 稠密矩阵全量 clone 只读数据无收益）。
-    let live = if live.inst_live_before.len() == f.insts.len() && !f.insts.is_empty() {
+    // LiveInfo 维度守卫：与 alloc 相同纪律，过期则重算。拍平后外层长度 = N×words，
+    // 空 LiveInfo 的 words 为 0（0==N*0 会误判对齐），须同时判 words > 0。
+    // 维度匹配时借用而非复制（LiveInfo 稠密矩阵全量 clone 只读数据无收益）。
+    let live = if live.inst_live_before.len() == f.insts.len() * live.words && live.words > 0 && !f.insts.is_empty() {
         Cow::Borrowed(live)
     } else {
         let cfg = oxide_cfg::build_cfg(f);
@@ -45,7 +46,7 @@ pub fn encode_call_window(f: &mut IRFunction, live: &LiveInfo) {
     if !has_try && !f.is_generator && !f.is_async {
         for (i, inst) in f.insts.iter_mut().enumerate() {
             if matches!(inst.op, OpCode::CALL | OpCode::NEW_EXPRESSION | OpCode::SUPER_CALL) {
-                let after = &live.inst_live_after[i];
+                let after = &live.inst_live_after[i * live.words..(i + 1) * live.words];
                 // 存活上界 = 最大存活槽号 + 1；254/255 由帧单独保存，不进窗口。
                 // 按 u64 位集逐字取置位（活集小，仅遍历实际存活的槽）。
                 let mut upper = 0u32;

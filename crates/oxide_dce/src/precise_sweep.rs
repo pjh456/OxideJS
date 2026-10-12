@@ -38,7 +38,7 @@ pub(super) fn pass_dead_with_liveness(f: &IRFunction, live: &LiveInfo, keep: &mu
         if !keep[i] || label_target[i] {
             continue;
         }
-        let after = &live.inst_live_after[i];
+        let after = &live.inst_live_after[i * live.words..(i + 1) * live.words];
         let not_live_after = |r: u32| !oxide_liveness::bitset_get(after, r as usize);
         // 通用规则：纯指令结果不被后续使用 → 删（is_pure=false 已防 CALL/SPILL/UNSPILL）
         if let Some(r) = inst.def_reg() {

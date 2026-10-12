@@ -6,23 +6,21 @@ use oxide_ir::operand::Operand;
 use oxide_ir::IRFunction;
 use oxide_liveness::LiveInfo;
 
-/// helper：稀疏号集 → u64 位集 live_after。
-fn live_sets(after: &[&[u32]], reg_count: usize) -> Vec<Vec<u64>> {
+/// helper：稀疏号集 → u64 位集 live_after（拍平为单一 `Vec<u64>`，长度 = 指令数 × words）。
+fn live_sets(after: &[&[u32]], reg_count: usize) -> Vec<u64> {
     let words = (reg_count + 1).div_ceil(64);
-    after
-        .iter()
-        .map(|set| {
-            let mut v = vec![0u64; words];
-            for &r in *set {
-                v[(r as usize) >> 6] |= 1u64 << ((r as usize) & 63);
-            }
-            v
-        })
-        .collect()
+    let mut flat = vec![0u64; after.len() * words];
+    for (i, set) in after.iter().enumerate() {
+        for &r in *set {
+            flat[i * words + ((r as usize) >> 6)] |= 1u64 << ((r as usize) & 63);
+        }
+    }
+    flat
 }
 
 fn run_precise(f: &mut IRFunction, after: &[&[u32]], reg_count: usize) {
     let mut live = LiveInfo::new();
+    live.words = (reg_count + 1).div_ceil(64);
     live.inst_live_after = live_sets(after, reg_count);
     dce_precise(f, &live);
 }

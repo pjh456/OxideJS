@@ -75,8 +75,9 @@ pub fn dce_precise(f: &mut IRFunction, live: &LiveInfo) -> PreciseOutcome {
         return PreciseOutcome { live_reusable: true };
     }
     // 维度守卫：live 与 insts 对齐才可信（删改后的过期 LiveInfo 索引错位会误删活指令）；
-    // 守卫不过时活集必过期，调用方须重建。
-    if live.inst_live_after.len() != f.insts.len() {
+    // 拍平后外层长度 = N×words，空 LiveInfo 的 words 为 0（0==N*0 会误判对齐），
+    // 须同时判 words > 0。守卫不过时活集必过期，调用方须重建。
+    if live.inst_live_after.len() != f.insts.len() * live.words || live.words == 0 {
         return PreciseOutcome { live_reusable: false };
     }
     let mut keep = vec![true; f.insts.len()];

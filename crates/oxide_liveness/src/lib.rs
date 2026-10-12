@@ -29,5 +29,6 @@ pub fn liveness(f: &IRFunction, cfg: &Cfg) -> LiveInfo {
         block_live_out: block_out,
         inst_live_before: inst_before,
         inst_live_after: inst_after,
+        words: (reg_count + 1).div_ceil(64),
     }
 }
