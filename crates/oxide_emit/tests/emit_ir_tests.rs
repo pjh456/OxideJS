@@ -375,3 +375,27 @@ fn source_encoded_regex_pool_key() {
     assert!(!enc.contains("\\ud800"));
     assert!(pool_strings(&static_ir).contains("\\ud800"), "静态源池键为明文转义文本");
 }
+
+/// 面 12：块函数抑制集含解构形参叶名——块函数名撞叶名时不建外层 var 绑定、
+/// 声明点不写回（STORE_VAR 少一条写回）；非抑制名块函数有入口 undefined 写
+/// 与声明点写回。
+#[test]
+fn block_fn_suppressed_by_destructured_param_leaf() {
+    // 撞解构叶名：叶名绑定（1）+ 块函数物化自写（1）= 2，无外层 var 写回。
+    let suppressed = emit_ir("function f({x}) { { function x() { return 1; } } return 2; }");
+    let f = &suppressed.nested[0];
+    assert_eq!(
+        count_op(&f.insts, OpCode::STORE_VAR),
+        2,
+        "撞解构叶名的块函数被抑制：无外层 var 写回"
+    );
+
+    // 非抑制对照：入口 undefined 写（1）+ 块函数物化自写（1）+ 外层 var 写回（1）= 3。
+    let control = emit_ir("function f() { { function y() { return 1; } } return 2; }");
+    let fc = &control.nested[0];
+    assert_eq!(
+        count_op(&fc.insts, OpCode::STORE_VAR),
+        3,
+        "非抑制块函数应有入口 undefined 写与外层 var 写回"
+    );
+}

@@ -434,10 +434,18 @@ impl Emitter {
         // 让 next_reg 与 builtin 槽位对齐，参数在 builtin 槽之后分配。
         ctx.reset_regs();
 
-        // 函数作用域六个名字面单趟收集（形参名先注入 own 面）：本函数体编译链
-        // 各调用点（参数 prologue / builtin 排除 / 入口实例化）共用此结果。
+        // 函数作用域八个名字面单趟收集（形参名先注入 own 面与抑制面）：本函数体
+        // 编译链各调用点（参数 prologue / builtin 排除 / 块函数 / 入口实例化）
+        // 共用此结果。
         let param_name_refs: Vec<&str> = param_specs.iter().map(|s| s.register_name()).collect();
-        let scope_names = collect_fn_scope_names(&param_name_refs, body_stmts);
+        let mut scope_names = collect_fn_scope_names(&param_name_refs, body_stmts);
+        // 抑制集口径是规范 paramNames（含解构叶名），合并趟形参注入按登记名，
+        // 叶名在此补入（登记名已入集，重复插入无副作用）。
+        for name in ctx.param_names.iter() {
+            if !param_name_refs.contains(&name.as_str()) {
+                scope_names.block_fn_suppressed.insert(name.clone());
+            }
+        }
 
         let param_base = self.emit_params_prologue(
             param_specs,
@@ -478,10 +486,10 @@ impl Emitter {
         // （形参/词法声明同名，该形退化为纯块作用域）则不建。求值期声明点把
         // 函数对象写回此绑定（见函数声明 emit）。
         if !ctx.is_strict {
-            ctx.block_fn_suppressed = self.collect_block_fn_suppressed_names(body_stmts, &ctx.param_names);
-            for name in self.collect_block_function_names(body_stmts) {
-                if !ctx.block_fn_suppressed.contains(&name) {
-                    self.predeclare_var_name(&name, &mut ctx);
+            ctx.block_fn_suppressed = scope_names.block_fn_suppressed.clone();
+            for name in &scope_names.block_function_names {
+                if !ctx.block_fn_suppressed.contains(name) {
+                    self.predeclare_var_name(name, &mut ctx);
                 }
             }
         }
@@ -1013,13 +1021,12 @@ impl Emitter {
         // 语义覆盖此初值。
         let mut captured_entry_names = scope_names.var_binding_names.clone();
         // 块级函数外层 var 名与 instantiate_var_bindings 同源并入；抑制名（形参/
-        // 词法声明同名）无外层绑定，不并入。抑制集在此独立计算：本循环早于函数体
-        // 的 block_fn_suppressed 构建。
+        // 词法声明同名）无外层绑定，不并入。
         if !ctx.is_strict {
-            let suppressed = self.collect_block_fn_suppressed_names(body_stmts, &ctx.param_names);
-            for name in self.collect_block_function_names(body_stmts) {
-                if !suppressed.contains(&name) {
-                    captured_entry_names.insert(name);
+            let suppressed = &scope_names.block_fn_suppressed;
+            for name in &scope_names.block_function_names {
+                if !suppressed.contains(name) {
+                    captured_entry_names.insert(name.clone());
                 }
             }
         }
@@ -1107,9 +1114,9 @@ impl Emitter {
                 .filter_map(|fd| fd.id.as_ref())
                 .map(|id| id.name.as_str())
                 .collect();
-            for name in self.collect_block_function_names(body_stmts) {
-                if !ctx.block_fn_suppressed.contains(&name) && !labeled_hoisted.contains(name.as_str()) {
-                    name_set.insert(name);
+            for name in &scope_names.block_function_names {
+                if !ctx.block_fn_suppressed.contains(name) && !labeled_hoisted.contains(name.as_str()) {
+                    name_set.insert(name.clone());
                 }
             }
         }

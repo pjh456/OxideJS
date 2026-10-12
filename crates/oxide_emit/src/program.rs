@@ -16,10 +16,7 @@ use oxide_ir::operand::Operand;
 use oxide_ir::IRFunction;
 use oxide_parser::Statement;
 
-use crate::capture::{
-    collect_block_level_decl_names, collect_captured_bindings, collect_direct_lexical_names, collect_own_binding_names,
-    collect_top_level_function_names, collect_top_level_function_names_ordered, collect_var_binding_names,
-};
+use crate::capture::{collect_captured_bindings, collect_fn_scope_names};
 use crate::compile_ctx::CompileCtx;
 use crate::Emitter;
 
@@ -231,10 +228,10 @@ impl Emitter {
     /// # 边界与前提
     /// - 仅普通脚本调用（`is_eval_script` 面由调用点按条件判定排除）；eval 动态
     ///   路径与 eval 三常量编译期条件开关零触碰。
-    /// - 仅遍历语句列表直接子级具名函数声明（生成器/异步声明同节点类型，天然
-    ///   覆盖）；块内函数声明与 `export default function` 不入全局检查面。
-    pub(crate) fn emit_gdi_func_decl_checks(&self, stmts: &[Statement], ctx: &mut CompileCtx) {
-        let names = collect_top_level_function_names_ordered(stmts);
+    /// - `names` 为顶层函数声明名列表（声明序，由调用点经合并单趟收集）：仅
+    ///   直接子级具名函数声明（生成器/异步声明同节点类型，天然覆盖）；块内函数
+    ///   声明与 `export default function` 不入全局检查面。
+    pub(crate) fn emit_gdi_func_decl_checks(&self, names: &[String], ctx: &mut CompileCtx) {
         let mut seen = HashSet::new();
         for name in names.iter().rev() {
             // 逆序首见即源序最后声明者（规范去重口径），重名只查一次。
@@ -272,6 +269,11 @@ impl Emitter {
         // 脚本顶层严格模式由源码 "use strict" directive 决定（嵌套函数经父 ctx 继承）。
         ctx.is_strict = program.has_use_strict_directive();
 
+        // 程序作用域八个名字面单趟收集（程序无形参，param_names 传空）：
+        // GDI 检查 / eval 门禁 / builtin 排除 / 块函数 / own 绑定 / tier 名集 /
+        // 入口实例化各调用点共用此结果。
+        let scope_names = collect_fn_scope_names(&[], &program.body);
+
         // eval 代码顶层函数声明撞不可写全局内置（三常量的全局绑定在任何符合规范的
         // 实现中均不可配置，声明实例化无法建立全局绑定）：规范在建立全局 var 绑定
         // 之前抛 TypeError（step 8 的 abrupt 先于绑定实例化），故 throw 发为程序首
@@ -279,7 +281,7 @@ impl Emitter {
         // 严格 eval 代码函数声明绑定 eval 自身 lexical 环境、不触全局、不抛，门禁
         // 随 !is_strict 关闭，其写点抑制在声明发射处。
         if ctx.is_eval_script && !ctx.is_strict {
-            for name in collect_top_level_function_names_ordered(&program.body) {
+            for name in &scope_names.top_level_function_names_ordered {
                 if NON_WRITABLE_GLOBAL_BUILTINS.contains(&name.as_str()) {
                     let _ = self.emit_throw_error(
                         "TypeError",
@@ -295,7 +297,7 @@ impl Emitter {
         // 顶层函数声明撞既有不可配置全局属性抛 TypeError，sloppy/strict 同形。
         // eval 面零触碰：静态三常量面由上方 eval 三常量编译期门禁拦，动态臂另归口。
         if !ctx.is_eval_script {
-            self.emit_gdi_func_decl_checks(&program.body, &mut ctx);
+            self.emit_gdi_func_decl_checks(&scope_names.top_level_function_names_ordered, &mut ctx);
         }
 
         self.predeclare_function_declarations(&program.body, &mut ctx);
@@ -303,7 +305,7 @@ impl Emitter {
         // 预注册 builtin 引用（先于任何临时寄存器），builtin 槽不进入临时寄存器池。
         // 顶层词法声明名（let/const/class）排除登记：词法绑定遮蔽同名全局属性，
         // 镜像占位先建会与词法预声明撞 scope 0 致合法遮蔽形被编译期误拒。
-        let lexical_excluded = collect_direct_lexical_names(&program.body);
+        let lexical_excluded = scope_names.direct_lexical_names.clone();
         self.pre_register_builtin_references(&program.body, &lexical_excluded, &mut ctx);
 
         // 预声明顶层 `var` 名，使首个 sub-pass 中提升的函数声明能解析外层 var。
@@ -320,8 +322,8 @@ impl Emitter {
         // （define-if-absent，既有属性不改动值）。strict 代码不建。
         let mut block_fn_names: Vec<String> = Vec::new();
         if !ctx.is_strict {
-            ctx.block_fn_suppressed = self.collect_block_fn_suppressed_names(&program.body, &ctx.param_names);
-            block_fn_names = self.collect_block_function_names(&program.body);
+            ctx.block_fn_suppressed = scope_names.block_fn_suppressed.clone();
+            block_fn_names = scope_names.block_function_names.clone();
             for name in &block_fn_names {
                 if !ctx.block_fn_suppressed.contains(name) && !CompileCtx::is_non_writable_global_builtin(name) {
                     self.predeclare_var_name(name, &mut ctx);
@@ -330,7 +332,7 @@ impl Emitter {
         }
 
         // 闭包捕获分析（AST 级，emit 前确定）
-        ctx.own_bindings = collect_own_binding_names(&[], &program.body);
+        ctx.own_bindings = scope_names.own_binding_names.clone();
         // 顶层已声明名（全局对象属性为唯一存储）：裸读走全局对象属性、裸写走感知
         // 全局对象属性描述符的写，不落引擎侧镜像副本——从捕获集剔除，使嵌套函数经
         // 继承 scope 0 直连全局。
@@ -338,9 +340,9 @@ impl Emitter {
         // 其全局对象属性值由首个 sub-pass（`emit_program` 顶层的内部阶段划分：先
         // 声明实例化、后用户代码发射）以真闭包建立，先于任何用户代码。
         // 仅在此顶层调用点过滤：嵌套函数的局部同名遮蔽是独立绑定，其调用点不过滤。
-        let var_names = collect_var_binding_names(&program.body);
+        let var_names = scope_names.var_binding_names.clone();
         let mut tier_names = var_names.clone();
-        tier_names.extend(collect_top_level_function_names(&program.body));
+        tier_names.extend(scope_names.top_level_function_names.iter().cloned());
         // 块级函数泄漏名并入：求值期写回与块入口头写同走全局对象属性（全局对象
         // 属性为唯一存储）。
         for name in &block_fn_names {
@@ -353,7 +355,7 @@ impl Emitter {
         // 顶层 tier 名（顶层 var/函数）的全局对象属性是唯一存储，从捕获集剔除；
         // 被同名块级绑定（catch 参数 / 块级 let/const）遮蔽时保留，使块级绑定能
         // 追加新索引供闭包捕获（顶层 var 本身不建 cell，回填与解析点均跳过）。
-        let block_level_names = collect_block_level_decl_names(&program.body);
+        let block_level_names = scope_names.block_level_decl_names.clone();
         ctx.captured_bindings
             .retain(|n, _| !ctx.global_tier_names.contains(n) || block_level_names.contains(n));
         // 顶层函数级绑定 cell 索引回填：预声明已完成，绑定已齐。
@@ -388,9 +390,11 @@ impl Emitter {
         // 创建的闭包指向此未初始化 cell，声明前读写经运行时抛真 TDZ；声明语句
         // 的 MAKE_CELL 按占位更新语义原位翻转为已初始化。名集取捕获集交集
         // （直接子级词法名，块级名不提升到顶层），排序保证发射序跨进程稳定。
-        let mut lex_names: Vec<String> = collect_direct_lexical_names(&program.body)
-            .into_iter()
-            .filter(|n| ctx.captured_bindings.contains_key(n))
+        let mut lex_names: Vec<String> = scope_names
+            .direct_lexical_names
+            .iter()
+            .filter(|n| ctx.captured_bindings.contains_key(*n))
+            .cloned()
             .collect();
         lex_names.sort();
         if !lex_names.is_empty() {
@@ -420,7 +424,7 @@ impl Emitter {
         // 把全局属性值预载进固定寄存器槽），既有属性不改动值，值幂等保留。
         // 序言名集 = 顶层 var 名 ∪ 顶层块级函数泄漏名（sloppy 模式浏览器兼容行为的
         // 外层绑定同样在求值前实例化，同走 define-if-absent）。
-        let mut gdi_var_names: Vec<String> = collect_var_binding_names(&program.body).into_iter().collect();
+        let mut gdi_var_names: Vec<String> = scope_names.var_binding_names.iter().cloned().collect();
         gdi_var_names.extend(
             block_fn_names
                 .iter()

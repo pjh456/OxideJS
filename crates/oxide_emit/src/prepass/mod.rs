@@ -4,6 +4,5 @@
 //! （builtin_reg_map），避免与临时寄存器池冲突；同时预声明函数/var 声明，
 //! 支持提升语义。
 
-mod block_fn;
 mod builtin_scan;
 mod declare;
