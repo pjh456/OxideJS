@@ -243,3 +243,35 @@ fn fold_deterministic() {
         }
     }
 }
+
+/// 负零字面量符号保真：折叠后常量池须含 `Number(-0.0)`（符号位置位），
+/// 不得走 i32 臂（`-0.0 as i32` 丢符号成 `Int(0)`）。符号位经 `to_bits`
+/// 比对——`Number(-0.0)` 与 `Number(0.0)` 的 `PartialEq` 相等，不能用
+/// `pool_contains` 判别。
+#[test]
+fn fold_negative_zero_sign() {
+    let cases: &[(&str, OpCode)] = &[
+        ("-0 - 0", OpCode::SUB),
+        ("-0 * 1", OpCode::MUL),
+        ("-0 / 1", OpCode::DIV),
+        ("-0 % 1", OpCode::MOD),
+        ("(-0) ** 3", OpCode::EXP),
+    ];
+    let neg_zero_bits = (-0.0f64).to_bits();
+    for (src, op) in cases {
+        let ir = emit_ir(src);
+        assert_eq!(
+            count_op(&ir.insts, *op),
+            0,
+            "{src:?} 应折叠，目标操作码 {op:?} 计数应为 0"
+        );
+        let has_neg_zero = ir
+            .constants
+            .iter()
+            .any(|c| matches!(c, Constant::Number(d) if d.to_bits() == neg_zero_bits));
+        assert!(
+            has_neg_zero,
+            "{src:?} 常量池应含折值 Number(-0.0)（符号位置位）"
+        );
+    }
+}

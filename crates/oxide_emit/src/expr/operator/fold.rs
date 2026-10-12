@@ -34,10 +34,17 @@ use crate::shared::string_pool::{pool_key_marker, pool_key_plain};
 ///
 /// 一元负号只沿 `UnaryNegation` 链剥（含嵌套负号与括号），其余一元运算符
 /// （`!`/`typeof`/`void`/`~`/`+`/`delete`）终止剥壳不折。
+///
+/// 负零字面量（`-0`/`-0.0`）定值 `Number(-0.0)` 保符号：`is_int_literal(-0.0)`
+/// 为真，走 i32 臂会在 `as i32` 处丢符号。
 pub(crate) fn literal_constant(expr: &Expression) -> Option<Constant> {
     let (inner, negated) = peel_negation(expr);
     match inner {
         Expression::NumericLiteral(n) => {
+            // 负零直接定值 `Number(-0.0)`，镜像运行时 `NEG` 对零的产物。
+            if negated && n.value == 0.0 {
+                return Some(Constant::Number(-0.0));
+            }
             let value = if negated { -n.value } else { n.value };
             if is_int_literal(value) {
                 Some(Constant::Int(value as i32))
