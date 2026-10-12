@@ -72,16 +72,12 @@ pub struct PreciseOutcome {
 pub fn dce_precise(f: &mut IRFunction, live: &LiveInfo) -> PreciseOutcome {
     // 空函数无指令可删，直接返回（no-op，f 不变）；未改任何指令，活集可复用。
     if f.insts.is_empty() {
-        return PreciseOutcome {
-            live_reusable: true,
-        };
+        return PreciseOutcome { live_reusable: true };
     }
     // 维度守卫：live 与 insts 对齐才可信（删改后的过期 LiveInfo 索引错位会误删活指令）；
     // 守卫不过时活集必过期，调用方须重建。
     if live.inst_live_after.len() != f.insts.len() {
-        return PreciseOutcome {
-            live_reusable: false,
-        };
+        return PreciseOutcome { live_reusable: false };
     }
     let mut keep = vec![true; f.insts.len()];
     precise_sweep::pass_dead_with_liveness(f, live, &mut keep);
@@ -91,7 +87,5 @@ pub fn dce_precise(f: &mut IRFunction, live: &LiveInfo) -> PreciseOutcome {
         rebuild::pass_c_sweep(f, &keep);
     }
     // 零删除 ⇒ 函数未变 ⇒ 第一轮活集仍有效（复用守卫与零删除判定同源）。
-    PreciseOutcome {
-        live_reusable: dead == 0,
-    }
+    PreciseOutcome { live_reusable: dead == 0 }
 }
