@@ -33,6 +33,7 @@ pub(super) fn block_liveness(f: &IRFunction, cfg: &Cfg) -> (Vec<Vec<u64>>, Vec<V
     // 每块 gen/kill：先算块内反向扫描的 gen，再算正向扫描的 kill。
     let mut gen: Vec<Vec<u64>> = vec![vec![0u64; words]; n];
     let mut kill: Vec<Vec<u64>> = vec![vec![0u64; words]; n];
+    let exc_targets = exception_target_blocks(cfg);
     for (b, block) in cfg.blocks.iter().enumerate() {
         // gen：块内反向扫描，kill 先于 gen（`live = (live − def) ∪ use`）。
         // 顺序理由：COMPOUND_ADD 等读-写同寄存器指令的 uses 含 Rd（见 oxide_ir::contract 的 def/use 约定），
@@ -58,11 +59,7 @@ pub(super) fn block_liveness(f: &IRFunction, cfg: &Cfg) -> (Vec<Vec<u64>>, Vec<V
         // Exception 目标块：入口 reg 0 隐式 def（异常展开在块外写 regs[0]）。
         // gen 去 0 防"无 def use"把活度污染到函数入口；kill 插 0 防 0 从任何 pred 流入。
         // 注：preds 是 Vec<BBId>（无 EdgeKind），须从源块 succs 侧检测 Exception 边。
-        let is_exception_target = cfg
-            .blocks
-            .iter()
-            .any(|src| src.succs.iter().any(|&(dst, k)| dst == b && k == EdgeKind::Exception));
-        if is_exception_target {
+        if exc_targets[b] {
             bitset_clear(&mut gen[b], 0);
             bitset_set(&mut kill[b], 0);
         }
@@ -106,6 +103,20 @@ pub(super) fn block_liveness(f: &IRFunction, cfg: &Cfg) -> (Vec<Vec<u64>>, Vec<V
     }
 
     (live_in, live_out, reg_count)
+}
+
+/// 异常目标块标记：一次全边遍历（O(E)）预计算哪些块是 Exception 边目标，
+/// 供逐块循环 O(1) 查表，替代原先每块一次全图扫描。
+pub(super) fn exception_target_blocks(cfg: &Cfg) -> Vec<bool> {
+    let mut targets = vec![false; cfg.blocks.len()];
+    for block in &cfg.blocks {
+        for &(dst, kind) in &block.succs {
+            if kind == EdgeKind::Exception {
+                targets[dst] = true;
+            }
+        }
+    }
+    targets
 }
 
 /// 从 entry 出发 DFS 沿 succs 存储序（确定序）收集 postorder 后反转；

@@ -8,7 +8,7 @@
 //!
 //! 位集为 `u64` 压缩（与 dataflow 同 words 布局），逐指令集经 `copy_from_slice` 落地。
 
-use oxide_cfg::{Cfg, EdgeKind};
+use oxide_cfg::Cfg;
 use oxide_ir::IRFunction;
 
 use crate::live_info::{bitset_clear, bitset_set};
@@ -20,6 +20,7 @@ pub(super) fn inst_liveness(
     let words = (reg_count + 1).div_ceil(64);
     let mut before = vec![vec![0u64; words]; f.insts.len()];
     let mut after = vec![vec![0u64; words]; f.insts.len()];
+    let exc_targets = crate::dataflow::exception_target_blocks(cfg);
     for (b, block) in cfg.blocks.iter().enumerate() {
         let mut live = block_live_out[b].clone(); // 从块级 liveOut 出发（非 liveIn）
         for i in block.inst_range.clone().rev() {
@@ -36,11 +37,7 @@ pub(super) fn inst_liveness(
         }
         // Exception 目标块：入口 reg 0 隐式 def（异常展开写 regs[0]）截断无 def use。
         // preds 是 Vec<BBId>（无 EdgeKind），从源块 succs 侧检测 Exception 边。
-        let is_exception_target = cfg
-            .blocks
-            .iter()
-            .any(|src| src.succs.iter().any(|&(dst, k)| dst == b && k == EdgeKind::Exception));
-        if is_exception_target {
+        if exc_targets[b] {
             bitset_clear(&mut live, 0);
         }
         debug_assert_eq!(live, block_live_in[b], "ranges 反向扫描与 dataflow liveIn 不一致，块 {b}");
