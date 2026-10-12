@@ -19,7 +19,7 @@ fn run_source(src: &str, regalloc: bool) -> (bool, String) {
         Ok(i) => i,
         Err(e) => return (false, format!("emit error: {e}")),
     };
-    oxide_dce::dce(&mut ir);
+    let _ = oxide_dce::dce(&mut ir);
     if regalloc {
         let cfg = oxide_cfg::build_cfg(&ir);
         let live = oxide_liveness::liveness(&ir, &cfg);

@@ -10,7 +10,7 @@ use oxide_ir::IRFunction;
 #[test]
 fn empty_function_unchanged() {
     let mut f = IRFunction::new();
-    dce(&mut f);
+    let _ = dce(&mut f);
     assert!(f.insts.is_empty());
     assert!(f.label_pos.is_empty());
     assert_eq!(f.label_count, 0);
@@ -29,10 +29,10 @@ fn dce_is_idempotent() {
         .push(Inst::new(OpCode::RETURN, Operand::Reg(5), Operand::None, Operand::None)); // 4
     f.label_pos = vec![Some(0)];
 
-    dce(&mut f);
+    let _ = dce(&mut f);
     let once_insts = f.insts.clone();
     let once_labels = f.label_pos.clone();
-    dce(&mut f);
+    let _ = dce(&mut f);
     assert_eq!(f.insts, once_insts, "二次 dce 后 insts 不变");
     assert_eq!(f.label_pos, once_labels, "二次 dce 后 label_pos 不变");
 }
@@ -50,7 +50,7 @@ fn if_else_both_branches_reachable_kept() {
     f.label_pos = vec![Some(3), Some(4)];
     f.label_count = 2;
 
-    dce(&mut f);
+    let _ = dce(&mut f);
     assert_eq!(f.insts.len(), 5, "双分支全保留");
     assert_eq!(f.label_pos, vec![Some(3), Some(4)], "存活 label 重映射到新下标");
     assert_eq!(f.label_count, 2, "label_count 保持原值，不参与重建");
@@ -71,7 +71,7 @@ fn all_live_function_unchanged() {
 
     let before_insts = f.insts.clone();
     let before_labels = f.label_pos.clone();
-    dce(&mut f);
+    let _ = dce(&mut f);
     assert_eq!(f.insts, before_insts, "全存活时 insts 逐位不变");
     assert_eq!(f.label_pos, before_labels, "全存活时 label_pos 逐位不变");
     assert_eq!(f.label_count, 1, "label_count 保持原值");

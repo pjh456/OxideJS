@@ -3,12 +3,13 @@
 //! 消费 `oxide_cfg::build_cfg` 的 Cfg，从 entry 沿 succs DFS（**遍历含 EdgeKind::Exception 边**，
 //! catch/finally 入口强制可达），不可达块的全部指令标记删除。
 
-use oxide_cfg::build_cfg;
+use oxide_cfg::Cfg;
 use oxide_ir::IRFunction;
 
 /// 从 entry 可达的指令位图（keep 前置：不可达指令为 false）。
-pub(super) fn pass_a_reachable(f: &IRFunction) -> Vec<bool> {
-    let cfg = build_cfg(f);
+///
+/// 消费调用方传入的 `Cfg`（`dce` 建一次复用，不重复构建）。
+pub(super) fn pass_a_reachable(f: &IRFunction, cfg: &Cfg) -> Vec<bool> {
     let mut reachable = vec![false; cfg.blocks.len()];
     let mut stack = vec![cfg.entry];
     while let Some(b) = stack.pop() {
@@ -47,7 +48,8 @@ mod tests {
         f.insts.push(Inst::load_const(Operand::Reg(1), 0));
         f.insts
             .push(Inst::new(OpCode::RETURN, Operand::Reg(1), Operand::None, Operand::None));
-        let keep = pass_a_reachable(&f);
+        let cfg = oxide_cfg::build_cfg(&f);
+        let keep = pass_a_reachable(&f, &cfg);
         assert!(keep.iter().all(|k| *k), "线性函数全指令可达");
     }
 
@@ -63,7 +65,8 @@ mod tests {
         f.label_pos = vec![Some(1)];
         f.label_count = 1;
 
-        let keep = pass_a_reachable(&f);
+        let cfg = oxide_cfg::build_cfg(&f);
+        let keep = pass_a_reachable(&f, &cfg);
         assert!(keep[0], "RETURN 指令可达");
         assert!(!keep[1] && !keep[2], "return 后死块不可达");
     }
@@ -83,7 +86,8 @@ mod tests {
         f.label_pos = vec![Some(3)];
         f.label_count = 1;
 
-        let keep = pass_a_reachable(&f);
+        let cfg = oxide_cfg::build_cfg(&f);
+        let keep = pass_a_reachable(&f, &cfg);
         assert!(keep[3] && keep[4], "catch 入口经 Exception 边强制可达");
     }
 }

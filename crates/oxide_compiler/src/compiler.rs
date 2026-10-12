@@ -93,24 +93,37 @@ impl Compiler {
 
     /// 统一 IR 后处理管线：（可选 DCE）→（可选 liveness/精确 DCE/RegAlloc）→
     /// bytecode（`lower`）→ 子模块拍平。
+    ///
+    /// 零删除时复用分析产物：DCE 零删除返回其 Pass A CFG（免重建），精确 DCE
+    /// 零删除返回 `live_reusable`（免第二轮 CFG/活集重建）。
     fn compile_ir(&self, mut ir: oxide_ir::IRFunction) -> Result<CompiledModule, String> {
         crate::compiler_debug!("compile_ir: after emit {} insts", ir.insts.len());
-        if self.enable_dce {
-            oxide_dce::dce(&mut ir); // 顶层函数；nested 不递归
+        // DCE 零删除时返回 Pass A CFG 供 liveness 复用；有删除或 DCE 关闭时为 None（须重建）。
+        let dce_cfg: Option<oxide_cfg::Cfg> = if self.enable_dce {
+            let cfg = oxide_dce::dce(&mut ir); // 顶层函数；nested 不递归
             crate::compiler_debug!("compile: after DCE {} insts", ir.insts.len());
-        }
+            cfg
+        } else {
+            None
+        };
         if self.enable_regalloc && !ir.const_overflow {
             // 优化管线：liveness → 精确 DCE → 重算 liveness → RegAlloc → 调用窗口编码
             // const_overflow 时跳过：程序已知无效（lower 报 "too many constants"），
             // 且超大常量池伴生的海量虚拟寄存器会使 liveness 稠密 bitset 爆内存。
-            let cfg = oxide_cfg::build_cfg(&ir);
+            // 零删除复用 DCE 的 Pass A CFG；DCE 关闭或有删除时重建
+            let cfg = dce_cfg.unwrap_or_else(|| oxide_cfg::build_cfg(&ir));
             let live = oxide_liveness::liveness(&ir, &cfg);
             // 精确 DCE 以第一轮 liveness 的指令级活集为输入，删除死指令
-            oxide_dce::dce_precise(&mut ir, &live);
-            // 删指令后 inst 下标位移，旧 CFG 失效，按新程序重建
-            let cfg2 = oxide_cfg::build_cfg(&ir);
-            // 指令集已变，旧活集失效，须重算
-            let live2 = oxide_liveness::liveness(&ir, &cfg2);
+            let outcome = oxide_dce::dce_precise(&mut ir, &live);
+            // 零删除时函数未变，复用第一轮活集；有删除时 inst 下标位移，须重建
+            // CFG 并重算活集（重建的 CFG 仅服务活集计算，不单独命名）。
+            let (_, live2) = if outcome.live_reusable {
+                (cfg, live)
+            } else {
+                let cfg2 = oxide_cfg::build_cfg(&ir);
+                let live2 = oxide_liveness::liveness(&ir, &cfg2);
+                (cfg2, live2)
+            };
             // 无可行染色 → RangeError 上抛
             oxide_regalloc::alloc(&mut ir, &live2)?;
             // RegAlloc 改写指令（虚拟寄存器→物理号并插入 spill）后旧活集失效，

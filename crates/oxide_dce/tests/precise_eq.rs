@@ -17,7 +17,7 @@ fn run_source(src: &str, precise: bool) -> Result<JsValue, String> {
     let mut ir = oxide_emit::Emitter::new()
         .emit_program(&program, false, false)
         .expect("emit failed");
-    oxide_dce::dce(&mut ir); // 保守轮恒定（两跑一致）
+    let _ = oxide_dce::dce(&mut ir); // 保守轮恒定（两跑一致）
     if precise {
         let cfg = oxide_cfg::build_cfg(&ir);
         let live = oxide_liveness::liveness(&ir, &cfg);
@@ -78,7 +78,7 @@ fn top_level_store_var_survives_precise() {
     let mut ir = oxide_emit::Emitter::new()
         .emit_program(&program, false, false)
         .expect("emit failed");
-    oxide_dce::dce(&mut ir);
+    let _ = oxide_dce::dce(&mut ir);
     let cfg = oxide_cfg::build_cfg(&ir);
     let live = oxide_liveness::liveness(&ir, &cfg);
     oxide_dce::dce_precise(&mut ir, &live);
@@ -104,7 +104,7 @@ fn precise_removes_dead_local_store() {
         .expect("emit failed");
     assert_eq!(ir.nested.len(), 1);
     let mut sub = ir.nested[0].clone();
-    oxide_dce::dce(&mut sub);
+    let _ = oxide_dce::dce(&mut sub);
     let cfg = oxide_cfg::build_cfg(&sub);
     let live = oxide_liveness::liveness(&sub, &cfg);
     oxide_dce::dce_precise(&mut sub, &live);

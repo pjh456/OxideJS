@@ -6,7 +6,7 @@ fn n_registers(src: &str, regalloc: bool) -> Result<u8, String> {
     let mut ir = oxide_emit::Emitter::new()
         .emit_program(&program, false, false)
         .expect("emit failed");
-    oxide_dce::dce(&mut ir);
+    let _ = oxide_dce::dce(&mut ir);
     if regalloc {
         let cfg = oxide_cfg::build_cfg(&ir);
         let live = oxide_liveness::liveness(&ir, &cfg);

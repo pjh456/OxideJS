@@ -17,7 +17,7 @@ fn run_source(src: &str, dce: bool) -> Result<JsValue, String> {
         .emit_program(&program, false, false)
         .expect("emit failed");
     if dce {
-        oxide_dce::dce(&mut ir);
+        let _ = oxide_dce::dce(&mut ir);
     }
     let module = oxide_ir::lower::lower(&ir).expect("lower failed");
     let mut vm = Vm::new();
@@ -80,7 +80,7 @@ fn top_level_store_var_kept() {
     let mut ir = oxide_emit::Emitter::new()
         .emit_program(&program, false, false)
         .expect("emit failed");
-    oxide_dce::dce(&mut ir);
+    let _ = oxide_dce::dce(&mut ir);
     let module = oxide_ir::lower::lower(&ir).expect("lower failed");
     let has_store_var = module
         .bytecode

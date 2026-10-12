@@ -16,7 +16,7 @@ fn run_source(src: &str, regalloc: bool) -> Result<JsValue, String> {
     let mut ir = oxide_emit::Emitter::new()
         .emit_program(&program, false, false)
         .expect("emit failed");
-    oxide_dce::dce(&mut ir);
+    let _ = oxide_dce::dce(&mut ir);
     if regalloc {
         let cfg = oxide_cfg::build_cfg(&ir);
         let live = oxide_liveness::liveness(&ir, &cfg);
@@ -128,7 +128,7 @@ fn large_and_spill_samples_run_correctly() {
     let allocator = oxide_parser::Allocator::default();
     let program = oxide_parser::parse(&allocator, &src_spill).expect("parse");
     let mut ir = oxide_emit::Emitter::new().emit_program(&program, false, false).expect("emit");
-    oxide_dce::dce(&mut ir);
+    let _ = oxide_dce::dce(&mut ir);
     let cfg = oxide_cfg::build_cfg(&ir);
     let live = oxide_liveness::liveness(&ir, &cfg);
     oxide_dce::dce_precise(&mut ir, &live);
