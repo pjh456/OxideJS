@@ -9,9 +9,7 @@
 
 use oxide_bytecode::module::Constant;
 use oxide_parser::{BinaryOperator, Expression, UnaryOperator};
-use oxide_runtime_api::{
-    abstract_eq_primitives, relational_compare, strict_equality, to_int32, to_number, to_uint32,
-};
+use oxide_runtime_api::{abstract_eq_primitives, relational_compare, strict_equality, to_int32, to_number, to_uint32};
 use oxide_types::value::JsValue;
 
 use crate::is_int_literal;

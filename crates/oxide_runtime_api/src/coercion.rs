@@ -473,12 +473,8 @@ pub fn abstract_eq_primitives(lhs: JsValue, rhs: JsValue) -> bool {
         // Number 混合表示（int vs double）：同属 ECMAScript Number，按严格相等。
         (JsType::Int | JsType::Double, JsType::Int | JsType::Double) => strict_equality(lhs, rhs),
         // BigInt 与 Number：转 f64 比较（精度内精确；超出精度近似）。
-        (JsType::BigInt, JsType::Int | JsType::Double) => {
-            bigint_to_f64(unsafe { bigint_data(lhs) }) == to_number(rhs)
-        }
-        (JsType::Int | JsType::Double, JsType::BigInt) => {
-            to_number(lhs) == bigint_to_f64(unsafe { bigint_data(rhs) })
-        }
+        (JsType::BigInt, JsType::Int | JsType::Double) => bigint_to_f64(unsafe { bigint_data(lhs) }) == to_number(rhs),
+        (JsType::Int | JsType::Double, JsType::BigInt) => to_number(lhs) == bigint_to_f64(unsafe { bigint_data(rhs) }),
         // BigInt 与 String：字符串解析为数字后比较（lossy 文本口径，见 to_number）。
         (JsType::BigInt, JsType::String) => {
             let r = parse_js_number(&unsafe { string_data(rhs) });
@@ -536,7 +532,10 @@ pub fn abstract_eq<H: VmHost>(lhs: JsValue, rhs: JsValue, host: &mut H) -> Resul
     // Object 与原始值：ToPrimitive 后重入。to_primitive 必返原始值，
     // 重入即收敛到原始值核心，与单次委托等价。
     match (tl, tr) {
-        (JsType::Object, JsType::Int | JsType::Double | JsType::String | JsType::BigInt | JsType::Symbol | JsType::Bool) => {
+        (
+            JsType::Object,
+            JsType::Int | JsType::Double | JsType::String | JsType::BigInt | JsType::Symbol | JsType::Bool,
+        ) => {
             let rhs = if tr == JsType::Bool {
                 // Boolean 先 ToNumber（int(0/1) 轻量编码），与原始值核心
                 // 的 Boolean 重入口径一致。
@@ -547,7 +546,10 @@ pub fn abstract_eq<H: VmHost>(lhs: JsValue, rhs: JsValue, host: &mut H) -> Resul
             let prim = to_primitive(lhs, ToPrimitiveHint::Default, host)?;
             abstract_eq(prim, rhs, host)
         }
-        (JsType::Int | JsType::Double | JsType::String | JsType::BigInt | JsType::Symbol | JsType::Bool, JsType::Object) => {
+        (
+            JsType::Int | JsType::Double | JsType::String | JsType::BigInt | JsType::Symbol | JsType::Bool,
+            JsType::Object,
+        ) => {
             let lhs = if tl == JsType::Bool {
                 // 同上。
                 JsValue::int(lhs.as_bool() as i32)

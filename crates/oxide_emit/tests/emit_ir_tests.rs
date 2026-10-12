@@ -419,12 +419,6 @@ fn binary_literal_fold_entry() {
     let ir = emit_ir("var a = 2 * 3; var b = 1 + 2;");
     assert_eq!(count_op(&ir.insts, OpCode::MUL), 0, "双字面量乘法应折叠，MUL 计数为 0");
     assert_eq!(count_op(&ir.insts, OpCode::ADD), 0, "双字面量加法应折叠，ADD 计数为 0");
-    assert!(
-        ir.constants.contains(&Constant::Number(6.0)),
-        "常量池应含乘法折值 Number(6.0)"
-    );
-    assert!(
-        ir.constants.contains(&Constant::Int(3)),
-        "常量池应含加法折值 Int(3)"
-    );
+    assert!(ir.constants.contains(&Constant::Number(6.0)), "常量池应含乘法折值 Number(6.0)");
+    assert!(ir.constants.contains(&Constant::Int(3)), "常量池应含加法折值 Int(3)");
 }

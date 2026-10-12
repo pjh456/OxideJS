@@ -128,8 +128,7 @@ fn fold_deterministic() {
         let mut fingerprints: Vec<(String, String)> = Vec::new();
         for _ in 0..8 {
             let alloc = oxide_parser::Allocator::default();
-            let program =
-                oxide_parser::parse(&alloc, src).unwrap_or_else(|e| panic!("parse 失败 {src:?}: {e:?}"));
+            let program = oxide_parser::parse(&alloc, src).unwrap_or_else(|e| panic!("parse 失败 {src:?}: {e:?}"));
             let ir = Emitter::new()
                 .emit_program(&program, false, false)
                 .unwrap_or_else(|e| panic!("emit 失败 {src:?}: {e}"));
