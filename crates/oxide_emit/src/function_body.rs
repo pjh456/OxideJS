@@ -14,8 +14,7 @@ use oxide_ir::IRFunction;
 use oxide_parser::{Expression, Statement, VariableDeclarationKind};
 
 use crate::capture::{
-    collect_binding_pattern_names, collect_captured_bindings, collect_fn_scope_names, collect_upvalue_names,
-    has_nested_function, FnScopeNames,
+    collect_binding_pattern_names, collect_captures_and_upvalues, collect_fn_scope_names, FnScopeNames,
 };
 use crate::compile_ctx::{CompileCtx, FieldBuffer};
 use crate::symbol_table::{Binding, ScopeKind};
@@ -703,13 +702,8 @@ impl Emitter {
                 ParamSpec::Rest { .. } => {}
             }
         }
-        // 早退守卫：体与附加表达式无嵌套函数/类节点时，捕获集
-        // （collect_captured_bindings，仅从嵌套函数/类节点产出名字）必为空，跳过该
-        // 趟；own_bindings 是 upvalue 分析的遮蔽集、upvalue 捕获是本体对父的捕获，
-        // 二者独立于嵌套函数，不得跳过。
         let mut capture_exprs: Vec<&oxide_parser::Expression> = param_defaults.clone();
         capture_exprs.extend_from_slice(extra_capture_exprs);
-        let has_nested = has_nested_function(body_stmts, &capture_exprs);
         ctx.own_bindings = scope_names.own_binding_names.clone();
         for spec in param_specs {
             if let ParamSpec::Pattern { pattern, .. } = spec {
@@ -766,27 +760,25 @@ impl Emitter {
             }
         }
 
-        if has_nested {
-            ctx.set_captured_bindings(collect_captured_bindings(body_stmts, &capture_exprs, &ctx.own_bindings));
-        }
-        // 自由变量分析：收集 upvalue 捕获（类方法也是普通函数，可捕获外层变量）。
-        if matches!(
+        // 单入口：对同一 AST 单趟产出两个输出（captured_bindings 与 upvalue_captures）。
+        let is_closure_context = matches!(
             body_context,
             FunctionBodyContext::Ordinary | FunctionBodyContext::Arrow | FunctionBodyContext::ClassElement
-        ) {
-            // 只有创建点父作用域链内可解析的父捕获名才可能成为子函数 upvalue：
-            // 捕获集是函数级名字并集，块级 let/const 在块退出后 cell 仍存留但名字
-            // 已不可解析，块外嵌套函数按名命中会错误读取已失效的 cell。父自身
-            // upvalue 代表的祖父绑定在父函数体内恒可见，不参与过滤。
-            // C 风格 for 头 let/const 名在 init 内尚未 declare，但同头声明会为其
-            // 建 cell，前向捕获须按父捕获集保留（见 `pending_for_head_names`）。
-            // 索引按父可见绑定实例取（块级遮蔽绑定持追加索引）；词法循环头名
-            // （for-in/for-of 头绑定在右值区编译时未进符号表，按名回查会误命中
-            // 外层同名绑定）与 for 头前向名无条件取捕获映射值（ForHeadEnv 覆盖
-            // 索引或名字排序索引）；绑定未分配索引的其余名（命名空间导入等）
-            // 回退映射值。顶层 tier 名（顶层 var/函数）已在捕获集剔除阶段出集，
-            // 不在此列。
-            let visible_parent_captured: BTreeMap<String, u8> = parent_ctx
+        );
+        // 只有创建点父作用域链内可解析的父捕获名才可能成为子函数 upvalue：
+        // 捕获集是函数级名字并集，块级 let/const 在块退出后 cell 仍存留但名字
+        // 已不可解析，块外嵌套函数按名命中会错误读取已失效的 cell。父自身
+        // upvalue 代表的祖父绑定在父函数体内恒可见，不参与过滤。
+        // C 风格 for 头 let/const 名在 init 内尚未 declare，但同头声明会为其
+        // 建 cell，前向捕获须按父捕获集保留（见 `pending_for_head_names`）。
+        // 索引按父可见绑定实例取（块级遮蔽绑定持追加索引）；词法循环头名
+        // （for-in/for-of 头绑定在右值区编译时未进符号表，按名回查会误命中
+        // 外层同名绑定）与 for 头前向名无条件取捕获映射值（ForHeadEnv 覆盖
+        // 索引或名字排序索引）；绑定未分配索引的其余名（命名空间导入等）
+        // 回退映射值。顶层 tier 名（顶层 var/函数）已在捕获集剔除阶段出集，
+        // 不在此列。
+        let visible_parent_captured: BTreeMap<String, u8> = if is_closure_context {
+            parent_ctx
                 .captured_bindings
                 .iter()
                 .filter(|(n, _)| {
@@ -830,14 +822,22 @@ impl Emitter {
                     };
                     (n.clone(), idx)
                 })
-                .collect();
-            ctx.current_upvalue_captures = collect_upvalue_names(
-                body_stmts,
-                &capture_exprs,
-                &visible_parent_captured,
-                &parent_ctx.current_upvalue_captures,
-                &ctx.own_bindings,
-            );
+                .collect()
+        } else {
+            BTreeMap::new()
+        };
+        let (captured_map, upvalue_vec) = collect_captures_and_upvalues(
+            body_stmts,
+            &capture_exprs,
+            &ctx.own_bindings,
+            &visible_parent_captured,
+            &parent_ctx.current_upvalue_captures,
+            &ctx.own_bindings,
+        );
+        ctx.set_captured_bindings(captured_map);
+        // 自由变量分析：收集 upvalue 捕获（类方法也是普通函数，可捕获外层变量）。
+        if is_closure_context {
+            ctx.current_upvalue_captures = upvalue_vec;
             // 捕获 const 信息快照：父作用域符号表此时完整（预声明已完成），
             // 直接查绑定 is_const（不依赖初始化状态，TDZ 中 const 也须拦截）。
             ctx.upvalue_const_flags = ctx

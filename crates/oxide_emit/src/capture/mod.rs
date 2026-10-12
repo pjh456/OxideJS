@@ -5,22 +5,19 @@
 //! 相同索引，保证父 MAKE_CELL 与子函数 upvalue 引用同一 cell），为 MAKE_CELL /
 //! CELL_GET / CELL_SET 与子函数 upvalue cell_idx 提供统一依据。
 //!
-//! 五区严格单向分层（本文件 ← names ← scanner ← captured ← upvalues）：
+//! 四区严格单向分层（本文件 ← names ← scanner ← upvalues）：
 //! 跨区调用单向、无共享局部状态、无接收者状态。
 
-mod captured;
-mod guard;
 mod names;
 mod scanner;
 mod upvalues;
 
 use std::collections::HashSet;
 
-pub(crate) use captured::collect_captured_bindings;
-pub(crate) use guard::has_nested_function;
 pub(crate) use names::collect_fn_scope_names;
 pub(crate) use names::FnScopeNames;
-pub(crate) use upvalues::collect_upvalue_names;
+pub(crate) use upvalues::collect_captured_bindings;
+pub(crate) use upvalues::collect_captures_and_upvalues;
 
 /// 收集形参（含 rest）绑定的名字集，作为本函数作用域的遮蔽集。
 pub(crate) fn collect_fn_param_names(params: &oxide_parser::FormalParameters) -> HashSet<String> {
