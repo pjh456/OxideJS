@@ -75,7 +75,8 @@ fn fold_hit_matrix() {
 
 /// 守卫不折矩阵：断言目标操作码计数为 1（落回运行时路径）。
 /// 除零守卫须同时覆盖 Int(0) 与 Number(±0.0)；负指数守卫须同时覆盖 Int/Number
-/// 负值；BigInt 字面量、字符串字面量、标识符均不折。
+/// 负值；BigInt 字面量、标识符均不折；字符串域守卫（全数字链无字符串字面量）
+/// 落回 CONCAT_N。
 #[test]
 fn fold_guard_matrix() {
     // (源串, 目标操作码)
@@ -90,8 +91,8 @@ fn fold_guard_matrix() {
         ("1n + 2n", OpCode::ADD),
         ("1 + 1n", OpCode::ADD),
         ("1n < 2n", OpCode::LT),
-        // 字符串域不折。
-        ("\"a\" + \"b\"", OpCode::ADD),
+        // 字符串域守卫：全数字链无字符串字面量，不落字符串域，落回 CONCAT_N。
+        ("1 + 2 + 3", OpCode::CONCAT_N),
         // 标识符不折。
         ("1 + x", OpCode::ADD),
     ];

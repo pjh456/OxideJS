@@ -265,10 +265,11 @@ fn destructured_rest_and_holes() {
 }
 
 /// 面 6：模板字面量的 TEMPLATE_STR 面与 quasis 池键（键经 string_forge 编码，
-/// 纯 ASCII 键按值还原即原形态）。
+/// 纯 ASCII 键按值还原即原形态）。全字面量模板已折单常量（见字符串域折叠
+/// 测试），此处用非字面量内插表达式保持 TEMPLATE_STR 路径。
 #[test]
 fn template_literal_pool_keys() {
-    let src = "\"use strict\";\nconst t = `a${1}b`;\nconst tag = (s) => s[0];\ntag`x${2}y`";
+    let src = "\"use strict\";\nvar x = 1;\nconst t = `a${x}b`;\nconst tag = (s) => s[0];\ntag`x${2}y`";
     let ir = emit_ir(src);
     assert!(count_op(&ir.insts, OpCode::TEMPLATE_STR) >= 1);
     let pool = pool_strings(&ir);
@@ -421,4 +422,117 @@ fn binary_literal_fold_entry() {
     assert_eq!(count_op(&ir.insts, OpCode::ADD), 0, "双字面量加法应折叠，ADD 计数为 0");
     assert!(ir.constants.contains(&Constant::Number(6.0)), "常量池应含乘法折值 Number(6.0)");
     assert!(ir.constants.contains(&Constant::Int(3)), "常量池应含加法折值 Int(3)");
+}
+
+/// 面 15：字符串域链折叠命中矩阵——全操作数为可折叠字面量且至少一个字符串
+/// 字面量时，Addition 链折单字符串常量：ADD/CONCAT_N 计数为 0、池含折值键。
+#[test]
+fn string_chain_fold_hit() {
+    // 纯字符串链：池含 "ab"。
+    let ir = emit_ir("var s = \"a\" + \"b\";");
+    assert_eq!(count_op(&ir.insts, OpCode::ADD), 0, "全字面量字符串链应折叠，ADD 计数为 0");
+    assert_eq!(count_op(&ir.insts, OpCode::CONCAT_N), 0, "全字面量字符串链应折叠，CONCAT_N 计数为 0");
+    assert!(pool_strings(&ir).contains("ab"), "池应含折值 ab");
+
+    // 字符串加数字加布尔加 null：池含 "a1truenull"。
+    let ir = emit_ir("var s = \"a\" + 1 + true + null;");
+    assert_eq!(count_op(&ir.insts, OpCode::ADD), 0);
+    assert_eq!(count_op(&ir.insts, OpCode::CONCAT_N), 0);
+    assert!(pool_strings(&ir).contains("a1truenull"), "池应含折值 a1truenull");
+
+    // 字符串加 BigInt：池含 "x10"。
+    let ir = emit_ir("var s = \"x\" + 10n;");
+    assert_eq!(count_op(&ir.insts, OpCode::ADD), 0);
+    assert!(pool_strings(&ir).contains("x10"), "池应含折值 x10");
+
+    // 字符串加非整数字面量（Number 臂走 js_number_to_string）：池含 "a1.5"。
+    let ir = emit_ir("var s = \"a\" + 1.5;");
+    assert_eq!(count_op(&ir.insts, OpCode::ADD), 0);
+    assert!(pool_strings(&ir).contains("a1.5"), "池应含折值 a1.5");
+
+    // 字符串加 -0（is_int_literal 为真走 Int 臂）：池含 "a0"。
+    let ir = emit_ir("var s = \"a\" + -0;");
+    assert_eq!(count_op(&ir.insts, OpCode::ADD), 0);
+    assert!(pool_strings(&ir).contains("a0"), "池应含折值 a0");
+
+    // 孤立 surrogate 字符串段：池键为 FFFD+hex4 marker 形态加 "a"。
+    let ir = emit_ir("var s = \"\\ud800\" + \"a\";");
+    assert_eq!(count_op(&ir.insts, OpCode::ADD), 0);
+    let pool = pool_strings(&ir);
+    assert!(pool.contains("\u{FFFD}d800a"), "池键应为 FFFD+hex4 marker 形态加 a: {pool:?}");
+
+    // 超平面字符段：经 encode_key 良配对形态入池。
+    let ir = emit_ir("var s = \"\\u{1F600}\" + \"a\";");
+    assert_eq!(count_op(&ir.insts, OpCode::ADD), 0);
+    assert!(pool_strings(&ir).contains("\u{1F600}a"), "池应含超平面字符良配对形态加 a");
+}
+
+/// 面 16：字符串域链不折矩阵——含标识符操作数或全数字链不落字符串域，
+/// 既有 CONCAT_N/ADD 路径计数不变、池不含折值键。
+#[test]
+fn string_chain_fold_miss() {
+    // 标识符操作数（两操作数形态）：不折，落回左结合 ADD。
+    let ir = emit_ir("var x = 1; var s = x + \"a\";");
+    assert_eq!(count_op(&ir.insts, OpCode::ADD), 1, "含标识符的链应落回 ADD");
+    assert_eq!(count_op(&ir.insts, OpCode::CONCAT_N), 0);
+    assert!(!pool_strings(&ir).contains("xa"), "含标识符的链不应折出字符串键");
+
+    // 全数字链：数值域守卫排除，不折出字符串键，落回 CONCAT_N。
+    let ir = emit_ir("var s = 1 + 2 + 3;");
+    assert_eq!(count_op(&ir.insts, OpCode::CONCAT_N), 1, "全数字链应落回 CONCAT_N");
+    assert!(!pool_strings(&ir).contains("123"), "全数字链不应折出字符串键 123");
+
+    // 字符串夹标识符（三操作数形态）：不折，落回 CONCAT_N。
+    let ir = emit_ir("var x = 1; var s = \"a\" + x + \"b\";");
+    assert_eq!(count_op(&ir.insts, OpCode::CONCAT_N), 1, "含标识符的链应落回 CONCAT_N");
+    assert!(!pool_strings(&ir).contains("axb"), "含标识符的链不应折出字符串键");
+}
+
+/// 面 17：模板字面量折叠命中矩阵——全内插表达式为可折叠字面量且全部 cooked
+/// 为 Some 时折单字符串常量：TEMPLATE_STR 计数为 0、池含折值键。
+#[test]
+fn template_fold_hit() {
+    let ir = emit_ir("var t = `a${1}b`;");
+    assert_eq!(count_op(&ir.insts, OpCode::TEMPLATE_STR), 0, "全字面量模板应折叠，TEMPLATE_STR 计数为 0");
+    assert!(pool_strings(&ir).contains("a1b"), "池应含折值 a1b");
+
+    // 内插 BigInt：池含 "x10y"。
+    let ir = emit_ir("var t = `x${10n}y`;");
+    assert_eq!(count_op(&ir.insts, OpCode::TEMPLATE_STR), 0);
+    assert!(pool_strings(&ir).contains("x10y"), "池应含折值 x10y");
+
+    // 无内插表达式的单 quasi 模板：折单串。
+    let ir = emit_ir("var t = `hello`;");
+    assert_eq!(count_op(&ir.insts, OpCode::TEMPLATE_STR), 0);
+    assert!(pool_strings(&ir).contains("hello"), "池应含折值 hello");
+
+    // 孤立 surrogate quasi：池键为 marker 形态。
+    let ir = emit_ir("var t = `\\ud800${1}`;");
+    assert_eq!(count_op(&ir.insts, OpCode::TEMPLATE_STR), 0);
+    let pool = pool_strings(&ir);
+    assert!(pool.contains("\u{FFFD}d8001"), "池键应为 FFFD+hex4 marker 形态加 1: {pool:?}");
+}
+
+/// 面 18：模板字面量不折矩阵——内插表达式非字面量时落回 TEMPLATE_STR；
+/// 带标签模板走 GET_TEMPLATE_OBJECT 加 CALL 的独立路径，不经折叠。
+#[test]
+fn template_fold_miss() {
+    // 表达式非字面量：TEMPLATE_STR 计数 1，池不含折值键。
+    let ir = emit_ir("var x = 1; var t = `a${x}b`;");
+    assert_eq!(count_op(&ir.insts, OpCode::TEMPLATE_STR), 1, "非字面量内插应落回 TEMPLATE_STR");
+    assert!(!pool_strings(&ir).contains("axb"), "不折时池不应含折值键");
+
+    // 带标签模板：走 GET_TEMPLATE_OBJECT 加 CALL，不折。
+    let ir = emit_ir("var tag = (s) => s[0]; var t = tag`a${1}`;");
+    assert_eq!(count_op(&ir.insts, OpCode::TEMPLATE_STR), 0, "带标签模板不发 TEMPLATE_STR");
+    assert_eq!(count_op(&ir.insts, OpCode::GET_TEMPLATE_OBJECT), 1, "带标签模板应发 GET_TEMPLATE_OBJECT");
+    assert_eq!(count_op(&ir.insts, OpCode::CALL), 1, "带标签模板应发 CALL");
+}
+
+/// 面 19：字符串域折叠发射确定性——折叠路径纯函数无迭代序依赖，链折叠与
+/// 模板折叠源串同进程连续编译指纹全等。
+#[test]
+fn string_fold_emission_stable() {
+    assert_emission_stable("var s = \"a\" + 1 + true + null;", false);
+    assert_emission_stable("var t = `a${1}b`;", false);
 }

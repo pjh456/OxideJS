@@ -10,6 +10,14 @@ impl Emitter {
     pub(crate) fn emit_template_literal_expression(
         &self, tl: &oxide_parser::TemplateLiteral, ctx: &mut CompileCtx,
     ) -> Result<u32, String> {
+        // 全字面量模板折叠：全部内插表达式为可折叠字面量且全部 cooked 为 Some 时，
+        // 编译期折单字符串常量，发射单条 LOAD_CONST（单元口径见 fold.rs）。
+        if let Some(folded) = crate::expr::operator::fold::fold_template(tl) {
+            let idx = ctx.add_constant(folded);
+            let r = ctx.alloc_reg();
+            ctx.inst(Inst::load_const(Operand::Reg(r), idx));
+            return Ok(r);
+        }
         let r = ctx.alloc_reg();
         let quasis = &tl.quasis;
         let expressions = &tl.expressions;

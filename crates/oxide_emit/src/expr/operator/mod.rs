@@ -2,7 +2,7 @@
 //! 逻辑与 `??` 用短路跳转，复合求值利用 `is_side_effect_free` 优化。
 //! 函数：`emit_operator` 及各类 `emit_*_expression`。
 
-mod fold;
+pub(crate) mod fold;
 
 use crate::{is_side_effect_free, BinaryOperator, CompileCtx, Emitter};
 use oxide_bytecode::module::Constant;
@@ -50,6 +50,14 @@ impl Emitter {
             let mut operands = Vec::new();
             collect_add_operands(&bin.left, &mut operands);
             operands.push(&bin.right);
+            // 字符串域链折叠：全操作数为可折叠字面量且至少一个字符串字面量时，
+            // 编译期折单字符串常量（单元口径见 fold.rs），发射单条 LOAD_CONST。
+            if let Some(folded) = fold::fold_string_chain(&operands) {
+                let idx = ctx.add_constant(folded);
+                let r = ctx.alloc_reg();
+                ctx.inst(Inst::load_const(Operand::Reg(r), idx));
+                return Ok(r);
+            }
             // 上限防寄存器压力：CONCAT_N 单点读全部操作数（须同时存活），超长链回退
             // 左结合 ADD（寄存器随链复用，纯表达式寄存器占用有界）。
             if operands.len() >= 3 && operands.len() <= MAX_CONCAT_N_OPERANDS {
