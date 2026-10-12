@@ -23,7 +23,15 @@ use crate::fold_table;
 /// 返回是否发生改写（仅调试日志用）。不删指令、不重映射 label；改写只改变指令
 /// 的 op 与操作数，不改变跳转结构，CFG 的块划分与边集不变，由下游 DCE 在折叠后
 /// 的指令流上重建 CFG 吸收。
+///
+/// pass 级前置：`const_overflow` 已被 emit 层置位时程序已知无效，直接返回不改写
+/// （无折叠无效程序的意义，且加常量会雪上加霜）。
 pub fn fold_function(f: &mut IRFunction) -> bool {
+    // pass 级前置：const_overflow 已置位即程序已知无效，跳过整个 pass。
+    if f.const_overflow {
+        return false;
+    }
+
     let insts = &mut f.insts;
     let constants = &mut f.constants;
     let label_pos = &f.label_pos;
@@ -106,6 +114,20 @@ pub fn fold_function(f: &mut IRFunction) -> bool {
                     _ => None,
                 }
             }
+            // C 组位运算与比较：两操作数须为已知寄存器且均在四变体域
+            // （BigInt/String/Undefined 操作数由表内守卫不折）。
+            OpCode::BIT_AND | OpCode::BIT_OR | OpCode::BIT_XOR | OpCode::SHL | OpCode::SHR
+            | OpCode::USHR | OpCode::LT | OpCode::GT | OpCode::LTE | OpCode::GTE | OpCode::EQ
+            | OpCode::NEQ | OpCode::STRICT_EQ | OpCode::STRICT_NEQ => match (inst.a, inst.b) {
+                (Operand::Reg(x), Operand::Reg(y)) => match (
+                    known.get(x as usize).and_then(|c| c.as_ref()),
+                    known.get(y as usize).and_then(|c| c.as_ref()),
+                ) {
+                    (Some(l), Some(r)) => fold_table::fold_c_group(inst.op, l, r),
+                    _ => None,
+                },
+                _ => None,
+            },
             _ => None,
         };
 
@@ -156,7 +178,8 @@ fn const_eq(a: &Constant, b: &Constant) -> bool {
 }
 
 /// 新常量入池：线性扫描判等（命中复用既有下标）；未命中推尾取新下标；池满
-/// （`u16::MAX`）时返回 `None` 禁用 A 组改写（B 组 MOV 不新增常量，不受影响）。
+/// （`u16::MAX`）时返回 `None` 禁用 A 组与 C 组改写（不置 `const_overflow`，
+/// 程序在 pass 前是有效的；B 组 MOV 不新增常量，不受影响）。
 fn intern(constants: &mut Vec<Constant>, c: &Constant) -> Option<u16> {
     if let Some(idx) = constants.iter().position(|x| const_eq(x, c)) {
         return Some(idx as u16);

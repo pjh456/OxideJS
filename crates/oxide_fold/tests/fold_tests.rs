@@ -1,10 +1,13 @@
 //! 常量折叠 pass 集成测试：手工构造 IR，断言前扫后指令流与常量池形态。
 //!
-//! 覆盖四类行为：
+//! 覆盖五类行为：
 //! - 常量传播（LOAD_CONST 与 MOV 的 known 表流动）
-//! - 折叠（A 组一元与算术改写为 LOAD_CONST，B 组逻辑短路改写为 MOV）
+//! - 折叠（A 组一元与算术改写为 LOAD_CONST，C 组位运算与比较改写为
+//!   LOAD_CONST，B 组逻辑短路改写为 MOV）
 //! - 汇合点（label 目标整体清空 known，跨汇合不折）
 //! - 负零守卫（`-0.0 + 0.0` 得 `+0.0`，不取恒等捷径）
+//! - 池溢出守卫（池满时 A 组与 C 组不折、B 组照折；`const_overflow`
+//!   置位时整个 pass 跳过）
 
 use oxide_bytecode::module::Constant;
 use oxide_bytecode::opcode::OpCode;
@@ -506,6 +509,200 @@ fn negative_zero_neg_yields_positive_zero() {
     }
 }
 
+// ── 折叠：C 组位运算 ──
+
+#[test]
+fn fold_bit_and_or_xor() {
+    // 12 & 10 = 8 / 12 | 10 = 14 / 12 ^ 10 = 6，均恒 Int。
+    let (a, b) = (Constant::Int(12), Constant::Int(10));
+    let mut f = func(
+        &[a, b],
+        vec![
+            Inst::load_const(Operand::Reg(1), 0),
+            Inst::load_const(Operand::Reg(2), 1),
+            Inst::new(OpCode::BIT_AND, Operand::Reg(3), Operand::Reg(1), Operand::Reg(2)),
+            Inst::new(OpCode::BIT_OR, Operand::Reg(4), Operand::Reg(1), Operand::Reg(2)),
+            Inst::new(OpCode::BIT_XOR, Operand::Reg(5), Operand::Reg(1), Operand::Reg(2)),
+        ],
+    );
+    fold(&mut f);
+    assert_load_const(&f.insts[2], 3, 2);
+    assert_eq!(f.constants[2], Constant::Int(8));
+    assert_load_const(&f.insts[3], 4, 3);
+    assert_eq!(f.constants[3], Constant::Int(14));
+    assert_load_const(&f.insts[4], 5, 4);
+    assert_eq!(f.constants[4], Constant::Int(6));
+}
+
+#[test]
+fn fold_shifts() {
+    // 1 << 34 = 1 << 2 = 4（移位量与 0x1F 掩码）/
+    // -2147483648 >> 1 = -1073741824（算术右移）/
+    // -1 >>> 0 = 4294967295（结果超 i32::MAX，升 Number）。
+    let (a, b) = (Constant::Int(1), Constant::Int(34));
+    let (c, d) = (Constant::Int(i32::MIN), Constant::Int(1));
+    let (e, f2) = (Constant::Int(-1), Constant::Int(0));
+    let mut f = func(
+        &[a, b, c, d, e, f2],
+        vec![
+            Inst::load_const(Operand::Reg(1), 0),
+            Inst::load_const(Operand::Reg(2), 1),
+            Inst::new(OpCode::SHL, Operand::Reg(3), Operand::Reg(1), Operand::Reg(2)),
+            Inst::load_const(Operand::Reg(4), 2),
+            Inst::load_const(Operand::Reg(5), 3),
+            Inst::new(OpCode::SHR, Operand::Reg(6), Operand::Reg(4), Operand::Reg(5)),
+            Inst::load_const(Operand::Reg(7), 4),
+            Inst::load_const(Operand::Reg(8), 5),
+            Inst::new(OpCode::USHR, Operand::Reg(9), Operand::Reg(7), Operand::Reg(8)),
+        ],
+    );
+    fold(&mut f);
+    assert_load_const(&f.insts[2], 3, 6);
+    assert_eq!(f.constants[6], Constant::Int(4));
+    assert_load_const(&f.insts[5], 6, 7);
+    assert_eq!(f.constants[7], Constant::Int(-1_073_741_824));
+    assert_load_const(&f.insts[8], 9, 8);
+    assert_eq!(f.constants[8], Constant::Number(4_294_967_295.0));
+}
+
+// ── 折叠：C 组比较 ──
+
+#[test]
+fn fold_comparisons() {
+    // 1 < 2 = true / 1 > 2 = false / 1 <= 1 = true / 2 >= 3 = false /
+    // 1 == 1.0 = true / 1 != 2 = true / 1 === 1.0 = true / 1 !== 2 = true /
+    // NaN < 1 = false（关系比较对 NaN 返回 None，归 false）。
+    let (a, b, c, d) = (Constant::Int(1), Constant::Int(2), Constant::Number(1.0), Constant::Int(3));
+    let (e, f2) = (Constant::Number(f64::NAN), Constant::Int(1));
+    let mut f = func(
+        &[a, b, c, d, e, f2],
+        vec![
+            Inst::load_const(Operand::Reg(1), 0),
+            Inst::load_const(Operand::Reg(2), 1),
+            Inst::new(OpCode::LT, Operand::Reg(3), Operand::Reg(1), Operand::Reg(2)),
+            Inst::new(OpCode::GT, Operand::Reg(4), Operand::Reg(1), Operand::Reg(2)),
+            Inst::load_const(Operand::Reg(5), 0),
+            Inst::new(OpCode::LTE, Operand::Reg(6), Operand::Reg(5), Operand::Reg(1)),
+            Inst::load_const(Operand::Reg(7), 1),
+            Inst::load_const(Operand::Reg(8), 3),
+            Inst::new(OpCode::GTE, Operand::Reg(9), Operand::Reg(7), Operand::Reg(8)),
+            Inst::load_const(Operand::Reg(10), 2),
+            Inst::new(OpCode::EQ, Operand::Reg(11), Operand::Reg(1), Operand::Reg(10)),
+            Inst::new(OpCode::NEQ, Operand::Reg(12), Operand::Reg(1), Operand::Reg(2)),
+            Inst::new(OpCode::STRICT_EQ, Operand::Reg(13), Operand::Reg(1), Operand::Reg(10)),
+            Inst::new(OpCode::STRICT_NEQ, Operand::Reg(14), Operand::Reg(1), Operand::Reg(2)),
+            Inst::load_const(Operand::Reg(15), 4),
+            Inst::new(OpCode::LT, Operand::Reg(16), Operand::Reg(15), Operand::Reg(1)),
+        ],
+    );
+    fold(&mut f);
+    // 池原有 6 条：Boolean(true) 首落位下标 6、Boolean(false) 下标 7，
+    // 后续同值折叠复用。
+    assert_load_const(&f.insts[2], 3, 6);
+    assert_eq!(f.constants[6], Constant::Boolean(true));
+    assert_load_const(&f.insts[3], 4, 7);
+    assert_eq!(f.constants[7], Constant::Boolean(false));
+    assert_load_const(&f.insts[5], 6, 6);
+    assert_load_const(&f.insts[8], 9, 7);
+    assert_load_const(&f.insts[10], 11, 6);
+    assert_load_const(&f.insts[11], 12, 6);
+    assert_load_const(&f.insts[12], 13, 6);
+    assert_load_const(&f.insts[13], 14, 6);
+    assert_load_const(&f.insts[15], 16, 7);
+    assert_eq!(f.constants.len(), 8, "同值折叠应复用池下标");
+}
+
+// ── C 组操作数域守卫（BigInt/String/Undefined 不折） ──
+
+#[test]
+fn c_group_bigint_operand_not_folded() {
+    // 1n & 1 → 不折（BigInt 操作数不折，运行期抛 TypeError）。
+    let (a, b) = (Constant::BigInt(num_bigint::BigInt::from(1)), Constant::Int(1));
+    let mut f = func(
+        &[a, b],
+        vec![
+            Inst::load_const(Operand::Reg(1), 0),
+            Inst::load_const(Operand::Reg(2), 1),
+            Inst::new(OpCode::BIT_AND, Operand::Reg(3), Operand::Reg(1), Operand::Reg(2)),
+        ],
+    );
+    assert!(!fold(&mut f), "BigInt 操作数不应折叠");
+    assert_eq!(f.insts[2].op, OpCode::BIT_AND);
+    assert_eq!(f.constants.len(), 2, "不应新增常量");
+}
+
+#[test]
+fn c_group_string_operand_not_folded() {
+    // "1" < "2" → 不折（String 操作数不折，字符串比较路径为后续任务）。
+    let (a, b) = (Constant::String("1".to_string()), Constant::String("2".to_string()));
+    let mut f = func(
+        &[a, b],
+        vec![
+            Inst::load_const(Operand::Reg(1), 0),
+            Inst::load_const(Operand::Reg(2), 1),
+            Inst::new(OpCode::LT, Operand::Reg(3), Operand::Reg(1), Operand::Reg(2)),
+        ],
+    );
+    assert!(!fold(&mut f), "String 操作数不应折叠");
+    assert_eq!(f.insts[2].op, OpCode::LT);
+}
+
+#[test]
+fn c_group_undefined_operand_not_folded() {
+    // 1 < undefined → 不折（Undefined 操作数不折，与共享表四臂口径一致）。
+    let (a, b) = (Constant::Int(1), Constant::Undefined);
+    let mut f = func(
+        &[a, b],
+        vec![
+            Inst::load_const(Operand::Reg(1), 0),
+            Inst::load_const(Operand::Reg(2), 1),
+            Inst::new(OpCode::LT, Operand::Reg(3), Operand::Reg(1), Operand::Reg(2)),
+        ],
+    );
+    assert!(!fold(&mut f), "Undefined 操作数不应折叠");
+    assert_eq!(f.insts[2].op, OpCode::LT);
+}
+
+// ── 池溢出守卫 ──
+
+#[test]
+fn pool_full_disables_a_and_c_groups() {
+    // 池 65535 条（Int(0)..Int(65534)）即满：NEG（A 组）与 EQ（C 组）折值
+    // 不在池内且无空间推尾 → 不折；AND（B 组）MOV 不新增常量 → 照折。
+    let mut f = IRFunction::new();
+    f.constants = (0..65535).map(Constant::Int).collect();
+    f.insts = vec![
+        Inst::load_const(Operand::Reg(1), 0),
+        Inst::load_const(Operand::Reg(2), 65534),
+        Inst::new(OpCode::NEG, Operand::Reg(3), Operand::Reg(1), Operand::None),
+        Inst::new(OpCode::EQ, Operand::Reg(4), Operand::Reg(1), Operand::Reg(2)),
+        Inst::new(OpCode::AND, Operand::Reg(5), Operand::Reg(1), Operand::Reg(2)),
+    ];
+    fold(&mut f);
+    assert_eq!(f.insts[2].op, OpCode::NEG, "池满时 A 组不应折叠");
+    assert_eq!(f.insts[3].op, OpCode::EQ, "池满时 C 组不应折叠");
+    assert_mov(&f.insts[4], 5, 1);
+    assert_eq!(f.constants.len(), 65535, "池满时不应新增常量");
+}
+
+#[test]
+fn const_overflow_skips_pass() {
+    // const_overflow 已置位（emit 层）：整个 pass 跳过，不改写。
+    let (a, b) = (Constant::Int(1), Constant::Int(2));
+    let mut f = func(
+        &[a, b],
+        vec![
+            Inst::load_const(Operand::Reg(1), 0),
+            Inst::load_const(Operand::Reg(2), 1),
+            Inst::new(OpCode::ADD, Operand::Reg(3), Operand::Reg(1), Operand::Reg(2)),
+        ],
+    );
+    f.const_overflow = true;
+    assert!(!fold(&mut f), "const_overflow 置位时不应改写");
+    assert_eq!(f.insts[2].op, OpCode::ADD);
+    assert_eq!(f.constants.len(), 2);
+}
+
 // ── 确定性 ──
 
 #[test]
@@ -519,6 +716,34 @@ fn fold_is_deterministic() {
                 Inst::load_const(Operand::Reg(2), 1),
                 Inst::new(OpCode::ADD, Operand::Reg(3), Operand::Reg(1), Operand::Reg(2)),
                 Inst::new(OpCode::NOT, Operand::Reg(4), Operand::Reg(3), Operand::None),
+            ],
+        )
+    };
+    let mut f = build();
+    fold(&mut f);
+    let fingerprint = |f: &IRFunction| (f.insts.clone(), f.constants.clone());
+    let first = fingerprint(&f);
+    for _ in 0..7 {
+        let mut g = build();
+        fold(&mut g);
+        assert_eq!(fingerprint(&g), first, "折叠结果应确定");
+    }
+}
+
+#[test]
+fn c_group_fold_is_deterministic() {
+    // 同一源（C 组位运算加比较）连续折叠八次，指令流与常量池指纹全等。
+    let build = || {
+        func(
+            &[Constant::Int(12), Constant::Int(10), Constant::Int(-1), Constant::Int(0)],
+            vec![
+                Inst::load_const(Operand::Reg(1), 0),
+                Inst::load_const(Operand::Reg(2), 1),
+                Inst::new(OpCode::BIT_XOR, Operand::Reg(3), Operand::Reg(1), Operand::Reg(2)),
+                Inst::load_const(Operand::Reg(4), 2),
+                Inst::load_const(Operand::Reg(5), 3),
+                Inst::new(OpCode::USHR, Operand::Reg(6), Operand::Reg(4), Operand::Reg(5)),
+                Inst::new(OpCode::LT, Operand::Reg(7), Operand::Reg(3), Operand::Reg(6)),
             ],
         )
     };
