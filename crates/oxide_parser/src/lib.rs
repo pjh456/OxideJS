@@ -22,6 +22,7 @@ fn parse_with_source_type<'a>(
     allocator: &'a Allocator, source: &'a str, source_type: oxc_span::SourceType,
 ) -> Result<Program<'a>, Vec<OxideError>> {
     use oxc_parser::Parser;
+    use oxc_semantic::Stats;
 
     let ret = Parser::new(allocator, source, source_type).parse();
 
@@ -43,8 +44,14 @@ fn parse_with_source_type<'a>(
 
     // 语法早期错误（Early Errors）检查：oxc parser 把复杂早期错误委托给
     // oxc_semantic（strict 绑定标识符、重复参数、NSPL、super 位置等）。
+
+    // 节点、作用域、符号、引用四计数各占至少一个源字节，源长加一即为四者的
+    // 安全上界；传入后语义构建器跳过 Stats::count 全 AST 遍历，直接按上界
+    // 预分配容量。
+    let bound = (source.len() + 1).min(u32::MAX as usize) as u32;
     let semantic_ret = oxc_semantic::SemanticBuilder::new()
         .with_check_syntax_error(true)
+        .with_stats(Stats::new(bound, bound, bound, bound))
         .build(&ret.program);
     if !semantic_ret.errors.is_empty() {
         // 重名诊断先经 AST 复核剔除跨语句列合法合并的误报（须在归一化前，
