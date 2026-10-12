@@ -3,7 +3,7 @@
 //! `emit_class_expression`、`emit_new_expression`、`emit_function_domain`。
 
 use crate::expr::call::pack_arg_regs;
-use crate::{CompileCtx, Emitter, ParamSpec};
+use crate::{CompileCtx, Emitter, FunctionBodyContext, FunctionFlags, ParamSpec};
 use oxide_ir::inst::Inst;
 use oxide_ir::operand::Operand;
 use oxide_parser::{Class, Expression, Statement};
@@ -39,27 +39,15 @@ impl Emitter {
         let body_stmts = &arrow.body.statements;
         let is_expr_body = arrow.expression;
 
-        let mut sub_module = if arrow.r#async {
-            self.compile_async_body(
-                &param_names,
-                body_stmts,
-                ctx,
-                is_expr_body,
-                true,
-                arrow.has_use_strict_directive(),
-                None,
-            )?
-        } else {
-            self.compile_function_body(
-                &param_names,
-                body_stmts,
-                ctx,
-                is_expr_body,
-                true,
-                arrow.has_use_strict_directive(),
-                None,
-            )?
+        let flags = FunctionFlags {
+            is_expression_body: is_expr_body,
+            is_generator: false,
+            is_async: arrow.r#async,
+            own_strict: arrow.has_use_strict_directive(),
+            name: None,
         };
+        let mut sub_module =
+            self.compile_simple_function_body(&param_names, body_stmts, ctx, FunctionBodyContext::Arrow, flags)?;
         sub_module.is_arrow = true;
         // 箭头函数词法继承 super 上下文：父带任一 super 标志时，本箭头须挂
         // home object（运行期从外层函数继承，见 CREATE_CLOSURE 分发）。
@@ -106,15 +94,15 @@ impl Emitter {
 
         let own_strict = fe.has_use_strict_directive();
         let fn_name = fe.id.as_ref().map(|id| id.name.as_str());
-        let mut sub_module = if fe.generator && fe.r#async {
-            self.compile_async_generator_body(&param_names, body_stmts, ctx, own_strict, fn_name)?
-        } else if fe.generator {
-            self.compile_generator_body(&param_names, body_stmts, ctx, own_strict, fn_name)?
-        } else if fe.r#async {
-            self.compile_async_body(&param_names, body_stmts, ctx, false, false, own_strict, fn_name)?
-        } else {
-            self.compile_function_body(&param_names, body_stmts, ctx, false, false, own_strict, fn_name)?
+        let flags = FunctionFlags {
+            is_expression_body: false,
+            is_generator: fe.generator,
+            is_async: fe.r#async,
+            own_strict,
+            name: fn_name,
         };
+        let mut sub_module =
+            self.compile_simple_function_body(&param_names, body_stmts, ctx, FunctionBodyContext::Ordinary, flags)?;
         if let Some(id) = &fe.id {
             sub_module.function_name = Some(id.name.to_string());
         }

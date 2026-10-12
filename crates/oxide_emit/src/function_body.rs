@@ -1,8 +1,10 @@
-//! 函数体编译域：`FunctionBodyContext` / `ParamSpec` 类型与函数体编译链
-//! （参数 prologue、参数默认值与闭包捕获分析、双 sub-pass 语句发射）。
+//! 函数体编译域：`FunctionBodyContext` / `ParamSpec` / `FunctionFlags` /
+//! `ClassElementHooks` 类型与函数体编译链（参数 prologue、参数默认值与闭包
+//! 捕获分析、双 sub-pass 语句发射）。
 //!
-//! 两类型经 lib.rs 重导出供各语法域构造实参；编译链为 `Emitter` 方法，
-//! 捕获分析经自由函数调用 capture 族，与所在文件无关。
+//! 上下文与参数规格两类型经 lib.rs 重导出供各语法域构造实参；标志与钩子结构体
+//! 供 crate 内各语法域整体传参；编译链为 `Emitter` 方法，捕获分析经自由函数
+//! 调用 capture 族，与所在文件无关。
 
 use std::collections::{BTreeMap, HashSet};
 
@@ -54,6 +56,57 @@ impl ParamSpec<'_> {
             Self::Identifier { name, .. } => name,
             Self::Pattern { synthetic_name, .. } => synthetic_name,
             Self::Rest { name } => name,
+        }
+    }
+}
+
+/// 函数体编译标志：函数体种类与严格性，随函数体编译核心入口整体传入。
+#[derive(Clone, Copy)]
+pub struct FunctionFlags<'a> {
+    /// 表达式体（箭头表达式体）：体返回最后一个表达式的值，否则返回 undefined。
+    pub is_expression_body: bool,
+    /// 生成器函数（`function*`）：VM 按生成器协议创建对象并执行。
+    pub is_generator: bool,
+    /// 异步函数（`async function`）：VM 按异步函数协议执行。
+    pub is_async: bool,
+    /// 本函数自身的 strict 指令（类元素恒 strict，不在此传递）。
+    pub own_strict: bool,
+    /// 函数名（具名函数声明/表达式传名，箭头与匿名传 `None`），用于函数名不可写绑定登记。
+    pub name: Option<&'a str>,
+}
+
+/// 类元素钩子：类元素函数（构造器/方法/字段）的额外绑定、字段发射与捕获组，
+/// 非类元素函数传 `ClassElementHooks::none()`。
+///
+/// `E` 为字段发射闭包类型（`FnMut(&Emitter, &mut CompileCtx) -> Result<(), String>`），
+/// 非类元素函数用 `NoFieldsHook` 占位（`emit_fields` 恒为 `None`，永不被调用）。
+#[derive(Clone, Copy)]
+pub struct ClassElementHooks<'a, E> {
+    /// 注入函数作用域的额外绑定（类名自绑定等）。
+    pub extra_bindings: &'a [(&'a str, u32)],
+    /// 字段发射钩子（非类元素函数为 `None`）。
+    pub emit_fields: Option<E>,
+    /// 字段在 `super()` 之后发射（派生构造器）。
+    pub fields_after_super: bool,
+    /// 额外捕获表达式（字段值表达式等）。
+    pub extra_capture_exprs: &'a [&'a Expression<'a>],
+    /// 额外 upvalue 名（`@@field_keys` 等合成捕获）。
+    pub extra_upvalue_names: &'a [(String, u8)],
+}
+
+/// 无字段发射钩子的占位类型：仅用于 `ClassElementHooks::none()`，`emit_fields`
+/// 恒为 `None`，永不被调用。
+type NoFieldsHook = Box<dyn FnMut(&Emitter, &mut CompileCtx) -> Result<(), String>>;
+
+impl<'a> ClassElementHooks<'a, NoFieldsHook> {
+    /// 非类元素函数的空钩子。
+    pub(crate) fn none() -> Self {
+        Self {
+            extra_bindings: &[],
+            emit_fields: None,
+            fields_after_super: false,
+            extra_capture_exprs: &[],
+            extra_upvalue_names: &[],
         }
     }
 }
@@ -136,188 +189,38 @@ impl Emitter {
         Ok((param_specs, body_stmts))
     }
 
-    /// 编译函数体（函数声明/函数表达式/箭头函数共用），单 pass 完成发码。
+    /// 编译函数体（函数声明/函数表达式/箭头函数/类元素共用核心入口），单 pass 完成发码。
     ///
-    /// `is_expression_body` 为 true（箭头表达式体）时返回最后一个表达式的值，
-    /// 否则返回 undefined。`is_arrow` 控制 super 相关标志的继承：箭头函数词法
-    /// 继承外层 super，普通函数重置 super 作用域。`name` 为函数名（具名函数
-    /// 声明/表达式传名，箭头与匿名传 `None`），用于函数名不可写绑定登记。
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn compile_function_body<'a>(
-        &self, param_specs: &[ParamSpec<'a>], body_stmts: &[Statement<'a>], parent_ctx: &CompileCtx,
-        is_expression_body: bool, is_arrow: bool, own_strict: bool, name: Option<&str>,
-    ) -> Result<IRFunction, String> {
-        self.compile_function_body_with_flags(
-            param_specs,
-            body_stmts,
-            parent_ctx,
-            is_expression_body,
-            is_arrow,
-            false,
-            false,
-            own_strict,
-            name,
-        )
-    }
-
-    /// 编译函数体并显式指定生成器标志（`function*` 走此入口）。
-    pub(crate) fn compile_generator_body<'a>(
-        &self, param_specs: &[ParamSpec<'a>], body_stmts: &[Statement<'a>], parent_ctx: &CompileCtx, own_strict: bool,
-        name: Option<&str>,
-    ) -> Result<IRFunction, String> {
-        self.compile_function_body_with_flags(
-            param_specs,
-            body_stmts,
-            parent_ctx,
-            false,
-            false,
-            true,
-            false,
-            own_strict,
-            name,
-        )
-    }
-
-    /// 编译异步生成器函数体（`async function*` / async 生成器表达式走此入口）：
-    /// 同时标记 `is_generator` 与 `is_async`，VM 调用时按异步生成器协议执行
-    /// （next 返回 Promise，yield 挂起与 await 挂起共存）。
-    pub(crate) fn compile_async_generator_body<'a>(
-        &self, param_specs: &[ParamSpec<'a>], body_stmts: &[Statement<'a>], parent_ctx: &CompileCtx, own_strict: bool,
-        name: Option<&str>,
-    ) -> Result<IRFunction, String> {
-        self.compile_function_body_with_flags(
-            param_specs,
-            body_stmts,
-            parent_ctx,
-            false,
-            false,
-            true,
-            true,
-            own_strict,
-            name,
-        )
-    }
-
-    /// 编译异步函数体（`async function` / async 箭头走此入口）：`is_async` 使
-    /// `assemble_ir` 标记模块，VM 调用时按异步函数协议执行。
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn compile_async_body<'a>(
-        &self, param_specs: &[ParamSpec<'a>], body_stmts: &[Statement<'a>], parent_ctx: &CompileCtx,
-        is_expression_body: bool, is_arrow: bool, own_strict: bool, name: Option<&str>,
-    ) -> Result<IRFunction, String> {
-        self.compile_function_body_with_flags(
-            param_specs,
-            body_stmts,
-            parent_ctx,
-            is_expression_body,
-            is_arrow,
-            false,
-            true,
-            own_strict,
-            name,
-        )
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn compile_function_body_with_flags<'a>(
-        &self, param_specs: &[ParamSpec<'a>], body_stmts: &[Statement<'a>], parent_ctx: &CompileCtx,
-        is_expression_body: bool, is_arrow: bool, is_generator: bool, is_async: bool, own_strict: bool,
-        name: Option<&str>,
-    ) -> Result<IRFunction, String> {
-        let body_context = if is_arrow {
-            FunctionBodyContext::Arrow
-        } else {
-            FunctionBodyContext::Ordinary
-        };
-        self.compile_function_body_with_bindings_gen(
-            param_specs,
-            body_stmts,
-            parent_ctx,
-            is_expression_body,
-            &[],
-            body_context,
-            is_generator,
-            is_async,
-            own_strict,
-            name,
-        )
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn compile_function_body_with_bindings_gen<'a>(
-        &self, param_specs: &[ParamSpec<'a>], body_stmts: &[Statement<'a>], parent_ctx: &CompileCtx,
-        is_expression_body: bool, extra_bindings: &[(&str, u32)], body_context: FunctionBodyContext,
-        is_generator: bool, is_async: bool, own_strict: bool, name: Option<&str>,
-    ) -> Result<IRFunction, String> {
-        self.compile_function_body_with_field_hooks_gen(
-            param_specs,
-            body_stmts,
-            parent_ctx,
-            is_expression_body,
-            extra_bindings,
-            body_context,
-            None::<fn(&Emitter, &mut CompileCtx) -> Result<(), String>>,
-            false,
-            &[],
-            &[],
-            is_generator,
-            is_async,
-            own_strict,
-            name,
-        )
-    }
-
-    /// 预注册 builtin 引用并编译函数体（普通/箭头/类元素方法共用入口）。
+    /// `flags` 携带函数体种类与严格性（表达式体、生成器、异步、自身 strict、函数名）；
+    /// `hooks` 携带类元素钩子（额外绑定、字段发射、捕获组），非类元素函数传
+    /// `ClassElementHooks::none()`。`body_context` 决定 `this`/`super` 绑定与参数
+    /// 前导形态：箭头词法继承外层 super，普通函数重置 super 作用域，类元素按类语义。
     ///
     /// 本函数体内任意位置（表达式、成员对象、调用实参、类字段等）引用的内置全局
     /// 标识符，其寄存器槽都先于任何临时寄存器登记。
     ///
     /// vreg 化后临时值不复用（独立 vreg），但 builtin 槽预注册仍保证分配序稳定：
     /// builtin 槽先于临时值池，嵌套函数继承边界不受扰。
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn compile_function_body_with_field_hooks<'a, E>(
-        &self, param_specs: &[ParamSpec<'a>], body_stmts: &[Statement<'a>], parent_ctx: &CompileCtx,
-        is_expression_body: bool, extra_bindings: &[(&str, u32)], body_context: FunctionBodyContext,
-        emit_fields: Option<E>, fields_after_super: bool, extra_capture_exprs: &[&'a Expression<'a>],
-        extra_upvalue_names: &[(String, u8)], own_strict: bool, name: Option<&str>,
-    ) -> Result<IRFunction, String>
-    where
-        E: FnMut(&Emitter, &mut CompileCtx) -> Result<(), String>,
-    {
-        self.compile_function_body_with_field_hooks_gen(
-            param_specs,
-            body_stmts,
-            parent_ctx,
-            is_expression_body,
-            extra_bindings,
-            body_context,
-            emit_fields,
-            fields_after_super,
-            extra_capture_exprs,
-            extra_upvalue_names,
-            false,
-            false,
-            own_strict,
-            name,
-        )
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn compile_function_body_with_field_hooks_gen<'a, E>(
-        &self, param_specs: &[ParamSpec<'a>], body_stmts: &[Statement<'a>], parent_ctx: &CompileCtx,
-        is_expression_body: bool, extra_bindings: &[(&str, u32)], body_context: FunctionBodyContext,
-        mut emit_fields: Option<E>, fields_after_super: bool, extra_capture_exprs: &[&'a Expression<'a>],
-        extra_upvalue_names: &[(String, u8)], is_generator: bool, is_async: bool, own_strict: bool, name: Option<&str>,
+    pub(crate) fn compile_function_body<'a, E>(
+        &self,
+        param_specs: &[ParamSpec<'a>],
+        body_stmts: &[Statement<'a>],
+        parent_ctx: &CompileCtx,
+        body_context: FunctionBodyContext,
+        flags: FunctionFlags<'a>,
+        hooks: ClassElementHooks<'a, E>,
     ) -> Result<IRFunction, String>
     where
         E: FnMut(&Emitter, &mut CompileCtx) -> Result<(), String>,
     {
         let mut ctx = CompileCtx::new();
-        ctx.is_generator = is_generator;
-        ctx.is_async = is_async;
+        ctx.is_generator = flags.is_generator;
+        ctx.is_async = flags.is_async;
         // 函数 strict = 自身 directive ‖ 外层严格（规范不可解除）；
         // 类元素方法/构造器恒 strict（ClassBody 是严格模式代码）。
-        ctx.is_strict = own_strict || matches!(body_context, FunctionBodyContext::ClassElement) || parent_ctx.is_strict;
+        ctx.is_strict = flags.own_strict
+            || matches!(body_context, FunctionBodyContext::ClassElement)
+            || parent_ctx.is_strict;
 
         // 形参名集（含解构叶子与 rest）：块级函数名同名的 web-compat 守卫查此集。
         let mut param_names = HashSet::new();
@@ -412,7 +315,7 @@ impl Emitter {
         // eval 起源随作用域继承：eval 顶层 var/函数名在嵌套函数内同样可删（物化
         // c:true 全局属性），delete 分类判定读此标志。
         ctx.is_eval_origin = parent_ctx.is_eval_origin;
-        for (name, reg) in extra_bindings {
+        for (name, reg) in hooks.extra_bindings {
             ctx.scopes.symbols.scopes[0].bindings.insert(
                 (*name).to_string(),
                 Binding {
@@ -452,9 +355,9 @@ impl Emitter {
             parent_ctx,
             &mut ctx,
             body_context,
-            extra_capture_exprs,
-            extra_upvalue_names,
-            name,
+            hooks.extra_capture_exprs,
+            hooks.extra_upvalue_names,
+            flags.name,
             &scope_names,
         )?;
         // 实例字段 computed key 数组所在 upvalue 下标，供字段初始化 emit 定位。
@@ -524,7 +427,7 @@ impl Emitter {
         let has_using = Self::scope_contains_using(body_stmts);
         // 生成器：body 起点标记——调用时参数初始化（emit_params_prologue）结束后挂起于此，
         // 参数副作用/异常在 `g()` 调用时刻生效，首次 next() 从这继续执行 body。
-        if is_generator {
+        if flags.is_generator {
             ctx.inst(Inst::suspend_body());
             // 生成器体环境在 `g()` 调用时建立、首次 next() 从挂起点后继续：水位登记
             // 在挂起点之后，体声明的资源只在体尾（生成器完成）释放。
@@ -536,8 +439,8 @@ impl Emitter {
             ctx.emit_dispose_mark();
         }
 
-        if let Some(emit) = emit_fields.as_mut() {
-            if fields_after_super {
+        if let Some(mut emit) = hooks.emit_fields {
+            if hooks.fields_after_super {
                 let mut parent_insts = Vec::new();
                 let mut parent_label_pos = Vec::new();
                 std::mem::swap(&mut ctx.insts, &mut parent_insts);
@@ -568,7 +471,7 @@ impl Emitter {
         if has_using {
             ctx.emit_dispose_pop();
         }
-        if is_expression_body {
+        if flags.is_expression_body {
             if let Some(reg) = last_result_reg {
                 ctx.inst(Inst::ret(Operand::Reg(reg), 0, 0, 0));
             } else {
@@ -597,6 +500,25 @@ impl Emitter {
             Some(parent_ctx),
         );
         Ok(ir)
+    }
+
+    /// 非类元素函数体便捷入口：空钩子，等价于核心入口传 `ClassElementHooks::none()`。
+    pub(crate) fn compile_simple_function_body<'a>(
+        &self,
+        param_specs: &[ParamSpec<'a>],
+        body_stmts: &[Statement<'a>],
+        parent_ctx: &CompileCtx,
+        body_context: FunctionBodyContext,
+        flags: FunctionFlags<'a>,
+    ) -> Result<IRFunction, String> {
+        self.compile_function_body(
+            param_specs,
+            body_stmts,
+            parent_ctx,
+            body_context,
+            flags,
+            ClassElementHooks::none(),
+        )
     }
 
     /// 规范 `argumentsObjNeeded` 的引擎判据：函数作用域是否声明 `arguments`

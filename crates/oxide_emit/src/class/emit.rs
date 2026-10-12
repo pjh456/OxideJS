@@ -2,7 +2,9 @@
 //!
 //! 函数：`emit_class`。
 
-use crate::{symbol_table::ScopeKind, CompileCtx, Emitter, FunctionBodyContext};
+use crate::{
+    symbol_table::ScopeKind, ClassElementHooks, CompileCtx, Emitter, FunctionBodyContext, FunctionFlags,
+};
 use oxide_bytecode::module::Constant;
 use oxide_bytecode::opcode::OpCode;
 use oxide_ir::inst::Inst;
@@ -270,36 +272,40 @@ impl Emitter {
             Ok(())
         };
 
+        // 构造器（显式与隐式派生）共用同一组标志与钩子：恒 strict、无表达式体、
+        // 字段发射钩子按派生与否在 super() 前后执行。
+        let ctor_flags = FunctionFlags {
+            is_expression_body: false,
+            is_generator: false,
+            is_async: false,
+            own_strict: true,
+            name: None,
+        };
+        let ctor_hooks = ClassElementHooks {
+            extra_bindings: &self_binding,
+            emit_fields: Some(emit_instance_fields),
+            fields_after_super: is_derived,
+            extra_capture_exprs: &field_value_exprs,
+            extra_upvalue_names: &extra_upvalue_names,
+        };
         let mut ctor_module = if let Some(method) = constructor_method {
             let (param_names, body_stmts) = self.extract_function_parts(method.value.as_ref())?;
-            self.compile_function_body_with_field_hooks(
+            self.compile_function_body(
                 &param_names,
                 body_stmts,
                 ctx,
-                false,
-                &self_binding,
                 FunctionBodyContext::ClassElement,
-                Some(&emit_instance_fields),
-                is_derived,
-                &field_value_exprs,
-                &extra_upvalue_names,
-                true,
-                None,
+                ctor_flags,
+                ctor_hooks,
             )?
         } else {
-            let mut module = self.compile_function_body_with_field_hooks(
+            let mut module = self.compile_function_body(
                 &[],
                 &[],
                 ctx,
-                false,
-                &self_binding,
                 FunctionBodyContext::ClassElement,
-                Some(&emit_instance_fields),
-                is_derived,
-                &field_value_exprs,
-                &extra_upvalue_names,
-                true,
-                None,
+                ctor_flags,
+                ctor_hooks,
             )?;
             if is_derived {
                 module.insts.clear();

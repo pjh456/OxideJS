@@ -47,7 +47,7 @@ pub struct CompileCtx {
     /// 本函数是否为异步函数体（`async function` / async 箭头），`assemble_ir` 回写到 IR。
     pub(crate) is_async: bool,
     /// 本函数是否为严格模式函数体：自身 directive ‖ 外层严格继承（编译入口设置 +
-    /// 嵌套继承，见 compile_function_body_with_field_hooks_gen），`assemble_ir` 回写到 IR。
+    /// 嵌套继承，见 compile_function_body），`assemble_ir` 回写到 IR。
     pub(crate) is_strict: bool,
     /// 是否为脚本顶层模块（emit_program 的根上下文）。顶层 var/function 声明需
     /// 同步写全局对象属性（脚本环境记录的 var 可经 globalThis 反射）；函数体为 false。

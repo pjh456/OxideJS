@@ -1,7 +1,7 @@
 //! 类方法 emit：`emit_class_methods` 逐方法构造，`emit_class_method_function`
 //! 负责单个方法函数体（含 `super` 与 home object）。
 
-use crate::{CompileCtx, Emitter, FunctionBodyContext};
+use crate::{ClassElementHooks, CompileCtx, Emitter, FunctionBodyContext, FunctionFlags};
 use oxide_bytecode::module::Constant;
 use oxide_bytecode::opcode::OpCode;
 use oxide_ir::inst::Inst;
@@ -125,21 +125,23 @@ impl Emitter {
         // 生成器/异步/异步生成器方法与普通方法统一走带标志入口：`*m` 置 is_generator，
         // `async *m` 同时置 is_generator 与 is_async，VM 据此按生成器协议创建对象并
         // 处理 body 内 SUSPEND/YIELD/异常边界。
-        let mut method_module = self.compile_function_body_with_field_hooks_gen(
+        // 方法无字段发射钩子：以空钩子为基底，注入类名自绑定与 brand upvalue。
+        let mut hooks = ClassElementHooks::none();
+        hooks.extra_bindings = self_binding;
+        hooks.extra_upvalue_names = &extra_uv;
+        let mut method_module = self.compile_function_body(
             &param_names,
             body_stmts,
             ctx,
-            false,
-            self_binding,
             FunctionBodyContext::ClassElement,
-            None::<fn(&Emitter, &mut CompileCtx) -> Result<(), String>>,
-            false,
-            &[],
-            &extra_uv,
-            method_value.generator,
-            method_value.r#async,
-            true,
-            None,
+            FunctionFlags {
+                is_expression_body: false,
+                is_generator: method_value.generator,
+                is_async: method_value.r#async,
+                own_strict: true,
+                name: None,
+            },
+            hooks,
         )?;
         ctx.in_instance_method = saved_instance;
         ctx.in_static_method = saved_static;

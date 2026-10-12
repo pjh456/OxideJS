@@ -1,7 +1,7 @@
 //! 函数声明语句 emit：`emit_function_declaration_statement` 创建闭包并绑定函数名。
 
 use crate::symbol_table::ScopeKind;
-use crate::{CompileCtx, Emitter, ParamSpec};
+use crate::{CompileCtx, Emitter, FunctionBodyContext, FunctionFlags, ParamSpec};
 use oxide_bytecode::opcode::OpCode;
 use oxide_ir::inst::Inst;
 use oxide_ir::operand::Operand;
@@ -151,15 +151,15 @@ impl Emitter {
         }
         let body_stmts: &[Statement] = if let Some(body) = &fd.body { &body.statements } else { &[] };
         let own_strict = fd.has_use_strict_directive();
-        let mut sub_module = if fd.generator && fd.r#async {
-            self.compile_async_generator_body(&param_names, body_stmts, ctx, own_strict, Some(name))?
-        } else if fd.generator {
-            self.compile_generator_body(&param_names, body_stmts, ctx, own_strict, Some(name))?
-        } else if fd.r#async {
-            self.compile_async_body(&param_names, body_stmts, ctx, false, false, own_strict, Some(name))?
-        } else {
-            self.compile_function_body(&param_names, body_stmts, ctx, false, false, own_strict, Some(name))?
+        let flags = FunctionFlags {
+            is_expression_body: false,
+            is_generator: fd.generator,
+            is_async: fd.r#async,
+            own_strict,
+            name: Some(name),
         };
+        let mut sub_module =
+            self.compile_simple_function_body(&param_names, body_stmts, ctx, FunctionBodyContext::Ordinary, flags)?;
         sub_module.function_name = Some(name.to_string());
         ctx.nested.push(sub_module);
         ctx.inst(Inst::create_closure(Operand::Reg(reg), ctx.nested.len() as u16));
