@@ -2,9 +2,7 @@
 //!
 //! 函数：`emit_class`。
 
-use crate::{
-    symbol_table::ScopeKind, ClassElementHooks, CompileCtx, Emitter, FunctionBodyContext, FunctionFlags,
-};
+use crate::{symbol_table::ScopeKind, ClassElementHooks, CompileCtx, Emitter, FunctionBodyContext, FunctionFlags};
 use oxide_bytecode::module::Constant;
 use oxide_bytecode::opcode::OpCode;
 use oxide_ir::inst::Inst;
@@ -299,14 +297,8 @@ impl Emitter {
                 ctor_hooks,
             )?
         } else {
-            let mut module = self.compile_function_body(
-                &[],
-                &[],
-                ctx,
-                FunctionBodyContext::ClassElement,
-                ctor_flags,
-                ctor_hooks,
-            )?;
+            let mut module =
+                self.compile_function_body(&[], &[], ctx, FunctionBodyContext::ClassElement, ctor_flags, ctor_hooks)?;
             if is_derived {
                 module.insts.clear();
                 module.constants.clear();

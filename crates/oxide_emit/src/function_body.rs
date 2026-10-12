@@ -202,13 +202,8 @@ impl Emitter {
     /// vreg 化后临时值不复用（独立 vreg），但 builtin 槽预注册仍保证分配序稳定：
     /// builtin 槽先于临时值池，嵌套函数继承边界不受扰。
     pub(crate) fn compile_function_body<'a, E>(
-        &self,
-        param_specs: &[ParamSpec<'a>],
-        body_stmts: &[Statement<'a>],
-        parent_ctx: &CompileCtx,
-        body_context: FunctionBodyContext,
-        flags: FunctionFlags<'a>,
-        hooks: ClassElementHooks<'a, E>,
+        &self, param_specs: &[ParamSpec<'a>], body_stmts: &[Statement<'a>], parent_ctx: &CompileCtx,
+        body_context: FunctionBodyContext, flags: FunctionFlags<'a>, hooks: ClassElementHooks<'a, E>,
     ) -> Result<IRFunction, String>
     where
         E: FnMut(&Emitter, &mut CompileCtx) -> Result<(), String>,
@@ -218,9 +213,8 @@ impl Emitter {
         ctx.is_async = flags.is_async;
         // 函数 strict = 自身 directive ‖ 外层严格（规范不可解除）；
         // 类元素方法/构造器恒 strict（ClassBody 是严格模式代码）。
-        ctx.is_strict = flags.own_strict
-            || matches!(body_context, FunctionBodyContext::ClassElement)
-            || parent_ctx.is_strict;
+        ctx.is_strict =
+            flags.own_strict || matches!(body_context, FunctionBodyContext::ClassElement) || parent_ctx.is_strict;
 
         // 形参名集（含解构叶子与 rest）：块级函数名同名的 web-compat 守卫查此集。
         let mut param_names = HashSet::new();
@@ -504,21 +498,10 @@ impl Emitter {
 
     /// 非类元素函数体便捷入口：空钩子，等价于核心入口传 `ClassElementHooks::none()`。
     pub(crate) fn compile_simple_function_body<'a>(
-        &self,
-        param_specs: &[ParamSpec<'a>],
-        body_stmts: &[Statement<'a>],
-        parent_ctx: &CompileCtx,
-        body_context: FunctionBodyContext,
-        flags: FunctionFlags<'a>,
+        &self, param_specs: &[ParamSpec<'a>], body_stmts: &[Statement<'a>], parent_ctx: &CompileCtx,
+        body_context: FunctionBodyContext, flags: FunctionFlags<'a>,
     ) -> Result<IRFunction, String> {
-        self.compile_function_body(
-            param_specs,
-            body_stmts,
-            parent_ctx,
-            body_context,
-            flags,
-            ClassElementHooks::none(),
-        )
+        self.compile_function_body(param_specs, body_stmts, parent_ctx, body_context, flags, ClassElementHooks::none())
     }
 
     /// 规范 `argumentsObjNeeded` 的引擎判据：函数作用域是否声明 `arguments`
