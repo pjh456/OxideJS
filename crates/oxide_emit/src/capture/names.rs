@@ -476,16 +476,8 @@ mod tests {
     /// 夹具：parse 源串后断言单趟八输出与钉值逐位一致（脚本口径）。
     #[allow(clippy::too_many_arguments)]
     fn assert_scope_names(
-        src: &str,
-        params: &[&str],
-        var: &[&str],
-        own: &[&str],
-        blk: &[&str],
-        lex: &[&str],
-        top: &[&str],
-        topo: &[&str],
-        bfn: &[&str],
-        sup: &[&str],
+        src: &str, params: &[&str], var: &[&str], own: &[&str], blk: &[&str], lex: &[&str], top: &[&str],
+        topo: &[&str], bfn: &[&str], sup: &[&str],
     ) {
         assert_names(src, params, false, var, own, blk, lex, top, topo, bfn, sup);
     }
@@ -493,33 +485,16 @@ mod tests {
     /// 夹具：parse 源串后断言单趟八输出与钉值逐位一致（模块口径）。
     #[allow(clippy::too_many_arguments)]
     fn assert_scope_names_module(
-        src: &str,
-        params: &[&str],
-        var: &[&str],
-        own: &[&str],
-        blk: &[&str],
-        lex: &[&str],
-        top: &[&str],
-        topo: &[&str],
-        bfn: &[&str],
-        sup: &[&str],
+        src: &str, params: &[&str], var: &[&str], own: &[&str], blk: &[&str], lex: &[&str], top: &[&str],
+        topo: &[&str], bfn: &[&str], sup: &[&str],
     ) {
         assert_names(src, params, true, var, own, blk, lex, top, topo, bfn, sup);
     }
 
     #[allow(clippy::too_many_arguments)]
     fn assert_names(
-        src: &str,
-        params: &[&str],
-        is_module: bool,
-        var: &[&str],
-        own: &[&str],
-        blk: &[&str],
-        lex: &[&str],
-        top: &[&str],
-        topo: &[&str],
-        bfn: &[&str],
-        sup: &[&str],
+        src: &str, params: &[&str], is_module: bool, var: &[&str], own: &[&str], blk: &[&str], lex: &[&str],
+        top: &[&str], topo: &[&str], bfn: &[&str], sup: &[&str],
     ) {
         let alloc = oxide_parser::Allocator::default();
         let program = if is_module {
@@ -679,9 +654,31 @@ mod tests {
             &[],
             &["b", "e"],
         );
-        assert_scope_names("try { var a; } catch { let b; }", &[], &["a"], &["a", "b"], &["b"], &[], &[], &[], &[], &["b"],);
-        assert_scope_names("L: { var a; let b; }", &[], &["a"], &["a", "b"], &["b"], &[], &[], &[], &[], &["b"],);
-        assert_scope_names("with (obj) { var a; let b; }", &[], &["a"], &["a", "b"], &["b"], &[], &[], &[], &[], &["b"],);
+        assert_scope_names(
+            "try { var a; } catch { let b; }",
+            &[],
+            &["a"],
+            &["a", "b"],
+            &["b"],
+            &[],
+            &[],
+            &[],
+            &[],
+            &["b"],
+        );
+        assert_scope_names("L: { var a; let b; }", &[], &["a"], &["a", "b"], &["b"], &[], &[], &[], &[], &["b"]);
+        assert_scope_names(
+            "with (obj) { var a; let b; }",
+            &[],
+            &["a"],
+            &["a", "b"],
+            &["b"],
+            &[],
+            &[],
+            &[],
+            &[],
+            &["b"],
+        );
     }
 
     /// 嵌套块面：块内 let/const/class 是块级绑定，顶层直接子不纳。
@@ -752,20 +749,9 @@ mod tests {
             &[],
             &["p", "q", "r"],
         );
-        assert_scope_names("var x = 1;", &["x", "y"], &["x"], &["x", "y"], &[], &[], &[], &[], &[], &["x", "y"],);
+        assert_scope_names("var x = 1;", &["x", "y"], &["x"], &["x", "y"], &[], &[], &[], &[], &[], &["x", "y"]);
         // 内层 var 在嵌套函数体内，不提升收集；形参名注入 own 面与抑制面。
-        assert_scope_names(
-            "function f() { var p; }",
-            &["p"],
-            &[],
-            &["f", "p"],
-            &[],
-            &[],
-            &["f"],
-            &["f"],
-            &[],
-            &["p"],
-        );
+        assert_scope_names("function f() { var p; }", &["p"], &[], &["f", "p"], &[], &[], &["f"], &["f"], &[], &["p"]);
     }
 
     /// 块函数面：源序去重、各控制流下钻、async/生成器排除、直接子排除、嵌套函数不递归。
@@ -888,18 +874,7 @@ mod tests {
             &["shadow"],
             &["shadow"],
         );
-        assert_scope_names(
-            "class C {} { function C() {} }",
-            &[],
-            &[],
-            &["C"],
-            &[],
-            &["C"],
-            &[],
-            &[],
-            &["C"],
-            &["C"],
-        );
+        assert_scope_names("class C {} { function C() {} }", &[], &[], &["C"], &[], &["C"], &[], &[], &["C"], &["C"]);
         assert_scope_names(
             "for (let s;;) { function s() {} }",
             &[],
@@ -1021,18 +996,7 @@ mod tests {
             &[],
             &[],
         );
-        assert_scope_names_module(
-            "export default class K {}",
-            &[],
-            &[],
-            &["K"],
-            &[],
-            &["K"],
-            &[],
-            &[],
-            &[],
-            &[],
-        );
+        assert_scope_names_module("export default class K {}", &[], &[], &["K"], &[], &["K"], &[], &[], &[], &[]);
         assert_scope_names_module(
             "import a from 'm'; export var b = 1; function c() {}",
             &[],

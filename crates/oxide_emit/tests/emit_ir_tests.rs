@@ -384,11 +384,7 @@ fn block_fn_suppressed_by_destructured_param_leaf() {
     // 撞解构叶名：叶名绑定（1）+ 块函数物化自写（1）= 2，无外层 var 写回。
     let suppressed = emit_ir("function f({x}) { { function x() { return 1; } } return 2; }");
     let f = &suppressed.nested[0];
-    assert_eq!(
-        count_op(&f.insts, OpCode::STORE_VAR),
-        2,
-        "撞解构叶名的块函数被抑制：无外层 var 写回"
-    );
+    assert_eq!(count_op(&f.insts, OpCode::STORE_VAR), 2, "撞解构叶名的块函数被抑制：无外层 var 写回");
 
     // 非抑制对照：入口 undefined 写（1）+ 块函数物化自写（1）+ 外层 var 写回（1）= 3。
     let control = emit_ir("function f() { { function y() { return 1; } } return 2; }");
