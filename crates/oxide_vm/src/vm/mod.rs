@@ -9,7 +9,6 @@ use std::sync::Arc;
 #[cfg(test)]
 use std::sync::OnceLock;
 
-#[cfg(test)]
 use oxide_bytecode::module::CompiledModule;
 use oxide_bytecode::opcode;
 use smallvec::SmallVec;
@@ -185,6 +184,27 @@ pub(crate) enum DisposeResumeKind {
     Escape(Completion),
 }
 
+/// 模块级装载缓存条目：常量池与 si 侧表各存一份，BigInt 存储随条目自持。
+///
+/// 生命周期与 Vm 同消亡（跨 `full_reset` 存活）：常量 BigInt 不在
+/// `session_bigint_ptrs` 内，session 拆除不悬垂；`Drop for Vm` 随条目 Vec 整体
+/// 释放，无手工 `Box::from_raw`、无双放。
+pub(crate) struct ModuleLoadEntry {
+    /// 保持模块 Arc 存活：键指针在条目存活期内恒有效，杜绝分配器复用旧指针
+    /// 撞出新模块的假命中。不得为省一个 Arc 引用而改为裸指针键。
+    /// 只保活不读值。
+    #[allow(dead_code)]
+    pub(crate) module: Arc<CompiledModule>,
+    /// 已转换常量池（BigInt 条目指针指向 bigint_storage 内对应元素）。
+    pub(crate) immutables: Arc<Vec<JsValue>>,
+    /// BigInt 存储：immutables 中 BigInt 指针的宿主（下标一一对应），
+    /// 由缓存条目独占，随 Vm 消亡。
+    #[allow(dead_code)]
+    pub(crate) bigint_storage: Arc<Vec<num_bigint::BigInt>>,
+    /// NEW_OBJECT 静态键 si 侧表（纯 u32，无 GC 边）。
+    pub(crate) si_table: Arc<Vec<Option<u32>>>,
+}
+
 /// 基于寄存器的 JS 虚拟机：持有执行状态、寄存器文件、调用栈与 session 内存。
 ///
 /// 执行入口为 [`Vm::run`]（见 `vm_runtime` 模块）；内存模型为统一入口分配 +
@@ -198,8 +218,9 @@ pub struct Vm {
     /// 零拷贝），子模块平表源保持惰性 COW，IC 写回经 `bytecode_mut` 的
     /// `Arc::make_mut` 写时复制，保证独占后才改写（miss 时才深拷贝，频率低）。
     pub(crate) bytecode: Arc<[opcode::Instr]>,
-    /// 当前活动模块已转换不可变常量的只读视图（指向当前表代际的 immutables 内部）。
-    /// 用胖 `*const`：常量 Vec 归表代际所有且 OnceLock 只填一次（堆分配地址稳定）。
+    /// 当前活动模块已转换不可变常量的只读视图（指向模块级装载缓存条目的
+    /// 常量 Vec 内部）。用胖 `*const`：常量 Vec 归缓存条目所有（随 Vm 同消亡、
+    /// 跨 full_reset 存活）且只填充一次（堆分配地址稳定）。
     pub(crate) active_immutables: *const [JsValue],
     pub(crate) frames: SmallVec<[CallFrame; 16]>,
     /// 帧身份单调计数器：压帧时分配 `CallFrame.frame_id`（mapped arguments 状态盒
@@ -247,6 +268,13 @@ pub struct Vm {
     /// 存活函数对象引用的代际（`reclaim_unreferenced_tables`），内存有界于
     /// 存活函数对象数，不随 run 数单调增。
     pub(crate) tables: HashMap<u32, Box<TableGen>>,
+    /// 模块级装载缓存：键 = 编译模块 Arc 指针身份，条目自持模块 Arc 防指针
+    /// 复用撞键。命中时零转换、零字节码扫描、零 BigInt 分配；未命中时转换一次
+    /// 并填缓存。生命周期与 Vm 同消亡：`full_reset` 的 `teardown_session_heap_data`
+    /// 不触碰条目 BigInt 存储（不在 `session_bigint_ptrs` 内），拆除不悬垂。
+    /// 条目数有界于该 Vm 跑过的不同模块数（CodeForge 容量加动态编译面），
+    /// 不随 run 数增长。
+    pub(crate) module_cache: HashMap<*const CompiledModule, ModuleLoadEntry>,
     /// 当前 run 正在装载的表代际（构造器预登记 gen 0 空表占位，run() 换表时 +1）。
     pub(crate) current_gen: u32,
     /// 帧切换时暂存调用方字节码的 Arc 栈（与 `bytecode` 同共享语义）。
@@ -495,6 +523,11 @@ impl Drop for Vm {
 // 6. worker_objects 字段（HashMap<u64, JsValue>）持本 Vm session 堆的 Worker
 //    对象指针，归不变量 1 覆盖：对象由本 Vm 独占分配、地址稳定、随 Vm 整体
 //    迁移，跨线程移动不悬垂。
+//
+// 7. module_cache 字段（HashMap<*const CompiledModule, ModuleLoadEntry>）：
+//    条目自持模块 Arc 与常量 BigInt 存储（Vec<BigInt>），存储随 Vm 整体迁移
+//    （同不变量 1 条款：Vm 独占分配、地址稳定、跨线程移动不悬垂）；键是
+//    Arc 指针身份，条目自持 Arc 保证键指针在条目存活期内不被分配器复用。
 unsafe impl Send for Vm {}
 
 impl Vm {

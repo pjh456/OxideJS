@@ -476,7 +476,7 @@ impl Vm {
         }
         self.pc = 0;
         self.bytecode = Arc::clone(&sub.bytecode);
-        self.activate_immutables(gen, sub_idx, &sub.constants);
+        self.activate_immutables(gen, sub_idx, &sub);
         self.active_flat_id = sub_idx as u32;
         self.active_table_gen = gen;
         self.active_reg_limit = sub.n_registers.max(1);
@@ -726,7 +726,7 @@ impl Vm {
         } else {
             self.bytecode = Arc::clone(&module.bytecode);
         }
-        self.activate_immutables(self.current_gen, 0, &module.constants);
+        self.activate_immutables(self.current_gen, 0, module);
         self.root_reg_limit = module.n_registers.max(1);
         self.active_reg_limit = self.root_reg_limit;
 

@@ -4,7 +4,7 @@ use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::sync::Arc;
 
-use oxide_bytecode::module::Constant;
+use oxide_bytecode::module::{CompiledModule, Constant};
 
 use crate::bindings;
 use crate::realm::Realm;
@@ -75,6 +75,10 @@ impl FunctionFlags {
         self.0 & Self::DERIVED_CONSTRUCTOR != 0
     }
 }
+
+/// 模块级装载缓存条目三件套：已转换常量池、BigInt 自持存储、si 侧表。
+pub(crate) type ModuleLoadTriple =
+    (Arc<Vec<JsValue>>, Arc<Vec<num_bigint::BigInt>>, Arc<Vec<Option<u32>>>);
 
 impl Vm {
     /// Cons（rope）节点保留的单元阈值：拼接总长（UTF-16 单元数）≤ 该值时
@@ -177,6 +181,7 @@ impl Vm {
                     si_tables: Vec::new(),
                 }),
             )]),
+            module_cache: std::collections::HashMap::new(),
             current_gen: 0,
             saved_bytecode_stack: Vec::new(),
             saved_immutables_stack: Vec::new(),
@@ -344,6 +349,7 @@ impl Vm {
                     si_tables: Vec::new(),
                 }),
             )]),
+            module_cache: std::collections::HashMap::new(),
             current_gen: 0,
             saved_bytecode_stack: Vec::new(),
             saved_immutables_stack: Vec::new(),
@@ -524,6 +530,9 @@ impl Vm {
         self.bytecode = Arc::default();
         // 注册表随 session 重建整体清空：session 对象（唯一按代际保活表者）全部
         // 消失，残留表无引用源。回到构造期同态：gen 0 空表占位 + current_gen = 0。
+        // 模块级装载缓存（module_cache）此处**不得**清空：条目 BigInt 存储归条目
+        // 自持（不在 session_bigint_ptrs 内），session 拆除不悬垂；误清则收益归零
+        // （同模块跨 run 重装退化回每 run 全量重转换），无正确性错误。
         self.tables.clear();
         self.current_gen = 0;
         self.tables.insert(
@@ -922,7 +931,8 @@ impl Vm {
     /// 分配一个 BigInt 值：把 `i128` 堆分配为 box 并返回携带指针的 `JsValue`。
     ///
     /// box 指针登记进 `realm.gc.session_bigint_ptrs`，在 `full_reset` 统一释放。
-    /// `&self` 使 `convert_immutables`（常量池 → JsValue）也能分配。
+    /// `&self` 供运行时面调用（`BigInt(42)` 字面量、算术结果等）；模块常量池
+    /// BigInt 走模块级装载缓存的条目自持存储，不经本入口。
     pub fn new_bigint(&self, v: num_bigint::BigInt) -> JsValue {
         let ptr = Box::into_raw(Box::new(v));
         self.realm.gc.borrow_mut().session_bigint_ptrs.borrow_mut().push(ptr);
@@ -935,23 +945,51 @@ impl Vm {
         unsafe { &*val.as_bigint_ptr() }
     }
 
-    fn convert_constant(&self, constant: &Constant) -> JsValue {
-        match constant {
-            Constant::Number(v) => JsValue::float(*v),
-            Constant::Int(v) => JsValue::int(*v),
-            Constant::BigInt(v) => self.new_bigint(v.clone()),
-            Constant::String(s) => self.perm_string(s),
-            Constant::Boolean(b) => JsValue::bool(*b),
-            Constant::Null => JsValue::null(),
-            Constant::Undefined => JsValue::undefined(),
+    /// 把模块常量池转换为模块级装载缓存条目三件套：已转换常量池、
+    /// BigInt 自持存储、si 侧表。不可能失败——CreateClosure/CreateRegExp
+    /// 已把函数与正则移出常量池，池中只剩标量 + 永久 intern 字符串值。
+    ///
+    /// # 步骤
+    /// 1. 按常量池 BigInt 计数精确预分配自持存储（`push` 后取地址作指针，
+    ///    存储扩容即指针悬垂）。
+    /// 2. 逐常量转换：标量臂与既有口径一致；BigInt 条目入自持存储，
+    ///    指针指向存储内对应元素。
+    /// 3. 经 `fill_si_table` 同口径填充 si 侧表。
+    ///
+    /// # 注意事项
+    /// - BigInt 常量只写条目自持存储，不登记 `session_bigint_ptrs`：
+    ///   `new_bigint` 保持运行时专属（`BigInt(42)` 字面量、算术结果等），
+    ///   两表 box 生命周期不相交，full_reset 拆除与条目 Drop 各释各的，无双放。
+    pub(crate) fn convert_module_constants(&mut self, module: &CompiledModule) -> ModuleLoadTriple {
+        let bigint_count = module
+            .constants
+            .iter()
+            .filter(|c| matches!(c, Constant::BigInt(_)))
+            .count();
+        let mut bigint_storage = Vec::with_capacity(bigint_count);
+        let mut values = Vec::with_capacity(module.constants.len());
+        for constant in &module.constants {
+            match constant {
+                Constant::Number(v) => values.push(JsValue::float(*v)),
+                Constant::Int(v) => values.push(JsValue::int(*v)),
+                Constant::BigInt(v) => {
+                    bigint_storage.push(v.clone());
+                    // 存储按计数精确预分配、循环内不再扩容：push 后取地址，
+                    // 指针在条目存活期内恒有效。
+                    // SAFETY: 存储未扩容，as_mut_ptr 指向的缓冲在条目存活期内
+                    // 不被释放也不被搬移，加偏移取的是刚 push 的元素。
+                    let ptr = unsafe { bigint_storage.as_mut_ptr().add(bigint_storage.len() - 1) };
+                    values.push(JsValue::bigint(ptr));
+                }
+                Constant::String(s) => values.push(self.perm_string(s)),
+                Constant::Boolean(b) => values.push(JsValue::bool(*b)),
+                Constant::Null => values.push(JsValue::null()),
+                Constant::Undefined => values.push(JsValue::undefined()),
+            }
         }
-    }
-
-    /// 把模块的不可变常量池转换为 `JsValue`。不可能失败——CreateClosure/CreateRegExp
-    /// 已把函数与正则移出常量池，池中只剩标量 + 永久 intern 字符串值。`&self`
-    /// 使其可运行于 `OnceLock::get_or_init` 内部。
-    pub(crate) fn convert_immutables(&self, constants: &[Constant]) -> Vec<JsValue> {
-        constants.iter().map(|c| self.convert_constant(c)).collect()
+        let immutables = Arc::new(values);
+        let si_table = Arc::new(self.fill_si_table(&immutables, &module.bytecode));
+        (immutables, Arc::new(bigint_storage), si_table)
     }
 }
 

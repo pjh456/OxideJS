@@ -498,6 +498,51 @@ fn immutables_filled_once_per_module() {
     // 子模块常量改走 temp_immutables（避免缓存下标冲突）
 }
 
+/// 模块级装载缓存：同模块跨 run（无 full_reset）常量转换只发生一次——
+/// 常量 BigInt 入条目自持存储、不入 session 表，session 表长不随 run 数增长，
+/// 缓存条目不重复创建。
+#[test]
+fn module_cache_converts_constants_once_across_runs() {
+    let mut vm = Vm::new();
+    let module = compile_module("var x = 10n; x");
+    vm.run(&module).expect("run1");
+    // 常量 BigInt 走条目自持存储，session 表不留痕。
+    assert!(
+        vm.realm.gc.borrow().session_bigint_ptrs.borrow().is_empty(),
+        "常量 BigInt 不得登记 session 表"
+    );
+    vm.run(&module).expect("run2");
+    // 第二次 run 命中缓存：不重转换、不重登记，表长不增、条目不增。
+    assert!(
+        vm.realm.gc.borrow().session_bigint_ptrs.borrow().is_empty(),
+        "同模块跨 run 不得重复登记常量 BigInt 入 session 表"
+    );
+    assert_eq!(vm.module_cache.len(), 1, "同模块跨 run 不得新建缓存条目");
+}
+
+/// 模块级装载缓存跨 full_reset 存活：条目自持 BigInt 存储不在
+/// session_bigint_ptrs 内，session 拆除后指针不悬垂，常量值仍可读。
+#[test]
+fn module_cache_bigint_readable_after_full_reset() {
+    let mut vm = Vm::new();
+    let module = compile_module("var x = 10n; x");
+    let result = vm.run(&module).expect("run");
+    assert!(result.is_bigint());
+    vm.full_reset();
+    // full_reset 不清装载缓存：条目 BigInt 存储归条目自持，拆除不悬垂。
+    let entry = vm
+        .module_cache
+        .get(&Arc::as_ptr(&module))
+        .expect("full_reset 不得清装载缓存");
+    let v = entry
+        .immutables
+        .iter()
+        .find(|v| v.is_bigint())
+        .copied()
+        .expect("常量池含 BigInt 常量");
+    assert_eq!(vm.bigint_value(v), &num_bigint::BigInt::from(10));
+}
+
 #[test]
 fn dynamic_function_basic_arity() {
     let mut vm = Vm::new();

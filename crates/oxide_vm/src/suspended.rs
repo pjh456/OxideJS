@@ -140,11 +140,15 @@ impl SuspendedFrame {
         } else {
             vm.current_gen
         };
-        let table = vm.tables.get(&gen);
-        let module = table.and_then(|t| t.modules.get(self.sub_idx as usize));
-        let constants = module.map(|m| m.constants.clone());
-        match constants {
-            Some(c) => vm.activate_immutables(gen, self.sub_idx as usize, &c),
+        // 平表条目取 Arc 克隆（与调用方共享同一编译产物）：后续 activate_immutables
+        // 等 &mut 调用期间不持有对注册表的借用。
+        let module = vm
+            .tables
+            .get(&gen)
+            .and_then(|t| t.modules.get(self.sub_idx as usize))
+            .cloned();
+        match module {
+            Some(m) => vm.activate_immutables(gen, self.sub_idx as usize, &m),
             None => return Err("suspended state module table is no longer available".into()),
         }
         // 模板缓存键维度随模块恢复：与 activate_immutables 同位还原。

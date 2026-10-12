@@ -3,17 +3,18 @@
 
 use std::sync::{Arc, OnceLock};
 
-use oxide_bytecode::module::{CompiledModule, Constant};
+use oxide_bytecode::module::CompiledModule;
 use oxide_bytecode::opcode;
 use oxide_types::object::JsObject;
 use oxide_types::value::JsValue;
 
 use super::Vm;
 
-/// 单代子模块平表：模块平表 + 每模块不可变常量缓存，注册进 `Vm::tables` 按代际管理。
+/// 单代子模块平表：模块平表 + 每模块不可变常量缓存槽位，注册进 `Vm::tables`
+/// 按代际管理。
 ///
 /// 以 `Box` 承载（HashMap 扩容搬 Box 指针不搬被指物）：`active_immutables` 与
-/// `saved_immutables_stack` 是伸入 immutables 内部常量 Vec 的胖指针，表地址须
+/// `saved_immutables_stack` 是伸入模块级装载缓存条目常量 Vec 的胖指针，表地址须
 /// 在其整个生命周期内稳定。动态扩表（`create_dynamic_function` /
 /// `create_dynamic_script`）对 modules 外层 Arc 做 `make_mut`：彼时该 Arc 的
 /// 强引用唯一持有者是本表（函数对象只持 u32 下标不持 Arc），原地扩展不分叉。
@@ -21,15 +22,17 @@ pub(crate) struct TableGen {
     /// 全局扁平模块表：下标 = 模块 `flat_id`（顶层 0，子模块 flatten 后全局唯一）。
     /// 函数对象 `sub_module_index` 即该平表下标，逃逸函数也能自足解析。
     pub(crate) modules: Arc<Vec<Arc<CompiledModule>>>,
-    /// 每次 run 转换一次的不可变常量缓存：下标 0 = 顶层模块，sub_idx = modules[sub_idx]。
-    /// 每个 `OnceLock` 保存该模块常量本次运行中只转换一次的 `JsValue` 结果。
-    /// 不可变常量是标量 + perm 字符串，只读，GC 根收集按表代际遍历。
-    pub(crate) immutables: Vec<OnceLock<Vec<JsValue>>>,
-    /// NEW_OBJECT 静态键 si 侧表，与 `immutables` 平行（下标 = flat_id，内部下标 =
-    /// 常量池下标）：`Some(si)` 是模块装载期预 intern 的键 si，`None` 表示该常量
-    /// 不是静态键。填充与 `immutables` 激活同点（`activate_immutables`），构造期
-    /// 直读免逐构造键推导。
-    pub(crate) si_tables: Vec<OnceLock<Vec<Option<u32>>>>,
+    /// 不可变常量缓存槽位：下标 0 = 顶层模块，sub_idx = modules[sub_idx]。
+    /// 每个 `OnceLock` 克隆模块级装载缓存条目（`Vm::module_cache`）中该模块
+    /// 只转换一次的 `JsValue` 结果 Arc 入槽；槽位只作代际视图，转换本体归
+    /// 缓存条目所有（跨 `full_reset` 存活）。不可变常量是标量 + perm 字符串 +
+    /// 条目自持 BigInt，只读，GC 根收集按缓存条目遍历。
+    pub(crate) immutables: Vec<OnceLock<Arc<Vec<JsValue>>>>,
+    /// NEW_OBJECT 静态键 si 侧表槽位，与 `immutables` 平行（下标 = flat_id，
+    /// 内部下标 = 常量池下标）：`Some(si)` 是模块装载期预 intern 的键 si，
+    /// `None` 表示该常量不是静态键。填充与 `immutables` 激活同点
+    /// （`activate_immutables`），构造期直读免逐构造键推导。
+    pub(crate) si_tables: Vec<OnceLock<Arc<Vec<Option<u32>>>>>,
 }
 
 impl Vm {
@@ -39,9 +42,9 @@ impl Vm {
         if self.active_immutables.is_null() {
             &[]
         } else {
-            // SAFETY: active_immutables 指向某表代际 immutables 内 OnceLock 的常量
-            // Vec，Vec 只填充一次且堆地址稳定；所指代际表在注册表内存活（当前
-            // 代际恒在，旧代际由存活函数对象引用保活）。
+            // SAFETY: active_immutables 指向模块级装载缓存条目（module_cache）的
+            // 常量 Vec，条目随 Vm 同消亡（跨 full_reset 存活），Vec 只填充一次且
+            // 堆地址稳定。
             unsafe { &*self.active_immutables }
         }
     }
@@ -94,26 +97,43 @@ impl Vm {
         self.tables.len()
     }
 
-    /// 激活代际 `gen` 平表中模块 `cache_idx` 的不可变常量，只转换一次存入该代际
-    /// `immutables[cache_idx]`，并把 `active_immutables` 指向该 Vec。
-    /// `constants` 由调用方传入（它已持有 `&module.constants`）。
+    /// 激活代际 `gen` 平表中模块 `cache_idx` 的不可变常量，并把
+    /// `active_immutables` 指向该模块已转换常量池。
+    ///
+    /// 转换本体归模块级装载缓存（`Vm::module_cache`，以模块 Arc 指针身份为键）
+    /// 所有：命中时零转换、零字节码扫描、零 BigInt 分配；未命中时
+    /// `convert_module_constants` 转换一次并填缓存。本方法只把条目 Arc 克隆入
+    /// 该代际槽位（O(1)），槽位随代际回收，条目随 Vm 消亡。
     ///
     /// # 边界与前提
     /// - `gen` 的表须已在注册表中（当前代际由 run() 登记，旧代际由存活函数
     ///   对象引用保活）；`cache_idx` 须小于该代际平表长度。
-    pub(crate) fn activate_immutables(&mut self, gen: u32, cache_idx: usize, constants: &[Constant]) {
-        // 用裸指针访问缓存槽，避免 get_or_init（借用表 immutables）与 &self 的
-        // convert_immutables 闭包和随后对 active_immutables 的写入发生借用冲突。
-        // 成立前提：代际表归注册表所有、只读、Box 承载地址稳定。
+    /// - `module` 是平表条目同一 Arc 实例（调用方克隆），作缓存键。
+    pub(crate) fn activate_immutables(&mut self, gen: u32, cache_idx: usize, module: &Arc<CompiledModule>) {
+        // 用裸指针访问缓存槽，避免 get_or_init（借用表 immutables）与查/建
+        // module_cache 的借用发生冲突。成立前提：代际表归注册表所有、只读、
+        // Box 承载地址稳定。
         let table = self.tables.get_mut(&gen).expect("激活的代际表须在注册表中");
-        let slot: *const OnceLock<Vec<JsValue>> = &table.immutables[cache_idx];
-        // si 侧表与 immutables 同点填充：模块字节码从平表取（同裸指针手法，
-        // 平表 Arc 归注册表所有、地址稳定），预 intern 静态键 si。
-        let si_slot: *const OnceLock<Vec<Option<u32>>> = &table.si_tables[cache_idx];
-        let bc: *const [opcode::Instr] = &table.modules[cache_idx].bytecode[..];
-        let vec = unsafe { &*slot }.get_or_init(|| self.convert_immutables(constants));
-        unsafe { &*si_slot }.get_or_init(|| self.fill_si_table(vec, unsafe { &*bc }));
-        self.active_immutables = vec.as_slice() as *const [JsValue];
+        let slot: *const OnceLock<Arc<Vec<JsValue>>> = &table.immutables[cache_idx];
+        // si 侧表槽位与 immutables 同点填充（条目共享同一份 si 表 Arc）。
+        let si_slot: *const OnceLock<Arc<Vec<Option<u32>>>> = &table.si_tables[cache_idx];
+        let key = Arc::as_ptr(module);
+        let entry = match self.module_cache.get(&key) {
+            Some(e) => e,
+            None => {
+                let (immutables, bigint_storage, si_table) = self.convert_module_constants(module);
+                let new_entry = super::ModuleLoadEntry {
+                    module: Arc::clone(module),
+                    immutables,
+                    bigint_storage,
+                    si_table,
+                };
+                self.module_cache.entry(key).or_insert(new_entry)
+            }
+        };
+        unsafe { &*slot }.get_or_init(|| Arc::clone(&entry.immutables));
+        unsafe { &*si_slot }.get_or_init(|| Arc::clone(&entry.si_table));
+        self.active_immutables = entry.immutables.as_slice() as *const [JsValue];
     }
 
     /// 填充模块的 NEW_OBJECT 静态键 si 侧表：按 dispatch 主循环同口径
@@ -124,7 +144,7 @@ impl Vm {
     /// # 边界与前提
     /// - 键值取自已转换的不可变常量（`values`），与构造期读同一池。
     /// - 键推导失败（非字符串键的防御面）保持 None，构造期回退旧路径同口径重推。
-    fn fill_si_table(&mut self, values: &[JsValue], bytecode: &[opcode::Instr]) -> Vec<Option<u32>> {
+    pub(crate) fn fill_si_table(&mut self, values: &[JsValue], bytecode: &[opcode::Instr]) -> Vec<Option<u32>> {
         let mut si = vec![None; values.len()];
         let mut i = 0;
         while i < bytecode.len() {

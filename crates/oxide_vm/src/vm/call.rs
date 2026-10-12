@@ -393,7 +393,7 @@ impl Vm {
 
         self.pc = 0;
         self.bytecode = sub_bytecode;
-        self.activate_immutables(gen, sub_idx, &sub.constants);
+        self.activate_immutables(gen, sub_idx, &sub);
         self.cell_stack.push(Vec::with_capacity(sub.cells_needed as usize));
         self.reload_builtin_mirror_slots(&sub.builtin_reg_map, 0);
 

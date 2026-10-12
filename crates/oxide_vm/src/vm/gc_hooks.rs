@@ -61,15 +61,12 @@ impl Vm {
         for value in &self.regs {
             f(RootGroup::Regs, *value);
         }
-        // 各代际 immutables 缓存含 session BigInt（new_bigint 分配），未入根则被
-        // sweep 释放 → 常量池加载时悬垂。perm 字符串无害（不在 session 集合中）。
-        for table in self.tables.values() {
-            for once_lock in &table.immutables {
-                if let Some(immutable_vec) = once_lock.get() {
-                    for &value in immutable_vec.iter() {
-                        f(RootGroup::Immutables, value);
-                    }
-                }
+        // 模块级装载缓存的常量池含 BigInt（条目自持存储，不在 session_bigint_ptrs
+        // 内）：未入根则逐组计数失真（BigInt 不在串表内、sweep 不触达，无悬垂）。
+        // perm 字符串无害（不在 session 集合中）。
+        for entry in self.module_cache.values() {
+            for &value in entry.immutables.iter() {
+                f(RootGroup::Immutables, value);
             }
         }
         for frame in &self.frames {
@@ -265,6 +262,9 @@ impl Vm {
     /// O(1) 读，供单 run 分配上限判定。收集释放后读数回落存活集量级；
     /// 轻量 reset 保留账目与表（仅复位峰值与水位），full_reset 清零重起算。
     ///
+    /// 注意：BigInt 表长分量不含模块级装载缓存的常量 BigInt（条目自持存储，
+    /// 一次性装载成本、非 run 内分配），单 run 分配上限语义为此略放宽，可接受。
+    ///
     /// 注意：手工堆账目只在对象分配/字符串分配/GC 回收点更新，执行期对象
     /// 属性区（元素/属性向量扩容）增长对其不可见——上限判定须配合
     /// [`Self::run_alloc_bytes_full`] 的深采样层。
@@ -286,7 +286,8 @@ impl Vm {
     /// 存活对象头加堆数据（属性/元素/meta 向量容量、upvalue 列表容量、native
     /// 状态盒）+ 存活串（头加 payload）+ BigInt 表长 × 尺寸 + cell 表长 ×
     /// 尺寸。重算即属性区扩容等账目盲区的兜底，读数为当前真实总量，零增长时
-    /// 与 [`Self::run_alloc_bytes`] 的轻层公式逐位相等。
+    /// 与 [`Self::run_alloc_bytes`] 的轻层公式逐位相等。BigInt 表长分量同
+    /// 轻层口径：不含模块级装载缓存的常量 BigInt（条目自持存储）。
     pub(crate) fn run_alloc_bytes_full(&self) -> u64 {
         let mut bytes = 0u64;
         for &ptr in self.realm.gc.borrow().session_object_ptrs.iter() {
