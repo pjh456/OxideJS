@@ -4,6 +4,8 @@ mod error;
 mod parser_log;
 mod redeclaration_filter;
 
+use std::cell::{Cell, UnsafeCell};
+
 /// 解析错误：消息 + 源文件字节区间（起始，结束）。
 pub use error::OxideError;
 /// 重导出 `oxc_allocator::Allocator`：AST 节点的 bump 分配器，解析产物生命周期由其决定。
@@ -12,6 +14,59 @@ pub use oxc_allocator::Allocator;
 pub use oxc_ast::ast::*;
 /// 重导出 `oxc_span::Span`：源码中的位置区间。
 pub use oxc_span::Span;
+
+// 线程本地持久 bump 分配器：解析入口共享该分配器，chunk 内存按线程
+// 高水位保留复用，稳态解析不再走全局分配器。
+//
+// 分配器存于 `UnsafeCell`：唯一可变操作 `reset()` 只在最外层（深度为零）
+// 调用，彼时尚无共享引用存活；闭包执行期间只产生共享 `&Allocator` 引用
+// （重入不再 reset），共享引用可别名，无 `&`/`&mut` 混用。
+// 重入深度独立存于 `Cell`（`Copy` 类型内部可变），嵌套读写不产生借用冲突。
+thread_local! {
+    static PARSE_ALLOCATOR: UnsafeCell<Allocator> = UnsafeCell::new(Allocator::new());
+    static PARSE_DEPTH: Cell<usize> = const { Cell::new(0) };
+}
+
+/// 重入深度守卫：出口（含 panic 展开）把深度减一，防深度泄漏。
+struct DepthGuard<'a>(&'a Cell<usize>);
+
+impl Drop for DepthGuard<'_> {
+    fn drop(&mut self) {
+        self.0.set(self.0.get() - 1);
+    }
+}
+
+/// 在线程本地分配器上执行一次解析上下文：闭包内完成解析与编译，
+/// AST 生命周期被闭包边界约束。
+///
+/// # 边界与前提
+/// - 闭包不得把 AST 逃逸出闭包边界：下一次顶层入口会 reset 分配器。
+/// - 闭包内重入本助手（嵌套解析）安全：深度非零时跳过 reset，
+///   嵌套解析共享同一分配器，AST 在外层退出前全部有效。
+///
+/// # 副作用
+/// - 深度为零时 reset 分配器（bump 指针归零，高水位 chunk 保留）；
+///   重入深度入口加一、出口减一（含 panic 展开路径）。
+pub fn with_parse_allocator<R, F>(f: F) -> R
+where
+    F: for<'a> FnOnce(&'a Allocator) -> R,
+{
+    PARSE_DEPTH.with(|depth| {
+        let is_root = depth.get() == 0;
+        depth.set(depth.get() + 1);
+        let _guard = DepthGuard(depth);
+        PARSE_ALLOCATOR.with(|cell| {
+            let ptr = cell.get();
+            // reset 只在最外层执行：此刻尚无共享引用存活，`&mut` 独占安全。
+            if is_root {
+                unsafe { (*ptr).reset() };
+            }
+            // 共享引用跨闭包存活；重入只再产生共享引用，无 `&mut` 混用。
+            let alloc = unsafe { &*ptr };
+            f(alloc)
+        })
+    })
+}
 
 /// 把 `source` 解析为 AST 根节点 `Program`，AST 分配在 `allocator` 中。
 ///

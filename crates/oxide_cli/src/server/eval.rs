@@ -12,7 +12,6 @@ use std::sync::Arc;
 
 use oxide_compiler::compiler::{compiled_module_hash, Compiler};
 use oxide_kernel::kernel::KernelCore;
-use oxide_parser::Allocator;
 use oxide_vm::vm_pool::VmPool;
 
 use super::protocol::ServerResponse;
@@ -20,7 +19,7 @@ use super::protocol::ServerResponse;
 /// 执行请求处理：解析 → 编译 → 取 VM → 执行 → 渲染完成值 → 归还池的六段路径。
 ///
 /// # 步骤
-/// 1. parse：局部分配器加 `oxide_parser::parse`，失败时各条错误换行拼接成错误帧。
+/// 1. parse：线程本地分配器加 `oxide_parser::parse`，失败时各条错误换行拼接成错误帧。
 /// 2. compile：`Compiler` 加 `CodeForge` 结构哈希缓存，失败以原文成错误帧。
 /// 3. spawn：从池取 `VmGuard`（闭包内创建，panic 时随展开被 drop）。
 /// 4. run：设每请求步数覆盖（含 None）后 `run`，`Err` 即错误帧。
@@ -38,22 +37,22 @@ use super::protocol::ServerResponse;
 /// - release 下 `panic=abort` 使 `catch_unwind` 空操作，watchdog 是崩溃后恢复的唯一自动手段。
 pub fn handle_eval(code: &str, max_steps: Option<u64>, kernel: &Arc<KernelCore>, pool: &Arc<VmPool>) -> ServerResponse {
     let response = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        // parse：局部分配器，解析失败各条换行拼接成错误帧。
-        let allocator = Allocator::default();
-        let program = match oxide_parser::parse(&allocator, code) {
-            Ok(program) => program,
-            Err(errors) => {
+        // parse + compile：线程本地分配器，AST 生命周期被闭包边界约束（不逃逸）。
+        // 解析失败各条换行拼接成错误帧，编译失败以原文成错误帧。
+        let module = match oxide_parser::with_parse_allocator(|allocator| {
+            let program = oxide_parser::parse(allocator, code).map_err(|errors| {
                 let message = errors.iter().map(|e| e.to_string()).collect::<Vec<_>>().join("\n");
-                return ServerResponse::eval_err(message);
-            }
-        };
-
-        // compile：结构哈希缓存，失败以原文成错误帧。
-        let compiler = Compiler::new();
-        let hash = compiled_module_hash(&program);
-        let module = match kernel.code_forge().get_or_insert_with(hash, || compiler.compile(&program)) {
+                ServerResponse::eval_err(message)
+            })?;
+            let compiler = Compiler::new();
+            let hash = compiled_module_hash(&program);
+            kernel
+                .code_forge()
+                .get_or_insert_with(hash, || compiler.compile(&program))
+                .map_err(ServerResponse::eval_err)
+        }) {
             Ok(module) => module,
-            Err(message) => return ServerResponse::eval_err(message),
+            Err(response) => return response,
         };
 
         // spawn：从池取 VM；guard 在闭包内创建，panic 时随展开被 drop。

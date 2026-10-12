@@ -958,27 +958,30 @@ impl Emitter {
     fn compile_js_dep(
         &self, resolved: &ResolvedModule, loader: &mut dyn ModuleSourceLoader, path_stack: &mut Vec<String>,
     ) -> Result<(IRFunction, bool, HashSet<String>, HashSet<String>), String> {
-        let alloc = oxide_parser::Allocator::default();
-        let program = oxide_parser::parse_module(&alloc, &resolved.source).map_err(|errs| {
-            format!(
-                "module parse error: {}",
-                errs.first().map(|e| e.message.as_str()).unwrap_or("parse failed")
-            )
-        })?;
-        let mut ctx = CompileCtx::new();
-        ctx.is_global_scope = false;
-        // 依赖模块经 parse_module 解析，顶层恒严格模式。
-        ctx.is_strict = true;
-        self.emit_module_into_ctx(&program, &resolved.path, loader, path_stack, &mut ctx, false)?;
-        let reassignable = ctx.module_live_dep;
-        let own_export_names = module_own_export_names(&program.body);
-        let var_scoped = module_var_scoped_export_names(&program.body);
-        Ok((
-            ctx.assemble_ir(ParamLayout { base: 0, count: 0 }, None),
-            reassignable,
-            own_export_names,
-            var_scoped,
-        ))
+        // 线程本地分配器：依赖模块递归解析共享同一分配器，
+        // 重入深度守卫防止嵌套 reset 销毁外层 AST。
+        oxide_parser::with_parse_allocator(|alloc| {
+            let program = oxide_parser::parse_module(alloc, &resolved.source).map_err(|errs| {
+                format!(
+                    "module parse error: {}",
+                    errs.first().map(|e| e.message.as_str()).unwrap_or("parse failed")
+                )
+            })?;
+            let mut ctx = CompileCtx::new();
+            ctx.is_global_scope = false;
+            // 依赖模块经 parse_module 解析，顶层恒严格模式。
+            ctx.is_strict = true;
+            self.emit_module_into_ctx(&program, &resolved.path, loader, path_stack, &mut ctx, false)?;
+            let reassignable = ctx.module_live_dep;
+            let own_export_names = module_own_export_names(&program.body);
+            let var_scoped = module_var_scoped_export_names(&program.body);
+            Ok((
+                ctx.assemble_ir(ParamLayout { base: 0, count: 0 }, None),
+                reassignable,
+                own_export_names,
+                var_scoped,
+            ))
+        })
     }
 
     /// 发 defer 预注册：对 deferred namespace 对象逐名 `__modulePreRegister`，

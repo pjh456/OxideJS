@@ -68,16 +68,16 @@ impl Engine {
     /// 构造传入，无缺省臂，漏传即旗标失效。
     ///
     /// # 步骤
-    /// 1. 局部分配器上解析源码为 Program。
+    /// 1. 线程本地分配器上解析源码为 Program。
     /// 2. 结构哈希作缓存键，CodeForge 未命中时调给定编译器编译并缓存。
     pub fn compile_with(&self, source: &str, compiler: &Compiler) -> Result<Arc<CompiledModule>, String> {
-        // 局部分配器：AST 节点经 oxc bump 分配器分配，编译完成即弃。
-        let allocator = oxide_parser::Allocator::default();
-        let program = oxide_parser::parse(&allocator, source)
-            .map_err(|errs| errs.into_iter().map(|e| e.message).collect::<Vec<_>>().join("\n"))?;
+        oxide_parser::with_parse_allocator(|allocator| {
+            let program = oxide_parser::parse(allocator, source)
+                .map_err(|errs| errs.into_iter().map(|e| e.message).collect::<Vec<_>>().join("\n"))?;
 
-        let hash = compiled_module_hash(&program);
-        self.kernel.code_forge().get_or_insert_with(hash, || compiler.compile(&program))
+            let hash = compiled_module_hash(&program);
+            self.kernel.code_forge().get_or_insert_with(hash, || compiler.compile(&program))
+        })
     }
 
     /// 编译 + 池借出 Vm 执行，返回完成值（eval 便捷路径）。

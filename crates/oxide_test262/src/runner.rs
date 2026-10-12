@@ -145,30 +145,35 @@ fn run_test_inner(
                 return TestResult::skip(path.to_path_buf(), e);
             }
         };
-        let alloc = oxide_parser::Allocator::default();
-        let program = match oxide_parser::parse_module(&alloc, &code) {
-            Ok(p) => p,
-            Err(errs) => {
+        // 线程本地分配器：解析与编译同闭包内完成，AST 生命周期被闭包边界约束。
+        // 闭包返回模块列表或提前判定的结果，外层拆包：Ok 取模块，Err 直接返回结果。
+        match oxide_parser::with_parse_allocator(|alloc| {
+            // 解析模块：解析失败按 negative 元数据判定 pass/fail，短路返回。
+            let program = oxide_parser::parse_module(alloc, &code).map_err(|errs| {
                 let dur = start.elapsed().as_millis() as u64;
                 let msg = format!("parse error: {}", errs[0].message);
                 if meta.negative.is_some() {
-                    return TestResult::pass(path.to_path_buf(), dur, msg);
+                    TestResult::pass(path.to_path_buf(), dur, msg)
+                } else {
+                    TestResult::fail(path.to_path_buf(), dur, msg)
                 }
-                return TestResult::fail(path.to_path_buf(), dur, msg);
-            }
-        };
-        let mut loader = Test262ModuleLoader;
-        match compiler.compile_module(&program, path.to_string_lossy().as_ref(), &mut loader) {
-            Ok(m) => vec![Arc::new(m)],
-            Err(e) => {
-                let dur = start.elapsed().as_millis() as u64;
-                let msg = format!("compile error: {e}");
-                match classify_compile_error(&msg, meta.negative.is_some(), no_skip) {
-                    TestOutcome::Pass(m) => return TestResult::pass(path.to_path_buf(), dur, m),
-                    TestOutcome::Fail(m) => return TestResult::fail(path.to_path_buf(), dur, m),
-                    TestOutcome::Skip(m) => return TestResult::skip(path.to_path_buf(), m),
+            })?;
+            let mut loader = Test262ModuleLoader;
+            match compiler.compile_module(&program, path.to_string_lossy().as_ref(), &mut loader) {
+                Ok(m) => Ok(vec![Arc::new(m)]),
+                Err(e) => {
+                    let dur = start.elapsed().as_millis() as u64;
+                    let msg = format!("compile error: {e}");
+                    match classify_compile_error(&msg, meta.negative.is_some(), no_skip) {
+                        TestOutcome::Pass(m) => Err(TestResult::pass(path.to_path_buf(), dur, m)),
+                        TestOutcome::Fail(m) => Err(TestResult::fail(path.to_path_buf(), dur, m)),
+                        TestOutcome::Skip(m) => Err(TestResult::skip(path.to_path_buf(), m)),
+                    }
                 }
             }
+        }) {
+            Ok(modules) => modules,
+            Err(result) => return result,
         }
     } else {
         // script 臂两模块方案：前缀模块按 includes 组合缓存（免每测试重解析重编译），
