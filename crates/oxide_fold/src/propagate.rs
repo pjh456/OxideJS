@@ -86,15 +86,13 @@ pub fn fold_function(f: &mut IRFunction) -> bool {
             // VOID 无操作数，恒折 Undefined。
             OpCode::VOID => Some(Constant::Undefined),
             // 其余一元：操作数须为已知寄存器。
-            OpCode::NOT | OpCode::TYPEOF | OpCode::NEG | OpCode::UNARY_PLUS | OpCode::BIT_NOT => {
-                match inst.a {
-                    Operand::Reg(x) => known
-                        .get(x as usize)
-                        .and_then(|c| c.as_ref())
-                        .and_then(|c| fold_table::fold_unary(inst.op, c)),
-                    _ => None,
-                }
-            }
+            OpCode::NOT | OpCode::TYPEOF | OpCode::NEG | OpCode::UNARY_PLUS | OpCode::BIT_NOT => match inst.a {
+                Operand::Reg(x) => known
+                    .get(x as usize)
+                    .and_then(|c| c.as_ref())
+                    .and_then(|c| fold_table::fold_unary(inst.op, c)),
+                _ => None,
+            },
             // 二元算术：两操作数须为已知寄存器。
             OpCode::ADD | OpCode::SUB | OpCode::MUL | OpCode::DIV | OpCode::MOD | OpCode::EXP => {
                 match (inst.a, inst.b) {

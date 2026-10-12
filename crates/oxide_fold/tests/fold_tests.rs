@@ -328,10 +328,7 @@ fn fold_add_bigint() {
 #[test]
 fn fold_add_bigint_mixed_not_folded() {
     // 1n + 1 BigInt 混合 → 不折（运行期抛 TypeError）。
-    let (a, b) = (
-        Constant::BigInt(num_bigint::BigInt::from(1)),
-        Constant::Int(1),
-    );
+    let (a, b) = (Constant::BigInt(num_bigint::BigInt::from(1)), Constant::Int(1));
     let mut f = func(
         &[a, b],
         vec![
