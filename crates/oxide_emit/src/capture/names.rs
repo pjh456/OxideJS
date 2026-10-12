@@ -15,7 +15,9 @@ use super::{
 
 /// 收集当前函数作用域声明的绑定名（参数 + 变量/函数声明，含嵌套 block，不含嵌套函数体），
 /// 写入影子计次映射（计次加一）。
-pub(crate) fn collect_own_binding_names_into(param_names: &[&str], stmts: &[Statement], out: &mut HashMap<String, u32>) {
+pub(crate) fn collect_own_binding_names_into(
+    param_names: &[&str], stmts: &[Statement], out: &mut HashMap<String, u32>,
+) {
     for p in param_names {
         *out.entry(p.to_string()).or_insert(0) += 1;
     }

@@ -33,7 +33,9 @@ pub(crate) fn collect_fn_param_names_into(params: &oxide_parser::FormalParameter
 
 /// 递归收集 binding pattern 内全部绑定标识符名（解构 `[a, b]` / `{x: y}` 嵌套），
 /// 写入影子计次映射（计次加一），作用域进入时遮蔽外层同名绑定。
-pub(crate) fn collect_binding_pattern_names_into(pattern: &oxide_parser::BindingPattern, shadow: &mut HashMap<String, u32>) {
+pub(crate) fn collect_binding_pattern_names_into(
+    pattern: &oxide_parser::BindingPattern, shadow: &mut HashMap<String, u32>,
+) {
     match pattern {
         oxide_parser::BindingPattern::BindingIdentifier(bi) => {
             *shadow.entry(bi.name.as_str().to_string()).or_insert(0) += 1;
@@ -101,7 +103,9 @@ pub(crate) fn shadow_dec(shadow: &mut HashMap<String, u32>, name: String) {
 
 /// 收集 for-in/for-of 头部声明（`var x` / 解构 pattern）绑定的名字写入影子计次
 /// 映射（计次加一），作用域进入时遮蔽外层同名绑定。
-pub(crate) fn collect_for_left_decl_names_into(left: &oxide_parser::ForStatementLeft, shadow: &mut HashMap<String, u32>) {
+pub(crate) fn collect_for_left_decl_names_into(
+    left: &oxide_parser::ForStatementLeft, shadow: &mut HashMap<String, u32>,
+) {
     if let oxide_parser::ForStatementLeft::VariableDeclaration(vd) = left {
         for d in &vd.declarations {
             collect_binding_pattern_names_into(&d.id, shadow);
@@ -111,7 +115,9 @@ pub(crate) fn collect_for_left_decl_names_into(left: &oxide_parser::ForStatement
 
 /// 收集 for-in/for-of 头部声明绑定的名字并解除影子计次映射（计次减一，归零删项），
 /// 作用域退出时解除遮蔽，与 `collect_for_left_decl_names_into` 配对。
-pub(crate) fn collect_for_left_decl_names_remove(left: &oxide_parser::ForStatementLeft, shadow: &mut HashMap<String, u32>) {
+pub(crate) fn collect_for_left_decl_names_remove(
+    left: &oxide_parser::ForStatementLeft, shadow: &mut HashMap<String, u32>,
+) {
     if let oxide_parser::ForStatementLeft::VariableDeclaration(vd) = left {
         for d in &vd.declarations {
             collect_binding_pattern_names_remove(&d.id, shadow);
