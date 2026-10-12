@@ -1295,7 +1295,11 @@ pub fn rebind_dirty_builtins(
         bind_object::bind_object(core, session, global);
         // object 家族重建连带重建 6 个迭代器原型与两资源栈原型（其链到新
         // Object.prototype），须同步安装原型方法并让保留的 global 构造器指向新原型。
-        let env = BindEnv { core, session: &*session, realm_id };
+        let env = BindEnv {
+            core,
+            session: &*session,
+            realm_id,
+        };
         bind_iterator_protos(env);
         sync_iterator_function_prototype(env, global);
         bind_disposable_stack::bind_disposable_stack_protos(core, session, realm_id);
@@ -1386,7 +1390,11 @@ pub fn rebind_dirty_builtins(
     bind_worker::bind_worker(core, session, global, realm_id);
     // tag 目标横跨多个脏分组（Map/Set/DataView/Math/JSON/迭代器原型），
     // 各组各自重绑后统一补装；安装点自带幂等检查。
-    let env = BindEnv { core, session: &*session, realm_id };
+    let env = BindEnv {
+        core,
+        session: &*session,
+        realm_id,
+    };
     install_to_string_tags(env);
 }
 
