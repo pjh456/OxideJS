@@ -74,10 +74,37 @@ use std::sync::Arc;
 
 use oxide_kernel::builtin::BuiltinWorld;
 use oxide_kernel::kernel::{BuiltinDirtySet, KernelCore, KernelSession};
-use oxide_kernel::shape_forge::EMPTY_SHAPE_ID;
+use oxide_kernel::shape_forge::{ShapeForge, EMPTY_SHAPE_ID};
 use oxide_types::mem::P;
 use oxide_types::object::{JsObject, NativeFnPtr, PropAttributes};
+use oxide_types::string_forge::PermInterner;
 use oxide_types::value::JsValue;
+
+/// 绑定环境：把 `core` / `session` / `realm_id` 三个环境参数打包为单一首参，
+/// 消除各绑定函数签名前缀与函数体首行的三行解包。
+///
+/// `Copy`：值语义轻量（两个引用加一个 u32），可自由复制传递。
+#[derive(Copy, Clone)]
+pub(crate) struct BindEnv<'a> {
+    core: &'a Arc<KernelCore>,
+    session: &'a KernelSession,
+    realm_id: u32,
+}
+
+impl BindEnv<'_> {
+    /// 当前 session 的 builtin world（共享借用）。
+    fn world(&self) -> &BuiltinWorld {
+        self.session.builtin_world()
+    }
+    /// 共享 shape forge。
+    fn shape_forge(&self) -> &ShapeForge {
+        self.core.shape_forge().as_ref()
+    }
+    /// 共享 perm interner（字符串 forge）。
+    fn string_forge(&self) -> &PermInterner {
+        self.core.perm_interner().as_ref()
+    }
+}
 
 #[macro_export]
 macro_rules! bind_constructor {
@@ -478,8 +505,11 @@ pub(crate) fn bind_iterator_proto_next(
 ///
 /// `realm_id` 是原型所属 realm 的编号：well-known 符号键按 (realm 编号, 局部
 /// 下标) 编码，realm 编号为 0 时与旧编码逐字节一致。
-fn bind_iterator_protos(core: &Arc<KernelCore>, session: &KernelSession, realm_id: u32) {
-    let world = session.builtin_world();
+fn bind_iterator_protos(env: BindEnv<'_>) {
+    let world = env.world();
+    let core = env.core;
+    let session = env.session;
+    let realm_id = env.realm_id;
 
     // %IteratorPrototype% 自身可迭代：@@iterator 返回 this，经原型链被全部
     // 集合迭代器继承（it[Symbol.iterator]() === it 恒等）。
@@ -703,10 +733,12 @@ fn bind_iterator_protos(core: &Arc<KernelCore>, session: &KernelSession, realm_i
 ///
 /// `realm_id` 是原型所属 realm 的编号：`@@toStringTag` 符号键按 (realm 编号,
 /// 局部下标) 编码，realm 编号为 0 时与旧编码逐字节一致。
-fn install_to_string_tags(core: &Arc<KernelCore>, session: &KernelSession, realm_id: u32) {
-    let world = session.builtin_world();
-    let sf = core.perm_interner().as_ref();
-    let sh = core.shape_forge().as_ref();
+fn install_to_string_tags(env: BindEnv<'_>) {
+    let world = env.world();
+    let sf = env.string_forge();
+    let sh = env.shape_forge();
+    let core = env.core;
+    let realm_id = env.realm_id;
     let tag_id = oxide_types::private_key::WELL_KNOWN_SYMBOL_TO_STRING_TAG;
     let tag_key = oxide_types::private_key::encode_symbol_key(realm_id, tag_id);
     let cases: [(*mut JsObject, &str); 14] = [
@@ -741,7 +773,9 @@ fn install_to_string_tags(core: &Arc<KernelCore>, session: &KernelSession, realm
 ///
 /// global 同时重建（global dirty）或初始化时无 `Iterator` 属性，直接跳过——
 /// 彼时由 `bind_iterator_global` 以新原型创建函数对象。
-fn sync_iterator_function_prototype(core: &Arc<KernelCore>, session: &KernelSession, global: &mut JsObject) {
+fn sync_iterator_function_prototype(env: BindEnv<'_>, global: &mut JsObject) {
+    let core = env.core;
+    let session = env.session;
     let si_iterator = core.perm_interner().intern("Iterator").0;
     let Some(pos) = core.shape_forge().lookup_position(global.shape_id(), si_iterator) else {
         return;
@@ -783,9 +817,9 @@ fn bind_existing_global(core: &Arc<KernelCore>, global: &mut JsObject, name: &st
 }
 
 fn bind_error_subtype_global(
-    core: &Arc<KernelCore>, session: &KernelSession, global: &mut JsObject, name: &str, proto: &P<JsObject>,
-    ctor_fn: *const (), arg_count: u8,
+    env: BindEnv<'_>, global: &mut JsObject, name: &str, proto: &P<JsObject>, ctor_fn: *const (), arg_count: u8,
 ) {
+    let core = env.core;
     let constructor_si = core.perm_interner().intern("constructor").0;
     if let Some(pos) = core.shape_forge().lookup_position(proto.shape_id(), constructor_si) {
         let existing_ctor = proto.get_prop_at(pos);
@@ -798,9 +832,9 @@ fn bind_error_subtype_global(
     // fallback 自建路径与 bind_error 的 Box 自建路径保持同一形态：[[Prototype]] 指向
     // Error 构造器（NativeError 构造器继承 Error 构造器），prototype/name 描述符按规范。
     // 家族重建后新原型无既有槽：按复用键查找前轮旧构造器迁移，避免每轮新建。
-    let world = session.builtin_world();
-    let sf = core.perm_interner().as_ref();
-    let sh = core.shape_forge().as_ref();
+    let world = env.world();
+    let sf = env.string_forge();
+    let sh = env.shape_forge();
     let si_prototype = sf.intern("prototype").0;
     let name_si = sf.intern(name).0;
     // SAFETY: ctor_fn 是转成 *const () 的 NativeFn 函数项指针。
@@ -840,11 +874,11 @@ fn bind_error_subtype_global(
     bind_existing_global(core, global, name, JsValue::from_js_object(ctor_ptr));
 }
 
-fn bind_global_functions(core: &Arc<KernelCore>, session: &KernelSession, global: &mut JsObject) {
+fn bind_global_functions(env: BindEnv<'_>, global: &mut JsObject) {
     apply_binding_table(
-        session.builtin_world(),
+        env.world(),
         global,
-        core,
+        env.core,
         &[
             // parseInt 形式参数为 (string, radix)，length 按规范取 2。
             ("parseInt", oxide_builtins::number::number_parse_int::<crate::vm::Vm> as *const (), 2),
@@ -875,15 +909,15 @@ fn bind_global_functions(core: &Arc<KernelCore>, session: &KernelSession, global
     );
 }
 
-fn bind_reflect_global(core: &Arc<KernelCore>, session: &KernelSession, global: &mut JsObject) {
+fn bind_reflect_global(env: BindEnv<'_>, global: &mut JsObject) {
     let mut reflect = Box::new(JsObject::new_empty(
         EMPTY_SHAPE_ID,
-        JsValue::from_js_object(session.builtin_world().object_proto.as_ptr() as *mut JsObject),
+        JsValue::from_js_object(env.world().object_proto.as_ptr() as *mut JsObject),
     ));
     apply_binding_table(
-        session.builtin_world(),
+        env.world(),
         &mut reflect,
-        core,
+        env.core,
         &[
             ("apply", oxide_builtins::reflect::reflect_apply::<crate::vm::Vm> as *const (), 3),
             ("construct", oxide_builtins::reflect::reflect_construct::<crate::vm::Vm> as *const (), 2),
@@ -929,12 +963,12 @@ fn bind_reflect_global(core: &Arc<KernelCore>, session: &KernelSession, global: 
         ],
     );
     let reflect_ptr = Box::into_raw(reflect);
-    session.builtin_world().track_leaked_object(reflect_ptr);
-    bind_existing_global(core, global, "Reflect", JsValue::from_js_object(reflect_ptr));
+    env.world().track_leaked_object(reflect_ptr);
+    bind_existing_global(env.core, global, "Reflect", JsValue::from_js_object(reflect_ptr));
 }
 
-fn bind_iterator_global(core: &Arc<KernelCore>, session: &KernelSession, global: &mut JsObject) {
-    let function_proto = session.builtin_world().function_proto.as_ptr() as *mut JsObject;
+fn bind_iterator_global(env: BindEnv<'_>, global: &mut JsObject) {
+    let function_proto = env.world().function_proto.as_ptr() as *mut JsObject;
     let mut iterator = Box::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(function_proto)));
     iterator.set_function(true);
     configure_native_constructor(
@@ -942,23 +976,23 @@ fn bind_iterator_global(core: &Arc<KernelCore>, session: &KernelSession, global:
         oxide_builtins::iterator::iterator_constructor::<crate::vm::Vm> as *const (),
         0,
     );
-    bind_iterator_ctor_identity(core, &mut iterator);
-    bind_iterator_function_prototype(core, session, &mut iterator);
+    bind_iterator_ctor_identity(env.core, &mut iterator);
+    bind_iterator_function_prototype(env.core, env.session, &mut iterator);
     apply_binding_table(
-        session.builtin_world(),
+        env.world(),
         &mut iterator,
-        core,
+        env.core,
         &[("from", oxide_builtins::iterator::iterator_from::<crate::vm::Vm> as *const (), 1)],
     );
     let iterator_ptr = Box::into_raw(iterator);
-    session.builtin_world().track_leaked_object(iterator_ptr);
-    bind_existing_global(core, global, "Iterator", JsValue::from_js_object(iterator_ptr));
+    env.world().track_leaked_object(iterator_ptr);
+    bind_existing_global(env.core, global, "Iterator", JsValue::from_js_object(iterator_ptr));
     // 迭代器原型方法（%IteratorPrototype% 的 @@iterator 与各集合原型 next）由
     // `bind_iterator_protos` 在 object 家族重建时统一安装，这里不重复绑定，
     // 避免保留原型经 dirty reset 时属性槽膨胀。
 }
 
-fn bind_stub_globals(core: &Arc<KernelCore>, session: &KernelSession, global: &mut JsObject) {
+fn bind_stub_globals(env: BindEnv<'_>, global: &mut JsObject) {
     // 索引 4 = WeakMap 真构造器（bind_weak 留存 stub_objects 末位），global
     // 重建时原位重绑；四 stub 族索引 0-3 紧随其后。
     for (index, (name, native_fn, arg_count)) in [
@@ -975,9 +1009,9 @@ fn bind_stub_globals(core: &Arc<KernelCore>, session: &KernelSession, global: &m
     .into_iter()
     .enumerate()
     {
-        if let Some(stub) = session.builtin_world().stub_objects.get(index) {
+        if let Some(stub) = env.world().stub_objects.get(index) {
             configure_existing_ctor(stub, native_fn, arg_count);
-            bind_existing_global(core, global, name, JsValue::from_js_object(stub.as_ptr() as *mut JsObject));
+            bind_existing_global(env.core, global, name, JsValue::from_js_object(stub.as_ptr() as *mut JsObject));
         }
     }
 }
@@ -993,6 +1027,7 @@ pub fn bind_global_builtin_slots(
     core: &Arc<KernelCore>, session: &KernelSession, global: &mut JsObject, realm_id: u32,
 ) {
     let world = session.builtin_world();
+    let env = BindEnv { core, session, realm_id };
 
     configure_existing_ctor(
         &world.object_constructor,
@@ -1170,8 +1205,7 @@ pub fn bind_global_builtin_slots(
     }
 
     bind_error_subtype_global(
-        core,
-        session,
+        env,
         global,
         "TypeError",
         &world.type_error_proto,
@@ -1179,8 +1213,7 @@ pub fn bind_global_builtin_slots(
         1,
     );
     bind_error_subtype_global(
-        core,
-        session,
+        env,
         global,
         "ReferenceError",
         &world.reference_error_proto,
@@ -1188,8 +1221,7 @@ pub fn bind_global_builtin_slots(
         1,
     );
     bind_error_subtype_global(
-        core,
-        session,
+        env,
         global,
         "RangeError",
         &world.range_error_proto,
@@ -1197,8 +1229,7 @@ pub fn bind_global_builtin_slots(
         1,
     );
     bind_error_subtype_global(
-        core,
-        session,
+        env,
         global,
         "SyntaxError",
         &world.syntax_error_proto,
@@ -1206,8 +1237,7 @@ pub fn bind_global_builtin_slots(
         1,
     );
     bind_error_subtype_global(
-        core,
-        session,
+        env,
         global,
         "URIError",
         &world.uri_error_proto,
@@ -1215,8 +1245,7 @@ pub fn bind_global_builtin_slots(
         1,
     );
     bind_error_subtype_global(
-        core,
-        session,
+        env,
         global,
         "EvalError",
         &world.eval_error_proto,
@@ -1227,8 +1256,7 @@ pub fn bind_global_builtin_slots(
     // SuppressedError 为三参构造器（error, suppressed, message），length=3；
     // 与 bind_error 的 Box 自建路径参数一致，保证 reset 重建后 length 不回落。
     bind_error_subtype_global(
-        core,
-        session,
+        env,
         global,
         "SuppressedError",
         &world.suppressed_error_proto,
@@ -1236,14 +1264,14 @@ pub fn bind_global_builtin_slots(
         3,
     );
 
-    bind_reflect_global(core, session, global);
-    bind_iterator_global(core, session, global);
+    bind_reflect_global(env, global);
+    bind_iterator_global(env, global);
     bind_worker::bind_worker(core, session, global, realm_id);
     bind_disposable_stack::bind_disposable_stack(core, session, global, realm_id);
     bind_async_disposable_stack::bind_async_disposable_stack(core, session, global, realm_id);
-    bind_stub_globals(core, session, global);
+    bind_stub_globals(env, global);
     bind_bigint::bind_bigint(core, session, global, realm_id);
-    bind_global_functions(core, session, global);
+    bind_global_functions(env, global);
     crate::test262_host::bind_test262_host(core, session, global);
     let global_this = JsValue::from_js_object(global as *mut JsObject);
     bind_existing_global(core, global, "globalThis", global_this);
@@ -1267,8 +1295,9 @@ pub fn rebind_dirty_builtins(
         bind_object::bind_object(core, session, global);
         // object 家族重建连带重建 6 个迭代器原型与两资源栈原型（其链到新
         // Object.prototype），须同步安装原型方法并让保留的 global 构造器指向新原型。
-        bind_iterator_protos(core, session, realm_id);
-        sync_iterator_function_prototype(core, session, global);
+        let env = BindEnv { core, session: &*session, realm_id };
+        bind_iterator_protos(env);
+        sync_iterator_function_prototype(env, global);
         bind_disposable_stack::bind_disposable_stack_protos(core, session, realm_id);
         bind_disposable_stack::sync_disposable_stack_ctor(core, session, global);
         bind_async_disposable_stack::bind_async_disposable_stack_protos(core, session, realm_id);
@@ -1357,7 +1386,8 @@ pub fn rebind_dirty_builtins(
     bind_worker::bind_worker(core, session, global, realm_id);
     // tag 目标横跨多个脏分组（Map/Set/DataView/Math/JSON/迭代器原型），
     // 各组各自重绑后统一补装；安装点自带幂等检查。
-    install_to_string_tags(core, session, realm_id);
+    let env = BindEnv { core, session: &*session, realm_id };
+    install_to_string_tags(env);
 }
 
 /// 完整初始化一个 session 的内置对象（全量绑定 + `globalThis` + 快照记录）。
