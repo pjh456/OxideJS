@@ -20,10 +20,12 @@ pub(crate) use captured::collect_captured_bindings;
 pub(crate) use guard::has_nested_function;
 pub(crate) use names::collect_block_level_decl_names;
 pub(crate) use names::collect_direct_lexical_names;
+pub(crate) use names::collect_fn_scope_names;
 pub(crate) use names::collect_own_binding_names;
 pub(crate) use names::collect_top_level_function_names;
 pub(crate) use names::collect_top_level_function_names_ordered;
 pub(crate) use names::collect_var_binding_names;
+pub(crate) use names::FnScopeNames;
 pub(crate) use upvalues::collect_upvalue_names;
 
 /// 收集形参（含 rest）绑定的名字集，作为本函数作用域的遮蔽集。

@@ -13,7 +13,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
-use crate::capture::{collect_captured_bindings, collect_direct_lexical_names, collect_own_binding_names};
+use crate::capture::{collect_captured_bindings, collect_fn_scope_names};
 use crate::expr::call::pack_arg_regs;
 use crate::{CompileCtx, Emitter};
 use oxc_allocator::Box;
@@ -451,17 +451,21 @@ impl Emitter {
     ) -> Result<(), String> {
         let body = &program.body;
 
+        // 模块作用域六个名字面单趟收集（模块顶层无形参，param_names 传空）：
+        // builtin 排除 / own 绑定 / 入口 var 与词法实例化各调用点共用此结果。
+        let scope_names = collect_fn_scope_names(&[], body);
+
         // —— 预声明（镜像 emit_program；import/export 包装的声明也计入 hoisting）——
         self.predeclare_function_declarations(body, ctx);
         // 模块顶层词法声明名排除镜像登记（词法绑定遮蔽同名全局属性，同 program.rs）。
-        let lexical_excluded = collect_direct_lexical_names(body);
+        let lexical_excluded = scope_names.direct_lexical_names.clone();
         self.pre_register_builtin_references(body, &lexical_excluded, ctx);
         self.predeclare_var_declarations(body, ctx);
         // 模块 lexical 声明入模块环境（非全局对象），不做受限全局名检查。
         let _ = self.predeclare_lexical_declarations(body, ctx);
 
         // 闭包捕获分析（import 绑定名纳入 own_bindings，供嵌套函数 cell 捕获）。
-        ctx.own_bindings = collect_own_binding_names(&[], body);
+        ctx.own_bindings = scope_names.own_binding_names.clone();
         ctx.set_captured_bindings(collect_captured_bindings(body, &[], &ctx.own_bindings));
         // 模块顶层函数级绑定 cell 索引回填：预声明已完成，绑定已齐。
         ctx.backfill_captured_cell_idxs();
@@ -834,10 +838,12 @@ impl Emitter {
         // var 名在模块入口统一 MAKE_CELL(undefined)，与脚本顶层实例化同语义。——
         self.reconcile_alias_captures(ctx);
         {
-            let mut var_names: Vec<String> = crate::capture::collect_var_binding_names(body)
-                .into_iter()
+            let mut var_names: Vec<String> = scope_names
+                .var_binding_names
+                .iter()
                 .filter(|n| !ctx.param_names.contains(n.as_str()))
-                .filter(|n| ctx.captured_bindings.contains_key(n))
+                .filter(|n| ctx.captured_bindings.contains_key(n.as_str()))
+                .cloned()
                 .collect();
             var_names.sort();
             if !var_names.is_empty() {
@@ -857,10 +863,12 @@ impl Emitter {
             // 既有预注册保持未初始化 TDZ（命名空间对象面，按导出名），入口 cell
             // 只覆盖被嵌套函数捕获的名（按捕获名），两面名集独立。声明语句的
             // MAKE_CELL 按占位更新语义原位翻转；直接子级 only，块级名不提升。
-            let mut lex_names: Vec<String> = crate::capture::collect_direct_lexical_names(body)
-                .into_iter()
+            let mut lex_names: Vec<String> = scope_names
+                .direct_lexical_names
+                .iter()
                 .filter(|n| !ctx.param_names.contains(n.as_str()))
-                .filter(|n| ctx.captured_bindings.contains_key(n))
+                .filter(|n| ctx.captured_bindings.contains_key(n.as_str()))
+                .cloned()
                 .collect();
             lex_names.sort();
             if !lex_names.is_empty() {

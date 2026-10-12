@@ -14,8 +14,8 @@ use oxide_ir::IRFunction;
 use oxide_parser::{Expression, Statement, VariableDeclarationKind};
 
 use crate::capture::{
-    collect_binding_pattern_names, collect_captured_bindings, collect_direct_lexical_names, collect_own_binding_names,
-    collect_upvalue_names, collect_var_binding_names, has_nested_function,
+    collect_binding_pattern_names, collect_captured_bindings, collect_fn_scope_names, collect_upvalue_names,
+    has_nested_function, FnScopeNames,
 };
 use crate::compile_ctx::{CompileCtx, FieldBuffer};
 use crate::symbol_table::{Binding, ScopeKind};
@@ -434,6 +434,11 @@ impl Emitter {
         // 让 next_reg 与 builtin 槽位对齐，参数在 builtin 槽之后分配。
         ctx.reset_regs();
 
+        // 函数作用域六个名字面单趟收集（形参名先注入 own 面）：本函数体编译链
+        // 各调用点（参数 prologue / builtin 排除 / 入口实例化）共用此结果。
+        let param_name_refs: Vec<&str> = param_specs.iter().map(|s| s.register_name()).collect();
+        let scope_names = collect_fn_scope_names(&param_name_refs, body_stmts);
+
         let param_base = self.emit_params_prologue(
             param_specs,
             body_stmts,
@@ -443,6 +448,7 @@ impl Emitter {
             extra_capture_exprs,
             extra_upvalue_names,
             name,
+            &scope_names,
         )?;
         // 实例字段 computed key 数组所在 upvalue 下标，供字段初始化 emit 定位。
         ctx.field_keys_uv = ctx
@@ -456,7 +462,7 @@ impl Emitter {
 
         // 预注册 builtin 引用（先于任何临时寄存器），builtin 槽不与被复用的临时值冲突。
         // 函数体直接子级词法声明名排除登记（顶层词法遮蔽同口径，见 program.rs）。
-        let lexical_excluded = collect_direct_lexical_names(body_stmts);
+        let lexical_excluded = scope_names.direct_lexical_names.clone();
         self.pre_register_builtin_references(body_stmts, &lexical_excluded, &mut ctx);
 
         // 预声明 `var` 名，使首个 sub-pass 中提升的函数声明能解析其闭包引用的外层 var。
@@ -488,7 +494,7 @@ impl Emitter {
         // 不发射定义指令，声明点对已绑定名又跳过 undefined 写，缺失入口写会让首次
         // 写入前的读取取到调用方遗留的寄存器值。捕获名已由参数 prologue 的
         // MAKE_CELL(undefined) 实例化，此处只补未捕获名。
-        self.instantiate_var_bindings(body_stmts, &mut ctx);
+        self.instantiate_var_bindings(body_stmts, &mut ctx, &scope_names);
 
         // 被捕获的函数名绑定同样建 cell（MAKE_CELL）：值源是帧槽写入已置位的
         // 名槽寄存器（函数对象），非 undefined。名槽寄存器此时已知（非抑制面
@@ -655,7 +661,7 @@ impl Emitter {
     fn emit_params_prologue<'a>(
         &self, param_specs: &[ParamSpec<'a>], body_stmts: &[Statement<'a>], parent_ctx: &CompileCtx,
         ctx: &mut CompileCtx, body_context: FunctionBodyContext, extra_capture_exprs: &[&'a Expression<'a>],
-        extra_upvalue_names: &[(String, u8)], name: Option<&str>,
+        extra_upvalue_names: &[(String, u8)], name: Option<&str>, scope_names: &FnScopeNames,
     ) -> Result<u32, String> {
         ctx.push_scope_with_kind(ScopeKind::FunctionScope);
         let param_base = ctx.next_reg;
@@ -696,7 +702,7 @@ impl Emitter {
         let mut capture_exprs: Vec<&oxide_parser::Expression> = param_defaults.clone();
         capture_exprs.extend_from_slice(extra_capture_exprs);
         let has_nested = has_nested_function(body_stmts, &capture_exprs);
-        ctx.own_bindings = collect_own_binding_names(&param_names, body_stmts);
+        ctx.own_bindings = scope_names.own_binding_names.clone();
         for spec in param_specs {
             if let ParamSpec::Pattern { pattern, .. } = spec {
                 collect_binding_pattern_names(pattern, &mut ctx.own_bindings);
@@ -723,7 +729,7 @@ impl Emitter {
         // 名登记须先于 set_captured_bindings：嵌套函数捕获名分析依赖 own_bindings
         // 完整（名被捕获时须识别为本函数绑定并建 cell）。
         if let Some(fn_name) = name {
-            let var_names = collect_var_binding_names(body_stmts);
+            let var_names = &scope_names.var_binding_names;
             let suppressed = ctx.param_names.contains(fn_name)
                 || var_names.contains(fn_name)
                 || (fn_name == "arguments" && arguments_reg.is_some());
@@ -1005,7 +1011,7 @@ impl Emitter {
         // 则取调用方寄存器残留。参数与 arguments 已在上方初始化（跳过以免覆盖参数
         // 值）；let/const/class 保持 TDZ 语义不动。声明语句的 MAKE_CELL 按占位更新
         // 语义覆盖此初值。
-        let mut captured_entry_names = collect_var_binding_names(body_stmts);
+        let mut captured_entry_names = scope_names.var_binding_names.clone();
         // 块级函数外层 var 名与 instantiate_var_bindings 同源并入；抑制名（形参/
         // 词法声明同名）无外层绑定，不并入。抑制集在此独立计算：本循环早于函数体
         // 的 block_fn_suppressed 构建。
@@ -1046,10 +1052,12 @@ impl Emitter {
         // 运行时抛真 TDZ；声明语句的 MAKE_CELL 按占位更新语义原位翻转。名集只取
         // 直接子级（块级名不提升到函数作用域，与块内重执行 cell 族零交集），
         // 排序保证发射序跨进程稳定。
-        let mut lex_names: Vec<String> = collect_direct_lexical_names(body_stmts)
-            .into_iter()
-            .filter(|n| !param_names.contains(&n.as_str()) && n != "arguments")
-            .filter(|n| ctx.captured_bindings.contains_key(n))
+        let mut lex_names: Vec<String> = scope_names
+            .direct_lexical_names
+            .iter()
+            .filter(|n| !param_names.contains(&n.as_str()) && n != &"arguments")
+            .filter(|n| ctx.captured_bindings.contains_key(n.as_str()))
+            .cloned()
             .collect();
         lex_names.sort();
         if !lex_names.is_empty() {
@@ -1085,8 +1093,8 @@ impl Emitter {
     ///   var；被形参/词法同名抑制的名字无外层绑定，不并入。直接子标签函数声明由
     ///   函数入口单独物化闭包，不并入。
     /// - 符号表查不到的名字（如解构 pattern 叶名未被预声明）跳过，不报错。
-    fn instantiate_var_bindings(&self, body_stmts: &[Statement], ctx: &mut CompileCtx) {
-        let mut name_set = collect_var_binding_names(body_stmts);
+    fn instantiate_var_bindings(&self, body_stmts: &[Statement], ctx: &mut CompileCtx, scope_names: &FnScopeNames) {
+        let mut name_set = scope_names.var_binding_names.clone();
 
         // 块级函数外层 var 绑定同样只预声明不发射定义指令，缺失入口写会让块前读取
         // 取到调用方残留；入口写须并入（strict 与抑制名除外）。
