@@ -22,17 +22,29 @@ pub(crate) struct SetContract {
 impl SetContract {
     /// 字节码入口（ordinary_set / member 写）：不帧化、非 builtin，严格性由调用点给。
     pub(crate) const fn bytecode(strict: bool) -> Self {
-        Self { use_frame_push: false, strict, builtin: false }
+        Self {
+            use_frame_push: false,
+            strict,
+            builtin: false,
+        }
     }
 
     /// builtin 入口（ordinary_set_builtin）：不帧化、builtin，严格性由调用点给。
     pub(crate) const fn builtin(strict: bool) -> Self {
-        Self { use_frame_push: false, strict, builtin: true }
+        Self {
+            use_frame_push: false,
+            strict,
+            builtin: true,
+        }
     }
 
     /// 分发入口（ordinary_set_dispatch / IC 写）：帧化、非 builtin，严格性由调用点给。
     pub(crate) const fn dispatch(strict: bool) -> Self {
-        Self { use_frame_push: true, strict, builtin: false }
+        Self {
+            use_frame_push: true,
+            strict,
+            builtin: false,
+        }
     }
 }
 

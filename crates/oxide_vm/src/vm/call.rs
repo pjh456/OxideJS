@@ -26,12 +26,20 @@ pub(crate) struct ConstructArgs {
 impl ConstructArgs {
     /// 非构造调用：无结果寄存器、无构造 this，new.target 为 undefined。
     pub(crate) fn none() -> Self {
-        Self { result_reg: None, constructed_this: None, new_target: JsValue::undefined() }
+        Self {
+            result_reg: None,
+            constructed_this: None,
+            new_target: JsValue::undefined(),
+        }
     }
 
     /// 构造调用：携带结果寄存器、构造 this 与 new.target。
     pub(crate) fn new(result_reg: u8, constructed_this: JsValue, new_target: JsValue) -> Self {
-        Self { result_reg: Some(result_reg), constructed_this: Some(constructed_this), new_target }
+        Self {
+            result_reg: Some(result_reg),
+            constructed_this: Some(constructed_this),
+            new_target,
+        }
     }
 }
 
@@ -243,13 +251,8 @@ impl Vm {
     /// - 压入调用帧与各类保存栈，改写 pc / bytecode / 活动寄存器上限与镜像槽；
     ///   `continuation` 决定返回后的续行方式。
     pub(crate) fn push_bytecode_frame(
-        &mut self,
-        callee: JsValue,
-        this_value: JsValue,
-        args: FrameArgs,
-        construct: ConstructArgs,
-        continuation: FrameContinuation,
-        call_window: u8,
+        &mut self, callee: JsValue, this_value: JsValue, args: FrameArgs, construct: ConstructArgs,
+        continuation: FrameContinuation, call_window: u8,
     ) -> Result<(), String> {
         vm_trace!(
             "push_bytecode_frame: depth={}, args={}, continuation={:?}",
