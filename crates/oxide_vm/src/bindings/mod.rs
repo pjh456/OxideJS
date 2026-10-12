@@ -285,8 +285,8 @@ pub(crate) fn bind_accessor_getter_key(
 /// getter/setter 函数对象登记进 world 释放表，session 收尾时统一释放，
 /// 与 `bind_accessor_getter` 的 getter 及方法 wrapper 同一生命周期约定。
 pub(crate) fn bind_accessor_getset(
-    env: BindEnv<'_>, proto: &mut JsObject, key: u32, getter_name: &str, setter_name: &str,
-    getter_fn: *const (), setter_fn: *const (),
+    env: BindEnv<'_>, proto: &mut JsObject, key: u32, getter_name: &str, setter_name: &str, getter_fn: *const (),
+    setter_fn: *const (),
 ) {
     let shape_forge = env.shape_forge();
     let string_forge = env.string_forge();

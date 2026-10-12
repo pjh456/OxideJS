@@ -60,11 +60,8 @@ pub fn bind_string(env: BindEnv<'_>, global: &mut JsObject) {
         sub: oxide_builtins::string::string_sub::<crate::vm::Vm> as *const (),
         sup: oxide_builtins::string::string_sup::<crate::vm::Vm> as *const (),
     };
-    env.world().bind_string_methods(
-        &string_methods,
-        env.string_forge(),
-        env.shape_forge(),
-    );
+    env.world()
+        .bind_string_methods(&string_methods, env.string_forge(), env.shape_forge());
 
     let ctor_ptr = env.world().string_constructor.as_ptr() as *mut JsObject;
     let ctor = unsafe { &mut *ctor_ptr };
@@ -103,9 +100,7 @@ pub fn bind_string(env: BindEnv<'_>, global: &mut JsObject) {
     if let Some(pos) = env.shape_forge().lookup_position(proto.shape_id(), iter_key) {
         let v = proto.get_prop_at(pos);
         if v.is_object() {
-            env.world()
-                .string_default_iterator
-                .set(v.as_js_object_ptr() as *const JsObject);
+            env.world().string_default_iterator.set(v.as_js_object_ptr() as *const JsObject);
         }
     }
 

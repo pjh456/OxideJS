@@ -6,8 +6,7 @@ use oxide_types::value::JsValue;
 use super::BindEnv;
 
 fn bind_error_subtype_constructor(
-    env: BindEnv<'_>, global: &mut JsObject, name: &str, proto_ptr: *mut JsObject,
-    ctor_fn: *const (), arg_count: u8,
+    env: BindEnv<'_>, global: &mut JsObject, name: &str, proto_ptr: *mut JsObject, ctor_fn: *const (), arg_count: u8,
 ) {
     let sf = env.string_forge();
     let sh = env.shape_forge();
@@ -108,11 +107,8 @@ pub fn bind_error(env: BindEnv<'_>, global: &mut JsObject) {
         is_error: oxide_builtins::error::error_is_error::<crate::vm::Vm> as *const (),
         to_json: oxide_builtins::error::error_to_json::<crate::vm::Vm> as *const (),
     };
-    env.world().bind_error_methods(
-        &error_methods,
-        env.string_forge(),
-        env.shape_forge(),
-    );
+    env.world()
+        .bind_error_methods(&error_methods, env.string_forge(), env.shape_forge());
 
     // stack 为访问器成对安装（getter 现算栈串 / setter 走
     // SetterThatIgnoresPrototypeProperties），经 getset 绑定器登记复用键，

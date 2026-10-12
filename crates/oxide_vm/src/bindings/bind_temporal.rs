@@ -117,10 +117,7 @@ pub fn bind_temporal(env: BindEnv<'_>, global: &mut JsObject) {
         env.core,
         instant_proto,
         9,
-        JsValue::perm_string(
-            env.string_forge()
-                .string_ptr(env.string_forge().intern("Temporal.Instant").0),
-        ),
+        JsValue::perm_string(env.string_forge().string_ptr(env.string_forge().intern("Temporal.Instant").0)),
         PropAttributes::new(false, false, true),
         env.realm_id,
     );
@@ -666,10 +663,7 @@ pub fn bind_temporal(env: BindEnv<'_>, global: &mut JsObject) {
         env.core,
         plain_time_proto,
         9,
-        JsValue::perm_string(
-            env.string_forge()
-                .string_ptr(env.string_forge().intern("Temporal.PlainTime").0),
-        ),
+        JsValue::perm_string(env.string_forge().string_ptr(env.string_forge().intern("Temporal.PlainTime").0)),
         PropAttributes::new(false, false, true),
         env.realm_id,
     );
@@ -911,10 +905,7 @@ pub fn bind_temporal(env: BindEnv<'_>, global: &mut JsObject) {
         env.core,
         duration_proto,
         9,
-        JsValue::perm_string(
-            env.string_forge()
-                .string_ptr(env.string_forge().intern("Temporal.Duration").0),
-        ),
+        JsValue::perm_string(env.string_forge().string_ptr(env.string_forge().intern("Temporal.Duration").0)),
         PropAttributes::new(false, false, true),
         env.realm_id,
     );

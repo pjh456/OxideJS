@@ -20,12 +20,8 @@ pub fn bind_function(env: BindEnv<'_>, global: &mut JsObject) {
         to_string: oxide_builtins::function::function_to_string::<crate::vm::Vm> as *const (),
         has_instance: oxide_builtins::function::function_symbol_has_instance::<crate::vm::Vm> as *const (),
     };
-    env.world().bind_function_methods(
-        &function_methods,
-        env.string_forge(),
-        env.shape_forge(),
-        env.realm_id,
-    );
+    env.world()
+        .bind_function_methods(&function_methods, env.string_forge(), env.shape_forge(), env.realm_id);
 
     let function_ctor = env.world().function_constructor.as_ptr() as *mut JsObject;
     configure_native_constructor(

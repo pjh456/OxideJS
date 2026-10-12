@@ -7,7 +7,9 @@
 //! 安装（既有槽更新槽值、无槽新开）。
 
 use crate::bind_constructor;
-use crate::bindings::{apply_binding_table, bind_accessor_getset, bind_accessor_getter, configure_native_constructor, BindEnv};
+use crate::bindings::{
+    apply_binding_table, bind_accessor_getset, bind_accessor_getter, configure_native_constructor, BindEnv,
+};
 use oxide_kernel::shape_forge::{ShapeForge, EMPTY_SHAPE_ID};
 use oxide_types::object::{JsObject, PropAttributes};
 use oxide_types::string_forge::PermInterner;
@@ -165,11 +167,7 @@ pub fn bind_worker(env: BindEnv<'_>, global: &mut JsObject) {
     // 幂等守卫。
     let si_import_scripts = sf.intern("importScripts").0;
     if sh.lookup_position(global.shape_id(), si_import_scripts).is_none() {
-        apply_binding_table(
-            env,
-            global,
-            &[("importScripts", crate::worker::bindings::import_scripts as *const (), 1)],
-        );
+        apply_binding_table(env, global, &[("importScripts", crate::worker::bindings::import_scripts as *const (), 1)]);
     }
     // EventTarget 三方法直绑全局（worker realm 经 self === global 可达；全局原型链
     // 是 Object.prototype，首版不改全局原型，三方法直绑全局等价可见）。幂等守卫。
@@ -241,12 +239,7 @@ pub fn bind_worker(env: BindEnv<'_>, global: &mut JsObject) {
     let si_location = sf.intern("location").0;
     if sh.lookup_position(global.shape_id(), si_location).is_none() {
         if worker_realm {
-            bind_accessor_getter(
-                env,
-                global,
-                "location",
-                crate::worker::bindings::self_location as *const (),
-            );
+            bind_accessor_getter(env, global, "location", crate::worker::bindings::self_location as *const ());
         } else {
             bind_global_empty_string_property(global, sf, sh, si_location);
         }

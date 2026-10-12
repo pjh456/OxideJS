@@ -170,8 +170,7 @@ pub fn sync_async_disposable_stack_ctor(env: BindEnv<'_>, global: &mut JsObject)
     let Some(proto_pos) = env.shape_forge().lookup_position(ctor.shape_id(), si_prototype) else {
         return;
     };
-    let new_proto =
-        JsValue::from_js_object(env.world().async_disposable_stack_proto.as_ptr() as *mut JsObject);
+    let new_proto = JsValue::from_js_object(env.world().async_disposable_stack_proto.as_ptr() as *mut JsObject);
     ctor.set_prop_at(proto_pos, new_proto);
 
     let proto_ptr = env.world().async_disposable_stack_proto.as_ptr() as *mut JsObject;

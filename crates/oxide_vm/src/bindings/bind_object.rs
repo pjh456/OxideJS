@@ -36,8 +36,7 @@ pub fn bind_object(env: BindEnv<'_>, global: &mut JsObject) {
             as *const (),
         group_by: oxide_builtins::object::object_group_by::<crate::vm::Vm> as *const (),
     };
-    env.world()
-        .bind_object_methods(&methods, env.string_forge(), env.shape_forge());
+    env.world().bind_object_methods(&methods, env.string_forge(), env.shape_forge());
 
     let object_proto_ptr = env.world().object_proto.as_ptr() as *mut JsObject;
     let object_proto = unsafe { &mut *object_proto_ptr };

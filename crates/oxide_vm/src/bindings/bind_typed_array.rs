@@ -354,8 +354,7 @@ pub fn bind_typed_array(env: BindEnv<'_>, global: &mut JsObject) {
     bind_typed_array_abstract_ctor(env);
 
     // 把 `%TypedArray%` 抽象构造器暴露为全局 `TypedArray`（具体构造器的 [[Prototype]]）。
-    let abstract_ctor_val =
-        JsValue::from_js_object(env.world().typed_array_constructor.as_ptr() as *mut JsObject);
+    let abstract_ctor_val = JsValue::from_js_object(env.world().typed_array_constructor.as_ptr() as *mut JsObject);
     bind_global_value(env.core, global, "TypedArray", abstract_ctor_val);
 
     bind_typed_array_constructor!(
