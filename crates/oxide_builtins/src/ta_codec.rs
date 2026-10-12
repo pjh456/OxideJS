@@ -312,16 +312,8 @@ mod tests {
         units: &[u16], alphabet: Base64Alphabet, handling: LastChunkHandling, max_len: Option<usize>,
     ) -> Result<(usize, Vec<u8>), DecodeError> {
         let mut bytes = Vec::new();
-        decode_base64(
-            units,
-            DecodeConfig {
-                alphabet,
-                handling,
-                max_len,
-            },
-            &mut |_, b| bytes.push(b),
-        )
-        .map(|(r, w)| (r, bytes.into_iter().take(w).collect()))
+        decode_base64(units, DecodeConfig { alphabet, handling, max_len }, &mut |_, b| bytes.push(b))
+            .map(|(r, w)| (r, bytes.into_iter().take(w).collect()))
     }
 
     fn decode_hex_full(units: &[u16], max_len: Option<usize>) -> Result<(usize, Vec<u8>), DecodeError> {

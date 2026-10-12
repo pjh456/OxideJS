@@ -15,7 +15,7 @@ use super::common::{
 use super::difference::{
     add_date_duration, add_days_iso, balance_instant_difference, compare_iso_date, date_duration_sign, date_until_iso,
     nudge_iso_difference, nudge_window, plain_date_time_unit_index, round_instant_difference, DifferenceSettings,
-    IsoDateTime, InternalDuration, DAY_NS, MAX_ISO_DAY,
+    InternalDuration, IsoDateTime, DAY_NS, MAX_ISO_DAY,
 };
 use super::instant::{instant_rounding_mode, InstantRoundingMode};
 use super::time_zone::zone_offset_seconds;
@@ -1466,10 +1466,7 @@ pub fn duration_round<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         increment,
         mode,
     };
-    let start = IsoDateTime {
-        date: rel,
-        time_ns: 0,
-    };
+    let start = IsoDateTime { date: rel, time_ns: 0 };
     let end_dt = IsoDateTime {
         date: end,
         time_ns: target_time,

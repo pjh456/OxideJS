@@ -19,7 +19,7 @@ use super::common::{
 use super::difference::{
     add_days_iso, bubble_relative_duration, compare_iso_date, date_duration_sign, date_until_iso, difference_core,
     internal_duration_sign, nudge_to_calendar_unit, parse_difference_settings, round_instant_difference,
-    DifferenceSettings, IsoDateTime, InternalDuration, RoundingSpec, DAY_NS, MAX_ISO_DAY, TIME_UNIT_NS,
+    DifferenceSettings, InternalDuration, IsoDateTime, RoundingSpec, DAY_NS, MAX_ISO_DAY, TIME_UNIT_NS,
 };
 use super::instant::{
     instant_rounding_mode, instant_string_without_annotations, parse_instant_string, primitive_to_bigint,
@@ -1906,16 +1906,14 @@ pub(crate) fn map_add_zoned_error<H: VmHost>(vm: &mut H, error: AddZonedError) -
 pub(crate) fn difference_zoned_datetime_with_rounding_vm<H: VmHost>(
     vm: &mut H, pair: ZonedPair, settings: DifferenceSettings,
 ) -> Result<InternalDuration, JsValue> {
-    difference_zoned_datetime_with_rounding(pair, settings)
-        .map_err(|error| map_add_zoned_error(vm, error))
+    difference_zoned_datetime_with_rounding(pair, settings).map_err(|error| map_add_zoned_error(vm, error))
 }
 
 /// DifferenceZonedDateTimeWithTotal 的 VM 包装：错误映射为 RangeError。
 pub(crate) fn difference_zoned_datetime_with_total_vm<H: VmHost>(
     vm: &mut H, pair: ZonedPair, unit: usize,
 ) -> Result<f64, JsValue> {
-    difference_zoned_datetime_with_total(pair, unit)
-        .map_err(|error| map_add_zoned_error(vm, error))
+    difference_zoned_datetime_with_total(pair, unit).map_err(|error| map_add_zoned_error(vm, error))
 }
 
 /// GetISODateTimeFor（规范 11.1.10）：epoch 对应的墙历日期时间。
@@ -2182,9 +2180,7 @@ fn nudge_to_zoned_time(
 /// # 步骤
 /// 1. unit 为时间单位 → TotalTimeDuration 快路径（纳秒差直接除单位长度）。
 /// 2. 否则 DifferenceZonedDateTime + TotalRelativeDuration。
-pub(crate) fn difference_zoned_datetime_with_total(
-    pair: ZonedPair, unit: usize,
-) -> Result<f64, AddZonedError> {
+pub(crate) fn difference_zoned_datetime_with_total(pair: ZonedPair, unit: usize) -> Result<f64, AddZonedError> {
     let ns1 = pair.ns1;
     let ns2 = pair.ns2;
     let time_zone = pair.time_zone;
@@ -2204,8 +2200,7 @@ pub(crate) fn difference_zoned_datetime_with_total(
 ///    （increment = 1、trunc）取 [[Total]]。
 /// 2. 否则 TotalTimeDuration（24h 日折算，zoned 面不可达）。
 fn total_relative_duration(
-    difference: &InternalDuration, origin_ns: i128, dest_ns: i128, iso: IsoDateTime, time_zone: &str,
-    unit: usize,
+    difference: &InternalDuration, origin_ns: i128, dest_ns: i128, iso: IsoDateTime, time_zone: &str, unit: usize,
 ) -> Result<f64, AddZonedError> {
     let values = difference.to_values();
     // zoned 面时区恒在场：unit ≤ day 恒走日历窗口路径。
