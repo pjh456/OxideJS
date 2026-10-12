@@ -266,8 +266,8 @@ impl CompileCtx {
             scopes: ScopeCtx {
                 symbols: SymbolTable::new(),
                 builtin_reg_map: Vec::new(),
-                private_name_map: Vec::new(),
-                private_element_kinds: Vec::new(),
+                private_name_map: HashMap::new(),
+                private_element_kinds: HashMap::new(),
                 private_brand_id: None,
                 next_private_name_id: 1,
             },

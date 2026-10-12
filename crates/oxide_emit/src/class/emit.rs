@@ -167,10 +167,8 @@ impl Emitter {
         let mut stacked_names = saved_private_names.clone();
         let mut stacked_kinds = saved_private_kinds.clone();
         for (n, id, kind, is_static) in &private_names {
-            stacked_names.retain(|(en, _)| en != n);
-            stacked_kinds.retain(|(en, _, _, _)| en != n);
-            stacked_names.push((n.clone(), *id));
-            stacked_kinds.push((n.clone(), *kind, *is_static, private_brand_id.unwrap_or(0)));
+            stacked_names.insert(n.clone(), *id);
+            stacked_kinds.insert(n.clone(), (*kind, *is_static, private_brand_id.unwrap_or(0)));
         }
         ctx.scopes.private_name_map = stacked_names;
         ctx.scopes.private_element_kinds = stacked_kinds;

@@ -12,8 +12,8 @@ impl Emitter {
     pub(crate) fn private_name_id(&self, name: &str, ctx: &CompileCtx) -> Result<u32, String> {
         ctx.scopes
             .private_name_map
-            .iter()
-            .find_map(|(n, id)| (n == name).then_some(*id))
+            .get(name)
+            .copied()
             .ok_or_else(|| format!("private name #{name} is not defined"))
     }
 
@@ -36,8 +36,7 @@ impl Emitter {
     pub(crate) fn private_access_brand(
         &self, _obj_reg: u32, name: &str, ctx: &mut CompileCtx,
     ) -> Result<(u32, u32), String> {
-        let entry = ctx.scopes.private_element_kinds.iter().find(|(n, _, _, _)| n == name);
-        let Some((_, kind, is_static, brand_id)) = entry else {
+        let Some((kind, is_static, brand_id)) = ctx.scopes.private_element_kinds.get(name) else {
             return Ok((0, 0));
         };
         if kind.is_none() && !is_static {
