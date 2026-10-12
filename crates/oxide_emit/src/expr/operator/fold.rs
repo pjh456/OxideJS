@@ -2,28 +2,31 @@
 //! 发射单条 `LOAD_CONST`。折值编码逐运算符镜像运行时指令的产物编码，
 //! 保证物化后与运行时执行结果逐字节一致。
 //!
-//! 两个域并列：数值域（`literal_constant`/`fold_binary`，两操作数形态，
-//! 守卫排除字符串与 BigInt）与字符串域（`literal_units`/`fold_string_chain`/
+//! 三个域并列：数值域（`literal_constant`/`fold_binary`，两操作数形态，
+//! 守卫排除字符串与 BigInt）、字符串域（`literal_units`/`fold_string_chain`/
 //! `fold_template`，Addition 链与全字面量模板，单元口径与运行期
-//! `push_units_to` 逐段一致）。
+//! `push_units_to` 逐段一致）、一元/逻辑/条件域（`literal_constant_wide`/
+//! `fold_unary`/`fold_logical`/`fold_conditional`，全字面量操作数折单常量）。
 //!
 //! 数值域语义守卫：任一操作数为 BigInt 字面量不折（BigInt 混合运行期抛
 //! TypeError，BigInt 与 BigInt 有独立指令族）；`DIV`/`MOD` 除数为零不折、
 //! `EXP` 指数为负不折（保持运行时指令为除零/负指数编码的唯一来源）。
 //! 字符串域语义守卫：Addition 链须至少一个字符串字面量（全数字链落回
 //! 数值域与 `CONCAT_N`，两域零重叠）；模板须全部 cooked 为 Some。
+//! 一元/逻辑/条件域语义守卫：`+` 作用 BigInt 字面量不折（运行期抛
+//! TypeError，保持运行时指令为该异常的唯一来源）。
 
 use oxide_bytecode::module::Constant;
-use oxide_parser::{BinaryOperator, Expression, UnaryOperator};
+use oxide_parser::{BinaryOperator, Expression, LogicalOperator, UnaryOperator};
 use oxide_runtime_api::{
-    abstract_eq_primitives, bigint_to_string, js_number_to_string, relational_compare, strict_equality, to_int32,
-    to_number, to_uint32,
+    abstract_eq_primitives, bigint_to_string, js_number_to_string, relational_compare, strict_equality, to_boolean,
+    to_int32, to_number, to_uint32,
 };
 use oxide_types::string_forge::{decode_key, encode_key};
 use oxide_types::value::JsValue;
 
 use crate::is_int_literal;
-use crate::shared::string_pool::pool_key_marker;
+use crate::shared::string_pool::{pool_key_marker, pool_key_plain};
 
 /// 字面量表达式提取常量：剥括号与一元负号后，数字（`is_int_literal` 分派
 /// `Int`/`Number`）、布尔、null 三类；BigInt 字面量、字符串字面量、RegExp 与
@@ -83,6 +86,57 @@ fn const_to_jsvalue(c: &Constant) -> JsValue {
 /// 常量的数值（`Int`/`Number`/`Boolean`/`Null` 均走 `ToNumber` 口径）。
 fn const_to_number(c: &Constant) -> f64 {
     to_number(const_to_jsvalue(c))
+}
+
+/// 字面量表达式提取常量（宽口径）：窄口径三臂加 BigInt 字面量臂，供一元/逻辑/
+/// 条件折叠识别 BigInt 字面量（`+` 的 TypeError 守卫与 `-`/`~` 的 BigInt 折值
+/// 都须知道操作数是 BigInt）。
+///
+/// 负零字面量（奇数层负号作用于 0 字面量）保 `Number(-0.0)` 不经 Int 臂，防
+/// 符号丢失（`+`/`-` 折叠产物经 `Object.is` 可观察）。BigInt 字面量解析与
+/// 字面量发射器同口径，解析失败返回 `None` 不折。
+pub(crate) fn literal_constant_wide(expr: &Expression) -> Option<Constant> {
+    let (inner, negated) = peel_negation(expr);
+    match inner {
+        Expression::NumericLiteral(n) => {
+            // 负零守卫：奇数层负号作用于 0 字面量保 Number(-0.0)，Int 臂会丢符号。
+            if negated && n.value == 0.0 {
+                return Some(Constant::Number(-0.0));
+            }
+            let value = if negated { -n.value } else { n.value };
+            if is_int_literal(value) {
+                Some(Constant::Int(value as i32))
+            } else {
+                Some(Constant::Number(value))
+            }
+        }
+        Expression::BooleanLiteral(b) if !negated => Some(Constant::Boolean(b.value)),
+        Expression::NullLiteral(_) if !negated => Some(Constant::Null),
+        Expression::BigIntLiteral(b) => {
+            let value = parse_bigint_literal(b)?;
+            Some(if negated { Constant::BigInt(-value) } else { Constant::BigInt(value) })
+        }
+        _ => None,
+    }
+}
+
+/// BigInt 字面量解析：与字面量发射器同口径（i128 快路径失败回退十进制
+/// `parse_bytes`，解析失败返回 `None` 不折）。
+fn parse_bigint_literal(b: &oxide_parser::BigIntLiteral) -> Option<num_bigint::BigInt> {
+    if let Ok(v) = b.value.parse::<i128>() {
+        Some(num_bigint::BigInt::from(v))
+    } else {
+        num_bigint::BigInt::parse_bytes(b.value.as_bytes(), 10)
+    }
+}
+
+/// 常量的布尔值（`ToBoolean` 口径）：BigInt 臂直接判零，其余经
+/// `const_to_jsvalue` 加 `to_boolean`。
+fn const_to_boolean(c: &Constant) -> bool {
+    if let Constant::BigInt(b) = c {
+        return *b != num_bigint::BigInt::from(0);
+    }
+    to_boolean(const_to_jsvalue(c))
 }
 
 /// 双常量折叠分派：按操作码计算折值，守卫命中返回 `None`。
@@ -196,6 +250,88 @@ fn relational(l: &Constant, r: &Constant, swap: bool, negate: bool) -> Option<Co
     };
     let cmp = relational_compare(a, b).unwrap_or(false);
     Some(Constant::Boolean(if negate { !cmp } else { cmp }))
+}
+
+/// 一元折叠分派：按操作符计算折值，守卫命中返回 `None`。
+///
+/// 折值编码逐运算符镜像运行时产物：
+/// - `LogicalNot`：`Boolean`（镜像 `NOT` 的 `to_boolean` 取反）
+/// - `UnaryNegation`：BigInt 操作数折 `BigInt`，其余恒 `Number`（镜像
+///   `NEG` 的 `JsValue::float`，不保 `Int`）
+/// - `UnaryPlus`：BigInt 操作数不折（运行期抛 TypeError，保持运行时指令为
+///   该异常的唯一来源）；其余恒 `Number`
+/// - `BitwiseNot`：BigInt 操作数折 `BigInt`，其余恒 `Int`（镜像 `to_int32`）
+/// - `Typeof`：`Int`/`Number` 折 "number"、`BigInt` 折 "bigint"、`Boolean` 折
+///   "boolean"、`Null` 折 "object"（结果字符串经 `pool_key_plain` 入池，逐类型
+///   镜像运行时 `TYPEOF_TEXTS` 分派）
+/// - `Void`：恒 `Undefined`
+/// - `Delete`：引用语义非常量，不折（入口 Delete 特判先行，此臂为防御）
+pub(crate) fn fold_unary(op: UnaryOperator, c: &Constant) -> Option<Constant> {
+    match op {
+        UnaryOperator::LogicalNot => Some(Constant::Boolean(!const_to_boolean(c))),
+        UnaryOperator::UnaryNegation => match c {
+            Constant::BigInt(b) => Some(Constant::BigInt(-b.clone())),
+            _ => Some(Constant::Number(-const_to_number(c))),
+        },
+        UnaryOperator::UnaryPlus => {
+            // BigInt 守卫：运行期抛 TypeError，不折。
+            if matches!(c, Constant::BigInt(_)) {
+                return None;
+            }
+            Some(Constant::Number(const_to_number(c)))
+        }
+        UnaryOperator::BitwiseNot => match c {
+            Constant::BigInt(b) => Some(Constant::BigInt(!b.clone())),
+            _ => Some(Constant::Int(!to_int32(const_to_jsvalue(c)))),
+        },
+        UnaryOperator::Typeof => {
+            // 逐类型镜像运行时 `TYPEOF_TEXTS` 分派：BigInt 归 "bigint"
+            // （独立于 Int/Double 的 "number"），Boolean 归 "boolean"，Null 归 "object"。
+            let text = match c {
+                Constant::Int(_) | Constant::Number(_) => "number",
+                Constant::BigInt(_) => "bigint",
+                Constant::Boolean(_) => "boolean",
+                Constant::Null => "object",
+                _ => return None,
+            };
+            Some(Constant::String(pool_key_plain(text)))
+        }
+        UnaryOperator::Void => Some(Constant::Undefined),
+        UnaryOperator::Delete => None,
+    }
+}
+
+/// 逻辑折叠分派：结果恒为某一操作数的原样拷贝（无类型转换，任何字面量类型
+/// 均安全，含 BigInt）。
+pub(crate) fn fold_logical(op: LogicalOperator, l: &Constant, r: &Constant) -> Option<Constant> {
+    Some(match op {
+        LogicalOperator::And => {
+            if const_to_boolean(l) {
+                r.clone()
+            } else {
+                l.clone()
+            }
+        }
+        LogicalOperator::Or => {
+            if const_to_boolean(l) {
+                l.clone()
+            } else {
+                r.clone()
+            }
+        }
+        LogicalOperator::Coalesce => {
+            if matches!(l, Constant::Null | Constant::Undefined) {
+                r.clone()
+            } else {
+                l.clone()
+            }
+        }
+    })
+}
+
+/// 条件折叠分派：结果恒为 test 的布尔值选定的分支常量（原样拷贝）。
+pub(crate) fn fold_conditional(test: &Constant, cons: &Constant, alt: &Constant) -> Option<Constant> {
+    Some(if const_to_boolean(test) { cons.clone() } else { alt.clone() })
 }
 
 /// 可折叠字面量的单元序列（剥括号与一元负号链）：字符串字面量经

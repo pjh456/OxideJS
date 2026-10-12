@@ -109,6 +109,16 @@ impl Emitter {
             }
             return self.emit_delete_operand(operand, ctx);
         }
+        // 一元常量折叠：操作数为字面量且通过语义守卫时折单常量，发射单条
+        // LOAD_CONST（编码镜像运行时指令产物，见 fold.rs）。
+        if let Some(c) = fold::literal_constant_wide(&un.argument) {
+            if let Some(folded) = fold::fold_unary(un.operator, &c) {
+                let idx = ctx.add_constant(folded);
+                let r = ctx.alloc_reg();
+                ctx.inst(Inst::load_const(Operand::Reg(r), idx));
+                return Ok(r);
+            }
+        }
         let arg = if matches!(un.operator, UnaryOperator::Typeof) {
             self.emit_typeof_operand(&un.argument, ctx)?
         } else {
@@ -446,6 +456,19 @@ impl Emitter {
     fn emit_conditional_expression(
         &self, cond: &oxide_parser::ConditionalExpression, ctx: &mut CompileCtx,
     ) -> Result<u32, String> {
+        // 条件常量折叠：test 与两臂均为字面量时折单常量，发射单条 LOAD_CONST。
+        if let (Some(t), Some(c), Some(a)) = (
+            fold::literal_constant_wide(&cond.test),
+            fold::literal_constant_wide(&cond.consequent),
+            fold::literal_constant_wide(&cond.alternate),
+        ) {
+            if let Some(folded) = fold::fold_conditional(&t, &c, &a) {
+                let idx = ctx.add_constant(folded);
+                let r = ctx.alloc_reg();
+                ctx.inst(Inst::load_const(Operand::Reg(r), idx));
+                return Ok(r);
+            }
+        }
         let else_label = ctx.next_label_id();
         let end_label = ctx.next_label_id();
 
@@ -479,6 +502,15 @@ impl Emitter {
     fn emit_logical_expression(
         &self, log: &oxide_parser::LogicalExpression, ctx: &mut CompileCtx,
     ) -> Result<u32, String> {
+        // 逻辑常量折叠：两侧均为字面量时折单常量，发射单条 LOAD_CONST。
+        if let (Some(l), Some(r)) = (fold::literal_constant_wide(&log.left), fold::literal_constant_wide(&log.right)) {
+            if let Some(folded) = fold::fold_logical(log.operator, &l, &r) {
+                let idx = ctx.add_constant(folded);
+                let r = ctx.alloc_reg();
+                ctx.inst(Inst::load_const(Operand::Reg(r), idx));
+                return Ok(r);
+            }
+        }
         let left_reg = self.emit_expression(&log.left, ctx)?;
 
         if is_side_effect_free(&log.left) && is_side_effect_free(&log.right) {
