@@ -563,9 +563,7 @@ fn collect_fn_scope_names_impl(stmts: &[Statement], out: &mut FnScopeNames, top:
                     collect_fn_scope_names_impl(&f.body, out, false);
                 }
             }
-            Statement::LabeledStatement(ls) => {
-                collect_fn_scope_names_impl(std::slice::from_ref(&ls.body), out, false)
-            }
+            Statement::LabeledStatement(ls) => collect_fn_scope_names_impl(std::slice::from_ref(&ls.body), out, false),
             Statement::WithStatement(ws) => collect_fn_scope_names_impl(std::slice::from_ref(&ws.body), out, false),
             _ => {}
         }
@@ -714,22 +712,13 @@ mod tests {
     /// 夹具：parse 源串（脚本口径）后，六输出逐一断言新单趟与旧六函数逐位一致。
     fn assert_bitwise(src: &str, params: &[&str]) {
         let alloc = oxide_parser::Allocator::default();
-        let program =
-            oxide_parser::parse(&alloc, src).unwrap_or_else(|e| panic!("parse 失败 {src:?}: {e:?}"));
+        let program = oxide_parser::parse(&alloc, src).unwrap_or_else(|e| panic!("parse 失败 {src:?}: {e:?}"));
         let body = &program.body;
 
         let names = collect_fn_scope_names(params, body);
         assert_eq!(names.var_binding_names, collect_var_binding_names(body), "var 面漂移：{src:?}");
-        assert_eq!(
-            names.own_binding_names,
-            collect_own_binding_names(params, body),
-            "own 面漂移：{src:?}"
-        );
-        assert_eq!(
-            names.block_level_decl_names,
-            collect_block_level_decl_names(body),
-            "块级面漂移：{src:?}"
-        );
+        assert_eq!(names.own_binding_names, collect_own_binding_names(params, body), "own 面漂移：{src:?}");
+        assert_eq!(names.block_level_decl_names, collect_block_level_decl_names(body), "块级面漂移：{src:?}");
         assert_eq!(
             names.direct_lexical_names,
             collect_direct_lexical_names(body),
@@ -750,22 +739,14 @@ mod tests {
     /// 夹具：parse 源串（模块口径）后，六输出逐一断言新单趟与旧六函数逐位一致。
     fn assert_bitwise_module(src: &str, params: &[&str]) {
         let alloc = oxide_parser::Allocator::default();
-        let program = oxide_parser::parse_module(&alloc, src)
-            .unwrap_or_else(|e| panic!("parse_module 失败 {src:?}: {e:?}"));
+        let program =
+            oxide_parser::parse_module(&alloc, src).unwrap_or_else(|e| panic!("parse_module 失败 {src:?}: {e:?}"));
         let body = &program.body;
 
         let names = collect_fn_scope_names(params, body);
         assert_eq!(names.var_binding_names, collect_var_binding_names(body), "var 面漂移：{src:?}");
-        assert_eq!(
-            names.own_binding_names,
-            collect_own_binding_names(params, body),
-            "own 面漂移：{src:?}"
-        );
-        assert_eq!(
-            names.block_level_decl_names,
-            collect_block_level_decl_names(body),
-            "块级面漂移：{src:?}"
-        );
+        assert_eq!(names.own_binding_names, collect_own_binding_names(params, body), "own 面漂移：{src:?}");
+        assert_eq!(names.block_level_decl_names, collect_block_level_decl_names(body), "块级面漂移：{src:?}");
         assert_eq!(
             names.direct_lexical_names,
             collect_direct_lexical_names(body),
