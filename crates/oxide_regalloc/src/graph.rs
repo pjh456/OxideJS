@@ -9,7 +9,7 @@
 //!
 //! 确定性：全 BTreeMap + Vec 排序，禁 HashMap 迭代序。
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 use oxide_bytecode::opcode::OpCode;
 use oxide_ir::operand::Operand;
@@ -34,20 +34,20 @@ pub(super) struct InterferenceGraph {
     pub arg_window_base: u32,
 }
 
-/// 收集全部真实 vreg（BTreeSet 保确定性）：
+/// 收集全部真实 vreg（Vec 排序去重保确定性）：
 /// 字面 `Operand::Reg(r)`（rd/a/b 三槽）+ CALL/CALL_NATIVE/NEW_EXPRESSION b 槽参数区间
 /// + SUPER_CALL a 槽参数区间。0 无条件排除（reg 0 永非真实——emit 分配寄存器从 ≥1 起）。
 ///
 /// 254/255 的过近似规则：live bitset 中位 254/255 无法区分 This/NewTarget 占用与
 /// 真实 vreg 活度，若函数存在该号真实 vreg（大函数场景）则按真实 vreg 建节点染色——
 /// 多出的边只造成过度约束（安全方向），缺失边才会错值。
-pub(super) fn collect_real_vregs(f: &IRFunction) -> BTreeSet<u32> {
-    let mut real = BTreeSet::new();
+pub(super) fn collect_real_vregs(f: &IRFunction) -> Vec<u32> {
+    let mut real: Vec<u32> = Vec::new();
     for inst in &f.insts {
         for o in [&inst.rd, &inst.a, &inst.b] {
             if let Operand::Reg(r) = o {
                 if *r != 0 {
-                    real.insert(*r);
+                    real.push(*r);
                 }
             }
         }
@@ -66,7 +66,7 @@ pub(super) fn collect_real_vregs(f: &IRFunction) -> BTreeSet<u32> {
         if let Some(fr) = first {
             for r in fr..fr + nargs {
                 if r != 0 {
-                    real.insert(r);
+                    real.push(r);
                 }
             }
         }
@@ -75,7 +75,7 @@ pub(super) fn collect_real_vregs(f: &IRFunction) -> BTreeSet<u32> {
             for &w in inst.ext.iter().skip(1) {
                 let r = w & 0x7FFF_FFFF;
                 if r != 0 {
-                    real.insert(r);
+                    real.push(r);
                 }
             }
         }
@@ -83,7 +83,7 @@ pub(super) fn collect_real_vregs(f: &IRFunction) -> BTreeSet<u32> {
         if matches!(inst.op, OpCode::DEFINE_ACCESSOR_DYNAMIC | OpCode::DEFINE_ACCESSOR_ATTRS_DYNAMIC) {
             let r = inst.ext.first().copied().unwrap_or(0) & 0x7FFF_FFFF;
             if r != 0 {
-                real.insert(r);
+                real.push(r);
             }
         }
         // CONCAT_N：ext[1..] 每个字是完整操作数 vreg（无高位标记）——漏收集则
@@ -92,18 +92,20 @@ pub(super) fn collect_real_vregs(f: &IRFunction) -> BTreeSet<u32> {
             for &w in inst.ext.iter().skip(1) {
                 let r = w & 0x7FFF_FFFF;
                 if r != 0 {
-                    real.insert(r);
+                    real.push(r);
                 }
             }
         }
     }
+    real.sort_unstable();
+    real.dedup();
     real
 }
 
 /// 构建干涉图：`build(f, live, spill_set, fresh) -> InterferenceGraph`。
 /// spill_set 中的 vreg 不再是节点（其 fresh 替代品入图）；fresh 按 at==i 并入该指令活集。
 pub(super) fn build(
-    f: &IRFunction, live: &LiveInfo, spill_set: &BTreeSet<u32>, fresh: &[FreshVreg],
+    f: &IRFunction, live: &LiveInfo, spill_set: &[u32], fresh: &[FreshVreg],
 ) -> InterferenceGraph {
     let mut real = collect_real_vregs(f);
     // inst_live_before 长度 = 指令数（逐指令活集索引）
@@ -176,7 +178,7 @@ pub(super) fn build(
         };
         for i in 0..pl.count {
             let vreg = pl.base + i;
-            real.insert(vreg);
+            real.push(vreg);
             pre_colors.insert(vreg, physical_base + i);
         }
     }
@@ -244,8 +246,16 @@ pub(super) fn build(
             adj: Vec::new(),
         });
     }
-    // 邻接表（BTreeMap<u32, BTreeSet<u32>> 去重后转 Vec 排序）
-    let mut adj_sets: BTreeMap<u32, BTreeSet<u32>> = BTreeMap::new();
+    // 节点成员位图：按 nodes 最大键定长（一次分配、建图期间不增长），逐活位 O(1)
+    // 查询替代 BTreeMap 探测；活位号可超最大键（spilled vreg 活但非节点），越界
+    // 返回 false 恰好正确。
+    let max_id = nodes.keys().next_back().copied().unwrap_or(0);
+    let mut is_node: Vec<u64> = vec![0u64; (max_id as usize / 64) + 1];
+    for v in nodes.keys() {
+        is_node[*v as usize / 64] |= 1u64 << (*v as usize % 64);
+    }
+    // 邻接表（Vec 收集，收尾排序去重，与 BTreeSet 输出逐字节完全一致）
+    let mut adj_sets: BTreeMap<u32, Vec<u32>> = BTreeMap::new();
     let node_ids: Vec<u32> = nodes.keys().copied().collect();
     for &v in &node_ids {
         adj_sets.entry(v).or_default();
@@ -268,7 +278,7 @@ pub(super) fn build(
             while bits != 0 {
                 let bit = bits.trailing_zeros() as usize;
                 let v = (word_idx * 64 + bit) as u32;
-                if nodes.contains_key(&v) {
+                if oxide_liveness::bitset_get(&is_node, v as usize) {
                     at_i.push(v);
                 }
                 bits &= bits - 1;
@@ -281,24 +291,24 @@ pub(super) fn build(
         for a in 0..at_i.len() {
             for b in a + 1..at_i.len() {
                 let (x, y) = (at_i[a], at_i[b]);
-                adj_sets.entry(x).or_default().insert(y);
-                adj_sets.entry(y).or_default().insert(x);
+                adj_sets.entry(x).or_default().push(y);
+                adj_sets.entry(y).or_default().push(x);
             }
         }
         // def 结果与执行后仍存活的值冲突（写覆盖）：live_after 含 def 后存活者。
         // live_before 已 kill def 自身，纯写指令（FOR_OF_NEXT 等）的结果若与长活
         // 寄存器同色会覆盖其值（elision 解构返回值被覆盖），须补此干涉边。
         if let Some(d) = f.insts[i].def_reg() {
-            if nodes.contains_key(&d) {
+            if oxide_liveness::bitset_get(&is_node, d as usize) {
                 let after = &live.inst_live_after[i];
                 for (word_idx, word) in after.iter().enumerate() {
                     let mut bits = *word;
                     while bits != 0 {
                         let bit = bits.trailing_zeros() as usize;
                         let v = (word_idx * 64 + bit) as u32;
-                        if v != d && nodes.contains_key(&v) {
-                            adj_sets.entry(d).or_default().insert(v);
-                            adj_sets.entry(v).or_default().insert(d);
+                        if v != d && oxide_liveness::bitset_get(&is_node, v as usize) {
+                            adj_sets.entry(d).or_default().push(v);
+                            adj_sets.entry(v).or_default().push(d);
                         }
                         bits &= bits - 1;
                     }
@@ -306,9 +316,11 @@ pub(super) fn build(
             }
         }
     }
-    for (v, set) in adj_sets {
+    for (v, mut adj) in adj_sets {
         if let Some(node) = nodes.get_mut(&v) {
-            node.adj = set.into_iter().collect();
+            adj.sort_unstable();
+            adj.dedup();
+            node.adj = adj;
         }
     }
 
@@ -380,7 +392,7 @@ mod tests {
     fn build_graph(f: &IRFunction) -> InterferenceGraph {
         let cfg = oxide_cfg::build_cfg(f);
         let live = oxide_liveness::liveness(f, &cfg);
-        build(f, &live, &BTreeSet::new(), &[])
+        build(f, &live, &[], &[])
     }
 
     #[test]

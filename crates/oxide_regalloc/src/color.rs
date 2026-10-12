@@ -23,10 +23,10 @@ pub(super) fn run(f: &IRFunction, live: &LiveInfo) -> Result<AllocMap, String> {
     } else {
         f.param_layout.base + f.param_layout.count - 1
     };
-    let max_real = graph::collect_real_vregs(f).into_iter().max().unwrap_or(0).max(max_param);
+    let max_real = graph::collect_real_vregs(f).last().copied().unwrap_or(0).max(max_param);
     let mut next_fresh_id = max_real + 1;
     let mut next_slot: u16 = 0;
-    let mut spill_set: BTreeSet<u32> = BTreeSet::new();
+    let mut spill_set: Vec<u32> = Vec::new();
     let mut fresh: Vec<FreshVreg> = Vec::new();
     let mut slot_for_vreg: BTreeMap<u32, u16> = BTreeMap::new();
     let mut iters = 0usize;
@@ -43,7 +43,7 @@ pub(super) fn run(f: &IRFunction, live: &LiveInfo) -> Result<AllocMap, String> {
                 return Err("RangeError: function body uses too many registers (max 253)".into());
             }
             // 真实 vreg 溢出：按 def/use 点拆成单点活度 fresh，重建图重试
-            spill_set.insert(v);
+            spill_set.push(v);
             debug_assert!(u32::from(next_slot) <= u16::MAX as u32, "spill slot 超 u16 上限");
             slot_for_vreg.insert(v, next_slot);
             next_slot += 1;
@@ -154,7 +154,7 @@ fn kemp_and_select(graph: &InterferenceGraph) -> (BTreeMap<u32, u32>, Vec<u32>) 
 
 /// 装配 AllocMap：map（真实 + fresh）+ spills 决策表 + phys_peak + arg_window_base。
 fn assemble(
-    colors: BTreeMap<u32, u32>, spill_set: BTreeSet<u32>, fresh: Vec<FreshVreg>, slot_for_vreg: BTreeMap<u32, u16>,
+    colors: BTreeMap<u32, u32>, spill_set: Vec<u32>, fresh: Vec<FreshVreg>, slot_for_vreg: BTreeMap<u32, u16>,
     arg_window_base: u32,
 ) -> Result<AllocMap, String> {
     let mut map = BTreeMap::new();
