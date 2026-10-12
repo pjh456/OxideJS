@@ -582,7 +582,7 @@ impl Emitter {
         for spec in param_specs {
             let name = spec.register_name();
             let reg = ctx.alloc_reg();
-            ctx.declare_initialized(name, reg, VariableDeclarationKind::Var, false)?;
+            ctx.declare_initialized(name, reg, VariableDeclarationKind::Var)?;
         }
 
         // 闭包捕获分析（AST 级，emit 前确定）：须在参数默认值 emit 之前，
@@ -624,7 +624,7 @@ impl Emitter {
             && self.arguments_obj_needed(body_stmts, &ctx.param_names, !param_defaults.is_empty())
         {
             let reg = ctx.alloc_reg();
-            ctx.declare_initialized("arguments", reg, VariableDeclarationKind::Var, false)?;
+            ctx.declare_initialized("arguments", reg, VariableDeclarationKind::Var)?;
             ctx.own_bindings.insert("arguments".to_string());
             arguments_reg = Some(reg);
         }
@@ -868,7 +868,7 @@ impl Emitter {
                     } else {
                         src_reg
                     };
-                    self.emit_binding_pattern(pattern, src_reg, VariableDeclarationKind::Var, false, false, ctx)?;
+                    self.emit_binding_pattern(pattern, src_reg, VariableDeclarationKind::Var, false, ctx)?;
                 }
                 ParamSpec::Identifier { name, initializer } => {
                     if let Some(init) = initializer {

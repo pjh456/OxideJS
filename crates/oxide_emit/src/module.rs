@@ -695,7 +695,6 @@ impl Emitter {
                                         s.local.name.as_str(),
                                         val_reg,
                                         VariableDeclarationKind::Const,
-                                        true,
                                         false,
                                         ctx,
                                     )?;
@@ -727,7 +726,7 @@ impl Emitter {
                                         && ctx.scopes.symbols.lookup_any(&source).is_none()
                                     {
                                         let reg = ctx.alloc_reg();
-                                        ctx.declare_predeclared(&source, reg, VariableDeclarationKind::Let, false)?;
+                                        ctx.declare_predeclared(&source, reg, VariableDeclarationKind::Let)?;
                                         // 表达式形态 TDZ 保持；函数声明形态由提升臂在求值
                                         // 前初始化，此处不做初始化。
                                     }
@@ -750,7 +749,6 @@ impl Emitter {
                                         s.local.name.as_str(),
                                         val_reg,
                                         VariableDeclarationKind::Const,
-                                        true,
                                         false,
                                         ctx,
                                     )?;
@@ -787,7 +785,6 @@ impl Emitter {
                                     s.local.name.as_str(),
                                     bind_reg,
                                     VariableDeclarationKind::Const,
-                                    true,
                                     false,
                                     ctx,
                                 )?;
@@ -1099,11 +1096,15 @@ impl Emitter {
         let undef_idx = ctx.add_constant(Constant::Undefined);
         let undef_reg = ctx.alloc_reg();
         ctx.inst(Inst::load_const(Operand::Reg(undef_reg), undef_idx));
-        self.emit_bind_target(local, undef_reg, VariableDeclarationKind::Const, true, false, ctx)?;
+        self.emit_bind_target(local, undef_reg, VariableDeclarationKind::Const, false, ctx)?;
         ctx.lookup(local)
     }
 
-    fn emit_module_set(&self, ctx: &mut CompileCtx, ns_reg: u32, name: &str, value_reg: u32) -> Result<(), String> {
+    fn emit_module_set(&self, ctx: &mut CompileCtx, name: &str, value_reg: u32) -> Result<(), String> {
+        // 非模块上下文无命名空间对象，静默返回（防御守卫）。
+        let Some(ns_reg) = ctx.module_ns_reg else {
+            return Ok(());
+        };
         let name_reg = self.load_string_const(name, ctx);
         self.emit_module_call(ctx, "__moduleSet", &[ns_reg, name_reg, value_reg])?;
         Ok(())
@@ -1118,9 +1119,11 @@ impl Emitter {
     /// # 副作用
     /// - 依赖运行期 `module_frame_cell(cell_idx)` 取当前字节码帧 cell，改命名空间
     ///   条目状态为共享 cell。
-    fn emit_module_set_cell(
-        &self, ctx: &mut CompileCtx, ns_reg: u32, export_name: &str, cell_idx: u8,
-    ) -> Result<(), String> {
+    fn emit_module_set_cell(&self, ctx: &mut CompileCtx, export_name: &str, cell_idx: u8) -> Result<(), String> {
+        // 非模块上下文无命名空间对象，静默返回（防御守卫）。
+        let Some(ns_reg) = ctx.module_ns_reg else {
+            return Ok(());
+        };
         let name_reg = self.load_string_const(export_name, ctx);
         let idx = ctx.add_constant(Constant::Int(cell_idx as i32));
         let cell_reg = ctx.alloc_reg();
@@ -1143,23 +1146,27 @@ impl Emitter {
     /// # 副作用
     /// - 命中时发 `__moduleSetCell`（条目状态改 Cell）；否则发 `__moduleSet`。
     fn emit_export_registration(
-        &self, ctx: &mut CompileCtx, ns_reg: u32, exported_name: &str, source_name: &str, value_reg: u32,
+        &self, ctx: &mut CompileCtx, exported_name: &str, source_name: &str, value_reg: u32,
     ) -> Result<(), String> {
         if ctx.module_live_ns_active
             && !ctx.module_live_imports.contains_key(source_name)
             && ctx.visible_binding_reg(source_name).is_some()
         {
             if let Some(&cell_idx) = ctx.captured_bindings.get(source_name) {
-                return self.emit_module_set_cell(ctx, ns_reg, exported_name, cell_idx);
+                return self.emit_module_set_cell(ctx, exported_name, cell_idx);
             }
         }
-        self.emit_module_set(ctx, ns_reg, exported_name, value_reg)
+        self.emit_module_set(ctx, exported_name, value_reg)
     }
 
     /// 发 `__moduleSetReexport`：注册带 `(dep_path, imported)` 来源身份的再导出。
     fn emit_module_set_reexport(
-        &self, ctx: &mut CompileCtx, ns_reg: u32, export_name: &str, value_reg: u32, dep_path: &str, imported: &str,
+        &self, ctx: &mut CompileCtx, export_name: &str, value_reg: u32, dep_path: &str, imported: &str,
     ) -> Result<(), String> {
+        // 非模块上下文无命名空间对象，静默返回（防御守卫）。
+        let Some(ns_reg) = ctx.module_ns_reg else {
+            return Ok(());
+        };
         let name_reg = self.load_string_const(export_name, ctx);
         let path_reg = self.load_string_const(dep_path, ctx);
         let imported_reg = self.load_string_const(imported, ctx);
@@ -1181,9 +1188,9 @@ impl Emitter {
     pub(crate) fn emit_module_write_through(
         &self, name: &str, value_reg: u32, ctx: &mut CompileCtx,
     ) -> Result<(), String> {
-        let Some(ns_reg) = ctx.module_ns_reg else {
+        if ctx.module_ns_reg.is_none() {
             return Ok(());
-        };
+        }
         let Some((binding, _)) = ctx.scopes.symbols.lookup_any_binding(name) else {
             return Ok(());
         };
@@ -1191,7 +1198,7 @@ impl Emitter {
             return Ok(());
         };
         for export_name in export_names {
-            self.emit_module_set(ctx, ns_reg, &export_name, value_reg)?;
+            self.emit_module_set(ctx, &export_name, value_reg)?;
         }
         Ok(())
     }
@@ -1272,7 +1279,7 @@ impl Emitter {
                                 if let BindingPattern::BindingIdentifier(bi) = &d.id {
                                     let name = bi.name.as_str();
                                     let val_reg = self.load_var_reg(name, ctx)?;
-                                    self.emit_export_registration(ctx, ns_reg, name, name, val_reg)?;
+                                    self.emit_export_registration(ctx, name, name, val_reg)?;
                                     self.emit_self_alias_write(ctx, name, val_reg);
                                 }
                             }
@@ -1282,7 +1289,7 @@ impl Emitter {
                             if let Some(id) = &fd.id {
                                 let name = id.name.as_str();
                                 let val_reg = self.load_var_reg(name, ctx)?;
-                                self.emit_export_registration(ctx, ns_reg, name, name, val_reg)?;
+                                self.emit_export_registration(ctx, name, name, val_reg)?;
                                 self.emit_self_alias_write(ctx, name, val_reg);
                             }
                         }
@@ -1291,7 +1298,7 @@ impl Emitter {
                             if let Some(id) = &cl.id {
                                 let name = id.name.as_str();
                                 let val_reg = self.load_var_reg(name, ctx)?;
-                                self.emit_export_registration(ctx, ns_reg, name, name, val_reg)?;
+                                self.emit_export_registration(ctx, name, name, val_reg)?;
                                 self.emit_self_alias_write(ctx, name, val_reg);
                             }
                         }
@@ -1316,14 +1323,7 @@ impl Emitter {
                                 .ok_or_else(|| format!("export from unknown module: {source}"))?;
                             let name_reg = self.load_string_const(&local_name, ctx);
                             let val_reg = self.emit_module_call(ctx, "__moduleLinkGet", &[dep_ns_reg, name_reg])?;
-                            self.emit_module_set_reexport(
-                                ctx,
-                                ns_reg,
-                                &exported_name,
-                                val_reg,
-                                &dep_path,
-                                &local_name,
-                            )?;
+                            self.emit_module_set_reexport(ctx, &exported_name, val_reg, &dep_path, &local_name)?;
                             // 自导入名可能来自 star 转发（占位路径）：导出语句执行时
                             // 就地刷新本地槽，覆盖同模块 body 内导出后读取的形态。
                             self.emit_self_alias_write(ctx, &exported_name, val_reg);
@@ -1333,14 +1333,14 @@ impl Emitter {
                         // (依赖模块路径, 导入名)；命名空间导入的导入名为共享哨兵。
                         if let Some((dep_path, imported)) = ctx.module_import_origins.get(&local_name).cloned() {
                             let val_reg = self.load_var_reg(&local_name, ctx)?;
-                            self.emit_module_set_reexport(ctx, ns_reg, &exported_name, val_reg, &dep_path, &imported)?;
+                            self.emit_module_set_reexport(ctx, &exported_name, val_reg, &dep_path, &imported)?;
                             // 自导入名重分类为间接导出时同样就地刷新占位槽。
                             self.emit_self_alias_write(ctx, &exported_name, val_reg);
                             continue;
                         }
                         // 本地导出：来源恒为 Local。
                         let val_reg = self.load_var_reg(&local_name, ctx)?;
-                        self.emit_export_registration(ctx, ns_reg, &exported_name, &local_name, val_reg)?;
+                        self.emit_export_registration(ctx, &exported_name, &local_name, val_reg)?;
                     }
                 }
             }
@@ -1359,7 +1359,7 @@ impl Emitter {
                                 .map(|_| SYNTHETIC_DEFAULT_BINDING.to_string())
                         });
                         if let Some(name) = &binding {
-                            self.emit_bind_target(name, reg, VariableDeclarationKind::Var, false, false, ctx)?;
+                            self.emit_bind_target(name, reg, VariableDeclarationKind::Var, false, ctx)?;
                         }
                         if fd.id.is_none() {
                             set_implicit_name_of_last_nested(ctx, DEFAULT_EXPORT_NAME);
@@ -1375,14 +1375,7 @@ impl Emitter {
                             cl.id.is_none().then_some(DEFAULT_EXPORT_NAME),
                         )?;
                         if let Some(id) = &cl.id {
-                            self.emit_bind_target(
-                                id.name.as_str(),
-                                reg,
-                                VariableDeclarationKind::Const,
-                                true,
-                                false,
-                                ctx,
-                            )?;
+                            self.emit_bind_target(id.name.as_str(), reg, VariableDeclarationKind::Const, false, ctx)?;
                             (reg, id.name.to_string())
                         } else {
                             if ctx.scopes.symbols.lookup_any(SYNTHETIC_DEFAULT_BINDING).is_some() {
@@ -1392,7 +1385,6 @@ impl Emitter {
                                     SYNTHETIC_DEFAULT_BINDING,
                                     reg,
                                     VariableDeclarationKind::Let,
-                                    false,
                                     false,
                                     ctx,
                                 )?;
@@ -1430,14 +1422,13 @@ impl Emitter {
                                 reg,
                                 VariableDeclarationKind::Let,
                                 false,
-                                false,
                                 ctx,
                             )?;
                         }
                         (reg, SYNTHETIC_DEFAULT_BINDING.to_string())
                     }
                 };
-                self.emit_export_registration(ctx, ns_reg, DEFAULT_EXPORT_NAME, &source_name, val_reg)?;
+                self.emit_export_registration(ctx, DEFAULT_EXPORT_NAME, &source_name, val_reg)?;
                 self.emit_self_alias_write(ctx, DEFAULT_EXPORT_NAME, val_reg);
             }
             Statement::ExportAllDeclaration(exp) => {
@@ -1456,7 +1447,6 @@ impl Emitter {
                     let exported_name = module_export_name_str(exported);
                     self.emit_module_set_reexport(
                         ctx,
-                        ns_reg,
                         &exported_name,
                         dep_ns_reg,
                         &dep_path,

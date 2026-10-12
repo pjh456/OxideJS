@@ -305,8 +305,10 @@ impl Emitter {
     /// 读取对象属性并产出键信息：非计算键走字符串常量 IC 路径，计算键在字面量可折叠时走 IC，否则动态求值。
     /// 返回 `(结果寄存器, 常量键名, 键寄存器)`，后两者互补为 None（计算键路径无论 IC 折叠还是动态求值均以寄存器返回键）。
     pub(crate) fn emit_object_property_read_key(
-        &self, src_reg: u32, key: &PropertyKey, computed: bool, ctx: &mut CompileCtx,
+        &self, src_reg: u32, key: &PropertyKey, ctx: &mut CompileCtx,
     ) -> Result<(u32, Option<String>, Option<u32>), String> {
+        // 计算键即表达式形态键（oxc 计算键恒为 Expression 继承变体），静态/私有名键非计算。
+        let computed = key.is_expression();
         if !computed {
             let key_name = crate::shared::string_pool::pool_key_property(key)?;
             let prop_reg = self.emit_object_property_read(src_reg, &key_name, ctx);

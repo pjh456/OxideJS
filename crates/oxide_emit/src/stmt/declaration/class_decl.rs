@@ -26,7 +26,7 @@ impl Emitter {
             Some(reg) => reg,
             None => {
                 let reg = ctx.alloc_reg();
-                ctx.declare(&name, reg, VariableDeclarationKind::Let, false)?;
+                ctx.declare(&name, reg, VariableDeclarationKind::Let)?;
                 reg
             }
         };

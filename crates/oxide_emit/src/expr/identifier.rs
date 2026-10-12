@@ -174,17 +174,17 @@ impl Emitter {
     /// 静态标识符写入：upvalue / 被捕获 cell / 普通槽（含 const guard）。
     ///
     /// # 边界与前提
-    /// - `const_flag` 为 1 时编译期直接抛 TypeError（值无关），覆盖普通/upvalue/cell 全写路径；
-    ///   不发射写指令（THROW 后不可达）。
+    /// - const 绑定（符号表与 upvalue 快照派生）编译期直接抛 TypeError（值无关），
+    ///   覆盖普通/upvalue/cell 全写路径；不发射写指令（THROW 后不可达）。
     /// - cell 写穿共享单元，无运行时 guard；const 拦截由本入口编译期完成。
     /// - 不可写全局内置（undefined/NaN/Infinity）的全局绑定写在此拦截：sloppy 跳过
     ///   寄存器写（槽保留入口预载原值），strict 抛 TypeError；局部遮蔽绑定不受影响。
     ///
     /// # 副作用
     /// - live 模块顶层对导出源绑定的写入追加 `__moduleSet`，同步命名空间条目。
-    pub(crate) fn emit_identifier_store(
-        &self, name: &str, val_reg: u32, const_flag: u16, ctx: &mut CompileCtx,
-    ) -> Result<(), String> {
+    pub(crate) fn emit_identifier_store(&self, name: &str, val_reg: u32, ctx: &mut CompileCtx) -> Result<(), String> {
+        // const 标志从符号表与 upvalue 快照派生：赋值路径对 const 再赋值统一编译期拦截。
+        let const_flag: u16 = if ctx.lookup_const_flag(name) { 1 } else { 0 };
         // 循环 update 段的 let/const 循环变量是 per-iteration 可变绑定（CreateMutableBinding），
         // 写寄存器而非 cell，且豁免 const 检查（register_update_names 覆盖全部循环头声明名）。
         let in_loop_update = ctx.register_update_names.iter().any(|n| n == name);
@@ -294,9 +294,7 @@ impl Emitter {
     /// - 对象属性存在性判定与动态读取一致（`in` 含原型链）。
     /// - 回退目标未在静态作用域声明时落隐式全局（sloppy 物化全局属性，
     ///   strict 抛 ReferenceError），与静态写路径同形。
-    pub(crate) fn emit_with_dynamic_write(
-        &self, name: &str, val_reg: u32, const_flag: u16, ctx: &mut CompileCtx,
-    ) -> Result<(), String> {
+    pub(crate) fn emit_with_dynamic_write(&self, name: &str, val_reg: u32, ctx: &mut CompileCtx) -> Result<(), String> {
         let obj_reg = ctx.innermost_with_obj().expect("with stack non-empty");
         let key_idx = ctx.add_constant(Constant::String(name.to_string()));
         let key_reg = ctx.alloc_reg();
@@ -320,7 +318,7 @@ impl Emitter {
         ctx.labels.set_label_pos(fallback_label, ctx.insts.len());
         // 回退写静态作用域：已声明绑定走常规写路径；未声明名是隐式全局
         // （sloppy 物化全局属性、strict 抛 ReferenceError），与静态写路径同形。
-        self.emit_identifier_store(name, val_reg, const_flag, ctx)?;
+        self.emit_identifier_store(name, val_reg, ctx)?;
         ctx.labels.set_label_pos(end_label, ctx.insts.len());
         Ok(())
     }

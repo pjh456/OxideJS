@@ -725,14 +725,10 @@ impl Emitter {
                     }
                 }
                 if with_dynamic {
-                    let is_const = ctx.lookup_const_flag(name);
-                    let const_flag: u16 = if is_const { 1 } else { 0 };
-                    self.emit_with_dynamic_write(name, val_reg, const_flag, ctx)?;
+                    self.emit_with_dynamic_write(name, val_reg, ctx)?;
                     return Ok(val_reg);
                 }
-                let is_const = ctx.lookup_const_flag(name);
-                let const_flag: u16 = if is_const { 1 } else { 0 };
-                self.emit_identifier_store(name, val_reg, const_flag, ctx)?;
+                self.emit_identifier_store(name, val_reg, ctx)?;
                 Ok(val_reg)
             }
         } else if matches!(

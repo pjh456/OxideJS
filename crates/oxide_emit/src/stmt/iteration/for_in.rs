@@ -199,7 +199,6 @@ impl Emitter {
             ForStatementLeft::VariableDeclaration(decl) => {
                 // let/const 声明对被捕获绑定用 fresh cell（每迭代新 cell）；var 单绑定。
                 let fresh_cell = !matches!(decl.kind, VariableDeclarationKind::Var);
-                let is_const = matches!(decl.kind, VariableDeclarationKind::Const);
                 for d in &decl.declarations {
                     match &d.id {
                         oxide_parser::BindingPattern::BindingIdentifier(bi) => {
@@ -209,12 +208,12 @@ impl Emitter {
                             // GlobalDeclarationInstantiation（脚本顶层声明实例化）序言预登记的内置名、
                             // 同 scope 先前声明）时复用既有槽位，不重复声明；let/const 同 scope 重复声明仍报错。
                             let target_reg = if matches!(decl.kind, VariableDeclarationKind::Var) {
-                                match ctx.declare(name, var_reg, decl.kind, is_const) {
+                                match ctx.declare(name, var_reg, decl.kind) {
                                     Ok(()) => var_reg,
                                     Err(_) => ctx.lookup(name).unwrap_or(var_reg),
                                 }
                             } else {
-                                ctx.declare(name, var_reg, decl.kind, is_const)?;
+                                ctx.declare(name, var_reg, decl.kind)?;
                                 // 头名回填：体区绑定点建绑定后把覆盖 cell 索引写进绑定
                                 // 字段，解析点按绑定身份取索引（var 头绑定已回填，
                                 // 同值覆盖幂等）。
@@ -256,7 +255,7 @@ impl Emitter {
                         // 解构头：数组 pattern 对迭代键字符串解构、对象 pattern 先
                         // ToObject 再按属性读；叶名绑定复用通用路径（含 let/const
                         // 声明、fresh cell 与顶层 var 全局属性反射）。
-                        _ => self.emit_binding_pattern(&d.id, key_reg, decl.kind, is_const, fresh_cell, ctx)?,
+                        _ => self.emit_binding_pattern(&d.id, key_reg, decl.kind, fresh_cell, ctx)?,
                     }
                 }
                 // using/await using 头声明登记释放栈（资源值即本迭代键）。

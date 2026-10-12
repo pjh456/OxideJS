@@ -57,21 +57,14 @@ impl Emitter {
         Ok((brand_reg, brand_id))
     }
 
-    pub(crate) fn emit_class_key_reg(
-        &self, key: &PropertyKey, computed: bool, ctx: &mut CompileCtx,
-    ) -> Result<u32, String> {
-        if !computed {
-            let name = crate::shared::string_pool::pool_key_property(key)?;
-            let idx = ctx.add_constant(Constant::String(name));
-            let reg = ctx.alloc_reg();
-            ctx.inst(Inst::load_const(Operand::Reg(reg), idx));
-            return Ok(reg);
-        }
-
-        if matches!(key, PropertyKey::PrivateIdentifier(_)) {
-            return Err("private class elements not yet supported".into());
-        }
-        self.emit_expression(key.to_expression(), ctx)
+    /// 非计算类属性键的寄存器：全部调用点均为非计算键（计算键经
+    /// `emit_class_array_key_reg` 从类定义期数组取），直接取池键字符串常量。
+    pub(crate) fn emit_class_key_reg(&self, key: &PropertyKey, ctx: &mut CompileCtx) -> Result<u32, String> {
+        let name = crate::shared::string_pool::pool_key_property(key)?;
+        let idx = ctx.add_constant(Constant::String(name));
+        let reg = ctx.alloc_reg();
+        ctx.inst(Inst::load_const(Operand::Reg(reg), idx));
+        Ok(reg)
     }
 
     /// 从类定义期 computed key 数组按 slot 取键（方法/静态字段在类定义期使用）。

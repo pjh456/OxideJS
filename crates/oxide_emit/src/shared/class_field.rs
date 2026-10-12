@@ -10,6 +10,8 @@ use oxide_parser::{Expression, MethodDefinitionKind, PropertyKey};
 impl Emitter {
     /// 实例字段初始化：define 语义（不触发原型 setter）。
     /// 非计算键用字符串常量；计算键从 `@@field_keys` upvalue 数组按 `key_slot` 取（类定义期求值一次）。
+    /// 类元素字符串字面量键（`"a" = 1`）非计算（oxc `computed` 标志为假），
+    /// 故 `computed` 取 AST 标志而非按键形态推导。
     pub(crate) fn emit_public_field_init(
         &self, target: Operand, key: &PropertyKey, computed: bool, value: Option<&Expression>, key_slot: Option<u8>,
         ctx: &mut CompileCtx,
@@ -17,7 +19,7 @@ impl Emitter {
         let key_reg = if computed {
             self.emit_instance_field_key(key_slot, ctx)?
         } else {
-            self.emit_class_key_reg(key, false, ctx)?
+            self.emit_class_key_reg(key, ctx)?
         };
         let value_reg = self.emit_field_value(value, ctx)?;
         ctx.inst(Inst::define_prop(target, Operand::Reg(value_reg), Operand::Reg(key_reg)));

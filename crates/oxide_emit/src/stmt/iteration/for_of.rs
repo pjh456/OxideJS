@@ -165,7 +165,7 @@ impl Emitter {
             ForStatementLeft::VariableDeclaration(decl) => {
                 let fresh_cell = !matches!(decl.kind, VariableDeclarationKind::Var);
                 for d in &decl.declarations {
-                    self.emit_binding_pattern(&d.id, val_reg, decl.kind, false, fresh_cell, ctx)?;
+                    self.emit_binding_pattern(&d.id, val_reg, decl.kind, fresh_cell, ctx)?;
                 }
                 // using/await using 头声明登记释放栈（资源值即本迭代值）。
                 self.emit_dispose_register(val_reg, decl.kind, ctx);

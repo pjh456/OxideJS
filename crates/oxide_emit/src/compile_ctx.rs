@@ -397,22 +397,20 @@ impl CompileCtx {
         self.scopes.symbols.pop_scope();
     }
 
-    pub(crate) fn declare(
-        &mut self, name: &str, reg: u32, kind: VariableDeclarationKind, is_const: bool,
-    ) -> Result<(), String> {
-        self.scopes.symbols.declare(name, reg, kind, is_const)
+    pub(crate) fn declare(&mut self, name: &str, reg: u32, kind: VariableDeclarationKind) -> Result<(), String> {
+        self.scopes.symbols.declare(name, reg, kind)
     }
 
     pub(crate) fn declare_initialized(
-        &mut self, name: &str, reg: u32, kind: VariableDeclarationKind, is_const: bool,
+        &mut self, name: &str, reg: u32, kind: VariableDeclarationKind,
     ) -> Result<(), String> {
-        self.scopes.symbols.declare_initialized(name, reg, kind, is_const)
+        self.scopes.symbols.declare_initialized(name, reg, kind)
     }
 
     pub(crate) fn declare_predeclared(
-        &mut self, name: &str, reg: u32, kind: VariableDeclarationKind, is_const: bool,
+        &mut self, name: &str, reg: u32, kind: VariableDeclarationKind,
     ) -> Result<(), String> {
-        self.scopes.symbols.declare_predeclared(name, reg, kind, is_const)
+        self.scopes.symbols.declare_predeclared(name, reg, kind)
     }
 
     pub(crate) fn push_scope_with_kind(&mut self, kind: ScopeKind) {

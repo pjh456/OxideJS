@@ -48,7 +48,7 @@ impl Emitter {
                 None => {
                     let reg = ctx.alloc_reg();
                     ctx.push_scope_with_kind(ScopeKind::BlockScope);
-                    ctx.declare(name, reg, VariableDeclarationKind::Const, true)?;
+                    ctx.declare(name, reg, VariableDeclarationKind::Const)?;
                     pushed_scope = true;
                     reg
                 }

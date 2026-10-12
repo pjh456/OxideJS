@@ -39,7 +39,7 @@ impl Emitter {
                 let key_reg = if method.computed {
                     self.emit_class_array_key_reg(key_slot.unwrap_or(0), ctx)?
                 } else {
-                    self.emit_class_key_reg(&method.key, false, ctx)?
+                    self.emit_class_key_reg(&method.key, ctx)?
                 };
                 let method_name = if method.computed {
                     "<computed>".to_string()

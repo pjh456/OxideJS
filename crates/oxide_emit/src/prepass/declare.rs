@@ -30,7 +30,7 @@ impl Emitter {
                 None => "*default*".to_string(),
             };
             let reg = ctx.alloc_reg();
-            let _ = ctx.declare_initialized(name.as_str(), reg, VariableDeclarationKind::Var, false);
+            let _ = ctx.declare_initialized(name.as_str(), reg, VariableDeclarationKind::Var);
         }
     }
 
@@ -52,7 +52,7 @@ impl Emitter {
                 continue;
             };
             let reg = ctx.alloc_reg();
-            let _ = ctx.declare_initialized(identifier.name.as_str(), reg, VariableDeclarationKind::Var, false);
+            let _ = ctx.declare_initialized(identifier.name.as_str(), reg, VariableDeclarationKind::Var);
         }
     }
 
@@ -66,7 +66,7 @@ impl Emitter {
             let _ = ctx.lookup_or_builtin(name);
         } else {
             let reg = ctx.alloc_reg();
-            let _ = ctx.declare_initialized(name, reg, VariableDeclarationKind::Var, false);
+            let _ = ctx.declare_initialized(name, reg, VariableDeclarationKind::Var);
         }
     }
 
@@ -233,7 +233,7 @@ impl Emitter {
                         continue;
                     }
                     let reg = ctx.alloc_reg();
-                    let _ = ctx.declare_initialized(identifier.name.as_str(), reg, VariableDeclarationKind::Let, false);
+                    let _ = ctx.declare_initialized(identifier.name.as_str(), reg, VariableDeclarationKind::Let);
                 }
                 Statement::BlockStatement(bs) => {
                     ctx.push_scope();
@@ -336,7 +336,7 @@ impl Emitter {
                 Statement::ClassDeclaration(cd) => {
                     if let Some(id) = &cd.id {
                         let reg = ctx.alloc_reg();
-                        let _ = ctx.declare_predeclared(id.name.as_str(), reg, VariableDeclarationKind::Let, false);
+                        let _ = ctx.declare_predeclared(id.name.as_str(), reg, VariableDeclarationKind::Let);
                     }
                 }
                 Statement::ExportNamedDeclaration(exp) => {
@@ -354,12 +354,8 @@ impl Emitter {
                             Declaration::ClassDeclaration(cd) => {
                                 if let Some(id) = &cd.id {
                                     let reg = ctx.alloc_reg();
-                                    let _ = ctx.declare_predeclared(
-                                        id.name.as_str(),
-                                        reg,
-                                        VariableDeclarationKind::Let,
-                                        false,
-                                    );
+                                    let _ =
+                                        ctx.declare_predeclared(id.name.as_str(), reg, VariableDeclarationKind::Let);
                                 }
                             }
                             _ => {}
@@ -372,7 +368,7 @@ impl Emitter {
                     if let ExportDefaultDeclarationKind::ClassDeclaration(cd) = &exp.declaration {
                         if let Some(id) = &cd.id {
                             let reg = ctx.alloc_reg();
-                            let _ = ctx.declare_predeclared(id.name.as_str(), reg, VariableDeclarationKind::Let, false);
+                            let _ = ctx.declare_predeclared(id.name.as_str(), reg, VariableDeclarationKind::Let);
                         }
                     }
                 }
@@ -397,7 +393,6 @@ impl Emitter {
                     } else {
                         VariableDeclarationKind::Let
                     },
-                    is_const,
                 );
                 // 块级遮蔽绑定：名字在捕获集且最内层为块作用域时，追加新 cell
                 // 索引并发未初始化 MAKE_CELL（TDZ 占位）。声明点与闭包捕获据

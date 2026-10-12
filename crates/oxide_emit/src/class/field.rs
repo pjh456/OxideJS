@@ -35,7 +35,7 @@ impl Emitter {
                             let key_reg = if prop.computed {
                                 self.emit_class_array_key_reg(key_slot.unwrap_or(0), ctx)?
                             } else {
-                                self.emit_class_key_reg(&prop.key, false, ctx)?
+                                self.emit_class_key_reg(&prop.key, ctx)?
                             };
                             let value_reg = self.emit_field_value(prop.value.as_ref(), ctx)?;
                             ctx.inst(Inst::define_prop(

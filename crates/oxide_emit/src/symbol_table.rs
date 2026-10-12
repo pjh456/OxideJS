@@ -101,9 +101,7 @@ impl SymbolTable {
 
     /// 声明绑定：`var` 提升到函数作用域，`let`/`const` 落在当前块。
     /// 初始为未初始化态（TDZ）；重复声明报错。
-    pub fn declare(
-        &mut self, name: &str, reg: u32, kind: VariableDeclarationKind, is_const: bool,
-    ) -> Result<(), String> {
+    pub fn declare(&mut self, name: &str, reg: u32, kind: VariableDeclarationKind) -> Result<(), String> {
         let target_idx = if matches!(kind, VariableDeclarationKind::Var) {
             self.find_var_target_scope()
         } else {
@@ -119,7 +117,7 @@ impl SymbolTable {
             Binding {
                 reg,
                 initialized: false,
-                is_const: matches!(kind, VariableDeclarationKind::Const) || is_const,
+                is_const: matches!(kind, VariableDeclarationKind::Const),
                 lexical: !matches!(kind, VariableDeclarationKind::Var),
                 predeclared: false,
                 cell_idx: None,
@@ -233,9 +231,7 @@ impl SymbolTable {
     }
 
     /// 声明并直接标记为已初始化；绑定已存在时仅补初始化标志（供预声明路径）。
-    pub fn declare_initialized(
-        &mut self, name: &str, reg: u32, kind: VariableDeclarationKind, is_const: bool,
-    ) -> Result<(), String> {
+    pub fn declare_initialized(&mut self, name: &str, reg: u32, kind: VariableDeclarationKind) -> Result<(), String> {
         let target_idx = if matches!(kind, VariableDeclarationKind::Var) {
             self.find_var_target_scope()
         } else {
@@ -252,7 +248,7 @@ impl SymbolTable {
             Binding {
                 reg,
                 initialized: true,
-                is_const: matches!(kind, VariableDeclarationKind::Const) || is_const,
+                is_const: matches!(kind, VariableDeclarationKind::Const),
                 lexical: !matches!(kind, VariableDeclarationKind::Var),
                 predeclared: false,
                 cell_idx: None,
@@ -278,7 +274,7 @@ impl SymbolTable {
     /// 声明未初始化绑定并标记为预声明（TDZ 占位），供声明点复用槽位。
     /// 与 `declare` 同作用域规则，仅 `predeclared` 标志不同。
     pub(crate) fn declare_predeclared(
-        &mut self, name: &str, reg: u32, kind: VariableDeclarationKind, is_const: bool,
+        &mut self, name: &str, reg: u32, kind: VariableDeclarationKind,
     ) -> Result<(), String> {
         let target_idx = if matches!(kind, VariableDeclarationKind::Var) {
             self.find_var_target_scope()
@@ -294,7 +290,7 @@ impl SymbolTable {
             Binding {
                 reg,
                 initialized: false,
-                is_const: matches!(kind, VariableDeclarationKind::Const) || is_const,
+                is_const: matches!(kind, VariableDeclarationKind::Const),
                 lexical: !matches!(kind, VariableDeclarationKind::Var),
                 predeclared: true,
                 cell_idx: None,
@@ -411,7 +407,7 @@ mod tests {
     #[test]
     fn declare_and_lookup() {
         let mut st = SymbolTable::new();
-        st.declare("x", 0, l(), false).unwrap();
+        st.declare("x", 0, l()).unwrap();
         st.init_var("x");
         assert_eq!(st.lookup("x").unwrap(), 0);
     }
@@ -419,24 +415,24 @@ mod tests {
     #[test]
     fn tdz_error() {
         let mut st = SymbolTable::new();
-        st.declare("x", 0, l(), false).unwrap();
+        st.declare("x", 0, l()).unwrap();
         assert!(st.lookup("x").unwrap_err().contains("before initialization"));
     }
 
     #[test]
     fn duplicate_declaration_error() {
         let mut st = SymbolTable::new();
-        st.declare("x", 0, l(), false).unwrap();
-        assert!(st.declare("x", 1, l(), false).is_err());
+        st.declare("x", 0, l()).unwrap();
+        assert!(st.declare("x", 1, l()).is_err());
     }
 
     #[test]
     fn nested_scopes_shadow() {
         let mut st = SymbolTable::new();
-        st.declare("x", 0, l(), false).unwrap();
+        st.declare("x", 0, l()).unwrap();
         st.init_var("x");
         st.push_scope();
-        st.declare("x", 1, l(), false).unwrap();
+        st.declare("x", 1, l()).unwrap();
         st.init_var("x");
         assert_eq!(st.lookup("x").unwrap(), 1);
         st.pop_scope();
@@ -454,7 +450,7 @@ mod tests {
     #[test]
     fn lookup_or_global_existing() {
         let mut st = SymbolTable::new();
-        st.declare("x", 3, l(), false).unwrap();
+        st.declare("x", 3, l()).unwrap();
         st.init_var("x");
         let reg = st.lookup_or_global("x", 99);
         assert_eq!(reg, 3);
@@ -464,12 +460,12 @@ mod tests {
     fn var_hoists_to_function_scope() {
         let mut st = SymbolTable::new();
         // 全局作用域是函数作用域
-        st.declare("x", 0, l(), false).unwrap();
+        st.declare("x", 0, l()).unwrap();
         st.init_var("x");
         // 压入块作用域
         st.push_scope();
         // 块内的 var 声明应落到函数作用域
-        st.declare("y", 1, v(), false).unwrap();
+        st.declare("y", 1, v()).unwrap();
         st.init_var("y");
         st.pop_scope();
         // y 可见（声明在函数作用域而非块作用域）
@@ -479,10 +475,10 @@ mod tests {
     #[test]
     fn let_block_scoped() {
         let mut st = SymbolTable::new();
-        st.declare("x", 0, l(), false).unwrap();
+        st.declare("x", 0, l()).unwrap();
         st.init_var("x");
         st.push_scope();
-        st.declare("x", 1, l(), false).unwrap();
+        st.declare("x", 1, l()).unwrap();
         st.init_var("x");
         assert_eq!(st.lookup("x").unwrap(), 1);
         st.pop_scope();
@@ -492,7 +488,7 @@ mod tests {
     #[test]
     fn const_has_is_const_flag() {
         let mut st = SymbolTable::new();
-        st.declare("x", 0, c(), false).unwrap();
+        st.declare("x", 0, c()).unwrap();
         st.init_var("x");
         let reg = st.lookup("x").unwrap();
         assert_eq!(reg, 0);
@@ -502,18 +498,18 @@ mod tests {
     fn var_in_two_blocks_same_function_scope_is_duplicate() {
         let mut st = SymbolTable::new();
         st.push_scope();
-        st.declare("y", 1, v(), false).unwrap();
+        st.declare("y", 1, v()).unwrap();
         st.pop_scope();
         st.push_scope();
         // 同一函数作用域，故应为重复声明
-        assert!(st.declare("y", 2, v(), false).is_err());
+        assert!(st.declare("y", 2, v()).is_err());
         st.pop_scope();
     }
 
     #[test]
     fn alias_shares_source_slot_and_const() {
         let mut st = SymbolTable::new();
-        st.declare("x", 3, l(), false).unwrap();
+        st.declare("x", 3, l()).unwrap();
         st.add_alias("y", "x").unwrap();
         // 别名复用源寄存器，且是不可变的间接绑定。
         assert_eq!(st.lookup_any("y"), Some(3));
@@ -525,7 +521,7 @@ mod tests {
     #[test]
     fn alias_tdz_follows_source_init() {
         let mut st = SymbolTable::new();
-        st.declare("x", 3, l(), false).unwrap();
+        st.declare("x", 3, l()).unwrap();
         st.add_alias("y", "x").unwrap();
         st.init_var("x");
         // 源声明点初始化同步解除别名 TDZ。
@@ -535,7 +531,7 @@ mod tests {
     #[test]
     fn alias_chain_resolves_to_base() {
         let mut st = SymbolTable::new();
-        st.declare("x", 3, l(), false).unwrap();
+        st.declare("x", 3, l()).unwrap();
         st.add_alias("y", "x").unwrap();
         st.add_alias("z", "y").unwrap();
         assert_eq!(st.resolve_alias_base("z"), "x");
@@ -551,9 +547,9 @@ mod tests {
     #[test]
     fn set_binding_cell_idx_innermost_first() {
         let mut st = SymbolTable::new();
-        st.declare("x", 0, l(), false).unwrap();
+        st.declare("x", 0, l()).unwrap();
         st.push_scope();
-        st.declare("x", 1, l(), false).unwrap();
+        st.declare("x", 1, l()).unwrap();
         st.set_binding_cell_idx("x", 3);
         let (inner, _) = st.lookup_any_binding("x").unwrap();
         assert_eq!(inner.cell_idx, Some(3));

@@ -98,12 +98,11 @@ impl Emitter {
                     }
                 }
                 for d in &decl.declarations {
-                    let is_const = matches!(decl.kind, VariableDeclarationKind::Const);
                     if let Some(init_expr) = &d.init {
                         let val_reg = self.emit_expression(init_expr, ctx)?;
                         // 捕获头名的寄存器补写在 `emit_bind_target` 经
                         // `for_head_store_registers` 完成（解构叶用各自的叶值，不用整头 RHS）。
-                        self.emit_binding_pattern(&d.id, val_reg, decl.kind, is_const, false, ctx)?;
+                        self.emit_binding_pattern(&d.id, val_reg, decl.kind, false, ctx)?;
                         // using/await using 头声明登记释放栈（资源值即 init 表达式结果）。
                         self.emit_dispose_register(val_reg, decl.kind, ctx);
                     } else if let BindingPattern::BindingIdentifier(bi) = &d.id {
@@ -114,12 +113,12 @@ impl Emitter {
                         // 无初始化 var 是纯声明而非赋值：绑定已预先存在（提升引用或
                         // 先前写入）时保留槽值，仅首次声明把 undefined 物化进槽。
                         let (target_reg, already_bound) = if matches!(decl.kind, VariableDeclarationKind::Var) {
-                            match ctx.declare(bi.name.as_str(), var_reg, decl.kind, is_const) {
+                            match ctx.declare(bi.name.as_str(), var_reg, decl.kind) {
                                 Ok(()) => (var_reg, false),
                                 Err(_) => (ctx.lookup(bi.name.as_str()).unwrap_or(var_reg), true),
                             }
                         } else {
-                            ctx.declare(bi.name.as_str(), var_reg, decl.kind, is_const)?;
+                            ctx.declare(bi.name.as_str(), var_reg, decl.kind)?;
                             // 头名回填：保留头名在 init 声明点建绑定后把覆盖 cell 索引
                             // 写进绑定字段，解析点按绑定身份取索引；非保留头名走寄存器
                             // 循环，不置位绑定字段（否则体区读经可见判定命中陈旧 cell，

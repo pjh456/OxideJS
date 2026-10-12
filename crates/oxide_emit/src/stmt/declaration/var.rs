@@ -35,7 +35,7 @@ impl Emitter {
             }
             if let Some(init) = &d.init {
                 let val_reg = self.emit_expression(init, ctx)?;
-                self.emit_binding_pattern(&d.id, val_reg, decl.kind, is_const, reexec, ctx)?;
+                self.emit_binding_pattern(&d.id, val_reg, decl.kind, reexec, ctx)?;
                 if let BindingPattern::BindingIdentifier(bi) = &d.id {
                     if crate::is_anonymous_function_definition(init) {
                         if let Some(sub_mod) = ctx.nested.last_mut() {
@@ -59,7 +59,7 @@ impl Emitter {
                 // 无初始化 var 是纯声明而非赋值：绑定已预先存在（提升引用或先前写入）
                 // 时保留槽值，仅首次声明把 undefined 物化进槽。
                 let (target_reg, already_bound) = if matches!(decl.kind, VariableDeclarationKind::Var) {
-                    match ctx.declare(bi.name.as_str(), var_reg, decl.kind, is_const) {
+                    match ctx.declare(bi.name.as_str(), var_reg, decl.kind) {
                         Ok(()) => (var_reg, false),
                         Err(_) => (ctx.lookup(bi.name.as_str()).unwrap_or(var_reg), true),
                     }
@@ -70,7 +70,7 @@ impl Emitter {
                         reg
                     } else {
                         let r = ctx.alloc_reg();
-                        ctx.declare(bi.name.as_str(), r, decl.kind, is_const)?;
+                        ctx.declare(bi.name.as_str(), r, decl.kind)?;
                         r
                     };
                     (target, false)
