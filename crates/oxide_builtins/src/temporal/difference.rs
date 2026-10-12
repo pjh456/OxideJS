@@ -86,6 +86,21 @@ pub(crate) struct InternalDuration {
     pub(crate) time_ns: i128,
 }
 
+/// ISO 日期时间：日期三元（年/月/日）加时间纳秒（不含日分量）。
+#[derive(Clone, Copy)]
+pub(crate) struct IsoDateTime {
+    pub(crate) date: (i128, i128, i128),
+    pub(crate) time_ns: i128,
+}
+
+/// 取整规格：增量、单位与舍入模式（吸收取整三参）。
+#[derive(Clone, Copy)]
+pub(crate) struct RoundingSpec {
+    pub(crate) increment: i128,
+    pub(crate) unit: usize,
+    pub(crate) mode: InstantRoundingMode,
+}
+
 impl InternalDuration {
     /// 转十分量数组：时间部分按向零截断分解为时/分/秒/毫秒/微秒/纳秒（与时长同号）。
     pub(crate) fn to_values(&self) -> [f64; 10] {
@@ -394,11 +409,11 @@ pub(crate) struct NudgeCalendarResult {
 ///
 /// `epoch_of_date` 是窗口端点日期的纪元换算闭包：plain 面传墙钟换算（行为逐字节
 /// 不变），zoned 面传 GetEpochNanosecondsFor(compatible) 换算。
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn nudge_to_calendar_unit(
-    sign: i128, values: &[f64; 10], origin_epoch: i128, dest_epoch: i128, date1: (i128, i128, i128), increment: i128,
-    unit: usize, mode: InstantRoundingMode, epoch_of_date: &dyn Fn((i128, i128, i128)) -> Result<i128, ()>,
+    sign: i128, values: &[f64; 10], origin_epoch: i128, dest_epoch: i128, date1: (i128, i128, i128),
+    spec: RoundingSpec, epoch_of_date: &dyn Fn((i128, i128, i128)) -> Result<i128, ()>,
 ) -> Result<NudgeCalendarResult, ()> {
+    let RoundingSpec { increment, unit, mode } = spec;
     let epoch_of = |dur: &[f64; 10]| -> Result<i128, ()> {
         if date_duration_sign(dur) == 0 {
             return Ok(origin_epoch);
@@ -744,12 +759,10 @@ pub(crate) fn parse_year_month_difference_settings<H: VmHost>(
 /// 的舍入模式并在最后整体取反（不调换两端，调换会改变 0.5 边界所在的年长）。
 /// no_rounding = 单位索引空间中"最细单位"的索引：该单位且 increment=1 时
 /// 舍入为恒等变换，跳过 nudge（边界处避免窗口端点的无效范围抛错）。
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn difference_core<H: VmHost>(
-    vm: &mut H, start: (i128, i128, i128), start_time_ns: i128, end: (i128, i128, i128), end_time_ns: i128,
-    settings: DifferenceSettings, since: bool, no_rounding: usize,
+    vm: &mut H, start: IsoDateTime, end: IsoDateTime, settings: DifferenceSettings, since: bool, no_rounding: usize,
 ) -> NativeResult {
-    let values = match nudge_iso_difference(vm, start, start_time_ns, end, end_time_ns, settings, since, no_rounding) {
+    let values = match nudge_iso_difference(vm, start, end, settings, since, no_rounding) {
         Ok(values) => values,
         Err(error) => return NativeResult::Err(error),
     };
@@ -769,10 +782,8 @@ pub(crate) fn difference_core<H: VmHost>(
 /// - Duration.round 的日历单位路径与本函数共用：round 把 duration 应用 relativeTo 后
 ///   以同样的 start/end 差输入本函数，输出即 balance 后的舍入结果。
 /// - 时间分量为带符号 i128；start/end 日与时间各自独立，符号由差值推导。
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn nudge_iso_difference<H: VmHost>(
-    vm: &mut H, start: (i128, i128, i128), start_time_ns: i128, end: (i128, i128, i128), end_time_ns: i128,
-    settings: DifferenceSettings, since: bool, no_rounding: usize,
+    vm: &mut H, start: IsoDateTime, end: IsoDateTime, settings: DifferenceSettings, since: bool, no_rounding: usize,
 ) -> Result<[f64; 10], JsValue> {
     let DifferenceSettings {
         largest_index,
@@ -794,17 +805,17 @@ pub(crate) fn nudge_iso_difference<H: VmHost>(
 
     // 规范语义：internal = other - receiver；since 用 NegateRoundingMode 的舍入模式，最后整体取反。
     // 不调换两端（调换会改变 0.5 边界所在的年长，破坏对称性）。
-    let origin_epoch = days_from_civil(start.0, start.1, start.2) * DAY_NS + start_time_ns;
-    let dest_epoch = days_from_civil(end.0, end.1, end.2) * DAY_NS + end_time_ns;
+    let origin_epoch = days_from_civil(start.date.0, start.date.1, start.date.2) * DAY_NS + start.time_ns;
+    let dest_epoch = days_from_civil(end.date.0, end.date.1, end.date.2) * DAY_NS + end.time_ns;
 
-    let date1 = start;
-    let time1_ns = start_time_ns;
+    let date1 = start.date;
+    let time1_ns = start.time_ns;
     // plain 面纪元换算闭包：墙钟（日 × 24h + 时间），行为与旧内联算法逐字节一致。
     let epoch_of_date = |date: (i128, i128, i128)| -> Result<i128, ()> {
         Ok(days_from_civil(date.0, date.1, date.2) * DAY_NS + time1_ns)
     };
-    let mut date2 = end;
-    let mut time_ns = end_time_ns - time1_ns;
+    let mut date2 = end.date;
+    let mut time_ns = end.time_ns - time1_ns;
     let time_sign = if time_ns > 0 {
         1_i128
     } else if time_ns < 0 {
@@ -906,9 +917,11 @@ pub(crate) fn nudge_iso_difference<H: VmHost>(
             origin_epoch,
             dest_epoch,
             date1,
-            increment,
-            smallest_index,
-            mode,
+            RoundingSpec {
+                increment,
+                unit: smallest_index,
+                mode,
+            },
             &epoch_of_date,
         ) {
             Ok(result) => result,

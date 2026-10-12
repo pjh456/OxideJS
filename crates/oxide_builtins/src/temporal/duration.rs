@@ -15,14 +15,14 @@ use super::common::{
 use super::difference::{
     add_date_duration, add_days_iso, balance_instant_difference, compare_iso_date, date_duration_sign, date_until_iso,
     nudge_iso_difference, nudge_window, plain_date_time_unit_index, round_instant_difference, DifferenceSettings,
-    InternalDuration, DAY_NS, MAX_ISO_DAY,
+    IsoDateTime, InternalDuration, DAY_NS, MAX_ISO_DAY,
 };
 use super::instant::{instant_rounding_mode, InstantRoundingMode};
 use super::time_zone::zone_offset_seconds;
 use super::zoned_date_time::{
     add_zoned_datetime, difference_zoned_datetime_with_rounding_vm, difference_zoned_datetime_with_total_vm,
     disambiguate_possible_epoch_nanoseconds, extract_time_zone_annotation, get_possible_epoch_nanoseconds,
-    map_add_zoned_error, parse_any_offset_seconds, valid_offset_fraction, zoned_date_time_string_parts,
+    map_add_zoned_error, parse_any_offset_seconds, valid_offset_fraction, zoned_date_time_string_parts, ZonedPair,
 };
 use super::{make_duration, parse_plain_date_time_string};
 
@@ -708,9 +708,13 @@ pub fn duration_total<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     // Zoned 载荷：AddZonedDateTime → DifferenceZonedDateTimeWithTotal（门与单位无关）。
     if let Some(RelativePoint::Zoned { epoch_ns, time_zone, calendar }) = &relative_date {
         let target = native_try!(add_zoned_datetime(vm, *epoch_ns, time_zone, calendar, &values, true));
-        let total = native_try!(difference_zoned_datetime_with_total_vm(
-            vm, *epoch_ns, target, time_zone, calendar, unit_index
-        ));
+        let pair = ZonedPair {
+            ns1: *epoch_ns,
+            ns2: target,
+            time_zone,
+            calendar,
+        };
+        let total = native_try!(difference_zoned_datetime_with_total_vm(vm, pair, unit_index));
         return NativeResult::Ok(JsValue::float(total));
     }
 
@@ -1369,17 +1373,19 @@ pub fn duration_round<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     // Zoned 载荷：AddZonedDateTime → DifferenceZonedDateTimeWithRounding（门与单位无关）。
     if let Some(RelativePoint::Zoned { epoch_ns, time_zone, calendar }) = &relative_date {
         let target = native_try!(add_zoned_datetime(vm, *epoch_ns, time_zone, calendar, &values, true));
-        let internal = native_try!(difference_zoned_datetime_with_rounding_vm(
-            vm,
-            *epoch_ns,
-            target,
+        let pair = ZonedPair {
+            ns1: *epoch_ns,
+            ns2: target,
             time_zone,
             calendar,
-            largest,
-            increment,
+        };
+        let settings = DifferenceSettings {
+            largest_index: largest,
             smallest_index,
+            increment,
             mode,
-        ));
+        };
+        let internal = native_try!(difference_zoned_datetime_with_rounding_vm(vm, pair, settings));
         // largestUnit 为日期类时降为 hour。
         let largest = if largest <= 3 { 4 } else { largest };
         let result = internal_duration_to_values(&internal, largest);
@@ -1460,7 +1466,15 @@ pub fn duration_round<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         increment,
         mode,
     };
-    let result = match nudge_iso_difference(vm, rel, 0, end, target_time, settings, false, 9) {
+    let start = IsoDateTime {
+        date: rel,
+        time_ns: 0,
+    };
+    let end_dt = IsoDateTime {
+        date: end,
+        time_ns: target_time,
+    };
+    let result = match nudge_iso_difference(vm, start, end_dt, settings, false, 9) {
         Ok(values) => values,
         Err(error) => return NativeResult::Err(error),
     };

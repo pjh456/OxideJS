@@ -14,7 +14,7 @@ use super::{
     parse_temporal_string_impl, plain_date_time_object_parts, plain_time_components, receiver_obj, round_instant_ns,
     temporal_calendar_id_strict, temporal_option_number, temporal_option_string, temporal_option_value,
     temporal_overflow, valid_iso_date, valid_plain_date_time_range, valid_plain_time, zoned_date_time_plain_parts,
-    FractionalSecondDigitsInput,
+    FractionalSecondDigitsInput, IsoDateTime,
 };
 // ───────────────────── PlainDateTime 基础方法 ─────────────────────
 
@@ -589,10 +589,14 @@ fn plain_date_time_difference<H: VmHost>(vm: &mut H, args: &[u8], since: bool) -
     };
     difference_core(
         vm,
-        (i128::from(sy), i128::from(sm), i128::from(sd)),
-        st as i128,
-        (i128::from(oy), i128::from(om), i128::from(od)),
-        ot as i128,
+        IsoDateTime {
+            date: (i128::from(sy), i128::from(sm), i128::from(sd)),
+            time_ns: st as i128,
+        },
+        IsoDateTime {
+            date: (i128::from(oy), i128::from(om), i128::from(od)),
+            time_ns: ot as i128,
+        },
         settings,
         since,
         9,

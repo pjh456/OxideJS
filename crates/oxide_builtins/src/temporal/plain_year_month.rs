@@ -13,7 +13,7 @@ use super::{
     read_iso2, receiver_obj, reject_partial_object_with_calendar_or_time_zone, temporal_constructor_calendar_id,
     temporal_number_component, temporal_option_string, temporal_option_value, temporal_overflow,
     temporal_to_show_calendar, validate_month_day_annotation_suffix, validate_month_day_time_suffix, ShowCalendar,
-    MAX_ISO_DAY,
+    IsoDateTime, MAX_ISO_DAY,
 };
 
 /// 读 PlainYearMonth 的 年/月/参考日 三元组（槽 0-2），含 receiver 校验。
@@ -884,5 +884,18 @@ fn plain_year_month_difference<H: VmHost>(vm: &mut H, args: &[u8], since: bool) 
     {
         return NativeResult::Err(crate::error::create_range_error(vm, "date is out of range"));
     }
-    difference_core(vm, (ry, rm, 1), 0, (i128::from(oy), i128::from(om), 1), 0, settings, since, 1)
+    difference_core(
+        vm,
+        IsoDateTime {
+            date: (ry, rm, 1),
+            time_ns: 0,
+        },
+        IsoDateTime {
+            date: (i128::from(oy), i128::from(om), 1),
+            time_ns: 0,
+        },
+        settings,
+        since,
+        1,
+    )
 }

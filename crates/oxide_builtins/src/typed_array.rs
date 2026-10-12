@@ -2701,7 +2701,15 @@ fn ta_decode_base64<H: VmHost>(
         handling = ta_handling_option(vm, obj, opts_val)?;
     }
     let units = vm.string_units(string).into_owned();
-    match crate::ta_codec::decode_base64(&units, alphabet, handling, max_len, write) {
+    match crate::ta_codec::decode_base64(
+        &units,
+        crate::ta_codec::DecodeConfig {
+            alphabet,
+            handling,
+            max_len,
+        },
+        write,
+    ) {
         Ok(r) => Ok(r),
         Err(_) => Err(crate::error::create_syntax_error(vm, "invalid base64 input")),
     }

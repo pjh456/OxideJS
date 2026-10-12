@@ -11,7 +11,7 @@ use super::common::{
     is_ctor_call, parse_plain_date_string, plain_date_time_object_parts, receiver_obj, temporal_calendar_id_strict,
     temporal_number_component, temporal_overflow, zoned_date_time_plain_parts,
 };
-use super::difference::{difference_core, parse_difference_settings};
+use super::difference::{difference_core, parse_difference_settings, IsoDateTime};
 use super::duration::duration_like_values;
 use super::make_plain_date;
 
@@ -623,10 +623,14 @@ pub fn plain_date_until<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     };
     difference_core(
         vm,
-        (i128::from(start.0), i128::from(start.1), i128::from(start.2)),
-        0,
-        (i128::from(other.0), i128::from(other.1), i128::from(other.2)),
-        0,
+        IsoDateTime {
+            date: (i128::from(start.0), i128::from(start.1), i128::from(start.2)),
+            time_ns: 0,
+        },
+        IsoDateTime {
+            date: (i128::from(other.0), i128::from(other.1), i128::from(other.2)),
+            time_ns: 0,
+        },
         settings,
         false,
         9,
@@ -651,10 +655,14 @@ pub fn plain_date_since<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     };
     difference_core(
         vm,
-        (i128::from(start.0), i128::from(start.1), i128::from(start.2)),
-        0,
-        (i128::from(other.0), i128::from(other.1), i128::from(other.2)),
-        0,
+        IsoDateTime {
+            date: (i128::from(start.0), i128::from(start.1), i128::from(start.2)),
+            time_ns: 0,
+        },
+        IsoDateTime {
+            date: (i128::from(other.0), i128::from(other.1), i128::from(other.2)),
+            time_ns: 0,
+        },
         settings,
         true,
         9,

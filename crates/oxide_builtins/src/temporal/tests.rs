@@ -104,20 +104,79 @@ fn format_time_zone_annotation_normalizes_offset() {
 #[test]
 fn format_zoned_date_time_iso_annotations() {
     // 偏移/时区/日历注解各取值组合，验证段序 `{offset}[{tz}][{ca}]` 与 critical 前缀。
-    let base = format_zoned_date_time_iso(0, 3600, "+01:00", "iso8601", true, None, "auto", "auto", "auto");
+    let base = format_zoned_date_time_iso(
+        0,
+        3600,
+        "+01:00",
+        "iso8601",
+        true,
+        None,
+        FormatNames {
+            offset_name: "auto",
+            time_zone_name: "auto",
+            calendar_name: "auto",
+        },
+    );
     assert_eq!(base, Some("1970-01-01T01:00:00+01:00[+01:00]".to_string()));
     // offset never 省略偏移段，时区注解仍显示。
-    let no_offset = format_zoned_date_time_iso(0, 3600, "+01:00", "iso8601", true, None, "never", "auto", "auto");
+    let no_offset = format_zoned_date_time_iso(
+        0,
+        3600,
+        "+01:00",
+        "iso8601",
+        true,
+        None,
+        FormatNames {
+            offset_name: "never",
+            time_zone_name: "auto",
+            calendar_name: "auto",
+        },
+    );
     assert_eq!(no_offset, Some("1970-01-01T01:00:00[+01:00]".to_string()));
     // calendarName always 追加日历注解。
-    let ca_always = format_zoned_date_time_iso(0, 3600, "+01:00", "iso8601", true, None, "auto", "auto", "always");
+    let ca_always = format_zoned_date_time_iso(
+        0,
+        3600,
+        "+01:00",
+        "iso8601",
+        true,
+        None,
+        FormatNames {
+            offset_name: "auto",
+            time_zone_name: "auto",
+            calendar_name: "always",
+        },
+    );
     assert_eq!(ca_always, Some("1970-01-01T01:00:00+01:00[+01:00][u-ca=iso8601]".to_string()));
     // timeZoneName/calendarName critical 均 `!` 置于括号内。
-    let critical = format_zoned_date_time_iso(0, 3600, "+01:00", "iso8601", true, None, "auto", "critical", "critical");
+    let critical = format_zoned_date_time_iso(
+        0,
+        3600,
+        "+01:00",
+        "iso8601",
+        true,
+        None,
+        FormatNames {
+            offset_name: "auto",
+            time_zone_name: "critical",
+            calendar_name: "critical",
+        },
+    );
     assert_eq!(critical, Some("1970-01-01T01:00:00+01:00[!+01:00][!u-ca=iso8601]".to_string()));
     // offset critical 偏移段前加 !。
-    let offset_critical =
-        format_zoned_date_time_iso(0, 3600, "+01:00", "iso8601", true, None, "critical", "auto", "auto");
+    let offset_critical = format_zoned_date_time_iso(
+        0,
+        3600,
+        "+01:00",
+        "iso8601",
+        true,
+        None,
+        FormatNames {
+            offset_name: "critical",
+            time_zone_name: "auto",
+            calendar_name: "auto",
+        },
+    );
     assert_eq!(offset_critical, Some("1970-01-01T01:00:00!+01:00[+01:00]".to_string()));
 }
 
@@ -125,7 +184,19 @@ fn format_zoned_date_time_iso_annotations() {
 fn format_zoned_date_time_iso_epoch_rounding_cross_midnight() {
     // 2000-01-01 前 1ns 已舍入到 2000-01-01 整点，8 位小数输出。
     let rounded = round_instant_ns(946_684_799_999_999_999, 100, InstantRoundingMode::HalfExpand).unwrap();
-    let output = format_zoned_date_time_iso(rounded, 0, "UTC", "iso8601", true, Some(8), "auto", "auto", "auto");
+    let output = format_zoned_date_time_iso(
+        rounded,
+        0,
+        "UTC",
+        "iso8601",
+        true,
+        Some(8),
+        FormatNames {
+            offset_name: "auto",
+            time_zone_name: "auto",
+            calendar_name: "auto",
+        },
+    );
     assert_eq!(output, Some("2000-01-01T00:00:00.00000000+00:00[UTC]".to_string()));
 }
 
@@ -429,7 +500,19 @@ fn sub_minute_offset_getter_branch() {
     assert_eq!(format_offset_seconds_text(2670), "+00:44:30");
     assert_eq!(format_offset_seconds_text(3600), "+01:00");
     assert_eq!(format_time_zone_annotation("-00:44:30", false), "[-00:44:30]");
-    let iso = format_zoned_date_time_iso(0, -2670, "-00:44:30", "iso8601", true, None, "auto", "auto", "auto");
+    let iso = format_zoned_date_time_iso(
+        0,
+        -2670,
+        "-00:44:30",
+        "iso8601",
+        true,
+        None,
+        FormatNames {
+            offset_name: "auto",
+            time_zone_name: "auto",
+            calendar_name: "auto",
+        },
+    );
     assert_eq!(iso, Some("1969-12-31T23:15:30-00:44:30[-00:44:30]".to_string()));
     assert_eq!(
         format_instant_iso(0, Some(-2670), true, None),
@@ -614,10 +697,13 @@ fn calendar_date_add_iso_constrain_semantics() {
     use super::zoned_date_time::{calendar_date_add_iso, AddZonedError};
 
     // 月末截断：constrain 钳到目标月末，reject 抛 DayOutOfRange。
-    assert_eq!(calendar_date_add_iso((2025, 1, 31), 0, 1, 0, 0, true), Ok((2025, 2, 28)));
-    assert_eq!(calendar_date_add_iso((2025, 1, 31), 0, 1, 0, 0, false), Err(AddZonedError::DayOutOfRange));
+    assert_eq!(calendar_date_add_iso((2025, 1, 31), [0, 1, 0, 0], true), Ok((2025, 2, 28)));
+    assert_eq!(
+        calendar_date_add_iso((2025, 1, 31), [0, 1, 0, 0], false),
+        Err(AddZonedError::DayOutOfRange)
+    );
     // 闰年二月：constrain 钳到 29。
-    assert_eq!(calendar_date_add_iso((2024, 1, 31), 0, 1, 0, 0, true), Ok((2024, 2, 29)));
+    assert_eq!(calendar_date_add_iso((2024, 1, 31), [0, 1, 0, 0], true), Ok((2024, 2, 29)));
 }
 
 #[test]
@@ -627,25 +713,61 @@ fn zoned_difference_day_correction() {
     // 同日纯时间差：无日期部分，时间部分为纳秒差。
     let ns1 = get_epoch_nanos_for("America/New_York", (2025, 6, 15), 43_200_000_000_000).unwrap();
     let ns2 = get_epoch_nanos_for("America/New_York", (2025, 6, 15), 66_600_000_000_000).unwrap();
-    let d = difference_zoned_datetime(ns1, ns2, "America/New_York", "iso8601", 3).unwrap();
+    let d = difference_zoned_datetime(
+        ZonedPair {
+            ns1,
+            ns2,
+            time_zone: "America/New_York",
+            calendar: "iso8601",
+        },
+        3,
+    )
+    .unwrap();
     assert_eq!(d.date, [0.0, 0.0, 0.0, 0.0]);
     assert_eq!(d.time_ns, 23_400_000_000_000);
 
     // 跨 DST 间隙日（23 小时）：墙历时刻相同，日期部分 1 天、时间部分 0。
     let ns1 = get_epoch_nanos_for("America/New_York", (2025, 3, 8), 43_200_000_000_000).unwrap();
     let ns2 = get_epoch_nanos_for("America/New_York", (2025, 3, 9), 43_200_000_000_000).unwrap();
-    let d = difference_zoned_datetime(ns1, ns2, "America/New_York", "iso8601", 3).unwrap();
+    let d = difference_zoned_datetime(
+        ZonedPair {
+            ns1,
+            ns2,
+            time_zone: "America/New_York",
+            calendar: "iso8601",
+        },
+        3,
+    )
+    .unwrap();
     assert_eq!(d.date, [0.0, 0.0, 0.0, 1.0]);
     assert_eq!(d.time_ns, 0);
 
     // dayCorrection 循环推进：12 小时跨间隙日，日期部分 0、时间部分 12 小时。
     let ns2b = get_epoch_nanos_for("America/New_York", (2025, 3, 9), 0).unwrap();
-    let d = difference_zoned_datetime(ns1, ns2b, "America/New_York", "iso8601", 3).unwrap();
+    let d = difference_zoned_datetime(
+        ZonedPair {
+            ns1,
+            ns2: ns2b,
+            time_zone: "America/New_York",
+            calendar: "iso8601",
+        },
+        3,
+    )
+    .unwrap();
     assert_eq!(d.date, [0.0, 0.0, 0.0, 0.0]);
     assert_eq!(d.time_ns, 43_200_000_000_000);
 
     // 反向（sign 为正）：日期部分为负一天、时间部分 0。
-    let d = difference_zoned_datetime(ns2, ns1, "America/New_York", "iso8601", 3).unwrap();
+    let d = difference_zoned_datetime(
+        ZonedPair {
+            ns1: ns2,
+            ns2: ns1,
+            time_zone: "America/New_York",
+            calendar: "iso8601",
+        },
+        3,
+    )
+    .unwrap();
     assert_eq!(d.date, [0.0, 0.0, 0.0, -1.0]);
     assert_eq!(d.time_ns, 0);
 }
@@ -657,12 +779,30 @@ fn zoned_total_dst_fraction() {
     // 整日差（23 小时间隙日）：总量 1。
     let ns1 = get_epoch_nanos_for("America/New_York", (2025, 3, 8), 43_200_000_000_000).unwrap();
     let ns2 = get_epoch_nanos_for("America/New_York", (2025, 3, 9), 43_200_000_000_000).unwrap();
-    let total = difference_zoned_datetime_with_total(ns1, ns2, "America/New_York", "iso8601", 3).unwrap();
+    let total = difference_zoned_datetime_with_total(
+        ZonedPair {
+            ns1,
+            ns2,
+            time_zone: "America/New_York",
+            calendar: "iso8601",
+        },
+        3,
+    )
+    .unwrap();
     assert!((total - 1.0).abs() < 1e-12);
 
     // 12 小时跨 23 小时间隙日：总量 12/23（按实际日长折算，非 24 小时）。
     let ns2b = get_epoch_nanos_for("America/New_York", (2025, 3, 9), 0).unwrap();
-    let total = difference_zoned_datetime_with_total(ns1, ns2b, "America/New_York", "iso8601", 3).unwrap();
+    let total = difference_zoned_datetime_with_total(
+        ZonedPair {
+            ns1,
+            ns2: ns2b,
+            time_zone: "America/New_York",
+            calendar: "iso8601",
+        },
+        3,
+    )
+    .unwrap();
     assert!((total - 12.0 / 23.0).abs() < 1e-12);
 }
 
@@ -681,14 +821,18 @@ fn zoned_round_nudge_to_zoned_time() {
     let p25h = [0.0_f64, 0.0, 0.0, 0.0, 25.0, 0.0, 0.0, 0.0, 0.0, 0.0];
     let target = add_zoned_datetime_pure(origin, "Pacific/Apia", "iso8601", &p25h, true).unwrap();
     let internal = difference_zoned_datetime_with_rounding(
-        origin,
-        target,
-        "Pacific/Apia",
-        "iso8601",
-        4,
-        1,
-        4,
-        InstantRoundingMode::Trunc,
+        ZonedPair {
+            ns1: origin,
+            ns2: target,
+            time_zone: "Pacific/Apia",
+            calendar: "iso8601",
+        },
+        DifferenceSettings {
+            largest_index: 4,
+            smallest_index: 4,
+            increment: 1,
+            mode: InstantRoundingMode::Trunc,
+        },
     )
     .unwrap();
     let values = internal_duration_to_values(&internal, 4);
@@ -698,14 +842,18 @@ fn zoned_round_nudge_to_zoned_time() {
     let p1dt26h = [0.0_f64, 0.0, 0.0, 1.0, 26.0, 0.0, 0.0, 0.0, 0.0, 0.0];
     let target = add_zoned_datetime_pure(origin, "Pacific/Apia", "iso8601", &p1dt26h, true).unwrap();
     let internal = difference_zoned_datetime_with_rounding(
-        origin,
-        target,
-        "Pacific/Apia",
-        "iso8601",
-        3,
-        1,
-        4,
-        InstantRoundingMode::Trunc,
+        ZonedPair {
+            ns1: origin,
+            ns2: target,
+            time_zone: "Pacific/Apia",
+            calendar: "iso8601",
+        },
+        DifferenceSettings {
+            largest_index: 3,
+            smallest_index: 4,
+            increment: 1,
+            mode: InstantRoundingMode::Trunc,
+        },
     )
     .unwrap();
     let values = internal_duration_to_values(&internal, 4);

@@ -11,7 +11,7 @@ use super::{
     make_plain_time, parse_any_offset_seconds, parse_difference_settings, parse_fractional_second_digits,
     parse_iso_date, receiver_obj, reject_partial_object_with_calendar_or_time_zone, round_instant_ns,
     temporal_number_component, temporal_option_number, temporal_option_string, temporal_option_value,
-    temporal_overflow, valid_offset_fraction, zoned_date_time_plain_parts, FractionalSecondDigitsInput,
+    temporal_overflow, valid_offset_fraction, zoned_date_time_plain_parts, FractionalSecondDigitsInput, IsoDateTime,
 };
 
 /// 时间串的日期歧义判定：形如 YYYY-MM / MMDD / YYYYMM / MM-DD 且作为日期合法 → 歧义。
@@ -701,7 +701,20 @@ fn plain_time_difference<H: VmHost>(vm: &mut H, args: &[u8], since: bool) -> Nat
         Ok(settings) => settings,
         Err(error) => return NativeResult::Err(error),
     };
-    difference_core(vm, (0, 0, 0), receiver_ns as i128, (0, 0, 0), other_ns as i128, settings, since, 9)
+    difference_core(
+        vm,
+        IsoDateTime {
+            date: (0, 0, 0),
+            time_ns: receiver_ns as i128,
+        },
+        IsoDateTime {
+            date: (0, 0, 0),
+            time_ns: other_ns as i128,
+        },
+        settings,
+        since,
+        9,
+    )
 }
 
 /// `Temporal.PlainTime.prototype.until(other, options)`。

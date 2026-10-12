@@ -26,6 +26,14 @@ pub enum LastChunkHandling {
     StopBeforePartial,
 }
 
+/// FromBase64 解码策略：字母表、尾块处理与长度上限三项。
+#[derive(Debug, Clone, Copy)]
+pub struct DecodeConfig {
+    pub alphabet: Base64Alphabet,
+    pub handling: LastChunkHandling,
+    pub max_len: Option<usize>,
+}
+
 const B64_ALPHABET_STANDARD: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 const B64_ALPHABET_URL: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
 
@@ -62,9 +70,9 @@ fn base64_value(unit: u16, alphabet: Base64Alphabet) -> Option<u32> {
 /// - `chunk` 恰 4 字符；调用方保证只在此处解码满块。
 /// - 返回 `(24 位值, 解码字节数 1-3)`：24 位值按 4 槽位左对齐（padding 槽补 0），
 ///   字节数 = 3 - padding 数。
-fn decode_full_chunk(
-    chunk: [u16; 4], alphabet: Base64Alphabet, handling: LastChunkHandling,
-) -> Result<(u32, usize), DecodeError> {
+fn decode_full_chunk(chunk: [u16; 4], config: DecodeConfig) -> Result<(u32, usize), DecodeError> {
+    let alphabet = config.alphabet;
+    let handling = config.handling;
     let pad = match (chunk[2] == 0x3d, chunk[3] == 0x3d) {
         (false, false) => 0,
         (false, true) => 1,
@@ -108,11 +116,13 @@ fn write_chunk_bytes(write: &mut dyn FnMut(usize, u8), written: usize, bits: u32
 ///   `clen - 1` 字节（2 字符 1 字节、3 字符 2 字节）并写出。
 /// - 成功 `read`：解出字节的 loose 路径取块后消费位置；各"停在块前"路径
 ///   （sbp、余量不足）取块前位置 `chunk_start`。
-#[allow(clippy::too_many_arguments)]
 fn finish_partial(
-    chunk: [u16; 4], clen: usize, alphabet: Base64Alphabet, handling: LastChunkHandling, max_len: Option<usize>,
-    write: &mut dyn FnMut(usize, u8), mut written: usize, chunk_start: usize, read: usize,
+    chunk: [u16; 4], clen: usize, config: DecodeConfig, write: &mut dyn FnMut(usize, u8), mut written: usize,
+    chunk_start: usize, read: usize,
 ) -> Result<(usize, usize), DecodeError> {
+    let alphabet = config.alphabet;
+    let handling = config.handling;
+    let max_len = config.max_len;
     if (0..clen).any(|i| chunk[i] == 0x3d) {
         let trailing = (0..clen).rev().take_while(|&i| chunk[i] == 0x3d).count();
         if clen == 3 && trailing == 1 && handling == LastChunkHandling::StopBeforePartial {
@@ -166,9 +176,9 @@ fn finish_partial(
 /// - `Ok((read, written))` 中 `read` 为成功语义下的消费位置（含跳过空白，
 ///   停止路径为块前位置）。
 pub fn decode_base64(
-    units: &[u16], alphabet: Base64Alphabet, handling: LastChunkHandling, max_len: Option<usize>,
-    write: &mut dyn FnMut(usize, u8),
+    units: &[u16], config: DecodeConfig, write: &mut dyn FnMut(usize, u8),
 ) -> Result<(usize, usize), DecodeError> {
+    let max_len = config.max_len;
     if max_len == Some(0) {
         return Ok((0, 0));
     }
@@ -197,7 +207,7 @@ pub fn decode_base64(
                         return Err(DecodeError);
                     }
                 }
-                let (bits, count) = decode_full_chunk(chunk, alphabet, handling)?;
+                let (bits, count) = decode_full_chunk(chunk, config)?;
                 if let Some(m) = max_len {
                     if written + count > m {
                         return Ok((chunk_start, written));
@@ -211,7 +221,7 @@ pub fn decode_base64(
                 }
             }
             0 => return Ok((read, written)),
-            _ => return finish_partial(chunk, clen, alphabet, handling, max_len, write, written, chunk_start, read),
+            _ => return finish_partial(chunk, clen, config, write, written, chunk_start, read),
         }
     }
 }
@@ -302,8 +312,16 @@ mod tests {
         units: &[u16], alphabet: Base64Alphabet, handling: LastChunkHandling, max_len: Option<usize>,
     ) -> Result<(usize, Vec<u8>), DecodeError> {
         let mut bytes = Vec::new();
-        decode_base64(units, alphabet, handling, max_len, &mut |_, b| bytes.push(b))
-            .map(|(r, w)| (r, bytes.into_iter().take(w).collect()))
+        decode_base64(
+            units,
+            DecodeConfig {
+                alphabet,
+                handling,
+                max_len,
+            },
+            &mut |_, b| bytes.push(b),
+        )
+        .map(|(r, w)| (r, bytes.into_iter().take(w).collect()))
     }
 
     fn decode_hex_full(units: &[u16], max_len: Option<usize>) -> Result<(usize, Vec<u8>), DecodeError> {
@@ -475,9 +493,11 @@ mod tests {
         let mut out = Vec::new();
         let r = decode_base64(
             &units("MjYyZm.9v"),
-            Base64Alphabet::Standard,
-            LastChunkHandling::Loose,
-            None,
+            DecodeConfig {
+                alphabet: Base64Alphabet::Standard,
+                handling: LastChunkHandling::Loose,
+                max_len: None,
+            },
             &mut |i, b| out.insert(i, b),
         );
         assert!(r.is_err());
@@ -486,9 +506,11 @@ mod tests {
         let mut out = Vec::new();
         let r = decode_base64(
             &units("MjYyZg==="),
-            Base64Alphabet::Standard,
-            LastChunkHandling::Loose,
-            None,
+            DecodeConfig {
+                alphabet: Base64Alphabet::Standard,
+                handling: LastChunkHandling::Loose,
+                max_len: None,
+            },
             &mut |i, b| out.insert(i, b),
         );
         assert!(r.is_err());
