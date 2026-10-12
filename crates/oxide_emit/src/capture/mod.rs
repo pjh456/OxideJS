@@ -9,6 +9,7 @@
 //! 跨区调用单向、无共享局部状态、无接收者状态。
 
 mod captured;
+mod guard;
 mod names;
 mod scanner;
 mod upvalues;
@@ -16,6 +17,7 @@ mod upvalues;
 use std::collections::HashSet;
 
 pub(crate) use captured::collect_captured_bindings;
+pub(crate) use guard::has_nested_function;
 pub(crate) use names::collect_block_level_decl_names;
 pub(crate) use names::collect_direct_lexical_names;
 pub(crate) use names::collect_own_binding_names;

@@ -15,7 +15,7 @@ use oxide_parser::{Expression, Statement, VariableDeclarationKind};
 
 use crate::capture::{
     collect_binding_pattern_names, collect_captured_bindings, collect_direct_lexical_names, collect_own_binding_names,
-    collect_upvalue_names, collect_var_binding_names,
+    collect_upvalue_names, collect_var_binding_names, has_nested_function,
 };
 use crate::compile_ctx::{CompileCtx, FieldBuffer};
 use crate::symbol_table::{Binding, ScopeKind};
@@ -689,6 +689,13 @@ impl Emitter {
                 ParamSpec::Rest { .. } => {}
             }
         }
+        // 早退守卫：体与附加表达式无嵌套函数/类节点时，捕获集
+        // （collect_captured_bindings，仅从嵌套函数/类节点产出名字）必为空，跳过该
+        // 趟；own_bindings 是 upvalue 分析的遮蔽集、upvalue 捕获是本体对父的捕获，
+        // 二者独立于嵌套函数，不得跳过。
+        let mut capture_exprs: Vec<&oxide_parser::Expression> = param_defaults.clone();
+        capture_exprs.extend_from_slice(extra_capture_exprs);
+        let has_nested = has_nested_function(body_stmts, &capture_exprs);
         ctx.own_bindings = collect_own_binding_names(&param_names, body_stmts);
         for spec in param_specs {
             if let ParamSpec::Pattern { pattern, .. } = spec {
@@ -745,10 +752,9 @@ impl Emitter {
             }
         }
 
-        // 字段初始化表达式（值表达式）与参数默认值一并纳入捕获分析。
-        let mut capture_exprs: Vec<&oxide_parser::Expression> = param_defaults.clone();
-        capture_exprs.extend_from_slice(extra_capture_exprs);
-        ctx.set_captured_bindings(collect_captured_bindings(body_stmts, &capture_exprs, &ctx.own_bindings));
+        if has_nested {
+            ctx.set_captured_bindings(collect_captured_bindings(body_stmts, &capture_exprs, &ctx.own_bindings));
+        }
         // 自由变量分析：收集 upvalue 捕获（类方法也是普通函数，可捕获外层变量）。
         if matches!(
             body_context,
