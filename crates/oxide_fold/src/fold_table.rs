@@ -27,8 +27,7 @@
 use oxide_bytecode::module::Constant;
 use oxide_bytecode::opcode::OpCode;
 use oxide_runtime_api::{
-    abstract_eq_primitives, relational_compare, strict_equality, to_boolean, to_int32, to_number,
-    to_uint32,
+    abstract_eq_primitives, relational_compare, strict_equality, to_boolean, to_int32, to_number, to_uint32,
 };
 use oxide_types::string_forge::encode_key;
 use oxide_types::value::JsValue;

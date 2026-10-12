@@ -116,9 +116,20 @@ pub fn fold_function(f: &mut IRFunction) -> bool {
             }
             // C 组位运算与比较：两操作数须为已知寄存器且均在四变体域
             // （BigInt/String/Undefined 操作数由表内守卫不折）。
-            OpCode::BIT_AND | OpCode::BIT_OR | OpCode::BIT_XOR | OpCode::SHL | OpCode::SHR
-            | OpCode::USHR | OpCode::LT | OpCode::GT | OpCode::LTE | OpCode::GTE | OpCode::EQ
-            | OpCode::NEQ | OpCode::STRICT_EQ | OpCode::STRICT_NEQ => match (inst.a, inst.b) {
+            OpCode::BIT_AND
+            | OpCode::BIT_OR
+            | OpCode::BIT_XOR
+            | OpCode::SHL
+            | OpCode::SHR
+            | OpCode::USHR
+            | OpCode::LT
+            | OpCode::GT
+            | OpCode::LTE
+            | OpCode::GTE
+            | OpCode::EQ
+            | OpCode::NEQ
+            | OpCode::STRICT_EQ
+            | OpCode::STRICT_NEQ => match (inst.a, inst.b) {
                 (Operand::Reg(x), Operand::Reg(y)) => match (
                     known.get(x as usize).and_then(|c| c.as_ref()),
                     known.get(y as usize).and_then(|c| c.as_ref()),
