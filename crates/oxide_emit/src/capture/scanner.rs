@@ -37,11 +37,8 @@ impl<'a> CaptureEngine<'a> {
     /// `sub_own` 为 upvalue 显式排除集，`captured_out` 与 `upvalue_out` 为双输出
     /// 累加器。shadow 初始空，depth 初始 0。
     pub(crate) fn new(
-        own: &'a HashSet<String>,
-        parent_names: &'a HashSet<String>,
-        sub_own: &'a HashSet<String>,
-        captured_out: &'a mut HashSet<String>,
-        upvalue_out: &'a mut HashSet<String>,
+        own: &'a HashSet<String>, parent_names: &'a HashSet<String>, sub_own: &'a HashSet<String>,
+        captured_out: &'a mut HashSet<String>, upvalue_out: &'a mut HashSet<String>,
     ) -> Self {
         CaptureEngine {
             own,

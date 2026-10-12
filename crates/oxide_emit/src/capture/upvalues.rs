@@ -15,12 +15,8 @@ use super::scanner::{collect_capture_names_expr, collect_capture_names_shadowed,
 /// `parent_captured` 与 `parent_upvalues` 为父层两映射（构建全深度引用集），
 /// `sub_own` 为 upvalue 判定的显式排除集。
 pub(crate) fn collect_captures_and_upvalues(
-    body_stmts: &[Statement],
-    extra_exprs: &[&Expression],
-    own: &HashSet<String>,
-    parent_captured: &BTreeMap<String, u8>,
-    parent_upvalues: &[UpvalueCapture],
-    sub_own: &HashSet<String>,
+    body_stmts: &[Statement], extra_exprs: &[&Expression], own: &HashSet<String>,
+    parent_captured: &BTreeMap<String, u8>, parent_upvalues: &[UpvalueCapture], sub_own: &HashSet<String>,
 ) -> (BTreeMap<String, u8>, Vec<UpvalueCapture>) {
     // 构建全深度引用集：父捕获名 ∪ 父 upvalue 名。
     let mut parent_names: HashSet<String> = parent_captured.keys().cloned().collect();
