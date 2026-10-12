@@ -104,9 +104,7 @@ pub(super) fn collect_real_vregs(f: &IRFunction) -> Vec<u32> {
 
 /// 构建干涉图：`build(f, live, spill_set, fresh) -> InterferenceGraph`。
 /// spill_set 中的 vreg 不再是节点（其 fresh 替代品入图）；fresh 按 at==i 并入该指令活集。
-pub(super) fn build(
-    f: &IRFunction, live: &LiveInfo, spill_set: &[u32], fresh: &[FreshVreg],
-) -> InterferenceGraph {
+pub(super) fn build(f: &IRFunction, live: &LiveInfo, spill_set: &[u32], fresh: &[FreshVreg]) -> InterferenceGraph {
     let mut real = collect_real_vregs(f);
     // inst_live_before 长度 = 指令数（逐指令活集索引）
     let inst_count = live.inst_live_before.len();
