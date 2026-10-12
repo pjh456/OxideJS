@@ -13,9 +13,11 @@
 
 use std::io::BufReader;
 use std::net::TcpStream;
+use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, RwLock};
+use std::time::{Duration, Instant};
 
 use crate::config::RunConfig;
 use crate::harness::{HarnessModuleCache, HarnessPrefixCache, HarnessSources, HARNESS};
@@ -65,14 +67,14 @@ pub(crate) fn run_worker(config: &RunConfig) -> bool {
         }
     };
 
-    let stream = match TcpStream::connect(&endpoint) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("worker: failed to connect to {endpoint}: {e}");
+    let conn = match connect_with_retry(&endpoint) {
+        Some(c) => c,
+        None => {
+            eprintln!("worker: failed to connect to {endpoint} after retries");
             return false;
         }
     };
-    let mut conn = Conn::Tcp(stream);
+    let mut conn = conn;
 
     // 认证门：读超时 30 秒（半开连接不永久占进程），发 Auth 帧后读回首帧，
     // 必须是 AuthOk，否则报错退出。握手必须在看门狗线程启动前完成：看门狗
@@ -166,7 +168,6 @@ pub(crate) fn run_worker(config: &RunConfig) -> bool {
         .filter(|&n| n > 0)
         .map(|n| n.min(512))
         .unwrap_or(256);
-    let mut stats = RunStats::default();
     let mut tests_since_kernel_reset = 0usize;
 
     for msg in msg_rx {
@@ -178,6 +179,10 @@ pub(crate) fn run_worker(config: &RunConfig) -> bool {
                 return true;
             }
         };
+        // 每窗口一份统计：DONE 心跳的 pass/fail/skip 是窗口级计数（监督者每窗口
+        // 只合并一次最终心跳的契约），跨窗口累计会使后窗口心跳含前窗口计数而双计。
+        // 失败记录帧逐测试随发（带全局下标），不依赖本统计跨窗口保留。
+        let mut stats = RunStats::default();
         for (offset, path_str) in window.paths.iter().enumerate() {
             let i = window.wstart + offset;
             // 检查 kill 标志（看门狗读 kill 帧后置位）。
@@ -228,6 +233,36 @@ pub(crate) fn run_worker(config: &RunConfig) -> bool {
     }
 
     true
+}
+
+/// 按端点形态连接监督者：含 `:` 走 TCP（host:port），否则走 Unix socket 路径
+/// （safe 模式临时目录短路径，防 `Sun_pathname` 上限）。
+///
+/// # 步骤
+/// 1. 按端点形态选传输臂尝试连接。
+/// 2. 失败（含 socket 文件尚未 bind 的竞态）睡 100 ms 重试，至 30 秒上限。
+///
+/// # 边界与前提
+/// - safe 模式监督者先 bind 再派生 worker，正常路径首连即成；重试只兜底
+///   进程启动早于 bind 完成的竞态窗口。
+///
+/// # 副作用
+/// - 无（只建连接，不发帧）。
+fn connect_with_retry(endpoint: &str) -> Option<Conn> {
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        if endpoint.contains(':') {
+            if let Ok(s) = TcpStream::connect(endpoint) {
+                return Some(Conn::Tcp(s));
+            }
+        } else if let Ok(s) = UnixStream::connect(endpoint) {
+            return Some(Conn::Unix(s));
+        }
+        if Instant::now() >= deadline {
+            return None;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
 }
 
 /// 发送事件帧（write_all 即 flush）。

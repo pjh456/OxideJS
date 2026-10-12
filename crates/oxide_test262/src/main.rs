@@ -13,6 +13,7 @@ mod judge;
 mod meta;
 mod report;
 mod runner;
+mod safe_supervise;
 mod shard_protocol;
 mod stats;
 mod supervise;
@@ -29,6 +30,7 @@ use judge::{categorize_fail, TestOutcome, TestResult};
 use oxide_log::{Level, LogConfig, Output, SUBSYSTEM_COUNT};
 use report::{append_fail_log, first_line, format_fail_categories, format_fail_groupings, format_fail_list};
 use runner::{build_runner_engine, process_path, CURRENT_TEST_PATH};
+use safe_supervise::run_safe;
 use stats::RunStats;
 use supervise::run_supervised;
 
@@ -313,6 +315,14 @@ fn run_tests() -> bool {
         test262_info!("supervised mode enabled");
         eprintln!("supervised mode enabled: child-window execution with per-test timeout + auto-resume");
         return run_supervised(&args, skip_until, end_index, config.no_skip, &paths, config.remote_supervise.clone());
+    }
+
+    // safe 模式：并行 worker 变派生进程（崩溃隔离），IPC 走 Unix socket 复用分片帧
+    // 协议。缺省 off（unsafe 线程路径逐位不变）。
+    if config.safe {
+        test262_info!("safe mode enabled");
+        eprintln!("safe mode enabled: worker processes with Unix socket IPC (crash isolation)");
+        return run_safe(skip_until, end_index, config.no_skip, config.no_regalloc, &paths, workers);
     }
 
     if let Some(chunk_size) = chunk_size {

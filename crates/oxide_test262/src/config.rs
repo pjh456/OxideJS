@@ -16,6 +16,9 @@ pub(crate) struct RunConfig {
     /// 远程监督模式：（端点文本, worker 数）。监督者 bind 端点、每窗口 accept 一条
     /// worker 连接，经 Tcp 传输执行窗口。
     pub(crate) remote_supervise: Option<(String, usize)>,
+    /// safe 模式：并行 worker 从线程变进程派生，IPC 走 Unix socket 复用分片帧协议。
+    /// 缺省 off（unsafe）保现状逐位不变；与 --supervise/--worker/--remote-supervise 互斥。
+    pub(crate) safe: bool,
     /// 关闭 liveness/精确 DCE/RegAlloc 链（开关对比：关优化链 vs 开优化链各跑一遍）。
     pub(crate) no_regalloc: bool,
     /// 逐测试打印 PASS/FAIL/SKIP（开关对比时对比两轮结果集合用）。
@@ -34,6 +37,7 @@ impl RunConfig {
             supervise: false,
             worker: false,
             remote_supervise: None,
+            safe: false,
             no_regalloc: false,
             verbose: false,
             no_fail_list: false,
@@ -94,6 +98,7 @@ impl RunConfig {
                 "--verbose" => config.verbose = true,
                 "--supervise" => config.supervise = true,
                 "--worker" => config.worker = true,
+                "--safe" => config.safe = true,
                 "--no-fail-list" => config.no_fail_list = true,
                 // --remote-supervise 消费后两个实参：端点文本与 worker 数。
                 // 端点解析期归一化：缺省补 loopback，非 loopback 拒绝。
@@ -131,6 +136,17 @@ impl RunConfig {
         if config.supervise && config.remote_supervise.is_some() {
             return Err(format!("--supervise and --remote-supervise are mutually exclusive\n\n{}", Self::usage()));
         }
+        // safe 模式是本地远程监督的 Unix socket 变体（自动派生 worker 进程），
+        // 与已各自进程化的 --supervise / --remote-supervise 及执行半区 --worker 互斥。
+        if config.safe && config.supervise {
+            return Err(format!("--safe and --supervise are mutually exclusive\n\n{}", Self::usage()));
+        }
+        if config.safe && config.worker {
+            return Err(format!("--safe and --worker are mutually exclusive\n\n{}", Self::usage()));
+        }
+        if config.safe && config.remote_supervise.is_some() {
+            return Err(format!("--safe and --remote-supervise are mutually exclusive\n\n{}", Self::usage()));
+        }
 
         if let Some(root) = positional.first() {
             config.test262_root = Some(PathBuf::from(root));
@@ -167,6 +183,11 @@ impl RunConfig {
           \x20            heartbeat/fail/scene/DONE frames over the accepted connections. A worker\n\
           \x20            disconnect is recovered as a child-process death. Mutually exclusive with\n\
           \x20            --supervise and --worker.\n\
+          --safe       Run the parallel workers as spawned processes (crash isolation) with IPC over a\n\
+          \x20            local Unix socket reusing the shard frame protocol. A worker process is respawned\n\
+          \x20            after a timeout/crash and resumes past the culprit. Off by default (unsafe thread\n\
+          \x20            path is unchanged). Mutually exclusive with --supervise, --worker and\n\
+          \x20            --remote-supervise.\n\
           \n\
           env tunables (all optional):\n\
           \x20  OXIDE_LOG                          per-subsystem log levels (default off)\n\
@@ -294,6 +315,26 @@ mod tests {
 
         let err = RunConfig::parse(&args(&["--remote-supervise", "127.0.0.1:8080", "4", "--supervise"]))
             .expect_err("supervise+remote-supervise 应互斥");
+        assert!(err.contains("mutually exclusive"), "应提示互斥：{err}");
+    }
+
+    /// --safe 旗标置位；与 --supervise / --worker / --remote-supervise 两两互斥；
+    /// safe 不触发 supervised()（独立执行路径，非监督模式）。
+    #[test]
+    fn parse_safe_flag_and_exclusive() {
+        let cfg = RunConfig::parse(&args(&["--safe"])).expect("safe 旗标应解析");
+        assert!(cfg.safe, "safe 旗标应置位");
+        assert!(!cfg.supervise, "safe 不应置位 supervise");
+        assert!(!cfg.supervised(false), "safe 不应触发 supervised");
+
+        let err = RunConfig::parse(&args(&["--safe", "--supervise"])).expect_err("safe+supervise 应互斥");
+        assert!(err.contains("mutually exclusive"), "应提示互斥：{err}");
+
+        let err = RunConfig::parse(&args(&["--safe", "--worker"])).expect_err("safe+worker 应互斥");
+        assert!(err.contains("mutually exclusive"), "应提示互斥：{err}");
+
+        let err = RunConfig::parse(&args(&["--safe", "--remote-supervise", "127.0.0.1:8080", "4"]))
+            .expect_err("safe+remote 应互斥");
         assert!(err.contains("mutually exclusive"), "应提示互斥：{err}");
     }
 

@@ -53,6 +53,11 @@ pub(crate) struct TcpWindowTransport {
     paths: Vec<String>,
     /// 单测试超时，随 assign 帧携带供 worker 侧看门狗使用。
     timeout_secs: u64,
+    /// worker 进程派生钩子（safe 模式）：连接丢失需重建时派生一个 worker 进程。
+    /// 远程模式为 `None`（worker 外部自启，本地不派生）。
+    spawn_worker: Option<Box<dyn FnMut() -> std::io::Result<std::process::Child> + Send>>,
+    /// 当前 worker 进程句柄（safe 模式；kill 或派生失败时为 `None`）。
+    child: Option<std::process::Child>,
 }
 
 impl TcpWindowTransport {
@@ -71,6 +76,20 @@ impl TcpWindowTransport {
             timeout_secs,
             token,
             auth_read_timeout: AUTH_READ_TIMEOUT,
+            spawn_worker: None,
+            child: None,
+        }
+    }
+
+    /// 构造带 worker 进程派生钩子的传输（safe 模式）：连接丢失需重建时经钩子
+    /// 派生一个 worker 进程再 accept。远程模式用 `new`（不派生）。
+    pub(crate) fn with_worker_spawn(
+        listener: Arc<Listener>, paths: Vec<String>, timeout_secs: u64, token: String,
+        spawn_worker: Box<dyn FnMut() -> std::io::Result<std::process::Child> + Send>,
+    ) -> Self {
+        Self {
+            spawn_worker: Some(spawn_worker),
+            ..Self::new(listener, paths, timeout_secs, token)
         }
     }
 
@@ -80,8 +99,23 @@ impl TcpWindowTransport {
         self.reader = None;
     }
 
+    /// 回收 worker 进程（safe 模式）：非阻塞 `try_wait` 防僵尸残留。
+    ///
+    /// 连接死亡（EOF / 真实 io 错误 / 协议违例）后 worker 进程已退，须 reap；
+    /// 远程模式无进程句柄，no-op。
+    fn reap_child(&mut self) {
+        if let Some(child) = self.child.as_mut() {
+            let _ = child.try_wait();
+        }
+    }
+
     /// Done 帧处理：把 `last_heartbeat` 的 phase 改 DONE 并保留计数（每窗口只
-    /// 合并一次的计数契约），随后断连判死亡。
+    /// 合并一次的计数契约）。
+    ///
+    /// 跨窗口保活：DONE 后不断连——worker 侧一条连接跨多窗口常驻，监督者侧同
+    /// 口径保活，下一窗口 `assign` 复用同一连接发新指派帧。传输实例跨窗口复
+    /// 用时（safe 模式）连接随实例存活；实例被 drop 时（远程模式每窗口新建实例）
+    /// 连接随句柄释放，行为不变。
     fn mark_done(&mut self) {
         match self.last_heartbeat.as_mut() {
             Some(hb) => hb.phase = "DONE".to_string(),
@@ -98,7 +132,6 @@ impl TcpWindowTransport {
                 });
             }
         }
-        self.drop_conn();
     }
 }
 
@@ -121,6 +154,12 @@ impl WindowTransport for TcpWindowTransport {
     fn assign(&mut self, wstart: usize, wend: usize) -> Result<(), SpawnError> {
         // 无连接时阻塞 `accept` 取一条 worker 连接（io 错误包成 SpawnError）。
         if self.writer.is_none() {
+            // safe 模式：先派生 worker 进程再 accept（避免 worker 连接时 socket
+            // 未 bind 的竞态；worker 侧另有连接重试兜底）。派生失败按 spawn
+            // 错误上报，监督策略自肇事者后续跑。
+            if let Some(spawn) = self.spawn_worker.as_mut() {
+                self.child = Some(spawn().map_err(SpawnError)?);
+            }
             let base = self.listener.accept().map_err(SpawnError)?;
             // 认证门：读超时内读首帧（半开连接不永久占线程），必须是 Auth 事件
             // 帧且 token 异或判等匹配，才写回 AuthOk；不匹配或首帧非 Auth 直接
@@ -207,6 +246,12 @@ impl WindowTransport for TcpWindowTransport {
             let _ = writer.write_all(frame.as_bytes());
         }
         self.drop_conn();
+        // safe 模式：杀掉 worker 进程并回收（远程模式无进程句柄，no-op）。
+        if let Some(child) = self.child.as_mut() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+        self.child = None;
     }
 
     fn poll(&mut self) -> PollResult {
@@ -258,17 +303,20 @@ impl WindowTransport for TcpWindowTransport {
                     // Auth 只应作首帧且在认证门消费；此处到达是协议违例，
                     // 判断连（同畸形帧同构恢复）。
                     self.drop_conn();
+                    self.reap_child();
                     return PollResult::Exited(1);
                 }
                 Err(_) => {
                     // 畸形帧：对端状态不定，判断连（同 EOF 同构恢复）。
                     self.drop_conn();
+                    self.reap_child();
                     return PollResult::Exited(1);
                 }
             },
             Ok(None) => {
                 // EOF：对端关闭，判死亡。
                 self.drop_conn();
+                self.reap_child();
                 return PollResult::Exited(1);
             }
             Err(e) if e.kind() == ErrorKind::WouldBlock => {
@@ -278,6 +326,7 @@ impl WindowTransport for TcpWindowTransport {
             Err(_) => {
                 // 真实 io 错误：判断连。
                 self.drop_conn();
+                self.reap_child();
                 return PollResult::Exited(1);
             }
         }
@@ -296,8 +345,9 @@ impl WindowTransport for TcpWindowTransport {
     }
 
     fn archive_window(&mut self) {
-        // 远程无文件归档：失败记录已并入 stats，无数据丢失；drop 连接即收尾。
-        self.drop_conn();
+        // 跨窗口保活：不断连——传输实例跨窗口复用时（safe 模式）连接随实例存活，
+        // 下一窗口 `assign` 复用同一连接。失败记录已并入 stats，无数据丢失；实例
+        // 被 drop 时（远程模式每窗口新建实例）连接随句柄释放，行为不变。
     }
 }
 

@@ -24,7 +24,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 /// # 边界与前提
 /// - 非 Linux 宿主（`/dev/urandom` 缺位）或读取失败时回落时间加进程号混合熵
 ///   （本宿主恒为 Linux，回落臂仅保编译）。
-fn generate_token() -> String {
+pub(crate) fn generate_token() -> String {
     let mut bytes = [0u8; 32];
     let ok = std::fs::File::open("/dev/urandom")
         .and_then(|mut file| file.read_exact(&mut bytes))
@@ -90,7 +90,7 @@ fn record_timeout_or_crash(stats: &mut RunStats, no_skip: bool, index: usize, el
 /// - `paths` 是父进程的全量路径清单（每行一路径，与父扫描同序），仅供肇事者
 ///   路径描述。
 #[expect(clippy::too_many_arguments)]
-fn supervise_window(
+pub(crate) fn supervise_window(
     no_skip: bool, wstart: usize, wend: usize, timeout: Duration, startup_grace: Duration, paths: &[PathBuf],
     window_id: usize, transport: &mut dyn WindowTransport,
 ) -> RunStats {
