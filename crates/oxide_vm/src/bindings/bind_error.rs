@@ -3,7 +3,7 @@ use oxide_kernel::shape_forge::EMPTY_SHAPE_ID;
 use oxide_types::object::{JsObject, NativeFnPtr, PropAttributes};
 use oxide_types::value::JsValue;
 
-use super::{BindEnv, kernel_env};
+use super::{kernel_env, BindEnv};
 
 fn bind_error_subtype_constructor(
     env: BindEnv<'_>, global: &mut JsObject, name: &str, proto_ptr: *mut JsObject, ctor_fn: *const (), arg_count: u8,

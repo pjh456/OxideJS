@@ -168,12 +168,7 @@ impl BuiltinWorld {
 
         let proto_ptr = P::as_ptr(&world.error_proto) as *mut JsObject;
         let proto = unsafe { &mut *proto_ptr };
-        bind_methods!(
-            env,
-            proto,
-            ("toString", methods.to_string, 0),
-            ("toJSON", methods.to_json, 1),
-        );
+        bind_methods!(env, proto, ("toString", methods.to_string, 0), ("toJSON", methods.to_json, 1),);
 
         let si_name = string_forge.intern("name").0;
         let error_si = string_forge.intern("Error").0;
@@ -357,7 +352,8 @@ impl BuiltinWorld {
     /// [`Self::bind_method`] 的站点标签版本：属性键由方法名 intern 得出，
     /// 供非 P 目标（VM 内建原型 Box 对象）的静态绑定宏使用。
     pub fn bind_method_labeled_static(
-        env: BindEnv<'_>, proto: &mut JsObject, method_name: &str, native_fn_ptr: NativeFnPtr, arg_count: u8, label: u32,
+        env: BindEnv<'_>, proto: &mut JsObject, method_name: &str, native_fn_ptr: NativeFnPtr, arg_count: u8,
+        label: u32,
     ) -> Result<(), String> {
         let si = env.string_forge.intern(method_name).0;
         Self::bind_method_key_labeled_static(env, proto, si, method_name, native_fn_ptr, arg_count, label)

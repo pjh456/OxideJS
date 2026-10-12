@@ -272,7 +272,11 @@ impl Vm {
         proto.set_shape_id(ctor_shape);
         proto.push_prop(JsValue::undefined());
         proto.set_data_meta(0u32, PropAttributes::new(true, false, true));
-        let kenv = oxide_kernel::builtin::BindEnv { world, shape_forge: sh, string_forge: sf };
+        let kenv = oxide_kernel::builtin::BindEnv {
+            world,
+            shape_forge: sh,
+            string_forge: sf,
+        };
         oxide_kernel::bind_methods!(
             kenv,
             &mut proto,

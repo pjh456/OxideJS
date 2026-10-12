@@ -29,7 +29,11 @@ fn bind_labeled_method(
     // SAFETY: func 是转成 *const () 的 NativeFn 函数项指针。
     let fn_ptr = unsafe { oxide_types::object::NativeFnPtr::from_raw(func) };
     let _ = oxide_kernel::builtin::BuiltinWorld::bind_method_labeled_static(
-        oxide_kernel::builtin::BindEnv { world, shape_forge, string_forge },
+        oxide_kernel::builtin::BindEnv {
+            world,
+            shape_forge,
+            string_forge,
+        },
         proto,
         name,
         fn_ptr,

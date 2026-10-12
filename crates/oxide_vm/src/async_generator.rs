@@ -1713,7 +1713,11 @@ pub(crate) fn init_async_generator_intrinsics(vm: &mut Vm) {
     let mut ag_proto = Box::new(JsObject::new_empty(EMPTY_SHAPE_ID, async_iterator_proto_val));
     // 站点标签：与 Generator 原型的同名方法槽（next/return/throw）区分复用键。
     let ag_label = sf.intern("AsyncGeneratorPrototype").0;
-    let kenv = oxide_kernel::builtin::BindEnv { world, shape_forge: sh, string_forge: sf };
+    let kenv = oxide_kernel::builtin::BindEnv {
+        world,
+        shape_forge: sh,
+        string_forge: sf,
+    };
     oxide_kernel::bind_methods!(
         kenv,
         &mut ag_proto,

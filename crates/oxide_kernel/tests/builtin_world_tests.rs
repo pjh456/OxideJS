@@ -1,4 +1,4 @@
-use oxide_kernel::builtin::{BuiltinWorld, BindEnv};
+use oxide_kernel::builtin::{BindEnv, BuiltinWorld};
 use oxide_kernel::kernel::BuiltinDirtySet;
 use oxide_kernel::shape_forge::{ShapeForge, EMPTY_SHAPE_ID};
 use oxide_kernel::string_forge::PermInterner;
