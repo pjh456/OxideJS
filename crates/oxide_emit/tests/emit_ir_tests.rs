@@ -409,3 +409,22 @@ fn block_fn_suppressed_by_destructured_param_leaf() {
         "非抑制块函数应有入口 undefined 写与外层 var 写回"
     );
 }
+
+/// 面 14：双常量折叠入口结构回归——双字面量算术编译后目标操作码计数为 0、
+/// 常量池含折值，锁死折叠入口不随后续重构丢失。
+#[test]
+fn binary_literal_fold_entry() {
+    // `2 * 3` 乘法编码恒为 f64 → Number(6.0)；`1 + 2` 为 int+int → Int(3)。
+    // 两操作数均为直接字面量才折（复合子表达式如 `1 + 2 * 3` 的外层加法不折）。
+    let ir = emit_ir("var a = 2 * 3; var b = 1 + 2;");
+    assert_eq!(count_op(&ir.insts, OpCode::MUL), 0, "双字面量乘法应折叠，MUL 计数为 0");
+    assert_eq!(count_op(&ir.insts, OpCode::ADD), 0, "双字面量加法应折叠，ADD 计数为 0");
+    assert!(
+        ir.constants.contains(&Constant::Number(6.0)),
+        "常量池应含乘法折值 Number(6.0)"
+    );
+    assert!(
+        ir.constants.contains(&Constant::Int(3)),
+        "常量池应含加法折值 Int(3)"
+    );
+}

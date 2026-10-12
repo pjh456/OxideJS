@@ -2,6 +2,8 @@
 //! 逻辑与 `??` 用短路跳转，复合求值利用 `is_side_effect_free` 优化。
 //! 函数：`emit_operator` 及各类 `emit_*_expression`。
 
+mod fold;
+
 use crate::{is_side_effect_free, BinaryOperator, CompileCtx, Emitter};
 use oxide_bytecode::module::Constant;
 use oxide_bytecode::opcode::OpCode;
@@ -30,6 +32,17 @@ impl Emitter {
     fn emit_binary_expression(
         &self, bin: &oxide_parser::BinaryExpression, ctx: &mut CompileCtx,
     ) -> Result<u32, String> {
+        // 双常量折叠：两操作数均为字面量且通过语义守卫时，编译期折单常量，
+        // 发射单条 LOAD_CONST（编码镜像运行时指令产物，见 fold.rs）。
+        // 置于 CONCAT_N 摊平之前，命中即提前返回。
+        if let (Some(l), Some(r)) = (fold::literal_constant(&bin.left), fold::literal_constant(&bin.right)) {
+            if let Some(folded) = fold::fold_binary(bin.operator, &l, &r) {
+                let idx = ctx.add_constant(folded);
+                let r = ctx.alloc_reg();
+                ctx.inst(Inst::load_const(Operand::Reg(r), idx));
+                return Ok(r);
+            }
+        }
         // Addition 左结合链摊平：≥3 操作数合并为单条 CONCAT_N（单趟预分配拼接，
         // 消除 N-2 次中间串分配）。只下钻 left 链、right 括号不拆（a+(b+c) 退化 ADD），
         // 保 f64 结合性与源码求值序。

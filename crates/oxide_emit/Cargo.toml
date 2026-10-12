@@ -13,6 +13,7 @@ oxc_allocator.workspace = true
 oxide_bytecode = { path = "../oxide_bytecode" }
 oxide_ir = { path = "../oxide_ir" }
 oxide_log = { path = "../oxide_log" }
+oxide_runtime_api = { path = "../oxide_runtime_api" }
 regex.workspace = true
 regress.workspace = true
 num-bigint = "0.4"

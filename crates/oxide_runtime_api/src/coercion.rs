@@ -455,6 +455,52 @@ pub fn to_boolean(val: JsValue) -> bool {
     }
 }
 
+/// IsLooselyEqual(x, y) 原始值核心 — ECMA-262 §7.2.15（`==`）的无宿主、
+/// 无异常通道版本，两侧均须为原始值（对象臂不可达，由调用方保证）。
+///
+/// 同类型委托严格相等；null 与 undefined 互等；BigInt/Number/String 两两
+/// 转数值比较；Boolean 操作数先 ToNumber 再重入。
+pub fn abstract_eq_primitives(lhs: JsValue, rhs: JsValue) -> bool {
+    let tl = lhs.js_type();
+    let tr = rhs.js_type();
+    // 同类型 → 严格相等。
+    if tl == tr {
+        return strict_equality(lhs, rhs);
+    }
+    match (tl, tr) {
+        // null 与 undefined 互等。
+        (JsType::Null, JsType::Undefined) | (JsType::Undefined, JsType::Null) => true,
+        // Number 混合表示（int vs double）：同属 ECMAScript Number，按严格相等。
+        (JsType::Int | JsType::Double, JsType::Int | JsType::Double) => strict_equality(lhs, rhs),
+        // BigInt 与 Number：转 f64 比较（精度内精确；超出精度近似）。
+        (JsType::BigInt, JsType::Int | JsType::Double) => {
+            bigint_to_f64(unsafe { bigint_data(lhs) }) == to_number(rhs)
+        }
+        (JsType::Int | JsType::Double, JsType::BigInt) => {
+            to_number(lhs) == bigint_to_f64(unsafe { bigint_data(rhs) })
+        }
+        // BigInt 与 String：字符串解析为数字后比较（lossy 文本口径，见 to_number）。
+        (JsType::BigInt, JsType::String) => {
+            let r = parse_js_number(&unsafe { string_data(rhs) });
+            bigint_to_f64(unsafe { bigint_data(lhs) }) == r
+        }
+        (JsType::String, JsType::BigInt) => {
+            let l = parse_js_number(&unsafe { string_data(lhs) });
+            l == bigint_to_f64(unsafe { bigint_data(rhs) })
+        }
+        // Number 与 String：字符串经 ToNumber 后按严格数值比较。
+        (JsType::Int | JsType::Double, JsType::String) | (JsType::String, JsType::Int | JsType::Double) => {
+            strict_double_eq(to_number(lhs), to_number(rhs))
+        }
+        // Boolean 操作数：先 ToNumber 再重入。int(0/1) 轻量编码，省 float
+        // 装箱与 to_number 链；int 属于 Number，重入后各数值分支全部认。
+        (JsType::Bool, _) => abstract_eq_primitives(JsValue::int(lhs.as_bool() as i32), rhs),
+        (_, JsType::Bool) => abstract_eq_primitives(lhs, JsValue::int(rhs.as_bool() as i32)),
+        // 其余组合不相等（含 null/undefined 与其它类型）。
+        _ => false,
+    }
+}
+
 /// IsLooselyEqual(x, y) — ECMA-262 §7.2.15（`==`）。
 ///
 /// 同类型委托严格相等；null 与 undefined 互等；BigInt/Number/String 两两
@@ -479,49 +525,39 @@ pub fn abstract_eq<H: VmHost>(lhs: JsValue, rhs: JsValue, host: &mut H) -> Resul
             return abstract_eq(lhs, JsValue::undefined(), host);
         }
     }
-    // 同类型 → 严格相等。
+    // 同类型 → 严格相等（含 Object/Object 指针同一）。
     if tl == tr {
         return Ok(strict_equality(lhs, rhs));
     }
+    // 双侧原始值：委托原始值核心（无宿主、无异常通道）。
+    if tl != JsType::Object && tr != JsType::Object {
+        return Ok(abstract_eq_primitives(lhs, rhs));
+    }
+    // Object 与原始值：ToPrimitive 后重入。to_primitive 必返原始值，
+    // 重入即收敛到原始值核心，与单次委托等价。
     match (tl, tr) {
-        // null 与 undefined 互等。
-        (JsType::Null, JsType::Undefined) | (JsType::Undefined, JsType::Null) => Ok(true),
-        // Number 混合表示（int vs double）：同属 ECMAScript Number，按严格相等。
-        (JsType::Int | JsType::Double, JsType::Int | JsType::Double) => Ok(strict_equality(lhs, rhs)),
-        // BigInt 与 Number：转 f64 比较（精度内精确；超出精度近似）。
-        (JsType::BigInt, JsType::Int | JsType::Double) => {
-            Ok(bigint_to_f64(unsafe { bigint_data(lhs) }) == to_number(rhs))
-        }
-        (JsType::Int | JsType::Double, JsType::BigInt) => {
-            Ok(to_number(lhs) == bigint_to_f64(unsafe { bigint_data(rhs) }))
-        }
-        // BigInt 与 String：字符串解析为数字后比较（lossy 文本口径，见 to_number）。
-        (JsType::BigInt, JsType::String) => {
-            let r = parse_js_number(&unsafe { string_data(rhs) });
-            Ok(bigint_to_f64(unsafe { bigint_data(lhs) }) == r)
-        }
-        (JsType::String, JsType::BigInt) => {
-            let l = parse_js_number(&unsafe { string_data(lhs) });
-            Ok(l == bigint_to_f64(unsafe { bigint_data(rhs) }))
-        }
-        // Number 与 String：字符串经 ToNumber 后按严格数值比较。
-        (JsType::Int | JsType::Double, JsType::String) | (JsType::String, JsType::Int | JsType::Double) => {
-            Ok(strict_double_eq(to_number(lhs), to_number(rhs)))
-        }
-        // Boolean 操作数：先 ToNumber 再重入。int(0/1) 轻量编码，省 float
-        // 装箱与 to_number 链；int 属于 Number，重入后各数值分支全部认。
-        (JsType::Bool, _) => abstract_eq(JsValue::int(lhs.as_bool() as i32), rhs, host),
-        (_, JsType::Bool) => abstract_eq(lhs, JsValue::int(rhs.as_bool() as i32), host),
-        // Object 与原始值（Number/String/BigInt/Symbol）：ToPrimitive 后重入。
-        (JsType::Object, JsType::Int | JsType::Double | JsType::String | JsType::BigInt | JsType::Symbol) => {
+        (JsType::Object, JsType::Int | JsType::Double | JsType::String | JsType::BigInt | JsType::Symbol | JsType::Bool) => {
+            let rhs = if tr == JsType::Bool {
+                // Boolean 先 ToNumber（int(0/1) 轻量编码），与原始值核心
+                // 的 Boolean 重入口径一致。
+                JsValue::int(rhs.as_bool() as i32)
+            } else {
+                rhs
+            };
             let prim = to_primitive(lhs, ToPrimitiveHint::Default, host)?;
             abstract_eq(prim, rhs, host)
         }
-        (JsType::Int | JsType::Double | JsType::String | JsType::BigInt | JsType::Symbol, JsType::Object) => {
+        (JsType::Int | JsType::Double | JsType::String | JsType::BigInt | JsType::Symbol | JsType::Bool, JsType::Object) => {
+            let lhs = if tl == JsType::Bool {
+                // 同上。
+                JsValue::int(lhs.as_bool() as i32)
+            } else {
+                lhs
+            };
             let prim = to_primitive(rhs, ToPrimitiveHint::Default, host)?;
             abstract_eq(lhs, prim, host)
         }
-        // 其余组合不相等（含 null/undefined 与其它类型、Object/Object 已由同类型分支处理）。
+        // 其余组合不相等（含 null/undefined 与其它类型；Object/Object 已由同类型分支处理）。
         _ => Ok(false),
     }
 }
