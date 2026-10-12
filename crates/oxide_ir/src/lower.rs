@@ -13,8 +13,10 @@ use crate::inst::Inst;
 use crate::operand::Operand;
 use crate::IRFunction;
 
-/// IRFunction → CompiledModule 等价转换。溢出/标签错误消息串是下游解析的契约键，改动须同步更新下游匹配。
-pub fn lower(f: &IRFunction) -> Result<CompiledModule, String> {
+/// IRFunction → CompiledModule 等价转换（所有权版，编码单源）。
+/// 五个堆字段由克隆改为移动，nested 递归由借用改为移动；
+/// 产物字节码与借用版逐字节完全一致。溢出/标签错误消息串是下游解析的契约键，改动须同步更新下游匹配。
+pub fn lower_owned(f: IRFunction) -> Result<CompiledModule, String> {
     crate::ir_debug!("lower: {} insts", f.insts.len());
     // 常量池检查（先于寄存器——超大常量池伴生的海量 vreg 会使后续检查的
     // 稠密 bitset 表示爆内存；常量池超限是更基础的失效，先报它）
@@ -73,22 +75,22 @@ pub fn lower(f: &IRFunction) -> Result<CompiledModule, String> {
     }
 
     let mut sub_modules = Vec::with_capacity(f.nested.len());
-    for nested in &f.nested {
-        sub_modules.push(Arc::new(lower(nested)?));
+    for nested in f.nested {
+        sub_modules.push(Arc::new(lower_owned(nested)?));
     }
 
     Ok(CompiledModule {
         bytecode: Arc::from(instrs),
-        constants: f.constants.clone(),
+        constants: f.constants,
         n_registers: f.n_registers as u8,
         n_args: f.param_layout.count as u8,
         param_base: f.param_layout.base as u8,
-        builtin_reg_map: f.builtin_reg_map.clone(),
+        builtin_reg_map: f.builtin_reg_map,
         sub_modules,
         is_arrow: f.is_arrow,
         is_strict: f.is_strict,
         captured_this_const_idx: f.captured_this_const_idx,
-        function_name: f.function_name.clone(),
+        function_name: f.function_name,
         function_name_reg: f.function_name_reg,
         function_length: f.function_length,
         has_simple_params: f.has_simple_params,
@@ -97,12 +99,18 @@ pub fn lower(f: &IRFunction) -> Result<CompiledModule, String> {
         needs_home_object: f.needs_home_object,
         is_generator: f.is_generator,
         is_async: f.is_async,
-        upvalue_captures: f.upvalue_captures.clone(),
+        upvalue_captures: f.upvalue_captures,
         cells_needed: f.cells_needed,
-        cell_names: f.cell_names.clone(),
+        cell_names: f.cell_names,
         flat_id: 0,
         is_es_module: false,
     })
+}
+
+/// IRFunction → CompiledModule 等价转换（借用版，向后兼容既有调用点）。
+/// 委托所有权版：整结构克隆后移交，编码逻辑单源。
+pub fn lower(f: &IRFunction) -> Result<CompiledModule, String> {
+    lower_owned(f.clone())
 }
 
 /// Operand → u8 槽位。Const/Imm 在 a 槽走拆字（operand_pair_to_u8）；

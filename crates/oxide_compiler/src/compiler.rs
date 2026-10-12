@@ -2,7 +2,7 @@
 
 use oxide_bytecode::module::CompiledModule;
 use oxide_emit::Emitter;
-use oxide_ir::lower::lower;
+use oxide_ir::lower::lower_owned;
 
 /// 结构哈希 / 编译模块哈希 re-export（供编译缓存作键）。
 pub use crate::hash::{compiled_module_hash, structural_hash};
@@ -134,7 +134,7 @@ impl Compiler {
             crate::compiler_debug!("compile: after regalloc {} insts", ir.insts.len());
         }
         crate::compiler_debug!("compile: done, {} instructions", ir.insts.len());
-        let mut module = lower(&ir)?;
+        let mut module = lower_owned(ir)?;
         crate::flatten::flatten_submodules(&mut module);
         Ok(module)
     }
