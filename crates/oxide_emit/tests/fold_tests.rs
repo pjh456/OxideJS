@@ -260,18 +260,11 @@ fn fold_negative_zero_sign() {
     let neg_zero_bits = (-0.0f64).to_bits();
     for (src, op) in cases {
         let ir = emit_ir(src);
-        assert_eq!(
-            count_op(&ir.insts, *op),
-            0,
-            "{src:?} 应折叠，目标操作码 {op:?} 计数应为 0"
-        );
+        assert_eq!(count_op(&ir.insts, *op), 0, "{src:?} 应折叠，目标操作码 {op:?} 计数应为 0");
         let has_neg_zero = ir
             .constants
             .iter()
             .any(|c| matches!(c, Constant::Number(d) if d.to_bits() == neg_zero_bits));
-        assert!(
-            has_neg_zero,
-            "{src:?} 常量池应含折值 Number(-0.0)（符号位置位）"
-        );
+        assert!(has_neg_zero, "{src:?} 常量池应含折值 Number(-0.0)（符号位置位）");
     }
 }
