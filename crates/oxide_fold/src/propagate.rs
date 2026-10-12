@@ -143,13 +143,15 @@ pub fn fold_function(f: &mut IRFunction) -> bool {
         };
 
         if let Some(value) = folded {
-            // 新常量入池（去重加溢出守卫）；池满时 A 组失效，跳过改写。
+            // 新常量入池（去重加溢出守卫）；池满时 A 组失效，跳过改写并清 known。
             if let Some(idx) = intern(constants, &value) {
                 *inst = Inst::load_const(inst.rd, idx);
                 changed = true;
                 if let Some(rd) = inst.def_reg() {
                     known[rd as usize] = Some(value);
                 }
+            } else if let Some(rd) = inst.def_reg() {
+                known[rd as usize] = None;
             }
         } else {
             // B 组：逻辑短路（左操作数已知）→ 改写为 MOV。
