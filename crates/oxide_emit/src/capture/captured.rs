@@ -10,7 +10,7 @@ use super::collect_fn_param_names;
 use super::names::collect_own_binding_names;
 use super::scanner::{
     collect_capture_names_expr, collect_capture_names_for_left, collect_capture_names_shadowed,
-    collect_class_capture_names,
+    collect_class_capture_names, CaptureEngine,
 };
 
 /// 分析本函数：哪些绑定被任意深度嵌套函数捕获 → captured_bindings。
@@ -40,10 +40,10 @@ pub(crate) fn collect_captured_bindings(
 pub(crate) fn collect_fn_default_captured(
     params: &oxide_parser::FormalParameters, own: &HashSet<String>, out: &mut HashSet<String>,
 ) {
-    let empty_shadow = HashSet::new();
     for p in &params.items {
         if let Some(init) = &p.initializer {
-            collect_capture_names_expr(init, own, &empty_shadow, out);
+            let mut eng = CaptureEngine::new(own, HashSet::new(), out);
+            collect_capture_names_expr(init, &mut eng);
         }
         // 形参模式的运行时求值表达式（计算键/内嵌默认值）在子作用域求值，
         // 其标识符引用须纳入父层 MAKE_CELL 判定。
@@ -57,7 +57,6 @@ pub(crate) fn collect_fn_default_captured(
 pub(crate) fn collect_captured_pattern_runtime_exprs(
     pattern: &oxide_parser::BindingPattern, own: &HashSet<String>, out: &mut HashSet<String>,
 ) {
-    let empty_shadow = HashSet::new();
     match pattern {
         oxide_parser::BindingPattern::BindingIdentifier(_) => {}
         oxide_parser::BindingPattern::ArrayPattern(ap) => {
@@ -71,7 +70,8 @@ pub(crate) fn collect_captured_pattern_runtime_exprs(
         oxide_parser::BindingPattern::ObjectPattern(op) => {
             for prop in &op.properties {
                 if prop.computed {
-                    collect_capture_names_expr(prop.key.to_expression(), own, &empty_shadow, out);
+                    let mut eng = CaptureEngine::new(own, HashSet::new(), out);
+                    collect_capture_names_expr(prop.key.to_expression(), &mut eng);
                 }
                 collect_captured_pattern_runtime_exprs(&prop.value, own, out);
             }
@@ -80,7 +80,8 @@ pub(crate) fn collect_captured_pattern_runtime_exprs(
             }
         }
         oxide_parser::BindingPattern::AssignmentPattern(ap) => {
-            collect_capture_names_expr(&ap.right, own, &empty_shadow, out);
+            let mut eng = CaptureEngine::new(own, HashSet::new(), out);
+            collect_capture_names_expr(&ap.right, &mut eng);
             collect_captured_pattern_runtime_exprs(&ap.left, own, out);
         }
     }
@@ -96,7 +97,8 @@ pub(crate) fn collect_captured_stmt(stmt: &Statement, own: &HashSet<String>, out
             let mut fn_shadow = HashSet::new();
             fn_shadow.extend(collect_fn_param_names(&fd.params));
             fn_shadow.extend(collect_own_binding_names(&[], body));
-            collect_capture_names_shadowed(body, own, &fn_shadow, out);
+            let mut eng = CaptureEngine::new(own, fn_shadow, out);
+            collect_capture_names_shadowed(body, &mut eng);
         }
         Statement::ClassDeclaration(cd) => {
             // 类构造器/方法体与字段表达式引用的父级绑定须建 cell，供子模块 upvalue 捕获。
@@ -104,7 +106,8 @@ pub(crate) fn collect_captured_stmt(stmt: &Statement, own: &HashSet<String>, out
             if let Some(id) = &cd.id {
                 class_shadow.insert(id.name.as_str().to_string());
             }
-            collect_class_capture_names(&cd.body, own, &class_shadow, out);
+            let mut eng = CaptureEngine::new(own, class_shadow, out);
+            collect_class_capture_names(&cd.body, &mut eng);
         }
         // export 包裹的变量/函数/类声明：捕获分析须下探声明体，否则被导出函数体内
         // 引用模块绑定（含自引用）不会被识别为捕获，闭包内读写退化为隐式全局。
@@ -125,14 +128,16 @@ pub(crate) fn collect_captured_stmt(stmt: &Statement, own: &HashSet<String>, out
                         let mut fn_shadow = HashSet::new();
                         fn_shadow.extend(collect_fn_param_names(&fd.params));
                         fn_shadow.extend(collect_own_binding_names(&[], body));
-                        collect_capture_names_shadowed(body, own, &fn_shadow, out);
+                        let mut eng = CaptureEngine::new(own, fn_shadow, out);
+                        collect_capture_names_shadowed(body, &mut eng);
                     }
                     Declaration::ClassDeclaration(cd) => {
                         let mut class_shadow = HashSet::new();
                         if let Some(id) = &cd.id {
                             class_shadow.insert(id.name.as_str().to_string());
                         }
-                        collect_class_capture_names(&cd.body, own, &class_shadow, out);
+                        let mut eng = CaptureEngine::new(own, class_shadow, out);
+                        collect_class_capture_names(&cd.body, &mut eng);
                     }
                     _ => {}
                 }
@@ -145,14 +150,16 @@ pub(crate) fn collect_captured_stmt(stmt: &Statement, own: &HashSet<String>, out
                 let mut fn_shadow = HashSet::new();
                 fn_shadow.extend(collect_fn_param_names(&fd.params));
                 fn_shadow.extend(collect_own_binding_names(&[], body));
-                collect_capture_names_shadowed(body, own, &fn_shadow, out);
+                let mut eng = CaptureEngine::new(own, fn_shadow, out);
+                collect_capture_names_shadowed(body, &mut eng);
             }
             ExportDefaultDeclarationKind::ClassDeclaration(cd) => {
                 let mut class_shadow = HashSet::new();
                 if let Some(id) = &cd.id {
                     class_shadow.insert(id.name.as_str().to_string());
                 }
-                collect_class_capture_names(&cd.body, own, &class_shadow, out);
+                let mut eng = CaptureEngine::new(own, class_shadow, out);
+                collect_class_capture_names(&cd.body, &mut eng);
             }
             other => {
                 if let Some(e) = other.as_expression() {
@@ -220,8 +227,8 @@ pub(crate) fn collect_captured_stmt(stmt: &Statement, own: &HashSet<String>, out
                 }
             } else {
                 // 赋值头是既有绑定引用：头名与默认值表达式须纳入捕获判定。
-                let empty_shadow = HashSet::new();
-                collect_capture_names_for_left(&fi.left, own, &empty_shadow, out);
+                let mut eng = CaptureEngine::new(own, HashSet::new(), out);
+                collect_capture_names_for_left(&fi.left, &mut eng);
             }
             collect_captured_stmt(&fi.body, own, out);
         }
@@ -232,8 +239,8 @@ pub(crate) fn collect_captured_stmt(stmt: &Statement, own: &HashSet<String>, out
                     collect_captured_binding_keys(&d.id, own, out);
                 }
             } else {
-                let empty_shadow = HashSet::new();
-                collect_capture_names_for_left(&fo.left, own, &empty_shadow, out);
+                let mut eng = CaptureEngine::new(own, HashSet::new(), out);
+                collect_capture_names_for_left(&fo.left, &mut eng);
             }
             collect_captured_stmt(&fo.body, own, out);
         }
@@ -358,13 +365,15 @@ pub(crate) fn collect_captured_expr(expr: &Expression, own: &HashSet<String>, ou
             let mut inner = collect_fn_param_names(&fe.params);
             inner.extend(collect_own_binding_names(&[], body));
             collect_fn_default_captured(&fe.params, own, out);
-            collect_capture_names_shadowed(body, own, &inner, out);
+            let mut eng = CaptureEngine::new(own, inner, out);
+            collect_capture_names_shadowed(body, &mut eng);
         }
         Expression::ArrowFunctionExpression(ae) => {
             let mut inner = collect_fn_param_names(&ae.params);
             inner.extend(collect_own_binding_names(&[], &ae.body.statements));
             collect_fn_default_captured(&ae.params, own, out);
-            collect_capture_names_shadowed(&ae.body.statements, own, &inner, out);
+            let mut eng = CaptureEngine::new(own, inner, out);
+            collect_capture_names_shadowed(&ae.body.statements, &mut eng);
         }
         Expression::ClassExpression(class) => {
             // 类表达式：构造器/方法体与字段表达式引用的父级绑定须建 cell。
@@ -372,7 +381,8 @@ pub(crate) fn collect_captured_expr(expr: &Expression, own: &HashSet<String>, ou
             if let Some(id) = &class.id {
                 class_shadow.insert(id.name.as_str().to_string());
             }
-            collect_class_capture_names(&class.body, own, &class_shadow, out);
+            let mut eng = CaptureEngine::new(own, class_shadow, out);
+            collect_class_capture_names(&class.body, &mut eng);
         }
         Expression::CallExpression(ce) => {
             collect_captured_expr(&ce.callee, own, out);

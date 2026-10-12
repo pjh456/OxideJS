@@ -7,7 +7,7 @@ use std::collections::{BTreeMap, HashSet};
 use oxide_bytecode::module::UpvalueCapture;
 use oxide_parser::Statement;
 
-use super::scanner::{collect_capture_names_expr, collect_capture_names_shadowed};
+use super::scanner::{collect_capture_names_expr, collect_capture_names_shadowed, CaptureEngine};
 
 /// 分析子函数 body：引用父级被捕获绑定的名字 → upvalue_captures。
 /// 名字若在父 `captured_bindings`（父 own cell）则 `cell_idx` 索引定义方表；
@@ -22,10 +22,11 @@ pub(crate) fn collect_upvalue_names(
         parent_names.insert(u.name.clone());
     }
     let mut names = HashSet::new();
-    collect_capture_names_shadowed(body_stmts, &parent_names, sub_own, &mut names);
+    let mut eng = CaptureEngine::new(&parent_names, sub_own.clone(), &mut names);
+    collect_capture_names_shadowed(body_stmts, &mut eng);
     // 参数默认值表达式（不在 body_stmts）里的嵌套函数引用也会捕获父变量。
     for expr in extra_exprs {
-        collect_capture_names_expr(expr, &parent_names, sub_own, &mut names);
+        collect_capture_names_expr(expr, &mut eng);
     }
     // HashSet 迭代序带随机种子（进程级非确定），必须排序使 upvalue_captures 的顺序与
     // 父 captured_bindings 的 cell_idx（BTreeMap 名字序）对齐——否则 LOAD_UPVALUE 的
