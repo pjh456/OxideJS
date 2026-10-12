@@ -1,4 +1,4 @@
-use crate::bindings::{apply_binding_table, configure_native_constructor, BindEnv};
+use crate::bindings::{apply_binding_table, configure_native_constructor, kernel_env, BindEnv};
 use oxide_kernel::builtin::StringMethods;
 use oxide_types::object::{JsObject, PropAttributes};
 use oxide_types::value::JsValue;
@@ -60,8 +60,7 @@ pub fn bind_string(env: BindEnv<'_>, global: &mut JsObject) {
         sub: oxide_builtins::string::string_sub::<crate::vm::Vm> as *const (),
         sup: oxide_builtins::string::string_sup::<crate::vm::Vm> as *const (),
     };
-    env.world()
-        .bind_string_methods(&string_methods, env.string_forge(), env.shape_forge());
+    oxide_kernel::builtin::BuiltinWorld::bind_string_methods(kernel_env(env), &string_methods);
 
     let ctor_ptr = env.world().string_constructor.as_ptr() as *mut JsObject;
     let ctor = unsafe { &mut *ctor_ptr };

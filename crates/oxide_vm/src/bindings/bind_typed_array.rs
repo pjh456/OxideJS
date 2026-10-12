@@ -1,10 +1,12 @@
+use oxide_kernel::builtin::BuiltinWorld;
+use oxide_types::object::{JsObject, PropAttributes};
+use oxide_types::value::JsValue;
+
 use crate::bind_constructor;
 use crate::bindings::{
     apply_binding_table, bind_accessor_getter, bind_accessor_getter_key, bind_global_value,
-    bind_well_known_method_alias, configure_native_constructor, BindEnv,
+    bind_well_known_method_alias, configure_native_constructor, kernel_env, BindEnv,
 };
-use oxide_types::object::{JsObject, PropAttributes};
-use oxide_types::value::JsValue;
 
 /// 把 `%TypedArray%` 抽象构造器的 native 实现配置为恒抛 TypeError（不可 new/不可调用），
 /// 设置 `length` 属性为 0，并挂载静态 `of`/`from`（具体构造器经原型链继承）。
@@ -26,16 +28,13 @@ fn bind_typed_array_abstract_ctor(env: BindEnv<'_>) {
     let pos = ctor.hash_props_vec().map_or(0, |v| v.len() as u32).saturating_sub(1);
     ctor.set_data_meta(pos, PropAttributes::new(false, false, true));
 
-    let sf = env.string_forge();
-    let sh = env.shape_forge();
-    let world = env.world();
-    let ctor_ptr = world.typed_array_constructor.as_ptr() as *mut JsObject;
+    let kenv = kernel_env(env);
+    let ctor_ptr = env.world().typed_array_constructor.as_ptr() as *mut JsObject;
     let ctor = unsafe { &mut *ctor_ptr };
     // SAFETY: of/from 是转成 *const () 的 NativeFn 函数项指针。
-    let _ = world.bind_method(
+    let _ = BuiltinWorld::bind_method(
+        kenv,
         ctor,
-        sh,
-        sf,
         "of",
         unsafe {
             oxide_types::object::NativeFnPtr::from_raw(
@@ -44,10 +43,9 @@ fn bind_typed_array_abstract_ctor(env: BindEnv<'_>) {
         },
         0,
     );
-    let _ = world.bind_method(
+    let _ = BuiltinWorld::bind_method(
+        kenv,
         ctor,
-        sh,
-        sf,
         "from",
         unsafe {
             oxide_types::object::NativeFnPtr::from_raw(
@@ -270,16 +268,13 @@ pub fn bind_typed_array(env: BindEnv<'_>, global: &mut JsObject) {
 
     // base64/hex 四原型法挂 Uint8Array 专属原型（Uint8ClampedArray 经链继承、
     // kind 校验拒绝）；两静态法挂 Uint8Array 构造器。
-    let world = env.world();
-    let sh = env.shape_forge();
-    let sf = env.string_forge();
+    let kenv = kernel_env(env);
     let u8_proto_ptr = env.world().uint8array_proto.as_ptr() as *mut JsObject;
     let u8_proto = unsafe { &mut *u8_proto_ptr };
     // SAFETY: 指针来自 session 存活期内的 BuiltinWorld 对象。
-    let _ = world.bind_method(
+    let _ = BuiltinWorld::bind_method(
+        kenv,
         u8_proto,
-        sh,
-        sf,
         "toBase64",
         unsafe {
             oxide_types::object::NativeFnPtr::from_raw(
@@ -288,10 +283,9 @@ pub fn bind_typed_array(env: BindEnv<'_>, global: &mut JsObject) {
         },
         0,
     );
-    let _ = world.bind_method(
+    let _ = BuiltinWorld::bind_method(
+        kenv,
         u8_proto,
-        sh,
-        sf,
         "toHex",
         unsafe {
             oxide_types::object::NativeFnPtr::from_raw(
@@ -300,10 +294,9 @@ pub fn bind_typed_array(env: BindEnv<'_>, global: &mut JsObject) {
         },
         0,
     );
-    let _ = world.bind_method(
+    let _ = BuiltinWorld::bind_method(
+        kenv,
         u8_proto,
-        sh,
-        sf,
         "setFromBase64",
         unsafe {
             oxide_types::object::NativeFnPtr::from_raw(
@@ -312,10 +305,9 @@ pub fn bind_typed_array(env: BindEnv<'_>, global: &mut JsObject) {
         },
         1,
     );
-    let _ = world.bind_method(
+    let _ = BuiltinWorld::bind_method(
+        kenv,
         u8_proto,
-        sh,
-        sf,
         "setFromHex",
         unsafe {
             oxide_types::object::NativeFnPtr::from_raw(
@@ -326,10 +318,9 @@ pub fn bind_typed_array(env: BindEnv<'_>, global: &mut JsObject) {
     );
     let u8_ctor_ptr = env.world().uint8array_constructor.as_ptr() as *mut JsObject;
     let u8_ctor = unsafe { &mut *u8_ctor_ptr };
-    let _ = world.bind_method(
+    let _ = BuiltinWorld::bind_method(
+        kenv,
         u8_ctor,
-        sh,
-        sf,
         "fromBase64",
         unsafe {
             oxide_types::object::NativeFnPtr::from_raw(
@@ -338,10 +329,9 @@ pub fn bind_typed_array(env: BindEnv<'_>, global: &mut JsObject) {
         },
         1,
     );
-    let _ = world.bind_method(
+    let _ = BuiltinWorld::bind_method(
+        kenv,
         u8_ctor,
-        sh,
-        sf,
         "fromHex",
         unsafe {
             oxide_types::object::NativeFnPtr::from_raw(

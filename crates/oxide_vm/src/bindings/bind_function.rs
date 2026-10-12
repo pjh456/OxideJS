@@ -3,10 +3,7 @@ use oxide_kernel::shape_forge::EMPTY_SHAPE_ID;
 use oxide_types::object::{JsObject, NativeFnPtr, PropAttributes};
 use oxide_types::value::JsValue;
 
-use super::apply_binding_table;
-use super::bind_global_value;
-use super::configure_native_constructor;
-use super::BindEnv;
+use super::{apply_binding_table, bind_global_value, configure_native_constructor, kernel_env, BindEnv};
 
 /// 把 Function 构造器与原型方法绑定到 global。
 ///
@@ -20,8 +17,7 @@ pub fn bind_function(env: BindEnv<'_>, global: &mut JsObject) {
         to_string: oxide_builtins::function::function_to_string::<crate::vm::Vm> as *const (),
         has_instance: oxide_builtins::function::function_symbol_has_instance::<crate::vm::Vm> as *const (),
     };
-    env.world()
-        .bind_function_methods(&function_methods, env.string_forge(), env.shape_forge(), env.realm_id);
+    oxide_kernel::builtin::BuiltinWorld::bind_function_methods(kernel_env(env), &function_methods, env.realm_id);
 
     let function_ctor = env.world().function_constructor.as_ptr() as *mut JsObject;
     configure_native_constructor(

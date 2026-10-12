@@ -8,20 +8,34 @@ use oxide_types::value::JsValue;
 
 use super::{ArrayMethods, BuiltinWorld, ErrorMethods, FnWrapperKey, FunctionMethods, ObjectMethods, StringMethods};
 use crate::bind_methods;
-use crate::bind_methods_static;
 use crate::shape_forge::{ShapeForge, EMPTY_SHAPE_ID};
 use crate::string_forge::PermInterner;
 
+/// 绑定环境：把绑定层三环境要素（builtin world、shape forge、string forge）
+/// 打包为单一首参，整体传入 `bind_method*` 家族与五家族函数。
+///
+/// `Copy`：值语义轻量（三个引用），可自由复制传递。
+///
+/// vm 绑定层有同名字段集不同的 `BindEnv`（core/session/realm_id）：其
+/// `world()` / `shape_forge()` / `string_forge()` 访问器是本结构的构造来源。
+#[derive(Copy, Clone)]
+pub struct BindEnv<'a> {
+    pub world: &'a BuiltinWorld,
+    pub shape_forge: &'a ShapeForge,
+    pub string_forge: &'a PermInterner,
+}
+
 impl BuiltinWorld {
     /// 把 Object 家族方法安装到 Object 构造器与原型上（含 `hasOwnProperty` 等非枚举元数据修正）。
-    pub fn bind_object_methods(&self, methods: &ObjectMethods, string_forge: &PermInterner, shape_forge: &ShapeForge) {
-        let ctor_ptr = P::as_ptr(&self.object_constructor) as *mut JsObject;
+    pub fn bind_object_methods(env: BindEnv<'_>, methods: &ObjectMethods) {
+        let world = env.world;
+        let string_forge = env.string_forge;
+        let shape_forge = env.shape_forge;
+        let ctor_ptr = P::as_ptr(&world.object_constructor) as *mut JsObject;
         let ctor = unsafe { &mut *ctor_ptr };
         bind_methods!(
-            self,
+            env,
             ctor,
-            string_forge,
-            shape_forge,
             ("keys", methods.keys, 1),
             ("create", methods.create, 2),
             ("assign", methods.assign, 2),
@@ -47,13 +61,11 @@ impl BuiltinWorld {
             ("groupBy", methods.group_by, 2),
         );
 
-        let proto_ptr = P::as_ptr(&self.object_proto) as *mut JsObject;
+        let proto_ptr = P::as_ptr(&world.object_proto) as *mut JsObject;
         let proto = unsafe { &mut *proto_ptr };
         bind_methods!(
-            self,
+            env,
             proto,
-            string_forge,
-            shape_forge,
             ("hasOwnProperty", methods.has_own_property, 1),
             ("propertyIsEnumerable", methods.property_is_enumerable, 1),
         );
@@ -69,28 +81,24 @@ impl BuiltinWorld {
     ///
     /// `realm_id` 是安装目标所属 realm 的编号：`@@iterator` 符号键按
     /// (realm 编号, 局部下标) 编码，realm 编号为 0 时与旧编码逐字节一致。
-    pub fn bind_array_methods(
-        &self, methods: &ArrayMethods, string_forge: &PermInterner, shape_forge: &ShapeForge, realm_id: u32,
-    ) {
-        let ctor_ptr = P::as_ptr(&self.array_constructor) as *mut JsObject;
+    pub fn bind_array_methods(env: BindEnv<'_>, methods: &ArrayMethods, realm_id: u32) {
+        let world = env.world;
+        let shape_forge = env.shape_forge;
+        let ctor_ptr = P::as_ptr(&world.array_constructor) as *mut JsObject;
         let ctor = unsafe { &mut *ctor_ptr };
         bind_methods!(
-            self,
+            env,
             ctor,
-            string_forge,
-            shape_forge,
             ("isArray", methods.is_array, 1),
             ("from", methods.from, 1),
             ("of", methods.of, 0),
         );
 
-        let proto_ptr = P::as_ptr(&self.array_proto) as *mut JsObject;
+        let proto_ptr = P::as_ptr(&world.array_proto) as *mut JsObject;
         let proto = unsafe { &mut *proto_ptr };
         bind_methods!(
-            self,
+            env,
             proto,
-            string_forge,
-            shape_forge,
             ("push", methods.push, 1),
             ("pop", methods.pop, 0),
             ("slice", methods.slice, 2),
@@ -133,28 +141,20 @@ impl BuiltinWorld {
         let raw = methods.values;
         // SAFETY: methods.values 是 VM 绑定层传入的 NativeFn 函数项。
         let func_ptr = unsafe { NativeFnPtr::from_raw(raw) };
-        let _ = Self::bind_method_key_static(
-            proto,
-            shape_forge,
-            string_forge,
-            iterator_key,
-            "@@iterator",
-            func_ptr,
-            0,
-            self,
-        );
+        let _ = Self::bind_method_key_static(env, proto, iterator_key, "@@iterator", func_ptr, 0);
         debug_assert!(shape_forge.lookup_position(proto.shape_id(), iterator_key).is_some());
     }
 
     /// 把 Error 家族方法安装到 Error 及各子类型构造器与原型上。
-    pub fn bind_error_methods(&self, methods: &ErrorMethods, string_forge: &PermInterner, shape_forge: &ShapeForge) {
-        let ctor_ptr = P::as_ptr(&self.error_constructor) as *mut JsObject;
+    pub fn bind_error_methods(env: BindEnv<'_>, methods: &ErrorMethods) {
+        let world = env.world;
+        let string_forge = env.string_forge;
+        let shape_forge = env.shape_forge;
+        let ctor_ptr = P::as_ptr(&world.error_constructor) as *mut JsObject;
         let ctor = unsafe { &mut *ctor_ptr };
         bind_methods!(
-            self,
+            env,
             ctor,
-            string_forge,
-            shape_forge,
             ("Error", methods.error, 1),
             ("TypeError", methods.type_error, 1),
             ("ReferenceError", methods.reference_error, 1),
@@ -166,13 +166,11 @@ impl BuiltinWorld {
             ("isError", methods.is_error, 1),
         );
 
-        let proto_ptr = P::as_ptr(&self.error_proto) as *mut JsObject;
+        let proto_ptr = P::as_ptr(&world.error_proto) as *mut JsObject;
         let proto = unsafe { &mut *proto_ptr };
         bind_methods!(
-            self,
+            env,
             proto,
-            string_forge,
-            shape_forge,
             ("toString", methods.to_string, 0),
             ("toJSON", methods.to_json, 1),
         );
@@ -194,24 +192,18 @@ impl BuiltinWorld {
         let msg_pos = proto.push_prop(empty_val);
         proto.set_data_meta(msg_pos, oxide_types::object::PropAttributes::new(true, false, true));
 
-        self.set_subtype_proto_name(string_forge, shape_forge, &self.type_error_proto, "TypeError", si_name);
-        self.set_subtype_proto_name(string_forge, shape_forge, &self.reference_error_proto, "ReferenceError", si_name);
-        self.set_subtype_proto_name(string_forge, shape_forge, &self.range_error_proto, "RangeError", si_name);
-        self.set_subtype_proto_name(string_forge, shape_forge, &self.syntax_error_proto, "SyntaxError", si_name);
-        self.set_subtype_proto_name(string_forge, shape_forge, &self.uri_error_proto, "URIError", si_name);
-        self.set_subtype_proto_name(string_forge, shape_forge, &self.eval_error_proto, "EvalError", si_name);
-        self.set_subtype_proto_name(
-            string_forge,
-            shape_forge,
-            &self.suppressed_error_proto,
-            "SuppressedError",
-            si_name,
-        );
+        Self::set_subtype_proto_name(env, &world.type_error_proto, "TypeError", si_name);
+        Self::set_subtype_proto_name(env, &world.reference_error_proto, "ReferenceError", si_name);
+        Self::set_subtype_proto_name(env, &world.range_error_proto, "RangeError", si_name);
+        Self::set_subtype_proto_name(env, &world.syntax_error_proto, "SyntaxError", si_name);
+        Self::set_subtype_proto_name(env, &world.uri_error_proto, "URIError", si_name);
+        Self::set_subtype_proto_name(env, &world.eval_error_proto, "EvalError", si_name);
+        Self::set_subtype_proto_name(env, &world.suppressed_error_proto, "SuppressedError", si_name);
     }
 
-    fn set_subtype_proto_name(
-        &self, string_forge: &PermInterner, shape_forge: &ShapeForge, proto_p: &P<JsObject>, name: &str, si_name: u32,
-    ) {
+    fn set_subtype_proto_name(env: BindEnv<'_>, proto_p: &P<JsObject>, name: &str, si_name: u32) {
+        let string_forge = env.string_forge;
+        let shape_forge = env.shape_forge;
         let proto_ptr = P::as_ptr(proto_p) as *mut JsObject;
         let proto = unsafe { &mut *proto_ptr };
         let name_si = string_forge.intern(name).0;
@@ -232,26 +224,25 @@ impl BuiltinWorld {
     }
 
     /// 把 String 家族方法安装到 String 构造器与原型上。
-    pub fn bind_string_methods(&self, methods: &StringMethods, string_forge: &PermInterner, shape_forge: &ShapeForge) {
-        let ctor_ptr = P::as_ptr(&self.string_constructor) as *mut JsObject;
+    pub fn bind_string_methods(env: BindEnv<'_>, methods: &StringMethods) {
+        let world = env.world;
+        let string_forge = env.string_forge;
+        let shape_forge = env.shape_forge;
+        let ctor_ptr = P::as_ptr(&world.string_constructor) as *mut JsObject;
         let ctor = unsafe { &mut *ctor_ptr };
         bind_methods!(
-            self,
+            env,
             ctor,
-            string_forge,
-            shape_forge,
             ("fromCharCode", methods.from_char_code, 1),
             ("fromCodePoint", methods.from_code_point, 1),
             ("raw", methods.from_raw, 1),
         );
 
-        let proto_ptr = P::as_ptr(&self.string_proto) as *mut JsObject;
+        let proto_ptr = P::as_ptr(&world.string_proto) as *mut JsObject;
         let proto = unsafe { &mut *proto_ptr };
         bind_methods!(
-            self,
+            env,
             proto,
-            string_forge,
-            shape_forge,
             ("indexOf", methods.index_of, 1),
             ("includes", methods.includes, 1),
             ("charAt", methods.char_at, 1),
@@ -320,16 +311,13 @@ impl BuiltinWorld {
     ///
     /// `realm_id` 是安装目标所属 realm 的编号：`@@hasInstance` 符号键按
     /// (realm 编号, 局部下标) 编码，realm 编号为 0 时与旧编码逐字节一致。
-    pub fn bind_function_methods(
-        &self, methods: &FunctionMethods, string_forge: &PermInterner, shape_forge: &ShapeForge, realm_id: u32,
-    ) {
-        let proto_ptr = P::as_ptr(&self.function_proto) as *mut JsObject;
+    pub fn bind_function_methods(env: BindEnv<'_>, methods: &FunctionMethods, realm_id: u32) {
+        let world = env.world;
+        let proto_ptr = P::as_ptr(&world.function_proto) as *mut JsObject;
         let proto = unsafe { &mut *proto_ptr };
-        bind_methods_static!(
+        bind_methods!(
+            env,
             proto,
-            string_forge,
-            shape_forge,
-            self,
             ("call", methods.call, 1),
             ("apply", methods.apply, 2),
             ("bind", methods.bind, 1),
@@ -338,35 +326,21 @@ impl BuiltinWorld {
         // @@hasInstance 走 well-known symbol 键（id 6）：instanceof 运算符经
         // dispatch_instanceof 读该属性调用，绑定后属性存在性测试与全局改写生效。
         let _ = Self::bind_method_key_static(
+            env,
             proto,
-            shape_forge,
-            string_forge,
             encode_symbol_key(realm_id, 6),
             "[Symbol.hasInstance]",
             unsafe { NativeFnPtr::from_raw(methods.has_instance) },
             1,
-            self,
         );
     }
 
     /// 在指定原型上安装一个 native 方法，wrapper 函数以本 world 的 Function 原型为原型。
     pub fn bind_method(
-        &self, proto: &mut JsObject, shape_forge: &ShapeForge, string_forge: &PermInterner, method_name: &str,
-        native_fn_ptr: NativeFnPtr, arg_count: u8,
+        env: BindEnv<'_>, proto: &mut JsObject, method_name: &str, native_fn_ptr: NativeFnPtr, arg_count: u8,
     ) -> Result<(), String> {
-        Self::bind_method_static(proto, shape_forge, string_forge, method_name, native_fn_ptr, arg_count, self)
-    }
-
-    /// 构造并安装一个 native 方法 wrapper 函数对象（设置 `length`/`name` 属性与参数元数据）。
-    ///
-    /// 无状态版本，供静态绑定宏在初始化阶段直接调用；需要传入当前
-    /// `BuiltinWorld`：wrapper 的原型取自它，wrapper 本体登记进它的释放表。
-    pub fn bind_method_static(
-        proto: &mut JsObject, shape_forge: &ShapeForge, string_forge: &PermInterner, method_name: &str,
-        native_fn_ptr: NativeFnPtr, arg_count: u8, world: &BuiltinWorld,
-    ) -> Result<(), String> {
-        let si = string_forge.intern(method_name).0;
-        Self::bind_method_key_static(proto, shape_forge, string_forge, si, method_name, native_fn_ptr, arg_count, world)
+        let si = env.string_forge.intern(method_name).0;
+        Self::bind_method_key_static(env, proto, si, method_name, native_fn_ptr, arg_count)
     }
 
     /// 按指定属性键安装方法 wrapper（键不要求字符串 intern，well-known symbol 键用此路径）。
@@ -374,43 +348,19 @@ impl BuiltinWorld {
     /// `method_name` 只用于 wrapper 的 `name` 属性；`key` 是属性的实际存储键。
     /// 目标站点标签取 0：P 目标由家族下标区分，非 P 目标须经
     /// [`Self::bind_method_key_labeled_static`] 传站点标签。
-    #[expect(clippy::too_many_arguments)]
     pub fn bind_method_key_static(
-        proto: &mut JsObject, shape_forge: &ShapeForge, string_forge: &PermInterner, key: u32, method_name: &str,
-        native_fn_ptr: NativeFnPtr, arg_count: u8, world: &BuiltinWorld,
+        env: BindEnv<'_>, proto: &mut JsObject, key: u32, method_name: &str, native_fn_ptr: NativeFnPtr, arg_count: u8,
     ) -> Result<(), String> {
-        Self::bind_method_key_labeled_static(
-            proto,
-            shape_forge,
-            string_forge,
-            key,
-            method_name,
-            native_fn_ptr,
-            arg_count,
-            world,
-            0,
-        )
+        Self::bind_method_key_labeled_static(env, proto, key, method_name, native_fn_ptr, arg_count, 0)
     }
 
-    /// [`Self::bind_method_static`] 的站点标签版本：属性键由方法名 intern 得出，
+    /// [`Self::bind_method`] 的站点标签版本：属性键由方法名 intern 得出，
     /// 供非 P 目标（VM 内建原型 Box 对象）的静态绑定宏使用。
-    #[expect(clippy::too_many_arguments)]
     pub fn bind_method_labeled_static(
-        proto: &mut JsObject, shape_forge: &ShapeForge, string_forge: &PermInterner, method_name: &str,
-        native_fn_ptr: NativeFnPtr, arg_count: u8, world: &BuiltinWorld, label: u32,
+        env: BindEnv<'_>, proto: &mut JsObject, method_name: &str, native_fn_ptr: NativeFnPtr, arg_count: u8, label: u32,
     ) -> Result<(), String> {
-        let si = string_forge.intern(method_name).0;
-        Self::bind_method_key_labeled_static(
-            proto,
-            shape_forge,
-            string_forge,
-            si,
-            method_name,
-            native_fn_ptr,
-            arg_count,
-            world,
-            label,
-        )
+        let si = env.string_forge.intern(method_name).0;
+        Self::bind_method_key_labeled_static(env, proto, si, method_name, native_fn_ptr, arg_count, label)
     }
 
     /// 按指定属性键安装方法 wrapper，显式指定非 P 目标的绑定站点标签。
@@ -418,11 +368,13 @@ impl BuiltinWorld {
     /// 同一 session 内多个非 P 目标（VM 内建原型 Box 对象等）可绑定同名方法槽
     /// （如 next/return/throw）：站点标签（站点名 perm intern 键）使复用键跨
     /// 站点唯一，重绑时只迁移本站点的旧 wrapper。
-    #[expect(clippy::too_many_arguments)]
     pub fn bind_method_key_labeled_static(
-        proto: &mut JsObject, shape_forge: &ShapeForge, string_forge: &PermInterner, key: u32, method_name: &str,
-        native_fn_ptr: NativeFnPtr, arg_count: u8, world: &BuiltinWorld, label: u32,
+        env: BindEnv<'_>, proto: &mut JsObject, key: u32, method_name: &str, native_fn_ptr: NativeFnPtr, arg_count: u8,
+        label: u32,
     ) -> Result<(), String> {
+        let world = env.world;
+        let shape_forge = env.shape_forge;
+        let string_forge = env.string_forge;
         let si = string_forge.intern(method_name).0;
         // 选择性重建复用：同键旧 wrapper 迁移到新 proto 槽位——其 proto 槽
         // 已由重建收尾改写到新指针（或 Function 家族保留而不变），length/name
@@ -442,8 +394,8 @@ impl BuiltinWorld {
                     wrapper.set_proto(wrapper_proto_val).ok();
                 }
                 wrapper.set_function(true);
-                // NativeFnPtr 不变量由调用方维护（见 bind_method / bind_method_static
-                // 的调用方，均使用函数项表达式）。
+                // NativeFnPtr 不变量由调用方维护（bind_method 家族的调用方
+                // 均使用函数项表达式）。
                 wrapper.set_native_fn(Some(native_fn_ptr));
                 wrapper.set_native_arg_count(arg_count);
                 // 设置 .length（JS 规范：值为形式参数个数，

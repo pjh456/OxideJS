@@ -7,7 +7,7 @@ use oxide_types::mem::P;
 use oxide_types::object::JsObject;
 use oxide_types::value::JsValue;
 
-use crate::builtin::BuiltinWorld;
+use crate::builtin::{BindEnv, BuiltinWorld};
 use crate::shape_forge::EMPTY_SHAPE_ID;
 
 use super::{BuiltinDirtySet, BuiltinId, BuiltinSnapshot, KernelCore};
@@ -258,9 +258,11 @@ impl KernelSession {
         if dirty.any_builtin_dirty() {
             let old_world = self.builtin_world.clone();
             let new_world = BuiltinWorld::rebuild_with_dirty(
-                &old_world,
-                core.perm_interner.as_ref(),
-                core.shape_forge.as_ref(),
+                BindEnv {
+                    world: &old_world,
+                    shape_forge: core.shape_forge.as_ref(),
+                    string_forge: core.perm_interner.as_ref(),
+                },
                 &dirty,
             );
             // 旧 world 的释放登记表并入新 world：存活 wrapper（未污染家族别名）

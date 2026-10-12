@@ -10,10 +10,9 @@ use super::construct::{
     builtin_labels, make_error_subtypes, make_named_pair, make_typed_array_family, tag_boolean_proto, tag_number_proto,
     tag_string_proto, wire_builtin_world_links, ErrorSubtypeProtos, TypedArrayFamily,
 };
-use super::BuiltinWorld;
+use super::{BindEnv, BuiltinWorld};
 use crate::kernel::BuiltinDirtySet;
-use crate::shape_forge::{ShapeForge, EMPTY_SHAPE_ID};
-use crate::string_forge::PermInterner;
+use crate::shape_forge::EMPTY_SHAPE_ID;
 
 impl BuiltinWorld {
     /// 选择性重建收尾：把保留对象的原型槽改写到新对象，并释放被替换旧对象的
@@ -147,9 +146,10 @@ impl BuiltinWorld {
     ///   本体同时充当 `retire_replaced` 原型槽改写遗漏的兜底：遗漏时读者仅见
     ///   属性缺失，不产生 use-after-free。属性区于原型槽改写完成后由
     ///   `retire_replaced` 释放。
-    pub fn rebuild_with_dirty(
-        current: &BuiltinWorld, string_forge: &PermInterner, shape_forge: &ShapeForge, dirty: &BuiltinDirtySet,
-    ) -> BuiltinWorld {
+    pub fn rebuild_with_dirty(env: BindEnv<'_>, dirty: &BuiltinDirtySet) -> BuiltinWorld {
+        let current = env.world;
+        let string_forge = env.string_forge;
+        let shape_forge = env.shape_forge;
         let labels = builtin_labels(string_forge);
 
         // 用 `mem::forget` 抬升 4 个对象（旧 Function/Object 对）的 Arc 计数

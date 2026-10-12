@@ -2,22 +2,16 @@ use oxide_kernel::bind_methods;
 use oxide_types::object::{JsObject, PropAttributes};
 use oxide_types::value::JsValue;
 
-use crate::bindings::BindEnv;
+use crate::bindings::{kernel_env, BindEnv};
 
 /// 把 Math 单例对象及其方法（abs/floor/max/random 等）绑定到 global。
 pub fn bind_math(env: BindEnv<'_>, global: &mut JsObject) {
     let math_ptr = env.world().math_object.as_ptr() as *mut JsObject;
     let math = unsafe { &mut *math_ptr };
 
-    let bw = env.world();
-    let sf = env.string_forge();
-    let sh = env.shape_forge();
-
     bind_methods!(
-        bw,
+        kernel_env(env),
         math,
-        sf,
-        sh,
         ("abs", oxide_builtins::math::math_abs::<crate::vm::Vm>, 1),
         ("acos", oxide_builtins::math::math_acos::<crate::vm::Vm>, 1),
         ("asin", oxide_builtins::math::math_asin::<crate::vm::Vm>, 1),

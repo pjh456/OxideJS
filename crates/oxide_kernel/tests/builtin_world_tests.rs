@@ -1,4 +1,4 @@
-use oxide_kernel::builtin::BuiltinWorld;
+use oxide_kernel::builtin::{BuiltinWorld, BindEnv};
 use oxide_kernel::kernel::BuiltinDirtySet;
 use oxide_kernel::shape_forge::{ShapeForge, EMPTY_SHAPE_ID};
 use oxide_kernel::string_forge::PermInterner;
@@ -99,7 +99,14 @@ fn builtin_rebuild_with_dirty_reuses_clean_fields() {
     let sf = PermInterner::new();
     let sh = ShapeForge::new();
     let w = BuiltinWorld::new(&sf, &sh);
-    let rebuilt = BuiltinWorld::rebuild_with_dirty(&w, &sf, &sh, &BuiltinDirtySet::default());
+    let rebuilt = BuiltinWorld::rebuild_with_dirty(
+        BindEnv {
+            world: &w,
+            shape_forge: &sh,
+            string_forge: &sf,
+        },
+        &BuiltinDirtySet::default(),
+    );
 
     assert!(std::ptr::eq(w.object_proto.as_ptr(), rebuilt.object_proto.as_ptr()));
     assert!(std::ptr::eq(w.array_proto.as_ptr(), rebuilt.array_proto.as_ptr()));
@@ -115,7 +122,14 @@ fn builtin_rebuild_with_dirty_replaces_only_dirty_group() {
         array: true,
         ..Default::default()
     };
-    let rebuilt = BuiltinWorld::rebuild_with_dirty(&w, &sf, &sh, &dirty);
+    let rebuilt = BuiltinWorld::rebuild_with_dirty(
+        BindEnv {
+            world: &w,
+            shape_forge: &sh,
+            string_forge: &sf,
+        },
+        &dirty,
+    );
 
     assert!(!std::ptr::eq(w.array_proto.as_ptr(), rebuilt.array_proto.as_ptr()));
     assert!(!std::ptr::eq(w.array_constructor.as_ptr(), rebuilt.array_constructor.as_ptr()));
@@ -132,7 +146,14 @@ fn builtin_rebuild_with_dirty_repairs_ctor_proto_links() {
         array: true,
         ..Default::default()
     };
-    let rebuilt = BuiltinWorld::rebuild_with_dirty(&w, &sf, &sh, &dirty);
+    let rebuilt = BuiltinWorld::rebuild_with_dirty(
+        BindEnv {
+            world: &w,
+            shape_forge: &sh,
+            string_forge: &sf,
+        },
+        &dirty,
+    );
 
     let ctor_proto = rebuilt.array_constructor.get_prop_at(0).as_js_object_ptr();
     let proto_ctor = rebuilt.array_proto.get_prop_at(0).as_js_object_ptr();

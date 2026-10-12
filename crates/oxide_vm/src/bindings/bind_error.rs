@@ -3,7 +3,7 @@ use oxide_kernel::shape_forge::EMPTY_SHAPE_ID;
 use oxide_types::object::{JsObject, NativeFnPtr, PropAttributes};
 use oxide_types::value::JsValue;
 
-use super::BindEnv;
+use super::{BindEnv, kernel_env};
 
 fn bind_error_subtype_constructor(
     env: BindEnv<'_>, global: &mut JsObject, name: &str, proto_ptr: *mut JsObject, ctor_fn: *const (), arg_count: u8,
@@ -107,8 +107,7 @@ pub fn bind_error(env: BindEnv<'_>, global: &mut JsObject) {
         is_error: oxide_builtins::error::error_is_error::<crate::vm::Vm> as *const (),
         to_json: oxide_builtins::error::error_to_json::<crate::vm::Vm> as *const (),
     };
-    env.world()
-        .bind_error_methods(&error_methods, env.string_forge(), env.shape_forge());
+    oxide_kernel::builtin::BuiltinWorld::bind_error_methods(kernel_env(env), &error_methods);
 
     // stack 为访问器成对安装（getter 现算栈串 / setter 走
     // SetterThatIgnoresPrototypeProperties），经 getset 绑定器登记复用键，

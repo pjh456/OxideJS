@@ -2,7 +2,7 @@ use oxide_kernel::builtin::ArrayMethods;
 use oxide_types::object::{JsObject, PropAttributes};
 
 use crate::bind_constructor;
-use crate::bindings::{apply_binding_table, BindEnv};
+use crate::bindings::{apply_binding_table, kernel_env, BindEnv};
 
 /// 把 Array 构造器与原型方法绑定到 global。
 ///
@@ -51,8 +51,7 @@ pub fn bind_array(env: BindEnv<'_>, global: &mut JsObject) {
         with_method: oxide_builtins::array::array_with::<crate::vm::Vm> as *const (),
     };
 
-    env.world()
-        .bind_array_methods(&_array_methods, env.string_forge(), env.shape_forge(), env.realm_id);
+    oxide_kernel::builtin::BuiltinWorld::bind_array_methods(kernel_env(env), &_array_methods, env.realm_id);
 
     let array_proto_ptr = env.world().array_proto.as_ptr() as *mut JsObject;
     let array_proto = unsafe { &mut *array_proto_ptr };

@@ -2,7 +2,7 @@ use oxide_kernel::builtin::ObjectMethods;
 use oxide_types::object::{JsObject, PropAttributes};
 
 use crate::bind_constructor;
-use crate::bindings::{apply_binding_table, BindEnv};
+use crate::bindings::{apply_binding_table, kernel_env, BindEnv};
 
 /// 把 Object 构造器与原型方法绑定到 global。
 pub fn bind_object(env: BindEnv<'_>, global: &mut JsObject) {
@@ -36,7 +36,7 @@ pub fn bind_object(env: BindEnv<'_>, global: &mut JsObject) {
             as *const (),
         group_by: oxide_builtins::object::object_group_by::<crate::vm::Vm> as *const (),
     };
-    env.world().bind_object_methods(&methods, env.string_forge(), env.shape_forge());
+    oxide_kernel::builtin::BuiltinWorld::bind_object_methods(kernel_env(env), &methods);
 
     let object_proto_ptr = env.world().object_proto.as_ptr() as *mut JsObject;
     let object_proto = unsafe { &mut *object_proto_ptr };

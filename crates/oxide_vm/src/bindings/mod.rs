@@ -84,6 +84,10 @@ use oxide_types::value::JsValue;
 /// 消除各绑定函数签名前缀与函数体首行的三行解包。
 ///
 /// `Copy`：值语义轻量（两个引用加一个 u32），可自由复制传递。
+///
+/// kernel 绑定层有同名字段集不同的 `BindEnv`（world/shape_forge/string_forge）：
+/// 本结构的 `world()` / `shape_forge()` / `string_forge()` 访问器是 kernel
+/// 结构的构造来源（见 [`kernel_env`]）。
 #[derive(Copy, Clone)]
 pub struct BindEnv<'a> {
     pub core: &'a Arc<KernelCore>,
@@ -107,6 +111,17 @@ impl<'a> BindEnv<'a> {
     /// 共享 perm interner（字符串 forge）。
     fn string_forge(&self) -> &PermInterner {
         self.core.perm_interner().as_ref()
+    }
+}
+
+/// 把 vm 绑定环境转换为 kernel 绑定环境：`world()` / `shape_forge()` /
+/// `string_forge()` 三个访问器是 kernel `BindEnv` 的构造来源（此处直接
+/// 从 `core` / `session` 字段借出，使返回引用可活过本函数）。
+pub(crate) fn kernel_env<'a>(env: BindEnv<'a>) -> oxide_kernel::builtin::BindEnv<'a> {
+    oxide_kernel::builtin::BindEnv {
+        world: env.session.builtin_world(),
+        shape_forge: env.core.shape_forge().as_ref(),
+        string_forge: env.core.perm_interner().as_ref(),
     }
 }
 
@@ -177,21 +192,19 @@ fn configure_existing_ctor(ctor: &P<JsObject>, native_fn: *const (), arg_count: 
 
 /// 把 `(name, native_fn_ptr, nargs)` 绑定表逐条安装为目标对象的命名方法。
 ///
-/// 每条经 `world.bind_method` 在 `target` 上建/复用方法 wrapper 并写命名属性；shape 与
-/// 字符串 interner 由 `core` 借出，循环内共享。
+/// 每条经 `BuiltinWorld::bind_method` 在 `target` 上建/复用方法 wrapper 并写命名属性；
+/// kernel 绑定环境由 `env` 借出，循环内共享。
 ///
 /// # 注意事项
 /// - 表中所有函数项指针须为合法的 `NativeFn`（转成 `*const ()`），此处经
 ///   `NativeFnPtr::from_raw` 转换。
 /// - `bind_method` 的返回值被丢弃：单条绑定失败不中断后续条目。
 pub(crate) fn apply_binding_table(env: BindEnv<'_>, target: &mut JsObject, bindings: &[(&'static str, *const (), u8)]) {
-    let world = env.world();
-    let shape_forge = env.shape_forge();
-    let string_forge = env.string_forge();
+    let kenv = kernel_env(env);
     for (name, func, nargs) in bindings {
         // SAFETY: 绑定表中所有条目都是转成 *const () 的 NativeFn 函数项指针。
         let fn_ptr = unsafe { oxide_types::object::NativeFnPtr::from_raw(*func) };
-        let _ = world.bind_method(target, shape_forge, string_forge, name, fn_ptr, *nargs);
+        let _ = BuiltinWorld::bind_method(kenv, target, name, fn_ptr, *nargs);
     }
 }
 
@@ -395,22 +408,11 @@ pub(crate) fn bind_method_alias(core: &Arc<KernelCore>, proto: &mut JsObject, so
 pub(crate) fn bind_well_known_method(
     env: BindEnv<'_>, target: &mut JsObject, well_known_id: u32, method_name: &str, func: *const (), nargs: u8,
 ) {
-    let world = env.world();
-    let shape_forge = env.shape_forge();
-    let string_forge = env.string_forge();
+    let kenv = kernel_env(env);
     // SAFETY: func 是转成 *const () 的 NativeFn 函数项指针。
     let fn_ptr = unsafe { oxide_types::object::NativeFnPtr::from_raw(func) };
     let key = oxide_types::private_key::encode_symbol_key(env.realm_id, well_known_id);
-    let _ = oxide_kernel::builtin::BuiltinWorld::bind_method_key_static(
-        target,
-        shape_forge,
-        string_forge,
-        key,
-        method_name,
-        fn_ptr,
-        nargs,
-        world,
-    );
+    let _ = BuiltinWorld::bind_method_key_static(kenv, target, key, method_name, fn_ptr, nargs);
 }
 
 /// 把原型上 `source` 属性已绑定的函数值复制到 well-known symbol 键名下（共享同一函数对象）。

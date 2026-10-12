@@ -809,11 +809,10 @@ pub(crate) fn init_generator_intrinsics(vm: &mut Vm) {
     let mut gen_proto = Box::new(JsObject::new_empty(EMPTY_SHAPE_ID, iterator_proto_val));
     // 站点标签：与 AsyncGenerator 原型的同名方法槽（next/return/throw）区分复用键。
     let gen_label = sf.intern("GeneratorPrototype").0;
-    oxide_kernel::bind_methods_static!(
+    let kenv = oxide_kernel::builtin::BindEnv { world, shape_forge: sh, string_forge: sf };
+    oxide_kernel::bind_methods!(
+        kenv,
         &mut gen_proto,
-        sf,
-        sh,
-        world,
         gen_label,
         ("next", generator_next as *const (), 1),
         ("return", generator_return as *const (), 1),
@@ -831,14 +830,12 @@ pub(crate) fn init_generator_intrinsics(vm: &mut Vm) {
     // @@iterator：返回自身（生成器是可迭代对象）。
     let iter_key = oxide_types::private_key::encode_symbol_key(vm.realm_id(), 0);
     let _ = oxide_kernel::builtin::BuiltinWorld::bind_method_key_labeled_static(
+        kenv,
         &mut gen_proto,
-        sh,
-        sf,
         iter_key,
         "@@iterator",
         unsafe { oxide_types::object::NativeFnPtr::from_raw(generator_symbol_iterator as *const ()) },
         0,
-        world,
         gen_label,
     );
     Vm::swap_intrinsic_proto(&mut vm.realm.generator_proto.borrow_mut(), *gen_proto);

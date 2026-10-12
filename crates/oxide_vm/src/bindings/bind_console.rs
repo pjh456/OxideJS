@@ -1,4 +1,4 @@
-use crate::bindings::{bind_global_value, BindEnv};
+use crate::bindings::{bind_global_value, kernel_env, BindEnv};
 use oxide_types::object::JsObject;
 use oxide_types::value::JsValue;
 
@@ -7,15 +7,9 @@ pub fn bind_console(env: BindEnv<'_>, global: &mut JsObject) {
     let console_ptr = env.world().console_object.as_ptr() as *mut JsObject;
     let console = unsafe { &mut *console_ptr };
 
-    let bw = env.world();
-    let sf = env.string_forge();
-    let sh = env.shape_forge();
-
     oxide_kernel::bind_methods!(
-        bw,
+        kernel_env(env),
         console,
-        sf,
-        sh,
         ("log", oxide_builtins::console::log::<crate::vm::Vm>, 1),
         ("warn", oxide_builtins::console::warn::<crate::vm::Vm>, 1),
         ("error", oxide_builtins::console::error::<crate::vm::Vm>, 1),

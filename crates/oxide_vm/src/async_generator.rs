@@ -1713,11 +1713,10 @@ pub(crate) fn init_async_generator_intrinsics(vm: &mut Vm) {
     let mut ag_proto = Box::new(JsObject::new_empty(EMPTY_SHAPE_ID, async_iterator_proto_val));
     // 站点标签：与 Generator 原型的同名方法槽（next/return/throw）区分复用键。
     let ag_label = sf.intern("AsyncGeneratorPrototype").0;
-    oxide_kernel::bind_methods_static!(
+    let kenv = oxide_kernel::builtin::BindEnv { world, shape_forge: sh, string_forge: sf };
+    oxide_kernel::bind_methods!(
+        kenv,
         &mut ag_proto,
-        sf,
-        sh,
-        world,
         ag_label,
         ("next", async_generator_next as *const (), 1),
         ("return", async_generator_return as *const (), 1),
@@ -1735,14 +1734,12 @@ pub(crate) fn init_async_generator_intrinsics(vm: &mut Vm) {
     // @@asyncIterator：返回自身（异步生成器是异步可迭代对象，供 for-await-of 消费）。
     let aiter_key = oxide_types::private_key::encode_symbol_key(vm.realm_id(), 8);
     let _ = oxide_kernel::builtin::BuiltinWorld::bind_method_key_labeled_static(
+        kenv,
         &mut ag_proto,
-        sh,
-        sf,
         aiter_key,
         "@@asyncIterator",
         unsafe { oxide_types::object::NativeFnPtr::from_raw(async_generator_symbol_async_iterator as *const ()) },
         0,
-        world,
         ag_label,
     );
     Vm::swap_intrinsic_proto(&mut vm.realm.async_generator_proto.borrow_mut(), *ag_proto);

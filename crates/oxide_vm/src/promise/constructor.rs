@@ -272,11 +272,10 @@ impl Vm {
         proto.set_shape_id(ctor_shape);
         proto.push_prop(JsValue::undefined());
         proto.set_data_meta(0u32, PropAttributes::new(true, false, true));
-        oxide_kernel::bind_methods_static!(
+        let kenv = oxide_kernel::builtin::BindEnv { world, shape_forge: sh, string_forge: sf };
+        oxide_kernel::bind_methods!(
+            kenv,
             &mut proto,
-            sf,
-            sh,
-            world,
             ("then", promise_then as *const (), 2),
             ("catch", promise_catch as *const (), 1),
             ("finally", promise_finally as *const (), 1),
@@ -313,11 +312,9 @@ impl Vm {
         ctor.set_shape_id(ctor_shape3);
         ctor.push_prop(JsValue::undefined());
         ctor.set_data_meta(2u32, PropAttributes::new(false, false, false));
-        oxide_kernel::bind_methods_static!(
+        oxide_kernel::bind_methods!(
+            kenv,
             &mut ctor,
-            sf,
-            sh,
-            world,
             ("resolve", promise_static_resolve as *const (), 1),
             ("reject", promise_static_reject as *const (), 1),
             ("all", promise_static_all as *const (), 1),

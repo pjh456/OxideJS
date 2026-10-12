@@ -2,7 +2,7 @@ use oxide_kernel::bind_methods;
 use oxide_types::object::JsObject;
 use oxide_types::value::JsValue;
 
-use crate::bindings::{bind_global_value, BindEnv};
+use crate::bindings::{bind_global_value, kernel_env, BindEnv};
 
 /// 把 Atomics 全局纯对象及其 10 个原子方法绑定到 global。
 ///
@@ -12,15 +12,9 @@ pub fn bind_atomics(env: BindEnv<'_>, global: &mut JsObject) {
     let atomics_ptr = env.world().atomics_object.as_ptr() as *mut JsObject;
     let atomics = unsafe { &mut *atomics_ptr };
 
-    let bw = env.world();
-    let sf = env.string_forge();
-    let sh = env.shape_forge();
-
     bind_methods!(
-        bw,
+        kernel_env(env),
         atomics,
-        sf,
-        sh,
         ("load", oxide_builtins::atomics::atomics_load::<crate::vm::Vm>, 2),
         ("store", oxide_builtins::atomics::atomics_store::<crate::vm::Vm>, 3),
         ("exchange", oxide_builtins::atomics::atomics_exchange::<crate::vm::Vm>, 3),
