@@ -568,7 +568,10 @@ pub(crate) fn collect_capture_names_simple_target(
 }
 
 /// 收集函数参数默认值表达式里的引用（子层 upvalue 判定；参数名遮蔽）。
+/// 默认值在定义处外层作用域求值，其中对外层 own 绑定的引用须纳入捕获判定：
+/// 扫描前临时深度加一过门槛，扫完即减回；upvalue 判定无深度门槛，不受影响。
 pub(crate) fn collect_fn_default_names(params: &oxide_parser::FormalParameters, eng: &mut CaptureEngine) {
+    eng.depth += 1;
     for p in &params.items {
         if let Some(init) = &p.initializer {
             collect_capture_names_expr(init, eng);
@@ -578,6 +581,7 @@ pub(crate) fn collect_fn_default_names(params: &oxide_parser::FormalParameters, 
         collect_capture_names_binding_pattern(&p.pattern, eng);
         eng.shadow = saved;
     }
+    eng.depth -= 1;
 }
 
 /// 按表达式类型递归扫描引用；进入嵌套函数体时以形参 + 体内声明扩充遮蔽集。与

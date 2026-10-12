@@ -227,6 +227,20 @@ fn closure_captures_cell_and_upvalue() {
     );
 }
 
+/// 面 13：直接子函数（深度 0）形参默认值对父级绑定的直接引用须纳入父捕获集
+/// （父建 cell、子建 upvalue），否则逃逸闭包缺参调用经 LOAD_VAR 读父帧死寄存器取陈旧值。
+#[test]
+fn nested_fn_default_ref_captures_parent_binding() {
+    let src = "function f() { var x = 1; var g = function(a = x) { return a; }; return g; }";
+    let ir = emit_ir(src);
+    let f = &ir.nested[0];
+    assert!(f.cells_needed >= 1, "父函数应为默认值引用的 x 建 cell");
+    assert!(count_op(&f.insts, OpCode::MAKE_CELL) >= 1, "父函数入口应发 MAKE_CELL");
+    let g = &f.nested[0];
+    let g_names: HashSet<&str> = g.upvalue_captures.iter().map(|c| c.name.as_str()).collect();
+    assert!(g_names.contains("x"), "子函数形参默认值引用的 x 应成为子 upvalue");
+}
+
 /// 面 5：对象 rest 展开与数组 holes 的现状形态：REST_OBJECT 的 ext 键是排除键
 /// （显式绑定的键名）；解构赋值经 for-of 迭代面（FOR_OF_INIT）逐元素绑定，
 /// 空洞元素被消费但不绑定；常量池含 Undefined。
