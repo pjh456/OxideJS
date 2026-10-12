@@ -1,19 +1,23 @@
 //! 闭包捕获分析，遮蔽感知引用收集：`CaptureEngine` 捆绑双引用集（own ×
-//! parent_names）× shadow（遮蔽名集）× 双输出累加器（captured_out ×
+//! parent_names）× shadow（遮蔽名计次映射）× 双输出累加器（captured_out ×
 //! upvalue_out）× depth（嵌套深度），遍历语句/表达式/赋值目标/类体 AST，嵌套
 //! 函数/类/for 头/catch 参数逐层遮蔽，按深度分区写两输出。
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use oxide_parser::{ClassBody, ClassElement, Expression, Statement};
 
-use super::names::collect_own_binding_names;
-use super::{collect_fn_param_names, collect_for_left_decl_names};
+use super::names::collect_own_binding_names_into;
+use super::{
+    collect_binding_pattern_names_into, collect_fn_param_names_into, collect_for_left_decl_names_into,
+    collect_for_left_decl_names_remove, shadow_dec,
+};
 
 /// 双引用集引擎：捆绑 own（深度 ≥ 1 引用集）、parent_names（全深度引用集）、
-/// sub_own（upvalue 显式排除集）、shadow（遮蔽名集）、depth（嵌套深度）与双输出
+/// sub_own（upvalue 显式排除集）、shadow（遮蔽名计次映射）、depth（嵌套深度）与双输出
 /// 累加器，本族十五个收集函数共享单一 `&mut CaptureEngine` 参数。作用域边界（嵌套
-/// 函数/类/for 头/catch 参数）对 shadow 集做保存/恢复，逐层遮蔽外层绑定；函数/类
+/// 函数/类/for 头/catch 参数）对 shadow 计次映射做计次增减（函数边界清空重建，
+/// catch 参数只增不减），逐层遮蔽外层绑定；函数/类
 /// 边界对 depth 做增减，区分本函数体层与嵌套层。
 pub(crate) struct CaptureEngine<'a> {
     /// 深度 ≥ 1 的引用集：本函数 own 绑定集（父层捕获判定）。
@@ -22,8 +26,9 @@ pub(crate) struct CaptureEngine<'a> {
     parent_names: &'a HashSet<String>,
     /// upvalue 判定的显式排除集：本函数 own 绑定集。
     sub_own: &'a HashSet<String>,
-    /// 遮蔽名集：当前作用域内被遮蔽、须排除的名字；作用域边界保存/恢复。
-    shadow: HashSet<String>,
+    /// 遮蔽名计次映射：当前作用域内被遮蔽的名字及其计次；作用域边界计次增减，
+    /// 函数边界清空重建，每边界零分配。
+    shadow: HashMap<String, u32>,
     /// 嵌套深度：0 = 本函数体层，≥ 1 = 嵌套函数/类内。
     depth: u32,
     /// 输出累加器：被嵌套函数捕获的名字（父层捕获判定）。
@@ -44,7 +49,7 @@ impl<'a> CaptureEngine<'a> {
             own,
             parent_names,
             sub_own,
-            shadow: HashSet::new(),
+            shadow: HashMap::new(),
             depth: 0,
             captured_out,
             upvalue_out,
@@ -55,12 +60,17 @@ impl<'a> CaptureEngine<'a> {
     /// 深度 ≥ 1 且名字在 own 且不在 shadow → captured_out；
     /// 名字在 parent_names 且不在 shadow 且不在 sub_own → upvalue_out。
     fn check_identifier(&mut self, name: &str) {
-        if self.depth >= 1 && self.own.contains(name) && !self.shadow.contains(name) {
+        if self.depth >= 1 && self.own.contains(name) && !self.shadow_contains(name) {
             self.captured_out.insert(name.to_string());
         }
-        if self.parent_names.contains(name) && !self.shadow.contains(name) && !self.sub_own.contains(name) {
+        if self.parent_names.contains(name) && !self.shadow_contains(name) && !self.sub_own.contains(name) {
             self.upvalue_out.insert(name.to_string());
         }
+    }
+
+    /// 遮蔽判定：名字在计次映射中的计次大于零即被遮蔽。
+    fn shadow_contains(&self, name: &str) -> bool {
+        self.shadow.get(name).is_some_and(|&c| c > 0)
     }
 }
 
@@ -94,10 +104,11 @@ pub(crate) fn collect_capture_names_stmt(stmt: &Statement, eng: &mut CaptureEngi
         Statement::FunctionDeclaration(fd) => {
             let body: &[Statement] = fd.body.as_ref().map(|b| &b.statements[..]).unwrap_or(&[]);
             collect_fn_default_names(&fd.params, eng);
-            // 函数形参与体内声明遮蔽外层绑定：影子集保存/恢复，深度增一。
+            // 函数形参与体内声明遮蔽外层绑定：影子计次映射保存/恢复，清空重建为
+            // 本函数自身名，深度增一。
             let saved = std::mem::take(&mut eng.shadow);
-            eng.shadow.extend(collect_fn_param_names(&fd.params));
-            eng.shadow.extend(collect_own_binding_names(&[], body));
+            collect_fn_param_names_into(&fd.params, &mut eng.shadow);
+            collect_own_binding_names_into(&[], body, &mut eng.shadow);
             eng.depth += 1;
             collect_capture_names_shadowed(body, eng);
             eng.depth -= 1;
@@ -106,14 +117,15 @@ pub(crate) fn collect_capture_names_stmt(stmt: &Statement, eng: &mut CaptureEngi
         Statement::ClassDeclaration(cd) => {
             // 类体（构造器/方法体、字段键与值、静态块）是嵌套作用域：
             // 类名遮蔽外层绑定，方法形参与方法体局部进一步遮蔽。深度增一。
-            let saved = std::mem::take(&mut eng.shadow);
             if let Some(id) = &cd.id {
-                eng.shadow.insert(id.name.as_str().to_string());
+                *eng.shadow.entry(id.name.as_str().to_string()).or_insert(0) += 1;
             }
             eng.depth += 1;
             collect_class_capture_names(&cd.body, eng);
             eng.depth -= 1;
-            eng.shadow = saved;
+            if let Some(id) = &cd.id {
+                shadow_dec(&mut eng.shadow, id.name.as_str().to_string());
+            }
         }
         Statement::IfStatement(is) => {
             collect_capture_names_expr(&is.test, eng);
@@ -164,10 +176,9 @@ pub(crate) fn collect_capture_names_stmt(stmt: &Statement, eng: &mut CaptureEngi
                 collect_capture_names_for_left(&fi.left, eng);
             }
             // left 的 var 声明遮蔽外层同名绑定，body 内引用不视为捕获外层。
-            let saved = std::mem::take(&mut eng.shadow);
-            collect_for_left_decl_names(&fi.left, &mut eng.shadow);
+            collect_for_left_decl_names_into(&fi.left, &mut eng.shadow);
             collect_capture_names_shadowed(std::slice::from_ref(&fi.body), eng);
-            eng.shadow = saved;
+            collect_for_left_decl_names_remove(&fi.left, &mut eng.shadow);
         }
         Statement::ForOfStatement(fo) => {
             collect_capture_names_expr(&fo.right, eng);
@@ -178,10 +189,9 @@ pub(crate) fn collect_capture_names_stmt(stmt: &Statement, eng: &mut CaptureEngi
             } else {
                 collect_capture_names_for_left(&fo.left, eng);
             }
-            let saved = std::mem::take(&mut eng.shadow);
-            collect_for_left_decl_names(&fo.left, &mut eng.shadow);
+            collect_for_left_decl_names_into(&fo.left, &mut eng.shadow);
             collect_capture_names_shadowed(std::slice::from_ref(&fo.body), eng);
-            eng.shadow = saved;
+            collect_for_left_decl_names_remove(&fo.left, &mut eng.shadow);
         }
         Statement::BlockStatement(b) => collect_capture_names_shadowed(&b.body, eng),
         Statement::TryStatement(ts) => {
@@ -190,9 +200,11 @@ pub(crate) fn collect_capture_names_stmt(stmt: &Statement, eng: &mut CaptureEngi
             }
             if let Some(h) = &ts.handler {
                 // catch 参数解构模式内的表达式引用（默认值等）也会被内部闭包捕获；
-                // 参数声明名合并进引擎影子集后遮蔽 catch 作用域。
+                // 先以外层影子集扫模式内表达式，再将参数声明名合并进引擎影子计次
+                // 映射遮蔽 catch 作用域（只增不减，与旧代码一致）。
                 if let Some(param) = &h.param {
-                    collect_capture_names_binding_pattern(&param.pattern, eng);
+                    collect_binding_pattern_exprs(&param.pattern, eng);
+                    collect_binding_pattern_names_into(&param.pattern, &mut eng.shadow);
                 }
                 for s in &h.body.body {
                     collect_capture_names_stmt(s, eng);
@@ -219,22 +231,23 @@ pub(crate) fn collect_capture_names_stmt(stmt: &Statement, eng: &mut CaptureEngi
                         let body: &[Statement] = fd.body.as_ref().map(|b| &b.statements[..]).unwrap_or(&[]);
                         collect_fn_default_names(&fd.params, eng);
                         let saved = std::mem::take(&mut eng.shadow);
-                        eng.shadow.extend(collect_fn_param_names(&fd.params));
-                        eng.shadow.extend(collect_own_binding_names(&[], body));
+                        collect_fn_param_names_into(&fd.params, &mut eng.shadow);
+                        collect_own_binding_names_into(&[], body, &mut eng.shadow);
                         eng.depth += 1;
                         collect_capture_names_shadowed(body, eng);
                         eng.depth -= 1;
                         eng.shadow = saved;
                     }
                     oxide_parser::Declaration::ClassDeclaration(cd) => {
-                        let saved = std::mem::take(&mut eng.shadow);
                         if let Some(id) = &cd.id {
-                            eng.shadow.insert(id.name.as_str().to_string());
+                            *eng.shadow.entry(id.name.as_str().to_string()).or_insert(0) += 1;
                         }
                         eng.depth += 1;
                         collect_class_capture_names(&cd.body, eng);
                         eng.depth -= 1;
-                        eng.shadow = saved;
+                        if let Some(id) = &cd.id {
+                            shadow_dec(&mut eng.shadow, id.name.as_str().to_string());
+                        }
                     }
                     _ => {}
                 }
@@ -245,22 +258,23 @@ pub(crate) fn collect_capture_names_stmt(stmt: &Statement, eng: &mut CaptureEngi
                 let body: &[Statement] = fd.body.as_ref().map(|b| &b.statements[..]).unwrap_or(&[]);
                 collect_fn_default_names(&fd.params, eng);
                 let saved = std::mem::take(&mut eng.shadow);
-                eng.shadow.extend(collect_fn_param_names(&fd.params));
-                eng.shadow.extend(collect_own_binding_names(&[], body));
+                collect_fn_param_names_into(&fd.params, &mut eng.shadow);
+                collect_own_binding_names_into(&[], body, &mut eng.shadow);
                 eng.depth += 1;
                 collect_capture_names_shadowed(body, eng);
                 eng.depth -= 1;
                 eng.shadow = saved;
             }
             oxide_parser::ExportDefaultDeclarationKind::ClassDeclaration(cd) => {
-                let saved = std::mem::take(&mut eng.shadow);
                 if let Some(id) = &cd.id {
-                    eng.shadow.insert(id.name.as_str().to_string());
+                    *eng.shadow.entry(id.name.as_str().to_string()).or_insert(0) += 1;
                 }
                 eng.depth += 1;
                 collect_class_capture_names(&cd.body, eng);
                 eng.depth -= 1;
-                eng.shadow = saved;
+                if let Some(id) = &cd.id {
+                    shadow_dec(&mut eng.shadow, id.name.as_str().to_string());
+                }
             }
             other => {
                 if let Some(e) = other.as_expression() {
@@ -307,11 +321,12 @@ pub(crate) fn collect_class_capture_names(class_body: &ClassBody, eng: &mut Capt
         match element {
             ClassElement::MethodDefinition(method) => {
                 collect_fn_default_names(&method.value.params, eng);
-                // 方法形参与方法体局部遮蔽外层绑定：影子集保存/恢复。
+                // 方法形参与方法体局部遮蔽外层绑定：影子计次映射保存/恢复，
+                // 清空重建为本方法自身名。
                 let saved = std::mem::take(&mut eng.shadow);
-                eng.shadow.extend(collect_fn_param_names(&method.value.params));
+                collect_fn_param_names_into(&method.value.params, &mut eng.shadow);
                 let body: &[Statement] = method.value.body.as_ref().map(|b| &b.statements[..]).unwrap_or(&[]);
-                eng.shadow.extend(collect_own_binding_names(&[], body));
+                collect_own_binding_names_into(&[], body, &mut eng.shadow);
                 collect_capture_names_shadowed(body, eng);
                 eng.shadow = saved;
             }
@@ -333,29 +348,20 @@ pub(crate) fn collect_class_capture_names(class_body: &ClassBody, eng: &mut Capt
     }
 }
 
-/// 遍历 catch 参数解构模式：收集模式内表达式引用（默认值等），声明名合并进引擎
-/// 影子集遮蔽 catch 作用域。模式内表达式扫描走外层影子集，不受本模式声明名影响。
-pub(crate) fn collect_capture_names_binding_pattern(pattern: &oxide_parser::BindingPattern, eng: &mut CaptureEngine) {
-    let mut declared = HashSet::new();
-    collect_binding_pattern_refs(pattern, eng, &mut declared);
-    eng.shadow.extend(declared);
-}
-
-/// 递归遍历 catch 参数解构模式：收集模式内表达式引用（默认值等）写入引擎输出，
-/// 声明名累积进 `declared` 供调用方合并进影子集。
-fn collect_binding_pattern_refs(
-    pattern: &oxide_parser::BindingPattern, eng: &mut CaptureEngine, declared: &mut HashSet<String>,
-) {
+/// 遍历绑定 pattern 的运行时求值表达式引用：计算键（`{[k]: a}` 的键）与内嵌
+/// 默认值（`{a = x}` 的 x）都是模式内求值的表达式，嵌套函数引用外层绑定时须
+/// 纳入捕获（与赋值侧/对象字面量/类字段键遍历同口径）。模式声明名不进影子计次
+/// 映射：catch 与形参默认值边界都先以外层影子集扫完表达式、再写声明名，声明名
+/// 不参与模式内表达式扫描。
+pub(crate) fn collect_binding_pattern_exprs(pattern: &oxide_parser::BindingPattern, eng: &mut CaptureEngine) {
     match pattern {
-        oxide_parser::BindingPattern::BindingIdentifier(bi) => {
-            declared.insert(bi.name.as_str().to_string());
-        }
+        oxide_parser::BindingPattern::BindingIdentifier(_) => {}
         oxide_parser::BindingPattern::ArrayPattern(ap) => {
             for p in ap.elements.iter().flatten() {
-                collect_binding_pattern_refs(p, eng, declared);
+                collect_binding_pattern_exprs(p, eng);
             }
             if let Some(rest) = &ap.rest {
-                collect_binding_pattern_refs(&rest.argument, eng, declared);
+                collect_binding_pattern_exprs(&rest.argument, eng);
             }
         }
         oxide_parser::BindingPattern::ObjectPattern(op) => {
@@ -364,15 +370,15 @@ fn collect_binding_pattern_refs(
                 if prop.computed {
                     collect_capture_names_expr(prop.key.to_expression(), eng);
                 }
-                collect_binding_pattern_refs(&prop.value, eng, declared);
+                collect_binding_pattern_exprs(&prop.value, eng);
             }
             if let Some(rest) = &op.rest {
-                collect_binding_pattern_refs(&rest.argument, eng, declared);
+                collect_binding_pattern_exprs(&rest.argument, eng);
             }
         }
         oxide_parser::BindingPattern::AssignmentPattern(ap) => {
             collect_capture_names_expr(&ap.right, eng);
-            collect_binding_pattern_refs(&ap.left, eng, declared);
+            collect_binding_pattern_exprs(&ap.left, eng);
         }
     }
 }
@@ -576,10 +582,10 @@ pub(crate) fn collect_fn_default_names(params: &oxide_parser::FormalParameters, 
         if let Some(init) = &p.initializer {
             collect_capture_names_expr(init, eng);
         }
-        // 形参模式声明名只遮蔽本形参模式，不渗入后续形参默认值扫描。
-        let saved = std::mem::take(&mut eng.shadow);
-        collect_capture_names_binding_pattern(&p.pattern, eng);
-        eng.shadow = saved;
+        // 形参模式内表达式（计算键、嵌套默认值）在外层作用域求值，须纳入捕获
+        // 判定；模式声明名不进影子计次映射（旧代码扩展后立即恢复，净效果为空，
+        // 保持逐位一致）。
+        collect_binding_pattern_exprs(&p.pattern, eng);
     }
     eng.depth -= 1;
 }
@@ -603,10 +609,11 @@ pub(crate) fn collect_capture_names_expr(expr: &Expression, eng: &mut CaptureEng
         Expression::FunctionExpression(fe) => {
             let body: &[Statement] = fe.body.as_ref().map(|b| &b.statements[..]).unwrap_or(&[]);
             collect_fn_default_names(&fe.params, eng);
-            // 函数形参与体内声明遮蔽外层绑定：影子集保存/恢复，深度增一。
+            // 函数形参与体内声明遮蔽外层绑定：影子计次映射保存/恢复，清空重建为
+            // 本函数自身名，深度增一。
             let saved = std::mem::take(&mut eng.shadow);
-            eng.shadow.extend(collect_fn_param_names(&fe.params));
-            eng.shadow.extend(collect_own_binding_names(&[], body));
+            collect_fn_param_names_into(&fe.params, &mut eng.shadow);
+            collect_own_binding_names_into(&[], body, &mut eng.shadow);
             eng.depth += 1;
             collect_capture_names_shadowed(body, eng);
             eng.depth -= 1;
@@ -614,10 +621,11 @@ pub(crate) fn collect_capture_names_expr(expr: &Expression, eng: &mut CaptureEng
         }
         Expression::ArrowFunctionExpression(ae) => {
             collect_fn_default_names(&ae.params, eng);
-            // 函数形参与体内声明遮蔽外层绑定：影子集保存/恢复，深度增一。
+            // 函数形参与体内声明遮蔽外层绑定：影子计次映射保存/恢复，清空重建为
+            // 本函数自身名，深度增一。
             let saved = std::mem::take(&mut eng.shadow);
-            eng.shadow.extend(collect_fn_param_names(&ae.params));
-            eng.shadow.extend(collect_own_binding_names(&[], &ae.body.statements));
+            collect_fn_param_names_into(&ae.params, &mut eng.shadow);
+            collect_own_binding_names_into(&[], &ae.body.statements, &mut eng.shadow);
             eng.depth += 1;
             collect_capture_names_shadowed(&ae.body.statements, eng);
             eng.depth -= 1;
@@ -625,14 +633,15 @@ pub(crate) fn collect_capture_names_expr(expr: &Expression, eng: &mut CaptureEng
         }
         Expression::ClassExpression(class) => {
             // 类表达式：方法/构造器体与字段表达式是嵌套作用域，引用须捕获。深度增一。
-            let saved = std::mem::take(&mut eng.shadow);
             if let Some(id) = &class.id {
-                eng.shadow.insert(id.name.as_str().to_string());
+                *eng.shadow.entry(id.name.as_str().to_string()).or_insert(0) += 1;
             }
             eng.depth += 1;
             collect_class_capture_names(&class.body, eng);
             eng.depth -= 1;
-            eng.shadow = saved;
+            if let Some(id) = &class.id {
+                shadow_dec(&mut eng.shadow, id.name.as_str().to_string());
+            }
         }
         Expression::BinaryExpression(be) => {
             collect_capture_names_expr(&be.left, eng);

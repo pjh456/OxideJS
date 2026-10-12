@@ -2,22 +2,24 @@
 //! 块级声明名 / 直接子词法名 / 顶层函数名集 / 顶层函数声明序 / 块级函数名 /
 //! 块函数抑制集），供各入口（程序/模块/函数体）的 GDI 检查、builtin 排除、
 //! 入口实例化与块函数 web-compat 各调用点共用；另保留捕获扫描器内部依赖的
-//! own 绑定名集收集（`collect_own_binding_names`）。
+//! own 绑定名集收集（`collect_own_binding_names_into`）。
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use oxide_parser::{Statement, VariableDeclarationKind};
 
-use super::{collect_binding_pattern_names, collect_for_left_decl_names};
+use super::{
+    collect_binding_pattern_names, collect_binding_pattern_names_into, collect_for_left_decl_names,
+    collect_for_left_decl_names_into,
+};
 
-/// 收集当前函数作用域声明的绑定名（参数 + 变量/函数声明，含嵌套 block，不含嵌套函数体）。
-pub(crate) fn collect_own_binding_names(param_names: &[&str], stmts: &[Statement]) -> HashSet<String> {
-    let mut names = HashSet::new();
+/// 收集当前函数作用域声明的绑定名（参数 + 变量/函数声明，含嵌套 block，不含嵌套函数体），
+/// 写入影子计次映射（计次加一）。
+pub(crate) fn collect_own_binding_names_into(param_names: &[&str], stmts: &[Statement], out: &mut HashMap<String, u32>) {
     for p in param_names {
-        names.insert(p.to_string());
+        *out.entry(p.to_string()).or_insert(0) += 1;
     }
-    collect_decl_names_stmt(stmts, &mut names);
-    names
+    collect_decl_names_into(stmts, out);
 }
 
 /// 函数作用域名收集结果：单趟遍历同时填八个输出，与各旧独立收集函数逐位一致。
@@ -335,25 +337,25 @@ fn collect_fn_scope_names_impl(stmts: &[Statement], out: &mut FnScopeNames, top:
 }
 
 /// 递归遍历语句树收集当前函数作用域声明的绑定名（变量/函数/类/import/export，
-/// 含嵌套块，不进嵌套函数体）。
-pub(crate) fn collect_decl_names_stmt(stmts: &[Statement], out: &mut HashSet<String>) {
+/// 含嵌套块，不进嵌套函数体），写入影子计次映射（计次加一）。
+pub(crate) fn collect_decl_names_into(stmts: &[Statement], out: &mut HashMap<String, u32>) {
     for stmt in stmts {
         match stmt {
             Statement::VariableDeclaration(vd) => {
                 for d in &vd.declarations {
-                    collect_binding_pattern_names(&d.id, out);
+                    collect_binding_pattern_names_into(&d.id, out);
                 }
             }
             Statement::FunctionDeclaration(fd) => {
                 if let Some(id) = &fd.id {
-                    out.insert(id.name.to_string());
+                    *out.entry(id.name.to_string()).or_insert(0) += 1;
                 }
             }
             // class 名是本作用域 const 绑定：须计入 own_bindings，否则嵌套函数
             // 引用类名时捕获分析缺失 → 落符号表兜底（TDZ 误报或读父寄存器残留）。
             Statement::ClassDeclaration(cd) => {
                 if let Some(id) = &cd.id {
-                    out.insert(id.name.to_string());
+                    *out.entry(id.name.to_string()).or_insert(0) += 1;
                 }
             }
             // import 绑定是模块作用域 const 绑定，须计入 own_bindings 供
@@ -363,13 +365,13 @@ pub(crate) fn collect_decl_names_stmt(stmts: &[Statement], out: &mut HashSet<Str
                     for sp in specifiers {
                         match sp {
                             oxide_parser::ImportDeclarationSpecifier::ImportSpecifier(s) => {
-                                out.insert(s.local.name.to_string());
+                                *out.entry(s.local.name.to_string()).or_insert(0) += 1;
                             }
                             oxide_parser::ImportDeclarationSpecifier::ImportDefaultSpecifier(s) => {
-                                out.insert(s.local.name.to_string());
+                                *out.entry(s.local.name.to_string()).or_insert(0) += 1;
                             }
                             oxide_parser::ImportDeclarationSpecifier::ImportNamespaceSpecifier(s) => {
-                                out.insert(s.local.name.to_string());
+                                *out.entry(s.local.name.to_string()).or_insert(0) += 1;
                             }
                         }
                     }
@@ -380,17 +382,17 @@ pub(crate) fn collect_decl_names_stmt(stmts: &[Statement], out: &mut HashSet<Str
                     match decl {
                         oxide_parser::Declaration::VariableDeclaration(vd) => {
                             for d in &vd.declarations {
-                                collect_binding_pattern_names(&d.id, out);
+                                collect_binding_pattern_names_into(&d.id, out);
                             }
                         }
                         oxide_parser::Declaration::FunctionDeclaration(fd) => {
                             if let Some(id) = &fd.id {
-                                out.insert(id.name.to_string());
+                                *out.entry(id.name.to_string()).or_insert(0) += 1;
                             }
                         }
                         oxide_parser::Declaration::ClassDeclaration(cd) => {
                             if let Some(id) = &cd.id {
-                                out.insert(id.name.to_string());
+                                *out.entry(id.name.to_string()).or_insert(0) += 1;
                             }
                         }
                         _ => {}
@@ -400,70 +402,70 @@ pub(crate) fn collect_decl_names_stmt(stmts: &[Statement], out: &mut HashSet<Str
             Statement::ExportDefaultDeclaration(exp) => match &exp.declaration {
                 oxide_parser::ExportDefaultDeclarationKind::FunctionDeclaration(fd) => {
                     if let Some(id) = &fd.id {
-                        out.insert(id.name.to_string());
+                        *out.entry(id.name.to_string()).or_insert(0) += 1;
                     }
                 }
                 oxide_parser::ExportDefaultDeclarationKind::ClassDeclaration(cd) => {
                     if let Some(id) = &cd.id {
-                        out.insert(id.name.to_string());
+                        *out.entry(id.name.to_string()).or_insert(0) += 1;
                     }
                 }
                 _ => {}
             },
-            Statement::BlockStatement(b) => collect_decl_names_stmt(&b.body, out),
+            Statement::BlockStatement(b) => collect_decl_names_into(&b.body, out),
             Statement::IfStatement(is) => {
-                collect_decl_names_stmt(std::slice::from_ref(&is.consequent), out);
+                collect_decl_names_into(std::slice::from_ref(&is.consequent), out);
                 if let Some(alt) = &is.alternate {
-                    collect_decl_names_stmt(std::slice::from_ref(alt), out);
+                    collect_decl_names_into(std::slice::from_ref(alt), out);
                 }
             }
-            Statement::WhileStatement(w) => collect_decl_names_stmt(std::slice::from_ref(&w.body), out),
-            Statement::DoWhileStatement(d) => collect_decl_names_stmt(std::slice::from_ref(&d.body), out),
+            Statement::WhileStatement(w) => collect_decl_names_into(std::slice::from_ref(&w.body), out),
+            Statement::DoWhileStatement(d) => collect_decl_names_into(std::slice::from_ref(&d.body), out),
             Statement::ForStatement(f) => {
                 if let Some(oxide_parser::ForStatementInit::VariableDeclaration(vd)) = &f.init {
                     for d in &vd.declarations {
                         if let oxide_parser::BindingPattern::BindingIdentifier(bi) = &d.id {
-                            out.insert(bi.name.to_string());
+                            *out.entry(bi.name.to_string()).or_insert(0) += 1;
                         }
                     }
                 }
-                collect_decl_names_stmt(std::slice::from_ref(&f.body), out);
+                collect_decl_names_into(std::slice::from_ref(&f.body), out);
             }
             // for-in / for-of 头部的 var 声明是本函数局部绑定（遮蔽外层同名），
             // 须计入 own_bindings，否则闭包捕获分析会误判为捕获外层变量。
             Statement::ForInStatement(fi) => {
                 if let oxide_parser::ForStatementLeft::VariableDeclaration(_) = &fi.left {
-                    collect_for_left_decl_names(&fi.left, out);
+                    collect_for_left_decl_names_into(&fi.left, out);
                 }
-                collect_decl_names_stmt(std::slice::from_ref(&fi.body), out);
+                collect_decl_names_into(std::slice::from_ref(&fi.body), out);
             }
             Statement::ForOfStatement(fo) => {
                 if let oxide_parser::ForStatementLeft::VariableDeclaration(_) = &fo.left {
-                    collect_for_left_decl_names(&fo.left, out);
+                    collect_for_left_decl_names_into(&fo.left, out);
                 }
-                collect_decl_names_stmt(std::slice::from_ref(&fo.body), out);
+                collect_decl_names_into(std::slice::from_ref(&fo.body), out);
             }
             Statement::SwitchStatement(sw) => {
                 for case in &sw.cases {
-                    collect_decl_names_stmt(&case.consequent, out);
+                    collect_decl_names_into(&case.consequent, out);
                 }
             }
             Statement::TryStatement(ts) => {
-                collect_decl_names_stmt(&ts.block.body, out);
+                collect_decl_names_into(&ts.block.body, out);
                 if let Some(h) = &ts.handler {
                     // catch 参数是本函数作用域的词法绑定：计入 own_bindings，
                     // 嵌套函数引用它时捕获分析才会建 cell 供 upvalue 读取。
                     if let Some(param) = &h.param {
-                        collect_binding_pattern_names(&param.pattern, out);
+                        collect_binding_pattern_names_into(&param.pattern, out);
                     }
-                    collect_decl_names_stmt(&h.body.body, out);
+                    collect_decl_names_into(&h.body.body, out);
                 }
                 if let Some(f) = &ts.finalizer {
-                    collect_decl_names_stmt(&f.body, out);
+                    collect_decl_names_into(&f.body, out);
                 }
             }
-            Statement::LabeledStatement(ls) => collect_decl_names_stmt(std::slice::from_ref(&ls.body), out),
-            Statement::WithStatement(ws) => collect_decl_names_stmt(std::slice::from_ref(&ws.body), out),
+            Statement::LabeledStatement(ls) => collect_decl_names_into(std::slice::from_ref(&ls.body), out),
+            Statement::WithStatement(ws) => collect_decl_names_into(std::slice::from_ref(&ws.body), out),
             _ => {}
         }
     }
