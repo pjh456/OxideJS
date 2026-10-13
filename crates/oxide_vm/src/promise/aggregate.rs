@@ -163,6 +163,36 @@ impl Vm {
         JsValue::from_js_object(ptr)
     }
 
+    /// `__moduleWaitAll(p1, p2, ...)`：模块求值聚合 gate。等待全部实参 promise
+    /// 结算后以结算值数组完成新 promise，任一实参拒绝则拒绝。
+    ///
+    /// # 步骤
+    /// 1. 按实参序收集各 promise 值（`args[0]` 为实参个数，`args[1..]` 为寄存器下标）。
+    /// 2. 以实参 promise 建数组，经 `Promise.all` 共享聚合路径（`perform_promise_combine`）
+    ///    结算：全部完成时以结算值数组完成，任一拒绝时拒绝。
+    ///
+    /// # 边界与前提
+    /// - 实参须为 promise（模块依赖的 capability promise）；非 promise 由
+    ///   `Promise.all` 的 `C.resolve` 包装为已完成 promise，语义不变。
+    ///
+    /// # 副作用
+    /// - 新建聚合 promise 与记录对象；结算反应入微任务队列。
+    pub fn module_wait_all(&mut self, args: &[u8]) -> NativeResult {
+        let n = args.len().saturating_sub(1);
+        let mut promises = Vec::with_capacity(n);
+        for i in 0..n {
+            promises.push(self.reg(args[i + 1]));
+        }
+        let array = self.make_plain_array(promises);
+        let ctor = JsValue::from_js_object(
+            self.realm.promise_constructor.borrow().as_ptr() as *mut JsObject,
+        );
+        match perform_promise_combine(self, ctor, array, AggregateKind::All) {
+            Ok(promise) => NativeResult::Ok(promise),
+            Err(err) => NativeResult::Err(err),
+        }
+    }
+
     /// 建 Promise.try 的包装闭包 W：native 函数对象，executor 与转发实参数组挂
     /// 自身属性（GC 边走属性区，免 native_data 接线）；W 被构造器以
     /// (resolve, reject) 实参调用。

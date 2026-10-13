@@ -23,8 +23,11 @@ use oxide_ir::inst::Inst;
 use oxide_ir::operand::Operand;
 use oxide_ir::{IRFunction, ParamLayout};
 use oxide_parser::{
-    BindingPattern, Declaration, ExportDefaultDeclarationKind, Expression, ImportAttributeKey,
-    ImportDeclarationSpecifier, ImportPhase, ModuleExportName, Statement, VariableDeclarationKind, WithClause,
+    ArrayExpressionElement, AssignmentTarget, AssignmentTargetMaybeDefault, AssignmentTargetProperty,
+    BindingPattern, ChainElement, Declaration, ExportDefaultDeclarationKind, Expression,
+    ForStatementInit, ForStatementLeft, ImportAttributeKey, ImportDeclarationSpecifier, ImportPhase,
+    ModuleExportName, ObjectPropertyKind, SimpleAssignmentTarget, Statement, VariableDeclarationKind,
+    WithClause,
 };
 use oxide_types::MODULE_NAMESPACE_BINDING;
 
@@ -334,6 +337,301 @@ fn is_hoisted_function_decl(stmt: &Statement) -> bool {
     }
 }
 
+/// 判断模块体是否含顶层 `await`（top-level await，模块自身 `[[HasTLA]]` 标志）。
+///
+/// # 边界与前提
+/// - 递归进入语句与表达式容器；不进入函数体（函数声明、函数表达式、箭头函数、
+///   类方法）——函数体内的 `await` 属函数自身异步语义，不使模块变异步。
+/// - `for await…of` 在模块代码使模块异步（规范强制），其 `await` 关键字与
+///   左值、右值、体一并判定。
+///
+/// # 注意事项
+/// - 取向宁假阳勿假阴：漏判会使模块按同步编译、运行期 `AWAIT` 守卫硬拒，红色不静默；
+///   误判仅使模块多走异步编译路径，语义不变。
+fn module_has_top_level_await(body: &[Statement]) -> bool {
+    body.iter().any(|stmt| stmt_has_top_level_await(stmt))
+}
+
+/// 语句级顶层 `await` 游走：进入子语句与子表达式，函数/类声明体不进入。
+fn stmt_has_top_level_await(stmt: &Statement) -> bool {
+    match stmt {
+        Statement::BlockStatement(block) => {
+            block.body.iter().any(|s| stmt_has_top_level_await(s))
+        }
+        Statement::IfStatement(if_stmt) => {
+            stmt_has_top_level_await(&if_stmt.consequent)
+                || if_stmt
+                    .alternate
+                    .as_ref()
+                    .is_some_and(|alt| stmt_has_top_level_await(alt))
+        }
+        Statement::ForStatement(for_stmt) => {
+            for_stmt.init.as_ref().is_some_and(|init| match init {
+                ForStatementInit::VariableDeclaration(vd) => vd
+                    .declarations
+                    .iter()
+                    .any(|d| d.init.as_ref().is_some_and(|i| expr_has_top_level_await(i))),
+                _ => init.as_expression().is_some_and(expr_has_top_level_await),
+            })
+            || for_stmt.test.as_ref().is_some_and(|t| expr_has_top_level_await(t))
+            || for_stmt.update.as_ref().is_some_and(|u| expr_has_top_level_await(u))
+            || stmt_has_top_level_await(&for_stmt.body)
+        }
+        Statement::ForInStatement(for_in) => {
+            for_left_has_top_level_await(&for_in.left)
+                || expr_has_top_level_await(&for_in.right)
+                || stmt_has_top_level_await(&for_in.body)
+        }
+        Statement::ForOfStatement(for_of) => {
+            // `for await…of` 在模块代码使模块按异步求值（规范强制模块异步；
+            // `await` 关键字本身非 AwaitExpression，但语句整体触发 [[HasTLA]]）。
+            // 左值、右值与体照常游走。
+            for_of.r#await
+                || for_left_has_top_level_await(&for_of.left)
+                || expr_has_top_level_await(&for_of.right)
+                || stmt_has_top_level_await(&for_of.body)
+        }
+        Statement::WhileStatement(while_stmt) => {
+            expr_has_top_level_await(&while_stmt.test) || stmt_has_top_level_await(&while_stmt.body)
+        }
+        Statement::DoWhileStatement(do_while) => {
+            expr_has_top_level_await(&do_while.test) || stmt_has_top_level_await(&do_while.body)
+        }
+        Statement::SwitchStatement(switch_stmt) => {
+            expr_has_top_level_await(&switch_stmt.discriminant)
+                || switch_stmt.cases.iter().any(|c| {
+                    c.test.as_ref().is_some_and(|t| expr_has_top_level_await(t))
+                        || c.consequent.iter().any(|s| stmt_has_top_level_await(s))
+                })
+        }
+        Statement::TryStatement(try_stmt) => {
+            try_stmt.block.body.iter().any(|s| stmt_has_top_level_await(s))
+                || try_stmt
+                    .handler
+                    .as_ref()
+                    .is_some_and(|h| h.body.body.iter().any(|s| stmt_has_top_level_await(s)))
+                || try_stmt
+                    .finalizer
+                    .as_ref()
+                    .is_some_and(|f| f.body.iter().any(|s| stmt_has_top_level_await(s)))
+        }
+        Statement::LabeledStatement(labeled) => stmt_has_top_level_await(&labeled.body),
+        Statement::WithStatement(with_stmt) => {
+            expr_has_top_level_await(&with_stmt.object) || stmt_has_top_level_await(&with_stmt.body)
+        }
+        Statement::ExpressionStatement(expr_stmt) => expr_has_top_level_await(&expr_stmt.expression),
+        Statement::ReturnStatement(ret) => ret
+            .argument
+            .as_ref()
+            .is_some_and(|a| expr_has_top_level_await(a)),
+        Statement::ThrowStatement(throw) => expr_has_top_level_await(&throw.argument),
+        Statement::VariableDeclaration(vd) => vd
+            .declarations
+            .iter()
+            .any(|d| d.init.as_ref().is_some_and(|i| expr_has_top_level_await(i))),
+        // 函数/类声明：体不进入（函数体是独立异步语义边界）。
+        Statement::FunctionDeclaration(_) | Statement::ClassDeclaration(_) => false,
+        // import/export 与无子表达式的语句（break/continue/debugger/empty）不含顶层 await。
+        _ => false,
+    }
+}
+
+/// `for-in`/`for-of` 左值顶层 `await` 游走：变量声明形态游走初始化器，
+/// 其余形态（绑定目标）经 `target_has_top_level_await` 游走。
+fn for_left_has_top_level_await(left: &ForStatementLeft) -> bool {
+    match left {
+        ForStatementLeft::VariableDeclaration(vd) => vd
+            .declarations
+            .iter()
+            .any(|d| d.init.as_ref().is_some_and(|i| expr_has_top_level_await(i))),
+        _ => left.as_assignment_target().is_some_and(target_has_top_level_await),
+    }
+}
+
+/// 赋值目标顶层 `await` 游走：模式目标递归进元素/属性，简单目标（标识符、
+/// 成员、TS 包装）经 `simple_target_has_top_level_await` 游走。
+fn target_has_top_level_await(target: &AssignmentTarget) -> bool {
+    match target {
+        AssignmentTarget::ArrayAssignmentTarget(arr) => arr
+            .elements
+            .iter()
+            .flatten()
+            .any(|e| target_maybe_default_has_top_level_await(e))
+            || arr
+                .rest
+                .as_ref()
+                .is_some_and(|r| target_has_top_level_await(&r.target)),
+        AssignmentTarget::ObjectAssignmentTarget(obj) => {
+            obj.properties.iter().any(|p| match p {
+                AssignmentTargetProperty::AssignmentTargetPropertyIdentifier(id) => id
+                    .init
+                    .as_ref()
+                    .is_some_and(|i| expr_has_top_level_await(i)),
+                AssignmentTargetProperty::AssignmentTargetPropertyProperty(prop) => {
+                    prop.name
+                        .as_expression()
+                        .is_some_and(expr_has_top_level_await)
+                        || target_maybe_default_has_top_level_await(&prop.binding)
+                }
+            })
+            || obj
+                .rest
+                .as_ref()
+                .is_some_and(|r| target_has_top_level_await(&r.target))
+        }
+        _ => target
+            .as_simple_assignment_target()
+            .is_some_and(simple_target_has_top_level_await),
+    }
+}
+
+/// 简单赋值目标顶层 `await` 游走：计算成员键是可求值子表达式，TS 包装进入内层，
+/// 纯标识符无子表达式。
+fn simple_target_has_top_level_await(t: &SimpleAssignmentTarget) -> bool {
+    match t {
+        SimpleAssignmentTarget::ComputedMemberExpression(m) => {
+            expr_has_top_level_await(&m.object) || expr_has_top_level_await(&m.expression)
+        }
+        SimpleAssignmentTarget::StaticMemberExpression(m) => expr_has_top_level_await(&m.object),
+        SimpleAssignmentTarget::PrivateFieldExpression(m) => expr_has_top_level_await(&m.object),
+        SimpleAssignmentTarget::TSAsExpression(e) => expr_has_top_level_await(&e.expression),
+        SimpleAssignmentTarget::TSSatisfiesExpression(e) => expr_has_top_level_await(&e.expression),
+        SimpleAssignmentTarget::TSNonNullExpression(e) => expr_has_top_level_await(&e.expression),
+        SimpleAssignmentTarget::TSTypeAssertion(e) => expr_has_top_level_await(&e.expression),
+        SimpleAssignmentTarget::AssignmentTargetIdentifier(_) => false,
+    }
+}
+
+/// 带默认值的赋值目标顶层 `await` 游走：默认值是可求值子表达式，
+/// 绑定目标本身递归进 `target_has_top_level_await`。
+fn target_maybe_default_has_top_level_await(t: &AssignmentTargetMaybeDefault) -> bool {
+    match t {
+        AssignmentTargetMaybeDefault::AssignmentTargetWithDefault(d) => {
+            target_has_top_level_await(&d.binding) || expr_has_top_level_await(&d.init)
+        }
+        _ => t.as_assignment_target().is_some_and(target_has_top_level_await),
+    }
+}
+
+/// 表达式级顶层 `await` 游走：命中 `AwaitExpression` 即真；进入子表达式容器，
+/// 函数表达式/箭头/类表达式体不进入。
+fn expr_has_top_level_await(expr: &Expression) -> bool {
+    match expr {
+        Expression::AwaitExpression(_) => true,
+        Expression::BinaryExpression(bin) => {
+            expr_has_top_level_await(&bin.left) || expr_has_top_level_await(&bin.right)
+        }
+        Expression::LogicalExpression(logic) => {
+            expr_has_top_level_await(&logic.left) || expr_has_top_level_await(&logic.right)
+        }
+        Expression::ConditionalExpression(cond) => {
+            expr_has_top_level_await(&cond.test)
+                || expr_has_top_level_await(&cond.consequent)
+                || expr_has_top_level_await(&cond.alternate)
+        }
+        Expression::CallExpression(call) => {
+            expr_has_top_level_await(&call.callee)
+                || call
+                    .arguments
+                    .iter()
+                    .any(|a| a.as_expression().is_some_and(expr_has_top_level_await))
+        }
+        Expression::NewExpression(new_expr) => {
+            expr_has_top_level_await(&new_expr.callee)
+                || new_expr
+                    .arguments
+                    .iter()
+                    .any(|a| a.as_expression().is_some_and(expr_has_top_level_await))
+        }
+        Expression::ComputedMemberExpression(m) => {
+            expr_has_top_level_await(&m.object) || expr_has_top_level_await(&m.expression)
+        }
+        Expression::StaticMemberExpression(m) => expr_has_top_level_await(&m.object),
+        Expression::PrivateFieldExpression(m) => expr_has_top_level_await(&m.object),
+        Expression::ChainExpression(chain) => chain_element_has_top_level_await(&chain.expression),
+        Expression::ArrayExpression(arr) => arr
+            .elements
+            .iter()
+            .any(|e| match e {
+                ArrayExpressionElement::SpreadElement(spread) => {
+                    expr_has_top_level_await(&spread.argument)
+                }
+                _ => e.as_expression().is_some_and(expr_has_top_level_await),
+            }),
+        Expression::ObjectExpression(obj) => obj.properties.iter().any(|p| match p {
+            ObjectPropertyKind::ObjectProperty(prop) => {
+                (prop.computed
+                    && prop
+                        .key
+                        .as_expression()
+                        .is_some_and(expr_has_top_level_await))
+                    || expr_has_top_level_await(&prop.value)
+            }
+            ObjectPropertyKind::SpreadProperty(spread) => expr_has_top_level_await(&spread.argument),
+        }),
+        Expression::SequenceExpression(seq) => {
+            seq.expressions.iter().any(|e| expr_has_top_level_await(e))
+        }
+        Expression::TemplateLiteral(tmpl) => {
+            tmpl.expressions.iter().any(|e| expr_has_top_level_await(e))
+        }
+        Expression::TaggedTemplateExpression(tagged) => {
+            expr_has_top_level_await(&tagged.tag)
+                || tagged.quasi.expressions.iter().any(|e| expr_has_top_level_await(e))
+        }
+        // 赋值左值是绑定目标（计算成员键可含可求值子表达式），右值与左值目标都游走。
+        Expression::AssignmentExpression(assign) => {
+            target_has_top_level_await(&assign.left) || expr_has_top_level_await(&assign.right)
+        }
+        Expression::UpdateExpression(update) => {
+            simple_target_has_top_level_await(&update.argument)
+        }
+        Expression::UnaryExpression(unary) => expr_has_top_level_await(&unary.argument),
+        Expression::ParenthesizedExpression(paren) => expr_has_top_level_await(&paren.expression),
+        Expression::YieldExpression(yield_expr) => yield_expr
+            .argument
+            .as_ref()
+            .is_some_and(|a| expr_has_top_level_await(a)),
+        Expression::PrivateInExpression(private_in) => expr_has_top_level_await(&private_in.right),
+        Expression::ImportExpression(import_expr) => {
+            expr_has_top_level_await(&import_expr.source)
+                || import_expr
+                    .options
+                    .as_ref()
+                    .is_some_and(|o| expr_has_top_level_await(o))
+        }
+        // 函数体：独立异步语义边界，不进入。
+        Expression::FunctionExpression(_)
+        | Expression::ArrowFunctionExpression(_)
+        | Expression::ClassExpression(_) => false,
+        // 字面量/标识符/this/super/meta 等无子表达式。
+        _ => false,
+    }
+}
+
+/// 可选链元素顶层 `await` 游走：链元素是成员/调用/TS 非空形态，逐一进入子表达式。
+fn chain_element_has_top_level_await(element: &ChainElement) -> bool {
+    match element {
+        ChainElement::CallExpression(call) => {
+            expr_has_top_level_await(&call.callee)
+                || call
+                    .arguments
+                    .iter()
+                    .any(|a| a.as_expression().is_some_and(expr_has_top_level_await))
+        }
+        ChainElement::TSNonNullExpression(non_null) => expr_has_top_level_await(&non_null.expression),
+        ChainElement::ComputedMemberExpression(computed) => {
+            expr_has_top_level_await(&computed.object) || expr_has_top_level_await(&computed.expression)
+        }
+        ChainElement::StaticMemberExpression(static_member) => {
+            expr_has_top_level_await(&static_member.object)
+        }
+        ChainElement::PrivateFieldExpression(private_field) => {
+            expr_has_top_level_await(&private_field.object)
+        }
+    }
+}
+
 /// 合成默认导出的源绑定名（匿名 default 函数/类与 default 表达式共用）。
 /// 含 `*`，与任何用户标识符都不可能重名。
 pub(crate) const SYNTHETIC_DEFAULT_BINDING: &str = "*default*";
@@ -526,6 +824,12 @@ impl Emitter {
         let own_export_names = module_own_export_names(body);
         let var_scoped_export_names = module_var_scoped_export_names(body);
 
+        // 本模块自身顶层 `await` 标志（`[[HasTLA]]`）：决定本模块是否按异步求值编译。
+        let own_tla = module_has_top_level_await(body);
+        // 异步 eager 依赖的 (spec, `__moduleEval` 返回的 promise 寄存器)：prelude
+        // 聚合 gate 消费。defer-only 依赖不求值、不产生 promise，不入此集。
+        let mut async_dep_promises: Vec<(String, u32)> = Vec::new();
+
         // —— 编译并求值依赖：eager 组先行（按 eager 语句序），defer-only 组随后 ——
         for spec in eager_order {
             let phase = &phase_map[&spec];
@@ -540,19 +844,21 @@ impl Emitter {
                     return Err(format!("circular module import not supported: {}", resolved.path));
                 }
                 path_stack.push(resolved.path.clone());
-                let (dep_ir, dep_reassignable, dep_own_names, dep_var_scoped) = match resolved.kind {
+                let (dep_ir, dep_reassignable, dep_own_names, dep_var_scoped, dep_eval_async) = match resolved.kind {
                     ModuleKind::Js => self.compile_js_dep(&resolved, loader, path_stack)?,
                     ModuleKind::Json => (
                         self.compile_data_dep("json", &resolved.source)?,
                         false,
                         HashSet::from([DEFAULT_EXPORT_NAME.to_string()]),
                         HashSet::from([DEFAULT_EXPORT_NAME.to_string()]),
+                        false,
                     ),
                     ModuleKind::Text => (
                         self.compile_data_dep("text", &resolved.source)?,
                         false,
                         HashSet::from([DEFAULT_EXPORT_NAME.to_string()]),
                         HashSet::from([DEFAULT_EXPORT_NAME.to_string()]),
+                        false,
                     ),
                     ModuleKind::Bytes => return Err("bytes module not supported".into()),
                 };
@@ -562,6 +868,11 @@ impl Emitter {
                 let fn_reg = ctx.alloc_reg();
                 ctx.inst(Inst::create_closure(Operand::Reg(fn_reg), ctx.nested.len() as u16));
                 let real_ns = self.emit_module_call(ctx, "__moduleEval", &[fn_reg])?;
+                // 异步依赖：`__moduleEval` 返回 capability promise（非命名空间），
+                // 登记进聚合 gate；命名空间在 gate 后从 promise 结算值提取。
+                if dep_eval_async {
+                    async_dep_promises.push((spec.clone(), real_ns));
+                }
                 (real_ns, Some(fn_reg), dep_own_names, dep_var_scoped)
             };
             ctx.module_dep_ns_regs.insert(spec.clone(), dep_ns_reg);
@@ -586,6 +897,11 @@ impl Emitter {
             }
         }
 
+        // 本模块异步求值标志：自身含顶层 `await`，或任一 eager 依赖按异步求值
+        // （传递异步经 `dep_eval_async` 递归回传），模块体按合成异步函数编译
+        // （`assemble_ir` 据此回写 IR 的 `is_async`）。非 TLA 模块恒 false，零 diff。
+        ctx.is_async = own_tla || !async_dep_promises.is_empty();
+
         // defer-only 组（eager == false 的 spec，按 defer_order）：不求值、不发
         // __moduleEval。祖先判定（自导入或父链回边）命中时发哨兵形态
         // __moduleDeferObject(undefined, undefined)——不递归、不压 path_stack、不编译；
@@ -608,19 +924,21 @@ impl Emitter {
                 ctx.module_dep_paths.insert(spec.clone(), resolved.path.clone());
             } else {
                 path_stack.push(resolved.path.clone());
-                let (dep_ir, _dep_reassignable, dep_own_names, dep_var_scoped) = match resolved.kind {
+                let (dep_ir, _dep_reassignable, dep_own_names, dep_var_scoped, _dep_eval_async) = match resolved.kind {
                     ModuleKind::Js => self.compile_js_dep(&resolved, loader, path_stack)?,
                     ModuleKind::Json => (
                         self.compile_data_dep("json", &resolved.source)?,
                         false,
                         HashSet::from([DEFAULT_EXPORT_NAME.to_string()]),
                         HashSet::from([DEFAULT_EXPORT_NAME.to_string()]),
+                        false,
                     ),
                     ModuleKind::Text => (
                         self.compile_data_dep("text", &resolved.source)?,
                         false,
                         HashSet::from([DEFAULT_EXPORT_NAME.to_string()]),
                         HashSet::from([DEFAULT_EXPORT_NAME.to_string()]),
+                        false,
                     ),
                     ModuleKind::Bytes => return Err("bytes module not supported".into()),
                 };
@@ -634,6 +952,30 @@ impl Emitter {
                 ctx.module_defer_ns_regs.insert(spec.clone(), defer_ns);
                 ctx.module_dep_paths.insert(spec.clone(), resolved.path.clone());
                 self.emit_defer_pre_register(ctx, defer_ns, &dep_own_names, &dep_var_scoped)?;
+            }
+        }
+
+        // —— 聚合 gate：异步依赖的 `__moduleEval` 返回 capability promise（非命名空间），
+        // 其命名空间在 gate 后从结算值提取。单 AWAIT 挂起模块体直至全部异步依赖结算
+        // （由 drain 微任务释放），非 TLA 模块此集为空、零 IR 变化。——
+        if !async_dep_promises.is_empty() {
+            let promise_regs: Vec<u32> = async_dep_promises.iter().map(|(_, r)| *r).collect();
+            let gate_reg = self.emit_module_call(ctx, "__moduleWaitAll", &promise_regs)?;
+            ctx.inst(Inst::await_expr(Operand::Reg(gate_reg)));
+            // promise settle 后恢复值（结算值数组）经 reg 0 交付（与 YIELD/CALL 同协议）。
+            let settled_reg = ctx.alloc_reg();
+            ctx.inst(Inst::new(OpCode::LOAD_VAR, Operand::Reg(settled_reg), Operand::None, Operand::None));
+            // 逐依赖从结算数组提取命名空间，覆盖链接寄存器（原为 promise）。
+            for (i, (spec, _)) in async_dep_promises.iter().enumerate() {
+                let idx_reg = self.load_string_const(&i.to_string(), ctx);
+                let ns_reg = ctx.alloc_reg();
+                ctx.inst(Inst::new(
+                    OpCode::GET_PROP_DYNAMIC,
+                    Operand::Reg(settled_reg),
+                    Operand::Reg(idx_reg),
+                    Operand::Reg(ns_reg),
+                ));
+                ctx.module_dep_ns_regs.insert(spec.clone(), ns_reg);
             }
         }
 
@@ -951,18 +1293,21 @@ impl Emitter {
     }
 
     /// 编译 JS 依赖模块（递归），回传 IR、「是否含可重赋导出」标志、
-    /// 自身静态导出名集与 var 作用域导出名集。
+    /// 自身静态导出名集、var 作用域导出名集与「是否异步求值」标志。
     ///
     /// # 边界与前提
     /// - 可重赋标志取自依赖 ctx 的 `module_live_dep`；入口模块不参与，依赖模块恒按
     ///   `!top_level` 判定，故 const-only 依赖回传 false。
     /// - 导出名集在函数内对解析产物就地计算，供导入方 defer 预注册消费。
+    /// - 异步求值标志取自依赖 ctx 的 `is_async`（依赖自身含顶层 `await` 或含异步
+    ///   传递依赖时为真），供导入方判定是否需 prelude 聚合 gate。
     ///
     /// # 注意事项
-    /// - 导入方据标志决定是否登记活读映射；标志不改变本模块 IR。
+    /// - 导入方据标志决定是否登记活读映射与聚合 gate；标志不改变本模块 IR。
+    #[allow(clippy::type_complexity)]
     fn compile_js_dep(
         &self, resolved: &ResolvedModule, loader: &mut dyn ModuleSourceLoader, path_stack: &mut Vec<String>,
-    ) -> Result<(IRFunction, bool, HashSet<String>, HashSet<String>), String> {
+    ) -> Result<(IRFunction, bool, HashSet<String>, HashSet<String>, bool), String> {
         // 线程本地分配器：依赖模块递归解析共享同一分配器，
         // 重入深度守卫防止嵌套 reset 销毁外层 AST。
         oxide_parser::with_parse_allocator(|alloc| {
@@ -978,6 +1323,7 @@ impl Emitter {
             ctx.is_strict = true;
             self.emit_module_into_ctx(&program, &resolved.path, loader, path_stack, &mut ctx, false)?;
             let reassignable = ctx.module_live_dep;
+            let eval_async = ctx.is_async;
             let own_export_names = module_own_export_names(&program.body);
             let var_scoped = module_var_scoped_export_names(&program.body);
             Ok((
@@ -985,6 +1331,7 @@ impl Emitter {
                 reassignable,
                 own_export_names,
                 var_scoped,
+                eval_async,
             ))
         })
     }

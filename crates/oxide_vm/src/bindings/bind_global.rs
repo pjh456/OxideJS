@@ -1,6 +1,13 @@
+use oxide_runtime_api::NativeResult;
 use oxide_types::object::JsObject;
 
 use crate::bindings::{apply_binding_table, BindEnv};
+use crate::vm::Vm;
+
+/// `__moduleWaitAll` 原生入口：委托 `Vm::module_wait_all`（聚合 gate，见 promise 模块）。
+fn module_wait_all(vm: &mut Vm, args: &[u8]) -> NativeResult {
+    vm.module_wait_all(args)
+}
 
 /// 把普通全局函数（`isNaN`、`parseInt`、`decodeURIComponent` 等）绑定到 global。
 pub fn bind_global(env: BindEnv<'_>, global: &mut JsObject) {
@@ -56,6 +63,7 @@ pub fn bind_global(env: BindEnv<'_>, global: &mut JsObject) {
                 2,
             ),
             ("__moduleData", oxide_builtins::module::module_data::<crate::vm::Vm> as *const (), 2),
+            ("__moduleWaitAll", module_wait_all as *const (), 0),
             ("eval", oxide_builtins::eval::eval::<crate::vm::Vm> as *const (), 1),
             (
                 "structuredClone",
