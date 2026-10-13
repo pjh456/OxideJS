@@ -225,11 +225,7 @@ fn run_and_judge(
     for module in modules {
         // 按编译产物标志路由：TLA 模块走异步驱动（单次 drain 到静止、三态终结），
         // 非 TLA 模块走原同步路径零 diff。判据是编译标志而非测试元数据旗标。
-        let result = if module.is_async {
-            vm.run_tla(module)
-        } else {
-            vm.run(module)
-        };
+        let result = if module.is_async { vm.run_tla(module) } else { vm.run(module) };
         match result {
             Ok(v) => run_result = Ok(v),
             Err(e) => {
