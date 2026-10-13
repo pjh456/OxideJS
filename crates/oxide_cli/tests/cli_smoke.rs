@@ -93,7 +93,7 @@ fn bench_help() {
 #[test]
 fn eval_trace_flag_pc_lines() {
     let output = Command::new(env!("CARGO_BIN_EXE_oxide"))
-        .args(["eval", "--trace", "1 + 2"])
+        .args(["eval", "--trace", "var a = 1; var b = 2; a + b"])
         .output()
         .expect("failed to run oxide eval --trace");
 

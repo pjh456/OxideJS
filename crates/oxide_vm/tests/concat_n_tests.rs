@@ -42,10 +42,11 @@ fn eval_str(source: &str) -> String {
 #[test]
 fn concat_n_three_form_mixed_anchors() {
     // 数值前缀折叠保证 1+2+"3" = "33"（非 "123"）；字符串开头整链拼接；中缀字符串同理。
-    assert_eq!(eval_str("1 + 2 + \"3\""), "33");
-    assert_eq!(eval_str("\"1\" + 2 + 3"), "123");
-    assert_eq!(eval_str("1 + \"2\" + 3"), "123");
-    assert_eq!(eval_str("\"a\" + 1 + 2"), "a12");
+    // 首操作数用变量避免常量折叠，保证链走 CONCAT_N 运行期路径。
+    assert_eq!(eval_str("var a = 1; a + 2 + \"3\""), "33");
+    assert_eq!(eval_str("var s = \"1\"; s + 2 + 3"), "123");
+    assert_eq!(eval_str("var a = 1; a + \"2\" + 3"), "123");
+    assert_eq!(eval_str("var s = \"a\"; s + 1 + 2"), "a12");
 }
 
 #[test]
@@ -60,10 +61,11 @@ fn concat_n_pure_numeric_folds_like_left_assoc() {
 fn concat_n_bigint_mix_semantics() {
     // 全 BigInt 链折叠；BigInt 混合在第一个混合点抛 TypeError（与 (1+2n) 同位置）；
     // BigInt + 字符串开头走字符串模式。
+    // 混合链首操作数用变量避免常量折叠，保证走 CONCAT_N 运行期语义。
     assert_eq!(eval_str("1n + 2n + 3n"), "6");
-    let err = eval(&mut Vm::new(), "1 + 2n + \"a\"").unwrap_err();
+    let err = eval(&mut Vm::new(), "var a = 1; a + 2n + \"a\"").unwrap_err();
     assert!(err.contains("TypeError"), "expected TypeError, got {err}");
-    assert_eq!(eval_str("1n + \"a\" + 2"), "1a2");
+    assert_eq!(eval_str("var b = 1n; b + \"a\" + 2"), "1a2");
 }
 
 #[test]
