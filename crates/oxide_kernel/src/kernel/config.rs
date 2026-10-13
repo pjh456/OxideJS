@@ -38,7 +38,7 @@ impl KernelConfig {
             max_steps: None,
             max_alloc_bytes: None,
             max_call_depth: 1024,
-            session_gc_threshold: 33_554_432,
+            session_gc_threshold: 4_194_304,
             max_cached_modules: 512,
             log_levels: [Level::Off; SUBSYSTEM_COUNT],
         }
@@ -53,7 +53,7 @@ impl KernelConfig {
             max_steps: None,
             max_alloc_bytes: None,
             max_call_depth: 1024,
-            session_gc_threshold: 33_554_432,
+            session_gc_threshold: 4_194_304,
             max_cached_modules: 512,
             log_levels: [Level::Off; SUBSYSTEM_COUNT],
         }
@@ -68,7 +68,7 @@ impl KernelConfig {
             max_steps: None,
             max_alloc_bytes: None,
             max_call_depth: 1024,
-            session_gc_threshold: 33_554_432,
+            session_gc_threshold: 4_194_304,
             max_cached_modules: 512,
             log_levels: [Level::Off; SUBSYSTEM_COUNT],
         }

@@ -345,22 +345,5 @@ pub(crate) fn build_runner_engine() -> Engine {
     kernel_config.max_call_depth = 256;
     kernel_config.min_pool_size = 0;
     kernel_config.max_pool_size = Some(1);
-    // 单测试分配上限：死循环类测试触步数上限时持续分配，arena 高水位可达 GB
-    // 级；多 worker 并发下进程 RSS 包络被各 worker 当前高水位顶起，全量运行
-    // 必然 OOM。真合法峰值实测 259.6MiB（含 RegExp property-escapes/
-    // character-class 生成大表），512MiB 上限留 ~252MiB 余量；
-    // 主要作用是把失控测试的驻留面封顶到上限本身。
-    kernel_config.max_alloc_bytes = Some(512 * 1024 * 1024);
     Engine::new(kernel_config)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// 分配上限常量与错误串单测的字面值机器耦合：改 cap 本钉必红。
-    #[test]
-    fn runner_alloc_cap_matches_error_string_tests() {
-        assert_eq!(build_runner_engine().kernel().config.max_alloc_bytes, Some(512 * 1024 * 1024));
-    }
 }
