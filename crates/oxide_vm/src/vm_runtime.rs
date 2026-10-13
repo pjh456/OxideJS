@@ -761,6 +761,101 @@ impl Vm {
         result
     }
 
+    /// 加载并执行一个 TLA（顶层 await）模块：模块求值建模为合成异步函数执行。
+    ///
+    /// 与 `run()` 同口径装载模块（换表、注册表代际、装字节码/常量/平表、builtin
+    /// 镜像槽、顶层 this），但不直接 `dispatch()` 顶层字节码——入口模块经
+    /// entry rehome 落在平表下标 1（下标 0 为占位槽），其函数对象由
+    /// `create_async_object` 启动，body 同步执行到首个 AWAIT（prelude 的
+    /// `__moduleWaitAll` gate 或顶层 await），再单次 `drain_microtasks` 排空到静止。
+    ///
+    /// # 步骤
+    /// 1. 装载模块（与 `run()` 同口径：清执行状态、换表、注册新代际、激活常量、
+    ///    镜像槽、顶层 this = undefined）。
+    /// 2. 建模块函数对象（平表下标 1，占位槽 0）。
+    /// 3. `create_async_object` 启动 body（同步执行到首个 AWAIT）。
+    /// 4. 单次 `drain_microtasks` 排空微任务队列到静止。
+    /// 5. 三态终结：settled 取结算值 / pending 返 capability promise /
+    ///    rejected 取拒绝原因经 `Err` 上交。
+    ///
+    /// # 边界与前提
+    /// - 模块须为 TLA 模块（`is_async == true`）；非 TLA 模块走 `run()`，零 diff。
+    /// - 步骤 3 与 4 之间不得插入清空执行状态/换表的路径（`clear_execution_state` /
+    ///   `reclaim_unreferenced_tables` 会断掉挂起快照的表代际与帧）——挂起期求值
+    ///   帧/环境根保活由既有 async 机器覆盖（三组 GC 边 + `AsyncState.callee` 保
+    ///   模块函数对象 + `reclaim_unreferenced_tables` 按存活函数对象保表代际）。
+    ///
+    /// # 副作用
+    /// - 模块 body 执行到完成或静止；capability promise 结算（fulfilled/rejected）
+    ///   或保持 pending（宏任务挂起）。
+    pub fn run_tla(&mut self, module: &Arc<CompiledModule>) -> Result<JsValue, String> {
+        vm_debug!("run_tla: starting async module evaluation, {} instructions", module.bytecode.len());
+        self.clear_execution_state();
+        // 模板对象缓存与保存栈按 run 清空（与 run 入口同语义）。
+        self.template_objects.clear();
+        self.saved_flat_id_stack.clear();
+        self.saved_table_gen_stack.clear();
+        self.active_flat_id = 0;
+        self.cell_stack.clear();
+        self.cell_stack.push(Vec::new());
+        self.active_immutables = std::ptr::slice_from_raw_parts(std::ptr::null(), 0);
+        // run 边界换表前先回收无存活函数对象引用的表代际（此刻 current_gen 仍指
+        // 上一 run 的表，存活代际集由 session 对象表扫描得出）。
+        self.reclaim_unreferenced_tables();
+        // 新表注册于 current_gen + 1：本 run 创建的函数对象记录该代际。
+        self.current_gen = self.current_gen.wrapping_add(1);
+        let modules = Arc::new(collect_flat_modules(module));
+        self.tables.insert(
+            self.current_gen,
+            Box::new(TableGen {
+                immutables: (0..modules.len()).map(|_| OnceLock::new()).collect(),
+                si_tables: (0..modules.len()).map(|_| OnceLock::new()).collect(),
+                modules,
+            }),
+        );
+        self.active_table_gen = self.current_gen;
+        self.top_level_strict = module.is_strict;
+        // 顶层字节码按引用计数条件复制（与 run 装载期同语义）：入口模块是 entry
+        // rehome 后的平表下标 1 模块，其字节码即本模块字节码。
+        if Arc::strong_count(module) > 1 {
+            self.bytecode = Arc::from(&module.bytecode[..]);
+        } else {
+            self.bytecode = Arc::clone(&module.bytecode);
+        }
+        // 入口模块在平表下标 1（下标 0 为占位槽）：激活常量与镜像槽按此下标。
+        self.activate_immutables(self.current_gen, 1, module);
+        self.root_reg_limit = module.n_registers.max(1);
+        self.active_reg_limit = self.root_reg_limit;
+        self.reload_builtin_mirror_slots(&module.builtin_reg_map, 0);
+        // 顶层 this：ES module 顶层环境 GetThisBinding 返回 undefined。
+        let this_val = JsValue::undefined();
+        self.top_level_this = this_val;
+        self.regs[254] = this_val;
+
+        // 建模块函数对象（平表下标 1）：其 body 由 create_async_object 启动执行。
+        let module_fn = self.create_function_object(1, self.current_gen, crate::vm_support::FunctionFlags::none());
+
+        // 「正在求值模块」cyclic 守卫标记：与 run 同口径，包在 create_async_object
+        // 的同步执行段（body 到首个 AWAIT）；drain 前模块已非同步求值中。
+        let saved_evaluating = self.evaluating_module.take();
+        self.evaluating_module = Some(JsValue::undefined());
+        let promise_res = self.create_async_object(module_fn, JsValue::undefined(), &[]);
+        self.evaluating_module = saved_evaluating;
+        let promise = promise_res?;
+
+        // 单次 drain 排空微任务队列到静止：gate 释放、模块 body 恢复执行到完成。
+        self.drain_microtasks();
+        self.print_sample_histogram();
+
+        // 三态终结：settled 取结算值 / pending 返 promise / rejected 取拒绝原因。
+        let obj = unsafe { &*promise.as_js_object_ptr() };
+        match crate::promise::promise_settled_value(obj) {
+            Some((true, value)) => Ok(value),
+            Some((false, reason)) => Err(self.error_text(reason)),
+            None => Ok(promise),
+        }
+    }
+
     /// 按 (flat_id, 表代际) 聚合采样记录并向 stderr 输出 top-K 热点直方图。
     ///
     /// 聚合键取 (flat_id, 表代际, pc)：样本数按 (flat_id, 表代际) 汇总，top pc
@@ -1277,5 +1372,135 @@ mod tests {
         vm.run(&module).expect("run");
         assert_eq!(global_value(&mut vm, "asyncUsed"), JsValue::int(1), "asyncDispose 优先");
         assert_eq!(global_value(&mut vm, "syncUsed"), JsValue::int(1), "asyncDispose 未定义回退 dispose");
+    }
+
+    // ── TLA 模块求值（run_tla）──
+
+    /// 无依赖加载器：单模块 TLA 测试无 import，resolve 不应被触达。
+    struct NoopLoader;
+    impl oxide_emit::module::ModuleSourceLoader for NoopLoader {
+        fn resolve(
+            &mut self, _base_dir: &str, specifier: &str, _attributes: &[(&str, &str)],
+        ) -> Result<oxide_emit::module::ResolvedModule, String> {
+            Err(format!("NoopLoader 无 {specifier}"))
+        }
+    }
+
+    /// 编译 ES module（含顶层 await 时经 entry rehome 落平表下标 1）。
+    fn compile_tla_module(source: &str) -> oxide_bytecode::module::CompiledModule {
+        let allocator = oxide_parser::Allocator::default();
+        let program = oxide_parser::parse_module(&allocator, source).expect("parse_module");
+        let mut loader = NoopLoader;
+        oxide_compiler::compiler::Compiler::new()
+            .compile_module(&program, "./entry.js", &mut loader)
+            .expect("compile_module")
+    }
+
+    /// 装载 TLA 模块（与 run_tla 装载步同口径），回传建好的模块函数对象：
+    /// 供挂起期根保活测试在 create_async_object 与 drain 之间插入强制收集。
+    fn load_tla_module(vm: &mut Vm, module: &Arc<CompiledModule>) -> JsValue {
+        vm.clear_execution_state();
+        vm.template_objects.clear();
+        vm.saved_flat_id_stack.clear();
+        vm.saved_table_gen_stack.clear();
+        vm.active_flat_id = 0;
+        vm.cell_stack.clear();
+        vm.cell_stack.push(Vec::new());
+        vm.active_immutables = std::ptr::slice_from_raw_parts(std::ptr::null(), 0);
+        vm.reclaim_unreferenced_tables();
+        vm.current_gen = vm.current_gen.wrapping_add(1);
+        let modules = Arc::new(collect_flat_modules(module));
+        vm.tables.insert(
+            vm.current_gen,
+            Box::new(TableGen {
+                immutables: (0..modules.len()).map(|_| OnceLock::new()).collect(),
+                si_tables: (0..modules.len()).map(|_| OnceLock::new()).collect(),
+                modules,
+            }),
+        );
+        vm.active_table_gen = vm.current_gen;
+        vm.top_level_strict = module.is_strict;
+        if Arc::strong_count(module) > 1 {
+            vm.bytecode = Arc::from(&module.bytecode[..]);
+        } else {
+            vm.bytecode = Arc::clone(&module.bytecode);
+        }
+        vm.activate_immutables(vm.current_gen, 1, module);
+        vm.root_reg_limit = module.n_registers.max(1);
+        vm.active_reg_limit = vm.root_reg_limit;
+        vm.reload_builtin_mirror_slots(&module.builtin_reg_map, 0);
+        vm.top_level_this = JsValue::undefined();
+        vm.regs[254] = JsValue::undefined();
+        vm.create_function_object(1, vm.current_gen, crate::vm_support::FunctionFlags::none())
+    }
+
+    #[test]
+    fn run_tla_evaluates_to_quiescence() {
+        // TLA 模块求值端到端：run_tla 启动 body（同步到首个 AWAIT），单次 drain
+        // 排空到静止，模块 body 完成；顶层完成值为 undefined。
+        let mut vm = Vm::new();
+        let module = Arc::new(compile_tla_module(
+            "globalThis.v = 0; await Promise.resolve(1); globalThis.v = 42;",
+        ));
+        assert!(module.is_async, "含顶层 await 的模块应标记异步");
+        let result = vm.run_tla(&module).expect("run_tla");
+        assert_eq!(result, JsValue::undefined(), "顶层模块完成值应为 undefined");
+        assert_eq!(global_value(&mut vm, "v"), JsValue::int(42), "模块 body 应执行到完成");
+    }
+
+    #[test]
+    fn run_tla_nested_await_sequence() {
+        // TLA 序列 await 嵌套：逐次挂起/恢复，最终完成值与侧效应正确。
+        let mut vm = Vm::new();
+        let module = Arc::new(compile_tla_module(
+            "globalThis.seq = ''; \
+             async function f(x) { return x * 2; } \
+             await Promise.resolve(1); \
+             globalThis.seq += 'a'; \
+             const y = await f(21); \
+             globalThis.seq += String(y);",
+        ));
+        assert!(module.is_async, "含顶层 await 的模块应标记异步");
+        let result = vm.run_tla(&module).expect("run_tla");
+        assert_eq!(result, JsValue::undefined(), "顶层模块完成值应为 undefined");
+        let seq = global_value(&mut vm, "seq");
+        assert_eq!(vm.lookup_str(seq).as_deref(), Some("a42"), "序列 await 应逐次挂起/恢复");
+    }
+
+    #[test]
+    fn run_tla_rejected_returns_err() {
+        // TLA 模块 body 抛未捕获异常：capability promise 拒绝，run_tla 经 Err 上交拒绝原因。
+        let mut vm = Vm::new();
+        let module = Arc::new(compile_tla_module(
+            "await Promise.reject(new Error('boom'));",
+        ));
+        assert!(module.is_async, "含顶层 await 的模块应标记异步");
+        let result = vm.run_tla(&module);
+        assert!(result.is_err(), "拒绝的 TLA 模块须以 Err 上交");
+        let msg = result.unwrap_err();
+        assert!(msg.contains("boom"), "拒绝原因应含错误消息: {msg}");
+    }
+
+    #[test]
+    fn run_tla_suspended_roots_survive_gc() {
+        // 挂起期根保活：模块 body 在 gate 挂起后强制收集，挂起帧根（模块函数对象 /
+        // 命名空间 / 单元格）经异步上下文对象边存活；drain 后 body 恢复执行到完成。
+        let mut vm = Vm::new();
+        let module = Arc::new(compile_tla_module(
+            "globalThis.v = 0; await Promise.resolve(1); globalThis.v = 42;",
+        ));
+        assert!(module.is_async, "含顶层 await 的模块应标记异步");
+        let module_fn = load_tla_module(&mut vm, &module);
+        let saved_evaluating = vm.evaluating_module.take();
+        vm.evaluating_module = Some(JsValue::undefined());
+        let promise = vm.create_async_object(module_fn, JsValue::undefined(), &[]).expect("create_async_object");
+        vm.evaluating_module = saved_evaluating;
+        // 挂起期强制收集：挂起帧根须经异步上下文对象边存活，drain 恢复不悬垂。
+        vm.collect_session_gc();
+        assert!(!vm.job_queue.is_empty(), "gate 释放反应应已入队");
+        vm.drain_microtasks();
+        assert_eq!(global_value(&mut vm, "v"), JsValue::int(42), "GC 后 body 应恢复执行到完成");
+        let obj = unsafe { &*promise.as_js_object_ptr() };
+        assert_eq!(crate::promise::promise_settled_value(obj), Some((true, JsValue::undefined())), "capability 应 fulfilled");
     }
 }
