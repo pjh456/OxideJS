@@ -819,11 +819,7 @@ impl Vm {
         if let Some(frame) = self.frames.pop() {
             self.cell_stack.pop();
             let construct_result_reg = frame.construct_result_reg;
-            let constructed_this = if frame.has_constructed_this {
-                Some(frame.constructed_this)
-            } else {
-                None
-            };
+            let constructed_this = if frame.has_constructed_this { Some(frame.constructed_this) } else { None };
             let is_derived_constructor = frame.is_derived_constructor;
             let super_called = frame.super_called;
             let continuation = frame.continuation;
