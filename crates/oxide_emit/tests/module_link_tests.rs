@@ -579,9 +579,8 @@ fn export_default_await_makes_module_async() {
 /// 不使模块异步——函数体是独立异步语义边界，不进入游走。
 #[test]
 fn export_named_async_fn_expr_not_tla() {
-    let (ir, _) =
-        emit_module("export const f = async () => { await Promise.resolve(1); };", "./entry.js", &[])
-            .expect("导出异步函数表达式模块应编译成功");
+    let (ir, _) = emit_module("export const f = async () => { await Promise.resolve(1); };", "./entry.js", &[])
+        .expect("导出异步函数表达式模块应编译成功");
     assert!(!ir.is_async, "异步函数表达式体不得使模块标记异步");
     assert_eq!(ir.insts.iter().filter(|i| i.op == OpCode::AWAIT).count(), 0, "主身不得含 AWAIT");
 }

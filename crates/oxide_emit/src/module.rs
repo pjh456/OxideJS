@@ -423,15 +423,13 @@ fn stmt_has_top_level_await(stmt: &Statement) -> bool {
         Statement::FunctionDeclaration(_) | Statement::ClassDeclaration(_) => false,
         // `export const/let/var x = await ...` 是顶层 await；
         // 函数/类声明形态不进入（体是独立异步语义边界，与裸声明臂同口径）。
-        Statement::ExportNamedDeclaration(exp) => {
-            exp.declaration.as_ref().is_some_and(|decl| match decl {
-                Declaration::VariableDeclaration(vd) => vd
-                    .declarations
-                    .iter()
-                    .any(|d| d.init.as_ref().is_some_and(|i| expr_has_top_level_await(i))),
-                _ => false,
-            })
-        }
+        Statement::ExportNamedDeclaration(exp) => exp.declaration.as_ref().is_some_and(|decl| match decl {
+            Declaration::VariableDeclaration(vd) => vd
+                .declarations
+                .iter()
+                .any(|d| d.init.as_ref().is_some_and(|i| expr_has_top_level_await(i))),
+            _ => false,
+        }),
         // `export default await ...` 是顶层 await；函数/类声明形态不进入（同口径）。
         Statement::ExportDefaultDeclaration(exp) => {
             exp.declaration.as_expression().is_some_and(expr_has_top_level_await)
