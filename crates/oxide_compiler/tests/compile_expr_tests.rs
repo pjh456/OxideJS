@@ -23,7 +23,8 @@ fn compile_source_err(source: &str) -> String {
 
 #[test]
 fn compile_simple_expr() {
-    let module = compile_source("1 + 2");
+    // 变量操作数避免常量折叠：折叠后 1 + 2 只剩单条 LOAD_CONST，无二元运算指令。
+    let module = compile_source("var a = 1; var b = 2; a + b");
 
     assert!(!module.bytecode.is_empty());
     assert!(module.bytecode.len() >= 4);
@@ -75,7 +76,8 @@ fn compile_dedups_identical_string_constants() {
 
 #[test]
 fn compile_negation() {
-    let module = compile_source("-5");
+    // 变量操作数避免常量折叠：折叠后 -5 只剩单条 LOAD_CONST，无 NEG 指令。
+    let module = compile_source("var a = 5; -a");
 
     let has_neg = module.bytecode.iter().any(|&i| opcode::opcode(i) == OpCode::NEG);
     assert!(has_neg);
@@ -209,17 +211,18 @@ fn compile_nested_object_literals_both_batch() {
 
 #[test]
 fn compile_binary_ops() {
+    // 变量操作数避免常量折叠：折叠后各表达式只剩单条 LOAD_CONST，无运算指令。
     let tests = [
-        ("3 * 4", OpCode::MUL),
-        ("10 / 2", OpCode::DIV),
-        ("7 % 3", OpCode::MOD),
-        ("5 - 2", OpCode::SUB),
-        ("5 & 3", OpCode::BIT_AND),
-        ("5 | 2", OpCode::BIT_OR),
-        ("5 ^ 1", OpCode::BIT_XOR),
-        ("1 << 3", OpCode::SHL),
-        ("-8 >> 1", OpCode::SHR),
-        ("-1 >>> 0", OpCode::USHR),
+        ("var a = 3, b = 4; a * b", OpCode::MUL),
+        ("var a = 10, b = 2; a / b", OpCode::DIV),
+        ("var a = 7, b = 3; a % b", OpCode::MOD),
+        ("var a = 5, b = 2; a - b", OpCode::SUB),
+        ("var a = 5, b = 3; a & b", OpCode::BIT_AND),
+        ("var a = 5, b = 2; a | b", OpCode::BIT_OR),
+        ("var a = 5, b = 1; a ^ b", OpCode::BIT_XOR),
+        ("var a = 1, b = 3; a << b", OpCode::SHL),
+        ("var a = -8, b = 1; a >> b", OpCode::SHR),
+        ("var a = -1, b = 0; a >>> b", OpCode::USHR),
     ];
 
     for (src, expected_op) in tests {
@@ -231,16 +234,18 @@ fn compile_binary_ops() {
 
 #[test]
 fn compile_bitwise_not() {
-    let module = compile_source("~0");
+    // 变量操作数避免常量折叠：折叠后 ~0 只剩单条 LOAD_CONST，无 BIT_NOT 指令。
+    let module = compile_source("var a = 0; ~a");
     assert!(
         module.bytecode.iter().any(|&i| opcode::opcode(i) == OpCode::BIT_NOT),
-        "~0 should emit BIT_NOT opcode"
+        "~a should emit BIT_NOT opcode"
     );
 }
 
 #[test]
 fn compile_ternary_emits_jumps() {
-    let module = compile_source("true ? 1 : 2");
+    // 条件走变量避免常量折叠：折叠后 true ? 1 : 2 只剩单条 LOAD_CONST，无分支指令。
+    let module = compile_source("var a = true; a ? 1 : 2");
     assert!(
         module.bytecode.iter().any(|&i| opcode::opcode(i) == OpCode::JMP_IF_FALSE),
         "ternary should contain JMP_IF_FALSE"
@@ -249,16 +254,19 @@ fn compile_ternary_emits_jumps() {
 
 #[test]
 fn compile_logical_not() {
-    let module = compile_source("!true");
+    // 变量操作数避免常量折叠：折叠后 !true 只剩单条 LOAD_CONST，无 NOT 指令。
+    let module = compile_source("var a = true; !a");
     assert!(
         module.bytecode.iter().any(|&i| opcode::opcode(i) == OpCode::NOT),
-        "!true should emit NOT opcode"
+        "!a should emit NOT opcode"
     );
 }
 
 #[test]
 fn compile_logical_and_simple() {
-    let module = compile_source("1 && 2");
+    // 正则字面量作操作数：side-effect-free 但非字面量常量，避开字面量折叠，
+    // 走 AND 快路径；标识符操作数非 side-effect-free，会落分支路径不发 AND。
+    let module = compile_source("(/x/) && 2");
     assert!(
         module.bytecode.iter().any(|&i| opcode::opcode(i) == OpCode::AND),
         "simple && should emit AND opcode"
@@ -267,7 +275,9 @@ fn compile_logical_and_simple() {
 
 #[test]
 fn compile_logical_or_simple() {
-    let module = compile_source("0 || 1");
+    // 正则字面量作操作数：side-effect-free 但非字面量常量，避开字面量折叠，
+    // 走 OR 快路径；标识符操作数非 side-effect-free，会落分支路径不发 OR。
+    let module = compile_source("(/x/) || 2");
     assert!(
         module.bytecode.iter().any(|&i| opcode::opcode(i) == OpCode::OR),
         "simple || should emit OR opcode"
@@ -288,19 +298,21 @@ fn regression_coalesce_consistency() {
 
 #[test]
 fn compile_strict_eq() {
-    let module = compile_source("1 === 2");
+    // 变量操作数避免常量折叠：折叠后 1 === 2 只剩单条 LOAD_CONST，无 STRICT_EQ 指令。
+    let module = compile_source("var a = 1, b = 2; a === b");
     assert!(
         module.bytecode.iter().any(|&i| opcode::opcode(i) == OpCode::STRICT_EQ),
-        "1 === 2 should emit STRICT_EQ opcode"
+        "a === b should emit STRICT_EQ opcode"
     );
 }
 
 #[test]
 fn compile_strict_neq() {
-    let module = compile_source("1 !== 2");
+    // 变量操作数避免常量折叠：折叠后 1 !== 2 只剩单条 LOAD_CONST，无 STRICT_NEQ 指令。
+    let module = compile_source("var a = 1, b = 2; a !== b");
     assert!(
         module.bytecode.iter().any(|&i| opcode::opcode(i) == OpCode::STRICT_NEQ),
-        "1 !== 2 should emit STRICT_NEQ opcode"
+        "a !== b should emit STRICT_NEQ opcode"
     );
 }
 
@@ -315,7 +327,9 @@ fn compile_unary_plus() {
 
 #[test]
 fn compile_typeof_strict_eq() {
-    let module = compile_source("typeof 42 === 'number'");
+    // 变量操作数避免常量折叠：折叠后 typeof 42 === 'number' 只剩单条 LOAD_CONST，
+    // TYPEOF 与 STRICT_EQ 均消失。
+    let module = compile_source("var a = 42; typeof a === 'number'");
     assert!(
         module.bytecode.iter().any(|&i| opcode::opcode(i) == OpCode::TYPEOF),
         "should emit TYPEOF opcode"
@@ -451,7 +465,9 @@ fn nullish_opcodes_round_trip() {
 
 #[test]
 fn compile_nullish_fast_path_opcode() {
-    let module = compile_source("null ?? 5");
+    // 正则字面量作操作数：side-effect-free 但非字面量常量，避开字面量折叠，
+    // 走 NULLISH 快路径；标识符操作数非 side-effect-free，会落分支路径不发 NULLISH。
+    let module = compile_source("(/x/) ?? 2");
     assert!(
         module.bytecode.iter().any(|&i| opcode::opcode(i) == OpCode::NULLISH),
         "side-effect-free ?? should emit NULLISH"
