@@ -1439,9 +1439,7 @@ mod tests {
         // TLA 模块求值端到端：run_tla 启动 body（同步到首个 AWAIT），单次 drain
         // 排空到静止，模块 body 完成；顶层完成值为 undefined。
         let mut vm = Vm::new();
-        let module = Arc::new(compile_tla_module(
-            "globalThis.v = 0; await Promise.resolve(1); globalThis.v = 42;",
-        ));
+        let module = Arc::new(compile_tla_module("globalThis.v = 0; await Promise.resolve(1); globalThis.v = 42;"));
         assert!(module.is_async, "含顶层 await 的模块应标记异步");
         let result = vm.run_tla(&module).expect("run_tla");
         assert_eq!(result, JsValue::undefined(), "顶层模块完成值应为 undefined");
@@ -1471,9 +1469,7 @@ mod tests {
     fn run_tla_rejected_returns_err() {
         // TLA 模块 body 抛未捕获异常：capability promise 拒绝，run_tla 经 Err 上交拒绝原因。
         let mut vm = Vm::new();
-        let module = Arc::new(compile_tla_module(
-            "await Promise.reject(new Error('boom'));",
-        ));
+        let module = Arc::new(compile_tla_module("await Promise.reject(new Error('boom'));"));
         assert!(module.is_async, "含顶层 await 的模块应标记异步");
         let result = vm.run_tla(&module);
         assert!(result.is_err(), "拒绝的 TLA 模块须以 Err 上交");
@@ -1486,14 +1482,14 @@ mod tests {
         // 挂起期根保活：模块 body 在 gate 挂起后强制收集，挂起帧根（模块函数对象 /
         // 命名空间 / 单元格）经异步上下文对象边存活；drain 后 body 恢复执行到完成。
         let mut vm = Vm::new();
-        let module = Arc::new(compile_tla_module(
-            "globalThis.v = 0; await Promise.resolve(1); globalThis.v = 42;",
-        ));
+        let module = Arc::new(compile_tla_module("globalThis.v = 0; await Promise.resolve(1); globalThis.v = 42;"));
         assert!(module.is_async, "含顶层 await 的模块应标记异步");
         let module_fn = load_tla_module(&mut vm, &module);
         let saved_evaluating = vm.evaluating_module.take();
         vm.evaluating_module = Some(JsValue::undefined());
-        let promise = vm.create_async_object(module_fn, JsValue::undefined(), &[]).expect("create_async_object");
+        let promise = vm
+            .create_async_object(module_fn, JsValue::undefined(), &[])
+            .expect("create_async_object");
         vm.evaluating_module = saved_evaluating;
         // 挂起期强制收集：挂起帧根须经异步上下文对象边存活，drain 恢复不悬垂。
         vm.collect_session_gc();
@@ -1501,6 +1497,10 @@ mod tests {
         vm.drain_microtasks();
         assert_eq!(global_value(&mut vm, "v"), JsValue::int(42), "GC 后 body 应恢复执行到完成");
         let obj = unsafe { &*promise.as_js_object_ptr() };
-        assert_eq!(crate::promise::promise_settled_value(obj), Some((true, JsValue::undefined())), "capability 应 fulfilled");
+        assert_eq!(
+            crate::promise::promise_settled_value(obj),
+            Some((true, JsValue::undefined())),
+            "capability 应 fulfilled"
+        );
     }
 }
