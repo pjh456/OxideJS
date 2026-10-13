@@ -584,3 +584,35 @@ fn export_named_async_fn_expr_not_tla() {
     assert!(!ir.is_async, "异步函数表达式体不得使模块标记异步");
     assert_eq!(ir.insts.iter().filter(|i| i.op == OpCode::AWAIT).count(), 0, "主身不得含 AWAIT");
 }
+
+/// 面 28：`if (await ...)`（IfStatement 的 test 表达式）是顶层 await，
+/// 模块标记异步、体 await 编译为 AWAIT。
+#[test]
+fn if_test_await_makes_module_async() {
+    let (ir, _) = emit_module("if (await Promise.resolve(1)) { globalThis.v = 1; }", "./entry.js", &[])
+        .expect("if (await ...) 模块应编译成功");
+    assert!(ir.is_async, "if (await ...) 应标记模块异步求值");
+    assert_eq!(
+        ir.insts.iter().filter(|i| i.op == OpCode::AWAIT).count(),
+        1,
+        "顶层 await 应编译为一条 AWAIT"
+    );
+}
+
+/// 面 29：`export class A extends (await ...)`（ClassDeclaration 的 extends
+/// 表达式）是顶层 await，模块标记异步、体 await 编译为 AWAIT；类体不进入游走。
+#[test]
+fn extends_await_makes_module_async() {
+    let (ir, _) = emit_module(
+        "export class A extends (await Promise.resolve(1)) {}",
+        "./entry.js",
+        &[],
+    )
+    .expect("extends (await ...) 模块应编译成功");
+    assert!(ir.is_async, "extends (await ...) 应标记模块异步求值");
+    assert_eq!(
+        ir.insts.iter().filter(|i| i.op == OpCode::AWAIT).count(),
+        1,
+        "顶层 await 应编译为一条 AWAIT"
+    );
+}

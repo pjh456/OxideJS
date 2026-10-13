@@ -356,7 +356,8 @@ fn stmt_has_top_level_await(stmt: &Statement) -> bool {
     match stmt {
         Statement::BlockStatement(block) => block.body.iter().any(|s| stmt_has_top_level_await(s)),
         Statement::IfStatement(if_stmt) => {
-            stmt_has_top_level_await(&if_stmt.consequent)
+            expr_has_top_level_await(&if_stmt.test)
+                || stmt_has_top_level_await(&if_stmt.consequent)
                 || if_stmt.alternate.as_ref().is_some_and(|alt| stmt_has_top_level_await(alt))
         }
         Statement::ForStatement(for_stmt) => {
@@ -419,21 +420,32 @@ fn stmt_has_top_level_await(stmt: &Statement) -> bool {
             .declarations
             .iter()
             .any(|d| d.init.as_ref().is_some_and(|i| expr_has_top_level_await(i))),
-        // 函数/类声明：体不进入（函数体是独立异步语义边界）。
-        Statement::FunctionDeclaration(_) | Statement::ClassDeclaration(_) => false,
+        // 函数声明：体不进入（函数体是独立异步语义边界）。
+        Statement::FunctionDeclaration(_) => false,
+        // 类声明：类体不进入（独立异步语义边界），extends 表达式是顶层 await
+        // （如 `export class A extends (await x) {}`）。
+        Statement::ClassDeclaration(cls) => cls.super_class.as_ref().is_some_and(expr_has_top_level_await),
         // `export const/let/var x = await ...` 是顶层 await；
-        // 函数/类声明形态不进入（体是独立异步语义边界，与裸声明臂同口径）。
+        // 函数/类声明形态不进入（体是独立异步语义边界，与裸声明臂同口径），
+        // 但类声明的 extends 表达式照常游走。
         Statement::ExportNamedDeclaration(exp) => exp.declaration.as_ref().is_some_and(|decl| match decl {
             Declaration::VariableDeclaration(vd) => vd
                 .declarations
                 .iter()
                 .any(|d| d.init.as_ref().is_some_and(|i| expr_has_top_level_await(i))),
+            Declaration::ClassDeclaration(cls) => {
+                cls.super_class.as_ref().is_some_and(expr_has_top_level_await)
+            }
             _ => false,
         }),
-        // `export default await ...` 是顶层 await；函数/类声明形态不进入（同口径）。
-        Statement::ExportDefaultDeclaration(exp) => {
-            exp.declaration.as_expression().is_some_and(expr_has_top_level_await)
-        }
+        // `export default await ...` 是顶层 await；函数/类声明形态体不进入（同口径），
+        // 但类声明的 extends 表达式照常游走。
+        Statement::ExportDefaultDeclaration(exp) => match &exp.declaration {
+            ExportDefaultDeclarationKind::ClassDeclaration(cls) => {
+                cls.super_class.as_ref().is_some_and(expr_has_top_level_await)
+            }
+            _ => exp.declaration.as_expression().is_some_and(expr_has_top_level_await),
+        },
         // import、`export *`、`export { x }`（无声明）与无子表达式的语句
         // （break/continue/debugger/empty）不含顶层 await。
         _ => false,
