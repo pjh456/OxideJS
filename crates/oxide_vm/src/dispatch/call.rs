@@ -625,10 +625,11 @@ impl Vm {
             self.raise_error_kind("ReferenceError", "super() called more than once")?;
             return Ok(true);
         }
-        let Some(derived_this) = frame.constructed_this else {
+        if !frame.has_constructed_this {
             self.raise_error_kind("ReferenceError", "super() without derived this")?;
             return Ok(true);
-        };
+        }
+        let derived_this = frame.constructed_this;
         let callee = frame.callee;
 
         let new_target = self.regs[255];
@@ -1197,10 +1198,11 @@ impl Vm {
             self.raise_error_kind("ReferenceError", "super() called more than once")?;
             return Ok(true);
         }
-        let Some(derived_this) = frame.constructed_this else {
+        if !frame.has_constructed_this {
             self.raise_error_kind("ReferenceError", "super() without derived this")?;
             return Ok(true);
-        };
+        }
+        let derived_this = frame.constructed_this;
         let callee = frame.callee;
 
         let new_target = self.regs[255];

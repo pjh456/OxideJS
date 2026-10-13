@@ -1646,7 +1646,7 @@ mod tests {
         // NEW 帧契约：构造结果寄存器与 constructed_this 随帧携带
         assert_eq!(frame.construct_result_reg, Some(0), "构造结果写回 regs[0]");
         assert!(
-            frame.constructed_this.is_some_and(|v| v.is_object()),
+            frame.has_constructed_this && frame.constructed_this.is_object(),
             "基类构造路径 constructed_this 应为新对象"
         );
         assert!(!frame.is_derived_constructor, "普通函数非 derived 构造器");

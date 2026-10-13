@@ -68,7 +68,13 @@ pub struct CallFrame {
     /// 无 mapped arguments 时为 undefined。GC 根（帧遍历期标记）。
     pub arguments_obj: JsValue,
     pub construct_result_reg: Option<u8>,
-    pub constructed_this: Option<JsValue>,
+    /// derived 构造器构造出的 this 值；仅当 `has_constructed_this` 为真时有效，
+    /// 标志为假时该槽为 undefined。
+    ///
+    /// 判别位并入结构体尾部 bool 组（单字节容纳四个 bool），字段本体只占
+    /// 裸 JsValue 的 8 字节，帧整体比 Option 包装省 8 字节。
+    pub constructed_this: JsValue,
+    pub has_constructed_this: bool,
     pub is_derived_constructor: bool,
     /// derived 构造帧是否已成功调用 super()（父构造器正常返回后置位）。
     ///
@@ -89,6 +95,18 @@ pub struct CallFrame {
     /// 恒有效；写路径经 `*mut` 转可变切片
     /// 与 `upvalues_slice_mut` 同口径（Box 单所有权）。
     pub upvalues: *const [*mut Cell],
+}
+
+#[cfg(test)]
+mod tests {
+    use super::CallFrame;
+
+    /// CallFrame 尺寸钉：constructed_this 的判别位并入尾部 bool 组后，
+    /// 帧固定 104 字节（Option 包装时代为 112 字节）。
+    #[test]
+    fn call_frame_size_pinned() {
+        assert_eq!(std::mem::size_of::<CallFrame>(), 104);
+    }
 }
 
 /// 一次 `for-in` 迭代的游标：已收集的 key 列表与当前下标。

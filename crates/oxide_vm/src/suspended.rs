@@ -191,8 +191,8 @@ impl SuspendedFrame {
             f(frame.saved_new_target);
             f(frame.callee);
             f(frame.arguments_obj);
-            if let Some(ct) = frame.constructed_this {
-                f(ct);
+            if frame.has_constructed_this {
+                f(frame.constructed_this);
             }
         }
         for v in &self.spill_stack {
@@ -307,7 +307,8 @@ mod tests {
             callee: tag,
             arguments_obj: JsValue::undefined(),
             construct_result_reg: None,
-            constructed_this: Some(tag),
+            constructed_this: tag,
+            has_constructed_this: true,
             is_derived_constructor: false,
             super_called: false,
             strict: false,

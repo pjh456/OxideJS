@@ -74,7 +74,14 @@ impl Vm {
             f(RootGroup::Frames, frame.saved_new_target);
             f(RootGroup::Frames, frame.callee);
             f(RootGroup::Frames, frame.arguments_obj);
-            f(RootGroup::Frames, frame.constructed_this.unwrap_or(JsValue::undefined()));
+            f(
+                RootGroup::Frames,
+                if frame.has_constructed_this {
+                    frame.constructed_this
+                } else {
+                    JsValue::undefined()
+                },
+            );
         }
         for &v in &self.save_stack {
             f(RootGroup::SaveStack, v);
