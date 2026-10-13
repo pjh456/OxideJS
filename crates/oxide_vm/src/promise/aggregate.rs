@@ -184,9 +184,7 @@ impl Vm {
             promises.push(self.reg(args[i + 1]));
         }
         let array = self.make_plain_array(promises);
-        let ctor = JsValue::from_js_object(
-            self.realm.promise_constructor.borrow().as_ptr() as *mut JsObject,
-        );
+        let ctor = JsValue::from_js_object(self.realm.promise_constructor.borrow().as_ptr() as *mut JsObject);
         match perform_promise_combine(self, ctor, array, AggregateKind::All) {
             Ok(promise) => NativeResult::Ok(promise),
             Err(err) => NativeResult::Err(err),

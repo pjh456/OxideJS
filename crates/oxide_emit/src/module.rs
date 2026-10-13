@@ -23,11 +23,10 @@ use oxide_ir::inst::Inst;
 use oxide_ir::operand::Operand;
 use oxide_ir::{IRFunction, ParamLayout};
 use oxide_parser::{
-    ArrayExpressionElement, AssignmentTarget, AssignmentTargetMaybeDefault, AssignmentTargetProperty,
-    BindingPattern, ChainElement, Declaration, ExportDefaultDeclarationKind, Expression,
-    ForStatementInit, ForStatementLeft, ImportAttributeKey, ImportDeclarationSpecifier, ImportPhase,
-    ModuleExportName, ObjectPropertyKind, SimpleAssignmentTarget, Statement, VariableDeclarationKind,
-    WithClause,
+    ArrayExpressionElement, AssignmentTarget, AssignmentTargetMaybeDefault, AssignmentTargetProperty, BindingPattern,
+    ChainElement, Declaration, ExportDefaultDeclarationKind, Expression, ForStatementInit, ForStatementLeft,
+    ImportAttributeKey, ImportDeclarationSpecifier, ImportPhase, ModuleExportName, ObjectPropertyKind,
+    SimpleAssignmentTarget, Statement, VariableDeclarationKind, WithClause,
 };
 use oxide_types::MODULE_NAMESPACE_BINDING;
 
@@ -355,15 +354,10 @@ fn module_has_top_level_await(body: &[Statement]) -> bool {
 /// 语句级顶层 `await` 游走：进入子语句与子表达式，函数/类声明体不进入。
 fn stmt_has_top_level_await(stmt: &Statement) -> bool {
     match stmt {
-        Statement::BlockStatement(block) => {
-            block.body.iter().any(|s| stmt_has_top_level_await(s))
-        }
+        Statement::BlockStatement(block) => block.body.iter().any(|s| stmt_has_top_level_await(s)),
         Statement::IfStatement(if_stmt) => {
             stmt_has_top_level_await(&if_stmt.consequent)
-                || if_stmt
-                    .alternate
-                    .as_ref()
-                    .is_some_and(|alt| stmt_has_top_level_await(alt))
+                || if_stmt.alternate.as_ref().is_some_and(|alt| stmt_has_top_level_await(alt))
         }
         Statement::ForStatement(for_stmt) => {
             for_stmt.init.as_ref().is_some_and(|init| match init {
@@ -372,10 +366,9 @@ fn stmt_has_top_level_await(stmt: &Statement) -> bool {
                     .iter()
                     .any(|d| d.init.as_ref().is_some_and(|i| expr_has_top_level_await(i))),
                 _ => init.as_expression().is_some_and(expr_has_top_level_await),
-            })
-            || for_stmt.test.as_ref().is_some_and(|t| expr_has_top_level_await(t))
-            || for_stmt.update.as_ref().is_some_and(|u| expr_has_top_level_await(u))
-            || stmt_has_top_level_await(&for_stmt.body)
+            }) || for_stmt.test.as_ref().is_some_and(|t| expr_has_top_level_await(t))
+                || for_stmt.update.as_ref().is_some_and(|u| expr_has_top_level_await(u))
+                || stmt_has_top_level_await(&for_stmt.body)
         }
         Statement::ForInStatement(for_in) => {
             for_left_has_top_level_await(&for_in.left)
@@ -420,10 +413,7 @@ fn stmt_has_top_level_await(stmt: &Statement) -> bool {
             expr_has_top_level_await(&with_stmt.object) || stmt_has_top_level_await(&with_stmt.body)
         }
         Statement::ExpressionStatement(expr_stmt) => expr_has_top_level_await(&expr_stmt.expression),
-        Statement::ReturnStatement(ret) => ret
-            .argument
-            .as_ref()
-            .is_some_and(|a| expr_has_top_level_await(a)),
+        Statement::ReturnStatement(ret) => ret.argument.as_ref().is_some_and(|a| expr_has_top_level_await(a)),
         Statement::ThrowStatement(throw) => expr_has_top_level_await(&throw.argument),
         Statement::VariableDeclaration(vd) => vd
             .declarations
@@ -452,32 +442,23 @@ fn for_left_has_top_level_await(left: &ForStatementLeft) -> bool {
 /// 成员、TS 包装）经 `simple_target_has_top_level_await` 游走。
 fn target_has_top_level_await(target: &AssignmentTarget) -> bool {
     match target {
-        AssignmentTarget::ArrayAssignmentTarget(arr) => arr
-            .elements
-            .iter()
-            .flatten()
-            .any(|e| target_maybe_default_has_top_level_await(e))
-            || arr
-                .rest
-                .as_ref()
-                .is_some_and(|r| target_has_top_level_await(&r.target)),
+        AssignmentTarget::ArrayAssignmentTarget(arr) => {
+            arr.elements
+                .iter()
+                .flatten()
+                .any(|e| target_maybe_default_has_top_level_await(e))
+                || arr.rest.as_ref().is_some_and(|r| target_has_top_level_await(&r.target))
+        }
         AssignmentTarget::ObjectAssignmentTarget(obj) => {
             obj.properties.iter().any(|p| match p {
-                AssignmentTargetProperty::AssignmentTargetPropertyIdentifier(id) => id
-                    .init
-                    .as_ref()
-                    .is_some_and(|i| expr_has_top_level_await(i)),
+                AssignmentTargetProperty::AssignmentTargetPropertyIdentifier(id) => {
+                    id.init.as_ref().is_some_and(|i| expr_has_top_level_await(i))
+                }
                 AssignmentTargetProperty::AssignmentTargetPropertyProperty(prop) => {
-                    prop.name
-                        .as_expression()
-                        .is_some_and(expr_has_top_level_await)
+                    prop.name.as_expression().is_some_and(expr_has_top_level_await)
                         || target_maybe_default_has_top_level_await(&prop.binding)
                 }
-            })
-            || obj
-                .rest
-                .as_ref()
-                .is_some_and(|r| target_has_top_level_await(&r.target))
+            }) || obj.rest.as_ref().is_some_and(|r| target_has_top_level_await(&r.target))
         }
         _ => target
             .as_simple_assignment_target()
@@ -549,32 +530,19 @@ fn expr_has_top_level_await(expr: &Expression) -> bool {
         Expression::StaticMemberExpression(m) => expr_has_top_level_await(&m.object),
         Expression::PrivateFieldExpression(m) => expr_has_top_level_await(&m.object),
         Expression::ChainExpression(chain) => chain_element_has_top_level_await(&chain.expression),
-        Expression::ArrayExpression(arr) => arr
-            .elements
-            .iter()
-            .any(|e| match e {
-                ArrayExpressionElement::SpreadElement(spread) => {
-                    expr_has_top_level_await(&spread.argument)
-                }
-                _ => e.as_expression().is_some_and(expr_has_top_level_await),
-            }),
+        Expression::ArrayExpression(arr) => arr.elements.iter().any(|e| match e {
+            ArrayExpressionElement::SpreadElement(spread) => expr_has_top_level_await(&spread.argument),
+            _ => e.as_expression().is_some_and(expr_has_top_level_await),
+        }),
         Expression::ObjectExpression(obj) => obj.properties.iter().any(|p| match p {
             ObjectPropertyKind::ObjectProperty(prop) => {
-                (prop.computed
-                    && prop
-                        .key
-                        .as_expression()
-                        .is_some_and(expr_has_top_level_await))
+                (prop.computed && prop.key.as_expression().is_some_and(expr_has_top_level_await))
                     || expr_has_top_level_await(&prop.value)
             }
             ObjectPropertyKind::SpreadProperty(spread) => expr_has_top_level_await(&spread.argument),
         }),
-        Expression::SequenceExpression(seq) => {
-            seq.expressions.iter().any(|e| expr_has_top_level_await(e))
-        }
-        Expression::TemplateLiteral(tmpl) => {
-            tmpl.expressions.iter().any(|e| expr_has_top_level_await(e))
-        }
+        Expression::SequenceExpression(seq) => seq.expressions.iter().any(|e| expr_has_top_level_await(e)),
+        Expression::TemplateLiteral(tmpl) => tmpl.expressions.iter().any(|e| expr_has_top_level_await(e)),
         Expression::TaggedTemplateExpression(tagged) => {
             expr_has_top_level_await(&tagged.tag)
                 || tagged.quasi.expressions.iter().any(|e| expr_has_top_level_await(e))
@@ -583,27 +551,21 @@ fn expr_has_top_level_await(expr: &Expression) -> bool {
         Expression::AssignmentExpression(assign) => {
             target_has_top_level_await(&assign.left) || expr_has_top_level_await(&assign.right)
         }
-        Expression::UpdateExpression(update) => {
-            simple_target_has_top_level_await(&update.argument)
-        }
+        Expression::UpdateExpression(update) => simple_target_has_top_level_await(&update.argument),
         Expression::UnaryExpression(unary) => expr_has_top_level_await(&unary.argument),
         Expression::ParenthesizedExpression(paren) => expr_has_top_level_await(&paren.expression),
-        Expression::YieldExpression(yield_expr) => yield_expr
-            .argument
-            .as_ref()
-            .is_some_and(|a| expr_has_top_level_await(a)),
+        Expression::YieldExpression(yield_expr) => {
+            yield_expr.argument.as_ref().is_some_and(|a| expr_has_top_level_await(a))
+        }
         Expression::PrivateInExpression(private_in) => expr_has_top_level_await(&private_in.right),
         Expression::ImportExpression(import_expr) => {
             expr_has_top_level_await(&import_expr.source)
-                || import_expr
-                    .options
-                    .as_ref()
-                    .is_some_and(|o| expr_has_top_level_await(o))
+                || import_expr.options.as_ref().is_some_and(|o| expr_has_top_level_await(o))
         }
         // 函数体：独立异步语义边界，不进入。
-        Expression::FunctionExpression(_)
-        | Expression::ArrowFunctionExpression(_)
-        | Expression::ClassExpression(_) => false,
+        Expression::FunctionExpression(_) | Expression::ArrowFunctionExpression(_) | Expression::ClassExpression(_) => {
+            false
+        }
         // 字面量/标识符/this/super/meta 等无子表达式。
         _ => false,
     }
@@ -623,12 +585,8 @@ fn chain_element_has_top_level_await(element: &ChainElement) -> bool {
         ChainElement::ComputedMemberExpression(computed) => {
             expr_has_top_level_await(&computed.object) || expr_has_top_level_await(&computed.expression)
         }
-        ChainElement::StaticMemberExpression(static_member) => {
-            expr_has_top_level_await(&static_member.object)
-        }
-        ChainElement::PrivateFieldExpression(private_field) => {
-            expr_has_top_level_await(&private_field.object)
-        }
+        ChainElement::StaticMemberExpression(static_member) => expr_has_top_level_await(&static_member.object),
+        ChainElement::PrivateFieldExpression(private_field) => expr_has_top_level_await(&private_field.object),
     }
 }
 

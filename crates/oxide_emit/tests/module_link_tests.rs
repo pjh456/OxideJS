@@ -478,12 +478,8 @@ fn no_defer_object_for_non_defer_modules() {
 /// 无异步依赖时不发聚合 gate。
 #[test]
 fn tla_module_compiles_async_without_gate() {
-    let (ir, _) = emit_module(
-        "const x = await Promise.resolve(1); export { x };",
-        "./entry.js",
-        &[],
-    )
-    .expect("TLA 模块应编译成功");
+    let (ir, _) = emit_module("const x = await Promise.resolve(1); export { x };", "./entry.js", &[])
+        .expect("TLA 模块应编译成功");
     assert!(ir.is_async, "含顶层 await 的模块应标记异步求值");
     assert_eq!(
         ir.insts.iter().filter(|i| i.op == OpCode::AWAIT).count(),
@@ -497,48 +493,29 @@ fn tla_module_compiles_async_without_gate() {
 /// 异步函数体内的 await 不使模块变异步（await 落在嵌套子模块）。
 #[test]
 fn non_tla_module_stays_sync() {
-    let (ir, _) = emit_module(
-        "async function f() { return await Promise.resolve(1); } export { f };",
-        "./entry.js",
-        &[],
-    )
-    .expect("非 TLA 模块应编译成功");
+    let (ir, _) =
+        emit_module("async function f() { return await Promise.resolve(1); } export { f };", "./entry.js", &[])
+            .expect("非 TLA 模块应编译成功");
     assert!(!ir.is_async, "无顶层 await 的模块不得标记异步");
-    assert_eq!(
-        ir.insts.iter().filter(|i| i.op == OpCode::AWAIT).count(),
-        0,
-        "主身不得含 AWAIT"
-    );
+    assert_eq!(ir.insts.iter().filter(|i| i.op == OpCode::AWAIT).count(), 0, "主身不得含 AWAIT");
 }
 
 /// 面 21：`for await…of` 在模块代码使模块异步（规范强制模块异步求值，
 /// `await` 关键字触发 [[HasTLA]]；右值与体照常游走）。
 #[test]
 fn for_await_of_makes_module_async() {
-    let (ir, _) = emit_module(
-        "for await (const x of iter) { globalThis.v = x; }",
-        "./entry.js",
-        &[],
-    )
-    .expect("for await…of 模块应编译成功");
+    let (ir, _) = emit_module("for await (const x of iter) { globalThis.v = x; }", "./entry.js", &[])
+        .expect("for await…of 模块应编译成功");
     assert!(ir.is_async, "for await…of 应使模块标记异步");
 }
 
 /// 面 22：普通 `for…of`（无 `await`）不使模块异步，主身零 AWAIT。
 #[test]
 fn for_of_is_not_tla() {
-    let (ir, _) = emit_module(
-        "for (const x of iter) { globalThis.v = x; }",
-        "./entry.js",
-        &[],
-    )
-    .expect("for…of 模块应编译成功");
+    let (ir, _) =
+        emit_module("for (const x of iter) { globalThis.v = x; }", "./entry.js", &[]).expect("for…of 模块应编译成功");
     assert!(!ir.is_async, "普通 for…of 不得使模块标记异步");
-    assert_eq!(
-        ir.insts.iter().filter(|i| i.op == OpCode::AWAIT).count(),
-        0,
-        "主身不得含 AWAIT"
-    );
+    assert_eq!(ir.insts.iter().filter(|i| i.op == OpCode::AWAIT).count(), 0, "主身不得含 AWAIT");
 }
 
 /// 面 23：异步 eager 依赖聚合 gate——依赖含顶层 `await` 时 `__moduleEval` 返回
@@ -553,11 +530,7 @@ fn async_dep_emits_wait_all_gate() {
     .expect("含异步依赖的模块应编译成功");
     assert!(ir.is_async, "含异步依赖的导入方应标记异步求值");
     assert_eq!(native_calls_to(&ir, "__moduleWaitAll"), 1, "聚合 gate 应发一次");
-    assert_eq!(
-        ir.insts.iter().filter(|i| i.op == OpCode::AWAIT).count(),
-        1,
-        "gate 应以单 AWAIT 挂起"
-    );
+    assert_eq!(ir.insts.iter().filter(|i| i.op == OpCode::AWAIT).count(), 1, "gate 应以单 AWAIT 挂起");
 }
 
 /// 面 24：同步依赖零 diff 守卫——无 gate、无 AWAIT、模块保持同步。
@@ -571,9 +544,5 @@ fn sync_dep_no_gate() {
     .expect("含同步依赖的模块应编译成功");
     assert!(!ir.is_async, "无顶层 await 且依赖同步的模块不得标记异步");
     assert_eq!(native_calls_to(&ir, "__moduleWaitAll"), 0, "同步依赖不得发聚合 gate");
-    assert_eq!(
-        ir.insts.iter().filter(|i| i.op == OpCode::AWAIT).count(),
-        0,
-        "主身不得含 AWAIT"
-    );
+    assert_eq!(ir.insts.iter().filter(|i| i.op == OpCode::AWAIT).count(), 0, "主身不得含 AWAIT");
 }
