@@ -433,9 +433,7 @@ fn stmt_has_top_level_await(stmt: &Statement) -> bool {
                 .declarations
                 .iter()
                 .any(|d| d.init.as_ref().is_some_and(|i| expr_has_top_level_await(i))),
-            Declaration::ClassDeclaration(cls) => {
-                cls.super_class.as_ref().is_some_and(expr_has_top_level_await)
-            }
+            Declaration::ClassDeclaration(cls) => cls.super_class.as_ref().is_some_and(expr_has_top_level_await),
             _ => false,
         }),
         // `export default await ...` 是顶层 await；函数/类声明形态体不进入（同口径），

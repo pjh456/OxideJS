@@ -603,12 +603,8 @@ fn if_test_await_makes_module_async() {
 /// 表达式）是顶层 await，模块标记异步、体 await 编译为 AWAIT；类体不进入游走。
 #[test]
 fn extends_await_makes_module_async() {
-    let (ir, _) = emit_module(
-        "export class A extends (await Promise.resolve(1)) {}",
-        "./entry.js",
-        &[],
-    )
-    .expect("extends (await ...) 模块应编译成功");
+    let (ir, _) = emit_module("export class A extends (await Promise.resolve(1)) {}", "./entry.js", &[])
+        .expect("extends (await ...) 模块应编译成功");
     assert!(ir.is_async, "extends (await ...) 应标记模块异步求值");
     assert_eq!(
         ir.insts.iter().filter(|i| i.op == OpCode::AWAIT).count(),
