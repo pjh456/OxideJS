@@ -75,6 +75,16 @@ pub(crate) fn make_named_pair(
     make_pair(string_forge, shape_forge, name, labels.prototype, labels.constructor, labels.name)
 }
 
+/// 把 Function.prototype 标成函数对象：规范规定其是 function object
+/// （IsCallable 为真），typeof 报 "function"、Object.prototype.toString
+/// 品牌表报 "[object Function]"；调用/构造仍因无函数体抛 TypeError。
+pub(crate) fn tag_function_proto(proto: &P<JsObject>) {
+    let ptr = proto.as_ptr() as *mut JsObject;
+    // SAFETY: proto 是 make_named_pair 刚建的本进程对象，P 引用与裸指针同址。
+    let obj = unsafe { &mut *ptr };
+    obj.set_function(true);
+}
+
 /// 把 Number.prototype 标成 Number 对象本体：规范 21.7.3 规定其是
 /// [[NumberData]] = +0 的 Number object。type_tag 是 Object.prototype.toString
 /// 品牌表的判据（置位后报 "[object Number]"），boxed 值供 thisNumberValue/
@@ -483,6 +493,7 @@ impl BuiltinWorld {
         let (object_proto, object_constructor) = make_named_pair(string_forge, shape_forge, labels, "Object");
         let (array_proto, array_constructor) = make_named_pair(string_forge, shape_forge, labels, "Array");
         let (function_proto, function_constructor) = make_named_pair(string_forge, shape_forge, labels, "Function");
+        tag_function_proto(&function_proto);
         let (string_proto, string_constructor) = make_named_pair(string_forge, shape_forge, labels, "String");
         tag_string_proto(&string_proto, string_forge, shape_forge);
         let (number_proto, number_constructor) = make_named_pair(string_forge, shape_forge, labels, "Number");

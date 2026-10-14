@@ -179,12 +179,16 @@ fn has_instance_overrides_instanceof() {
 }
 
 #[test]
-fn has_instance_non_callable_falls_through() {
+fn has_instance_non_callable_handler_throws() {
     let mut vm = Vm::new();
+    // handler 在场但不可调用：Call(42) 抛 TypeError（旧行为静默回落
+    // prototype 分支，与规范步 4 不符）。
     let source = r#"
         class D {}
         D[Symbol.hasInstance] = 42;
-        ({} instanceof D) === false
+        var threw = false;
+        try { ({} ) instanceof D; } catch (e) { threw = e instanceof TypeError; }
+        threw
     "#;
     let result = eval(&mut vm, source).unwrap();
     assert!(result.as_bool());

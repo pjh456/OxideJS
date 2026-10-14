@@ -206,13 +206,11 @@ impl Vm {
             )?;
             Ok(true)
         } else {
-            let error = oxide_builtins::error::create_from_text(
-                self,
-                "NEW_EXPRESSION: bytecode constructors not yet supported",
-            );
-            self.exception_value = Some(error);
-            self.pending_error_kind = Some(self.thrown_error_kind(error));
-            self.unwind().map(|_| true)
+            // 无函数体的函数对象（如 Function.prototype）：IsConstructor 为假，
+            // 按规范抛 TypeError（此前该分支不可达，报普通 Error 属内部错误）。
+            self
+                .raise_type_error("NEW_EXPRESSION: constructor is not a constructor")
+                .map(|_| true)
         }
     }
 
@@ -411,17 +409,31 @@ impl Vm {
         let has_instance_si = encode_symbol_key(self.realm_id(), WELL_KNOWN_SYMBOL_HAS_INSTANCE);
 
         let ctor_obj = unsafe { &*rhs_val.as_js_object_ptr() };
-        let has_instance_val = self.ordinary_get(ctor_obj, has_instance_si, rhs_val)?;
+        // 传播读触发 getter；getter 抛错且外围 catch 接手时 ordinary_get 返回
+        // catch 参数值（pc 已改写），按 pc 变化感知并停流，异常由展开送达。
+        let pc_before = self.pc;
+        let has_instance_val = match self.ordinary_get(ctor_obj, has_instance_si, rhs_val) {
+            Ok(v) if self.pc == pc_before => v,
+            Ok(_) => return Ok(()),
+            Err(e) => return self.raise_call_error(&e).map(|_| ()),
+        };
+        // GetMethod 语义：null/undefined 均视为无 handler。handler 在场须可调用，
+        // 否则 Call(null) 抛 TypeError；调用异常原值上抛（外围 try/catch 可捕获）。
         if !has_instance_val.is_undefined() && !has_instance_val.is_null() {
-            let fn_ptr = has_instance_val.as_js_object_ptr();
-            if !fn_ptr.is_null() {
-                let fn_obj = unsafe { &*fn_ptr };
-                if fn_obj.is_function() {
-                    let result = self.call_function_sync(has_instance_val, rhs_val, &[lhs_val])?;
-                    self.regs[rd] = JsValue::bool(to_boolean(result));
-                    return Ok(());
-                }
+            if !is_callable(has_instance_val) {
+                return self.raise_type_error("instanceof: @@hasInstance handler is not callable");
             }
+            let result = match self.call_function_sync(has_instance_val, rhs_val, &[lhs_val]) {
+                Ok(v) => v,
+                Err(e) => return self.raise_call_error(&e).map(|_| ()),
+            };
+            self.regs[rd] = JsValue::bool(to_boolean(result));
+            return Ok(());
+        }
+
+        // 无 handler 时 RHS 不可调用即 TypeError（先于左操作数类型检查）。
+        if !is_callable(rhs_val) {
+            return self.raise_type_error("INSTANCEOF right-hand side is not callable");
         }
 
         if !lhs_val.is_object() {
@@ -431,15 +443,18 @@ impl Vm {
 
         let rhs_obj = unsafe { &*rhs_val.as_js_object_ptr() };
         let proto_si = self.kernel_core.perm_interner().intern("prototype").0;
-        let ctor_proto = self.resolve_property(rhs_obj, proto_si);
-
-        let ctor_proto_ptr = match ctor_proto {
-            Some(v) if v.is_object() => v.as_js_object_ptr(),
-            _ => {
-                self.regs[rd] = JsValue::bool(false);
-                return Ok(());
-            }
+        // 传播读：getter 异常原值上抛（深度 0 已就地展开的由 pc 变化感知）。
+        let pc_before = self.pc;
+        let ctor_proto = match self.ordinary_get(rhs_obj, proto_si, rhs_val) {
+            Ok(v) if self.pc == pc_before => v,
+            Ok(_) => return Ok(()),
+            Err(e) => return self.raise_call_error(&e).map(|_| ()),
         };
+        // prototype 非对象 → TypeError。
+        if !ctor_proto.is_object() {
+            return self.raise_type_error("instanceof: prototype is not an object");
+        }
+        let ctor_proto_ptr = ctor_proto.as_js_object_ptr();
 
         let mut proto = unsafe { &*lhs_val.as_js_object_ptr() }.proto();
         let mut depth = 0usize;

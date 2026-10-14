@@ -46,7 +46,9 @@ fn test_prototypes_are_not_functions() {
     let w = make_world();
     assert!(!w.object_proto.is_function());
     assert!(!w.array_proto.is_function());
-    assert!(!w.function_proto.is_function());
+    // Function.prototype 是函数对象（规范规定其 IsCallable 为真），
+    // 其余原型均非函数。
+    assert!(w.function_proto.is_function());
     assert!(!w.string_proto.is_function());
     assert!(!w.number_proto.is_function());
     assert!(!w.boolean_proto.is_function());

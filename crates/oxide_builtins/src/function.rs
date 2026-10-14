@@ -89,11 +89,12 @@ fn to_string_error_value<H: VmHost>(vm: &mut H, msg: &str) -> JsValue {
 /// 1. this（C）非可调用 → false（非对象或非函数对象，不抛）
 /// 2. C 是 bound 包装 → 逐层解包 [[BoundTargetFunction]]，按最内层 target 判定
 /// 3. 实参（O）非对象 → false
-/// 4. C.prototype 不是对象 → TypeError
+/// 4. C.prototype 读取（传播读，触发 getter）；非对象 → TypeError
 /// 5. 沿 O 原型链与 C.prototype 指针比对（深度上限防环）
 ///
 /// # 边界与前提
 /// - 唯一抛错点：C 可调用但其 `prototype` 属性非对象（含无 prototype 的 native 方法）
+///   或 prototype getter 抛错（原值经 uncaught 侧通道恢复投递）
 /// - bound 链解包后 prototype 取最内层 target 的（bound 包装自身无 prototype）
 /// - 无实参调用（O 缺失）视为 undefined → false
 pub fn function_symbol_has_instance<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
@@ -129,13 +130,12 @@ pub fn function_symbol_has_instance<H: VmHost>(vm: &mut H, args: &[u8]) -> Nativ
         return NativeResult::Ok(JsValue::bool(false));
     }
 
-    // prototype 非对象 → TypeError（OrdinaryHasInstance 唯一抛错点）。
+    // prototype 非对象 → TypeError（OrdinaryHasInstance 唯一抛错点）；
+    // 传播读触发 getter，getter 抛错时原值经 uncaught 侧通道恢复投递。
     let proto_si = vm.perm_intern("prototype");
-    let Some(proto_val) = vm.resolve_property(c_obj, proto_si) else {
-        return NativeResult::Err(crate::error::create_type_error(
-            vm,
-            "Function has non-object prototype in instanceof check",
-        ));
+    let proto_val = match vm.ordinary_get(c_obj, proto_si, c) {
+        Ok(v) => v,
+        Err(e) => return NativeResult::Err(to_string_error_value(vm, &e)),
     };
     if !proto_val.is_object() {
         return NativeResult::Err(crate::error::create_type_error(

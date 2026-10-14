@@ -7,8 +7,9 @@ use oxide_types::object::JsObject;
 use oxide_types::value::JsValue;
 
 use super::construct::{
-    builtin_labels, make_error_subtypes, make_named_pair, make_typed_array_family, tag_boolean_proto, tag_number_proto,
-    tag_string_proto, wire_builtin_world_links, ErrorSubtypeProtos, TypedArrayFamily,
+    builtin_labels, make_error_subtypes, make_named_pair, make_typed_array_family, tag_boolean_proto,
+    tag_function_proto, tag_number_proto, tag_string_proto, wire_builtin_world_links, ErrorSubtypeProtos,
+    TypedArrayFamily,
 };
 use super::{BindEnv, BuiltinWorld};
 use crate::kernel::BuiltinDirtySet;
@@ -173,7 +174,11 @@ impl BuiltinWorld {
             (current.array_proto.clone(), current.array_constructor.clone())
         };
         let (function_proto, function_constructor) = if dirty.function {
-            make_named_pair(string_forge, shape_forge, labels, "Function")
+            // 脏重建与全量构造同形：原型本体须带函数对象标志，
+            // 漏此分支 full_reset 后 IsCallable(Function.prototype) 翻回假。
+            let (proto, ctor) = make_named_pair(string_forge, shape_forge, labels, "Function");
+            tag_function_proto(&proto);
+            (proto, ctor)
         } else {
             (current.function_proto.clone(), current.function_constructor.clone())
         };
