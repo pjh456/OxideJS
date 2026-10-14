@@ -416,9 +416,9 @@ impl Vm {
             Ok(_) => return Ok(()),
             Err(e) => return self.raise_call_error(&e).map(|_| ()),
         };
-        // GetMethod 语义：null/undefined 均视为无 handler。handler 在场须可调用，
-        // 否则 Call(null) 抛 TypeError；调用异常原值上抛（外围 try/catch 可捕获）。
-        if !has_instance_val.is_undefined() && !has_instance_val.is_null() {
+        // 仅 undefined 视为无 handler；null 非 undefined，须调用，Call(null) 抛
+        // TypeError。handler 在场须可调用；调用异常原值上抛（外围 try/catch 可捕获）。
+        if !has_instance_val.is_undefined() {
             if !is_callable(has_instance_val) {
                 return self.raise_type_error("instanceof: @@hasInstance handler is not callable");
             }

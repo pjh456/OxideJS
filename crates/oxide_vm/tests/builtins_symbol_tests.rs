@@ -195,6 +195,21 @@ fn has_instance_non_callable_handler_throws() {
 }
 
 #[test]
+fn has_instance_null_handler_throws_type_error() {
+    let mut vm = Vm::new();
+    // null 非 undefined，规范仍须调用 handler，Call(null) 抛 TypeError。
+    let source = r#"
+        class D {}
+        D[Symbol.hasInstance] = null;
+        var threw = false;
+        try { ({} ) instanceof D; } catch (e) { threw = e instanceof TypeError; }
+        threw
+    "#;
+    let result = eval(&mut vm, source).unwrap();
+    assert!(result.as_bool());
+}
+
+#[test]
 fn has_instance_coerces_return_to_boolean() {
     let mut vm = Vm::new();
     let source = r#"
