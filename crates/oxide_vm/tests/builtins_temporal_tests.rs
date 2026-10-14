@@ -4616,3 +4616,170 @@ fn round_options_bag_shorthand_and_modes() {
         "1976-11-18T13:00:00|1976-11-18T13:00:00|1976-11-18T12:00:00|1976-11-18T13:00:00|1976-11-18T12:00:00|1976-11-18T13:00:00|1976-11-18T12:00:00|1976-11-18T12:00:00|1976-11-18T12:00:00"
     );
 }
+
+// -- Temporal.Now.*ISO --
+
+#[test]
+fn now_iso_methods_return_utc_components() {
+    let mut vm = Vm::new();
+    let r = eval(
+        &mut vm,
+        "(() => {
+           let before = Temporal.Now.instant();
+           let d = Temporal.Now.plainDateISO();
+           let t = Temporal.Now.plainTimeISO();
+           let dt = Temporal.Now.plainDateTimeISO();
+           let m = Temporal.Now.plainMonthDayISO();
+           let y = Temporal.Now.plainYearMonthISO();
+           let z = Temporal.Now.zonedDateTimeISO();
+           let after = Temporal.Now.instant();
+           let bd = before.toZonedDateTimeISO('UTC').toPlainDate();
+           let ad = after.toZonedDateTimeISO('UTC').toPlainDate();
+           let bt = before.toZonedDateTimeISO('UTC').toPlainTime();
+           let at = after.toZonedDateTimeISO('UTC').toPlainTime();
+           let lo = bd.subtract({ days: 1 });
+           let hi = ad.add({ days: 1 });
+           let dateInRange = (x) => Temporal.PlainDate.compare(x, lo) >= 0
+             && Temporal.PlainDate.compare(x, hi) <= 0;
+           let ymInRange = (yr, mo) => {
+             let pm = new Temporal.PlainYearMonth(yr, mo);
+             return Temporal.PlainYearMonth.compare(pm, new Temporal.PlainYearMonth(lo.year, lo.month)) >= 0
+               && Temporal.PlainYearMonth.compare(pm, new Temporal.PlainYearMonth(hi.year, hi.month)) <= 0;
+           };
+           let timeInRange = (x) => bd === ad
+             ? (Temporal.PlainTime.compare(x, bt) >= 0 && Temporal.PlainTime.compare(x, at) <= 0)
+             : (Temporal.PlainTime.compare(x, bt) >= 0 || Temporal.PlainTime.compare(x, at) <= 0);
+           return (d instanceof Temporal.PlainDate) + '|' +
+             (t instanceof Temporal.PlainTime) + '|' +
+             (dt instanceof Temporal.PlainDateTime) + '|' +
+             (m instanceof Temporal.PlainMonthDay) + '|' +
+             (y instanceof Temporal.PlainYearMonth) + '|' +
+             (z instanceof Temporal.ZonedDateTime) + '|' +
+             d.calendarId + '|' + dt.calendarId + '|' + z.calendarId + '|' +
+             dateInRange(d) + '|' + timeInRange(t) + '|' +
+             dateInRange(dt.toPlainDate()) + '|' + timeInRange(dt.toPlainTime()) + '|' +
+             dateInRange(new Temporal.PlainDate(y.year, Number(m.monthCode.slice(1)), m.day)) + '|' +
+             ymInRange(y.year, y.month) + '|' +
+             (z.timeZoneId === Temporal.Now.timeZoneId());
+         })()",
+    )
+    .unwrap();
+    assert_eq!(
+        str_val(&vm, r),
+        "true|true|true|true|true|true|iso8601|iso8601|iso8601|true|true|true|true|true|true|true"
+    );
+}
+
+#[test]
+fn now_iso_methods_accept_time_zone_strings() {
+    let mut vm = Vm::new();
+    let r = eval(
+        &mut vm,
+        "['UTC', 'uTc', '+01:30', '-07:00', '+01', '-0530', 'Asia/Shanghai',
+           '2021-08-19T17:30Z', '2021-08-19T1730Z', '2021-08-19T17:30-07:00',
+           '2021-08-19T17:30-0700', '2021-08-19T17:30[UTC]', '2021-08-19T17:30Z[UTC]',
+           '2021-08-19T17:30-07:00[UTC]', '2016-12-31T23:59:60+00:00[UTC]']
+          .every(z => Temporal.Now.plainDateISO(z) instanceof Temporal.PlainDate
+              && Temporal.Now.plainTimeISO(z) instanceof Temporal.PlainTime
+              && Temporal.Now.plainDateTimeISO(z) instanceof Temporal.PlainDateTime
+              && Temporal.Now.zonedDateTimeISO(z) instanceof Temporal.ZonedDateTime)",
+    )
+    .unwrap();
+    assert!(r.as_bool());
+}
+
+#[test]
+fn now_zoned_date_time_iso_time_zone_id() {
+    let mut vm = Vm::new();
+    let r = eval(
+        &mut vm,
+        "Temporal.Now.zonedDateTimeISO('2021-08-19T17:30Z').timeZoneId + '|' +
+         Temporal.Now.zonedDateTimeISO('2021-08-19T17:30-07:00').timeZoneId + '|' +
+         Temporal.Now.zonedDateTimeISO('2021-08-19T17:30[UTC]').timeZoneId + '|' +
+         Temporal.Now.zonedDateTimeISO('2021-08-19T17:30:45.123456789-12:12[+01:46]').timeZoneId + '|' +
+         Temporal.Now.zonedDateTimeISO('UtC').timeZoneId + '|' +
+         Temporal.Now.zonedDateTimeISO('+01:30').timeZoneId + '|' +
+         Temporal.Now.zonedDateTimeISO().timeZoneId",
+    )
+    .unwrap();
+    assert_eq!(str_val(&vm, r), "UTC|-07:00|UTC|+01:46|UTC|+01:30|UTC");
+}
+
+#[test]
+fn now_iso_methods_reject_invalid_time_zones() {
+    let mut vm = Vm::new();
+    let r = eval(
+        &mut vm,
+        "['2021-08-19T17:30', '2021-08-19T17:30-07:00:00', '2021-08-19T17:30-07:00:00.1',
+           '-12:12:59.9', '2021-08-19T17:30:45.123456789-12:12:59.9[-12:12:59.9]',
+           '2021-08-19T17:30:45.123456789+23:59[+23:59:60]',
+           '-000000-10-31T17:45Z', '-000000-10-31T17:45+00:00[UTC]', '']
+          .every(z => { try { Temporal.Now.plainDateISO(z); return false }
+                       catch (e) { return e instanceof RangeError } }) + '|' +
+         [null, true, 1, 19761118, 1n, Symbol(), {}, new Temporal.Duration()]
+          .every(z => { try { Temporal.Now.zonedDateTimeISO(z); return false }
+                       catch (e) { return e instanceof TypeError } })",
+    )
+    .unwrap();
+    assert_eq!(str_val(&vm, r), "true|true");
+}
+
+#[test]
+fn now_plain_time_iso_does_not_call_to_plain_time() {
+    let mut vm = Vm::new();
+    let r = eval(
+        &mut vm,
+        "let calls = [];
+         Object.defineProperty(Temporal.PlainDateTime.prototype, 'toPlainTime', {
+           get() { calls.push('get'); return () => calls.push('call'); }
+         });
+         let result = Temporal.Now.plainTimeISO('UTC');
+         calls.length + '|' + (result instanceof Temporal.PlainTime)",
+    )
+    .unwrap();
+    assert_eq!(str_val(&vm, r), "0|true");
+}
+
+#[test]
+fn now_and_temporal_and_plain_date_to_string_tags() {
+    let mut vm = Vm::new();
+    let r = eval(
+        &mut vm,
+        "let d1 = Object.getOwnPropertyDescriptor(Temporal, Symbol.toStringTag);
+         let d2 = Object.getOwnPropertyDescriptor(Temporal.Now, Symbol.toStringTag);
+         let d3 = Object.getOwnPropertyDescriptor(Temporal.PlainDate.prototype, Symbol.toStringTag);
+         (d1.value === 'Temporal' && d1.writable === false && d1.enumerable === false && d1.configurable === true) + '|' +
+         (d2.value === 'Temporal.Now' && d2.writable === false && d2.enumerable === false && d2.configurable === true) + '|' +
+         (d3.value === 'Temporal.PlainDate' && d3.writable === false && d3.enumerable === false && d3.configurable === true) + '|' +
+         Object.prototype.toString.call(Temporal) + '|' +
+         Object.prototype.toString.call(Temporal.Now) + '|' +
+         Object.prototype.toString.call(new Temporal.PlainDate(2024, 1, 1))",
+    )
+    .unwrap();
+    assert_eq!(
+        str_val(&vm, r),
+        "true|true|true|[object Temporal]|[object Temporal.Now]|[object Temporal.PlainDate]"
+    );
+}
+
+#[test]
+fn now_iso_method_bindings_are_plain_functions() {
+    let mut vm = Vm::new();
+    let r = eval(
+        &mut vm,
+        "['plainDateISO', 'plainDateTimeISO', 'plainTimeISO', 'plainMonthDayISO', 'plainYearMonthISO', 'zonedDateTimeISO']
+          .every(name => {
+            let f = Temporal.Now[name];
+            if (typeof f !== 'function' || f.length !== 0 || f.name !== name) return false;
+            let d = Object.getOwnPropertyDescriptor(Temporal.Now, name);
+            return d.writable === true && d.enumerable === false && d.configurable === true;
+          }) + '|' +
+         Object.isExtensible(Temporal.Now) + '|' +
+         (Object.getPrototypeOf(Temporal.Now) === Object.prototype) + '|' +
+         (Temporal.Now.prototype === undefined) + '|' +
+         ( () => { try { new Temporal.Now.zonedDateTimeISO(); return false }
+                catch (e) { return e instanceof TypeError } })()",
+    )
+    .unwrap();
+    assert_eq!(str_val(&vm, r), "true|true|true|true|true");
+}

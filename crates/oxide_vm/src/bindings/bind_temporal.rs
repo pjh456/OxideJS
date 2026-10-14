@@ -23,7 +23,45 @@ pub fn bind_temporal(env: BindEnv<'_>, global: &mut JsObject) {
         &[
             ("instant", oxide_builtins::temporal::now_instant::<crate::vm::Vm> as *const (), 0),
             ("timeZoneId", oxide_builtins::temporal::now_time_zone_id::<crate::vm::Vm> as *const (), 0),
+            (
+                "plainDateISO",
+                oxide_builtins::temporal::now_plain_date_iso::<crate::vm::Vm> as *const (),
+                0,
+            ),
+            (
+                "plainDateTimeISO",
+                oxide_builtins::temporal::now_plain_date_time_iso::<crate::vm::Vm> as *const (),
+                0,
+            ),
+            (
+                "plainTimeISO",
+                oxide_builtins::temporal::now_plain_time_iso::<crate::vm::Vm> as *const (),
+                0,
+            ),
+            (
+                "plainMonthDayISO",
+                oxide_builtins::temporal::now_plain_month_day_iso::<crate::vm::Vm> as *const (),
+                0,
+            ),
+            (
+                "plainYearMonthISO",
+                oxide_builtins::temporal::now_plain_year_month_iso::<crate::vm::Vm> as *const (),
+                0,
+            ),
+            (
+                "zonedDateTimeISO",
+                oxide_builtins::temporal::now_zoned_date_time_iso::<crate::vm::Vm> as *const (),
+                0,
+            ),
         ],
+    );
+    bind_well_known_data_property(
+        env.core,
+        now,
+        9,
+        JsValue::perm_string(env.string_forge().string_ptr(env.string_forge().intern("Temporal.Now").0)),
+        PropAttributes::new(false, false, true),
+        env.realm_id,
     );
 
     // Temporal.Instant：构造器 + 静态方法 + 原型 getter 与 toString/valueOf。
@@ -591,6 +629,14 @@ pub fn bind_temporal(env: BindEnv<'_>, global: &mut JsObject) {
             ("round", oxide_builtins::temporal::plain_date_round::<crate::vm::Vm> as *const (), 1),
         ],
     );
+    bind_well_known_data_property(
+        env.core,
+        plain_date_proto,
+        9,
+        JsValue::perm_string(env.string_forge().string_ptr(env.string_forge().intern("Temporal.PlainDate").0)),
+        PropAttributes::new(false, false, true),
+        env.realm_id,
+    );
 
     // Temporal.PlainTime：构造器 + 6 个分量 getter 与 toString。
     let plain_time_ctor_ptr = world.plain_time_constructor.as_ptr() as *mut JsObject;
@@ -1157,6 +1203,14 @@ pub fn bind_temporal(env: BindEnv<'_>, global: &mut JsObject) {
     );
 
     // 把子对象挂到 Temporal 命名空间对象上，再把 Temporal 挂到 global。
+    bind_well_known_data_property(
+        env.core,
+        temporal,
+        9,
+        JsValue::perm_string(env.string_forge().string_ptr(env.string_forge().intern("Temporal").0)),
+        PropAttributes::new(false, false, true),
+        env.realm_id,
+    );
     bind_global_value(env.core, temporal, "Now", JsValue::from_js_object(now_ptr));
     bind_global_value(env.core, temporal, "Instant", JsValue::from_js_object(instant_ctor_ptr));
     bind_global_value(env.core, temporal, "PlainDate", JsValue::from_js_object(plain_date_ctor_ptr));

@@ -914,6 +914,67 @@ pub(crate) fn canonical_time_zone(value: &str) -> Option<String> {
     parse_offset_seconds(offset_id).map(|_| offset_id.to_string())
 }
 
+/// 整数分钟偏移串解析为秒（±HH:MM / ±HH / ±HHMM 三形式）。
+///
+/// # 边界与前提
+/// - 亚分钟形式（±HH:MM:SS 及带小数秒的串）一律拒绝，返回 None。
+/// - 小时 ≤ 23、分钟 ≤ 59，越界返回 None。
+pub(crate) fn whole_minute_offset(value: &str) -> Option<i64> {
+    if value.len() == 9 {
+        return None;
+    }
+    fixed_offset_seconds(value)
+}
+
+/// 时区字符串解析（ParseTemporalTimeZoneString）：返回规范时区 ID。
+///
+/// # 步骤
+/// 1. "-000000" 前缀（负零年出 ISO 界）先于一切分支拒绝。
+/// 2. UTC/Z（大小写折叠）→ "UTC"。
+/// 3. 独立整数分钟偏移串原样保留为时区 ID。
+/// 4. IANA 区名（含 legacy 别名）→ 规范名。
+/// 5. 完整日期时间串：带方括号注解 → 注解内容递归走同一分支序；
+///    无注解、带尾偏移 → 偏移子串原样保留；无注解、无偏移 → None。
+///
+/// # 边界与前提
+/// - 亚分钟偏移（±HH:MM:SS、小数秒）在步骤 3 与步骤 5 的偏移分支均被拒绝。
+/// - 裸日期时间串（无偏移、无注解）不是合法时区，返回 None。
+/// - 与 canonical_time_zone 的区别：尾偏移接受 ±HHMM / ±HH 整数分钟形式，
+///   不修改 canonical_time_zone 的既有接受面。
+pub(crate) fn parse_time_zone_string(value: &str) -> Option<String> {
+    let input = value.trim();
+    if input.starts_with("-000000") {
+        return None;
+    }
+    if input.eq_ignore_ascii_case("UTC") || input.eq_ignore_ascii_case("Z") {
+        return Some("UTC".to_string());
+    }
+    if whole_minute_offset(input).is_some() {
+        return Some(input.to_string());
+    }
+    if let Some(name) = tz_canonical_name(input) {
+        return Some(name.to_string());
+    }
+    if let Some(open) = input.rfind('[') {
+        if !input.ends_with(']') || open + 2 > input.len() {
+            return None;
+        }
+        let annotation = &input[open + 1..input.len() - 1];
+        return parse_time_zone_string(annotation);
+    }
+    let time_start = input.find(['T', 't', ' '])?;
+    let time = &input[time_start + 1..];
+    if time.ends_with(['Z', 'z']) {
+        return Some("UTC".to_string());
+    }
+    let offset_start = time
+        .char_indices()
+        .rev()
+        .find_map(|(index, ch)| matches!(ch, '+' | '-').then_some(index))?;
+    let offset_id = &time[offset_start..];
+    whole_minute_offset(offset_id).map(|_| offset_id.to_string())
+}
+
 pub(crate) fn civil_from_days(days: i128) -> (i128, i128, i128) {
     let shifted = days + 719_468;
     let era = shifted.div_euclid(146_097);

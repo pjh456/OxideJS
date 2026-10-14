@@ -11,11 +11,14 @@ use super::time_zone::zone_offset_seconds;
 use super::{
     balance_instant_difference, canonical_time_zone, civil_from_days, days_from_civil, days_in_month,
     duration_like_values, duration_time_nanoseconds, ensure_instant, format_iso_year, format_offset_seconds_text,
-    get_instant_epoch_ns, initialize_temporal_receiver, is_ctor_call, make_duration, make_instant,
-    make_zoned_date_time, native_engine_error, parse_digits, parse_fractional_second_digits, parse_round_options,
+    get_instant_epoch_ns, initialize_temporal_receiver, is_ctor_call, make_duration, make_instant, make_plain_date,
+    make_plain_date_time, make_plain_month_day, make_plain_time, make_plain_year_month, make_zoned_date_time,
+    native_engine_error, parse_digits, parse_fractional_second_digits, parse_round_options, parse_time_zone_string,
     receiver_obj, round_instant_difference, temporal_option_number, temporal_option_string, temporal_option_value,
     FractionalSecondDigitsInput, MAX_INSTANT_NS,
 };
+
+const DAY_NS: i128 = 86_400_000_000_000;
 
 pub(crate) fn instant_string_without_annotations(input: &str) -> Option<&str> {
     let Some(first_annotation) = input.find('[') else {
@@ -288,14 +291,84 @@ fn instant_like_epoch_ns<H: VmHost>(vm: &mut H, value: JsValue) -> Result<i128, 
 
 /// `Temporal.Now.instant()`：返回当前时刻的 Temporal.Instant。
 pub fn now_instant<H: VmHost>(vm: &mut H, _args: &[u8]) -> NativeResult {
-    let now = Utc::now();
-    let epoch_ns = now.timestamp() as i128 * 1_000_000_000 + now.timestamp_subsec_nanos() as i128;
-    make_instant(vm, epoch_ns)
+    make_instant(vm, now_epoch_ns())
 }
 
 /// `Temporal.Now.timeZoneId()`：引擎固定使用 UTC。
 pub fn now_time_zone_id<H: VmHost>(vm: &mut H, _args: &[u8]) -> NativeResult {
     NativeResult::Ok(vm.new_string("UTC"))
+}
+
+fn now_epoch_ns() -> i128 {
+    let now = Utc::now();
+    now.timestamp() as i128 * 1_000_000_000 + now.timestamp_subsec_nanos() as i128
+}
+
+/// Now.*ISO 方法的可选 timeZone 参数解析：undefined → "UTC"；非字符串 →
+/// TypeError；字符串经 parse_time_zone_string 校验（空串与非法形式 → RangeError）。
+///
+/// # 边界与前提
+/// - 本批口径下 zone 参仅做语法校验，返回分量恒取 UTC，zone 值不影响分量。
+fn now_time_zone_param<H: VmHost>(vm: &mut H, args: &[u8]) -> Result<String, JsValue> {
+    let raw = if args.len() < 2 { JsValue::undefined() } else { vm.reg(args[1]) };
+    if raw.is_undefined() {
+        return Ok("UTC".to_string());
+    }
+    if !raw.is_string() {
+        return Err(crate::error::create_type_error(vm, "invalid time zone"));
+    }
+    let input = to_string(raw);
+    parse_time_zone_string(&input).ok_or_else(|| crate::error::create_range_error(vm, "invalid time zone"))
+}
+
+/// `Temporal.Now.plainDateISO([timeZone])`：返回当前 UTC 日期的 PlainDate。
+pub fn now_plain_date_iso<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let epoch_ns = now_epoch_ns();
+    native_try!(now_time_zone_param(vm, args));
+    let (year, month, day) = civil_from_days(epoch_ns.div_euclid(DAY_NS));
+    make_plain_date(vm, year as i32, month as u32, day as u32, "iso8601")
+}
+
+/// `Temporal.Now.plainTimeISO([timeZone])`：返回当前 UTC 时刻的 PlainTime。
+/// 直接按纳秒分量构造，不经 toPlainTime 路径。
+pub fn now_plain_time_iso<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let epoch_ns = now_epoch_ns();
+    native_try!(now_time_zone_param(vm, args));
+    make_plain_time(vm, epoch_ns.rem_euclid(DAY_NS) as f64)
+}
+
+/// `Temporal.Now.plainDateTimeISO([timeZone])`：返回当前 UTC 日期时间的 PlainDateTime。
+pub fn now_plain_date_time_iso<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let epoch_ns = now_epoch_ns();
+    native_try!(now_time_zone_param(vm, args));
+    let (year, month, day) = civil_from_days(epoch_ns.div_euclid(DAY_NS));
+    make_plain_date_time(vm, year as i32, month as u32, day as u32, epoch_ns.rem_euclid(DAY_NS) as f64, "iso8601")
+}
+
+/// `Temporal.Now.plainMonthDayISO([timeZone])`：返回当前 UTC 月日的 PlainMonthDay
+/// （参考年取当前年）。
+pub fn now_plain_month_day_iso<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let epoch_ns = now_epoch_ns();
+    native_try!(now_time_zone_param(vm, args));
+    let (year, month, day) = civil_from_days(epoch_ns.div_euclid(DAY_NS));
+    make_plain_month_day(vm, month as u32, day as u32, year as i32, "iso8601")
+}
+
+/// `Temporal.Now.plainYearMonthISO([timeZone])`：返回当前 UTC 年月的 PlainYearMonth
+/// （参考日取当前日）。
+pub fn now_plain_year_month_iso<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let epoch_ns = now_epoch_ns();
+    native_try!(now_time_zone_param(vm, args));
+    let (year, month, day) = civil_from_days(epoch_ns.div_euclid(DAY_NS));
+    make_plain_year_month(vm, year as i32, month as u32, day as u32, "iso8601")
+}
+
+/// `Temporal.Now.zonedDateTimeISO([timeZone])`：返回同一纪元纳秒、指定时区的
+/// ZonedDateTime（calendar 恒 iso8601）。
+pub fn now_zoned_date_time_iso<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let epoch_ns = now_epoch_ns();
+    let zone = native_try!(now_time_zone_param(vm, args));
+    make_zoned_date_time(vm, epoch_ns, &zone, "iso8601")
 }
 
 /// `Temporal.Instant` 构造器：把参数按 ToBigInt 转换为纪元纳秒。
@@ -691,7 +764,6 @@ pub fn instant_since<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 pub(crate) fn format_instant_iso(
     epoch_ns: i128, offset_seconds: Option<i64>, include_seconds: bool, fractional_digits: Option<usize>,
 ) -> Option<String> {
-    const DAY_NS: i128 = 86_400_000_000_000;
     let offset_ns = i128::from(offset_seconds.unwrap_or(0)).checked_mul(1_000_000_000)?;
     let local_ns = epoch_ns.checked_add(offset_ns)?;
     let days = local_ns.div_euclid(DAY_NS);
