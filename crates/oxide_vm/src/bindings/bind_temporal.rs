@@ -568,6 +568,26 @@ pub fn bind_temporal(env: BindEnv<'_>, global: &mut JsObject) {
             ("until", oxide_builtins::temporal::plain_date_until::<crate::vm::Vm> as *const (), 1),
             ("since", oxide_builtins::temporal::plain_date_since::<crate::vm::Vm> as *const (), 1),
             ("with", oxide_builtins::temporal::plain_date_with::<crate::vm::Vm> as *const (), 1),
+            (
+                "withCalendar",
+                oxide_builtins::temporal::plain_date_with_calendar::<crate::vm::Vm> as *const (),
+                1,
+            ),
+            (
+                "toPlainDateTime",
+                oxide_builtins::temporal::plain_date_to_plain_date_time::<crate::vm::Vm> as *const (),
+                0,
+            ),
+            (
+                "toPlainMonthDay",
+                oxide_builtins::temporal::plain_date_to_plain_month_day::<crate::vm::Vm> as *const (),
+                0,
+            ),
+            (
+                "toPlainYearMonth",
+                oxide_builtins::temporal::plain_date_to_plain_year_month::<crate::vm::Vm> as *const (),
+                0,
+            ),
         ],
     );
 
@@ -814,6 +834,16 @@ pub fn bind_temporal(env: BindEnv<'_>, global: &mut JsObject) {
                 1,
             ),
             ("with", oxide_builtins::temporal::plain_date_time_with::<crate::vm::Vm> as *const (), 1),
+            (
+                "withCalendar",
+                oxide_builtins::temporal::plain_date_time_with_calendar::<crate::vm::Vm> as *const (),
+                1,
+            ),
+            (
+                "withPlainTime",
+                oxide_builtins::temporal::plain_date_time_with_plain_time::<crate::vm::Vm> as *const (),
+                0,
+            ),
         ],
     );
     bind_well_known_data_property(

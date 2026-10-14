@@ -11,11 +11,11 @@ use super::{
     duration_like_values, ensure_plain_date_time, format_iso_year, get_calendar_id, get_double_prop,
     initialize_temporal_receiver, instant_rounding_mode, is_ctor_call, is_leap_year_iso, make_plain_date,
     make_plain_date_time, make_plain_time, parse_difference_settings, parse_fractional_second_digits,
-    parse_temporal_string_impl, plain_date_time_object_parts, plain_time_components, receiver_obj,
-    reject_partial_object_with_calendar_or_time_zone, resolve_date_time_parts, round_instant_ns,
-    temporal_calendar_id_strict, temporal_number_component, temporal_option_number, temporal_option_string,
-    temporal_option_value, temporal_overflow, valid_iso_date, valid_plain_date_time_range, valid_plain_time,
-    zoned_date_time_plain_parts, DateTimeParts, FractionalSecondDigitsInput, IsoDateTime,
+    parse_temporal_string_impl, plain_date_time_object_parts, plain_time_components, plain_time_like_ns,
+    receiver_obj, reject_partial_object_with_calendar_or_time_zone, resolve_date_time_parts, round_instant_ns,
+    temporal_calendar_id, temporal_calendar_id_strict, temporal_number_component, temporal_option_number,
+    temporal_option_string, temporal_option_value, temporal_overflow, valid_iso_date, valid_plain_date_time_range,
+    valid_plain_time, zoned_date_time_plain_parts, DateTimeParts, FractionalSecondDigitsInput, IsoDateTime,
 };
 // ───────────────────── PlainDateTime 基础方法 ─────────────────────
 
@@ -528,6 +528,61 @@ pub fn plain_date_time_to_plain_date<H: VmHost>(vm: &mut H, args: &[u8]) -> Nati
 pub fn plain_date_time_to_plain_time<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let (_, _, _, total_ns) = native_try!(plain_date_time_parts(vm, args));
     make_plain_time(vm, total_ns)
+}
+
+/// `Temporal.PlainDateTime.prototype.withCalendar(calendar)`：只换日历槽，日期时间分量不变。
+///
+/// # 步骤
+/// 1. receiver 品牌校验；缺参 / undefined 抛 TypeError。
+/// 2. 参数经 temporal_calendar_id（宽松版）：字符串走白名单或 ISO 日期(-时间)串，
+///    六类 Temporal 对象直读日历槽（不触发 getter），其他对象 / 原始值抛 TypeError。
+/// 3. 读 receiver 槽 0-3 重建，日历槽替换。
+///
+/// # 边界与前提
+/// - 非法日历串 → RangeError；日历 ID 大小写折叠。
+pub fn plain_date_time_with_calendar<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let ptr = native_try!(receiver_obj(vm, args));
+    let obj = unsafe { &*ptr };
+    native_try!(ensure_plain_date_time(vm, obj));
+    let calendar_value = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
+    if calendar_value.is_undefined() {
+        return NativeResult::Err(crate::error::create_type_error(vm, "calendar is required"));
+    }
+    let calendar = native_try!(temporal_calendar_id(vm, calendar_value)).unwrap_or_else(|| "iso8601".to_string());
+    make_plain_date_time(
+        vm,
+        get_double_prop(obj, 0) as i32,
+        get_double_prop(obj, 1) as u32,
+        get_double_prop(obj, 2) as u32,
+        get_double_prop(obj, 3),
+        &calendar,
+    )
+}
+
+/// `Temporal.PlainDateTime.prototype.withPlainTime(plainTimeLike)`：只换时间槽，日期分量不变。
+///
+/// # 步骤
+/// 1. receiver 品牌校验；读槽 0-2 与日历槽 4 入本地（plain_time_like_ns 的 bag
+///    路径有用户调用窗口，receiver 槽须先于窗口读入）。
+/// 2. plain_time_like_ns 取当日纳秒（undefined → 午夜）。
+/// 3. valid_plain_date_time_range 严格不等式越界抛 RangeError；make_plain_date_time 重建。
+///
+/// # 边界与前提
+/// - 组合越 PlainDateTime 表示范围 → RangeError；日历槽继承 receiver。
+pub fn plain_date_time_with_plain_time<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let ptr = native_try!(receiver_obj(vm, args));
+    let obj = unsafe { &*ptr };
+    native_try!(ensure_plain_date_time(vm, obj));
+    let year = get_double_prop(obj, 0) as i32;
+    let month = get_double_prop(obj, 1) as u32;
+    let day = get_double_prop(obj, 2) as u32;
+    let calendar = get_calendar_id(obj, 4);
+    let time_like = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
+    let time_ns = native_try!(plain_time_like_ns(vm, time_like));
+    if !valid_plain_date_time_range(year, month, day, time_ns) {
+        return NativeResult::Err(crate::error::create_range_error(vm, "invalid date-time"));
+    }
+    make_plain_date_time(vm, year, month, day, time_ns, &calendar)
 }
 
 /// Temporal 对象禁止隐式转换为原始值。

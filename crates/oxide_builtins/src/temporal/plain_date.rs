@@ -9,13 +9,13 @@ use super::common::native_try;
 use super::common::{
     days_from_civil, days_in_month, ensure_plain_date, get_calendar_id, get_double_prop, initialize_temporal_receiver,
     is_ctor_call, parse_plain_date_string, plain_date_time_object_parts, receiver_obj,
-    reject_partial_object_with_calendar_or_time_zone, resolve_date_time_parts, temporal_calendar_id_strict,
-    temporal_number_component, temporal_option_string, temporal_option_value, temporal_overflow,
-    zoned_date_time_plain_parts, DateTimeParts,
+    reject_partial_object_with_calendar_or_time_zone, resolve_date_time_parts, temporal_calendar_id,
+    temporal_calendar_id_strict, temporal_number_component, temporal_option_string, temporal_option_value,
+    temporal_overflow, zoned_date_time_plain_parts, DateTimeParts,
 };
 use super::difference::{difference_core, parse_difference_settings, IsoDateTime};
 use super::duration::duration_like_values;
-use super::make_plain_date;
+use super::{make_plain_date, make_plain_date_time, make_plain_month_day, make_plain_year_month, plain_time_like_ns};
 
 /// 校验 ISO 日期分量（month 1-12、day 按月份与闰年，不依赖 chrono 年份范围）。
 pub(crate) fn valid_iso_date(year: i32, month: u32, day: u32) -> bool {
@@ -597,6 +597,89 @@ pub fn plain_date_with<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         return NativeResult::Err(crate::error::create_range_error(vm, "ISO date is out of range"));
     }
     make_plain_date(vm, year, month, day, &get_calendar_id(obj, 3))
+}
+
+/// `Temporal.PlainDate.prototype.withCalendar(calendar)`：只换日历槽，日期分量不变。
+///
+/// # 步骤
+/// 1. receiver 品牌校验；缺参 / undefined 抛 TypeError。
+/// 2. 参数经 temporal_calendar_id（宽松版）：字符串走白名单或 ISO 日期(-时间)串，
+///    六类 Temporal 对象直读日历槽（不触发 getter），其他对象 / 原始值抛 TypeError。
+/// 3. 读 receiver 槽 0-2 重建，日历槽替换。
+///
+/// # 边界与前提
+/// - 非法日历串 → RangeError；日历 ID 大小写折叠。
+pub fn plain_date_with_calendar<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let ptr = native_try!(receiver_obj(vm, args));
+    let obj = unsafe { &*ptr };
+    native_try!(ensure_plain_date(vm, obj));
+    let calendar_value = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
+    if calendar_value.is_undefined() {
+        return NativeResult::Err(crate::error::create_type_error(vm, "calendar is required"));
+    }
+    let calendar = native_try!(temporal_calendar_id(vm, calendar_value)).unwrap_or_else(|| "iso8601".to_string());
+    make_plain_date(
+        vm,
+        get_double_prop(obj, 0) as i32,
+        get_double_prop(obj, 1) as u32,
+        get_double_prop(obj, 2) as u32,
+        &calendar,
+    )
+}
+
+/// `Temporal.PlainDate.prototype.toPlainDateTime(timeLike)`：日期分量 + 时间槽组合。
+///
+/// # 步骤
+/// 1. receiver 品牌校验；读槽 0-2 与日历槽 3 入本地（plain_time_like_ns 的 bag
+///    路径有用户调用窗口，receiver 槽须先于窗口读入）。
+/// 2. plain_time_like_ns 取当日纳秒（undefined → 午夜）。
+/// 3. valid_plain_date_time_range 严格不等式越界抛 RangeError；make_plain_date_time 重建。
+///
+/// # 边界与前提
+/// - 组合越 PlainDateTime 表示范围（min 午夜抛、min 加 1 纳秒过、max 全满过）→ RangeError。
+/// - 日历槽继承 receiver。
+pub fn plain_date_to_plain_date_time<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let ptr = native_try!(receiver_obj(vm, args));
+    let obj = unsafe { &*ptr };
+    native_try!(ensure_plain_date(vm, obj));
+    let year = get_double_prop(obj, 0) as i32;
+    let month = get_double_prop(obj, 1) as u32;
+    let day = get_double_prop(obj, 2) as u32;
+    let calendar = get_calendar_id(obj, 3);
+    let time_like = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
+    let time_ns = native_try!(plain_time_like_ns(vm, time_like));
+    if !valid_plain_date_time_range(year, month, day, time_ns) {
+        return NativeResult::Err(crate::error::create_range_error(vm, "invalid date-time"));
+    }
+    make_plain_date_time(vm, year, month, day, time_ns, &calendar)
+}
+
+/// `Temporal.PlainDate.prototype.toPlainMonthDay()`：纯拷贝月/日，参考年固定 1972。
+pub fn plain_date_to_plain_month_day<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let ptr = native_try!(receiver_obj(vm, args));
+    let obj = unsafe { &*ptr };
+    native_try!(ensure_plain_date(vm, obj));
+    make_plain_month_day(
+        vm,
+        get_double_prop(obj, 1) as u32,
+        get_double_prop(obj, 2) as u32,
+        1972,
+        &get_calendar_id(obj, 3),
+    )
+}
+
+/// `Temporal.PlainDate.prototype.toPlainYearMonth()`：纯拷贝年/月，参考日固定 1。
+pub fn plain_date_to_plain_year_month<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let ptr = native_try!(receiver_obj(vm, args));
+    let obj = unsafe { &*ptr };
+    native_try!(ensure_plain_date(vm, obj));
+    make_plain_year_month(
+        vm,
+        get_double_prop(obj, 0) as i32,
+        get_double_prop(obj, 1) as u32,
+        1,
+        &get_calendar_id(obj, 3),
+    )
 }
 
 /// `Temporal.PlainDate.compare(a, b)`：静态比较，返回 -1/0/1。

@@ -4179,3 +4179,158 @@ fn relativeto_bag_zoned_payload() {
     .unwrap();
     assert_eq!(str_val(&vm, r), "24|24|24|24|24|23|-1|24|25|25|RangeError|RangeError");
 }
+
+// -- PlainDate/PlainDateTime withCalendar / withPlainTime / toPlain* 族 --
+
+#[test]
+fn plain_date_with_calendar_inherits_slot_and_forms() {
+    let mut vm = Vm::new();
+    // 换日历槽：日期分量不变、返回新对象；大小写不敏感；ISO 日期串与纯时间串接受；
+    // Temporal 对象直读日历槽（不触发 getter）。
+    let r = eval(
+        &mut vm,
+        "const d = new Temporal.PlainDate(1976, 11, 18, 'hebrew');
+         const w = d.withCalendar('iso8601');
+         (w !== d) + '|' + w.calendarId + '|' + w.year + '|' + w.month + '|' + w.day + '|' +
+         d.withCalendar('iSo8601').calendarId + '|' +
+         d.withCalendar('2020-01-01').calendarId + '|' +
+         d.withCalendar('15:23').calendarId + '|' +
+         d.withCalendar(new Temporal.PlainMonthDay(3, 1, 'japanese')).calendarId + '|' +
+         d.withCalendar(new Temporal.PlainYearMonth(2020, 5, 'buddhist')).calendarId",
+    )
+    .unwrap();
+    assert_eq!(str_val(&vm, r), "true|iso8601|1976|11|18|iso8601|iso8601|iso8601|japanese|buddhist");
+}
+
+#[test]
+fn plain_date_with_calendar_errors() {
+    let mut vm = Vm::new();
+    // 缺参/undefined/非字符串非对象 → TypeError；非法串 → RangeError。
+    let r = eval(
+        &mut vm,
+        "const d = new Temporal.PlainDate(1976, 11, 18);
+         (() => { try { d.withCalendar(); return 'no'; }
+                 catch (e) { return e instanceof TypeError; } })() + '|' +
+         (() => { try { d.withCalendar(undefined); return 'no'; }
+                 catch (e) { return e instanceof TypeError; } })() + '|' +
+         (() => { try { d.withCalendar(42); return 'no'; }
+                 catch (e) { return e instanceof TypeError; } })() + '|' +
+         (() => { try { d.withCalendar('notacal'); return 'no'; }
+                 catch (e) { return e instanceof RangeError; } })()",
+    )
+    .unwrap();
+    assert_eq!(str_val(&vm, r), "true|true|true|true");
+}
+
+#[test]
+fn plain_date_time_with_calendar_inherits_slot_and_forms() {
+    let mut vm = Vm::new();
+    // 换日历槽：日期时间分量不变、返回新对象；日历继承 receiver 槽（hebrew）。
+    let r = eval(
+        &mut vm,
+        "const p = new Temporal.PlainDateTime(1976, 11, 18, 15, 23, 30, 123, 456, 789, 'hebrew');
+         const w = p.withCalendar('iso8601');
+         (w !== p) + '|' + w.calendarId + '|' + w.year + '|' + w.month + '|' + w.day + '|' +
+         w.hour + '|' + w.minute + '|' + w.second + '|' + w.nanosecond + '|' +
+         p.withCalendar('iSo8601').calendarId + '|' +
+         p.withCalendar(new Temporal.PlainDate(2020, 1, 1, 'islamic')).calendarId",
+    )
+    .unwrap();
+    assert_eq!(
+        str_val(&vm, r),
+        "true|iso8601|1976|11|18|15|23|30|789|iso8601|islamic"
+    );
+}
+
+#[test]
+fn plain_date_time_with_calendar_errors() {
+    let mut vm = Vm::new();
+    // 缺参/undefined/非字符串非对象 → TypeError；非法串 → RangeError。
+    let r = eval(
+        &mut vm,
+        "const p = new Temporal.PlainDateTime(1976, 11, 18);
+         (() => { try { p.withCalendar(); return 'no'; }
+                 catch (e) { return e instanceof TypeError; } })() + '|' +
+         (() => { try { p.withCalendar(undefined); return 'no'; }
+                 catch (e) { return e instanceof TypeError; } })() + '|' +
+         (() => { try { p.withCalendar(42); return 'no'; }
+                 catch (e) { return e instanceof TypeError; } })() + '|' +
+         (() => { try { p.withCalendar('notacal'); return 'no'; }
+                 catch (e) { return e instanceof RangeError; } })()",
+    )
+    .unwrap();
+    assert_eq!(str_val(&vm, r), "true|true|true|true");
+}
+
+#[test]
+fn plain_date_time_with_plain_time_forms_and_range() {
+    let mut vm = Vm::new();
+    // 缺参/undefined → 午夜；bag 缺省字段 0、second=60 钳制 59；字符串 / PlainTime /
+    // ZDT（自身时区本地时间）形态；空袋 TypeError；组合越范围 RangeError；
+    // 日历继承 receiver 槽。
+    let r = eval(
+        &mut vm,
+        "const p = new Temporal.PlainDateTime(1976, 11, 18, 15, 23, 30, 123, 456, 789, 'hebrew');
+         p.withPlainTime().toString() + '|' +
+         p.withPlainTime(undefined).toString() + '|' +
+         p.withPlainTime({ minute: 30 }).toString() + '|' +
+         p.withPlainTime({ hour: 23, minute: 59, second: 60 }).toString() + '|' +
+         p.withPlainTime('12:34').toString() + '|' +
+         p.withPlainTime(new Temporal.PlainTime(11, 22)).hour + '|' +
+         p.withPlainTime(new Temporal.ZonedDateTime(0n, 'UTC')).toString() + '|' +
+         p.withPlainTime({ minute: 5 }).calendarId + '|' +
+         (() => { try { p.withPlainTime({}); return 'no'; }
+                 catch (e) { return e instanceof TypeError; } })() + '|' +
+         (() => { try { new Temporal.PlainDateTime(-271821, 4, 19, 0, 0, 0, 0, 0, 1).withPlainTime(); return 'no'; }
+                 catch (e) { return e instanceof RangeError; } })()",
+    )
+    .unwrap();
+    assert_eq!(
+        str_val(&vm, r),
+        "1976-11-18T00:00:00|1976-11-18T00:00:00|1976-11-18T00:30:00|1976-11-18T23:59:59|1976-11-18T12:34:00|11|1976-11-18T00:00:00|hebrew|true|true"
+    );
+}
+
+#[test]
+fn plain_date_to_plain_date_time_limits_and_calendar() {
+    let mut vm = Vm::new();
+    // 严格不等式边界：min 午夜抛、min 加 1 纳秒过、max 全满过；日历继承 receiver 槽。
+    let r = eval(
+        &mut vm,
+        "(() => {
+           const kind = (fn) => { try { fn(); return 'no'; } catch (e) { return e.constructor.name; } };
+           const min = new Temporal.PlainDate(-271821, 4, 19, 'hebrew');
+           const max = new Temporal.PlainDate(275760, 9, 13);
+           return [
+             kind(() => min.toPlainDateTime()),
+             min.toPlainDateTime({ nanosecond: 1 }).toString(),
+             min.toPlainDateTime('23:59:59.999999999').toString(),
+             min.toPlainDateTime({ nanosecond: 1 }).calendarId,
+             max.toPlainDateTime('23:59:59.999999999').toString(),
+             max.toPlainDateTime().toString(),
+           ].join('|');
+         })()",
+    )
+    .unwrap();
+    assert_eq!(
+        str_val(&vm, r),
+        "RangeError|-271821-04-19T00:00:00.000000001|-271821-04-19T23:59:59.999999999|hebrew|+275760-09-13T23:59:59.999999999|+275760-09-13T00:00:00"
+    );
+}
+
+#[test]
+fn plain_date_to_plain_month_day_and_year_month() {
+    let mut vm = Vm::new();
+    // 纯拷贝：月/日与年/月分量不变；参考年 1972、参考日 1（非 iso8601 日历
+    // toString 补参考值与日历注解）；日历继承 receiver 槽。
+    let r = eval(
+        &mut vm,
+        "const d = new Temporal.PlainDate(1976, 11, 18, 'hebrew');
+         const md = d.toPlainMonthDay();
+         const ym = d.toPlainYearMonth();
+         md.monthCode + '|' + md.day + '|' + md.calendarId + '|' + md.toString() + '|' +
+         ym.year + '|' + ym.month + '|' + ym.calendarId + '|' + ym.toString()",
+    )
+    .unwrap();
+    assert_eq!(str_val(&vm, r), "M11|18|hebrew|1972-11-18[u-ca=hebrew]|1976|11|hebrew|1976-11-01[u-ca=hebrew]");
+}
