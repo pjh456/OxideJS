@@ -4236,10 +4236,7 @@ fn plain_date_time_with_calendar_inherits_slot_and_forms() {
          p.withCalendar(new Temporal.PlainDate(2020, 1, 1, 'islamic')).calendarId",
     )
     .unwrap();
-    assert_eq!(
-        str_val(&vm, r),
-        "true|iso8601|1976|11|18|15|23|30|789|iso8601|islamic"
-    );
+    assert_eq!(str_val(&vm, r), "true|iso8601|1976|11|18|15|23|30|789|iso8601|islamic");
 }
 
 #[test]
@@ -4332,5 +4329,8 @@ fn plain_date_to_plain_month_day_and_year_month() {
          ym.year + '|' + ym.month + '|' + ym.calendarId + '|' + ym.toString()",
     )
     .unwrap();
-    assert_eq!(str_val(&vm, r), "M11|18|hebrew|1972-11-18[u-ca=hebrew]|1976|11|hebrew|1976-11-01[u-ca=hebrew]");
+    assert_eq!(
+        str_val(&vm, r),
+        "M11|18|hebrew|1972-11-18[u-ca=hebrew]|1976|11|hebrew|1976-11-01[u-ca=hebrew]"
+    );
 }
