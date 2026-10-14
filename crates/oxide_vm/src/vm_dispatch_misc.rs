@@ -208,8 +208,7 @@ impl Vm {
         } else {
             // 无函数体的函数对象（如 Function.prototype）：IsConstructor 为假，
             // 按规范抛 TypeError（此前该分支不可达，报普通 Error 属内部错误）。
-            self
-                .raise_type_error("NEW_EXPRESSION: constructor is not a constructor")
+            self.raise_type_error("NEW_EXPRESSION: constructor is not a constructor")
                 .map(|_| true)
         }
     }
