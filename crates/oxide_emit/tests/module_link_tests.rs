@@ -663,3 +663,53 @@ fn defer_only_dep_without_tla_no_hoisting() {
     assert_eq!(native_calls_to(&ir, "__moduleWaitAll"), 0, "无 TLA 模块不得发聚合 gate");
     assert!(!ir.is_async, "无 TLA 模块的导入方不得标记异步");
 }
+
+/// 面 33：source-phase 导入（`import source x from`）局部名绑定 ModuleSource 对象——
+/// 发 `__moduleSourceObject` 调用，不走默认导入的 `__moduleLinkGet` 取 default 路径。
+#[test]
+fn import_source_phase_binds_module_source_object() {
+    let (ir, _) = emit_module(
+        "import source x from \"./src.js\"; var y = x;",
+        "./entry.js",
+        &[("./src.js", ModuleKind::Js, "")],
+    )
+    .expect("source-phase 导入应编译成功");
+    assert!(
+        builtin_names(&ir).contains("__moduleSourceObject"),
+        "source-phase 导入应发 __moduleSourceObject 调用"
+    );
+    assert_eq!(native_calls_to(&ir, "__moduleSourceObject"), 1, "局部名应绑定一次 ModuleSource");
+    assert_eq!(native_calls_to(&ir, "__moduleLinkGet"), 0, "source-phase 不得走 default 导出链接");
+}
+
+/// 面 34：source-phase 导入再导出（`export { x }`）按 `~source~` 来源身份转发——
+/// 经 `__moduleSetReexport` 注册，来源路径与绑定名入池。
+#[test]
+fn import_source_phase_reexport_registrs_source_origin() {
+    let (ir, _) = emit_module(
+        "import source x from \"./src.js\"; export { x };",
+        "./entry.js",
+        &[("./src.js", ModuleKind::Js, "")],
+    )
+    .expect("source-phase 导入再导出应编译成功");
+    assert!(
+        builtin_names(&ir).contains("__moduleSetReexport"),
+        "source-phase 再导出应走 __moduleSetReexport"
+    );
+    assert_eq!(native_calls_to(&ir, "__moduleSetReexport"), 1, "再导出应注册一次来源身份");
+    assert_eq!(native_calls_to(&ir, "__moduleSet"), 0, "source-phase 再导出不得走本地注册");
+}
+
+/// 面 35：普通导入（phase 缺省）产物零 diff 守卫——source-phase 分支不得改变
+/// 默认导入的发射形态（仍走 `__moduleLinkGet` 取 default）。
+#[test]
+fn default_import_unchanged_by_source_phase_branch() {
+    let (ir, _) = emit_module(
+        "import d from \"./dep.js\"; var y = d;",
+        "./entry.js",
+        &[("./dep.js", ModuleKind::Js, "export default 42;")],
+    )
+    .expect("默认导入应编译成功");
+    assert!(builtin_names(&ir).contains("__moduleLinkGet"), "默认导入应经 __moduleLinkGet 链接");
+    assert_eq!(native_calls_to(&ir, "__moduleSourceObject"), 0, "普通默认导入不得发 source 对象调用");
+}

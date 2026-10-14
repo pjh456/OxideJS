@@ -7,10 +7,11 @@
 
 use oxide_kernel::shape_forge::EMPTY_SHAPE_ID;
 use oxide_runtime_api::{to_units_full, NativeResult};
-use oxide_types::object::{JsObject, NativeFnPtr};
+use oxide_types::object::{JsObject, NativeFnPtr, PropAttributes};
+use oxide_types::private_key::{encode_symbol_key, WELL_KNOWN_SYMBOL_TO_STRING_TAG};
 use oxide_types::value::JsValue;
 
-use crate::bindings::{apply_binding_table, bind_global_value, BindEnv};
+use crate::bindings::{apply_binding_table, bind_accessor_getter_key, bind_global_value, BindEnv};
 use crate::vm::Vm;
 
 /// `$262` 未实现方法统一抛错：消息带 `not supported`，runner 据此按能力缺失跳过。
@@ -96,6 +97,82 @@ pub fn is_html_dda_call(_vm: &mut Vm, _args: &[u8]) -> NativeResult {
     NativeResult::Ok(JsValue::null())
 }
 
+/// 构造 `%AbstractModuleSource%` 内建（source-phase 导入的 ModuleSource 实例族）：
+/// 构造器调用恒抛 TypeError，原型带 `constructor` 与 `@@toStringTag` 访问器。
+///
+/// # 步骤
+/// 1. 建原型对象（Object.prototype 为原型）：`constructor` 指回构造器
+///    （可写不可枚举可配置），`@@toStringTag` 装原生 getter（不可枚举可配置）。
+/// 2. 建构造器函数对象（Function.prototype 为原型，可构造，原生入口抛 TypeError）：
+///    `prototype` 指回原型（不可写不可枚举不可配置）、`name` = "AbstractModuleSource"、
+///    `length` = 0（均不可写不可枚举可配置）。
+/// 3. 原型与构造器登记进 world 释放表（session 收尾统一释放）。
+///
+/// # 注意事项
+/// - 每次绑定新建对象（与 `$262` 本体同一约定）：选择性重建后旧内建对象随宿主
+///   对象泄漏，全量初始化与 full_reset 频率低，可接受。
+fn build_abstract_module_source_ctor(env: BindEnv<'_>) -> *mut JsObject {
+    let sf = env.core.perm_interner().as_ref();
+    let sh = env.core.shape_forge().as_ref();
+    let world = env.world();
+
+    // 原型对象：constructor 槽先装（getter 安装会再扩 shape 槽）。
+    let object_proto = world.object_proto.as_ptr() as *mut JsObject;
+    let proto = Box::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(object_proto)));
+    let proto_ptr = Box::into_raw(proto);
+
+    // 构造器函数对象：原生入口恒抛 TypeError（规范 28.1.1.1 不可构造）。
+    let fn_proto_val = JsValue::from_js_object(world.function_proto.as_ptr() as *mut JsObject);
+    let mut ctor = Box::new(JsObject::new_empty(EMPTY_SHAPE_ID, fn_proto_val));
+    ctor.set_function(true);
+    ctor.type_tag = JsObject::OBJ_TYPE_CONSTRUCTOR;
+    ctor.set_native_fn(Some(unsafe {
+        NativeFnPtr::from_raw(oxide_builtins::module::abstract_module_source_ctor::<crate::vm::Vm> as *const ())
+    }));
+    ctor.set_native_arg_count(0);
+
+    // 属性面：prototype / name / length 三槽（描述符按规范内建函数约定）。
+    let si_prototype = sf.intern("prototype").0;
+    let si_name = sf.intern("name").0;
+    let si_length = sf.intern("length").0;
+    let shape1 = sh.make_shape(EMPTY_SHAPE_ID, si_prototype);
+    let shape2 = sh.make_shape(shape1, si_name);
+    let shape3 = sh.make_shape(shape2, si_length);
+    ctor.set_shape_id(shape3);
+    ctor.ensure_hash_props().push(JsValue::from_js_object(proto_ptr));
+    ctor.ensure_hash_props()
+        .push(JsValue::perm_string(sf.string_ptr(sf.intern("AbstractModuleSource").0)));
+    ctor.ensure_hash_props().push(JsValue::int(0));
+    ctor.set_data_meta(0, PropAttributes::new(false, false, false));
+    ctor.set_data_meta(1, PropAttributes::new(false, false, true));
+    ctor.set_data_meta(2, PropAttributes::new(false, false, true));
+    let ctor_ptr = Box::into_raw(ctor);
+
+    // 原型 constructor 槽：可写不可枚举可配置（与一般内建原型约定一致）。
+    let proto_ref = unsafe { &mut *proto_ptr };
+    let si_constructor = sf.intern("constructor").0;
+    let ctor_shape = sh.make_shape(proto_ref.shape_id(), si_constructor);
+    proto_ref.set_shape_id(ctor_shape);
+    proto_ref.ensure_hash_props().push(JsValue::from_js_object(ctor_ptr));
+    let ctor_pos = proto_ref.prop_vec_len().saturating_sub(1) as u32;
+    proto_ref.set_data_meta(ctor_pos, PropAttributes::new(true, false, true));
+    proto_ref.bump_generation();
+
+    // 原型 @@toStringTag 访问器：getter 按实例类名标记返回值，非实例返 undefined。
+    let tag_key = encode_symbol_key(env.realm_id(), WELL_KNOWN_SYMBOL_TO_STRING_TAG);
+    bind_accessor_getter_key(
+        env,
+        proto_ref,
+        tag_key,
+        "get [Symbol.toStringTag]",
+        oxide_builtins::module::abstract_module_source_to_string_tag::<crate::vm::Vm> as *const (),
+    );
+
+    world.track_leaked_object(ctor_ptr);
+    world.track_leaked_object(proto_ptr);
+    ctor_ptr
+}
+
 /// 把 `$262` 宿主对象绑定到 global：对象本体 + 标准方法 + `global` 数据属性。
 ///
 /// # 步骤
@@ -103,6 +180,7 @@ pub fn is_html_dda_call(_vm: &mut Vm, _args: &[u8]) -> NativeResult {
 /// 2. 绑定 evalScript/detachArrayBuffer/createRealm/gc/agent 方法。
 /// 3. `global` 数据属性指向当前 session global；`$262` 本体挂到 global。
 /// 4. `IsHTMLDDA` 宿主对象挂到 `$262`（可调用，被调用时返回 null）。
+/// 5. `AbstractModuleSource` 内建挂到 `$262`（source-phase 导入的 ModuleSource 实例族）。
 ///
 /// # 注意事项
 /// - 宿主对象登记进 world 释放表，session 收尾时统一释放（与 Reflect/Iterator
@@ -124,6 +202,10 @@ pub fn bind_test262_host(env: BindEnv<'_>, global: &mut JsObject) {
     );
     let global_this = JsValue::from_js_object(global as *mut JsObject);
     bind_global_value(env.core, &mut host, "global", global_this);
+    // %AbstractModuleSource% 内建：source-phase 导入的 ModuleSource 实例族
+    // （构造器调用抛 TypeError，原型承载 @@toStringTag 访问器）。
+    let amms_ctor = build_abstract_module_source_ctor(env);
+    bind_global_value(env.core, &mut host, "AbstractModuleSource", JsValue::from_js_object(amms_ctor));
     // [[IsHTMLDDA]] 宿主值（B.3.4）：可调用（被调用时返回 null），
     // ToBoolean/typeof/宽松相等按 undefined 处理，Type 与其余强制转换按普通对象处理。
     let mut dda = JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(object_proto));

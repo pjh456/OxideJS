@@ -78,6 +78,16 @@ impl oxide_emit::module::ModuleSourceLoader for Test262ModuleLoader {
         &mut self, base_dir: &str, specifier: &str, attributes: &[(&str, &str)],
     ) -> Result<oxide_emit::module::ResolvedModule, String> {
         use oxide_emit::module::{ModuleKind, ResolvedModule};
+        // `<module source>` 是 test262 宿主哨兵说明符（INTERPRETING 约定）：解析为
+        // 合成空模块，ModuleSource 对象由宿主在 `import source` 绑定时提供，不读磁盘。
+        // 路径回填哨兵本身（稳定规范形态），使自导入身份比较与循环检测不误判。
+        if specifier == "<module source>" {
+            return Ok(ResolvedModule {
+                source: String::new(),
+                path: "<module source>".to_string(),
+                kind: ModuleKind::Js,
+            });
+        }
         let kind = attributes
             .iter()
             .find(|(k, _)| *k == "type")

@@ -63,6 +63,11 @@ pub fn bind_global(env: BindEnv<'_>, global: &mut JsObject) {
                 2,
             ),
             ("__moduleData", oxide_builtins::module::module_data::<crate::vm::Vm> as *const (), 2),
+            (
+                "__moduleSourceObject",
+                oxide_builtins::module::module_source_object::<crate::vm::Vm> as *const (),
+                0,
+            ),
             ("__moduleWaitAll", module_wait_all as *const (), 0),
             ("eval", oxide_builtins::eval::eval::<crate::vm::Vm> as *const (), 1),
             (

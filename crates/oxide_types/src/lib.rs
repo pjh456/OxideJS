@@ -30,3 +30,11 @@ pub use error::{JsError, JsErrorKind};
 /// 转发的是同一个命名空间对象，来源身份须用同一绑定名才能判为同一绑定；该字面量
 /// 含 NUL，不可能与任何静态导出名相同。编译器与运行时共享此常量，禁止另写字面量。
 pub const MODULE_NAMESPACE_BINDING: &str = "\u{0}namespace";
+
+/// 模块 source-phase 再导出的绑定身份哨兵（`~source~` 的引擎内表示）。
+///
+/// `import source x from mod; export { x }` 与 `export * from` 两路转发的是
+/// 同一目标模块的 ModuleSource 对象，来源身份须用同一绑定名才能判为同一绑定
+/// （同名异源才歧义）。该字面量含 NUL，不可能与任何静态导出名相同；编译器与
+/// 运行时共享此常量，禁止另写字面量。
+pub const MODULE_SOURCE_BINDING: &str = "\u{0}source";

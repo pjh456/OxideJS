@@ -7,7 +7,9 @@
 //! defer 导入（`import defer * as ns`）的依赖不求值：编译入子模块树并发
 //! `__moduleDeferObject` 构造 deferred namespace 对象（逐名预注册静态导出名），
 //! 绑定该对象；自导入/祖先 defer 回边发哨兵形态（不递归、不编译）。
-//! 未支持：嵌套闭包内读 import 名（仍为链接期快照）、source-phase；
+//! source-phase 导入（`import source x from`）的局部名绑定目标模块的 ModuleSource
+//! 对象（宿主内建），再导出链按 `~source~` 来源身份转发。
+//! 未支持：嵌套闭包内读 import 名（仍为链接期快照）；
 //! star 转发与经再导出链的活值仍为快照；eager 环导入在编译期跳过。
 
 use std::collections::{HashMap, HashSet};
@@ -28,7 +30,7 @@ use oxide_parser::{
     ImportAttributeKey, ImportDeclarationSpecifier, ImportPhase, ModuleExportName, ObjectPropertyKind,
     SimpleAssignmentTarget, Statement, VariableDeclarationKind, WithClause,
 };
-use oxide_types::MODULE_NAMESPACE_BINDING;
+use oxide_types::{MODULE_NAMESPACE_BINDING, MODULE_SOURCE_BINDING};
 
 /// 数据模块种类（非 JS 源码模块）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1241,6 +1243,25 @@ impl Emitter {
                                 }
                             }
                             ImportDeclarationSpecifier::ImportDefaultSpecifier(s) => {
+                                if imp.phase == Some(ImportPhase::Source) {
+                                    // source-phase 导入：局部名绑定目标模块的 ModuleSource
+                                    // 对象（宿主提供的 %AbstractModuleSource% 实例），
+                                    // 非默认导出。再导出链的来源身份按 `~source~` 哨兵
+                                    // 登记，使同名异源经 star 转发时身份可比。
+                                    ctx.module_import_origins.insert(
+                                        s.local.name.to_string(),
+                                        (dep_path.clone(), MODULE_SOURCE_BINDING.to_string()),
+                                    );
+                                    let val_reg = self.emit_module_call(ctx, "__moduleSourceObject", &[])?;
+                                    self.emit_bind_target(
+                                        s.local.name.as_str(),
+                                        val_reg,
+                                        VariableDeclarationKind::Const,
+                                        false,
+                                        ctx,
+                                    )?;
+                                    continue;
+                                }
                                 if !is_self {
                                     ctx.module_import_origins.insert(
                                         s.local.name.to_string(),

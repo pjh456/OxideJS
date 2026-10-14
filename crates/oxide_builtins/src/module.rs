@@ -1070,6 +1070,111 @@ pub fn module_data<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     NativeResult::Ok(JsValue::from_js_object(obj))
 }
 
+/// `%AbstractModuleSource%` 构造器入口：被调用（含 `new`）恒抛 TypeError。
+///
+/// 规范 28.1.1.1：该内建不可被构造，实例只能由宿主（source-phase 导入的
+/// ModuleSource 提供）产生。
+pub fn abstract_module_source_ctor<H: VmHost>(vm: &mut H, _args: &[u8]) -> NativeResult {
+    NativeResult::Err(crate::error::create_type_error(vm, "AbstractModuleSource is not a constructor"))
+}
+
+/// `%AbstractModuleSource%.prototype` 上 `Symbol.toStringTag` 访问器的 getter：
+/// 返回实例的模块源类名，非实例（非对象 this 或无类名标记）返回 undefined。
+///
+/// # 步骤
+/// 1. `this` 非对象 → undefined（规范 28.3.3.2 第 2 步）。
+/// 2. 查全局符号注册表取类名符号键；未登记或 `this` 无该 own 属性 → undefined。
+/// 3. 有类名标记 → 返回其值（宿主模块源类名，如 `AbstractModuleSource`）。
+///
+/// # 边界与前提
+/// - 类名标记是 `__moduleSourceObject` 在实例上定义的符号键 own 属性（引擎内
+///   表示宿主 `[[ModuleSourceClassName]]` 内部槽），非实例对象无此属性。
+pub fn abstract_module_source_to_string_tag<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    // 访问器 getter 的 `this` 在 args[0]（receiver 槽 253），实参区从 args[1] 起。
+    let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
+    if !this_val.is_object() {
+        return NativeResult::Ok(JsValue::undefined());
+    }
+    let Some(idx) = vm.symbol_lookup_global(MODULE_SOURCE_CLASS_NAME_SYMBOL_KEY) else {
+        return NativeResult::Ok(JsValue::undefined());
+    };
+    let key = encode_symbol_key(vm.realm_id(), idx);
+    let obj = unsafe { &*this_val.as_js_object_ptr() };
+    if vm.get_own_property_slot(obj, key).is_none() {
+        return NativeResult::Ok(JsValue::undefined());
+    }
+    match vm.ordinary_get(obj, key, this_val) {
+        Ok(v) => NativeResult::Ok(v),
+        Err(e) => NativeResult::Err(crate::error::create_error(vm, &e)),
+    }
+}
+
+/// ModuleSource 类名符号的宿主注册表键（`Symbol.for` 全局注册表口径）。
+const MODULE_SOURCE_CLASS_NAME_SYMBOL_KEY: &str = "oxide.moduleSourceClassName";
+
+/// `__moduleSourceObject()`：返回一个 ModuleSource 对象（`%AbstractModuleSource%`
+/// 实例），供 source-phase 导入的局部名绑定。
+///
+/// # 步骤
+/// 1. 经 `$262.AbstractModuleSource.prototype` 取内建原型（宿主绑定在绑定期
+///    安装）；宿主或内建缺失时抛 TypeError。
+/// 2. 以该原型分配新对象。
+/// 3. 定义类名符号 own 属性（非枚举），供 `@@toStringTag` getter 读回类名。
+///
+/// # 边界与前提
+/// - 每次调用产生新实例：宿主对同一 `<module source>` 模块记录的 ModuleSource
+///   身份由依赖求值缓存（per-module 状态）承载，对象本体不跨调用共享。
+///
+/// # 副作用
+/// - 分配新对象并定义符号键属性；首次调用时登记类名符号入全局注册表。
+pub fn module_source_object<H: VmHost>(vm: &mut H, _args: &[u8]) -> NativeResult {
+    let global = vm.global_object();
+    let global_val = JsValue::from_js_object(global.as_ptr() as *mut JsObject);
+    let host_si = vm.perm_intern("$262");
+    let host = match vm.ordinary_get(&global, host_si, global_val) {
+        Ok(v) => v,
+        Err(e) => return NativeResult::Err(crate::error::create_error(vm, &e)),
+    };
+    if !host.is_object() {
+        return type_error(vm, "__moduleSourceObject: $262 host is not bound");
+    }
+    let host_obj = unsafe { &*host.as_js_object_ptr() };
+    let ctor_si = vm.perm_intern("AbstractModuleSource");
+    let ctor = match vm.ordinary_get(host_obj, ctor_si, host) {
+        Ok(v) => v,
+        Err(e) => return NativeResult::Err(crate::error::create_error(vm, &e)),
+    };
+    if !ctor.is_object() {
+        return type_error(vm, "__moduleSourceObject: AbstractModuleSource is not bound");
+    }
+    let ctor_obj = unsafe { &*ctor.as_js_object_ptr() };
+    let proto_si = vm.perm_intern("prototype");
+    let proto = match vm.ordinary_get(ctor_obj, proto_si, ctor) {
+        Ok(v) => v,
+        Err(e) => return NativeResult::Err(crate::error::create_error(vm, &e)),
+    };
+    if !proto.is_object() {
+        return type_error(vm, "__moduleSourceObject: AbstractModuleSource.prototype is not an object");
+    }
+
+    let obj = vm.alloc_object(JsObject::new_empty(EMPTY_SHAPE_ID, proto));
+    let obj_ref = unsafe { &mut *obj };
+    let idx = match vm.symbol_lookup_global(MODULE_SOURCE_CLASS_NAME_SYMBOL_KEY) {
+        Some(idx) => idx,
+        None => {
+            let idx = vm.symbol_intern(Some(MODULE_SOURCE_CLASS_NAME_SYMBOL_KEY.to_string()));
+            vm.symbol_register_global(MODULE_SOURCE_CLASS_NAME_SYMBOL_KEY.to_string(), idx);
+            idx
+        }
+    };
+    let key = encode_symbol_key(vm.realm_id(), idx);
+    let class_name = vm.new_string("AbstractModuleSource");
+    if let Err(e) = vm.define_data_property(obj_ref, key, class_name, PropAttributes::new(true, false, true)) {
+        return NativeResult::Err(crate::error::create_error(vm, &e));
+    }
+    NativeResult::Ok(JsValue::from_js_object(obj))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

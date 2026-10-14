@@ -104,6 +104,10 @@ impl<'a> BindEnv<'a> {
     pub fn world(&self) -> &BuiltinWorld {
         self.session.builtin_world()
     }
+    /// 本绑定环境的 realm 编号（well-known 符号键编码用）。
+    pub(crate) fn realm_id(&self) -> u32 {
+        self.realm_id
+    }
     /// 共享 shape forge。
     fn shape_forge(&self) -> &ShapeForge {
         self.core.shape_forge().as_ref()
