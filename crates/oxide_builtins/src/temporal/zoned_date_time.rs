@@ -11,7 +11,8 @@ use super::common::{
     canonical_time_zone, civil_from_days, days_from_civil, days_in_month, ensure_zoned_date_time, fixed_offset_seconds,
     format_iso_year, format_offset_seconds_text, get_calendar_id, get_double_prop, get_instant_epoch_ns,
     initialize_temporal_receiver, is_ctor_call, local_to_epoch_ns, make_instant, make_zoned_date_time, parse_digits,
-    parse_fractional_second_digits, parse_temporal_string_impl, plain_date_time_object_parts, receiver_obj,
+    parse_fractional_second_digits, parse_round_options, parse_temporal_string_impl, plain_date_time_object_parts,
+    receiver_obj,
     reject_partial_object_with_calendar_or_time_zone, temporal_calendar_id, temporal_calendar_id_strict,
     temporal_option_number, temporal_option_string, temporal_option_value, temporal_overflow, temporal_string_strict,
     zoned_date_time_plain_parts, FractionalSecondDigitsInput, MAX_INSTANT_NS,
@@ -1436,55 +1437,14 @@ pub fn zoned_date_time_round<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult
     // roundTo 解析：字符串简写直接取用，对象选项按 roundingIncrement、roundingMode、
     // smallestUnit 的固定读取顺序取值。
     let round_to = if args.len() < 2 { JsValue::undefined() } else { vm.reg(args[1]) };
-    let (increment_value, mode_value, unit_value) = if round_to.is_string() {
-        (1.0, "halfExpand".to_string(), Some(to_string(round_to)))
-    } else {
-        if !round_to.is_object() {
-            return NativeResult::Err(crate::error::create_type_error(vm, "roundTo must be a string or object"));
-        }
-        let options_ptr = round_to.as_js_object_ptr();
-        if options_ptr.is_null() {
-            return NativeResult::Err(crate::error::create_type_error(vm, "roundTo must be a string or object"));
-        }
-        let options = unsafe { &*options_ptr };
-        let increment_raw = native_try!(temporal_option_value(vm, options, round_to, "roundingIncrement"));
-        let increment = if increment_raw.is_undefined() {
-            1.0
-        } else {
-            native_try!(temporal_option_number(vm, increment_raw))
-        };
-        let mode_raw = native_try!(temporal_option_value(vm, options, round_to, "roundingMode"));
-        let mode = if mode_raw.is_undefined() {
-            "halfExpand".to_string()
-        } else {
-            native_try!(temporal_option_string(vm, mode_raw))
-        };
-        let unit_raw = native_try!(temporal_option_value(vm, options, round_to, "smallestUnit"));
-        let unit = if unit_raw.is_undefined() {
-            None
-        } else {
-            Some(native_try!(temporal_option_string(vm, unit_raw)))
-        };
-        (increment, mode, unit)
-    };
+    let (increment, mode, unit_value) = native_try!(parse_round_options(vm, round_to));
 
-    let Some(mode) = instant_rounding_mode(&mode_value) else {
-        return NativeResult::Err(crate::error::create_range_error(vm, "invalid rounding mode"));
-    };
     let Some(unit_value) = unit_value else {
         return NativeResult::Err(crate::error::create_range_error(vm, "smallestUnit is required"));
     };
     let Some((unit_ns, units_per_day)) = zoned_date_time_round_unit(&unit_value) else {
         return NativeResult::Err(crate::error::create_range_error(vm, "invalid smallest unit"));
     };
-    if !increment_value.is_finite() {
-        return NativeResult::Err(crate::error::create_range_error(vm, "invalid rounding increment"));
-    }
-    let increment = increment_value.trunc();
-    if !(1.0..=1_000_000_000.0).contains(&increment) {
-        return NativeResult::Err(crate::error::create_range_error(vm, "invalid rounding increment"));
-    }
-    let increment = increment as i128;
     // 真因子校验：时间单位增量须小于更高一级单位数量且整除（hour/24、minute/60、second/60 拒绝）；
     // day 特殊：更高一级数量=1，仅 increment==1 合法。
     let increment_valid = if unit_ns == DAY_NS {

@@ -20,6 +20,7 @@ use oxide_runtime_api::{to_number, to_string, NativeResult, ProtoKind, VmHost};
 use oxide_types::object::JsObject;
 use oxide_types::value::JsValue;
 
+use super::instant::{instant_rounding_mode, InstantRoundingMode};
 use super::time_zone::{tz_canonical_name, zone_offset_seconds};
 use super::{
     parse_iso_date, parse_plain_date_time_string, parse_plain_time_string, valid_iso_date, valid_plain_date_time_range,
@@ -229,6 +230,68 @@ pub(crate) fn temporal_string_strict<H: VmHost>(vm: &mut H, value: JsValue) -> R
         return Err(crate::error::create_type_error(vm, "expected a string"));
     }
     Ok(to_string(primitive))
+}
+
+/// round 的 options 袋统一校验：roundTo 解析加 increment/mode/smallestUnit 读取与校验。
+///
+/// # 步骤
+/// 1. roundTo 字符串简写 → (1, halfExpand, Some(串))；对象 → 按固定读序
+///    roundingIncrement → roundingMode → smallestUnit 依次取值，全部读完再统一校验。
+/// 2. increment：undefined → 1.0；temporal_option_number；有限性；1..=1e9；截断取整。
+/// 3. mode：undefined → "halfExpand"；temporal_option_string；instant_rounding_mode
+///    查表（9 模式，None → RangeError）。
+/// 4. smallestUnit：undefined → None；temporal_option_string。
+///
+/// # 边界与前提
+/// - 非字符串非对象 → TypeError "roundTo must be a string or object"。
+/// - 单位表查表与真因子校验由调用方负责（单位表因类而异）。
+pub(crate) fn parse_round_options<H: VmHost>(
+    vm: &mut H, round_to: JsValue,
+) -> Result<(i128, InstantRoundingMode, Option<String>), JsValue> {
+    let (increment_raw, mode_raw, unit_raw) = if round_to.is_string() {
+        (JsValue::undefined(), JsValue::undefined(), round_to)
+    } else {
+        if !round_to.is_object() {
+            return Err(crate::error::create_type_error(vm, "roundTo must be a string or object"));
+        }
+        let options_ptr = round_to.as_js_object_ptr();
+        if options_ptr.is_null() {
+            return Err(crate::error::create_type_error(vm, "roundTo must be a string or object"));
+        }
+        let options = unsafe { &*options_ptr };
+        (
+            temporal_option_value(vm, options, round_to, "roundingIncrement")?,
+            temporal_option_value(vm, options, round_to, "roundingMode")?,
+            temporal_option_value(vm, options, round_to, "smallestUnit")?,
+        )
+    };
+    let increment_value = if increment_raw.is_undefined() {
+        1.0
+    } else {
+        temporal_option_number(vm, increment_raw)?
+    };
+    if !increment_value.is_finite() {
+        return Err(crate::error::create_range_error(vm, "invalid rounding increment"));
+    }
+    let increment = increment_value.trunc();
+    if !(1.0..=1_000_000_000.0).contains(&increment) {
+        return Err(crate::error::create_range_error(vm, "invalid rounding increment"));
+    }
+    let mode_value = if mode_raw.is_undefined() {
+        "halfExpand".to_string()
+    } else {
+        temporal_option_string(vm, mode_raw)?
+    };
+    let mode = match instant_rounding_mode(&mode_value) {
+        Some(mode) => mode,
+        None => return Err(crate::error::create_range_error(vm, "invalid rounding mode")),
+    };
+    let smallest_unit = if unit_raw.is_undefined() {
+        None
+    } else {
+        Some(temporal_option_string(vm, unit_raw)?)
+    };
+    Ok((increment as i128, mode, smallest_unit))
 }
 
 /// 校验 `with` 族方法的 partial 参数并排除日历/时区载体。

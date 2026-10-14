@@ -12,8 +12,8 @@ use super::{
     balance_instant_difference, canonical_time_zone, civil_from_days, days_from_civil, days_in_month,
     duration_like_values, duration_time_nanoseconds, ensure_instant, format_iso_year, format_offset_seconds_text,
     get_instant_epoch_ns, initialize_temporal_receiver, is_ctor_call, make_duration, make_instant,
-    make_zoned_date_time, native_engine_error, parse_digits, parse_fractional_second_digits, receiver_obj,
-    round_instant_difference, temporal_option_number, temporal_option_string, temporal_option_value,
+    make_zoned_date_time, native_engine_error, parse_digits, parse_fractional_second_digits, parse_round_options,
+    receiver_obj, round_instant_difference, temporal_option_number, temporal_option_string, temporal_option_value,
     FractionalSecondDigitsInput, MAX_INSTANT_NS,
 };
 
@@ -551,55 +551,14 @@ pub fn instant_round<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     };
 
     let round_to = if args.len() < 2 { JsValue::undefined() } else { vm.reg(args[1]) };
-    let (increment_value, mode_value, unit_value) = if round_to.is_string() {
-        (1.0, "halfExpand".to_string(), Some(to_string(round_to)))
-    } else {
-        if !round_to.is_object() {
-            return NativeResult::Err(crate::error::create_type_error(vm, "roundTo must be a string or object"));
-        }
-        let options_ptr = round_to.as_js_object_ptr();
-        if options_ptr.is_null() {
-            return NativeResult::Err(crate::error::create_type_error(vm, "roundTo must be a string or object"));
-        }
-        let options = unsafe { &*options_ptr };
-        let increment_raw = native_try!(temporal_option_value(vm, options, round_to, "roundingIncrement"));
-        let increment = if increment_raw.is_undefined() {
-            1.0
-        } else {
-            native_try!(temporal_option_number(vm, increment_raw))
-        };
-        let mode_raw = native_try!(temporal_option_value(vm, options, round_to, "roundingMode"));
-        let mode = if mode_raw.is_undefined() {
-            "halfExpand".to_string()
-        } else {
-            native_try!(temporal_option_string(vm, mode_raw))
-        };
-        let unit_raw = native_try!(temporal_option_value(vm, options, round_to, "smallestUnit"));
-        let unit = if unit_raw.is_undefined() {
-            None
-        } else {
-            Some(native_try!(temporal_option_string(vm, unit_raw)))
-        };
-        (increment, mode, unit)
-    };
-
-    let Some(mode) = instant_rounding_mode(&mode_value) else {
-        return NativeResult::Err(crate::error::create_range_error(vm, "invalid rounding mode"));
-    };
+    let (increment, mode, unit_value) = native_try!(parse_round_options(vm, round_to));
     let Some(unit_value) = unit_value else {
         return NativeResult::Err(crate::error::create_range_error(vm, "smallestUnit is required"));
     };
     let Some((unit_ns, units_per_day)) = instant_round_unit(&unit_value) else {
         return NativeResult::Err(crate::error::create_range_error(vm, "invalid smallest unit"));
     };
-    if !increment_value.is_finite() {
-        return NativeResult::Err(crate::error::create_range_error(vm, "invalid rounding increment"));
-    }
-    let increment = increment_value.trunc();
-    if !(1.0..=1_000_000_000.0).contains(&increment) {
-        return NativeResult::Err(crate::error::create_range_error(vm, "invalid rounding increment"));
-    }
-    let increment = increment as i128;
+    // 整除校验用每更高一级单位数量（Instant 语义：增量须整除一天）。
     if units_per_day % increment != 0 {
         return NativeResult::Err(crate::error::create_range_error(vm, "rounding increment must divide a day"));
     }

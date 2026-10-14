@@ -9,8 +9,9 @@ use super::{
     calendar_annotation, compare_iso_date, days_from_civil, days_in_month_iso, difference_core, duration_like_values,
     ensure_plain_year_month, format_iso_year, get_calendar_id, get_double_prop, initialize_temporal_receiver,
     is_ctor_call, is_leap_year_iso, iso_year_month_within_limits, make_duration, make_plain_date,
-    make_plain_year_month, month_day_bag_calendar_id, native_engine_error, parse_year_month_difference_settings,
-    read_iso2, receiver_obj, reject_partial_object_with_calendar_or_time_zone, temporal_constructor_calendar_id,
+    make_plain_year_month, month_day_bag_calendar_id, native_engine_error, parse_round_options,
+    parse_year_month_difference_settings, read_iso2, receiver_obj,
+    reject_partial_object_with_calendar_or_time_zone, round_instant_ns, temporal_constructor_calendar_id,
     temporal_number_component, temporal_option_string, temporal_option_value, temporal_overflow,
     temporal_to_show_calendar, validate_month_day_annotation_suffix, validate_month_day_time_suffix, IsoDateTime,
     ShowCalendar, MAX_ISO_DAY,
@@ -686,6 +687,73 @@ pub fn plain_year_month_add<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult 
 /// `Temporal.PlainYearMonth.prototype.subtract(durationLike)`。
 pub fn plain_year_month_subtract<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     plain_year_month_apply_duration(vm, args, -1)
+}
+
+/// PlainYearMonth round 的最小单位表：year/month。
+/// 返回 (单位月数, 最大增量)；日历单位无整除约束（最大增量 0）。
+pub(crate) fn plain_year_month_round_unit(value: &str) -> Option<(i128, i128)> {
+    match value {
+        "year" | "years" => Some((12, 0)),
+        "month" | "months" => Some((1, 0)),
+        _ => None,
+    }
+}
+
+/// `Temporal.PlainYearMonth.prototype.round(roundTo)`：日历分量平衡。
+///
+/// # 步骤
+/// 1. receiver 品牌校验；读槽 0-3 入本地（参考日槽 2 与日历槽继承 receiver）。
+/// 2. roundTo 经 parse_round_options（undefined → TypeError；字符串简写；对象固定读序）。
+/// 3. 单位表查 smallestUnit（year/month；None → RangeError）；缺失 → RangeError。
+/// 4. month：总月数（年 × 12 + 月 − 1）按 increment 舍入 → 年/月回填。
+/// 5. year：年数按 increment 舍入 → 月保持不变。
+/// 6. iso_year_month_within_limits 越界抛 RangeError。
+/// 7. make_plain_year_month 重建（参考日与日历槽继承 receiver）。
+///
+/// # 边界与前提
+/// - 日历单位（year/month）的 increment 无真因子约束。
+pub fn plain_year_month_round<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let ptr = native_try!(receiver_obj(vm, args));
+    let obj = unsafe { &*ptr };
+    native_try!(ensure_plain_year_month(vm, obj));
+    let year = get_double_prop(obj, 0) as i32;
+    let month = get_double_prop(obj, 1) as u32;
+    let ref_day = get_double_prop(obj, 2) as u32;
+    let calendar = get_calendar_id(obj, 3);
+
+    let round_to = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
+    let (increment, mode, unit_value) = native_try!(parse_round_options(vm, round_to));
+    let Some(unit_value) = unit_value else {
+        return NativeResult::Err(crate::error::create_range_error(vm, "smallestUnit is required"));
+    };
+    let (_, max_increment) = match plain_year_month_round_unit(&unit_value) {
+        Some(entry) => entry,
+        None => return NativeResult::Err(crate::error::create_range_error(vm, "invalid smallest unit")),
+    };
+    if max_increment != 0 && (increment >= max_increment || max_increment % increment != 0) {
+        return NativeResult::Err(crate::error::create_range_error(vm, "invalid rounding increment"));
+    }
+
+    let (year, month) = match unit_value.as_str() {
+        "year" | "years" => {
+            let Some(rounded_year) = round_instant_ns(i128::from(year), increment, mode) else {
+                return NativeResult::Err(crate::error::create_range_error(vm, "year-month is out of range"));
+            };
+            (rounded_year as i32, month)
+        }
+        "month" | "months" => {
+            let total_months = i128::from(year) * 12 + i128::from(month) - 1;
+            let Some(rounded_months) = round_instant_ns(total_months, increment, mode) else {
+                return NativeResult::Err(crate::error::create_range_error(vm, "year-month is out of range"));
+            };
+            (rounded_months.div_euclid(12) as i32, rounded_months.rem_euclid(12) as u32 + 1)
+        }
+        _ => unreachable!(),
+    };
+    if !iso_year_month_within_limits(year, month) {
+        return NativeResult::Err(crate::error::create_range_error(vm, "invalid year-month"));
+    }
+    make_plain_year_month(vm, year, month, ref_day, &calendar)
 }
 
 /// `Temporal.PlainYearMonth.prototype.with(yearMonthLike[, options])`：覆盖 year/month/monthCode；

@@ -11,11 +11,12 @@ use super::{
     duration_like_values, ensure_plain_date_time, format_iso_year, get_calendar_id, get_double_prop,
     initialize_temporal_receiver, instant_rounding_mode, is_ctor_call, is_leap_year_iso, make_plain_date,
     make_plain_date_time, make_plain_time, parse_difference_settings, parse_fractional_second_digits,
-    parse_temporal_string_impl, plain_date_time_object_parts, plain_time_components, plain_time_like_ns, receiver_obj,
-    reject_partial_object_with_calendar_or_time_zone, resolve_date_time_parts, round_instant_ns, temporal_calendar_id,
-    temporal_calendar_id_strict, temporal_number_component, temporal_option_number, temporal_option_string,
-    temporal_option_value, temporal_overflow, valid_iso_date, valid_plain_date_time_range, valid_plain_time,
-    zoned_date_time_plain_parts, DateTimeParts, FractionalSecondDigitsInput, IsoDateTime,
+    parse_round_options, parse_temporal_string_impl, plain_date_time_object_parts, plain_time_components,
+    plain_time_like_ns, receiver_obj, reject_partial_object_with_calendar_or_time_zone, resolve_date_time_parts,
+    round_instant_ns, temporal_calendar_id, temporal_calendar_id_strict, temporal_number_component,
+    temporal_option_number, temporal_option_string, temporal_option_value, temporal_overflow, valid_iso_date,
+    valid_plain_date_time_range, valid_plain_time, zoned_date_time_plain_parts, DateTimeParts,
+    FractionalSecondDigitsInput, IsoDateTime,
 };
 // ───────────────────── PlainDateTime 基础方法 ─────────────────────
 
@@ -825,6 +826,98 @@ pub fn plain_date_time_add<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 /// `Temporal.PlainDateTime.prototype.subtract(durationLike, options)`。
 pub fn plain_date_time_subtract<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     plain_date_time_apply_duration(vm, args, -1)
+}
+
+/// PlainDateTime round 的最小单位表：day + 6 个时间单位（不含 year/month/week）。
+/// 返回 (单位纳秒, 最大增量)；day 的最大增量 = 1（仅 increment 1 合法）。
+pub(crate) fn plain_date_time_round_unit(value: &str) -> Option<(i128, i128)> {
+    match value {
+        "day" | "days" => Some((86_400_000_000_000, 1)),
+        "hour" | "hours" => Some((3_600_000_000_000, 24)),
+        "minute" | "minutes" => Some((60_000_000_000, 60)),
+        "second" | "seconds" => Some((1_000_000_000, 60)),
+        "millisecond" | "milliseconds" => Some((1_000_000, 1_000)),
+        "microsecond" | "microseconds" => Some((1_000, 1_000)),
+        "nanosecond" | "nanoseconds" => Some((1, 1_000)),
+        _ => None,
+    }
+}
+
+/// `Temporal.PlainDateTime.prototype.round(roundTo)`：日历分量平衡加纳秒算术。
+///
+/// # 步骤
+/// 1. receiver 品牌校验；读槽 0-4 入本地（日历槽继承 receiver）。
+/// 2. roundTo 经 parse_round_options（undefined → TypeError；字符串简写；对象固定读序）。
+/// 3. 单位表查 smallestUnit（day..nanosecond；None → RangeError）；缺失 → RangeError。
+/// 4. 真因子校验：day 仅 increment=1 合法（闭区间）；时间单位增量须严格小于最大增量且整除。
+/// 5. day：整日纳秒（日数 × 24h + 时间槽）按 increment × 24h 舍入 → 日期进位回填，时间槽清零。
+/// 6. 时间单位：时间槽按单位纳秒 × increment 舍入；≥24h 进位到日（日期 +1，时间槽减 24h）。
+/// 7. valid_iso_date 加 valid_plain_date_time_range（严格不等式）越界抛 RangeError。
+/// 8. make_plain_date_time 重建（日历槽继承 receiver）。
+///
+/// # 边界与前提
+/// - 舍入跨午夜（如 23:59:59.9 舍入到秒 → 次日 00:00）合法，同 rounding-cross-midnight 语义。
+/// - 进位至多一天（quantum < 24h 且时间槽 < 24h）。
+pub fn plain_date_time_round<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let ptr = native_try!(receiver_obj(vm, args));
+    let obj = unsafe { &*ptr };
+    native_try!(ensure_plain_date_time(vm, obj));
+    let year = get_double_prop(obj, 0) as i32;
+    let month = get_double_prop(obj, 1) as u32;
+    let day = get_double_prop(obj, 2) as u32;
+    let time_ns = get_double_prop(obj, 3) as i128;
+    let calendar = get_calendar_id(obj, 4);
+
+    let round_to = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
+    let (increment, mode, unit_value) = native_try!(parse_round_options(vm, round_to));
+    let Some(unit_value) = unit_value else {
+        return NativeResult::Err(crate::error::create_range_error(vm, "smallestUnit is required"));
+    };
+    let Some((unit_ns, max_increment)) = plain_date_time_round_unit(&unit_value) else {
+        return NativeResult::Err(crate::error::create_range_error(vm, "invalid smallest unit"));
+    };
+    const DAY_NS: i128 = 86_400_000_000_000;
+    // 真因子校验：day 为闭区间（上界 1，仅 increment=1 合法）；时间单位增量须严格小于
+    // 上一级单位数量且整除。
+    let increment_valid = if unit_ns == DAY_NS {
+        increment == 1
+    } else {
+        increment < max_increment && max_increment % increment == 0
+    };
+    if !increment_valid {
+        return NativeResult::Err(crate::error::create_range_error(vm, "rounding increment must divide a day"));
+    }
+    let (year, month, day, time_ns) = if unit_ns == DAY_NS {
+        // day：整日纳秒（日数 × 24h + 时间槽）舍入，日期进位回填，时间槽清零。
+        let days = days_from_civil(i128::from(year), i128::from(month), i128::from(day));
+        let Some(total_ns) = days.checked_mul(DAY_NS).and_then(|value| value.checked_add(time_ns)) else {
+            return NativeResult::Err(crate::error::create_range_error(vm, "invalid date-time"));
+        };
+        let Some(rounded_ns) = round_instant_ns(total_ns, DAY_NS * increment, mode) else {
+            return NativeResult::Err(crate::error::create_range_error(vm, "invalid date-time"));
+        };
+        let (year, month, day) = civil_from_days(rounded_ns.div_euclid(DAY_NS));
+        (year as i32, month as u32, day as u32, rounded_ns.rem_euclid(DAY_NS))
+    } else {
+        // 时间单位：时间槽舍入，≥24h 进位到日（至多一天）。
+        let Some(quantum_ns) = unit_ns.checked_mul(increment) else {
+            return NativeResult::Err(crate::error::create_range_error(vm, "invalid rounding increment"));
+        };
+        let Some(rounded_ns) = round_instant_ns(time_ns, quantum_ns, mode) else {
+            return NativeResult::Err(crate::error::create_range_error(vm, "invalid time"));
+        };
+        if rounded_ns >= DAY_NS {
+            let days = days_from_civil(i128::from(year), i128::from(month), i128::from(day)) + 1;
+            let (year, month, day) = civil_from_days(days);
+            (year as i32, month as u32, day as u32, rounded_ns - DAY_NS)
+        } else {
+            (year, month, day, rounded_ns)
+        }
+    };
+    if !valid_iso_date(year, month, day) || !valid_plain_date_time_range(year, month, day, time_ns as f64) {
+        return NativeResult::Err(crate::error::create_range_error(vm, "invalid date-time"));
+    }
+    make_plain_date_time(vm, year, month, day, time_ns as f64, &calendar)
 }
 
 /// `Temporal.PlainDateTime.prototype.toJSON()`：输出默认 ISO 日期时间。

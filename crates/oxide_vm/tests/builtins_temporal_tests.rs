@@ -4334,3 +4334,287 @@ fn plain_date_to_plain_month_day_and_year_month() {
         "M11|18|hebrew|1972-11-18[u-ca=hebrew]|1976|11|hebrew|1976-11-01[u-ca=hebrew]"
     );
 }
+
+// -- Temporal round 族（PD/PDT/PYM 新 round 与统一 options 袋）--
+
+#[test]
+fn plain_date_round_calendar_units() {
+    let mut vm = Vm::new();
+    // day：精确在日边界 → 原样。
+    let r = eval(&mut vm, "new Temporal.PlainDate(1976, 11, 18).round('day').toString()").unwrap();
+    assert_eq!(str_val(&vm, r), "1976-11-18");
+    // week：1976-11-18 恰在周边界（epoch 锚定）→ 原样；次日舍入回边界。
+    let r = eval(&mut vm, "new Temporal.PlainDate(1976, 11, 18).round('week').toString()").unwrap();
+    assert_eq!(str_val(&vm, r), "1976-11-18");
+    let r = eval(&mut vm, "new Temporal.PlainDate(1976, 11, 19).round('week').toString()").unwrap();
+    assert_eq!(str_val(&vm, r), "1976-11-18");
+    let r = eval(&mut vm, "new Temporal.PlainDate(1976, 11, 22).round('week').toString()").unwrap();
+    assert_eq!(str_val(&vm, r), "1976-11-25");
+    // month：日钳制到目标月末（11 月 30 天）。
+    let r = eval(&mut vm, "new Temporal.PlainDate(1976, 11, 18).round('month').toString()").unwrap();
+    assert_eq!(str_val(&vm, r), "1976-11-30");
+    // month 增量：1976-10 恰在 3 月边界 → 原样（日钳制到 10 月末）。
+    let r = eval(
+        &mut vm,
+        "new Temporal.PlainDate(1976, 10, 18).round({ smallestUnit: 'month', roundingIncrement: 3 }).toString()",
+    )
+    .unwrap();
+    assert_eq!(str_val(&vm, r), "1976-10-31");
+    // 1976-11 越界（总月数余 1）→ 舍入回 1976-10。
+    let r = eval(
+        &mut vm,
+        "new Temporal.PlainDate(1976, 11, 18).round({ smallestUnit: 'month', roundingIncrement: 3 }).toString()",
+    )
+    .unwrap();
+    assert_eq!(str_val(&vm, r), "1976-10-31");
+    // 闰年 2 月末：2000-02-29 舍入到月 → 2000-02-29。
+    let r = eval(&mut vm, "new Temporal.PlainDate(2000, 2, 29).round('month').toString()").unwrap();
+    assert_eq!(str_val(&vm, r), "2000-02-29");
+    // year：月/日钳制到 1/1。
+    let r = eval(&mut vm, "new Temporal.PlainDate(1976, 11, 18).round('year').toString()").unwrap();
+    assert_eq!(str_val(&vm, r), "1976-01-01");
+    // year 增量：1977 按 4 舍入（1977 % 4 = 1 < 2）→ 1976-01-01。
+    let r = eval(
+        &mut vm,
+        "new Temporal.PlainDate(1977, 6, 15).round({ smallestUnit: 'year', roundingIncrement: 4 }).toString()",
+    )
+    .unwrap();
+    assert_eq!(str_val(&vm, r), "1976-01-01");
+}
+
+#[test]
+fn plain_date_round_errors_and_calendar() {
+    let mut vm = Vm::new();
+    // 缺参 / undefined → TypeError（roundTo 非串非对象）。
+    let r = eval(&mut vm, "try { new Temporal.PlainDate(1976, 11, 18).round() } catch (e) { e.constructor.name }")
+        .unwrap();
+    assert_eq!(str_val(&vm, r), "TypeError");
+    // 对象缺 smallestUnit → RangeError。
+    let r = eval(&mut vm, "try { new Temporal.PlainDate(1976, 11, 18).round({}) } catch (e) { e.constructor.name }")
+        .unwrap();
+    assert_eq!(str_val(&vm, r), "RangeError");
+    // 非法最小单位（PD 限 year/month/week/day）→ RangeError。
+    let r = eval(
+        &mut vm,
+        "try { new Temporal.PlainDate(1976, 11, 18).round({ smallestUnit: 'hour' }) } catch (e) { e.constructor.name }",
+    )
+    .unwrap();
+    assert_eq!(str_val(&vm, r), "RangeError");
+    // NaN 增量 → RangeError。
+    let r = eval(
+        &mut vm,
+        "try { new Temporal.PlainDate(1976, 11, 18).round({ smallestUnit: 'week', roundingIncrement: NaN }) } catch (e) { e.constructor.name }",
+    )
+    .unwrap();
+    assert_eq!(str_val(&vm, r), "RangeError");
+    // 日历槽继承 receiver。
+    let r = eval(
+        &mut vm,
+        "new Temporal.PlainDate(1976, 11, 18, 'hebrew').round('month').calendarId",
+    )
+    .unwrap();
+    assert_eq!(str_val(&vm, r), "hebrew");
+}
+
+#[test]
+fn plain_date_time_round_time_units() {
+    let mut vm = Vm::new();
+    // second：0.6s 舍入到秒 → 进位（halfExpand 默认）。
+    let r = eval(
+        &mut vm,
+        "new Temporal.PlainDateTime(1976, 11, 18, 14, 23, 30, 600, 0, 0).round({ smallestUnit: 'second' }).toString()",
+    )
+    .unwrap();
+    assert_eq!(str_val(&vm, r), "1976-11-18T14:23:31");
+    // nanosecond 增量 + floor：123456789ns → 123456700ns。
+    let r = eval(
+        &mut vm,
+        "new Temporal.PlainDateTime(1976, 11, 18, 14, 23, 30, 123, 456, 789).round({ smallestUnit: 'nanosecond', roundingIncrement: 100, roundingMode: 'floor' }).toString()",
+    )
+    .unwrap();
+    assert_eq!(str_val(&vm, r), "1976-11-18T14:23:30.1234567");
+    // hour：23:59:59.999999999 舍入到小时 → 进位到次日 00:00。
+    let r = eval(
+        &mut vm,
+        "new Temporal.PlainDateTime(1976, 11, 18, 23, 59, 59, 999, 999, 999).round({ smallestUnit: 'hour' }).toString()",
+    )
+    .unwrap();
+    assert_eq!(str_val(&vm, r), "1976-11-19T00:00:00");
+    // day：14:23:30 舍入到日（>12:00）→ 次日；floor → 当日。
+    let r = eval(
+        &mut vm,
+        "new Temporal.PlainDateTime(1976, 11, 18, 14, 23, 30).round({ smallestUnit: 'day' }).toString()",
+    )
+    .unwrap();
+    assert_eq!(str_val(&vm, r), "1976-11-19T00:00:00");
+    let r = eval(
+        &mut vm,
+        "new Temporal.PlainDateTime(1976, 11, 18, 11, 23, 30).round({ smallestUnit: 'day', roundingMode: 'floor' }).toString()",
+    )
+    .unwrap();
+    assert_eq!(str_val(&vm, r), "1976-11-18T00:00:00");
+    // 跨年进位：2000-12-31T23:30 舍入到日 → 2001-01-01。
+    let r = eval(
+        &mut vm,
+        "new Temporal.PlainDateTime(2000, 12, 31, 23, 30).round({ smallestUnit: 'day' }).toString()",
+    )
+    .unwrap();
+    assert_eq!(str_val(&vm, r), "2001-01-01T00:00:00");
+}
+
+#[test]
+fn plain_date_time_round_limits_and_errors() {
+    let mut vm = Vm::new();
+    // 表示范围边界（严格不等式）：min 舍入落边界下抛、max 舍入上越界抛。
+    let r = eval(
+        &mut vm,
+        "(() => { const kind = (fn) => { try { fn(); return 'no'; } catch (e) { return e.constructor.name; } };
+         const min = new Temporal.PlainDateTime(-271821, 4, 19, 0, 0, 0, 0, 0, 1);
+         const max = new Temporal.PlainDateTime(275760, 9, 13, 23, 59, 59, 999, 999, 999);
+         return [
+           kind(() => min.round({ smallestUnit: 'day', roundingMode: 'floor' })),
+           kind(() => max.round({ smallestUnit: 'hour', roundingMode: 'ceil' })),
+         ].join('|'); })()",
+    )
+    .unwrap();
+    assert_eq!(str_val(&vm, r), "RangeError|RangeError");
+    // 缺参 → TypeError；对象缺 smallestUnit → RangeError。
+    let r = eval(
+        &mut vm,
+        "(() => { const kind = (fn) => { try { fn(); return 'no'; } catch (e) { return e.constructor.name; } };
+         const dt = new Temporal.PlainDateTime(1976, 11, 18, 14, 23, 30);
+         return [kind(() => dt.round()), kind(() => dt.round({}))].join('|'); })()",
+    )
+    .unwrap();
+    assert_eq!(str_val(&vm, r), "TypeError|RangeError");
+    // 非法最小单位（PDT 限 day..nanosecond，year/month/week 不合法）→ RangeError。
+    let r = eval(
+        &mut vm,
+        "(() => { const kind = (fn) => { try { fn(); return 'no'; } catch (e) { return e.constructor.name; } };
+         const dt = new Temporal.PlainDateTime(1976, 11, 18, 14, 23, 30);
+         return [
+           kind(() => dt.round({ smallestUnit: 'year' })),
+           kind(() => dt.round({ smallestUnit: 'week' })),
+         ].join('|'); })()",
+    )
+    .unwrap();
+    assert_eq!(str_val(&vm, r), "RangeError|RangeError");
+    // 真因子校验：hour 增量 24 拒绝；day 仅增量 1 合法。
+    let r = eval(
+        &mut vm,
+        "(() => { const kind = (fn) => { try { fn(); return 'no'; } catch (e) { return e.constructor.name; } };
+         const dt = new Temporal.PlainDateTime(1976, 11, 18, 14, 23, 30);
+         return [
+           kind(() => dt.round({ smallestUnit: 'hour', roundingIncrement: 24 })),
+           kind(() => dt.round({ smallestUnit: 'day', roundingIncrement: 2 })),
+         ].join('|'); })()",
+    )
+    .unwrap();
+    assert_eq!(str_val(&vm, r), "RangeError|RangeError");
+    // 日历槽继承 receiver。
+    let r = eval(
+        &mut vm,
+        "new Temporal.PlainDateTime(1976, 11, 18, 12, 0, 0, 0, 0, 0, 'hebrew').round('minute').calendarId",
+    )
+    .unwrap();
+    assert_eq!(str_val(&vm, r), "hebrew");
+}
+
+#[test]
+fn plain_year_month_round_units() {
+    let mut vm = Vm::new();
+    // month：1976-11 恰在 1 月边界 → 原样。
+    let r = eval(&mut vm, "new Temporal.PlainYearMonth(1976, 11).round('month').toString()").unwrap();
+    assert_eq!(str_val(&vm, r), "1976-11");
+    // month 增量：1976-12 按 3 舍入（余 2 > 1.5）→ 1977-01。
+    let r = eval(
+        &mut vm,
+        "new Temporal.PlainYearMonth(1976, 12).round({ smallestUnit: 'month', roundingIncrement: 3 }).toString()",
+    )
+    .unwrap();
+    assert_eq!(str_val(&vm, r), "1977-01");
+    // year：1976 恰在 4 年边界 → 月不变（11）。
+    let r = eval(
+        &mut vm,
+        "new Temporal.PlainYearMonth(1976, 11).round({ smallestUnit: 'year', roundingIncrement: 4 }).toString()",
+    )
+    .unwrap();
+    assert_eq!(str_val(&vm, r), "1976-11");
+    // year 增量：1977 按 4 舍入（余 1 < 2）→ 1976，月保持 11。
+    let r = eval(
+        &mut vm,
+        "new Temporal.PlainYearMonth(1977, 11).round({ smallestUnit: 'year', roundingIncrement: 4 }).toString()",
+    )
+    .unwrap();
+    assert_eq!(str_val(&vm, r), "1976-11");
+}
+
+#[test]
+fn plain_year_month_round_errors_and_calendar() {
+    let mut vm = Vm::new();
+    // 缺参 → TypeError；对象缺 smallestUnit → RangeError；非法单位（week）→ RangeError。
+    let r = eval(
+        &mut vm,
+        "(() => { const kind = (fn) => { try { fn(); return 'no'; } catch (e) { return e.constructor.name; } };
+         const ym = new Temporal.PlainYearMonth(1976, 11);
+         return [
+           kind(() => ym.round()),
+           kind(() => ym.round({})),
+           kind(() => ym.round({ smallestUnit: 'week' })),
+         ].join('|'); })()",
+    )
+    .unwrap();
+    assert_eq!(str_val(&vm, r), "TypeError|RangeError|RangeError");
+    // 范围边界：-271821-03 在表示范围外（下界 -271821-04）→ RangeError。
+    let r = eval(
+        &mut vm,
+        "try { new Temporal.PlainYearMonth(-271821, 3).round({ smallestUnit: 'month', roundingMode: 'floor' }) } catch (e) { e.constructor.name }",
+    )
+    .unwrap();
+    assert_eq!(str_val(&vm, r), "RangeError");
+    // 日历槽继承 receiver。
+    let r = eval(
+        &mut vm,
+        "new Temporal.PlainYearMonth(1976, 11, 'hebrew').round('year').calendarId",
+    )
+    .unwrap();
+    assert_eq!(str_val(&vm, r), "hebrew");
+}
+
+#[test]
+fn round_options_bag_shorthand_and_modes() {
+    let mut vm = Vm::new();
+    // 字符串简写与对象形态等价（PD/PDT/PYM 三族）。
+    let r = eval(
+        &mut vm,
+        "(() => {
+          const pd = new Temporal.PlainDate(1976, 11, 18);
+          const s = pd.round('month').toString();
+          const o = pd.round({ smallestUnit: 'month' }).toString();
+          const pds = new Temporal.PlainDateTime(1976, 11, 18, 14, 23, 30).round('day').toString();
+          const pdo = new Temporal.PlainDateTime(1976, 11, 18, 14, 23, 30).round({ smallestUnit: 'day' }).toString();
+          const yms = new Temporal.PlainYearMonth(1976, 12).round('year').toString();
+          const ymo = new Temporal.PlainYearMonth(1976, 12).round({ smallestUnit: 'year' }).toString();
+          return [s, o, pds, pdo, yms, ymo].join('|');
+        })()",
+    )
+    .unwrap();
+    assert_eq!(
+        str_val(&vm, r),
+        "1976-11-30|1976-11-30|1976-11-19T00:00:00|1976-11-19T00:00:00|1976-12|1976-12"
+    );
+    // 9 种舍入模式全过（PDT 时间单位路径）。
+    let r = eval(
+        &mut vm,
+        "(() => {
+          const dt = new Temporal.PlainDateTime(1976, 11, 18, 12, 30, 0);
+          const modes = ['ceil','expand','floor','halfCeil','halfEven','halfExpand','halfFloor','halfTrunc','trunc'];
+          return modes.map((m) => dt.round({ smallestUnit: 'hour', roundingMode: m }).toString()).join('|');
+        })()",
+    )
+    .unwrap();
+    assert_eq!(
+        str_val(&vm, r),
+        "1976-11-18T13:00:00|1976-11-18T13:00:00|1976-11-18T12:00:00|1976-11-18T13:00:00|1976-11-18T12:00:00|1976-11-18T13:00:00|1976-11-18T12:00:00|1976-11-18T12:00:00|1976-11-18T12:00:00"
+    );
+}

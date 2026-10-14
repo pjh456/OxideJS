@@ -9,15 +9,15 @@ use super::common::native_try;
 use super::common::{
     canonical_time_zone, civil_from_days, days_from_civil, ensure_duration, get_calendar_id, get_double_prop,
     get_instant_epoch_ns, initialize_temporal_receiver, is_ctor_call, local_to_epoch_ns, month_code_well_formed,
-    native_engine_error, receiver_obj, resolve_date_time_parts, temporal_calendar_id, temporal_option_number,
-    temporal_option_string, temporal_option_value, temporal_string_strict, zoned_date_time_plain_parts, DateTimeParts,
+    native_engine_error, parse_round_options, receiver_obj, resolve_date_time_parts, temporal_calendar_id,
+    temporal_option_number, temporal_option_string, temporal_option_value, temporal_string_strict,
+    zoned_date_time_plain_parts, DateTimeParts,
 };
 use super::difference::{
     add_date_duration, add_days_iso, balance_instant_difference, compare_iso_date, date_duration_sign, date_until_iso,
     nudge_iso_difference, nudge_window, plain_date_time_unit_index, round_instant_difference, DifferenceSettings,
     InternalDuration, IsoDateTime, DAY_NS, MAX_ISO_DAY,
 };
-use super::instant::{instant_rounding_mode, InstantRoundingMode};
 use super::time_zone::zone_offset_seconds;
 use super::zoned_date_time::{
     add_zoned_datetime, difference_zoned_datetime_with_rounding_vm, difference_zoned_datetime_with_total_vm,
@@ -1240,14 +1240,9 @@ pub fn duration_round<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     }
 
     // roundTo 字符串 => { smallestUnit: 字符串 }；否则必须为对象。
-    let (largest_raw, relative_raw, increment_raw, mode_raw, smallest_raw) = if round_to.is_string() {
-        (
-            JsValue::undefined(),
-            JsValue::undefined(),
-            JsValue::undefined(),
-            JsValue::undefined(),
-            round_to,
-        )
+    // largestUnit/relativeTo 先于 increment 读取（读序钉死）；其余三字段走统一 helper。
+    let (largest_raw, relative_raw) = if round_to.is_string() {
+        (JsValue::undefined(), JsValue::undefined())
     } else {
         if !round_to.is_object() {
             return NativeResult::Err(crate::error::create_type_error(vm, "roundTo must be an object"));
@@ -1257,13 +1252,12 @@ pub fn duration_round<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
             return NativeResult::Err(crate::error::create_type_error(vm, "roundTo must be an object"));
         }
         let options = unsafe { &*options_ptr };
-        let largest_raw = native_try!(temporal_option_value(vm, options, round_to, "largestUnit"));
-        let relative_raw = native_try!(temporal_option_value(vm, options, round_to, "relativeTo"));
-        let increment_raw = native_try!(temporal_option_value(vm, options, round_to, "roundingIncrement"));
-        let mode_raw = native_try!(temporal_option_value(vm, options, round_to, "roundingMode"));
-        let smallest_raw = native_try!(temporal_option_value(vm, options, round_to, "smallestUnit"));
-        (largest_raw, relative_raw, increment_raw, mode_raw, smallest_raw)
+        (
+            native_try!(temporal_option_value(vm, options, round_to, "largestUnit")),
+            native_try!(temporal_option_value(vm, options, round_to, "relativeTo")),
+        )
     };
+    let (increment, mode, smallest_unit) = native_try!(parse_round_options(vm, round_to));
 
     // largestUnit：允许 "auto"；缺失/undefined 视为未提供。
     let largest_provided = !largest_raw.is_undefined();
@@ -1283,43 +1277,14 @@ pub fn duration_round<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         }
     };
 
-    // roundingIncrement：ToIntegerOrInfinity 舍入后需在 [1, 10^9] 内。
-    let increment_value = if increment_raw.is_undefined() {
-        1.0
-    } else {
-        native_try!(temporal_option_number(vm, increment_raw))
-    };
-    let increment = increment_value.trunc();
-    if !increment.is_finite() || !(1.0..=1_000_000_000.0).contains(&increment) {
-        return NativeResult::Err(crate::error::create_range_error(vm, "invalid rounding increment"));
-    }
-    let increment = increment as i128;
-
-    // roundingMode：缺失时 halfExpand。
-    let mode = if mode_raw.is_undefined() {
-        InstantRoundingMode::HalfExpand
-    } else {
-        let mode_string = native_try!(temporal_option_string(vm, mode_raw));
-        match instant_rounding_mode(&mode_string) {
-            Some(mode) => mode,
-            None => {
-                return NativeResult::Err(crate::error::create_range_error(vm, "invalid rounding mode"));
-            }
-        }
-    };
-
     // smallestUnit：缺失时 nanosecond。
-    let smallest_provided = !smallest_raw.is_undefined();
-    let smallest_index = if smallest_raw.is_undefined() {
-        9
-    } else {
-        let unit = native_try!(temporal_option_string(vm, smallest_raw));
-        match plain_date_time_unit_index(&unit) {
+    let smallest_provided = smallest_unit.is_some();
+    let smallest_index = match smallest_unit {
+        Some(unit) => match plain_date_time_unit_index(&unit) {
             Some(index) => index,
-            None => {
-                return NativeResult::Err(crate::error::create_range_error(vm, "invalid smallestUnit"));
-            }
-        }
+            None => return NativeResult::Err(crate::error::create_range_error(vm, "invalid smallestUnit")),
+        },
+        None => 9,
     };
 
     // 默认最大单位：现有最大单位与最小单位中较大（索引较小）的那个。

@@ -9,7 +9,8 @@ use super::{
     difference_core, duration_component_integer, duration_like_values, ensure_plain_time, get_double_prop,
     initialize_temporal_receiver, instant_rounding_mode, instant_string_without_annotations, is_ctor_call,
     make_plain_time, parse_any_offset_seconds, parse_difference_settings, parse_fractional_second_digits,
-    parse_iso_date, receiver_obj, reject_partial_object_with_calendar_or_time_zone, round_instant_ns,
+    parse_iso_date, parse_round_options, receiver_obj, reject_partial_object_with_calendar_or_time_zone,
+    round_instant_ns,
     temporal_number_component, temporal_option_number, temporal_option_string, temporal_option_value,
     temporal_overflow, valid_offset_fraction, zoned_date_time_plain_parts, FractionalSecondDigitsInput, IsoDateTime,
 };
@@ -815,60 +816,19 @@ pub(crate) fn plain_time_round_unit(value: &str) -> Option<(i128, i128)> {
 /// - 舍入跨午夜（如 23:59:59.9 舍入到秒）→ 取模回 00:00，符合 rounding-cross-midnight 语义。
 pub fn plain_time_round<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let round_to = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
-    let (increment_value, mode_value, unit_value) = if round_to.is_string() {
-        (1.0, "halfExpand".to_string(), Some(to_string(round_to)))
-    } else {
-        if !round_to.is_object() {
-            return NativeResult::Err(crate::error::create_type_error(vm, "roundTo must be a string or object"));
-        }
-        let options_ptr = round_to.as_js_object_ptr();
-        if options_ptr.is_null() {
-            return NativeResult::Err(crate::error::create_type_error(vm, "roundTo must be a string or object"));
-        }
-        let options = unsafe { &*options_ptr };
-        let increment_raw = native_try!(temporal_option_value(vm, options, round_to, "roundingIncrement"));
-        let increment = if increment_raw.is_undefined() {
-            1.0
-        } else {
-            native_try!(temporal_option_number(vm, increment_raw))
-        };
-        let mode_raw = native_try!(temporal_option_value(vm, options, round_to, "roundingMode"));
-        let mode = if mode_raw.is_undefined() {
-            "halfExpand".to_string()
-        } else {
-            native_try!(temporal_option_string(vm, mode_raw))
-        };
-        let unit_raw = native_try!(temporal_option_value(vm, options, round_to, "smallestUnit"));
-        let unit = if unit_raw.is_undefined() {
-            None
-        } else {
-            Some(native_try!(temporal_option_string(vm, unit_raw)))
-        };
-        (increment, mode, unit)
-    };
+    let (increment, mode, unit_value) = native_try!(parse_round_options(vm, round_to));
 
     let ptr = native_try!(receiver_obj(vm, args));
     let obj = unsafe { &*ptr };
     native_try!(ensure_plain_time(vm, obj));
     let time_ns = get_double_prop(obj, 0) as i128;
 
-    let Some(mode) = instant_rounding_mode(&mode_value) else {
-        return NativeResult::Err(crate::error::create_range_error(vm, "invalid rounding mode"));
-    };
     let Some(unit_value) = unit_value else {
         return NativeResult::Err(crate::error::create_range_error(vm, "smallestUnit is required"));
     };
     let Some((unit_ns, max_increment)) = plain_time_round_unit(&unit_value) else {
         return NativeResult::Err(crate::error::create_range_error(vm, "invalid smallest unit"));
     };
-    if !increment_value.is_finite() {
-        return NativeResult::Err(crate::error::create_range_error(vm, "invalid rounding increment"));
-    }
-    let increment = increment_value.trunc();
-    if !(1.0..=1_000_000_000.0).contains(&increment) {
-        return NativeResult::Err(crate::error::create_range_error(vm, "invalid rounding increment"));
-    }
-    let increment = increment as i128;
     // 真因子校验：增量须严格小于最大增量且能整除（MaximumTemporalDurationRoundingIncrement
     // 语义；instant_round 只查 % 的缺陷不在此沿用）。
     if increment >= max_increment || max_increment % increment != 0 {
