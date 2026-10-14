@@ -102,6 +102,11 @@ pub enum Insn {
     /// Perform a backreference match.
     BackRef(u32),
 
+    /// Perform a backreference match against the last-defined occurrence of a
+    /// name shared by multiple capture groups. Indices are 0-based, in source
+    /// order; if no occurrence is defined the match succeeds.
+    BackRefLastDefined(Vec<CaptureGroupID>),
+
     /// Match the next character against the bracket contents, stored at the given index in the CompiledRegex.
     Bracket(usize),
 

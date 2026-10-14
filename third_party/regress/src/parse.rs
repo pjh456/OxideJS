@@ -1689,15 +1689,9 @@ where
                         ir::Node::BackRef(group_indices[0] + 1)
                     }
                     _ => {
-                        // Unusual case of multiple groups sharing a name: the backref should try each in turn.
-                        // Lower to alternations of backreferences. Reverse to keep it right-associative: a | (b | (c | d))...
-                        let backrefs = group_indices
-                            .iter()
-                            .rev()
-                            .map(|group_index| ir::Node::BackRef(*group_index + 1));
-                        backrefs
-                            .reduce(|right, left| ir::Node::Alt(Box::new(left), Box::new(right)))
-                            .unwrap()
+                        // Multiple groups sharing a name: the backref reads the
+                        // last occurrence that is defined at match time.
+                        ir::Node::BackRefLastDefined(group_indices.iter().map(|i| i + 1).collect())
                     }
                 };
                 Ok(node)

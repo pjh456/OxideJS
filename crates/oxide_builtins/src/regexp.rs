@@ -18,7 +18,7 @@ pub(crate) fn build_groups_object<H: VmHost>(vm: &mut H, m: &regress::Match, tex
     let groups_obj = vm.alloc_object(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()));
     let groups_ptr = unsafe { &mut *groups_obj };
 
-    // 遍历所有命名捕获组，按名称设置属性（重复名称取首个已定义的出现）。
+    // 遍历所有命名捕获组，按名称设置属性（重复名称取末次已定义的出现）。
     for (name, range) in named {
         let name_si = vm.perm_intern(name);
         let value = match range {
@@ -2221,4 +2221,79 @@ pub fn regexp_symbol_match_all<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResu
     vm.set_or_create_prop_value(wrapper_obj, global_si, JsValue::bool(is_global));
     vm.set_or_create_prop_value(wrapper_obj, unicode_si, JsValue::bool(is_unicode));
     NativeResult::Ok(JsValue::from_js_object(wrapper))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+
+    use oxide_vm::vm::Vm;
+
+    /// 编译并执行单脚本，返回 VM 与完成值。
+    fn eval(source: &str) -> Result<(Vm, JsValue), String> {
+        let allocator = oxide_parser::Allocator::default();
+        let program = oxide_parser::parse(&allocator, source).map_err(|e| format!("parse: {:?}", e))?;
+        let module = oxide_compiler::compiler::Compiler::new()
+            .compile(&program)
+            .map_err(|e| format!("compile: {e}"))?;
+        let mut vm = Vm::new();
+        let result = vm.run(&Arc::new(module))?;
+        Ok((vm, result))
+    }
+
+    /// 读对象自身属性值（按名称），无则 undefined。
+    fn obj_prop(vm: &Vm, obj: &JsObject, name: &str) -> JsValue {
+        let si = vm.perm_intern(name);
+        match vm.get_own_property_slot(obj, si) {
+            Some(idx) => obj.get_prop_at(idx),
+            None => JsValue::undefined(),
+        }
+    }
+
+    /// 读 exec 结果数组第 i 个元素的字符串值（按值）。
+    fn arr_str(vm: &Vm, arr: &JsObject, i: usize) -> Option<String> {
+        vm.lookup_str(arr.get_prop_at(i))
+    }
+
+    /// groups.x 取末次已定义出现；result 数组各出现独立交付（首出现被迭代 2
+    /// 重入清槽，末次出现命中 b）。
+    #[test]
+    fn groups_last_defined() {
+        let (vm, result) = eval(r"/(?:(?<x>a)|(?<x>b)){2}/.exec('ab')").unwrap();
+        let arr = unsafe { &*result.as_js_object_ptr() };
+        assert_eq!(arr_str(&vm, arr, 0).as_deref(), Some("ab"));
+        assert!(arr.get_prop_at(1).is_undefined());
+        assert_eq!(arr_str(&vm, arr, 2).as_deref(), Some("b"));
+        let groups = obj_prop(&vm, arr, "groups");
+        let groups_obj = unsafe { &*groups.as_js_object_ptr() };
+        assert_eq!(vm.lookup_str(obj_prop(&vm, groups_obj, "x")).as_deref(), Some("b"));
+    }
+
+    /// 同名回引读末次已定义：迭代 2 中末次出现命中 b，回引读 b 命中 "aabb"。
+    #[test]
+    fn backref_last_defined_aabb() {
+        let (vm, result) = eval(r"/(?:(?:(?<x>a)|(?<x>b))\k<x>){2}/.exec('aabb')").unwrap();
+        let arr = unsafe { &*result.as_js_object_ptr() };
+        assert_eq!(arr_str(&vm, arr, 0).as_deref(), Some("aabb"));
+        assert!(arr.get_prop_at(1).is_undefined(), "首出现重入未命中");
+        assert_eq!(arr_str(&vm, arr, 2).as_deref(), Some("b"));
+        let groups = obj_prop(&vm, arr, "groups");
+        let groups_obj = unsafe { &*groups.as_js_object_ptr() };
+        assert_eq!(vm.lookup_str(obj_prop(&vm, groups_obj, "x")).as_deref(), Some("b"));
+    }
+
+    /// 全部出现未定义时回引空匹配；末次已定义值不匹配时整体失败（不回落空匹配）。
+    #[test]
+    fn backref_undefined_empty_and_no_fallthrough() {
+        let (vm, result) = eval(r"/^(?:(?<a>x)|(?<a>y)|z)\k<a>$/.exec('z')").unwrap();
+        let arr = unsafe { &*result.as_js_object_ptr() };
+        assert_eq!(arr_str(&vm, arr, 0).as_deref(), Some("z"));
+        assert!(arr.get_prop_at(1).is_undefined());
+        assert!(arr.get_prop_at(2).is_undefined());
+
+        // 末次已定义为 x（位 2 为 y，不匹配 x），整体应失败。
+        let (_, result) = eval(r"/(?:(?<a>y)|(?<a>x)){2}\k<a>/.exec('yxy')").unwrap();
+        assert!(result.is_null(), "末次已定义值不匹配时整体应失败");
+    }
 }

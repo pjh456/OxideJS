@@ -340,6 +340,14 @@ impl Emitter {
                         self.emit_insn(Insn::BackRef(group - 1))
                     }
 
+                    Node::BackRefLastDefined(groups) => {
+                        debug_assert!(!groups.is_empty(), "Should not be empty");
+                        // -1 because group indices are 1-based in the IR.
+                        let indices: Vec<CaptureGroupID> =
+                            groups.iter().map(|g| (*g - 1) as CaptureGroupID).collect();
+                        self.emit_insn(Insn::BackRefLastDefined(indices))
+                    }
+
                     Node::ByteSet(bytes) => self.emit_byte_set_insn(bytes),
 
                     Node::CharSet(chars) => {

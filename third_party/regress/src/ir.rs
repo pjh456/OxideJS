@@ -84,9 +84,13 @@ pub enum Node {
     /// A backreference.
     /// Indices are 1-based. That is, it matches JS syntax: \1 is the first capture group,
     /// not everything.
-    /// A backreference that logically may match multiple capture groups (through shared names)
-    /// are emitted through alternations of backreferences.
     BackRef(u32),
+
+    /// A backreference to a name shared by multiple capture groups.
+    /// Indices are 1-based, one per occurrence in source order. At match time it
+    /// matches the text of the last occurrence that is defined; if none is
+    /// defined, it matches the empty string.
+    BackRefLastDefined(Vec<u32>),
 
     /// A bracket.
     Bracket(BracketContents),
@@ -232,6 +236,7 @@ impl Node {
             }
             &Node::WordBoundary { invert } => Node::WordBoundary { invert },
             &Node::BackRef(idx) => Node::BackRef(idx),
+            Node::BackRefLastDefined(groups) => Node::BackRefLastDefined(groups.clone()),
             Node::Bracket(bc) => Node::Bracket(bc.clone()),
             // Do not reverse into lookarounds, they already have the right sense.
             Node::LookaroundAssertion {
@@ -308,6 +313,7 @@ where
             | Node::CharSet(..)
             | Node::WordBoundary { .. }
             | Node::BackRef { .. }
+            | Node::BackRefLastDefined { .. }
             | Node::Bracket { .. }
             | Node::MatchAny
             | Node::MatchAnyExceptLineTerminator
@@ -381,6 +387,7 @@ where
             | Node::Anchor { .. }
             | Node::WordBoundary { .. }
             | Node::BackRef { .. }
+            | Node::BackRefLastDefined { .. }
             | Node::Bracket { .. } => {}
             Node::Cat(nodes) => {
                 nodes.iter_mut().for_each(|node| self.process(node));
@@ -547,6 +554,9 @@ fn display_node(node: &Node, depth: usize, f: &mut fmt::Formatter) -> fmt::Resul
         }
         &Node::BackRef(group) => {
             writeln!(f, "BackRef {:?} ", group)?;
+        }
+        Node::BackRefLastDefined(groups) => {
+            writeln!(f, "BackRefLastDefined {:?} ", groups)?;
         }
         Node::Bracket(contents) => {
             writeln!(f, "Bracket {:?}", contents)?;

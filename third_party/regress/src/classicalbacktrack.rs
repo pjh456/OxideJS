@@ -886,6 +886,27 @@ impl<'a, Input: InputIndexer> MatchAttempter<'a, Input> {
                         next_or_bt!(matched)
                     }
 
+                    Insn::BackRefLastDefined(cg_indices) => {
+                        // Scan the occurrences in reverse source order and match the
+                        // text of the last occurrence that is defined; a later
+                        // occurrence overrides an earlier one only when it matched.
+                        let mut matched = true;
+                        for &cg_idx in cg_indices.iter().rev() {
+                            let cg = self.s.groups.mat(cg_idx as usize);
+                            if let Some(orig_range) = cg.as_range() {
+                                if re.flags.icase {
+                                    matched = matchers::backref_icase(input, dir, orig_range, &mut pos);
+                                } else {
+                                    matched = matchers::backref(input, dir, orig_range, &mut pos);
+                                }
+                                break;
+                            }
+                        }
+                        // No occurrence is defined and so the match succeeds (ES6
+                        // 21.2.2.9).
+                        next_or_bt!(matched)
+                    }
+
                     &Insn::Lookahead {
                         negate,
                         start_group,

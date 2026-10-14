@@ -339,15 +339,14 @@ impl<'m> Iterator for NamedGroups<'m> {
                 continue;
             }
 
-            // This is the first occurrence of this name. Find the best range value.
-            // Prefer a Some value over None when there are duplicate names.
+            // This is the first occurrence of this name. Resolve the value to
+            // the last occurrence of this name that matched: a later duplicate
+            // overrides an earlier one only when it is defined.
             let mut best_range = self.mat.captures[idx].clone();
             for check_idx in (idx + 1)..end {
                 if self.mat.group_names[check_idx].as_ref() == name {
-                    // Found a duplicate name. Prefer a Some value over None.
-                    if best_range.is_none() && self.mat.captures[check_idx].is_some() {
-                        best_range = self.mat.captures[check_idx].clone();
-                        break; // Stop once we find a Some value
+                    if let Some(range) = self.mat.captures[check_idx].as_ref() {
+                        best_range = Some(range.clone());
                     }
                 }
             }
@@ -1270,5 +1269,114 @@ mod utf16_tests {
 
         let text = "xxabcdefyy";
         assert_eq!(str_matches(&re, text), utf16_matches(&re, &to_units(text)));
+    }
+}
+
+#[cfg(test)]
+mod named_groups_tests {
+    use super::Regex;
+
+    /// 同名双定义（循环内各迭代命中不同出现）：named_groups 取末次已定义出现，
+    /// 键序为首现源序。
+    #[test]
+    fn named_groups_last_defined_wins() {
+        let re = Regex::new(r"(?:(?<x>a)|(?<x>b)){2}").unwrap();
+        let m = re.find("ab").unwrap();
+        let named: Vec<_> = m.named_groups().collect();
+        assert_eq!(named, vec![("x", Some(1..2))], "末次已定义出现（b）胜出");
+        // 首出现被迭代 2 重入清槽，末次出现命中 b。
+        assert_eq!(m.captures, vec![None, Some(1..2)], "result 数组各出现独立交付");
+    }
+
+    /// 末次出现未定义时回退至更早已定义出现。
+    #[test]
+    fn named_groups_falls_back_to_earlier_defined() {
+        let re = Regex::new(r"(?:(?<x>a)|(?<x>b)|c){2}").unwrap();
+        let m = re.find("ca").unwrap();
+        let named: Vec<_> = m.named_groups().collect();
+        assert_eq!(named, vec![("x", Some(1..2))], "末次出现未定义，回退首出现");
+        assert_eq!(m.captures, vec![Some(1..2), None]);
+    }
+
+    /// 全部出现未定义时取 undefined。
+    #[test]
+    fn named_groups_all_undefined() {
+        let re = Regex::new(r"(?:(?<x>a)|(?<x>b)|c){2}").unwrap();
+        let m = re.find("cc").unwrap();
+        let named: Vec<_> = m.named_groups().collect();
+        assert_eq!(named, vec![("x", None)]);
+        assert_eq!(m.captures, vec![None, None]);
+    }
+
+    /// 同名回引读末次已定义出现：迭代 2 中末次出现命中 b，回引读 b 命中 "aabb"。
+    #[test]
+    fn backref_reads_last_defined() {
+        let re = Regex::new(r"(?:(?:(?<x>a)|(?<x>b))\k<x>){2}").unwrap();
+        let m = re.find("aabb").unwrap();
+        assert_eq!(m.range(), 0..4);
+        assert_eq!(m.captures, vec![None, Some(2..3)], "各出现独立交付");
+    }
+
+    /// 单轮同名回引：末次已定义分别为首出现（aa）与次出现（bb）。
+    #[test]
+    fn backref_single_round() {
+        let re = Regex::new(r"(?:(?<x>a)|(?<x>b))\k<x>").unwrap();
+        let m = re.find("aa").unwrap();
+        assert_eq!(m.range(), 0..2);
+        assert_eq!(m.captures, vec![Some(0..1), None]);
+        let m = re.find("bb").unwrap();
+        assert_eq!(m.range(), 0..2);
+        assert_eq!(m.captures, vec![None, Some(0..1)]);
+    }
+
+    /// 全部出现未定义时回引空匹配；末次已定义值不匹配时整体失败（不回落空匹配，
+    /// 也不回落更早已定义出现）。
+    #[test]
+    fn backref_undefined_empty_and_no_fallthrough() {
+        let re = Regex::new(r"^(?:(?<a>x)|(?<a>y)|z)\k<a>$").unwrap();
+        let m = re.find("z").unwrap();
+        assert_eq!(m.range(), 0..1);
+        assert_eq!(m.captures, vec![None, None]);
+        assert!(re.find("zz").is_none(), "末次已定义值不匹配时整体失败");
+
+        // 末次已定义为 x（位 2 为 y，不匹配 x）；更早已定义为 y（位 2 亦不匹配）。
+        let re = Regex::new(r"(?:(?<a>y)|(?<a>x)){2}\k<a>").unwrap();
+        assert!(re.find("yxy").is_none(), "末次已定义值不匹配时整体失败");
+        // 对照：末次已定义值匹配时命中。
+        let m = re.find("yxx").unwrap();
+        assert_eq!(m.range(), 0..3);
+    }
+
+    /// 循环重入清槽后全部未定义：回引空匹配，结果数组各出现 undefined。
+    #[test]
+    fn backref_loop_reentry_clears() {
+        let re = Regex::new(r"^(?:(?<a>x)|(?<a>y)|z){2}\k<a>$").unwrap();
+        let m = re.find("xz").unwrap();
+        assert_eq!(m.range(), 0..2);
+        assert_eq!(m.captures, vec![None, None]);
+        assert!(re.find("xzx").is_none());
+    }
+
+    /// 未定义组回引空匹配（单出现面不变）。
+    #[test]
+    fn backref_single_occurrence_undefined_empty() {
+        let re = Regex::new(r"(?<a>x)|(?:zy\k<a>)").unwrap();
+        let m = re.find("zy").unwrap();
+        assert_eq!(m.range(), 0..2);
+        assert_eq!(m.captures, vec![None]);
+    }
+
+    /// PikeVM 执行器与回退执行器对同名回引口径一致。
+    #[cfg(feature = "backend-pikevm")]
+    #[test]
+    fn pikevm_backref_agrees() {
+        use crate::backends::PikeVMExecutor;
+        use crate::exec::{Executor, Matches};
+        let re = Regex::new(r"(?:(?:(?<x>a)|(?<x>b))\k<x>){2}").unwrap();
+        let m = Matches::new(PikeVMExecutor::new(&re.cr, "aabb"), 0)
+            .next()
+            .expect("pikevm 应命中 aabb");
+        assert_eq!(m.range(), 0..4);
+        assert_eq!(m.captures, vec![None, Some(2..3)]);
     }
 }

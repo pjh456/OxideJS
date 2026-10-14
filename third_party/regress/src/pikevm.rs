@@ -238,6 +238,27 @@ fn try_match_state<Input: InputIndexer, Dir: Direction>(
             nextinsn_or_fail!(matched)
         }
 
+        Insn::BackRefLastDefined(group_indices) => {
+            // Scan the occurrences in reverse source order and match the text of
+            // the last occurrence that is defined; a later occurrence overrides
+            // an earlier one only when it matched.
+            let mut matched = true;
+            for &group_idx in group_indices.iter().rev() {
+                let group = &s.groups[group_idx as usize];
+                if let Some(orig_range) = group.as_range() {
+                    if re.flags.icase {
+                        matched = matchers::backref_icase(input, dir, orig_range, &mut s.pos);
+                    } else {
+                        matched = matchers::backref(input, dir, orig_range, &mut s.pos);
+                    }
+                    break;
+                }
+            }
+            // No occurrence is defined, and therefore the match succeeds
+            // (ES6 21.2.2.9).
+            nextinsn_or_fail!(matched)
+        }
+
         &Insn::Lookahead {
             negate,
             start_group: _,
