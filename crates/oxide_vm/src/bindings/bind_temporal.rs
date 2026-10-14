@@ -813,11 +813,7 @@ pub fn bind_temporal(env: BindEnv<'_>, global: &mut JsObject) {
                 oxide_builtins::temporal::plain_date_time_equals::<crate::vm::Vm> as *const (),
                 1,
             ),
-            (
-                "with",
-                oxide_builtins::temporal::plain_date_time_with::<crate::vm::Vm> as *const (),
-                1,
-            ),
+            ("with", oxide_builtins::temporal::plain_date_time_with::<crate::vm::Vm> as *const (), 1),
         ],
     );
     bind_well_known_data_property(

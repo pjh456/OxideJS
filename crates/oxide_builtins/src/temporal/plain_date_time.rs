@@ -308,9 +308,20 @@ pub fn plain_date_time_with<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult 
     } else {
         Some(native_try!(temporal_number_component(vm, year_raw)))
     };
-    if [day_raw, hour_raw, microsecond_raw, millisecond_raw, minute_raw, month_raw, month_code_raw, nanosecond_raw, second_raw, year_raw]
-        .iter()
-        .all(|raw| raw.is_undefined())
+    if [
+        day_raw,
+        hour_raw,
+        microsecond_raw,
+        millisecond_raw,
+        minute_raw,
+        month_raw,
+        month_code_raw,
+        nanosecond_raw,
+        second_raw,
+        year_raw,
+    ]
+    .iter()
+    .all(|raw| raw.is_undefined())
     {
         return NativeResult::Err(crate::error::create_type_error(vm, "no properties present"));
     }
