@@ -1,8 +1,7 @@
 use std::sync::Arc;
 
 use oxide_builtins::map::{
-    map_clear, map_constructor as new_map, map_delete, map_get, map_get_or_insert, map_has,
-    map_set, map_size,
+    map_clear, map_constructor as new_map, map_delete, map_get, map_get_or_insert, map_has, map_set, map_size,
 };
 use oxide_compiler::compiler::Compiler;
 use oxide_kernel::shape_forge::EMPTY_SHAPE_ID;
