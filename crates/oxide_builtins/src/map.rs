@@ -292,8 +292,8 @@ pub fn map_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 pub fn map_set<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
     let inner = native_try!(get_map_inner(vm, this_val));
-    let key = vm.reg(if args.len() > 1 { args[1] } else { 0 });
-    let val = vm.reg(if args.len() > 2 { args[2] } else { 0 });
+    let key = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
+    let val = if args.len() > 2 { vm.reg(args[2]) } else { JsValue::undefined() };
     unsafe {
         (*inner).insert(SetKey(key), val);
     }
@@ -318,8 +318,8 @@ pub fn map_get<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 pub fn map_get_or_insert<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
     let inner = native_try!(get_map_inner(vm, this_val));
-    let key = vm.reg(if args.len() > 1 { args[1] } else { 0 });
-    let val = vm.reg(if args.len() > 2 { args[2] } else { 0 });
+    let key = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
+    let val = if args.len() > 2 { vm.reg(args[2]) } else { JsValue::undefined() };
     let found = unsafe { (*inner).get(&SetKey(key)) };
     if let Some(existing) = found {
         return NativeResult::Ok(existing);

@@ -1,6 +1,9 @@
 use std::sync::Arc;
 
-use oxide_builtins::map::{map_clear, map_constructor as new_map, map_delete, map_get, map_has, map_set, map_size};
+use oxide_builtins::map::{
+    map_clear, map_constructor as new_map, map_delete, map_get, map_get_or_insert, map_has,
+    map_set, map_size,
+};
 use oxide_compiler::compiler::Compiler;
 use oxide_kernel::shape_forge::EMPTY_SHAPE_ID;
 use oxide_runtime_api::VmHost;
@@ -82,6 +85,31 @@ fn tmap_size_and_clear() {
     assert_eq!(map_size(&mut vm, &[0]).unwrap().as_double(), 2.0);
     map_clear(&mut vm, &[0]).unwrap();
     assert_eq!(map_size(&mut vm, &[0]).unwrap().as_double(), 0.0);
+}
+
+#[test]
+fn tmap_set_missing_value_defaults_undefined() {
+    // 缺省 value 实参：存储值取 undefined，不读调用方结果槽残留。
+    let mut vm = Vm::new();
+    map_this(&mut vm);
+    let m = new_map(&mut vm, &[0]).unwrap();
+    vm.set_reg(0, m);
+    vm.set_reg(1, JsValue::float(5.0));
+    map_set(&mut vm, &[0, 1]).unwrap();
+    assert!(map_get(&mut vm, &[0, 1]).unwrap().is_undefined());
+}
+
+#[test]
+fn tmap_get_or_insert_missing_value_defaults_undefined() {
+    // 缺省 value 实参且键缺失：返回值与存储值均取 undefined，不读调用方结果槽残留。
+    let mut vm = Vm::new();
+    map_this(&mut vm);
+    let m = new_map(&mut vm, &[0]).unwrap();
+    vm.set_reg(0, m);
+    vm.set_reg(1, JsValue::float(5.0));
+    let r = map_get_or_insert(&mut vm, &[0, 1]).unwrap();
+    assert!(r.is_undefined());
+    assert!(map_get(&mut vm, &[0, 1]).unwrap().is_undefined());
 }
 
 // ── 经 JS 使用 new 关键字的 eval 测试（每个测试一次 eval）──
