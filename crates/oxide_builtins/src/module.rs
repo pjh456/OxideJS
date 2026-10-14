@@ -1234,6 +1234,31 @@ mod tests {
     }
 
     #[test]
+    fn module_eval_state_ns_survives_session_gc() {
+        let (mut vm, fn_val) = vm_with_function();
+        // 依赖模块函数经寄存器钉为根，首收集达稳态后记录基线。
+        vm.set_reg(0, fn_val);
+        vm.collect_session_gc();
+        let baseline = vm.session_object_count();
+
+        // 命名空间对象为唯一新增 session 对象：per-module 求值状态表是其唯一根。
+        let ns = vm.alloc_object(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()));
+        let ns_val = JsValue::from_js_object(ns);
+        let ns_ptr = ns_val.as_js_object_ptr();
+        vm.set_module_eval_state("p", true, ns_val);
+        assert_eq!(vm.session_object_count(), baseline + 1, "命名空间对象应已分配");
+
+        // 完整收集：若状态表边漏登，命名空间对象被回收、计数回落。
+        vm.collect_session_gc();
+
+        assert_eq!(vm.session_object_count(), baseline + 1, "per-module 状态命名空间对象应跨收集存活（GC 边已登记）");
+        // 原地 sweep 不搬移：状态表原地保留，命名空间指针稳定。
+        let state = vm.get_module_eval_state("p").expect("per-module 状态应存活");
+        assert!(state.evaluated, "evaluated 标志应稳定");
+        assert_eq!(state.namespace.as_js_object_ptr(), ns_ptr, "命名空间指针应稳定");
+    }
+
+    #[test]
     fn deferred_ns_read_target_falls_back_for_non_object_namespace() {
         let (mut vm, fn_val) = vm_with_function();
         // 模块函数返回非对象（42）：求值成功后 [[Namespace]] 为非对象值。
