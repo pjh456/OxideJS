@@ -845,11 +845,7 @@ pub fn bind_temporal(env: BindEnv<'_>, global: &mut JsObject) {
                 oxide_builtins::temporal::plain_date_time_with_plain_time::<crate::vm::Vm> as *const (),
                 0,
             ),
-            (
-                "round",
-                oxide_builtins::temporal::plain_date_time_round::<crate::vm::Vm> as *const (),
-                1,
-            ),
+            ("round", oxide_builtins::temporal::plain_date_time_round::<crate::vm::Vm> as *const (), 1),
         ],
     );
     bind_well_known_data_property(
@@ -1145,11 +1141,7 @@ pub fn bind_temporal(env: BindEnv<'_>, global: &mut JsObject) {
             ),
             ("until", oxide_builtins::temporal::plain_year_month_until::<crate::vm::Vm> as *const (), 1),
             ("since", oxide_builtins::temporal::plain_year_month_since::<crate::vm::Vm> as *const (), 1),
-            (
-                "round",
-                oxide_builtins::temporal::plain_year_month_round::<crate::vm::Vm> as *const (),
-                1,
-            ),
+            ("round", oxide_builtins::temporal::plain_year_month_round::<crate::vm::Vm> as *const (), 1),
         ],
     );
     bind_well_known_data_property(

@@ -10,8 +10,7 @@ use super::{
     initialize_temporal_receiver, instant_rounding_mode, instant_string_without_annotations, is_ctor_call,
     make_plain_time, parse_any_offset_seconds, parse_difference_settings, parse_fractional_second_digits,
     parse_iso_date, parse_round_options, receiver_obj, reject_partial_object_with_calendar_or_time_zone,
-    round_instant_ns,
-    temporal_number_component, temporal_option_number, temporal_option_string, temporal_option_value,
+    round_instant_ns, temporal_number_component, temporal_option_number, temporal_option_string, temporal_option_value,
     temporal_overflow, valid_offset_fraction, zoned_date_time_plain_parts, FractionalSecondDigitsInput, IsoDateTime,
 };
 

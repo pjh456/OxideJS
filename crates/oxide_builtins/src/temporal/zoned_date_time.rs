@@ -12,8 +12,7 @@ use super::common::{
     format_iso_year, format_offset_seconds_text, get_calendar_id, get_double_prop, get_instant_epoch_ns,
     initialize_temporal_receiver, is_ctor_call, local_to_epoch_ns, make_instant, make_zoned_date_time, parse_digits,
     parse_fractional_second_digits, parse_round_options, parse_temporal_string_impl, plain_date_time_object_parts,
-    receiver_obj,
-    reject_partial_object_with_calendar_or_time_zone, temporal_calendar_id, temporal_calendar_id_strict,
+    receiver_obj, reject_partial_object_with_calendar_or_time_zone, temporal_calendar_id, temporal_calendar_id_strict,
     temporal_option_number, temporal_option_string, temporal_option_value, temporal_overflow, temporal_string_strict,
     zoned_date_time_plain_parts, FractionalSecondDigitsInput, MAX_INSTANT_NS,
 };

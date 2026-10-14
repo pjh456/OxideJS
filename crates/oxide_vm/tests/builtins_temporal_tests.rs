@@ -4386,12 +4386,18 @@ fn plain_date_round_calendar_units() {
 fn plain_date_round_errors_and_calendar() {
     let mut vm = Vm::new();
     // 缺参 / undefined → TypeError（roundTo 非串非对象）。
-    let r = eval(&mut vm, "try { new Temporal.PlainDate(1976, 11, 18).round() } catch (e) { e.constructor.name }")
-        .unwrap();
+    let r = eval(
+        &mut vm,
+        "try { new Temporal.PlainDate(1976, 11, 18).round() } catch (e) { e.constructor.name }",
+    )
+    .unwrap();
     assert_eq!(str_val(&vm, r), "TypeError");
     // 对象缺 smallestUnit → RangeError。
-    let r = eval(&mut vm, "try { new Temporal.PlainDate(1976, 11, 18).round({}) } catch (e) { e.constructor.name }")
-        .unwrap();
+    let r = eval(
+        &mut vm,
+        "try { new Temporal.PlainDate(1976, 11, 18).round({}) } catch (e) { e.constructor.name }",
+    )
+    .unwrap();
     assert_eq!(str_val(&vm, r), "RangeError");
     // 非法最小单位（PD 限 year/month/week/day）→ RangeError。
     let r = eval(
@@ -4408,11 +4414,7 @@ fn plain_date_round_errors_and_calendar() {
     .unwrap();
     assert_eq!(str_val(&vm, r), "RangeError");
     // 日历槽继承 receiver。
-    let r = eval(
-        &mut vm,
-        "new Temporal.PlainDate(1976, 11, 18, 'hebrew').round('month').calendarId",
-    )
-    .unwrap();
+    let r = eval(&mut vm, "new Temporal.PlainDate(1976, 11, 18, 'hebrew').round('month').calendarId").unwrap();
     assert_eq!(str_val(&vm, r), "hebrew");
 }
 
@@ -4573,11 +4575,7 @@ fn plain_year_month_round_errors_and_calendar() {
     .unwrap();
     assert_eq!(str_val(&vm, r), "RangeError");
     // 日历槽继承 receiver。
-    let r = eval(
-        &mut vm,
-        "new Temporal.PlainYearMonth(1976, 11, 'hebrew').round('year').calendarId",
-    )
-    .unwrap();
+    let r = eval(&mut vm, "new Temporal.PlainYearMonth(1976, 11, 'hebrew').round('year').calendarId").unwrap();
     assert_eq!(str_val(&vm, r), "hebrew");
 }
 
