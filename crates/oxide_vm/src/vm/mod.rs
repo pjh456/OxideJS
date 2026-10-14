@@ -20,6 +20,7 @@ use crate::realm::Realm;
 use crate::vm_debug;
 use crate::vm_state::{IterState, ProfilingState, SampleState};
 use oxide_kernel::kernel::{KernelCore, KernelSession};
+use oxide_runtime_api::ModuleEvalState;
 use oxide_types::error::JsErrorKind;
 use oxide_types::object::{Cell, JsObject, JsString, NativeFnPtr};
 use oxide_types::private_key::INT_KEY_COUNT;
@@ -314,6 +315,11 @@ pub struct Vm {
     /// 在 `call_function_sync` 前置 `Some(fn)`，两者均 save/restore（嵌套安全）。
     /// 触发点据此判自求值/祖先求值中的 cyclic 并抛 TypeError。
     pub(crate) evaluating_module: Option<JsValue>,
+    /// per-module 求值状态（键 = 模块规范路径）：防 hoisted TLA 模块与
+    /// deferred 模块 prelude 的双求值。`evaluated` 为真时 `namespace` 为
+    /// 已求值命名空间，为假时 `namespace` 承载启动中的 capability promise。
+    /// 生命周期与 Vm 同消亡：`full_reset` 清空。
+    pub(crate) module_eval_states: std::collections::HashMap<String, ModuleEvalState>,
     /// 数组 length define 强转期用户代码抛出的原始异常：与 `last_uncaught_value`
     /// 分离，避免入口误取其它操作忽略调用残留的值。仅 `define_array_length` 写入，
     /// 由 Object/Reflect define 入口消费。

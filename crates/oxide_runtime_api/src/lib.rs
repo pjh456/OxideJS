@@ -32,5 +32,5 @@ pub use coercion::{
 };
 pub use compiler_service::CompilerService;
 pub use event_target::{EventTargetState, ListenerEntry};
-pub use host::{ProtoKind, ShapeNode, VmHost};
+pub use host::{ModuleEvalState, ProtoKind, ShapeNode, VmHost};
 pub use native_result::NativeResult;

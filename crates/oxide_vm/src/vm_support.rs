@@ -195,6 +195,7 @@ impl Vm {
             exception_value: None,
             last_uncaught_value: None,
             evaluating_module: None,
+            module_eval_states: std::collections::HashMap::new(),
             pending_length_exception: None,
             pending_exception: None,
             pending_error_kind: None,
@@ -363,6 +364,7 @@ impl Vm {
             exception_value: None,
             last_uncaught_value: None,
             evaluating_module: None,
+            module_eval_states: std::collections::HashMap::new(),
             pending_length_exception: None,
             pending_exception: None,
             pending_error_kind: None,
@@ -605,6 +607,9 @@ impl Vm {
         // 池回收后残留将悬垂。
         self.last_uncaught_value = None;
         self.pending_length_exception = None;
+        // per-module 求值状态持 session 对象指针（命名空间/promise）：执行期状态，
+        // 跨 run/reset 不保留，残留将悬垂。
+        self.module_eval_states.clear();
         self.pending_exception = None;
         self.pending_error_kind = None;
         self.pending_completion = None;

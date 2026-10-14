@@ -7,7 +7,7 @@
 //! source-phase / defer 语义留待后续轮次。
 
 use oxide_kernel::shape_forge::EMPTY_SHAPE_ID;
-use oxide_runtime_api::{NativeResult, VmHost};
+use oxide_runtime_api::{to_string, NativeResult, VmHost};
 use oxide_types::object::{Cell, JsObject, PropAttributes, PropMetaEntry};
 use oxide_types::private_key::encode_symbol_key;
 use oxide_types::value::JsValue;
@@ -78,6 +78,9 @@ pub struct DeferredNsState {
     /// 求值失败时缓存的原始错误值（再读再抛同一错误对象，保身份）；
     /// 成功求值与求值前恒 `None`。
     pub error: Option<JsValue>,
+    /// 依赖模块规范路径：求值触发点据此查 per-module 状态（提升求值过的 TLA
+    /// 模块已结算，直接取缓存命名空间，防双求值）。
+    pub path: String,
 }
 
 /// 模块命名空间条目表：挂在 ns 对象 `native_data` 上，是 exotic [[Get]] 的权威
@@ -897,16 +900,26 @@ pub fn module_seal<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     NativeResult::Ok(ns_val)
 }
 
-/// `__moduleEval(fn)`：同步执行依赖模块（fn 为编译期 CREATE_CLOSURE 的函数对象），返回其命名空间。
+/// `__moduleEval(fn, path)`：求值依赖模块（fn 为编译期 CREATE_CLOSURE 的函数对象，
+/// path 为模块规范路径），返回其命名空间。有状态：per-module 状态按 path 键防双求值。
+///
+/// # 步骤
+/// 1. 查 per-module 状态（按 path 键）：已求值返缓存命名空间（no-op）；
+///    启动中（capability promise）已结算取结算值返命名空间，未结算返 promise
+///    本体（调用方聚合 gate 据 async 标志 await 之，不重跑、不抛错）。
+/// 2. 未求值：启动模块（`call_function_sync`，TLA 模块挂起返 promise、同步模块
+///    返命名空间），置状态（pending 载 promise / evaluated 载命名空间），返返值。
 ///
 /// # 副作用
 /// - 调用前置「正在求值模块」标记为 `Some(fn)`、返回后还原（save/restore，嵌套
 ///   `__moduleEval` 安全）：deferred namespace 求值触发的 cyclic 守卫据此判自求值。
+/// - 写 per-module 状态（键 = path）。
 pub fn module_eval<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
-    if args.len() < 2 {
-        return type_error(vm, "__moduleEval: 1 argument required");
+    if args.len() < 3 {
+        return type_error(vm, "__moduleEval: 2 arguments required");
     }
     let fn_val = vm.reg(args[1]);
+    let path_val = vm.reg(args[2]);
     if !fn_val.is_object() {
         return type_error(vm, "__moduleEval: target is not a function");
     }
@@ -914,18 +927,50 @@ pub fn module_eval<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     if ptr.is_null() || !unsafe { (*ptr).is_function() } {
         return type_error(vm, "__moduleEval: target is not a function");
     }
+    let path = to_string(path_val);
+    // 已求值：直接返缓存命名空间（no-op，防 hoisted TLA 模块与 deferred 模块
+    // prelude 的双求值）。
+    if let Some(state) = vm.get_module_eval_state(&path) {
+        if state.evaluated {
+            return NativeResult::Ok(state.namespace);
+        }
+        // 启动中：capability promise 已结算（调用方在聚合 gate 之后），取结算值；
+        // 未结算（提升 TLA 模块互为依赖，先启动者尚未被外层 gate 排空）返 promise
+        // 本体，调用方聚合 gate 据 async 标志 await 之——不重跑、不抛错。
+        let promise = state.namespace;
+        return match vm.promise_settled_value(promise) {
+            Some((true, value)) => {
+                vm.set_module_eval_state(&path, true, value);
+                NativeResult::Ok(value)
+            }
+            Some((false, reason)) => {
+                let text = to_string(reason);
+                NativeResult::Err(crate::error::create_from_text(vm, &text))
+            }
+            None => NativeResult::Ok(promise),
+        };
+    }
     // 置位标记，调用返回后无条件还原（异常展开亦不残留）。
     let saved = vm.evaluating_module();
     vm.set_evaluating_module(Some(fn_val));
     let result = match vm.call_function_sync(fn_val, JsValue::undefined(), &[]) {
-        Ok(v) => NativeResult::Ok(v),
+        Ok(v) => {
+            // TLA 模块返 capability promise（挂起未结算），同步模块返命名空间。
+            if vm.is_promise_value(v) {
+                vm.set_module_eval_state(&path, false, v);
+            } else {
+                vm.set_module_eval_state(&path, true, v);
+            }
+            NativeResult::Ok(v)
+        }
         Err(e) => NativeResult::Err(crate::error::create_error(vm, &e)),
     };
     vm.set_evaluating_module(saved);
     result
 }
 
-/// `__moduleDeferObject(fn, real_ns)`：创建 deferred namespace 对象（`import defer * as` 产物）。
+/// `__moduleDeferObject(fn, real_ns, path)`：创建 deferred namespace 对象
+/// （`import defer * as` 产物）。
 ///
 /// # 步骤
 /// 1. 校验 `fn` 为函数对象（依赖模块函数，编译期 CREATE_CLOSURE 的闭包对象）
@@ -934,17 +979,19 @@ pub fn module_eval<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 /// 2. 建 null 原型对象，定义 `@@toStringTag` = "Deferred Module"（不可写不可枚举不可配置）。
 /// 3. 置 module namespace + deferred 双标志，置 non-extensible。
 /// 4. 安装条目表并写状态盒：`[[Module]]` = fn、`[[Evaluated]]` = `real_ns` 为对象、
-///    `[[Namespace]]` = `real_ns`（或 undefined）、失败错误缓存恒 `None`。
+///    `[[Namespace]]` = `real_ns`（或 undefined）、失败错误缓存恒 `None`、
+///    `path` = 依赖模块规范路径（求值触发点查 per-module 状态防双求值）。
 ///
 /// # 副作用
 /// - 新对象创建起即标记 module namespace exotic 并置 non-extensible（同 `__moduleObject`）；
-///   状态盒三内部槽由本入口唯一安装。
+///   状态盒内部槽由本入口唯一安装。
 pub fn module_defer_object<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
-    if args.len() < 3 {
-        return type_error(vm, "__moduleDeferObject: 2 arguments required");
+    if args.len() < 4 {
+        return type_error(vm, "__moduleDeferObject: 3 arguments required");
     }
     let fn_val = vm.reg(args[1]);
     let ns_val = vm.reg(args[2]);
+    let path = to_string(vm.reg(args[3]));
     // fn 为函数或 undefined（哨兵）；其余抛 TypeError。
     let fn_is_function = fn_val.is_object() && {
         let ptr = fn_val.as_js_object_ptr();
@@ -975,6 +1022,7 @@ pub fn module_defer_object<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
             evaluated: ns_val.is_object(),
             namespace: ns_val,
             error: None,
+            path,
         });
     }
     NativeResult::Ok(JsValue::from_js_object(obj))
@@ -1044,7 +1092,9 @@ mod tests {
         let (mut vm, fn_val) = vm_with_function();
         vm.set_reg(1, fn_val);
         vm.set_reg(2, JsValue::undefined());
-        let ns_val = module_defer_object(&mut vm, &[0, 1, 2]).unwrap();
+        let path_str = vm.new_string("p");
+        vm.set_reg(3, path_str);
+        let ns_val = module_defer_object(&mut vm, &[0, 1, 2, 3]).unwrap();
         assert!(ns_val.is_object());
         let ns_ptr = ns_val.as_js_object_ptr();
         assert!(!ns_ptr.is_null());
@@ -1068,7 +1118,9 @@ mod tests {
         let ns_val = JsValue::from_js_object(real_ns);
         vm.set_reg(1, fn_val);
         vm.set_reg(2, ns_val);
-        let defer_ns = module_defer_object(&mut vm, &[0, 1, 2]).unwrap();
+        let path_str = vm.new_string("p");
+        vm.set_reg(3, path_str);
+        let defer_ns = module_defer_object(&mut vm, &[0, 1, 2, 3]).unwrap();
         let ns_obj = unsafe { &*defer_ns.as_js_object_ptr() };
         let state = deferred_state(ns_obj).expect("deferred state 应已安装");
         assert_eq!(state.module, fn_val, "[[Module]] 应存依赖模块函数");
@@ -1082,7 +1134,9 @@ mod tests {
         // 哨兵形态：fn 与 real_ns 均为 undefined（自导入/祖先 defer）。
         vm.set_reg(1, JsValue::undefined());
         vm.set_reg(2, JsValue::undefined());
-        let ns_val = module_defer_object(&mut vm, &[0, 1, 2]).unwrap();
+        let path_str = vm.new_string("p");
+        vm.set_reg(3, path_str);
+        let ns_val = module_defer_object(&mut vm, &[0, 1, 2, 3]).unwrap();
         let ns_obj = unsafe { &*ns_val.as_js_object_ptr() };
         let state = deferred_state(ns_obj).expect("deferred state 应已安装");
         assert_eq!(state.module, JsValue::undefined(), "哨兵 [[Module]] 应为 undefined");
@@ -1095,7 +1149,9 @@ mod tests {
         let (mut vm, _) = vm_with_function();
         vm.set_reg(1, JsValue::int(42));
         vm.set_reg(2, JsValue::undefined());
-        let result = module_defer_object(&mut vm, &[0, 1, 2]);
+        let path_str = vm.new_string("p");
+        vm.set_reg(3, path_str);
+        let result = module_defer_object(&mut vm, &[0, 1, 2, 3]);
         assert!(matches!(result, NativeResult::Err(_)), "非函数应抛 TypeError");
     }
 
@@ -1104,7 +1160,9 @@ mod tests {
         let (mut vm, fn_val) = vm_with_function();
         vm.set_reg(1, fn_val);
         vm.set_reg(2, JsValue::int(42));
-        let result = module_defer_object(&mut vm, &[0, 1, 2]);
+        let path_str = vm.new_string("p");
+        vm.set_reg(3, path_str);
+        let result = module_defer_object(&mut vm, &[0, 1, 2, 3]);
         assert!(matches!(result, NativeResult::Err(_)), "非对象 real_ns 应抛 TypeError");
     }
 
@@ -1116,7 +1174,9 @@ mod tests {
         // 创建 deferred ns（持有 fn）；fn + ns 两个 session 对象。
         vm.set_reg(1, fn_val);
         vm.set_reg(2, JsValue::undefined());
-        let ns_val = module_defer_object(&mut vm, &[0, 1, 2]).unwrap();
+        let path_str = vm.new_string("p");
+        vm.set_reg(3, path_str);
+        let ns_val = module_defer_object(&mut vm, &[0, 1, 2, 3]).unwrap();
         let count_after_ns = vm.session_object_count();
 
         // 仅 ns 为根：清掉持有 fn 的寄存器，fn 唯一可达路径是 ns 的 [[Module]] 边。
@@ -1143,7 +1203,9 @@ mod tests {
         // 创建 deferred ns（哨兵形态）。
         vm.set_reg(1, JsValue::undefined());
         vm.set_reg(2, JsValue::undefined());
-        let ns_val = module_defer_object(&mut vm, &[0, 1, 2]).unwrap();
+        let path_str = vm.new_string("p");
+        vm.set_reg(3, path_str);
+        let ns_val = module_defer_object(&mut vm, &[0, 1, 2, 3]).unwrap();
 
         // 直接写入 error 字段（模拟失败缓存），置已求值。
         {
@@ -1177,7 +1239,9 @@ mod tests {
         // 模块函数返回非对象（42）：求值成功后 [[Namespace]] 为非对象值。
         vm.set_reg(1, fn_val);
         vm.set_reg(2, JsValue::undefined());
-        let ns_val = module_defer_object(&mut vm, &[0, 1, 2]).unwrap();
+        let path_str = vm.new_string("p");
+        vm.set_reg(3, path_str);
+        let ns_val = module_defer_object(&mut vm, &[0, 1, 2, 3]).unwrap();
         let ns_ptr = ns_val.as_js_object_ptr();
 
         // 模拟求值完成：[[Evaluated]] 置真、[[Namespace]] 为非对象值 42。
@@ -1205,7 +1269,9 @@ mod tests {
         let real_ns_val = JsValue::from_js_object(real_ns);
         vm.set_reg(1, fn_val);
         vm.set_reg(2, real_ns_val);
-        let ns_val = module_defer_object(&mut vm, &[0, 1, 2]).unwrap();
+        let path_str = vm.new_string("p");
+        vm.set_reg(3, path_str);
+        let ns_val = module_defer_object(&mut vm, &[0, 1, 2, 3]).unwrap();
         let ns_ptr = ns_val.as_js_object_ptr();
 
         // 权威读目标返回真实 ns（活值与真实槽位在真实 ns 条目表）。

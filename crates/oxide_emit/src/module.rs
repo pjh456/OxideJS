@@ -59,6 +59,74 @@ struct DepPhase {
     attrs: Vec<(String, String)>,
 }
 
+/// 依赖图节点：模块的依赖路径集（源序）、自身 TLA 标志、提升求值用 IR 副本。
+///
+/// `ir` 仅对含顶层 `await` 的模块（TLA 边界）回填其完整 `IRFunction`：提升求值时
+/// 入口模块须在自己的 `ctx.nested` 持有该模块 IR 才能发 `CREATE_CLOSURE`——传递
+/// TLA 依赖编译在中间模块的 `ctx.nested`，入口侧无直接引用，故按 path 键缓存 IR。
+struct DepNode {
+    deps: Vec<String>,
+    has_tla: bool,
+    ir: Option<IRFunction>,
+}
+
+/// 编译期依赖图：`GatherAsynchronousTransitiveDependencies` 的 DFS 游走载体。
+///
+/// 键 = 模块规范路径（与加载器 `resolve` 回填口径一致），值 = 依赖路径集
+/// （源序）+ 自身 TLA 标志 + 嵌套 IR 下标。递归编译期间逐模块登记，defer 依赖
+/// 的 TLA 传递依赖据此按发现序收集并提升求值。
+struct ModuleDepGraph {
+    nodes: HashMap<String, DepNode>,
+}
+
+impl ModuleDepGraph {
+    fn new() -> Self {
+        Self { nodes: HashMap::new() }
+    }
+
+    /// 登记模块节点：依赖路径集按源序、`has_tla` 为模块自身顶层 `await` 标志。
+    fn record_module(&mut self, path: &str, deps: Vec<String>, has_tla: bool) {
+        self.nodes.insert(path.to_string(), DepNode { deps, has_tla, ir: None });
+    }
+
+    /// 回填 TLA 模块的完整 IR（`compile_js_dep` 组装 IR 后调用，仅 `has_tla` 模块）。
+    fn set_ir(&mut self, path: &str, ir: IRFunction) {
+        if let Some(node) = self.nodes.get_mut(path) {
+            node.ir = Some(ir);
+        }
+    }
+
+    /// 取 TLA 模块的完整 IR（非 TLA 或未登记时为 `None`）。
+    fn ir(&self, path: &str) -> Option<IRFunction> {
+        self.nodes.get(path).and_then(|n| n.ir.clone())
+    }
+
+    /// `GatherAsynchronousTransitiveDependencies` 编译期等价：DFS 游走依赖图，
+    /// 按发现序收集 TLA 边界模块（自身含顶层 `await` 的模块；命中即停，不递归）。
+    fn gather_tla(&self, root: &str) -> Vec<String> {
+        let mut seen = HashSet::new();
+        let mut result = Vec::new();
+        self.gather_dfs(root, &mut seen, &mut result);
+        result
+    }
+
+    fn gather_dfs(&self, path: &str, seen: &mut HashSet<String>, result: &mut Vec<String>) {
+        if !seen.insert(path.to_string()) {
+            return;
+        }
+        let Some(node) = self.nodes.get(path) else {
+            return;
+        };
+        if node.has_tla {
+            result.push(path.to_string());
+            return;
+        }
+        for dep in &node.deps {
+            self.gather_dfs(dep, seen, result);
+        }
+    }
+}
+
 /// 模块加载器：由调用方（test262 runner / CLI）提供文件解析。
 pub trait ModuleSourceLoader {
     /// 解析依赖模块：按 `base_dir` 与 `specifier` 定位模块源码，`attributes` 为
@@ -716,7 +784,8 @@ impl Emitter {
         // ES module 顶层恒严格模式（模块代码是严格模式代码，嵌套函数经父 ctx 继承）。
         ctx.is_strict = true;
         let mut path_stack = vec![module_path.to_string()];
-        self.emit_module_into_ctx(program, module_path, loader, &mut path_stack, &mut ctx, true)?;
+        let mut graph = ModuleDepGraph::new();
+        self.emit_module_into_ctx(program, module_path, loader, &mut path_stack, &mut ctx, true, &mut graph)?;
         Ok(ctx.assemble_ir(ParamLayout { base: 0, count: 0 }, None))
     }
 
@@ -727,7 +796,7 @@ impl Emitter {
     #[allow(clippy::too_many_arguments)]
     fn emit_module_into_ctx(
         &self, program: &oxide_parser::Program, module_path: &str, loader: &mut dyn ModuleSourceLoader,
-        path_stack: &mut Vec<String>, ctx: &mut CompileCtx, top_level: bool,
+        path_stack: &mut Vec<String>, ctx: &mut CompileCtx, top_level: bool, graph: &mut ModuleDepGraph,
     ) -> Result<(), String> {
         let body = &program.body;
 
@@ -755,9 +824,9 @@ impl Emitter {
         ctx.module_ns_reg = Some(ns_reg);
 
         // —— 依赖收集（import + re-export/star 的 source，按首次出现去重，记 phase）——
-        // eager_order 为各 spec 首个 eager 语句的出现序（求值序）；defer_order 为各 spec
-        // 首次出现序（defer-only 组发射序）。无 defer 的模块两序与首次出现序恒等，
-        // 发射产物与现态逐字节一致。
+        // eager_order 为各 spec 首个 eager 语句的出现序（编译序）；defer_order 为各
+        // spec 首次出现序（求值发射序，evaluationList 序）。无 defer 的模块两序与
+        // 首次出现序恒等，发射产物与现态逐字节一致。
         let base_dir = Path::new(module_path)
             .parent()
             .map(|p| p.to_string_lossy().to_string())
@@ -765,6 +834,10 @@ impl Emitter {
         let mut phase_map: HashMap<String, DepPhase> = HashMap::new();
         let mut eager_order: Vec<String> = Vec::new();
         let mut defer_order: Vec<String> = Vec::new();
+        // 语句源序（spec, 是否 defer）：evaluationList 求值发射序的权威口径——
+        // 每条语句按源位贡献（defer 语句贡献其 TLA 传递依赖、eager 语句贡献模块
+        // 本体），mixed 依赖的求值点落在其 eager 语句位（非首次出现位）。
+        let mut stmt_order: Vec<(String, bool)> = Vec::new();
         for stmt in body {
             let (spec, attrs, is_defer) = match stmt {
                 Statement::ImportDeclaration(imp) => {
@@ -783,6 +856,7 @@ impl Emitter {
                 }
                 _ => continue,
             };
+            stmt_order.push((spec.clone(), is_defer));
             let is_new = !phase_map.contains_key(&spec);
             let entry = phase_map.entry(spec.clone()).or_insert_with(|| DepPhase {
                 eager: false,
@@ -811,23 +885,39 @@ impl Emitter {
         // 异步 eager 依赖的 (spec, `__moduleEval` 返回的 promise 寄存器)：prelude
         // 聚合 gate 消费。defer-only 依赖不求值、不产生 promise，不入此集。
         let mut async_dep_promises: Vec<(String, u32)> = Vec::new();
+        let mut hoisted_tla_promises: Vec<u32> = Vec::new();
 
-        // —— 编译并求值依赖：eager 组先行（按 eager 语句序），defer-only 组随后 ——
+        // 逐依赖发射数据：编译期（旧序）记录闭包寄存器与求值信息，求值期
+        // （evaluationList 序）消费。
+        #[derive(Clone)]
+        struct DepEmitData {
+            fn_reg: Option<u32>,
+            own_names: HashSet<String>,
+            var_scoped: HashSet<String>,
+            eval_async: bool,
+            path: String,
+            is_self: bool,
+            is_defer: bool,
+        }
+        let mut dep_data: HashMap<String, DepEmitData> = HashMap::new();
+
+        // —— 阶段一：编译依赖（旧序：eager 组按 eager 语句序、defer-only 组随后），
+        // 发 CREATE_CLOSURE 并登记子模块树；求值发射推迟到阶段二（evaluationList 序）。——
         for spec in eager_order {
             let phase = &phase_map[&spec];
             let attr_refs: Vec<(&str, &str)> = phase.attrs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
             let resolved = loader.resolve(&base_dir, &spec, &attr_refs)?;
             let is_self = resolved.path == module_path;
-            let (dep_ns_reg, fn_reg, dep_own_names, dep_var_scoped) = if is_self {
+            let (fn_reg, dep_eval_async, dep_own_names, dep_var_scoped) = if is_self {
                 // 自导入：读自身命名空间（依赖即本模块，勿递归）。
-                (ns_reg, None, own_export_names.clone(), var_scoped_export_names.clone())
+                (None, false, own_export_names.clone(), var_scoped_export_names.clone())
             } else {
                 if path_stack.contains(&resolved.path) {
                     return Err(format!("circular module import not supported: {}", resolved.path));
                 }
                 path_stack.push(resolved.path.clone());
                 let (dep_ir, dep_reassignable, dep_own_names, dep_var_scoped, dep_eval_async) = match resolved.kind {
-                    ModuleKind::Js => self.compile_js_dep(&resolved, loader, path_stack)?,
+                    ModuleKind::Js => self.compile_js_dep(&resolved, loader, path_stack, graph)?,
                     ModuleKind::Json => (
                         self.compile_data_dep("json", &resolved.source)?,
                         false,
@@ -849,65 +939,51 @@ impl Emitter {
                 ctx.module_dep_reassignable.insert(spec.clone(), dep_reassignable);
                 let fn_reg = ctx.alloc_reg();
                 ctx.inst(Inst::create_closure(Operand::Reg(fn_reg), ctx.nested.len() as u16));
-                let real_ns = self.emit_module_call(ctx, "__moduleEval", &[fn_reg])?;
-                // 异步依赖：`__moduleEval` 返回 capability promise（非命名空间），
-                // 登记进聚合 gate；命名空间在 gate 后从 promise 结算值提取。
-                if dep_eval_async {
-                    async_dep_promises.push((spec.clone(), real_ns));
-                }
-                (real_ns, Some(fn_reg), dep_own_names, dep_var_scoped)
+                (Some(fn_reg), dep_eval_async, dep_own_names, dep_var_scoped)
             };
-            ctx.module_dep_ns_regs.insert(spec.clone(), dep_ns_reg);
-            ctx.module_dep_paths.insert(spec.clone(), resolved.path.clone());
-            if is_self {
-                // 自导入：绑定走别名语义（源导出在 body 执行中才就绪），
-                // 不能像普通依赖那样链接期快照。
-                ctx.module_self_import_specs.insert(spec.clone());
-            }
-            if phase.defer {
-                // mixed 依赖：模块已急切求值，deferred 对象承载已求值态
-                // （[[Evaluated]]=true、[[Namespace]]=真实 ns）。
-                let fn_or_sentinel = if is_self {
-                    // 自导入 mixed：模块函数在导入方 prelude 期不可得，发哨兵形态。
-                    self.emit_undefined(ctx)
-                } else {
-                    fn_reg.expect("非自导入 eager 依赖必有闭包寄存器")
-                };
-                let defer_ns = self.emit_module_call(ctx, "__moduleDeferObject", &[fn_or_sentinel, dep_ns_reg])?;
-                ctx.module_defer_ns_regs.insert(spec.clone(), defer_ns);
-                self.emit_defer_pre_register(ctx, defer_ns, &dep_own_names, &dep_var_scoped)?;
-            }
+            dep_data.insert(
+                spec.clone(),
+                DepEmitData {
+                    fn_reg,
+                    own_names: dep_own_names,
+                    var_scoped: dep_var_scoped,
+                    eval_async: dep_eval_async,
+                    path: resolved.path,
+                    is_self,
+                    is_defer: phase.defer,
+                },
+            );
         }
 
-        // 本模块异步求值标志：自身含顶层 `await`，或任一 eager 依赖按异步求值
-        // （传递异步经 `dep_eval_async` 递归回传），模块体按合成异步函数编译
-        // （`assemble_ir` 据此回写 IR 的 `is_async`）。非 TLA 模块恒 false，零 diff。
-        ctx.is_async = own_tla || !async_dep_promises.is_empty();
-
-        // defer-only 组（eager == false 的 spec，按 defer_order）：不求值、不发
-        // __moduleEval。祖先判定（自导入或父链回边）命中时发哨兵形态
-        // __moduleDeferObject(undefined, undefined)——不递归、不压 path_stack、不编译；
-        // 否则正常编译并发 __moduleDeferObject(fn, undefined) + 逐名预注册。
-        for spec in defer_order {
-            let phase = &phase_map[&spec];
+        // defer-only 组（eager == false 的 spec，按 defer_order）：编译入子模块树、
+        // 发 CREATE_CLOSURE，求值发射推迟到阶段二。
+        for spec in &defer_order {
+            let phase = &phase_map[spec];
             if phase.eager {
                 continue;
             }
             let attr_refs: Vec<(&str, &str)> = phase.attrs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
-            let resolved = loader.resolve(&base_dir, &spec, &attr_refs)?;
+            let resolved = loader.resolve(&base_dir, spec, &attr_refs)?;
             let is_ancestor = resolved.path == module_path || path_stack.contains(&resolved.path);
             if is_ancestor {
                 // 哨兵：模块函数在导入方 prelude 期不可得（自导入是自身、祖先是
                 // 父链），defer 回边在导入图上成环，编译期不得报循环。
-                let undef = self.emit_undefined(ctx);
-                let defer_ns = self.emit_module_call(ctx, "__moduleDeferObject", &[undef, undef])?;
-                ctx.module_dep_ns_regs.insert(spec.clone(), defer_ns);
-                ctx.module_defer_ns_regs.insert(spec.clone(), defer_ns);
-                ctx.module_dep_paths.insert(spec.clone(), resolved.path.clone());
+                dep_data.insert(
+                    spec.clone(),
+                    DepEmitData {
+                        fn_reg: None,
+                        own_names: HashSet::new(),
+                        var_scoped: HashSet::new(),
+                        eval_async: false,
+                        path: resolved.path,
+                        is_self: true,
+                        is_defer: true,
+                    },
+                );
             } else {
                 path_stack.push(resolved.path.clone());
                 let (dep_ir, _dep_reassignable, dep_own_names, dep_var_scoped, _dep_eval_async) = match resolved.kind {
-                    ModuleKind::Js => self.compile_js_dep(&resolved, loader, path_stack)?,
+                    ModuleKind::Js => self.compile_js_dep(&resolved, loader, path_stack, graph)?,
                     ModuleKind::Json => (
                         self.compile_data_dep("json", &resolved.source)?,
                         false,
@@ -928,26 +1004,159 @@ impl Emitter {
                 ctx.nested.push(dep_ir);
                 let fn_reg = ctx.alloc_reg();
                 ctx.inst(Inst::create_closure(Operand::Reg(fn_reg), ctx.nested.len() as u16));
-                let undef = self.emit_undefined(ctx);
-                let defer_ns = self.emit_module_call(ctx, "__moduleDeferObject", &[fn_reg, undef])?;
-                ctx.module_dep_ns_regs.insert(spec.clone(), defer_ns);
-                ctx.module_defer_ns_regs.insert(spec.clone(), defer_ns);
-                ctx.module_dep_paths.insert(spec.clone(), resolved.path.clone());
-                self.emit_defer_pre_register(ctx, defer_ns, &dep_own_names, &dep_var_scoped)?;
+                dep_data.insert(
+                    spec.clone(),
+                    DepEmitData {
+                        fn_reg: Some(fn_reg),
+                        own_names: dep_own_names,
+                        var_scoped: dep_var_scoped,
+                        eval_async: false,
+                        path: resolved.path,
+                        is_self: false,
+                        is_defer: true,
+                    },
+                );
             }
         }
 
-        // —— 聚合 gate：异步依赖的 `__moduleEval` 返回 capability promise（非命名空间），
-        // 其命名空间在 gate 后从结算值提取。单 AWAIT 挂起模块体直至全部异步依赖结算
-        // （由 drain 微任务释放），非 TLA 模块此集为空、零 IR 变化。——
-        if !async_dep_promises.is_empty() {
-            let promise_regs: Vec<u32> = async_dep_promises.iter().map(|(_, r)| *r).collect();
-            let gate_reg = self.emit_module_call(ctx, "__moduleWaitAll", &promise_regs)?;
+        // —— 阶段二：按 evaluationList 序（语句源位交错）发射求值——每条语句按源位
+        // 贡献：defer 语句提升其 TLA 传递依赖、eager 语句求值模块本体（去重，mixed
+        // 依赖的求值点落在其 eager 语句位而非首次出现位）。——
+        let mut evaluated_specs: HashSet<String> = HashSet::new();
+        let mut hoisted_tla: HashSet<String> = HashSet::new();
+        for (spec, is_defer) in &stmt_order {
+            let phase = &phase_map[spec];
+            let data = dep_data.get(spec).cloned().unwrap_or_else(|| {
+                DepEmitData {
+                    fn_reg: None,
+                    own_names: HashSet::new(),
+                    var_scoped: HashSet::new(),
+                    eval_async: false,
+                    path: String::new(),
+                    is_self: false,
+                    is_defer: false,
+                }
+            });
+            if *is_defer {
+                // defer 语句：提升本模块的 TLA 传递依赖（去重，已提升者不重发）。
+                // 提升模块在导入方 prelude 期启动（TLA 模块挂起返 promise），其
+                // promise 登记进聚合 gate；deferred 模块 prelude 再求值时经
+                // per-module 状态取缓存命名空间，防双求值。
+                //
+                // 传递 TLA 依赖编译在中间模块的 `ctx.nested`，入口侧无直接引用：
+                // 按 path 取图缓存的完整 IR，push 进入口自己的 `ctx.nested` 再发
+                // `CREATE_CLOSURE`（下标为 push 后的 `ctx.nested.len()`）。
+                let tla_modules = graph.gather_tla(&data.path);
+                for tla_path in tla_modules {
+                    if !hoisted_tla.insert(tla_path.clone()) {
+                        continue;
+                    }
+                    let Some(tla_ir) = graph.ir(&tla_path) else {
+                        continue;
+                    };
+                    ctx.nested.push(tla_ir);
+                    let tla_fn_reg = ctx.alloc_reg();
+                    ctx.inst(Inst::create_closure(Operand::Reg(tla_fn_reg), ctx.nested.len() as u16));
+                    let tla_path_reg = self.load_string_const(&tla_path, ctx);
+                    let tla_promise = self.emit_module_call(ctx, "__moduleEval", &[tla_fn_reg, tla_path_reg])?;
+                    hoisted_tla_promises.push(tla_promise);
+                }
+                if !phase.eager {
+                    // defer-only：deferred 模块本身不求值，发 deferred 对象。
+                    // path 槽供求值触发点查 per-module 状态（防提升求值后的双求值）。
+                    if data.is_self {
+                        // 哨兵：模块函数在导入方 prelude 期不可得。
+                        let undef = self.emit_undefined(ctx);
+                        let path_reg = self.load_string_const(&data.path, ctx);
+                        let defer_ns =
+                            self.emit_module_call(ctx, "__moduleDeferObject", &[undef, undef, path_reg])?;
+                        ctx.module_dep_ns_regs.insert(spec.clone(), defer_ns);
+                        ctx.module_defer_ns_regs.insert(spec.clone(), defer_ns);
+                        ctx.module_dep_paths.insert(spec.clone(), data.path.clone());
+                    } else {
+                        let fn_reg = data.fn_reg.expect("非祖先 defer-only 依赖必有闭包寄存器");
+                        let undef = self.emit_undefined(ctx);
+                        let path_reg = self.load_string_const(&data.path, ctx);
+                        let defer_ns =
+                            self.emit_module_call(ctx, "__moduleDeferObject", &[fn_reg, undef, path_reg])?;
+                        ctx.module_dep_ns_regs.insert(spec.clone(), defer_ns);
+                        ctx.module_defer_ns_regs.insert(spec.clone(), defer_ns);
+                        ctx.module_dep_paths.insert(spec.clone(), data.path.clone());
+                        self.emit_defer_pre_register(ctx, defer_ns, &data.own_names, &data.var_scoped)?;
+                    }
+                }
+                // mixed defer 语句：模块本体在其 eager 语句位求值、deferred 对象亦在
+                // eager 语句位发（承载已求值态），此处仅提升 TLA 传递依赖。
+            } else {
+                // eager 语句：求值模块本体（去重，mixed 依赖仅在其 eager 语句位求值一次）。
+                if !evaluated_specs.contains(spec) {
+                    let (dep_ns_reg, fn_reg) = if data.is_self {
+                        // 自导入：读自身命名空间（依赖即本模块，勿递归）。
+                        (ns_reg, None)
+                    } else {
+                        let fn_reg = data.fn_reg.expect("非自导入 eager 依赖必有闭包寄存器");
+                        let path_reg = self.load_string_const(&data.path, ctx);
+                        let real_ns = self.emit_module_call(ctx, "__moduleEval", &[fn_reg, path_reg])?;
+                        // 异步依赖：`__moduleEval` 返回 capability promise（非命名空间），
+                        // 登记进聚合 gate；命名空间在 gate 后从 promise 结算值提取。
+                        if data.eval_async {
+                            async_dep_promises.push((spec.clone(), real_ns));
+                        }
+                        (real_ns, Some(fn_reg))
+                    };
+                    ctx.module_dep_ns_regs.insert(spec.clone(), dep_ns_reg);
+                    ctx.module_dep_paths.insert(spec.clone(), data.path.clone());
+                    if data.is_self {
+                        // 自导入：绑定走别名语义（源导出在 body 执行中才就绪），
+                        // 不能像普通依赖那样链接期快照。
+                        ctx.module_self_import_specs.insert(spec.clone());
+                    }
+                    evaluated_specs.insert(spec.clone());
+                    if data.is_defer {
+                        // mixed 依赖：模块已急切求值，deferred 对象承载已求值态
+                        // （[[Evaluated]]=true、[[Namespace]]=真实 ns）。
+                        let fn_or_sentinel = if data.is_self {
+                            // 自导入 mixed：模块函数在导入方 prelude 期不可得，发哨兵形态。
+                            self.emit_undefined(ctx)
+                        } else {
+                            fn_reg.expect("非自导入 eager 依赖必有闭包寄存器")
+                        };
+                        let path_reg = self.load_string_const(&data.path, ctx);
+                        let defer_ns =
+                            self.emit_module_call(ctx, "__moduleDeferObject", &[fn_or_sentinel, dep_ns_reg, path_reg])?;
+                        ctx.module_defer_ns_regs.insert(spec.clone(), defer_ns);
+                        self.emit_defer_pre_register(ctx, defer_ns, &data.own_names, &data.var_scoped)?;
+                    }
+                }
+            }
+        }
+
+        // 登记本模块图节点：依赖路径集按源序（defer_order）、has_tla 为自身顶层
+        // `await` 标志。
+        let dep_paths_in_source_order: Vec<String> =
+            defer_order.iter().filter_map(|s| dep_data.get(s).map(|d| d.path.clone())).collect();
+        graph.record_module(module_path, dep_paths_in_source_order, own_tla);
+
+        // 本模块异步求值标志：自身含顶层 `await`，或任一 eager 依赖按异步求值
+        // （传递异步经 `dep_eval_async` 递归回传），或存在提升的 TLA 传递依赖
+        // （其 promise 须由聚合 gate 等待）。模块体按合成异步函数编译
+        // （`assemble_ir` 据此回写 IR 的 `is_async`）。非 TLA 模块恒 false，零 diff。
+        ctx.is_async = own_tla || !async_dep_promises.is_empty() || !hoisted_tla_promises.is_empty();
+
+        // —— 聚合 gate：异步依赖与提升 TLA 模块的 `__moduleEval` 返回 capability
+        // promise（非命名空间），其命名空间在 gate 后从结算值提取（仅直接依赖）。
+        // 单 AWAIT 挂起模块体直至全部 promise 结算（由 drain 微任务释放），
+        // 非 TLA 模块此集为空、零 IR 变化。——
+        let all_promises: Vec<u32> =
+            async_dep_promises.iter().map(|(_, r)| *r).chain(hoisted_tla_promises.iter().copied()).collect();
+        if !all_promises.is_empty() {
+            let gate_reg = self.emit_module_call(ctx, "__moduleWaitAll", &all_promises)?;
             ctx.inst(Inst::await_expr(Operand::Reg(gate_reg)));
             // promise settle 后恢复值（结算值数组）经 reg 0 交付（与 YIELD/CALL 同协议）。
             let settled_reg = ctx.alloc_reg();
             ctx.inst(Inst::new(OpCode::LOAD_VAR, Operand::Reg(settled_reg), Operand::None, Operand::None));
-            // 逐依赖从结算数组提取命名空间，覆盖链接寄存器（原为 promise）。
+            // 逐直接依赖从结算数组提取命名空间，覆盖链接寄存器（原为 promise）；
+            // 提升 TLA 模块非直接依赖，不提取（其命名空间由 per-module 状态承载）。
             for (i, (spec, _)) in async_dep_promises.iter().enumerate() {
                 let idx_reg = self.load_string_const(&i.to_string(), ctx);
                 let ns_reg = ctx.alloc_reg();
@@ -1289,6 +1498,7 @@ impl Emitter {
     #[allow(clippy::type_complexity)]
     fn compile_js_dep(
         &self, resolved: &ResolvedModule, loader: &mut dyn ModuleSourceLoader, path_stack: &mut Vec<String>,
+        graph: &mut ModuleDepGraph,
     ) -> Result<(IRFunction, bool, HashSet<String>, HashSet<String>, bool), String> {
         // 线程本地分配器：依赖模块递归解析共享同一分配器，
         // 重入深度守卫防止嵌套 reset 销毁外层 AST。
@@ -1303,13 +1513,19 @@ impl Emitter {
             ctx.is_global_scope = false;
             // 依赖模块经 parse_module 解析，顶层恒严格模式。
             ctx.is_strict = true;
-            self.emit_module_into_ctx(&program, &resolved.path, loader, path_stack, &mut ctx, false)?;
+            self.emit_module_into_ctx(&program, &resolved.path, loader, path_stack, &mut ctx, false, graph)?;
             let reassignable = ctx.module_live_dep;
             let eval_async = ctx.is_async;
             let own_export_names = module_own_export_names(&program.body);
             let var_scoped = module_var_scoped_export_names(&program.body);
+            let ir = ctx.assemble_ir(ParamLayout { base: 0, count: 0 }, None);
+            // TLA 模块：缓存完整 IR 供导入方提升求值（入口侧 `ctx.nested` 无直接
+            // 引用，须按 path 键取副本）。非 TLA 模块不缓存，零额外开销。
+            if module_has_top_level_await(&program.body) {
+                graph.set_ir(&resolved.path, ir.clone());
+            }
             Ok((
-                ctx.assemble_ir(ParamLayout { base: 0, count: 0 }, None),
+                ir,
                 reassignable,
                 own_export_names,
                 var_scoped,

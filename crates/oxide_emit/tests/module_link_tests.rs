@@ -612,3 +612,54 @@ fn extends_await_makes_module_async() {
         "顶层 await 应编译为一条 AWAIT"
     );
 }
+
+/// 面 30：defer-only 依赖含 TLA——TLA 传递依赖提升求值（导入方 prelude 发
+/// `__moduleEval`），deferred 模块本身不求值；导入方标记异步、发聚合 gate。
+#[test]
+fn defer_only_dep_with_tla_hoists_tla_module() {
+    let (ir, _) = emit_module(
+        "import defer * as ns from \"./dep.js\"; ns;",
+        "./entry.js",
+        &[
+            ("./dep.js", ModuleKind::Js, "import \"./tla.js\"; export const x = 1;"),
+            ("./tla.js", ModuleKind::Js, "const v = await Promise.resolve(1); export { v };"),
+        ],
+    )
+    .expect("defer-only 依赖含 TLA 应编译成功");
+    // 入口：1 个提升 TLA 模块（tla）求值一次；deferred 模块（dep）不求值。
+    assert_eq!(native_calls_to(&ir, "__moduleEval"), 1, "提升 TLA 模块应求值一次");
+    assert_eq!(native_calls_to(&ir, "__moduleDeferObject"), 1, "deferred 对象应构造一次");
+    assert!(ir.is_async, "含提升 TLA 模块的导入方应标记异步求值");
+    assert_eq!(native_calls_to(&ir, "__moduleWaitAll"), 1, "聚合 gate 应发一次");
+}
+
+/// 面 31：defer-only 依赖的传递 TLA——DFS 序收集 TLA 边界模块，提升求值一次。
+#[test]
+fn defer_only_dep_with_transitive_tla_hoists_in_dfs_order() {
+    let (ir, _) = emit_module(
+        "import defer * as ns from \"./dep.js\"; ns;",
+        "./entry.js",
+        &[
+            ("./dep.js", ModuleKind::Js, "import \"./mid.js\"; export const x = 1;"),
+            ("./mid.js", ModuleKind::Js, "import \"./tla.js\"; export const y = 2;"),
+            ("./tla.js", ModuleKind::Js, "const v = await Promise.resolve(1); export { v };"),
+        ],
+    )
+    .expect("defer-only 依赖含传递 TLA 应编译成功");
+    assert_eq!(native_calls_to(&ir, "__moduleEval"), 1, "传递 TLA 模块应提升求值一次");
+    assert!(ir.is_async, "含传递 TLA 模块的导入方应标记异步求值");
+}
+
+/// 面 32：defer-only 依赖无 TLA——零提升、零 gate、导入方保持同步（零 diff 守卫）。
+#[test]
+fn defer_only_dep_without_tla_no_hoisting() {
+    let (ir, _) = emit_module(
+        "import defer * as ns from \"./dep.js\"; ns;",
+        "./entry.js",
+        &[("./dep.js", ModuleKind::Js, "export const x = 1;")],
+    )
+    .expect("defer-only 依赖无 TLA 应编译成功");
+    assert_eq!(native_calls_to(&ir, "__moduleEval"), 0, "无 TLA 的 defer-only 依赖不得求值");
+    assert_eq!(native_calls_to(&ir, "__moduleWaitAll"), 0, "无 TLA 模块不得发聚合 gate");
+    assert!(!ir.is_async, "无 TLA 模块的导入方不得标记异步");
+}

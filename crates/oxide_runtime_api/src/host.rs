@@ -23,6 +23,16 @@ pub struct ShapeNode {
     pub depth: u32,
 }
 
+/// 模块求值状态（per-module 防双求值）：键 = 模块规范路径。
+///
+/// `evaluated` 为真时 `namespace` 为已求值命名空间；为假时 `namespace` 承载
+/// 启动中的 capability promise（TLA 模块挂起未结算），调用方据结算值取命名空间。
+#[derive(Clone, Debug)]
+pub struct ModuleEvalState {
+    pub evaluated: bool,
+    pub namespace: JsValue,
+}
+
 /// 内建对象种类：session builtin world 中 builtins 读取的原型与构造器槽位。
 ///
 /// 变体与 builtin world 字段一一对应，仅覆盖 builtins 实际读取的槽位；
@@ -306,6 +316,30 @@ pub trait VmHost {
 
     // 调用基础设施
     fn call_function_sync(&mut self, callee: JsValue, receiver: JsValue, args: &[JsValue]) -> Result<JsValue, String>;
+    /// 异步模块求值驱动：同步执行模块函数到静止并取结算命名空间。
+    ///
+    /// # 步骤
+    /// 1. `call_function_sync(callee)`：TLA 模块返 capability promise（body 同步
+    ///    执行到首个 AWAIT），同步模块返命名空间。
+    /// 2. 返值为 promise 时单次 `drain_microtasks` 排空到静止，取结算值；
+    ///    返值为命名空间时原样返回。
+    ///
+    /// # 边界与前提
+    /// - 返值为 promise 且 drain 后仍 pending（宏任务挂起）时返该 promise
+    ///   （不阻塞）；rejected 时取拒绝原因经 `Err` 上交。
+    ///
+    /// # 副作用
+    /// - 可能执行用户模块代码（含分配与 GC）；drain 排空微任务队列。
+    fn evaluate_module_async(&mut self, callee: JsValue) -> Result<JsValue, String>;
+    /// 是否原生 Promise 对象（capability promise 判定）。
+    fn is_promise_value(&self, v: JsValue) -> bool;
+    /// 取 promise 结算值：`Some((is_fulfilled, value))`，pending 返 `None`。
+    fn promise_settled_value(&self, promise: JsValue) -> Option<(bool, JsValue)>;
+    /// 读 per-module 求值状态（键 = 模块规范路径）：`None` 未求值。
+    fn get_module_eval_state(&self, path: &str) -> Option<ModuleEvalState>;
+    /// 置 per-module 求值状态（键 = 模块规范路径）：`evaluated` 为真时
+    /// `namespace` 为命名空间，为假时 `namespace` 承载 capability promise。
+    fn set_module_eval_state(&mut self, path: &str, evaluated: bool, namespace: JsValue);
     /// deferred namespace 求值触发（`EnsureDeferredNamespaceEvaluation`）：
     /// 对 deferred 且未求值的 module namespace 同步执行依赖模块函数，缓存结果
     /// 命名空间或失败错误对象。

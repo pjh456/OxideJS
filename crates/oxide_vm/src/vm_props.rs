@@ -2049,7 +2049,9 @@ mod tests {
     fn make_deferred_ns(vm: &mut Vm, fn_val: JsValue) -> JsValue {
         vm.set_reg(1, fn_val);
         vm.set_reg(2, JsValue::undefined());
-        oxide_builtins::module::module_defer_object(vm, &[0, 1, 2]).unwrap()
+        let path_str = vm.new_string("p");
+        vm.set_reg(3, path_str);
+        oxide_builtins::module::module_defer_object(vm, &[0, 1, 2, 3]).unwrap()
     }
 
     #[test]
@@ -2077,7 +2079,9 @@ mod tests {
         // 哨兵形态：[[Module]] = undefined（自导入/祖先 defer）。
         vm.set_reg(1, JsValue::undefined());
         vm.set_reg(2, JsValue::undefined());
-        let ns_val = oxide_builtins::module::module_defer_object(&mut vm, &[0, 1, 2]).unwrap();
+        let path_str = vm.new_string("p");
+        vm.set_reg(3, path_str);
+        let ns_val = oxide_builtins::module::module_defer_object(&mut vm, &[0, 1, 2, 3]).unwrap();
         let ns_ptr = ns_val.as_js_object_ptr();
 
         // 模拟「正在求值模块」：置 cyclic 守卫标记。
@@ -2099,7 +2103,9 @@ mod tests {
             .expect("create function");
         vm.set_reg(1, throwing_fn);
         vm.set_reg(2, JsValue::undefined());
-        let ns_val = oxide_builtins::module::module_defer_object(&mut vm, &[0, 1, 2]).unwrap();
+        let path_str = vm.new_string("p");
+        vm.set_reg(3, path_str);
+        let ns_val = oxide_builtins::module::module_defer_object(&mut vm, &[0, 1, 2, 3]).unwrap();
         let ns_ptr = ns_val.as_js_object_ptr();
         let x_si = vm.kernel_core.perm_interner().intern("x").0;
 

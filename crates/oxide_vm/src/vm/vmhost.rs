@@ -4,7 +4,7 @@ use std::ffi::c_void;
 use std::sync::Arc;
 
 use oxide_kernel::KernelCore;
-use oxide_runtime_api::{ListenerEntry, ProtoKind, ShapeNode};
+use oxide_runtime_api::{ListenerEntry, ModuleEvalState, ProtoKind, ShapeNode};
 use oxide_types::mem::P;
 use oxide_types::object::{Cell, JsObject, PropAttributes};
 use oxide_types::value::JsValue;
@@ -262,6 +262,44 @@ impl oxide_runtime_api::VmHost for Vm {
     fn call_function_sync(&mut self, callee: JsValue, receiver: JsValue, args: &[JsValue]) -> Result<JsValue, String> {
         self.call_function_sync(callee, receiver, args)
     }
+    fn evaluate_module_async(&mut self, callee: JsValue) -> Result<JsValue, String> {
+        // 同步执行模块函数到首个挂起点：TLA 模块返 capability promise，同步模块返命名空间。
+        let result = self.call_function_sync(callee, JsValue::undefined(), &[])?;
+        // 返值为 promise（TLA 模块）：单次 drain 排空到静止，取结算值。
+        if self.is_promise_value(result) {
+            self.drain_microtasks();
+            let obj = unsafe { &*result.as_js_object_ptr() };
+            return match crate::promise::promise_settled_value(obj) {
+                Some((true, value)) => Ok(value),
+                Some((false, reason)) => Err(self.error_text(reason)),
+                // 宏任务挂起（drain 后仍 pending）：返 capability promise，不阻塞。
+                None => Ok(result),
+            };
+        }
+        // 同步模块：命名空间原样返回。
+        Ok(result)
+    }
+    fn is_promise_value(&self, v: JsValue) -> bool {
+        self.is_promise_value(v)
+    }
+    fn promise_settled_value(&self, promise: JsValue) -> Option<(bool, JsValue)> {
+        if !promise.is_object() {
+            return None;
+        }
+        let ptr = promise.as_js_object_ptr();
+        if ptr.is_null() {
+            return None;
+        }
+        let obj = unsafe { &*ptr };
+        crate::promise::promise_settled_value(obj)
+    }
+    fn get_module_eval_state(&self, path: &str) -> Option<ModuleEvalState> {
+        self.module_eval_states.get(path).cloned()
+    }
+    fn set_module_eval_state(&mut self, path: &str, evaluated: bool, namespace: JsValue) {
+        self.module_eval_states
+            .insert(path.to_string(), ModuleEvalState { evaluated, namespace });
+    }
     fn ensure_deferred_ns_evaluation(&mut self, obj: &JsObject, key_si: Option<u32>) -> Result<(), String> {
         // 非 deferred module namespace 直接 no-op（热路径零成本）。
         if !obj.is_module_namespace() || !obj.is_deferred() {
@@ -303,8 +341,24 @@ impl oxide_runtime_api::VmHost for Vm {
         if self.evaluating_module == Some(state.module) {
             return Err(self.error_message_text("TypeError", "cyclic module evaluation"));
         }
-        // EvaluateSync：调依赖模块函数，缓存结果命名空间或失败错误。
-        match self.call_function_sync(state.module, JsValue::undefined(), &[]) {
+        // 提升求值过的 TLA 模块：per-module 状态已结算（或结算中），直接取缓存
+        // 命名空间，防 `evaluate_module_async` 重跑模块函数（双求值）。
+        if let Some(ms) = self.get_module_eval_state(&state.path) {
+            if ms.evaluated {
+                state.namespace = ms.namespace;
+                state.evaluated = true;
+                return Ok(());
+            }
+            if let Some((true, value)) = self.promise_settled_value(ms.namespace) {
+                self.set_module_eval_state(&state.path, true, value);
+                state.namespace = value;
+                state.evaluated = true;
+                return Ok(());
+            }
+            // pending 且未结算：落入下方正常求值（聚合 gate 后不应发生，兜底）。
+        }
+        // EvaluateSync：调依赖模块函数（异步驱动到静止），缓存结果命名空间或失败错误。
+        match self.evaluate_module_async(state.module) {
             Ok(ns) => {
                 state.namespace = ns;
                 state.evaluated = true;
