@@ -1026,16 +1026,14 @@ impl Emitter {
         let mut hoisted_tla: HashSet<String> = HashSet::new();
         for (spec, is_defer) in &stmt_order {
             let phase = &phase_map[spec];
-            let data = dep_data.get(spec).cloned().unwrap_or_else(|| {
-                DepEmitData {
-                    fn_reg: None,
-                    own_names: HashSet::new(),
-                    var_scoped: HashSet::new(),
-                    eval_async: false,
-                    path: String::new(),
-                    is_self: false,
-                    is_defer: false,
-                }
+            let data = dep_data.get(spec).cloned().unwrap_or_else(|| DepEmitData {
+                fn_reg: None,
+                own_names: HashSet::new(),
+                var_scoped: HashSet::new(),
+                eval_async: false,
+                path: String::new(),
+                is_self: false,
+                is_defer: false,
             });
             if *is_defer {
                 // defer 语句：提升本模块的 TLA 传递依赖（去重，已提升者不重发）。
@@ -1068,8 +1066,7 @@ impl Emitter {
                         // 哨兵：模块函数在导入方 prelude 期不可得。
                         let undef = self.emit_undefined(ctx);
                         let path_reg = self.load_string_const(&data.path, ctx);
-                        let defer_ns =
-                            self.emit_module_call(ctx, "__moduleDeferObject", &[undef, undef, path_reg])?;
+                        let defer_ns = self.emit_module_call(ctx, "__moduleDeferObject", &[undef, undef, path_reg])?;
                         ctx.module_dep_ns_regs.insert(spec.clone(), defer_ns);
                         ctx.module_defer_ns_regs.insert(spec.clone(), defer_ns);
                         ctx.module_dep_paths.insert(spec.clone(), data.path.clone());
@@ -1077,8 +1074,7 @@ impl Emitter {
                         let fn_reg = data.fn_reg.expect("非祖先 defer-only 依赖必有闭包寄存器");
                         let undef = self.emit_undefined(ctx);
                         let path_reg = self.load_string_const(&data.path, ctx);
-                        let defer_ns =
-                            self.emit_module_call(ctx, "__moduleDeferObject", &[fn_reg, undef, path_reg])?;
+                        let defer_ns = self.emit_module_call(ctx, "__moduleDeferObject", &[fn_reg, undef, path_reg])?;
                         ctx.module_dep_ns_regs.insert(spec.clone(), defer_ns);
                         ctx.module_defer_ns_regs.insert(spec.clone(), defer_ns);
                         ctx.module_dep_paths.insert(spec.clone(), data.path.clone());
@@ -1133,8 +1129,10 @@ impl Emitter {
 
         // 登记本模块图节点：依赖路径集按源序（defer_order）、has_tla 为自身顶层
         // `await` 标志。
-        let dep_paths_in_source_order: Vec<String> =
-            defer_order.iter().filter_map(|s| dep_data.get(s).map(|d| d.path.clone())).collect();
+        let dep_paths_in_source_order: Vec<String> = defer_order
+            .iter()
+            .filter_map(|s| dep_data.get(s).map(|d| d.path.clone()))
+            .collect();
         graph.record_module(module_path, dep_paths_in_source_order, own_tla);
 
         // 本模块异步求值标志：自身含顶层 `await`，或任一 eager 依赖按异步求值
@@ -1147,8 +1145,11 @@ impl Emitter {
         // promise（非命名空间），其命名空间在 gate 后从结算值提取（仅直接依赖）。
         // 单 AWAIT 挂起模块体直至全部 promise 结算（由 drain 微任务释放），
         // 非 TLA 模块此集为空、零 IR 变化。——
-        let all_promises: Vec<u32> =
-            async_dep_promises.iter().map(|(_, r)| *r).chain(hoisted_tla_promises.iter().copied()).collect();
+        let all_promises: Vec<u32> = async_dep_promises
+            .iter()
+            .map(|(_, r)| *r)
+            .chain(hoisted_tla_promises.iter().copied())
+            .collect();
         if !all_promises.is_empty() {
             let gate_reg = self.emit_module_call(ctx, "__moduleWaitAll", &all_promises)?;
             ctx.inst(Inst::await_expr(Operand::Reg(gate_reg)));
@@ -1524,13 +1525,7 @@ impl Emitter {
             if module_has_top_level_await(&program.body) {
                 graph.set_ir(&resolved.path, ir.clone());
             }
-            Ok((
-                ir,
-                reassignable,
-                own_export_names,
-                var_scoped,
-                eval_async,
-            ))
+            Ok((ir, reassignable, own_export_names, var_scoped, eval_async))
         })
     }
 
