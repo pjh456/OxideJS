@@ -3898,6 +3898,76 @@ fn plain_time_with_reject_invalid_components_throw_range_error() {
 }
 
 #[test]
+fn plain_date_with_field_update_overflow_and_forms() {
+    let mut vm = Vm::new();
+    // 字段更新：year/month/day/monthCode 覆盖、undefined 不覆盖、unrecognized 键忽略；
+    // overflow：constrain 钳日、reject 抛 RangeError；day/year 越界 RangeError；
+    // 三形态：空袋/字符串/Temporal 实例/calendar 键均 TypeError，month 与 monthCode 冲突
+    // RangeError；year 超 day count 表示范围 RangeError。
+    let r = eval(
+        &mut vm,
+        "(() => {
+           const d = new Temporal.PlainDate(1976, 11, 18);
+           const kind = (fn) => { try { fn(); return 'no'; } catch (e) { return e.constructor.name; } };
+           const val = (fn) => { try { return String(fn()); } catch (e) { return e.constructor.name; } };
+           return [
+             val(() => d.with({ year: 2019, nonsense: true }).toString()),
+             val(() => d.with({ month: 4, day: 31 }, { overflow: 'constrain' }).toString()),
+             kind(() => d.with({ month: 4, day: 31 }, { overflow: 'reject' })),
+             kind(() => d.with({ day: -1 }, { overflow: 'reject' })),
+             kind(() => d.with({ year: 300000 })),
+             kind(() => d.with({})),
+             kind(() => d.with('2019-05-17')),
+             kind(() => d.with(Temporal.PlainDate.from('2019-05-17'))),
+             kind(() => d.with({ year: 2021, calendar: 'iso8601' })),
+             val(() => d.with({ monthCode: 'M03' }).toString()),
+             kind(() => d.with({ month: 5, monthCode: 'M06' })),
+           ].join('|');
+         })()",
+    )
+    .unwrap();
+    assert_eq!(
+        str_val(&vm, r),
+        "2019-11-18|1976-04-30|RangeError|RangeError|RangeError|TypeError|TypeError|TypeError|TypeError|1976-03-18|RangeError"
+    );
+}
+
+#[test]
+fn plain_date_time_with_field_update_overflow_and_forms() {
+    let mut vm = Vm::new();
+    // 字段更新：日期与时间全字段覆盖、undefined 不覆盖；
+    // overflow：constrain 钳时/日、reject 抛 RangeError；
+    // 三形态：空袋/字符串/timeZone 键 TypeError，month 与 monthCode 冲突 RangeError；
+    // 边界：-271821-04-19T00:00:00.000000001 减纳秒到范围外边界抛 RangeError。
+    let r = eval(
+        &mut vm,
+        "(() => {
+           const dt = new Temporal.PlainDateTime(1976, 11, 18, 15, 23, 30, 123, 456, 789);
+           const kind = (fn) => { try { fn(); return 'no'; } catch (e) { return e.constructor.name; } };
+           const val = (fn) => { try { return String(fn()); } catch (e) { return e.constructor.name; } };
+           const min = new Temporal.PlainDateTime(-271821, 4, 19, 0, 0, 0, 0, 0, 1);
+           return [
+             val(() => dt.with({ year: 2019, hour: 5 }).toString()),
+             val(() => dt.with({ month: 2, day: 31 }, { overflow: 'constrain' }).toString()),
+             kind(() => dt.with({ month: 2, day: 31 }, { overflow: 'reject' })),
+             kind(() => dt.with({ hour: -1 }, { overflow: 'reject' })),
+             val(() => dt.with({ hour: 25, minute: 90 }, { overflow: 'constrain' }).toString()),
+             kind(() => dt.with({})),
+             kind(() => dt.with('1995-04-07T12:34')),
+             kind(() => dt.with({ year: 2021, timeZone: 'UTC' })),
+             kind(() => dt.with({ month: 5, monthCode: 'M06' })),
+             kind(() => min.with({ nanosecond: 0 })),
+           ].join('|');
+         })()",
+    )
+    .unwrap();
+    assert_eq!(
+        str_val(&vm, r),
+        "2019-11-18T05:23:30.123456789|1976-02-29T15:23:30.123456789|RangeError|RangeError|1976-11-18T23:59:30.123456789|TypeError|TypeError|TypeError|RangeError|RangeError"
+    );
+}
+
+#[test]
 fn zoned_date_time_with_reject_negative_time_component_throws_range_error() {
     let mut vm = Vm::new();
     // 红形钉：zdt.with 的 reject 臂负合并分量须先查范围后转换（截断后为负的

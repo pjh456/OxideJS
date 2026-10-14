@@ -8,8 +8,9 @@ use oxide_types::value::JsValue;
 use super::common::native_try;
 use super::common::{
     days_from_civil, days_in_month, ensure_plain_date, get_calendar_id, get_double_prop, initialize_temporal_receiver,
-    is_ctor_call, parse_plain_date_string, plain_date_time_object_parts, receiver_obj, temporal_calendar_id_strict,
-    temporal_number_component, temporal_overflow, zoned_date_time_plain_parts,
+    is_ctor_call, parse_plain_date_string, plain_date_time_object_parts, receiver_obj, reject_partial_object_with_calendar_or_time_zone,
+    resolve_date_time_parts, temporal_calendar_id_strict, temporal_number_component, temporal_option_string,
+    temporal_option_value, temporal_overflow, zoned_date_time_plain_parts, DateTimeParts,
 };
 use super::difference::{difference_core, parse_difference_settings, IsoDateTime};
 use super::duration::duration_like_values;
@@ -496,6 +497,105 @@ pub fn plain_date_equals<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     };
     let equal = other.0 as f64 == y && other.1 as f64 == m && other.2 as f64 == d;
     NativeResult::Ok(JsValue::bool(equal))
+}
+
+/// `Temporal.PlainDate.prototype.with(temporalDateLike[, options])`：覆盖 year/month/day/monthCode；
+/// undefined 字段不覆盖；calendar/timeZone 键与 Temporal 实例、字符串参数均抛 TypeError；
+/// 四键全 undefined 抛 TypeError；overflow 读自 options（缺省 constrain）。
+/// 结果保留 receiver 日历。
+///
+/// # 步骤
+/// 1. receiver 品牌校验；partial 参数经 reject_partial_object_with_calendar_or_time_zone
+///    排除日历/时区载体（其内部按序读 calendar、timeZone 两键）。
+/// 2. 按规范读序逐字段读并就地转换：day → month → monthCode → year（数值字段
+///    ToNumber，monthCode ToString），转换错误先于 options 校验抛出。
+/// 3. month/day 小于 1 抛 RangeError（先于 options 形态错误）。
+/// 4. 读 overflow；monthCode 语义校验（L 后缀、超界、与 month 冲突）在 options 之后。
+/// 5. 与 receiver 字段合并后经 resolve_date_time_parts 钳制/校验；显式 day count
+///    范围检查（ignore_time 路径不查 ISODateWithinLimits）。
+pub fn plain_date_with<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let ptr = native_try!(receiver_obj(vm, args));
+    let obj = unsafe { &*ptr };
+    native_try!(ensure_plain_date(vm, obj));
+    let value = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
+    native_try!(reject_partial_object_with_calendar_or_time_zone(vm, value));
+    let vptr = value.as_js_object_ptr();
+    if vptr.is_null() {
+        return NativeResult::Err(crate::error::create_type_error(vm, "invalid argument"));
+    }
+    let vobj = unsafe { &*vptr };
+    // 读序由规范固定：day → month → monthCode → year，每字段读后立即转换。
+    let day_raw = native_try!(temporal_option_value(vm, vobj, value, "day"));
+    let day = if day_raw.is_undefined() {
+        None
+    } else {
+        Some(native_try!(temporal_number_component(vm, day_raw)))
+    };
+    let month_raw = native_try!(temporal_option_value(vm, vobj, value, "month"));
+    let month = if month_raw.is_undefined() {
+        None
+    } else {
+        Some(native_try!(temporal_number_component(vm, month_raw)))
+    };
+    let month_code_raw = native_try!(temporal_option_value(vm, vobj, value, "monthCode"));
+    let month_code = if month_code_raw.is_undefined() {
+        None
+    } else {
+        Some(native_try!(temporal_option_string(vm, month_code_raw)))
+    };
+    let year_raw = native_try!(temporal_option_value(vm, vobj, value, "year"));
+    let year = if year_raw.is_undefined() {
+        None
+    } else {
+        Some(native_try!(temporal_number_component(vm, year_raw)))
+    };
+    if day.is_none() && month.is_none() && month_code.is_none() && year.is_none() {
+        return NativeResult::Err(crate::error::create_type_error(vm, "no properties present"));
+    }
+    // 月/日小于 1 的 RangeError 先于 options 校验抛出。
+    if let Some(month) = month {
+        if month < 1.0 {
+            return NativeResult::Err(crate::error::create_range_error(vm, "invalid month"));
+        }
+    }
+    if let Some(day) = day {
+        if day < 1.0 {
+            return NativeResult::Err(crate::error::create_range_error(vm, "invalid day"));
+        }
+    }
+    let constrain = native_try!(temporal_overflow(vm, args));
+    // 与 receiver 字段合并：bag 字段优先，undefined 字段回落 receiver 槽值。
+    // receiver 月只在 bag 未提供 month 与 monthCode 时参与合并，避免与
+    // bag 的 monthCode 触发误冲突（冲突检查仅作用于 bag 字段）。
+    let month = if month.is_none() && month_code.is_none() {
+        Some(get_double_prop(obj, 1))
+    } else {
+        month
+    };
+    let (year, month, day, _, _) = native_try!(resolve_date_time_parts(
+        vm,
+        None,
+        DateTimeParts {
+            year: year.or(Some(get_double_prop(obj, 0))),
+            month,
+            month_code,
+            day: day.or(Some(get_double_prop(obj, 2))),
+            hour: 0.0,
+            minute: 0.0,
+            second: 0.0,
+            millisecond: 0.0,
+            microsecond: 0.0,
+            nanosecond: 0.0,
+        },
+        constrain,
+        true,
+    ));
+    // ignore_time 路径不查 ISODateWithinLimits，day count 表示范围须显式检查。
+    let day_count = days_from_civil(i128::from(year), i128::from(month), i128::from(day));
+    if !(-100_000_001..=100_000_000).contains(&day_count) {
+        return NativeResult::Err(crate::error::create_range_error(vm, "ISO date is out of range"));
+    }
+    make_plain_date(vm, year, month, day, &get_calendar_id(obj, 3))
 }
 
 /// `Temporal.PlainDate.compare(a, b)`：静态比较，返回 -1/0/1。

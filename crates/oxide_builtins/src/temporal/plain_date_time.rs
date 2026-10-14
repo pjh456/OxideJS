@@ -11,10 +11,11 @@ use super::{
     duration_like_values, ensure_plain_date_time, format_iso_year, get_calendar_id, get_double_prop,
     initialize_temporal_receiver, instant_rounding_mode, is_ctor_call, is_leap_year_iso, make_plain_date,
     make_plain_date_time, make_plain_time, parse_difference_settings, parse_fractional_second_digits,
-    parse_temporal_string_impl, plain_date_time_object_parts, plain_time_components, receiver_obj, round_instant_ns,
-    temporal_calendar_id_strict, temporal_option_number, temporal_option_string, temporal_option_value,
-    temporal_overflow, valid_iso_date, valid_plain_date_time_range, valid_plain_time, zoned_date_time_plain_parts,
-    FractionalSecondDigitsInput, IsoDateTime,
+    parse_temporal_string_impl, plain_date_time_object_parts, plain_time_components, receiver_obj,
+    reject_partial_object_with_calendar_or_time_zone, resolve_date_time_parts, round_instant_ns,
+    temporal_calendar_id_strict, temporal_number_component, temporal_option_number, temporal_option_string,
+    temporal_option_value, temporal_overflow, valid_iso_date, valid_plain_date_time_range, valid_plain_time,
+    zoned_date_time_plain_parts, DateTimeParts, FractionalSecondDigitsInput, IsoDateTime,
 };
 // ───────────────────── PlainDateTime 基础方法 ─────────────────────
 
@@ -217,6 +218,143 @@ pub fn plain_date_time_equals<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResul
     };
     let equal = other.0 == y && other.1 == m && other.2 == d && other.3 as u64 == ns as u64;
     NativeResult::Ok(JsValue::bool(equal))
+}
+
+/// `Temporal.PlainDateTime.prototype.with(temporalDateTimeLike[, options])`：覆盖日期与时间全字段；
+/// undefined 字段不覆盖；calendar/timeZone 键与 Temporal 实例、字符串参数均抛 TypeError；
+/// 十键全 undefined 抛 TypeError；overflow 读自 options（缺省 constrain）。
+/// 结果保留 receiver 日历。
+///
+/// # 步骤
+/// 1. receiver 品牌校验；partial 参数经 reject_partial_object_with_calendar_or_time_zone
+///    排除日历/时区载体（其内部按序读 calendar、timeZone 两键）。
+/// 2. 按规范读序逐字段读并就地转换：day → hour → microsecond → millisecond → minute
+///    → month → monthCode → nanosecond → second → year（数值字段 ToNumber，
+///    monthCode ToString），转换错误先于 options 校验抛出。
+/// 3. month/day 小于 1 抛 RangeError（先于 options 形态错误）。
+/// 4. 读 overflow；monthCode 语义校验（L 后缀、超界、与 month 冲突）在 options 之后。
+/// 5. 与 receiver 字段合并（时间字段缺省取 receiver 的纳秒分解）后经
+///    resolve_date_time_parts 钳制/校验（含 PlainDateTime 范围严格不等式边界）。
+pub fn plain_date_time_with<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let ptr = native_try!(receiver_obj(vm, args));
+    let obj = unsafe { &*ptr };
+    native_try!(ensure_plain_date_time(vm, obj));
+    let value = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
+    native_try!(reject_partial_object_with_calendar_or_time_zone(vm, value));
+    let vptr = value.as_js_object_ptr();
+    if vptr.is_null() {
+        return NativeResult::Err(crate::error::create_type_error(vm, "invalid argument"));
+    }
+    let vobj = unsafe { &*vptr };
+    // 读序由规范固定：day → hour → microsecond → millisecond → minute → month
+    // → monthCode → nanosecond → second → year，每字段读后立即转换。
+    let day_raw = native_try!(temporal_option_value(vm, vobj, value, "day"));
+    let day = if day_raw.is_undefined() {
+        None
+    } else {
+        Some(native_try!(temporal_number_component(vm, day_raw)))
+    };
+    let hour_raw = native_try!(temporal_option_value(vm, vobj, value, "hour"));
+    let hour = if hour_raw.is_undefined() {
+        None
+    } else {
+        Some(native_try!(temporal_number_component(vm, hour_raw)))
+    };
+    let microsecond_raw = native_try!(temporal_option_value(vm, vobj, value, "microsecond"));
+    let microsecond = if microsecond_raw.is_undefined() {
+        None
+    } else {
+        Some(native_try!(temporal_number_component(vm, microsecond_raw)))
+    };
+    let millisecond_raw = native_try!(temporal_option_value(vm, vobj, value, "millisecond"));
+    let millisecond = if millisecond_raw.is_undefined() {
+        None
+    } else {
+        Some(native_try!(temporal_number_component(vm, millisecond_raw)))
+    };
+    let minute_raw = native_try!(temporal_option_value(vm, vobj, value, "minute"));
+    let minute = if minute_raw.is_undefined() {
+        None
+    } else {
+        Some(native_try!(temporal_number_component(vm, minute_raw)))
+    };
+    let month_raw = native_try!(temporal_option_value(vm, vobj, value, "month"));
+    let month = if month_raw.is_undefined() {
+        None
+    } else {
+        Some(native_try!(temporal_number_component(vm, month_raw)))
+    };
+    let month_code_raw = native_try!(temporal_option_value(vm, vobj, value, "monthCode"));
+    let month_code = if month_code_raw.is_undefined() {
+        None
+    } else {
+        Some(native_try!(temporal_option_string(vm, month_code_raw)))
+    };
+    let nanosecond_raw = native_try!(temporal_option_value(vm, vobj, value, "nanosecond"));
+    let nanosecond = if nanosecond_raw.is_undefined() {
+        None
+    } else {
+        Some(native_try!(temporal_number_component(vm, nanosecond_raw)))
+    };
+    let second_raw = native_try!(temporal_option_value(vm, vobj, value, "second"));
+    let second = if second_raw.is_undefined() {
+        None
+    } else {
+        Some(native_try!(temporal_number_component(vm, second_raw)))
+    };
+    let year_raw = native_try!(temporal_option_value(vm, vobj, value, "year"));
+    let year = if year_raw.is_undefined() {
+        None
+    } else {
+        Some(native_try!(temporal_number_component(vm, year_raw)))
+    };
+    if [day_raw, hour_raw, microsecond_raw, millisecond_raw, minute_raw, month_raw, month_code_raw, nanosecond_raw, second_raw, year_raw]
+        .iter()
+        .all(|raw| raw.is_undefined())
+    {
+        return NativeResult::Err(crate::error::create_type_error(vm, "no properties present"));
+    }
+    // 月/日小于 1 的 RangeError 先于 options 校验抛出。
+    if let Some(month) = month {
+        if month < 1.0 {
+            return NativeResult::Err(crate::error::create_range_error(vm, "invalid month"));
+        }
+    }
+    if let Some(day) = day {
+        if day < 1.0 {
+            return NativeResult::Err(crate::error::create_range_error(vm, "invalid day"));
+        }
+    }
+    let constrain = native_try!(temporal_overflow(vm, args));
+    // 与 receiver 字段合并：bag 字段优先，undefined 字段回落 receiver 槽值
+    // （时间字段取 receiver 午夜后纳秒的分解）。receiver 月只在 bag 未提供
+    // month 与 monthCode 时参与合并，避免与 bag 的 monthCode 触发误冲突。
+    let month = if month.is_none() && month_code.is_none() {
+        Some(get_double_prop(obj, 1))
+    } else {
+        month
+    };
+    let (hour_r, minute_r, second_r, millisecond_r, microsecond_r, nanosecond_r) =
+        plain_time_components(get_double_prop(obj, 3));
+    let (year, month, day, total_ns, _) = native_try!(resolve_date_time_parts(
+        vm,
+        None,
+        DateTimeParts {
+            year: year.or(Some(get_double_prop(obj, 0))),
+            month,
+            month_code,
+            day: day.or(Some(get_double_prop(obj, 2))),
+            hour: hour.unwrap_or(hour_r as f64),
+            minute: minute.unwrap_or(minute_r as f64),
+            second: second.unwrap_or(second_r as f64),
+            millisecond: millisecond.unwrap_or(millisecond_r as f64),
+            microsecond: microsecond.unwrap_or(microsecond_r as f64),
+            nanosecond: nanosecond.unwrap_or(nanosecond_r as f64),
+        },
+        constrain,
+        false,
+    ));
+    make_plain_date_time(vm, year, month, day, total_ns, &get_calendar_id(obj, 4))
 }
 
 fn plain_date_time_parts<H: VmHost>(vm: &mut H, args: &[u8]) -> Result<(i32, u32, u32, f64), JsValue> {

@@ -567,6 +567,7 @@ pub fn bind_temporal(env: BindEnv<'_>, global: &mut JsObject) {
             ("subtract", oxide_builtins::temporal::plain_date_subtract::<crate::vm::Vm> as *const (), 1),
             ("until", oxide_builtins::temporal::plain_date_until::<crate::vm::Vm> as *const (), 1),
             ("since", oxide_builtins::temporal::plain_date_since::<crate::vm::Vm> as *const (), 1),
+            ("with", oxide_builtins::temporal::plain_date_with::<crate::vm::Vm> as *const (), 1),
         ],
     );
 
@@ -810,6 +811,11 @@ pub fn bind_temporal(env: BindEnv<'_>, global: &mut JsObject) {
             (
                 "equals",
                 oxide_builtins::temporal::plain_date_time_equals::<crate::vm::Vm> as *const (),
+                1,
+            ),
+            (
+                "with",
+                oxide_builtins::temporal::plain_date_time_with::<crate::vm::Vm> as *const (),
                 1,
             ),
         ],
