@@ -1251,7 +1251,11 @@ mod tests {
         // 完整收集：若状态表边漏登，命名空间对象被回收、计数回落。
         vm.collect_session_gc();
 
-        assert_eq!(vm.session_object_count(), baseline + 1, "per-module 状态命名空间对象应跨收集存活（GC 边已登记）");
+        assert_eq!(
+            vm.session_object_count(),
+            baseline + 1,
+            "per-module 状态命名空间对象应跨收集存活（GC 边已登记）"
+        );
         // 原地 sweep 不搬移：状态表原地保留，命名空间指针稳定。
         let state = vm.get_module_eval_state("p").expect("per-module 状态应存活");
         assert!(state.evaluated, "evaluated 标志应稳定");
