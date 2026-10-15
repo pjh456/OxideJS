@@ -575,6 +575,32 @@ fn duration_constructor_exposes_components() {
 }
 
 #[test]
+fn duration_constructor_coerces_fields_per_spec() {
+    let mut vm = Vm::new();
+    // undefined 分量视为 0
+    let r = eval(&mut vm, "new Temporal.Duration(undefined).toString()").unwrap();
+    assert_eq!(str_val(&vm, r), "PT0S");
+    let r = eval(&mut vm, "new Temporal.Duration(1, undefined).toString()").unwrap();
+    assert_eq!(str_val(&vm, r), "P1Y");
+    // Symbol 与 BigInt 抛 TypeError
+    let r = eval(&mut vm, "try { new Temporal.Duration(Symbol()) } catch (e) { e.constructor.name }").unwrap();
+    assert_eq!(str_val(&vm, r), "TypeError");
+    let r = eval(&mut vm, "try { new Temporal.Duration(0n) } catch (e) { e.constructor.name }").unwrap();
+    assert_eq!(str_val(&vm, r), "TypeError");
+    // 对象经 valueOf 转换
+    assert_eq!(num(&mut vm, "new Temporal.Duration({valueOf(){return 1}}).years"), 1.0);
+    // ±Infinity 抛 RangeError
+    let r = eval(&mut vm, "try { new Temporal.Duration(Infinity) } catch (e) { e.constructor.name }").unwrap();
+    assert_eq!(str_val(&vm, r), "RangeError");
+    let r = eval(&mut vm, "try { new Temporal.Duration(-Infinity) } catch (e) { e.constructor.name }").unwrap();
+    assert_eq!(str_val(&vm, r), "RangeError");
+    // 传入 −0 时 getter 返回 +0（整数往返归一）
+    assert!(eval(&mut vm, "Object.is(new Temporal.Duration(-0).years, 0)")
+        .unwrap()
+        .as_bool());
+}
+
+#[test]
 fn duration_from_validates_property_bags_and_preserves_precision() {
     let mut vm = Vm::new();
     let r = eval(&mut vm, "try { Temporal.Duration.from({}) } catch (e) { e.constructor.name }").unwrap();

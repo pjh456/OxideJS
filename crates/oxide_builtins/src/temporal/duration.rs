@@ -1,7 +1,7 @@
 //! Temporal.Duration：ISO 字符串与 property bag 解析、构造、getter、total/round、
 //! 加减比较与格式化。
 
-use oxide_runtime_api::{to_number, to_string, NativeResult, ProtoKind, VmHost};
+use oxide_runtime_api::{to_number, to_number_full, to_string, NativeResult, ProtoKind, VmHost};
 use oxide_types::object::JsObject;
 use oxide_types::value::JsValue;
 
@@ -264,6 +264,18 @@ pub(crate) fn duration_like_values<H: VmHost>(vm: &mut H, val: JsValue) -> Resul
 }
 
 /// `Temporal.Duration` 构造器，保存十个整数时长分量。
+///
+/// # 步骤
+/// 1. 校验构造调用（非 `new` 形态抛 TypeError）。
+/// 2. 按年、月、周、日、时、分、秒、毫秒、微秒、纳秒顺序逐字段转换：
+///    undefined 视为 0；BigInt 抛 TypeError；其余经完整 ToNumber
+///    （对象走 valueOf 路径，Symbol 抛 TypeError）；NaN、非整数、
+///    非有限值抛 RangeError。
+/// 3. 共享校验器做符号一致性与范围检查。
+///
+/// # 注意事项
+/// 零分量归一为 +0：规范经整数往返（取整再还原为 Number），
+/// 传入 −0 时 getter 仍返回 +0。
 pub fn duration_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let ctor_proto = vm.builtin_proto(ProtoKind::DurationProto);
     if !is_ctor_call(vm, args, ctor_proto) {
@@ -277,11 +289,22 @@ pub fn duration_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult 
         if args.len() <= index + 1 {
             continue;
         }
-        let number = to_number(vm.reg(args[index + 1]));
+        let arg = vm.reg(args[index + 1]);
+        if arg.is_undefined() {
+            continue;
+        }
+        if arg.is_bigint() {
+            return NativeResult::Err(crate::error::create_type_error(vm, "cannot convert duration field to number"));
+        }
+        let number = match to_number_full(arg, vm) {
+            Ok(value) => value,
+            Err(error) => return NativeResult::Err(native_engine_error(vm, &error)),
+        };
         if !number.is_finite() || number.fract() != 0.0 {
             return NativeResult::Err(crate::error::create_range_error(vm, "invalid duration"));
         }
-        *value = number;
+        // 零分量归一为 +0：规范整数往返（取整再还原 Number）使 −0 落为 +0。
+        *value = if number == 0.0 { 0.0 } else { number };
     }
     native_try!(validate_duration_values(vm, &values));
     initialize_temporal_receiver(vm, args, JsObject::OBJ_TYPE_DURATION, values.map(JsValue::float))
