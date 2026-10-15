@@ -386,11 +386,31 @@ pub fn date_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         // 七参按序经完整 ToNumber 强转（对象参走 valueOf/toString，异常原样传播）。
         let y_val = native_try!(date_arg_number(vm, vm.reg(args[1])));
         let m_val = native_try!(date_arg_number(vm, vm.reg(args[2])));
-        let d_val = if args.len() > 3 { native_try!(date_arg_number(vm, vm.reg(args[3]))) } else { 1.0 };
-        let h_val = if args.len() > 4 { native_try!(date_arg_number(vm, vm.reg(args[4]))) } else { 0.0 };
-        let min_val = if args.len() > 5 { native_try!(date_arg_number(vm, vm.reg(args[5]))) } else { 0.0 };
-        let sec_val = if args.len() > 6 { native_try!(date_arg_number(vm, vm.reg(args[6]))) } else { 0.0 };
-        let ms_val = if args.len() > 7 { native_try!(date_arg_number(vm, vm.reg(args[7]))) } else { 0.0 };
+        let d_val = if args.len() > 3 {
+            native_try!(date_arg_number(vm, vm.reg(args[3])))
+        } else {
+            1.0
+        };
+        let h_val = if args.len() > 4 {
+            native_try!(date_arg_number(vm, vm.reg(args[4])))
+        } else {
+            0.0
+        };
+        let min_val = if args.len() > 5 {
+            native_try!(date_arg_number(vm, vm.reg(args[5])))
+        } else {
+            0.0
+        };
+        let sec_val = if args.len() > 6 {
+            native_try!(date_arg_number(vm, vm.reg(args[6])))
+        } else {
+            0.0
+        };
+        let ms_val = if args.len() > 7 {
+            native_try!(date_arg_number(vm, vm.reg(args[7])))
+        } else {
+            0.0
+        };
         // MakeFullYear：先截断后做 0..99 映射（±Infinity 归 NaN）。
         let y_val = make_full_year(y_val).unwrap_or(f64::NAN);
         if y_val.is_nan()
@@ -851,7 +871,10 @@ pub fn date_set_utc_full_year<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResul
     };
     if !ms.is_finite() {
         // +0 基准：1970-01-01 UTC 全零，日内毫秒为 0。
-        return apply_date_result!(obj, make_day(y, m.unwrap_or(0.0), d.unwrap_or(1.0)).and_then(|days| make_date_ms(days, 0)))
+        return apply_date_result!(
+            obj,
+            make_day(y, m.unwrap_or(0.0), d.unwrap_or(1.0)).and_then(|days| make_date_ms(days, 0))
+        );
     }
     let ndt = match naive_from_ms(ms) {
         Some(n) => n,
