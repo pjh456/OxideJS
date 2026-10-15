@@ -594,6 +594,8 @@ fn two_digits(b: &[u8]) -> Option<i64> {
 /// - 两种形态：`Www Mmm DD YYYY HH:MM:SS GMT±HHMM`（toString）与
 ///   `Www, DD Mmm YYYY HH:MM:SS GMT`（toUTCString）；星期名不校验。
 /// - 年号带符号（负年 `-` 前缀），时分秒与偏移均按十进制数字解析。
+/// - 年号超出 ±275760（TimeClip 包络可表示的极端年）必越界，按不可解析
+///   处理返回 None，日数乘积随之有界，不溢出 i64。
 fn parse_engine_date_string(s: &str) -> Option<f64> {
     let tokens: Vec<&str> = s.split_whitespace().collect();
     if tokens.len() != 6 {
@@ -607,6 +609,10 @@ fn parse_engine_date_string(s: &str) -> Option<f64> {
     let m = MONTH_NAMES.iter().position(|n| *n == mon_s)? as i64 + 1;
     let d = two_digits(day_s.as_bytes())?;
     let y = parse_signed_year(year_s)?;
+    // 年号超出包络可表示的极端年必越 TimeClip 归 NaN，且日数乘积需有界防溢出。
+    if !(-275_760..=275_760).contains(&y) {
+        return None;
+    }
     let (h, mi, sec) = parse_hms(time_s)?;
     let offset_min = if off_s == "GMT" {
         0

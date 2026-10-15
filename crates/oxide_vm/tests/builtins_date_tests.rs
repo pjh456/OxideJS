@@ -1085,6 +1085,17 @@ fn date_parse_invalid_calendar_rejected() {
     assert!(r.as_double().is_nan());
 }
 
+#[test]
+fn date_parse_engine_format_year_beyond_envelope_is_nan() {
+    let mut vm = Vm::new();
+    // 引擎自身输出形态的年号超出 TimeClip 包络：归 NaN，不 panic、不环绕。
+    let r = eval(&mut vm, "Date.parse('Wed, 05 Aug 300000000 12:00:00 GMT')").unwrap();
+    assert!(r.as_double().is_nan());
+    // 负年同侧越界同样归 NaN。
+    let r = eval(&mut vm, "Date.parse('Wed, 05 Aug -300000000 12:00:00 GMT')").unwrap();
+    assert!(r.as_double().is_nan());
+}
+
 // ── toISOString 6 位年与 TimeClip 边界 ──
 
 #[test]
