@@ -996,8 +996,7 @@ pub fn instant_to_date<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         return NativeResult::Err(crate::error::create_range_error(vm, "invalid Instant"));
     };
     let epoch_ms = epoch_ns.div_euclid(1_000_000) as f64;
-    let mut date =
-        JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(vm.builtin_proto(ProtoKind::DateProto)));
+    let mut date = JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(vm.builtin_proto(ProtoKind::DateProto)));
     date.type_tag = JsObject::OBJ_TYPE_DATE;
     date.set_prop_at(0, JsValue::float(epoch_ms));
     NativeResult::Ok(JsValue::from_js_object(vm.alloc_object(date)))
