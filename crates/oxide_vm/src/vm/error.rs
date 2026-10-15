@@ -74,7 +74,11 @@ impl Vm {
             return Ok(result);
         }
 
-        let method_names = if hint.prefer_string() { ["toString", "valueOf"] } else { ["valueOf", "toString"] };
+        let method_names = if hint.prefer_string() {
+            ["toString", "valueOf"]
+        } else {
+            ["valueOf", "toString"]
+        };
 
         for method_name in method_names {
             let method_si = self.kernel_core.perm_interner().intern(method_name).0;

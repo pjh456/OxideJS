@@ -280,7 +280,11 @@ impl Vm {
         parts.push(rhs);
         for &reg in rest {
             let v = self.regs[reg];
-            let prim = if v.is_object() { self.coerce_primitive_bounded(v, coercion::ToPrimitiveHint::Number)? } else { v };
+            let prim = if v.is_object() {
+                self.coerce_primitive_bounded(v, coercion::ToPrimitiveHint::Number)?
+            } else {
+                v
+            };
             // 字符串模式对全部操作数做 ToString，Symbol 按 §7.1.17 抛 TypeError。
             if prim.is_symbol() {
                 self.raise_type_error("Cannot convert a Symbol value to a string")?;

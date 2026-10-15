@@ -10,9 +10,7 @@ use oxide_runtime_api::{NativeResult, ProtoKind, ToPrimitiveHint, VmHost};
 const WEEKDAY_NAMES: [&str; 7] = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
 /// 月名（1-based 下标）。
-const MONTH_NAMES: [&str; 12] = [
-    "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
-];
+const MONTH_NAMES: [&str; 12] = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
 /// 4 位年格式化：非负无符号零填充（年 0 写作 `0000`），负年 `-` 前缀加 4 位。
 fn format_year_4(y: i64) -> String {
@@ -550,11 +548,7 @@ fn parse_iso_strict(s: &str) -> Option<f64> {
     }
 
     // 组合：naive 时刻按解释方式折算 UTC。
-    let naive = civil_day_count(y, m, d) * MS_PER_DAY
-        + h * 3_600_000
-        + mi * 60_000
-        + sec * 1_000
-        + ms;
+    let naive = civil_day_count(y, m, d) * MS_PER_DAY + h * 3_600_000 + mi * 60_000 + sec * 1_000 + ms;
     let ts = match offset_min {
         Some(off) => naive - off * 60_000,
         None => local_offset_sample(naive)?,
@@ -634,11 +628,7 @@ fn parse_engine_date_string(s: &str) -> Option<f64> {
 }
 
 fn parse_signed_year(s: &str) -> Option<i64> {
-    let (neg, rest) = if let Some(r) = s.strip_prefix('-') {
-        (true, r)
-    } else {
-        (false, s)
-    };
+    let (neg, rest) = if let Some(r) = s.strip_prefix('-') { (true, r) } else { (false, s) };
     if rest.is_empty() || !rest.bytes().all(|c| c.is_ascii_digit()) {
         return None;
     }
@@ -654,7 +644,11 @@ fn parse_hms(s: &str) -> Option<(i64, i64, i64)> {
     if parts.len() != 3 {
         return None;
     }
-    Some((two_digits(parts[0].as_bytes())?, two_digits(parts[1].as_bytes())?, two_digits(parts[2].as_bytes())?))
+    Some((
+        two_digits(parts[0].as_bytes())?,
+        two_digits(parts[1].as_bytes())?,
+        two_digits(parts[2].as_bytes())?,
+    ))
 }
 
 /// 日期字符串解析总入口：先严格 ISO，失败后按序回退实现自定义格式
@@ -772,11 +766,7 @@ pub fn date_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
             parse_date_string(&s)
         } else if val.is_int() || val.is_double() {
             // 数值参数先截断再 TimeClip（Date 值为整毫秒）。
-            let n = if val.is_int() {
-                val.as_int() as f64
-            } else {
-                val.as_double()
-            };
+            let n = if val.is_int() { val.as_int() as f64 } else { val.as_double() };
             time_clip(n.trunc())
         } else if val.is_object() && {
             let ptr = val.as_js_object_ptr();
@@ -812,7 +802,10 @@ pub fn date_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
                         if let Some(exc) = vm.take_uncaught_value() {
                             return NativeResult::Err(exc);
                         }
-                        return NativeResult::Err(crate::error::create_type_error(vm, "Cannot convert value to a number"));
+                        return NativeResult::Err(crate::error::create_type_error(
+                            vm,
+                            "Cannot convert value to a number",
+                        ));
                     }
                 }
             }
@@ -1202,15 +1195,7 @@ pub fn date_set_seconds<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     }
     finish_local_setter(
         obj,
-        make_local_timestamp(
-            p.year as f64,
-            p.month0 as f64,
-            p.day as f64,
-            p.hour as f64,
-            p.minute as f64,
-            sec,
-            ms_v,
-        ),
+        make_local_timestamp(p.year as f64, p.month0 as f64, p.day as f64, p.hour as f64, p.minute as f64, sec, ms_v),
     )
 }
 /// `Date.prototype.setMilliseconds(ms)`：设置本地毫秒，返回新时间戳。
@@ -1632,11 +1617,7 @@ pub fn date_to_json<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     // 有限性检查仅对 Number 结果生效：tv 为非有限 Number 返回 null；
     // 字符串 / Symbol 等其余原始值不拦截，直落到 Invoke。
     if tv.is_int() || tv.is_double() {
-        let n = if tv.is_int() {
-            tv.as_int() as f64
-        } else {
-            tv.as_double()
-        };
+        let n = if tv.is_int() { tv.as_int() as f64 } else { tv.as_double() };
         if !n.is_finite() {
             return NativeResult::Ok(JsValue::null());
         }
@@ -1704,13 +1685,7 @@ pub fn date_to_time_string<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let Some(p) = local_components(ms) else {
         return NativeResult::Ok(vm.new_string("Invalid Date"));
     };
-    let s = format!(
-        "{:02}:{:02}:{:02} {}",
-        p.hour,
-        p.minute,
-        p.second,
-        format_tz_ms(p.offset_ms)
-    );
+    let s = format!("{:02}:{:02}:{:02} {}", p.hour, p.minute, p.second, format_tz_ms(p.offset_ms));
     NativeResult::Ok(vm.new_string_owned(s))
 }
 
