@@ -989,12 +989,14 @@ fn date_to_primitive_user_throw_propagates_original() {
 }
 
 #[test]
-fn date_to_primitive_called_as_function_no_strict_this() {
+fn date_to_primitive_called_as_function_strict_this() {
     let mut vm = Vm::new();
-    // 顶层函数形态调用（this 为 undefined）抛 TypeError，且不触发 toString/valueOf 查找。
+    // 严格脚本顶层函数形态调用（this 为 undefined）抛 TypeError，且不触发 toString/valueOf 查找。
+    // 用严格脚本使 this 恒为 undefined（规范保证），不依赖 sloppy 顶层 this 绑定
+    // （JS 函数与 native 函数两条路径取值不同，前者替换为全局对象、后者保留 undefined）。
     let r = eval(
         &mut vm,
-        "var toPrimitive = Date.prototype[Symbol.toPrimitive]; \
+        "'use strict'; var toPrimitive = Date.prototype[Symbol.toPrimitive]; \
          try { toPrimitive('default'); 'no' } catch (e) { e instanceof TypeError ? 'yes' : 'no' }",
     )
     .unwrap();
