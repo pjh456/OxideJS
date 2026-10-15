@@ -7,11 +7,12 @@ use oxide_types::value::JsValue;
 
 use super::common::native_try;
 use super::common::{
-    civil_from_days, days_from_civil, days_in_month, ensure_plain_date, get_calendar_id, get_double_prop,
-    initialize_temporal_receiver, is_ctor_call, parse_plain_date_string, parse_round_options,
-    plain_date_time_object_parts, receiver_obj, reject_partial_object_with_calendar_or_time_zone,
-    resolve_date_time_parts, temporal_calendar_id, temporal_calendar_id_strict, temporal_number_component,
-    temporal_option_string, temporal_option_value, temporal_overflow, zoned_date_time_plain_parts, DateTimeParts,
+    calendar_annotation, civil_from_days, days_from_civil, days_in_month, ensure_plain_date, format_iso_year,
+    get_calendar_id, get_double_prop, initialize_temporal_receiver, is_ctor_call, parse_plain_date_string,
+    parse_round_options, plain_date_time_object_parts, receiver_obj,
+    reject_partial_object_with_calendar_or_time_zone, resolve_date_time_parts, temporal_calendar_id,
+    temporal_calendar_id_strict, temporal_number_component, temporal_option_string, temporal_option_value,
+    temporal_overflow, temporal_to_show_calendar, zoned_date_time_plain_parts, DateTimeParts, ShowCalendar,
 };
 use super::difference::{difference_core, parse_difference_settings, IsoDateTime};
 use super::duration::duration_like_values;
@@ -262,15 +263,26 @@ pub fn plain_date_day<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     NativeResult::Ok(JsValue::float(d))
 }
 
-/// `Temporal.PlainDate.prototype.toString()`：输出 `YYYY-MM-DD`。
+/// PlainDate ISO 串：auto/never 加 iso8601 日历保持裸 `±YYYY-MM-DD`；
+/// 非 iso8601 日历与 always/critical 按注解表补 `[u-ca=…]`/`[!u-ca=…]`。
+fn plain_date_iso_string(obj: &JsObject, show: ShowCalendar) -> String {
+    let year = get_double_prop(obj, 0) as i32;
+    let month = get_double_prop(obj, 1) as u32;
+    let day = get_double_prop(obj, 2) as u32;
+    let calendar = get_calendar_id(obj, 3);
+    let annotation = calendar_annotation(&calendar, show);
+    format!("{}-{month:02}-{day:02}{annotation}", format_iso_year(year as i128))
+}
+
+/// `Temporal.PlainDate.prototype.toString([options])`：默认 `±YYYY-MM-DD`；
+/// options 非对象抛 TypeError，calendarName 取值 auto/always/never/critical
+/// （其余 RangeError）；非 iso8601 日历与 always/critical 补日历注解。
 pub fn plain_date_to_string<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let ptr = native_try!(receiver_obj(vm, args));
     let obj = unsafe { &*ptr };
     native_try!(ensure_plain_date(vm, obj));
-    let year = get_double_prop(obj, 0) as i32;
-    let month = get_double_prop(obj, 1) as u32;
-    let day = get_double_prop(obj, 2) as u32;
-    NativeResult::Ok(vm.new_string(&format!("{year:04}-{month:02}-{day:02}")))
+    let show = native_try!(temporal_to_show_calendar(vm, args));
+    NativeResult::Ok(vm.new_string_owned(plain_date_iso_string(obj, show)))
 }
 
 // ───────────────────── PlainDate 扩展方法 ─────────────────────
@@ -710,7 +722,7 @@ pub fn plain_date_value_of<H: VmHost>(vm: &mut H, _args: &[u8]) -> NativeResult 
     NativeResult::Err(crate::error::create_type_error(vm, "Temporal.PlainDate has no valueOf"))
 }
 
-/// `Temporal.PlainDate.prototype.toJSON()`：输出 ISO 日期串（同 toString）。
+/// `Temporal.PlainDate.prototype.toJSON()`：输出默认形 ISO 日期串（同 toString 的 auto 形），忽略参数。
 pub fn plain_date_to_json<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let ptr = match receiver_obj(vm, args) {
         Ok(p) => p,
@@ -720,10 +732,7 @@ pub fn plain_date_to_json<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     if let Err(e) = ensure_plain_date(vm, obj) {
         return NativeResult::Err(e);
     }
-    let year = get_double_prop(obj, 0) as i32;
-    let month = get_double_prop(obj, 1) as u32;
-    let day = get_double_prop(obj, 2) as u32;
-    NativeResult::Ok(vm.new_string(&format!("{year:04}-{month:02}-{day:02}")))
+    NativeResult::Ok(vm.new_string_owned(plain_date_iso_string(obj, ShowCalendar::Auto)))
 }
 
 /// 按 duration-like 日期字段对日期做加减（Temporal 大单位运算，月份不足日时取月末）。

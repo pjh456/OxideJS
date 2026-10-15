@@ -514,6 +514,64 @@ fn plain_date_to_string() {
 }
 
 #[test]
+fn plain_date_to_string_honors_calendar_name() {
+    let mut vm = Vm::new();
+    let r = eval(
+        &mut vm,
+        "(() => {
+           const d = new Temporal.PlainDate(2000, 5, 2);
+           const auto = d.toString({ calendarName: 'auto' });
+           const always = d.toString({ calendarName: 'always' });
+           const critical = d.toString({ calendarName: 'critical' });
+           const never = d.toString({ calendarName: 'never' });
+           const badValue = (() => { try { d.toString({ calendarName: 'ALWAYS' }); return false; }
+             catch (e) { return e instanceof RangeError; } })();
+           const badOptions = (() => { try { d.toString(null); return false; }
+             catch (e) { return e instanceof TypeError; } })();
+           return [auto, always, critical, never, badValue, badOptions].join('|');
+         })()",
+    )
+    .unwrap();
+    assert_eq!(
+        str_val(&vm, r),
+        "2000-05-02|2000-05-02[u-ca=iso8601]|2000-05-02[!u-ca=iso8601]|2000-05-02|true|true"
+    );
+}
+
+#[test]
+fn plain_date_serializes_extended_years() {
+    let mut vm = Vm::new();
+    let r = eval(
+        &mut vm,
+        "[new Temporal.PlainDate(-100000, 12, 3).toString(),
+          new Temporal.PlainDate(-10000, 4, 5).toString(),
+          new Temporal.PlainDate(-1, 8, 7).toString(),
+          new Temporal.PlainDate(0, 6, 5).toString(),
+          new Temporal.PlainDate(10000, 6, 7).toString(),
+          new Temporal.PlainDate(100000, 8, 9).toJSON()].join('|')",
+    )
+    .unwrap();
+    assert_eq!(
+        str_val(&vm, r),
+        "-100000-12-03|-010000-04-05|-000001-08-07|0000-06-05|+010000-06-07|+100000-08-09"
+    );
+}
+
+#[test]
+fn plain_date_constructor_accepts_cldr_calendar_aliases() {
+    let mut vm = Vm::new();
+    // CLDR 别名归一到规范小写 ID：ethiopic-amete-alem → ethioaa、islamicc → islamic-civil。
+    let r = eval(
+        &mut vm,
+        "Temporal.PlainDate.from({ year: 2000, month: 5, day: 2, calendar: 'ethiopic-amete-alem' }).calendarId + ',' +
+         Temporal.PlainDate.from({ year: 2000, month: 5, day: 2, calendar: 'islamicc' }).calendarId + ',' +
+         Temporal.PlainDate.from({ year: 2000, month: 5, day: 2, calendar: 'ETHIOpic-TANA-alem' }).calendarId",
+    )
+    .unwrap();
+    assert_eq!(str_val(&vm, r), "ethioaa,islamic-civil,ethiopic");
+}
+
+#[test]
 fn plain_date_requires_new() {
     let mut vm = Vm::new();
     let r = eval(&mut vm, "try { Temporal.PlainDate(2024, 1, 1); 'no' } catch (e) { e.constructor.name }").unwrap();
@@ -3243,7 +3301,7 @@ fn plain_month_day_to_plain_date_matrix() {
     .unwrap();
     assert_eq!(
         str_val(&vm, r),
-        "2002-01-22|TypeError|TypeError|0012-01-22|RangeError|2020-02-29|2023-02-28|2020-02-29|-271821-04-19|RangeError|275760-09-13|RangeError|iso8601|TypeError|2002-01-22"
+        "2002-01-22|TypeError|TypeError|0012-01-22|RangeError|2020-02-29|2023-02-28|2020-02-29|-271821-04-19|RangeError|+275760-09-13|RangeError|iso8601|TypeError|2002-01-22"
     );
 }
 
@@ -3743,7 +3801,7 @@ fn plain_year_month_to_plain_date_matrix() {
     .unwrap();
     assert_eq!(
         str_val(&vm, r),
-        "2002-01-22|TypeError|TypeError|TypeError|TypeError|2023-02-28|1998-06-30|2000-05-01|2000-05-01|-271821-04-19|RangeError|275760-09-13|RangeError|RangeError"
+        "2002-01-22|TypeError|TypeError|TypeError|TypeError|2023-02-28|1998-06-30|2000-05-01|2000-05-01|-271821-04-19|RangeError|+275760-09-13|RangeError|RangeError"
     );
 }
 

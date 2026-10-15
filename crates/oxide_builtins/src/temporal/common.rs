@@ -1247,12 +1247,26 @@ pub(crate) const CALENDAR_ID_WHITELIST: [&str; 18] = [
     "roc",
 ];
 
-/// 严格白名单匹配：命中返回规范小写形式，未命中返回 None。
+/// CLDR 日历别名（ParseTemporalCalendarString 的别名表）：命中后归一到规范小写 ID。
+const CALENDAR_ID_ALIASES: [(&str, &str); 3] = [
+    ("ethiopic-amete-alem", "ethioaa"),
+    ("ethiopic-tana-alem", "ethiopic"),
+    ("islamicc", "islamic-civil"),
+];
+
+/// 严格白名单匹配：先查 18 项白名单，未命中再查 CLDR 别名表；
+/// 命中返回规范小写形式，未命中返回 None。
 pub(crate) fn is_builtin_calendar_id(value: &str) -> Option<&'static str> {
-    CALENDAR_ID_WHITELIST.iter().find(|id| value.eq_ignore_ascii_case(id)).copied()
+    if let Some(id) = CALENDAR_ID_WHITELIST.iter().find(|id| value.eq_ignore_ascii_case(id)).copied() {
+        return Some(id);
+    }
+    CALENDAR_ID_ALIASES
+        .iter()
+        .find(|(alias, _)| value.eq_ignore_ascii_case(alias))
+        .map(|(_, id)| *id)
 }
 
-/// 严格日历 ID 解析：只走 18 项白名单，拒绝 ISO 串（含注解/compact/extended/空串）。
+/// 严格日历 ID 解析：只走 18 项白名单与 CLDR 别名表，拒绝 ISO 串（含注解/compact/extended/空串）。
 /// 供构造器日历参数与注解值判定使用。
 pub(crate) fn parse_temporal_calendar_id_strict(input: &str) -> Result<String, String> {
     let trimmed = input.trim();
