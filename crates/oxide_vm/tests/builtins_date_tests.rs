@@ -496,11 +496,13 @@ fn date_set_utc_full_year_returns_timestamp() {
     assert_eq!(r.as_int(), 1);
 }
 
+// setUTCFullYear 对无效 this 不早退：取 +0 基准（1970-01-01 UTC 全零）继续
+// 计算并写槽，年份 2025 落在 0..99 映射之外，结果为 2025-01-01T00:00:00Z。
 #[test]
-fn date_set_utc_invalid_returns_nan() {
+fn date_set_utc_full_year_invalid_this_uses_plus_zero_base() {
     let mut vm = Vm::new();
     let r = eval(&mut vm, "new Date(NaN).setUTCFullYear(2025)").unwrap();
-    assert!(r.as_double().is_nan());
+    assert_eq!(r.as_double(), 1735689600000.0);
 }
 
 // setYear 无参数时不得索引缺失的参数寄存器（此前会 panic）；
@@ -639,4 +641,92 @@ fn date_length_descriptor() {
     )
     .unwrap();
     assert!(r.as_bool());
+}
+
+// UTC setter 族强转序钉：参数 ToNumber 先于 this 值 NaN 判定，无效 this 仍触发
+// valueOf（计数一次），返回 NaN 且不写槽。
+#[test]
+fn date_set_utc_month_invalid_this_still_coerces() {
+    let mut vm = Vm::new();
+    let r = eval(
+        &mut vm,
+        "var d = new Date(NaN); var n = 0; \
+         var v = d.setUTCMonth({ valueOf: function() { n++; return 0; } }); \
+         n === 1 && Number.isNaN(v) && Number.isNaN(d.getTime()) ? 1 : 0",
+    )
+    .unwrap();
+    assert_eq!(r.as_int(), 1);
+}
+
+// setUTCFullYear 无效 this 取 +0 基准（1970-01-01 UTC 全零）：
+// 未给月/日时取基准分量，结果为 1970-01-01T00:00:00Z 加 2025 年。
+#[test]
+fn date_set_utc_full_year_invalid_this_base_components() {
+    let mut vm = Vm::new();
+    let r = eval(
+        &mut vm,
+        "var d = new Date(NaN); d.setUTCFullYear(1975, 2, 14) === new Date(Date.UTC(1975, 2, 14)).getTime() ? 1 : 0",
+    )
+    .unwrap();
+    assert_eq!(r.as_int(), 1);
+}
+
+// setTime 越界值经 TimeClip 归 NaN（|t| > 8.64e15 或非有限）。
+#[test]
+fn date_set_time_out_of_range_time_clip() {
+    let mut vm = Vm::new();
+    let r = eval(
+        &mut vm,
+        "var d = new Date(0); var ts = d.setTime(8.64e15 + 1); \
+         Number.isNaN(ts) && Number.isNaN(d.getTime()) ? 1 : 0",
+    )
+    .unwrap();
+    assert_eq!(r.as_int(), 1);
+    // 上界内的值原样入槽。
+    let r = eval(&mut vm, "var d = new Date(0); d.setTime(8.64e15) === 8.64e15 ? 1 : 0").unwrap();
+    assert_eq!(r.as_int(), 1);
+}
+
+// Date.UTC 年份先截断后做 0..99 映射：-0.999999 截断为 -0 落区间，归 1900 年。
+#[test]
+fn date_utc_truncates_before_year_offset() {
+    let mut vm = Vm::new();
+    let r = eval(&mut vm, "Date.UTC(-0.999999, 0) === Date.UTC(1900, 0) ? 1 : 0").unwrap();
+    assert_eq!(r.as_int(), 1);
+    let r = eval(&mut vm, "Date.UTC(99.999999, 0) === Date.UTC(1999, 0) ? 1 : 0").unwrap();
+    assert_eq!(r.as_int(), 1);
+    let r = eval(&mut vm, "Date.UTC(100, 0) === -59011459200000 ? 1 : 0").unwrap();
+    assert_eq!(r.as_int(), 1);
+}
+
+// 多参构造器七参按序走完整 ToNumber（对象参经 toString 通道），
+// 且某一参抛错时中断后续强转并原样传播异常。
+#[test]
+fn date_constructor_object_args_coercion_order() {
+    let mut vm = Vm::new();
+    let r = eval(
+        &mut vm,
+        "var log = ''; \
+         new Date({toString: function() { log += 'y'; return 0; }}, \
+                  {toString: function() { log += 'm'; return 0; }}, \
+                  {toString: function() { log += 'd'; return 1; }}); \
+         log === 'ymd' ? 1 : 0",
+    )
+    .unwrap();
+    assert_eq!(r.as_int(), 1);
+}
+
+#[test]
+fn date_constructor_object_arg_error_propagates() {
+    let mut vm = Vm::new();
+    let r = eval(
+        &mut vm,
+        "var n = 0; try { \
+         new Date({ valueOf: function() { throw 'boom'; }}, \
+                  { valueOf: function() { n++; } }); \
+         'no'; \
+         } catch (e) { e === 'boom' && n === 0 ? 'yes' : 'no' }",
+    )
+    .unwrap();
+    assert_eq!(str_val(&vm, r), "yes");
 }

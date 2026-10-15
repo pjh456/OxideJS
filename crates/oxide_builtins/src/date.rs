@@ -175,6 +175,16 @@ fn local_components(ms: f64) -> Option<(i64, i64, i64, i64, i64, i64, i64)> {
     ))
 }
 
+/// MakeFullYear（构造器与 Date.UTC 专用，setter 无此映射）：先按 ToIntegerOrInfinity
+/// 截断，0 至 99 区间加 1900；NaN 与 ±Infinity 归 NaN。
+fn make_full_year(y: f64) -> Option<f64> {
+    if !y.is_finite() {
+        return None;
+    }
+    let yt = y.trunc();
+    Some(if (0.0..=99.0).contains(&yt) { yt + 1900.0 } else { yt })
+}
+
 /// TimeClip：|ts| > 8.64e15 或非有限的时刻值归 NaN（Invalid Date）。
 fn time_clip(ts: f64) -> f64 {
     if ts.is_finite() && (-MS_LIMIT as f64..=MS_LIMIT as f64).contains(&ts) {
@@ -373,19 +383,16 @@ pub fn date_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let timestamp = if args.len() < 2 {
         Utc::now().timestamp_millis() as f64
     } else if args.len() > 2 {
-        let y_val = oxide_runtime_api::to_number(vm.reg(args[1]));
-        // 年 0..99 按规范映射到 1900..1999（ToInteger 截断后判断）。
-        let y_val = if (0.0..=99.0).contains(&y_val.trunc()) {
-            y_val.trunc() + 1900.0
-        } else {
-            y_val
-        };
-        let m_val = oxide_runtime_api::to_number(vm.reg(args[2]));
-        let d_val = if args.len() > 3 { oxide_runtime_api::to_number(vm.reg(args[3])) } else { 1.0 };
-        let h_val = if args.len() > 4 { oxide_runtime_api::to_number(vm.reg(args[4])) } else { 0.0 };
-        let min_val = if args.len() > 5 { oxide_runtime_api::to_number(vm.reg(args[5])) } else { 0.0 };
-        let sec_val = if args.len() > 6 { oxide_runtime_api::to_number(vm.reg(args[6])) } else { 0.0 };
-        let ms_val = if args.len() > 7 { oxide_runtime_api::to_number(vm.reg(args[7])) } else { 0.0 };
+        // 七参按序经完整 ToNumber 强转（对象参走 valueOf/toString，异常原样传播）。
+        let y_val = native_try!(date_arg_number(vm, vm.reg(args[1])));
+        let m_val = native_try!(date_arg_number(vm, vm.reg(args[2])));
+        let d_val = if args.len() > 3 { native_try!(date_arg_number(vm, vm.reg(args[3]))) } else { 1.0 };
+        let h_val = if args.len() > 4 { native_try!(date_arg_number(vm, vm.reg(args[4]))) } else { 0.0 };
+        let min_val = if args.len() > 5 { native_try!(date_arg_number(vm, vm.reg(args[5]))) } else { 0.0 };
+        let sec_val = if args.len() > 6 { native_try!(date_arg_number(vm, vm.reg(args[6]))) } else { 0.0 };
+        let ms_val = if args.len() > 7 { native_try!(date_arg_number(vm, vm.reg(args[7]))) } else { 0.0 };
+        // MakeFullYear：先截断后做 0..99 映射（±Infinity 归 NaN）。
+        let y_val = make_full_year(y_val).unwrap_or(f64::NAN);
         if y_val.is_nan()
             || m_val.is_nan()
             || d_val.is_nan()
@@ -516,8 +523,11 @@ pub fn date_utc<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     if y.is_nan() || m.is_nan() || d.is_nan() || h.is_nan() || min.is_nan() || sec.is_nan() || ms.is_nan() {
         return NativeResult::Ok(JsValue::float(f64::NAN));
     }
-    // 年 0..99 按规范映射到 1900..1999（ToInteger 截断后判断）。
-    let y = if (0.0..=99.0).contains(&y.trunc()) { y + 1900.0 } else { y };
+    // MakeFullYear：先截断后做 0..99 映射（±Infinity 归 NaN）。
+    let y = match make_full_year(y) {
+        Some(y) => y,
+        None => return NativeResult::Ok(JsValue::float(f64::NAN)),
+    };
     match make_day(y, m, d).and_then(|days| make_time(h, min, sec, ms).and_then(|t| make_date_ms(days, t))) {
         Some(ts) => NativeResult::Ok(JsValue::float(ts)),
         None => NativeResult::Ok(JsValue::float(f64::NAN)),
@@ -626,6 +636,8 @@ pub fn date_set_time<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let obj = unsafe { &mut *native_try!(date_this_mut(vm, args)) };
     let val = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
     let v = native_try!(date_arg_number(vm, val));
+    // 新值过 TimeClip 包络，越界（含非有限）归 NaN。
+    let v = time_clip(v);
     set_timestamp(obj, v);
     NativeResult::Ok(JsValue::float(v))
 }
@@ -819,35 +831,52 @@ pub fn date_set_milliseconds<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult
 }
 
 /// `Date.prototype.setUTCFullYear(y, m, d)`：设置 UTC 年份（可选月/日），返回新时间戳。
+///
+/// 无效 this 不早退：取 +0 基准（1970-01-01 UTC 全零）继续计算并写槽；
+/// 年/月/日参数在 this 值读取之后、NaN 判定之前逐一走完整 ToNumber。
 pub fn date_set_utc_full_year<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let obj = unsafe { &mut *native_try!(date_this_mut(vm, args)) };
+    // this 值先读，参数按序强转（规范步序），NaN 判定后置。
     let ms = get_timestamp(obj);
+    let y = native_try!(date_arg_number(vm, if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() }));
+    let m = if args.len() > 2 {
+        Some(native_try!(date_arg_number(vm, vm.reg(args[2]))))
+    } else {
+        None
+    };
+    let d = if args.len() > 3 {
+        Some(native_try!(date_arg_number(vm, vm.reg(args[3]))))
+    } else {
+        None
+    };
     if !ms.is_finite() {
-        return NativeResult::Ok(JsValue::float(f64::NAN));
+        // +0 基准：1970-01-01 UTC 全零，日内毫秒为 0。
+        return apply_date_result!(obj, make_day(y, m.unwrap_or(0.0), d.unwrap_or(1.0)).and_then(|days| make_date_ms(days, 0)))
     }
     let ndt = match naive_from_ms(ms) {
         Some(n) => n,
         None => return NativeResult::Ok(JsValue::float(f64::NAN)),
     };
-    let y = native_try!(date_arg_number(vm, if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() }));
-    let m = if args.len() > 2 {
-        native_try!(date_arg_number(vm, vm.reg(args[2])))
-    } else {
-        ndt.date().month0() as f64
-    };
-    let d = if args.len() > 3 {
-        native_try!(date_arg_number(vm, vm.reg(args[3])))
-    } else {
-        ndt.date().day() as f64
-    };
+    let m = m.unwrap_or(ndt.date().month0() as f64);
+    let d = d.unwrap_or(ndt.date().day() as f64);
     let time_ms = utc_time_ms(&ndt);
     apply_date_result!(obj, make_day(y, m, d).and_then(|days| make_date_ms(days, time_ms)))
 }
 
 /// `Date.prototype.setUTCMonth(m, d)`：设置 UTC 月份（可选日），返回新时间戳。
+///
+/// 参数在 this 值读取之后、NaN 判定之前逐一走完整 ToNumber；无效 this 在
+/// 强转完成后返回 NaN 且不写槽。
 pub fn date_set_utc_month<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let obj = unsafe { &mut *native_try!(date_this_mut(vm, args)) };
+    // this 值先读，参数按序强转（规范步序），NaN 判定后置。
     let ms = get_timestamp(obj);
+    let m = native_try!(date_arg_number(vm, if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() }));
+    let d = if args.len() > 2 {
+        Some(native_try!(date_arg_number(vm, vm.reg(args[2]))))
+    } else {
+        None
+    };
     if !ms.is_finite() {
         return NativeResult::Ok(JsValue::float(f64::NAN));
     }
@@ -855,20 +884,20 @@ pub fn date_set_utc_month<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         Some(n) => n,
         None => return NativeResult::Ok(JsValue::float(f64::NAN)),
     };
-    let m = native_try!(date_arg_number(vm, if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() }));
-    let d = if args.len() > 2 {
-        native_try!(date_arg_number(vm, vm.reg(args[2])))
-    } else {
-        ndt.date().day() as f64
-    };
+    let d = d.unwrap_or(ndt.date().day() as f64);
     let time_ms = utc_time_ms(&ndt);
     apply_date_result!(obj, make_day(ndt.date().year() as f64, m, d).and_then(|days| make_date_ms(days, time_ms)))
 }
 
 /// `Date.prototype.setUTCDate(d)`：设置 UTC 日，返回新时间戳。
+///
+/// 参数在 this 值读取之后、NaN 判定之前走完整 ToNumber；无效 this 在强转
+/// 完成后返回 NaN 且不写槽。
 pub fn date_set_utc_date<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let obj = unsafe { &mut *native_try!(date_this_mut(vm, args)) };
+    // this 值先读，参数强转（规范步序），NaN 判定后置。
     let ms = get_timestamp(obj);
+    let d = native_try!(date_arg_number(vm, if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() }));
     if !ms.is_finite() {
         return NativeResult::Ok(JsValue::float(f64::NAN));
     }
@@ -876,7 +905,6 @@ pub fn date_set_utc_date<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         Some(n) => n,
         None => return NativeResult::Ok(JsValue::float(f64::NAN)),
     };
-    let d = native_try!(date_arg_number(vm, if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() }));
     let time_ms = utc_time_ms(&ndt);
     apply_date_result!(
         obj,
@@ -885,9 +913,29 @@ pub fn date_set_utc_date<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 }
 
 /// `Date.prototype.setUTCHours(h, min, s, ms)`：设置 UTC 小时（可选分/秒/毫秒），返回新时间戳。
+///
+/// 参数在 this 值读取之后、NaN 判定之前逐一走完整 ToNumber；无效 this 在
+/// 强转完成后返回 NaN 且不写槽。
 pub fn date_set_utc_hours<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let obj = unsafe { &mut *native_try!(date_this_mut(vm, args)) };
+    // this 值先读，参数按序强转（规范步序），NaN 判定后置。
     let ms = get_timestamp(obj);
+    let h = native_try!(date_arg_number(vm, if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() }));
+    let min = if args.len() > 2 {
+        Some(native_try!(date_arg_number(vm, vm.reg(args[2]))))
+    } else {
+        None
+    };
+    let sec = if args.len() > 3 {
+        Some(native_try!(date_arg_number(vm, vm.reg(args[3]))))
+    } else {
+        None
+    };
+    let ms_arg = if args.len() > 4 {
+        Some(native_try!(date_arg_number(vm, vm.reg(args[4]))))
+    } else {
+        None
+    };
     if !ms.is_finite() {
         return NativeResult::Ok(JsValue::float(f64::NAN));
     }
@@ -895,39 +943,34 @@ pub fn date_set_utc_hours<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         Some(n) => n,
         None => return NativeResult::Ok(JsValue::float(f64::NAN)),
     };
-    let h = native_try!(date_arg_number(vm, if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() }));
-    let min = if args.len() > 2 {
-        native_try!(date_arg_number(vm, vm.reg(args[2])))
-    } else {
-        0.0
-    };
-    let sec = if args.len() > 3 {
-        native_try!(date_arg_number(vm, vm.reg(args[3])))
-    } else {
-        0.0
-    };
-    let ms_arg = if args.len() > 4 {
-        native_try!(date_arg_number(vm, vm.reg(args[4])))
-    } else {
-        0.0
-    };
     // 缺省分量取当前 UTC 时刻值，与 MakeTime 组合后整体进位。
-    let min_v = if args.len() > 2 { min } else { ndt.time().minute() as f64 };
-    let sec_v = if args.len() > 3 { sec } else { ndt.time().second() as f64 };
-    let ms_v = if args.len() > 4 {
-        ms_arg
-    } else {
-        ndt.time().nanosecond() as f64 / 1_000_000.0
-    };
+    let min_v = min.unwrap_or(ndt.time().minute() as f64);
+    let sec_v = sec.unwrap_or(ndt.time().second() as f64);
+    let ms_v = ms_arg.unwrap_or(ndt.time().nanosecond() as f64 / 1_000_000.0);
     let days = civil_day_count(ndt.date().year() as i64, ndt.date().month() as i64, ndt.date().day() as i64);
     let result = make_time(h, min_v, sec_v, ms_v).and_then(|time_ms| make_date_ms(days, time_ms));
     apply_date_result!(obj, result)
 }
 
 /// `Date.prototype.setUTCMinutes(min, s, ms)`：设置 UTC 分钟（可选秒/毫秒），返回新时间戳。
+///
+/// 参数在 this 值读取之后、NaN 判定之前逐一走完整 ToNumber；无效 this 在
+/// 强转完成后返回 NaN 且不写槽。
 pub fn date_set_utc_minutes<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let obj = unsafe { &mut *native_try!(date_this_mut(vm, args)) };
+    // this 值先读，参数按序强转（规范步序），NaN 判定后置。
     let ms = get_timestamp(obj);
+    let min = native_try!(date_arg_number(vm, if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() }));
+    let sec = if args.len() > 2 {
+        Some(native_try!(date_arg_number(vm, vm.reg(args[2]))))
+    } else {
+        None
+    };
+    let ms_arg = if args.len() > 3 {
+        Some(native_try!(date_arg_number(vm, vm.reg(args[3]))))
+    } else {
+        None
+    };
     if !ms.is_finite() {
         return NativeResult::Ok(JsValue::float(f64::NAN));
     }
@@ -935,32 +978,28 @@ pub fn date_set_utc_minutes<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult 
         Some(n) => n,
         None => return NativeResult::Ok(JsValue::float(f64::NAN)),
     };
-    let min = native_try!(date_arg_number(vm, if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() }));
-    let sec = if args.len() > 2 {
-        native_try!(date_arg_number(vm, vm.reg(args[2])))
-    } else {
-        0.0
-    };
-    let ms_arg = if args.len() > 3 {
-        native_try!(date_arg_number(vm, vm.reg(args[3])))
-    } else {
-        0.0
-    };
-    let sec_v = if args.len() > 2 { sec } else { ndt.time().second() as f64 };
-    let ms_v = if args.len() > 3 {
-        ms_arg
-    } else {
-        ndt.time().nanosecond() as f64 / 1_000_000.0
-    };
+    // 缺省分量取当前 UTC 时刻值，与 MakeTime 组合后整体进位。
+    let sec_v = sec.unwrap_or(ndt.time().second() as f64);
+    let ms_v = ms_arg.unwrap_or(ndt.time().nanosecond() as f64 / 1_000_000.0);
     let days = civil_day_count(ndt.date().year() as i64, ndt.date().month() as i64, ndt.date().day() as i64);
     let result = make_time(ndt.time().hour() as f64, min, sec_v, ms_v).and_then(|time_ms| make_date_ms(days, time_ms));
     apply_date_result!(obj, result)
 }
 
 /// `Date.prototype.setUTCSeconds(s, ms)`：设置 UTC 秒（可选毫秒），返回新时间戳。
+///
+/// 参数在 this 值读取之后、NaN 判定之前逐一走完整 ToNumber；无效 this 在
+/// 强转完成后返回 NaN 且不写槽。
 pub fn date_set_utc_seconds<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let obj = unsafe { &mut *native_try!(date_this_mut(vm, args)) };
+    // this 值先读，参数按序强转（规范步序），NaN 判定后置。
     let ms = get_timestamp(obj);
+    let sec = native_try!(date_arg_number(vm, if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() }));
+    let ms_arg = if args.len() > 2 {
+        Some(native_try!(date_arg_number(vm, vm.reg(args[2]))))
+    } else {
+        None
+    };
     if !ms.is_finite() {
         return NativeResult::Ok(JsValue::float(f64::NAN));
     }
@@ -968,17 +1007,8 @@ pub fn date_set_utc_seconds<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult 
         Some(n) => n,
         None => return NativeResult::Ok(JsValue::float(f64::NAN)),
     };
-    let sec = native_try!(date_arg_number(vm, if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() }));
-    let ms_arg = if args.len() > 2 {
-        native_try!(date_arg_number(vm, vm.reg(args[2])))
-    } else {
-        0.0
-    };
-    let ms_v = if args.len() > 2 {
-        ms_arg
-    } else {
-        ndt.time().nanosecond() as f64 / 1_000_000.0
-    };
+    // 缺省分量取当前 UTC 时刻值，与 MakeTime 组合后整体进位。
+    let ms_v = ms_arg.unwrap_or(ndt.time().nanosecond() as f64 / 1_000_000.0);
     let days = civil_day_count(ndt.date().year() as i64, ndt.date().month() as i64, ndt.date().day() as i64);
     let result = make_time(ndt.time().hour() as f64, ndt.time().minute() as f64, sec, ms_v)
         .and_then(|time_ms| make_date_ms(days, time_ms));
@@ -986,9 +1016,14 @@ pub fn date_set_utc_seconds<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult 
 }
 
 /// `Date.prototype.setUTCMilliseconds(ms)`：设置 UTC 毫秒，返回新时间戳。
+///
+/// 参数在 this 值读取之后、NaN 判定之前走完整 ToNumber；无效 this 在强转
+/// 完成后返回 NaN 且不写槽。
 pub fn date_set_utc_milliseconds<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let obj = unsafe { &mut *native_try!(date_this_mut(vm, args)) };
+    // this 值先读，参数强转（规范步序），NaN 判定后置。
     let ms = get_timestamp(obj);
+    let ms_arg = native_try!(date_arg_number(vm, if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() }));
     if !ms.is_finite() {
         return NativeResult::Ok(JsValue::float(f64::NAN));
     }
@@ -996,7 +1031,6 @@ pub fn date_set_utc_milliseconds<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeRe
         Some(n) => n,
         None => return NativeResult::Ok(JsValue::float(f64::NAN)),
     };
-    let ms_arg = native_try!(date_arg_number(vm, if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() }));
     let days = civil_day_count(ndt.date().year() as i64, ndt.date().month() as i64, ndt.date().day() as i64);
     let result = make_time(ndt.time().hour() as f64, ndt.time().minute() as f64, ndt.time().second() as f64, ms_arg)
         .and_then(|time_ms| make_date_ms(days, time_ms));
