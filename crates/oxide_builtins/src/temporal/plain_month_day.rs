@@ -6,12 +6,12 @@ use oxide_types::value::JsValue;
 
 use super::common::native_try;
 use super::{
-    calendar_annotation, days_from_civil, days_in_month_iso, ensure_plain_month_day, format_iso_year, get_calendar_id,
-    get_double_prop, initialize_temporal_receiver, is_ctor_call, make_plain_date, make_plain_month_day,
-    month_day_bag_calendar_id, read_iso2, receiver_obj, reject_partial_object_with_calendar_or_time_zone,
-    strip_iso_offset, temporal_calendar_id_strict, temporal_number_component, temporal_option_string,
-    temporal_option_value, temporal_overflow, temporal_to_show_calendar, valid_iso_date, valid_plain_time,
-    ShowCalendar,
+    calendar_annotation, days_from_civil, days_in_month_iso, duration_like_values, ensure_plain_month_day,
+    format_iso_year, get_calendar_id, get_double_prop, initialize_temporal_receiver, is_ctor_call,
+    make_plain_date, make_plain_month_day, month_day_bag_calendar_id, parse_round_options, read_iso2, receiver_obj,
+    reject_partial_object_with_calendar_or_time_zone, strip_iso_offset, temporal_calendar_id_strict,
+    temporal_number_component, temporal_option_string, temporal_option_value, temporal_overflow,
+    temporal_to_show_calendar, valid_iso_date, valid_plain_time, ShowCalendar,
 };
 
 /// 读 PlainMonthDay 的 月/日/参考年 三元组（槽 0-2），含 receiver 校验。
@@ -745,4 +745,110 @@ pub fn plain_month_day_to_plain_date<H: VmHost>(vm: &mut H, args: &[u8]) -> Nati
     }
     let calendar = get_calendar_id(obj, 3);
     make_plain_date(vm, year, month, day, &calendar)
+}
+
+// ==================== PlainMonthDay add/subtract/round ====================
+
+/// `Temporal.PlainMonthDay.prototype.add/subtract(durationLike [, options])` 核心。
+///
+/// # 步骤
+/// 1. receiver branding（TypeError）。
+/// 2. ToTemporalDuration（串 / bag / 实例；TypeError、RangeError 各自语义）。
+/// 3. 读 overflow（缺省 constrain）。
+/// 4. years / weeks / days / 时间分量任一非零 → RangeError（PMD 无年与日分量）。
+/// 5. (年, 月) 按参考年（槽 2）折算绝对月数后平衡，日按 overflow 规整
+///    （constrain 钳到目标年月长，reject 非法即抛）。
+/// 6. 结果 (年, 月, 日) 过 ISODateWithinLimits（day 级）→ 越界 RangeError。
+///
+/// # 边界与副作用
+/// - 结果参考年为算术后的年，日历标识取自 receiver 槽 3。
+/// - subtract 与 add 共用本函数，sign 参数取反月分量。
+fn plain_month_day_apply_duration<H: VmHost>(vm: &mut H, args: &[u8], sign: i64) -> NativeResult {
+    let ptr = native_try!(receiver_obj(vm, args));
+    let obj = unsafe { &*ptr };
+    native_try!(ensure_plain_month_day(vm, obj));
+    let month = get_double_prop(obj, 0) as i64;
+    let day = get_double_prop(obj, 1) as i64;
+    let ref_year = get_double_prop(obj, 2) as i64;
+    let calendar = get_calendar_id(obj, 3);
+    let val = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
+    let values = native_try!(duration_like_values(vm, val));
+    let constrain = native_try!(temporal_overflow(vm, args));
+    // PMD 无年分量：years 与 weeks/days/时间分量均须为零。
+    if values[0] != 0.0 || values[2..].iter().any(|value| *value != 0.0) {
+        return NativeResult::Err(crate::error::create_range_error(
+            vm,
+            "month-day cannot add years, weeks, days, or time units",
+        ));
+    }
+    // BalanceISOYearMonth：月折算绝对月数后平衡（days 恒 0，日不参与）。
+    let months = sign * values[1] as i64;
+    let absolute = ref_year * 12 + month - 1 + months;
+    let year = absolute.div_euclid(12);
+    let month = absolute.rem_euclid(12) + 1;
+    // RegulateISODate：constrain 钳日到目标年月长，reject 非法即抛。
+    let day = if constrain {
+        day.min(days_in_month_iso(year as i32, month as u32) as i64)
+    } else {
+        if !valid_iso_date(year as i32, month as u32, day as u32) {
+            return NativeResult::Err(crate::error::create_range_error(vm, "invalid ISO date"));
+        }
+        day
+    };
+    // ISODateWithinLimits（day 级）：-100_000_001..=100_000_000。
+    let day_count = days_from_civil(i128::from(year), i128::from(month), i128::from(day));
+    if !(-100_000_001..=100_000_000).contains(&day_count) {
+        return NativeResult::Err(crate::error::create_range_error(vm, "month-day is out of range"));
+    }
+    make_plain_month_day(vm, month as u32, day as u32, year as i32, &calendar)
+}
+
+/// `Temporal.PlainMonthDay.prototype.add(durationLike)`。
+pub fn plain_month_day_add<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    plain_month_day_apply_duration(vm, args, 1)
+}
+
+/// `Temporal.PlainMonthDay.prototype.subtract(durationLike)`。
+pub fn plain_month_day_subtract<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    plain_month_day_apply_duration(vm, args, -1)
+}
+
+/// `Temporal.PlainMonthDay.prototype.round(roundTo)`：smallestUnit 仅 "day"，
+/// 增量须为 1（日已是整数，舍入为恒等），日钳到参考年月长后过表示范围。
+///
+/// # 步骤
+/// 1. receiver 品牌校验；读槽 0-3 入本地（参考年与日历槽继承 receiver）。
+/// 2. roundTo 经 parse_round_options（undefined → TypeError；字符串简写；对象固定读序）。
+/// 3. smallestUnit 缺失 → RangeError；非 day → RangeError；增量 > 1 → RangeError。
+/// 4. 日钳到参考年月长（constrain 语义）；valid_iso_date 与 day 级表示范围检查。
+/// 5. make_plain_month_day 重建（参考年与日历槽继承 receiver）。
+pub fn plain_month_day_round<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let ptr = native_try!(receiver_obj(vm, args));
+    let obj = unsafe { &*ptr };
+    native_try!(ensure_plain_month_day(vm, obj));
+    let month = get_double_prop(obj, 0) as u32;
+    let day = get_double_prop(obj, 1) as u32;
+    let ref_year = get_double_prop(obj, 2) as i32;
+    let calendar = get_calendar_id(obj, 3);
+    let round_to = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
+    let (increment, _mode, unit_value) = native_try!(parse_round_options(vm, round_to));
+    let Some(unit_value) = unit_value else {
+        return NativeResult::Err(crate::error::create_range_error(vm, "smallestUnit is required"));
+    };
+    if unit_value != "day" && unit_value != "days" {
+        return NativeResult::Err(crate::error::create_range_error(vm, "invalid smallest unit"));
+    }
+    if increment > 1 {
+        return NativeResult::Err(crate::error::create_range_error(vm, "invalid rounding increment"));
+    }
+    // 日已是整数且增量恒 1，舍入为恒等；钳到参考年月长。
+    let day = day.min(days_in_month_iso(ref_year, month));
+    if !valid_iso_date(ref_year, month, day) {
+        return NativeResult::Err(crate::error::create_range_error(vm, "month-day is out of range"));
+    }
+    let day_count = days_from_civil(i128::from(ref_year), i128::from(month), i128::from(day));
+    if !(-100_000_001..=100_000_000).contains(&day_count) {
+        return NativeResult::Err(crate::error::create_range_error(vm, "month-day is out of range"));
+    }
+    make_plain_month_day(vm, month, day, ref_year, &calendar)
 }

@@ -2,6 +2,7 @@
 
 use chrono::Utc;
 use num_traits::ToPrimitive;
+use oxide_kernel::shape_forge::EMPTY_SHAPE_ID;
 use oxide_runtime_api::{to_number, to_string, NativeResult, ProtoKind, VmHost};
 use oxide_types::object::JsObject;
 use oxide_types::value::JsValue;
@@ -935,6 +936,71 @@ pub fn instant_to_zoned_date_time_iso<H: VmHost>(vm: &mut H, args: &[u8]) -> Nat
         return NativeResult::Err(crate::error::create_range_error(vm, "invalid time zone"));
     };
     make_zoned_date_time(vm, epoch_ns, &time_zone_id, "iso8601")
+}
+
+/// ToNumeric 语义的纪元纳秒取值：number 须为有限整数（否则 RangeError），
+/// BigInt 直读 i128；其余原始值 → TypeError。
+fn to_numeric_epoch_ns<H: VmHost>(vm: &mut H, value: JsValue) -> Result<i128, JsValue> {
+    if value.is_number() {
+        let number = to_number(value);
+        if !number.is_finite() || number.fract() != 0.0 {
+            return Err(crate::error::create_range_error(vm, "invalid epochNanoseconds"));
+        }
+        return Ok(number as i128);
+    }
+    if value.is_bigint() {
+        return Ok(vm.bigint_value(value).to_i128().unwrap_or(i128::MAX));
+    }
+    Err(crate::error::create_type_error(vm, "invalid epochNanoseconds"))
+}
+
+/// `Temporal.Instant.prototype.with(properties)`：properties.epochNanoseconds
+/// （number 或 BigInt）须过 Instant 范围，返回新 Instant；options 不读取。
+///
+/// # 步骤
+/// 1. receiver branding（TypeError）。
+/// 2. properties 非对象 → TypeError。
+/// 3. Get epochNanoseconds：undefined → TypeError；ToNumeric 取值。
+/// 4. 绝对值超 MAX_INSTANT_NS → RangeError；make_instant 重建。
+pub fn instant_with<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let ptr = native_try!(receiver_obj(vm, args));
+    let obj = unsafe { &*ptr };
+    native_try!(ensure_instant(vm, obj));
+    let properties = if args.len() < 2 { JsValue::undefined() } else { vm.reg(args[1]) };
+    if !properties.is_object() {
+        return NativeResult::Err(crate::error::create_type_error(vm, "properties must be an object"));
+    }
+    let pptr = properties.as_js_object_ptr();
+    if pptr.is_null() {
+        return NativeResult::Err(crate::error::create_type_error(vm, "properties must be an object"));
+    }
+    let properties_obj = unsafe { &*pptr };
+    let raw = native_try!(temporal_option_value(vm, properties_obj, properties, "epochNanoseconds"));
+    if raw.is_undefined() {
+        return NativeResult::Err(crate::error::create_type_error(vm, "epochNanoseconds is required"));
+    }
+    let epoch_ns = native_try!(to_numeric_epoch_ns(vm, raw));
+    if epoch_ns.unsigned_abs() > MAX_INSTANT_NS as u128 {
+        return NativeResult::Err(crate::error::create_range_error(vm, "Instant outside supported range"));
+    }
+    make_instant(vm, epoch_ns)
+}
+
+/// `Temporal.Instant.prototype.toDate()`：纪元纳秒按毫秒取整（floor）后
+/// 产出 Date 对象（同一时刻，亚毫秒精度丢失，与 epochMilliseconds getter 同口径）。
+pub fn instant_to_date<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let ptr = native_try!(receiver_obj(vm, args));
+    let obj = unsafe { &*ptr };
+    native_try!(ensure_instant(vm, obj));
+    let Some(epoch_ns) = get_instant_epoch_ns(obj) else {
+        return NativeResult::Err(crate::error::create_range_error(vm, "invalid Instant"));
+    };
+    let epoch_ms = epoch_ns.div_euclid(1_000_000) as f64;
+    let mut date =
+        JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(vm.builtin_proto(ProtoKind::DateProto)));
+    date.type_tag = JsObject::OBJ_TYPE_DATE;
+    date.set_prop_at(0, JsValue::float(epoch_ms));
+    NativeResult::Ok(JsValue::from_js_object(vm.alloc_object(date)))
 }
 
 /// `Temporal.Instant.prototype.valueOf()`：Temporal 对象禁止转原始值。

@@ -412,6 +412,61 @@ fn instant_from_invalid_throws_range_error() {
     assert_eq!(str_val(&vm, r), "RangeError");
 }
 
+#[test]
+fn instant_with_epoch_nanoseconds() {
+    let mut vm = Vm::new();
+    // with：epochNanoseconds 按 ToNumeric 取值（number 须有限整数、BigInt 直读）；
+    // 越界 → RangeError；缺失/非对象 → TypeError；非整数/NaN → RangeError；
+    // 边界值 ±MAX_INSTANT_NS 合法。
+    let r = eval(
+        &mut vm,
+        "(() => {
+           const kind = (fn) => { try { fn(); return 'no'; } catch (e) { return e.constructor.name; } };
+           const i = Temporal.Instant.fromEpochNanoseconds(0n);
+           return [
+             i.with({epochNanoseconds: 123456789n}).epochNanoseconds,
+             i.with({epochNanoseconds: 5000000}).epochNanoseconds,
+             kind(() => i.with({epochNanoseconds: 8640000000000000000001n})),
+             kind(() => i.with({epochNanoseconds: -8640000000000000000001n})),
+             i.with({epochNanoseconds: 8640000000000000000000n}).epochNanoseconds,
+             i.with({epochNanoseconds: -8640000000000000000000n}).epochNanoseconds,
+             kind(() => i.with({})),
+             kind(() => i.with(5)),
+             kind(() => i.with({epochNanoseconds: 1.5})),
+             kind(() => i.with({epochNanoseconds: NaN})),
+             kind(() => i.with({epochNanoseconds: '1'})),
+           ].join('|');
+         })()",
+    )
+    .unwrap();
+    assert_eq!(
+        str_val(&vm, r),
+        "123456789|5000000|RangeError|RangeError|8640000000000000000000|-8640000000000000000000|TypeError|TypeError|RangeError|RangeError|TypeError"
+    );
+}
+
+#[test]
+fn instant_to_date() {
+    let mut vm = Vm::new();
+    // toDate：纳秒按毫秒向下取整（与 epochMilliseconds getter 同口径），
+    // 负值向 -Inf 取整；结果是真实 Date（instanceof + getTime）。
+    let r = eval(
+        &mut vm,
+        "(() => {
+           const d = Temporal.Instant.fromEpochNanoseconds(1234567890123456789n).toDate();
+           return [
+             d instanceof Date,
+             d.getTime(),
+             Temporal.Instant.fromEpochNanoseconds(-1n).toDate().getTime(),
+             Temporal.Instant.fromEpochNanoseconds(-1000001n).toDate().getTime(),
+             Temporal.Instant.fromEpochNanoseconds(1000000000n).toDate().getTime(),
+           ].join('|');
+         })()",
+    )
+    .unwrap();
+    assert_eq!(str_val(&vm, r), "true|1234567890123|-1|-2|1000");
+}
+
 // -- Temporal.PlainDate --
 
 #[test]
@@ -3163,6 +3218,101 @@ fn plain_month_day_to_plain_date_matrix() {
     assert_eq!(
         str_val(&vm, r),
         "2002-01-22|TypeError|TypeError|0012-01-22|RangeError|2020-02-29|2023-02-28|2020-02-29|-271821-04-19|RangeError|275760-09-13|RangeError|iso8601|TypeError|2002-01-22"
+    );
+}
+
+#[test]
+fn plain_month_day_add_balance_and_clamp() {
+    let mut vm = Vm::new();
+    // add：月按（参考年, 月）平衡，负年经 div_euclid 处理；日钳到目标年月长
+    // （constrain 缺省，reject 非法即抛）；years/weeks/days/时间分量 → RangeError；
+    // 无参 → TypeError；day 级表示范围 ±100_000_00x。
+    let r = eval(
+        &mut vm,
+        "(() => {
+           const kind = (fn) => { try { fn(); return 'no'; } catch (e) { return e.constructor.name; } };
+           const md = Temporal.PlainMonthDay.from('01-31');
+           return [
+             md.add('P1M').toString(),
+             kind(() => md.add('P1M', {overflow: 'reject'})),
+             Temporal.PlainMonthDay.from('02-29').add('P1M').toString(),
+             Temporal.PlainMonthDay.from('12-15').add('P1M').toString(),
+             Temporal.PlainMonthDay.from('01-15').add('P13M').toString(),
+             Temporal.PlainMonthDay.from('01-15').add({months: -1}).toString(),
+             new Temporal.PlainMonthDay(1, 15, 'iso8601', -1).add({months: -1}).toString(),
+             Temporal.PlainMonthDay.from('01-15').add({months: 1}).toString(),
+             kind(() => Temporal.PlainMonthDay.from('01-15').add('P1Y')),
+             kind(() => Temporal.PlainMonthDay.from('01-15').add('P1W')),
+             kind(() => Temporal.PlainMonthDay.from('01-15').add('P1D')),
+             kind(() => Temporal.PlainMonthDay.from('01-15').add('PT1H')),
+             kind(() => Temporal.PlainMonthDay.from('01-15').add()),
+             kind(() => new Temporal.PlainMonthDay(10, 31, 'iso8601', 275760).add('P1M')),
+           ].join('|');
+         })()",
+    )
+    .unwrap();
+    assert_eq!(
+        str_val(&vm, r),
+        "02-29|RangeError|03-29|01-15|02-15|12-15|12-15|02-15|RangeError|RangeError|RangeError|RangeError|TypeError|RangeError"
+    );
+}
+
+#[test]
+fn plain_month_day_subtract_balance_and_clamp() {
+    let mut vm = Vm::new();
+    // subtract：月分量反向（sign 取反）；日钳到目标年月长；
+    // years/weeks/days/时间分量 → RangeError；day 级表示范围下界。
+    let r = eval(
+        &mut vm,
+        "(() => {
+           const kind = (fn) => { try { fn(); return 'no'; } catch (e) { return e.constructor.name; } };
+           return [
+             Temporal.PlainMonthDay.from('03-31').subtract('P1M').toString(),
+             kind(() => Temporal.PlainMonthDay.from('03-31').subtract('P1M', {overflow: 'reject'})),
+             Temporal.PlainMonthDay.from('01-15').subtract('P13M').toString(),
+             new Temporal.PlainMonthDay(1, 15, 'iso8601', -1).subtract('P1M').toString(),
+             kind(() => Temporal.PlainMonthDay.from('01-15').subtract('P1Y')),
+             kind(() => Temporal.PlainMonthDay.from('01-15').subtract('P1D')),
+             kind(() => Temporal.PlainMonthDay.from('01-15').subtract('PT1H')),
+             kind(() => new Temporal.PlainMonthDay(3, 10, 'iso8601', -271821).subtract('P1M')),
+           ].join('|');
+         })()",
+    )
+    .unwrap();
+    assert_eq!(
+        str_val(&vm, r),
+        "02-29|RangeError|12-15|12-15|RangeError|RangeError|RangeError|RangeError"
+    );
+}
+
+#[test]
+fn plain_month_day_round_identity_and_validation() {
+    let mut vm = Vm::new();
+    // round：日已是整数且增量恒 1，舍入为恒等；日钳到参考年月长
+    // （from('02-31') 串路径不校验日，可造出超长按日）；smallestUnit 须 day
+    // （缺失/其他 → RangeError）；增量 > 1 → RangeError；非串/对象 → TypeError。
+    let r = eval(
+        &mut vm,
+        "(() => {
+           const kind = (fn) => { try { fn(); return 'no'; } catch (e) { return e.constructor.name; } };
+           const leap = Temporal.PlainMonthDay.from('02-29');
+           return [
+             leap.round('day').toString(),
+             leap.round({smallestUnit: 'days'}).toString(),
+             Temporal.PlainMonthDay.from('02-31').round('day').toString(),
+             kind(() => leap.round('month')),
+             kind(() => leap.round({})),
+             kind(() => leap.round({smallestUnit: 'day', roundingIncrement: 2})),
+             kind(() => leap.round(5)),
+             kind(() => leap.round()),
+             leap.round('day').day,
+           ].join('|');
+         })()",
+    )
+    .unwrap();
+    assert_eq!(
+        str_val(&vm, r),
+        "02-29|02-29|02-29|RangeError|RangeError|RangeError|TypeError|TypeError|29"
     );
 }
 

@@ -149,6 +149,8 @@ pub fn bind_temporal(env: BindEnv<'_>, global: &mut JsObject) {
             ),
             ("until", oxide_builtins::temporal::instant_until::<crate::vm::Vm> as *const (), 1),
             ("valueOf", oxide_builtins::temporal::instant_value_of::<crate::vm::Vm> as *const (), 0),
+            ("with", oxide_builtins::temporal::instant_with::<crate::vm::Vm> as *const (), 1),
+            ("toDate", oxide_builtins::temporal::instant_to_date::<crate::vm::Vm> as *const (), 0),
         ],
     );
     bind_well_known_data_property(
@@ -1063,6 +1065,13 @@ pub fn bind_temporal(env: BindEnv<'_>, global: &mut JsObject) {
                 oxide_builtins::temporal::plain_month_day_to_plain_date::<crate::vm::Vm> as *const (),
                 1,
             ),
+            ("add", oxide_builtins::temporal::plain_month_day_add::<crate::vm::Vm> as *const (), 1),
+            (
+                "subtract",
+                oxide_builtins::temporal::plain_month_day_subtract::<crate::vm::Vm> as *const (),
+                1,
+            ),
+            ("round", oxide_builtins::temporal::plain_month_day_round::<crate::vm::Vm> as *const (), 1),
         ],
     );
     bind_well_known_data_property(
