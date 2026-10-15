@@ -1181,3 +1181,109 @@ pub fn date_value_of<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let ms = get_timestamp(obj);
     NativeResult::Ok(JsValue::float(ms))
 }
+
+/// `Date.prototype.toTemporalInstant()`：把时间戳换算为 epoch 纳秒并构造 Instant。
+///
+/// # 步骤
+/// 1. `date_this` 品牌守卫（非 Date 对象抛 TypeError）。
+/// 2. 取 `[[DateValue]]`，非有限（Invalid Date）抛 RangeError。
+/// 3. 毫秒 × 10^6 得纳秒，交 `make_instant` 构造 Instant 对象。
+///
+/// # 边界
+/// 有效 Date 时间戳恒为整数毫秒且在 TimeClip 包络内（|t| ≤ 8.64e15），
+/// 乘积恒在 i128 内，无溢出面。
+pub fn date_to_temporal_instant<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let obj = unsafe { &*native_try!(date_this(vm, args)) };
+    let ms = get_timestamp(obj);
+    if !ms.is_finite() {
+        return NativeResult::Err(crate::error::create_range_error(vm, "invalid date"));
+    }
+    let ns = (ms as i128) * 1_000_000;
+    crate::temporal::make_instant(vm, ns)
+}
+
+/// OrdinaryToPrimitive：按 [first, second] 序逐个查 `toString`/`valueOf`，
+/// 首个产出非对象结果的方法返回其结果；两臂均不产出原始值抛 TypeError。
+///
+/// # 步骤
+/// 1. 按 hint 定方法序（string 族 toString 优先，number 族 valueOf 优先）。
+/// 2. 逐臂 `Get(O, name)`（receiver = O），null/undefined/非可调用跳过。
+/// 3. 调用方法（this = O），结果非对象即返回。
+///
+/// # 注意事项
+/// 用户 getter 与调用抛错经 `take_uncaught_value` 恢复原始异常值，不降级。
+fn ordinary_to_primitive<H: VmHost>(vm: &mut H, obj: &JsObject, this_val: JsValue, try_first: &str) -> NativeResult {
+    let (first, second) = if try_first == "string" {
+        ("toString", "valueOf")
+    } else {
+        ("valueOf", "toString")
+    };
+    for name in [first, second] {
+        let si = vm.perm_intern(name);
+        let method = match vm.ordinary_get(obj, si, this_val) {
+            Ok(m) => m,
+            Err(msg) => {
+                return NativeResult::Err(
+                    vm.take_uncaught_value()
+                        .unwrap_or_else(|| crate::error::create_type_error(vm, &msg)),
+                );
+            }
+        };
+        if method.is_undefined() || method.is_null() {
+            continue;
+        }
+        if !crate::iterator::is_callable(method) {
+            continue;
+        }
+        let result = match vm.call_function_sync(method, this_val, &[]) {
+            Ok(r) => r,
+            Err(msg) => {
+                return NativeResult::Err(
+                    vm.take_uncaught_value()
+                        .unwrap_or_else(|| crate::error::create_type_error(vm, &msg)),
+                );
+            }
+        };
+        if !result.is_object() {
+            return NativeResult::Ok(result);
+        }
+    }
+    NativeResult::Err(crate::error::create_type_error(vm, "Cannot convert object to primitive value"))
+}
+
+/// `Date.prototype[Symbol.toPrimitive](hint)`：OrdinaryToPrimitive 原始值转换。
+///
+/// # 步骤
+/// 1. this 非对象抛 TypeError（不做 Date 品牌检查，普通对象合法）。
+/// 2. hint 须为原始字符串值，严格比较（"string"/"default"/"number"），
+///    其余（含 String 对象、带 toString 的对象）抛 TypeError，不做强转。
+/// 3. 按 hint 定 tryFirst 走 OrdinaryToPrimitive。
+///
+/// # 注意事项
+/// 不复用 runtime `to_primitive`：其先查 @@toPrimitive 再走 OrdinaryToPrimitive，
+/// 语义漂移且对 Date 自身会递归。
+pub fn date_to_primitive<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
+    if !this_val.is_object() {
+        return NativeResult::Err(crate::error::create_type_error(vm, "called on incompatible receiver"));
+    }
+    let obj_ptr = this_val.as_js_object_ptr();
+    if obj_ptr.is_null() {
+        return NativeResult::Err(crate::error::create_type_error(vm, "called on incompatible receiver"));
+    }
+    let obj = unsafe { &*obj_ptr };
+
+    let hint_val = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
+    if !hint_val.is_string() {
+        return NativeResult::Err(crate::error::create_type_error(vm, "invalid hint"));
+    }
+    // SAFETY: hint_val 已确认是字符串值。
+    let hint = unsafe { (*hint_val.as_string_ptr()).to_owned_string() };
+    let try_first = match hint.as_str() {
+        "string" | "default" => "string",
+        "number" => "number",
+        _ => return NativeResult::Err(crate::error::create_type_error(vm, "invalid hint")),
+    };
+
+    ordinary_to_primitive(vm, obj, this_val, try_first)
+}

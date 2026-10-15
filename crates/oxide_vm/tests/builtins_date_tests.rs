@@ -730,3 +730,287 @@ fn date_constructor_object_arg_error_propagates() {
     .unwrap();
     assert_eq!(str_val(&vm, r), "yes");
 }
+
+// ── toTemporalInstant ──
+
+#[test]
+fn date_to_temporal_instant_epoch_values() {
+    let mut vm = Vm::new();
+    // 有效日期换算为 epoch 纳秒（毫秒 × 10^6），逐值与 BigInt 字面量比较。
+    let cases = [
+        ("new Date(0)", "0n"),
+        ("new Date(123456789)", "123456789000000n"),
+        ("new Date(-123456789)", "-123456789000000n"),
+        // TimeClip 包络两端（±8.64e15 ms）。
+        ("new Date(8.64e15)", "8640000000000000000000n"),
+        ("new Date(-8.64e15)", "-8640000000000000000000n"),
+    ];
+    for (date, ns) in cases {
+        let r = eval(&mut vm, &format!("{date}.toTemporalInstant().epochNanoseconds === {ns} ? 1 : 0"))
+            .unwrap();
+        assert_eq!(r.as_int(), 1, "date = {date}");
+    }
+}
+
+#[test]
+fn date_to_temporal_instant_invalid_date_throws_range_error() {
+    let mut vm = Vm::new();
+    let r = eval(
+        &mut vm,
+        "var d = new Date(NaN); \
+         try { d.toTemporalInstant(); 'no' } catch (e) { e instanceof RangeError ? 'yes' : 'no' }",
+    )
+    .unwrap();
+    assert_eq!(str_val(&vm, r), "yes");
+}
+
+#[test]
+fn date_to_temporal_instant_non_date_throws_type_error() {
+    let mut vm = Vm::new();
+    let f = |vm: &mut Vm, this: &str| {
+        eval(
+            vm,
+            &format!(
+                "var m = Date.prototype.toTemporalInstant; \
+                 try {{ m.call({this}); 'no' }} catch (e) {{ e instanceof TypeError ? 'yes' : 'no' }}"
+            ),
+        )
+        .unwrap()
+    };
+    for this in ["{}", "[]", "function(){}", "Date.prototype", "0", "null", "undefined", "Symbol()"] {
+        let r = f(&mut vm, this);
+        assert_eq!(str_val(&vm, r), "yes", "this = {this}");
+    }
+}
+
+#[test]
+fn date_to_temporal_instant_prop_desc() {
+    let mut vm = Vm::new();
+    let r = eval(
+        &mut vm,
+        "var d = Object.getOwnPropertyDescriptor(Date.prototype, 'toTemporalInstant'); \
+         d.writable === true && d.enumerable === false && d.configurable === true ? 1 : 0",
+    )
+    .unwrap();
+    assert_eq!(r.as_int(), 1);
+}
+
+#[test]
+fn date_to_temporal_instant_length_name() {
+    let mut vm = Vm::new();
+    let r = eval(
+        &mut vm,
+        "Date.prototype.toTemporalInstant.length === 0 && \
+         Date.prototype.toTemporalInstant.name === 'toTemporalInstant' ? 1 : 0",
+    )
+    .unwrap();
+    assert_eq!(r.as_int(), 1);
+}
+
+// ── [Symbol.toPrimitive] ──
+
+#[test]
+fn date_to_primitive_number_hint_first_valid() {
+    let mut vm = Vm::new();
+    // number 提示 valueOf 优先：valueOf 产出原始值即返回，toString 不被引用。
+    let r = eval(
+        &mut vm,
+        "var vo = 0, ts = 0; \
+         var obj = { valueOf: function() { vo++; return 'valueOf test'; }, \
+                    get toString() { ts++; } }; \
+         var v = Date.prototype[Symbol.toPrimitive].call(obj, 'number'); \
+         v === 'valueOf test' && vo === 1 && ts === 0 ? 1 : 0",
+    )
+    .unwrap();
+    assert_eq!(r.as_int(), 1);
+}
+
+#[test]
+fn date_to_primitive_string_hint_first_valid() {
+    let mut vm = Vm::new();
+    // string 提示 toString 优先：toString 产出原始值即返回，valueOf 不被引用。
+    let r = eval(
+        &mut vm,
+        "var vo = 0, ts = 0; \
+         var obj = { get valueOf() { vo++; }, \
+                    toString: function() { ts++; return 'toString test'; } }; \
+         var v = Date.prototype[Symbol.toPrimitive].call(obj, 'string'); \
+         v === 'toString test' && vo === 0 && ts === 1 ? 1 : 0",
+    )
+    .unwrap();
+    assert_eq!(r.as_int(), 1);
+}
+
+#[test]
+fn date_to_primitive_default_hint_uses_string_order() {
+    let mut vm = Vm::new();
+    // default 提示与 string 同序（toString 优先）。
+    let r = eval(
+        &mut vm,
+        "var obj = { valueOf: function() { return 1; }, \
+                    toString: function() { return 'def'; } }; \
+         Date.prototype[Symbol.toPrimitive].call(obj, 'default') === 'def' ? 1 : 0",
+    )
+    .unwrap();
+    assert_eq!(r.as_int(), 1);
+}
+
+#[test]
+fn date_to_primitive_number_hint_first_non_callable() {
+    let mut vm = Vm::new();
+    // valueOf 非可调用时回落 toString。
+    let r = eval(
+        &mut vm,
+        "var obj = { valueOf: null, toString: function() { return 'ts'; } }; \
+         Date.prototype[Symbol.toPrimitive].call(obj, 'number') === 'ts' ? 1 : 0",
+    )
+    .unwrap();
+    assert_eq!(r.as_int(), 1);
+}
+
+#[test]
+fn date_to_primitive_number_hint_first_invalid() {
+    let mut vm = Vm::new();
+    // valueOf 返回对象（非原始值）时回落 toString。
+    let r = eval(
+        &mut vm,
+        "var obj = { valueOf: function() { return {}; }, \
+                    toString: function() { return 'ts'; } }; \
+         Date.prototype[Symbol.toPrimitive].call(obj, 'number') === 'ts' ? 1 : 0",
+    )
+    .unwrap();
+    assert_eq!(r.as_int(), 1);
+}
+
+#[test]
+fn date_to_primitive_no_callables_throws_type_error() {
+    let mut vm = Vm::new();
+    let r = eval(
+        &mut vm,
+        "var obj = { valueOf: null, toString: null }; \
+         try { Date.prototype[Symbol.toPrimitive].call(obj, 'number'); 'no' } \
+         catch (e) { e instanceof TypeError ? 'yes' : 'no' }",
+    )
+    .unwrap();
+    assert_eq!(str_val(&vm, r), "yes");
+}
+
+#[test]
+fn date_to_primitive_invalid_hint_throws_type_error() {
+    let mut vm = Vm::new();
+    let f = |vm: &mut Vm, hint: &str| {
+        eval(
+            vm,
+            &format!(
+                "var d = new Date(0); \
+                 try {{ d[Symbol.toPrimitive]({hint}); 'no' }} \
+                 catch (e) {{ e instanceof TypeError ? 'yes' : 'no' }}"
+            ),
+        )
+        .unwrap()
+    };
+    // 缺参、undefined、null、空串、非原始串（String 对象 / 带 toString 的对象）均抛 TypeError。
+    for hint in [
+        "",
+        "undefined",
+        "null",
+        "''",
+        "'String'",
+        "new String('number')",
+        "{ toString: function() { 'number'; } }",
+    ] {
+        let r = f(&mut vm, hint);
+        assert_eq!(str_val(&vm, r), "yes", "hint = {hint}");
+    }
+}
+
+#[test]
+fn date_to_primitive_non_object_this_throws_type_error() {
+    let mut vm = Vm::new();
+    let f = |vm: &mut Vm, this: &str| {
+        eval(
+            vm,
+            &format!(
+                "try {{ Date.prototype[Symbol.toPrimitive].call({this}, 'string'); 'no' }} \
+                 catch (e) {{ e instanceof TypeError ? 'yes' : 'no' }}"
+            ),
+        )
+        .unwrap()
+    };
+    for this in ["undefined", "null", "86", "''", "true"] {
+        let r = f(&mut vm, this);
+        assert_eq!(str_val(&vm, r), "yes", "this = {this}");
+    }
+}
+
+#[test]
+fn date_to_primitive_works_on_plain_object() {
+    let mut vm = Vm::new();
+    // 非 Date 品牌方法：普通对象合法（仅要求 this 为对象）。
+    let r = eval(
+        &mut vm,
+        "var obj = { valueOf: function() { return 42; } }; \
+         Date.prototype[Symbol.toPrimitive].call(obj, 'number') === 42 ? 1 : 0",
+    )
+    .unwrap();
+    assert_eq!(r.as_int(), 1);
+}
+
+#[test]
+fn date_to_primitive_prop_desc_length_name() {
+    let mut vm = Vm::new();
+    let r = eval(
+        &mut vm,
+        "var d = Object.getOwnPropertyDescriptor(Date.prototype, Symbol.toPrimitive); \
+         d.writable === false && d.enumerable === false && d.configurable === true ? 1 : 0",
+    )
+    .unwrap();
+    assert_eq!(r.as_int(), 1);
+    let r = eval(
+        &mut vm,
+        "Date.prototype[Symbol.toPrimitive].length === 1 && \
+         Date.prototype[Symbol.toPrimitive].name === '[Symbol.toPrimitive]' ? 1 : 0",
+    )
+    .unwrap();
+    assert_eq!(r.as_int(), 1);
+}
+
+#[test]
+fn date_to_primitive_user_throw_propagates_original() {
+    let mut vm = Vm::new();
+    // 用户方法抛错经原始异常值传播（不降级为 TypeError）。
+    let r = eval(
+        &mut vm,
+        "var obj = { valueOf: function() { throw 'boom'; } }; \
+         try { Date.prototype[Symbol.toPrimitive].call(obj, 'number'); 'no' } \
+         catch (e) { e === 'boom' ? 'yes' : 'no' }",
+    )
+    .unwrap();
+    assert_eq!(str_val(&vm, r), "yes");
+}
+
+#[test]
+fn date_to_primitive_called_as_function_no_strict_this() {
+    let mut vm = Vm::new();
+    // 顶层函数形态调用（this 为 undefined）抛 TypeError，且不触发 toString/valueOf 查找。
+    let r = eval(
+        &mut vm,
+        "var toPrimitive = Date.prototype[Symbol.toPrimitive]; \
+         try { toPrimitive('default'); 'no' } catch (e) { e instanceof TypeError ? 'yes' : 'no' }",
+    )
+    .unwrap();
+    assert_eq!(str_val(&vm, r), "yes");
+}
+
+// 既有 Date 强转路径行为回归：绑定 [Symbol.toPrimitive] 后，VM 的 ToPrimitive
+// 对 Date 先经原型方法再走 OrdinaryToPrimitive，可观察行为与直接 valueOf/toString 等价。
+#[test]
+fn date_to_primitive_existing_coercion_regression() {
+    let mut vm = Vm::new();
+    // +new Date(0) 经 valueOf 通道。
+    let r = eval(&mut vm, "+new Date(0)").unwrap();
+    assert_eq!(r.as_double(), 0.0);
+    // "" + new Date(0) 经 toString 通道（得到字符串）。
+    let r = eval(&mut vm, "typeof ('' + new Date(0))").unwrap();
+    assert_eq!(str_val(&vm, r), "string");
+}

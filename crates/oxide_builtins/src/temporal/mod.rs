@@ -11,6 +11,7 @@ mod time_zone;
 mod zoned_date_time;
 
 use common::*;
+pub(crate) use common::make_instant;
 use difference::*;
 pub use duration::*;
 pub use instant::*;

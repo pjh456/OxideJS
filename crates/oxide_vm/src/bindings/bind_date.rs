@@ -1,5 +1,8 @@
-use crate::bindings::{apply_binding_table, bind_global_value, configure_native_constructor, BindEnv};
+use crate::bindings::{
+    apply_binding_table, bind_global_value, bind_well_known_method, configure_native_constructor, BindEnv,
+};
 use oxide_types::object::{JsObject, PropAttributes};
+use oxide_types::private_key::{encode_symbol_key, WELL_KNOWN_SYMBOL_TO_PRIMITIVE};
 use oxide_types::value::JsValue;
 
 /// 把 Date 构造器与原型方法绑定到 global。
@@ -134,9 +137,25 @@ pub fn bind_date(env: BindEnv<'_>, global: &mut JsObject) {
                 0,
             ),
             ("valueOf", oxide_builtins::date::date_value_of::<crate::vm::Vm> as *const (), 0),
+            ("toTemporalInstant", oxide_builtins::date::date_to_temporal_instant::<crate::vm::Vm> as *const (), 0),
             ("toSource", oxide_builtins::to_source::to_source_date::<crate::vm::Vm> as *const (), 0),
         ],
     );
+
+    // [Symbol.toPrimitive] 方法：bind 默认描述符可写，规范为不可写，绑定后改 meta。
+    bind_well_known_method(
+        env,
+        proto,
+        WELL_KNOWN_SYMBOL_TO_PRIMITIVE,
+        "[Symbol.toPrimitive]",
+        oxide_builtins::date::date_to_primitive::<crate::vm::Vm> as *const (),
+        1,
+    );
+    let to_prim_key = encode_symbol_key(env.realm_id, WELL_KNOWN_SYMBOL_TO_PRIMITIVE);
+    if let Some(pos) = env.shape_forge().lookup_position(proto.shape_id(), to_prim_key) {
+        proto.set_data_meta(pos, PropAttributes::new(false, false, true));
+        proto.bump_generation();
+    }
 
     bind_global_value(env.core, global, "Date", JsValue::from_js_object(ctor_ptr));
 }
