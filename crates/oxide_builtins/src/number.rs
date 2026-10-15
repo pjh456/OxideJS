@@ -1,6 +1,6 @@
 use oxide_types::value::JsValue;
 
-use oxide_runtime_api::{NativeResult, ProtoKind, VmHost};
+use oxide_runtime_api::{NativeResult, ProtoKind, ToPrimitiveHint, VmHost};
 
 /// 整值且 i32 域内的有限数转 int 表示；-0 排除
 /// （int 表示丢符号，规范要求 `Number(-0)` 得 -0）。
@@ -23,7 +23,7 @@ pub fn number_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         // ToPrimitive 先解盒：BigInt 原始值走 lossy 转换（BigIntToNumber 不抛错，
         // 显式 `Number(bigint)` 是规范唯一合法入口）；其余经 bounded ToNumber
         // 入口（Symbol 抛 TypeError）。
-        let prim = match vm.coerce_primitive_bounded(raw, false) {
+        let prim = match vm.coerce_primitive_bounded(raw, ToPrimitiveHint::Number) {
             Ok(p) => p,
             Err(_) => {
                 // 对象经 ToPrimitive 转换时 toString/valueOf 可抛异常，须原样传播原始异常。

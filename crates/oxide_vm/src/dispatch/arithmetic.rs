@@ -108,8 +108,8 @@ impl Vm {
         // 注意：不能在此前置检查 BigInt 混合（`lv.is_bigint() || rv.is_bigint()`）——
         // 对象操作数（如 `{valueOf: () => 2n}`）需先 ToPrimitive 再判定，混合检查
         // 必须放在 coerce 之后。
-        let lhs = self.coerce_primitive_bounded(lv, false)?;
-        let rhs = self.coerce_primitive_bounded(rv, false)?;
+        let lhs = self.coerce_primitive_bounded(lv, coercion::ToPrimitiveHint::Number)?;
+        let rhs = self.coerce_primitive_bounded(rv, coercion::ToPrimitiveHint::Number)?;
         reject_symbol_add!(self, lhs, rhs);
         if lhs.is_string() || rhs.is_string() {
             self.regs[rd] = self.concat_strings(lhs, rhs);
@@ -238,8 +238,8 @@ impl Vm {
             }
             // 快路径失败才 coerce：acc 已原语零副作用；next 对象 ToPrimitive 在此触发，
             // 顺序与左结合 ADD 一致。
-            let lhs = self.coerce_primitive_bounded(acc, false)?;
-            let rhs = self.coerce_primitive_bounded(next, false)?;
+            let lhs = self.coerce_primitive_bounded(acc, coercion::ToPrimitiveHint::Number)?;
+            let rhs = self.coerce_primitive_bounded(next, coercion::ToPrimitiveHint::Number)?;
             reject_symbol_add!(self, lhs, rhs);
             if lhs.is_string() || rhs.is_string() {
                 // ── 阶段 2：字符串模式单趟预分配 ──
@@ -280,7 +280,7 @@ impl Vm {
         parts.push(rhs);
         for &reg in rest {
             let v = self.regs[reg];
-            let prim = if v.is_object() { self.coerce_primitive_bounded(v, false)? } else { v };
+            let prim = if v.is_object() { self.coerce_primitive_bounded(v, coercion::ToPrimitiveHint::Number)? } else { v };
             // 字符串模式对全部操作数做 ToString，Symbol 按 §7.1.17 抛 TypeError。
             if prim.is_symbol() {
                 self.raise_type_error("Cannot convert a Symbol value to a string")?;
@@ -322,7 +322,7 @@ impl Vm {
         let v = self.regs[a];
         // ToPrimitive 先解盒（BigInt 包装对象如 Object(1n) 的 valueOf 返回 BigInt），
         // 解盒后是 BigInt 才抛 TypeError——用户覆盖 valueOf/toString 的普通对象不受影响。
-        let prim = self.coerce_primitive_bounded(v, false)?;
+        let prim = self.coerce_primitive_bounded(v, coercion::ToPrimitiveHint::Number)?;
         if prim.is_bigint() {
             return self.raise_type_error("Cannot convert a BigInt value to a number");
         }
@@ -348,8 +348,8 @@ impl Vm {
             self.regs[rd] = self.new_bigint(self.bigint_value(lv) + self.bigint_value(rv));
             return Ok(());
         }
-        let lhs = self.coerce_primitive_bounded(lv, false)?;
-        let rhs = self.coerce_primitive_bounded(rv, false)?;
+        let lhs = self.coerce_primitive_bounded(lv, coercion::ToPrimitiveHint::Number)?;
+        let rhs = self.coerce_primitive_bounded(rv, coercion::ToPrimitiveHint::Number)?;
         reject_symbol_add!(self, lhs, rhs);
         if lhs.is_string() || rhs.is_string() {
             self.regs[rd] = self.concat_strings(lhs, rhs);
@@ -387,8 +387,8 @@ impl Vm {
             self.regs[rd] = self.new_bigint(self.bigint_value(lv) - self.bigint_value(rv));
             return Ok(());
         }
-        let l = self.coerce_primitive_bounded(lv, false)?;
-        let r = self.coerce_primitive_bounded(rv, false)?;
+        let l = self.coerce_primitive_bounded(lv, coercion::ToPrimitiveHint::Number)?;
+        let r = self.coerce_primitive_bounded(rv, coercion::ToPrimitiveHint::Number)?;
         reject_symbol_number!(self, l, r);
         if l.is_bigint() && r.is_bigint() {
             self.regs[rd] = self.new_bigint(self.bigint_value(l) - self.bigint_value(r));
@@ -420,8 +420,8 @@ impl Vm {
             self.regs[rd] = self.new_bigint(self.bigint_value(lv) * self.bigint_value(rv));
             return Ok(());
         }
-        let l = self.coerce_primitive_bounded(lv, false)?;
-        let r = self.coerce_primitive_bounded(rv, false)?;
+        let l = self.coerce_primitive_bounded(lv, coercion::ToPrimitiveHint::Number)?;
+        let r = self.coerce_primitive_bounded(rv, coercion::ToPrimitiveHint::Number)?;
         reject_symbol_number!(self, l, r);
         if l.is_bigint() && r.is_bigint() {
             self.regs[rd] = self.new_bigint(self.bigint_value(l) * self.bigint_value(r));
@@ -457,8 +457,8 @@ impl Vm {
             self.regs[rd] = self.new_bigint(self.bigint_value(lv) / r);
             return Ok(());
         }
-        let l = self.coerce_primitive_bounded(lv, false)?;
-        let r = self.coerce_primitive_bounded(rv, false)?;
+        let l = self.coerce_primitive_bounded(lv, coercion::ToPrimitiveHint::Number)?;
+        let r = self.coerce_primitive_bounded(rv, coercion::ToPrimitiveHint::Number)?;
         reject_symbol_number!(self, l, r);
         if l.is_bigint() && r.is_bigint() {
             let rv = self.bigint_value(r);
@@ -506,8 +506,8 @@ impl Vm {
             self.regs[rd] = self.new_bigint(self.bigint_value(lv) % r);
             return Ok(());
         }
-        let l = self.coerce_primitive_bounded(lv, false)?;
-        let r = self.coerce_primitive_bounded(rv, false)?;
+        let l = self.coerce_primitive_bounded(lv, coercion::ToPrimitiveHint::Number)?;
+        let r = self.coerce_primitive_bounded(rv, coercion::ToPrimitiveHint::Number)?;
         reject_symbol_number!(self, l, r);
         if l.is_bigint() && r.is_bigint() {
             let rv = self.bigint_value(r);
@@ -551,8 +551,8 @@ impl Vm {
             let exp = self.bigint_value(rv).clone();
             return self.bigint_exp(&base, &exp);
         }
-        let l = self.coerce_primitive_bounded(lv, false)?;
-        let r = self.coerce_primitive_bounded(rv, false)?;
+        let l = self.coerce_primitive_bounded(lv, coercion::ToPrimitiveHint::Number)?;
+        let r = self.coerce_primitive_bounded(rv, coercion::ToPrimitiveHint::Number)?;
         if l.is_symbol() || r.is_symbol() {
             self.raise_type_error("Cannot convert a Symbol value to a number")?;
             return Ok(JsValue::undefined());

@@ -14,19 +14,19 @@ use crate::vm_debug;
 impl Vm {
     /// ToPrimitive 有界版：按规范序把对象转为原始值，失败统一抛 `TypeError`。
     ///
-    /// 对象上（沿原型链读取）的 `Symbol.toPrimitive` 优先；不存在时按 `prefer_string` 定序尝试
+    /// 对象上（沿原型链读取）的 `Symbol.toPrimitive` 优先；不存在时按 hint 定序尝试
     /// `toString`/`valueOf`，等价于 OrdinaryToPrimitive。
     ///
     /// # 步骤
     /// 1. 非对象或空指针原样返回。
     /// 2. 读 `@@toPrimitive`：存在则必须可调用（否则抛 `TypeError`），以
-    ///    `"string"`/`"number"` hint 调用；返回对象再抛 `TypeError`。
+    ///    hint 字符串（`"string"`/`"default"`/`"number"`）调用；返回对象再抛 `TypeError`。
     /// 3. 回退方法族：按 hint 顺序试 `toString`/`valueOf`，不可调用者跳过，
     ///    首个返回非对象的结果即采用。
     /// 4. 两条路径都不产出原始值时抛 `TypeError`。
     ///
     /// # 边界与前提
-    /// - `prefer_string` 为 `true` 时先试 `toString`，否则先试 `valueOf`。
+    /// - hint 为 `String` 时先试 `toString`，`Default`/`Number` 时先试 `valueOf`。
     /// - 方法调用经 `call_function_sync`；调用错误转 `raise_call_error` 恢复
     ///   原始异常。
     ///
@@ -36,7 +36,9 @@ impl Vm {
     /// # 注意事项
     /// - 主 dispatch 下就地展开异常；原生 builtin 内部只返回格式化 `Err`，
     ///   由其调用边界恢复（见 `conversion_error`）。
-    pub(crate) fn coerce_primitive_bounded(&mut self, value: JsValue, prefer_string: bool) -> Result<JsValue, String> {
+    pub(crate) fn coerce_primitive_bounded(
+        &mut self, value: JsValue, hint: coercion::ToPrimitiveHint,
+    ) -> Result<JsValue, String> {
         if !value.is_object() {
             return Ok(value);
         }
@@ -60,7 +62,7 @@ impl Vm {
                 self.conversion_error("Symbol.toPrimitive is not a function")?;
                 return Ok(JsValue::undefined());
             }
-            let hint_val = self.new_string(if prefer_string { "string" } else { "number" });
+            let hint_val = self.new_string(hint.as_str());
             let result = match self.call_function_sync(exotic, value, &[hint_val]) {
                 Ok(r) => r,
                 Err(err) => return self.raise_call_error(&err),
@@ -72,7 +74,7 @@ impl Vm {
             return Ok(result);
         }
 
-        let method_names = if prefer_string { ["toString", "valueOf"] } else { ["valueOf", "toString"] };
+        let method_names = if hint.prefer_string() { ["toString", "valueOf"] } else { ["valueOf", "toString"] };
 
         for method_name in method_names {
             let method_si = self.kernel_core.perm_interner().intern(method_name).0;
@@ -184,7 +186,7 @@ impl Vm {
     /// 对 BigInt 做 lossy 转换）。BigInt 入口语义：显式 lossy 站点
     /// （`Number` 构造器）先解盒自行转换，不经本入口。
     pub(crate) fn coerce_number_bounded(&mut self, value: JsValue) -> Result<f64, String> {
-        let primitive = self.coerce_primitive_bounded(value, false)?;
+        let primitive = self.coerce_primitive_bounded(value, coercion::ToPrimitiveHint::Number)?;
         if primitive.is_symbol() {
             self.conversion_error("Cannot convert a Symbol value to a number")?;
             return Ok(f64::NAN);

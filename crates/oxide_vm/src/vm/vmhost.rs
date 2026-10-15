@@ -253,8 +253,10 @@ impl oxide_runtime_api::VmHost for Vm {
     fn lookup_str(&self, val: JsValue) -> Option<String> {
         self.lookup_str(val)
     }
-    fn coerce_primitive_bounded(&mut self, value: JsValue, prefer_string: bool) -> Result<JsValue, String> {
-        self.coerce_primitive_bounded(value, prefer_string)
+    fn coerce_primitive_bounded(
+        &mut self, value: JsValue, hint: oxide_runtime_api::ToPrimitiveHint,
+    ) -> Result<JsValue, String> {
+        self.coerce_primitive_bounded(value, hint)
     }
     fn coerce_number_bounded(&mut self, value: JsValue) -> Result<f64, String> {
         self.coerce_number_bounded(value)

@@ -311,7 +311,9 @@ pub trait VmHost {
 
     // 查找 / 强制转换
     fn lookup_str(&self, val: JsValue) -> Option<String>;
-    fn coerce_primitive_bounded(&mut self, value: JsValue, prefer_string: bool) -> Result<JsValue, String>;
+    fn coerce_primitive_bounded(
+        &mut self, value: JsValue, hint: crate::ToPrimitiveHint,
+    ) -> Result<JsValue, String>;
     fn coerce_number_bounded(&mut self, value: JsValue) -> Result<f64, String>;
 
     // 调用基础设施

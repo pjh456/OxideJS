@@ -543,7 +543,7 @@ pub fn abstract_eq<H: VmHost>(lhs: JsValue, rhs: JsValue, host: &mut H) -> Resul
             } else {
                 rhs
             };
-            let prim = to_primitive(lhs, ToPrimitiveHint::Default, host)?;
+            let prim = to_primitive(lhs, ToPrimitiveHint::Number, host)?;
             abstract_eq(prim, rhs, host)
         }
         (
@@ -556,7 +556,7 @@ pub fn abstract_eq<H: VmHost>(lhs: JsValue, rhs: JsValue, host: &mut H) -> Resul
             } else {
                 lhs
             };
-            let prim = to_primitive(rhs, ToPrimitiveHint::Default, host)?;
+            let prim = to_primitive(rhs, ToPrimitiveHint::Number, host)?;
             abstract_eq(lhs, prim, host)
         }
         // 其余组合不相等（含 null/undefined 与其它类型；Object/Object 已由同类型分支处理）。
@@ -872,12 +872,21 @@ pub enum ToPrimitiveHint {
 }
 
 impl ToPrimitiveHint {
-    /// OrdinaryToPrimitive 方法名顺序提示：`Default`/`Number` → "number"，`String` → "string"。
+    /// 传给 `@@toPrimitive` 的 hint 字符串：`String` → "string"，`Default` → "default"，
+    /// `Number` → "number"。
     pub fn as_str(self) -> &'static str {
         match self {
             ToPrimitiveHint::String => "string",
-            ToPrimitiveHint::Default | ToPrimitiveHint::Number => "number",
+            ToPrimitiveHint::Default => "default",
+            ToPrimitiveHint::Number => "number",
         }
+    }
+
+    /// OrdinaryToPrimitive 回退方法序：`String` 先试 `toString`，
+    /// `Default`/`Number` 先试 `valueOf`。
+    #[inline]
+    pub fn prefer_string(self) -> bool {
+        self == ToPrimitiveHint::String
     }
 }
 
@@ -890,7 +899,7 @@ pub fn to_primitive<H: VmHost>(val: JsValue, hint: ToPrimitiveHint, host: &mut H
     if !val.is_object() {
         return Ok(val);
     }
-    host.coerce_primitive_bounded(val, hint == ToPrimitiveHint::String)
+    host.coerce_primitive_bounded(val, hint)
 }
 
 /// 带完整对象强制转换的 ToNumber(input)：对象经 ToPrimitive（number hint）

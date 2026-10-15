@@ -27,8 +27,8 @@ impl Vm {
     #[inline(always)]
     pub(crate) fn dispatch_lt(&mut self, rd: usize, a: usize, b: usize) -> Result<(), String> {
         vm_trace!("LT rd={} r{}={:?} r{}={:?}", rd, a, self.regs[a], b, self.regs[b]);
-        let va = self.coerce_primitive_bounded(self.regs[a], false)?;
-        let vb = self.coerce_primitive_bounded(self.regs[b], false)?;
+        let va = self.coerce_primitive_bounded(self.regs[a], coercion::ToPrimitiveHint::Number)?;
+        let vb = self.coerce_primitive_bounded(self.regs[b], coercion::ToPrimitiveHint::Number)?;
         if va.is_symbol() || vb.is_symbol() {
             return self.raise_type_error("Cannot convert a Symbol value to a number");
         }
@@ -45,8 +45,8 @@ impl Vm {
     #[inline(always)]
     pub(crate) fn dispatch_gt(&mut self, rd: usize, a: usize, b: usize) -> Result<(), String> {
         vm_trace!("GT rd={} r{}={:?} r{}={:?}", rd, a, self.regs[a], b, self.regs[b]);
-        let va = self.coerce_primitive_bounded(self.regs[a], false)?;
-        let vb = self.coerce_primitive_bounded(self.regs[b], false)?;
+        let va = self.coerce_primitive_bounded(self.regs[a], coercion::ToPrimitiveHint::Number)?;
+        let vb = self.coerce_primitive_bounded(self.regs[b], coercion::ToPrimitiveHint::Number)?;
         if va.is_symbol() || vb.is_symbol() {
             return self.raise_type_error("Cannot convert a Symbol value to a number");
         }
@@ -63,8 +63,8 @@ impl Vm {
     #[inline(always)]
     pub(crate) fn dispatch_lte(&mut self, rd: usize, a: usize, b: usize) -> Result<(), String> {
         vm_trace!("LTE rd={} r{}={:?} r{}={:?}", rd, a, self.regs[a], b, self.regs[b]);
-        let va = self.coerce_primitive_bounded(self.regs[a], false)?;
-        let vb = self.coerce_primitive_bounded(self.regs[b], false)?;
+        let va = self.coerce_primitive_bounded(self.regs[a], coercion::ToPrimitiveHint::Number)?;
+        let vb = self.coerce_primitive_bounded(self.regs[b], coercion::ToPrimitiveHint::Number)?;
         if va.is_symbol() || vb.is_symbol() {
             return self.raise_type_error("Cannot convert a Symbol value to a number");
         }
@@ -81,8 +81,8 @@ impl Vm {
     #[inline(always)]
     pub(crate) fn dispatch_gte(&mut self, rd: usize, a: usize, b: usize) -> Result<(), String> {
         vm_trace!("GTE rd={} r{}={:?} r{}={:?}", rd, a, self.regs[a], b, self.regs[b]);
-        let va = self.coerce_primitive_bounded(self.regs[a], false)?;
-        let vb = self.coerce_primitive_bounded(self.regs[b], false)?;
+        let va = self.coerce_primitive_bounded(self.regs[a], coercion::ToPrimitiveHint::Number)?;
+        let vb = self.coerce_primitive_bounded(self.regs[b], coercion::ToPrimitiveHint::Number)?;
         if va.is_symbol() || vb.is_symbol() {
             return self.raise_type_error("Cannot convert a Symbol value to a number");
         }

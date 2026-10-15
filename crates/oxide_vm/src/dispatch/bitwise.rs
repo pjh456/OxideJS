@@ -2,6 +2,7 @@ use crate::vm::Vm;
 use crate::vm_trace;
 use num_bigint::{BigInt, Sign};
 use num_traits::ToPrimitive;
+use oxide_runtime_api as coercion;
 use oxide_types::value::JsValue;
 
 impl Vm {
@@ -19,13 +20,13 @@ impl Vm {
     #[inline(always)]
     fn coerce_primitive_pair(&mut self, lv: JsValue, rv: JsValue) -> Result<(JsValue, JsValue), String> {
         let saved_pc = self.pc;
-        let l = self.coerce_primitive_bounded(lv, false)?;
+        let l = self.coerce_primitive_bounded(lv, coercion::ToPrimitiveHint::Number)?;
         if self.pc != saved_pc {
             // 转换异常已被外围 try/catch 接住：unwind 已改写 pc，立即中止后续转换，
             // 由调用方在检测到 pc 变化后直接返回，避免继续用 undefined 计算结果并二次抛错。
             return Ok((JsValue::undefined(), JsValue::undefined()));
         }
-        let r = self.coerce_primitive_bounded(rv, false)?;
+        let r = self.coerce_primitive_bounded(rv, coercion::ToPrimitiveHint::Number)?;
         if self.pc != saved_pc {
             return Ok((JsValue::undefined(), JsValue::undefined()));
         }
@@ -183,7 +184,7 @@ impl Vm {
     pub(crate) fn dispatch_bit_not(&mut self, rd: usize, a: usize) -> Result<(), String> {
         vm_trace!("BIT_NOT rd={} r{}", rd, a);
         let saved_pc = self.pc;
-        let v = self.coerce_primitive_bounded(self.regs[a], false)?;
+        let v = self.coerce_primitive_bounded(self.regs[a], coercion::ToPrimitiveHint::Number)?;
         if self.pc != saved_pc {
             return Ok(());
         }

@@ -191,8 +191,8 @@ impl Vm {
             let obj = unsafe { &mut *obj_ptr };
             self.read_member_prop(obj, prop_name_si, receiver)?
         };
-        let prop_val = self.coerce_primitive_bounded(prop_raw, false)?;
-        let rhs = self.coerce_primitive_bounded(self.regs[a], false)?;
+        let prop_val = self.coerce_primitive_bounded(prop_raw, coercion::ToPrimitiveHint::Number)?;
+        let rhs = self.coerce_primitive_bounded(self.regs[a], coercion::ToPrimitiveHint::Number)?;
         if prop_val.is_symbol() || rhs.is_symbol() {
             // 复合成员加法分流同 `+`：字符串分支走 ToString、数值分支走 ToNumber，
             // 两者对 Symbol 均抛 TypeError（ECMA-262 §7.1.4 / §7.1.17）。

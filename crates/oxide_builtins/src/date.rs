@@ -4,7 +4,32 @@ use oxide_kernel::shape_forge::EMPTY_SHAPE_ID;
 use oxide_types::object::JsObject;
 use oxide_types::value::JsValue;
 
-use oxide_runtime_api::{NativeResult, ProtoKind, VmHost};
+use oxide_runtime_api::{NativeResult, ProtoKind, ToPrimitiveHint, VmHost};
+
+/// 星期名（0 为周日，与 `(days + 4) mod 7` 的取值对齐）。
+const WEEKDAY_NAMES: [&str; 7] = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+
+/// 月名（1-based 下标）。
+const MONTH_NAMES: [&str; 12] = [
+    "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+];
+
+/// 4 位年格式化：非负无符号零填充（年 0 写作 `0000`），负年 `-` 前缀加 4 位。
+fn format_year_4(y: i64) -> String {
+    if y < 0 {
+        format!("-{:04}", -y)
+    } else {
+        format!("{:04}", y)
+    }
+}
+
+/// GMT 偏移串：`GMT±HHMM`，时与分各 2 位（本地偏移毫秒）。
+fn format_tz_ms(offset_ms: i64) -> String {
+    let min = offset_ms / 60_000;
+    let sign = if min < 0 { "-" } else { "+" };
+    let min = min.abs();
+    format!("GMT{}{:02}{:02}", sign, min / 60, min % 60)
+}
 
 fn get_timestamp(obj: &JsObject) -> f64 {
     let v = obj.get_prop_at(0);
@@ -121,8 +146,9 @@ fn make_day(y: f64, m: f64, d: f64) -> Option<i64> {
     let yr = y.trunc() as i64;
     let mq = m.trunc() as i64;
     let dq = d.trunc() as i64;
-    // Date 值域约 ±1e11 天；分量远超包络时直接越界，同时兜住后续乘积溢出。
-    if yr.abs() > 1_000_000_000 || mq.abs() > 12_000_000_000 || dq.abs() > 4_000_000_000 {
+    // 分量远超包络时直接越界；上限兜住日数公式乘积的 i64 溢出带
+    // （日分量乘积项量级为自身，4e15 远低于 i64 上限 9.2e18）。
+    if yr.abs() > 1_000_000_000 || mq.abs() > 12_000_000_000 || dq.abs() > 4_000_000_000_000 {
         return None;
     }
     // 月溢出折入年份（欧几里得除法保持月在 [0, 12)）。
@@ -130,49 +156,82 @@ fn make_day(y: f64, m: f64, d: f64) -> Option<i64> {
     Some(civil_day_count(total.div_euclid(12), total.rem_euclid(12) + 1, dq))
 }
 
-/// MakeTime(hour, minute, second, millisecond)：各分量截断后线性组合成日内毫秒；
-/// 任一分量非有限或溢出返回 None。
-fn make_time(h: f64, min: f64, s: f64, ms: f64) -> Option<i64> {
+/// MakeTime(hour, minute, second, millisecond)：各分量截断后按 IEEE 754
+/// 规则组合（`((h×msPerHour + m×msPerMinute) + s×msPerSecond) + milli`）；
+/// 任一分量非有限返回 None。
+fn make_time(h: f64, min: f64, s: f64, ms: f64) -> Option<f64> {
     if !h.is_finite() || !min.is_finite() || !s.is_finite() || !ms.is_finite() {
         return None;
     }
-    (h.trunc() as i64)
-        .checked_mul(3_600_000)?
-        .checked_add((min.trunc() as i64).checked_mul(60_000)?)?
-        .checked_add((s.trunc() as i64).checked_mul(1_000)?)?
-        .checked_add(ms.trunc() as i64)
+    Some((h.trunc() * 3_600_000.0 + min.trunc() * 60_000.0) + s.trunc() * 1_000.0 + ms.trunc())
 }
 
-/// 日数与日内毫秒组合为最终时间戳；TimeClip 越界（|ts| > 8.64e15）返回 None。
-fn make_date_ms(days: i64, time_ms: i64) -> Option<f64> {
-    let ts = days.checked_mul(MS_PER_DAY)?.checked_add(time_ms)?;
-    if !(-MS_LIMIT..=MS_LIMIT).contains(&ts) {
+/// MakeDate(day, time)：日数与日内毫秒按 IEEE 754 规则组合（`day×msPerDay + time`）；
+/// 结果非有限或 TimeClip 越界（|ts| > 8.64e15）返回 None。
+fn make_date_ms(days: i64, time_ms: f64) -> Option<f64> {
+    let ts = days as f64 * 86_400_000.0 + time_ms;
+    if !ts.is_finite() || ts.abs() > MS_LIMIT as f64 {
         return None;
     }
-    Some(ts as f64)
+    Some(ts)
 }
 
 /// UTC 时间的日内毫秒（时/分/秒/毫秒分量组合）。
-fn utc_time_ms(ndt: &NaiveDateTime) -> i64 {
-    ndt.time().hour() as i64 * 3_600_000
-        + ndt.time().minute() as i64 * 60_000
-        + ndt.time().second() as i64 * 1_000
-        + ndt.time().nanosecond() as i64 / 1_000_000
+fn utc_time_ms(ndt: &NaiveDateTime) -> f64 {
+    ndt.time().hour() as f64 * 3_600_000.0
+        + ndt.time().minute() as f64 * 60_000.0
+        + ndt.time().second() as f64 * 1_000.0
+        + ndt.time().nanosecond() as f64 / 1_000_000.0
 }
 
-/// 本地时间七分量（年、0-based 月、日、时、分、秒、毫秒）；
-/// 时间戳无效或超出可表示范围返回 None。
-fn local_components(ms: f64) -> Option<(i64, i64, i64, i64, i64, i64, i64)> {
-    let dt = dt_from_ms_local(ms)?;
-    Some((
-        dt.year() as i64,
-        dt.month0() as i64,
-        dt.day() as i64,
-        dt.hour() as i64,
-        dt.minute() as i64,
-        dt.second() as i64,
-        dt.timestamp_subsec_millis() as i64,
-    ))
+/// 本地时间八分量（年、0-based 月、日、时、分、秒、毫秒、本地偏移毫秒）。
+#[derive(Clone, Copy)]
+struct LocalParts {
+    year: i64,
+    month0: i64,
+    day: i64,
+    hour: i64,
+    minute: i64,
+    second: i64,
+    milli: i64,
+    offset_ms: i64,
+}
+
+impl LocalParts {
+    /// +0 基准分量（1970-01-01 00:00:00.000，全零）。
+    const EPOCH: LocalParts = LocalParts {
+        year: 1970,
+        month0: 0,
+        day: 1,
+        hour: 0,
+        minute: 0,
+        second: 0,
+        milli: 0,
+        offset_ms: 0,
+    };
+}
+
+/// 本地时间八分量；时间戳无效或本地偏移采样失败返回 None。
+/// 纯算术路径，覆盖 TimeClip 全包络。
+fn local_components(ms: f64) -> Option<LocalParts> {
+    if !ms.is_finite() {
+        return None;
+    }
+    let ts = ms as i64;
+    let naive = local_offset_sample(ts)?;
+    let days = naive.div_euclid(MS_PER_DAY);
+    let rem = naive.rem_euclid(MS_PER_DAY);
+    let (y, m, d) = civil_from_days(days);
+    Some(LocalParts {
+        year: y,
+        month0: m as i64 - 1,
+        day: d as i64,
+        hour: rem / 3_600_000,
+        minute: (rem / 60_000) % 60,
+        second: (rem / 1_000) % 60,
+        milli: rem % 1_000,
+        offset_ms: ts - naive,
+    })
 }
 
 /// MakeFullYear（构造器与 Date.UTC 专用，setter 无此映射）：先按 ToIntegerOrInfinity
@@ -185,10 +244,15 @@ fn make_full_year(y: f64) -> Option<f64> {
     Some(if (0.0..=99.0).contains(&yt) { yt + 1900.0 } else { yt })
 }
 
-/// TimeClip：|ts| > 8.64e15 或非有限的时刻值归 NaN（Invalid Date）。
+/// TimeClip：|ts| > 8.64e15 或非有限的时刻值归 NaN（Invalid Date）；
+/// -0 归一为 +0（Date 值域只含正零）。
 fn time_clip(ts: f64) -> f64 {
     if ts.is_finite() && (-MS_LIMIT as f64..=MS_LIMIT as f64).contains(&ts) {
-        ts
+        if ts == 0.0 {
+            0.0
+        } else {
+            ts
+        }
     } else {
         f64::NAN
     }
@@ -272,15 +336,7 @@ fn make_local_timestamp(y: f64, m: f64, d: f64, h: f64, min: f64, sec: f64, ms: 
     let naive_ms = naive_ms as i64;
 
     // naive 时刻按本地时区解释（DST 歧义取最早），得到真实 UTC 时间戳。
-    match DateTime::from_timestamp_millis(naive_ms) {
-        Some(dt) => dt
-            .naive_utc()
-            .and_local_timezone(Local)
-            .earliest()
-            .map(|dt| dt.timestamp_millis() as f64)
-            .unwrap_or(f64::NAN),
-        None => local_offset_sample(naive_ms).map(|ts| ts as f64).unwrap_or(f64::NAN),
-    }
+    local_offset_sample(naive_ms).map(|ts| ts as f64).unwrap_or(f64::NAN)
 }
 
 /// 1970-01-01 起的日数转民用历法（年, 月, 日）。
@@ -298,12 +354,11 @@ fn civil_from_days(z0: i64) -> (i64, u32, u32) {
     (y, m, d)
 }
 
-/// naive 时刻超出 chrono 可表示范围（约 262142-12-31 / -262143-01-01）时，
-/// 用同一 400 年循环内的参考年采样本地偏移再映射回真实 UTC 时刻。
+/// 用同一 400 年循环内的参考年采样本地偏移（毫秒）。
 ///
-/// 规范将 LocalTime 映射定义为实现定义的近似，取同闰年周期的参考年满足该定义；
+/// 规范将本地时间映射定义为实现定义的近似，取同闰年周期的参考年满足该定义；
 /// 参考时刻落在 DST 空档时返回 None（与范围内路径行为一致）。
-fn local_offset_sample(naive_ms: i64) -> Option<i64> {
+fn sample_local_offset_ms(naive_ms: i64) -> Option<i64> {
     let days = naive_ms.div_euclid(86_400_000);
     let rem = naive_ms.rem_euclid(86_400_000);
     let (cy, cm, cd) = civil_from_days(days);
@@ -319,25 +374,303 @@ fn local_offset_sample(naive_ms: i64) -> Option<i64> {
     })?;
     let ref_naive_ms = civil_day_count(ry, rm as i64, rd as i64) * 86_400_000 + rem;
     let earliest = ref_naive.and_local_timezone(Local).earliest()?;
-    let offset_ms = ref_naive_ms - earliest.timestamp_millis();
-    Some(naive_ms - offset_ms)
+    Some(ref_naive_ms - earliest.timestamp_millis())
 }
 
-/// 解析 ISO 8601 日期时间字符串（含时区偏移），返回 UTC 毫秒时间戳；无法解析返回 NaN。
+/// naive 时刻按本地时区解释（DST 歧义取最早），映射回真实 UTC 时刻；
+/// 采样失败（DST 空档）返回 None。
+fn local_offset_sample(naive_ms: i64) -> Option<i64> {
+    sample_local_offset_ms(naive_ms).map(|off| naive_ms - off)
+}
+
+/// 整型时间戳的 TimeClip 收尾：|ts| > 8.64e15 归 NaN。
+fn time_clip_i64(ts: i64) -> f64 {
+    if (-MS_LIMIT..=MS_LIMIT).contains(&ts) {
+        ts as f64
+    } else {
+        f64::NAN
+    }
+}
+
+/// 严格 ISO 8601（Date Time String Format）字符级解析：
+/// 返回已 TimeClip 的 UTC 毫秒时间戳；串不匹配格式返回 None。
 ///
-/// # 边界与前提
-/// - 偏移形态 `Z` / `+hh:mm` / `+hhmm` 均折算为 UTC；无偏移完整时间按 UTC；纯日期按 UTC 零点。
-fn parse_iso_timestamp(s: &str) -> f64 {
-    // 带偏移（含 Z）：DateTime 保留偏移直接折算 UTC。
-    if let Ok(dt) = chrono::DateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S%.f%#z") {
+/// # 边界
+/// - 年为 4 位无符号（0000 至 9999）、6 位无符号扩展年，或 6 位带符号
+///   扩展年；年 0 视为正，必须写作 `+000000`，`-000000` 非法。
+/// - 月 01 至 12、日 01 至 31、时 00 至 24（仅 `24:00:00.000` 形态）、
+///   分秒 00 至 59、毫秒 3 位；偏移为 `Z` 或 `±HH:mm` / `±HHmm` / `±HH`。
+/// - 日期-only 形式解释为 UTC 零点；带偏移日期时间折算 UTC；
+///   无偏移日期时间解释为本地时间（本地偏移采样失败归 NaN）。
+/// - 扩展年越出时间值范围时整体按可识别处理，由 TimeClip 归 NaN，
+///   不回退实现自定义格式。
+fn parse_iso_strict(s: &str) -> Option<f64> {
+    let b = s.as_bytes();
+    let mut pos = 0;
+
+    // 年：可选符号；带符号恒为 6 位扩展年，无符号为 4 位年或 6 位扩展年
+    // （第 5 位起为数字时读满 6 位）。
+    let y: i64;
+    if pos < b.len() && (b[pos] == b'+' || b[pos] == b'-') {
+        let neg = b[pos] == b'-';
+        pos += 1;
+        if b.len() - pos < 6 || !b[pos..pos + 6].iter().all(|c| c.is_ascii_digit()) {
+            return None;
+        }
+        let yv = digits6(&b[pos..pos + 6]);
+        // 扩展年 -000000 非法（年 0 视为正，须写作 +000000）。
+        if neg && yv == 0 {
+            return None;
+        }
+        pos += 6;
+        y = if neg { -yv } else { yv };
+    } else {
+        if b.len() - pos < 4 || !b[pos..pos + 4].iter().all(|c| c.is_ascii_digit()) {
+            return None;
+        }
+        let mut yv = digits4(&b[pos..pos + 4]);
+        pos += 4;
+        if pos + 2 <= b.len() && b[pos].is_ascii_digit() && b[pos + 1].is_ascii_digit() {
+            yv = yv * 100 + (b[pos] - b'0') as i64 * 10 + (b[pos + 1] - b'0') as i64;
+            pos += 2;
+        }
+        y = yv;
+    }
+
+    // 纯年形式（YYYY）：当年 1 月 1 日 UTC 零点。
+    if pos == b.len() {
+        return Some(time_clip_i64(civil_day_count(y, 1, 1) * MS_PER_DAY));
+    }
+
+    // 月、日各 2 位。
+    if pos >= b.len() || b[pos] != b'-' {
+        return None;
+    }
+    pos += 1;
+    let m = two_digits(&b[pos..])?;
+    if !(1..=12).contains(&m) {
+        return None;
+    }
+    pos += 2;
+    if pos >= b.len() || b[pos] != b'-' {
+        return None;
+    }
+    pos += 1;
+    let d = two_digits(&b[pos..])?;
+    // 日须为该月合法日（ISO 8601 有效日期），越月非法。
+    if !(1..=31).contains(&d) || d > days_in_month(y, m) {
+        return None;
+    }
+    pos += 2;
+
+    // 日期-only 形式：UTC 零点。
+    if pos == b.len() {
+        return Some(time_clip_i64(civil_day_count(y, m, d) * MS_PER_DAY));
+    }
+
+    // 日期时间形式：THH:mm[:ss[.sss]][偏移]。
+    if b[pos] != b'T' {
+        return None;
+    }
+    pos += 1;
+    let h = two_digits(&b[pos..])?;
+    if !(0..=24).contains(&h) {
+        return None;
+    }
+    pos += 2;
+    if pos >= b.len() || b[pos] != b':' {
+        return None;
+    }
+    pos += 1;
+    let mi = two_digits(&b[pos..])?;
+    if mi > 59 || (h == 24 && mi != 0) {
+        return None;
+    }
+    pos += 2;
+    let mut sec = 0i64;
+    let mut ms = 0i64;
+    if pos < b.len() && b[pos] == b':' {
+        pos += 1;
+        sec = two_digits(&b[pos..])?;
+        if sec > 59 || (h == 24 && sec != 0) {
+            return None;
+        }
+        pos += 2;
+        if pos < b.len() && b[pos] == b'.' {
+            pos += 1;
+            if b.len() - pos < 3 || !b[pos..pos + 3].iter().all(|c| c.is_ascii_digit()) {
+                return None;
+            }
+            ms = (b[pos] - b'0') as i64 * 100 + (b[pos + 1] - b'0') as i64 * 10 + (b[pos + 2] - b'0') as i64;
+            if h == 24 && ms != 0 {
+                return None;
+            }
+            pos += 3;
+        }
+    }
+
+    // 偏移：Z 或 ±HH:mm / ±HHmm / ±HH。
+    let offset_min = if pos == b.len() {
+        None
+    } else if b[pos] == b'Z' {
+        pos += 1;
+        Some(0)
+    } else {
+        if b[pos] != b'+' && b[pos] != b'-' {
+            return None;
+        }
+        let osign = if b[pos] == b'-' { -1 } else { 1 };
+        pos += 1;
+        if b.len() - pos < 2 || !b[pos..pos + 2].iter().all(|c| c.is_ascii_digit()) {
+            return None;
+        }
+        let oh = (b[pos] - b'0') as i64 * 10 + (b[pos + 1] - b'0') as i64;
+        if oh > 23 {
+            return None;
+        }
+        pos += 2;
+        let mut om = 0i64;
+        if pos < b.len() && (b[pos] == b':' || b[pos].is_ascii_digit()) {
+            if b[pos] == b':' {
+                pos += 1;
+            }
+            if b.len() - pos < 2 || !b[pos..pos + 2].iter().all(|c| c.is_ascii_digit()) {
+                return None;
+            }
+            om = (b[pos] - b'0') as i64 * 10 + (b[pos + 1] - b'0') as i64;
+            if om > 59 {
+                return None;
+            }
+            pos += 2;
+        }
+        Some(osign * (oh * 60 + om))
+    };
+    if pos != b.len() {
+        return None;
+    }
+
+    // 组合：naive 时刻按解释方式折算 UTC。
+    let naive = civil_day_count(y, m, d) * MS_PER_DAY
+        + h * 3_600_000
+        + mi * 60_000
+        + sec * 1_000
+        + ms;
+    let ts = match offset_min {
+        Some(off) => naive - off * 60_000,
+        None => local_offset_sample(naive)?,
+    };
+    Some(time_clip_i64(ts))
+}
+
+/// 月 1-based 的该月天数（proleptic Gregorian 闰年规则）。
+fn days_in_month(y: i64, m: i64) -> i64 {
+    match m {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 => {
+            if y % 4 == 0 && (y % 100 != 0 || y % 400 == 0) {
+                29
+            } else {
+                28
+            }
+        }
+        _ => 0,
+    }
+}
+
+fn digits4(b: &[u8]) -> i64 {
+    (b[0] - b'0') as i64 * 1000 + (b[1] - b'0') as i64 * 100 + (b[2] - b'0') as i64 * 10 + (b[3] - b'0') as i64
+}
+
+fn digits6(b: &[u8]) -> i64 {
+    digits4(&b[0..4]) * 100 + (b[4] - b'0') as i64 * 10 + (b[5] - b'0') as i64
+}
+
+fn two_digits(b: &[u8]) -> Option<i64> {
+    if b.len() < 2 || !b[0].is_ascii_digit() || !b[1].is_ascii_digit() {
+        return None;
+    }
+    Some((b[0] - b'0') as i64 * 10 + (b[1] - b'0') as i64)
+}
+
+/// 解析引擎自身 toString / toUTCString 输出（回退分支：圆环要求
+/// `Date.parse(d.toString()) === d.valueOf()` 对整毫秒值成立）。
+///
+/// # 边界
+/// - 两种形态：`Www Mmm DD YYYY HH:MM:SS GMT±HHMM`（toString）与
+///   `Www, DD Mmm YYYY HH:MM:SS GMT`（toUTCString）；星期名不校验。
+/// - 年号带符号（负年 `-` 前缀），时分秒与偏移均按十进制数字解析。
+fn parse_engine_date_string(s: &str) -> Option<f64> {
+    let tokens: Vec<&str> = s.split_whitespace().collect();
+    if tokens.len() != 6 {
+        return None;
+    }
+    let (day_s, mon_s, year_s, time_s, off_s) = if tokens[0].ends_with(',') {
+        (tokens[1], tokens[2], tokens[3], tokens[4], "GMT")
+    } else {
+        (tokens[2], tokens[1], tokens[3], tokens[4], tokens[5])
+    };
+    let m = MONTH_NAMES.iter().position(|n| *n == mon_s)? as i64 + 1;
+    let d = two_digits(day_s.as_bytes())?;
+    let y = parse_signed_year(year_s)?;
+    let (h, mi, sec) = parse_hms(time_s)?;
+    let offset_min = if off_s == "GMT" {
+        0
+    } else {
+        let rest = off_s.strip_prefix("GMT")?;
+        let (sign, rest) = rest.split_at(1);
+        let sign = if sign == "-" { -1 } else { 1 };
+        let mut om = 0i64;
+        for c in rest.bytes() {
+            if !c.is_ascii_digit() {
+                return None;
+            }
+            om = om * 10 + (c - b'0') as i64;
+        }
+        sign * om
+    };
+    let ts = civil_day_count(y, m, d) * MS_PER_DAY + h * 3_600_000 + mi * 60_000 + sec * 1_000 - offset_min * 60_000;
+    Some(time_clip_i64(ts))
+}
+
+fn parse_signed_year(s: &str) -> Option<i64> {
+    let (neg, rest) = if let Some(r) = s.strip_prefix('-') {
+        (true, r)
+    } else {
+        (false, s)
+    };
+    if rest.is_empty() || !rest.bytes().all(|c| c.is_ascii_digit()) {
+        return None;
+    }
+    let mut y = 0i64;
+    for c in rest.bytes() {
+        y = y.checked_mul(10)?.checked_add((c - b'0') as i64)?;
+    }
+    Some(if neg { -y } else { y })
+}
+
+fn parse_hms(s: &str) -> Option<(i64, i64, i64)> {
+    let parts: Vec<&str> = s.split(':').collect();
+    if parts.len() != 3 {
+        return None;
+    }
+    Some((two_digits(parts[0].as_bytes())?, two_digits(parts[1].as_bytes())?, two_digits(parts[2].as_bytes())?))
+}
+
+/// 日期字符串解析总入口：先严格 ISO，失败后按序回退实现自定义格式
+/// （RFC 2822、引擎自身 toString / toUTCString 输出、YYYY/MM/DD）；
+/// 全部不匹配返回 NaN。
+fn parse_date_string(s: &str) -> f64 {
+    if let Some(ts) = parse_iso_strict(s) {
+        return ts;
+    }
+    if let Ok(dt) = chrono::DateTime::parse_from_rfc2822(s) {
         return dt.timestamp_millis() as f64;
     }
-    // 无偏移完整时间按 UTC。
-    if let Ok(ndt) = NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S%.f") {
-        return ndt.and_utc().timestamp_millis() as f64;
+    if let Some(ts) = parse_engine_date_string(s) {
+        return ts;
     }
-    // 纯日期按 UTC 零点。
-    if let Ok(nd) = NaiveDate::parse_from_str(s, "%Y-%m-%d") {
+    if let Ok(nd) = NaiveDate::parse_from_str(s, "%Y/%m/%d") {
         if let Some(ndt) = nd.and_hms_opt(0, 0, 0) {
             return ndt.and_utc().timestamp_millis() as f64;
         }
@@ -345,39 +678,44 @@ fn parse_iso_timestamp(s: &str) -> f64 {
     f64::NAN
 }
 
+/// toString 完整格式：`Www Mmm DD YYYY HH:MM:SS GMT±HHMM`（本地时间）；
+/// 时间戳无效或本地偏移采样失败返回 `"Invalid Date"`。
+fn format_local_date_string(ms: f64) -> String {
+    match local_components(ms) {
+        Some(p) => {
+            let naive = ms as i64 + p.offset_ms;
+            let days = naive.div_euclid(MS_PER_DAY);
+            let wd = (days + 4).rem_euclid(7);
+            format!(
+                "{} {} {:02} {} {:02}:{:02}:{:02} {}",
+                WEEKDAY_NAMES[wd as usize],
+                MONTH_NAMES[p.month0 as usize],
+                p.day,
+                format_year_4(p.year),
+                p.hour,
+                p.minute,
+                p.second,
+                format_tz_ms(p.offset_ms),
+            )
+        }
+        None => "Invalid Date".to_string(),
+    }
+}
+
 /// JS `Date()` 构造逻辑：构造调用无参取当前时间、单参支持时间戳/字符串/Date 对象、
 /// 多参按本地时间字段（年/月/日/时/分/秒/毫秒）组合；普通调用忽略全部参数，
 /// 返回当前时刻的日期字符串（与 `new Date().toString()` 同格式）。
+///
+/// # 边界
+/// - 单参对象按序判定：Date 对象直取 [[DateValue]]；其余对象走
+///   ToPrimitive（default 提示），字符串结果按日期解析、数值结果 TimeClip。
+/// - 单参数值先截断再 TimeClip（Date 值为整毫秒）。
+/// - 原型按 GetPrototypeFromConstructor(new.target, %Date.prototype%) 选取。
 pub fn date_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
-    let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
-    let is_ctor_call = this_val.is_object() && {
-        let ptr = this_val.as_js_object_ptr();
-        if ptr.is_null() {
-            false
-        } else {
-            let date_proto = vm.builtin_proto(ProtoKind::DateProto);
-            if date_proto.is_null() {
-                false
-            } else {
-                let obj = unsafe { &*ptr };
-                let proto_ptr = obj.proto().as_js_object_ptr();
-                if proto_ptr.is_null() {
-                    false
-                } else {
-                    std::ptr::eq(proto_ptr, date_proto)
-                }
-            }
-        }
-    };
-
-    if !is_ctor_call {
+    if !vm.constructing_native() {
         // 普通调用：忽略全部参数（不做任何强制转换），返回当前时刻字符串。
         let ms = Utc::now().timestamp_millis() as f64;
-        let s = match dt_from_ms(ms) {
-            Some(dt) => dt.format("%a %b %d %Y %H:%M:%S %Z %z").to_string(),
-            None => "Invalid Date".to_string(),
-        };
-        return NativeResult::Ok(vm.new_string_owned(s));
+        return NativeResult::Ok(vm.new_string_owned(format_local_date_string(ms)));
     }
 
     let timestamp = if args.len() < 2 {
@@ -431,13 +769,15 @@ pub fn date_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         if val.is_string() {
             // SAFETY: val 已确认是字符串值。
             let s = unsafe { (*val.as_string_ptr()).to_owned_string() };
-            parse_iso_timestamp(&s)
+            parse_date_string(&s)
         } else if val.is_int() || val.is_double() {
-            if val.is_int() {
+            // 数值参数先截断再 TimeClip（Date 值为整毫秒）。
+            let n = if val.is_int() {
                 val.as_int() as f64
             } else {
                 val.as_double()
-            }
+            };
+            time_clip(n.trunc())
         } else if val.is_object() && {
             let ptr = val.as_js_object_ptr();
             if ptr.is_null() {
@@ -446,23 +786,62 @@ pub fn date_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
                 unsafe { &*ptr }.is_date_obj()
             }
         } {
+            // Date 对象直取 [[DateValue]]，不触发 ToPrimitive。
             let obj = unsafe { &*val.as_js_object_ptr() };
             get_timestamp(obj)
         } else {
-            match oxide_runtime_api::to_number_full(val, vm) {
-                Ok(n) => n,
-                Err(_) => {
-                    // 对象经 ToNumber 转换时 toString/valueOf 可抛异常，须原样传播原始异常。
+            // 其余对象：ToPrimitive（default 提示）；字符串结果按日期解析，
+            // 数值结果 TimeClip。用户方法抛错原值传播。
+            let v = match oxide_runtime_api::to_primitive(val, ToPrimitiveHint::Default, vm) {
+                Ok(v) => v,
+                Err(msg) => {
                     if let Some(exc) = vm.take_uncaught_value() {
                         return NativeResult::Err(exc);
                     }
-                    return NativeResult::Err(crate::error::create_type_error(vm, "Cannot convert value to a number"));
+                    return NativeResult::Err(crate::error::create_type_error(vm, &msg));
+                }
+            };
+            if v.is_string() {
+                // SAFETY: v 已确认是字符串值。
+                let s = unsafe { (*v.as_string_ptr()).to_owned_string() };
+                parse_date_string(&s)
+            } else {
+                match oxide_runtime_api::to_number_full(v, vm) {
+                    Ok(n) => time_clip(n),
+                    Err(_) => {
+                        if let Some(exc) = vm.take_uncaught_value() {
+                            return NativeResult::Err(exc);
+                        }
+                        return NativeResult::Err(crate::error::create_type_error(vm, "Cannot convert value to a number"));
+                    }
                 }
             }
         }
     };
 
-    let mut obj = JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(vm.builtin_proto(ProtoKind::DateProto)));
+    // GetPrototypeFromConstructor(new.target, %Date.prototype%)：读 new.target
+    // 的 "prototype"（访问器触发，异常原值传播），非对象结果回落默认原型。
+    let new_target = vm.reg(255);
+    let proto = if new_target.is_object() {
+        let nt_ptr = new_target.as_js_object_ptr();
+        // SAFETY: is_object 保证指针非空且对象本 session 存活。
+        let nt_obj = unsafe { &*nt_ptr };
+        let proto_si = vm.perm_intern("prototype");
+        match vm.ordinary_get(nt_obj, proto_si, new_target) {
+            Ok(p) if p.is_object() => p,
+            Ok(_) => JsValue::from_js_object(vm.builtin_proto(ProtoKind::DateProto)),
+            Err(msg) => {
+                if let Some(exc) = vm.take_uncaught_value() {
+                    return NativeResult::Err(exc);
+                }
+                return NativeResult::Err(crate::error::create_type_error(vm, &msg));
+            }
+        }
+    } else {
+        JsValue::from_js_object(vm.builtin_proto(ProtoKind::DateProto))
+    };
+
+    let mut obj = JsObject::new_empty(EMPTY_SHAPE_ID, proto);
     obj.type_tag = JsObject::OBJ_TYPE_DATE;
     obj.set_prop_at(0, JsValue::float(timestamp));
 
@@ -475,8 +854,13 @@ pub fn date_now<H: VmHost>(_vm: &mut H, _args: &[u8]) -> NativeResult {
     NativeResult::Ok(JsValue::float(Utc::now().timestamp_millis() as f64))
 }
 
-/// `Date.parse(string)`：解析日期字符串（RFC 2822、ISO 8601 及常用格式）为时间戳；
-/// 无法解析返回 NaN。
+/// `Date.parse(string)`：解析日期字符串为时间戳；无法解析返回 NaN。
+///
+/// # 步骤
+/// 1. 先按严格 Date Time String Format 解析（含扩展年）；可识别串直接
+///    返回其 TimeClip 结果（越界扩展年归 NaN，不回退）。
+/// 2. 不匹配时回退实现自定义格式：RFC 2822、引擎自身 toString /
+///    toUTCString 输出、YYYY/MM/DD。
 pub fn date_parse<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     if args.len() < 2 {
         return NativeResult::Ok(JsValue::float(f64::NAN));
@@ -487,21 +871,7 @@ pub fn date_parse<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     }
     // SAFETY: val 已确认是字符串值。
     let s = unsafe { (*val.as_string_ptr()).to_owned_string() };
-    let mut ts = f64::NAN;
-    if let Ok(dt) = chrono::DateTime::parse_from_rfc2822(&s) {
-        ts = dt.timestamp_millis() as f64;
-    }
-    if ts.is_nan() {
-        ts = parse_iso_timestamp(&s);
-    }
-    if ts.is_nan() {
-        if let Ok(nd) = NaiveDate::parse_from_str(&s, "%Y/%m/%d") {
-            if let Some(ndt) = nd.and_hms_opt(0, 0, 0).and_then(|n| n.and_local_timezone(Utc).earliest()) {
-                ts = ndt.timestamp_millis() as f64;
-            }
-        }
-    }
-    NativeResult::Ok(JsValue::float(ts))
+    NativeResult::Ok(JsValue::float(parse_date_string(&s)))
 }
 
 /// `Date.UTC(y, m, d, h, min, s, ms)`：按 UTC 各字段组合成时间戳（m 为 0-based 月）。
@@ -554,23 +924,6 @@ pub fn date_utc<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     }
 }
 
-macro_rules! make_getter {
-    ($name:ident, $f:expr, $df:expr) => {
-        /// UTC 视图 getter（如 `getTime`）：返回 UTC 时间的指定分量；Invalid Date 返回 NaN。
-        pub fn $name<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
-            let obj = unsafe { &*native_try!(date_this(vm, args)) };
-            let ms = get_timestamp(obj);
-            if !ms.is_finite() {
-                return NativeResult::Ok(JsValue::float($df));
-            }
-            match dt_from_ms(ms) {
-                Some(dt) => NativeResult::Ok(JsValue::float(($f)(dt))),
-                None => NativeResult::Ok(JsValue::float($df)),
-            }
-        }
-    };
-}
-
 macro_rules! make_utc_getter {
     ($name:ident, $f:expr, $df:expr) => {
         /// UTC getter（如 `getUTCFullYear`）：返回 UTC 时间的指定分量；Invalid Date 返回 NaN。
@@ -605,7 +958,12 @@ macro_rules! make_local_getter {
     };
 }
 
-make_getter!(date_get_time, |dt: DateTime<Utc>| dt.timestamp_millis() as f64, f64::NAN);
+/// `Date.prototype.getTime()`：返回 [[DateValue]]（无转换）；Invalid Date 返回 NaN。
+pub fn date_get_time<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let obj = unsafe { &*native_try!(date_this(vm, args)) };
+    NativeResult::Ok(JsValue::float(get_timestamp(obj)))
+}
+
 make_local_getter!(date_get_full_year, |dt: DateTime<Local>| dt.year() as f64, f64::NAN);
 make_local_getter!(date_get_month, |dt: DateTime<Local>| dt.month0() as f64, f64::NAN);
 make_local_getter!(date_get_date, |dt: DateTime<Local>| dt.day() as f64, f64::NAN);
@@ -632,10 +990,14 @@ make_utc_getter!(
     f64::NAN
 );
 
-/// `Date.prototype.getTimezoneOffset()`：返回本地时区相对 UTC 的分钟偏移。
+/// `Date.prototype.getTimezoneOffset()`：返回本地时区相对 UTC 的分钟偏移；
+/// Invalid Date 返回 NaN。
 pub fn date_get_timezone_offset<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let obj = unsafe { &*native_try!(date_this(vm, args)) };
     let ms = get_timestamp(obj);
+    if !ms.is_finite() {
+        return NativeResult::Ok(JsValue::float(f64::NAN));
+    }
     let offset_min = local_offset_minutes(ms);
     NativeResult::Ok(JsValue::float(offset_min as f64))
 }
@@ -644,11 +1006,8 @@ fn local_offset_minutes(ms: f64) -> i32 {
     if !ms.is_finite() {
         return 0;
     }
-    let offset = chrono::DateTime::from_timestamp_millis(ms as i64)
-        .map(|dt| dt.with_timezone(&chrono::Local))
-        .map(|dt| dt.offset().local_minus_utc())
-        .unwrap_or(0);
-    -offset / 60
+    let ts = ms as i64;
+    sample_local_offset_ms(ts).map(|off| -((off / 60_000) as i32)).unwrap_or(0)
 }
 
 /// `Date.prototype.setTime(ms)`：直接设置时间戳，返回新时间戳。
@@ -669,26 +1028,29 @@ pub fn date_set_full_year<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let ms = get_timestamp(obj);
     let y = native_try!(date_arg_number(vm, if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() }));
     // 无效 this 值取 +0 基准分量（1970-01-01 时刻全零，+0 不经 LocalTime 换算）。
-    let (_dy, dm, dd, dh, dmin, dsec, dms) = if ms.is_finite() {
-        local_components(ms).unwrap_or((1970, 0, 1, 0, 0, 0, 0))
+    let p = if ms.is_finite() {
+        local_components(ms).unwrap_or(LocalParts::EPOCH)
     } else {
-        (1970, 0, 1, 0, 0, 0, 0)
+        LocalParts::EPOCH
     };
     let m = if args.len() > 2 {
         native_try!(date_arg_number(vm, vm.reg(args[2])))
     } else {
-        dm as f64
+        p.month0 as f64
     };
     let d = if args.len() > 3 {
         native_try!(date_arg_number(vm, vm.reg(args[3])))
     } else {
-        dd as f64
+        p.day as f64
     };
     if y.is_nan() || m.is_nan() || d.is_nan() {
         set_timestamp(obj, f64::NAN);
         return NativeResult::Ok(JsValue::float(f64::NAN));
     }
-    finish_local_setter(obj, make_local_timestamp(y, m, d, dh as f64, dmin as f64, dsec as f64, dms as f64))
+    finish_local_setter(
+        obj,
+        make_local_timestamp(y, m, d, p.hour as f64, p.minute as f64, p.second as f64, p.milli as f64),
+    )
 }
 /// `Date.prototype.setMonth(m, d)`：设置本地月份（可选日），返回新时间戳。
 pub fn date_set_month<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
@@ -705,17 +1067,17 @@ pub fn date_set_month<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     if !ms.is_finite() {
         return NativeResult::Ok(JsValue::float(f64::NAN));
     }
-    let Some((dy, _dm, dd, dh, dmin, dsec, dms)) = local_components(ms) else {
+    let Some(p) = local_components(ms) else {
         return NativeResult::Ok(JsValue::float(f64::NAN));
     };
-    let d = if has_date { d } else { dd as f64 };
+    let d = if has_date { d } else { p.day as f64 };
     if m.is_nan() || d.is_nan() {
         set_timestamp(obj, f64::NAN);
         return NativeResult::Ok(JsValue::float(f64::NAN));
     }
     finish_local_setter(
         obj,
-        make_local_timestamp(dy as f64, m, d, dh as f64, dmin as f64, dsec as f64, dms as f64),
+        make_local_timestamp(p.year as f64, m, d, p.hour as f64, p.minute as f64, p.second as f64, p.milli as f64),
     )
 }
 /// `Date.prototype.setDate(d)`：设置本地日，返回新时间戳。
@@ -726,7 +1088,7 @@ pub fn date_set_date<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     if !ms.is_finite() {
         return NativeResult::Ok(JsValue::float(f64::NAN));
     }
-    let Some((dy, dm, _dd, dh, dmin, dsec, dms)) = local_components(ms) else {
+    let Some(p) = local_components(ms) else {
         return NativeResult::Ok(JsValue::float(f64::NAN));
     };
     if d.is_nan() {
@@ -735,7 +1097,15 @@ pub fn date_set_date<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     }
     finish_local_setter(
         obj,
-        make_local_timestamp(dy as f64, dm as f64, d, dh as f64, dmin as f64, dsec as f64, dms as f64),
+        make_local_timestamp(
+            p.year as f64,
+            p.month0 as f64,
+            d,
+            p.hour as f64,
+            p.minute as f64,
+            p.second as f64,
+            p.milli as f64,
+        ),
     )
 }
 /// `Date.prototype.setHours(h, min, s, ms)`：设置本地小时（可选分/秒/毫秒），返回新时间戳。
@@ -761,18 +1131,21 @@ pub fn date_set_hours<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     if !ms.is_finite() {
         return NativeResult::Ok(JsValue::float(f64::NAN));
     }
-    let Some((dy, dm, dd, _dh, dmin, dsec, dms)) = local_components(ms) else {
+    let Some(p) = local_components(ms) else {
         return NativeResult::Ok(JsValue::float(f64::NAN));
     };
     // 缺省分量取本地时刻的 TimeWithinDay 值，与 MakeTime 组合后整体进位。
-    let min_v = if args.len() > 2 { min } else { dmin as f64 };
-    let sec_v = if args.len() > 3 { sec } else { dsec as f64 };
-    let ms_v = if args.len() > 4 { ms_arg } else { dms as f64 };
+    let min_v = if args.len() > 2 { min } else { p.minute as f64 };
+    let sec_v = if args.len() > 3 { sec } else { p.second as f64 };
+    let ms_v = if args.len() > 4 { ms_arg } else { p.milli as f64 };
     if h.is_nan() || min_v.is_nan() || sec_v.is_nan() || ms_v.is_nan() {
         set_timestamp(obj, f64::NAN);
         return NativeResult::Ok(JsValue::float(f64::NAN));
     }
-    finish_local_setter(obj, make_local_timestamp(dy as f64, dm as f64, dd as f64, h, min_v, sec_v, ms_v))
+    finish_local_setter(
+        obj,
+        make_local_timestamp(p.year as f64, p.month0 as f64, p.day as f64, h, min_v, sec_v, ms_v),
+    )
 }
 /// `Date.prototype.setMinutes(min, s, ms)`：设置本地分钟（可选秒/毫秒），返回新时间戳。
 pub fn date_set_minutes<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
@@ -792,16 +1165,19 @@ pub fn date_set_minutes<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     if !ms.is_finite() {
         return NativeResult::Ok(JsValue::float(f64::NAN));
     }
-    let Some((dy, dm, dd, dh, _dmin, dsec, dms)) = local_components(ms) else {
+    let Some(p) = local_components(ms) else {
         return NativeResult::Ok(JsValue::float(f64::NAN));
     };
-    let sec_v = if args.len() > 2 { sec } else { dsec as f64 };
-    let ms_v = if args.len() > 3 { ms_arg } else { dms as f64 };
+    let sec_v = if args.len() > 2 { sec } else { p.second as f64 };
+    let ms_v = if args.len() > 3 { ms_arg } else { p.milli as f64 };
     if min.is_nan() || sec_v.is_nan() || ms_v.is_nan() {
         set_timestamp(obj, f64::NAN);
         return NativeResult::Ok(JsValue::float(f64::NAN));
     }
-    finish_local_setter(obj, make_local_timestamp(dy as f64, dm as f64, dd as f64, dh as f64, min, sec_v, ms_v))
+    finish_local_setter(
+        obj,
+        make_local_timestamp(p.year as f64, p.month0 as f64, p.day as f64, p.hour as f64, min, sec_v, ms_v),
+    )
 }
 /// `Date.prototype.setSeconds(s, ms)`：设置本地秒（可选毫秒），返回新时间戳。
 pub fn date_set_seconds<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
@@ -816,17 +1192,25 @@ pub fn date_set_seconds<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     if !ms.is_finite() {
         return NativeResult::Ok(JsValue::float(f64::NAN));
     }
-    let Some((dy, dm, dd, dh, dmin, _dsec, dms)) = local_components(ms) else {
+    let Some(p) = local_components(ms) else {
         return NativeResult::Ok(JsValue::float(f64::NAN));
     };
-    let ms_v = if args.len() > 2 { ms_arg } else { dms as f64 };
+    let ms_v = if args.len() > 2 { ms_arg } else { p.milli as f64 };
     if sec.is_nan() || ms_v.is_nan() {
         set_timestamp(obj, f64::NAN);
         return NativeResult::Ok(JsValue::float(f64::NAN));
     }
     finish_local_setter(
         obj,
-        make_local_timestamp(dy as f64, dm as f64, dd as f64, dh as f64, dmin as f64, sec, ms_v),
+        make_local_timestamp(
+            p.year as f64,
+            p.month0 as f64,
+            p.day as f64,
+            p.hour as f64,
+            p.minute as f64,
+            sec,
+            ms_v,
+        ),
     )
 }
 /// `Date.prototype.setMilliseconds(ms)`：设置本地毫秒，返回新时间戳。
@@ -837,7 +1221,7 @@ pub fn date_set_milliseconds<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult
     if !ms.is_finite() {
         return NativeResult::Ok(JsValue::float(f64::NAN));
     }
-    let Some((dy, dm, dd, dh, dmin, dsec, _dms)) = local_components(ms) else {
+    let Some(p) = local_components(ms) else {
         return NativeResult::Ok(JsValue::float(f64::NAN));
     };
     if ms_arg.is_nan() {
@@ -846,7 +1230,15 @@ pub fn date_set_milliseconds<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult
     }
     finish_local_setter(
         obj,
-        make_local_timestamp(dy as f64, dm as f64, dd as f64, dh as f64, dmin as f64, dsec as f64, ms_arg),
+        make_local_timestamp(
+            p.year as f64,
+            p.month0 as f64,
+            p.day as f64,
+            p.hour as f64,
+            p.minute as f64,
+            p.second as f64,
+            ms_arg,
+        ),
     )
 }
 
@@ -873,7 +1265,7 @@ pub fn date_set_utc_full_year<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResul
         // +0 基准：1970-01-01 UTC 全零，日内毫秒为 0。
         return apply_date_result!(
             obj,
-            make_day(y, m.unwrap_or(0.0), d.unwrap_or(1.0)).and_then(|days| make_date_ms(days, 0))
+            make_day(y, m.unwrap_or(0.0), d.unwrap_or(1.0)).and_then(|days| make_date_ms(days, 0.0))
         );
     }
     let ndt = match naive_from_ms(ms) {
@@ -1085,10 +1477,10 @@ pub fn date_set_year<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let ms = get_timestamp(obj);
     let y = native_try!(date_arg_number(vm, if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() }));
     // 无效 this 值取 +0 基准分量（1970-01-01 时刻全零，与 setFullYear 同口径）。
-    let (_dy, dm, dd, dh, dmin, dsec, dms) = if ms.is_finite() {
-        local_components(ms).unwrap_or((1970, 0, 1, 0, 0, 0, 0))
+    let p = if ms.is_finite() {
+        local_components(ms).unwrap_or(LocalParts::EPOCH)
     } else {
-        (1970, 0, 1, 0, 0, 0, 0)
+        LocalParts::EPOCH
     };
     if y.is_nan() {
         set_timestamp(obj, f64::NAN);
@@ -1099,7 +1491,15 @@ pub fn date_set_year<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let full_year = if (0..=99).contains(&y_int) { y_int + 1900 } else { y_int };
     finish_local_setter(
         obj,
-        make_local_timestamp(full_year as f64, dm as f64, dd as f64, dh as f64, dmin as f64, dsec as f64, dms as f64),
+        make_local_timestamp(
+            full_year as f64,
+            p.month0 as f64,
+            p.day as f64,
+            p.hour as f64,
+            p.minute as f64,
+            p.second as f64,
+            p.milli as f64,
+        ),
     )
 }
 
@@ -1123,56 +1523,215 @@ pub fn date_to_locale_time_string<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeR
     date_to_time_string(vm, args)
 }
 
-fn date_to_string_inner<H: VmHost>(vm: &mut H, args: &[u8], format_str: &str, invalid: &str) -> NativeResult {
-    let obj = unsafe { &*native_try!(date_this(vm, args)) };
-    let ms = get_timestamp(obj);
-    if !ms.is_finite() {
-        return NativeResult::Ok(vm.new_string(invalid));
+/// toISOString 的年文本：负年 `-` 前缀加 6 位零填充，年 > 9999 加 `+` 前缀
+/// 加 6 位零填充，其余 4 位零填充。
+fn format_iso_year(y: i64) -> String {
+    if y < 0 {
+        format!("-{:06}", -y)
+    } else if y > 9999 {
+        format!("+{:06}", y)
+    } else {
+        format!("{:04}", y)
     }
-    let s = match dt_from_ms(ms) {
-        Some(dt) => dt.format(format_str).to_string(),
-        None => invalid.to_string(),
-    };
-    NativeResult::Ok(vm.new_string_owned(s))
 }
 
-/// `Date.prototype.toISOString()`：输出 ISO 8601 格式（`YYYY-MM-DDTHH:MM:SS.mmmZ`）。
+/// UTC 八分量（年、1-based 月、日、时、分、秒、毫秒、星期）。
+#[derive(Clone, Copy)]
+struct UtcParts {
+    year: i64,
+    month: i64,
+    day: i64,
+    hour: i64,
+    minute: i64,
+    second: i64,
+    milli: i64,
+    weekday: i64,
+}
+
+/// UTC 八分量；时间戳无效返回 None。
+fn utc_components(ms: f64) -> Option<UtcParts> {
+    if !ms.is_finite() {
+        return None;
+    }
+    let ts = ms as i64;
+    let days = ts.div_euclid(MS_PER_DAY);
+    let rem = ts.rem_euclid(MS_PER_DAY);
+    let (y, m, d) = civil_from_days(days);
+    let wd = (days + 4).rem_euclid(7);
+    Some(UtcParts {
+        year: y,
+        month: m as i64,
+        day: d as i64,
+        hour: rem / 3_600_000,
+        minute: (rem / 60_000) % 60,
+        second: (rem / 1_000) % 60,
+        milli: rem % 1_000,
+        weekday: wd,
+    })
+}
+
+/// `Date.prototype.toISOString()`：输出 ISO 8601 格式（6 位年，`Z` 收尾）。
+///
+/// # 边界
+/// 时间值非有限或超出 TimeClip 包络（|t| > 8.64e15）抛 RangeError。
 pub fn date_to_iso_string<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
-    date_to_string_inner(vm, args, "%Y-%m-%dT%H:%M:%S%.3fZ", "Invalid Date")
-}
-
-/// `Date.prototype.toJSON()`：输出 ISO 8601 字符串；Invalid Date 返回 null。
-pub fn date_to_json<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let obj = unsafe { &*native_try!(date_this(vm, args)) };
     let ms = get_timestamp(obj);
-    if !ms.is_finite() {
-        return NativeResult::Ok(JsValue::null());
+    if !ms.is_finite() || ms.abs() > MS_LIMIT as f64 {
+        return NativeResult::Err(crate::error::create_range_error(vm, "invalid date"));
     }
-    let s = match dt_from_ms(ms) {
-        Some(dt) => dt.format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string(),
-        None => return NativeResult::Ok(JsValue::null()),
+    let p = match utc_components(ms) {
+        Some(c) => c,
+        None => return NativeResult::Err(crate::error::create_range_error(vm, "invalid date")),
     };
+    let s = format!(
+        "{}-{:02}-{:02}T{:02}:{:02}:{:02}.{:03}Z",
+        format_iso_year(p.year),
+        p.month,
+        p.day,
+        p.hour,
+        p.minute,
+        p.second,
+        p.milli
+    );
     NativeResult::Ok(vm.new_string_owned(s))
+}
+
+/// `Date.prototype.toJSON(key)`：泛型方法。
+///
+/// # 步骤
+/// 1. O = ToObject(this)（null / undefined 抛 TypeError）。
+/// 2. tv = ToPrimitive(O, hint Number)；tv 为非有限 Number 时返回 null
+///    （非 Number 结果不拦截）。
+/// 3. 返回 ? Invoke(O, "toISOString")（无参）。
+///
+/// # 注意事项
+/// 接收者指针跨 ToPrimitive 与 Invoke 窗口钉返回寄存器保活，每窗口后重读。
+pub fn date_to_json<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
+    let o_val = match oxide_runtime_api::to_object(this_val, vm) {
+        Ok(o) => o,
+        Err(msg) => {
+            if let Some(exc) = vm.take_uncaught_value() {
+                return NativeResult::Err(exc);
+            }
+            return NativeResult::Err(crate::error::create_type_error(vm, &msg));
+        }
+    };
+    vm.set_reg(0, o_val);
+    let o_val = vm.reg(0);
+    let tv = match oxide_runtime_api::to_primitive(o_val, ToPrimitiveHint::Number, vm) {
+        Ok(t) => t,
+        Err(msg) => {
+            if let Some(exc) = vm.take_uncaught_value() {
+                return NativeResult::Err(exc);
+            }
+            return NativeResult::Err(crate::error::create_type_error(vm, &msg));
+        }
+    };
+    // 有限性检查仅对 Number 结果生效：tv 为非有限 Number 返回 null；
+    // 字符串 / Symbol 等其余原始值不拦截，直落到 Invoke。
+    if tv.is_int() || tv.is_double() {
+        let n = if tv.is_int() {
+            tv.as_int() as f64
+        } else {
+            tv.as_double()
+        };
+        if !n.is_finite() {
+            return NativeResult::Ok(JsValue::null());
+        }
+    }
+    // Invoke(O, "toISOString")：读方法后调用（this = O、无参）。
+    let o_val = vm.reg(0);
+    let obj_ptr = o_val.as_js_object_ptr();
+    // SAFETY: ToObject 保证 o_val 为对象且指针非空。
+    let obj = unsafe { &*obj_ptr };
+    let si = vm.perm_intern("toISOString");
+    let method = match vm.ordinary_get(obj, si, o_val) {
+        Ok(m) => m,
+        Err(msg) => {
+            if let Some(exc) = vm.take_uncaught_value() {
+                return NativeResult::Err(exc);
+            }
+            return NativeResult::Err(crate::error::create_type_error(vm, &msg));
+        }
+    };
+    if !crate::iterator::is_callable(method) {
+        return NativeResult::Err(crate::error::create_type_error(vm, "toISOString is not a function"));
+    }
+    let result = match vm.call_function_sync(method, o_val, &[]) {
+        Ok(r) => r,
+        Err(msg) => {
+            if let Some(exc) = vm.take_uncaught_value() {
+                return NativeResult::Err(exc);
+            }
+            return NativeResult::Err(crate::error::create_type_error(vm, &msg));
+        }
+    };
+    NativeResult::Ok(result)
 }
 
 /// `Date.prototype.toString()`：本地时间完整字符串（如 `Wed Aug 05 2026 12:00:00 GMT+0000`）。
 pub fn date_to_string<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
-    date_to_string_inner(vm, args, "%a %b %d %Y %H:%M:%S %Z %z", "Invalid Date")
+    let obj = unsafe { &*native_try!(date_this(vm, args)) };
+    let ms = get_timestamp(obj);
+    NativeResult::Ok(vm.new_string_owned(format_local_date_string(ms)))
 }
 
 /// `Date.prototype.toDateString()`：日期部分字符串（如 `Wed Aug 05 2026`）。
 pub fn date_to_date_string<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
-    date_to_string_inner(vm, args, "%a %b %d %Y", "Invalid Date")
+    let obj = unsafe { &*native_try!(date_this(vm, args)) };
+    let ms = get_timestamp(obj);
+    let Some(p) = local_components(ms) else {
+        return NativeResult::Ok(vm.new_string("Invalid Date"));
+    };
+    let days = (ms as i64 + p.offset_ms).div_euclid(MS_PER_DAY);
+    let wd = (days + 4).rem_euclid(7);
+    let s = format!(
+        "{} {} {:02} {}",
+        WEEKDAY_NAMES[wd as usize],
+        MONTH_NAMES[p.month0 as usize],
+        p.day,
+        format_year_4(p.year)
+    );
+    NativeResult::Ok(vm.new_string_owned(s))
 }
 
 /// `Date.prototype.toTimeString()`：时间部分字符串（如 `12:00:00 GMT+0000`）。
 pub fn date_to_time_string<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
-    date_to_string_inner(vm, args, "%H:%M:%S %Z", "Invalid Date")
+    let obj = unsafe { &*native_try!(date_this(vm, args)) };
+    let ms = get_timestamp(obj);
+    let Some(p) = local_components(ms) else {
+        return NativeResult::Ok(vm.new_string("Invalid Date"));
+    };
+    let s = format!(
+        "{:02}:{:02}:{:02} {}",
+        p.hour,
+        p.minute,
+        p.second,
+        format_tz_ms(p.offset_ms)
+    );
+    NativeResult::Ok(vm.new_string_owned(s))
 }
 
 /// `Date.prototype.toUTCString()`：UTC 完整字符串（如 `Wed, 05 Aug 2026 12:00:00 GMT`）。
 pub fn date_to_utc_string<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
-    date_to_string_inner(vm, args, "%a, %d %b %Y %H:%M:%S GMT", "Invalid Date")
+    let obj = unsafe { &*native_try!(date_this(vm, args)) };
+    let ms = get_timestamp(obj);
+    let Some(p) = utc_components(ms) else {
+        return NativeResult::Ok(vm.new_string("Invalid Date"));
+    };
+    let s = format!(
+        "{}, {:02} {} {} {:02}:{:02}:{:02} GMT",
+        WEEKDAY_NAMES[p.weekday as usize],
+        p.day,
+        MONTH_NAMES[(p.month - 1) as usize],
+        format_year_4(p.year),
+        p.hour,
+        p.minute,
+        p.second
+    );
+    NativeResult::Ok(vm.new_string_owned(s))
 }
 
 /// `Date.prototype.valueOf()`：返回时间戳（毫秒）。

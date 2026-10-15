@@ -31,8 +31,8 @@ macro_rules! binary_arith {
         } else {
             // 注意：混合 BigInt/Number 检查不能在此前置（对象操作数如
             // `{valueOf: () => 2n}` 需先 ToPrimitive 再判定），统一放 coerce 之后。
-            let l = $self.coerce_primitive_bounded(lv, false)?;
-            let r = $self.coerce_primitive_bounded(rv, false)?;
+            let l = $self.coerce_primitive_bounded(lv, coercion::ToPrimitiveHint::Number)?;
+            let r = $self.coerce_primitive_bounded(rv, coercion::ToPrimitiveHint::Number)?;
             if l.is_symbol() || r.is_symbol() {
                 // ToNumber(Symbol) 抛 TypeError（ECMA-262 §7.1.4），先于 BigInt 混合判定。
                 $self.raise_type_error("Cannot convert a Symbol value to a number")?;

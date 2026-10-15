@@ -1013,3 +1013,174 @@ fn date_to_primitive_existing_coercion_regression() {
     let r = eval(&mut vm, "typeof ('' + new Date(0))").unwrap();
     assert_eq!(str_val(&vm, r), "string");
 }
+
+// ── 严格 ISO 解析（Date Time String Format）──
+
+#[test]
+fn date_parse_extended_year_time_clip_boundaries() {
+    let mut vm = Vm::new();
+    // 扩展年落在 TimeClip 包络两端，按规范解析为包络端点值。
+    let r = eval(&mut vm, "Date.parse('275760-09-13T00:00:00Z')").unwrap();
+    assert_eq!(r.as_double(), 8.64e15);
+    let r = eval(&mut vm, "Date.parse('-271821-04-20T00:00:00Z')").unwrap();
+    assert_eq!(r.as_double(), -8.64e15);
+    // 扩展年越出包络：整体可识别，TimeClip 归 NaN。
+    let r = eval(&mut vm, "Date.parse('275761-01-01T00:00:00Z')").unwrap();
+    assert!(r.as_double().is_nan());
+    let r = eval(&mut vm, "Date.parse('-271822-01-01T00:00:00Z')").unwrap();
+    assert!(r.as_double().is_nan());
+}
+
+#[test]
+fn date_parse_negative_zero_year_rejected() {
+    let mut vm = Vm::new();
+    // 年 0 视为正，须写作 +000000；-000000 不是合法扩展年。
+    let r = eval(&mut vm, "Date.parse('-000000-01-01T00:00:00Z')").unwrap();
+    assert!(r.as_double().is_nan());
+    let r = eval(&mut vm, "Date.parse('+000000-01-01T00:00:00Z')").unwrap();
+    assert_eq!(r.as_double(), -62167219200000.0);
+}
+
+#[test]
+fn date_parse_date_only_is_utc() {
+    let mut vm = Vm::new();
+    // 日期-only 形式解释为 UTC 零点。
+    let r = eval(&mut vm, "Date.parse('2020-01-01')").unwrap();
+    assert_eq!(r.as_double(), 1577836800000.0);
+}
+
+#[test]
+fn date_parse_offsetless_datetime_is_local() {
+    let mut vm = Vm::new();
+    // 无偏移完整日期时间解释为本地时间（与本地构造器互证，宿主无关）。
+    let r = eval(&mut vm, "Date.parse('2020-01-01T12:00:00')").unwrap();
+    let r2 = eval(&mut vm, "new Date(2020, 0, 1, 12).getTime()").unwrap();
+    assert_eq!(r.as_double(), r2.as_double());
+}
+
+#[test]
+fn date_parse_midnight_24_accepted() {
+    let mut vm = Vm::new();
+    // 24:00:00 等价于次日 00:00。
+    let r = eval(&mut vm, "Date.parse('2020-01-01T24:00:00Z')").unwrap();
+    assert_eq!(r.as_double(), 1577923200000.0);
+    // 24 时仅允许 24:00:00 形态，分秒毫秒非零即非法。
+    let r = eval(&mut vm, "Date.parse('2020-01-01T24:01:00Z')").unwrap();
+    assert!(r.as_double().is_nan());
+    let r = eval(&mut vm, "Date.parse('2020-01-01T24:00:01Z')").unwrap();
+    assert!(r.as_double().is_nan());
+}
+
+#[test]
+fn date_parse_invalid_calendar_rejected() {
+    let mut vm = Vm::new();
+    // 月 13、二月 30 日、时 25 均不是合法日期时间串。
+    let r = eval(&mut vm, "Date.parse('2020-13-01T00:00:00Z')").unwrap();
+    assert!(r.as_double().is_nan());
+    let r = eval(&mut vm, "Date.parse('2020-02-30T00:00:00Z')").unwrap();
+    assert!(r.as_double().is_nan());
+    let r = eval(&mut vm, "Date.parse('2020-01-01T25:00:00Z')").unwrap();
+    assert!(r.as_double().is_nan());
+}
+
+// ── toISOString 6 位年与 TimeClip 边界 ──
+
+#[test]
+fn date_to_iso_string_six_digit_year() {
+    let mut vm = Vm::new();
+    // 4 位年零填充（epoch 为 1970 年）。
+    let r = eval(&mut vm, "new Date(0).toISOString()").unwrap();
+    assert_eq!(str_val(&vm, r), "1970-01-01T00:00:00.000Z");
+    // 年 0 输出 4 位 0000。
+    let r = eval(&mut vm, "new Date(-62167219200000).toISOString()").unwrap();
+    assert_eq!(str_val(&vm, r), "0000-01-01T00:00:00.000Z");
+    // 负年带负号前缀（年 -1 的 1 月 1 日）。
+    let r = eval(&mut vm, "new Date(-62198755200000).toISOString()").unwrap();
+    assert_eq!(str_val(&vm, r), "-000001-01-01T00:00:00.000Z");
+}
+
+#[test]
+fn date_to_iso_string_time_clip_boundaries() {
+    let mut vm = Vm::new();
+    // 包络两端合法（正年 > 9999 带 + 前缀 6 位，负年带 - 前缀 6 位）。
+    let r = eval(&mut vm, "new Date(8.64e15).toISOString()").unwrap();
+    assert_eq!(str_val(&vm, r), "+275760-09-13T00:00:00.000Z");
+    let r = eval(&mut vm, "new Date(-8.64e15).toISOString()").unwrap();
+    assert_eq!(str_val(&vm, r), "-271821-04-20T00:00:00.000Z");
+    // 越出包络一毫秒：时间值归 NaN，toISOString 抛 RangeError。
+    let r = eval(
+        &mut vm,
+        "try { new Date(8.64e15 + 1).toISOString(); 'no' } catch (e) { e instanceof RangeError ? 'yes' : 'no' }",
+    )
+    .unwrap();
+    assert_eq!(str_val(&vm, r), "yes");
+    let r = eval(
+        &mut vm,
+        "try { new Date(-8.64e15 - 1).toISOString(); 'no' } catch (e) { e instanceof RangeError ? 'yes' : 'no' }",
+    )
+    .unwrap();
+    assert_eq!(str_val(&vm, r), "yes");
+}
+
+// ── toJSON 泛型化 ──
+
+#[test]
+fn date_to_json_invalid_date_returns_null() {
+    let mut vm = Vm::new();
+    let r = eval(&mut vm, "new Date(NaN).toJSON()").unwrap();
+    assert!(r.is_null());
+}
+
+#[test]
+fn date_to_json_generic_non_date_this() {
+    let mut vm = Vm::new();
+    // 非有限 Number 结果返回 null（有限性检查仅对 Number 生效）。
+    let r = eval(&mut vm, "Date.prototype.toJSON.call(Infinity)").unwrap();
+    assert!(r.is_null());
+    // 字符串结果（非 Number）不拦截，直落 Invoke(toISOString)，
+    // 装箱后的 String 对象无该方法，抛 TypeError。
+    let r = eval(
+        &mut vm,
+        "try { Date.prototype.toJSON.call('2020-01-01T00:00:00Z'); 'no' } \
+         catch (e) { e instanceof TypeError ? 'yes' : 'no' }",
+    )
+    .unwrap();
+    assert_eq!(str_val(&vm, r), "yes");
+    // 有限数值接收者装箱后走到 Invoke(toISOString)，方法不可调用抛 TypeError。
+    let r = eval(
+        &mut vm,
+        "try { Date.prototype.toJSON.call(42); 'no' } catch (e) { e instanceof TypeError ? 'yes' : 'no' }",
+    )
+    .unwrap();
+    assert_eq!(str_val(&vm, r), "yes");
+}
+
+#[test]
+fn date_to_json_via_json_stringify() {
+    let mut vm = Vm::new();
+    let r = eval(&mut vm, "JSON.stringify({ a: new Date(0) })").unwrap();
+    assert_eq!(str_val(&vm, r), "{\"a\":\"1970-01-01T00:00:00.000Z\"}");
+}
+
+// ── 构造器单参对象：ToPrimitive 传 default 提示 ──
+
+#[test]
+fn date_constructor_single_arg_object_default_hint() {
+    let mut vm = Vm::new();
+    // 单参对象构造经 ToPrimitive（default 提示），@@toPrimitive 收到 "default"。
+    let r = eval(
+        &mut vm,
+        "var d = new Date({ [Symbol.toPrimitive]: function(h) { return h === 'default' ? 0 : 1; } }); \
+         d.getTime() === 0 ? 1 : 0",
+    )
+    .unwrap();
+    assert_eq!(r.as_int(), 1);
+}
+
+#[test]
+fn date_constructor_single_arg_truncates_before_time_clip() {
+    let mut vm = Vm::new();
+    // 单参数值先截断再 TimeClip；-0.5 截断为 -0，归一为 +0。
+    let r = eval(&mut vm, "Object.is(new Date(-0.5).getTime(), 0) ? 1 : 0").unwrap();
+    assert_eq!(r.as_int(), 1);
+}
