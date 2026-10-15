@@ -746,8 +746,7 @@ fn date_to_temporal_instant_epoch_values() {
         ("new Date(-8.64e15)", "-8640000000000000000000n"),
     ];
     for (date, ns) in cases {
-        let r = eval(&mut vm, &format!("{date}.toTemporalInstant().epochNanoseconds === {ns} ? 1 : 0"))
-            .unwrap();
+        let r = eval(&mut vm, &format!("{date}.toTemporalInstant().epochNanoseconds === {ns} ? 1 : 0")).unwrap();
         assert_eq!(r.as_int(), 1, "date = {date}");
     }
 }

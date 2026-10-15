@@ -10,8 +10,8 @@ mod plain_year_month;
 mod time_zone;
 mod zoned_date_time;
 
-use common::*;
 pub(crate) use common::make_instant;
+use common::*;
 use difference::*;
 pub use duration::*;
 pub use instant::*;

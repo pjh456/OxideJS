@@ -137,7 +137,11 @@ pub fn bind_date(env: BindEnv<'_>, global: &mut JsObject) {
                 0,
             ),
             ("valueOf", oxide_builtins::date::date_value_of::<crate::vm::Vm> as *const (), 0),
-            ("toTemporalInstant", oxide_builtins::date::date_to_temporal_instant::<crate::vm::Vm> as *const (), 0),
+            (
+                "toTemporalInstant",
+                oxide_builtins::date::date_to_temporal_instant::<crate::vm::Vm> as *const (),
+                0,
+            ),
             ("toSource", oxide_builtins::to_source::to_source_date::<crate::vm::Vm> as *const (), 0),
         ],
     );
