@@ -2336,10 +2336,7 @@ fn iterator_zip_binding_surface() {
              && Iterator.zip.length === 1",
             true,
         ),
-        (
-            "Object.getPrototypeOf(Iterator.zip) === Function.prototype",
-            true,
-        ),
+        ("Object.getPrototypeOf(Iterator.zip) === Function.prototype", true),
         (
             "var d = Object.getOwnPropertyDescriptor(Iterator, 'zip'); \
              d.writable === true && d.enumerable === false && d.configurable === true",
@@ -2349,10 +2346,7 @@ fn iterator_zip_binding_surface() {
             "var ok = false; try { new Iterator.zip([]); } catch (e) { ok = e instanceof TypeError; } ok",
             true,
         ),
-        (
-            "var it = Iterator.zip([]); it instanceof Iterator",
-            true,
-        ),
+        ("var it = Iterator.zip([]); it instanceof Iterator", true),
         (
             "var it = Iterator.zip([]); var p = Object.getPrototypeOf(it); \
              p[Symbol.toStringTag] === 'Iterator Helper' \

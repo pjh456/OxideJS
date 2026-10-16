@@ -533,10 +533,7 @@ fn validate_helper_this<H: VmHost>(
         let zips_si = vm.perm_intern(ZIPS_PROP);
         let zips = vm.ordinary_get(obj, zips_si, this_val).map_err(|e| engine_error(vm, &e))?;
         if !zips.is_object() {
-            return Err(crate::error::create_type_error(
-                vm,
-                &format!("{method} called on non-iterator-helper"),
-            ));
+            return Err(crate::error::create_type_error(vm, &format!("{method} called on non-iterator-helper")));
         }
         return Ok((kind, zips));
     }
@@ -1318,7 +1315,10 @@ pub fn iterator_zip<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
             Err(err) => return NativeResult::Err(engine_error(vm, &err)),
         };
         if !p.is_undefined() && !p.is_object() {
-            return NativeResult::Err(crate::error::create_type_error(vm, "Iterator.zip padding must be undefined or an object"));
+            return NativeResult::Err(crate::error::create_type_error(
+                vm,
+                "Iterator.zip padding must be undefined or an object",
+            ));
         }
         p
     } else {
@@ -1363,17 +1363,10 @@ fn make_iterator_zip_helper<H: VmHost>(
     let wrapper = vm.alloc_object(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(helper_proto)));
     let wrapper_obj = unsafe { &mut *wrapper };
     let array_proto = vm.builtin_proto(ProtoKind::ArrayProto);
-    let zips_arr = vm.alloc_object(JsObject::new_array(
-        EMPTY_SHAPE_ID,
-        JsValue::from_js_object(array_proto),
-        zips.len(),
-    ));
+    let zips_arr =
+        vm.alloc_object(JsObject::new_array(EMPTY_SHAPE_ID, JsValue::from_js_object(array_proto), zips.len()));
     for (i, (iter, next)) in zips.iter().enumerate() {
-        let pair = vm.alloc_object(JsObject::new_array(
-            EMPTY_SHAPE_ID,
-            JsValue::from_js_object(array_proto),
-            2,
-        ));
+        let pair = vm.alloc_object(JsObject::new_array(EMPTY_SHAPE_ID, JsValue::from_js_object(array_proto), 2));
         // SAFETY: pair 是刚经统一入口分配的数组对象，元素区已就绪。
         unsafe {
             (*pair).set_prop_at(0, *iter);
