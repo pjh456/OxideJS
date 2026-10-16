@@ -987,9 +987,7 @@ pub(crate) fn parse_time_zone_string(value: &str) -> Option<String> {
 /// # 边界与前提
 /// - 字符串接受面与规范一致：UTC/Z、整数分钟偏移串、IANA 区名、带注解与尾偏移的
 ///   日期时间串；亚分钟偏移拒绝。
-pub(crate) fn to_temporal_time_zone_identifier<H: VmHost>(
-    vm: &mut H, value: JsValue,
-) -> Result<String, JsValue> {
+pub(crate) fn to_temporal_time_zone_identifier<H: VmHost>(vm: &mut H, value: JsValue) -> Result<String, JsValue> {
     if value.is_object() {
         let ptr = value.as_js_object_ptr();
         if !ptr.is_null() {
@@ -1005,8 +1003,7 @@ pub(crate) fn to_temporal_time_zone_identifier<H: VmHost>(
     }
     if value.is_string() {
         let input = to_string(value);
-        return parse_time_zone_string(&input)
-            .ok_or_else(|| crate::error::create_range_error(vm, "invalid time zone"));
+        return parse_time_zone_string(&input).ok_or_else(|| crate::error::create_range_error(vm, "invalid time zone"));
     }
     Err(crate::error::create_type_error(vm, "invalid time zone"))
 }

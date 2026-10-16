@@ -717,8 +717,8 @@ pub fn plain_date_to_zoned_datetime<H: VmHost>(vm: &mut H, args: &[u8]) -> Nativ
     let time_zone_id = native_try!(to_temporal_time_zone_identifier(vm, time_zone_like));
     let time_ns = native_try!(plain_time_like_ns(vm, temporal_time));
     if temporal_time.is_undefined() {
-        let epoch = get_start_of_day_epoch_ns(&time_zone_id, year, month, day)
-            .map_err(|error| map_add_zoned_error(vm, error));
+        let epoch =
+            get_start_of_day_epoch_ns(&time_zone_id, year, month, day).map_err(|error| map_add_zoned_error(vm, error));
         let epoch_ns = native_try!(epoch);
         return make_zoned_date_time(vm, epoch_ns, &time_zone_id, &calendar);
     }

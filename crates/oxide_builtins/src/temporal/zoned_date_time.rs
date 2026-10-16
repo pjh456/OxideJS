@@ -26,8 +26,8 @@ use super::instant::{
     round_instant_ns, InstantRoundingMode,
 };
 use super::time_zone::{
-    named_zone_possible_epoch_ns, tz_gap_offsets, tz_gap_transition_epoch, tz_next_transition,
-    tz_prev_transition, zone_offset_seconds,
+    named_zone_possible_epoch_ns, tz_gap_offsets, tz_gap_transition_epoch, tz_next_transition, tz_prev_transition,
+    zone_offset_seconds,
 };
 use super::{
     days_in_month_iso, duration_like_values, duration_time_only_nanoseconds, is_leap_year_iso, make_duration,
@@ -1662,18 +1662,12 @@ pub fn zoned_date_time_get_time_zone_transition<H: VmHost>(vm: &mut H, args: &[u
     } else if direction_param.is_object() {
         let ptr = direction_param.as_js_object_ptr();
         if ptr.is_null() {
-            return NativeResult::Err(crate::error::create_type_error(
-                vm,
-                "direction must be a string or an object",
-            ));
+            return NativeResult::Err(crate::error::create_type_error(vm, "direction must be a string or an object"));
         }
         let options = unsafe { &*ptr };
         native_try!(temporal_option_value(vm, options, direction_param, "direction"))
     } else {
-        return NativeResult::Err(crate::error::create_type_error(
-            vm,
-            "direction must be a string or an object",
-        ));
+        return NativeResult::Err(crate::error::create_type_error(vm, "direction must be a string or an object"));
     };
     let direction = if direction_raw.is_undefined() {
         return NativeResult::Err(crate::error::create_range_error(vm, "direction is required"));
