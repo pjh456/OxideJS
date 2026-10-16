@@ -66,7 +66,9 @@ pub struct CompileCtx {
     /// 源码是否为 `source_escape` 产物（动态编译入口）：正则字面量源文本切片
     /// 的池键形态据此选择（见 [`Emitter::source_encoded`]）。
     pub(crate) source_encoded: bool,
-    pub(crate) static_block_this_reg: Option<u8>,
+    /// 静态块内 `this` 的构造器寄存器（vreg 号，无 u8 上限，RegAlloc 期压缩到物理域）。
+    /// None 表示非静态块上下文，`this` 走常规 this 槽。
+    pub(crate) static_block_this_reg: Option<u32>,
     pub(crate) field_buffer: Option<FieldBuffer>,
     /// 类构造器模块中 `@@field_keys` upvalue 下标（实例字段 computed key 数组）。
     /// 类定义期求值一次存入 cell，构造器经此 upvalue 读取。

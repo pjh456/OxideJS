@@ -576,3 +576,33 @@ fn private_field_read_captures_object() {
     let names: HashSet<&str> = inner.upvalue_captures.iter().map(|c| c.name.as_str()).collect();
     assert!(names.contains("self"), "私有字段读路径目标对象须入捕获集");
 }
+
+/// 面 21：顶层 vreg 号越过 255 后，类静态块 `this` 仍正确读类构造器 vreg——
+/// 构造器寄存器不截断、不与 this 槽（254）特判混淆。
+#[test]
+fn static_block_this_reads_ctor_vreg_beyond_u8() {
+    // 大量顶层 var 把 vreg 号推过 255，再声明含静态块的类。
+    let mut src = String::new();
+    for i in 0..300 {
+        src.push_str(&format!("var v{i} = {i};\n"));
+    }
+    src.push_str("class C { static { this.x = 1; } }");
+    // 修复前此源码 emit 报「class constructor register … exceeds u8 limit」，
+    // `emit_ir` 会 panic。
+    let ir = emit_ir(&src);
+    // 静态块 `this` 应发 LOAD_VAR 读构造器 vreg（Operand::Reg），非 this 槽。
+    let this_load = ir
+        .insts
+        .iter()
+        .filter(|i| i.op == OpCode::LOAD_VAR)
+        .find(|i| matches!(i.a, Operand::Reg(_)))
+        .expect("静态块 this 应发 LOAD_VAR Reg");
+    let Operand::Reg(r) = this_load.a else {
+        unreachable!()
+    };
+    assert!(r > 255, "静态块 this 的构造器 vreg 号应越过 255：{r}");
+    assert!(
+        !ir.insts.iter().any(|i| i.op == OpCode::LOAD_VAR && matches!(i.a, Operand::This)),
+        "静态块 this 不应走 this 槽"
+    );
+}

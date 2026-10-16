@@ -14,10 +14,8 @@ impl Emitter {
         &self, elements: &[ClassElement], ctor_reg: u32, key_slots: &[Option<u8>], ctx: &mut CompileCtx,
     ) -> Result<(), String> {
         let saved_static_this = ctx.static_block_this_reg;
-        // static_block_this_reg 保留 u8（this 槽语义，254 特判），ctor_reg 超 u8 界时报错而非静默截断。
-        ctx.static_block_this_reg = Some(
-            u8::try_from(ctor_reg).map_err(|_| format!("class constructor register {ctor_reg} exceeds u8 limit"))?,
-        );
+        // ctor_reg 是 vreg 号（RegAlloc 期压缩到物理域），直接存 u32，不截断。
+        ctx.static_block_this_reg = Some(ctor_reg);
         for (element, &key_slot) in elements.iter().zip(key_slots) {
             match element {
                 ClassElement::PropertyDefinition(prop) => {
