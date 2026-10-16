@@ -5017,3 +5017,67 @@ fn now_iso_method_bindings_are_plain_functions() {
     .unwrap();
     assert_eq!(str_val(&vm, r), "true|true|true|true|true");
 }
+
+// -- toZonedDateTime / getTimeZoneTransition 回归钉 --
+
+#[test]
+fn plain_date_to_zoned_datetime_fixed_offset_and_errors() {
+    let mut vm = Vm::new();
+    // 固定偏移区：GetStartOfDay 取当地午夜（墙历减偏移），候选唯一；
+    // reject 对单候选不抛（规范 2a 在 reject 判定之前）；缺区 / 非法区抛错。
+    let r = eval(
+        &mut vm,
+        "(new Temporal.PlainDate(2019, 2, 16).toZonedDateTime('+03:30').epochNanoseconds === 1550262600000000000n) + '|' +
+         (() => { try { return new Temporal.PlainDate(2019, 2, 16).toZonedDateTime('+03:30', { disambiguation: 'reject' }).epochNanoseconds === 1550262600000000000n; }
+                 catch (e) { return false; } })() + '|' +
+         (() => { try { new Temporal.PlainDate(2019, 2, 16).toZonedDateTime(); return 'no'; }
+                 catch (e) { return e instanceof TypeError; } })() + '|' +
+         (() => { try { new Temporal.PlainDate(2019, 2, 16).toZonedDateTime('Not/AZone'); return 'no'; }
+                 catch (e) { return e instanceof RangeError; } })()",
+    )
+    .unwrap();
+    assert_eq!(str_val(&vm, r), "true|true|true|true");
+}
+
+#[test]
+fn plain_date_time_to_zoned_datetime_fixed_offset_and_errors() {
+    let mut vm = Vm::new();
+    // 固定偏移区：墙历减偏移得唯一候选；reject 对单候选不抛（曾误抛 RangeError）；
+    // options 为原始值 / 非法 disambiguation 抛错。
+    let r = eval(
+        &mut vm,
+        "(new Temporal.PlainDateTime(2019, 2, 16, 23, 45).toZonedDateTime('+03:30').epochNanoseconds === 1550348100000000000n) + '|' +
+         (() => { try { return new Temporal.PlainDateTime(2019, 2, 16, 23, 45).toZonedDateTime('+03:30', { disambiguation: 'reject' }).epochNanoseconds === 1550348100000000000n; }
+                 catch (e) { return false; } })() + '|' +
+         (() => { try { new Temporal.PlainDateTime(2019, 2, 16, 23, 45).toZonedDateTime('+03:30', 'earlier'); return 'no'; }
+                 catch (e) { return e instanceof TypeError; } })() + '|' +
+         (() => { try { new Temporal.PlainDateTime(2019, 2, 16, 23, 45).toZonedDateTime('+03:30', { disambiguation: 'sideways' }); return 'no'; }
+                 catch (e) { return e instanceof RangeError; } })()",
+    )
+    .unwrap();
+    assert_eq!(str_val(&vm, r), "true|true|true|true");
+}
+
+#[test]
+fn zdt_get_time_zone_transition_fixed_and_errors() {
+    let mut vm = Vm::new();
+    // 固定偏移区无 transition → null；缺 direction / 非法值 / 对象缺 direction 抛错；
+    // IANA 区 next/previous 严格大于/小于当前纪元，对象形式与字符串形式等价。
+    let r = eval(
+        &mut vm,
+        "(new Temporal.ZonedDateTime(1000n, '+03:30').getTimeZoneTransition('next') === null) + '|' +
+         (() => { try { new Temporal.ZonedDateTime(1000n, 'America/Santiago').getTimeZoneTransition(); return 'no'; }
+                 catch (e) { return e instanceof TypeError; } })() + '|' +
+         (() => { try { new Temporal.ZonedDateTime(1000n, 'America/Santiago').getTimeZoneTransition('sideways'); return 'no'; }
+                 catch (e) { return e instanceof RangeError; } })() + '|' +
+         (() => { try { new Temporal.ZonedDateTime(1000n, 'America/Santiago').getTimeZoneTransition({}); return 'no'; }
+                 catch (e) { return e instanceof RangeError; } })() + '|' +
+         (() => { const z = new Temporal.ZonedDateTime(1520817600000000000n, 'America/Santiago');
+                   return z.getTimeZoneTransition('next').epochNanoseconds > z.epochNanoseconds &&
+                          z.epochNanoseconds > z.getTimeZoneTransition('previous').epochNanoseconds; })() + '|' +
+         (() => { const z = new Temporal.ZonedDateTime(1520817600000000000n, 'America/Santiago');
+                   return z.getTimeZoneTransition({ direction: 'next' }).epochNanoseconds === z.getTimeZoneTransition('next').epochNanoseconds; })()",
+    )
+    .unwrap();
+    assert_eq!(str_val(&vm, r), "true|true|true|true|true|true");
+}

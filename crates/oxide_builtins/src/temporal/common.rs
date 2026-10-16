@@ -975,6 +975,42 @@ pub(crate) fn parse_time_zone_string(value: &str) -> Option<String> {
     whole_minute_offset(offset_id).map(|_| offset_id.to_string())
 }
 
+/// ToTemporalTimeZoneIdentifier：ZDT 对象直返时区槽，字符串经 parse_time_zone_string
+/// 规范化，其余值抛 TypeError。
+///
+/// # 步骤
+/// 1. ZDT 对象读槽 1（时区标识符）直接返回。
+/// 2. 字符串走 parse_time_zone_string（ParseTemporalTimeZoneString 语义，
+///    未命中 RangeError）。
+/// 3. 非字符串非 ZDT（含普通对象）TypeError。
+///
+/// # 边界与前提
+/// - 字符串接受面与规范一致：UTC/Z、整数分钟偏移串、IANA 区名、带注解与尾偏移的
+///   日期时间串；亚分钟偏移拒绝。
+pub(crate) fn to_temporal_time_zone_identifier<H: VmHost>(
+    vm: &mut H, value: JsValue,
+) -> Result<String, JsValue> {
+    if value.is_object() {
+        let ptr = value.as_js_object_ptr();
+        if !ptr.is_null() {
+            let obj = unsafe { &*ptr };
+            if obj.is_zoned_date_time_obj() {
+                let slot = obj.get_prop_at(1);
+                if slot.is_string() {
+                    return Ok(to_string(slot));
+                }
+            }
+        }
+        return Err(crate::error::create_type_error(vm, "invalid time zone"));
+    }
+    if value.is_string() {
+        let input = to_string(value);
+        return parse_time_zone_string(&input)
+            .ok_or_else(|| crate::error::create_range_error(vm, "invalid time zone"));
+    }
+    Err(crate::error::create_type_error(vm, "invalid time zone"))
+}
+
 pub(crate) fn civil_from_days(days: i128) -> (i128, i128, i128) {
     let shifted = days + 719_468;
     let era = shifted.div_euclid(146_097);

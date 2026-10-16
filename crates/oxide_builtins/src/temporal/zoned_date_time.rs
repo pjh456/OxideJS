@@ -25,7 +25,10 @@ use super::instant::{
     instant_rounding_mode, instant_string_without_annotations, parse_instant_string, primitive_to_bigint,
     round_instant_ns, InstantRoundingMode,
 };
-use super::time_zone::{named_zone_possible_epoch_ns, tz_gap_offsets, zone_offset_seconds};
+use super::time_zone::{
+    named_zone_possible_epoch_ns, tz_gap_offsets, tz_gap_transition_epoch, tz_next_transition,
+    tz_prev_transition, zone_offset_seconds,
+};
 use super::{
     days_in_month_iso, duration_like_values, duration_time_only_nanoseconds, is_leap_year_iso, make_duration,
     make_plain_date, make_plain_date_time, make_plain_time, plain_time_components, plain_time_components_signed,
@@ -1621,6 +1624,89 @@ pub fn zoned_date_time_offset_nanoseconds<H: VmHost>(vm: &mut H, args: &[u8]) ->
     NativeResult::Ok(JsValue::float(offset_seconds as f64 * 1_000_000_000.0))
 }
 
+/// `Temporal.ZonedDateTime.prototype.getTimeZoneTransition(directionParam)`：
+/// 查 next/previous 时间区 transition，返回 transition 纪元处的新 ZDT；
+/// 固定偏移区与无 transition 返回 null。
+///
+/// # 步骤
+/// 1. receiver branding；读槽 0（纪元）/1（时区）/2（日历）。
+/// 2. directionParam：undefined → TypeError；字符串直接取值；对象读
+///    direction 属性；其余原始值 → TypeError。
+/// 3. GetDirectionOption：缺省/undefined → RangeError；ToString（Symbol →
+///    TypeError）；非 next/previous → RangeError。
+/// 4. 固定偏移区 → null。
+/// 5. next 取严格大于当前纪元的 transition，previous 取严格小于的；
+///    next 超上界（t > nsMaxInstant）或 previous 超下界（t < nsMinInstant）
+///    或无 transition → null。
+/// 6. make_zoned_date_time 收尾。
+///
+/// # 边界与前提
+/// - 读序先于固定偏移判定（direction 读取在 IsOffsetTimeZoneIdentifier 之前）。
+pub fn zoned_date_time_get_time_zone_transition<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let ptr = native_try!(receiver_obj(vm, args));
+    let obj = unsafe { &*ptr };
+    native_try!(ensure_zoned_date_time(vm, obj));
+    let time_zone_id = to_string(obj.get_prop_at(1));
+    let calendar = get_calendar_id(obj, 2);
+    let Some(epoch_ns) = get_instant_epoch_ns(obj) else {
+        return NativeResult::Err(crate::error::create_range_error(vm, "invalid ZonedDateTime"));
+    };
+    let direction_param = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
+    if direction_param.is_undefined() {
+        return NativeResult::Err(crate::error::create_type_error(vm, "direction is required"));
+    }
+    // 读序：direction 先于固定偏移判定。字符串包装 bag 后取值即原串；
+    // 对象走 Get（getter 可观察）。
+    let direction_raw = if direction_param.is_string() {
+        direction_param
+    } else if direction_param.is_object() {
+        let ptr = direction_param.as_js_object_ptr();
+        if ptr.is_null() {
+            return NativeResult::Err(crate::error::create_type_error(
+                vm,
+                "direction must be a string or an object",
+            ));
+        }
+        let options = unsafe { &*ptr };
+        native_try!(temporal_option_value(vm, options, direction_param, "direction"))
+    } else {
+        return NativeResult::Err(crate::error::create_type_error(
+            vm,
+            "direction must be a string or an object",
+        ));
+    };
+    let direction = if direction_raw.is_undefined() {
+        return NativeResult::Err(crate::error::create_range_error(vm, "direction is required"));
+    } else {
+        let value = native_try!(temporal_option_string(vm, direction_raw));
+        if !matches!(value.as_str(), "next" | "previous") {
+            return NativeResult::Err(crate::error::create_range_error(vm, "invalid direction"));
+        }
+        value
+    };
+    // 固定偏移区：无 transition。
+    if fixed_offset_seconds(&time_zone_id).is_some() {
+        return NativeResult::Ok(JsValue::null());
+    }
+    let epoch_s = epoch_ns.div_euclid(1_000_000_000) as i64;
+    let transition_s = if direction == "next" {
+        tz_next_transition(&time_zone_id, epoch_s)
+    } else {
+        tz_prev_transition(&time_zone_id, epoch_s)
+    };
+    let Some(transition_s) = transition_s else {
+        return NativeResult::Ok(JsValue::null());
+    };
+    let transition_ns = i128::from(transition_s) * 1_000_000_000;
+    // 规范 11.1.3/11.1.4：next 要求 t ≤ nsMaxInstant，previous 要求 t ≥ nsMinInstant。
+    if (direction == "next" && transition_ns > MAX_INSTANT_NS)
+        || (direction == "previous" && transition_ns < -MAX_INSTANT_NS)
+    {
+        return NativeResult::Ok(JsValue::null());
+    }
+    make_zoned_date_time(vm, transition_ns, &time_zone_id, &calendar)
+}
+
 /// `Temporal.ZonedDateTime.prototype.monthCode`：ISO 日历下恒为 `M{month:02}` 补零格式。
 pub fn zoned_date_time_month_code<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let ptr = native_try!(receiver_obj(vm, args));
@@ -1657,6 +1743,33 @@ pub(crate) fn start_of_day_epoch_ns_by_days(days: i128, offset_seconds: i64) -> 
         .checked_mul(86_400_000_000_000)?
         .checked_sub(i128::from(offset_seconds) * 1_000_000_000)?;
     (start.unsigned_abs() <= MAX_INSTANT_NS as u128).then_some(start)
+}
+
+/// GetStartOfDay（规范 11.1.14）：当地日期首个有效墙历时刻的纪元纳秒。
+///
+/// # 步骤
+/// 1. 枚举午夜候选集（GetPossibleEpochNanoseconds）：非空取首（固定偏移区候选唯一）。
+/// 2. 候选集为空（午夜落 DST 间隙）：取间隙 transition 纪元 t——间隙
+///    [t + oBefore, t + oAfter) 中首个有效墙历 t + oAfter 恰对应纪元 t。
+///
+/// # 边界与前提
+/// - 不复用 start_of_day_epoch_ns（naive `days*DAY_NS - offset`，午夜落间隙时
+///   返回 transition 前墙历，合规范错误）。
+/// - 候选超 Instant 范围抛 OutOfInstantRange；transition 纪元超范围同理。
+pub(crate) fn get_start_of_day_epoch_ns(
+    time_zone: &str, year: i32, month: u32, day: u32,
+) -> Result<i128, AddZonedError> {
+    let candidates = get_possible_epoch_nanoseconds(time_zone, year, month, day, 0)?;
+    if let Some(&first) = candidates.first() {
+        return Ok(first);
+    }
+    let wall_ns = days_from_civil(i128::from(year), i128::from(month), i128::from(day)) * DAY_NS;
+    let transition = tz_gap_transition_epoch(time_zone, wall_ns).ok_or(AddZonedError::OutOfDateTimeRange)?;
+    let epoch = i128::from(transition) * 1_000_000_000;
+    if epoch.unsigned_abs() > MAX_INSTANT_NS as u128 {
+        return Err(AddZonedError::OutOfInstantRange);
+    }
+    Ok(epoch)
 }
 
 /// AddZonedDateTime 核心的错误分类（包装层统一转 RangeError）。
@@ -1749,14 +1862,18 @@ pub(crate) fn get_possible_epoch_nanoseconds(
 /// DisambiguatePossibleEpochNanoseconds（规范 11.1.12）：从候选集选唯一纪元。
 ///
 /// # 步骤
-/// 1. 1 候选 → 直接返回。
+/// 1. 1 候选 → 直接返回（含 reject，规范 2a 在 reject 判定之前）。
 /// 2. 2 候选（重叠）→ compatible/earlier 取较早纪元，later 取较晚，reject 抛 RangeError。
 /// 3. 0 候选（间隙）→ 按间隙前后偏移差平移墙历（earlier 反向、compatible/later 正向），
-///    重枚举候选集后取首（earlier）/末（compatible、later）。
+///    重枚举候选集后取首（earlier）/末（compatible、later）；reject 抛 RangeError。
 pub(crate) fn disambiguate_possible_epoch_nanoseconds(
     time_zone: &str, iso_date: (i128, i128, i128), time_ns: i128, disambiguation: &str, candidates: &[i128],
 ) -> Result<i128, AddZonedError> {
     if !candidates.is_empty() {
+        // 单候选（固定偏移区 / 无歧义墙历）：直接返回，含 reject 也不抛。
+        if candidates.len() == 1 {
+            return Ok(candidates[0]);
+        }
         if disambiguation == "reject" {
             return Err(AddZonedError::OutOfDateTimeRange);
         }

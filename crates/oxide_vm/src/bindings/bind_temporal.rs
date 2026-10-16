@@ -464,6 +464,11 @@ pub fn bind_temporal(env: BindEnv<'_>, global: &mut JsObject) {
                 oxide_builtins::temporal::zoned_date_time_start_of_day::<crate::vm::Vm> as *const (),
                 0,
             ),
+            (
+                "getTimeZoneTransition",
+                oxide_builtins::temporal::zoned_date_time_get_time_zone_transition::<crate::vm::Vm> as *const (),
+                1,
+            ),
         ],
     );
 
@@ -627,6 +632,11 @@ pub fn bind_temporal(env: BindEnv<'_>, global: &mut JsObject) {
                 "toPlainYearMonth",
                 oxide_builtins::temporal::plain_date_to_plain_year_month::<crate::vm::Vm> as *const (),
                 0,
+            ),
+            (
+                "toZonedDateTime",
+                oxide_builtins::temporal::plain_date_to_zoned_datetime::<crate::vm::Vm> as *const (),
+                1,
             ),
             ("round", oxide_builtins::temporal::plain_date_round::<crate::vm::Vm> as *const (), 1),
         ],
@@ -853,6 +863,11 @@ pub fn bind_temporal(env: BindEnv<'_>, global: &mut JsObject) {
                 "toPlainTime",
                 oxide_builtins::temporal::plain_date_time_to_plain_time::<crate::vm::Vm> as *const (),
                 0,
+            ),
+            (
+                "toZonedDateTime",
+                oxide_builtins::temporal::plain_date_time_to_zoned_datetime::<crate::vm::Vm> as *const (),
+                1,
             ),
             (
                 "valueOf",

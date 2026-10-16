@@ -10,13 +10,16 @@ use super::{
     civil_from_days, days_from_civil, days_in_month, days_in_month_iso, difference_core, duration_component_integer,
     duration_like_values, ensure_plain_date_time, format_iso_year, get_calendar_id, get_double_prop,
     initialize_temporal_receiver, instant_rounding_mode, is_ctor_call, is_leap_year_iso, make_plain_date,
-    make_plain_date_time, make_plain_time, parse_difference_settings, parse_fractional_second_digits,
-    parse_round_options, parse_temporal_string_impl, plain_date_time_object_parts, plain_time_components,
-    plain_time_like_ns, receiver_obj, reject_partial_object_with_calendar_or_time_zone, resolve_date_time_parts,
-    round_instant_ns, temporal_calendar_id, temporal_calendar_id_strict, temporal_number_component,
-    temporal_option_number, temporal_option_string, temporal_option_value, temporal_overflow, valid_iso_date,
-    valid_plain_date_time_range, valid_plain_time, zoned_date_time_plain_parts, DateTimeParts,
-    FractionalSecondDigitsInput, IsoDateTime,
+    make_plain_date_time, make_plain_time, make_zoned_date_time, parse_difference_settings,
+    parse_fractional_second_digits, parse_round_options, parse_temporal_string_impl, plain_date_time_object_parts,
+    plain_time_components, plain_time_like_ns, receiver_obj, reject_partial_object_with_calendar_or_time_zone,
+    resolve_date_time_parts, round_instant_ns, temporal_calendar_id, temporal_calendar_id_strict,
+    temporal_number_component, temporal_option_number, temporal_option_string, temporal_option_value,
+    temporal_overflow, to_temporal_time_zone_identifier, valid_iso_date, valid_plain_date_time_range, valid_plain_time,
+    zoned_date_time_plain_parts, DateTimeParts, FractionalSecondDigitsInput, IsoDateTime,
+};
+use super::zoned_date_time::{
+    disambiguate_possible_epoch_nanoseconds, get_possible_epoch_nanoseconds, map_add_zoned_error,
 };
 // ───────────────────── PlainDateTime 基础方法 ─────────────────────
 
@@ -529,6 +532,69 @@ pub fn plain_date_time_to_plain_date<H: VmHost>(vm: &mut H, args: &[u8]) -> Nati
 pub fn plain_date_time_to_plain_time<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let (_, _, _, total_ns) = native_try!(plain_date_time_parts(vm, args));
     make_plain_time(vm, total_ns)
+}
+
+/// `Temporal.PlainDateTime.prototype.toZonedDateTime(temporalTimeZoneLike, [options])`：
+/// 解析时区与 disambiguation 后求墙历日期时间的纪元，返回新 ZDT。
+///
+/// # 步骤
+/// 1. receiver branding；读槽 0-3（年/月/日/时间纳秒）与槽 4 日历。
+/// 2. ToTemporalTimeZoneIdentifier（ZDT 对象 / 字符串 / 其余 TypeError）。
+/// 3. options 读 disambiguation（缺省 compatible；白名单校验），先于算法校验。
+/// 4. GetPossibleEpochNanoseconds + DisambiguatePossibleEpochNanoseconds。
+/// 5. make_zoned_date_time 收尾。
+///
+/// # 边界与前提
+/// - 读序：timeZone 先于 options（语料 order-of-operations 钉死）。
+/// - options 非对象原始值（含 null）TypeError；非法 disambiguation 值 RangeError。
+pub fn plain_date_time_to_zoned_datetime<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let ptr = native_try!(receiver_obj(vm, args));
+    let obj = unsafe { &*ptr };
+    native_try!(ensure_plain_date_time(vm, obj));
+    let year = get_double_prop(obj, 0) as i32;
+    let month = get_double_prop(obj, 1) as u32;
+    let day = get_double_prop(obj, 2) as u32;
+    let time_ns = get_double_prop(obj, 3);
+    let calendar = get_calendar_id(obj, 4);
+    let time_zone_like = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
+    let time_zone_id = native_try!(to_temporal_time_zone_identifier(vm, time_zone_like));
+    // options：非对象原始值 TypeError；读 disambiguation（先于算法校验）。
+    let options = if args.len() > 2 { vm.reg(args[2]) } else { JsValue::undefined() };
+    let disambiguation = if options.is_undefined() {
+        "compatible".to_string()
+    } else {
+        if !options.is_object() {
+            return NativeResult::Err(crate::error::create_type_error(vm, "options must be an object"));
+        }
+        let ptr = options.as_js_object_ptr();
+        if ptr.is_null() {
+            return NativeResult::Err(crate::error::create_type_error(vm, "options must be an object"));
+        }
+        let options_obj = unsafe { &*ptr };
+        let raw = native_try!(temporal_option_value(vm, options_obj, options, "disambiguation"));
+        if raw.is_undefined() {
+            "compatible".to_string()
+        } else {
+            let value = native_try!(temporal_option_string(vm, raw));
+            if !matches!(value.as_str(), "compatible" | "earlier" | "later" | "reject") {
+                return NativeResult::Err(crate::error::create_range_error(vm, "invalid disambiguation"));
+            }
+            value
+        }
+    };
+    let candidates = get_possible_epoch_nanoseconds(&time_zone_id, year, month, day, time_ns as i128)
+        .map_err(|error| map_add_zoned_error(vm, error));
+    let candidates = native_try!(candidates);
+    let epoch = disambiguate_possible_epoch_nanoseconds(
+        &time_zone_id,
+        (i128::from(year), i128::from(month), i128::from(day)),
+        time_ns as i128,
+        &disambiguation,
+        &candidates,
+    )
+    .map_err(|error| map_add_zoned_error(vm, error));
+    let epoch_ns = native_try!(epoch);
+    make_zoned_date_time(vm, epoch_ns, &time_zone_id, &calendar)
 }
 
 /// `Temporal.PlainDateTime.prototype.withCalendar(calendar)`：只换日历槽，日期时间分量不变。

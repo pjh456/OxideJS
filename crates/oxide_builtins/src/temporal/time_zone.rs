@@ -1221,7 +1221,7 @@ pub(crate) fn named_zone_possible_epoch_ns(zone: &str, wall_ns: i128) -> Option<
     Some(candidates)
 }
 
-/// 找 0 候选墙历所落间隙的 transition，返回间隙前后偏移（秒）。
+/// 找 0 候选墙历所落间隙的 transition：返回 (transition 纪元秒, 间隙前偏移, 间隙后偏移)。
 ///
 /// # 步骤
 /// 1. 墙历（按 UTC 解释）在 transition 前区间：查下一 transition 是否正偏移跳变
@@ -1229,13 +1229,12 @@ pub(crate) fn named_zone_possible_epoch_ns(zone: &str, wall_ns: i128) -> Option<
 /// 2. 墙历在 transition 后区间：查上一 transition 同条件。
 ///
 /// # 边界与前提
-/// - 区表未命中或墙历不落在任何间隙内返回 `None`（调用方决定错误）。
-pub(crate) fn tz_gap_offsets(zone: &str, wall_ns: i128) -> Option<(i64, i64)> {
-    let z = tz_zone_data(zone)?;
+/// - 墙历不落在任何间隙内返回 `None`（调用方决定错误）。
+/// - 间隙起点（墙历 = t + o_before）候选集为空，计入间隙。
+fn tz_gap_transition(z: &TzifZone, wall_ns: i128) -> Option<(i64, i64, i64)> {
     let wall_s = wall_ns.div_euclid(1_000_000_000) as i64;
     let idx = z.transitions.partition_point(|t| t.0 <= wall_s);
     // 墙历在 transition 前区间：间隙由下一 transition 产生。
-    // 间隙起点（墙历 = t + o_before）候选集为空，计入间隙。
     if idx < z.transitions.len() {
         let (t, offset_after) = z.transitions[idx];
         let offset_before = if idx == 0 { z.lmt_offset } else { z.transitions[idx - 1].1 };
@@ -1243,7 +1242,7 @@ pub(crate) fn tz_gap_offsets(zone: &str, wall_ns: i128) -> Option<(i64, i64)> {
             && wall_ns >= i128::from(t) * 1_000_000_000 + i128::from(offset_before) * 1_000_000_000
             && wall_ns < i128::from(t) * 1_000_000_000 + i128::from(offset_after) * 1_000_000_000
         {
-            return Some((i64::from(offset_before), i64::from(offset_after)));
+            return Some((t, i64::from(offset_before), i64::from(offset_after)));
         }
     }
     // 墙历在 transition 后区间：间隙由上一 transition 产生。
@@ -1254,10 +1253,29 @@ pub(crate) fn tz_gap_offsets(zone: &str, wall_ns: i128) -> Option<(i64, i64)> {
             && wall_ns >= i128::from(t) * 1_000_000_000 + i128::from(offset_before) * 1_000_000_000
             && wall_ns < i128::from(t) * 1_000_000_000 + i128::from(offset_after) * 1_000_000_000
         {
-            return Some((i64::from(offset_before), i64::from(offset_after)));
+            return Some((t, i64::from(offset_before), i64::from(offset_after)));
         }
     }
     None
+}
+
+/// 找 0 候选墙历所落间隙的 transition，返回间隙前后偏移（秒）。
+///
+/// # 边界与前提
+/// - 区表未命中或墙历不落在任何间隙内返回 `None`（调用方决定错误）。
+pub(crate) fn tz_gap_offsets(zone: &str, wall_ns: i128) -> Option<(i64, i64)> {
+    let z = tz_zone_data(zone)?;
+    let (_, before, after) = tz_gap_transition(z, wall_ns)?;
+    Some((before, after))
+}
+
+/// 找 0 候选墙历所落间隙的 transition 纪元秒（GetStartOfDay 间隙臂专用）。
+///
+/// # 边界与前提
+/// - 区表未命中或墙历不落在任何间隙内返回 `None`（调用方决定错误）。
+pub(crate) fn tz_gap_transition_epoch(zone: &str, wall_ns: i128) -> Option<i64> {
+    let z = tz_zone_data(zone)?;
+    Some(tz_gap_transition(z, wall_ns)?.0)
 }
 
 /// 统一时区偏移查找（epoch 依赖）：固定偏移区（数值偏移串）走快速路径恒返常量，

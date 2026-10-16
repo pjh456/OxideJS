@@ -12,13 +12,17 @@ use super::common::{
     parse_round_options, plain_date_time_object_parts, receiver_obj, reject_partial_object_with_calendar_or_time_zone,
     resolve_date_time_parts, temporal_calendar_id, temporal_calendar_id_strict, temporal_number_component,
     temporal_option_string, temporal_option_value, temporal_overflow, temporal_to_show_calendar,
-    zoned_date_time_plain_parts, DateTimeParts, ShowCalendar,
+    to_temporal_time_zone_identifier, zoned_date_time_plain_parts, DateTimeParts, ShowCalendar,
 };
 use super::difference::{difference_core, parse_difference_settings, IsoDateTime};
 use super::duration::duration_like_values;
+use super::zoned_date_time::{
+    disambiguate_possible_epoch_nanoseconds, get_possible_epoch_nanoseconds, get_start_of_day_epoch_ns,
+    map_add_zoned_error,
+};
 use super::{
-    make_plain_date, make_plain_date_time, make_plain_month_day, make_plain_year_month, plain_time_like_ns,
-    round_instant_ns,
+    make_plain_date, make_plain_date_time, make_plain_month_day, make_plain_year_month, make_zoned_date_time,
+    plain_time_like_ns, round_instant_ns,
 };
 
 /// 校验 ISO 日期分量（month 1-12、day 按月份与闰年，不依赖 chrono 年份范围）。
@@ -667,6 +671,73 @@ pub fn plain_date_to_plain_date_time<H: VmHost>(vm: &mut H, args: &[u8]) -> Nati
         return NativeResult::Err(crate::error::create_range_error(vm, "invalid date-time"));
     }
     make_plain_date_time(vm, year, month, day, time_ns, &calendar)
+}
+
+/// `Temporal.PlainDate.prototype.toZonedDateTime(item)`：解析时区与 plainTime，
+/// plainTime 缺省时走 GetStartOfDay 取当日首个有效墙历时刻的纪元。
+///
+/// # 步骤
+/// 1. receiver branding；读槽 0-3（年/月/日/日历）。
+/// 2. item 对象：先 Get timeZone（undefined 回落 item 本身），再 Get plainTime；
+///    非对象：timeZone 即 item，plainTime 取 undefined。
+/// 3. plainTime 为 undefined：GetStartOfDay（午夜候选为空时取间隙 transition 纪元）。
+/// 4. plainTime 在场：ToTemporalTime → ISODateTimeWithinLimits →
+///    GetPossibleEpochNanoseconds + Disambiguate(compatible)。
+/// 5. make_zoned_date_time 收尾。
+///
+/// # 边界与前提
+/// - 读序：timeZone 先于 plainTime（语料 order-of-operations 钉死）。
+/// - 时区臂非字符串非 ZDT 是 TypeError，非法区名是 RangeError。
+pub fn plain_date_to_zoned_datetime<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let ptr = native_try!(receiver_obj(vm, args));
+    let obj = unsafe { &*ptr };
+    native_try!(ensure_plain_date(vm, obj));
+    let year = get_double_prop(obj, 0) as i32;
+    let month = get_double_prop(obj, 1) as u32;
+    let day = get_double_prop(obj, 2) as u32;
+    let calendar = get_calendar_id(obj, 3);
+    let item = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
+    // 读序：timeZone 先于 plainTime。
+    let (time_zone_like, temporal_time) = if item.is_object() {
+        let ptr = item.as_js_object_ptr();
+        if ptr.is_null() {
+            return NativeResult::Err(crate::error::create_type_error(vm, "invalid time zone"));
+        }
+        let item_obj = unsafe { &*ptr };
+        let time_zone_like = native_try!(temporal_option_value(vm, item_obj, item, "timeZone"));
+        if time_zone_like.is_undefined() {
+            (item, JsValue::undefined())
+        } else {
+            let temporal_time = native_try!(temporal_option_value(vm, item_obj, item, "plainTime"));
+            (time_zone_like, temporal_time)
+        }
+    } else {
+        (item, JsValue::undefined())
+    };
+    let time_zone_id = native_try!(to_temporal_time_zone_identifier(vm, time_zone_like));
+    let time_ns = native_try!(plain_time_like_ns(vm, temporal_time));
+    if temporal_time.is_undefined() {
+        let epoch = get_start_of_day_epoch_ns(&time_zone_id, year, month, day)
+            .map_err(|error| map_add_zoned_error(vm, error));
+        let epoch_ns = native_try!(epoch);
+        return make_zoned_date_time(vm, epoch_ns, &time_zone_id, &calendar);
+    }
+    if !valid_plain_date_time_range(year, month, day, time_ns) {
+        return NativeResult::Err(crate::error::create_range_error(vm, "invalid date-time"));
+    }
+    let candidates = get_possible_epoch_nanoseconds(&time_zone_id, year, month, day, time_ns as i128)
+        .map_err(|error| map_add_zoned_error(vm, error));
+    let candidates = native_try!(candidates);
+    let epoch = disambiguate_possible_epoch_nanoseconds(
+        &time_zone_id,
+        (i128::from(year), i128::from(month), i128::from(day)),
+        time_ns as i128,
+        "compatible",
+        &candidates,
+    )
+    .map_err(|error| map_add_zoned_error(vm, error));
+    let epoch_ns = native_try!(epoch);
+    make_zoned_date_time(vm, epoch_ns, &time_zone_id, &calendar)
 }
 
 /// `Temporal.PlainDate.prototype.toPlainMonthDay()`：纯拷贝月/日，参考年固定 1972。
