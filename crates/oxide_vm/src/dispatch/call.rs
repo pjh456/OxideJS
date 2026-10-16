@@ -100,11 +100,17 @@ impl Vm {
             NativeResult::TailCall { callee, this, args } => {
                 if callee.is_object() {
                     let obj = unsafe { &*callee.as_js_object_ptr() };
-                    // 不可调用目标（apply/call/bound 转发的 thisArg 不可调用等）抛
+                    // 非函数目标（apply/call/bound 转发的 thisArg 非函数等）抛
                     // 可捕获 TypeError；落入 push_bytecode_frame 会产生引擎级错误，
                     // 绕过 JS try/catch。
-                    if !obj.is_function() || (obj.native_fn().is_none() && obj.sub_module_index() == 0) {
+                    if !obj.is_function() {
                         return self.raise_type_error("CALL target is not callable");
+                    }
+                    // 无本体函数对象（Function.prototype）：[[Call]] 接受任意实参
+                    // 返回 undefined，不执行函数体。
+                    if obj.native_fn().is_none() && obj.sub_module_index() == 0 {
+                        self.regs[0] = JsValue::undefined();
+                        return Ok(());
                     }
                     if obj.native_fn().is_some() {
                         // 尾调用转发为普通调用形态。
@@ -967,6 +973,12 @@ impl Vm {
                             .raise_type_error("class constructor cannot be invoked without 'new'")
                             .map(|_| true);
                     }
+                    // 无本体函数对象（Function.prototype）：[[Call]] 接受任意实参
+                    // 返回 undefined，不执行函数体。
+                    if obj.native_fn().is_none() && obj.sub_module_index() == 0 {
+                        self.regs[0] = JsValue::undefined();
+                        return Ok(false);
+                    }
                     if obj.native_fn().is_some() {
                         // spread 普通调用形态：清零构造形态标记。
                         self.constructing_native = false;
@@ -1174,11 +1186,10 @@ impl Vm {
             )?;
             Ok(true)
         } else {
-            let error =
-                oxide_builtins::error::create_error(self, "NEW_EXPRESSION: bytecode constructors not yet supported");
-            self.exception_value = Some(error);
-            self.pending_error_kind = Some(self.thrown_error_kind(error));
-            self.unwind().map(|_| true)
+            // 无函数体的函数对象（如 Function.prototype）：IsConstructor 为假，
+            // 按规范抛 TypeError（与非 spread 的 NEW_EXPRESSION 臂同形）。
+            self.raise_type_error("NEW_EXPRESSION: constructor is not a constructor")
+                .map(|_| true)
         }
     }
 

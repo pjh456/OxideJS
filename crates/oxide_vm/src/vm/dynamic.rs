@@ -98,7 +98,9 @@ impl Vm {
         table.immutables.resize(table.modules.len(), OnceLock::new());
         table.si_tables.resize(table.modules.len(), OnceLock::new());
 
-        let func_val = self.create_function_object(base, self.current_gen, FunctionFlags::none());
+        // 动态函数对象置 DYNAMIC 旗：`prototype` 属性按规范不可配置
+        // （区别于普通函数的可配置面）。
+        let func_val = self.create_function_object(base, self.current_gen, FunctionFlags(FunctionFlags::DYNAMIC));
         let func_obj = unsafe { &mut *func_val.as_js_object_ptr() };
         let length_si = self.kernel_core.perm_interner().intern("length").0;
         let name_si = self.kernel_core.perm_interner().intern("name").0;

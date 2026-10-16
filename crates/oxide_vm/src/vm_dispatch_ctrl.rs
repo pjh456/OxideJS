@@ -41,6 +41,13 @@ impl Vm {
                     let call_window = (ext >> 8) as u8;
                     crate::vm_debug!("CALL rd={} this={} args={} depth={}", rd, this_reg, arg_count, self.frames.len());
 
+                    // 无本体函数对象（Function.prototype）：[[Call]] 接受任意实参
+                    // 返回 undefined，不执行函数体。
+                    if obj.native_fn().is_none() && obj.sub_module_index() == 0 {
+                        self.regs[0] = JsValue::undefined();
+                        return Ok(false);
+                    }
+
                     if obj.native_fn().is_some() {
                         self.dispatch_native_call(obj, callee, this_reg, first_arg_reg, arg_count)?;
                         return Ok(true);

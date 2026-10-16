@@ -191,6 +191,12 @@ impl Vm {
             };
         }
 
+        // 无本体函数对象（Function.prototype）：[[Call]] 接受任意实参返回
+        // undefined，不执行函数体。此处 callee 已确认为非 native 的函数对象，
+        // sub_module_index == 0 即无本体（accessor 非函数，已在上方拦截）。
+        if callee_obj.sub_module_index() == 0 {
+            return Ok(JsValue::undefined());
+        }
         // 字节码函数在自身（同一 epoch）内联执行，防止 use-after-free。
         // 独立子 VM 拥有不同 epoch：返回含子 VM epoch 指针的 JsValue 后再销毁子 VM，
         // 会在 release 构建中产生悬垂指针 / 访问违规。

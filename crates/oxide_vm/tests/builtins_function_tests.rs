@@ -449,6 +449,66 @@ fn function_bind_async_generator_target_returns_iterator() {
 }
 
 #[test]
+fn function_prototype_call_returns_undefined() {
+    // Function.prototype 是函数对象：[[Call]] 接受任意实参返回 undefined，
+    // 不执行函数体。三个调用入口（CALL、CALL_SPREAD、TailCall 转发）同口径。
+    let mut vm = Vm::new();
+    // 直调（CALL 指令）。
+    let result = eval(&mut vm, "Function.prototype()").unwrap();
+    assert!(result.is_undefined());
+    // 带任意实参。
+    let result = eval(&mut vm, "Function.prototype(null, void 0, 7)").unwrap();
+    assert!(result.is_undefined());
+    // 展开调用（CALL_SPREAD 指令）。
+    let result = eval(&mut vm, "Function.prototype(...[1, 2, 3])").unwrap();
+    assert!(result.is_undefined());
+    // call/apply 尾调用转发（TailCall 分支）。
+    let result = eval(&mut vm, "Function.prototype.call.call(Function.prototype)").unwrap();
+    assert!(result.is_undefined());
+    let result = eval(&mut vm, "Function.prototype.apply.call(Function.prototype, [7])").unwrap();
+    assert!(result.is_undefined());
+}
+
+#[test]
+fn function_prototype_new_throws_catchable_type_error() {
+    // Function.prototype 无 [[Construct]]：new 表达式抛可捕获 TypeError，
+    // 不得绕过 try/catch 成为引擎级错误。
+    let mut vm = Vm::new();
+    let name = eval(&mut vm, "try { new Function.prototype() } catch (e) { e.name }").unwrap();
+    assert_eq!(vm.lookup_str(name).unwrap_or_default(), "TypeError");
+    // 展开构造形态（NEW_EXPRESSION_SPREAD）同口径：抛 TypeError。
+    let name = eval(&mut vm, "try { new Function.prototype(...[]) } catch (e) { e.name }").unwrap();
+    assert_eq!(vm.lookup_str(name).unwrap_or_default(), "TypeError");
+}
+
+#[test]
+fn dynamic_function_prototype_descriptor_not_configurable() {
+    // 动态函数（Function 构造器产物）的 prototype 属性为
+    // {writable:true, enumerable:false, configurable:false}，delete 失败且值不变；
+    // 普通函数的 prototype 属性保持可配置，不回归。
+    let mut vm = Vm::new();
+    vm.set_compiler_service(Arc::new(DefaultCompilerService));
+    let result = eval(
+        &mut vm,
+        "var d = Object.getOwnPropertyDescriptor(new Function('a', 'return a;'), 'prototype'); d.writable + ',' + d.enumerable + ',' + d.configurable",
+    )
+    .unwrap();
+    assert_eq!(vm.lookup_str(result).unwrap_or_default(), "true,false,false");
+    let result = eval(
+        &mut vm,
+        "var f = new Function('a', 'return a;'); var p = f.prototype; delete f.prototype; f.prototype === p",
+    )
+    .unwrap();
+    assert!(result.as_bool());
+    let result = eval(
+        &mut vm,
+        "function g() {} var d = Object.getOwnPropertyDescriptor(g, 'prototype'); d.writable + ',' + d.enumerable + ',' + d.configurable",
+    )
+    .unwrap();
+    assert_eq!(vm.lookup_str(result).unwrap_or_default(), "true,false,true");
+}
+
+#[test]
 fn function_call_generator_param_default_throw_keeps_catch_value() {
     // 生成器目标带抛错的参数默认值，经 call/apply/bind 调用且调用点在 try/catch 内：
     // catch 参数须是抛出的原值 42，不得被占位迭代器对象覆盖。
