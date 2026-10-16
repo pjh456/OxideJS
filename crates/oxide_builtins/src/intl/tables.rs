@@ -1,4 +1,3 @@
-
 /// 复合区域映射条目：区域码、默认映射、按「语言[-脚本]」键选择的覆盖表。
 type ComplexRegionMapping = (&'static str, &'static str, &'static [(&'static str, &'static str)]);
 

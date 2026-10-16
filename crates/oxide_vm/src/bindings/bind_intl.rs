@@ -154,12 +154,7 @@ pub fn bind_intl(env: BindEnv<'_>, global: &mut JsObject) {
 /// 安装一组 Intl 构造器/原型对：构造器 native 函数与 `length`、
 /// `supportedLocalesOf` 静态方法、原型 `@@toStringTag`。
 fn bind_intl_ctor_pair(
-    env: BindEnv<'_>,
-    ctor: &mut JsObject,
-    proto: &mut JsObject,
-    ctor_fn: *const (),
-    length: u32,
-    tag: &str,
+    env: BindEnv<'_>, ctor: &mut JsObject, proto: &mut JsObject, ctor_fn: *const (), length: u32, tag: &str,
 ) {
     // 构造器：length 槽的 native 函数；`prototype`/`name` 槽由内核接线
     // 预置（wire_ctor_proto / make_pair），此处不重复建槽。
