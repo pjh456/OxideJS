@@ -597,12 +597,12 @@ fn static_block_this_reads_ctor_vreg_beyond_u8() {
         .filter(|i| i.op == OpCode::LOAD_VAR)
         .find(|i| matches!(i.a, Operand::Reg(_)))
         .expect("静态块 this 应发 LOAD_VAR Reg");
-    let Operand::Reg(r) = this_load.a else {
-        unreachable!()
-    };
+    let Operand::Reg(r) = this_load.a else { unreachable!() };
     assert!(r > 255, "静态块 this 的构造器 vreg 号应越过 255：{r}");
     assert!(
-        !ir.insts.iter().any(|i| i.op == OpCode::LOAD_VAR && matches!(i.a, Operand::This)),
+        !ir.insts
+            .iter()
+            .any(|i| i.op == OpCode::LOAD_VAR && matches!(i.a, Operand::This)),
         "静态块 this 不应走 this 槽"
     );
 }
