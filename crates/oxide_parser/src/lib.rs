@@ -1,9 +1,11 @@
 #![doc = "OxideJS - JavaScript parser (oxc_parser re-export)"]
 
+mod call_lhs_rewrite;
 mod error;
 mod parser_log;
 mod redeclaration_filter;
 
+use std::borrow::Cow;
 use std::cell::{Cell, UnsafeCell};
 
 /// 解析错误：消息 + 源文件字节区间（起始，结束）。
@@ -125,8 +127,19 @@ fn parse_with_source_type<'a>(
 ///
 /// 使用 oxc 的 `unambiguous` SourceType：代码含顶层 import/export 时按模块解析，
 /// 否则按脚本解析。返回 `Ok(program)` 或 `Err`（收集全部解析错误）。
+///
+/// 脚本入口先做语句起始位裸 CallExpression 赋值目标的源文本等价改写（sloppy
+/// web-compat 语义，见 [`call_lhs_rewrite`]）；模块恒严格，解析拒绝即规范正确，
+/// 改写内部对模块源与严格源自动跳过。
 pub fn parse<'a>(allocator: &'a Allocator, source: &'a str) -> Result<Program<'a>, Vec<OxideError>> {
-    parse_with_source_type(allocator, source, oxc_span::SourceType::unambiguous())
+    // 改写产物若为自有文本，落入线程本地分配器获得 `'a` 生命周期（AST 的
+    // source_text 借用该文本）；未改写时直接借用原源。
+    let rewritten = call_lhs_rewrite::rewrite_call_lhs(source);
+    let source_text: &'a str = match &rewritten {
+        Cow::Borrowed(s) => s,
+        Cow::Owned(s) => allocator.alloc_str(s),
+    };
+    parse_with_source_type(allocator, source_text, oxc_span::SourceType::unambiguous())
 }
 
 /// 将 `source` 强制按 ES module 解析为 AST 根节点 `Program`。
