@@ -234,6 +234,26 @@ pub(crate) fn iterator_record_step<H: VmHost>(
     Ok(Some(value))
 }
 
+/// 调用缓存的 next 取一步，只读结果对象的 `done`（对应规范 IteratorStep，
+/// 不读 value getter）。
+///
+/// # 返回值
+/// - `Ok(true)`：迭代完成（done=true）；
+/// - `Ok(false)`：未耗尽（done=false，不读 value）；
+/// - `Err`：next 抛错 / 结果非对象 / done getter 抛错（透传原值，不关底层）。
+pub(crate) fn iterator_step_done_only<H: VmHost>(
+    vm: &mut H, next: JsValue, iterated: JsValue,
+) -> Result<bool, JsValue> {
+    let result = vm.call_function_sync(next, iterated, &[]).map_err(|e| engine_error(vm, &e))?;
+    if !result.is_object() {
+        return Err(crate::error::create_type_error(vm, "iterator result is not an object"));
+    }
+    let result_obj = unsafe { &*result.as_js_object_ptr() };
+    let done_si = vm.perm_intern("done");
+    let done = vm.ordinary_get(result_obj, done_si, result).map_err(|e| engine_error(vm, &e))?;
+    Ok(oxide_runtime_api::to_boolean(done))
+}
+
 /// IteratorClose：延迟 GetMethod(iterator, "return") 并调用，按 completion 形态决定
 /// 错误胜者（throw → 原错误胜出；正常 → return 相关错误胜出）。
 ///
@@ -443,7 +463,9 @@ fn get_iterator_flattenable<H: VmHost>(vm: &mut H, value: JsValue) -> Result<(Js
 ///
 /// # 返回
 /// - `Ok((iter, next))`：迭代器 + GetIteratorDirect 缓存的 next。
-fn get_iterator_strict<H: VmHost>(vm: &mut H, value: JsValue) -> Result<(JsValue, JsValue), JsValue> {
+fn get_iterator_strict<H: VmHost>(
+    vm: &mut H, what: &str, value: JsValue,
+) -> Result<(JsValue, JsValue), JsValue> {
     let obj = unsafe { &*value.as_js_object_ptr() };
     let sym_iter_si = encode_symbol_key(vm.realm_id(), 0);
     let method = match vm.ordinary_get(obj, sym_iter_si, value) {
@@ -451,13 +473,16 @@ fn get_iterator_strict<H: VmHost>(vm: &mut H, value: JsValue) -> Result<(JsValue
         Err(err) => return Err(engine_error(vm, &err)),
     };
     if !is_callable(method) {
-        return Err(crate::error::create_type_error(vm, "Iterator.zip iterables is not iterable"));
+        return Err(crate::error::create_type_error(
+            vm,
+            &format!("Iterator.zip {what} is not iterable"),
+        ));
     }
     let iter = vm.call_function_sync(method, value, &[]).map_err(|e| engine_error(vm, &e))?;
     if !iter.is_object() {
         return Err(crate::error::create_type_error(
             vm,
-            "Iterator.zip iterables @@iterator returned a non-object",
+            &format!("Iterator.zip {what} @@iterator returned a non-object"),
         ));
     }
     get_iterator_direct(vm, iter)
@@ -1261,7 +1286,8 @@ fn helper_step_flat_map<H: VmHost>(
 /// `iterables` 对象、读 options（mode 严格字符串校验，longest 时读 padding），
 /// 再全 GetIterator 取 `inputIter`，元素收集循环（IteratorStepValue 骤发逆序关
 /// 已收集元素迭代器；元素经 GetIteratorFlattenable 骤发逆序关含 inputIter），
-/// 最后建 zip wrapper。
+/// longest 且 padding 为对象时预计算 padding 数组（骤发逆序关元素迭代器、
+/// padding 迭代器不关；未耗尽收口正常关），最后建 zip wrapper。
 ///
 /// # 步骤
 /// 1. `iterables` 非对象 → TypeError（options 不读）。
@@ -1269,7 +1295,9 @@ fn helper_step_flat_map<H: VmHost>(
 ///    String 包装对象拒绝、不触发 toPrimitive，无效 mode 不读 padding）。
 /// 3. longest 模式读 `padding`（undefined 或对象，其余 TypeError）。
 /// 4. GetIterator（无鸭子回退）取 inputIter；元素收集循环骤发逆序关后透传。
-/// 5. 建 zip wrapper（`__kind__`=5）。
+/// 5. longest 且 padding 为对象：GetIterator(padding) 加升序步进至多元素数次
+///    预计算 padding 数组（耗尽余位填 undefined，未耗尽正常关）。
+/// 6. 建 zip wrapper（`__kind__`=5）。
 pub fn iterator_zip<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let iterables = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
     let options = if args.len() > 2 { vm.reg(args[2]) } else { JsValue::undefined() };
@@ -1324,7 +1352,7 @@ pub fn iterator_zip<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     } else {
         JsValue::undefined()
     };
-    let (input_iter, input_next) = match get_iterator_strict(vm, iterables) {
+    let (input_iter, input_next) = match get_iterator_strict(vm, "iterables", iterables) {
         Ok(pair) => pair,
         Err(v) => return NativeResult::Err(v),
     };
@@ -1347,12 +1375,56 @@ pub fn iterator_zip<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
             }
         }
     }
-    NativeResult::Ok(make_iterator_zip_helper(vm, &zips, mode, padding))
+    // longest 且 padding 为对象：预计算 padding 数组（长度恒为元素数，耗尽后余位
+    // 填 undefined）。骤发（GetIterator 与 next/done/value getter）逆序关已收集
+    // 元素迭代器而 padding 迭代器不关，透传原值；全部步进后未耗尽则正常关，
+    // 关闭骤发同样逆序关元素迭代器透传。
+    let padding_value = if mode == 1 && padding.is_object() {
+        let (padding_iter, padding_next) = match get_iterator_strict(vm, "padding", padding) {
+            Ok(pair) => pair,
+            Err(v) => {
+                close_zip_pairs(vm, &zips, None, Some(v));
+                return NativeResult::Err(v);
+            }
+        };
+        let mut pad_values: Vec<JsValue> = Vec::new();
+        let mut using_iterator = true;
+        for _ in 0..zips.len() {
+            if using_iterator {
+                match iterator_record_step(vm, padding_next, padding_iter) {
+                    Ok(Some(value)) => pad_values.push(value),
+                    Ok(None) => {
+                        using_iterator = false;
+                        pad_values.push(JsValue::undefined());
+                    }
+                    Err(v) => {
+                        close_zip_pairs(vm, &zips, None, Some(v));
+                        return NativeResult::Err(v);
+                    }
+                }
+            } else {
+                pad_values.push(JsValue::undefined());
+            }
+        }
+        if using_iterator {
+            if let Err(v) = iterator_close_record(vm, padding_iter, None) {
+                close_zip_pairs(vm, &zips, None, Some(v));
+                return NativeResult::Err(v);
+            }
+        }
+        make_array_from_list(vm, &pad_values)
+    } else {
+        JsValue::undefined()
+    };
+    NativeResult::Ok(make_iterator_zip_helper(vm, &zips, mode, padding_value))
 }
 
 /// 建 zip wrapper：空对象挂 `%IteratorHelperPrototype%`，写 `__zips__`（元素
 /// 迭代器对数组，每元素为 [iter, next] 对）、`__open__`（位掩码，初始全 1）、
 /// `__mode__`（0/1/2）、`__state__`（0）、`__kind__`（5）、`__padding__` 槽。
+///
+/// `__padding__` 存预计算 padding 数组（longest 且 padding 为对象时，长度恒为
+/// 元素数）或 undefined；步进期按 done 位下标取落点值。
 ///
 /// 独立构造器（不复用 [`make_iterator_helper`]）：槽位布局不同，zip 无
 /// `__inner__`/`__next__` 槽。
@@ -1467,10 +1539,13 @@ fn close_zip_pairs<H: VmHost>(
     }
 }
 
-/// zip 推进（shortest 臂加 mode 分派骨架）：升序步进开放迭代器，收集到钉在
-/// `__results__` 槽的新数组；done 清位后 shortest 逆序关其余开放迭代器（正常
-/// 完成）收口；abrupt 清位后逆序关其余（原值胜出）透传；longest/strict 臂
-/// 未实现，此处按 longest 的 undefined 填充语义降级保 wrapper 健壮。
+/// zip 推进：升序步进开放迭代器，收集到钉在 `__results__` 槽的新数组。三 mode
+/// 臂：shortest done 位逆序关其余开放迭代器（正常完成）收口；longest done 位填
+/// 预计算 `padding[i]`（越界 undefined）续行、全耗尽收口；strict done 位 i 非 0
+/// 逆序关全部开放迭代器（throw 完成，新 TypeError 胜出）后抛新 TypeError，i 为 0
+/// 升序余者扫描（只读 done，已关位视 done 不重调 next），首个骤发逆序关全部开放
+/// 迭代器透传原值、首个未耗尽逆序关全部开放迭代器抛新 TypeError、全耗尽正常收口；
+/// 步进骤发清位后逆序关其余（原值胜出）透传。
 fn helper_step_zip<H: VmHost>(
     vm: &mut H, this_val: JsValue, helper: &mut JsObject,
 ) -> Result<Option<JsValue>, JsValue> {
@@ -1491,6 +1566,9 @@ fn helper_step_zip<H: VmHost>(
     }
     let mode_si = vm.perm_intern(MODE_PROP);
     let mode = read_slot_int(vm, helper, mode_si, 0);
+    // longest 臂落点值来自预计算 padding 数组（用户调用窗口前读取）。
+    let padding_si = vm.perm_intern(PADDING_PROP);
+    let padding_val = vm.ordinary_get(helper, padding_si, this_val).unwrap_or(JsValue::undefined());
     let array_proto = vm.builtin_proto(ProtoKind::ArrayProto);
     let arr = vm.alloc_object(JsObject::new_array(
         EMPTY_SHAPE_ID,
@@ -1503,6 +1581,21 @@ fn helper_step_zip<H: VmHost>(
     let mut arr_len = 0usize;
     for i in 0..iter_count {
         if !zip_bit_open(open, i) {
+            // 已关迭代器：longest 臂填 padding 落点续行（结果数组每个输入恒有
+            // 一槽）；shortest/strict 首 done 即返回，本臂不会到达已关位。
+            if mode == 1 {
+                let pad = if padding_val.is_object() {
+                    let pad_obj = unsafe { &*padding_val.as_js_object_ptr() };
+                    pad_obj.get_prop_at(i)
+                } else {
+                    JsValue::undefined()
+                };
+                // SAFETY: arr 是刚经统一入口分配的数组对象，元素区已就绪。
+                unsafe {
+                    (*arr).set_prop_at(arr_len, pad);
+                }
+                arr_len += 1;
+            }
             continue;
         }
         // 每次用户调用窗口后重读槽位（回调可改写 wrapper 槽）。
@@ -1534,13 +1627,67 @@ fn helper_step_zip<H: VmHost>(
                         Err(v) => Err(v),
                     };
                 }
-                // longest/strict 臂未实现：按 longest 的 undefined 填充语义降级。
+                if mode == 2 {
+                    // strict：i 非 0 done → 逆序关全部开放迭代器（throw 完成，新
+                    // TypeError 胜出）后抛新 TypeError。
+                    if i != 0 {
+                        let type_err = crate::error::create_type_error(
+                            vm,
+                            "Iterator.zip strict mode: iterators are not all the same length",
+                        );
+                        let _ = close_remaining_open(vm, this_val, helper, open, iter_count, Some(type_err));
+                        return Err(type_err);
+                    }
+                    // i 为 0：升序余者扫描（只读 done，已关位视 done 不重调 next）。
+                    for k in 1..iter_count {
+                        if !zip_bit_open(open, k) {
+                            continue;
+                        }
+                        let pair_val = zips_obj.get_prop_at(k);
+                        if !pair_val.is_object() {
+                            continue;
+                        }
+                        let pair_obj = unsafe { &*pair_val.as_js_object_ptr() };
+                        let iter_k = pair_obj.get_prop_at(0);
+                        let next_k = pair_obj.get_prop_at(1);
+                        match iterator_step_done_only(vm, next_k, iter_k) {
+                            Err(v) => {
+                                open = zip_bit_clear(open, k);
+                                vm.set_or_create_prop_value(helper, open_si, JsValue::int(open));
+                                let _ = close_remaining_open(vm, this_val, helper, open, iter_count, Some(v));
+                                return Err(v);
+                            }
+                            Ok(true) => {
+                                // done 位移出开放集（不重调 next，不参与关全部）。
+                                open = zip_bit_clear(open, k);
+                                vm.set_or_create_prop_value(helper, open_si, JsValue::int(open));
+                            }
+                            Ok(false) => {
+                                let type_err = crate::error::create_type_error(
+                                    vm,
+                                    "Iterator.zip strict mode: iterators are not all the same length",
+                                );
+                                let _ = close_remaining_open(vm, this_val, helper, open, iter_count, Some(type_err));
+                                return Err(type_err);
+                            }
+                        }
+                    }
+                    // 全耗尽：正常收口。
+                    return Ok(None);
+                }
+                // longest：done 位填 padding[i]（越界 undefined）续行。
                 if !zip_bit_open(open, 0) && (0..iter_count).all(|k| !zip_bit_open(open, k)) {
                     return Ok(None);
                 }
+                let pad = if padding_val.is_object() {
+                    let pad_obj = unsafe { &*padding_val.as_js_object_ptr() };
+                    pad_obj.get_prop_at(i)
+                } else {
+                    JsValue::undefined()
+                };
                 // SAFETY: 同上一分支。
                 unsafe {
-                    (*arr).set_prop_at(arr_len, JsValue::undefined());
+                    (*arr).set_prop_at(arr_len, pad);
                 }
                 arr_len += 1;
             }

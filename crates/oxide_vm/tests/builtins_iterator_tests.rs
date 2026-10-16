@@ -2703,3 +2703,340 @@ fn iterator_zip_reentrancy_guard() {
     .unwrap();
     assert!(r.as_bool(), "executing reentry on return throws TypeError");
 }
+
+#[test]
+fn iterator_zip_longest_basic_values_and_padding() {
+    // longest 基本值与 padding 落点：无 padding 填 undefined、padding 数组、
+    // padding 迭代器（耗尽余位 undefined、无限迭代器步进至多 iterCount 次）。
+    let mut vm = Vm::new();
+    let bool_cases = [
+        (
+            "var it = Iterator.zip([[1,2,3],[4,5]], {mode: 'longest'}); \
+             var r1 = it.next().value; var r2 = it.next().value; var r3 = it.next(); \
+             r1[0] === 1 && r1[1] === 4 && r2[0] === 2 && r2[1] === 5 \
+             && r3.value[0] === 3 && r3.value[1] === undefined && r3.done === false \
+             && it.next().done === true",
+            true,
+        ),
+        (
+            "var it = Iterator.zip([[1,2],[3,4,5]], {mode: 'longest', padding: ['p','q']}); \
+             var r1 = it.next().value; var r2 = it.next().value; var r3 = it.next(); \
+             r1[0] === 1 && r1[1] === 3 && r2[0] === 2 && r2[1] === 4 \
+             && r3.value[0] === 'p' && r3.value[1] === 5 && it.next().done === true",
+            true,
+        ),
+        (
+            "var it = Iterator.zip([[1,2],[3,4,5]], {mode: 'longest', padding: []}); \
+             it.next(); it.next(); var r3 = it.next().value; r3[0] === undefined && r3[1] === 5 \
+             && it.next().done === true",
+            true,
+        ),
+        (
+            "var pads = { [Symbol.iterator]() { return {v: 0, next() { this.v++; return {value: this.v, done: false}; }}; } }; \
+             var it = Iterator.zip([[1,2],[3,4,5]], {mode: 'longest', padding: pads}); \
+             it.next(); it.next(); var r3 = it.next().value; r3[0] === 1 && r3[1] === 5",
+            true,
+        ),
+        (
+            "var steps = 0; var rets = 0; \
+             var infinite = { [Symbol.iterator]() { var self = this; return { next() { steps++; return {value: steps, done: false}; }, \
+               return() { rets++; return {done: true}; } }; } }; \
+             var it = Iterator.zip([[1,2],[3]], {mode: 'longest', padding: infinite}); \
+             it.next(); it.next(); it.next(); \
+             steps === 2 && rets === 1",
+            true,
+        ),
+    ];
+    for (src, expected) in bool_cases {
+        let result = eval(&mut vm, src).unwrap();
+        assert_eq!(result.as_bool(), expected, "for {}", src);
+    }
+}
+
+#[test]
+fn iterator_zip_strict_basic_values() {
+    // strict 基本值：等长正常收口，不等长 done 位抛 TypeError。
+    let mut vm = Vm::new();
+    let bool_cases = [
+        (
+            "var it = Iterator.zip([[1,2,3],[4,5,6]], {mode: 'strict'}); \
+             it.next().value[0] === 1 && it.next().value[1] === 5 && it.next().value[0] === 3 \
+             && it.next().done === true",
+            true,
+        ),
+        (
+            "var ok = false; try { \
+              var it = Iterator.zip([[1,2,3],[4,5]], {mode: 'strict'}); \
+              it.next(); it.next(); it.next(); \
+            } catch (e) { ok = e instanceof TypeError; } ok",
+            true,
+        ),
+        (
+            "var ok = false; try { \
+              var it = Iterator.zip([[1,2],[3,4,5]], {mode: 'strict'}); \
+              it.next(); it.next(); it.next(); \
+            } catch (e) { ok = e instanceof TypeError; } ok",
+            true,
+        ),
+    ];
+    for (src, expected) in bool_cases {
+        let result = eval(&mut vm, src).unwrap();
+        assert_eq!(result.as_bool(), expected, "for {}", src);
+    }
+}
+
+#[test]
+fn iterator_zip_strict_done_close_order() {
+    // strict done 位 i 非 0：逆序关全部开放迭代器（throw 完成，return 错误被吞），
+    // 抛新 TypeError；done 位迭代器不关。
+    let mut vm = Vm::new();
+    let r = eval(
+        &mut vm,
+        "(() => {
+            var log = [];
+            var first = { next() { log.push('first next'); return {done: false}; },
+              return() { log.push('first return'); throw new RangeError('x'); } };
+            var second = { next() { log.push('second next'); return {done: true}; },
+              return() { log.push('second return'); } };
+            var third = { next() { log.push('third next'); },
+              return() { log.push('third return'); throw new ReferenceError('boom'); } };
+            var it = Iterator.zip([first, second, third], {mode: 'strict'});
+            var threw = false;
+            try { it.next(); } catch (e) { threw = e instanceof TypeError; }
+            return threw + '|' + JSON.stringify(log);
+          })()",
+    )
+    .unwrap();
+    assert_eq!(
+        to_str(&vm, r),
+        "true|[\"first next\",\"second next\",\"third return\",\"first return\"]",
+        "strict i not zero: close all open in reverse, new TypeError wins"
+    );
+}
+
+#[test]
+fn iterator_zip_strict_i_is_zero_scan() {
+    // strict done 位 i 为 0：升序余者扫描（只读 done），三臂——全耗尽正常收口、
+    // 首个未耗尽逆序关全部开放抛新 TypeError、骤发逆序关全部透传原值。
+    let mut vm = Vm::new();
+    // 全耗尽：正常收口，无 return 调用。
+    let r = eval(
+        &mut vm,
+        "(() => {
+            var log = [];
+            function makeIter(name) {
+              return { next() { log.push(name + ' next'); return {done: true}; },
+                return() { log.push(name + ' return'); } };
+            }
+            var it = Iterator.zip([makeIter('a'), makeIter('b'), makeIter('c')], {mode: 'strict'});
+            var result = it.next();
+            return (result.done === true) + '|' + JSON.stringify(log);
+          })()",
+    )
+    .unwrap();
+    assert_eq!(
+        to_str(&vm, r),
+        "true|[\"a next\",\"b next\",\"c next\"]",
+        "strict i zero all exhausted: normal completion, no return calls"
+    );
+    // 首个未耗尽：逆序关全部开放（含已关位不重调 next），抛新 TypeError。
+    let r = eval(
+        &mut vm,
+        "(() => {
+            var log = [];
+            var first = { next() { log.push('first next'); return {done: true}; },
+              return() { log.push('first return'); } };
+            var second = { next() { log.push('second next'); return {done: true}; },
+              return() { log.push('second return'); } };
+            var third = { next() { log.push('third next'); return {done: false}; },
+              return() { log.push('third return'); throw new RangeError('x'); } };
+            var fourth = { next() { log.push('fourth next'); },
+              return() { log.push('fourth return'); throw new ReferenceError('boom'); } };
+            var it = Iterator.zip([first, second, third, fourth], {mode: 'strict'});
+            var threw = false;
+            try { it.next(); } catch (e) { threw = e instanceof TypeError; }
+            return threw + '|' + JSON.stringify(log);
+          })()",
+    )
+    .unwrap();
+    assert_eq!(
+        to_str(&vm, r),
+        "true|[\"first next\",\"second next\",\"third next\",\"fourth return\",\"third return\"]",
+        "strict i zero not exhausted: close all open in reverse, new TypeError wins"
+    );
+    // 骤发：首个骤发逆序关全部开放（原值胜出），骤发位不关。
+    let r = eval(
+        &mut vm,
+        "(() => {
+            var log = [];
+            var first = { next() { log.push('first next'); return {done: true}; },
+              return() { log.push('first return'); } };
+            var second = { next() { log.push('second next'); throw new RangeError('boom'); },
+              return() { log.push('second return'); } };
+            var third = { next() { log.push('third next'); },
+              return() { log.push('third return'); throw new ReferenceError('x'); } };
+            var fourth = { next() { log.push('fourth next'); },
+              return() { log.push('fourth return'); throw new ReferenceError('y'); } };
+            var it = Iterator.zip([first, second, third, fourth], {mode: 'strict'});
+            var threw = false;
+            try { it.next(); } catch (e) { threw = e instanceof RangeError; }
+            return threw + '|' + JSON.stringify(log);
+          })()",
+    )
+    .unwrap();
+    assert_eq!(
+        to_str(&vm, r),
+        "true|[\"first next\",\"second next\",\"fourth return\",\"third return\"]",
+        "strict i zero scan abrupt: close all open in reverse, original value wins"
+    );
+}
+
+#[test]
+fn iterator_zip_longest_abrupt_close_order() {
+    // longest 步进骤发：清位后逆序关其余开放迭代器（原值胜出），done 位不关。
+    let mut vm = Vm::new();
+    let r = eval(
+        &mut vm,
+        "(() => {
+            var log = [];
+            var empty = { next() { log.push('empty next'); return {done: true}; },
+              return() { log.push('empty return'); } };
+            var first = { next() { log.push('first next'); throw new RangeError('boom'); },
+              return() { log.push('first return'); } };
+            var second = { next() { log.push('second next'); },
+              return() { log.push('second return'); throw new ReferenceError('x'); } };
+            var third = { next() { log.push('third next'); },
+              return() { log.push('third return'); throw new ReferenceError('y'); } };
+            var it = Iterator.zip([empty, first, second, third], {mode: 'longest'});
+            var threw = false;
+            try { it.next(); } catch (e) { threw = e instanceof RangeError; }
+            return threw + '|' + JSON.stringify(log);
+          })()",
+    )
+    .unwrap();
+    assert_eq!(
+        to_str(&vm, r),
+        "true|[\"empty next\",\"first next\",\"third return\",\"second return\"]",
+        "longest abrupt: done slot not closed, rest closed in reverse, original wins"
+    );
+}
+
+#[test]
+fn iterator_zip_padding_precompute_abrupt() {
+    // padding 预计算骤发（GetIterator 与 next/done/value getter）：逆序关元素
+    // 迭代器，padding 迭代器不关，透传原值。
+    let mut vm = Vm::new();
+    // GetIterator 骤发（Symbol.iterator 抛错）。
+    let r = eval(
+        &mut vm,
+        "(() => {
+            var log = [];
+            var first = { next() { log.push('unexpected next'); },
+              return() { log.push('first return'); throw new ReferenceError('x'); } };
+            var second = { next() { log.push('unexpected next'); },
+              return() { log.push('second return'); throw new ReferenceError('y'); } };
+            var third = { next() { log.push('unexpected next'); },
+              get return() { log.push('third return'); throw new ReferenceError('z'); } };
+            var padding = { [Symbol.iterator]() { throw new RangeError('boom'); } };
+            var threw = false;
+            try { Iterator.zip([first, second, third], {mode: 'longest', padding}); }
+            catch (e) { threw = e instanceof RangeError; }
+            return threw + '|' + JSON.stringify(log);
+          })()",
+    )
+    .unwrap();
+    assert_eq!(
+        to_str(&vm, r),
+        "true|[\"third return\",\"second return\",\"first return\"]",
+        "padding GetIterator abrupt: close element iterators in reverse, padding not closed"
+    );
+    // 步进骤发（next 抛错 / done getter 抛错 / value getter 抛错）。
+    let r = eval(
+        &mut vm,
+        "(() => {
+            var log = [];
+            function makeElements() {
+              return [
+                { next() { log.push('unexpected next'); },
+                  return() { log.push('first return'); throw new ReferenceError('x'); } },
+                { next() { log.push('unexpected next'); },
+                  return() { log.push('second return'); throw new ReferenceError('y'); } },
+                { next() { log.push('unexpected next'); },
+                  get return() { log.push('third return'); throw new ReferenceError('z'); } }
+              ];
+            }
+            var padding = { [Symbol.iterator]() { return this; },
+              next() { throw new RangeError('boom'); } };
+            var threw = false;
+            try { Iterator.zip(makeElements(), {mode: 'longest', padding}); }
+            catch (e) { threw = e instanceof RangeError; }
+            var l1 = JSON.stringify(log);
+            log.length = 0;
+            var padding2 = { [Symbol.iterator]() { return this; },
+              next() { return { get done() { throw new RangeError('boom'); } }; } };
+            try { Iterator.zip(makeElements(), {mode: 'longest', padding: padding2}); }
+            catch (e) { threw = threw && e instanceof RangeError; }
+            var l2 = JSON.stringify(log);
+            log.length = 0;
+            var padding3 = { [Symbol.iterator]() { return this; },
+              next() { return { done: false, get value() { throw new RangeError('boom'); } }; } };
+            try { Iterator.zip(makeElements(), {mode: 'longest', padding: padding3}); }
+            catch (e) { threw = threw && e instanceof RangeError; }
+            var l3 = JSON.stringify(log);
+            return threw + '|' + l1 + '|' + l2 + '|' + l3;
+          })()",
+    )
+    .unwrap();
+    assert_eq!(
+        to_str(&vm, r),
+        "true|[\"third return\",\"second return\",\"first return\"]|[\"third return\",\"second return\",\"first return\"]|[\"third return\",\"second return\",\"first return\"]",
+        "padding step abrupt (next/done/value): close element iterators in reverse, original wins"
+    );
+}
+
+#[test]
+fn iterator_zip_padding_not_exhausted_close() {
+    // padding 未耗尽收口：正常关 padding 迭代器，关闭骤发逆序关元素迭代器透传。
+    let mut vm = Vm::new();
+    let r = eval(
+        &mut vm,
+        "(() => {
+            var log = [];
+            var first = { next() { log.push('unexpected next'); },
+              return() { log.push('first return'); throw new ReferenceError('x'); } };
+            var second = { next() { log.push('unexpected next'); },
+              return() { log.push('second return'); throw new ReferenceError('y'); } };
+            var third = { next() { log.push('unexpected next'); },
+              get return() { log.push('third return'); throw new ReferenceError('z'); } };
+            var padding = { [Symbol.iterator]() { return this; },
+              next() { return {done: false}; },
+              return() { log.push('padding return'); throw new RangeError('boom'); } };
+            var threw = false;
+            try { Iterator.zip([first, second, third], {mode: 'longest', padding}); }
+            catch (e) { threw = e instanceof RangeError; }
+            return threw + '|' + JSON.stringify(log);
+          })()",
+    )
+    .unwrap();
+    assert_eq!(
+        to_str(&vm, r),
+        "true|[\"padding return\",\"third return\",\"second return\",\"first return\"]",
+        "padding not exhausted: normal close, abrupt close passes through element iterators"
+    );
+    // 耗尽：不关 padding 迭代器。
+    let r = eval(
+        &mut vm,
+        "(() => {
+            var rets = 0;
+            var padding = { [Symbol.iterator]() { return this; },
+              next() { if (this.v === undefined) { this.v = 1; return {done: false, value: 'p0'}; } return {done: true}; },
+              return() { rets++; return {done: true}; } };
+            var it = Iterator.zip([[1,2],[3]], {mode: 'longest', padding});
+            var r1 = it.next(); var r2 = it.next();
+            return r1.value[0] === 1 && r1.value[1] === 3 && r2.value[0] === 2 \
+              && r2.value[1] === undefined && rets === 0 && it.next().done === true;
+          })()",
+    )
+    .unwrap();
+    assert!(r.as_bool(), "padding exhausted exactly at iterCount: no close, done landing undefined");
+}
