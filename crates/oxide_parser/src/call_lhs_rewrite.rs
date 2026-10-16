@@ -499,7 +499,9 @@ fn find_stmt_end(toks: &[Tok], src: &str, start: usize) -> Option<(usize, bool)>
         if toks[j].kind == Kind::Punct {
             match tok_val(src, &toks[j]) {
                 "(" | "[" | "{" => depth += 1,
-                ")" | "]" => depth -= 1,
+                // 右括号在深度为零时出现（畸形输入），饱和减保持深度为零，
+                // 扫描继续到末尾后安全退出，不回绕也不 panic。
+                ")" | "]" => depth = depth.saturating_sub(1),
                 "}" if depth == 0 => return Some((j, false)),
                 "}" => depth -= 1,
                 ";" if depth == 0 => return Some((j, true)),
@@ -553,7 +555,7 @@ fn is_directive_strict(toks: &[Tok], src: &str, stmt_tok: usize) -> bool {
 }
 
 /// 收集严格函数体区间（函数体首语句为 "use strict" 指令）：`function` 声明/
-/// 表达式与箭头函数块体。返回字节区间列表，区间内不改写。
+/// 表达式、箭头函数块体与对象/类方法体。返回字节区间列表，区间内不改写。
 fn collect_strict_regions(toks: &[Tok], src: &str) -> Vec<(usize, usize)> {
     let mut regions = Vec::new();
     let mut i = 0usize;
@@ -563,6 +565,18 @@ fn collect_strict_regions(toks: &[Tok], src: &str) -> Vec<(usize, usize)> {
 
         if t.kind == Kind::Ident && v == "function" {
             if let Some(open) = function_body_open(toks, src, i) {
+                if let Some(close) = match_brace(toks, src, open) {
+                    if is_directive_strict(toks, src, open + 1) {
+                        regions.push((toks[open].start, toks[close].end));
+                    }
+                }
+            }
+        }
+
+        // 对象/类方法体：名字后（可选 `*`）紧跟参数括号与 `{`。
+        // `get`/`set`/`async`/`static` 前缀落在名字之前，锚定名字即覆盖。
+        if t.kind == Kind::Ident {
+            if let Some(open) = method_body_open(toks, src, i) {
                 if let Some(close) = match_brace(toks, src, open) {
                     if is_directive_strict(toks, src, open + 1) {
                         regions.push((toks[open].start, toks[close].end));
@@ -590,12 +604,35 @@ fn collect_strict_regions(toks: &[Tok], src: &str) -> Vec<(usize, usize)> {
 }
 
 /// 从 `function` token 起定位函数体的 `{` 下标：跳过可选函数名与 `*`，
-/// 平衡参数括号后须紧跟 `{`。
+/// 平衡参数括号后须紧跟 `{`。星号可紧邻关键字（`function* name`）也可紧邻
+/// 参数括号（`function name*`），两种顺序都跳过。
 fn function_body_open(toks: &[Tok], src: &str, i: usize) -> Option<usize> {
     let mut j = i + 1;
-    if j < toks.len() && toks[j].kind == Kind::Ident {
+    if j < toks.len() && toks[j].kind == Kind::Punct && tok_val(src, &toks[j]) == "*" {
         j += 1;
     }
+    if j < toks.len() && toks[j].kind == Kind::Ident {
+        j += 1;
+        if j < toks.len() && toks[j].kind == Kind::Punct && tok_val(src, &toks[j]) == "*" {
+            j += 1;
+        }
+    }
+    if j >= toks.len() || toks[j].kind != Kind::Punct || tok_val(src, &toks[j]) != "(" {
+        return None;
+    }
+    let close = match_paren(toks, src, j)?;
+    let k = close + 1;
+    if k < toks.len() && toks[k].kind == Kind::Punct && tok_val(src, &toks[k]) == "{" {
+        return Some(k);
+    }
+    None
+}
+
+/// 从方法名 token 起定位方法体的 `{` 下标：跳过可选 `*`（生成器方法），
+/// 平衡参数括号后须紧跟 `{`。调用表达式后不合法地跟块，此形态只会命中
+/// 对象/类方法定义（或非法源，安全方向同函数臂）。
+fn method_body_open(toks: &[Tok], src: &str, i: usize) -> Option<usize> {
+    let mut j = i + 1;
     if j < toks.len() && toks[j].kind == Kind::Punct && tok_val(src, &toks[j]) == "*" {
         j += 1;
     }
@@ -898,6 +935,13 @@ mod tests {
         let src = "f()`` = 1;";
         assert_eq!(rw(src), src);
     }
+
+    // 畸形输入（语句未闭合多一个右括号）原样透传，不 panic 也不改写
+    #[test]
+    fn unbalanced_stmt_end_not_rewritten() {
+        let src = "f() = 1)";
+        assert_eq!(rw(src), src);
+    }
 }
 
 #[cfg(test)]
@@ -922,6 +966,24 @@ mod probe {
     #[test]
     fn strict_fn_body_not_rewritten() {
         let src = "function() { \"use strict\"; f() = g(); }";
+        assert_eq!(rw(src), src);
+    }
+    // strict 具名生成器体（星号在函数名之前）不改写
+    #[test]
+    fn strict_named_generator_body_not_rewritten() {
+        let src = "function* g() { \"use strict\"; f() = g(); }";
+        assert_eq!(rw(src), src);
+    }
+    // strict 对象方法体不改写
+    #[test]
+    fn strict_object_method_body_not_rewritten() {
+        let src = "o = { m() { \"use strict\"; f() = g(); } };";
+        assert_eq!(rw(src), src);
+    }
+    // strict 类方法体不改写
+    #[test]
+    fn strict_class_method_body_not_rewritten() {
+        let src = "class C { m() { \"use strict\"; f() = g(); } }";
         assert_eq!(rw(src), src);
     }
 }

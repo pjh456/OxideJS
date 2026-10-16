@@ -408,8 +408,7 @@ fn parse_iso_strict(s: &str) -> Option<f64> {
 
     // 年：可选符号；带符号恒为 6 位扩展年，无符号为 4 位年或 6 位扩展年
     // （第 5 位起为数字时读满 6 位）。
-    let y: i64;
-    if pos < b.len() && (b[pos] == b'+' || b[pos] == b'-') {
+    let y: i64 = if pos < b.len() && (b[pos] == b'+' || b[pos] == b'-') {
         let neg = b[pos] == b'-';
         pos += 1;
         if b.len() - pos < 6 || !b[pos..pos + 6].iter().all(|c| c.is_ascii_digit()) {
@@ -421,7 +420,7 @@ fn parse_iso_strict(s: &str) -> Option<f64> {
             return None;
         }
         pos += 6;
-        y = if neg { -yv } else { yv };
+        if neg { -yv } else { yv }
     } else {
         if b.len() - pos < 4 || !b[pos..pos + 4].iter().all(|c| c.is_ascii_digit()) {
             return None;
@@ -432,8 +431,8 @@ fn parse_iso_strict(s: &str) -> Option<f64> {
             yv = yv * 100 + (b[pos] - b'0') as i64 * 10 + (b[pos + 1] - b'0') as i64;
             pos += 2;
         }
-        y = yv;
-    }
+        yv
+    };
 
     // 纯年形式（YYYY）：当年 1 月 1 日 UTC 零点。
     if pos == b.len() {
