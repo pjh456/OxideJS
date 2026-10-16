@@ -44,8 +44,8 @@ pub(crate) struct FnScopeNames {
     /// 块级普通函数声明名（源序去重；直接子级是提升 var 声明不纳，async/生成器
     /// 是块级词法绑定不纳，不递归嵌套函数体）。
     pub(crate) block_function_names: Vec<String>,
-    /// 块级函数名的外层 var 绑定抑制集（形参名 ∪ 树内词法声明名；命中抑制的名字
-    /// 不建外层 var 绑定、不求值写回）。
+    /// 块级函数名的外层 var 绑定抑制集（形参名 ∪ 树内词法声明名，绑定标识符 catch
+    /// 参数除外；命中抑制的名字不建外层 var 绑定、不求值写回）。
     pub(crate) block_fn_suppressed: HashSet<String>,
 }
 
@@ -112,6 +112,8 @@ fn collect_fn_scope_names_impl(stmts: &[Statement], out: &mut FnScopeNames, top:
                     }
                 }
                 // 抑制面：词法名与块函数名同名时退化为纯块作用域（各层均收集）。
+                // 规范口径：var 声明与函数体任一层词法声明同名即产生早期错误
+                // （LexicallyDeclaredNames 递归收集嵌套块），故嵌套 let/const 亦入集。
                 if !is_var {
                     for d in &vd.declarations {
                         collect_binding_pattern_names(&d.id, &mut out.block_fn_suppressed);
@@ -141,7 +143,7 @@ fn collect_fn_scope_names_impl(stmts: &[Statement], out: &mut FnScopeNames, top:
                     let name = id.name.to_string();
                     // own 面：类名是本作用域 const 绑定。
                     out.own_binding_names.insert(name.clone());
-                    // 抑制面：类名是词法声明，与块函数名同名时退化纯块作用域。
+                    // 抑制面：类名是词法声明，与块函数名同名时退化纯块作用域（各层均收集）。
                     out.block_fn_suppressed.insert(name.clone());
                     if top {
                         // 直接子词法面：顶层类是顶层词法绑定。
@@ -269,7 +271,7 @@ fn collect_fn_scope_names_impl(stmts: &[Statement], out: &mut FnScopeNames, top:
                             collect_binding_pattern_names(&d.id, &mut out.block_level_decl_names);
                         }
                     }
-                    // 抑制面：for 头词法名与块函数名同名时退化纯块作用域。
+                    // 抑制面：for 头词法名与块函数名同名时退化纯块作用域（各层均收集）。
                     if !is_var {
                         for d in &vd.declarations {
                             collect_binding_pattern_names(&d.id, &mut out.block_fn_suppressed);
@@ -288,7 +290,7 @@ fn collect_fn_scope_names_impl(stmts: &[Statement], out: &mut FnScopeNames, top:
                     collect_for_left_decl_names(&fi.left, &mut out.own_binding_names);
                     if !is_var {
                         collect_for_left_decl_names(&fi.left, &mut out.block_level_decl_names);
-                        // 抑制面：for 头词法名与块函数名同名时退化纯块作用域。
+                        // 抑制面：for 头词法名与块函数名同名时退化纯块作用域（各层均收集）。
                         collect_for_left_decl_names(&fi.left, &mut out.block_fn_suppressed);
                     }
                 }
@@ -303,7 +305,7 @@ fn collect_fn_scope_names_impl(stmts: &[Statement], out: &mut FnScopeNames, top:
                     collect_for_left_decl_names(&fo.left, &mut out.own_binding_names);
                     if !is_var {
                         collect_for_left_decl_names(&fo.left, &mut out.block_level_decl_names);
-                        // 抑制面：for 头词法名与块函数名同名时退化纯块作用域。
+                        // 抑制面：for 头词法名与块函数名同名时退化纯块作用域（各层均收集）。
                         collect_for_left_decl_names(&fo.left, &mut out.block_fn_suppressed);
                     }
                 }
@@ -319,11 +321,16 @@ fn collect_fn_scope_names_impl(stmts: &[Statement], out: &mut FnScopeNames, top:
                 // 与旧收集器逐位一致（各集合面不受访问序影响）。
                 collect_fn_scope_names_impl(&ts.block.body, out, false);
                 if let Some(h) = &ts.handler {
-                    // catch 参数是本作用域的词法绑定：own、块级与抑制三面均计入。
+                    // catch 参数是本作用域的词法绑定：own 与块级两面的计入。
+                    // 抑制面：仅解构 catch 参数（BindingPattern）计入。绑定标识符
+                    // catch 参数（CatchParameter:BindingIdentifier）按 B.3.5 例外条款
+                    // 豁免 var 碰撞早期错误，同名块函数仍提升全局，不入抑制集。
                     if let Some(param) = &h.param {
                         collect_binding_pattern_names(&param.pattern, &mut out.own_binding_names);
                         collect_binding_pattern_names(&param.pattern, &mut out.block_level_decl_names);
-                        collect_binding_pattern_names(&param.pattern, &mut out.block_fn_suppressed);
+                        if !matches!(param.pattern, oxide_parser::BindingPattern::BindingIdentifier(_)) {
+                            collect_binding_pattern_names(&param.pattern, &mut out.block_fn_suppressed);
+                        }
                     }
                     collect_fn_scope_names_impl(&h.body.body, out, false);
                 }
@@ -656,7 +663,7 @@ mod tests {
             &[],
             &[],
             &[],
-            &["b", "e"],
+            &["b"],
         );
         assert_scope_names(
             "try { var a; } catch { let b; }",
@@ -795,7 +802,7 @@ mod tests {
             &[],
             &[],
             &["bf6", "bf7", "bf8"],
-            &["e"],
+            &[],
         );
         assert_scope_names(
             "L2: { function bf9() {} } with (o) { function bf10() {} }",
@@ -891,7 +898,8 @@ mod tests {
             &["s"],
             &["s"],
         );
-        // catch 参数与块函数名同名：catch 体外的 if 臂块函数被抑制。
+        // catch 参数与块函数名同名：绑定标识符 catch 参数按 B.3.5 例外条款豁免 var
+        // 碰撞早期错误，不入抑制集（同名块函数仍提升全局）。
         assert_scope_names(
             "try {} catch (e) {} if (x) { function e() {} }",
             &[],
@@ -902,7 +910,7 @@ mod tests {
             &[],
             &[],
             &["e"],
-            &["e"],
+            &[],
         );
         // 形参名进抑制面：块函数名撞形参名退化纯块作用域（形参名同时注入 own 面）。
         assert_scope_names(

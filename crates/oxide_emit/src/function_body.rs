@@ -73,6 +73,9 @@ pub struct FunctionFlags<'a> {
     pub own_strict: bool,
     /// 函数名（具名函数声明/表达式传名，箭头与匿名传 `None`），用于函数名不可写绑定登记。
     pub name: Option<&'a str>,
+    /// 块级普通函数声明（Annex B.3.3）：函数名绑定为可写 var 绑定，体内容器内
+    /// `f = 123` 可覆写块绑定（非块级函数声明的函数名绑定恒不可写）。
+    pub is_block_function: bool,
 }
 
 /// 类元素钩子：类元素函数（构造器/方法/字段）的额外绑定、字段发射与捕获组，
@@ -353,6 +356,7 @@ impl Emitter {
             hooks.extra_upvalue_names,
             flags.name,
             &scope_names,
+            flags.is_block_function,
         )?;
         // 实例字段 computed key 数组所在 upvalue 下标，供字段初始化 emit 定位。
         ctx.field_keys_uv = ctx
@@ -574,6 +578,7 @@ impl Emitter {
         &self, param_specs: &[ParamSpec<'a>], body_stmts: &[Statement<'a>], parent_ctx: &CompileCtx,
         ctx: &mut CompileCtx, body_context: FunctionBodyContext, extra_capture_exprs: &[&'a Expression<'a>],
         extra_upvalue_names: &[(String, u8)], name: Option<&str>, scope_names: &FnScopeNames,
+        is_block_function: bool,
     ) -> Result<u32, String> {
         ctx.push_scope_with_kind(ScopeKind::FunctionScope);
         let param_base = ctx.next_reg;
@@ -633,6 +638,9 @@ impl Emitter {
         // 绑定，帧槽写入把它初始化为函数对象。抑制面（形参同名 / 体内容器 var
         // 同名 / arguments 对象占位）不建名绑定：前两者名解析到参数/var 绑定，
         // 后者 arguments 绑定占位（var 同名时由帧槽写入初始化为函数对象）。
+        // 块级普通函数声明（Annex B.3.3）的块绑定是可变 var 绑定：体内容器内
+        // `f = 123` 可覆写块绑定（非块级函数声明的函数名绑定恒不可写）；strict
+        // 函数名绑定恒不可写（strict 块函数名绑定 eval 自身词法环境，同不可写）。
         // 名登记须先于 set_captured_bindings：嵌套函数捕获名分析依赖 own_bindings
         // 完整（名被捕获时须识别为本函数绑定并建 cell）。
         if let Some(fn_name) = name {
@@ -651,7 +659,7 @@ impl Emitter {
                         lexical: false,
                         predeclared: false,
                         cell_idx: None,
-                        non_writable: true,
+                        non_writable: ctx.is_strict || !is_block_function,
                     },
                 );
                 ctx.own_bindings.insert(fn_name.to_string());
@@ -1088,6 +1096,9 @@ impl Emitter {
     /// 入口物化闭包，次 sub-pass 跳过声明语句本身，声明点不重编以保函数对象同一性。
     fn emit_body_stmts(&self, body_stmts: &[Statement], ctx: &mut CompileCtx) -> Result<Option<u32>, String> {
         let mut last_result_reg = None;
+        // 提升 sub-pass 标志置位：声明点据此区分顶层函数声明（名绑定恒不可写）
+        // 与块级函数声明（Annex B.3.3 块绑定为可变 var 绑定）。
+        ctx.in_hoisting_subpass = true;
         for stmt in body_stmts {
             if Self::is_body_hoisted_function_decl(stmt) {
                 if let Some(reg) = self.emit_statement(stmt, ctx)? {
@@ -1095,6 +1106,7 @@ impl Emitter {
                 }
             }
         }
+        ctx.in_hoisting_subpass = false;
         for stmt in body_stmts {
             if Self::is_body_hoisted_function_decl(stmt) {
                 continue;

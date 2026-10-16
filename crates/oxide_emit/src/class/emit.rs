@@ -278,6 +278,7 @@ impl Emitter {
             is_async: false,
             own_strict: true,
             name: None,
+            is_block_function: false,
         };
         let ctor_hooks = ClassElementHooks {
             extra_bindings: &self_binding,

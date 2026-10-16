@@ -448,11 +448,15 @@ impl Emitter {
         }
 
         // 首个 sub-pass：发函数声明（hoisting），保证任何代码运行前函数对象已就绪。
+        // 提升 sub-pass 标志置位：声明点据此区分顶层函数声明（名绑定恒不可写）
+        // 与块级函数声明（Annex B.3.3 块绑定为可变 var 绑定）。
+        ctx.in_hoisting_subpass = true;
         for stmt in &program.body {
             if matches!(stmt, Statement::FunctionDeclaration(_)) {
                 self.emit_statement(stmt, &mut ctx)?;
             }
         }
+        ctx.in_hoisting_subpass = false;
 
         // 第二个 sub-pass：发其余所有语句。
         let mut last_result: Option<u32> = None;

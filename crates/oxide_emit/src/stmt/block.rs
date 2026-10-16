@@ -77,7 +77,7 @@ impl Emitter {
                     return Ok(());
                 };
                 let name = id.name.to_string();
-                self.materialize_function_declaration(fd, &name, ctx)?;
+                self.materialize_function_declaration(fd, &name, ctx, true)?;
                 // 登记声明节点 arena 地址（Box 解引到 arena 本体）：声明点
                 // 以同一节点地址判同一，区分本声明入口物化与同名支臂。
                 ctx.block_fn_entry_mats

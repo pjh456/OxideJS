@@ -63,6 +63,10 @@ pub struct CompileCtx {
     /// `is_eval_script`——该标志只标识当前顶层程序，且还控制顶层全局写点与块级
     /// 函数门控，整体传播语义过宽。
     pub(crate) is_eval_origin: bool,
+    /// 是否处于首个 sub-pass（提升函数声明发射期）：声明点据此区分顶层函数
+    /// 声明（名绑定恒不可写）与块级函数声明（Annex B.3.3 块绑定为可变 var 绑定）。
+    /// 仅程序/函数体发射入口在提升 sub-pass 内置位，不跨嵌套函数继承。
+    pub(crate) in_hoisting_subpass: bool,
     /// 源码是否为 `source_escape` 产物（动态编译入口）：正则字面量源文本切片
     /// 的池键形态据此选择（见 [`Emitter::source_encoded`]）。
     pub(crate) source_encoded: bool,
@@ -285,6 +289,7 @@ impl CompileCtx {
             repl_persist: false,
             is_eval_script: false,
             is_eval_origin: false,
+            in_hoisting_subpass: false,
             source_encoded: false,
             static_block_this_reg: None,
             field_buffer: None,

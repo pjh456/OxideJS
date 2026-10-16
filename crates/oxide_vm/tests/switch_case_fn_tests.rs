@@ -132,13 +132,13 @@ fn switch_case_function_captured_by_outer() {
 
 #[test]
 fn switch_case_function_binding_independent_of_outer_var() {
-    // 函数名不可写绑定（15.2.10.1 步 m）：体内容器对 f 重新赋值静默失败（sloppy），
-    // 块内 f 仍为函数对象；外层 var 绑定独立，不被改写。
+    // 块级函数（Annex B.3.3）块绑定为可变 var 绑定：体内容器 `f = 123` 覆写块绑定，
+    // currentBV 取 123；外层 var 绑定（globalThis.f）独立，仍为函数对象。
     let src = "var r1, r2; (function(){ var initialBV, currentBV; \
         switch(1){case 1: function f(){ initialBV=f; f=123; currentBV=f; return 'decl'; }} \
         var varBinding=f; f(); r1 = initialBV() === 'decl'; \
-        r2 = currentBV === f && varBinding() === 'decl'; }()); r1 && r2";
-    assert!(eval(src).unwrap().as_bool(), "函数名不可写绑定自引用重赋静默失败，外层 var 绑定独立");
+        r2 = currentBV === 123 && varBinding() === 'decl'; }()); r1 && r2";
+    assert!(eval(src).unwrap().as_bool(), "块函数块绑定可变覆写，外层 var 绑定独立");
 }
 
 #[test]

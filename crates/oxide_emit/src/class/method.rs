@@ -140,6 +140,7 @@ impl Emitter {
                 is_async: method_value.r#async,
                 own_strict: true,
                 name: None,
+                is_block_function: false,
             },
             hooks,
         )?;

@@ -45,6 +45,7 @@ impl Emitter {
             is_async: arrow.r#async,
             own_strict: arrow.has_use_strict_directive(),
             name: None,
+            is_block_function: false,
         };
         let mut sub_module =
             self.compile_simple_function_body(&param_names, body_stmts, ctx, FunctionBodyContext::Arrow, flags)?;
@@ -100,6 +101,7 @@ impl Emitter {
             is_async: fe.r#async,
             own_strict,
             name: fn_name,
+            is_block_function: false,
         };
         let mut sub_module =
             self.compile_simple_function_body(&param_names, body_stmts, ctx, FunctionBodyContext::Ordinary, flags)?;

@@ -1,6 +1,5 @@
 //! 函数声明语句 emit：`emit_function_declaration_statement` 创建闭包并绑定函数名。
 
-use crate::symbol_table::ScopeKind;
 use crate::{CompileCtx, Emitter, FunctionBodyContext, FunctionFlags, ParamSpec};
 use oxide_bytecode::opcode::OpCode;
 use oxide_ir::inst::Inst;
@@ -34,20 +33,20 @@ impl Emitter {
         //   闭包落 fresh 寄存器写回外层 var；
         // - 其余（支臂首次求值）：执行期自物化闭包写入块槽。
         // 非块路径（顶层/函数作用域声明点）恒自物化。
-        let binding_scope_kind = ctx
-            .scopes
-            .symbols
-            .lookup_any_binding(&name)
-            .map(|(_, scope_idx)| ctx.scopes.symbols.scopes[scope_idx].kind);
         let node = fd as *const _ as *const ();
-        let var_reg = if binding_scope_kind == Some(ScopeKind::BlockScope) {
+        // 块级普通函数声明（Annex B.3.3）：块槽 Let 绑定承载块函数，函数名绑定
+        // 为可变 var 绑定（体内容器内 `f = 123` 可覆写块绑定）；非块路径恒不可写。
+        // 判定依据提升 sub-pass 标志：首个 sub-pass 发顶层函数声明（恒不可写），
+        // 其余 sub-pass 发的函数声明皆为块级（if/while/for/switch/try 支臂与块直接子）。
+        let is_block_function = !ctx.in_hoisting_subpass;
+        let var_reg = if is_block_function {
             match ctx.block_fn_entry_mats.last().and_then(|m| m.get(&name)) {
                 Some(&m) if m == node => ctx.lookup(&name)?,
-                Some(_) => self.materialize_function_declaration_var_only(fd, &name, ctx)?,
-                None => self.materialize_function_declaration(fd, &name, ctx)?,
+                Some(_) => self.materialize_function_declaration_var_only(fd, &name, ctx, true)?,
+                None => self.materialize_function_declaration(fd, &name, ctx, true)?,
             }
         } else {
-            self.materialize_function_declaration(fd, &name, ctx)?
+            self.materialize_function_declaration(fd, &name, ctx, false)?
         };
         // sloppy 模式下按 Annex B.3.3 为块级普通函数声明建外层 var 绑定并写回：
         // 预声明期为该名实例化的函数作用域 var 绑定在此写入块槽位里的函数对象，
@@ -110,11 +109,11 @@ impl Emitter {
     /// - 闭包的 upvalue/cell 捕获在函数入口的捕获分析期固定，本调用点的时序
     ///   只决定 CREATE_CLOSURE 在指令流中的落点。
     pub(crate) fn materialize_function_declaration(
-        &self, fd: &oxide_parser::Function, name: &str, ctx: &mut CompileCtx,
+        &self, fd: &oxide_parser::Function, name: &str, ctx: &mut CompileCtx, is_block_function: bool,
     ) -> Result<u32, String> {
         let var_reg = ctx.lookup(name)?;
         ctx.reserve_reg(var_reg);
-        self.materialize_function_closure(fd, name, var_reg, ctx, true)?;
+        self.materialize_function_closure(fd, name, var_reg, ctx, true, is_block_function)?;
         Ok(var_reg)
     }
 
@@ -122,15 +121,16 @@ impl Emitter {
     /// 直接子占用块槽，嵌套捕获读槽 cell 与 V8 块绑定一致）。调用点经返回
     /// 寄存器把闭包写回外层 var 绑定。
     pub(crate) fn materialize_function_declaration_var_only(
-        &self, fd: &oxide_parser::Function, name: &str, ctx: &mut CompileCtx,
+        &self, fd: &oxide_parser::Function, name: &str, ctx: &mut CompileCtx, is_block_function: bool,
     ) -> Result<u32, String> {
         let reg = ctx.alloc_reg();
-        self.materialize_function_closure(fd, name, reg, ctx, false)?;
+        self.materialize_function_closure(fd, name, reg, ctx, false, is_block_function)?;
         Ok(reg)
     }
 
     fn materialize_function_closure(
         &self, fd: &oxide_parser::Function, name: &str, reg: u32, ctx: &mut CompileCtx, write_slot: bool,
+        is_block_function: bool,
     ) -> Result<(), String> {
         let mut param_names = Vec::new();
         for (idx, param) in fd.params.items.iter().enumerate() {
@@ -157,6 +157,7 @@ impl Emitter {
             is_async: fd.r#async,
             own_strict,
             name: Some(name),
+            is_block_function,
         };
         let mut sub_module =
             self.compile_simple_function_body(&param_names, body_stmts, ctx, FunctionBodyContext::Ordinary, flags)?;
