@@ -1794,8 +1794,8 @@ fn helper_step_zip<H: VmHost>(
 /// - 方法为 undefined/null/其它不可调用值 → TypeError（构造期不触发方法调用）。
 pub fn iterator_concat<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let mut items: Vec<(JsValue, JsValue)> = Vec::new();
-    for i in 1..args.len() {
-        let item = vm.reg(args[i]);
+    for &reg in args.iter().skip(1) {
+        let item = vm.reg(reg);
         if !item.is_object() {
             return NativeResult::Err(crate::error::create_type_error(vm, "Iterator.concat argument is not an object"));
         }
