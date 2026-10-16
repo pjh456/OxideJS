@@ -151,7 +151,10 @@ fn parse_undefined_ident(e: &str) -> Option<&str> {
 
 /// 已知缺失的宿主/标准全局白名单：这些标识符未绑定是能力缺失（skip），
 /// 其它 `is not defined` 是引擎回归或语义缺口（fail）。
-const KNOWN_MISSING_GLOBALS: &[&str] = &["$262", "queueMicrotask"];
+/// 成员是引擎尚未实现的宿主工具（$262、queueMicrotask）与 ES 新内建
+/// （Intl、ShadowRealm）；后两者落地后此白名单条目自然失效（不再抛
+/// `is not defined`），无需移除。
+const KNOWN_MISSING_GLOBALS: &[&str] = &["$262", "queueMicrotask", "Intl", "ShadowRealm"];
 
 /// 判定编译期错误结果：compile 错误无条件放行 negative；能力未实现形态
 /// （含白名单内的未绑定标识符）→ Skip（`--no-skip` 下为 Fail）；其余一律 Fail。
@@ -430,6 +433,8 @@ mod tests {
             "uncaught ReferenceError: $262 is not defined",
             "compile error: Identifier '$262' is not defined",
             "compile error: Identifier 'queueMicrotask' is not defined",
+            "uncaught ReferenceError: Intl is not defined",
+            "uncaught ReferenceError: ShadowRealm is not defined",
         ] {
             assert_outcome(e, None, false, &TestOutcome::Skip("".into()));
             assert_outcome(e, None, true, &TestOutcome::Fail("".into()));
