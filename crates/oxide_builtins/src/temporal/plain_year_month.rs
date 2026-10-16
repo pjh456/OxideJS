@@ -5,9 +5,9 @@ use oxide_types::object::JsObject;
 use oxide_types::value::JsValue;
 
 use super::calendar::{
-    hebrew_absolute_month, hebrew_days_in_month, hebrew_is_leap, hebrew_month_code,
-    hebrew_months_in_year, hebrew_number_from_ordinal, hebrew_ordinal_from_month_code,
-    hebrew_ordinal_from_number, hebrew_to_iso, hebrew_year_length, iso_to_hebrew, HEBREW_ERA,
+    hebrew_absolute_month, hebrew_days_in_month, hebrew_is_leap, hebrew_month_code, hebrew_months_in_year,
+    hebrew_number_from_ordinal, hebrew_ordinal_from_month_code, hebrew_ordinal_from_number, hebrew_to_iso,
+    hebrew_year_length, iso_to_hebrew, HEBREW_ERA,
 };
 use super::common::native_try;
 use super::{
@@ -26,11 +26,7 @@ fn plain_year_month_ymc<H: VmHost>(vm: &mut H, args: &[u8]) -> Result<(f64, f64,
     let ptr = receiver_obj(vm, args)?;
     let obj = unsafe { &*ptr };
     ensure_plain_year_month(vm, obj)?;
-    Ok((
-        get_double_prop(obj, 0),
-        get_double_prop(obj, 1),
-        get_calendar_id(obj, 3),
-    ))
+    Ok((get_double_prop(obj, 0), get_double_prop(obj, 1), get_calendar_id(obj, 3)))
 }
 
 /// 读 PlainYearMonth 的参考日（槽 2），含 receiver 校验。
@@ -970,11 +966,8 @@ pub fn plain_year_month_with<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult
     if calendar == "hebrew" {
         // receiver 的历法年/序月（槽 0/1 存 ISO 年/月，须换算）。
         let ref_day = get_double_prop(obj, 2) as u32;
-        let (recv_year, recv_ord, _) = iso_to_hebrew(
-            get_double_prop(obj, 0) as i32,
-            get_double_prop(obj, 1) as u32,
-            ref_day,
-        );
+        let (recv_year, recv_ord, _) =
+            iso_to_hebrew(get_double_prop(obj, 0) as i32, get_double_prop(obj, 1) as u32, ref_day);
         // 年缺省时取 receiver 的历法年。
         let h_year = year.map_or(recv_year, i128::from);
         let ordinal_month = if let Some(code) = month_code_num {
@@ -1154,11 +1147,8 @@ fn plain_year_month_difference<H: VmHost>(vm: &mut H, args: &[u8], since: bool) 
         let (ry_h, rm_h, _) = iso_to_hebrew(ry as i32, rm as u32, rd as u32);
         let (oy_h, om_h, _) = iso_to_hebrew(oy, om, od);
         // until: end=other、start=receiver；since: 反之。
-        let (start_year, start_ord, end_year, end_ord) = if since {
-            (oy_h, om_h, ry_h, rm_h)
-        } else {
-            (ry_h, rm_h, oy_h, om_h)
-        };
+        let (start_year, start_ord, end_year, end_ord) =
+            if since { (oy_h, om_h, ry_h, rm_h) } else { (ry_h, rm_h, oy_h, om_h) };
         // 负差值：end < start 时交换端点取绝对差再取反。
         let negative = (end_year, end_ord) < (start_year, start_ord);
         let (a_year, a_ord, b_year, b_ord) = if negative {
@@ -1177,11 +1167,7 @@ fn plain_year_month_difference<H: VmHost>(vm: &mut H, args: &[u8], since: bool) 
             years -= 1;
             months += 12;
         }
-        let (years, months) = if negative {
-            (-years, -months)
-        } else {
-            (years, months)
-        };
+        let (years, months) = if negative { (-years, -months) } else { (years, months) };
         // largestUnit=month 时整月表示：同月码按绝对月索引差（含闰月），
         // 异月码按 years*12+months。
         let (years, months) = if settings.largest_index > 0 {
