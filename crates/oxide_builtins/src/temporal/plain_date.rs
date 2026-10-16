@@ -5,14 +5,20 @@ use oxide_runtime_api::{to_string, NativeResult, ProtoKind, VmHost};
 use oxide_types::object::JsObject;
 use oxide_types::value::JsValue;
 
+use super::calendar::{
+    hebrew_days_in_month, hebrew_is_leap, hebrew_month_code, hebrew_months_in_year,
+    hebrew_number_from_ordinal, hebrew_ordinal_from_month_code, hebrew_ordinal_from_number, hebrew_to_iso,
+    hebrew_year_length, iso_to_hebrew, HEBREW_ERA,
+};
 use super::common::native_try;
 use super::common::{
     calendar_annotation, civil_from_days, days_from_civil, days_in_month, ensure_plain_date, format_iso_year,
-    get_calendar_id, get_double_prop, initialize_temporal_receiver, is_ctor_call, parse_plain_date_string,
-    parse_round_options, plain_date_time_object_parts, receiver_obj, reject_partial_object_with_calendar_or_time_zone,
-    resolve_date_time_parts, temporal_calendar_id, temporal_calendar_id_strict, temporal_number_component,
-    temporal_option_string, temporal_option_value, temporal_overflow, temporal_to_show_calendar,
-    to_temporal_time_zone_identifier, zoned_date_time_plain_parts, DateTimeParts, ShowCalendar,
+    get_calendar_id, get_double_prop, initialize_temporal_receiver, is_ctor_call, month_code_well_formed,
+    parse_plain_date_string, parse_round_options, plain_date_time_object_parts, receiver_obj,
+    reject_partial_object_with_calendar_or_time_zone, resolve_date_time_parts, temporal_calendar_id,
+    temporal_calendar_id_strict, temporal_number_component, temporal_option_string, temporal_option_value,
+    temporal_overflow, temporal_to_show_calendar, to_temporal_time_zone_identifier, zoned_date_time_plain_parts,
+    DateTimeParts, ShowCalendar,
 };
 use super::difference::{difference_core, parse_difference_settings, IsoDateTime};
 use super::duration::duration_like_values;
@@ -249,22 +255,54 @@ fn plain_date_ymd<H: VmHost>(vm: &mut H, args: &[u8]) -> Result<(f64, f64, f64),
     Ok((get_double_prop(obj, 0), get_double_prop(obj, 1), get_double_prop(obj, 2)))
 }
 
-/// `Temporal.PlainDate.prototype.year` getter。
+/// 读 PlainDate 的 ISO 分量（槽 0-2）与日历 ID（槽 3），含 receiver 校验。
+/// getter 按日历 ID 分发：hebrew 换算为历法字段，其余历法直返 ISO 分量。
+fn plain_date_iso_ymd_calendar<H: VmHost>(
+    vm: &mut H, args: &[u8],
+) -> Result<(i32, u32, u32, String), JsValue> {
+    let ptr = receiver_obj(vm, args)?;
+    let obj = unsafe { &*ptr };
+    ensure_plain_date(vm, obj)?;
+    let y = get_double_prop(obj, 0);
+    let m = get_double_prop(obj, 1);
+    let d = get_double_prop(obj, 2);
+    if y.is_nan() || m.is_nan() || d.is_nan() {
+        return Err(crate::error::create_type_error(vm, "called on incompatible receiver"));
+    }
+    let calendar = get_calendar_id(obj, 3);
+    Ok((y.trunc() as i32, m.trunc() as u32, d.trunc() as u32, calendar))
+}
+
+/// `Temporal.PlainDate.prototype.year` getter：hebrew 历返历法年，其余历法返 ISO 年。
 pub fn plain_date_year<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
-    let (y, _, _) = native_try!(plain_date_ymd(vm, args));
-    NativeResult::Ok(JsValue::float(y))
+    let (y, m, d, calendar) = native_try!(plain_date_iso_ymd_calendar(vm, args));
+    if calendar == "hebrew" {
+        let (hy, _, _) = iso_to_hebrew(y, m, d);
+        return NativeResult::Ok(JsValue::float(hy as f64));
+    }
+    NativeResult::Ok(JsValue::float(y as f64))
 }
 
-/// `Temporal.PlainDate.prototype.month` getter。
+/// `Temporal.PlainDate.prototype.month` getter：hebrew 历返数值月（序月），其余历法返 ISO 月。
 pub fn plain_date_month<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
-    let (_, m, _) = native_try!(plain_date_ymd(vm, args));
-    NativeResult::Ok(JsValue::float(m))
+    let (y, m, d, calendar) = native_try!(plain_date_iso_ymd_calendar(vm, args));
+    if calendar == "hebrew" {
+        let (hy, ordinal, _) = iso_to_hebrew(y, m, d);
+        let _ = hy;
+        let number = hebrew_number_from_ordinal(ordinal).unwrap_or(0);
+        return NativeResult::Ok(JsValue::float(number as f64));
+    }
+    NativeResult::Ok(JsValue::float(m as f64))
 }
 
-/// `Temporal.PlainDate.prototype.day` getter。
+/// `Temporal.PlainDate.prototype.day` getter：hebrew 历返历法日，其余历法返 ISO 日。
 pub fn plain_date_day<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
-    let (_, _, d) = native_try!(plain_date_ymd(vm, args));
-    NativeResult::Ok(JsValue::float(d))
+    let (y, m, d, calendar) = native_try!(plain_date_iso_ymd_calendar(vm, args));
+    if calendar == "hebrew" {
+        let (_hy, _ordinal, hebrew_day) = iso_to_hebrew(y, m, d);
+        return NativeResult::Ok(JsValue::float(hebrew_day as f64));
+    }
+    NativeResult::Ok(JsValue::float(d as f64))
 }
 
 /// PlainDate ISO 串：auto/never 加 iso8601 日历保持裸 `±YYYY-MM-DD`；
@@ -350,8 +388,128 @@ fn object_date_ymd<H: VmHost>(
         let (year, month, day, _) = zoned_date_time_plain_parts(vm, obj)?;
         return Ok((year, month, day, Some(get_calendar_id(obj, 2))));
     }
+    // 先读日历：hebrew 走专用解析（era/eraYear 校验 + hebrew→ISO 换算），
+    // 其余历法走 ISO 路径。
+    let calendar_raw = temporal_option_value(vm, obj, val, "calendar")?;
+    let calendar = temporal_calendar_id(vm, calendar_raw)?;
+    if calendar.as_deref() == Some("hebrew") {
+        let (year, month, day) = hebrew_object_date_ymd(vm, obj, val, constrain)?;
+        return Ok((year, month, day, calendar));
+    }
     let (year, month, day, _, calendar) = plain_date_time_object_parts(vm, val, obj, constrain, true)?;
     Ok((year, month, day, calendar))
+}
+
+/// hebrew property bag 解析：读 era/eraYear/year/month/monthCode/day，定 hebrew
+/// 年/序月/日，换算为 ISO 年/月/日后入槽。
+///
+/// # 步骤
+/// 1. 读序（字典序）：day → era → eraYear → month → monthCode → year。
+/// 2. day 必填（TypeError）。
+/// 3. era 族：恰一个现 → TypeError；双现 → era 须为 "am"（RangeError），eraYear 定年；
+///    双缺 → year 必填（TypeError）。
+/// 4. month/monthCode 定序月（冲突 → RangeError）。
+/// 5. day 校验（1..=月长；constrain 钳制、reject 抛 RangeError）。
+/// 6. hebrew → ISO 换算。
+fn hebrew_object_date_ymd<H: VmHost>(
+    vm: &mut H, obj: &JsObject, value: JsValue, constrain: bool,
+) -> Result<(i32, u32, u32), JsValue> {
+    let day_raw = temporal_option_value(vm, obj, value, "day")?;
+    let era_raw = temporal_option_value(vm, obj, value, "era")?;
+    let era_year_raw = temporal_option_value(vm, obj, value, "eraYear")?;
+    let month_raw = temporal_option_value(vm, obj, value, "month")?;
+    let month_code_raw = temporal_option_value(vm, obj, value, "monthCode")?;
+    let year_raw = temporal_option_value(vm, obj, value, "year")?;
+
+    if day_raw.is_undefined() {
+        return Err(crate::error::create_type_error(vm, "day is required"));
+    }
+
+    // era 族：恰一个现 → TypeError；双现 → era 须为 "am"、eraYear 定年；双缺 → year 必填。
+    let era_present = !era_raw.is_undefined();
+    let era_year_present = !era_year_raw.is_undefined();
+    if era_present != era_year_present {
+        return Err(crate::error::create_type_error(
+            vm, "era and eraYear must both be present or both absent",
+        ));
+    }
+    let hebrew_year = if era_year_present {
+        let era = temporal_option_string(vm, era_raw)?;
+        if era != HEBREW_ERA {
+            return Err(crate::error::create_range_error(vm, "invalid era"));
+        }
+        let era_year = temporal_number_component(vm, era_year_raw)?;
+        if era_year < i32::MIN as f64 || era_year > i32::MAX as f64 {
+            return Err(crate::error::create_range_error(vm, "invalid eraYear"));
+        }
+        era_year as i32
+    } else {
+        if year_raw.is_undefined() {
+            return Err(crate::error::create_type_error(vm, "year is required"));
+        }
+        let year = temporal_number_component(vm, year_raw)?;
+        if year < i32::MIN as f64 || year > i32::MAX as f64 {
+            return Err(crate::error::create_range_error(vm, "invalid year"));
+        }
+        year as i32
+    };
+
+    // month / monthCode 定序月。
+    let month_code = if month_code_raw.is_undefined() {
+        None
+    } else {
+        if !month_code_raw.is_string() {
+            return Err(crate::error::create_type_error(vm, "monthCode must be a string"));
+        }
+        let code = to_string(month_code_raw);
+        if !month_code_well_formed(&code) {
+            return Err(crate::error::create_range_error(vm, "invalid monthCode"));
+        }
+        Some(code)
+    };
+    let ordinal_month = match (month_raw.is_undefined(), month_code) {
+        (true, None) => {
+            return Err(crate::error::create_type_error(vm, "month is required"));
+        }
+        (true, Some(code)) => hebrew_ordinal_from_month_code(hebrew_year as i128, &code)
+            .ok_or_else(|| crate::error::create_range_error(vm, "invalid monthCode"))?,
+        (false, Some(code)) => {
+            let ordinal_from_code = hebrew_ordinal_from_month_code(hebrew_year as i128, &code)
+                .ok_or_else(|| crate::error::create_range_error(vm, "invalid monthCode"))?;
+            let month_num = temporal_number_component(vm, month_raw)?;
+            let ordinal_from_num = hebrew_ordinal_from_number(hebrew_year as i128, month_num as u32)
+                .ok_or_else(|| crate::error::create_range_error(vm, "invalid month"))?;
+            if ordinal_from_code != ordinal_from_num {
+                return Err(crate::error::create_range_error(vm, "month and monthCode disagree"));
+            }
+            ordinal_from_num
+        }
+        (false, None) => {
+            let month_num = temporal_number_component(vm, month_raw)?;
+            hebrew_ordinal_from_number(hebrew_year as i128, month_num as u32)
+                .ok_or_else(|| crate::error::create_range_error(vm, "invalid month"))?
+        }
+    };
+
+    // day 校验（1..=月长；constrain 钳制、reject 抛 RangeError）。
+    let day = temporal_number_component(vm, day_raw)?;
+    if day < 1.0 {
+        return Err(crate::error::create_range_error(vm, "invalid day"));
+    }
+    let month_len = hebrew_days_in_month(hebrew_year as i128, ordinal_month) as u32;
+    let day = if day as u32 > month_len {
+        if constrain {
+            month_len
+        } else {
+            return Err(crate::error::create_range_error(vm, "invalid day"));
+        }
+    } else {
+        day as u32
+    };
+
+    // hebrew → ISO 换算。
+    let (iso_year, iso_month, iso_day) = hebrew_to_iso(hebrew_year as i128, ordinal_month, day);
+    Ok((iso_year, iso_month, iso_day))
 }
 
 fn date_like_ymd<H: VmHost>(vm: &mut H, val: JsValue) -> Result<(i32, u32, u32, Option<String>), JsValue> {
@@ -414,13 +572,14 @@ pub(crate) fn days_in_month_iso(year: i32, month: u32) -> u32 {
     }
 }
 
-/// `Temporal.PlainDate.prototype.daysInMonth` getter。
+/// `Temporal.PlainDate.prototype.daysInMonth` getter：hebrew 历返历法月长，其余历法返 ISO 月长。
 pub fn plain_date_days_in_month<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
-    let date = match plain_date_naive(vm, args) {
-        Ok(d) => d,
-        Err(e) => return NativeResult::Err(e),
-    };
-    NativeResult::Ok(JsValue::float(days_in_month_iso(date.year(), date.month()) as f64))
+    let (y, m, d, calendar) = native_try!(plain_date_iso_ymd_calendar(vm, args));
+    if calendar == "hebrew" {
+        let (hy, ordinal, _) = iso_to_hebrew(y, m, d);
+        return NativeResult::Ok(JsValue::float(hebrew_days_in_month(hy, ordinal) as f64));
+    }
+    NativeResult::Ok(JsValue::float(days_in_month_iso(y, m) as f64))
 }
 
 /// `Temporal.PlainDate.prototype.daysInWeek` getter：恒 7。
@@ -433,28 +592,34 @@ pub(crate) fn is_leap_year_iso(year: i32) -> bool {
     NaiveDate::from_ymd_opt(year, 2, 29).is_some()
 }
 
-/// `Temporal.PlainDate.prototype.daysInYear` getter：366（闰年）或 365。
+/// `Temporal.PlainDate.prototype.daysInYear` getter：hebrew 历返历法年长，其余历法 366/365。
 pub fn plain_date_days_in_year<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
-    let date = match plain_date_naive(vm, args) {
-        Ok(d) => d,
-        Err(e) => return NativeResult::Err(e),
-    };
-    NativeResult::Ok(JsValue::float(if is_leap_year_iso(date.year()) { 366.0 } else { 365.0 }))
+    let (y, m, d, calendar) = native_try!(plain_date_iso_ymd_calendar(vm, args));
+    if calendar == "hebrew" {
+        let (hy, _, _) = iso_to_hebrew(y, m, d);
+        return NativeResult::Ok(JsValue::float(hebrew_year_length(hy) as f64));
+    }
+    NativeResult::Ok(JsValue::float(if is_leap_year_iso(y) { 366.0 } else { 365.0 }))
 }
 
-/// `Temporal.PlainDate.prototype.monthsInYear` getter：恒 12（ISO 日历）。
+/// `Temporal.PlainDate.prototype.monthsInYear` getter：hebrew 历 12/13，其余历法恒 12。
 pub fn plain_date_months_in_year<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
-    let _ = native_try!(plain_date_ymd(vm, args));
+    let (y, m, d, calendar) = native_try!(plain_date_iso_ymd_calendar(vm, args));
+    if calendar == "hebrew" {
+        let (hy, _, _) = iso_to_hebrew(y, m, d);
+        return NativeResult::Ok(JsValue::float(hebrew_months_in_year(hy) as f64));
+    }
     NativeResult::Ok(JsValue::float(12.0))
 }
 
-/// `Temporal.PlainDate.prototype.inLeapYear` getter。
+/// `Temporal.PlainDate.prototype.inLeapYear` getter：hebrew 历按历法闰年判定。
 pub fn plain_date_in_leap_year<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
-    let date = match plain_date_naive(vm, args) {
-        Ok(d) => d,
-        Err(e) => return NativeResult::Err(e),
-    };
-    NativeResult::Ok(JsValue::bool(is_leap_year_iso(date.year())))
+    let (y, m, d, calendar) = native_try!(plain_date_iso_ymd_calendar(vm, args));
+    if calendar == "hebrew" {
+        let (hy, _, _) = iso_to_hebrew(y, m, d);
+        return NativeResult::Ok(JsValue::bool(hebrew_is_leap(hy)));
+    }
+    NativeResult::Ok(JsValue::bool(is_leap_year_iso(y)))
 }
 
 /// `Temporal.PlainDate.prototype.weekOfYear` getter：ISO 周数。
@@ -475,24 +640,33 @@ pub fn plain_date_year_of_week<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResu
     NativeResult::Ok(JsValue::float(date.iso_week().year() as f64))
 }
 
-/// `Temporal.PlainDate.prototype.monthCode` getter：`M01`..`M12`。
+/// `Temporal.PlainDate.prototype.monthCode` getter：ISO 历 `M01`..`M12`；
+/// hebrew 历含闰月 `M05L`。
 pub fn plain_date_month_code<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
-    let (_, m, _) = match plain_date_ymd(vm, args) {
-        Ok(x) => x,
-        Err(e) => return NativeResult::Err(e),
-    };
+    let (y, m, d, calendar) = native_try!(plain_date_iso_ymd_calendar(vm, args));
+    if calendar == "hebrew" {
+        let (hy, ordinal, _) = iso_to_hebrew(y, m, d);
+        return NativeResult::Ok(vm.new_string_owned(hebrew_month_code(hy, ordinal)));
+    }
     NativeResult::Ok(vm.new_string(&format!("M{m:02}")))
 }
 
-/// `Temporal.PlainDate.prototype.era` getter：ISO 日历无纪元，恒 undefined。
+/// `Temporal.PlainDate.prototype.era` getter：hebrew 历恒 "am"，其余历法无纪元恒 undefined。
 pub fn plain_date_era<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
-    let _ = native_try!(plain_date_ymd(vm, args));
+    let (_y, _m, _d, calendar) = native_try!(plain_date_iso_ymd_calendar(vm, args));
+    if calendar == "hebrew" {
+        return NativeResult::Ok(vm.new_string(HEBREW_ERA));
+    }
     NativeResult::Ok(JsValue::undefined())
 }
 
-/// `Temporal.PlainDate.prototype.eraYear` getter：ISO 日历无纪元，恒 undefined。
+/// `Temporal.PlainDate.prototype.eraYear` getter：hebrew 历返历法年，其余历法恒 undefined。
 pub fn plain_date_era_year<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
-    let _ = native_try!(plain_date_ymd(vm, args));
+    let (y, m, d, calendar) = native_try!(plain_date_iso_ymd_calendar(vm, args));
+    if calendar == "hebrew" {
+        let (hy, _, _) = iso_to_hebrew(y, m, d);
+        return NativeResult::Ok(JsValue::float(hy as f64));
+    }
     NativeResult::Ok(JsValue::undefined())
 }
 

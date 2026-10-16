@@ -4,6 +4,7 @@ use oxide_runtime_api::{to_string, NativeResult, ProtoKind, VmHost};
 use oxide_types::object::JsObject;
 use oxide_types::value::JsValue;
 
+use super::calendar::HEBREW_ERA;
 use super::common::native_try;
 use super::{
     calendar_annotation, compare_iso_date, days_from_civil, days_in_month_iso, difference_core, duration_like_values,
@@ -351,12 +352,27 @@ pub fn plain_year_month_from<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult
     let era_raw = native_try!(temporal_option_value(vm, obj, value, "era"));
     let era_year_raw = native_try!(temporal_option_value(vm, obj, value, "eraYear"));
     let constrain = native_try!(temporal_overflow(vm, args));
-    // era 族：双现 → RangeError；恰一个 → 忽略（ISO 无纪元体系）。
-    if !era_raw.is_undefined() && !era_year_raw.is_undefined() {
+    // era 族：hebrew（有纪元）恰一个现 → TypeError、双现校验 era 为 "am"；
+    // 其余历法沿用既有处理（双现 RangeError、恰一个忽略）。
+    let era_present = !era_raw.is_undefined();
+    let era_year_present = !era_year_raw.is_undefined();
+    if calendar == "hebrew" {
+        if era_present != era_year_present {
+            return NativeResult::Err(crate::error::create_type_error(
+                vm, "era and eraYear must both be present or both absent",
+            ));
+        }
+        if era_present {
+            let era = native_try!(temporal_option_string(vm, era_raw));
+            if era != HEBREW_ERA {
+                return NativeResult::Err(crate::error::create_range_error(vm, "invalid era"));
+            }
+        }
+    } else if era_present && era_year_present {
         return NativeResult::Err(crate::error::create_range_error(vm, "era and eraYear cannot both be present"));
     }
-    // 存在性：year 必填（先于 monthCode 语法）；month|monthCode 至少其一。
-    if year_raw.is_undefined() {
+    // 存在性：year 必填（hebrew 由 eraYear 定年时豁免）；month|monthCode 至少其一。
+    if year_raw.is_undefined() && !(calendar == "hebrew" && era_year_present) {
         return NativeResult::Err(crate::error::create_type_error(vm, "year is required"));
     }
     if month_raw.is_undefined() && month_code_raw.is_undefined() {
@@ -397,12 +413,20 @@ pub fn plain_year_month_from<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult
         }
         None => (None, false),
     };
-    // year 转换（TypeError/RangeError）在 monthCode 语法之后。
-    let year_raw = native_try!(temporal_number_component(vm, year_raw));
-    let year = if year_raw >= i32::MIN as f64 && year_raw <= i32::MAX as f64 {
-        year_raw as i32
+    // year 转换（TypeError/RangeError）在 monthCode 语法之后；hebrew 由 eraYear 定年。
+    let year = if calendar == "hebrew" && era_year_present {
+        let era_year = native_try!(temporal_number_component(vm, era_year_raw));
+        if era_year < i32::MIN as f64 || era_year > i32::MAX as f64 {
+            return NativeResult::Err(crate::error::create_range_error(vm, "invalid eraYear"));
+        }
+        era_year as i32
     } else {
-        return NativeResult::Err(crate::error::create_range_error(vm, "invalid year"));
+        let year_raw = native_try!(temporal_number_component(vm, year_raw));
+        if year_raw >= i32::MIN as f64 && year_raw <= i32::MAX as f64 {
+            year_raw as i32
+        } else {
+            return NativeResult::Err(crate::error::create_range_error(vm, "invalid year"));
+        }
     };
     let month_f = match month_raw.is_undefined() {
         true => None,
