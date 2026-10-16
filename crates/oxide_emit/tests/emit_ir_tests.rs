@@ -536,3 +536,43 @@ fn string_fold_emission_stable() {
     assert_emission_stable("var s = \"a\" + 1 + true + null;", false);
     assert_emission_stable("var t = `a${1}b`;", false);
 }
+
+/// 按名递归查找嵌套函数（树序）。
+fn find_fn_by_name<'a>(ir: &'a IRFunction, name: &str) -> &'a IRFunction {
+    find_fn_by_name_opt(ir, name).unwrap_or_else(|| panic!("嵌套函数 {name} 未找到"))
+}
+
+fn find_fn_by_name_opt<'a>(ir: &'a IRFunction, name: &str) -> Option<&'a IRFunction> {
+    ir.nested.iter().find_map(|f| {
+        if f.function_name.as_deref() == Some(name) {
+            Some(f)
+        } else {
+            find_fn_by_name_opt(f, name)
+        }
+    })
+}
+
+/// 面 20：类方法内嵌套函数对私有字段赋值目标，目标对象须入捕获集——
+/// 读路径本就扫对象，赋值目标臂同口径；不捕获则运行期回落全局对象，
+/// brand 检查必失败。
+#[test]
+fn private_field_assign_target_captures_object() {
+    let src = "class C { #m = 'Test262'; method() { let self = this; \
+               function innerFunction() { self.#m = 'Test262'; } innerFunction(); } }";
+    let ir = emit_ir(src);
+    let inner = find_fn_by_name(&ir, "innerFunction");
+    let names: HashSet<&str> = inner.upvalue_captures.iter().map(|c| c.name.as_str()).collect();
+    assert!(names.contains("self"), "私有字段赋值目标对象须入捕获集");
+    assert!(tree_count(&ir, OpCode::SET_PRIVATE) >= 1, "私有字段写面应存在");
+}
+
+/// 面 20 对照：类方法内嵌套函数对私有字段读路径，目标对象已入捕获集（不回归）。
+#[test]
+fn private_field_read_captures_object() {
+    let src = "class C { #m = 'Test262'; method() { let self = this; \
+               function innerFunction() { return self.#m; } innerFunction(); } }";
+    let ir = emit_ir(src);
+    let inner = find_fn_by_name(&ir, "innerFunction");
+    let names: HashSet<&str> = inner.upvalue_captures.iter().map(|c| c.name.as_str()).collect();
+    assert!(names.contains("self"), "私有字段读路径目标对象须入捕获集");
+}

@@ -436,8 +436,10 @@ pub(crate) fn collect_capture_names_assign_target(target: &oxide_parser::Assignm
         oxide_parser::AssignmentTarget::ObjectAssignmentTarget(o) => {
             collect_capture_names_object_target(o, eng);
         }
-        // 无扫描需求变体：私有字段目标与 TS 类型断言目标。
-        oxide_parser::AssignmentTarget::PrivateFieldExpression(_) => {}
+        oxide_parser::AssignmentTarget::PrivateFieldExpression(m) => {
+            collect_capture_names_expr(&m.object, eng);
+        }
+        // 无扫描需求变体：TS 类型断言目标。
         oxide_parser::AssignmentTarget::TSAsExpression(_) => {}
         oxide_parser::AssignmentTarget::TSSatisfiesExpression(_) => {}
         oxide_parser::AssignmentTarget::TSNonNullExpression(_) => {}
@@ -564,7 +566,7 @@ pub(crate) fn collect_capture_names_simple_target(
             collect_capture_names_expr(&m.object, eng);
             collect_capture_names_expr(&m.expression, eng);
         }
-        // 无扫描需求变体：私有字段目标与 TS 类型断言目标。
+        // 无扫描需求变体：私有字段目标（更新发射面未支持，程序不可编译）与 TS 类型断言目标。
         oxide_parser::SimpleAssignmentTarget::PrivateFieldExpression(_) => {}
         oxide_parser::SimpleAssignmentTarget::TSAsExpression(_) => {}
         oxide_parser::SimpleAssignmentTarget::TSSatisfiesExpression(_) => {}
