@@ -229,3 +229,42 @@ fn define_property_nested_call_updates_stored_value() {
     .unwrap();
     assert_eq!(result.as_int(), 5);
 }
+
+#[test]
+fn arguments_iterator_own_property_shares_array_values() {
+    // arguments 对象自身 Symbol.iterator 指向 Array.prototype[Symbol.iterator]
+    // 同一函数对象（可写、不可枚举、可配置），原型保持 Object.prototype。
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "function f(){var d=Object.getOwnPropertyDescriptor(arguments,Symbol.iterator);
+         return d.value === [][Symbol.iterator] && d.writable === true
+            && d.enumerable === false && d.configurable === true
+            && Object.getPrototypeOf(arguments) === Object.prototype} f(1)",
+    )
+    .unwrap();
+    assert_eq!(result, JsValue::bool(true));
+}
+
+#[test]
+fn arguments_spread_iterates_values_in_order() {
+    // 展开 arguments 对象按序产出实参值。
+    let mut vm = Vm::new();
+    let result = eval(&mut vm, "function f(){return [...arguments].join(',')} f(1,2,3)").unwrap();
+    assert_eq!(vm.lookup_str(result).as_deref(), Some("1,2,3"));
+}
+
+#[test]
+fn arguments_iterator_reads_length_live() {
+    // 迭代器每次步进活读 length：创建迭代器后抬高 length 并写入新索引，
+    // 后续步进产出新值。
+    let mut vm = Vm::new();
+    let result = eval(
+        &mut vm,
+        "function f(){var it=arguments[Symbol.iterator](); it.next(); it.next();
+         arguments.length=4; arguments[3]=9; it.next(); return it.next().value} f(1,2,3)",
+    )
+    .unwrap();
+    assert_eq!(result.as_int(), 9);
+}
+
