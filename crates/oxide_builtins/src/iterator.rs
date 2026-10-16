@@ -463,9 +463,7 @@ fn get_iterator_flattenable<H: VmHost>(vm: &mut H, value: JsValue) -> Result<(Js
 ///
 /// # 返回
 /// - `Ok((iter, next))`：迭代器 + GetIteratorDirect 缓存的 next。
-fn get_iterator_strict<H: VmHost>(
-    vm: &mut H, what: &str, value: JsValue,
-) -> Result<(JsValue, JsValue), JsValue> {
+fn get_iterator_strict<H: VmHost>(vm: &mut H, what: &str, value: JsValue) -> Result<(JsValue, JsValue), JsValue> {
     let obj = unsafe { &*value.as_js_object_ptr() };
     let sym_iter_si = encode_symbol_key(vm.realm_id(), 0);
     let method = match vm.ordinary_get(obj, sym_iter_si, value) {
@@ -473,10 +471,7 @@ fn get_iterator_strict<H: VmHost>(
         Err(err) => return Err(engine_error(vm, &err)),
     };
     if !is_callable(method) {
-        return Err(crate::error::create_type_error(
-            vm,
-            &format!("Iterator.zip {what} is not iterable"),
-        ));
+        return Err(crate::error::create_type_error(vm, &format!("Iterator.zip {what} is not iterable")));
     }
     let iter = vm.call_function_sync(method, value, &[]).map_err(|e| engine_error(vm, &e))?;
     if !iter.is_object() {
