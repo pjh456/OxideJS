@@ -3040,3 +3040,383 @@ fn iterator_zip_padding_not_exhausted_close() {
     .unwrap();
     assert!(r.as_bool(), "padding exhausted exactly at iterCount: no close, done landing undefined");
 }
+
+#[test]
+fn iterator_concat_binding_surface() {
+    // 绑定面：name/length 0/原型/描述符/非构造/instanceof/结果原型。
+    let mut vm = Vm::new();
+    let bool_cases = [
+        (
+            "typeof Iterator.concat === 'function' && Iterator.concat.name === 'concat' \
+             && Iterator.concat.length === 0",
+            true,
+        ),
+        ("Object.getPrototypeOf(Iterator.concat) === Function.prototype", true),
+        (
+            "var d = Object.getOwnPropertyDescriptor(Iterator, 'concat'); \
+             d.writable === true && d.enumerable === false && d.configurable === true",
+            true,
+        ),
+        (
+            "var ok = false; try { new Iterator.concat(); } catch (e) { ok = e instanceof TypeError; } ok",
+            true,
+        ),
+        ("var it = Iterator.concat(); it instanceof Iterator", true),
+        (
+            "var it = Iterator.concat(); var p = Object.getPrototypeOf(it); \
+             p[Symbol.toStringTag] === 'Iterator Helper' \
+             && Object.getPrototypeOf(p) === Iterator.prototype",
+            true,
+        ),
+    ];
+    for (src, expected) in bool_cases {
+        let result = eval(&mut vm, src).unwrap();
+        assert_eq!(result.as_bool(), expected, "for {}", src);
+    }
+}
+
+#[test]
+fn iterator_concat_zero_and_basic_sequences() {
+    // 零实参首次 next 即 done；单/多段元素序列、空段穿插、段切换不关前段。
+    let mut vm = Vm::new();
+    let bool_cases = [
+        (
+            "var it = Iterator.concat(); var r = it.next(); \
+             r.done === true && r.value === undefined && it.next().done === true",
+            true,
+        ),
+        (
+            "var r = Array.from(Iterator.concat([1, 2], [3], [4, 5])); \
+             r.length === 5 && r[0] === 1 && r[4] === 5",
+            true,
+        ),
+        (
+            "var r = Array.from(Iterator.concat([], [1], [], [2], [])); \
+             r.length === 2 && r[0] === 1 && r[1] === 2",
+            true,
+        ),
+        (
+            "var rets = 0; \
+             var it = Iterator.concat(\
+               { [Symbol.iterator]() { var i = 0; \
+                 return { next() { if (i++ < 1) { return {done: false, value: 1}; } return {done: true}; }, \
+                           return() { rets++; return {}; } }; } }, \
+               [2]); \
+             var a = it.next(); var b = it.next(); var c = it.next(); \
+             a.value === 1 && b.value === 2 && c.done === true && rets === 0",
+            true,
+        ),
+    ];
+    for (src, expected) in bool_cases {
+        let result = eval(&mut vm, src).unwrap();
+        assert_eq!(result.as_bool(), expected, "for {}", src);
+    }
+}
+
+#[test]
+fn iterator_concat_lazy_open_timing() {
+    // 构造期只读方法（getter 一次、方法不调用）；方法每段首 next 恰好一次、
+    // 段序即实参序；每次 next 新建结果对象。
+    let mut vm = Vm::new();
+    let bool_cases = [
+        (
+            "(() => { \
+             var gets = 0, calls = 0; \
+             var iterable = { get [Symbol.iterator]() { \
+               ++gets; return function () { ++calls; return [1, 2][Symbol.iterator](); }; } }; \
+             var it = Iterator.concat(iterable); \
+             var afterCtor = gets === 1 && calls === 0; \
+             var r = Array.from(it); \
+             return afterCtor && gets === 1 && calls === 1 && r.length === 2 && r[1] === 2; \
+           })()",
+            true,
+        ),
+        (
+            "(() => { \
+             var called = []; \
+             var a = { [Symbol.iterator]() { called.push('a'); return [1][Symbol.iterator](); } }; \
+             var b = { [Symbol.iterator]() { called.push('b'); return [2][Symbol.iterator](); } }; \
+             var it = Iterator.concat(a, b); \
+             var before = JSON.stringify(called) === '[]'; \
+             var r1 = it.next(); \
+             var afterFirst = r1.value === 1 && JSON.stringify(called) === '[\"a\"]'; \
+             var r2 = it.next(); \
+             var afterSecond = r2.value === 2 && JSON.stringify(called) === '[\"a\",\"b\"]'; \
+             return before && afterFirst && afterSecond && it.next().done === true; \
+           })()",
+            true,
+        ),
+        (
+            "var it = Iterator.concat([1]); \
+             var r1 = it.next(); var r2 = it.next(); \
+             r1 !== r2 && r1.value === 1 && r2.done === true",
+            true,
+        ),
+    ];
+    for (src, expected) in bool_cases {
+        let result = eval(&mut vm, src).unwrap();
+        assert_eq!(result.as_bool(), expected, "for {}", src);
+    }
+}
+
+#[test]
+fn iterator_concat_construction_validation() {
+    // 构造期逐实参按序：非对象 TypeError（getter 不被调用）；方法 undefined/null/
+    // 非可调用 TypeError；getter 抛错透传原值且后续实参不读。
+    let mut vm = Vm::new();
+    let bool_cases = [
+        (
+            "var ok = false; try { Iterator.concat(1); } catch (e) { ok = e instanceof TypeError; } ok",
+            true,
+        ),
+        (
+            "var ok = false; try { Iterator.concat(null); } catch (e) { ok = e instanceof TypeError; } ok",
+            true,
+        ),
+        (
+            "var ok = false; try { Iterator.concat(Object.create(null)); } \
+             catch (e) { ok = e instanceof TypeError; } ok",
+            true,
+        ),
+        (
+            "var ok = false; try { Iterator.concat({[Symbol.iterator]: null}); } \
+             catch (e) { ok = e instanceof TypeError; } ok",
+            true,
+        ),
+        (
+            "var ok = false; try { Iterator.concat({[Symbol.iterator]: 42}); } \
+             catch (e) { ok = e instanceof TypeError; } ok",
+            true,
+        ),
+        (
+            "(() => { \
+             var secondRead = 0; \
+             var first = { get [Symbol.iterator]() { throw new RangeError('boom'); } }; \
+             var second = { get [Symbol.iterator]() { ++secondRead; return function () {}; } }; \
+             var threw = false; \
+             try { Iterator.concat(first, second); } \
+             catch (e) { threw = e instanceof RangeError; } \
+             return threw && secondRead === 0; \
+           })()",
+            true,
+        ),
+        (
+            "var r = Array.from(Iterator.concat(Object('abc'), Object('123'))); \
+             r.length === 6 && r[0] === 'a' && r[5] === '3'",
+            true,
+        ),
+    ];
+    for (src, expected) in bool_cases {
+        let result = eval(&mut vm, src).unwrap();
+        assert_eq!(result.as_bool(), expected, "for {}", src);
+    }
+}
+
+#[test]
+fn iterator_concat_step_family() {
+    // 内层 next 零参调用；结果非对象 TypeError；done 先读、done 为真不读 value
+    // getter；value/done getter 抛错或 next 抛错均为骤发（只关当前内层、原值
+    // 胜出、return 自身抛错被吞）；方法结果非对象 TypeError。
+    let mut vm = Vm::new();
+    let bool_cases = [
+        (
+            "(() => { \
+             var args = null; \
+             var it = Iterator.concat({ [Symbol.iterator]() { \
+               return { next: function (a) { args = a; return {done: false, value: 1}; } }; } }); \
+             var r = it.next(); \
+             return r.value === 1 && args === undefined; \
+           })()",
+            true,
+        ),
+        (
+            "var ok = false; try { \
+             Iterator.concat({ [Symbol.iterator]() { return 42; } }).next(); \
+             } catch (e) { ok = e instanceof TypeError; } ok",
+            true,
+        ),
+        (
+            "(() => { \
+             var valueGets = 0; \
+             var it = Iterator.concat({ [Symbol.iterator]() { \
+               return { next() { return { done: true, get value() { ++valueGets; return 1; } }; } }; } }); \
+             var r = it.next(); \
+             return r.done === true && valueGets === 0; \
+           })()",
+            true,
+        ),
+        (
+            "(() => { \
+             var threw = false; var returnCount = 0; \
+             var it = Iterator.concat({ [Symbol.iterator]() { \
+               return { next() { return { done: false, get value() { throw new RangeError('v'); } }; }, \
+                         return() { ++returnCount; throw new Error('swallowed'); } }; } }); \
+             try { it.next(); } catch (e) { threw = e instanceof RangeError; } \
+             return threw && returnCount === 1; \
+           })()",
+            true,
+        ),
+        (
+            "(() => { \
+             var threw = false; var returnCount = 0; \
+             var it = Iterator.concat({ [Symbol.iterator]() { \
+               return { next() { throw new RangeError('n'); }, \
+                         return() { ++returnCount; throw new Error('swallowed'); } }; } }); \
+             try { it.next(); } catch (e) { threw = e instanceof RangeError; } \
+             return threw && returnCount === 1; \
+           })()",
+            true,
+        ),
+    ];
+    for (src, expected) in bool_cases {
+        let result = eval(&mut vm, src).unwrap();
+        assert_eq!(result.as_bool(), expected, "for {}", src);
+    }
+}
+
+#[test]
+fn iterator_concat_return_forwarding() {
+    // return 转发：完成态短路 done；未开段（首次 next 前）不转发；转发只一次；
+    // 耗尽后不转发；内层 return 零参调用。
+    let mut vm = Vm::new();
+    let bool_cases = [
+        (
+            "(() => { \
+             var rets = 0; \
+             var it = Iterator.concat({ [Symbol.iterator]() { \
+               return { next() { return {done: false, value: 1}; }, return() { ++rets; return {}; } }; } }); \
+             it.return(); \
+             return rets === 0; \
+           })()",
+            true,
+        ),
+        (
+            "(() => { \
+             var rets = 0; \
+             var it = Iterator.concat({ [Symbol.iterator]() { \
+               return { next() { return {done: false, value: 1}; }, return() { ++rets; return {}; } }; } }); \
+             var r1 = it.next(); \
+             it.return(); \
+             var r2 = it.return(); \
+             return r1.value === 1 && rets === 1 && r2.done === true && rets === 1; \
+           })()",
+            true,
+        ),
+        (
+            "(() => { \
+             var rets = 0; \
+             var it = Iterator.concat({ [Symbol.iterator]() { \
+               return { next() { return {done: true}; }, return() { ++rets; return {}; } }; } }); \
+             var r = it.next(); \
+             it.return(); \
+             return r.done === true && rets === 0; \
+           })()",
+            true,
+        ),
+        (
+            "(() => { \
+             var args = null; \
+             var it = Iterator.concat({ [Symbol.iterator]() { \
+               return { next() { return {done: false, value: 1}; }, \
+                         return: function (a) { args = a; return {}; } }; } }); \
+             it.next(); it.return(); \
+             return args === undefined; \
+           })()",
+            true,
+        ),
+        (
+            "(() => { \
+             var rets = 0; \
+             var it = Iterator.concat({ [Symbol.iterator]() { \
+               return { next() { return {done: true}; }, return() { ++rets; return {}; } }; } }); \
+             it.next(); \
+             var r = it.return(); \
+             return r.done === true && rets === 0; \
+           })()",
+            true,
+        ),
+    ];
+    for (src, expected) in bool_cases {
+        let result = eval(&mut vm, src).unwrap();
+        assert_eq!(result.as_bool(), expected, "for {}", src);
+    }
+}
+
+#[test]
+fn iterator_concat_throw_original_wins() {
+    // throw：完成态重抛 value；未开段直接抛 value；已开段关当前内层（throw
+    // 完成，原值恒胜出、return 自身抛错被吞）后抛 value。
+    let mut vm = Vm::new();
+    let bool_cases = [
+        (
+            "(() => { \
+             var threw = false; \
+             var it = Iterator.concat(); \
+             try { it.throw('v'); } catch (e) { threw = e === 'v'; } \
+             return threw; \
+           })()",
+            true,
+        ),
+        (
+            "(() => { \
+             var rets = 0; var threw = false; \
+             var it = Iterator.concat({ [Symbol.iterator]() { \
+               return { next() { return {done: false, value: 1}; }, \
+                         return() { ++rets; throw new Error('swallowed'); } }; } }); \
+             try { it.throw('v'); } catch (e) { threw = e === 'v'; } \
+             return threw && rets === 0; \
+           })()",
+            true,
+        ),
+        (
+            "(() => { \
+             var rets = 0; var threw = false; \
+             var it = Iterator.concat({ [Symbol.iterator]() { \
+               return { next() { return {done: false, value: 1}; }, \
+                         return() { ++rets; return {}; } }; } }); \
+             it.next(); \
+             try { it.throw('v'); } catch (e) { threw = e === 'v'; } \
+             return threw && rets === 1; \
+           })()",
+            true,
+        ),
+    ];
+    for (src, expected) in bool_cases {
+        let result = eval(&mut vm, src).unwrap();
+        assert_eq!(result.as_bool(), expected, "for {}", src);
+    }
+}
+
+#[test]
+fn iterator_concat_reentrancy_guard() {
+    // 步进期间 state=1：内层 next 回调内再调 next/return/throw 抛 TypeError。
+    let mut vm = Vm::new();
+    let bool_cases = [
+        (
+            "(() => { \
+             var it = Iterator.concat({ [Symbol.iterator]() { \
+               return { next() { it.next(); return {done: false}; } }; } }); \
+             var ok = false; \
+             try { it.next(); } catch (e) { ok = e instanceof TypeError; } \
+             return ok; \
+           })()",
+            true,
+        ),
+        (
+            "(() => { \
+             var it = Iterator.concat({ [Symbol.iterator]() { \
+               return { next() { return {done: false, value: 1}; }, \
+                         return() { it.return(); it.throw('x'); return {}; } }; } }); \
+             it.next(); \
+             var ok = false; \
+             try { it.return(); } catch (e) { ok = e instanceof TypeError; } \
+             return ok; \
+           })()",
+            true,
+        ),
+    ];
+    for (src, expected) in bool_cases {
+        let result = eval(&mut vm, src).unwrap();
+        assert_eq!(result.as_bool(), expected, "for {}", src);
+    }
+}

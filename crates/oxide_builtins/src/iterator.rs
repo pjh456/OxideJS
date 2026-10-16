@@ -20,6 +20,10 @@ const ZIPS_PROP: &str = "__zips__";
 const OPEN_PROP: &str = "__open__";
 const RESULTS_PROP: &str = "__results__";
 const PADDING_PROP: &str = "__padding__";
+const ITEMS_PROP: &str = "__items__";
+const SEG_PROP: &str = "__seg__";
+const CURRENT_PROP: &str = "__current__";
+const CURRENT_NEXT_PROP: &str = "__current_next__";
 
 /// `Iterator` 构造逻辑：不是构造函数，`new Iterator()` / `Iterator()` 均抛 TypeError；
 /// subclass `super()` 路径放行并返回 undefined（原型由调用方按 newTarget 设置）。
@@ -331,6 +335,7 @@ pub(crate) enum IteratorHelperKind {
     Drop = 3,
     FlatMap = 4,
     Zip = 5,
+    Concat = 6,
 }
 
 impl IteratorHelperKind {
@@ -342,6 +347,7 @@ impl IteratorHelperKind {
             3 => Self::Drop,
             4 => Self::FlatMap,
             5 => Self::Zip,
+            6 => Self::Concat,
             _ => Self::Map,
         }
     }
@@ -483,6 +489,31 @@ fn get_iterator_strict<H: VmHost>(vm: &mut H, what: &str, value: JsValue) -> Res
     get_iterator_direct(vm, iter)
 }
 
+/// GetMethod 只读：`@@iterator` getter 抛错透传原值，方法为 undefined/null/
+/// 其它不可调用值一律 TypeError（规范 GetMethod 步 4 同落 TypeError），返回
+/// 方法闭包本身，不调用（concat 构造期只缓存方法，懒开由各段首次 next 触发）。
+///
+/// # 边界与前提
+/// - `value` 必须是对象（调用方已校验）。
+///
+/// # 返回
+/// - `Ok(method)`：可调用方法闭包；`Err` 为透传异常值或 TypeError。
+fn get_iterator_method<H: VmHost>(vm: &mut H, value: JsValue) -> Result<JsValue, JsValue> {
+    let obj = unsafe { &*value.as_js_object_ptr() };
+    let sym_iter_si = encode_symbol_key(vm.realm_id(), 0);
+    let method = match vm.ordinary_get(obj, sym_iter_si, value) {
+        Ok(m) => m,
+        Err(err) => return Err(engine_error(vm, &err)),
+    };
+    if !is_callable(method) {
+        return Err(crate::error::create_type_error(
+            vm,
+            "Iterable object does not have a callable @@iterator method",
+        ));
+    }
+    Ok(method)
+}
+
 /// GetOptionsObject：undefined 建 null 原型空对象，对象原样，其余抛 TypeError。
 fn get_options_object<H: VmHost>(vm: &mut H, options: JsValue) -> Result<JsValue, JsValue> {
     if options.is_undefined() {
@@ -535,11 +566,12 @@ fn make_iterator_helper<H: VmHost>(
 
 /// 校验 wrapper 对象形态并读出 kind：`this` 非对象 → TypeError；其余 kind 以
 /// `__inner__` 槽为对象作判据，Zip 以 `__zips__` 槽为对象作判据（zip wrapper
+/// 无 `__inner__` 槽），Concat 以 `__items__` 槽为对象作判据（concat wrapper
 /// 无 `__inner__` 槽）。
 ///
 /// # 返回
 /// - `Ok((kind, inner))`：kind 与底层值（其余 kind 为 `__inner__` 槽，Zip 为
-///   `__zips__` 槽）；`Err` 为透传的异常值。
+///   `__zips__` 槽，Concat 为 `__items__` 槽）；`Err` 为透传的异常值。
 fn validate_helper_this<H: VmHost>(
     vm: &mut H, this_val: JsValue, method: &str,
 ) -> Result<(IteratorHelperKind, JsValue), JsValue> {
@@ -556,6 +588,14 @@ fn validate_helper_this<H: VmHost>(
             return Err(crate::error::create_type_error(vm, &format!("{method} called on non-iterator-helper")));
         }
         return Ok((kind, zips));
+    }
+    if kind == IteratorHelperKind::Concat {
+        let items_si = vm.perm_intern(ITEMS_PROP);
+        let items = vm.ordinary_get(obj, items_si, this_val).map_err(|e| engine_error(vm, &e))?;
+        if !items.is_object() {
+            return Err(crate::error::create_type_error(vm, &format!("{method} called on non-iterator-helper")));
+        }
+        return Ok((kind, items));
     }
     let inner_si = vm.perm_intern(INNER_PROP);
     let inner = vm.ordinary_get(obj, inner_si, this_val).map_err(|e| engine_error(vm, &e))?;
@@ -967,12 +1007,17 @@ pub fn iterator_helper_next<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult 
         IteratorHelperKind::Drop => helper_step_drop(vm, helper, inner, next),
         IteratorHelperKind::FlatMap => helper_step_flat_map(vm, this_val, helper, inner, next),
         IteratorHelperKind::Zip => helper_step_zip(vm, this_val, helper),
+        IteratorHelperKind::Concat => helper_step_concat(vm, this_val, helper),
     };
     match step {
         Ok(Some(value)) => {
-            // zip 产出后为 suspended-yield（state 3，return/throw 关闭期重入守卫
-            // 需区分 suspended-start 的完成态短路）；其余 kind 恒 0。
-            let new_state = if kind == IteratorHelperKind::Zip { 3 } else { 0 };
+            // zip 与 concat 产出后为 suspended-yield（state 3，return/throw 关闭期
+            // 重入守卫需区分 suspended-start 的完成态短路）；其余 kind 恒 0。
+            let new_state = if matches!(kind, IteratorHelperKind::Zip | IteratorHelperKind::Concat) {
+                3
+            } else {
+                0
+            };
             vm.set_or_create_prop_value(helper, state_si, JsValue::int(new_state));
             NativeResult::Ok(make_iter_result(vm, value, false))
         }
@@ -1032,6 +1077,24 @@ pub fn iterator_helper_return<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResul
         vm.set_or_create_prop_value(helper, state_si, JsValue::int(2));
         return result;
     }
+    if kind == IteratorHelperKind::Concat {
+        // 以 `__current__` 槽在场判定内层是否已开：已开则置执行中（重入守卫）
+        // 后关当前内层（正常完成，关闭错误传播）返 done；未开段（首次 next
+        // 前）与自然耗尽后均空操作，不转发 return。
+        let current_si = vm.perm_intern(CURRENT_PROP);
+        let current = vm.ordinary_get(helper, current_si, this_val).unwrap_or(JsValue::undefined());
+        if current.is_object() {
+            vm.set_or_create_prop_value(helper, state_si, JsValue::int(1));
+            let result = match iterator_close_record(vm, current, None) {
+                Ok(()) => NativeResult::Ok(make_iter_result(vm, JsValue::undefined(), true)),
+                Err(v) => NativeResult::Err(v),
+            };
+            vm.set_or_create_prop_value(helper, state_si, JsValue::int(2));
+            return result;
+        }
+        vm.set_or_create_prop_value(helper, state_si, JsValue::int(2));
+        return NativeResult::Ok(make_iter_result(vm, JsValue::undefined(), true));
+    }
     let kind_si = vm.perm_intern(KIND_PROP);
     if IteratorHelperKind::from_i32(read_slot_int(vm, helper, kind_si, 0)) == IteratorHelperKind::FlatMap {
         let inner_iter_si = vm.perm_intern(INNER_ITER_PROP);
@@ -1089,6 +1152,21 @@ pub fn iterator_helper_throw<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult
         let open_si = vm.perm_intern(OPEN_PROP);
         let open = read_slot_int(vm, helper, open_si, -1);
         let _ = close_remaining_open(vm, this_val, helper, open, iter_count, Some(value));
+        vm.set_or_create_prop_value(helper, state_si, JsValue::int(2));
+        return NativeResult::Err(value);
+    }
+    if kind == IteratorHelperKind::Concat {
+        // 与 return 臂同判据：`__current__` 在场则置执行中（重入守卫）后关当前
+        // 内层（throw 完成，原值恒胜出，关闭错误被吞）再抛 value；未开段直接
+        // 抛 value。
+        let current_si = vm.perm_intern(CURRENT_PROP);
+        let current = vm.ordinary_get(helper, current_si, this_val).unwrap_or(JsValue::undefined());
+        if current.is_object() {
+            vm.set_or_create_prop_value(helper, state_si, JsValue::int(1));
+            let _ = iterator_close_record(vm, current, Some(value));
+            vm.set_or_create_prop_value(helper, state_si, JsValue::int(2));
+            return NativeResult::Err(value);
+        }
         vm.set_or_create_prop_value(helper, state_si, JsValue::int(2));
         return NativeResult::Err(value);
     }
@@ -1701,6 +1779,147 @@ fn helper_step_zip<H: VmHost>(
         (*arr).set_prop_count(arr_len);
     }
     Ok(Some(arr_val))
+}
+
+/// `Iterator.concat(...items)`：返回按序依次产出各实参元素的迭代器。
+///
+/// # 步骤
+/// 1. 逐实参按序：对象检查（非对象 TypeError）加 GetMethod 只读缓存 `@@iterator`
+///    方法（getter 构造期调用一次、方法不调用）；任一实参抛错即终止，后续
+///    实参不读。
+/// 2. 建 wrapper（内层迭代器懒开：各段首次 next 才调用方法）。
+///
+/// # 边界
+/// - 静态方法，无 this 检查、无 options 参数。
+/// - 方法为 undefined/null/其它不可调用值 → TypeError（构造期不触发方法调用）。
+pub fn iterator_concat<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let mut items: Vec<(JsValue, JsValue)> = Vec::new();
+    for i in 1..args.len() {
+        let item = vm.reg(args[i]);
+        if !item.is_object() {
+            return NativeResult::Err(crate::error::create_type_error(vm, "Iterator.concat argument is not an object"));
+        }
+        let method = match get_iterator_method(vm, item) {
+            Ok(m) => m,
+            Err(v) => return NativeResult::Err(v),
+        };
+        items.push((method, item));
+    }
+    NativeResult::Ok(make_iterator_concat_helper(vm, &items))
+}
+
+/// 建 concat wrapper：空对象挂 `%IteratorHelperPrototype%`，写 `__items__`
+/// （[method, iterable] 对数组）、`__seg__`（段下标，初始 0）、`__current__`
+/// （当前内层，初始 undefined）、`__current_next__`（缓存 next，初始
+/// undefined）、`__state__`（0）、`__kind__`（6）槽。
+///
+/// 独立构造器（不复用 [`make_iterator_helper`]）：槽位布局不同，concat 无
+/// `__inner__`/`__next__` 槽。
+fn make_iterator_concat_helper<H: VmHost>(vm: &mut H, items: &[(JsValue, JsValue)]) -> JsValue {
+    let helper_proto = vm.builtin_proto(ProtoKind::IteratorHelperProto);
+    let wrapper = vm.alloc_object(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(helper_proto)));
+    let wrapper_obj = unsafe { &mut *wrapper };
+    let array_proto = vm.builtin_proto(ProtoKind::ArrayProto);
+    let items_arr =
+        vm.alloc_object(JsObject::new_array(EMPTY_SHAPE_ID, JsValue::from_js_object(array_proto), items.len()));
+    for (i, (method, iterable)) in items.iter().enumerate() {
+        let pair = vm.alloc_object(JsObject::new_array(EMPTY_SHAPE_ID, JsValue::from_js_object(array_proto), 2));
+        // SAFETY: pair 是刚经统一入口分配的数组对象，元素区已就绪。
+        unsafe {
+            (*pair).set_prop_at(0, *method);
+            (*pair).set_prop_at(1, *iterable);
+        }
+        // SAFETY: 同 epoch，写入后按实际元素数设 prop_count。
+        unsafe {
+            (*items_arr).set_prop_at(i, JsValue::from_js_object(pair));
+        }
+    }
+    // SAFETY: 与 new_array 同 epoch，写入后按实际元素数设 prop_count。
+    unsafe {
+        (*items_arr).set_prop_count(items.len());
+    }
+    let items_si = vm.perm_intern(ITEMS_PROP);
+    let seg_si = vm.perm_intern(SEG_PROP);
+    let current_si = vm.perm_intern(CURRENT_PROP);
+    let current_next_si = vm.perm_intern(CURRENT_NEXT_PROP);
+    let state_si = vm.perm_intern(STATE_PROP);
+    let kind_si = vm.perm_intern(KIND_PROP);
+    vm.set_or_create_prop_value(wrapper_obj, items_si, JsValue::from_js_object(items_arr));
+    vm.set_or_create_prop_value(wrapper_obj, seg_si, JsValue::int(0));
+    vm.set_or_create_prop_value(wrapper_obj, current_si, JsValue::undefined());
+    vm.set_or_create_prop_value(wrapper_obj, current_next_si, JsValue::undefined());
+    vm.set_or_create_prop_value(wrapper_obj, state_si, JsValue::int(0));
+    vm.set_or_create_prop_value(wrapper_obj, kind_si, JsValue::int(IteratorHelperKind::Concat as i32));
+    JsValue::from_js_object(wrapper)
+}
+
+/// concat 推进：自 `__seg__` 起逐段——未开段（`__current__` 非对象）先懒开
+/// （`Call(method, iterable)`，结果非对象抛 TypeError，加 GetIteratorDirect
+/// 写槽）；内层步进：产出返回；done 清槽不关、切下一段；骤发只关当前内层
+/// （throw 完成，原值恒胜出）透传；全段耗尽收口。
+///
+/// # 注意事项
+/// 每次用户调用窗口后重读 `__items__`/`__seg__`/`__current__` 槽（回调可改写
+/// wrapper 槽），不消费求值前快照。
+fn helper_step_concat<H: VmHost>(
+    vm: &mut H, this_val: JsValue, helper: &mut JsObject,
+) -> Result<Option<JsValue>, JsValue> {
+    let items_si = vm.perm_intern(ITEMS_PROP);
+    let seg_si = vm.perm_intern(SEG_PROP);
+    let current_si = vm.perm_intern(CURRENT_PROP);
+    let current_next_si = vm.perm_intern(CURRENT_NEXT_PROP);
+    loop {
+        // 每次用户调用窗口后重读槽位（回调可改写 wrapper 槽）。
+        let items_val = vm.ordinary_get(helper, items_si, this_val).unwrap_or(JsValue::undefined());
+        if !items_val.is_object() {
+            return Ok(None);
+        }
+        let items_obj = unsafe { &*items_val.as_js_object_ptr() };
+        let item_count = items_obj.prop_count();
+        let seg = read_slot_int(vm, helper, seg_si, 0) as u32;
+        if seg >= item_count {
+            return Ok(None);
+        }
+        let pair_val = items_obj.get_prop_at(seg);
+        let (method, iterable) = if pair_val.is_object() {
+            let pair_obj = unsafe { &*pair_val.as_js_object_ptr() };
+            (pair_obj.get_prop_at(0), pair_obj.get_prop_at(1))
+        } else {
+            return Ok(None);
+        };
+        let current = vm.ordinary_get(helper, current_si, this_val).unwrap_or(JsValue::undefined());
+        if !current.is_object() {
+            // 懒开：本段首次 next 才调用方法（构造期只缓存不调用）。
+            let inner = vm.call_function_sync(method, iterable, &[]).map_err(|e| engine_error(vm, &e))?;
+            if !inner.is_object() {
+                return Err(crate::error::create_type_error(
+                    vm,
+                    "Iterator.concat iterable @@iterator returned a non-object",
+                ));
+            }
+            let (inner, next) = get_iterator_direct(vm, inner)?;
+            vm.set_or_create_prop_value(helper, current_si, inner);
+            vm.set_or_create_prop_value(helper, current_next_si, next);
+            continue;
+        }
+        let next = vm
+            .ordinary_get(helper, current_next_si, this_val)
+            .unwrap_or(JsValue::undefined());
+        match iterator_record_step(vm, next, current) {
+            Ok(Some(value)) => return Ok(Some(value)),
+            Ok(None) => {
+                // 自然耗尽：清槽不关内层，切下一段。
+                vm.set_or_create_prop_value(helper, current_si, JsValue::undefined());
+                vm.set_or_create_prop_value(helper, current_next_si, JsValue::undefined());
+                vm.set_or_create_prop_value(helper, seg_si, JsValue::int((seg + 1) as i32));
+            }
+            Err(v) => {
+                // 骤发：只关当前内层（throw 完成，原值恒胜出），透传原值。
+                let _ = iterator_close_record(vm, current, Some(v));
+                return Err(v);
+            }
+        }
+    }
 }
 
 /// `%IteratorPrototype%[@@iterator]`：返回 this（迭代器对象自迭代）。
