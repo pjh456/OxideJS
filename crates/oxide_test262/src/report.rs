@@ -267,10 +267,7 @@ mod tests {
     #[test]
     fn verbose_line_pins_three_arm_formats() {
         let path = PathBuf::from("built-ins/Promise/t.js");
-        assert_eq!(
-            verbose_line(&TestOutcome::Pass("ok".into()), &path),
-            "PASS built-ins/Promise/t.js"
-        );
+        assert_eq!(verbose_line(&TestOutcome::Pass("ok".into()), &path), "PASS built-ins/Promise/t.js");
         assert_eq!(
             verbose_line(&TestOutcome::Fail("vm error: TypeError: x is not callable".into()), &path),
             "FAIL built-ins/Promise/t.js [vm: not callable] vm error: TypeError: x is not callable"
