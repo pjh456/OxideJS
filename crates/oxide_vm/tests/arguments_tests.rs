@@ -267,4 +267,3 @@ fn arguments_iterator_reads_length_live() {
     .unwrap();
     assert_eq!(result.as_int(), 9);
 }
-
