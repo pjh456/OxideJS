@@ -81,7 +81,12 @@ impl Emitter {
         {
             // 全局词法环境读：先查镜像（顶层 let/const 真源），未命中回退全局对象属性。
             let key_idx = ctx.add_constant(Constant::String(name.to_string()));
-            ctx.inst(Inst::new(OpCode::LOAD_GLOBAL_LEX, Operand::Reg(r), Operand::Const(key_idx), Operand::None));
+            ctx.inst(Inst::new(
+                OpCode::LOAD_GLOBAL_LEX,
+                Operand::Reg(r),
+                Operand::Const(key_idx),
+                Operand::None,
+            ));
         } else {
             ctx.inst(Inst::new(OpCode::LOAD_VAR, Operand::Reg(r), Operand::Reg(var_reg), Operand::None));
         }

@@ -399,10 +399,7 @@ impl Emitter {
                 // 落全局词法环境，预声明期先写 undefined 占位（无初始化器声明即终值；
                 // 带初始化器声明由声明点写真实值覆盖）。eval 脚本顶层词法落自身声明
                 // 环境，不写镜像；块级词法（scope >0）不属全局词法环境，不写镜像。
-                if ctx.is_global_scope
-                    && !ctx.is_eval_script
-                    && ctx.is_global_lexical_binding(bi.name.as_str())
-                {
+                if ctx.is_global_scope && !ctx.is_eval_script && ctx.is_global_lexical_binding(bi.name.as_str()) {
                     let key_idx = ctx.add_constant(Constant::String(bi.name.to_string()));
                     let undef_reg = self.emit_undefined(ctx);
                     ctx.inst(Inst::store_global_lex(Operand::Reg(undef_reg), key_idx));
