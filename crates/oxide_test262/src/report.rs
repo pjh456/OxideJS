@@ -1,6 +1,7 @@
 //! 失败诊断：FailRecord 捕获、FAIL 清单/类别段格式化。
 //! 全部为纯函数/String builder（可单测），不持有全局状态。
 
+use crate::judge::{categorize_fail, TestOutcome};
 use crate::RunStats;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -32,6 +33,25 @@ pub fn first_line(s: &str) -> &str {
 /// 压平 \t \n \r 为空格（fail-log / 心跳旁路行 / 类别行的可解析保证）。
 pub fn escape_log_field(s: &str) -> String {
     s.replace(['\t', '\n', '\r'], " ")
+}
+
+/// 格式化 verbose 逐测试行：PASS 仅路径，FAIL 为路径加类别加消息首行，
+/// SKIP 为路径加跳过原因首行。
+///
+/// # 边界与前提
+/// - `^PASS ` / `^FAIL ` / `^SKIP ` 前缀是逐行解析的对外契约；原因追加在路径
+///   之后，前缀结构不变，按前缀匹配的行解析不受影响。
+/// - SKIP 原因取跳过消息首行，与 FAIL 行「路径后方括号标签加消息首行」形态
+///   对称；跳过消息是固定原因的集合，本函数不新增任何文案。
+pub fn verbose_line(outcome: &TestOutcome, path: &Path) -> String {
+    match outcome {
+        TestOutcome::Pass(_) => format!("PASS {}", path.display()),
+        TestOutcome::Fail(msg) => {
+            let (cat, _) = categorize_fail(msg);
+            format!("FAIL {} [{}] {}", path.display(), cat, first_line(msg))
+        }
+        TestOutcome::Skip(msg) => format!("SKIP {} [{}]", path.display(), first_line(msg)),
+    }
 }
 
 /// 类别计数降序的打印版（返回 String，可单测）；`vm: other`/`compile: other`/`other`
@@ -239,6 +259,30 @@ mod tests {
     #[test]
     fn escape_log_field_flattens_separators() {
         assert_eq!(escape_log_field("a\tb\nc\rd"), "a b c d");
+    }
+
+    /// verbose 逐测试行三臂格式钉：PASS 仅路径、FAIL 为类别加消息首行、
+    /// SKIP 为原因首行（多行消息取首行）；`^PASS ` / `^FAIL ` / `^SKIP `
+    /// 前缀契约不变。
+    #[test]
+    fn verbose_line_pins_three_arm_formats() {
+        let path = PathBuf::from("built-ins/Promise/t.js");
+        assert_eq!(
+            verbose_line(&TestOutcome::Pass("ok".into()), &path),
+            "PASS built-ins/Promise/t.js"
+        );
+        assert_eq!(
+            verbose_line(&TestOutcome::Fail("vm error: TypeError: x is not callable".into()), &path),
+            "FAIL built-ins/Promise/t.js [vm: not callable] vm error: TypeError: x is not callable"
+        );
+        assert_eq!(
+            verbose_line(&TestOutcome::Skip("compile error: not yet supported: SpreadElement".into()), &path),
+            "SKIP built-ins/Promise/t.js [compile error: not yet supported: SpreadElement]"
+        );
+        assert_eq!(
+            verbose_line(&TestOutcome::Skip("staging tests excluded\nsecond line".into()), &path),
+            "SKIP built-ins/Promise/t.js [staging tests excluded]"
+        );
     }
 
     /// `not callable` 调用点提取：带/不带 `vm error: ` 前缀均可定位，

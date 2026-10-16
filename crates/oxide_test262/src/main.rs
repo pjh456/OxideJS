@@ -28,7 +28,7 @@ use harness::{HarnessModuleCache, HarnessPrefixCache, HarnessSources, HARNESS};
 use heartbeat::write_heartbeat;
 use judge::{categorize_fail, TestOutcome, TestResult};
 use oxide_log::{Level, LogConfig, Output, SUBSYSTEM_COUNT};
-use report::{append_fail_log, first_line, format_fail_categories, format_fail_groupings, format_fail_list};
+use report::{append_fail_log, format_fail_categories, format_fail_groupings, format_fail_list, verbose_line};
 use runner::{build_runner_engine, process_path, CURRENT_TEST_PATH};
 use safe_supervise::run_safe;
 use stats::RunStats;
@@ -129,14 +129,7 @@ fn run_worker_window(
         // 无漏项、无双计的写序契约）。
         stats.hb_write_errors += on_heartbeat(i, &result, &stats);
         if params.verbose {
-            match &result.outcome {
-                TestOutcome::Pass(_) => println!("PASS {}", params.paths[i].display()),
-                TestOutcome::Fail(msg) => {
-                    let (cat, _) = categorize_fail(msg);
-                    println!("FAIL {} [{}] {}", params.paths[i].display(), cat, first_line(msg));
-                }
-                TestOutcome::Skip(_) => println!("SKIP {}", params.paths[i].display()),
-            }
+            println!("{}", verbose_line(&result.outcome, &params.paths[i]));
         }
         tests_since_kernel_reset += 1;
 
