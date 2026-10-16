@@ -420,7 +420,11 @@ fn parse_iso_strict(s: &str) -> Option<f64> {
             return None;
         }
         pos += 6;
-        if neg { -yv } else { yv }
+        if neg {
+            -yv
+        } else {
+            yv
+        }
     } else {
         if b.len() - pos < 4 || !b[pos..pos + 4].iter().all(|c| c.is_ascii_digit()) {
             return None;
