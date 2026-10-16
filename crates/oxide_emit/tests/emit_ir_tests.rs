@@ -422,11 +422,7 @@ fn eval_early_error_skip_no_binding() {
         .emit_program(&program, false, true)
         .unwrap_or_else(|e| panic!("base 形应编译成功：{e}"));
     // `let f = 123` 初始化写（1）+ 函数声明不覆写词法绑定（0）= 1。
-    assert_eq!(
-        count_op(&ir.insts, OpCode::STORE_VAR),
-        1,
-        "早期错误跳过：函数声明不覆写词法绑定"
-    );
+    assert_eq!(count_op(&ir.insts, OpCode::STORE_VAR), 1, "早期错误跳过：函数声明不覆写词法绑定");
 
     // -block 形：碰撞在同块 let。编译不报「Identifier has already been declared」。
     let alloc = oxide_parser::Allocator::default();
