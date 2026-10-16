@@ -577,8 +577,7 @@ impl Emitter {
     fn emit_params_prologue<'a>(
         &self, param_specs: &[ParamSpec<'a>], body_stmts: &[Statement<'a>], parent_ctx: &CompileCtx,
         ctx: &mut CompileCtx, body_context: FunctionBodyContext, extra_capture_exprs: &[&'a Expression<'a>],
-        extra_upvalue_names: &[(String, u8)], name: Option<&str>, scope_names: &FnScopeNames,
-        is_block_function: bool,
+        extra_upvalue_names: &[(String, u8)], name: Option<&str>, scope_names: &FnScopeNames, is_block_function: bool,
     ) -> Result<u32, String> {
         ctx.push_scope_with_kind(ScopeKind::FunctionScope);
         let param_base = ctx.next_reg;
