@@ -281,6 +281,12 @@ impl Vm {
                     Err(e) => return Err(e),
                 },
 
+                OpCode::LOAD_GLOBAL_LEX => match self.dispatch_load_global_lex(rd, instr) {
+                    Ok(true) => continue,
+                    Ok(false) => {}
+                    Err(e) => return Err(e),
+                },
+
                 OpCode::LOAD_GLOBAL_TYPEOF => {
                     self.dispatch_load_global_typeof(rd, instr)?;
                 }
@@ -579,6 +585,12 @@ impl Vm {
                     let key_idx = self.bytecode[self.pc] as u16;
                     self.pc += 1;
                     self.dispatch_delete_global_prop_c(rd, a, key_idx)?;
+                }
+
+                OpCode::STORE_GLOBAL_LEX => {
+                    let key_idx = self.bytecode[self.pc] as u16;
+                    self.pc += 1;
+                    self.dispatch_store_global_lex(a, key_idx)?;
                 }
 
                 OpCode::CAN_DECLARE_GLOBAL_FUNC => {

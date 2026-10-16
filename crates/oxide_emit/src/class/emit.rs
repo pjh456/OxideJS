@@ -426,6 +426,9 @@ impl Emitter {
                 Operand::Reg(ctor_reg),
                 Operand::None,
             ));
+            // 顶层词法双写镜像：类声明值同步写镜像，使跨脚本（间接 eval）读经
+            // 镜像见当前值。
+            self.emit_global_lex_mirror_write(name, ctor_reg, ctx);
             if let Some(cell_idx) = class_self_cell {
                 // 以构造器初始化类名 cell 并解除 TDZ（占位 cell 已由类元素闭包在 hoist 期创建）。
                 ctx.inst(Inst::new(

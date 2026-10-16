@@ -129,6 +129,11 @@ impl Emitter {
                 Operand::Imm(0),
             ));
         }
+        // 顶层词法双写镜像：宿主脚本（主脚本 + 宿主 evalScript）顶层 let/const 落
+        // 全局词法环境，声明点把值写镜像，使跨脚本（间接 eval）读经镜像可见。
+        // eval 脚本顶层词法落自身声明环境，不写镜像；块级词法（scope >0）与顶层
+        // var 不属全局词法环境，不写镜像。
+        self.emit_global_lex_mirror_write(name, src_reg, ctx);
         ctx.init_var(name);
         // 脚本顶层 var：同步写全局对象，使 globalThis.x 反射声明值。
         if ctx.is_global_scope && matches!(kind, VariableDeclarationKind::Var) {
@@ -168,6 +173,7 @@ impl Emitter {
                         Operand::Reg(src_reg),
                         Operand::Imm(uv_idx as u16),
                     ));
+                    self.emit_global_lex_mirror_write(name, src_reg, ctx);
                     self.emit_module_write_through(name, src_reg, ctx)?;
                     return Ok(());
                 }
@@ -181,6 +187,7 @@ impl Emitter {
                         Operand::Reg(src_reg),
                         Operand::Imm(cell_idx as u16),
                     ));
+                    self.emit_global_lex_mirror_write(name, src_reg, ctx);
                     self.emit_module_write_through(name, src_reg, ctx)?;
                     return Ok(());
                 }
@@ -217,6 +224,8 @@ impl Emitter {
                     // 可写内置名：值同步落全局对象属性。
                     self.emit_global_put_write(name, var_reg, ctx);
                 }
+                // 顶层词法双写镜像：值同步写镜像，使跨脚本（间接 eval）读经镜像见当前值。
+                self.emit_global_lex_mirror_write(name, src_reg, ctx);
                 // live 模块顶层解构赋值目标同样写穿命名空间条目。
                 self.emit_module_write_through(name, src_reg, ctx)?;
                 Ok(())
@@ -397,6 +406,7 @@ impl Emitter {
                         Operand::Reg(src_reg),
                         Operand::Imm(uv_idx as u16),
                     ));
+                    self.emit_global_lex_mirror_write(name, src_reg, ctx);
                     self.emit_module_write_through(name, src_reg, ctx)?;
                     return Ok(());
                 }
@@ -410,6 +420,7 @@ impl Emitter {
                         Operand::Reg(src_reg),
                         Operand::Imm(cell_idx as u16),
                     ));
+                    self.emit_global_lex_mirror_write(name, src_reg, ctx);
                     self.emit_module_write_through(name, src_reg, ctx)?;
                     return Ok(());
                 }
@@ -446,6 +457,8 @@ impl Emitter {
                     // 可写内置名：值同步落全局对象属性。
                     self.emit_global_put_write(name, var_reg, ctx);
                 }
+                // 顶层词法双写镜像：值同步写镜像，使跨脚本（间接 eval）读经镜像见当前值。
+                self.emit_global_lex_mirror_write(name, src_reg, ctx);
                 // live 模块顶层解构赋值目标同样写穿命名空间条目。
                 self.emit_module_write_through(name, src_reg, ctx)?;
                 Ok(())
@@ -516,6 +529,7 @@ impl Emitter {
                             Operand::Reg(prop_reg),
                             Operand::Imm(uv_idx as u16),
                         ));
+                        self.emit_global_lex_mirror_write(name, prop_reg, ctx);
                         self.emit_module_write_through(name, prop_reg, ctx)?;
                         continue;
                     }
@@ -529,6 +543,7 @@ impl Emitter {
                             Operand::Reg(prop_reg),
                             Operand::Imm(cell_idx as u16),
                         ));
+                        self.emit_global_lex_mirror_write(name, prop_reg, ctx);
                         self.emit_module_write_through(name, prop_reg, ctx)?;
                         continue;
                     }
@@ -565,6 +580,8 @@ impl Emitter {
                         // 可写内置名：值同步落全局对象属性（其余属性继续赋值）。
                         self.emit_global_put_write(name, var_reg, ctx);
                     }
+                    // 顶层词法双写镜像：值同步写镜像，使跨脚本（间接 eval）读经镜像见当前值。
+                    self.emit_global_lex_mirror_write(name, prop_reg, ctx);
                     // live 模块顶层解构赋值目标同样写穿命名空间条目。
                     self.emit_module_write_through(name, prop_reg, ctx)?;
                 }

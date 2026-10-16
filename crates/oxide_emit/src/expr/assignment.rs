@@ -91,6 +91,7 @@ impl Emitter {
                 Operand::Reg(val_reg),
                 Operand::Imm(uv as u16),
             ));
+            self.emit_global_lex_mirror_write(name, val_reg, ctx);
             self.emit_module_write_through(name, val_reg, ctx)?;
             Ok(val_reg)
         } else if let Some((cell_idx, binding_reg)) = ctx.visible_cell(name) {
@@ -108,6 +109,7 @@ impl Emitter {
                 Operand::Reg(val_reg),
                 Operand::Imm(cell_idx as u16),
             ));
+            self.emit_global_lex_mirror_write(name, val_reg, ctx);
             self.emit_module_write_through(name, val_reg, ctx)?;
             Ok(val_reg)
         } else {
@@ -162,6 +164,9 @@ impl Emitter {
                 // 可写内置名：RMW 新值同步落全局对象属性。
                 self.emit_global_put_write(name, var_reg, ctx);
             }
+            // 顶层词法双写镜像：RMW 新值同步写镜像，使跨脚本（间接 eval）读经镜像
+            // 见当前值。
+            self.emit_global_lex_mirror_write(name, var_reg, ctx);
             // live 模块顶层复合赋值同样写穿命名空间条目。
             self.emit_module_write_through(name, var_reg, ctx)?;
             Ok(var_reg)
@@ -609,6 +614,9 @@ impl Emitter {
                             }
                         }
                     }
+                    // 顶层词法双写镜像：短路通过后新值同步写镜像，使跨脚本（间接
+                    // eval）读经镜像见当前值。
+                    self.emit_global_lex_mirror_write(name, val_reg, ctx);
                     // 逻辑赋值仅在短路通过后到达此处：写穿同步命名空间条目。
                     self.emit_module_write_through(name, val_reg, ctx)?;
                     ctx.inst(Inst::new(

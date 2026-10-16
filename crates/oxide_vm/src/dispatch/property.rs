@@ -811,6 +811,14 @@ impl Vm {
             return Err(format!("DELETE_GLOBAL_PROP_C constant index {idx} is not a string key"));
         }
         let si = self.property_key_si(key_val)?;
+        // 全局词法环境绑定（顶层 let/const）不可删除：镜像命中恒 false 且属性保留。
+        {
+            let session = self.realm.session.borrow();
+            if self.resolve_property(session.global_lexical(), si).is_some() {
+                self.regs[rd] = JsValue::bool(false);
+                return Ok(());
+            }
+        }
         let global_ptr = self.realm.session.borrow().global_object().as_ptr() as *mut JsObject;
         // SAFETY: 全局对象钉在 session 永久区，指针在 VM 生命周期内有效。
         let obj = unsafe { &mut *global_ptr };

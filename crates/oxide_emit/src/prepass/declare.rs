@@ -3,6 +3,7 @@
 
 use crate::symbol_table::ScopeKind;
 use crate::{CompileCtx, Emitter};
+use oxide_bytecode::module::Constant;
 use oxide_bytecode::opcode::OpCode;
 use oxide_ir::inst::Inst;
 use oxide_ir::operand::Operand;
@@ -394,6 +395,18 @@ impl Emitter {
                         VariableDeclarationKind::Let
                     },
                 );
+                // 顶层词法双写镜像：宿主脚本（主脚本 + 宿主 evalScript）顶层 let/const
+                // 落全局词法环境，预声明期先写 undefined 占位（无初始化器声明即终值；
+                // 带初始化器声明由声明点写真实值覆盖）。eval 脚本顶层词法落自身声明
+                // 环境，不写镜像；块级词法（scope >0）不属全局词法环境，不写镜像。
+                if ctx.is_global_scope
+                    && !ctx.is_eval_script
+                    && ctx.is_global_lexical_binding(bi.name.as_str())
+                {
+                    let key_idx = ctx.add_constant(Constant::String(bi.name.to_string()));
+                    let undef_reg = self.emit_undefined(ctx);
+                    ctx.inst(Inst::store_global_lex(Operand::Reg(undef_reg), key_idx));
+                }
                 // 块级遮蔽绑定：名字在捕获集且最内层为块作用域时，追加新 cell
                 // 索引并发未初始化 MAKE_CELL（TDZ 占位）。声明点与闭包捕获据
                 // 绑定字段走新索引，不原位覆写函数级同名绑定的名字排序索引；

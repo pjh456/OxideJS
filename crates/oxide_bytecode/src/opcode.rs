@@ -614,6 +614,19 @@ define_opcodes! {
         def = None, uses = [SlotSpec::Slot(Slot::Rd), SlotSpec::Slot(Slot::A), SlotSpec::Slot(Slot::B), SlotSpec::ExtReg],
         pure = false, jump = false, term = false, ic = false,
 
+    // 全局词法环境读：imm16 常量池 key（标识符名字符串）。先查 session 全局词法
+    // 环境镜像（顶层 let/const 真源），命中取值；未命中回退全局对象属性读，
+    // 缺失抛 ReferenceError（未声明名与 known builtin 名同形 LOAD_GLOBAL）。
+    LOAD_GLOBAL_LEX = 0xA0 => "LOAD_GLOBAL_LEX",
+        def = Some(SlotSpec::Slot(Slot::Rd)), uses = [],
+        pure = false, jump = false, term = false, ic = false,
+    // 全局词法环境写：ext 字 = 键常量池下标（u16）、a 槽 = 值寄存器。镜像对象
+    // 由 session 解析（不依赖 this）。顶层 let/const 声明与赋值双写镜像，
+    // 使跨脚本（间接 eval / 宿主 evalScript）读经镜像可见。
+    STORE_GLOBAL_LEX = 0xA1 => "STORE_GLOBAL_LEX",
+        def = None, uses = [SlotSpec::Slot(Slot::A)],
+        pure = false, jump = false, term = false, ic = false,
+
     // ── 成员复合赋值：位/移位 (0x64-0x69) ──
     COMPOUND_MEMBER_BIT_AND = 0x64 => "COMPOUND_MEMBER_BIT_AND",
         def = Some(SlotSpec::Slot(Slot::A)), uses = [SlotSpec::Slot(Slot::Rd), SlotSpec::Slot(Slot::A), SlotSpec::Slot(Slot::B)],
@@ -824,7 +837,8 @@ pub fn ext_word_count(bytecode: &[Instr], pc: usize) -> usize {
         | OpCode::DELETE_GLOBAL_PROP_C
         | OpCode::DELETE_PROP_STATIC
         | OpCode::REST_OBJECT
-        | OpCode::INIT_PRIVATE => 1,
+        | OpCode::INIT_PRIVATE
+        | OpCode::STORE_GLOBAL_LEX => 1,
         OpCode::DEFINE_ACCESSOR_ATTRS
         | OpCode::DEFINE_ACCESSOR_ATTRS_DYNAMIC
         | OpCode::GET_PRIVATE

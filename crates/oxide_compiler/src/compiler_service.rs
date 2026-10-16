@@ -25,6 +25,11 @@ impl CompilerService for DefaultCompilerService {
     fn compile_eval_script(&self, source: &str) -> Result<CompiledModule, String> {
         oxide_parser::with_parse_allocator(|allocator| {
             let program = parse_program(allocator, source)?;
+            // eval 代码是脚本：import/export 声明不得出现（规范 Script 产生式），
+            // 按模块解析命中即 SyntaxError（既有包装臂转成 JS 异常）。
+            if program.source_type.is_module() {
+                return Err("eval code may not contain import or export declarations".to_string());
+            }
             // eval 脚本：顶层 var/function 声明落全局属性 configurable:true。
             Compiler::new()
                 .with_eval_script(true)

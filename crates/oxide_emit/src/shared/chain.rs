@@ -132,8 +132,12 @@ impl Emitter {
             let mut static_regs = words;
             let first_arg_reg = if static_regs.is_empty() { 0u32 } else { pack_arg_regs(&mut static_regs, ctx) };
             let op = match &call.callee {
+                // 可选链调用（eval?.）是间接求值：走通用 CALL 而非 CALL_NATIVE，
+                // 不传直接求值上下文（规范 ChainEvaluation 的 eval 特判）。
                 Expression::Identifier(ident)
-                    if ctx.is_builtin(ident.name.as_str()) && !ctx.is_local_shadowing_builtin(ident.name.as_str()) =>
+                    if ctx.is_builtin(ident.name.as_str())
+                        && !ctx.is_local_shadowing_builtin(ident.name.as_str())
+                        && !call.optional =>
                 {
                     OpCode::CALL_NATIVE
                 }

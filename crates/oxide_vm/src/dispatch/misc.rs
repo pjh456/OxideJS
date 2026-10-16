@@ -77,6 +77,75 @@ impl Vm {
         Ok(())
     }
 
+    /// 全局词法环境读：先查 session 全局词法环境镜像（顶层 let/const 真源），
+    /// 命中取值；未命中回退全局对象属性读，缺失抛 ReferenceError。
+    ///
+    /// # 步骤
+    /// 1. imm16 取常量池 key（标识符名字符串），解析为属性键 si。
+    /// 2. 查镜像对象属性，命中写 rd 返回。
+    /// 3. 未命中回退全局对象属性读，命中写 rd 返回；缺失 raise ReferenceError。
+    ///
+    /// # 边界与前提
+    /// - key 常量必须是字符串（emit 侧保证）；非字符串按错误返回。
+    /// - 镜像命中即返回（顶层词法绑定优先于全局对象属性，规范全局环境词法面）。
+    pub(crate) fn dispatch_load_global_lex(&mut self, rd: usize, instr: u32) -> Result<bool, String> {
+        let idx = (instr >> 16) as usize;
+        vm_trace!("LOAD_GLOBAL_LEX rd={} idx={}", rd, idx);
+        let key_val = self.immutables().get(idx).copied().unwrap_or(JsValue::undefined());
+        if !key_val.is_string() {
+            return Err(format!("LOAD_GLOBAL_LEX constant index {idx} is not a string key"));
+        }
+        let si = self.property_key_si(key_val)?;
+        // 镜像优先：顶层 let/const 真源，命中即返回。
+        let lexical_hit = {
+            let session = self.realm.session.borrow();
+            self.resolve_property(session.global_lexical(), si)
+        };
+        if let Some(val) = lexical_hit {
+            self.regs[rd] = val;
+            return Ok(false);
+        }
+        // 回退全局对象属性读（未声明名与 known builtin 名同形 LOAD_GLOBAL）。
+        let global_hit = {
+            let session = self.realm.session.borrow();
+            let global = session.global_object().clone();
+            self.resolve_property(&global, si)
+        };
+        if let Some(val) = global_hit {
+            self.regs[rd] = val;
+            Ok(false)
+        } else {
+            // SAFETY: key_val 已校验为字符串值；错误消息走 lossy 文本。
+            let name = unsafe { (*key_val.as_string_ptr()).as_lossy_str() };
+            self.raise_error_kind("ReferenceError", &format!("{name} is not defined"))?;
+            Ok(true)
+        }
+    }
+
+    /// 全局词法环境写：把 a 槽值写入镜像对象（顶层 let/const 声明与赋值双写）。
+    ///
+    /// # 步骤
+    /// 1. ext[0] 取键常量池下标，解析为属性键 si。
+    /// 2. 镜像对象由 session 解析，`set_or_create_prop_value` 写值（缺失建属性）。
+    ///
+    /// # 副作用
+    /// - 修改镜像对象 shape/属性表/generation。
+    pub(crate) fn dispatch_store_global_lex(&mut self, a: usize, key_idx: u16) -> Result<(), String> {
+        let idx = key_idx as usize;
+        vm_trace!("STORE_GLOBAL_LEX value={} idx={}", a, idx);
+        let key_val = self.immutables().get(idx).copied().unwrap_or(JsValue::undefined());
+        if !key_val.is_string() {
+            return Err(format!("STORE_GLOBAL_LEX constant index {idx} is not a string key"));
+        }
+        let si = self.property_key_si(key_val)?;
+        let value = self.regs[a];
+        let lexical_ptr = self.realm.session.borrow().global_lexical().as_ptr() as *mut JsObject;
+        // SAFETY: 镜像对象钉在 session 永久区，指针在 VM 生命周期内有效。
+        let obj = unsafe { &mut *lexical_ptr };
+        self.set_or_create_prop_value(obj, si, value);
+        Ok(())
+    }
+
     #[inline(always)]
     pub(crate) fn dispatch_typeof(&mut self, rd: usize, a: usize) {
         vm_trace!("TYPEOF rd={} r{}={:?}", rd, a, self.regs[a]);

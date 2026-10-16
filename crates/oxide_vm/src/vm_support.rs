@@ -530,6 +530,9 @@ impl Vm {
 
     fn clear_full_reset_state(&mut self) {
         self.clear_execution_state();
+        // 全局词法环境镜像随 session 隔离重建：顶层词法绑定不跨 run 存活，
+        // 旧镜像属性区释放并重建空对象（防上一 run 残留值被新 run 读到）。
+        self.realm.session.borrow_mut().clear_global_lexical();
         // 模板对象缓存中的 JsValue 指向将被重建的 session 对象：全量重置后悬垂，
         // 必须随 session 一并清空。
         self.template_objects.clear();

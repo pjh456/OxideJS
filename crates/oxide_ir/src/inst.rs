@@ -261,6 +261,13 @@ impl Inst {
         )
     }
 
+    /// 全局词法环境写：ext = [key_idx]（键常量池下标），value 放 a 槽。镜像对象
+    /// 由 VM 运行期从 session 解析（不依赖 this 寄存器）。顶层 let/const 声明与
+    /// 赋值双写镜像，使跨脚本读经镜像可见。
+    pub fn store_global_lex(value: Operand, key_idx: u16) -> Self {
+        Self::with_ext(OpCode::STORE_GLOBAL_LEX, Operand::None, value, Operand::None, &[key_idx as u32])
+    }
+
     /// 顶层函数声明的全局绑定声明检查（GDI step 9）：target 为全局对象，key 为
     /// 声明名寄存器。运行期按 CanDeclareGlobalFunction 判定——撞既有不可配置
     /// 非可写数据属性（或不可扩展上的缺失名）抛 TypeError。

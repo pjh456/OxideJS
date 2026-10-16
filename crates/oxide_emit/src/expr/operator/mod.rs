@@ -915,6 +915,7 @@ impl Emitter {
                 Operand::Reg(new_reg),
                 Operand::Imm(uv as u16),
             ));
+            self.emit_global_lex_mirror_write(name, new_reg, ctx);
             self.emit_module_write_through(name, new_reg, ctx)?;
             Ok(if update.prefix { new_reg } else { old_reg })
         } else if let Some((cell_idx, binding_reg)) = ctx.visible_cell(name) {
@@ -943,6 +944,7 @@ impl Emitter {
                 Operand::Reg(new_reg),
                 Operand::Imm(cell_idx as u16),
             ));
+            self.emit_global_lex_mirror_write(name, new_reg, ctx);
             self.emit_module_write_through(name, new_reg, ctx)?;
             Ok(if update.prefix { new_reg } else { old_reg })
         } else {
@@ -1048,6 +1050,9 @@ impl Emitter {
                 // 可写内置名：RMW 新值同步落全局对象属性。
                 self.emit_global_put_write(name, var_reg, ctx);
             }
+            // 顶层词法双写镜像：更新后新值同步写镜像，使跨脚本（间接 eval）读经
+            // 镜像见当前值。
+            self.emit_global_lex_mirror_write(name, var_reg, ctx);
             // 槽位寄存器承载更新后的新值：写穿必须取 var_reg，
             // 否则命名空间条目被写回旧值。
             self.emit_module_write_through(name, var_reg, ctx)?;

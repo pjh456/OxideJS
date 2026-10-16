@@ -887,6 +887,15 @@ impl CompileCtx {
         matches!(self.scopes.symbols.lookup_any_binding(name), Some((binding, 0)) if !binding.lexical)
     }
 
+    /// 名字是否解析到顶层词法绑定（全局词法环境）：scope 0 的 let/const/class/
+    /// 导入绑定。顶层词法绑定的值存储是全局词法环境记录（镜像），所有写路径
+    /// （声明/赋值/复合/逻辑/update/解构）须同步镜像，否则跨脚本（间接 eval）
+    /// 读经镜像见陈旧值。块级词法（scope >0）与顶层 var/隐式全局（lexical 不置位）
+    /// 不属全局词法环境，不写镜像。
+    pub(crate) fn is_global_lexical_binding(&self, name: &str) -> bool {
+        matches!(self.scopes.symbols.lookup_any_binding(name), Some((binding, 0)) if binding.lexical)
+    }
+
     /// 写目标是否为只读全局内置（undefined/NaN/Infinity 的全局绑定——全局对象上
     /// 数据属性 {writable:false, configurable:false}，put 永不成功）。名字在只读
     /// 名单内且解析到全局内置槽；声明臂与赋值臂共用本谓词。

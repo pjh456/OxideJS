@@ -79,8 +79,9 @@ impl Emitter {
             || ctx.is_implicit_global_reg(var_reg)
             || (ctx.is_builtin(name) && !ctx.is_local_shadowing_builtin(name))
         {
+            // 全局词法环境读：先查镜像（顶层 let/const 真源），未命中回退全局对象属性。
             let key_idx = ctx.add_constant(Constant::String(name.to_string()));
-            ctx.inst(Inst::new(OpCode::LOAD_GLOBAL, Operand::Reg(r), Operand::Const(key_idx), Operand::None));
+            ctx.inst(Inst::new(OpCode::LOAD_GLOBAL_LEX, Operand::Reg(r), Operand::Const(key_idx), Operand::None));
         } else {
             ctx.inst(Inst::new(OpCode::LOAD_VAR, Operand::Reg(r), Operand::Reg(var_reg), Operand::None));
         }
@@ -139,22 +140,22 @@ impl Emitter {
                 Operand::Imm(cell_idx as u16),
             ));
         } else if self.is_global_tier_name(ctx, name) {
-            // 顶层已声明 var：with 对象无该属性时回退读全局对象属性（顶层 var 的唯一
-            // 存储，引擎侧不保留镜像副本）。
+            // 顶层已声明 var：with 对象无该属性时回退读全局词法环境（镜像优先，
+            // 未命中回退全局对象属性）。
             let key_idx = ctx.add_constant(Constant::String(name.to_string()));
             ctx.inst(Inst::new(
-                OpCode::LOAD_GLOBAL,
+                OpCode::LOAD_GLOBAL_LEX,
                 Operand::Reg(result_reg),
                 Operand::Const(key_idx),
                 Operand::None,
             ));
         } else if let Some(reg) = ctx.scopes.symbols.lookup_any(name) {
-            // 已知 builtin 名（非局部遮蔽）读 A 侧全局对象属性，与静态读臂同形；
-            // 局部遮蔽绑定保持 LOAD_VAR 读局部槽。
+            // 已知 builtin 名（非局部遮蔽）读全局词法环境（镜像优先，未命中回退
+            // 全局对象属性），与静态读臂同形；局部遮蔽绑定保持 LOAD_VAR 读局部槽。
             if ctx.is_builtin(name) && !ctx.is_local_shadowing_builtin(name) {
                 let key_idx = ctx.add_constant(Constant::String(name.to_string()));
                 ctx.inst(Inst::new(
-                    OpCode::LOAD_GLOBAL,
+                    OpCode::LOAD_GLOBAL_LEX,
                     Operand::Reg(result_reg),
                     Operand::Const(key_idx),
                     Operand::None,
@@ -169,6 +170,17 @@ impl Emitter {
         ctx.labels.set_label_pos(end_label, ctx.insts.len());
 
         Ok(result_reg)
+    }
+
+    /// 顶层词法绑定镜像写：写目标是顶层词法绑定（全局词法环境）时把新值同步写
+    /// 镜像，使跨脚本（间接 eval）读经镜像见当前值。eval 脚本顶层词法落自身声明
+    /// 环境，不写镜像；非顶层词法（块级）与顶层 var/隐式全局不属全局词法环境，
+    /// 不写镜像。
+    pub(crate) fn emit_global_lex_mirror_write(&self, name: &str, val_reg: u32, ctx: &mut CompileCtx) {
+        if ctx.is_global_scope && !ctx.is_eval_script && ctx.is_global_lexical_binding(name) {
+            let key_idx = ctx.add_constant(Constant::String(name.to_string()));
+            ctx.inst(Inst::store_global_lex(Operand::Reg(val_reg), key_idx));
+        }
     }
 
     /// 静态标识符写入：upvalue / 被捕获 cell / 普通槽（含 const guard）。
@@ -229,6 +241,7 @@ impl Emitter {
                 Operand::Reg(val_reg),
                 Operand::Imm(uv_idx as u16),
             ));
+            self.emit_global_lex_mirror_write(name, val_reg, ctx);
             self.emit_module_write_through(name, val_reg, ctx)?;
             return Ok(());
         }
@@ -243,6 +256,7 @@ impl Emitter {
                 Operand::Reg(val_reg),
                 Operand::Imm(cell_idx as u16),
             ));
+            self.emit_global_lex_mirror_write(name, val_reg, ctx);
             self.emit_module_write_through(name, val_reg, ctx)?;
             return Ok(());
         }
@@ -282,6 +296,9 @@ impl Emitter {
             // enumerable/configurable 位；否则内置名镜像槽与 globalThis 反射读到不同值。
             self.emit_global_put_write(name, var_reg, ctx);
         }
+        // 顶层词法双写镜像：宿主脚本（主脚本 + 宿主 evalScript）顶层 let/const 赋值
+        // 同步写镜像，使跨脚本（间接 eval）读经镜像可见当前值。
+        self.emit_global_lex_mirror_write(name, val_reg, ctx);
         // 模块顶层对导出源绑定的写入同步命名空间条目；非 live 模块空表直接返回。
         self.emit_module_write_through(name, val_reg, ctx)?;
         Ok(())

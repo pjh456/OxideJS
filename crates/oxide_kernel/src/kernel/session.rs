@@ -19,6 +19,10 @@ use super::{BuiltinDirtySet, BuiltinId, BuiltinSnapshot, KernelCore};
 pub struct KernelSession {
     pub builtin_world: Arc<BuiltinWorld>,
     pub global_object: P<JsObject>,
+    /// 全局词法环境镜像：普通对象（Object.prototype），顶层 let/const 声明与赋值
+    /// 双写此对象，使跨脚本（间接 eval / 宿主 evalScript）读经镜像可见顶层词法
+    /// 绑定。会话级持久，full_reset 随 session 重建。
+    pub global_lexical: P<JsObject>,
     pub builtin_snapshot: BuiltinSnapshot,
 }
 
@@ -69,11 +73,15 @@ impl KernelSession {
         let builtin_world = Arc::new(BuiltinWorld::new(&core.perm_interner, &core.shape_forge));
         let object_proto_val = JsValue::from_js_object(builtin_world.object_proto.as_ptr() as *mut JsObject);
         let global_object = Self::new_global_object(core, object_proto_val);
+        // 全局词法环境镜像：普通对象，[[Prototype]] = Object.prototype，与全局对象
+        // 同策略（session 永久区，属性区随 session 收尾释放）。
+        let global_lexical = P::new(JsObject::new_empty(EMPTY_SHAPE_ID, object_proto_val));
         let builtin_snapshot = BuiltinSnapshot::new(&builtin_world, &global_object);
 
         Self {
             builtin_world,
             global_object,
+            global_lexical,
             builtin_snapshot,
         }
     }
@@ -86,6 +94,20 @@ impl KernelSession {
     /// 只读访问当前 session 的 global object。
     pub fn global_object(&self) -> &P<JsObject> {
         &self.global_object
+    }
+
+    /// 只读访问当前 session 的全局词法环境镜像。
+    pub fn global_lexical(&self) -> &P<JsObject> {
+        &self.global_lexical
+    }
+
+    /// 清空全局词法环境镜像：释放旧镜像属性区并重建空对象。full_reset 随 session
+    /// 隔离重建调用——顶层词法绑定不跨 run 存活。
+    pub fn clear_global_lexical(&mut self) {
+        let old = unsafe { &mut *(self.global_lexical.as_ptr() as *mut JsObject) };
+        old.release_raw_heap();
+        let object_proto_val = JsValue::from_js_object(self.builtin_world.object_proto.as_ptr() as *mut JsObject);
+        self.global_lexical = P::new(JsObject::new_empty(EMPTY_SHAPE_ID, object_proto_val));
     }
 
     /// 重新采集内置对象世代快照，作为下一次脏检查的基准。
@@ -256,6 +278,9 @@ impl KernelSession {
         // SAFETY: global 归本 session 所有，收尾时恰好释放其属性区一次。
         let global = unsafe { &mut *(self.global_object.as_ptr() as *mut JsObject) };
         global.release_raw_heap();
+        // 全局词法环境镜像同 global 归属本 session，属性区恰好释放一次。
+        let lexical = unsafe { &mut *(self.global_lexical.as_ptr() as *mut JsObject) };
+        lexical.release_raw_heap();
     }
 
     /// 选择性重置：只重建被污染的对象（global 或相应 builtin 家族），并返回脏集合。
