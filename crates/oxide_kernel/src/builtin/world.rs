@@ -1,5 +1,5 @@
-//! 注册表职责：BuiltinWorld 结构（108 固定 P 字段 + stub 族 + Box::into_raw
-//! 登记表）、get_by_id 派发、all_p_fields 108 元组枚举（新增 P 字段四处同步
+//! 注册表职责：BuiltinWorld 结构（129 固定 P 字段 + stub 族 + Box::into_raw
+//! 登记表）、get_by_id 派发、all_p_fields 129 元组枚举（新增 P 字段四处同步
 //! 约束载体）与登记表 track/find/inherit/teardown。
 
 use oxide_types::mem::P;
@@ -177,6 +177,40 @@ pub struct BuiltinWorld {
     /// `EventTarget.prototype` 槽位：纯内核接线占位（空对象），真实原型
     /// 本体由绑定层后续任务填充（EventTarget 无构造器，仅暴露原型）。
     pub event_target_proto: P<JsObject>,
+    /// `Intl` 命名空间对象（非构造器）：构造器/原型对与静态方法由绑定层
+    /// 安装；脏家族位为 `intl`。
+    pub intl_object: P<JsObject>,
+    /// `Intl.NumberFormat` 构造器与原型对：经 `make_named_pair` 成对构造，
+    /// 骨架阶段构造语义（实例化/resolvedOptions）由绑定层 native 填充。
+    pub number_format_constructor: P<JsObject>,
+    pub number_format_proto: P<JsObject>,
+    /// `Intl.DateTimeFormat` 构造器与原型对。
+    pub date_time_format_constructor: P<JsObject>,
+    pub date_time_format_proto: P<JsObject>,
+    /// `Intl.Collator` 构造器与原型对。
+    pub collator_constructor: P<JsObject>,
+    pub collator_proto: P<JsObject>,
+    /// `Intl.PluralRules` 构造器与原型对。
+    pub plural_rules_constructor: P<JsObject>,
+    pub plural_rules_proto: P<JsObject>,
+    /// `Intl.ListFormat` 构造器与原型对。
+    pub list_format_constructor: P<JsObject>,
+    pub list_format_proto: P<JsObject>,
+    /// `Intl.RelativeTimeFormat` 构造器与原型对。
+    pub relative_time_format_constructor: P<JsObject>,
+    pub relative_time_format_proto: P<JsObject>,
+    /// `Intl.DisplayNames` 构造器与原型对。
+    pub display_names_constructor: P<JsObject>,
+    pub display_names_proto: P<JsObject>,
+    /// `Intl.Segmenter` 构造器与原型对。
+    pub segmenter_constructor: P<JsObject>,
+    pub segmenter_proto: P<JsObject>,
+    /// `Intl.Locale` 构造器与原型对。
+    pub locale_constructor: P<JsObject>,
+    pub locale_proto: P<JsObject>,
+    /// `Intl.DurationFormat` 构造器与原型对。
+    pub duration_format_constructor: P<JsObject>,
+    pub duration_format_proto: P<JsObject>,
     /// 释放登记表（`Box::into_raw` 对象的清单，session 收尾统一释放，非内存泄漏）：
     /// 绑定层经 `Box::into_raw` 持有的函数/宿主对象（方法 wrapper、访问器、
     /// 错误构造器、Reflect/Iterator、内建原型构造器、`$262` 宿主等）。
@@ -407,7 +441,7 @@ impl BuiltinWorld {
     /// session 收尾（`teardown_heap_data`）与选择性重建收尾（`retire_replaced`）
     /// 的 P 字段枚举唯一入口：`BuiltinWorld` 新增 P 字段须在此同步补一行，否则
     /// 收尾时该字段属性区无法释放、重建原型槽改写/释放漏掉该字段。
-    pub(crate) fn all_p_fields(&self) -> [&P<JsObject>; 108] {
+    pub(crate) fn all_p_fields(&self) -> [&P<JsObject>; 129] {
         [
             &self.object_proto,
             &self.array_proto,
@@ -517,6 +551,27 @@ impl BuiltinWorld {
             &self.custom_event_proto,
             &self.custom_event_constructor,
             &self.event_target_proto,
+            &self.intl_object,
+            &self.number_format_constructor,
+            &self.number_format_proto,
+            &self.date_time_format_constructor,
+            &self.date_time_format_proto,
+            &self.collator_constructor,
+            &self.collator_proto,
+            &self.plural_rules_constructor,
+            &self.plural_rules_proto,
+            &self.list_format_constructor,
+            &self.list_format_proto,
+            &self.relative_time_format_constructor,
+            &self.relative_time_format_proto,
+            &self.display_names_constructor,
+            &self.display_names_proto,
+            &self.segmenter_constructor,
+            &self.segmenter_proto,
+            &self.locale_constructor,
+            &self.locale_proto,
+            &self.duration_format_constructor,
+            &self.duration_format_proto,
         ]
     }
 
@@ -663,6 +718,27 @@ impl BuiltinWorld {
             BuiltinId::CustomEventProto => &self.custom_event_proto,
             BuiltinId::CustomEventCtor => &self.custom_event_constructor,
             BuiltinId::EventTargetProto => &self.event_target_proto,
+            BuiltinId::IntlObject => &self.intl_object,
+            BuiltinId::NumberFormatConstructor => &self.number_format_constructor,
+            BuiltinId::NumberFormatProto => &self.number_format_proto,
+            BuiltinId::DateTimeFormatConstructor => &self.date_time_format_constructor,
+            BuiltinId::DateTimeFormatProto => &self.date_time_format_proto,
+            BuiltinId::CollatorConstructor => &self.collator_constructor,
+            BuiltinId::CollatorProto => &self.collator_proto,
+            BuiltinId::PluralRulesConstructor => &self.plural_rules_constructor,
+            BuiltinId::PluralRulesProto => &self.plural_rules_proto,
+            BuiltinId::ListFormatConstructor => &self.list_format_constructor,
+            BuiltinId::ListFormatProto => &self.list_format_proto,
+            BuiltinId::RelativeTimeFormatConstructor => &self.relative_time_format_constructor,
+            BuiltinId::RelativeTimeFormatProto => &self.relative_time_format_proto,
+            BuiltinId::DisplayNamesConstructor => &self.display_names_constructor,
+            BuiltinId::DisplayNamesProto => &self.display_names_proto,
+            BuiltinId::SegmenterConstructor => &self.segmenter_constructor,
+            BuiltinId::SegmenterProto => &self.segmenter_proto,
+            BuiltinId::LocaleConstructor => &self.locale_constructor,
+            BuiltinId::LocaleProto => &self.locale_proto,
+            BuiltinId::DurationFormatConstructor => &self.duration_format_constructor,
+            BuiltinId::DurationFormatProto => &self.duration_format_proto,
         }
     }
 }

@@ -122,6 +122,28 @@ pub enum ProtoKind {
     MessageEventProto,
     ErrorEventProto,
     CustomEventProto,
+    // Intl 十组构造器与原型（Intl 命名空间对象不占 ProtoKind：builtins 不读它，
+    // 绑定层直接访问 world 的 intl_object 槽）
+    NumberFormatConstructor,
+    NumberFormatProto,
+    DateTimeFormatConstructor,
+    DateTimeFormatProto,
+    CollatorConstructor,
+    CollatorProto,
+    PluralRulesConstructor,
+    PluralRulesProto,
+    ListFormatConstructor,
+    ListFormatProto,
+    RelativeTimeFormatConstructor,
+    RelativeTimeFormatProto,
+    DisplayNamesConstructor,
+    DisplayNamesProto,
+    SegmenterConstructor,
+    SegmenterProto,
+    LocaleConstructor,
+    LocaleProto,
+    DurationFormatConstructor,
+    DurationFormatProto,
 }
 
 /// builtins 依赖的 `Vm` 能力集合。

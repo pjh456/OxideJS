@@ -33,6 +33,8 @@ pub mod bind_event;
 pub mod bind_function;
 /// global 对象上的普通全局函数（parseInt、isNaN 等）绑定。
 pub mod bind_global;
+/// Intl 命名空间对象与十组构造器/原型的 native 绑定（骨架阶段）。
+pub mod bind_intl;
 /// Iterator 相关全局辅助对象（%IteratorPrototype% 等）绑定。
 pub mod bind_iterator;
 /// JSON 单例对象及其 native 方法绑定。
@@ -1118,6 +1120,7 @@ pub fn bind_global_builtin_slots(
         ("JSON", JsValue::from_js_object(world.json_object.as_ptr() as *mut JsObject)),
         ("Temporal", JsValue::from_js_object(world.temporal_object.as_ptr() as *mut JsObject)),
         ("Atomics", JsValue::from_js_object(world.atomics_object.as_ptr() as *mut JsObject)),
+        ("Intl", JsValue::from_js_object(world.intl_object.as_ptr() as *mut JsObject)),
     ] {
         bind_existing_global(core, global, name, value);
     }
@@ -1342,6 +1345,9 @@ pub fn rebind_dirty_builtins(
     }
     if dirty.map_or(true, |d| d.temporal) {
         bind_temporal::bind_temporal(env, global);
+    }
+    if dirty.map_or(true, |d| d.intl) {
+        bind_intl::bind_intl(env, global);
     }
     // 独占函数（bind_stubs / bind_weak_map）需要 session 的可变借用，与 env
     // 的共享借用冲突；env 的最后一次使用在上面的 temporal 分支，独占调用

@@ -43,6 +43,8 @@ pub mod event_target;
 pub mod function;
 /// 全局函数模块（URI 编解码与 Annex B 的 escape/unescape）。
 pub mod global;
+/// Intl 特性域（骨架阶段）：命名空间、十组构造器/原型对、getCanonicalLocales。
+pub mod intl;
 /// 迭代器相关实现（Iterator 包装、for-of 底层迭代逻辑）。
 pub mod iterator;
 /// JSON 内置对象实现（parse/stringify）。

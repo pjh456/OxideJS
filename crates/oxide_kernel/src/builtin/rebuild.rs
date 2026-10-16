@@ -460,6 +460,98 @@ impl BuiltinWorld {
             )
         };
 
+        // Intl 命名空间对象（非构造器空对象）与十组构造器/原型对：脏则换新
+        // 空对象占位（与全量构造同形），未脏沿用旧指针。
+        let (
+            intl_object,
+            number_format_constructor,
+            number_format_proto,
+            date_time_format_constructor,
+            date_time_format_proto,
+            collator_constructor,
+            collator_proto,
+            plural_rules_constructor,
+            plural_rules_proto,
+            list_format_constructor,
+            list_format_proto,
+            relative_time_format_constructor,
+            relative_time_format_proto,
+            display_names_constructor,
+            display_names_proto,
+            segmenter_constructor,
+            segmenter_proto,
+            locale_constructor,
+            locale_proto,
+            duration_format_constructor,
+            duration_format_proto,
+        ) = if dirty.intl {
+            let (number_format_proto, number_format_constructor) =
+                make_named_pair(string_forge, shape_forge, labels, "NumberFormat");
+            let (date_time_format_proto, date_time_format_constructor) =
+                make_named_pair(string_forge, shape_forge, labels, "DateTimeFormat");
+            let (collator_proto, collator_constructor) = make_named_pair(string_forge, shape_forge, labels, "Collator");
+            let (plural_rules_proto, plural_rules_constructor) =
+                make_named_pair(string_forge, shape_forge, labels, "PluralRules");
+            let (list_format_proto, list_format_constructor) =
+                make_named_pair(string_forge, shape_forge, labels, "ListFormat");
+            let (relative_time_format_proto, relative_time_format_constructor) =
+                make_named_pair(string_forge, shape_forge, labels, "RelativeTimeFormat");
+            let (display_names_proto, display_names_constructor) =
+                make_named_pair(string_forge, shape_forge, labels, "DisplayNames");
+            let (segmenter_proto, segmenter_constructor) =
+                make_named_pair(string_forge, shape_forge, labels, "Segmenter");
+            let (locale_proto, locale_constructor) = make_named_pair(string_forge, shape_forge, labels, "Locale");
+            let (duration_format_proto, duration_format_constructor) =
+                make_named_pair(string_forge, shape_forge, labels, "DurationFormat");
+            (
+                P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null())),
+                number_format_constructor,
+                number_format_proto,
+                date_time_format_constructor,
+                date_time_format_proto,
+                collator_constructor,
+                collator_proto,
+                plural_rules_constructor,
+                plural_rules_proto,
+                list_format_constructor,
+                list_format_proto,
+                relative_time_format_constructor,
+                relative_time_format_proto,
+                display_names_constructor,
+                display_names_proto,
+                segmenter_constructor,
+                segmenter_proto,
+                locale_constructor,
+                locale_proto,
+                duration_format_constructor,
+                duration_format_proto,
+            )
+        } else {
+            (
+                current.intl_object.clone(),
+                current.number_format_constructor.clone(),
+                current.number_format_proto.clone(),
+                current.date_time_format_constructor.clone(),
+                current.date_time_format_proto.clone(),
+                current.collator_constructor.clone(),
+                current.collator_proto.clone(),
+                current.plural_rules_constructor.clone(),
+                current.plural_rules_proto.clone(),
+                current.list_format_constructor.clone(),
+                current.list_format_proto.clone(),
+                current.relative_time_format_constructor.clone(),
+                current.relative_time_format_proto.clone(),
+                current.display_names_constructor.clone(),
+                current.display_names_proto.clone(),
+                current.segmenter_constructor.clone(),
+                current.segmenter_proto.clone(),
+                current.locale_constructor.clone(),
+                current.locale_proto.clone(),
+                current.duration_format_constructor.clone(),
+                current.duration_format_proto.clone(),
+            )
+        };
+
         // 迭代器原型与资源栈原型依赖 Object.prototype（链到其上）：object 家族重建时
         // 一并重建，否则旧原型链指向已释放的 object_proto。
         let (
@@ -623,6 +715,27 @@ impl BuiltinWorld {
             custom_event_proto,
             custom_event_constructor,
             event_target_proto,
+            intl_object,
+            number_format_constructor,
+            number_format_proto,
+            date_time_format_constructor,
+            date_time_format_proto,
+            collator_constructor,
+            collator_proto,
+            plural_rules_constructor,
+            plural_rules_proto,
+            list_format_constructor,
+            list_format_proto,
+            relative_time_format_constructor,
+            relative_time_format_proto,
+            display_names_constructor,
+            display_names_proto,
+            segmenter_constructor,
+            segmenter_proto,
+            locale_constructor,
+            locale_proto,
+            duration_format_constructor,
+            duration_format_proto,
             leaked_objects: std::cell::RefCell::new(Vec::new()),
         };
         wire_builtin_world_links(&world);

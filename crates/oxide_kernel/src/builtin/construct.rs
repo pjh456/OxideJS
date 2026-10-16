@@ -347,6 +347,16 @@ pub(crate) fn wire_builtin_world_links(world: &BuiltinWorld) {
     wire_ctor_proto(&world.plain_month_day_constructor, &world.plain_month_day_proto);
     wire_ctor_proto(&world.plain_year_month_constructor, &world.plain_year_month_proto);
     wire_ctor_proto(&world.bigint_constructor, &world.bigint_proto);
+    wire_ctor_proto(&world.number_format_constructor, &world.number_format_proto);
+    wire_ctor_proto(&world.date_time_format_constructor, &world.date_time_format_proto);
+    wire_ctor_proto(&world.collator_constructor, &world.collator_proto);
+    wire_ctor_proto(&world.plural_rules_constructor, &world.plural_rules_proto);
+    wire_ctor_proto(&world.list_format_constructor, &world.list_format_proto);
+    wire_ctor_proto(&world.relative_time_format_constructor, &world.relative_time_format_proto);
+    wire_ctor_proto(&world.display_names_constructor, &world.display_names_proto);
+    wire_ctor_proto(&world.segmenter_constructor, &world.segmenter_proto);
+    wire_ctor_proto(&world.locale_constructor, &world.locale_proto);
+    wire_ctor_proto(&world.duration_format_constructor, &world.duration_format_proto);
 
     // 非 TypedArray 构造器的 [[Prototype]] 指向 Function.prototype：
     // 标准内置函数对象均继承 Function.prototype。
@@ -376,12 +386,22 @@ pub(crate) fn wire_builtin_world_links(world: &BuiltinWorld) {
         &world.plain_date_time_constructor,
         &world.plain_month_day_constructor,
         &world.plain_year_month_constructor,
+        &world.number_format_constructor,
+        &world.date_time_format_constructor,
+        &world.collator_constructor,
+        &world.plural_rules_constructor,
+        &world.list_format_constructor,
+        &world.relative_time_format_constructor,
+        &world.display_names_constructor,
+        &world.segmenter_constructor,
+        &world.locale_constructor,
+        &world.duration_format_constructor,
     ] {
         set_proto_if_changed(ctor, fn_proto_val);
     }
 
     let obj_proto_val = JsValue::from_js_object(world.object_proto.as_ptr() as *mut JsObject);
-    let non_object_protos: [&P<JsObject>; 28] = [
+    let non_object_protos: [&P<JsObject>; 38] = [
         &world.array_proto,
         &world.function_proto,
         &world.string_proto,
@@ -410,6 +430,16 @@ pub(crate) fn wire_builtin_world_links(world: &BuiltinWorld) {
         &world.disposable_stack_proto,
         &world.async_disposable_stack_proto,
         &world.async_iterator_proto,
+        &world.number_format_proto,
+        &world.date_time_format_proto,
+        &world.collator_proto,
+        &world.plural_rules_proto,
+        &world.list_format_proto,
+        &world.relative_time_format_proto,
+        &world.display_names_proto,
+        &world.segmenter_proto,
+        &world.locale_proto,
+        &world.duration_format_proto,
     ];
     for proto in &non_object_protos {
         set_proto_if_changed(proto, obj_proto_val);
@@ -418,6 +448,9 @@ pub(crate) fn wire_builtin_world_links(world: &BuiltinWorld) {
     // Temporal 命名空间对象（非构造器）继承 Object.prototype。
     set_proto_if_changed(&world.temporal_object, obj_proto_val);
     set_proto_if_changed(&world.temporal_now_object, obj_proto_val);
+
+    // Intl 命名空间对象（非构造器）继承 Object.prototype。
+    set_proto_if_changed(&world.intl_object, obj_proto_val);
 
     // Console 对象（单例命名空间）继承 Object.prototype。
     set_proto_if_changed(&world.console_object, obj_proto_val);
@@ -569,6 +602,28 @@ impl BuiltinWorld {
         let (bigint_proto, bigint_constructor) = make_named_pair(string_forge, shape_forge, labels, "BigInt");
         let stub_objects = Vec::new();
 
+        // Intl 命名空间对象（非构造器空对象）与十组构造器/原型对：骨架阶段
+        // 构造语义（实例化/resolvedOptions/静态方法）由绑定层 native 填充，
+        // 本处只预留 P 字段使快照/脏检查/收尾枚举覆盖到这二十一枚对象。
+        let intl_object = P::new(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()));
+        let (number_format_proto, number_format_constructor) =
+            make_named_pair(string_forge, shape_forge, labels, "NumberFormat");
+        let (date_time_format_proto, date_time_format_constructor) =
+            make_named_pair(string_forge, shape_forge, labels, "DateTimeFormat");
+        let (collator_proto, collator_constructor) = make_named_pair(string_forge, shape_forge, labels, "Collator");
+        let (plural_rules_proto, plural_rules_constructor) =
+            make_named_pair(string_forge, shape_forge, labels, "PluralRules");
+        let (list_format_proto, list_format_constructor) =
+            make_named_pair(string_forge, shape_forge, labels, "ListFormat");
+        let (relative_time_format_proto, relative_time_format_constructor) =
+            make_named_pair(string_forge, shape_forge, labels, "RelativeTimeFormat");
+        let (display_names_proto, display_names_constructor) =
+            make_named_pair(string_forge, shape_forge, labels, "DisplayNames");
+        let (segmenter_proto, segmenter_constructor) = make_named_pair(string_forge, shape_forge, labels, "Segmenter");
+        let (locale_proto, locale_constructor) = make_named_pair(string_forge, shape_forge, labels, "Locale");
+        let (duration_format_proto, duration_format_constructor) =
+            make_named_pair(string_forge, shape_forge, labels, "DurationFormat");
+
         // 迭代器原型家族：链关系（→ %IteratorPrototype% → Object.prototype）在
         // wire_builtin_world_links 中建立，next/@@iterator 方法由绑定层
         // （oxide_builtins 中安装方法 wrapper 的代码）安装。
@@ -699,6 +754,27 @@ impl BuiltinWorld {
             custom_event_proto,
             custom_event_constructor,
             event_target_proto,
+            intl_object,
+            number_format_constructor,
+            number_format_proto,
+            date_time_format_constructor,
+            date_time_format_proto,
+            collator_constructor,
+            collator_proto,
+            plural_rules_constructor,
+            plural_rules_proto,
+            list_format_constructor,
+            list_format_proto,
+            relative_time_format_constructor,
+            relative_time_format_proto,
+            display_names_constructor,
+            display_names_proto,
+            segmenter_constructor,
+            segmenter_proto,
+            locale_constructor,
+            locale_proto,
+            duration_format_constructor,
+            duration_format_proto,
             leaked_objects: std::cell::RefCell::new(Vec::new()),
         };
         wire_builtin_world_links(&world);

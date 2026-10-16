@@ -209,6 +209,27 @@ impl KernelSession {
                 || gen(BuiltinId::CustomEventProto) != snap(BuiltinId::CustomEventProto)
                 || gen(BuiltinId::CustomEventCtor) != snap(BuiltinId::CustomEventCtor)
                 || gen(BuiltinId::EventTargetProto) != snap(BuiltinId::EventTargetProto),
+            intl: gen(BuiltinId::IntlObject) != snap(BuiltinId::IntlObject)
+                || gen(BuiltinId::NumberFormatConstructor) != snap(BuiltinId::NumberFormatConstructor)
+                || gen(BuiltinId::NumberFormatProto) != snap(BuiltinId::NumberFormatProto)
+                || gen(BuiltinId::DateTimeFormatConstructor) != snap(BuiltinId::DateTimeFormatConstructor)
+                || gen(BuiltinId::DateTimeFormatProto) != snap(BuiltinId::DateTimeFormatProto)
+                || gen(BuiltinId::CollatorConstructor) != snap(BuiltinId::CollatorConstructor)
+                || gen(BuiltinId::CollatorProto) != snap(BuiltinId::CollatorProto)
+                || gen(BuiltinId::PluralRulesConstructor) != snap(BuiltinId::PluralRulesConstructor)
+                || gen(BuiltinId::PluralRulesProto) != snap(BuiltinId::PluralRulesProto)
+                || gen(BuiltinId::ListFormatConstructor) != snap(BuiltinId::ListFormatConstructor)
+                || gen(BuiltinId::ListFormatProto) != snap(BuiltinId::ListFormatProto)
+                || gen(BuiltinId::RelativeTimeFormatConstructor) != snap(BuiltinId::RelativeTimeFormatConstructor)
+                || gen(BuiltinId::RelativeTimeFormatProto) != snap(BuiltinId::RelativeTimeFormatProto)
+                || gen(BuiltinId::DisplayNamesConstructor) != snap(BuiltinId::DisplayNamesConstructor)
+                || gen(BuiltinId::DisplayNamesProto) != snap(BuiltinId::DisplayNamesProto)
+                || gen(BuiltinId::SegmenterConstructor) != snap(BuiltinId::SegmenterConstructor)
+                || gen(BuiltinId::SegmenterProto) != snap(BuiltinId::SegmenterProto)
+                || gen(BuiltinId::LocaleConstructor) != snap(BuiltinId::LocaleConstructor)
+                || gen(BuiltinId::LocaleProto) != snap(BuiltinId::LocaleProto)
+                || gen(BuiltinId::DurationFormatConstructor) != snap(BuiltinId::DurationFormatConstructor)
+                || gen(BuiltinId::DurationFormatProto) != snap(BuiltinId::DurationFormatProto),
         };
         // wrapper 本体被写不落在任何家族位上（写的是 wrapper 自身而非所属 P
         // 对象）：收缩为全脏，强制重建全部家族与 global，使被写的可复用
