@@ -137,6 +137,7 @@ impl SessionGc {
         bytes += event::error_event_native_size(obj);
         bytes += event::custom_event_native_size(obj);
         bytes += crate::arguments_gc::arguments_native_size(obj);
+        bytes += crate::proxy::proxy_native_size(obj);
 
         bytes
     }
@@ -599,6 +600,7 @@ impl SessionGc {
             freed_bytes += event::drop_error_event_native(obj);
             freed_bytes += event::drop_custom_event_native(obj);
             freed_bytes += crate::arguments_gc::drop_arguments_native(obj);
+            freed_bytes += crate::proxy::drop_proxy_native(obj);
 
             freed_bytes
         }
