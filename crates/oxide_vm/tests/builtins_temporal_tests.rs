@@ -4565,7 +4565,7 @@ fn plain_date_to_plain_month_day_and_year_month() {
     .unwrap();
     assert_eq!(
         str_val(&vm, r),
-        "M11|18|hebrew|1972-11-18[u-ca=hebrew]|1976|11|hebrew|1976-11-01[u-ca=hebrew]"
+        "M11|18|hebrew|1972-11-18[u-ca=hebrew]|5737|2|hebrew|1976-11-01[u-ca=hebrew]"
     );
 }
 

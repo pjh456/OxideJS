@@ -335,6 +335,15 @@ pub(crate) fn hebrew_months_in_year(h_year: i128) -> i128 {
 /// hebrew 纪元恒为 "am"（Anno Mundi），eraYear 即年号。
 pub(crate) const HEBREW_ERA: &str = "am";
 
+/// hebrew 年/序月 → 绝对月索引（年 1 月 1 为 0），含闰月。
+pub(crate) fn hebrew_absolute_month(h_year: i128, ordinal_month: u32) -> i128 {
+    let mut total = 0i128;
+    for y in 1..h_year {
+        total += hebrew_months_in_year(y);
+    }
+    total + i128::from(ordinal_month) - 1
+}
+
 /// hebrew 日期（年, 序月, 日）→ ISO 纪元日。
 pub(crate) fn hebrew_to_iso_days(h_year: i128, ordinal_month: u32, day: u32) -> i128 {
     let year_info = YearInfo::compute_for(h_year);
@@ -545,3 +554,7 @@ mod tests {
         }
     }
 }
+
+
+
+

@@ -4,7 +4,11 @@ use oxide_runtime_api::{to_string, NativeResult, ProtoKind, VmHost};
 use oxide_types::object::JsObject;
 use oxide_types::value::JsValue;
 
-use super::calendar::HEBREW_ERA;
+use super::calendar::{
+    hebrew_absolute_month, hebrew_days_in_month, hebrew_is_leap, hebrew_month_code,
+    hebrew_months_in_year, hebrew_number_from_ordinal, hebrew_ordinal_from_month_code,
+    hebrew_ordinal_from_number, hebrew_to_iso, hebrew_year_length, iso_to_hebrew, HEBREW_ERA,
+};
 use super::common::native_try;
 use super::{
     calendar_annotation, compare_iso_date, days_from_civil, days_in_month_iso, difference_core, duration_like_values,
@@ -17,12 +21,24 @@ use super::{
     validate_month_day_time_suffix, IsoDateTime, ShowCalendar, MAX_ISO_DAY,
 };
 
-/// 读 PlainYearMonth 的 年/月/参考日 三元组（槽 0-2），含 receiver 校验。
-fn plain_year_month_ymd<H: VmHost>(vm: &mut H, args: &[u8]) -> Result<(f64, f64, f64), JsValue> {
+/// 读 PlainYearMonth 的 年/月/日历 三元组（槽 0/1/3），含 receiver 校验。
+fn plain_year_month_ymc<H: VmHost>(vm: &mut H, args: &[u8]) -> Result<(f64, f64, String), JsValue> {
     let ptr = receiver_obj(vm, args)?;
     let obj = unsafe { &*ptr };
     ensure_plain_year_month(vm, obj)?;
-    Ok((get_double_prop(obj, 0), get_double_prop(obj, 1), get_double_prop(obj, 2)))
+    Ok((
+        get_double_prop(obj, 0),
+        get_double_prop(obj, 1),
+        get_calendar_id(obj, 3),
+    ))
+}
+
+/// 读 PlainYearMonth 的参考日（槽 2），含 receiver 校验。
+fn plain_year_month_ref_day<H: VmHost>(vm: &mut H, args: &[u8]) -> Result<u32, JsValue> {
+    let ptr = receiver_obj(vm, args)?;
+    let obj = unsafe { &*ptr };
+    ensure_plain_year_month(vm, obj)?;
+    Ok(get_double_prop(obj, 2) as u32)
 }
 
 /// `Temporal.PlainYearMonth` 构造器：`new PlainYearMonth(year, month[, calendar[, referenceISODay]])`。
@@ -75,21 +91,37 @@ pub fn plain_year_month_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> Nativ
     )
 }
 
-/// `Temporal.PlainYearMonth.prototype.year` getter（槽 0）。
+/// `Temporal.PlainYearMonth.prototype.year` getter：hebrew 历返历法年，其余返 ISO 年。
 pub fn plain_year_month_year<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
-    let (year, _, _) = native_try!(plain_year_month_ymd(vm, args));
+    let (year, month, calendar) = native_try!(plain_year_month_ymc(vm, args));
+    if calendar == "hebrew" {
+        let ref_day = native_try!(plain_year_month_ref_day(vm, args));
+        let (hy, _, _) = iso_to_hebrew(year as i32, month as u32, ref_day);
+        return NativeResult::Ok(JsValue::float(hy as f64));
+    }
     NativeResult::Ok(JsValue::float(year))
 }
 
-/// `Temporal.PlainYearMonth.prototype.month` getter（槽 1）。
+/// `Temporal.PlainYearMonth.prototype.month` getter：hebrew 历返数值月，其余返 ISO 月。
 pub fn plain_year_month_month<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
-    let (_, month, _) = native_try!(plain_year_month_ymd(vm, args));
+    let (year, month, calendar) = native_try!(plain_year_month_ymc(vm, args));
+    if calendar == "hebrew" {
+        let ref_day = native_try!(plain_year_month_ref_day(vm, args));
+        let (_hy, ordinal, _) = iso_to_hebrew(year as i32, month as u32, ref_day);
+        let number = hebrew_number_from_ordinal(ordinal).unwrap_or(0);
+        return NativeResult::Ok(JsValue::float(number as f64));
+    }
     NativeResult::Ok(JsValue::float(month))
 }
 
 /// `Temporal.PlainYearMonth.prototype.monthCode` getter：`M01`..`M12`。
 pub fn plain_year_month_month_code<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
-    let (_, month, _) = native_try!(plain_year_month_ymd(vm, args));
+    let (year, month, calendar) = native_try!(plain_year_month_ymc(vm, args));
+    if calendar == "hebrew" {
+        let ref_day = native_try!(plain_year_month_ref_day(vm, args));
+        let (hy, ordinal, _) = iso_to_hebrew(year as i32, month as u32, ref_day);
+        return NativeResult::Ok(vm.new_string_owned(hebrew_month_code(hy, ordinal)));
+    }
     NativeResult::Ok(vm.new_string(&format!("M{:02}", month as u32)))
 }
 
@@ -101,39 +133,73 @@ pub fn plain_year_month_calendar_id<H: VmHost>(vm: &mut H, args: &[u8]) -> Nativ
     NativeResult::Ok(vm.new_string(&get_calendar_id(obj, 3)))
 }
 
-/// `Temporal.PlainYearMonth.prototype.daysInMonth` getter：按年月的 ISO 月长。
+/// `Temporal.PlainYearMonth.prototype.daysInMonth` getter：hebrew 历按历法月长，其余按 ISO 月长。
 pub fn plain_year_month_days_in_month<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
-    let (year, month, _) = native_try!(plain_year_month_ymd(vm, args));
+    let (year, month, calendar) = native_try!(plain_year_month_ymc(vm, args));
+    if calendar == "hebrew" {
+        let ref_day = native_try!(plain_year_month_ref_day(vm, args));
+        let (hy, ordinal, _) = iso_to_hebrew(year as i32, month as u32, ref_day);
+        return NativeResult::Ok(JsValue::float(hebrew_days_in_month(hy, ordinal) as f64));
+    }
     NativeResult::Ok(JsValue::float(days_in_month_iso(year as i32, month as u32) as f64))
 }
 
-/// `Temporal.PlainYearMonth.prototype.daysInYear` getter：366（闰年）或 365。
+/// `Temporal.PlainYearMonth.prototype.daysInYear` getter：hebrew 历按历法年长，其余 366/365。
 pub fn plain_year_month_days_in_year<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
-    let (year, _, _) = native_try!(plain_year_month_ymd(vm, args));
+    let (year, month, calendar) = native_try!(plain_year_month_ymc(vm, args));
+    if calendar == "hebrew" {
+        let ref_day = native_try!(plain_year_month_ref_day(vm, args));
+        let (hy, _, _) = iso_to_hebrew(year as i32, month as u32, ref_day);
+        return NativeResult::Ok(JsValue::float(hebrew_year_length(hy) as f64));
+    }
     NativeResult::Ok(JsValue::float(if is_leap_year_iso(year as i32) { 366.0 } else { 365.0 }))
 }
 
-/// `Temporal.PlainYearMonth.prototype.monthsInYear` getter：恒 12（ISO 日历）。
+/// `Temporal.PlainYearMonth.prototype.monthsInYear` getter：hebrew 历 12/13，其余恒 12。
 pub fn plain_year_month_months_in_year<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
-    let _ = native_try!(plain_year_month_ymd(vm, args));
+    let (year, month, calendar) = native_try!(plain_year_month_ymc(vm, args));
+    if calendar == "hebrew" {
+        let ref_day = native_try!(plain_year_month_ref_day(vm, args));
+        let (hy, _, _) = iso_to_hebrew(year as i32, month as u32, ref_day);
+        return NativeResult::Ok(JsValue::float(hebrew_months_in_year(hy) as f64));
+    }
     NativeResult::Ok(JsValue::float(12.0))
 }
 
-/// `Temporal.PlainYearMonth.prototype.inLeapYear` getter。
+/// `Temporal.PlainYearMonth.prototype.inLeapYear` getter：hebrew 历按历法闰年判定。
 pub fn plain_year_month_in_leap_year<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
-    let (year, _, _) = native_try!(plain_year_month_ymd(vm, args));
+    let (year, month, calendar) = native_try!(plain_year_month_ymc(vm, args));
+    if calendar == "hebrew" {
+        let ref_day = native_try!(plain_year_month_ref_day(vm, args));
+        let (hy, _, _) = iso_to_hebrew(year as i32, month as u32, ref_day);
+        return NativeResult::Ok(JsValue::bool(hebrew_is_leap(hy)));
+    }
     NativeResult::Ok(JsValue::bool(is_leap_year_iso(year as i32)))
 }
 
-/// `Temporal.PlainYearMonth.prototype.era` getter：ISO 日历无纪元，恒 undefined。
+/// `Temporal.PlainYearMonth.prototype.era` getter：hebrew 历恒 "am"，其余历法恒 undefined。
 pub fn plain_year_month_era<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
-    let _ = native_try!(plain_year_month_ymd(vm, args));
+    let ptr = native_try!(receiver_obj(vm, args));
+    let obj = unsafe { &*ptr };
+    native_try!(ensure_plain_year_month(vm, obj));
+    if get_calendar_id(obj, 3) == "hebrew" {
+        return NativeResult::Ok(vm.new_string(HEBREW_ERA));
+    }
     NativeResult::Ok(JsValue::undefined())
 }
 
-/// `Temporal.PlainYearMonth.prototype.eraYear` getter：ISO 日历无纪元，恒 undefined。
+/// `Temporal.PlainYearMonth.prototype.eraYear` getter：hebrew 历返历法年，其余历法恒 undefined。
 pub fn plain_year_month_era_year<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
-    let _ = native_try!(plain_year_month_ymd(vm, args));
+    let ptr = native_try!(receiver_obj(vm, args));
+    let obj = unsafe { &*ptr };
+    native_try!(ensure_plain_year_month(vm, obj));
+    if get_calendar_id(obj, 3) == "hebrew" {
+        let year = get_double_prop(obj, 0) as i32;
+        let month = get_double_prop(obj, 1) as u32;
+        let ref_day = get_double_prop(obj, 2) as u32;
+        let (hy, _, _) = iso_to_hebrew(year, month, ref_day);
+        return NativeResult::Ok(JsValue::float(hy as f64));
+    }
     NativeResult::Ok(JsValue::undefined())
 }
 
@@ -433,6 +499,38 @@ pub fn plain_year_month_from<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult
         true => None,
         false => Some(native_try!(temporal_number_component(vm, month_raw))),
     };
+    // hebrew 历：monthCode/数值月定序月，换算为 ISO 年/月后入槽。
+    if calendar == "hebrew" {
+        let h_year = year as i128;
+        let ordinal_month = if let Some(code) = month_code_num {
+            let code_str = format!("M{:02}{}", code, if leap_month { "L" } else { "" });
+            let ordinal_from_code = native_try!(hebrew_ordinal_from_month_code(h_year, &code_str)
+                .ok_or_else(|| crate::error::create_range_error(vm, "invalid monthCode")));
+            if let Some(f) = month_f {
+                let ordinal_from_num = native_try!(hebrew_ordinal_from_number(h_year, f as u32)
+                    .ok_or_else(|| crate::error::create_range_error(vm, "invalid month")));
+                if ordinal_from_num != ordinal_from_code {
+                    return NativeResult::Err(crate::error::create_range_error(vm, "month and monthCode conflict"));
+                }
+            }
+            ordinal_from_code
+        } else {
+            let f = match month_f {
+                Some(v) => v,
+                None => return NativeResult::Err(crate::error::create_type_error(vm, "month is required")),
+            };
+            if f < 1.0 {
+                return NativeResult::Err(crate::error::create_range_error(vm, "invalid month"));
+            }
+            native_try!(hebrew_ordinal_from_number(h_year, f as u32)
+                .ok_or_else(|| crate::error::create_range_error(vm, "invalid month")))
+        };
+        let (iso_year, iso_month, iso_day) = hebrew_to_iso(h_year, ordinal_month, 1);
+        if !iso_year_month_within_limits(iso_year, iso_month) {
+            return NativeResult::Err(crate::error::create_range_error(vm, "ISO year-month is out of range"));
+        }
+        return make_plain_year_month(vm, iso_year, iso_month, iso_day, &calendar);
+    }
     // monthCode 第二段适配：闰月后缀或月值越界 → RangeError。
     if let Some(code) = month_code_num {
         if leap_month || !(1..=12).contains(&code) {
@@ -690,17 +788,36 @@ fn plain_year_month_apply_duration<H: VmHost>(vm: &mut H, args: &[u8], sign: i64
     }
     let year = get_double_prop(obj, 0) as i64;
     let month = get_double_prop(obj, 1) as i64;
+    let calendar = get_calendar_id(obj, 3);
     if !iso_year_month_day1_within_limits(year, month) {
         return NativeResult::Err(crate::error::create_range_error(vm, "year-month is out of range"));
     }
-    let months = (values[0] as i64) * 12 + values[1] as i64;
-    let absolute = year * 12 + month - 1 + sign * months;
-    let result_year = absolute.div_euclid(12);
-    let result_month = absolute.rem_euclid(12) + 1;
+    let years = values[0] as i64;
+    let months = values[1] as i64;
+    let (result_year, result_month, result_ref_day): (i64, i64, u32) = if calendar == "hebrew" {
+        let ref_day = get_double_prop(obj, 2) as u32;
+        let (h_year, h_month, _) = iso_to_hebrew(year as i32, month as u32, ref_day);
+        // 年、月分别加（保序月），序月越界跨年进位。
+        let mut ry = h_year + sign as i128 * years as i128;
+        let mut rm = h_month as i128 + sign as i128 * months as i128;
+        while rm < 1 {
+            ry -= 1;
+            rm += hebrew_months_in_year(ry);
+        }
+        while rm > hebrew_months_in_year(ry) {
+            rm -= hebrew_months_in_year(ry);
+            ry += 1;
+        }
+        let (iso_y, iso_m, iso_d) = hebrew_to_iso(ry, rm as u32, 1);
+        (iso_y as i64, iso_m as i64, iso_d)
+    } else {
+        let absolute = year * 12 + month - 1 + sign * (years * 12 + months);
+        (absolute.div_euclid(12), absolute.rem_euclid(12) + 1, 1)
+    };
     if !iso_year_month_day1_within_limits(result_year, result_month) {
         return NativeResult::Err(crate::error::create_range_error(vm, "year-month is out of range"));
     }
-    make_plain_year_month(vm, result_year as i32, result_month as u32, 1, &get_calendar_id(obj, 3))
+    make_plain_year_month(vm, result_year as i32, result_month as u32, result_ref_day, &calendar)
 }
 
 /// `Temporal.PlainYearMonth.prototype.add(durationLike)`。
@@ -848,6 +965,49 @@ pub fn plain_year_month_with<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult
         }
     }
     let constrain = native_try!(temporal_overflow(vm, args));
+    let calendar = get_calendar_id(obj, 3);
+    // hebrew 历：monthCode/数值月定序月，换算为 ISO 年/月后入槽。
+    if calendar == "hebrew" {
+        // receiver 的历法年/序月（槽 0/1 存 ISO 年/月，须换算）。
+        let ref_day = get_double_prop(obj, 2) as u32;
+        let (recv_year, recv_ord, _) = iso_to_hebrew(
+            get_double_prop(obj, 0) as i32,
+            get_double_prop(obj, 1) as u32,
+            ref_day,
+        );
+        // 年缺省时取 receiver 的历法年。
+        let h_year = year.map_or(recv_year, i128::from);
+        let ordinal_month = if let Some(code) = month_code_num {
+            if let Some(f) = month_f {
+                let ordinal_from_num = native_try!(hebrew_ordinal_from_number(h_year, f as u32)
+                    .ok_or_else(|| crate::error::create_range_error(vm, "invalid month")));
+                let ordinal_from_code = native_try!(hebrew_ordinal_from_month_code(
+                    h_year,
+                    &format!("M{:02}{}", code, if leap_month { "L" } else { "" }),
+                )
+                .ok_or_else(|| crate::error::create_range_error(vm, "invalid monthCode")));
+                if ordinal_from_num != ordinal_from_code {
+                    return NativeResult::Err(crate::error::create_range_error(vm, "month and monthCode conflict"));
+                }
+            }
+            native_try!(hebrew_ordinal_from_month_code(
+                h_year,
+                &format!("M{:02}{}", code, if leap_month { "L" } else { "" }),
+            )
+            .ok_or_else(|| crate::error::create_range_error(vm, "invalid monthCode")))
+        } else {
+            match month_f {
+                Some(f) => native_try!(hebrew_ordinal_from_number(h_year, f as u32)
+                    .ok_or_else(|| crate::error::create_range_error(vm, "invalid month"))),
+                None => recv_ord,
+            }
+        };
+        let (iso_year, iso_month, iso_day) = hebrew_to_iso(h_year, ordinal_month, 1);
+        if !iso_year_month_within_limits(iso_year, iso_month) {
+            return NativeResult::Err(crate::error::create_range_error(vm, "ISO year-month is out of range"));
+        }
+        return make_plain_year_month(vm, iso_year, iso_month, iso_day, &calendar);
+    }
     if let Some(code) = month_code_num {
         if leap_month || !(1..=12).contains(&code) {
             return NativeResult::Err(crate::error::create_range_error(vm, "invalid monthCode"));
@@ -883,7 +1043,6 @@ pub fn plain_year_month_with<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult
     if !iso_year_month_within_limits(year, month) {
         return NativeResult::Err(crate::error::create_range_error(vm, "ISO year-month is out of range"));
     }
-    let calendar = get_calendar_id(obj, 3);
     make_plain_year_month(vm, year, month, 1, &calendar)
 }
 
@@ -911,6 +1070,20 @@ pub fn plain_year_month_to_plain_date<H: VmHost>(vm: &mut H, args: &[u8]) -> Nat
     let day = native_try!(temporal_number_component(vm, day_raw));
     let year = get_double_prop(obj, 0) as i32;
     let month = get_double_prop(obj, 1) as u32;
+    let calendar = get_calendar_id(obj, 3);
+    // hebrew 历：先换算为历法月，设日（钳到历法月长），再转回 ISO。
+    if calendar == "hebrew" {
+        let ref_day = get_double_prop(obj, 2) as u32;
+        let (h_year, ordinal, _) = iso_to_hebrew(year, month, ref_day);
+        let month_len = hebrew_days_in_month(h_year, ordinal) as i32;
+        let day = (day as i32).clamp(1, month_len) as u32;
+        let (iso_year, iso_month, iso_day) = hebrew_to_iso(h_year, ordinal, day);
+        let day_count = days_from_civil(i128::from(iso_year), i128::from(iso_month), i128::from(iso_day));
+        if !(-100_000_001..=100_000_000).contains(&day_count) {
+            return NativeResult::Err(crate::error::create_range_error(vm, "date is out of range"));
+        }
+        return make_plain_date(vm, iso_year, iso_month, iso_day, &calendar);
+    }
     // constrain：day 钳到 [1, 月长]。
     let day = (day as i32).clamp(1, days_in_month_iso(year, month) as i32) as u32;
     // day 级表示范围：-100_000_001..=100_000_000（年月级合法而 day 级越界在此抛）。
@@ -918,7 +1091,6 @@ pub fn plain_year_month_to_plain_date<H: VmHost>(vm: &mut H, args: &[u8]) -> Nat
     if !(-100_000_001..=100_000_000).contains(&day_count) {
         return NativeResult::Err(crate::error::create_range_error(vm, "date is out of range"));
     }
-    let calendar = get_calendar_id(obj, 3);
     make_plain_date(vm, year, month, day, &calendar)
 }
 
@@ -975,6 +1147,57 @@ fn plain_year_month_difference<H: VmHost>(vm: &mut H, args: &[u8], since: bool) 
         || days_from_civil(i128::from(oy), i128::from(om), 1).abs() > MAX_ISO_DAY
     {
         return NativeResult::Err(crate::error::create_range_error(vm, "date is out of range"));
+    }
+    // hebrew 日历：同月码跨年恒整年；异月码按序月差定月（跨年借位）。
+    let calendar = get_calendar_id(obj, 3);
+    if calendar == "hebrew" {
+        let (ry_h, rm_h, _) = iso_to_hebrew(ry as i32, rm as u32, rd as u32);
+        let (oy_h, om_h, _) = iso_to_hebrew(oy, om, od);
+        // until: end=other、start=receiver；since: 反之。
+        let (start_year, start_ord, end_year, end_ord) = if since {
+            (oy_h, om_h, ry_h, rm_h)
+        } else {
+            (ry_h, rm_h, oy_h, om_h)
+        };
+        // 负差值：end < start 时交换端点取绝对差再取反。
+        let negative = (end_year, end_ord) < (start_year, start_ord);
+        let (a_year, a_ord, b_year, b_ord) = if negative {
+            (end_year, end_ord, start_year, start_ord)
+        } else {
+            (start_year, start_ord, end_year, end_ord)
+        };
+        // 月差按 end 年内月码位置差计算（跨闰/平年时同月码序月不同）。
+        let code_a = hebrew_month_code(a_year, a_ord);
+        let code_b = hebrew_month_code(b_year, b_ord);
+        let pos_a = hebrew_ordinal_from_month_code(b_year, &code_a).unwrap_or(a_ord);
+        let pos_b = hebrew_ordinal_from_month_code(b_year, &code_b).unwrap_or(b_ord);
+        let mut years = b_year - a_year;
+        let mut months = i128::from(pos_b) - i128::from(pos_a);
+        if months < 0 {
+            years -= 1;
+            months += 12;
+        }
+        let (years, months) = if negative {
+            (-years, -months)
+        } else {
+            (years, months)
+        };
+        // largestUnit=month 时整月表示：同月码按绝对月索引差（含闰月），
+        // 异月码按 years*12+months。
+        let (years, months) = if settings.largest_index > 0 {
+            let total = if code_a == code_b {
+                hebrew_absolute_month(end_year, end_ord) - hebrew_absolute_month(start_year, start_ord)
+            } else {
+                years * 12 + months
+            };
+            (0, total)
+        } else {
+            (years, months)
+        };
+        let mut values = [0.0f64; 10];
+        values[0] = years as f64;
+        values[1] = months as f64;
+        return make_duration(vm, values);
     }
     difference_core(
         vm,
