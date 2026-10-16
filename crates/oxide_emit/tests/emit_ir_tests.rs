@@ -411,6 +411,31 @@ fn block_fn_suppressed_by_destructured_param_leaf() {
     );
 }
 
+/// 面 22：Annex B.3.3.3 早期错误跳过——sloppy eval 代码内块函数名撞同树词法
+/// 声明时编译不报重复声明错，且函数声明不覆写词法绑定（STORE_VAR 少一条写回）。
+#[test]
+fn eval_early_error_skip_no_binding() {
+    // base 形：碰撞在 eval 顶层 let。编译成功且函数不覆写词法绑定。
+    let alloc = oxide_parser::Allocator::default();
+    let program = oxide_parser::parse(&alloc, "let f = 123; if (true) function f() {}").unwrap();
+    let ir = Emitter::new()
+        .emit_program(&program, false, true)
+        .unwrap_or_else(|e| panic!("base 形应编译成功：{e}"));
+    // `let f = 123` 初始化写（1）+ 函数声明不覆写词法绑定（0）= 1。
+    assert_eq!(
+        count_op(&ir.insts, OpCode::STORE_VAR),
+        1,
+        "早期错误跳过：函数声明不覆写词法绑定"
+    );
+
+    // -block 形：碰撞在同块 let。编译不报「Identifier has already been declared」。
+    let alloc = oxide_parser::Allocator::default();
+    let program = oxide_parser::parse(&alloc, "{ let f = 123; if (true) function f() {} }").unwrap();
+    let _ir = Emitter::new()
+        .emit_program(&program, false, true)
+        .unwrap_or_else(|e| panic!("-block 形应编译成功：{e}"));
+}
+
 /// 面 14：双常量折叠入口结构回归——双字面量算术编译后目标操作码计数为 0、
 /// 常量池含折值，锁死折叠入口不随后续重构丢失。
 #[test]

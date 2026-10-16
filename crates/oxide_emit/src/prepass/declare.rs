@@ -230,7 +230,13 @@ impl Emitter {
                     let Some(identifier) = &f.id else {
                         continue;
                     };
-                    if if_arm && Self::if_arm_has_outer_var_carrier(ctx, identifier.name.as_str()) {
+                    // 早期错误跳过（Annex B.3.3.3）：sloppy eval 代码内支臂函数名撞
+                    // 同树词法声明时不建块 Let 绑定，使词法预声明不撞名报重复声明
+                    // 错（函数体只求值副作用，不写任何绑定）。
+                    if if_arm
+                        && (Self::if_arm_has_outer_var_carrier(ctx, identifier.name.as_str())
+                            || ctx.is_eval_early_error_suppressed(identifier.name.as_str()))
+                    {
                         continue;
                     }
                     let reg = ctx.alloc_reg();

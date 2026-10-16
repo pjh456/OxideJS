@@ -40,10 +40,16 @@ impl Emitter {
         // 其余 sub-pass 发的函数声明皆为块级（if/while/for/switch/try 支臂与块直接子）。
         let is_block_function = !ctx.in_hoisting_subpass;
         let var_reg = if is_block_function {
-            match ctx.block_fn_entry_mats.last().and_then(|m| m.get(&name)) {
-                Some(&m) if m == node => ctx.lookup(&name)?,
-                Some(_) => self.materialize_function_declaration_var_only(fd, &name, ctx, true)?,
-                None => self.materialize_function_declaration(fd, &name, ctx, true)?,
+            if ctx.is_eval_early_error_suppressed(&name) {
+                // 早期错误跳过（Annex B.3.3.3）：不写入任何绑定，函数体只求值
+                // 副作用（CREATE_CLOSURE 照发，结果寄存器丢弃，不发 STORE_VAR）。
+                self.materialize_function_declaration_var_only(fd, &name, ctx, true)?
+            } else {
+                match ctx.block_fn_entry_mats.last().and_then(|m| m.get(&name)) {
+                    Some(&m) if m == node => ctx.lookup(&name)?,
+                    Some(_) => self.materialize_function_declaration_var_only(fd, &name, ctx, true)?,
+                    None => self.materialize_function_declaration(fd, &name, ctx, true)?,
+                }
             }
         } else {
             self.materialize_function_declaration(fd, &name, ctx, false)?

@@ -954,6 +954,14 @@ impl CompileCtx {
         NON_WRITABLE_GLOBAL_BUILTINS.contains(&name)
     }
 
+    /// 早期错误跳过谓词（Annex B.3.3.3 对 EvalDeclarationInstantiation 的增补）：
+    /// sloppy eval 代码内块函数声明的名若与同树词法声明/形参同名，替换为变量
+    /// 语句即产生早期错误，规范不为其建任何绑定——函数体只求值副作用，不写块
+    /// Let、不写外层 var、不写全局对象属性。预声明门与存储臂共用本谓词。
+    pub(crate) fn is_eval_early_error_suppressed(&self, name: &str) -> bool {
+        self.is_eval_script && !self.is_strict && self.block_fn_suppressed.contains(name)
+    }
+
     /// 进入 with 语句体：记录对象寄存器与当前作用域深度，供动态标识符解析。
     pub(crate) fn push_with(&mut self, obj_reg: u32) {
         let depth = self.scopes.symbols.scopes.len();
