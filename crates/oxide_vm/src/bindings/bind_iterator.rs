@@ -7,7 +7,7 @@ use crate::bindings::{
     configure_native_constructor, BindEnv,
 };
 
-/// 绑定 `Iterator` 全局构造器（`prototype` = %IteratorPrototype%、`from` 方法）。
+/// 绑定 `Iterator` 全局构造器（`prototype` = %IteratorPrototype%、`from`/`zip` 方法）。
 ///
 /// 迭代器原型方法（%IteratorPrototype% 的 `@@iterator` 与各集合原型 `next`）由
 /// `rebind_dirty_builtins` 的 object 分支统一安装，本入口不重复绑定，避免
@@ -27,7 +27,10 @@ pub fn bind_iterator(env: BindEnv<'_>, global: &mut JsObject) {
     apply_binding_table(
         env,
         &mut iterator,
-        &[("from", oxide_builtins::iterator::iterator_from::<crate::vm::Vm> as *const (), 1)],
+        &[
+            ("from", oxide_builtins::iterator::iterator_from::<crate::vm::Vm> as *const (), 1),
+            ("zip", oxide_builtins::iterator::iterator_zip::<crate::vm::Vm> as *const (), 1),
+        ],
     );
 
     let iterator_ptr = Box::into_raw(iterator);

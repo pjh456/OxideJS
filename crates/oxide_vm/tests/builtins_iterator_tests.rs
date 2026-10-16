@@ -2325,3 +2325,387 @@ fn typed_array_from_throws_when_iterator_not_callable() {
     .unwrap();
     assert_eq!(to_str(&vm, r), "TypeError|TypeError");
 }
+
+#[test]
+fn iterator_zip_binding_surface() {
+    // 绑定面：name/length/原型/描述符/非构造/instanceof/结果原型。
+    let mut vm = Vm::new();
+    let bool_cases = [
+        (
+            "typeof Iterator.zip === 'function' && Iterator.zip.name === 'zip' \
+             && Iterator.zip.length === 1",
+            true,
+        ),
+        (
+            "Object.getPrototypeOf(Iterator.zip) === Function.prototype",
+            true,
+        ),
+        (
+            "var d = Object.getOwnPropertyDescriptor(Iterator, 'zip'); \
+             d.writable === true && d.enumerable === false && d.configurable === true",
+            true,
+        ),
+        (
+            "var ok = false; try { new Iterator.zip([]); } catch (e) { ok = e instanceof TypeError; } ok",
+            true,
+        ),
+        (
+            "var it = Iterator.zip([]); it instanceof Iterator",
+            true,
+        ),
+        (
+            "var it = Iterator.zip([]); var p = Object.getPrototypeOf(it); \
+             p[Symbol.toStringTag] === 'Iterator Helper' \
+             && Object.getPrototypeOf(p) === Iterator.prototype",
+            true,
+        ),
+    ];
+    for (src, expected) in bool_cases {
+        let result = eval(&mut vm, src).unwrap();
+        assert_eq!(result.as_bool(), expected, "for {}", src);
+    }
+}
+
+#[test]
+fn iterator_zip_options_and_mode_validation() {
+    // options 原始值 TypeError；iterables 原始值 TypeError 且 options 不读；
+    // mode 严格字符串校验（String 包装拒绝、toPrimitive 不触发、无效 mode 不读 padding）。
+    let mut vm = Vm::new();
+    let bool_cases = [
+        (
+            "Iterator.zip([], undefined) instanceof Iterator && Iterator.zip([], {}) instanceof Iterator",
+            true,
+        ),
+        (
+            "var ok = false; try { Iterator.zip([], null); } catch (e) { ok = e instanceof TypeError; } ok",
+            true,
+        ),
+        (
+            "var ok = false; try { Iterator.zip(1); } catch (e) { ok = e instanceof TypeError; } ok",
+            true,
+        ),
+        (
+            "var badOptions = { get mode() { throw new RangeError('x'); } }; \
+             var ok = false; try { Iterator.zip(1, badOptions); } catch (e) { ok = e instanceof TypeError; } ok",
+            true,
+        ),
+        (
+            "var ok = false; try { Iterator.zip([], {mode: 'short'}); } catch (e) { ok = e instanceof TypeError; } ok",
+            true,
+        ),
+        (
+            "var ok = false; try { Iterator.zip([], {mode: new String('shortest')}); } \
+             catch (e) { ok = e instanceof TypeError; } ok",
+            true,
+        ),
+        (
+            "var ok = false; try { Iterator.zip([], {mode: {toString() { throw new RangeError('x'); }, \
+             valueOf() { throw new RangeError('y'); }, [Symbol.toPrimitive]() { throw new RangeError('z'); }}}); } \
+             catch (e) { ok = e instanceof TypeError; } ok",
+            true,
+        ),
+        (
+            "var opts = { mode: 'bad', get padding() { throw new RangeError('x'); } }; \
+             var ok = false; try { Iterator.zip([], opts); } catch (e) { ok = e instanceof TypeError; } ok",
+            true,
+        ),
+        (
+            "Iterator.zip([], {mode: 'longest', padding: []}) instanceof Iterator \
+             && Iterator.zip([], {mode: 'strict'}) instanceof Iterator",
+            true,
+        ),
+        (
+            "var ok = false; try { Iterator.zip([], {mode: 'longest', padding: 42}); } \
+             catch (e) { ok = e instanceof TypeError; } ok",
+            true,
+        ),
+    ];
+    for (src, expected) in bool_cases {
+        let result = eval(&mut vm, src).unwrap();
+        assert_eq!(result.as_bool(), expected, "for {}", src);
+    }
+}
+
+#[test]
+fn iterator_zip_iterables_validation() {
+    // iterables 全 GetIterator 无鸭子回退；字符串对象经 @@iterator 接受，字符串原始值拒绝。
+    let mut vm = Vm::new();
+    let bool_cases = [
+        (
+            "var ok = false; try { Iterator.zip(Object.create(null)); } \
+             catch (e) { ok = e instanceof TypeError; } ok",
+            true,
+        ),
+        (
+            "var ok = false; try { Iterator.zip(Object.create(null, \
+             {next: {value: function(){}}, return: {value: function(){}}})); } \
+             catch (e) { ok = e instanceof TypeError; } ok",
+            true,
+        ),
+        (
+            "var r = Array.from(Iterator.zip([Object('abc'), Object('123')])); \
+             r.length === 3 && r[0][0] === 'a' && r[0][1] === '1' && r[2][0] === 'c' && r[2][1] === '3'",
+            true,
+        ),
+        (
+            "var ok = false; try { Iterator.zip([['a','b'], 'cd']); } catch (e) { ok = e instanceof TypeError; } ok",
+            true,
+        ),
+    ];
+    for (src, expected) in bool_cases {
+        let result = eval(&mut vm, src).unwrap();
+        assert_eq!(result.as_bool(), expected, "for {}", src);
+    }
+}
+
+#[test]
+fn iterator_zip_collection_abrupt_close_order() {
+    // 收集期骤发：步进骤发只关已收集（inputIter 不关）；元素骤发逆序关含 inputIter。
+    let mut vm = Vm::new();
+    let r = eval(
+        &mut vm,
+        "(() => {
+            var log = [];
+            var first = { next() { log.push('unexpected next'); },
+              return() { log.push('close first'); throw new RangeError('x'); } };
+            var second = { next() { log.push('unexpected next'); },
+              return() { log.push('close second'); throw new RangeError('y'); } };
+            var elements = [first, second];
+            var elementsIter = elements.values();
+            var iterables = { [Symbol.iterator]() { return this; },
+              next() { var r = elementsIter.next(); if (r.done) { throw new ReferenceError('boom'); } return r; },
+              return() { log.push('close iterables'); throw new RangeError('z'); } };
+            var threw = false;
+            try { Iterator.zip(iterables); } catch (e) { threw = e instanceof ReferenceError; }
+            return threw + '|' + JSON.stringify(log);
+          })()",
+    )
+    .unwrap();
+    assert_eq!(
+        to_str(&vm, r),
+        "true|[\"close second\",\"close first\"]",
+        "step abrupt closes collected only, inputIter untouched"
+    );
+    let r = eval(
+        &mut vm,
+        "(() => {
+            var log = [];
+            var first = { next() {}, return() { log.push('close first'); throw new RangeError('x'); } };
+            var second = { next() {}, return() { log.push('close second'); throw new RangeError('y'); } };
+            var bad = { [Symbol.iterator]() { throw new ReferenceError('boom'); } };
+            var elements = [first, second, bad];
+            var elementsIter = elements.values();
+            var iterables = { [Symbol.iterator]() { return this; },
+              next() { return elementsIter.next(); },
+              return() { log.push('close iterables'); throw new RangeError('z'); } };
+            var threw = false;
+            try { Iterator.zip(iterables); } catch (e) { threw = e instanceof ReferenceError; }
+            return threw + '|' + JSON.stringify(log);
+          })()",
+    )
+    .unwrap();
+    assert_eq!(
+        to_str(&vm, r),
+        "true|[\"close second\",\"close first\",\"close iterables\"]",
+        "flattenable abrupt closes inputIter last in reverse order"
+    );
+}
+
+#[test]
+fn iterator_zip_shortest_basic_values() {
+    // shortest 基本值、done、空迭代器、单迭代器、短输入收口、结果数组逐次新对象。
+    let mut vm = Vm::new();
+    let bool_cases = [
+        (
+            "var it = Iterator.zip([[1,2,3],[4,5,6]]); \
+             var r1 = it.next(); var r2 = it.next(); var r3 = it.next(); var r4 = it.next(); \
+             r1.value[0] === 1 && r1.value[1] === 4 && r2.value[0] === 2 && r2.value[1] === 5 \
+             && r3.value[0] === 3 && r3.value[1] === 6 && r4.done === true",
+            true,
+        ),
+        (
+            "var it = Iterator.zip([[1,2,3],[4,5,6]]); \
+             var a = it.next().value; var b = it.next().value; a !== b",
+            true,
+        ),
+        ("Iterator.zip([]).next().done === true", true),
+        (
+            "var it = Iterator.zip([[1,2]]); var r = it.next(); \
+             r.value.length === 1 && r.value[0] === 1 && it.next().value[0] === 2 && it.next().done === true",
+            true,
+        ),
+        (
+            "var it = Iterator.zip([[1,2],[3,4,5]]); \
+             it.next().value[0] === 1 && it.next().value[0] === 2 && it.next().done === true",
+            true,
+        ),
+    ];
+    for (src, expected) in bool_cases {
+        let result = eval(&mut vm, src).unwrap();
+        assert_eq!(result.as_bool(), expected, "for {}", src);
+    }
+}
+
+#[test]
+fn iterator_zip_shortest_done_close_order() {
+    // shortest done：done 迭代器不关不读值，逆序关其余开放迭代器，关闭错误传播。
+    let mut vm = Vm::new();
+    let r = eval(
+        &mut vm,
+        "(() => {
+            var log = [];
+            var first = { next() { log.push('first next'); return {done: false}; },
+              return() { log.push('first return'); return {}; } };
+            var second = { next() { log.push('second next'); return {done: true}; },
+              return() { log.push('second return'); } };
+            var third = { next() { log.push('third next'); },
+              return() { log.push('third return'); throw new RangeError('x'); } };
+            var fourth = { next() { log.push('fourth next'); },
+              return() { log.push('fourth return'); throw new ReferenceError('boom'); } };
+            var it = Iterator.zip([first, second, third, fourth], {mode: 'shortest'});
+            var threw = false;
+            try { it.next(); } catch (e) { threw = e instanceof ReferenceError; }
+            return threw + '|' + JSON.stringify(log);
+          })()",
+    )
+    .unwrap();
+    assert_eq!(
+        to_str(&vm, r),
+        "true|[\"first next\",\"second next\",\"fourth return\",\"third return\",\"first return\"]",
+        "done iterator stays open, others closed in reverse index order"
+    );
+}
+
+#[test]
+fn iterator_zip_abrupt_close_all_original_wins() {
+    // 步进骤发与 return 关闭：逆序关全部开放迭代器，原值恒胜出。
+    let mut vm = Vm::new();
+    let r = eval(
+        &mut vm,
+        "(() => {
+            var log = [];
+            var first = { next() { log.push('first next'); return {done: false}; },
+              return() { log.push('first return'); throw new RangeError('x'); } };
+            var second = { next() { log.push('second next'); return {done: false}; },
+              return() { log.push('second return'); throw new ReferenceError('boom'); } };
+            var third = { next() { log.push('third next'); return {done: false}; },
+              return() { log.push('third return'); return {}; } };
+            var it = Iterator.zip([first, second, third]);
+            it.next();
+            var threw = false;
+            try { it.return(); } catch (e) { threw = e instanceof ReferenceError; }
+            return threw + '|' + JSON.stringify(log);
+          })()",
+    )
+    .unwrap();
+    assert_eq!(
+        to_str(&vm, r),
+        "true|[\"first next\",\"second next\",\"third next\",\"third return\",\"second return\",\"first return\"]",
+        "return closes all open iterators in reverse order, original value wins"
+    );
+    let r = eval(
+        &mut vm,
+        "(() => {
+            var closed = 0;
+            var underlying = { next() { return {value: 1, done: false}; },
+              return() { closed++; return {}; } };
+            var it = Iterator.zip([underlying]);
+            it.next();
+            var ok = false;
+            try { it.throw(42); } catch (e) { ok = e === 42; }
+            return ok && closed === 1 && it.next().done === true;
+          })()",
+    )
+    .unwrap();
+    assert!(r.as_bool(), "throw closes all open iterators then rethrows value");
+}
+
+#[test]
+fn iterator_zip_suspended_start_return() {
+    // suspended-start return：逆序关全部底层，next 不转发，嵌套调用短路。
+    let mut vm = Vm::new();
+    let r = eval(
+        &mut vm,
+        "(() => {
+            var returnCallCount = 0;
+            var underlying = { next() { throw new RangeError('unexpected next'); },
+              return() {
+                returnCallCount += 1;
+                var result = it.next();
+                if (result.value !== undefined || result.done !== true) { throw new RangeError('bad nested next'); }
+                return {};
+              } };
+            var it = Iterator.zip([underlying]);
+            var result = it.return();
+            return result.value === undefined && result.done === true && returnCallCount === 1;
+          })()",
+    )
+    .unwrap();
+    assert!(r.as_bool(), "suspended-start return closes all underlying iterators");
+    let r = eval(
+        &mut vm,
+        "(() => {
+            var returnCallCount = 0;
+            var underlying = { next() { throw new RangeError('unexpected next'); },
+              return() {
+                returnCallCount += 1;
+                var result = it.return();
+                if (result.value !== undefined || result.done !== true) { throw new RangeError('bad nested return'); }
+                return {};
+              } };
+            var it = Iterator.zip([underlying]);
+            var result = it.return();
+            return result.value === undefined && result.done === true && returnCallCount === 1;
+          })()",
+    )
+    .unwrap();
+    assert!(r.as_bool(), "suspended-start return with nested return short-circuits to done");
+}
+
+#[test]
+fn iterator_zip_reentrancy_guard() {
+    // executing 重入守卫：底层 return 回调内再调 next/return → TypeError。
+    let mut vm = Vm::new();
+    let r = eval(
+        &mut vm,
+        "(() => {
+            var returnCallCount = 0;
+            var underlying = { next() { return {value: 123, done: false}; },
+              return() {
+                returnCallCount += 1;
+                var ok = false;
+                try { it.next(); } catch (e) { ok = e instanceof TypeError; }
+                if (!ok) { throw new RangeError('no TypeError'); }
+                return {};
+              } };
+            var it = Iterator.zip([underlying]);
+            var r = it.next();
+            if (r.value[0] !== 123) { throw new RangeError('bad value'); }
+            var result = it.return();
+            return result.done === true && returnCallCount === 1;
+          })()",
+    )
+    .unwrap();
+    assert!(r.as_bool(), "executing reentry on next throws TypeError");
+    let r = eval(
+        &mut vm,
+        "(() => {
+            var returnCallCount = 0;
+            var underlying = { next() { return {value: 123, done: false}; },
+              return() {
+                returnCallCount += 1;
+                var ok = false;
+                try { it.return(); } catch (e) { ok = e instanceof TypeError; }
+                if (!ok) { throw new RangeError('no TypeError'); }
+                return {};
+              } };
+            var it = Iterator.zip([underlying]);
+            var r = it.next();
+            if (r.value[0] !== 123) { throw new RangeError('bad value'); }
+            var result = it.return();
+            return result.done === true && returnCallCount === 1;
+          })()",
+    )
+    .unwrap();
+    assert!(r.as_bool(), "executing reentry on return throws TypeError");
+}

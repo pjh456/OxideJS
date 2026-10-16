@@ -963,7 +963,10 @@ fn bind_iterator_global(env: BindEnv<'_>, global: &mut JsObject) {
     apply_binding_table(
         env,
         &mut iterator,
-        &[("from", oxide_builtins::iterator::iterator_from::<crate::vm::Vm> as *const (), 1)],
+        &[
+            ("from", oxide_builtins::iterator::iterator_from::<crate::vm::Vm> as *const (), 1),
+            ("zip", oxide_builtins::iterator::iterator_zip::<crate::vm::Vm> as *const (), 1),
+        ],
     );
     let iterator_ptr = Box::into_raw(iterator);
     env.world().track_leaked_object(iterator_ptr);

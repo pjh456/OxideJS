@@ -577,12 +577,21 @@ impl Vm {
                 callee_mut.set_prop_at(slot, JsValue::undefined());
             }
         }
-        // 弹帧后活动镜像切回新栈顶的表（帧空即顶层空切片）。
-        self.active_upvalues = self
-            .frames
-            .last()
-            .map(|f| f.upvalues)
-            .unwrap_or(std::ptr::slice_from_raw_parts(std::ptr::null(), 0));
+        // 弹帧后活动镜像切回新栈顶的表（帧空即顶层空切片）。内联执行期间弹回
+        // 基线时新栈顶不是内联函数本身（它无帧），须恢复内联目标函数的 upvalue
+        // 表，否则其闭包捕获继续读外层帧的表，读到错 cell。
+        let inline_upvalues = self.inline_callee.as_ref().map(|callee| {
+            let obj = unsafe { &*callee.as_js_object_ptr() };
+            obj.upvalues_slice() as *const [*mut Cell]
+        });
+        self.active_upvalues = match (inline_upvalues, self.frames.len() <= self.inline_frames_base) {
+            (Some(up), true) => up,
+            _ => self
+                .frames
+                .last()
+                .map(|f| f.upvalues)
+                .unwrap_or(std::ptr::slice_from_raw_parts(std::ptr::null(), 0)),
+        };
         if let Some(saved_bc) = self.saved_bytecode_stack.pop() {
             self.bytecode = saved_bc;
         }
