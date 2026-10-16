@@ -116,7 +116,11 @@ fn tokenize(src: &str) -> Option<Vec<Tok>> {
         if c == b'"' || c == b'\'' {
             let s = i;
             i = scan_string(b, i)?;
-            toks.push(Tok { kind: Kind::Str, start: s, end: i });
+            toks.push(Tok {
+                kind: Kind::Str,
+                start: s,
+                end: i,
+            });
             continue;
         }
 
@@ -124,7 +128,11 @@ fn tokenize(src: &str) -> Option<Vec<Tok>> {
         if c == b'`' {
             let s = i;
             i = scan_template(b, i)?;
-            toks.push(Tok { kind: Kind::Template, start: s, end: i });
+            toks.push(Tok {
+                kind: Kind::Template,
+                start: s,
+                end: i,
+            });
             continue;
         }
 
@@ -132,7 +140,11 @@ fn tokenize(src: &str) -> Option<Vec<Tok>> {
         if c == b'/' && can_start_regex(&toks, src) {
             let s = i;
             i = scan_regex(b, i)?;
-            toks.push(Tok { kind: Kind::Punct, start: s, end: i });
+            toks.push(Tok {
+                kind: Kind::Punct,
+                start: s,
+                end: i,
+            });
             continue;
         }
 
@@ -140,7 +152,11 @@ fn tokenize(src: &str) -> Option<Vec<Tok>> {
         if c.is_ascii_digit() || (c == b'.' && i + 1 < n && b[i + 1].is_ascii_digit()) {
             let s = i;
             i = scan_number(b, i);
-            toks.push(Tok { kind: Kind::Num, start: s, end: i });
+            toks.push(Tok {
+                kind: Kind::Num,
+                start: s,
+                end: i,
+            });
             continue;
         }
 
@@ -150,7 +166,11 @@ fn tokenize(src: &str) -> Option<Vec<Tok>> {
             while i < n && (b[i].is_ascii_alphanumeric() || b[i] == b'_' || b[i] == b'$') {
                 i += 1;
             }
-            toks.push(Tok { kind: Kind::Ident, start: s, end: i });
+            toks.push(Tok {
+                kind: Kind::Ident,
+                start: s,
+                end: i,
+            });
             continue;
         }
 
@@ -161,7 +181,11 @@ fn tokenize(src: &str) -> Option<Vec<Tok>> {
         }
         let s = i;
         i += len;
-        toks.push(Tok { kind: Kind::Punct, start: s, end: i });
+        toks.push(Tok {
+            kind: Kind::Punct,
+            start: s,
+            end: i,
+        });
     }
 
     Some(toks)
@@ -572,10 +596,7 @@ fn function_body_open(toks: &[Tok], src: &str, i: usize) -> Option<usize> {
     if j < toks.len() && toks[j].kind == Kind::Ident {
         j += 1;
     }
-    if j < toks.len()
-        && toks[j].kind == Kind::Punct
-        && tok_val(src, &toks[j]) == "*"
-    {
+    if j < toks.len() && toks[j].kind == Kind::Punct && tok_val(src, &toks[j]) == "*" {
         j += 1;
     }
     if j >= toks.len() || toks[j].kind != Kind::Punct || tok_val(src, &toks[j]) != "(" {
@@ -608,10 +629,7 @@ fn is_for_stmt_start(toks: &[Tok], src: &str, i: usize) -> bool {
     if is_stmt_start(toks, src, i) {
         return true;
     }
-    i >= 2
-        && toks[i - 1].kind == Kind::Punct
-        && tok_val(src, &toks[i - 1]) == ":"
-        && toks[i - 2].kind == Kind::Ident
+    i >= 2 && toks[i - 1].kind == Kind::Punct && tok_val(src, &toks[i - 1]) == ":" && toks[i - 2].kind == Kind::Ident
 }
 
 fn in_strict_region(pos: usize, regions: &[(usize, usize)]) -> bool {
@@ -619,11 +637,7 @@ fn in_strict_region(pos: usize, regions: &[(usize, usize)]) -> bool {
 }
 
 /// 扫描全部语句起始位，收集改写区间 (起始字节, 结束字节, 替换文本)。
-fn scan_rewrites(
-    toks: &[Tok],
-    src: &str,
-    strict_regions: &[(usize, usize)],
-) -> Vec<(usize, usize, String)> {
+fn scan_rewrites(toks: &[Tok], src: &str, strict_regions: &[(usize, usize)]) -> Vec<(usize, usize, String)> {
     let mut rewrites = Vec::new();
     let mut i = 0usize;
 
@@ -672,11 +686,7 @@ fn scan_rewrites(
 
 /// 判定 `i` 处的 `IDENT ( ARGS )` 后接赋值/更新运算符并收集整句改写。
 /// 逻辑赋值 `&&=` `||=` `??=` 与比较/箭头等 `=` 形运算符不改写。
-fn try_call_assign(
-    toks: &[Tok],
-    src: &str,
-    i: usize,
-) -> Option<(usize, usize, usize, String)> {
+fn try_call_assign(toks: &[Tok], src: &str, i: usize) -> Option<(usize, usize, usize, String)> {
     let name = &toks[i];
     let p = toks.get(i + 1)?;
     if p.kind != Kind::Punct || tok_val(src, p) != "(" {
@@ -691,19 +701,14 @@ fn try_call_assign(
     let opv = tok_val(src, op);
     let is_target = matches!(
         opv,
-        "=" | "+=" | "-=" | "*=" | "/=" | "%=" | "**=" | "<<=" | ">>=" | ">>>=" | "&=" | "^="
-            | "|=" | "++" | "--"
+        "=" | "+=" | "-=" | "*=" | "/=" | "%=" | "**=" | "<<=" | ">>=" | ">>>=" | "&=" | "^=" | "|=" | "++" | "--"
     );
     if !is_target {
         return None;
     }
 
     let (end_tok, include) = find_stmt_end(toks, src, close + 1)?;
-    let end = if include {
-        toks[end_tok].end
-    } else {
-        toks[end_tok].start
-    };
+    let end = if include { toks[end_tok].end } else { toks[end_tok].start };
     let call = &src[name.start..toks[close].end];
     // 后接 `++`/`--` 为更新表达式，用 increment/decrement 文案；其余为赋值。
     let msg = if matches!(opv, "++" | "--") {
@@ -716,11 +721,7 @@ fn try_call_assign(
 }
 
 /// 判定 `i` 处的 `++`/`--` 后接 `IDENT ( ARGS )`（前缀更新）并收集整句改写。
-fn try_prefix_update(
-    toks: &[Tok],
-    src: &str,
-    i: usize,
-) -> Option<(usize, usize, usize, String)> {
+fn try_prefix_update(toks: &[Tok], src: &str, i: usize) -> Option<(usize, usize, usize, String)> {
     let name = toks.get(i + 1)?;
     if name.kind != Kind::Ident {
         return None;
@@ -732,25 +733,16 @@ fn try_prefix_update(
     let close = match_paren(toks, src, i + 2)?;
 
     let (end_tok, include) = find_stmt_end(toks, src, close + 1)?;
-    let end = if include {
-        toks[end_tok].end
-    } else {
-        toks[end_tok].start
-    };
+    let end = if include { toks[end_tok].end } else { toks[end_tok].start };
     let call = &src[name.start..toks[close].end];
-    let repl = format!(
-        "{call}; throw new ReferenceError(\"Invalid left-hand side in increment/decrement\");"
-    );
+    let repl = format!("{call}; throw new ReferenceError(\"Invalid left-hand side in increment/decrement\");");
     Some((toks[i].start, end, end_tok + 1, repl))
 }
 
 /// 判定 `i` 处的 `for (IDENT ( ARGS ) in/of …)` 并收集整句改写（含标签前缀）。
 fn try_for_stmt(toks: &[Tok], src: &str, i: usize) -> Option<(usize, usize, usize, String)> {
     let mut j = i + 1;
-    if j < toks.len()
-        && toks[j].kind == Kind::Ident
-        && tok_val(src, &toks[j]) == "await"
-    {
+    if j < toks.len() && toks[j].kind == Kind::Ident && tok_val(src, &toks[j]) == "await" {
         j += 1;
     }
     let for_open = toks.get(j)?;
@@ -782,16 +774,11 @@ fn try_for_stmt(toks: &[Tok], src: &str, i: usize) -> Option<(usize, usize, usiz
     } else {
         find_stmt_end(toks, src, for_close + 1)?
     };
-    let end = if include {
-        toks[end_tok].end
-    } else {
-        toks[end_tok].start
-    };
+    let end = if include { toks[end_tok].end } else { toks[end_tok].start };
 
     // 标签前缀：L: for(…) → L: { … }（块语句保标签合法）
     let call = &src[name.start..toks[lhs_close].end];
-    let inner =
-        format!("{call}; throw new ReferenceError(\"Invalid left-hand side in for-in loop\");");
+    let inner = format!("{call}; throw new ReferenceError(\"Invalid left-hand side in for-in loop\");");
     let (start, repl) = if i >= 2
         && toks[i - 1].kind == Kind::Punct
         && tok_val(src, &toks[i - 1]) == ":"
@@ -912,7 +899,6 @@ mod tests {
         assert_eq!(rw(src), src);
     }
 }
-
 
 #[cfg(test)]
 mod probe {
