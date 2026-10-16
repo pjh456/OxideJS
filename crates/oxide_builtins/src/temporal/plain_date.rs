@@ -6,9 +6,9 @@ use oxide_types::object::JsObject;
 use oxide_types::value::JsValue;
 
 use super::calendar::{
-    hebrew_days_in_month, hebrew_is_leap, hebrew_month_code, hebrew_months_in_year,
-    hebrew_number_from_ordinal, hebrew_ordinal_from_month_code, hebrew_ordinal_from_number, hebrew_to_iso,
-    hebrew_year_length, iso_to_hebrew, HEBREW_ERA,
+    hebrew_days_in_month, hebrew_is_leap, hebrew_month_code, hebrew_months_in_year, hebrew_number_from_ordinal,
+    hebrew_ordinal_from_month_code, hebrew_ordinal_from_number, hebrew_to_iso, hebrew_year_length, iso_to_hebrew,
+    HEBREW_ERA,
 };
 use super::common::native_try;
 use super::common::{
@@ -257,9 +257,7 @@ fn plain_date_ymd<H: VmHost>(vm: &mut H, args: &[u8]) -> Result<(f64, f64, f64),
 
 /// 读 PlainDate 的 ISO 分量（槽 0-2）与日历 ID（槽 3），含 receiver 校验。
 /// getter 按日历 ID 分发：hebrew 换算为历法字段，其余历法直返 ISO 分量。
-fn plain_date_iso_ymd_calendar<H: VmHost>(
-    vm: &mut H, args: &[u8],
-) -> Result<(i32, u32, u32, String), JsValue> {
+fn plain_date_iso_ymd_calendar<H: VmHost>(vm: &mut H, args: &[u8]) -> Result<(i32, u32, u32, String), JsValue> {
     let ptr = receiver_obj(vm, args)?;
     let obj = unsafe { &*ptr };
     ensure_plain_date(vm, obj)?;
@@ -429,9 +427,7 @@ fn hebrew_object_date_ymd<H: VmHost>(
     let era_present = !era_raw.is_undefined();
     let era_year_present = !era_year_raw.is_undefined();
     if era_present != era_year_present {
-        return Err(crate::error::create_type_error(
-            vm, "era and eraYear must both be present or both absent",
-        ));
+        return Err(crate::error::create_type_error(vm, "era and eraYear must both be present or both absent"));
     }
     let hebrew_year = if era_year_present {
         let era = temporal_option_string(vm, era_raw)?;

@@ -88,20 +88,20 @@ enum StartOfYear {
 enum Keviyah {
     // 平年
     BetHetGimel = 0,    // 2D3
-    BetShinHe = 1,     // 2C5
-    GimelKafHe = 2,    // 3R5
-    HeKafZayin = 3,    // 5R7
-    HeShinAlef = 4,    // 5C1
-    ZayinHetAlef = 5,  // 7D1
+    BetShinHe = 1,      // 2C5
+    GimelKafHe = 2,     // 3R5
+    HeKafZayin = 3,     // 5R7
+    HeShinAlef = 4,     // 5C1
+    ZayinHetAlef = 5,   // 7D1
     ZayinShinGimel = 6, // 7C3
     // 闰年
-    BetHetHe = 7,      // 2D5
-    BetShinZayin = 8,  // 2C7
-    GimelKafZayin = 9, // 3R7
-    HeHetAlef = 10,    // 5D1
-    HeShinGimel = 11,  // 5C3
+    BetHetHe = 7,       // 2D5
+    BetShinZayin = 8,   // 2C7
+    GimelKafZayin = 9,  // 3R7
+    HeHetAlef = 10,     // 5D1
+    HeShinGimel = 11,   // 5C3
     ZayinHetGimel = 12, // 7D3
-    ZayinShinHe = 13,  // 7C5
+    ZayinShinHe = 13,   // 7C5
 }
 
 impl Keviyah {
@@ -156,14 +156,11 @@ impl Keviyah {
         let is_leap = self.is_leap();
         // 闰年中 Adar 之后的序月对应上一个月号。
         let month_number = ordinal_month - (is_leap && ordinal_month >= 6) as u8;
-        29
-            + (
-                month_number % 2
+        29 + (month_number % 2
                     // Heshvan 在全年型为长月
                     + (ordinal_month == 2 && year_type == YearType::Complete) as u8
                     // Kislev 在缺年型为短月
-                    - (ordinal_month == 3 && year_type == YearType::Deficient) as u8
-            )
+                    - (ordinal_month == 3 && year_type == YearType::Deficient) as u8)
     }
 
     /// 第 ordinal_month 个序月之前的累计天数。
@@ -172,15 +169,13 @@ impl Keviyah {
         let is_leap = self.is_leap();
         let month_number = ordinal_month - (is_leap && ordinal_month > 6) as u8;
         29 * (ordinal_month as u16 - 1)
-            + (
-                month_number / 2
+            + (month_number / 2
                     // Adar I 为长月
                     + (is_leap && ordinal_month > 6) as u8
                     // Heshvan 在全年型为长月
                     + (ordinal_month > 2 && year_type == YearType::Complete) as u8
                     // Kislev 在缺年型为短月
-                    - (ordinal_month > 3 && year_type == YearType::Deficient) as u8
-            ) as u16
+                    - (ordinal_month > 3 && year_type == YearType::Deficient) as u8) as u16
     }
 
     /// 年内第 day_of_year 天（1 起）折算为（序月, 月内日）。
@@ -288,19 +283,15 @@ impl YearInfo {
         if in_week >= hal(7, 18, 0) {
             weeks_since_beharad += 1;
         }
-        Self {
-            keviyah,
-            weeks_since_beharad,
-        }
+        Self { keviyah, weeks_since_beharad }
     }
 
     /// 新年首日（Tishrei 1）的 ISO 纪元日。
     fn new_year(self) -> i128 {
         // Beharad 周从周一开始。
         const BEHARAD_START_OF_YEAR: i128 = StartOfYear::Monday as i128;
-        let days_since_beharad = self.weeks_since_beharad * 7
-            + self.keviyah.start_of_year() as i128
-            - BEHARAD_START_OF_YEAR;
+        let days_since_beharad =
+            self.weeks_since_beharad * 7 + self.keviyah.start_of_year() as i128 - BEHARAD_START_OF_YEAR;
         HEBREW_EPOCH_DAYS + days_since_beharad
     }
 
@@ -347,9 +338,7 @@ pub(crate) const HEBREW_ERA: &str = "am";
 /// hebrew 日期（年, 序月, 日）→ ISO 纪元日。
 pub(crate) fn hebrew_to_iso_days(h_year: i128, ordinal_month: u32, day: u32) -> i128 {
     let year_info = YearInfo::compute_for(h_year);
-    year_info.new_year()
-        + year_info.keviyah.days_preceding(ordinal_month as u8) as i128
-        + (day - 1) as i128
+    year_info.new_year() + year_info.keviyah.days_preceding(ordinal_month as u8) as i128 + (day - 1) as i128
 }
 
 /// ISO 纪元日 → hebrew 日期（年, 序月, 日）。
@@ -368,11 +357,7 @@ pub(crate) fn hebrew_to_iso(h_year: i128, ordinal_month: u32, day: u32) -> (i32,
 
 /// ISO 日期分量 → hebrew 日期（年, 序月, 日）。
 pub(crate) fn iso_to_hebrew(iso_year: i32, iso_month: u32, iso_day: u32) -> (i128, u32, u32) {
-    iso_days_to_hebrew(days_from_civil(
-        i128::from(iso_year),
-        i128::from(iso_month),
-        i128::from(iso_day),
-    ))
+    iso_days_to_hebrew(days_from_civil(i128::from(iso_year), i128::from(iso_month), i128::from(iso_day)))
 }
 
 /// 数值月（平年 1-12、闰年 1-13）→ 序月：hebrew 数值月即序月（闰年 Adar I 为 6、
@@ -455,10 +440,7 @@ mod tests {
     fn test_year_lengths_valid() {
         for year in 3700..=5800 {
             let len = hebrew_year_length(year);
-            assert!(
-                matches!(len, 353 | 354 | 355 | 383 | 384 | 385),
-                "year {year} -> {len}"
-            );
+            assert!(matches!(len, 353 | 354 | 355 | 383 | 384 | 385), "year {year} -> {len}");
         }
     }
 
@@ -528,12 +510,30 @@ mod tests {
     fn test_icu4x_vectors() {
         let cases: [Vector4x; 6] = [
             // iso 为公历年月日，heb 为希伯来年与序数月与日
-            Vector4x { iso: (2021, 1, 10), heb: (5781, 4, 26) },
-            Vector4x { iso: (2021, 9, 10), heb: (5782, 1, 4) },
-            Vector4x { iso: (2022, 2, 10), heb: (5782, 6, 9) }, // Adar I（闰年）
-            Vector4x { iso: (2022, 3, 10), heb: (5782, 7, 7) }, // Adar II（闰年）
-            Vector4x { iso: (2022, 10, 10), heb: (5783, 1, 15) },
-            Vector4x { iso: (2022, 12, 25), heb: (5783, 4, 1) },
+            Vector4x {
+                iso: (2021, 1, 10),
+                heb: (5781, 4, 26),
+            },
+            Vector4x {
+                iso: (2021, 9, 10),
+                heb: (5782, 1, 4),
+            },
+            Vector4x {
+                iso: (2022, 2, 10),
+                heb: (5782, 6, 9),
+            }, // Adar I（闰年）
+            Vector4x {
+                iso: (2022, 3, 10),
+                heb: (5782, 7, 7),
+            }, // Adar II（闰年）
+            Vector4x {
+                iso: (2022, 10, 10),
+                heb: (5783, 1, 15),
+            },
+            Vector4x {
+                iso: (2022, 12, 25),
+                heb: (5783, 4, 1),
+            },
         ];
         for v in cases {
             let (iy, im, id) = v.iso;

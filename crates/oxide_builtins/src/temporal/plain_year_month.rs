@@ -359,7 +359,8 @@ pub fn plain_year_month_from<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult
     if calendar == "hebrew" {
         if era_present != era_year_present {
             return NativeResult::Err(crate::error::create_type_error(
-                vm, "era and eraYear must both be present or both absent",
+                vm,
+                "era and eraYear must both be present or both absent",
             ));
         }
         if era_present {
