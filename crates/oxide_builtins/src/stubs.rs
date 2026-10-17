@@ -5,10 +5,6 @@ fn stub_error<H: VmHost>(vm: &mut H, name: &str) -> NativeResult {
 }
 
 // 架构性延后：这些特性按设计排除在受支持语言子集之外。
-/// `Proxy` 全局占位：始终抛 TypeError。Proxy 按设计延后实现。
-pub fn proxy_stub<H: VmHost>(vm: &mut H, _args: &[u8]) -> NativeResult {
-    stub_error(vm, "Proxy")
-}
 /// `WeakSet` 全局占位：始终抛 TypeError。WeakSet 按设计延后实现。
 pub fn weakset_stub<H: VmHost>(vm: &mut H, _args: &[u8]) -> NativeResult {
     stub_error(vm, "WeakSet")

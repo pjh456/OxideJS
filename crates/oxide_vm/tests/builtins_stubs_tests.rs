@@ -98,8 +98,8 @@ fn stub_proto_member_read_returns_undefined() {
     assert!(result.as_bool());
 }
 
-/// 构造体不回归钉：四 stub 构造调用仍抛 TypeError（消息含 "… is not
-/// implemented"）；WeakMap 已落地真构造器，不在此列。
+/// 构造体不回归钉：三弱族 stub 构造调用仍抛 TypeError（消息含 "… is not
+/// implemented"）；WeakMap 与 Proxy 已落地真构造器，不在此列。
 #[test]
 fn stub_ctor_call_still_throws_not_implemented() {
     let mut vm = Vm::new();
@@ -113,8 +113,7 @@ fn stub_ctor_call_still_throws_not_implemented() {
            } \
            return probe(WeakSet, [], 'WeakSet') \
               && probe(WeakRef, [{}], 'WeakRef') \
-              && probe(FinalizationRegistry, [function () {}], 'FinalizationRegistry') \
-              && probe(Proxy, [ {}, {} ], 'Proxy'); })()",
+              && probe(FinalizationRegistry, [function () {}], 'FinalizationRegistry'); })()",
     )
     .unwrap();
     assert!(result.as_bool());

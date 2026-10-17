@@ -1,50 +1,16 @@
-//! Proxy 状态盒：Proxy 对象 `native_data` 槽的载荷盒（target、handler、revoked
-//! 位）与 session GC 三类接线——值边、字节核算与释放。
+//! Proxy 状态盒的 session GC 三类接线：值边、字节核算与释放。
+//!
+//! 状态盒本体（`ProxyState`）定义在 `oxide_builtins::proxy`（构造器侧分配），
+//! 本模块只读其布局做 GC 接线；撤销函数（独立 tag）的边函数在
+//! `oxide_builtins::proxy::proxy_revoker_native_edges`。
 
+use oxide_builtins::proxy::ProxyState;
 use oxide_types::object::JsObject;
 use oxide_types::value::JsValue;
 
-/// Proxy 状态盒：存于 Proxy 对象 `native_data`，target 与 handler 是 GC 边，
-/// revoked 位标记已撤销状态（撤销后全部 trap 抛 TypeError）。
-///
-/// 生命周期与 Proxy 对象一致：构造期经 `Box::into_raw` 分配，GC drop 链释放，
-/// 此后不替换。
-pub(crate) struct ProxyState {
-    /// 目标对象（GC 边）。
-    pub(crate) target: JsValue,
-    /// 处理器对象（GC 边）。
-    pub(crate) handler: JsValue,
-    /// 撤销位：置位后所有 trap 派发抛 TypeError。
-    #[allow(dead_code)] // 读方为 trap 派发路径，随该路径接线启用
-    pub(crate) revoked: bool,
-}
-
-/// 读 Proxy 状态盒（盒未建立时 None）。
-pub(crate) fn proxy_state_ref(obj: &JsObject) -> Option<&ProxyState> {
-    let ptr = obj.native_data() as *const ProxyState;
-    if ptr.is_null() {
-        None
-    } else {
-        // SAFETY: native_data 由 Box::into_raw 分配，生命周期与 Proxy 对象一致。
-        Some(unsafe { &*ptr })
-    }
-}
-
-/// 可变访问 Proxy 状态盒（写 revoked 位）。
-#[allow(dead_code)] // 写方为构造器与 revocable 路径，随该路径接线启用
-pub(crate) fn proxy_state_mut(obj: &mut JsObject) -> Option<&mut ProxyState> {
-    let ptr = obj.native_data() as *mut ProxyState;
-    if ptr.is_null() {
-        None
-    } else {
-        // SAFETY: native_data 由 Box::into_raw 分配，生命周期与 Proxy 对象一致。
-        Some(unsafe { &mut *ptr })
-    }
-}
-
 /// Proxy 状态盒内全部值边（GC mark 边）：target 与 handler。
 pub(crate) fn proxy_native_edges(obj: &JsObject) -> Vec<JsValue> {
-    let Some(state) = proxy_state_ref(obj) else {
+    let Some(state) = oxide_builtins::proxy::proxy_state_ref(obj) else {
         return Vec::new();
     };
     vec![state.target, state.handler]
@@ -85,11 +51,7 @@ mod tests {
     fn proxy_obj(target: JsValue, handler: JsValue) -> JsObject {
         let mut obj = JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::undefined());
         obj.type_tag = JsObject::OBJ_TYPE_PROXY;
-        let state = Box::new(ProxyState {
-            target,
-            handler,
-            revoked: false,
-        });
+        let state = Box::new(ProxyState { target, handler, revoked: false });
         obj.set_native_data(Box::into_raw(state) as *mut u8);
         obj
     }
@@ -126,10 +88,10 @@ mod tests {
     #[test]
     fn proxy_state_revoked_bit_roundtrip() {
         let mut obj = proxy_obj(plain_obj_value(), plain_obj_value());
-        let state = proxy_state_ref(&obj).expect("状态盒");
+        let state = oxide_builtins::proxy::proxy_state_ref(&obj).expect("状态盒");
         assert!(!state.revoked);
-        let state = proxy_state_mut(&mut obj).expect("状态盒");
+        let state = oxide_builtins::proxy::proxy_state_mut(&mut obj).expect("状态盒");
         state.revoked = true;
-        assert!(proxy_state_ref(&obj).expect("状态盒").revoked);
+        assert!(oxide_builtins::proxy::proxy_state_ref(&obj).expect("状态盒").revoked);
     }
 }

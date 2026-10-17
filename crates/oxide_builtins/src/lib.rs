@@ -5,8 +5,8 @@
 //! ArrayBuffer、DataView、Reflect、Function、Error 与全局函数（URI/escape 等）。
 //! 每个内置方法以 `fn xxx<H: VmHost>(vm, args: &[u8]) -> NativeResult` 形式暴露，
 //! 由上层（oxide_vm / oxide_api）注册为 JS 全局对象上的 native function。
-//! 架构性延后的特性（Proxy、WeakMap、WeakSet、WeakRef、FinalizationRegistry）
-//! 在 `stubs` 中仅提供占位实现，调用时抛 TypeError。
+//! 架构性延后的特性（WeakSet、WeakRef、FinalizationRegistry）在 `stubs` 中
+//! 仅提供占位实现，调用时抛 TypeError；Proxy 与 WeakMap 已落地真构造器。
 
 /// Array 内置对象实现（目录模块：common 共享助手、from 构造器与静态方法、element 元素变更、iterate 高阶迭代、sort_iterator 排序与迭代协议、immutable ES2023 不可变方法族）。
 pub mod array;
@@ -64,6 +64,8 @@ pub mod module;
 pub mod number;
 /// Object 内置对象实现（keys/create/assign/defineProperty 等静态方法）。
 pub mod object;
+/// Proxy 内置对象实现（%Proxy% 构造器、参数与不变量校验、Proxy.revocable 与撤销函数）。
+pub mod proxy;
 /// Reflect 内置对象实现（属性操作镜像）。
 pub mod reflect;
 /// RegExp 内置对象实现（constructor/test/exec/toString）。

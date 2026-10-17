@@ -59,7 +59,7 @@ pub mod bind_set;
 pub mod bind_shared_array_buffer;
 /// String 构造器与原型的 native 方法绑定。
 pub mod bind_string;
-/// 未实现内置（Proxy/BigInt/WeakMap 等）的 stub 构造器绑定。
+/// 未实现内置（WeakSet/WeakRef/FinalizationRegistry 等）的 stub 构造器绑定。
 pub mod bind_stubs;
 /// Symbol 构造器与原型的 native 方法绑定。
 pub mod bind_symbol;
@@ -978,10 +978,9 @@ fn bind_iterator_global(env: BindEnv<'_>, global: &mut JsObject) {
 }
 
 fn bind_stub_globals(env: BindEnv<'_>, global: &mut JsObject) {
-    // 索引 4 = WeakMap 真构造器（bind_weak 留存 stub_objects 末位），global
-    // 重建时原位重绑；四 stub 族索引 0-3 紧随其后。
+    // 索引 3 = WeakMap 真构造器、索引 4 = Proxy 真构造器（bind_weak / bind_proxy
+    // 留存 stub_objects 末两位），global 重建时原位重绑；三 stub 族索引 0-2 紧随其后。
     for (index, (name, native_fn, arg_count)) in [
-        ("Proxy", oxide_builtins::stubs::proxy_stub::<crate::vm::Vm> as *const (), 2),
         ("WeakSet", oxide_builtins::stubs::weakset_stub::<crate::vm::Vm> as *const (), 0),
         ("WeakRef", oxide_builtins::stubs::weakref_stub::<crate::vm::Vm> as *const (), 1),
         (
@@ -990,6 +989,7 @@ fn bind_stub_globals(env: BindEnv<'_>, global: &mut JsObject) {
             1,
         ),
         ("WeakMap", oxide_builtins::weak_map::weak_map_constructor::<crate::vm::Vm> as *const (), 0),
+        ("Proxy", oxide_builtins::proxy::proxy_constructor::<crate::vm::Vm> as *const (), 2),
     ]
     .into_iter()
     .enumerate()
@@ -999,6 +999,83 @@ fn bind_stub_globals(env: BindEnv<'_>, global: &mut JsObject) {
             bind_existing_global(env.core, global, name, JsValue::from_js_object(stub.as_ptr() as *mut JsObject));
         }
     }
+}
+
+/// 把 %Proxy% 真构造器绑定到 global。
+///
+/// # 副作用
+/// - 构造器经 `P` 留存 `stub_objects`（索引 4，紧随 WeakMap 真构造器），global
+///   重建时原位重绑；全局 `Proxy` 槽经 `bind_global_value` 安装。
+/// - 构造器面按规范装 `length`（2）与 `name`（"Proxy"）；规范 25.1 的 %Proxy%
+///   无 prototype 属性，不装。
+/// - `revocable` 静态方法（非构造器函数，length 2、name "revocable"，原型链
+///   Function.prototype）经构造器属性边可达，另登记释放登记表，session 收尾
+///   统一释放。
+fn bind_proxy(core: &Arc<KernelCore>, session: &mut KernelSession, global: &mut JsObject, _realm_id: u32) {
+    let world = Arc::get_mut(&mut session.builtin_world)
+        .expect("BuiltinWorld must be uniquely owned during init_kernel_builtins");
+    let function_proto_ptr = world.function_proto.as_ptr() as *mut JsObject;
+    let si_length = core.perm_interner().intern("length").0;
+    let si_name = core.perm_interner().intern("name").0;
+
+    // 构造器对象：Function 原型链 + native 函数项；length / name 按规范装
+    // （描述符 { f,f,t }，length 先于 name 以保 own 属性序）。
+    let mut ctor = JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(function_proto_ptr));
+    ctor.set_function(true);
+    configure_native_constructor(
+        &mut ctor,
+        oxide_builtins::proxy::proxy_constructor::<crate::vm::Vm> as *const (),
+        2,
+    );
+    let length_shape = core.shape_forge().make_shape(ctor.shape_id(), si_length);
+    ctor.set_shape_id(length_shape);
+    ctor.ensure_hash_props().push(JsValue::int(2));
+    let length_pos = ctor.hash_props_vec().map_or(0, |v| v.len() as u32).saturating_sub(1);
+    ctor.set_data_meta(length_pos, PropAttributes::new(false, false, true));
+    let name_shape = core.shape_forge().make_shape(ctor.shape_id(), si_name);
+    ctor.set_shape_id(name_shape);
+    ctor.ensure_hash_props().push(JsValue::perm_string(
+        core.perm_interner().string_ptr(core.perm_interner().intern("Proxy").0),
+    ));
+    let name_pos = ctor.hash_props_vec().map_or(0, |v| v.len() as u32).saturating_sub(1);
+    ctor.set_data_meta(name_pos, PropAttributes::new(false, false, true));
+
+    // revocable 静态方法：非构造器函数（不设 CONSTRUCTOR 标签，new 调用按规范
+    // 抛 TypeError），length 2 / name "revocable"，原型链 Function.prototype。
+    let mut revocable = JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(function_proto_ptr));
+    revocable.set_function(true);
+    // SAFETY: proxy_revocable 是合法 NativeFn 函数项。
+    revocable.set_native_fn(Some(unsafe {
+        NativeFnPtr::from_raw(oxide_builtins::proxy::proxy_revocable::<crate::vm::Vm> as *const ())
+    }));
+    revocable.set_native_arg_count(2);
+    let rev_length_shape = core.shape_forge().make_shape(revocable.shape_id(), si_length);
+    revocable.set_shape_id(rev_length_shape);
+    revocable.ensure_hash_props().push(JsValue::int(2));
+    let rev_length_pos = revocable.hash_props_vec().map_or(0, |v| v.len() as u32).saturating_sub(1);
+    revocable.set_data_meta(rev_length_pos, PropAttributes::new(false, false, true));
+    let rev_name_shape = core.shape_forge().make_shape(revocable.shape_id(), si_name);
+    revocable.set_shape_id(rev_name_shape);
+    revocable.ensure_hash_props().push(JsValue::perm_string(
+        core.perm_interner().string_ptr(core.perm_interner().intern("revocable").0),
+    ));
+    let rev_name_pos = revocable.hash_props_vec().map_or(0, |v| v.len() as u32).saturating_sub(1);
+    revocable.set_data_meta(rev_name_pos, PropAttributes::new(false, false, true));
+    let revocable_ptr = Box::into_raw(Box::new(revocable));
+    world.track_leaked_object(revocable_ptr);
+
+    // 构造器 revocable 属性（{ f,f,t }），own 属性序 length、name、revocable。
+    let si_revocable = core.perm_interner().intern("revocable").0;
+    let rev_shape = core.shape_forge().make_shape(ctor.shape_id(), si_revocable);
+    ctor.set_shape_id(rev_shape);
+    ctor.ensure_hash_props().push(JsValue::from_js_object(revocable_ptr));
+    let rev_pos = ctor.hash_props_vec().map_or(0, |v| v.len() as u32).saturating_sub(1);
+    ctor.set_data_meta(rev_pos, PropAttributes::new(false, false, true));
+
+    let stub = P::new(ctor);
+    let ctor_ptr = stub.as_ptr() as *mut JsObject;
+    world.stub_objects.push(stub);
+    bind_global_value(core, global, "Proxy", JsValue::from_js_object(ctor_ptr));
 }
 
 /// 把已有 builtin 构造器的 native 实现与 global 槽位一次性装配完整。
@@ -1361,6 +1438,9 @@ pub fn rebind_dirty_builtins(
         // WeakMap 真构造器面与 stub 族同脏位：原型对象经 leaked 登记表迁移，
         // 重绑时全局槽原位更新，不占 BuiltinWorld 槽。
         bind_weak::bind_weak_map(core, session, global, realm_id);
+        // Proxy 真构造器面与 WeakMap 同脏位：构造器经 stub_objects 留存，重绑时
+        // 全局槽原位更新，不占 BuiltinWorld 槽。
+        bind_proxy(core, session, global, realm_id);
     }
     let env = BindEnv {
         core,

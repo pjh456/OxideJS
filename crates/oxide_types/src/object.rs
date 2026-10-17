@@ -240,9 +240,12 @@ impl JsObject {
     pub const OBJ_TYPE_ERROR_EVENT: u8 = 37;
     /// CustomEvent 对象：事件派生类载荷盒（detail 边）存于 `native_fn` 槽。
     pub const OBJ_TYPE_CUSTOM_EVENT: u8 = 38;
-    /// Proxy 对象：target 与 handler 存于 `native_data` 载荷盒（`oxide_vm` 的
-    /// ProxyState），全部 trap 经 handler 路由；revoked 位记入同一载荷盒。
+    /// Proxy 对象：target 与 handler 存于 `native_data` 载荷盒（`oxide_builtins`
+    /// 的 ProxyState），全部 trap 经 handler 路由；revoked 位记入同一载荷盒。
     pub const OBJ_TYPE_PROXY: u8 = 39;
+    /// Proxy 撤销函数（`Proxy.revocable` 的 revoke）：被撤销代理指针存于
+    /// `native_data`（GC 边），保证仅持撤销函数时代理不被回收。
+    pub const OBJ_TYPE_PROXY_REVOKER: u8 = 40;
     /// `is_session_epoch` 字段中的 session 标记位。
     pub const SESSION_EPOCH_BIT: u8 = 0x01;
     /// `is_session_epoch` 字段中的 GC 标记位。
@@ -339,6 +342,11 @@ impl JsObject {
     #[inline]
     pub fn is_proxy_obj(&self) -> bool {
         self.type_tag == Self::OBJ_TYPE_PROXY
+    }
+    /// 是否 Proxy 撤销函数（`native_data` 槽存被撤销代理指针，GC 边）。
+    #[inline]
+    pub fn is_proxy_revoker_obj(&self) -> bool {
+        self.type_tag == Self::OBJ_TYPE_PROXY_REVOKER
     }
     /// 是否 DataView 对象。
     #[inline]
