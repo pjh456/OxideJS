@@ -108,6 +108,15 @@ impl Vm {
         &mut self, obj: &JsObject, prop_name_si: u32, receiver: JsValue, target_reg: Option<u8>,
     ) -> Result<JsValue, String> {
         vm_trace!("ordinary_get_inner: shape={} prop_si={}", obj.shape_id(), prop_name_si);
+        // Proxy [[Get]]：get trap 权威（target、P、Receiver），trap 定义时其返回值
+        // 即读结果；trap 未定义落穿普通属性路径。
+        if obj.is_proxy_obj() {
+            let target = oxide_builtins::proxy::proxy_state_ref(obj).expect("状态盒").target;
+            let key = oxide_builtins::object::key_si_to_js_value(self, prop_name_si);
+            if let Some(v) = crate::proxy::call_trap(self, obj, self.perm_intern("get"), &[target, key, receiver])? {
+                return Ok(v);
+            }
+        }
         let length_si = self.length_si;
         let mut current = Some(obj);
         let mut depth = 0usize;
@@ -425,6 +434,30 @@ impl Vm {
             prop_name_si,
             use_frame_push
         );
+        // Proxy [[Set]]：set trap 以（target、P、Value、Receiver）调用；trap 报
+        // true 写成功；报 false 落穿 target 的普通写路径（不变量检查由后续卡补全）。
+        if obj.is_proxy_obj() {
+            let target = oxide_builtins::proxy::proxy_state_ref(obj).expect("状态盒").target;
+            let key = oxide_builtins::object::key_si_to_js_value(self, prop_name_si);
+            if let Some(r) = crate::proxy::call_trap(self, obj, self.perm_intern("set"), &[target, key, val, receiver])?
+            {
+                if crate::proxy::trap_bool_result(r, "set")? {
+                    return Ok(());
+                }
+                // target 即本代理（自环）时按写失败处理，避免无限递归。
+                if std::ptr::eq(target.as_js_object_ptr(), obj as *const JsObject) {
+                    return self.write_protection_failure(builtin, "Proxy set trap reported false");
+                }
+                // SAFETY: target 由构造器校验为非空对象指针。
+                return self.ordinary_set_inner(
+                    unsafe { &mut *target.as_js_object_ptr() },
+                    prop_name_si,
+                    val,
+                    receiver,
+                    contract,
+                );
+            }
+        }
         // 模块命名空间 exotic [[Set]] 恒 false（规范 10.4.6.8，deferred 形态同口径
         // 不触发求值）：严格抛 TypeError，sloppy 静默 no-op；Reflect.set 以
         // strict=true 调用并投影为 false。
@@ -1094,6 +1127,32 @@ impl Vm {
         &mut self, obj: &mut JsObject, prop_name_si: u32, val: JsValue, attributes: PropAttributes,
     ) -> Result<(), String> {
         vm_trace!("define_data_property: shape={} prop_si={}", obj.shape_id(), prop_name_si);
+        // Proxy [[DefineOwnProperty]]：defineProperty trap 以（target、P、Desc）
+        // 调用；trap 报 true 定义成功；报 false 落穿 target 的普通定义路径
+        // （不变量检查由后续卡补全）。
+        if obj.is_proxy_obj() {
+            let target = oxide_builtins::proxy::proxy_state_ref(obj).expect("状态盒").target;
+            let key = oxide_builtins::object::key_si_to_js_value(self, prop_name_si);
+            let desc = crate::proxy::define_property_descriptor(self, val, attributes);
+            if let Some(r) =
+                crate::proxy::call_trap(self, obj, self.perm_intern("defineProperty"), &[target, key, desc])?
+            {
+                if crate::proxy::trap_bool_result(r, "defineProperty")? {
+                    return Ok(());
+                }
+                // target 即本代理（自环）时按定义失败处理，避免无限递归。
+                if std::ptr::eq(target.as_js_object_ptr(), obj as *const JsObject) {
+                    return Err("Proxy defineProperty trap reported false".to_string());
+                }
+                // SAFETY: target 由构造器校验为非空对象指针。
+                return self.define_data_property(
+                    unsafe { &mut *target.as_js_object_ptr() },
+                    prop_name_si,
+                    val,
+                    attributes,
+                );
+            }
+        }
         // TypedArray 统一数值键门：界内规范键走元素定义（界内写 buffer）；
         // 规范越界键（含 detach：live 长 0）拒绝定义；非规范数值串
         // （"+1"/"1.0" 等，round-trip 不成）与 symbol 键落命名属性路径。

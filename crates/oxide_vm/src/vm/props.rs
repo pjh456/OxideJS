@@ -163,6 +163,11 @@ impl Vm {
     /// `MAX_PROTO_CHAIN_DEPTH` 深度上限。
     pub(crate) fn resolve_property(&self, obj: &JsObject, prop_name_si: u32) -> Option<JsValue> {
         vm_trace!("resolve_property: shape_id={} prop_name_si={}", obj.shape_id(), prop_name_si);
+        // Proxy：本方法是不可变签名，无法同步调 get trap；代理无自身属性，
+        // 保守返 None（get trap 是权威，须由可变签名入口承载）。
+        if obj.is_proxy_obj() {
+            return None;
+        }
         let length_si = self.length_si;
         if obj.is_array() && prop_name_si == length_si {
             return Some(obj.logical_len_value());
@@ -218,6 +223,23 @@ impl Vm {
     /// （`in` 运算符逐级走 HasProperty；非 deferred 对象触发为 no-op），触发失败
     /// （cyclic 守卫抛 TypeError / 失败缓存原值重抛）走可捕获异常展开。
     pub(crate) fn has_property(&mut self, obj: &JsObject, prop_name_si: u32) -> Result<bool, String> {
+        // Proxy [[HasProperty]]：has trap 以（target、P）调用；trap 报 true 即
+        // 存在；报 false 落穿 target 的普通存在性判定（不变量检查由后续卡补全）。
+        if obj.is_proxy_obj() {
+            let target = oxide_builtins::proxy::proxy_state_ref(obj).expect("状态盒").target;
+            let key = oxide_builtins::object::key_si_to_js_value(self, prop_name_si);
+            if let Some(r) = crate::proxy::call_trap(self, obj, self.perm_intern("has"), &[target, key])? {
+                if crate::proxy::trap_bool_result(r, "has")? {
+                    return Ok(true);
+                }
+                // target 即本代理（自环）时保守判不存在，避免无限递归。
+                if std::ptr::eq(target.as_js_object_ptr(), obj as *const JsObject) {
+                    return Ok(false);
+                }
+                // SAFETY: target 由构造器校验为非空对象指针。
+                return self.has_property(unsafe { &*target.as_js_object_ptr() }, prop_name_si);
+            }
+        }
         let length_si = self.length_si;
         let mut current = Some(obj);
         let mut depth = 0usize;
