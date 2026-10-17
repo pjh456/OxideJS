@@ -122,7 +122,11 @@ fn create_proxy_object<H: VmHost>(vm: &mut H, target: JsValue, handler: JsValue)
     let object_proto = vm.builtin_proto(ProtoKind::ObjectProto);
     let mut obj = JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(object_proto));
     obj.type_tag = JsObject::OBJ_TYPE_PROXY;
-    let state = Box::new(ProxyState { target, handler, revoked: false });
+    let state = Box::new(ProxyState {
+        target,
+        handler,
+        revoked: false,
+    });
     obj.set_native_data(Box::into_raw(state) as *mut u8);
     if crate::iterator::is_callable(target) {
         obj.set_function(true);
@@ -199,22 +203,14 @@ pub fn proxy_revocable<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let revoker_obj = vm.alloc_object(revoker);
     let revoker_ref = unsafe { &mut *revoker_obj };
     let length_si = vm.perm_intern("length");
-    if let Err(e) = vm.define_data_property(
-        revoker_ref,
-        length_si,
-        JsValue::int(0),
-        PropAttributes::new(false, false, true),
-    ) {
+    if let Err(e) =
+        vm.define_data_property(revoker_ref, length_si, JsValue::int(0), PropAttributes::new(false, false, true))
+    {
         return NativeResult::Err(crate::iterator::engine_error(vm, &e));
     }
     let name_si = vm.perm_intern("name");
     let empty_name = vm.new_string("");
-    if let Err(e) = vm.define_data_property(
-        revoker_ref,
-        name_si,
-        empty_name,
-        PropAttributes::new(false, false, true),
-    ) {
+    if let Err(e) = vm.define_data_property(revoker_ref, name_si, empty_name, PropAttributes::new(false, false, true)) {
         return NativeResult::Err(crate::iterator::engine_error(vm, &e));
     }
     // 代理指针存进撤销函数 native_data（GC 边，mark 期经家族表传播）。
@@ -273,7 +269,11 @@ mod tests {
     fn proxy_obj(target: JsValue, handler: JsValue) -> JsObject {
         let mut obj = JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::undefined());
         obj.type_tag = JsObject::OBJ_TYPE_PROXY;
-        let state = Box::new(ProxyState { target, handler, revoked: false });
+        let state = Box::new(ProxyState {
+            target,
+            handler,
+            revoked: false,
+        });
         obj.set_native_data(Box::into_raw(state) as *mut u8);
         obj
     }

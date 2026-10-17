@@ -51,7 +51,11 @@ mod tests {
     fn proxy_obj(target: JsValue, handler: JsValue) -> JsObject {
         let mut obj = JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::undefined());
         obj.type_tag = JsObject::OBJ_TYPE_PROXY;
-        let state = Box::new(ProxyState { target, handler, revoked: false });
+        let state = Box::new(ProxyState {
+            target,
+            handler,
+            revoked: false,
+        });
         obj.set_native_data(Box::into_raw(state) as *mut u8);
         obj
     }

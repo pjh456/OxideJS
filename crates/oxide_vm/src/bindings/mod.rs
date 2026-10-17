@@ -1022,11 +1022,7 @@ fn bind_proxy(core: &Arc<KernelCore>, session: &mut KernelSession, global: &mut 
     // （描述符 { f,f,t }，length 先于 name 以保 own 属性序）。
     let mut ctor = JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(function_proto_ptr));
     ctor.set_function(true);
-    configure_native_constructor(
-        &mut ctor,
-        oxide_builtins::proxy::proxy_constructor::<crate::vm::Vm> as *const (),
-        2,
-    );
+    configure_native_constructor(&mut ctor, oxide_builtins::proxy::proxy_constructor::<crate::vm::Vm> as *const (), 2);
     let length_shape = core.shape_forge().make_shape(ctor.shape_id(), si_length);
     ctor.set_shape_id(length_shape);
     ctor.ensure_hash_props().push(JsValue::int(2));
