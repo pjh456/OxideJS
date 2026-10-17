@@ -55,7 +55,7 @@ pub(crate) fn drop_proxy_native(obj: &JsObject) -> u64 {
 /// 1. 取状态盒并检 revoked 位：位真抛 TypeError（"Proxy is revoked"）。
 /// 2. 经全 get 路径从 handler 读 trap 值（receiver 为 handler——handler 自身
 ///    是代理时其 get trap 依规范触发）。
-/// 3. trap 值 undefined 返 None（落穿普通行为）。
+/// 3. trap 值 undefined 或 null 返 None（GetMethod 形态：落穿普通行为）。
 /// 4. 经 `call_function_sync` 同步调用 trap 值（this 为 handler）。
 ///
 /// # 边界与前提
@@ -79,8 +79,22 @@ pub(crate) fn call_trap(
     // SAFETY: handler 由构造器校验为非空对象指针。
     let handler_obj = unsafe { &*handler.as_js_object_ptr() };
     let trap_val = vm.ordinary_get(handler_obj, trap_name_si, handler)?;
-    if trap_val.is_undefined() {
+    if trap_val.is_undefined() || trap_val.is_null() {
         return Ok(None);
+    }
+    // trap 值须可调用（规范 Call 语义）：非可调用抛 TypeError 而非落入
+    // call_function_sync 的通用「accessor is not callable」文本（kind 丢失）。
+    if !trap_val.is_object() {
+        return Err(oxide_runtime_api::format_error_message(
+            "TypeError",
+            "Proxy trap is not callable",
+        ));
+    }
+    if !unsafe { &*trap_val.as_js_object_ptr() }.is_function() {
+        return Err(oxide_runtime_api::format_error_message(
+            "TypeError",
+            "Proxy trap is not callable",
+        ));
     }
     let result = vm.call_function_sync(trap_val, handler, args)?;
     Ok(Some(result))
@@ -98,6 +112,77 @@ pub(crate) fn trap_bool_result(result: JsValue, trap_name: &str) -> Result<bool,
         "TypeError",
         &format!("Proxy {trap_name} trap must return a boolean"),
     ))
+}
+
+/// 把实参切片物化为 JS 数组（CreateArrayFromList 形态：Array.prototype
+/// 原型链，元素区逐值写入）。
+pub(crate) fn materialize_args_array(vm: &mut Vm, args: &[JsValue]) -> JsValue {
+    let array_proto = vm.builtin_proto(oxide_runtime_api::ProtoKind::ArrayProto);
+    let arr = vm.alloc_object(JsObject::new_array(
+        oxide_kernel::shape_forge::EMPTY_SHAPE_ID,
+        JsValue::from_js_object(array_proto),
+        args.len().min(oxide_types::object::MAX_DENSE_PROPS),
+    ));
+    for (i, item) in args.iter().enumerate() {
+        // SAFETY: arr 是刚经统一入口分配的数组对象，元素区已就绪。
+        unsafe { (*arr).set_prop_at(i, *item) };
+    }
+    // SAFETY: 与 new_array 同 epoch，写入后按实际元素数设 prop_count。
+    unsafe { (*arr).set_prop_count(args.len().min(oxide_types::object::MAX_DENSE_PROPS)) };
+    JsValue::from_js_object(arr)
+}
+
+/// apply trap 调用（[[Call]] 路由）：trap 权威，缺失落穿 target。
+///
+/// # 步骤
+/// 1. 取状态盒（revoked 检查在 `call_trap` 内）。
+/// 2. 从 handler 读 apply trap 值（GetMethod 形态：undefined 与 null 均视为缺失）。
+/// 3. trap 缺失：落穿 target 的 [[Call]]（同 this 同实参的同步调用）。
+/// 4. trap 存在：以 (target, thisArgument, argumentsList) 调用，返回值原样透传。
+///
+/// # 边界与前提
+/// - `proxy` 须为带状态盒的 Proxy 对象（守卫以 `is_proxy_obj` 保证入口）。
+/// - 函数代理的 target 可调用（构造期置 is_function 位的前提），落穿
+///   `call_function_sync` 依赖该前提。
+pub(crate) fn proxy_apply_call(
+    vm: &mut Vm, proxy: &JsObject, this_value: JsValue, args: &[JsValue],
+) -> Result<JsValue, String> {
+    let state = oxide_builtins::proxy::proxy_state_ref(proxy).expect("状态盒");
+    let target = state.target;
+    let args_array = materialize_args_array(vm, args);
+    match call_trap(vm, proxy, vm.perm_intern("apply"), &[target, this_value, args_array])? {
+        Some(result) => Ok(result),
+        None => vm.call_function_sync(target, this_value, args),
+    }
+}
+
+/// construct trap 调用（[[Construct]] 路由）：trap 权威，缺失落穿 target。
+///
+/// # 步骤
+/// 1. 取状态盒（revoked 检查在 `call_trap` 内）。
+/// 2. 从 handler 读 construct trap 值（GetMethod 形态）。
+/// 3. trap 缺失：返 None，调用方落穿 target 的普通 [[Construct]]。
+/// 4. trap 存在：以 (target, argumentsList, newTarget) 调用；返回值须为对象，
+///    否则抛 TypeError。
+///
+/// # 边界与前提
+/// - `proxy` 须为带状态盒的 Proxy 对象（守卫以 `is_proxy_obj` 保证入口）。
+/// - `new_target` 为调用点 newTarget（代理自身），落穿时原样透传给 target。
+pub(crate) fn proxy_construct_trap(
+    vm: &mut Vm, proxy: &JsObject, args: &[JsValue], new_target: JsValue,
+) -> Result<Option<JsValue>, String> {
+    let state = oxide_builtins::proxy::proxy_state_ref(proxy).expect("状态盒");
+    let target = state.target;
+    let args_array = materialize_args_array(vm, args);
+    let result = call_trap(vm, proxy, vm.perm_intern("construct"), &[target, args_array, new_target])?;
+    match result {
+        Some(v) if v.is_object() => Ok(Some(v)),
+        Some(_) => Err(oxide_runtime_api::format_error_message(
+            "TypeError",
+            "a [[Construct]] trap returned a non-object",
+        )),
+        None => Ok(None),
+    }
 }
 
 /// 构造 defineProperty trap 的属性描述符对象（value 加三标志位）。
@@ -241,6 +326,158 @@ mod tests {
         let err = call_trap(&mut vm, unsafe { &*proxy }, get_si, &[]).expect_err("已撤销代理须抛错");
         assert!(err.contains("TypeError"), "已撤销代理须抛 TypeError：{err}");
         assert!(err.contains("Proxy is revoked"), "错误文本须带撤销标记：{err}");
+    }
+
+    /// 函数代理不变量：target 可调用且不可扩展时构造器抛 TypeError。
+    #[test]
+    fn proxy_constructor_rejects_callable_non_extensible_target() {
+        let mut vm = Vm::new();
+        let target = native_fn_obj(&mut vm, gc_forcing_get_trap);
+        unsafe { (*target).set_extensible(false) };
+        let handler = vm.alloc_object(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::undefined()));
+        // native 调用协议：253/254 为 receiver/callee 槽，实参经寄存器下标传递。
+        vm.regs[1] = JsValue::from_js_object(target);
+        vm.regs[2] = JsValue::from_js_object(handler);
+        vm.constructing_native = true;
+        let result = oxide_builtins::proxy::proxy_constructor(&mut vm, &[253, 254, 1, 2]);
+        let exc = match result {
+            NativeResult::Err(exc) => exc,
+            _ => panic!("可调用且不可扩展的 target 须抛 TypeError"),
+        };
+        let exc_ref = unsafe { &*exc.as_js_object_ptr() };
+        let name_val = vm.resolve_property(exc_ref, vm.perm_intern("name")).unwrap();
+        // SAFETY: name_val 为字符串值（异常对象 name 属性）。
+        let name = unsafe { (*name_val.as_string_ptr()).as_lossy_str() };
+        assert_eq!(name, "TypeError", "须抛 TypeError");
+    }
+
+    /// apply trap 体：把三实参（target、thisArg、argumentsList）身份记入 handler，
+    /// 返回固定值。
+    fn apply_trap_capture(vm: &mut Vm, args: &[u8]) -> NativeResult {
+        let handler = vm.reg(253);
+        let handler_ref = unsafe { &mut *handler.as_js_object_ptr() };
+        vm.set_or_create_prop_value(handler_ref, vm.perm_intern("target"), vm.reg(args[1]));
+        vm.set_or_create_prop_value(handler_ref, vm.perm_intern("this"), vm.reg(args[2]));
+        vm.set_or_create_prop_value(handler_ref, vm.perm_intern("list"), vm.reg(args[3]));
+        NativeResult::Ok(JsValue::int(99))
+    }
+
+    /// apply trap 路由：trap 以 (target, thisArg, argumentsList) 调用，返回值原样透传。
+    #[test]
+    fn proxy_apply_call_routes_apply_trap_with_args() {
+        let mut vm = Vm::new();
+        let target = native_fn_obj(&mut vm, counting_trap);
+        let handler = vm.alloc_object(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::undefined()));
+        let proxy = proxy_with_state(&mut vm, JsValue::from_js_object(target), JsValue::from_js_object(handler));
+        let trap_fn = native_fn_obj(&mut vm, apply_trap_capture);
+        let this_value = plain_obj_value();
+        vm.set_or_create_prop_value(
+            unsafe { &mut *handler },
+            vm.perm_intern("apply"),
+            JsValue::from_js_object(trap_fn),
+        );
+        let result = proxy_apply_call(&mut vm, unsafe { &*proxy }, this_value, &[JsValue::int(1), JsValue::int(2)])
+            .expect("apply 应成功");
+        assert_eq!(result, JsValue::int(99), "trap 返回值须原样透传");
+        let handler_ref = unsafe { &*handler };
+        assert_eq!(
+            vm.resolve_property(handler_ref, vm.perm_intern("target")).unwrap(),
+            JsValue::from_js_object(target),
+            "第一实参须为 target"
+        );
+        assert_eq!(
+            vm.resolve_property(handler_ref, vm.perm_intern("this")).unwrap(),
+            this_value,
+            "第二实参须为 thisArg"
+        );
+        let list = vm.resolve_property(handler_ref, vm.perm_intern("list")).unwrap();
+        assert!(list.is_object(), "第三实参须为数组对象");
+        let list_ref = unsafe { &*list.as_js_object_ptr() };
+        assert!(list_ref.is_array(), "argumentsList 须为数组");
+    }
+
+    /// apply trap 缺失：落穿 target 的普通调用路径。
+    #[test]
+    fn proxy_apply_call_falls_through_to_target() {
+        let mut vm = Vm::new();
+        // target 不读 receiver（落穿时 this 为 undefined），仅返回固定值。
+        fn target_return_7(_vm: &mut Vm, _args: &[u8]) -> NativeResult {
+            NativeResult::Ok(JsValue::int(7))
+        }
+        let target = native_fn_obj(&mut vm, target_return_7);
+        let handler = vm.alloc_object(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::undefined()));
+        let proxy = proxy_with_state(&mut vm, JsValue::from_js_object(target), JsValue::from_js_object(handler));
+        let result =
+            proxy_apply_call(&mut vm, unsafe { &*proxy }, JsValue::undefined(), &[JsValue::int(1)])
+                .expect("落穿 target 应成功");
+        assert_eq!(result, JsValue::int(7), "target 调用结果须原样返回");
+    }
+
+    /// construct trap 返回值须为对象，非对象返回抛 TypeError。
+    #[test]
+    fn proxy_construct_trap_non_object_result_throws() {
+        let mut vm = Vm::new();
+        let target = native_fn_obj(&mut vm, counting_trap);
+        let handler = vm.alloc_object(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::undefined()));
+        let proxy = proxy_with_state(&mut vm, JsValue::from_js_object(target), JsValue::from_js_object(handler));
+        // construct trap 体：返回非对象值。
+        fn construct_trap_non_object(_vm: &mut Vm, _args: &[u8]) -> NativeResult {
+            NativeResult::Ok(JsValue::int(42))
+        }
+        let trap_fn = native_fn_obj(&mut vm, construct_trap_non_object);
+        vm.set_or_create_prop_value(
+            unsafe { &mut *handler },
+            vm.perm_intern("construct"),
+            JsValue::from_js_object(trap_fn),
+        );
+        let err = proxy_construct_trap(&mut vm, unsafe { &*proxy }, &[], JsValue::from_js_object(proxy))
+            .expect_err("非对象返回值须抛 TypeError");
+        assert!(err.contains("TypeError"), "须抛 TypeError：{err}");
+        assert!(err.contains("non-object"), "错误文本须带非对象标记：{err}");
+    }
+
+    /// construct trap 路由：trap 以 (target, argumentsList, newTarget) 调用，
+    /// 对象返回值原样透传。
+    #[test]
+    fn proxy_construct_trap_routes_with_new_target() {
+        let mut vm = Vm::new();
+        let target = native_fn_obj(&mut vm, counting_trap);
+        let handler = vm.alloc_object(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::undefined()));
+        let proxy = proxy_with_state(&mut vm, JsValue::from_js_object(target), JsValue::from_js_object(handler));
+        // construct trap 体：记录三实参身份，返回固定对象。
+        fn construct_trap_capture(vm: &mut Vm, args: &[u8]) -> NativeResult {
+            let handler = vm.reg(253);
+            let handler_ref = unsafe { &mut *handler.as_js_object_ptr() };
+            vm.set_or_create_prop_value(handler_ref, vm.perm_intern("target"), vm.reg(args[1]));
+            vm.set_or_create_prop_value(handler_ref, vm.perm_intern("list"), vm.reg(args[2]));
+            vm.set_or_create_prop_value(handler_ref, vm.perm_intern("newtarget"), vm.reg(args[3]));
+            let result = vm.alloc_object(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::undefined()));
+            NativeResult::Ok(JsValue::from_js_object(result))
+        }
+        let trap_fn = native_fn_obj(&mut vm, construct_trap_capture);
+        vm.set_or_create_prop_value(
+            unsafe { &mut *handler },
+            vm.perm_intern("construct"),
+            JsValue::from_js_object(trap_fn),
+        );
+        let new_target = plain_obj_value();
+        let result = proxy_construct_trap(&mut vm, unsafe { &*proxy }, &[JsValue::int(3)], new_target)
+            .expect("construct 应成功")
+            .expect("trap 存在须有返回值");
+        assert!(result.is_object(), "trap 对象返回值须原样透传");
+        let handler_ref = unsafe { &*handler };
+        assert_eq!(
+            vm.resolve_property(handler_ref, vm.perm_intern("target")).unwrap(),
+            JsValue::from_js_object(target),
+            "第一实参须为 target"
+        );
+        let list = vm.resolve_property(handler_ref, vm.perm_intern("list")).unwrap();
+        assert!(list.is_object() && unsafe { &*list.as_js_object_ptr() }.is_array(), "第二实参须为数组");
+        assert_eq!(
+            vm.resolve_property(handler_ref, vm.perm_intern("newtarget")).unwrap(),
+            new_target,
+            "第三实参须为 newTarget"
+        );
     }
 
     /// 守卫路由：get / set / has trap 对代理命中，resolve_property 对代理保守返 None。

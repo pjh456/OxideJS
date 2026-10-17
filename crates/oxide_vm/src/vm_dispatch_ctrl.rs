@@ -41,6 +41,26 @@ impl Vm {
                     let call_window = (ext >> 8) as u8;
                     crate::vm_debug!("CALL rd={} this={} args={} depth={}", rd, this_reg, arg_count, self.frames.len());
 
+                    // Proxy [[Call]]：apply trap 权威（target, thisArgument,
+                    // argumentsList）；trap 缺失落穿 target 的普通调用路径。
+                    if obj.is_proxy_obj() {
+                        let this_value = self.regs[this_reg as usize];
+                        let mut args = Vec::with_capacity(arg_count);
+                        for i in 0..arg_count.min(256) {
+                            args.push(self.regs[first_arg_reg.wrapping_add(i as u8) as usize]);
+                        }
+                        match crate::proxy::proxy_apply_call(self, obj, this_value, &args) {
+                            Ok(v) => {
+                                self.regs[0] = v;
+                                return Ok(false);
+                            }
+                            Err(msg) => {
+                                self.raise_call_error(&msg)?;
+                                return Ok(true);
+                            }
+                        }
+                    }
+
                     // 无本体函数对象（Function.prototype）：[[Call]] 接受任意实参
                     // 返回 undefined，不执行函数体。
                     if obj.native_fn().is_none() && obj.sub_module_index() == 0 {

@@ -366,6 +366,16 @@ impl Vm {
         }
 
         let obj = unsafe { &*obj_ptr };
+        // 代理对象恒走慢路径：IC 键不含 type_tag，shape_id 与同形普通对象碰撞时
+        // 命中会绕过 get trap 直读代理自身属性槽（恒 miss 守卫的读入口侧）。
+        if obj.is_proxy_obj() {
+            let prop_name_si = self.property_key_si(self.regs[b])?;
+            let val = self.ordinary_get_with_target(obj, prop_name_si, val, a as u8)?;
+            if self.accessor_frame_target_reg.take().is_none() {
+                self.regs[a] = val;
+            }
+            return Ok(());
+        }
         // 入口快判：键寄存器恒为 perm 串，指针相等即键为 "length"；
         // 数组接收者直返逻辑长度，免 IC 读与键解析（与虚拟长度槽口径一致）。
         let key_val = self.regs[b];

@@ -75,6 +75,23 @@ impl Vm {
         // SAFETY: 调用方入口已对 new_target 做过同谓词 IsConstructor 校验，
         // 指针非空且指向存活对象。
         let nt_obj = unsafe { &*new_target.as_js_object_ptr() };
+        // Proxy [[Construct]]：construct trap 权威（target, argumentsList,
+        // newTarget）；trap 缺失落穿 target 的普通 [[Construct]]（newTarget 不变）。
+        if ctor_obj.is_proxy_obj() {
+            match crate::proxy::proxy_construct_trap(self, ctor_obj, args, new_target) {
+                Ok(Some(v)) => return Ok(v),
+                Ok(None) => {
+                    let target = oxide_builtins::proxy::proxy_state_ref(ctor_obj).expect("状态盒").target;
+                    return self.construct_with(target, new_target, args);
+                }
+                Err(e) => {
+                    return Err(self
+                        .last_uncaught_value
+                        .take()
+                        .unwrap_or_else(|| oxide_builtins::error::create_from_text(self, &e)));
+                }
+            }
+        }
         // bound 包装：解包链（绑定实参前置、newTarget 逐层指针相等替换），
         // 最内层非构造器判定后递归进入既有臂。
         if ctor_obj.type_tag == JsObject::OBJ_TYPE_BOUND {

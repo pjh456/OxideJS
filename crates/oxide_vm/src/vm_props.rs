@@ -109,14 +109,29 @@ impl Vm {
     ) -> Result<JsValue, String> {
         vm_trace!("ordinary_get_inner: shape={} prop_si={}", obj.shape_id(), prop_name_si);
         // Proxy [[Get]]：get trap 权威（target、P、Receiver），trap 定义时其返回值
-        // 即读结果；trap 未定义落穿普通属性路径。
-        if obj.is_proxy_obj() {
-            let target = oxide_builtins::proxy::proxy_state_ref(obj).expect("状态盒").target;
-            let key = oxide_builtins::object::key_si_to_js_value(self, prop_name_si);
-            if let Some(v) = crate::proxy::call_trap(self, obj, self.perm_intern("get"), &[target, key, receiver])? {
-                return Ok(v);
+        // 即读结果；trap 缺失落穿 target 的 [[Get]]（receiver 不变）。target 本身
+        // 可为代理（嵌套代理），逐层递归应用同一语义直至非代理对象，再落普通读
+        // 路径从该对象继续。
+        let obj = if obj.is_proxy_obj() {
+            let mut current = obj;
+            loop {
+                let target = oxide_builtins::proxy::proxy_state_ref(current).expect("状态盒").target;
+                let key = oxide_builtins::object::key_si_to_js_value(self, prop_name_si);
+                match crate::proxy::call_trap(self, current, self.perm_intern("get"), &[target, key, receiver])? {
+                    Some(v) => return Ok(v),
+                    None => {
+                        // SAFETY: target 由构造器校验为非空对象指针。
+                        let target_obj = unsafe { &*target.as_js_object_ptr() };
+                        if !target_obj.is_proxy_obj() {
+                            break target_obj;
+                        }
+                        current = target_obj;
+                    }
+                }
             }
-        }
+        } else {
+            obj
+        };
         let length_si = self.length_si;
         let mut current = Some(obj);
         let mut depth = 0usize;

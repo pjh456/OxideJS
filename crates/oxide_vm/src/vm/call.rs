@@ -125,6 +125,11 @@ impl Vm {
         if !callee_obj.is_function() {
             return Err(self.error_message_text("TypeError", "accessor is not callable"));
         }
+        // Proxy [[Call]]：apply trap 权威（target, thisArgument, argumentsList）；
+        // trap 缺失落穿 target 的普通调用路径（嵌套代理经递归自然消解）。
+        if callee_obj.is_proxy_obj() {
+            return crate::proxy::proxy_apply_call(self, callee_obj, receiver, args);
+        }
 
         if let Some(native_fn) = callee_obj.native_fn() {
             if self.native_call_depth >= self.kernel_core.config.max_call_depth {

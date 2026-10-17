@@ -87,6 +87,59 @@ impl Vm {
             return self.dispatch_new_bound(rd, constructor, new_obj, args, call_window);
         }
 
+        let mut args = Vec::with_capacity(arg_count);
+        for i in 0..arg_count.min(256) {
+            args.push(self.regs[first_arg_reg.wrapping_add(i as u8) as usize]);
+        }
+        self.dispatch_new_target(ctor_obj, constructor, constructor, rd, &args, call_window)
+    }
+
+    /// 构造器普通 [[Construct]]：Proxy construct trap 路由、新对象分配、原型读
+    /// （newTarget）、native / 字节码分派。
+    ///
+    /// # 步骤
+    /// 1. Proxy [[Construct]]：construct trap 权威（target、argumentsList、
+    ///    newTarget）；trap 缺失落穿 target 的普通 [[Construct]]（newTarget 不变，
+    ///    嵌套代理经递归自然消解）。
+    /// 2. 分配占位 this（原型默认 Object.prototype）。
+    /// 3. GpFC 自 newTarget 读原型（native 形裸读、字节码形传播读）。
+    /// 4. native 构造器：值传递调用（receiver = 新对象，new.target 槽 = newTarget）；
+    ///    字节码构造器：压构造帧（this = 新对象，派生构造器为 undefined）。
+    ///
+    /// # 边界与前提
+    /// - `ctor_obj` 为待分派的构造器（native / 字节码臂）；`new_target` 为
+    ///   newTarget（原型读源与 new.target 槽），非代理路径两者恒同一值。
+    pub(crate) fn dispatch_new_target(
+        &mut self,
+        ctor_obj: &JsObject,
+        constructor: JsValue,
+        new_target: JsValue,
+        rd: usize,
+        args: &[JsValue],
+        call_window: u8,
+    ) -> Result<bool, String> {
+        // Proxy [[Construct]]：construct trap 权威（target, argumentsList,
+        // newTarget）；trap 缺失落穿 target 的普通 [[Construct]] 路径。
+        if ctor_obj.is_proxy_obj() {
+            match crate::proxy::proxy_construct_trap(self, ctor_obj, args, new_target) {
+                Ok(Some(v)) => {
+                    self.regs[rd] = v;
+                    return Ok(false);
+                }
+                Ok(None) => {
+                    let target = oxide_builtins::proxy::proxy_state_ref(ctor_obj).expect("状态盒").target;
+                    let target_obj = unsafe { &*target.as_js_object_ptr() };
+                    return self.dispatch_new_target(target_obj, target, new_target, rd, args, call_window);
+                }
+                Err(msg) => {
+                    // trap 抛错（含 revoked / 非可调用 / 非对象返回）须恢复为可捕获
+                    // JS 异常：原值经 last_uncaught_value 保留，深度 0 就地展开。
+                    self.raise_call_error(&msg)?;
+                    return Ok(true);
+                }
+            }
+        }
+
         let proto_ptr = self.realm.object_prototype.borrow().as_ptr() as *mut JsObject;
         let new_obj = self.alloc_object(JsObject::new_empty(
             oxide_kernel::shape_forge::EMPTY_SHAPE_ID,
@@ -99,11 +152,13 @@ impl Vm {
         // 先于函数体求值，访问器 getter 的异常须原值上抛，非对象结果回落
         // Object.prototype）。bound 包装已在上方转发臂返回，不到达此处。
         let proto_si = self.kernel_core.perm_interner().intern("prototype").0;
+        // SAFETY: new_target 为构造器值（非空对象指针）。
+        let new_target_obj = unsafe { &*new_target.as_js_object_ptr() };
         let proto_val = if ctor_obj.native_fn().is_some() {
-            self.resolve_property(ctor_obj, proto_si)
+            self.resolve_property(new_target_obj, proto_si)
         } else {
             let pc_before = self.pc;
-            match self.ordinary_get(ctor_obj, proto_si, constructor) {
+            match self.ordinary_get(new_target_obj, proto_si, new_target) {
                 Ok(v) if self.pc == pc_before => Some(v),
                 Ok(_) => {
                     // getter 抛且已有 catch/finally 接手：展开已跳到落点，停构造流。
@@ -131,10 +186,6 @@ impl Vm {
 
         if ctor_obj.native_fn().is_some() {
             let new_obj_val = JsValue::object(new_obj as *mut u8);
-            let mut args = Vec::with_capacity(arg_count);
-            for i in 0..arg_count.min(256) {
-                args.push(self.regs[first_arg_reg.wrapping_add(i as u8) as usize]);
-            }
             // native 构造器：收口到 call_function_sync（与 spread / bound 变体一致）。
             // 该入口统一保存/恢复调用窗口与 253/254 槽且不触碰 255，调用方
             // new.target 与 this 跨 native 构造不被污染；receiver 经 arg0 打包，
@@ -143,9 +194,9 @@ impl Vm {
             // 夹持（调用后恢复）。
             let saved_new_target = self.regs[255];
             let saved_constructing = self.constructing_native;
-            self.regs[255] = constructor;
+            self.regs[255] = new_target;
             self.constructing_native = true;
-            let result = self.call_function_sync(constructor, new_obj_val, &args);
+            let result = self.call_function_sync(constructor, new_obj_val, args);
             self.constructing_native = saved_constructing;
             self.regs[255] = saved_new_target;
             match result {
@@ -187,7 +238,7 @@ impl Vm {
 
             let new_obj_val = JsValue::object(new_obj as *mut u8);
             // 收敛到统一压帧入口：derived 构造器在 super() 前 this 为 undefined，
-            // 基类构造器 this = 新对象；new.target = 构造器本身。
+            // 基类构造器 this = 新对象；new.target = newTarget。
             let this_value = if ctor_obj.is_derived_constructor() {
                 JsValue::undefined()
             } else {
@@ -196,11 +247,8 @@ impl Vm {
             self.push_bytecode_frame(
                 constructor,
                 this_value,
-                FrameArgs::RegRange {
-                    first: first_arg_reg,
-                    count: arg_count,
-                },
-                ConstructArgs::new(rd as u8, new_obj_val, constructor),
+                FrameArgs::Slice(args),
+                ConstructArgs::new(rd as u8, new_obj_val, new_target),
                 FrameContinuation::None,
                 call_window,
             )?;

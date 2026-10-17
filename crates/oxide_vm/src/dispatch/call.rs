@@ -108,12 +108,13 @@ impl Vm {
                     }
                     // 无本体函数对象（Function.prototype）：[[Call]] 接受任意实参
                     // 返回 undefined，不执行函数体。
-                    if obj.native_fn().is_none() && obj.sub_module_index() == 0 {
+                    if obj.native_fn().is_none() && obj.sub_module_index() == 0 && !obj.is_proxy_obj() {
                         self.regs[0] = JsValue::undefined();
                         return Ok(());
                     }
-                    if obj.native_fn().is_some() {
-                        // 尾调用转发为普通调用形态。
+                    if obj.is_proxy_obj() || obj.native_fn().is_some() {
+                        // 尾调用转发为普通调用形态（代理经 call_function_sync 的
+                        // apply trap 路由，缺失落穿 target）。
                         self.constructing_native = false;
                         match self.call_function_sync(callee, this, &args) {
                             Ok(val) => {
@@ -1094,103 +1095,9 @@ impl Vm {
             return self.dispatch_new_bound(rd, constructor, new_obj, args, 0);
         }
 
-        let proto_ptr = self.realm.object_prototype.borrow().as_ptr() as *mut JsObject;
-        let new_obj = self.alloc_object(JsObject::new_empty(
-            oxide_kernel::shape_forge::EMPTY_SHAPE_ID,
-            JsValue::from_js_object(proto_ptr),
-        ));
-        // GpFC 按构造器种类分读形：native 构造器保持裸存储读（占位 receiver
-        // 不可观测，构造体自重读覆盖可观测面）；字节码构造器走传播读（getter
-        // 异常原值上抛，非对象结果回落 Object.prototype）。
-        let proto_si = self.kernel_core.perm_interner().intern("prototype").0;
-        let proto_val = if ctor_obj.native_fn().is_some() {
-            self.resolve_property(ctor_obj, proto_si)
-        } else {
-            let pc_before = self.pc;
-            match self.ordinary_get(ctor_obj, proto_si, constructor) {
-                Ok(v) if self.pc == pc_before => Some(v),
-                Ok(_) => {
-                    // getter 抛且已有 catch/finally 接手：展开已跳到落点，停构造流。
-                    return Ok(true);
-                }
-                Err(err) => {
-                    // 无处理器（或重入在途异常）：恢复原值走异常通道。
-                    let exc = self
-                        .last_uncaught_value
-                        .take()
-                        .unwrap_or_else(|| oxide_builtins::error::create_from_text(self, &err));
-                    self.exception_value = Some(exc);
-                    self.pending_error_kind = Some(self.thrown_error_kind(exc));
-                    return self.unwind().map(|_| true);
-                }
-            }
-        };
-        if let Some(v) = proto_val {
-            if v.is_object() {
-                let new_obj_mut = unsafe { &mut *new_obj };
-                let proto_obj_ptr = v.as_js_object_ptr();
-                let _ = new_obj_mut.set_proto(JsValue::from_js_object(proto_obj_ptr));
-            }
-        }
-        let new_obj_val = JsValue::object(new_obj as *mut u8);
-
-        if ctor_obj.native_fn().is_some() {
-            // native 构造器：receiver 为新对象，值传递调用。newTarget 快照后置入
-            // reg(255) 暴露给 native 构造器（调用后恢复原值）；构造形态标记同窗
-            // 夹持（调用返回即恢复，先于结果分派，异常结局不残留）。
-            let saved_new_target = self.regs[255];
-            let saved_constructing = self.constructing_native;
-            self.regs[255] = constructor;
-            self.constructing_native = true;
-            let result = self.call_function_sync(constructor, new_obj_val, &args);
-            self.constructing_native = saved_constructing;
-            self.regs[255] = saved_new_target;
-            match result {
-                Ok(v) => {
-                    self.regs[rd] = if v.is_object() { v } else { new_obj_val };
-                    Ok(false)
-                }
-                Err(_) => {
-                    let exc = self
-                        .last_uncaught_value
-                        .take()
-                        .unwrap_or_else(|| oxide_builtins::error::create_error(self, "constructor call failed"));
-                    self.exception_value = Some(exc);
-                    self.pending_error_kind = Some(self.thrown_error_kind(exc));
-                    self.unwind().map(|_| true)
-                }
-            }
-        } else if ctor_obj.sub_module_index() > 0 {
-            // 按构造器自身记录的表代际解析。
-            let sub = self.callee_module(ctor_obj);
-            // 生成器函数不是构造器：`new g()` 抛 TypeError。
-            if matches!(sub, Some(m) if m.is_generator) {
-                return self.raise_type_error("g is not a constructor").map(|_| true);
-            }
-            // 异步函数不是构造器：`new f()` 抛 TypeError。
-            if matches!(sub, Some(m) if m.is_async) {
-                return self.raise_type_error("g is not a constructor").map(|_| true);
-            }
-            let this_value = if ctor_obj.is_derived_constructor() {
-                JsValue::undefined()
-            } else {
-                new_obj_val
-            };
-            self.push_bytecode_frame(
-                constructor,
-                this_value,
-                FrameArgs::Slice(&args),
-                ConstructArgs::new(rd as u8, new_obj_val, constructor),
-                FrameContinuation::None,
-                0,
-            )?;
-            Ok(true)
-        } else {
-            // 无函数体的函数对象（如 Function.prototype）：IsConstructor 为假，
-            // 按规范抛 TypeError（与非 spread 的 NEW_EXPRESSION 臂同形）。
-            self.raise_type_error("NEW_EXPRESSION: constructor is not a constructor")
-                .map(|_| true)
-        }
+        // Proxy [[Construct]] 路由、新对象分配、原型读与 native / 字节码分派
+        // 收敛到统一入口（spread 路径无调用点存活上界，窗口取 0）。
+        self.dispatch_new_target(ctor_obj, constructor, constructor, rd, &args, 0)
     }
 
     /// SUPER_CALL_SPREAD：物化实参后按父构造器目标分派（native 走值传递，字节码走帧）。

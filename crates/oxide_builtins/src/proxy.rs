@@ -70,15 +70,23 @@ fn check_target_and_handler(target: JsValue, handler: JsValue) -> Result<(), &'s
     Ok(())
 }
 
-/// 不变量检查（规范 10.2.4 步骤 4-5）：handler 的 isExtensible 与 setPrototypeOf
-/// trap 若存在，其布尔值须与 target 实际状态一致，否则抛 TypeError。
+/// 不变量检查（规范 10.2.4 步骤 1、4-5）：target 可调用时须可扩展，handler
+/// 的 isExtensible 与 setPrototypeOf trap 若存在，其布尔值须与 target 实际
+/// 状态一致，否则抛 TypeError。
 ///
 /// # 边界与前提
 /// - 仅当 handler 自有对应 trap 属性时检查（继承属性不触发）。
 /// - trap 读为传播读，getter 抛错原值上抛。
 fn proxy_create_invariants<H: VmHost>(
-    vm: &mut H, target_obj: &JsObject, handler_obj: &JsObject, handler: JsValue,
+    vm: &mut H, target: JsValue, target_obj: &JsObject, handler_obj: &JsObject, handler: JsValue,
 ) -> Result<(), JsValue> {
+    // target 可调用且不可扩展：函数代理的不变量无法满足，抛 TypeError。
+    if crate::iterator::is_callable(target) && !target_obj.is_extensible() {
+        return Err(crate::error::create_type_error(
+            vm,
+            "Proxy target must be extensible if it is callable",
+        ));
+    }
     // isExtensible trap：handler 报 true 时 target 须可扩展，报 false 时须不可扩展。
     let si_is_extensible = vm.perm_intern("isExtensible");
     if vm.get_own_property_slot(handler_obj, si_is_extensible).is_some() {
@@ -160,7 +168,7 @@ pub fn proxy_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     // SAFETY: check_target_and_handler 已校验非空对象指针。
     let target_obj = unsafe { &*target.as_js_object_ptr() };
     let handler_obj = unsafe { &*handler.as_js_object_ptr() };
-    if let Err(exc) = proxy_create_invariants(vm, target_obj, handler_obj, handler) {
+    if let Err(exc) = proxy_create_invariants(vm, target, target_obj, handler_obj, handler) {
         return NativeResult::Err(exc);
     }
     NativeResult::Ok(create_proxy_object(vm, target, handler))
@@ -187,7 +195,7 @@ pub fn proxy_revocable<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     // SAFETY: check_target_and_handler 已校验非空对象指针。
     let target_obj = unsafe { &*target.as_js_object_ptr() };
     let handler_obj = unsafe { &*handler.as_js_object_ptr() };
-    if let Err(exc) = proxy_create_invariants(vm, target_obj, handler_obj, handler) {
+    if let Err(exc) = proxy_create_invariants(vm, target, target_obj, handler_obj, handler) {
         return NativeResult::Err(exc);
     }
     let proxy_val = create_proxy_object(vm, target, handler);

@@ -17,6 +17,12 @@ use super::common::{
 pub fn array_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let proto = vm.builtin_proto(ProtoKind::ArrayProto);
     let proto_val = JsValue::from_js_object(proto);
+    let this_val = vm.reg(if args.is_empty() { 0 } else { args[0] });
+    // 构造形态（newTarget 在场）：产物须为 Array exotic 对象（Array.isArray 认）
+    // 且原型取 newTarget.prototype（派生类 / 代理 newTarget 由此拿到子类实例），
+    // 原型已由构造入口预写入 receiver，直接读取复用；普通调用形态自建
+    // Array.prototype 原型的新数组。
+    let in_construct = vm.constructing_native() && this_val.is_object();
 
     if args.len() == 2 {
         let val = vm.reg(args[1]);
@@ -25,7 +31,13 @@ pub fn array_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
                 Ok(n) => n,
                 Err(err) => return NativeResult::Err(err),
             };
-            let arr = vm.alloc_object(JsObject::new_array(EMPTY_SHAPE_ID, proto_val, n));
+            let arr_proto = if in_construct {
+                // SAFETY: receiver 是构造帧分配的 this（本 session 存活），只读原型。
+                unsafe { &*this_val.as_js_object_ptr() }.proto()
+            } else {
+                proto_val
+            };
+            let arr = vm.alloc_object(JsObject::new_array(EMPTY_SHAPE_ID, arr_proto, n));
             // 数值长度分支建 n 个空洞而非 present-undefined：`in`、for-in、
             // Object.keys 按缺失处理，元素 Get 落原型链。物理区以稠密上限
             // 钳位（越界索引无物理槽，逻辑长度已覆盖）。
@@ -39,7 +51,13 @@ pub fn array_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     }
 
     let n_elems = if args.len() > 1 { args.len() - 1 } else { 0 };
-    let arr = vm.alloc_object(JsObject::new_array(EMPTY_SHAPE_ID, proto_val, n_elems));
+    let arr_proto = if in_construct {
+        // SAFETY: receiver 是构造帧分配的 this（本 session 存活），只读原型。
+        unsafe { &*this_val.as_js_object_ptr() }.proto()
+    } else {
+        proto_val
+    };
+    let arr = vm.alloc_object(JsObject::new_array(EMPTY_SHAPE_ID, arr_proto, n_elems));
     for i in 0..n_elems {
         unsafe {
             (*arr).set_prop_at(i, vm.reg(args[1 + i]));
