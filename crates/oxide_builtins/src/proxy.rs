@@ -82,10 +82,7 @@ fn proxy_create_invariants<H: VmHost>(
 ) -> Result<(), JsValue> {
     // target 可调用且不可扩展：函数代理的不变量无法满足，抛 TypeError。
     if crate::iterator::is_callable(target) && !target_obj.is_extensible() {
-        return Err(crate::error::create_type_error(
-            vm,
-            "Proxy target must be extensible if it is callable",
-        ));
+        return Err(crate::error::create_type_error(vm, "Proxy target must be extensible if it is callable"));
     }
     // isExtensible trap：handler 报 true 时 target 须可扩展，报 false 时须不可扩展。
     let si_is_extensible = vm.perm_intern("isExtensible");

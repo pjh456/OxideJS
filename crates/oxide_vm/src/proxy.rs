@@ -85,16 +85,10 @@ pub(crate) fn call_trap(
     // trap 值须可调用（规范 Call 语义）：非可调用抛 TypeError 而非落入
     // call_function_sync 的通用「accessor is not callable」文本（kind 丢失）。
     if !trap_val.is_object() {
-        return Err(oxide_runtime_api::format_error_message(
-            "TypeError",
-            "Proxy trap is not callable",
-        ));
+        return Err(oxide_runtime_api::format_error_message("TypeError", "Proxy trap is not callable"));
     }
     if !unsafe { &*trap_val.as_js_object_ptr() }.is_function() {
-        return Err(oxide_runtime_api::format_error_message(
-            "TypeError",
-            "Proxy trap is not callable",
-        ));
+        return Err(oxide_runtime_api::format_error_message("TypeError", "Proxy trap is not callable"));
     }
     let result = vm.call_function_sync(trap_val, handler, args)?;
     Ok(Some(result))
@@ -407,9 +401,8 @@ mod tests {
         let target = native_fn_obj(&mut vm, target_return_7);
         let handler = vm.alloc_object(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::undefined()));
         let proxy = proxy_with_state(&mut vm, JsValue::from_js_object(target), JsValue::from_js_object(handler));
-        let result =
-            proxy_apply_call(&mut vm, unsafe { &*proxy }, JsValue::undefined(), &[JsValue::int(1)])
-                .expect("落穿 target 应成功");
+        let result = proxy_apply_call(&mut vm, unsafe { &*proxy }, JsValue::undefined(), &[JsValue::int(1)])
+            .expect("落穿 target 应成功");
         assert_eq!(result, JsValue::int(7), "target 调用结果须原样返回");
     }
 

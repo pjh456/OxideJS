@@ -110,12 +110,7 @@ impl Vm {
     /// - `ctor_obj` 为待分派的构造器（native / 字节码臂）；`new_target` 为
     ///   newTarget（原型读源与 new.target 槽），非代理路径两者恒同一值。
     pub(crate) fn dispatch_new_target(
-        &mut self,
-        ctor_obj: &JsObject,
-        constructor: JsValue,
-        new_target: JsValue,
-        rd: usize,
-        args: &[JsValue],
+        &mut self, ctor_obj: &JsObject, constructor: JsValue, new_target: JsValue, rd: usize, args: &[JsValue],
         call_window: u8,
     ) -> Result<bool, String> {
         // Proxy [[Construct]]：construct trap 权威（target, argumentsList,
