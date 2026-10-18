@@ -314,9 +314,7 @@ impl Vm {
         Ok(true)
     }
 
-    fn inherited_property_meta(
-        &mut self, obj: &JsObject, prop_name_si: u32,
-    ) -> Result<Option<PropMetaEntry>, String> {
+    fn inherited_property_meta(&mut self, obj: &JsObject, prop_name_si: u32) -> Result<Option<PropMetaEntry>, String> {
         vm_trace!("inherited_property_meta: shape={} prop_si={}", obj.shape_id(), prop_name_si);
         let mut proto = self.get_prototype_of(obj)?;
         let mut depth = 0usize;

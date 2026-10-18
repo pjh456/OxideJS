@@ -124,9 +124,7 @@ impl Vm {
     /// 沿实例→proto 链查找私有方法/访问器槽（存于类的 home=proto）。字段槽不跨原型
     /// （PrivateFieldFind 只查 own）——链上遇到字段槽（无 hole meta）即拒绝，防
     /// `Object.create(instance)` 穿透读取实例字段。
-    fn find_private_method_slot(
-        &mut self, obj: &JsObject, private_key: u32,
-    ) -> Result<Option<*mut JsObject>, String> {
+    fn find_private_method_slot(&mut self, obj: &JsObject, private_key: u32) -> Result<Option<*mut JsObject>, String> {
         let mut proto = self.get_prototype_of(obj)?;
         let mut depth = 0usize;
         while proto.is_object() && depth < MAX_PROTO_CHAIN_DEPTH {
