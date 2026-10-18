@@ -974,6 +974,20 @@ impl Vm {
                             .raise_type_error("class constructor cannot be invoked without 'new'")
                             .map(|_| true);
                     }
+                    // Proxy [[Call]]：apply trap 权威（target, thisArgument,
+                    // argumentsList）；trap 缺失落穿 target 的普通调用路径。
+                    if obj.is_proxy_obj() {
+                        match crate::proxy::proxy_apply_call(self, obj, this_value, &args) {
+                            Ok(v) => {
+                                self.regs[0] = v;
+                                return Ok(false);
+                            }
+                            Err(msg) => {
+                                self.raise_call_error(&msg)?;
+                                return Ok(true);
+                            }
+                        }
+                    }
                     // 无本体函数对象（Function.prototype）：[[Call]] 接受任意实参
                     // 返回 undefined，不执行函数体。
                     if obj.native_fn().is_none() && obj.sub_module_index() == 0 {

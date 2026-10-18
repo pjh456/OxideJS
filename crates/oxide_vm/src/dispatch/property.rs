@@ -374,6 +374,7 @@ impl Vm {
             if self.accessor_frame_target_reg.take().is_none() {
                 self.regs[a] = val;
             }
+            self.pc += IC_EXT_WORDS;
             return Ok(());
         }
         // 入口快判：键寄存器恒为 perm 串，指针相等即键为 "length"；
