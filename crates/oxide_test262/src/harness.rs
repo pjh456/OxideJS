@@ -66,14 +66,8 @@ impl HarnessSources {
             "resizableArrayBufferUtils.js",
             include_str!("../../../tests/test262/harness/resizableArrayBufferUtils.js"),
         );
-        sources.insert(
-            "proxyTrapsHelper.js",
-            include_str!("../../../tests/test262/harness/proxyTrapsHelper.js"),
-        );
-        sources.insert(
-            "iteratorZipUtils.js",
-            include_str!("../../../tests/test262/harness/iteratorZipUtils.js"),
-        );
+        sources.insert("proxyTrapsHelper.js", include_str!("../../../tests/test262/harness/proxyTrapsHelper.js"));
+        sources.insert("iteratorZipUtils.js", include_str!("../../../tests/test262/harness/iteratorZipUtils.js"));
         Self { sources }
     }
 
@@ -89,11 +83,7 @@ pub(crate) static HARNESS: OnceLock<HarnessSources> = OnceLock::new();
 fn is_blacklisted_harness(name: &str) -> bool {
     matches!(
         name,
-        "testIntl.js"
-            | "atomicsHelper.js"
-            | "tcoHelper.js"
-            | "byteConversionValues.js"
-            | "compareIterator.js"
+        "testIntl.js" | "atomicsHelper.js" | "tcoHelper.js" | "byteConversionValues.js" | "compareIterator.js"
     )
 }
 
