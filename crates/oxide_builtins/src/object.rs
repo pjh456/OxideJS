@@ -1579,7 +1579,7 @@ fn desc_field_bool<H: VmHost>(vm: &mut H, desc: JsValue, prop_si: u32) -> Result
 /// [[IsExtensible]]（代理感知）：代理经 isExtensible trap 路由（实参 target，
 /// 结果经 ToBoolean 投影，trap 报告须与 target 实际可扩展状态一致，不一致抛
 /// TypeError），trap 缺失落穿 target；普通对象读自身标志。
-fn proxy_is_extensible<H: VmHost>(vm: &mut H, obj: &JsObject) -> Result<bool, String> {
+pub fn proxy_is_extensible<H: VmHost>(vm: &mut H, obj: &JsObject) -> Result<bool, String> {
     if !obj.is_proxy_obj() {
         return Ok(obj.is_extensible());
     }
@@ -1943,9 +1943,10 @@ fn seal_own_prop_meta(obj: &mut JsObject, store: u32) {
 }
 
 /// 代理 [[PreventExtensions]]（规范 ProxyPreventExtensions）：preventExtensions
-/// trap 以（target）调用，结果经 ToBoolean 投影后须与 target 实际可扩展状态
-/// 一致（不一致抛 TypeError）；trap 缺失落穿 target 的普通 preventExtensions
-/// （置不可扩展标志，返 true）。
+/// trap 以（target）调用，结果经 ToBoolean 投影；trap 报 true 而 target 可扩展
+/// 时抛 TypeError（报 false 无论 target 状态均原样返回）；trap 缺失落穿
+/// target 的 [[PreventExtensions]]（target 自身为代理时递归再路由，普通对象
+/// 置不可扩展标志）。
 pub fn proxy_prevent_extensions<H: VmHost>(vm: &mut H, obj: &JsObject) -> Result<bool, JsValue> {
     let target = crate::proxy::proxy_state_ref(obj).expect("状态盒").target;
     // SAFETY: target 由构造器校验为非空对象指针。
@@ -1955,32 +1956,45 @@ pub fn proxy_prevent_extensions<H: VmHost>(vm: &mut H, obj: &JsObject) -> Result
         Err(msg) => return Err(own_keys_trap_exc(vm, msg)),
     };
     let Some(r) = trap_result else {
-        // OrdinaryPreventExtensions(target)：置不可扩展标志。
+        // 落穿 target 的 [[PreventExtensions]]：target 自身为代理时递归再路由
+        // （其 trap 与落穿语义对 target 生效）；普通对象置不可扩展标志。
+        if target_obj.is_proxy_obj() {
+            return proxy_prevent_extensions(vm, target_obj);
+        }
         // SAFETY: target 由构造器校验为非空对象指针。
         unsafe { &mut *target.as_js_object_ptr() }.set_extensible(false);
         return Ok(true);
     };
     let result = oxide_runtime_api::to_boolean(r);
-    let target_extensible =
-        proxy_is_extensible(vm, target_obj).map_err(|msg| crate::error::create_from_text(vm, &msg))?;
-    if result != target_extensible {
-        return Err(crate::error::create_type_error(
-            vm,
-            "Proxy preventExtensions trap result is inconsistent with target",
-        ));
+    if result {
+        let target_extensible =
+            proxy_is_extensible(vm, target_obj).map_err(|msg| crate::error::create_from_text(vm, &msg))?;
+        if target_extensible {
+            return Err(crate::error::create_type_error(
+                vm,
+                "Proxy preventExtensions trap returned true for an extensible target",
+            ));
+        }
     }
     Ok(result)
 }
 
-/// 代理完整性级别（规范 SetIntegrityLevel）：[[PreventExtensions]]（代理感知）
-/// 后 [[OwnPropertyKeys]]（代理感知），逐键 DefinePropertyOrThrow（经
-/// defineProperty trap 路由，trap 缺失落穿 target）。seal 仅置 configurable:
-/// false；freeze 对数据属性额外置 writable: false（规范步 7b 先读 currentDesc
-/// 区分数据/访问器，访问器不写 writable 字段）。
+/// 代理完整性级别（规范 SetIntegrityLevel）：[[PreventExtensions]]（代理感知，
+/// 报 false 时按规范抛 TypeError）后 [[OwnPropertyKeys]]（代理感知），逐键
+/// DefinePropertyOrThrow（经 defineProperty trap 路由，trap 缺失落穿 target）。
+/// seal 仅置 configurable: false；freeze 对数据属性额外置 writable: false
+/// （规范步 7b 先读 currentDesc 区分数据/访问器，访问器不写 writable 字段）。
 fn proxy_set_integrity_level<H: VmHost>(vm: &mut H, obj_ptr: *mut JsObject, frozen: bool) -> Result<(), JsValue> {
     // SAFETY: obj_ptr 为存活对象指针。
     let obj = unsafe { &*obj_ptr };
-    proxy_prevent_extensions(vm, obj)?;
+    // SetIntegrityLevel 步 3：[[PreventExtensions]] 报 false 时完整性级别
+    // 返回 false，Object.freeze/seal 按规范抛 TypeError。
+    if !proxy_prevent_extensions(vm, obj)? {
+        return Err(crate::error::create_type_error(
+            vm,
+            "SetIntegrityLevel: [[PreventExtensions]] returned false",
+        ));
+    }
     let (keys, _storage) = own_keys_proxy_aware(vm, obj)?;
     let cfg_si = vm.perm_intern("configurable");
     let writable_si = vm.perm_intern("writable");
@@ -2138,6 +2152,10 @@ pub fn object_seal<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 }
 
 /// `Object.preventExtensions(obj)`：禁止添加新属性，返回原对象。
+///
+/// # 边界与前提
+/// - 代理经 preventExtensions trap 路由（缺失落穿 target）；`[[PreventExtensions]]`
+///   报 false 时按规范抛 TypeError。
 pub fn object_prevent_extensions<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     if args.len() < 2 {
         return NativeResult::Err(crate::error::create_type_error(vm, "Object.preventExtensions called on non-object"));
@@ -2147,10 +2165,16 @@ pub fn object_prevent_extensions<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeRe
         return NativeResult::Ok(val);
     }
     let obj_ptr = val.as_js_object_ptr();
-    unsafe {
-        (*obj_ptr).set_extensible(false);
+    match vm.prevent_extensions(unsafe { &mut *obj_ptr }) {
+        Ok(true) => NativeResult::Ok(val),
+        // [[PreventExtensions]] 报 false：规范 20.1.2.20 步 3 抛 TypeError。
+        Ok(false) => NativeResult::Err(crate::error::create_type_error(
+            vm,
+            "Object.preventExtensions: [[PreventExtensions]] returned false",
+        )),
+        // 代理 trap 异常原值传播（ReturnIfAbrupt）。
+        Err(err) => NativeResult::Err(crate::array::from_engine_error(vm, &err)),
     }
-    NativeResult::Ok(val)
 }
 
 /// `Object.isFrozen(obj)`：对象是否冻结（检查 extensible 及全部属性 writable/configurable）。
@@ -2236,6 +2260,10 @@ pub fn object_is_sealed<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 }
 
 /// `Object.isExtensible(obj)`：对象是否可扩展。
+///
+/// # 边界与前提
+/// - 代理经 isExtensible trap 路由（缺失落穿 target，报告与 target 状态
+///   不一致抛 TypeError）；普通对象读自身标志。
 pub fn object_is_extensible<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     if args.len() < 2 {
         return NativeResult::Err(crate::error::create_type_error(vm, "Object.isExtensible called on non-object"));
@@ -2248,8 +2276,11 @@ pub fn object_is_extensible<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult 
     if obj_ptr.is_null() {
         return NativeResult::Ok(JsValue::bool(false));
     }
-    let obj = unsafe { &*obj_ptr };
-    NativeResult::Ok(JsValue::bool(obj.is_extensible()))
+    match vm.is_extensible(unsafe { &*obj_ptr }) {
+        Ok(extensible) => NativeResult::Ok(JsValue::bool(extensible)),
+        // 代理 trap 异常原值传播（ReturnIfAbrupt）。
+        Err(err) => NativeResult::Err(crate::array::from_engine_error(vm, &err)),
+    }
 }
 
 /// `Object.getOwnPropertyNames(obj)`：返回全部自身属性名（含不可枚举）。

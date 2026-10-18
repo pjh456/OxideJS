@@ -704,12 +704,41 @@ mod tests {
             "isExtensible trap 须命中"
         );
 
-        // preventExtensions：trap 报 true（与 target 可扩展状态一致）。
+        // ownKeys：trap 返数组，原样透传。
+        let keys = vm.own_keys(proxy_ref).expect("own_keys 应成功");
+        assert_eq!(keys.len(), 1, "ownKeys trap 返值须为单元素数组");
+        assert_eq!(vm.lookup_str(keys[0]).as_deref(), Some("k"), "ownKeys trap 返值须原样透传");
+        assert_eq!(vm.resolve_property(handler_ref, hits_si).unwrap(), JsValue::int(3), "ownKeys trap 须命中");
+
+        // getOwnPropertyDescriptor：trap 返描述符对象，原样透传。
+        let desc = vm
+            .get_own_property_desc(proxy_ref, key_si)
+            .expect("get_own_property_desc 应成功");
+        assert!(desc.is_some(), "getOwnPropertyDescriptor trap 须返描述符");
+        assert_eq!(
+            vm.resolve_property(handler_ref, hits_si).unwrap(),
+            JsValue::int(4),
+            "getOwnPropertyDescriptor trap 须命中"
+        );
+
+        // deleteProperty：trap 报 true，布尔投影为 true。
+        assert!(
+            vm.delete_own(unsafe { &mut *proxy }, key_si).expect("delete_own 应成功"),
+            "deleteProperty trap 报 true 须投影为 true"
+        );
+        assert_eq!(
+            vm.resolve_property(handler_ref, hits_si).unwrap(),
+            JsValue::int(5),
+            "deleteProperty trap 须命中"
+        );
+
+        // preventExtensions：trap 报 true（与 target 不可扩展状态一致）。
+        unsafe { (*target).set_extensible(false) };
         vm.prevent_extensions(unsafe { &mut *proxy })
             .expect("prevent_extensions 应成功");
         assert_eq!(
             vm.resolve_property(handler_ref, hits_si).unwrap(),
-            JsValue::int(3),
+            JsValue::int(6),
             "preventExtensions trap 须命中"
         );
 
@@ -721,36 +750,8 @@ mod tests {
         );
         assert_eq!(
             vm.resolve_property(handler_ref, hits_si).unwrap(),
-            JsValue::int(4),
-            "setPrototypeOf trap 须命中"
-        );
-
-        // ownKeys：trap 返数组，原样透传。
-        let keys = vm.own_keys(proxy_ref).expect("own_keys 应成功");
-        assert_eq!(keys.len(), 1, "ownKeys trap 返值须为单元素数组");
-        assert_eq!(vm.lookup_str(keys[0]).as_deref(), Some("k"), "ownKeys trap 返值须原样透传");
-        assert_eq!(vm.resolve_property(handler_ref, hits_si).unwrap(), JsValue::int(5), "ownKeys trap 须命中");
-
-        // getOwnPropertyDescriptor：trap 返描述符对象，原样透传。
-        let desc = vm
-            .get_own_property_desc(proxy_ref, key_si)
-            .expect("get_own_property_desc 应成功");
-        assert!(desc.is_some(), "getOwnPropertyDescriptor trap 须返描述符");
-        assert_eq!(
-            vm.resolve_property(handler_ref, hits_si).unwrap(),
-            JsValue::int(6),
-            "getOwnPropertyDescriptor trap 须命中"
-        );
-
-        // deleteProperty：trap 报 true，布尔投影为 true。
-        assert!(
-            vm.delete_own(unsafe { &mut *proxy }, key_si).expect("delete_own 应成功"),
-            "deleteProperty trap 报 true 须投影为 true"
-        );
-        assert_eq!(
-            vm.resolve_property(handler_ref, hits_si).unwrap(),
             JsValue::int(7),
-            "deleteProperty trap 须命中"
+            "setPrototypeOf trap 须命中"
         );
     }
 
@@ -809,6 +810,120 @@ mod tests {
 
         // ownKeys trap 返非数组抛 TypeError。
         let err = vm.own_keys(proxy_ref).expect_err("须抛 TypeError");
+        assert!(err.contains("TypeError"), "须抛 TypeError：{err}");
+    }
+
+    /// setPrototypeOf 不变量（规范 10.5.2 步 10-12）：trap 报 true 且 target
+    /// 不可扩展时，新 proto 与 target 原型非 SameValue 抛 TypeError；target
+    /// 可扩展时直接成功（不读 target 原型）。
+    #[test]
+    fn set_prototype_of_invariant_by_extensibility() {
+        let mut vm = Vm::new();
+        let target = vm.alloc_object(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::undefined()));
+        unsafe { (*target).set_proto(JsValue::null()).expect("set_proto 应成功") };
+        unsafe { (*target).set_extensible(false) };
+        let handler = vm.alloc_object(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::undefined()));
+        let trap_fn = native_fn_obj(&mut vm, counting_trap);
+        vm.set_or_create_prop_value(
+            unsafe { &mut *handler },
+            vm.perm_intern("setPrototypeOf"),
+            JsValue::from_js_object(trap_fn),
+        );
+        let proxy = proxy_with_state(&mut vm, JsValue::from_js_object(target), JsValue::from_js_object(handler));
+        // 异 proto：不可扩展 target 下 trap 报 true 须抛 TypeError。
+        let other = vm.alloc_object(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::undefined()));
+        let err = vm
+            .set_prototype_of(unsafe { &mut *proxy }, JsValue::from_js_object(other))
+            .expect_err("须抛 TypeError");
+        assert!(err.contains("TypeError"), "须抛 TypeError：{err}");
+        // 同 proto（null）：不变量通过，返 true。
+        assert!(
+            vm.set_prototype_of(unsafe { &mut *proxy }, JsValue::null())
+                .expect("set_prototype_of 应成功"),
+            "同 proto 须返 true"
+        );
+    }
+
+    /// setPrototypeOf 可扩展早返（规范 10.5.2 步 10-11）：target 可扩展时
+    /// trap 报 true 直接成功，不触 target 的 [[GetPrototypeOf]]（其 trap 抛
+    /// 异常值验证未调用）。
+    #[test]
+    fn set_prototype_of_extensible_target_skips_target_proto_read() {
+        let mut vm = Vm::new();
+        // target 为代理且可扩展：其 getPrototypeOf trap 抛错。
+        fn throwing_get_prototype_trap(vm: &mut Vm, _args: &[u8]) -> NativeResult {
+            let exc = vm.alloc_object(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::undefined()));
+            NativeResult::Err(JsValue::from_js_object(exc))
+        }
+        let inner_target = vm.alloc_object(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::undefined()));
+        let inner_handler = vm.alloc_object(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::undefined()));
+        let throw_fn = native_fn_obj(&mut vm, throwing_get_prototype_trap);
+        vm.set_or_create_prop_value(
+            unsafe { &mut *inner_handler },
+            vm.perm_intern("getPrototypeOf"),
+            JsValue::from_js_object(throw_fn),
+        );
+        let target =
+            proxy_with_state(&mut vm, JsValue::from_js_object(inner_target), JsValue::from_js_object(inner_handler));
+        let handler = vm.alloc_object(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::undefined()));
+        let trap_fn = native_fn_obj(&mut vm, counting_trap);
+        vm.set_or_create_prop_value(
+            unsafe { &mut *handler },
+            vm.perm_intern("setPrototypeOf"),
+            JsValue::from_js_object(trap_fn),
+        );
+        let proxy = proxy_with_state(&mut vm, JsValue::from_js_object(target), JsValue::from_js_object(handler));
+        let new_proto = vm.alloc_object(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::undefined()));
+        assert!(
+            vm.set_prototype_of(unsafe { &mut *proxy }, JsValue::from_js_object(new_proto))
+                .expect("可扩展 target 下 trap 报 true 须成功"),
+            "须返 true"
+        );
+    }
+
+    /// preventExtensions 不变量（规范 10.5.4 步 9）：trap 报 true 而 target
+    /// 可扩展抛 TypeError；target 不可扩展时返 true。
+    #[test]
+    fn prevent_extensions_invariant_by_extensibility() {
+        let mut vm = Vm::new();
+        let target = vm.alloc_object(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::undefined()));
+        let handler = vm.alloc_object(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::undefined()));
+        let trap_fn = native_fn_obj(&mut vm, counting_trap);
+        vm.set_or_create_prop_value(
+            unsafe { &mut *handler },
+            vm.perm_intern("preventExtensions"),
+            JsValue::from_js_object(trap_fn),
+        );
+        let proxy = proxy_with_state(&mut vm, JsValue::from_js_object(target), JsValue::from_js_object(handler));
+        // 可扩展 target + trap 报 true：抛 TypeError。
+        let err = vm.prevent_extensions(unsafe { &mut *proxy }).expect_err("须抛 TypeError");
+        assert!(err.contains("TypeError"), "须抛 TypeError：{err}");
+        // 不可扩展 target + trap 报 true：返 true。
+        unsafe { (*target).set_extensible(false) };
+        assert!(
+            vm.prevent_extensions(unsafe { &mut *proxy })
+                .expect("prevent_extensions 应成功"),
+            "target 不可扩展时 trap 报 true 须返 true"
+        );
+    }
+
+    /// getPrototypeOf 不变量（规范 10.5.1 步 9-12）：target 不可扩展且 trap
+    /// 结果与 target 原型非 SameValue 抛 TypeError。
+    #[test]
+    fn get_prototype_of_invariant_on_non_extensible_target() {
+        let mut vm = Vm::new();
+        let target = vm.alloc_object(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::undefined()));
+        unsafe { (*target).set_proto(JsValue::null()).expect("set_proto 应成功") };
+        unsafe { (*target).set_extensible(false) };
+        let handler = vm.alloc_object(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::undefined()));
+        let trap_fn = native_fn_obj(&mut vm, counting_get_prototype_trap);
+        vm.set_or_create_prop_value(
+            unsafe { &mut *handler },
+            vm.perm_intern("getPrototypeOf"),
+            JsValue::from_js_object(trap_fn),
+        );
+        let proxy = proxy_with_state(&mut vm, JsValue::from_js_object(target), JsValue::from_js_object(handler));
+        let err = vm.get_prototype_of(unsafe { &*proxy }).expect_err("须抛 TypeError");
         assert!(err.contains("TypeError"), "须抛 TypeError：{err}");
     }
 

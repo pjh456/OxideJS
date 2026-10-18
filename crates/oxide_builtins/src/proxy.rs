@@ -70,53 +70,16 @@ fn check_target_and_handler(target: JsValue, handler: JsValue) -> Result<(), &'s
     Ok(())
 }
 
-/// 不变量检查（规范 10.2.4 步骤 1、4-5）：target 可调用时须可扩展，handler
-/// 的 isExtensible 与 setPrototypeOf trap 若存在，其布尔值须与 target 实际
-/// 状态一致，否则抛 TypeError。
+/// 不变量检查（规范 10.5.15 ProxyCreate 步 1-2）：target 可调用且不可扩展时
+/// 抛 TypeError。构造器不读 handler 的 trap 属性（现代规范无构造期 trap 一致性
+/// 检查，不变量在内部方法调用期执行，getter 抛错不得在构造期触发）。
 ///
 /// # 边界与前提
-/// - 仅当 handler 自有对应 trap 属性时检查（继承属性不触发）。
-/// - trap 读为传播读，getter 抛错原值上抛。
-fn proxy_create_invariants<H: VmHost>(
-    vm: &mut H, target: JsValue, target_obj: &JsObject, handler_obj: &JsObject, handler: JsValue,
-) -> Result<(), JsValue> {
+/// - 仅当 target 可调用时检查可扩展性。
+fn proxy_create_invariants<H: VmHost>(vm: &mut H, target: JsValue, target_obj: &JsObject) -> Result<(), JsValue> {
     // target 可调用且不可扩展：函数代理的不变量无法满足，抛 TypeError。
     if crate::iterator::is_callable(target) && !target_obj.is_extensible() {
         return Err(crate::error::create_type_error(vm, "Proxy target must be extensible if it is callable"));
-    }
-    // isExtensible trap：handler 报 true 时 target 须可扩展，报 false 时须不可扩展。
-    let si_is_extensible = vm.perm_intern("isExtensible");
-    if vm.get_own_property_slot(handler_obj, si_is_extensible).is_some() {
-        let trap_val = vm
-            .ordinary_get(handler_obj, si_is_extensible, handler)
-            .map_err(|e| crate::iterator::engine_error(vm, &e))?;
-        let target_extensible = target_obj.is_extensible();
-        let trap_is_true = trap_val.is_bool() && trap_val.as_bool();
-        let trap_is_false = trap_val.is_bool() && !trap_val.as_bool();
-        if (trap_is_true && !target_extensible) || (trap_is_false && target_extensible) {
-            return Err(crate::error::create_type_error(
-                vm,
-                "Proxy invariant: isExtensible trap inconsistent with target",
-            ));
-        }
-    }
-    // setPrototypeOf trap：handler 报 true 时 target 原型须为对象或 null，
-    // 报 false 时须为其它类型。
-    let si_set_proto = vm.perm_intern("setPrototypeOf");
-    if vm.get_own_property_slot(handler_obj, si_set_proto).is_some() {
-        let trap_val = vm
-            .ordinary_get(handler_obj, si_set_proto, handler)
-            .map_err(|e| crate::iterator::engine_error(vm, &e))?;
-        let target_proto = target_obj.proto();
-        let target_proto_is_obj_or_null = target_proto.is_object() || target_proto.is_null();
-        let trap_is_true = trap_val.is_bool() && trap_val.as_bool();
-        let trap_is_false = trap_val.is_bool() && !trap_val.as_bool();
-        if (trap_is_true && !target_proto_is_obj_or_null) || (trap_is_false && target_proto_is_obj_or_null) {
-            return Err(crate::error::create_type_error(
-                vm,
-                "Proxy invariant: setPrototypeOf trap inconsistent with target",
-            ));
-        }
     }
     Ok(())
 }
@@ -146,7 +109,7 @@ fn create_proxy_object<H: VmHost>(vm: &mut H, target: JsValue, handler: JsValue)
 /// # 步骤
 /// 1. NewTarget 校验：非构造形态调用抛 TypeError。
 /// 2. 参数校验：target 与 handler 均须对象。
-/// 3. 不变量检查：handler 的 isExtensible / setPrototypeOf trap 与 target 一致性。
+/// 3. 不变量检查：target 可调用时须可扩展（构造器不读 handler trap 属性）。
 /// 4. 创建代理对象（tag 39 + 状态盒 + Object.prototype 原型链）。
 ///
 /// # 边界与前提
@@ -164,8 +127,7 @@ pub fn proxy_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     }
     // SAFETY: check_target_and_handler 已校验非空对象指针。
     let target_obj = unsafe { &*target.as_js_object_ptr() };
-    let handler_obj = unsafe { &*handler.as_js_object_ptr() };
-    if let Err(exc) = proxy_create_invariants(vm, target, target_obj, handler_obj, handler) {
+    if let Err(exc) = proxy_create_invariants(vm, target, target_obj) {
         return NativeResult::Err(exc);
     }
     NativeResult::Ok(create_proxy_object(vm, target, handler))
@@ -191,8 +153,7 @@ pub fn proxy_revocable<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     }
     // SAFETY: check_target_and_handler 已校验非空对象指针。
     let target_obj = unsafe { &*target.as_js_object_ptr() };
-    let handler_obj = unsafe { &*handler.as_js_object_ptr() };
-    if let Err(exc) = proxy_create_invariants(vm, target, target_obj, handler_obj, handler) {
+    if let Err(exc) = proxy_create_invariants(vm, target, target_obj) {
         return NativeResult::Err(exc);
     }
     let proxy_val = create_proxy_object(vm, target, handler);

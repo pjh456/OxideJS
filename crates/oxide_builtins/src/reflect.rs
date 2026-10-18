@@ -233,12 +233,20 @@ pub fn reflect_has<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 }
 
 /// `Reflect.isExtensible(target)`：对象是否可扩展。
+///
+/// # 边界与前提
+/// - 代理经 isExtensible trap 路由（缺失落穿 target，报告与 target 状态
+///   不一致抛 TypeError）；普通对象读自身标志。
 pub fn reflect_is_extensible<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let target_val = arg(vm, args, 1);
     let Some(target_ptr) = object_ptr(target_val) else {
         return type_error(vm, "Reflect.isExtensible target is not an object");
     };
-    NativeResult::Ok(JsValue::bool(unsafe { &*target_ptr }.is_extensible()))
+    match vm.is_extensible(unsafe { &*target_ptr }) {
+        Ok(extensible) => NativeResult::Ok(JsValue::bool(extensible)),
+        // 代理 trap 异常原值传播（ReturnIfAbrupt）。
+        Err(msg) => NativeResult::Err(from_engine_error(vm, &msg)),
+    }
 }
 
 /// `Reflect.ownKeys(target)`：返回对象全部自身属性键，字符串键在前、Symbol 键在后。
@@ -297,14 +305,22 @@ pub fn reflect_own_keys<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     NativeResult::Ok(JsValue::from_js_object(arr))
 }
 
-/// `Reflect.preventExtensions(target)`：阻止扩展，返回 true。
+/// `Reflect.preventExtensions(target)`：阻止扩展，返回 `[[PreventExtensions]]`
+/// 的布尔结果。
+///
+/// # 边界与前提
+/// - 代理经 preventExtensions trap 路由（缺失落穿 target）；结果按规范
+///   原样返回（非恒 true）。
 pub fn reflect_prevent_extensions<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let target_val = arg(vm, args, 1);
     let Some(target_ptr) = object_ptr(target_val) else {
         return type_error(vm, "Reflect.preventExtensions target is not an object");
     };
-    unsafe { &mut *target_ptr }.set_extensible(false);
-    NativeResult::Ok(JsValue::bool(true))
+    match vm.prevent_extensions(unsafe { &mut *target_ptr }) {
+        Ok(status) => NativeResult::Ok(JsValue::bool(status)),
+        // 代理 trap 异常原值传播（ReturnIfAbrupt）。
+        Err(msg) => NativeResult::Err(from_engine_error(vm, &msg)),
+    }
 }
 
 /// `Reflect.set(target, key, value, receiver)`：按 OrdinarySetWithReceiver 语义写入属性。

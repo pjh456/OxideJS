@@ -330,7 +330,8 @@ pub trait VmHost {
     // 原型与扩展性面（代理感知路由：代理经 trap 路由、非代理委托固有语义）
     /// `[[GetPrototypeOf]]`：返回对象的 prototype（对象或 null）；代理经
     /// getPrototypeOf trap 路由——缺失落穿 target 的 `[[GetPrototypeOf]]`，
-    /// trap 返值须为对象或 null，否则抛 TypeError。
+    /// trap 返值须为对象或 null，否则抛 TypeError；target 不可扩展时 trap
+    /// 结果须与 target 原型 SameValue，否则抛 TypeError。
     ///
     /// # 边界与前提
     /// - `obj` 须为存活对象；代理的 target 由构造器校验为非空对象指针。
@@ -352,18 +353,24 @@ pub trait VmHost {
     /// - 可能执行用户 trap 代码（含分配与 GC）；revoked 抛 TypeError。
     fn set_prototype_of(&mut self, obj: &mut JsObject, proto: JsValue) -> Result<bool, String>;
     /// `[[IsExtensible]]`：返回可扩展标志；代理经 isExtensible trap 路由
-    /// （结果经布尔投影），trap 缺失落穿 target。
+    /// （结果经布尔投影，报告须与 target 实际可扩展状态一致，不一致抛
+    /// TypeError），trap 缺失落穿 target。
     ///
     /// # 副作用
     /// - 可能执行用户 trap 代码（含分配与 GC）；revoked 抛 TypeError。
     fn is_extensible(&mut self, obj: &JsObject) -> Result<bool, String>;
-    /// `[[PreventExtensions]]`：置不可扩展标志；代理经 preventExtensions
-    /// trap 路由（结果经布尔投影，报告须与 target 实际可扩展状态一致），
-    /// trap 缺失落穿 target 的普通 preventExtensions。
+    /// `[[PreventExtensions]]`：置不可扩展标志并返回状态（普通对象恒 true；
+    /// 代理经 preventExtensions trap 路由，结果经布尔投影，trap 报 true 而
+    /// target 可扩展时抛 TypeError），trap 缺失落穿 target 的普通
+    /// preventExtensions。
+    ///
+    /// # 返回值
+    /// - `Ok(true)` 成功置不可扩展；`Ok(false)` 代理 trap 报 false（未置位）；
+    ///   `Err` 为 TypeError 或 trap 异常。
     ///
     /// # 副作用
     /// - 可能执行用户 trap 代码（含分配与 GC）；revoked 抛 TypeError。
-    fn prevent_extensions(&mut self, obj: &mut JsObject) -> Result<(), String>;
+    fn prevent_extensions(&mut self, obj: &mut JsObject) -> Result<bool, String>;
     /// `[[OwnPropertyKeys]]`：返回自身属性键列表（JS 可见键值，整数键升序
     /// 在前、字符串键插入序、Symbol 键插入序）；代理经 ownKeys trap 路由
     /// （缺失落穿 target 自身键，重复键与不可配置键做不变量检查）。

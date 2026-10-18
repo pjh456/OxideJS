@@ -278,6 +278,18 @@ impl oxide_runtime_api::VmHost for Vm {
                         "a [[GetPrototypeOf]] trap returned a non-object and non-null value",
                     ));
                 }
+                // 不变量：target 不可扩展时，trap 结果须与 target 的
+                // [[GetPrototypeOf]] 结果 SameValue（规范 10.5.1 步 9-12）。
+                if !self.is_extensible(unsafe { &*target.as_js_object_ptr() })? {
+                    // SAFETY: target 由构造器校验为非空对象指针。
+                    let target_proto = self.get_prototype_of(unsafe { &*target.as_js_object_ptr() })?;
+                    if !oxide_runtime_api::same_value(result, target_proto) {
+                        return Err(oxide_runtime_api::format_error_message(
+                            "TypeError",
+                            "a [[GetPrototypeOf]] trap returned a value different from the non-extensible target's prototype",
+                        ));
+                    }
+                }
                 Ok(result)
             }
             // SAFETY: target 由构造器校验为非空对象指针。
@@ -310,14 +322,18 @@ impl oxide_runtime_api::VmHost for Vm {
         if !crate::proxy::trap_bool_result(trap_result, "setPrototypeOf")? {
             return Ok(false);
         }
-        // 不变量检查：trap 报 true 时 target 的 prototype 须为对象或 null。
-        // SAFETY: target 由构造器校验为非空对象指针。
-        let target_proto = self.get_prototype_of(unsafe { &*target.as_js_object_ptr() })?;
-        if !target_proto.is_object() && !target_proto.is_null() {
-            return Err(oxide_runtime_api::format_error_message(
-                "TypeError",
-                "a [[SetPrototypeOf]] trap returned true for a non-object and non-null target prototype",
-            ));
+        // 不变量：trap 报 true 且 target 不可扩展时，proto 须与 target 的
+        // [[GetPrototypeOf]] 结果 SameValue（规范 10.5.2 步 10-12）；target
+        // 可扩展时直接成功，不读 target 原型。
+        if !self.is_extensible(unsafe { &*target.as_js_object_ptr() })? {
+            // SAFETY: target 由构造器校验为非空对象指针。
+            let target_proto = self.get_prototype_of(unsafe { &*target.as_js_object_ptr() })?;
+            if !oxide_runtime_api::same_value(proto, target_proto) {
+                return Err(oxide_runtime_api::format_error_message(
+                    "TypeError",
+                    "a [[SetPrototypeOf]] trap returned true for a non-extensible target with a different prototype",
+                ));
+            }
         }
         Ok(true)
     }
@@ -325,24 +341,19 @@ impl oxide_runtime_api::VmHost for Vm {
         if !obj.is_proxy_obj() {
             return Ok(obj.is_extensible());
         }
-        // 代理路径：isExtensible trap（实参 target），结果经布尔投影，缺失
-        // 落穿 target（target 自身为代理时经递归再路由）。
-        let target = oxide_builtins::proxy::proxy_state_ref(obj).expect("状态盒").target;
-        match crate::proxy::call_trap(self, obj, self.perm_intern("isExtensible"), &[target])? {
-            Some(result) => Ok(oxide_runtime_api::to_boolean(result)),
-            // SAFETY: target 由构造器校验为非空对象指针。
-            None => self.is_extensible(unsafe { &*target.as_js_object_ptr() }),
-        }
+        // 代理路径：isExtensible trap 路由（实参 target，结果经布尔投影，
+        // 报告须与 target 实际可扩展状态一致），缺失落穿 target。
+        oxide_builtins::object::proxy_is_extensible(self, obj)
     }
-    fn prevent_extensions(&mut self, obj: &mut JsObject) -> Result<(), String> {
+    fn prevent_extensions(&mut self, obj: &mut JsObject) -> Result<bool, String> {
         if !obj.is_proxy_obj() {
             obj.set_extensible(false);
-            return Ok(());
+            return Ok(true);
         }
         // 代理路径：preventExtensions trap 路由（含报告与 target 可扩展状态
         // 一致性检查），缺失落穿 target 的普通 preventExtensions。
         match oxide_builtins::object::proxy_prevent_extensions(self, obj) {
-            Ok(_) => Ok(()),
+            Ok(status) => Ok(status),
             // 还原原始异常值入 uncaught 侧通道（保身份）。
             Err(exc) => {
                 self.last_uncaught_value = Some(exc);
