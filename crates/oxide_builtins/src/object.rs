@@ -1439,7 +1439,8 @@ fn own_descriptor_of<H: VmHost>(vm: &mut H, obj: &JsObject, key_si: u32) -> Resu
     // 调用；trap 缺失落穿 target 的自身描述符（target 自身为代理时经递归再
     // 路由）；trap 返 undefined 表示无属性（target 自身属性不可配置或 target
     // 不可扩展时抛 TypeError）；trap 返非对象按规范抛 TypeError；trap 返对象
-    // 时与 target 自身描述符做不变量交叉检查（target 不可扩展时）。
+    // 时与 target 自身描述符做不变量交叉检查（targetDesc 缺失仅在 target
+    // 不可扩展时抛；targetDesc 不可配置时全量交叉检查与可扩展性无关）。
     if obj.is_proxy_obj() {
         let target = crate::proxy::proxy_state_ref(obj).expect("状态盒").target;
         // SAFETY: target 由构造器校验为非空对象指针。
@@ -1600,12 +1601,13 @@ fn proxy_is_extensible<H: VmHost>(vm: &mut H, obj: &JsObject) -> Result<bool, St
 }
 
 /// Proxy [[GetOwnProperty]] trap 返回值的不变量检查（规范 [[GetOwnProperty]]
-/// 步 11-12 形态）：结果描述符不可配置时 target 自身属性必须存在且不可配置
-/// （与可扩展性无关）；target 不可扩展时 target 自身属性必须存在且不可配置，
-/// 并经 `IsCompatiblePropertyDescriptor` 全量交叉检查（enumerable 须一致、
-/// 访问器 get/set 须一致、数据描述符不得由不可写放宽为可写、可写放宽为不可写
-/// 时值须 SameValue、形态须一致）；writable 与 value 交叉检查按 target 不可
-/// 配置限定（target 可配置时放宽）。违反抛 TypeError。
+/// 步 14-16 形态）：`IsCompatiblePropertyDescriptor`（三参形态）在 targetDesc
+/// 缺失且 target 不可扩展时抛 TypeError；targetDesc 不可配置时执行全量交叉检查
+/// （与可扩展性无关）：result 可配置抛、enumerable 须一致、数据与访问器形态须
+/// 一致、访问器 get/set 须一致、target 不可写时 result 不得放宽为可写且值须
+/// SameValue；targetDesc 可配置时无约束。结果描述符不可配置时 targetDesc 必须
+/// 存在且不可配置，且 result 不可写时 target 不得可写（无条件抛，无值相等豁免）。
+/// 违反抛 TypeError。
 fn proxy_gopd_invariant_check<H: VmHost>(
     vm: &mut H, target: &JsObject, key_si: u32, result_desc: JsValue,
 ) -> Result<(), JsValue> {
@@ -1617,90 +1619,102 @@ fn proxy_gopd_invariant_check<H: VmHost>(
     let value_si = vm.perm_intern("value");
     let extensible = proxy_is_extensible(vm, target).map_err(|msg| crate::error::create_from_text(vm, &msg))?;
     let target_desc = own_descriptor_of(vm, target, key_si)?;
-    // IsCompatiblePropertyDescriptor：仅 target 不可扩展时执行。
-    if !extensible {
-        let Some(td) = target_desc else {
-            return Err(crate::error::create_type_error(
-                vm,
-                "getOwnPropertyDescriptor trap reported a property that does not exist on a non-extensible target",
-            ));
-        };
-        if desc_field_bool(vm, td, cfg_si)? {
-            return Err(crate::error::create_type_error(
-                vm,
-                "getOwnPropertyDescriptor trap reported a descriptor for a configurable target property of a non-extensible target",
-            ));
-        }
-        if desc_field_bool(vm, result_desc, cfg_si)? {
-            return Err(crate::error::create_type_error(
-                vm,
-                "getOwnPropertyDescriptor trap reported a configurable descriptor for a non-extensible target property",
-            ));
-        }
-        if desc_field_bool(vm, result_desc, enum_si)? != desc_field_bool(vm, td, enum_si)? {
-            return Err(crate::error::create_type_error(
-                vm,
-                "getOwnPropertyDescriptor trap reported a different enumerable flag for a non-configurable target property",
-            ));
-        }
-        let result_get = own_field(vm, result_desc, get_si)?;
-        let target_get = own_field(vm, td, get_si)?;
-        if target_get.is_some() {
-            if result_get.is_none() || result_get != target_get {
+    // IsCompatiblePropertyDescriptor（三参形态）：targetDesc 缺失仅在 target
+    // 不可扩展时抛；targetDesc 不可配置时执行全量交叉检查（与可扩展性无关）；
+    // targetDesc 可配置时无约束。
+    match target_desc {
+        None => {
+            if !extensible {
                 return Err(crate::error::create_type_error(
                     vm,
-                    "getOwnPropertyDescriptor trap reported a different getter for a non-configurable target accessor",
+                    "getOwnPropertyDescriptor trap reported a property that does not exist on a non-extensible target",
                 ));
             }
-            let target_set = own_field(vm, td, set_si)?;
-            let result_set = own_field(vm, result_desc, set_si)?;
-            if target_set.is_some() {
-                if result_set.is_none() || result_set != target_set {
-                    return Err(crate::error::create_type_error(
-                        vm,
-                        "getOwnPropertyDescriptor trap reported a different setter for a non-configurable target accessor",
-                    ));
+        }
+        Some(td) => {
+            if !desc_field_bool(vm, td, cfg_si)? {
+                // targetDesc 不可配置：result 可配置抛。
+                if let Some(cfg) = own_field(vm, result_desc, cfg_si)? {
+                    if oxide_runtime_api::to_boolean(cfg) {
+                        return Err(crate::error::create_type_error(
+                            vm,
+                            "getOwnPropertyDescriptor trap reported a configurable descriptor for a non-configurable target property",
+                        ));
+                    }
                 }
-            } else if result_set.is_some() {
-                return Err(crate::error::create_type_error(
-                    vm,
-                    "getOwnPropertyDescriptor trap reported a setter for a target accessor without setter",
-                ));
-            }
-        } else {
-            if result_get.is_some() {
-                return Err(crate::error::create_type_error(
-                    vm,
-                    "getOwnPropertyDescriptor trap reported a getter for a non-configurable target data property",
-                ));
-            }
-            if own_field(vm, result_desc, set_si)?.is_some() {
-                return Err(crate::error::create_type_error(
-                    vm,
-                    "getOwnPropertyDescriptor trap reported a setter for a non-configurable target data property",
-                ));
-            }
-            let target_writable = desc_field_bool(vm, td, writable_si)?;
-            let result_writable = desc_field_bool(vm, result_desc, writable_si)?;
-            if !target_writable && result_writable {
-                return Err(crate::error::create_type_error(
-                    vm,
-                    "getOwnPropertyDescriptor trap reported a writable descriptor for a non-writable target property",
-                ));
-            }
-            if !result_writable && target_writable {
-                let result_value = own_field(vm, result_desc, value_si)?.unwrap_or(JsValue::undefined());
-                let target_value = own_field(vm, td, value_si)?.unwrap_or(JsValue::undefined());
-                if !oxide_runtime_api::same_value(result_value, target_value) {
-                    return Err(crate::error::create_type_error(
-                        vm,
-                        "getOwnPropertyDescriptor trap reported a non-writable descriptor with a different value for a writable target property",
-                    ));
+                // targetDesc 不可配置：enumerable 须一致（字段缺失不检查）。
+                if let Some(en) = own_field(vm, result_desc, enum_si)? {
+                    if oxide_runtime_api::to_boolean(en) != desc_field_bool(vm, td, enum_si)? {
+                        return Err(crate::error::create_type_error(
+                            vm,
+                            "getOwnPropertyDescriptor trap reported a different enumerable flag for a non-configurable target property",
+                        ));
+                    }
+                }
+                let result_get = own_field(vm, result_desc, get_si)?;
+                let target_get = own_field(vm, td, get_si)?;
+                if target_get.is_some() {
+                    if result_get.is_none() || result_get != target_get {
+                        return Err(crate::error::create_type_error(
+                            vm,
+                            "getOwnPropertyDescriptor trap reported a different getter for a non-configurable target accessor",
+                        ));
+                    }
+                    let target_set = own_field(vm, td, set_si)?;
+                    let result_set = own_field(vm, result_desc, set_si)?;
+                    if target_set.is_some() {
+                        if result_set.is_none() || result_set != target_set {
+                            return Err(crate::error::create_type_error(
+                                vm,
+                                "getOwnPropertyDescriptor trap reported a different setter for a non-configurable target accessor",
+                            ));
+                        }
+                    } else if result_set.is_some() {
+                        return Err(crate::error::create_type_error(
+                            vm,
+                            "getOwnPropertyDescriptor trap reported a setter for a target accessor without setter",
+                        ));
+                    }
+                } else {
+                    if result_get.is_some() {
+                        return Err(crate::error::create_type_error(
+                            vm,
+                            "getOwnPropertyDescriptor trap reported a getter for a non-configurable target data property",
+                        ));
+                    }
+                    if own_field(vm, result_desc, set_si)?.is_some() {
+                        return Err(crate::error::create_type_error(
+                            vm,
+                            "getOwnPropertyDescriptor trap reported a setter for a non-configurable target data property",
+                        ));
+                    }
+                    // target 不可写：result 不得放宽为可写，result 有值字段时
+                    // 值须 SameValue。
+                    if !desc_field_bool(vm, td, writable_si)? {
+                        if let Some(w) = own_field(vm, result_desc, writable_si)? {
+                            if oxide_runtime_api::to_boolean(w) {
+                                return Err(crate::error::create_type_error(
+                                    vm,
+                                    "getOwnPropertyDescriptor trap reported a writable descriptor for a non-writable target property",
+                                ));
+                            }
+                        }
+                        if let Some(v) = own_field(vm, result_desc, value_si)? {
+                            let target_value = own_field(vm, td, value_si)?.unwrap_or(JsValue::undefined());
+                            if !oxide_runtime_api::same_value(v, target_value) {
+                                return Err(crate::error::create_type_error(
+                                    vm,
+                                    "getOwnPropertyDescriptor trap reported a different value for a non-writable target property",
+                                ));
+                            }
+                        }
+                    }
                 }
             }
         }
     }
-    // 结果描述符不可配置：target 自身属性必须存在且不可配置（与可扩展性无关）。
+    // 结果描述符不可配置：target 自身属性必须存在且不可配置；result 不可写且
+    // target 可写无条件抛（无值相等豁免）。
     if !desc_field_bool(vm, result_desc, cfg_si)? {
         match target_desc {
             None => {
@@ -1715,6 +1729,14 @@ fn proxy_gopd_invariant_check<H: VmHost>(
                         vm,
                         "getOwnPropertyDescriptor trap reported a non-configurable descriptor for a configurable target property",
                     ));
+                }
+                if let Some(w) = own_field(vm, result_desc, writable_si)? {
+                    if !oxide_runtime_api::to_boolean(w) && desc_field_bool(vm, td, writable_si)? {
+                        return Err(crate::error::create_type_error(
+                            vm,
+                            "getOwnPropertyDescriptor trap reported a non-writable descriptor for a writable target property",
+                        ));
+                    }
                 }
             }
         }
