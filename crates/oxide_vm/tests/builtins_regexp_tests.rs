@@ -267,11 +267,21 @@ fn regexp_exec_negative_last_index_clamped_to_zero() {
 
 #[test]
 fn regexp_exec_last_index_set_once_on_success() {
-    // 成功路径 lastIndex 恰好 Set 一次（写回在核内单点）：计数 setter 只被观察一次。
-    let source = "(() => { var re = /a/g; var n = 0; Object.defineProperty(re, 'lastIndex', { configurable: true, set() { n += 1; }, get() { return 0; } }); re.exec('a'); return String(n); })()";
+    // 成功路径 lastIndex 写回匹配末尾（核内单点写回的可观测口径）；
+    // 失败路径置 0（lastIndex 规范不可配置，无法以访问器计数观察）。
     let mut vm = Vm::new();
-    let result = eval(&mut vm, source).unwrap();
-    assert_eq!(to_str(&vm, result), "1");
+    let result = eval(
+        &mut vm,
+        "(() => { var re = /a/g; var m = re.exec('a'); return m[0] + ':' + re.lastIndex; })()",
+    )
+    .unwrap();
+    assert_eq!(to_str(&vm, result), "a:1");
+    let result = eval(
+        &mut vm,
+        "(() => { var re = /a/g; var r = re.exec('b'); return r === null && re.lastIndex === 0; })()",
+    )
+    .unwrap();
+    assert!(result.as_bool());
 }
 
 // --- test() lastIndex 规范语义（sticky 锚定 / 越界短路 / 不追踪不写回）---
@@ -747,10 +757,10 @@ fn symbol_search_lastindex_init_and_restore() {
     .unwrap();
     assert_eq!(to_str(&vm, result), "0/3");
     // 严格 SameValue 口径：-0 与 +0 不同值，初始化 Set 0 与恢复 Set -0
-    // 各触发一次写。
+    // 各触发一次写（lastIndex 规范不可配置，计数经代理 set trap 观察）。
     let result = eval(
         &mut vm,
-        "(() => { var r = /b/; var sets = 0; var store = -0; Object.defineProperty(r, 'lastIndex', { configurable: true, set(v) { sets += 1; store = v; }, get() { return store; } }); r.exec = function() { return null; }; r[Symbol.search](''); return sets; })()",
+        "(() => { var r = /b/; var sets = 0; var store = -0; var p = new Proxy(r, { set(t, k, v) { if (k === 'lastIndex') { sets += 1; store = v; } t[k] = v; return true; }, get(t, k) { if (k === 'lastIndex') { return store; } return t[k]; } }); p.exec = function() { return null; }; p[Symbol.search](''); return sets; })()",
     )
     .unwrap();
     assert!(result.as_int() == 2);

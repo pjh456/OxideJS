@@ -1273,9 +1273,10 @@ fn sab_new_target_proto_and_fallback() {
          var d = Reflect.construct(SharedArrayBuffer, [4], D); \
          if (Object.getPrototypeOf(d) !== SharedArrayBuffer.prototype) { return false; } \
          var E = function () {}; \
-         Object.defineProperty(E, 'prototype', { get: function () { throw new RangeError('x'); } }); \
+         var e_proxy = new Proxy(E, { get: function (t, k) { \
+             if (k === 'prototype') { throw new RangeError('x'); } return t[k]; } }); \
          var threw = false; \
-         try { Reflect.construct(SharedArrayBuffer, [1], E); } catch (e) { threw = e instanceof RangeError; } \
+         try { Reflect.construct(SharedArrayBuffer, [1], e_proxy); } catch (e) { threw = e instanceof RangeError; } \
          return threw; })()",
     )
     .unwrap();

@@ -159,14 +159,15 @@ fn throwing_proto_ctor(source_tail: &str) -> String {
 
 #[test]
 fn gpfc_new_expression_bytecode_ctor_propagates_getter_throw() {
-    // 字节码构造器 prototype 为访问器且 getter 抛错：new 表达式须原值上抛（getter 触发）。
+    // newTarget 为代理且 get trap 读 prototype 抛错：new 表达式须原值上抛
+    // （getter 触发；普通函数 prototype 规范不可配置，抛错形态经代理表达）。
     let mut vm = Vm::new();
     let result = eval(
         &mut vm,
         "var F = function(){}; var calls = 0; \
-         Object.defineProperty(F, 'prototype', { configurable: true, \
-         get: function() { calls++; throw new Error('boom'); } }); \
-         try { new F(); } catch (e) { e.message + ':' + calls }",
+         var p = new Proxy(F, { get: function(t, k) { \
+         if (k === 'prototype') { calls++; throw new Error('boom'); } return t[k]; } }); \
+         try { new p(); } catch (e) { e.message + ':' + calls }",
     )
     .unwrap();
     assert_eq!(vm.lookup_str(result).unwrap(), "boom:1");
@@ -179,9 +180,9 @@ fn gpfc_new_expression_spread_bytecode_ctor_propagates_getter_throw() {
     let result = eval(
         &mut vm,
         "var F = function(){}; var calls = 0; \
-         Object.defineProperty(F, 'prototype', { configurable: true, \
-         get: function() { calls++; throw new Error('boom'); } }); \
-         try { new F(...[]); } catch (e) { e.message + ':' + calls }",
+         var p = new Proxy(F, { get: function(t, k) { \
+         if (k === 'prototype') { calls++; throw new Error('boom'); } return t[k]; } }); \
+         try { new p(...[]); } catch (e) { e.message + ':' + calls }",
     )
     .unwrap();
     assert_eq!(vm.lookup_str(result).unwrap(), "boom:1");

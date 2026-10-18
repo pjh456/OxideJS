@@ -789,10 +789,18 @@ impl Vm {
         let key_val = self.regs[b];
         let prop_name_si = self.property_key_si(key_val)?;
         let super_obj = unsafe { &*super_base.as_js_object_ptr() };
+        let pc_before = self.pc;
         let val = self.ordinary_get_with_target(super_obj, prop_name_si, self.regs[a], rd as u8)?;
-        if self.accessor_frame_target_reg.take().is_none() {
-            self.regs[rd] = val;
+        if self.accessor_frame_target_reg.take().is_some() {
+            // getter 帧已入栈：结果由帧续行交付，此处不写结果寄存器。
+            return Ok(true);
         }
+        if self.pc != pc_before {
+            // 读路径在途抛错已展开到 catch/finally 入口：pc 由处理器接管，
+            // 结果寄存器不得再写（regs[0] 持在途异常）。
+            return Ok(true);
+        }
+        self.regs[rd] = val;
         Ok(false)
     }
 

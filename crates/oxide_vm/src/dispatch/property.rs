@@ -370,11 +370,21 @@ impl Vm {
         // 命中会绕过 get trap 直读代理自身属性槽（恒 miss 守卫的读入口侧）。
         if obj.is_proxy_obj() {
             let prop_name_si = self.property_key_si(self.regs[b])?;
+            // 先消费扩展字：代理分支不写回 IC（槽恒零），getter 帧的返回地址
+            // 与展开后的 catch 入口都以 pc 接管，调用后不得再推进。
+            let _ = ic_helper::read_ic_slot0(&self.bytecode, &mut self.pc);
+            let pc_before = self.pc;
             let val = self.ordinary_get_with_target(obj, prop_name_si, val, a as u8)?;
-            if self.accessor_frame_target_reg.take().is_none() {
-                self.regs[a] = val;
+            if self.accessor_frame_target_reg.take().is_some() {
+                // getter 帧已入栈：结果由帧续行交付，此处不写结果寄存器。
+                return Ok(());
             }
-            self.pc += IC_EXT_WORDS;
+            if self.pc != pc_before {
+                // 读路径在途抛错已展开到 catch/finally 入口：pc 由处理器接管，
+                // 结果寄存器不得再写（regs[0] 持在途异常）。
+                return Ok(());
+            }
+            self.regs[a] = val;
             return Ok(());
         }
         // 入口快判：键寄存器恒为 perm 串，指针相等即键为 "length"；
@@ -390,10 +400,18 @@ impl Vm {
         if obj.has_prop_meta() {
             // meta 对象整对象走慢路径，此时才解析键。
             let prop_name_si = self.property_key_si(self.regs[b])?;
+            let pc_before = self.pc;
             let val = self.ordinary_get_with_target(obj, prop_name_si, val, a as u8)?;
-            if self.accessor_frame_target_reg.take().is_none() {
-                self.regs[a] = val;
+            if self.accessor_frame_target_reg.take().is_some() {
+                // getter 帧已入栈：结果由帧续行交付，此处不写结果寄存器。
+                return Ok(());
             }
+            if self.pc != pc_before {
+                // 读路径在途抛错已展开到 catch/finally 入口：pc 由处理器接管，
+                // 结果寄存器不得再写（regs[0] 持在途异常）。
+                return Ok(());
+            }
+            self.regs[a] = val;
             return Ok(());
         }
 
@@ -570,10 +588,18 @@ impl Vm {
             return Ok(());
         };
         let obj = unsafe { &*obj_ptr };
+        let pc_before = self.pc;
         let val = self.ordinary_get_with_target(obj, prop_name_si, self.regs[rd], a as u8)?;
-        if self.accessor_frame_target_reg.take().is_none() {
-            self.regs[a] = val;
+        if self.accessor_frame_target_reg.take().is_some() {
+            // getter 帧已入栈：结果由帧续行交付，此处不写结果寄存器。
+            return Ok(());
         }
+        if self.pc != pc_before {
+            // 读路径在途抛错已展开到 catch/finally 入口：pc 由处理器接管，
+            // 结果寄存器不得再写（regs[0] 持在途异常）。
+            return Ok(());
+        }
+        self.regs[a] = val;
         Ok(())
     }
 
@@ -645,10 +671,18 @@ impl Vm {
             return Ok(());
         };
         let obj = unsafe { &*obj_ptr };
+        let pc_before = self.pc;
         let val = self.ordinary_get_with_target(obj, prop_name_si, receiver, b as u8)?;
-        if self.accessor_frame_target_reg.take().is_none() {
-            self.regs[b] = val;
+        if self.accessor_frame_target_reg.take().is_some() {
+            // getter 帧已入栈：结果由帧续行交付，此处不写结果寄存器。
+            return Ok(());
         }
+        if self.pc != pc_before {
+            // 读路径在途抛错已展开到 catch/finally 入口：pc 由处理器接管，
+            // 结果寄存器不得再写（regs[0] 持在途异常）。
+            return Ok(());
+        }
+        self.regs[b] = val;
         Ok(())
     }
 

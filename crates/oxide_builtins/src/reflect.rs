@@ -264,7 +264,7 @@ pub fn reflect_own_keys<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     // 字符串键同序（整数键升序、字符串键插入序、Symbol 键插入序）。
     let (mut keys, storage) = match crate::object::own_keys_proxy_aware(vm, target) {
         Ok(k) => k,
-        Err(msg) => return NativeResult::Err(crate::error::create_from_text(vm, &msg)),
+        Err(exc) => return NativeResult::Err(exc),
     };
     // 数组 length 是虚拟自身属性（无 shape 槽、不在形状链）：注入字符串组首
     // （创建序第一枚字符串键），存储下标哨兵 u32::MAX = 无槽位（消费端只读

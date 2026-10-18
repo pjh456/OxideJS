@@ -2303,14 +2303,14 @@ fn typed_array_ctor_plain_call_all_forms_throw() {
 
 #[test]
 fn typed_array_ctor_gpf_getter_throws_propagates() {
-    // newTarget.prototype 访问器抛值原值传播（buffer 形 + length 形）：
-    // 构造器体内 GpFC 自重读，不依赖通用构造机制的原型读。
+    // newTarget.prototype 读取抛值原值传播（buffer 形 + length 形）：
+    // 构造器体内 GpFC 自重读，不依赖通用构造机制的原型读。普通函数 prototype
+    // 规范不可配置，抛错形态经代理 get trap 表达。
     let mut vm = Vm::new();
     let result = eval(
         &mut vm,
-        "(function () { var nt = function () {}; \
-         Object.defineProperty(nt, 'prototype', { \
-           get: function () { throw new RangeError('gpf'); } }); \
+        "(function () { var nt = new Proxy(function () {}, { \
+          get: function (t, k) { if (k === 'prototype') { throw new RangeError('gpf'); } return t[k]; } }); \
          var ab = new ArrayBuffer(4); var t1, t2; \
          try { Reflect.construct(Int8Array, [ab], nt); } \
          catch (e) { t1 = e instanceof RangeError && e.message === 'gpf'; } \

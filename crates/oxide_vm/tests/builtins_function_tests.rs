@@ -483,9 +483,9 @@ fn function_prototype_new_throws_catchable_type_error() {
 
 #[test]
 fn dynamic_function_prototype_descriptor_not_configurable() {
-    // 动态函数（Function 构造器产物）的 prototype 属性为
-    // {writable:true, enumerable:false, configurable:false}，delete 失败且值不变；
-    // 普通函数的 prototype 属性保持可配置，不回归。
+    // 动态函数（Function 构造器产物）与普通函数的 prototype 属性均为
+    // {writable:true, enumerable:false, configurable:false}（规范 10.2.1 口径），
+    // delete 失败且值不变。
     let mut vm = Vm::new();
     vm.set_compiler_service(Arc::new(DefaultCompilerService));
     let result = eval(
@@ -505,7 +505,14 @@ fn dynamic_function_prototype_descriptor_not_configurable() {
         "function g() {} var d = Object.getOwnPropertyDescriptor(g, 'prototype'); d.writable + ',' + d.enumerable + ',' + d.configurable",
     )
     .unwrap();
-    assert_eq!(vm.lookup_str(result).unwrap_or_default(), "true,false,true");
+    assert_eq!(vm.lookup_str(result).unwrap_or_default(), "true,false,false");
+    // 普通函数同口径：delete 失败且值不变。
+    let result = eval(
+        &mut vm,
+        "function h() {} var p = h.prototype; delete h.prototype; h.prototype === p",
+    )
+    .unwrap();
+    assert!(result.as_bool());
 }
 
 #[test]

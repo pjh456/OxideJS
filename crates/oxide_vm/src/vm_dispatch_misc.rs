@@ -565,6 +565,36 @@ impl Vm {
         let mut seen = std::collections::HashSet::new();
         let mut current = obj_val;
 
+        // 代理 for-in：[[OwnPropertyKeys]] 经 ownKeys trap 路由（缺失落穿
+        // target），[[GetOwnProperty]] 可枚举过滤经存储对象（代理本体无原型
+        // 链可走，规范枚举面即自身键）。
+        if current.is_object() {
+            let arr = unsafe { &*current.as_js_object_ptr() };
+            if arr.is_proxy_obj() {
+                let (keys, storage) = match oxide_builtins::object::own_keys_proxy_aware(self, arr) {
+                    Ok(k) => k,
+                    Err(exc) => return self.raise_captured(exc),
+                };
+                for (si, store) in keys {
+                    if is_symbol_key(si) {
+                        continue;
+                    }
+                    let enumerable = storage
+                        .prop_meta_at(store)
+                        .map(|m| m.attributes.enumerable())
+                        .unwrap_or(PropAttributes::DEFAULT_DATA.enumerable());
+                    if !enumerable {
+                        continue;
+                    }
+                    let key_val = oxide_builtins::object::key_si_to_js_value(self, si);
+                    keys_vec.push((key_val, si));
+                }
+                let iter = Box::into_raw(Box::new(ForInIter { keys: keys_vec, index: 0 }));
+                self.iters.push_for_in(iter);
+                return Ok(());
+            }
+        }
+
         // 数组把整型下标元素存在 prop_vec，而 prop_vec 不属于 shape 链。
         // 单独枚举它们（ES：数组下标是可枚举字符串键，按升序排在其它自有键之前）。
         // hole（删除标记）跳过——for-in 不枚举数组稀疏空洞。

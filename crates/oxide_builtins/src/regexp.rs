@@ -517,14 +517,16 @@ pub fn regexp_constructor<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         }
     }
 
-    // lastIndex 作实例自身属性写入（缺省描述符，与既有构造器口径一致）。
+    // lastIndex 作实例自身属性写入（规范 22.2.7.1：writable:true /
+    // enumerable:false / configurable:false）。
     {
         let li_si = vm.perm_intern("lastIndex");
         let shape_id = vm.make_shape(unsafe { (*this_ptr).shape_id() }, li_si);
         unsafe {
             let obj = &mut *this_ptr;
             obj.set_shape_id(shape_id);
-            obj.push_prop(JsValue::int(0));
+            let li_pos = obj.push_prop(JsValue::int(0));
+            obj.set_data_meta(li_pos, oxide_types::object::PropAttributes::new(true, false, false));
             obj.type_tag = JsObject::OBJ_TYPE_REGEXP;
             // source/flags 存实例字段：原型访问器从本字段读取，不作为自身属性枚举。
             obj.set_regexp_source(vm.new_string_units_owned(pattern_units));

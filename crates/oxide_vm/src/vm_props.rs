@@ -108,34 +108,45 @@ impl Vm {
         &mut self, obj: &JsObject, prop_name_si: u32, receiver: JsValue, target_reg: Option<u8>,
     ) -> Result<JsValue, String> {
         vm_trace!("ordinary_get_inner: shape={} prop_si={}", obj.shape_id(), prop_name_si);
-        // Proxy [[Get]]：get trap 权威（target、P、Receiver），trap 定义时其返回值
-        // 即读结果；trap 缺失落穿 target 的 [[Get]]（receiver 不变）。target 本身
-        // 可为代理（嵌套代理），逐层递归应用同一语义直至非代理对象，再落普通读
-        // 路径从该对象继续。
-        let obj = if obj.is_proxy_obj() {
-            let mut current = obj;
-            loop {
-                let target = oxide_builtins::proxy::proxy_state_ref(current).expect("状态盒").target;
-                let key = oxide_builtins::object::key_si_to_js_value(self, prop_name_si);
-                match crate::proxy::call_trap(self, current, self.perm_intern("get"), &[target, key, receiver])? {
-                    Some(v) => return Ok(v),
-                    None => {
-                        // SAFETY: target 由构造器校验为非空对象指针。
-                        let target_obj = unsafe { &*target.as_js_object_ptr() };
-                        if !target_obj.is_proxy_obj() {
-                            break target_obj;
-                        }
-                        current = target_obj;
-                    }
-                }
-            }
-        } else {
-            obj
-        };
         let length_si = self.length_si;
         let mut current = Some(obj);
         let mut depth = 0usize;
         while let Some(obj) = current {
+            // Proxy [[Get]]：链上任意层（入口对象或原型链）为代理时，get trap
+            // 权威（target、P、Receiver），trap 定义时其返回值即读结果；trap 缺失
+            // 落穿 target 的 [[Get]]（receiver 不变）。target 本身可为代理（嵌套
+            // 代理），逐层递归应用同一语义直至非代理对象，再落普通读路径从该对象
+            // 继续。
+            if obj.is_proxy_obj() {
+                let mut chain = obj;
+                loop {
+                    let target = oxide_builtins::proxy::proxy_state_ref(chain).expect("状态盒").target;
+                    let key = oxide_builtins::object::key_si_to_js_key(self, prop_name_si);
+                    match crate::proxy::call_trap(self, chain, self.perm_intern("get"), &[target, key, receiver]) {
+                        Ok(Some(v)) => {
+                            // 不变量检查：target 自身属性不可配置时，不可写数据属性
+                            // 的 trap 结果须与 target 值 SameValue，无 getter 的访问器
+                            // 属性要求 trap 结果为 undefined。违反抛 TypeError：字节码
+                            // 上下文就地展开到外围 catch（pc 已交处理器、regs[0] 持在途
+                            // 异常），builtin 上下文返回格式化 Err 由调用边界恢复。
+                            // 检查失败须立即返回，调用方不得再写结果寄存器或推进 pc。
+                            self.proxy_get_invariant_check(target, prop_name_si, v, self.native_call_depth != 0)?;
+                            return Ok(v);
+                        }
+                        Ok(None) => {
+                            // SAFETY: target 由构造器校验为非空对象指针。
+                            let target_obj = unsafe { &*target.as_js_object_ptr() };
+                            if !target_obj.is_proxy_obj() {
+                                current = Some(target_obj);
+                                break;
+                            }
+                            chain = target_obj;
+                        }
+                        Err(e) => return self.proxy_trap_call_failure(e).map(|_| JsValue::undefined()),
+                    }
+                }
+                continue;
+            }
             // 模块命名空间 exotic [[Get]]：条目表是权威状态，预注册但未初始化的
             // 导出读抛 ReferenceError；非 live ns（无表）落普通属性路径零行为变化。
             if obj.is_module_namespace() {
@@ -875,6 +886,9 @@ impl Vm {
     ) -> Option<(JsValue, bool, PropAttributes, JsValue, JsValue)> {
         // SAFETY: target 由构造器校验为非空对象指针。
         let target_obj = unsafe { &*target.as_js_object_ptr() };
+        // target 自身为代理时其存储恒空：沿代理链落到终极 target 读自身
+        // 描述符（不变量检查与属性补全均按终极 target 口径）。
+        let target_obj = Self::ultimate_proxy_target(target_obj);
         let pos = self.get_own_property_slot(target_obj, prop_name_si)?;
         let meta = target_obj.prop_meta_at(pos)?;
         Some((target_obj.get_prop_at(pos), meta.is_accessor, meta.attributes, meta.get, meta.set))
@@ -903,6 +917,35 @@ impl Vm {
                 return self.proxy_invariant_failure(
                     builtin,
                     "Proxy set trap reported true for a non-writable target property",
+                );
+            }
+        }
+        Ok(())
+    }
+
+    /// Proxy [[Get]] trap 返回值的不变量检查（规范 [[Get]] 步 9 形态）：target
+    /// 自身属性不可配置时，不可写数据属性要求 trap 结果与 target 值
+    /// SameValue，无 getter 的访问器属性要求 trap 结果为 undefined；违反抛
+    /// TypeError（builtin 上下文物化原值入 uncaught 侧通道，调用边界原值
+    /// 重抛，字节码上下文就地抛可捕获异常并展开）。
+    fn proxy_get_invariant_check(
+        &mut self, target: JsValue, prop_name_si: u32, trap_result: JsValue, builtin: bool,
+    ) -> Result<(), String> {
+        let Some((target_val, is_accessor, attrs, get, _)) = self.proxy_target_desc(target, prop_name_si) else {
+            return Ok(());
+        };
+        if !attrs.configurable() {
+            if is_accessor {
+                if get.is_undefined() && !trap_result.is_undefined() {
+                    return self.proxy_invariant_failure(
+                        builtin,
+                        "Proxy get trap returned a value for a non-configurable target accessor without getter",
+                    );
+                }
+            } else if !attrs.writable() && !oxide_runtime_api::same_value(trap_result, target_val) {
+                return self.proxy_invariant_failure(
+                    builtin,
+                    "Proxy get trap returned a different value for a non-writable target property",
                 );
             }
         }
@@ -1119,12 +1162,13 @@ impl Vm {
     }
 
     /// Proxy receiver 的 `[[DefineOwnProperty]]`（defineProperty trap）：trap
-    /// 以（target、P、部分描述符 {value: V}）调用；报 true 时读 target 自身
-    /// 描述符补全部分描述符（数据形态取 target 的 writable/enumerable/
-    /// configurable）、做不变量检查后写 target；报 false 或 target 不可扩展
-    /// 的新属性定义返 `Ok(false)`（`[[Set]]` 投影为 false）。
+    /// 以（target、P、部分描述符 {value: V}）调用；报 true 时按
+    /// `receiver_configurable` 补全属性（可配置按完整描述符全真、不可配置
+    /// 保留 target 既有属性）、做不变量检查后写 target；trap 缺失落穿 target
+    /// 的普通定义，同口径补全；报 false 或 target 不可扩展的新属性定义返
+    /// `Ok(false)`（`[[Set]]` 投影为 false）。
     fn proxy_define_on_receiver(
-        &mut self, receiver_proxy: &JsObject, prop_name_si: u32, val: JsValue,
+        &mut self, receiver_proxy: &JsObject, prop_name_si: u32, val: JsValue, receiver_configurable: bool,
     ) -> Result<bool, String> {
         let target = oxide_builtins::proxy::proxy_state_ref(receiver_proxy).expect("状态盒").target;
         let key = oxide_builtins::object::key_si_to_js_key(self, prop_name_si);
@@ -1140,12 +1184,7 @@ impl Vm {
         };
         if let Some(r) = trap_result {
             if crate::proxy::trap_bool_result(r, "defineProperty")? {
-                // 补全部分描述符：数据 targetDesc 取其 writable/enumerable/
-                // configurable；targetDesc 缺失按新建数据属性（全真）。
-                let completed = self
-                    .proxy_target_desc(target, prop_name_si)
-                    .map(|(_, _, attrs, _, _)| attrs)
-                    .unwrap_or(oxide_types::object::PropAttributes::DEFAULT_DATA);
+                let completed = self.receiver_set_completed_attrs(target, prop_name_si, receiver_configurable);
                 self.proxy_define_invariant_check(
                     target,
                     prop_name_si,
@@ -1157,9 +1196,9 @@ impl Vm {
             }
             return Ok(false);
         }
-        // trap 缺失：落穿 target 的普通定义（完整数据描述符）。
-        let full = oxide_types::object::PropAttributes::DEFAULT_DATA;
-        self.define_on_target_bool(target, prop_name_si, val, full)
+        // trap 缺失：落穿 target 的普通定义（同口径补全）。
+        let completed = self.receiver_set_completed_attrs(target, prop_name_si, receiver_configurable);
+        self.define_on_target_bool(target, prop_name_si, val, completed)
     }
 
     /// CreateDataProperty(Receiver, P, V)（Receiver 为代理）：defineProperty
@@ -1224,9 +1263,37 @@ impl Vm {
                     }
                     return Ok(false);
                 }
-                self.proxy_define_on_receiver(receiver_proxy, prop_name_si, val)
+                // receiverDesc 为可写数据属性（规范步 7）：可配置按完整描述符
+                // 重定义，不可配置按部分描述符 {value: V} 保留既有属性。
+                let receiver_configurable = self.read_desc_configurable(desc);
+                self.proxy_define_on_receiver(receiver_proxy, prop_name_si, val, receiver_configurable)
             }
         }
+    }
+
+    /// 读描述符对象的 configurable 字段（缺省视为 false：缺字段时无法确认
+    /// 可配置，按不可配置分支保留既有属性，与部分描述符语义一致）。
+    fn read_desc_configurable(&self, desc: JsValue) -> bool {
+        // SAFETY: desc 为值携带的非空对象指针。
+        let desc_obj = unsafe { &*desc.as_js_object_ptr() };
+        self.resolve_property(desc_obj, self.perm_intern("configurable"))
+            .map(oxide_runtime_api::to_boolean)
+            .unwrap_or(false)
+    }
+
+    /// `[[Set]]` receiver 定义补全属性：可配置 receiverDesc 按完整描述符
+    /// 重定义（全真，规范步 7.b）；不可配置 receiverDesc 保留 target 既有
+    /// 属性（规范步 7.c 部分描述符 {value: V}），target 缺该属性时按新建
+    /// 数据属性（全真）。
+    fn receiver_set_completed_attrs(
+        &self, target: JsValue, prop_name_si: u32, receiver_configurable: bool,
+    ) -> PropAttributes {
+        if receiver_configurable {
+            return oxide_types::object::PropAttributes::DEFAULT_DATA;
+        }
+        self.proxy_target_desc(target, prop_name_si)
+            .map(|(_, _, attrs, _, _)| attrs)
+            .unwrap_or(oxide_types::object::PropAttributes::DEFAULT_DATA)
     }
 
     /// TypedArray 界内规范键在 `receiver` ≠ TA 时的 [[Set]] 语义：

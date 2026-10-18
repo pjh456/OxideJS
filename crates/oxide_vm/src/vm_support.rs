@@ -40,9 +40,6 @@ impl FunctionFlags {
     pub(crate) const CLASS_CONSTRUCTOR: u8 = 0b010;
     /// 派生构造器标志位（bit2）。
     pub(crate) const DERIVED_CONSTRUCTOR: u8 = 0b100;
-    /// 动态函数标志位（bit3）：经 Function 构造器创建的函数对象，其
-    /// `prototype` 属性不可配置。
-    pub(crate) const DYNAMIC: u8 = 0b1000;
 
     /// 无标志（普通函数）。
     pub(crate) const fn none() -> Self {
@@ -77,11 +74,6 @@ impl FunctionFlags {
     /// 是否派生构造器。
     pub(crate) const fn is_derived_constructor(self) -> bool {
         self.0 & Self::DERIVED_CONSTRUCTOR != 0
-    }
-
-    /// 是否动态函数（经 Function 构造器创建）。
-    pub(crate) const fn is_dynamic(self) -> bool {
-        self.0 & Self::DYNAMIC != 0
     }
 }
 
@@ -903,21 +895,16 @@ impl Vm {
                 prototype.bump_generation();
             }
 
-            // 函数自身 `prototype` 属性：生成器与动态函数（Function 构造器产物）
-            // writable:true / enumerable:false / configurable:false；普通函数与
-            // 构造器 writable:true / enumerable:false / configurable:true。显式
-            // 落元数据——缺元数据按默认描述符（可枚举）判定，`prototype` 会泄漏
-            // 进 keys / for-in / 聚合枚举。
+            // 函数自身 `prototype` 属性：writable:true / enumerable:false /
+            // configurable:false（规范 10.2.1 口径，生成器与动态函数同口径）。
+            // 显式落元数据——缺元数据按默认描述符（可枚举）判定，`prototype`
+            // 会泄漏进 keys / for-in / 聚合枚举。
             let prototype_si = self.kernel_core.perm_interner().intern("prototype").0;
             let func = unsafe { &mut *obj_ptr };
             let prototype_shape = self.kernel_core.shape_forge().make_shape(func.shape_id(), prototype_si);
             func.set_shape_id(prototype_shape);
             let prototype_pos = func.push_prop(prototype_val);
-            if is_generator || is_async_generator || flags.is_dynamic() {
-                func.set_data_meta(prototype_pos, PropAttributes::new(true, false, false));
-            } else {
-                func.set_data_meta(prototype_pos, PropAttributes::new(true, false, true));
-            }
+            func.set_data_meta(prototype_pos, PropAttributes::new(true, false, false));
             func.bump_generation();
         }
 
