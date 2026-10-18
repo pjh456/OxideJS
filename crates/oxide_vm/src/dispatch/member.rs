@@ -205,19 +205,25 @@ impl Vm {
         }
     }
 
-    fn member_op_f64(&mut self, prop_val: JsValue, rhs: JsValue, op: impl FnOnce(f64, f64) -> f64) -> Result<JsValue, String> {
+    fn member_op_f64(
+        &mut self, prop_val: JsValue, rhs: JsValue, op: impl FnOnce(f64, f64) -> f64,
+    ) -> Result<JsValue, String> {
         let ln = self.coerce_number_bounded(prop_val)?;
         let rn = self.coerce_number_bounded(rhs)?;
         Ok(JsValue::float(op(ln, rn)))
     }
 
-    fn member_op_i32(&mut self, prop_val: JsValue, rhs: JsValue, op: impl FnOnce(i32, i32) -> i32) -> Result<JsValue, String> {
+    fn member_op_i32(
+        &mut self, prop_val: JsValue, rhs: JsValue, op: impl FnOnce(i32, i32) -> i32,
+    ) -> Result<JsValue, String> {
         let ln = self.coerce_int32_bounded(prop_val)?;
         let rn = self.coerce_int32_bounded(rhs)?;
         Ok(JsValue::int(op(ln, rn)))
     }
 
-    fn member_op_shift(&mut self, prop_val: JsValue, rhs: JsValue, is_right: bool, is_unsigned: bool) -> Result<JsValue, String> {
+    fn member_op_shift(
+        &mut self, prop_val: JsValue, rhs: JsValue, is_right: bool, is_unsigned: bool,
+    ) -> Result<JsValue, String> {
         let ln = self.coerce_int32_bounded(prop_val)?;
         let shift = self.coerce_uint32_bounded(rhs)? & 0x1F;
         Ok(if !is_right {
