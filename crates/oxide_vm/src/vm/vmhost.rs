@@ -262,6 +262,130 @@ impl oxide_runtime_api::VmHost for Vm {
     fn proxy_trap_bool_result(&self, result: JsValue, trap_name: &str) -> Result<bool, String> {
         crate::proxy::trap_bool_result(result, trap_name)
     }
+    fn get_prototype_of(&mut self, obj: &JsObject) -> Result<JsValue, String> {
+        if !obj.is_proxy_obj() {
+            return Ok(obj.proto());
+        }
+        // 代理路径：getPrototypeOf trap（实参 target），缺失落穿 target 的
+        // [[GetPrototypeOf]]（target 自身为代理时经递归再路由）。
+        let target = oxide_builtins::proxy::proxy_state_ref(obj).expect("状态盒").target;
+        match crate::proxy::call_trap(self, obj, self.perm_intern("getPrototypeOf"), &[target])? {
+            Some(result) => {
+                // 返值须为对象或 null（规范 10.5.3.1），否则 TypeError。
+                if !result.is_object() && !result.is_null() {
+                    return Err(oxide_runtime_api::format_error_message(
+                        "TypeError",
+                        "a [[GetPrototypeOf]] trap returned a non-object and non-null value",
+                    ));
+                }
+                Ok(result)
+            }
+            // SAFETY: target 由构造器校验为非空对象指针。
+            None => self.get_prototype_of(unsafe { &*target.as_js_object_ptr() }),
+        }
+    }
+    fn set_prototype_of(&mut self, obj: &mut JsObject, proto: JsValue) -> Result<bool, String> {
+        if !obj.is_proxy_obj() {
+            // OrdinarySetPrototypeOf 步 2-4：新旧 SameValue 直接成功；不可扩展
+            // 且新旧不同返回 false。
+            if !obj.is_extensible() && obj.proto() != proto {
+                return Ok(false);
+            }
+            return match obj.set_proto(proto) {
+                Ok(()) => Ok(true),
+                // 成环（新原型已在原型链上）：规范返回 false，非错误。
+                Err("cyclic __proto__ value") => Ok(false),
+                Err(msg) => Err(oxide_runtime_api::format_error_message("TypeError", msg)),
+            };
+        }
+        // 代理路径：setPrototypeOf trap（实参 target、newProto），缺失落穿 target
+        // 的 [[SetPrototypeOf]]（target 自身为代理时经递归再路由）。
+        let target = oxide_builtins::proxy::proxy_state_ref(obj).expect("状态盒").target;
+        let trap_result =
+            match crate::proxy::call_trap(self, obj, self.perm_intern("setPrototypeOf"), &[target, proto])? {
+                Some(r) => r,
+                // SAFETY: target 由构造器校验为非空对象指针。
+                None => return self.set_prototype_of(unsafe { &mut *target.as_js_object_ptr() }, proto),
+            };
+        if !crate::proxy::trap_bool_result(trap_result, "setPrototypeOf")? {
+            return Ok(false);
+        }
+        // 不变量检查：trap 报 true 时 target 的 prototype 须为对象或 null。
+        // SAFETY: target 由构造器校验为非空对象指针。
+        let target_proto = self.get_prototype_of(unsafe { &*target.as_js_object_ptr() })?;
+        if !target_proto.is_object() && !target_proto.is_null() {
+            return Err(oxide_runtime_api::format_error_message(
+                "TypeError",
+                "a [[SetPrototypeOf]] trap returned true for a non-object and non-null target prototype",
+            ));
+        }
+        Ok(true)
+    }
+    fn is_extensible(&mut self, obj: &JsObject) -> Result<bool, String> {
+        if !obj.is_proxy_obj() {
+            return Ok(obj.is_extensible());
+        }
+        // 代理路径：isExtensible trap（实参 target），结果经布尔投影，缺失
+        // 落穿 target（target 自身为代理时经递归再路由）。
+        let target = oxide_builtins::proxy::proxy_state_ref(obj).expect("状态盒").target;
+        match crate::proxy::call_trap(self, obj, self.perm_intern("isExtensible"), &[target])? {
+            Some(result) => Ok(oxide_runtime_api::to_boolean(result)),
+            // SAFETY: target 由构造器校验为非空对象指针。
+            None => self.is_extensible(unsafe { &*target.as_js_object_ptr() }),
+        }
+    }
+    fn prevent_extensions(&mut self, obj: &mut JsObject) -> Result<(), String> {
+        if !obj.is_proxy_obj() {
+            obj.set_extensible(false);
+            return Ok(());
+        }
+        // 代理路径：preventExtensions trap 路由（含报告与 target 可扩展状态
+        // 一致性检查），缺失落穿 target 的普通 preventExtensions。
+        match oxide_builtins::object::proxy_prevent_extensions(self, obj) {
+            Ok(_) => Ok(()),
+            // 还原原始异常值入 uncaught 侧通道（保身份）。
+            Err(exc) => {
+                self.last_uncaught_value = Some(exc);
+                Err(self.error_text(exc))
+            }
+        }
+    }
+    fn own_keys(&mut self, obj: &JsObject) -> Result<Vec<JsValue>, String> {
+        match oxide_builtins::object::own_keys_proxy_aware(self, obj) {
+            Ok((keys, _storage)) => {
+                let mut out = Vec::with_capacity(keys.len());
+                for (si, _pos) in keys {
+                    out.push(oxide_builtins::object::key_si_to_js_key(self, si));
+                }
+                Ok(out)
+            }
+            // 还原原始异常值入 uncaught 侧通道（保身份）。
+            Err(exc) => {
+                self.last_uncaught_value = Some(exc);
+                Err(self.error_text(exc))
+            }
+        }
+    }
+    fn get_own_property_desc(&mut self, obj: &JsObject, key_si: u32) -> Result<Option<JsValue>, String> {
+        match oxide_builtins::object::own_descriptor_value(self, obj, key_si) {
+            Ok(desc) => Ok(desc),
+            // 还原原始异常值入 uncaught 侧通道（保身份）。
+            Err(exc) => {
+                self.last_uncaught_value = Some(exc);
+                Err(self.error_text(exc))
+            }
+        }
+    }
+    fn delete_own(&mut self, obj: &mut JsObject, key_si: u32) -> Result<bool, String> {
+        match oxide_builtins::object::delete_own_property(self, obj, key_si) {
+            Ok(deleted) => Ok(deleted),
+            // 还原原始异常值入 uncaught 侧通道（保身份）。
+            Err(exc) => {
+                self.last_uncaught_value = Some(exc);
+                Err(self.error_text(exc))
+            }
+        }
+    }
     fn define_data_property(
         &mut self, obj: &mut JsObject, prop_name_si: u32, val: JsValue, attributes: PropAttributes,
     ) -> Result<(), String> {

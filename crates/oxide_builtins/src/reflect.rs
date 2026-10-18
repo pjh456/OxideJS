@@ -202,7 +202,11 @@ pub fn reflect_get_prototype_of<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeRes
     let Some(target_ptr) = object_ptr(target_val) else {
         return type_error(vm, "Reflect.getPrototypeOf target is not an object");
     };
-    NativeResult::Ok(unsafe { &*target_ptr }.proto())
+    match vm.get_prototype_of(unsafe { &*target_ptr }) {
+        Ok(proto) => NativeResult::Ok(proto),
+        // 代理 trap 异常原值传播（ReturnIfAbrupt）。
+        Err(err) => NativeResult::Err(from_engine_error(vm, &err)),
+    }
 }
 
 /// `Reflect.has(target, key)`：属性存在性判定（规范 HasProperty，含原型链）。
@@ -475,11 +479,13 @@ pub fn reflect_set_prototype_of<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeRes
         return type_error(vm, "Reflect.setPrototypeOf prototype must be an object or null");
     }
     let target = unsafe { &mut *target_ptr };
-    // OrdinarySetPrototypeOf 步 2-4：新旧相同先于可扩展判定，直接成功。
-    if !target.is_extensible() && target.proto() != proto {
-        return NativeResult::Ok(JsValue::bool(false));
+    // OrdinarySetPrototypeOf 步 2-4 语义在 trait 方法内承载：新旧 SameValue
+    // 直接成功，不可扩展且新旧不同或成环返回 false。
+    match vm.set_prototype_of(target, proto) {
+        Ok(set) => NativeResult::Ok(JsValue::bool(set)),
+        // 代理 trap 异常原值传播（ReturnIfAbrupt）。
+        Err(err) => NativeResult::Err(from_engine_error(vm, &err)),
     }
-    NativeResult::Ok(JsValue::bool(target.set_proto(proto).is_ok()))
 }
 
 fn arg<H: VmHost>(vm: &H, args: &[u8], idx: usize) -> JsValue {

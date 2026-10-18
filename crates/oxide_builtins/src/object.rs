@@ -1911,7 +1911,7 @@ fn seal_own_prop_meta(obj: &mut JsObject, store: u32) {
 /// trap 以（target）调用，结果经 ToBoolean 投影后须与 target 实际可扩展状态
 /// 一致（不一致抛 TypeError）；trap 缺失落穿 target 的普通 preventExtensions
 /// （置不可扩展标志，返 true）。
-fn proxy_prevent_extensions<H: VmHost>(vm: &mut H, obj: &JsObject) -> Result<bool, JsValue> {
+pub fn proxy_prevent_extensions<H: VmHost>(vm: &mut H, obj: &JsObject) -> Result<bool, JsValue> {
     let target = crate::proxy::proxy_state_ref(obj).expect("状态盒").target;
     // SAFETY: target 由构造器校验为非空对象指针。
     let target_obj = unsafe { &*target.as_js_object_ptr() };
@@ -2326,7 +2326,11 @@ pub fn object_from_entries<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 /// `Object.getPrototypeOf(obj)`：返回对象的 prototype。
 pub fn object_get_prototype_of<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let obj_ptr = native_try!(require_obj_arg(vm, args, "getPrototypeOf"));
-    NativeResult::Ok(unsafe { (*obj_ptr).proto() })
+    match vm.get_prototype_of(unsafe { &*obj_ptr }) {
+        Ok(proto) => NativeResult::Ok(proto),
+        // 代理 trap 异常原值传播（ReturnIfAbrupt）。
+        Err(err) => NativeResult::Err(crate::array::from_engine_error(vm, &err)),
+    }
 }
 
 /// `Object.setPrototypeOf(obj, proto)`：设置对象的 prototype，返回原值。
@@ -2360,19 +2364,17 @@ pub fn object_set_prototype_of<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResu
         return NativeResult::Ok(target_val);
     }
     let target_ptr = target_val.as_js_object_ptr();
-    let target = unsafe { &mut *target_ptr };
-    // OrdinarySetPrototypeOf 步 2-4：新旧原型 SameValue 时直接成功，可扩展标志
-    // 不参与判断；不可扩展且新旧不同才失败。set_proto 是裸写槽操作，不含该判定。
-    if !target.is_extensible() && target.proto() != proto {
-        return NativeResult::Err(crate::error::create_type_error(
+    // OrdinarySetPrototypeOf 步 2-4 语义在 trait 方法内承载：新旧 SameValue
+    // 直接成功，不可扩展且新旧不同或成环返回 false（此处按规范抛 TypeError）。
+    match vm.set_prototype_of(unsafe { &mut *target_ptr }, proto) {
+        Ok(true) => NativeResult::Ok(target_val),
+        Ok(false) => NativeResult::Err(crate::error::create_type_error(
             vm,
             "Object.setPrototypeOf: cannot set prototype of non-extensible object",
-        ));
+        )),
+        // 代理 trap 异常原值传播（ReturnIfAbrupt）。
+        Err(err) => NativeResult::Err(crate::array::from_engine_error(vm, &err)),
     }
-    if target.set_proto(proto).is_err() {
-        return NativeResult::Err(crate::error::create_type_error(vm, "Object.setPrototypeOf: cannot set prototype"));
-    }
-    NativeResult::Ok(target_val)
 }
 
 /// `Object.hasOwn(obj, key)`：对象是否有指定自身属性。

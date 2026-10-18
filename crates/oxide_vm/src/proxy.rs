@@ -228,7 +228,7 @@ mod tests {
     use crate::native::NativeFn;
     use crate::vm::Vm;
     use oxide_kernel::shape_forge::EMPTY_SHAPE_ID;
-    use oxide_runtime_api::{NativeResult, ProtoKind};
+    use oxide_runtime_api::{NativeResult, ProtoKind, VmHost};
     use oxide_types::object::NativeFnPtr;
 
     /// 建一个带状态盒的 Proxy 对象（测试构造路径，不经 Vm 分配）。
@@ -265,6 +265,48 @@ mod tests {
         let cur = vm.resolve_property(handler, hits_si).unwrap_or(JsValue::int(0));
         vm.set_or_create_prop_value(handler, hits_si, JsValue::int(cur.as_int() + 1));
         NativeResult::Ok(JsValue::bool(true))
+    }
+
+    /// handler 计数属性加一（receiver 由 trap 调用约定保证为 handler）。
+    fn bump_hits(vm: &mut Vm) {
+        let receiver = vm.reg(253);
+        // SAFETY: receiver 由 trap 调用约定保证为 handler 对象值。
+        let handler = unsafe { &mut *receiver.as_js_object_ptr() };
+        let hits_si = vm.perm_intern("hits");
+        let cur = vm.resolve_property(handler, hits_si).unwrap_or(JsValue::int(0));
+        vm.set_or_create_prop_value(handler, hits_si, JsValue::int(cur.as_int() + 1));
+    }
+
+    /// getPrototypeOf trap 原生函数体：计数加一，返回一个新对象。
+    fn counting_get_prototype_trap(vm: &mut Vm, _args: &[u8]) -> NativeResult {
+        bump_hits(vm);
+        let result = vm.alloc_object(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::undefined()));
+        NativeResult::Ok(JsValue::from_js_object(result))
+    }
+
+    /// ownKeys trap 原生函数体：计数加一，返回单元素数组 ["k"]。
+    fn counting_own_keys_trap(vm: &mut Vm, _args: &[u8]) -> NativeResult {
+        bump_hits(vm);
+        let array_proto = vm.builtin_proto(ProtoKind::ArrayProto);
+        let arr = vm.alloc_object(JsObject::new_array(EMPTY_SHAPE_ID, JsValue::from_js_object(array_proto), 1));
+        unsafe { (*arr).set_prop_at(0, vm.new_string("k")) };
+        unsafe { (*arr).set_prop_count(1) };
+        NativeResult::Ok(JsValue::from_js_object(arr))
+    }
+
+    /// getOwnPropertyDescriptor trap 原生函数体：计数加一，返回数据描述符
+    /// 对象 {value: 7, writable/enumerable/configurable 全真}。
+    fn counting_gopd_trap(vm: &mut Vm, _args: &[u8]) -> NativeResult {
+        bump_hits(vm);
+        let proto = vm.builtin_proto(ProtoKind::ObjectProto);
+        let desc = vm.alloc_object(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(proto)));
+        let attrs = PropAttributes::DEFAULT_DATA;
+        let d = unsafe { &mut *desc };
+        let _ = vm.define_data_property(d, vm.perm_intern("value"), JsValue::int(7), attrs);
+        let _ = vm.define_data_property(d, vm.perm_intern("writable"), JsValue::bool(true), attrs);
+        let _ = vm.define_data_property(d, vm.perm_intern("enumerable"), JsValue::bool(true), attrs);
+        let _ = vm.define_data_property(d, vm.perm_intern("configurable"), JsValue::bool(true), attrs);
+        NativeResult::Ok(JsValue::from_js_object(desc))
     }
 
     /// 建带原生函数项的函数对象（session 堆分配并登记）。
@@ -538,6 +580,236 @@ mod tests {
             vm.resolve_property(unsafe { &*proxy }, key_si).is_none(),
             "resolve_property 对代理须保守返 None"
         );
+    }
+
+    /// 7 个 trait 方法：非代理路径零行为变化（返回值与固有方法直读一致）。
+    #[test]
+    fn proto_trait_methods_plain_object_paths() {
+        let mut vm = Vm::new();
+        let obj = vm.alloc_object(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::undefined()));
+        let key_si = vm.perm_intern("k");
+        vm.set_or_create_prop_value(unsafe { &mut *obj }, key_si, JsValue::int(1));
+        let obj_ref = unsafe { &*obj };
+
+        // get_prototype_of：与直读一致。
+        assert_eq!(
+            vm.get_prototype_of(obj_ref).expect("get_prototype_of 应成功"),
+            obj_ref.proto(),
+            "非代理路径须与直读一致"
+        );
+
+        // set_prototype_of：正常设置成功；新旧 SameValue 直接成功。
+        let new_proto = vm.alloc_object(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::undefined()));
+        assert!(
+            vm.set_prototype_of(unsafe { &mut *obj }, JsValue::from_js_object(new_proto))
+                .expect("set_prototype_of 应成功"),
+            "正常设置须成功"
+        );
+        assert_eq!(unsafe { &*obj }.proto(), JsValue::from_js_object(new_proto));
+        assert!(
+            vm.set_prototype_of(unsafe { &mut *obj }, JsValue::from_js_object(new_proto))
+                .expect("set_prototype_of 应成功"),
+            "新旧 SameValue 须直接成功"
+        );
+
+        // is_extensible：与直读一致。
+        assert_eq!(
+            vm.is_extensible(obj_ref).expect("is_extensible 应成功"),
+            obj_ref.is_extensible(),
+            "非代理路径须与直读一致"
+        );
+
+        // prevent_extensions：置不可扩展。
+        vm.prevent_extensions(unsafe { &mut *obj }).expect("prevent_extensions 应成功");
+        assert!(!unsafe { &*obj }.is_extensible(), "prevent_extensions 后须不可扩展");
+
+        // own_keys：与 walk_own_keys 一致（仅字符串键 "k"）。
+        let keys = vm.own_keys(obj_ref).expect("own_keys 应成功");
+        assert_eq!(keys.len(), 1, "自身键须恰有一个");
+        assert_eq!(vm.lookup_str(keys[0]).as_deref(), Some("k"), "键值须为字符串 k");
+
+        // get_own_property_desc：存在属性返描述符，缺失返 None。
+        assert!(
+            vm.get_own_property_desc(obj_ref, key_si)
+                .expect("get_own_property_desc 应成功")
+                .is_some(),
+            "存在属性须有描述符"
+        );
+        assert!(
+            vm.get_own_property_desc(obj_ref, vm.perm_intern("missing"))
+                .expect("get_own_property_desc 应成功")
+                .is_none(),
+            "缺失属性须返 None"
+        );
+
+        // delete_own：删除成功返 true；缺失键删除亦返 true。
+        assert!(vm.delete_own(unsafe { &mut *obj }, key_si).expect("delete_own 应成功"), "删除须成功");
+        assert!(
+            vm.delete_own(unsafe { &mut *obj }, key_si).expect("delete_own 应成功"),
+            "缺失键删除须成功"
+        );
+    }
+
+    /// 7 个 trait 方法：代理路径经 trap 路由（trap 命中、返值原样透传）。
+    #[test]
+    fn proto_trait_methods_proxy_paths_route_traps() {
+        let mut vm = Vm::new();
+        let target = vm.alloc_object(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::undefined()));
+        // target 原型须为对象或 null（setPrototypeOf trap 报 true 的不变量检查）。
+        unsafe { (*target).set_proto(JsValue::null()).expect("set_proto 应成功") };
+        let handler = vm.alloc_object(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::undefined()));
+        let handler_val = JsValue::from_js_object(handler);
+        let get_proto_fn = native_fn_obj(&mut vm, counting_get_prototype_trap);
+        let counting_fn = native_fn_obj(&mut vm, counting_trap);
+        let own_keys_fn = native_fn_obj(&mut vm, counting_own_keys_trap);
+        let gopd_fn = native_fn_obj(&mut vm, counting_gopd_trap);
+        for (name, trap_fn) in [
+            ("getPrototypeOf", get_proto_fn),
+            ("setPrototypeOf", counting_fn),
+            ("isExtensible", counting_fn),
+            ("preventExtensions", counting_fn),
+            ("ownKeys", own_keys_fn),
+            ("getOwnPropertyDescriptor", gopd_fn),
+            ("deleteProperty", counting_fn),
+        ] {
+            vm.set_or_create_prop_value(
+                unsafe { &mut *handler },
+                vm.perm_intern(name),
+                JsValue::from_js_object(trap_fn),
+            );
+        }
+        let proxy = proxy_with_state(&mut vm, JsValue::from_js_object(target), handler_val);
+        let proxy_ref = unsafe { &*proxy };
+        let handler_ref = unsafe { &*handler };
+        let hits_si = vm.perm_intern("hits");
+        let key_si = vm.perm_intern("k");
+
+        // getPrototypeOf：trap 返对象，原样透传。
+        let proto = vm.get_prototype_of(proxy_ref).expect("get_prototype_of 应成功");
+        assert!(proto.is_object(), "getPrototypeOf trap 返值须为对象");
+        assert_eq!(
+            vm.resolve_property(handler_ref, hits_si).unwrap(),
+            JsValue::int(1),
+            "getPrototypeOf trap 须命中"
+        );
+
+        // isExtensible：trap 报 true，布尔投影为 true。
+        assert!(
+            vm.is_extensible(proxy_ref).expect("is_extensible 应成功"),
+            "isExtensible trap 报 true 须投影为 true"
+        );
+        assert_eq!(
+            vm.resolve_property(handler_ref, hits_si).unwrap(),
+            JsValue::int(2),
+            "isExtensible trap 须命中"
+        );
+
+        // preventExtensions：trap 报 true（与 target 可扩展状态一致）。
+        vm.prevent_extensions(unsafe { &mut *proxy })
+            .expect("prevent_extensions 应成功");
+        assert_eq!(
+            vm.resolve_property(handler_ref, hits_si).unwrap(),
+            JsValue::int(3),
+            "preventExtensions trap 须命中"
+        );
+
+        // setPrototypeOf：trap 报 true，不变量检查通过（target 原型为 null）。
+        assert!(
+            vm.set_prototype_of(unsafe { &mut *proxy }, JsValue::null())
+                .expect("set_prototype_of 应成功"),
+            "setPrototypeOf trap 报 true 须投影为 true"
+        );
+        assert_eq!(
+            vm.resolve_property(handler_ref, hits_si).unwrap(),
+            JsValue::int(4),
+            "setPrototypeOf trap 须命中"
+        );
+
+        // ownKeys：trap 返数组，原样透传。
+        let keys = vm.own_keys(proxy_ref).expect("own_keys 应成功");
+        assert_eq!(keys.len(), 1, "ownKeys trap 返值须为单元素数组");
+        assert_eq!(vm.lookup_str(keys[0]).as_deref(), Some("k"), "ownKeys trap 返值须原样透传");
+        assert_eq!(vm.resolve_property(handler_ref, hits_si).unwrap(), JsValue::int(5), "ownKeys trap 须命中");
+
+        // getOwnPropertyDescriptor：trap 返描述符对象，原样透传。
+        let desc = vm
+            .get_own_property_desc(proxy_ref, key_si)
+            .expect("get_own_property_desc 应成功");
+        assert!(desc.is_some(), "getOwnPropertyDescriptor trap 须返描述符");
+        assert_eq!(
+            vm.resolve_property(handler_ref, hits_si).unwrap(),
+            JsValue::int(6),
+            "getOwnPropertyDescriptor trap 须命中"
+        );
+
+        // deleteProperty：trap 报 true，布尔投影为 true。
+        assert!(
+            vm.delete_own(unsafe { &mut *proxy }, key_si).expect("delete_own 应成功"),
+            "deleteProperty trap 报 true 须投影为 true"
+        );
+        assert_eq!(
+            vm.resolve_property(handler_ref, hits_si).unwrap(),
+            JsValue::int(7),
+            "deleteProperty trap 须命中"
+        );
+    }
+
+    /// 7 个 trait 方法：代理路径不变量检查（getPrototypeOf 返非对象非 null
+    /// 抛 TypeError、setPrototypeOf 报 false 返 false、ownKeys 返非数组抛
+    /// TypeError）。
+    #[test]
+    fn proto_trait_methods_proxy_invariants() {
+        let mut vm = Vm::new();
+        let target = vm.alloc_object(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::undefined()));
+        unsafe { (*target).set_proto(JsValue::null()).expect("set_proto 应成功") };
+        let handler = vm.alloc_object(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::undefined()));
+        // getPrototypeOf trap 返非对象非 null 值。
+        fn bad_get_prototype_trap(_vm: &mut Vm, _args: &[u8]) -> NativeResult {
+            NativeResult::Ok(JsValue::int(42))
+        }
+        // setPrototypeOf trap 报 false。
+        fn false_trap(_vm: &mut Vm, _args: &[u8]) -> NativeResult {
+            NativeResult::Ok(JsValue::bool(false))
+        }
+        // ownKeys trap 返非数组值。
+        fn bad_own_keys_trap(_vm: &mut Vm, _args: &[u8]) -> NativeResult {
+            NativeResult::Ok(JsValue::int(42))
+        }
+        let get_proto_fn = native_fn_obj(&mut vm, bad_get_prototype_trap);
+        let set_proto_fn = native_fn_obj(&mut vm, false_trap);
+        let own_keys_fn = native_fn_obj(&mut vm, bad_own_keys_trap);
+        vm.set_or_create_prop_value(
+            unsafe { &mut *handler },
+            vm.perm_intern("getPrototypeOf"),
+            JsValue::from_js_object(get_proto_fn),
+        );
+        vm.set_or_create_prop_value(
+            unsafe { &mut *handler },
+            vm.perm_intern("setPrototypeOf"),
+            JsValue::from_js_object(set_proto_fn),
+        );
+        vm.set_or_create_prop_value(
+            unsafe { &mut *handler },
+            vm.perm_intern("ownKeys"),
+            JsValue::from_js_object(own_keys_fn),
+        );
+        let proxy = proxy_with_state(&mut vm, JsValue::from_js_object(target), JsValue::from_js_object(handler));
+        let proxy_ref = unsafe { &*proxy };
+
+        // getPrototypeOf trap 返非对象非 null 抛 TypeError。
+        let err = vm.get_prototype_of(proxy_ref).expect_err("须抛 TypeError");
+        assert!(err.contains("TypeError"), "须抛 TypeError：{err}");
+
+        // setPrototypeOf trap 报 false 投影为 false（非错误）。
+        assert!(
+            !vm.set_prototype_of(unsafe { &mut *proxy }, JsValue::null())
+                .expect("set_prototype_of 应成功"),
+            "trap 报 false 须投影为 false"
+        );
+
+        // ownKeys trap 返非数组抛 TypeError。
+        let err = vm.own_keys(proxy_ref).expect_err("须抛 TypeError");
+        assert!(err.contains("TypeError"), "须抛 TypeError：{err}");
     }
 
     #[test]
