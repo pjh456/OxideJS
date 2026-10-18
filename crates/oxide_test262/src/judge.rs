@@ -371,7 +371,6 @@ mod tests {
     #[test]
     fn unimplemented_shapes_stay_skipped() {
         for e in [
-            "not yet implemented: Proxy",
             "feature is not supported",
             "unsupported syntax",
             "vm error: NEW_EXPRESSION not supported",

@@ -10,7 +10,7 @@
 use oxide_kernel::shape_forge::EMPTY_SHAPE_ID;
 use oxide_runtime_api::NativeResult;
 use oxide_types::object::{JsObject, NativeFnPtr, PropAttributes};
-use oxide_types::private_key::{decode_symbol_key, encode_symbol_key, is_symbol_key, make_int_key};
+use oxide_types::private_key::{decode_symbol_key, is_symbol_key, make_int_key};
 use oxide_types::value::JsValue;
 
 use crate::native::NativeFn;
@@ -706,28 +706,42 @@ fn perform_promise_combine_keyed(
     let keys = vm.make_plain_array(Vec::new());
     let record = vm.make_agg_record_keyed(values, keys, resolve, reject);
 
-    // OwnKeys 序：整数键升序、字符串键插入序；符号键按插入序追加（shape 位置
-    // 换算绝对存储下标，与 walk_own_keys 口径一致）。
-    let mut all_keys = oxide_builtins::object::walk_own_keys(vm, promises_obj);
-    for sym in oxide_builtins::object::own_symbol_key_values(vm, promises_obj) {
-        let si = encode_symbol_key(vm.realm_id(), sym.as_symbol_index());
-        if let Some(pos) = vm.kernel_core.shape_forge().lookup_position(promises_obj.shape_id(), si) {
-            let store = if promises_obj.is_array() { promises_obj.array_prop_count + pos } else { pos };
-            all_keys.push((si, store));
+    // OwnKeys 序：整数键升序、字符串键插入序；符号键按插入序追加。代理感知：
+    // 代理经 ownKeys trap（缺失落穿 target 自身键），trap 抛错异步拒绝。
+    let (all_keys, _storage) = match oxide_builtins::object::own_keys_proxy_aware(vm, promises_obj) {
+        Ok(ks) => ks,
+        Err(exc) => {
+            let _ = vm.call_function_sync(reject, JsValue::undefined(), &[exc]);
+            return Ok(promise);
         }
-    }
+    };
 
     let mut index: i32 = 0;
-    for (si, store) in all_keys {
-        // 可枚举性：TA 元素键（哨兵存储下标）恒在场且可枚举；其余查元数据区
-        // （无元数据 = 默认数据描述符，可枚举）。
-        let enumerable = if store == u32::MAX {
-            true
-        } else {
-            promises_obj
-                .prop_meta_at(store)
-                .map_or(true, |m| !m.is_hole() && m.attributes.enumerable())
+    for (si, _store) in all_keys {
+        // [[GetOwnProperty]](key)：代理经 getOwnPropertyDescriptor trap 路由，
+        // 缺失跳过，抛错异步拒绝；可枚举性取描述符 enumerable 属性（缺省为真）。
+        let desc = match oxide_builtins::object::own_descriptor_value(vm, promises_obj, si) {
+            Ok(d) => d,
+            Err(exc) => {
+                let _ = vm.call_function_sync(reject, JsValue::undefined(), &[exc]);
+                return Ok(promise);
+            }
         };
+        let Some(desc) = desc else {
+            continue;
+        };
+        // SAFETY: desc 是存活描述符对象。
+        let desc_obj = unsafe { &*desc.as_js_object_ptr() };
+        let en_si = vm.kernel_core.perm_interner().intern("enumerable").0;
+        let en = match vm.ordinary_get(desc_obj, en_si, desc) {
+            Ok(v) => v,
+            Err(e) => {
+                let exc = agg_engine_error(vm, &e);
+                let _ = vm.call_function_sync(reject, JsValue::undefined(), &[exc]);
+                return Ok(promise);
+            }
+        };
+        let enumerable = if en.is_undefined() { true } else { oxide_runtime_api::to_boolean(en) };
         if !enumerable {
             continue;
         }

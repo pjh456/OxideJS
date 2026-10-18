@@ -1,4 +1,4 @@
-//! test262 harness 内嵌注册表与前缀拼接/缓存：`HarnessSources`（24 处 `include_str!`）、`HARNESS`、黑名单、
+//! test262 harness 内嵌注册表与前缀拼接/缓存：`HarnessSources`（26 处 `include_str!`）、`HARNESS`、黑名单、
 //! 前缀拼接与缓存。全部 `include_str!` 路径相对上 3 级到仓库根，依赖本文件平铺 `src/` 一级，禁子目录。
 
 use crate::meta::TestMeta;
@@ -66,6 +66,14 @@ impl HarnessSources {
             "resizableArrayBufferUtils.js",
             include_str!("../../../tests/test262/harness/resizableArrayBufferUtils.js"),
         );
+        sources.insert(
+            "proxyTrapsHelper.js",
+            include_str!("../../../tests/test262/harness/proxyTrapsHelper.js"),
+        );
+        sources.insert(
+            "iteratorZipUtils.js",
+            include_str!("../../../tests/test262/harness/iteratorZipUtils.js"),
+        );
         Self { sources }
     }
 
@@ -77,17 +85,15 @@ impl HarnessSources {
 
 pub(crate) static HARNESS: OnceLock<HarnessSources> = OnceLock::new();
 
-/// 判断 harness 文件是否在支持范围之外（依赖 Proxy/Intl/async 等未实现特性）。
+/// 判断 harness 文件是否在支持范围之外（依赖 Intl/async 等未实现特性）。
 fn is_blacklisted_harness(name: &str) -> bool {
     matches!(
         name,
         "testIntl.js"
             | "atomicsHelper.js"
-            | "proxyTrapsHelper.js"
             | "tcoHelper.js"
             | "byteConversionValues.js"
             | "compareIterator.js"
-            | "iteratorZipUtils.js"
     )
 }
 
