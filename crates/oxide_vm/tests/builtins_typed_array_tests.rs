@@ -1893,7 +1893,7 @@ fn ta_detached_empty_enum() {
             if (ks.length !== 2 || ks[0] !== 'foo' || ks[1] !== s) return false; \
             if (Object.keys(ta).join(',') !== 'foo') return false; \
             var vs = Object.values(ta); \
-            if (vs.length !== 1 || vs[0] !== 42) return false; \
+            if (vs.length !== 2 || vs[0] !== 42 || vs[1] !== 5) return false; \
             var kf = []; for (var k in ta) kf.push(k); \
             return kf.length === 1 && kf[0] === 'foo' && ta.foo === 42; })()",
     )

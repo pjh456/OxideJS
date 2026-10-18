@@ -142,6 +142,23 @@ pub fn key_si_to_js_value<H: VmHost>(vm: &mut H, si: u32) -> JsValue {
     vm.new_string_units_owned(units)
 }
 
+/// 键 si 构造为 JS 可见属性键值（Proxy trap 的 P 实参）：Symbol 键还原为符号
+/// 值（键自含 realm 编号与局部下标），整数键反解数字串，字符串键还原单元序列。
+pub fn key_si_to_js_key<H: VmHost>(vm: &mut H, si: u32) -> JsValue {
+    if is_symbol_key(si) {
+        return symbol_key_to_value(si);
+    }
+    key_si_to_js_value(vm, si)
+}
+
+/// 读取对象自身属性描述符对象（`[[GetOwnProperty]]` 的 JS 可见形态）：缺失返
+/// `Ok(None)`；deferred namespace 求值触发失败以异常值 `Err` 上抛（uncaught
+/// 侧通道已还原为原错误值）。Proxy 的 `[[GetOwnProperty]]` trap 缺失落穿时
+/// 经本函数取 target 的普通自身描述符。
+pub fn own_descriptor_value<H: VmHost>(vm: &mut H, obj: &JsObject, key_si: u32) -> Result<Option<JsValue>, JsValue> {
+    own_descriptor_of(vm, obj, key_si)
+}
+
 /// 收集对象自身全部 Symbol 键（shape 链），按键序排列（根→叶，即插入序）。
 /// 与 [`walk_own_keys`] 互补：只返回 Symbol 键。返回 `(属性键 si, 绝对存储索引)`：
 /// 槽位计数须含全部非空节点（含字符串键）并对数组加元素区偏移，与物理存储及
@@ -181,6 +198,97 @@ pub(crate) fn walk_own_symbol_keys<H: VmHost>(vm: &H, obj: &JsObject) -> Vec<(u3
 fn symbol_key_to_value(key: u32) -> JsValue {
     let (realm_id, local_index) = decode_symbol_key(key);
     JsValue::symbol_realm(realm_id, local_index)
+}
+
+/// 代理感知的自身键收集（规范 [[OwnPropertyKeys]] 完整形态）：普通对象经
+/// walk_own_keys 加 walk_own_symbol_keys（整数键升序、字符串键插入序、Symbol
+/// 键插入序）；代理经 ownKeys trap——缺失落穿 target 的自身键，存在时以 trap
+/// 结果为主、target 键中不在 trap 的追加末尾（trap 序优先），target 上没有
+/// 的键丢弃（无存储槽可定位，描述符按缺失处理）。
+///
+/// # 步骤
+/// 1. 非代理：walk_own_keys 加 walk_own_symbol_keys，存储对象即自身。
+/// 2. 代理：先递归落穿 target（target 自身为代理时再路由）取 target 键。
+/// 3. ownKeys trap 存在时 ToList 其结果（数组直读元素区、非数组按 length
+///    读整数索引区），逐元素 ToPropertyKey 去重。
+/// 4. 合并：trap 键在前（存储下标按 target 键定位），target 键补尾。
+///
+/// # 边界与前提
+/// - `obj` 须为存活对象；代理的 target 由构造器校验为非空对象指针。
+///
+/// # 副作用
+/// - trap 调用执行用户代码（含分配与 GC）；revoked 抛 TypeError。
+///
+/// # 返回
+/// (键列表, 存储对象)：消费方读 meta/值一律经存储对象，不读代理本体。
+pub type OwnKeys<'a> = (Vec<(u32, u32)>, &'a JsObject);
+
+pub fn own_keys_proxy_aware<'a, H: VmHost>(vm: &mut H, obj: &'a JsObject) -> Result<OwnKeys<'a>, String> {
+    if !obj.is_proxy_obj() {
+        let mut keys = walk_own_keys(vm, obj);
+        keys.extend(walk_own_symbol_keys(vm, obj));
+        return Ok((keys, obj));
+    }
+    let target = crate::proxy::proxy_state_ref(obj).expect("状态盒").target;
+    // SAFETY: target 由构造器校验为非空对象指针。
+    let target_obj = unsafe { &*target.as_js_object_ptr() };
+    // 落穿：target 自身为代理时递归再路由，普通对象取其自身键。
+    let (target_keys, storage) = own_keys_proxy_aware(vm, target_obj)?;
+    let trap_result = vm.proxy_call_trap(obj, vm.perm_intern("ownKeys"), &[target])?;
+    let Some(result) = trap_result else {
+        return Ok((target_keys, storage));
+    };
+    if !result.is_object() {
+        return Err(oxide_runtime_api::format_error_message(
+            "TypeError",
+            "Proxy ownKeys trap returned a non-object",
+        ));
+    }
+    // SAFETY: result 是非空对象指针。
+    let result_obj = unsafe { &*result.as_js_object_ptr() };
+    // ToList：数组直读元素区（hole 视为不存在）；非数组按 length 属性读整数
+    // 索引区。
+    let mut trap_keys: Vec<u32> = Vec::new();
+    if result_obj.is_array() {
+        for i in 0..result_obj.array_prop_count {
+            if result_obj.prop_meta_at(i).is_some_and(|m| m.is_hole()) {
+                continue;
+            }
+            let si = vm.to_property_key_si(result_obj.get_prop_at(i))?;
+            if !trap_keys.contains(&si) {
+                trap_keys.push(si);
+            }
+        }
+    } else {
+        let length_val = vm.ordinary_get(result_obj, vm.perm_intern("length"), result)?;
+        let len = oxide_runtime_api::to_length(length_val);
+        for i in 0..len {
+            // 大索引（2^30 以上）走字符串键形态（规范数字串）。
+            let key_si = if i < INT_KEY_COUNT as u64 {
+                make_int_key(i as u32)
+            } else {
+                vm.perm_intern(&i.to_string())
+            };
+            let val = vm.ordinary_get(result_obj, key_si, result)?;
+            let si = vm.to_property_key_si(val)?;
+            if !trap_keys.contains(&si) {
+                trap_keys.push(si);
+            }
+        }
+    }
+    // 合并：trap 序优先，target 键补尾；target 上没有的键丢弃。
+    let mut keys: Vec<(u32, u32)> = Vec::with_capacity(trap_keys.len() + target_keys.len());
+    for si in &trap_keys {
+        if let Some(store) = target_keys.iter().find(|(k, _)| k == si).map(|(_, s)| *s) {
+            keys.push((*si, store));
+        }
+    }
+    for (si, store) in target_keys {
+        if !trap_keys.contains(&si) {
+            keys.push((si, store));
+        }
+    }
+    Ok((keys, storage))
 }
 
 /// 收集对象自身全部 Symbol 键并按插入序物化为 Symbol 值。
@@ -266,10 +374,16 @@ pub fn object_get_own_property_symbols<H: VmHost>(vm: &mut H, args: &[u8]) -> Na
         return NativeResult::Err(exc);
     }
 
-    let symbols: Vec<JsValue> = {
-        let obj = unsafe { &*obj_ptr };
-        own_symbol_key_values(vm, obj)
+    // 代理经 ownKeys trap 路由（缺失落穿 target）；本入口只取 Symbol 键。
+    let (keys, _storage) = match own_keys_proxy_aware(vm, obj) {
+        Ok(k) => k,
+        Err(msg) => return NativeResult::Err(crate::error::create_from_text(vm, &msg)),
     };
+    let symbols: Vec<JsValue> = keys
+        .into_iter()
+        .filter(|(si, _)| is_symbol_key(*si))
+        .map(|(si, _)| symbol_key_to_value(si))
+        .collect();
 
     let n = symbols.len();
     let array_proto = vm.builtin_proto(ProtoKind::ArrayProto);
@@ -342,6 +456,53 @@ pub enum DeleteOutcome {
 pub fn delete_own_property_outcome<H: VmHost>(
     vm: &mut H, obj: &mut JsObject, key_si: u32,
 ) -> Result<DeleteOutcome, JsValue> {
+    // Proxy [[Delete]]：deleteProperty trap 以（target、P）调用；trap 缺失落穿
+    // target 的普通删除路径（target 自身为代理时经递归再路由）；trap 报 false
+    // 删除失败；trap 报 true 时 target 自身属性不可配置或 target 不可扩展抛
+    // TypeError。
+    if obj.is_proxy_obj() {
+        let target = crate::proxy::proxy_state_ref(obj).expect("状态盒").target;
+        let key = key_si_to_js_key(vm, key_si);
+        let trap_result = match vm.proxy_call_trap(obj, vm.perm_intern("deleteProperty"), &[target, key]) {
+            Ok(r) => r,
+            Err(msg) => {
+                let exc = vm
+                    .take_uncaught_value()
+                    .unwrap_or_else(|| crate::error::create_from_text(vm, &msg));
+                return Err(exc);
+            }
+        };
+        if let Some(r) = trap_result {
+            let ok = vm
+                .proxy_trap_bool_result(r, "deleteProperty")
+                .map_err(|msg| crate::error::create_from_text(vm, &msg))?;
+            if !ok {
+                return Ok(DeleteOutcome::NonConfigurable);
+            }
+            // SAFETY: target 由构造器校验为非空对象指针。
+            let target_obj = unsafe { &*target.as_js_object_ptr() };
+            // targetDesc 缺失（步 8）直接返 true，不做不可配置 / 不可扩展检查；
+            // 存在时先查不可配置（步 9）再查不可扩展（步 11）。
+            if let Some(pos) = vm.get_own_property_slot(target_obj, key_si) {
+                let meta = target_obj.prop_meta_at(pos);
+                if meta.is_some_and(|m| !m.attributes.configurable()) {
+                    return Err(crate::error::create_type_error(
+                        vm,
+                        "Proxy deleteProperty trap reported true for a non-configurable target property",
+                    ));
+                }
+                if !target_obj.is_extensible() {
+                    return Err(crate::error::create_type_error(
+                        vm,
+                        "Proxy deleteProperty trap reported true for a non-extensible target",
+                    ));
+                }
+            }
+            return Ok(DeleteOutcome::Deleted);
+        }
+        // SAFETY: target 由构造器校验为非空对象指针。
+        return delete_own_property_outcome(vm, unsafe { &mut *target.as_js_object_ptr() }, key_si);
+    }
     // deferred namespace 求值触发（[[Delete]]，symbol-like 键内部 no-op）：
     // 触发失败（cyclic / 失败缓存重抛）以异常值上抛，由调用边界恢复。
     // uncaught 侧通道已还原为原错误值，原值重抛保身份。
@@ -631,10 +792,19 @@ pub fn object_keys<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     if let Err(exc) = ensure_deferred_own_keys(vm, obj) {
         return NativeResult::Err(exc);
     }
-    let owned_keys: Vec<(u32, u32)> = walk_own_keys(vm, obj)
+    // 代理经 ownKeys trap 路由（缺失落穿 target）；meta 读经存储对象。
+    // Object.keys 只取字符串键（规范 EnumerableOwnPropertyNames 的 key 形态），
+    // Symbol 键在收集器内与字符串键同序，须在此过滤。
+    let (keys, storage) = match own_keys_proxy_aware(vm, obj) {
+        Ok(k) => k,
+        Err(msg) => return NativeResult::Err(crate::error::create_from_text(vm, &msg)),
+    };
+    let owned_keys: Vec<(u32, u32)> = keys
         .into_iter()
+        .filter(|(si, _)| !is_symbol_key(*si))
         .filter(|(_si, offset)| {
-            obj.prop_meta_at(*offset)
+            storage
+                .prop_meta_at(*offset)
                 .map(|m| m.attributes.enumerable())
                 .unwrap_or(PropAttributes::DEFAULT_DATA.enumerable())
         })
@@ -742,11 +912,15 @@ pub fn object_assign<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         }
         let source_keys: Vec<(u32, u32)> = {
             let source = unsafe { &*source_ptr };
-            walk_own_keys(vm, source)
-                .into_iter()
+            // 源为代理时经 ownKeys trap 路由（缺失落穿 target）；meta 读经存储对象。
+            let (keys, storage) = match own_keys_proxy_aware(vm, source) {
+                Ok(k) => k,
+                Err(err) => return NativeResult::Err(crate::error::create_from_text(vm, &err)),
+            };
+            keys.into_iter()
                 // CopyDataProperties：只拷贝可枚举自身属性（无显式 meta 视为可枚举）。
                 .filter(|(_si, offset)| {
-                    source
+                    storage
                         .prop_meta_at(*offset)
                         .map(|m| m.attributes.enumerable())
                         .unwrap_or(PropAttributes::DEFAULT_DATA.enumerable())
@@ -858,22 +1032,29 @@ pub(crate) fn define_from_descriptor<H: VmHost>(
     let length_si = vm.perm_intern("length");
     let is_array_length = unsafe { &*obj_ptr }.is_array() && key_si == length_si;
 
+    // Proxy [[DefineOwnProperty]]：代理自身形状恒空，缺省回填读终极 target 的
+    // 自身描述符（gOPD trap 由描述符读入口路由，本处读 target 普通存储）。
+    let storage_obj = unsafe { &*obj_ptr };
+    let storage_obj = if storage_obj.is_proxy_obj() {
+        ultimate_target(storage_obj)
+    } else {
+        storage_obj
+    };
     let existing_pos = if is_array_length {
         None
     } else {
-        let obj = unsafe { &*obj_ptr };
-        vm.get_own_property_slot(obj, key_si)
+        vm.get_own_property_slot(storage_obj, key_si)
     };
     let existing_meta = if is_array_length {
         let writable = unsafe { &*obj_ptr }.is_length_writable();
         Some(oxide_types::object::PropMetaEntry::data(PropAttributes::new(writable, false, false)))
     } else {
         existing_pos.map(|pos| {
-            let obj = unsafe { &*obj_ptr };
             // 已有属性无显式 meta（普通数据属性/数组元素）时按默认属性回填：
             // 描述符缺省字段保持现有值（writable/enumerable/configurable 均 true），
             // 而非按新属性处理为 false（Object.defineProperty 省略字段不改已有属性）。
-            obj.prop_meta_at(pos)
+            storage_obj
+                .prop_meta_at(pos)
                 .unwrap_or_else(|| oxide_types::object::PropMetaEntry::data(PropAttributes::DEFAULT_DATA))
         })
     };
@@ -919,10 +1100,7 @@ pub(crate) fn define_from_descriptor<H: VmHost>(
     let existing_value = if is_array_length {
         unsafe { &*obj_ptr }.logical_len_value()
     } else {
-        existing_pos.map_or(JsValue::undefined(), |pos| {
-            let obj = unsafe { &*obj_ptr };
-            obj.get_prop_at(pos)
-        })
+        existing_pos.map_or(JsValue::undefined(), |pos| storage_obj.get_prop_at(pos))
     };
 
     // 访问器描述符：解析 get/set（缺失字段回填现有属性）并做可调用性校验——
@@ -1097,17 +1275,33 @@ fn define_all_from_properties<H: VmHost>(
     let props_ptr = props_obj.as_js_object_ptr();
     let descriptors: Vec<(u32, JsValue)> = {
         let props = unsafe { &*props_ptr };
-        walk_own_keys(vm, props)
+        // 描述符对象为代理时经 ownKeys trap 路由（缺失落穿 target）；meta 读经
+        // 存储对象。
+        let (keys, storage) = match own_keys_proxy_aware(vm, props) {
+            Ok(k) => k,
+            Err(msg) => return Err(DefineDescFailure::Engine(msg)),
+        };
+        // 先物化可枚举自身键（meta 读经存储对象），再逐键经 ordinary_get 取
+        // 描述符值（触发访问器 getter，异常原值传播）。
+        let enumerable: Vec<u32> = keys
             .into_iter()
-            // 非可枚举自身属性跳过；无显式 meta 视为可枚举（普通字面量默认）。
-            .filter(|(_si, offset)| !props.prop_meta_at(*offset).map(|m| !m.attributes.enumerable()).unwrap_or(false))
-            .map(|(key_si, _offset)| {
-                let props = unsafe { &*props_ptr };
-                vm.ordinary_get(props, key_si, props_obj).map(|desc_val| (key_si, desc_val))
+            .filter(|(_si, offset)| {
+                !storage
+                    .prop_meta_at(*offset)
+                    .map(|m| !m.attributes.enumerable())
+                    .unwrap_or(false)
             })
-            // 描述符值 getter 抛出的异常原值传播。
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|msg| DefineDescFailure::User(crate::array::from_engine_error(vm, &msg)))?
+            .map(|(si, _)| si)
+            .collect();
+        let mut out = Vec::with_capacity(enumerable.len());
+        for key_si in enumerable {
+            let props = unsafe { &*props_ptr };
+            let desc_val = vm
+                .ordinary_get(props, key_si, props_obj)
+                .map_err(|msg| DefineDescFailure::User(crate::array::from_engine_error(vm, &msg)))?;
+            out.push((key_si, desc_val));
+        }
+        out
     };
     for (key_si, desc_val) in descriptors {
         define_from_descriptor(vm, target_ptr, key_si, desc_val)?;
@@ -1144,6 +1338,10 @@ pub fn object_define_property<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResul
             if let Some(exc) = vm.take_pending_length_exception() {
                 return NativeResult::Err(exc);
             }
+            // 定义期用户代码（Proxy trap）抛出的原始异常值原值重抛。
+            if let Some(exc) = vm.take_uncaught_value() {
+                return NativeResult::Err(exc);
+            }
             return NativeResult::Err(crate::error::create_define_failure(vm, &msg));
         }
     }
@@ -1162,6 +1360,33 @@ pub fn object_define_property<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResul
 /// # 副作用
 /// - 在 epoch 分配一个描述符对象
 fn own_descriptor_of<H: VmHost>(vm: &mut H, obj: &JsObject, key_si: u32) -> Result<Option<JsValue>, JsValue> {
+    // Proxy [[GetOwnProperty]]：getOwnPropertyDescriptor trap 以（target、P）
+    // 调用；trap 缺失落穿 target 的自身描述符（target 自身为代理时经递归再
+    // 路由）；trap 返 undefined 表示无属性；返非对象按规范抛 TypeError。
+    if obj.is_proxy_obj() {
+        let target = crate::proxy::proxy_state_ref(obj).expect("状态盒").target;
+        let key = key_si_to_js_key(vm, key_si);
+        let trap_result = match vm.proxy_call_trap(obj, vm.perm_intern("getOwnPropertyDescriptor"), &[target, key]) {
+            Ok(r) => r,
+            Err(msg) => {
+                let exc = vm
+                    .take_uncaught_value()
+                    .unwrap_or_else(|| crate::error::create_from_text(vm, &msg));
+                return Err(exc);
+            }
+        };
+        if let Some(r) = trap_result {
+            if r.is_undefined() {
+                return Ok(None);
+            }
+            if !r.is_object() {
+                return Err(crate::error::create_type_error(vm, "getOwnPropertyDescriptor trap returned a non-object"));
+            }
+            return Ok(Some(r));
+        }
+        // SAFETY: target 由构造器校验为非空对象指针。
+        return own_descriptor_of(vm, unsafe { &*target.as_js_object_ptr() }, key_si);
+    }
     // deferred namespace 求值触发（[[GetOwnProperty]]，symbol-like 键内部 no-op）。
     // 触发失败时 uncaught 侧通道已还原为原错误值，原值重抛保身份。
     if let Err(msg) = vm.ensure_deferred_ns_evaluation(obj, Some(key_si)) {
@@ -1311,9 +1536,12 @@ pub fn object_get_own_property_descriptors<H: VmHost>(vm: &mut H, args: &[u8]) -
         return NativeResult::Err(exc);
     }
 
-    // 三段自身键序：字符串/整数键（整键升序在前）后接 Symbol 键插入序。
-    let mut keys = walk_own_keys(vm, obj);
-    keys.extend(walk_own_symbol_keys(vm, obj));
+    // 三段自身键序：字符串/整数键（整键升序在前）后接 Symbol 键插入序；
+    // 代理经 ownKeys trap 路由（缺失落穿 target）。
+    let (keys, _storage) = match own_keys_proxy_aware(vm, obj) {
+        Ok(k) => k,
+        Err(msg) => return NativeResult::Err(crate::error::create_from_text(vm, &msg)),
+    };
 
     // 结果对象：proto = %Object.prototype%。
     let desc_proto = vm.builtin_proto(ProtoKind::ObjectProto);
@@ -1333,6 +1561,17 @@ pub fn object_get_own_property_descriptors<H: VmHost>(vm: &mut H, args: &[u8]) -
         }
     }
     NativeResult::Ok(result_val)
+}
+
+/// 代理链的终极 target（沿 ProxyState 递归，非代理对象原样返回）。
+fn ultimate_target(obj: &JsObject) -> &JsObject {
+    let mut cur = obj;
+    while cur.is_proxy_obj() {
+        let target = crate::proxy::proxy_state_ref(cur).expect("状态盒").target;
+        // SAFETY: target 由构造器校验为非空对象指针。
+        cur = unsafe { &*target.as_js_object_ptr() };
+    }
+    cur
 }
 
 /// 按 ToPropertyDescriptor 语义取描述符字段：沿原型链判存在性，存在时经
@@ -1650,7 +1889,14 @@ pub fn object_get_own_property_names<H: VmHost>(vm: &mut H, args: &[u8]) -> Nati
     if let Err(exc) = ensure_deferred_own_keys(vm, obj) {
         return NativeResult::Err(exc);
     }
-    let keys = walk_own_keys(vm, obj);
+    // 代理经 ownKeys trap 路由（缺失落穿 target）；本入口只读键名，不读存储。
+    // getOwnPropertyNames 只取字符串键（规范过滤 Symbol 键），Symbol 键归
+    // getOwnPropertySymbols，须在此过滤。
+    let (keys, _storage) = match own_keys_proxy_aware(vm, obj) {
+        Ok(k) => k,
+        Err(msg) => return NativeResult::Err(crate::error::create_from_text(vm, &msg)),
+    };
+    let keys = keys.into_iter().filter(|(si, _)| !is_symbol_key(*si)).collect::<Vec<_>>();
     let n = keys.len();
     let array_proto = vm.builtin_proto(ProtoKind::ArrayProto);
     let arr = vm.alloc_object(JsObject::new_array(EMPTY_SHAPE_ID, JsValue::from_js_object(array_proto), n));
@@ -1688,6 +1934,10 @@ pub fn object_define_properties<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeRes
             // 强转期用户异常原值重抛，非法 length 以 RangeError kind 穿透，
             // 其余 define 失败投影为 TypeError。
             if let Some(exc) = vm.take_pending_length_exception() {
+                return NativeResult::Err(exc);
+            }
+            // 定义期用户代码（Proxy trap）抛出的原始异常值原值重抛。
+            if let Some(exc) = vm.take_uncaught_value() {
                 return NativeResult::Err(exc);
             }
             return NativeResult::Err(crate::error::create_define_failure(vm, &msg));
@@ -2275,11 +2525,17 @@ pub fn object_entries<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     if let Err(exc) = ensure_deferred_own_keys(vm, obj) {
         return NativeResult::Err(exc);
     }
-    let keys = walk_own_keys(vm, obj);
+    // 代理经 ownKeys trap 路由（缺失落穿 target）；meta 与值读均经存储对象
+    // （accessor 的 this 指向存储对象）。
+    let (keys, storage) = match own_keys_proxy_aware(vm, obj) {
+        Ok(k) => k,
+        Err(msg) => return NativeResult::Err(crate::error::create_from_text(vm, &msg)),
+    };
     let owned_keys: Vec<(u32, u32)> = keys
         .into_iter()
         .filter(|(_si, offset)| {
-            obj.prop_meta_at(*offset)
+            storage
+                .prop_meta_at(*offset)
                 .map(|m| m.attributes.enumerable())
                 .unwrap_or(PropAttributes::DEFAULT_DATA.enumerable())
         })
@@ -2287,11 +2543,16 @@ pub fn object_entries<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let n = owned_keys.len();
     let array_proto = vm.builtin_proto(ProtoKind::ArrayProto);
     let arr = vm.alloc_object(JsObject::new_array(EMPTY_SHAPE_ID, JsValue::from_js_object(array_proto), n));
-    let obj_val = JsValue::from_js_object(obj_ptr);
+    let storage_val = if obj.is_proxy_obj() {
+        crate::proxy::proxy_state_ref(obj).expect("状态盒").target
+    } else {
+        JsValue::from_js_object(obj_ptr)
+    };
     for (i, (si, offset)) in owned_keys.iter().enumerate() {
-        let key_val = key_si_to_js_value(vm, *si);
+        // Symbol 键还原为符号值（entries 的 key 为符号本身，非空串）。
+        let key_val = key_si_to_js_key(vm, *si);
         // EnumerableOwnProperties 的 "key+value"：accessor 触发 getter，异常传播原值。
-        let val = match own_property_value(vm, obj, obj_val, *si, *offset) {
+        let val = match own_property_value(vm, storage, storage_val, *si, *offset) {
             Ok(value) => value,
             Err(exc) => return NativeResult::Err(exc),
         };
@@ -2454,11 +2715,17 @@ pub fn object_values<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     if let Err(exc) = ensure_deferred_own_keys(vm, obj) {
         return NativeResult::Err(exc);
     }
-    let keys = walk_own_keys(vm, obj);
+    // 代理经 ownKeys trap 路由（缺失落穿 target）；meta 与值读均经存储对象
+    // （accessor 的 this 指向存储对象）。
+    let (keys, storage) = match own_keys_proxy_aware(vm, obj) {
+        Ok(k) => k,
+        Err(msg) => return NativeResult::Err(crate::error::create_from_text(vm, &msg)),
+    };
     let owned_keys: Vec<(u32, u32)> = keys
         .into_iter()
         .filter(|(_si, offset)| {
-            obj.prop_meta_at(*offset)
+            storage
+                .prop_meta_at(*offset)
                 .map(|m| m.attributes.enumerable())
                 .unwrap_or(PropAttributes::DEFAULT_DATA.enumerable())
         })
@@ -2466,10 +2733,14 @@ pub fn object_values<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     let n = owned_keys.len();
     let array_proto = vm.builtin_proto(ProtoKind::ArrayProto);
     let arr = vm.alloc_object(JsObject::new_array(EMPTY_SHAPE_ID, JsValue::from_js_object(array_proto), n));
-    let obj_val = JsValue::from_js_object(obj_ptr);
+    let storage_val = if obj.is_proxy_obj() {
+        crate::proxy::proxy_state_ref(obj).expect("状态盒").target
+    } else {
+        JsValue::from_js_object(obj_ptr)
+    };
     for (i, (si, offset)) in owned_keys.iter().enumerate() {
         // EnumerableOwnProperties 的 "value"：accessor 触发 getter，异常传播原值。
-        let val = match own_property_value(vm, obj, obj_val, *si, *offset) {
+        let val = match own_property_value(vm, storage, storage_val, *si, *offset) {
             Ok(value) => value,
             Err(exc) => return NativeResult::Err(exc),
         };

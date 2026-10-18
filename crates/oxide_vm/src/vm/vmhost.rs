@@ -254,6 +254,14 @@ impl oxide_runtime_api::VmHost for Vm {
         // builtin 调用边界：写失败返回格式化 Err，不就地展开（见 ordinary_set_builtin）。
         self.ordinary_set_builtin(obj, prop_name_si, val, receiver, strict)
     }
+    fn proxy_call_trap(
+        &mut self, proxy: &JsObject, trap_name_si: u32, args: &[JsValue],
+    ) -> Result<Option<JsValue>, String> {
+        crate::proxy::call_trap(self, proxy, trap_name_si, args)
+    }
+    fn proxy_trap_bool_result(&self, result: JsValue, trap_name: &str) -> Result<bool, String> {
+        crate::proxy::trap_bool_result(result, trap_name)
+    }
     fn define_data_property(
         &mut self, obj: &mut JsObject, prop_name_si: u32, val: JsValue, attributes: PropAttributes,
     ) -> Result<(), String> {

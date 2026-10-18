@@ -94,18 +94,10 @@ pub(crate) fn call_trap(
     Ok(Some(result))
 }
 
-/// 布尔 trap 返回值校验：trap 返回值投影为布尔，非布尔返回抛 TypeError。
-///
-/// 错误文本为 `TypeError: ...` 前缀形态，调用边界经 `create_from_text`
-/// 恢复为 TypeError 异常对象。
-pub(crate) fn trap_bool_result(result: JsValue, trap_name: &str) -> Result<bool, String> {
-    if result.is_bool() {
-        return Ok(result.as_bool());
-    }
-    Err(oxide_runtime_api::format_error_message(
-        "TypeError",
-        &format!("Proxy {trap_name} trap must return a boolean"),
-    ))
+/// 布尔 trap 返回值投影（规范 ToBoolean 形态）：trap 返回值经 ToBoolean
+/// 投影为布尔，任意值均可投影（0/null/undefined/空串等 falsy 值为 false）。
+pub(crate) fn trap_bool_result(result: JsValue, _trap_name: &str) -> Result<bool, String> {
+    Ok(oxide_runtime_api::to_boolean(result))
 }
 
 /// 把实参切片物化为 JS 数组（CreateArrayFromList 形态：Array.prototype
@@ -179,20 +171,46 @@ pub(crate) fn proxy_construct_trap(
     }
 }
 
-/// 构造 defineProperty trap 的属性描述符对象（value 加三标志位）。
-///
-/// 描述符属性均为不可写、不可枚举、不可配置（与内建对象属性口径一致）；
-/// 对象原型链落 Object.prototype。
-pub(crate) fn define_property_descriptor(vm: &mut Vm, val: JsValue, attributes: PropAttributes) -> JsValue {
+/// 构造 `[[Set]]` 落 receiver 的 defineProperty trap 的部分描述符对象
+/// （`{ [[Value]]: V }` 形态）：仅携 value 字段，writable/enumerable/
+/// configurable 由 trap 侧（或其委托的 target 定义）按 targetDesc 补全。
+/// 描述符属性均为可写、可枚举、可配置；对象原型链落 Object.prototype。
+pub(crate) fn set_partial_trap_desc(vm: &mut Vm, val: JsValue) -> JsValue {
     let proto = vm.builtin_proto(oxide_runtime_api::ProtoKind::ObjectProto);
     let obj = vm.alloc_object(JsObject::new_empty(
         oxide_kernel::shape_forge::EMPTY_SHAPE_ID,
         JsValue::from_js_object(proto),
     ));
-    let attrs = PropAttributes::new(false, false, true);
+    let attrs = PropAttributes::DEFAULT_DATA;
     let obj_ref = unsafe { &mut *obj };
     let _ = vm.define_data_property(obj_ref, vm.perm_intern("value"), val, attrs);
-    let _ = vm.define_data_property(obj_ref, vm.perm_intern("writable"), JsValue::bool(attributes.writable()), attrs);
+    JsValue::from_js_object(obj)
+}
+
+/// 构造 defineProperty trap 的属性描述符对象（FromPropertyDescriptor 形态）：
+/// 数据形态为 value 加 writable/enumerable/configurable，访问器形态为 get/set 加
+/// enumerable/configurable；描述符属性均为可写、可枚举、可配置（trap 侧以
+/// Object.keys 枚举字段数）。对象原型链落 Object.prototype。
+pub(crate) fn define_trap_desc(
+    vm: &mut Vm, data: Option<(JsValue, bool)>, get: JsValue, set: JsValue, attributes: PropAttributes,
+) -> JsValue {
+    let proto = vm.builtin_proto(oxide_runtime_api::ProtoKind::ObjectProto);
+    let obj = vm.alloc_object(JsObject::new_empty(
+        oxide_kernel::shape_forge::EMPTY_SHAPE_ID,
+        JsValue::from_js_object(proto),
+    ));
+    let attrs = PropAttributes::DEFAULT_DATA;
+    let obj_ref = unsafe { &mut *obj };
+    match data {
+        Some((val, writable)) => {
+            let _ = vm.define_data_property(obj_ref, vm.perm_intern("value"), val, attrs);
+            let _ = vm.define_data_property(obj_ref, vm.perm_intern("writable"), JsValue::bool(writable), attrs);
+        }
+        None => {
+            let _ = vm.define_data_property(obj_ref, vm.perm_intern("get"), get, attrs);
+            let _ = vm.define_data_property(obj_ref, vm.perm_intern("set"), set, attrs);
+        }
+    }
     let _ =
         vm.define_data_property(obj_ref, vm.perm_intern("enumerable"), JsValue::bool(attributes.enumerable()), attrs);
     let _ = vm.define_data_property(

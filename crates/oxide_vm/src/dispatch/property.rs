@@ -492,6 +492,14 @@ impl Vm {
         let receiver = self.regs[rd];
         let obj = unsafe { &mut *obj_ptr };
 
+        // 代理对象恒走完整写路径：IC 命中 / 快路径直写会绕过 set trap
+        // （含 revoked 检查与不变量校验）。
+        if obj.is_proxy_obj() {
+            let prop_name_si = self.property_key_si(self.regs[b])?;
+            self.ordinary_set_dispatch(obj, prop_name_si, value, receiver, self.current_strict())?;
+            return Ok(());
+        }
+
         // 命中路径零键零拦截：__proto__ 赋值从不写 IC，缓存槽必为数据槽。
         if !obj.has_prop_meta()
             && (ic_set_hit(obj, cached_shape_id, cached_slot, cached_depth, value)

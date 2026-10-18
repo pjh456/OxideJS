@@ -4,7 +4,7 @@ use oxide_types::private_key::is_int_key;
 use oxide_types::value::JsValue;
 
 use crate::array::{arraylike_get, from_engine_error, is_constructor_value};
-use crate::object::{delete_own_property, key_si_to_js_value, own_symbol_key_values, walk_own_keys};
+use crate::object::delete_own_property;
 
 use oxide_runtime_api::{to_length, NativeResult, ProtoKind, VmHost};
 
@@ -136,6 +136,10 @@ pub fn reflect_define_property<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResu
             if let Some(exc) = vm.take_pending_length_exception() {
                 return NativeResult::Err(exc);
             }
+            // 定义期用户代码（Proxy trap）抛出的原始异常值原值重抛。
+            if let Some(exc) = vm.take_uncaught_value() {
+                return NativeResult::Err(exc);
+            }
             match crate::error::split_kinded(&msg) {
                 Some((kind, rest)) => NativeResult::Err(crate::error::create_kind_error(vm, kind, rest)),
                 None => NativeResult::Ok(JsValue::bool(false)),
@@ -256,32 +260,31 @@ pub fn reflect_own_keys<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
         return NativeResult::Err(exc);
     }
 
-    // Symbol 键分流在消费端追加：底层字符串枚举源（Object.keys / JSON / for-in）
-    // 语义不变，不泄漏 Symbol 键。
-    let mut keys = walk_own_keys(vm, target);
+    // 代理经 ownKeys trap 路由（缺失落穿 target）；Symbol 键在收集器内与
+    // 字符串键同序（整数键升序、字符串键插入序、Symbol 键插入序）。
+    let (mut keys, storage) = match crate::object::own_keys_proxy_aware(vm, target) {
+        Ok(k) => k,
+        Err(msg) => return NativeResult::Err(crate::error::create_from_text(vm, &msg)),
+    };
     // 数组 length 是虚拟自身属性（无 shape 槽、不在形状链）：注入字符串组首
     // （创建序第一枚字符串键），存储下标哨兵 u32::MAX = 无槽位（消费端只读
-    // si，不读存储下标）。
-    if target.is_array() {
+    // si，不读存储下标）。存储对象为数组时注入（trap 已含 length 时不重复）。
+    if storage.is_array() {
         let length_si = vm.perm_intern("length");
-        let insert_at = keys.iter().position(|(si, _)| !is_int_key(*si)).unwrap_or(keys.len());
-        keys.insert(insert_at, (length_si, u32::MAX));
+        if keys.iter().all(|(si, _)| *si != length_si) {
+            let insert_at = keys.iter().position(|(si, _)| !is_int_key(*si)).unwrap_or(keys.len());
+            keys.insert(insert_at, (length_si, u32::MAX));
+        }
     }
-    let symbols = own_symbol_key_values(vm, target);
-    let n = keys.len() + symbols.len();
+    let n = keys.len();
 
     let array_proto = vm.builtin_proto(ProtoKind::ArrayProto);
     let arr = vm.alloc_object(JsObject::new_array(EMPTY_SHAPE_ID, JsValue::from_js_object(array_proto), n));
     for (i, (si, _)) in keys.iter().enumerate() {
-        let key_val = key_si_to_js_value(vm, *si);
+        // Symbol 键还原为符号值（ownKeys 返回符号本身，非空串）。
+        let key_val = crate::object::key_si_to_js_key(vm, *si);
         unsafe {
             (*arr).set_prop_at(i, key_val);
-        }
-    }
-    let base = keys.len();
-    for (j, sym) in symbols.iter().enumerate() {
-        unsafe {
-            (*arr).set_prop_at(base + j, *sym);
         }
     }
     unsafe {

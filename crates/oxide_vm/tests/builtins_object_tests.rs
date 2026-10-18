@@ -367,6 +367,9 @@ fn object_set_prototype_of_negative_paths() {
 
 #[test]
 fn entries_values_with_interleaved_symbol_key() {
+    // Object.entries / Object.values 经 EnumerableOwnProperties(.both) 含 Symbol
+    // 键（字符串键在前、Symbol 键末段）；entries 的 key 为符号值本身，
+    // JSON.stringify 将 Symbol 值序列化为 null。
     let (_vm, result) = eval(
         "var s = Symbol(); var o = {a: 1, [s]: 2, b: 3}; [JSON.stringify(Object.entries(o)), JSON.stringify(Object.values(o))]",
     )
@@ -374,8 +377,8 @@ fn entries_values_with_interleaved_symbol_key() {
     let obj = unsafe { &*result.as_js_object_ptr() };
     let s0 = unsafe { &*obj.get_prop_at(0).as_string_ptr() }.to_owned_string();
     let s1 = unsafe { &*obj.get_prop_at(1).as_string_ptr() }.to_owned_string();
-    assert_eq!(s0, "[[\"a\",1],[\"b\",3]]");
-    assert_eq!(s1, "[1,3]");
+    assert_eq!(s0, "[[\"a\",1],[\"b\",3],[null,2]]");
+    assert_eq!(s1, "[1,3,2]");
 }
 
 // -- Object.getOwnPropertyDescriptors --

@@ -313,6 +313,20 @@ pub trait VmHost {
         &mut self, obj: &mut JsObject, prop_name_si: u32, val: JsValue, receiver: JsValue, strict: bool,
     ) -> Result<(), String>;
 
+    /// Proxy trap 调用：从 handler 读 trap 值并同步调用（this 为 handler）。
+    ///
+    /// # 边界与前提
+    /// - `proxy` 须为带状态盒的 Proxy 对象（调用方以 `is_proxy_obj` 保证入口）。
+    ///
+    /// # 副作用
+    /// - 执行用户 trap 代码（含分配与 GC）；trap 值 undefined/null 返 `None`
+    ///   （落穿普通行为），revoked 抛 TypeError。
+    fn proxy_call_trap(
+        &mut self, proxy: &JsObject, trap_name_si: u32, args: &[JsValue],
+    ) -> Result<Option<JsValue>, String>;
+    /// Proxy trap 返回值布尔投影：非布尔返回抛 TypeError。
+    fn proxy_trap_bool_result(&self, result: JsValue, trap_name: &str) -> Result<bool, String>;
+
     // 属性定义
     fn define_data_property(
         &mut self, obj: &mut JsObject, prop_name_si: u32, val: JsValue, attributes: PropAttributes,

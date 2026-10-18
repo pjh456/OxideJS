@@ -223,27 +223,58 @@ impl Vm {
     /// （`in` 运算符逐级走 HasProperty；非 deferred 对象触发为 no-op），触发失败
     /// （cyclic 守卫抛 TypeError / 失败缓存原值重抛）走可捕获异常展开。
     pub(crate) fn has_property(&mut self, obj: &JsObject, prop_name_si: u32) -> Result<bool, String> {
-        // Proxy [[HasProperty]]：has trap 以（target、P）调用；trap 报 true 即
-        // 存在；报 false 落穿 target 的普通存在性判定（不变量检查由后续卡补全）。
+        // Proxy [[HasProperty]]：has trap 以（target、P）调用；trap 缺失落穿
+        // target 的普通存在性判定（target 自身为代理时经递归再路由）；trap
+        // 报 true 即存在；报 false 时 target 自身属性不可配置或 target 不可
+        // 扩展抛 TypeError。
         if obj.is_proxy_obj() {
             let target = oxide_builtins::proxy::proxy_state_ref(obj).expect("状态盒").target;
-            let key = oxide_builtins::object::key_si_to_js_value(self, prop_name_si);
-            if let Some(r) = crate::proxy::call_trap(self, obj, self.perm_intern("has"), &[target, key])? {
+            let key = oxide_builtins::object::key_si_to_js_key(self, prop_name_si);
+            let trap_result = match crate::proxy::call_trap(self, obj, self.perm_intern("has"), &[target, key]) {
+                Ok(r) => r,
+                Err(e) => return self.proxy_trap_call_failure(e).map(|_| false),
+            };
+            if let Some(r) = trap_result {
                 if crate::proxy::trap_bool_result(r, "has")? {
                     return Ok(true);
                 }
-                // target 即本代理（自环）时保守判不存在，避免无限递归。
-                if std::ptr::eq(target.as_js_object_ptr(), obj as *const JsObject) {
+                // SAFETY: target 由构造器校验为非空对象指针。
+                let target_obj = unsafe { &*target.as_js_object_ptr() };
+                if let Some(pos) = self.get_own_property_slot(target_obj, prop_name_si) {
+                    let meta = target_obj.prop_meta_at(pos);
+                    if meta.is_some_and(|m| !m.attributes.configurable()) {
+                        self.raise_call_error(&self.error_message_text(
+                            "TypeError",
+                            "Proxy has trap reported false for a non-configurable target property",
+                        ))?;
+                        return Ok(false);
+                    }
+                }
+                // target 不可扩展：不变量检查在 targetDesc 判定之外恒执行
+                // （规范步 11，targetDesc 缺失同样抛错）。
+                if !target_obj.is_extensible() {
+                    self.raise_call_error(
+                        &self.error_message_text(
+                            "TypeError",
+                            "Proxy has trap reported false for a non-extensible target",
+                        ),
+                    )?;
                     return Ok(false);
                 }
-                // SAFETY: target 由构造器校验为非空对象指针。
-                return self.has_property(unsafe { &*target.as_js_object_ptr() }, prop_name_si);
+                return Ok(false);
             }
+            // SAFETY: target 由构造器校验为非空对象指针。
+            return self.has_property(unsafe { &*target.as_js_object_ptr() }, prop_name_si);
         }
         let length_si = self.length_si;
         let mut current = Some(obj);
         let mut depth = 0usize;
         while let Some(obj) = current {
+            // 原型链上的代理层：HasProperty 逐层判定，代理层调自身
+            // [[HasProperty]]（经入口守卫路由 trap）。
+            if obj.is_proxy_obj() {
+                return self.has_property(obj, prop_name_si);
+            }
             // deferred namespace 求值触发（symbol-like 键内部 no-op）：链上每层
             // 独立判定，`key in obj`（obj 原型为 deferred ns）在 ns 层触发。
             if let Err(msg) = self.ensure_deferred_ns_evaluation(obj, Some(prop_name_si)) {

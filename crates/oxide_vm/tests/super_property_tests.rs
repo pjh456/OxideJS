@@ -190,32 +190,35 @@ fn super_call_native_constructor_still_works() {
     assert!(result.is_bool() && result.as_bool(), "super() 后实例应为 Object 实例");
 }
 
-// 对象方法 super.x 写（静态成员）：写经 proto 链落基（super base），receiver 为方法接收者。
+// 对象方法 super.x 写（静态成员）：2026 规范 OrdinarySetWithOwnDescriptor
+// 数据分支——receiver 无同名自身属性时写落 receiver 自身（CreateDataProperty），
+// 基对象不变。
 #[test]
 fn object_method_super_put_static_member() {
     let mut vm = Vm::new();
     let result = eval(
         &mut vm,
         "var base = { x: 'a' }; \
-         var obj = { __proto__: base, method() { super.x = 'written'; return base.x; } }; \
+         var obj = { __proto__: base, method() { super.x = 'written'; return base.x + '|' + obj.x + '|' + Object.prototype.hasOwnProperty.call(obj, 'x'); } }; \
          obj.method()",
     )
     .unwrap();
-    assert_eq!(vm.lookup_str(result).unwrap(), "written");
+    assert_eq!(vm.lookup_str(result).unwrap(), "a|written|true");
 }
 
-// 对象方法 super['x'] 写（计算成员）：键运行期求值，写经 proto 链落基。
+// 对象方法 super['x'] 写（计算成员）：键运行期求值，写落 receiver 自身属性，
+// 基对象不变。
 #[test]
 fn object_method_super_put_computed_member() {
     let mut vm = Vm::new();
     let result = eval(
         &mut vm,
         "var base = { x: 'a' }; \
-         var obj = { __proto__: base, method() { super['x'] = 'written'; return base.x; } }; \
+         var obj = { __proto__: base, method() { super['x'] = 'written'; return base.x + '|' + obj.x; } }; \
          obj.method()",
     )
     .unwrap();
-    assert_eq!(vm.lookup_str(result).unwrap(), "written");
+    assert_eq!(vm.lookup_str(result).unwrap(), "a|written");
 }
 
 // 严格模式 super 写失败（基对象冻结）抛 TypeError。
@@ -247,7 +250,8 @@ fn object_method_super_put_non_strict_frozen_silent() {
     assert_eq!(vm.lookup_str(result).unwrap(), "done");
 }
 
-// 键对象 toString 副作用换 proto：GetSuperBase 先于 ToPropertyKey，写旧 proto。
+// 键对象 toString 副作用换 proto：GetSuperBase 先于 ToPropertyKey，写旧 proto 的
+// [[Set]]；2026 规范数据分支写落 receiver 自身属性，新旧 proto 基均不变。
 #[test]
 fn object_method_super_put_getsuperbase_before_topropertykey() {
     let mut vm = Vm::new();
@@ -256,10 +260,10 @@ fn object_method_super_put_getsuperbase_before_topropertykey() {
         "var proto = { p: 1 }; var proto2 = { p: -1 }; \
          var obj = { __proto__: proto, m() { super[key] = 10; } }; \
          var key = { toString() { Object.setPrototypeOf(obj, proto2); return 'p'; } }; \
-         obj.m(); proto.p + '|' + proto2.p",
+         obj.m(); proto.p + '|' + proto2.p + '|' + obj.p",
     )
     .unwrap();
-    assert_eq!(vm.lookup_str(result).unwrap(), "10|-1");
+    assert_eq!(vm.lookup_str(result).unwrap(), "1|-1|10");
 }
 
 // 复合赋值 GetSuperBase 先于 ToPropertyKey：读旧值、运算、写回均用旧 proto 基。
