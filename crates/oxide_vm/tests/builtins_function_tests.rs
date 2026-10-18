@@ -507,11 +507,7 @@ fn dynamic_function_prototype_descriptor_not_configurable() {
     .unwrap();
     assert_eq!(vm.lookup_str(result).unwrap_or_default(), "true,false,false");
     // 普通函数同口径：delete 失败且值不变。
-    let result = eval(
-        &mut vm,
-        "function h() {} var p = h.prototype; delete h.prototype; h.prototype === p",
-    )
-    .unwrap();
+    let result = eval(&mut vm, "function h() {} var p = h.prototype; delete h.prototype; h.prototype === p").unwrap();
     assert!(result.as_bool());
 }
 

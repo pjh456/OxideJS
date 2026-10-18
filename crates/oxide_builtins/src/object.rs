@@ -235,7 +235,8 @@ pub type OwnKeys<'a> = (Vec<(u32, u32)>, &'a JsObject);
 /// ownKeys 代理路径统一错误出口：优先从 uncaught 侧通道还原原始异常值
 /// （保 trap 抛出原值的身份），侧通道为空时按格式化文本构造异常。
 fn own_keys_trap_exc<H: VmHost>(vm: &mut H, msg: String) -> JsValue {
-    vm.take_uncaught_value().unwrap_or_else(|| crate::error::create_from_text(vm, &msg))
+    vm.take_uncaught_value()
+        .unwrap_or_else(|| crate::error::create_from_text(vm, &msg))
 }
 
 pub fn own_keys_proxy_aware<'a, H: VmHost>(vm: &mut H, obj: &'a JsObject) -> Result<OwnKeys<'a>, JsValue> {
@@ -295,7 +296,9 @@ pub fn own_keys_proxy_aware<'a, H: VmHost>(vm: &mut H, obj: &'a JsObject) -> Res
             } else {
                 vm.perm_intern(&i.to_string())
             };
-            let val = vm.ordinary_get(result_obj, key_si, result).map_err(|msg| own_keys_trap_exc(vm, msg))?;
+            let val = vm
+                .ordinary_get(result_obj, key_si, result)
+                .map_err(|msg| own_keys_trap_exc(vm, msg))?;
             let si = vm.to_property_key_si(val).map_err(|msg| own_keys_trap_exc(vm, msg))?;
             if !val.is_string() && !val.is_symbol() {
                 return Err(crate::error::create_type_error(
@@ -1912,11 +1915,10 @@ fn proxy_prevent_extensions<H: VmHost>(vm: &mut H, obj: &JsObject) -> Result<boo
     let target = crate::proxy::proxy_state_ref(obj).expect("状态盒").target;
     // SAFETY: target 由构造器校验为非空对象指针。
     let target_obj = unsafe { &*target.as_js_object_ptr() };
-    let trap_result =
-        match vm.proxy_call_trap(obj, vm.perm_intern("preventExtensions"), &[target]) {
-            Ok(r) => r,
-            Err(msg) => return Err(own_keys_trap_exc(vm, msg)),
-        };
+    let trap_result = match vm.proxy_call_trap(obj, vm.perm_intern("preventExtensions"), &[target]) {
+        Ok(r) => r,
+        Err(msg) => return Err(own_keys_trap_exc(vm, msg)),
+    };
     let Some(r) = trap_result else {
         // OrdinaryPreventExtensions(target)：置不可扩展标志。
         // SAFETY: target 由构造器校验为非空对象指针。
@@ -1940,9 +1942,7 @@ fn proxy_prevent_extensions<H: VmHost>(vm: &mut H, obj: &JsObject) -> Result<boo
 /// defineProperty trap 路由，trap 缺失落穿 target）。seal 仅置 configurable:
 /// false；freeze 对数据属性额外置 writable: false（规范步 7b 先读 currentDesc
 /// 区分数据/访问器，访问器不写 writable 字段）。
-fn proxy_set_integrity_level<H: VmHost>(
-    vm: &mut H, obj_ptr: *mut JsObject, frozen: bool,
-) -> Result<(), JsValue> {
+fn proxy_set_integrity_level<H: VmHost>(vm: &mut H, obj_ptr: *mut JsObject, frozen: bool) -> Result<(), JsValue> {
     // SAFETY: obj_ptr 为存活对象指针。
     let obj = unsafe { &*obj_ptr };
     proxy_prevent_extensions(vm, obj)?;
@@ -1956,9 +1956,7 @@ fn proxy_set_integrity_level<H: VmHost>(
         // 恒为 {Configurable: false}，无需读描述符。
         let is_accessor = if frozen {
             match own_descriptor_of(vm, obj, si)? {
-                Some(desc) => {
-                    own_field(vm, desc, get_si)?.is_some() || own_field(vm, desc, set_si)?.is_some()
-                }
+                Some(desc) => own_field(vm, desc, get_si)?.is_some() || own_field(vm, desc, set_si)?.is_some(),
                 None => false,
             }
         } else {
