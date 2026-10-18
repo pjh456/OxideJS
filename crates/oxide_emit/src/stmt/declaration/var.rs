@@ -79,8 +79,13 @@ impl Emitter {
                     // 被捕获绑定的 cell 在函数入口已实例化（undefined）；声明语句
                     // 不赋值，仅首次声明刷新初值，已绑定的 cell 保留现值。
                     if !already_bound {
-                        // 重执行迭代取新 cell，与 with-init 臂同一门控。
-                        let op = if reexec { OpCode::MAKE_CELL_FRESH } else { OpCode::MAKE_CELL };
+                        // 重执行迭代取新 cell，与 with-init 臂同一门控：块入口每迭代
+                        // TDZ 占位已建时原位更新，防孤儿化声明前创建的闭包。
+                        let op = if reexec && !ctx.per_iter_predeclared_cells.contains(&cell_idx) {
+                            OpCode::MAKE_CELL_FRESH
+                        } else {
+                            OpCode::MAKE_CELL
+                        };
                         ctx.inst(Inst::new(op, Operand::Reg(tmp), Operand::Imm(cell_idx as u16), Operand::None));
                     }
                 } else if !already_bound {

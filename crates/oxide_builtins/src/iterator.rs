@@ -2420,6 +2420,7 @@ fn get_iterator<H: VmHost>(vm: &mut H, value: JsValue) -> Result<Option<(JsValue
     // 迭代协议：GetIterator 先取 value[Symbol.iterator] 并调用；装箱对象仅作查找
     // 起点与鸭子回退 inner，receiver/this 用原始 value（GetV / GetIteratorFromMethod）。
     let sym_iter_si = encode_symbol_key(vm.realm_id(), 0);
+    let pc_before = vm.pc();
     let method = match vm.ordinary_get(obj, sym_iter_si, value) {
         Ok(m) => m,
         Err(err) => {
@@ -2430,6 +2431,11 @@ fn get_iterator<H: VmHost>(vm: &mut H, value: JsValue) -> Result<Option<(JsValue
             return Err(exc);
         }
     };
+    // 取 @@iterator 期间源 getter 抛出：深度 0 的 raise_call_error 已就地 unwind
+    //（跳转 catch），pc 必已变化——须立即停止，不得落入鸭子回退二次触源 getter。
+    if vm.pc() != pc_before {
+        return Ok(None);
+    }
     if builtin_value && builtin_iterator_default_intact(vm, value, method) {
         return Ok(Some((value, None)));
     }

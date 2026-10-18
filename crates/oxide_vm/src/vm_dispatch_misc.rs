@@ -1032,8 +1032,15 @@ impl Vm {
     pub(crate) fn dispatch_for_of_init(&mut self, a: usize) -> Result<(), String> {
         vm_trace!("FOR_OF_INIT r{}={:?}", a, self.regs[a]);
         let iterable = self.regs[a];
+        let pc_before = self.pc;
         match oxide_builtins::iterator::make_iterator_for_value(self, iterable) {
             Ok(iterator) => {
+                // 取迭代器期间源 getter 抛出：深度 0 的 raise_call_error 已就地
+                // unwind（跳转 catch），pc 已改写——迭代器值无效，直接返回，
+                // 派发循环自 catch 点续行，不得再触碰迭代器栈。
+                if self.pc != pc_before {
+                    return Ok(());
+                }
                 // 内置包装器检测：Array/String/TA/Map/Set 走快路径（异步恒慢）。
                 // init 期把 inner 快照入条目，步内不重读 `__inner__` 槽。
                 let (kind, inner) = match oxide_builtins::iterator::builtin_iter_kind(self, iterator) {
@@ -1044,6 +1051,12 @@ impl Vm {
                 Ok(())
             }
             Err(err) => {
+                // 取迭代器期间源 getter 抛出：深度 0 的 raise_call_error 已就地
+                // unwind（跳转 catch），pc 已改写、handler 已弹出——不得再 unwind
+                //（二次展开无 handler 必报未捕获），派发循环自 catch 点续行。
+                if self.pc != pc_before {
+                    return Ok(());
+                }
                 self.exception_value = Some(err);
                 self.pending_error_kind = Some(self.thrown_error_kind(err));
                 self.unwind()

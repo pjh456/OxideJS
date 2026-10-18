@@ -466,7 +466,15 @@ impl Vm {
         vm_trace!("call_bytecode: saving state pc={} depth={}", self.pc, self.frames.len());
         // 窗口 = max(调用方活跃寄存器, callee 寄存器数)：restore 只回拷窗口，正好
         // 覆盖 callee 写入区（regs[0..n_registers] + 254/255）与调用方活动区。
-        let window = self.active_reg_limit.max(sub.n_registers).max(1) as usize;
+        // native 调用在飞（native_call_depth > 0）时窗口扩到全量 254：native 实参
+        // 暂存在调用点参数窗口（物理槽 252/253 一带，arg_window_base = 254 − max_nargs），
+        // 内层字节码调用复用同一参数窗口会踩掉外层 native 实参；窗口截断不覆盖
+        // 参数窗口时 restore 不还原，外层 builtin 后续读实参得踩值。
+        let window = if self.native_call_depth > 0 {
+            254
+        } else {
+            self.active_reg_limit.max(sub.n_registers).max(1) as usize
+        };
         let saved = self.save_inline_state(window);
 
         // 只零填 callee 读区 regs[0..n_registers]；高位残留调用方旧值无害

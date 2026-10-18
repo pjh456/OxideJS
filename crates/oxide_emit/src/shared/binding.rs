@@ -101,7 +101,15 @@ impl Emitter {
         // 绑定走回填索引，块级遮蔽绑定走预声明追加索引，catch 参数等块作用域
         // 就地声明现场追加；词法循环头名走捕获映射回退。
         if let Some(cell_idx) = ctx.resolve_bind_cell_idx(name) {
-            let op = if fresh_cell { OpCode::MAKE_CELL_FRESH } else { OpCode::MAKE_CELL };
+            // 每迭代 TDZ 占位已建（块入口预声明）时改发原位 MAKE_CELL：占位
+            // cell 是本迭代新 cell，声明前创建的闭包（提升函数声明）已捕获它，
+            // 原位更新使其跟随初始化；仅体区 fresh cell 场景（循环头绑定，占位
+            // 一次性）发替换式 MAKE_CELL_FRESH。
+            let op = if fresh_cell && !ctx.per_iter_predeclared_cells.contains(&cell_idx) {
+                OpCode::MAKE_CELL_FRESH
+            } else {
+                OpCode::MAKE_CELL
+            };
             ctx.inst(Inst::new(op, Operand::Reg(src_reg), Operand::Imm(cell_idx as u16), Operand::None));
             // C 风格 for 头绑定：cell 之外补写绑定寄存器——循环体/test/update 读寄存器，
             // 每迭代 fresh 拷贝的源也是寄存器（见 `CompileCtx::for_head_store_registers`）。

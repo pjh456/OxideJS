@@ -303,8 +303,16 @@ impl Vm {
         // 窗口 = min(调用方活动寄存器, 存活上界)；call_window=0 表示调用方全量
         // （运行时发起路径 / 未编码的旧模块）。恢复按窗口回拷，active_reg_limit
         // 仍还原为调用方真实值（caller_active_reg_limit）。
+        // native 调用在飞（native_call_depth > 0）时窗口扩到全量 254：native 实参
+        // 暂存在调用点参数窗口（物理槽 252/253 一带），内层字节码调用复用同一
+        // 参数窗口会踩掉外层 native 实参；窗口截断不覆盖参数窗口时 restore
+        // 不还原，外层 builtin 后续读实参得踩值。
         let caller_active_reg_limit = self.active_reg_limit.max(1);
-        let caller_reg_limit = self.call_window_limit(caller_active_reg_limit, call_window);
+        let caller_reg_limit = if self.native_call_depth > 0 {
+            254
+        } else {
+            self.call_window_limit(caller_active_reg_limit, call_window)
+        };
         let saved_reg_offset = self.save_stack.len() as u32;
         self.save_stack.extend_from_slice(&self.regs[..caller_reg_limit as usize]);
         let saved_this = self.regs[254];

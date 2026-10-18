@@ -115,6 +115,11 @@ pub struct CompileCtx {
     /// 0..n-1 占满），块级遮蔽绑定预声明追加、catch 参数就地声明与合成 cell 经
     /// `alloc_cell_idx` 递增取号，保证与函数级名字排序索引及历次追加互不碰撞。
     pub(crate) next_cell_idx: u8,
+    /// 块入口已发每迭代 TDZ 占位 MAKE_CELL 的 cell 索引集：被捕获的块级
+    /// let/const 在块入口每迭代新建未初始化 cell（循环体重执行即新 cell），
+    /// 声明点据此改发原位 MAKE_CELL（闭包捕获占位 cell 后跟随初始化），
+    /// 不发 MAKE_CELL_FRESH（替换会孤儿化声明前创建的闭包）。
+    pub(crate) per_iter_predeclared_cells: HashSet<u8>,
     /// 词法循环头（C-for / for-in / for-of）名集：头名索引由 ForHeadEnv 覆盖
     /// 捕获映射分配（TDZ 占位与体区 fresh cell），声明点据此走映射回退而非
     /// 就地追加新索引。begin 时并入、restore 时移除，嵌套循环成对。
@@ -304,6 +309,7 @@ impl CompileCtx {
             block_fn_entry_mats: Vec::new(),
             captured_bindings: BTreeMap::new(),
             next_cell_idx: 0,
+            per_iter_predeclared_cells: HashSet::new(),
             for_head_env_names: HashSet::new(),
             pending_for_head_names: HashSet::new(),
             global_tier_names: HashSet::new(),

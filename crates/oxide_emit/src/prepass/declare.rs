@@ -425,6 +425,11 @@ impl Emitter {
                 {
                     let idx = ctx.alloc_cell_idx();
                     ctx.set_binding_cell_idx(bi.name.as_str(), idx);
+                    // 登记每迭代 TDZ 占位：循环体内块重执行时该 MAKE_CELL 每迭代
+                    // 新建未初始化 cell，声明点据此改发原位 MAKE_CELL（闭包捕获
+                    // 占位 cell 后跟随初始化），替换式 fresh 会孤儿化声明前创建的
+                    // 闭包（提升函数声明）致 TDZ 误报。
+                    ctx.per_iter_predeclared_cells.insert(idx);
                     let undef_reg = self.emit_undefined(ctx);
                     ctx.inst(Inst::new(
                         OpCode::MAKE_CELL,
