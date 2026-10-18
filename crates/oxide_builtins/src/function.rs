@@ -146,7 +146,12 @@ pub fn function_symbol_has_instance<H: VmHost>(vm: &mut H, args: &[u8]) -> Nativ
     let proto_ptr = proto_val.as_js_object_ptr();
 
     // 沿 O 原型链与 C.prototype 比对；深度上限防止原型环死循环。
-    let mut cur = unsafe { &*o_val.as_js_object_ptr() }.proto();
+    // 原型链走查经 [[GetPrototypeOf]] 路由：代理经 getPrototypeOf trap，
+    // 非代理对象零行为变化。
+    let mut cur = match vm.get_prototype_of(unsafe { &*o_val.as_js_object_ptr() }) {
+        Ok(v) => v,
+        Err(e) => return NativeResult::Err(to_string_error_value(vm, &e)),
+    };
     for _ in 0..1024 {
         if !cur.is_object() {
             return NativeResult::Ok(JsValue::bool(false));
@@ -154,7 +159,10 @@ pub fn function_symbol_has_instance<H: VmHost>(vm: &mut H, args: &[u8]) -> Nativ
         if cur.as_js_object_ptr() == proto_ptr {
             return NativeResult::Ok(JsValue::bool(true));
         }
-        cur = unsafe { &*cur.as_js_object_ptr() }.proto();
+        cur = match vm.get_prototype_of(unsafe { &*cur.as_js_object_ptr() }) {
+            Ok(v) => v,
+            Err(e) => return NativeResult::Err(to_string_error_value(vm, &e)),
+        };
     }
     NativeResult::Ok(JsValue::bool(false))
 }

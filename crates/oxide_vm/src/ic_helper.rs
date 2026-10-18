@@ -119,6 +119,10 @@ pub(crate) fn ic_get_hit(obj: &JsObject, shape_id: u32, slot_index: u32, proto_d
         return None;
     }
     let target_ref = unsafe { &*target };
+    // 链上目标为代理：直读自身槽绕过 get trap，恒 miss，落穿慢路径路由 trap。
+    if target_ref.is_proxy_obj() {
+        return None;
+    }
     if target_ref.shape_id() == shape_id && slot_index < target_ref.prop_vec_len() as u32 {
         Some(target_ref.get_prop_shape(slot_index))
     } else {
@@ -153,6 +157,10 @@ pub(crate) fn ic_get_hit_poly(obj: &JsObject, bytecode: &[Instr], ext_pc: usize)
             continue;
         }
         let target_ref = unsafe { &*target };
+        // 链上目标为代理：恒 miss，落穿慢路径路由 get trap。
+        if target_ref.is_proxy_obj() {
+            continue;
+        }
         if target_ref.shape_id() == shape_id && slot_index < target_ref.prop_vec_len() as u32 {
             return Some(target_ref.get_prop_shape(slot_index));
         }
@@ -177,6 +185,10 @@ pub(crate) fn ic_set_hit(obj: &mut JsObject, shape_id: u32, slot_index: u32, pro
         return false;
     }
     let target_ref = unsafe { &*target };
+    // 链上目标为代理：直写自身槽绕过 set trap，恒 miss，落穿慢路径路由 trap。
+    if target_ref.is_proxy_obj() {
+        return false;
+    }
     if target_ref.shape_id() == shape_id && slot_index < target_ref.prop_vec_len() as u32 {
         unsafe { &mut *(target as *mut JsObject) }.set_prop_shape(slot_index, value);
         true
@@ -209,6 +221,10 @@ pub(crate) fn ic_set_hit_poly(obj: &mut JsObject, bytecode: &[Instr], ext_pc: us
             continue;
         }
         let target_ref = unsafe { &*target };
+        // 链上目标为代理：恒 miss，落穿慢路径路由 set trap。
+        if target_ref.is_proxy_obj() {
+            continue;
+        }
         if target_ref.shape_id() == shape_id && slot_index < target_ref.prop_vec_len() as u32 {
             unsafe { &mut *(target as *mut JsObject) }.set_prop_shape(slot_index, value);
             return true;

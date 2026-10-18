@@ -246,7 +246,9 @@ impl Vm {
                 break;
             }
             depth += 1;
-            let proto = obj.proto();
+            // 原型链走查经 [[GetPrototypeOf]] 路由：代理层调 getPrototypeOf
+            // trap，非代理对象零行为变化。
+            let proto = self.get_prototype_of(obj)?;
             current = proto.is_object().then(|| unsafe { &*proto.as_js_object_ptr() });
             if let Some(proto_obj) = current {
                 vm_trace!("ordinary_get proto step: depth={} shape={}", depth, proto_obj.shape_id());
@@ -312,16 +314,18 @@ impl Vm {
         Ok(true)
     }
 
-    fn inherited_property_meta(&self, obj: &JsObject, prop_name_si: u32) -> Option<PropMetaEntry> {
+    fn inherited_property_meta(
+        &mut self, obj: &JsObject, prop_name_si: u32,
+    ) -> Result<Option<PropMetaEntry>, String> {
         vm_trace!("inherited_property_meta: shape={} prop_si={}", obj.shape_id(), prop_name_si);
-        let mut proto = obj.proto();
+        let mut proto = self.get_prototype_of(obj)?;
         let mut depth = 0usize;
         while proto.is_object() && depth < MAX_PROTO_CHAIN_DEPTH {
             depth += 1;
             let proto_obj = unsafe { &*proto.as_js_object_ptr() };
             // 代理层：无 getOwnPropertyDescriptor trap 时 [[GetOwnProperty]]
-            // 落穿 target 的自身属性，故按 target 的自身槽位判定；链上续层取
-            // 代理自身的原型（[[GetPrototypeOf]] 同样落穿 target）。
+            // 落穿 target 的自身属性，故按 target 的自身槽位判定；链上续层经
+            // [[GetPrototypeOf]] 路由取下一层（代理经 trap，非代理零行为变化）。
             let effective = if proto_obj.is_proxy_obj() {
                 let target = oxide_builtins::proxy::proxy_state_ref(proto_obj).expect("状态盒").target;
                 // SAFETY: target 由构造器校验为非空对象指针。
@@ -330,11 +334,11 @@ impl Vm {
                 proto_obj
             };
             if let Some(pos) = self.get_own_property_slot(effective, prop_name_si) {
-                return effective.prop_meta_at(pos);
+                return Ok(effective.prop_meta_at(pos));
             }
-            proto = proto_obj.proto();
+            proto = self.get_prototype_of(proto_obj)?;
         }
-        None
+        Ok(None)
     }
 
     /// 全局 builtin 属性在原始存储侧（全局对象自身属性槽，下文简称 A 侧）写成功后
@@ -705,7 +709,9 @@ impl Vm {
         // 即 receiver）；原型链走完（或深度到界）时 CreateDataProperty(Receiver,
         // P, V)。
         if depth < MAX_PROTO_CHAIN_DEPTH {
-            let parent = obj.proto();
+            // 经 [[GetPrototypeOf]] 路由取父层：代理父层经 trap 取原型，
+            // 父层自身 [[Set]] 由递归入口判定。
+            let parent = self.get_prototype_of(obj)?;
             if parent.is_object() {
                 // SAFETY: parent 为值携带的非空对象指针，对象在本会话内存活；
                 // 写路径不移动对象。
@@ -1451,8 +1457,9 @@ impl Vm {
             }
             return Ok(resolved);
         }
-        // 沿原型链查找继承属性。
-        let mut cursor = obj.proto().as_js_object_ptr();
+        // 沿原型链查找继承属性（逐层经 [[GetPrototypeOf]] 路由，代理层经 trap）。
+        let proto = self.get_prototype_of(obj)?;
+        let mut cursor = proto.as_js_object_ptr();
         let mut depth = 1u8;
         while !cursor.is_null() {
             let co = unsafe { &*cursor };
@@ -1462,10 +1469,11 @@ impl Vm {
                 }
                 break;
             }
-            if !co.proto().is_object() {
+            let next_proto = self.get_prototype_of(co)?;
+            if !next_proto.is_object() {
                 break;
             }
-            cursor = co.proto().as_js_object_ptr();
+            cursor = next_proto.as_js_object_ptr();
             depth += 1;
         }
         Ok(resolved)
@@ -1531,7 +1539,7 @@ impl Vm {
         let use_frame_push = contract.use_frame_push;
         // 原型链同名 accessor 须触发 setter、只读 data 须报错（与 ordinary_set 一致），
         // 命中时不得创建 own 属性（规范 [[Set]] shadow 语义）。
-        if let Some(meta) = self.inherited_property_meta(obj, prop_name_si) {
+        if let Ok(Some(meta)) = self.inherited_property_meta(obj, prop_name_si) {
             if meta.is_accessor {
                 if meta.set.is_undefined() {
                     // 继承无 setter：严格抛错，sloppy 静默 no-op。

@@ -1,6 +1,7 @@
 use crate::{ic_debug, ic_trace, vm_trace};
 use oxide_bytecode::opcode::{OpCode, IC_EXT_WORDS};
 use oxide_runtime_api as coercion;
+use oxide_runtime_api::VmHost;
 use oxide_types::object::JsObject;
 use oxide_types::private_key::{int_key_value, is_int_key, make_int_key, make_private_name_id};
 use oxide_types::value::JsValue;
@@ -123,8 +124,10 @@ impl Vm {
     /// 沿实例→proto 链查找私有方法/访问器槽（存于类的 home=proto）。字段槽不跨原型
     /// （PrivateFieldFind 只查 own）——链上遇到字段槽（无 hole meta）即拒绝，防
     /// `Object.create(instance)` 穿透读取实例字段。
-    fn find_private_method_slot(&self, obj: &JsObject, private_key: u32) -> Option<*mut JsObject> {
-        let mut proto = obj.proto();
+    fn find_private_method_slot(
+        &mut self, obj: &JsObject, private_key: u32,
+    ) -> Result<Option<*mut JsObject>, String> {
+        let mut proto = self.get_prototype_of(obj)?;
         let mut depth = 0usize;
         while proto.is_object() && depth < MAX_PROTO_CHAIN_DEPTH {
             depth += 1;
@@ -133,13 +136,13 @@ impl Vm {
                 // 方法/访问器槽有 hole 标记（私有方法）或 is_accessor 标记（私有 getter/setter）；
                 // 字段槽（存实例）沿链出现说明接收者并非本类实例 → 拒绝穿透。
                 if proto_obj.prop_meta_at(pos).is_some_and(|m| m.is_hole() || m.is_accessor) {
-                    return Some(proto_obj as *const JsObject as *mut JsObject);
+                    return Ok(Some(proto_obj as *const JsObject as *mut JsObject));
                 }
-                return None;
+                return Ok(None);
             }
-            proto = proto_obj.proto();
+            proto = self.get_prototype_of(proto_obj)?;
         }
-        None
+        Ok(None)
     }
 
     /// 私有方法/访问器/静态字段访问的 brand 检查：接收者 own 的 brand 槽（构造时写入
@@ -185,7 +188,7 @@ impl Vm {
             return Ok(());
         }
         // 方法路径：own 无槽（私有方法/访问器存于 home=proto）→ 沿链找方法槽 + brand 检查。
-        let Some(home_ptr) = self.find_private_method_slot(obj, private_key) else {
+        let Ok(Some(home_ptr)) = self.find_private_method_slot(obj, private_key) else {
             return self.raise_type_error("private field brand check failed");
         };
         if brand_reg != 0 {
@@ -244,7 +247,7 @@ impl Vm {
             return Ok(());
         }
         // 方法路径：own 无槽（私有方法/访问器存于 home=proto）→ 沿链找方法槽 + brand 检查。
-        let Some(home_ptr) = self.find_private_method_slot(obj, private_key) else {
+        let Ok(Some(home_ptr)) = self.find_private_method_slot(obj, private_key) else {
             return self.raise_type_error("private field brand check failed");
         };
         if brand_reg != 0 {
@@ -465,8 +468,10 @@ impl Vm {
                         ic_debug!("IC_GET write-back own shape={} slot={}", obj.shape_id(), pos);
                     }
                 } else {
-                    // 沿原型链查找真正拥有该属性的对象。
-                    let mut cursor = obj.proto().as_js_object_ptr();
+                    // 沿原型链查找真正拥有该属性的对象（逐层经 [[GetPrototypeOf]]
+                    // 路由，代理层经 trap 取原型）。
+                    let proto = self.get_prototype_of(obj)?;
+                    let mut cursor = proto.as_js_object_ptr();
                     let mut depth = 1u8;
                     while !cursor.is_null() {
                         let co_ref = unsafe { &*cursor };
@@ -484,10 +489,11 @@ impl Vm {
                             }
                             break;
                         }
-                        if !co_ref.proto().is_object() {
+                        let next_proto = self.get_prototype_of(co_ref)?;
+                        if !next_proto.is_object() {
                             break;
                         }
-                        cursor = co_ref.proto().as_js_object_ptr();
+                        cursor = next_proto.as_js_object_ptr();
                         depth += 1;
                     }
                 }

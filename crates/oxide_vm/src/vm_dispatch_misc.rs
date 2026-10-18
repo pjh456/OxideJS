@@ -498,7 +498,10 @@ impl Vm {
         }
         let ctor_proto_ptr = ctor_proto.as_js_object_ptr();
 
-        let mut proto = unsafe { &*lhs_val.as_js_object_ptr() }.proto();
+        // 原型链走查经 [[GetPrototypeOf]] 路由：代理经 getPrototypeOf trap，
+        // 非代理对象零行为变化。
+        let lhs_obj = unsafe { &*lhs_val.as_js_object_ptr() };
+        let mut proto = self.get_prototype_of(lhs_obj)?;
         let mut depth = 0usize;
         loop {
             if !proto.is_object() {
@@ -515,7 +518,7 @@ impl Vm {
                 self.regs[rd] = JsValue::bool(true);
                 break;
             }
-            proto = unsafe { &*proto_ptr }.proto();
+            proto = self.get_prototype_of(unsafe { &*proto_ptr })?;
         }
         Ok(())
     }
@@ -681,7 +684,8 @@ impl Vm {
             // shape 链按叶→根遍历（与插入序相反）；在接上原型前把本对象的切片
             // 翻转为插入序。
             keys_vec[obj_start..].reverse();
-            current = cur.proto();
+            // 链上续层经 [[GetPrototypeOf]] 路由：代理层经 trap 取原型。
+            current = self.get_prototype_of(cur)?;
         }
 
         // 模块命名空间 exotic：EnumerateObjectProperties 构建键表时逐键走

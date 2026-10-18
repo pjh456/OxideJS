@@ -5,7 +5,7 @@ use crate::{vm_debug, vm_trace};
 use oxide_builtins::iterator::make_iterator_for_value;
 use oxide_builtins::{builtins_debug, builtins_trace};
 use oxide_bytecode::opcode;
-use oxide_runtime_api::{to_boolean, NativeResult};
+use oxide_runtime_api::{to_boolean, NativeResult, VmHost};
 use oxide_types::object::{Cell, JsObject, PropAttributes};
 use oxide_types::value::JsValue;
 
@@ -653,7 +653,9 @@ impl Vm {
             return Ok(true);
         }
         let callee_obj = unsafe { &*callee.as_js_object_ptr() };
-        let super_ctor = callee_obj.proto();
+        // super 构造器取当前帧 callee 的 [[GetPrototypeOf]]（规范 10.2.11 面）：
+        // 代理函数对象经 getPrototypeOf trap 取基。
+        let super_ctor = self.get_prototype_of(callee_obj)?;
         if !super_ctor.is_object() {
             self.raise_error_kind("TypeError", "super constructor is not an object")?;
             return Ok(true);
@@ -781,7 +783,9 @@ impl Vm {
         let home_obj = unsafe { &*home_object.as_js_object_ptr() };
         // 规范步序：GetSuperBase 先于 ToPropertyKey；基非对象可强转时抛
         // TypeError（RequireObjectCoercible 面）。
-        let super_base = home_obj.proto();
+        // GetSuperBase 取 home 对象的 [[GetPrototypeOf]]（规范 10.2.11 面）：
+        // 代理 home 对象经 getPrototypeOf trap 取基。
+        let super_base = self.get_prototype_of(home_obj)?;
         if !super_base.is_object() {
             self.raise_type_error("Cannot convert null or undefined to object")?;
             return Ok(true);
@@ -826,7 +830,9 @@ impl Vm {
         let home_obj = unsafe { &*home_object.as_js_object_ptr() };
         // 规范步序：GetSuperBase 先于 ToPropertyKey；基非对象可强转时抛
         // TypeError（RequireObjectCoercible 面）。
-        let super_base = home_obj.proto();
+        // GetSuperBase 取 home 对象的 [[GetPrototypeOf]]（规范 10.2.11 面）：
+        // 代理 home 对象经 getPrototypeOf trap 取基。
+        let super_base = self.get_prototype_of(home_obj)?;
         if !super_base.is_object() {
             self.raise_type_error("Cannot convert null or undefined to object")?;
             return Ok(true);
@@ -1158,7 +1164,9 @@ impl Vm {
             return Ok(true);
         }
         let callee_obj = unsafe { &*callee.as_js_object_ptr() };
-        let super_ctor = callee_obj.proto();
+        // super 构造器取当前帧 callee 的 [[GetPrototypeOf]]（规范 10.2.11 面）：
+        // 代理函数对象经 getPrototypeOf trap 取基。
+        let super_ctor = self.get_prototype_of(callee_obj)?;
         if !super_ctor.is_object() {
             self.raise_error_kind("TypeError", "super constructor is not an object")?;
             return Ok(true);

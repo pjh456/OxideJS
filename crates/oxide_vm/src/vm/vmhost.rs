@@ -571,20 +571,21 @@ impl oxide_runtime_api::VmHost for Vm {
         // 按严格处理（受限访问器对其抛错）。
         self.callee_module(obj).map(|m| m.is_strict).unwrap_or(true)
     }
-    fn function_is_restricted(&self, obj: &JsObject) -> bool {
+    fn function_is_restricted(&mut self, obj: &JsObject) -> Result<bool, String> {
         // 严格函数对象，或 [[Prototype]] 为三个动态函数原型之一（生成器 /
-        // 异步 / 异步生成器函数）：caller/arguments 访问一律受限。
+        // 异步 / 异步生成器函数）：caller/arguments 访问一律受限。原型经
+        // [[GetPrototypeOf]] 路由取（代理函数对象经 getPrototypeOf trap）。
         if self.function_is_strict(obj) {
-            return true;
+            return Ok(true);
         }
-        let proto = obj.proto();
+        let proto = self.get_prototype_of(obj)?;
         if !proto.is_object() {
-            return false;
+            return Ok(false);
         }
         let p = proto.as_js_object_ptr() as *const JsObject;
-        std::ptr::eq(p, self.realm.generator_function_proto.borrow().as_ptr())
+        Ok(std::ptr::eq(p, self.realm.generator_function_proto.borrow().as_ptr())
             || std::ptr::eq(p, self.realm.async_function_proto.borrow().as_ptr())
-            || std::ptr::eq(p, self.realm.async_generator_function_proto.borrow().as_ptr())
+            || std::ptr::eq(p, self.realm.async_generator_function_proto.borrow().as_ptr()))
     }
     fn step_rng(&mut self) {
         self.step_rng()

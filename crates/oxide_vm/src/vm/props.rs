@@ -191,6 +191,11 @@ impl Vm {
         while proto.is_object() && depth < MAX_PROTO_CHAIN_DEPTH {
             depth += 1;
             let proto_obj = unsafe { &*proto.as_js_object_ptr() };
+            // 链上代理层：不可变签名无法同步调 get trap，保守返 None，
+            // 与顶层代理口径一致（权威路径由可变签名入口承载）。
+            if proto_obj.is_proxy_obj() {
+                return None;
+            }
             if let Some(pos) = self
                 .kernel_core
                 .shape_forge()
@@ -300,7 +305,9 @@ impl Vm {
                 break;
             }
             depth += 1;
-            let proto = obj.proto();
+            // 链上续层经 [[GetPrototypeOf]] 路由：代理层经 trap 取原型，
+            // 取到的代理层在下一轮循环经入口守卫路由 has trap。
+            let proto = self.get_prototype_of(obj)?;
             current = proto.is_object().then(|| unsafe { &*proto.as_js_object_ptr() });
         }
         Ok(false)
