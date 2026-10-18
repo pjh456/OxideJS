@@ -9,6 +9,15 @@ use oxide_runtime_api as coercion;
 impl Vm {
     pub(crate) fn dispatch_member_op(&mut self, op: OpCode, rd: usize, a: usize, b: usize) -> Result<(), String> {
         vm_trace!("MEMBER_OP {:?} rd={} a={} b={}", op, rd, a, b);
+        // 代理接收者统一走全路径：ordinary_get/ordinary_set 已带代理守卫，
+        // 命中路径直读代理自身属性槽会绕过 get trap（member 读侧无入口守卫）。
+        let receiver = self.regs[rd];
+        if receiver.is_object() {
+            let obj_ptr = receiver.as_js_object_ptr();
+            if !obj_ptr.is_null() && unsafe { (*obj_ptr).is_proxy_obj() } {
+                return self.dispatch_member_op_full(op, rd, a, b);
+            }
+        }
         match op {
             OpCode::MEMBER_INC => self.dispatch_member_inc(rd, a, b),
             OpCode::MEMBER_DEC => self.dispatch_member_dec(rd, a, b),
@@ -117,6 +126,112 @@ impl Vm {
         };
         let prop_name_si = self.property_key_si(self.regs[b])?;
         Ok((obj_ptr, prop_name_si))
+    }
+
+    /// 代理接收者全路径读改写：ordinary_get/ordinary_set 已带代理守卫，
+    /// 经 get/set trap 路由，不接触 IC 命中路径。
+    fn dispatch_member_op_full(&mut self, op: OpCode, rd: usize, a: usize, b: usize) -> Result<(), String> {
+        vm_trace!("MEMBER_OP_FULL {:?} rd={} a={} b={}", op, rd, a, b);
+        let Some(obj_ptr) = self.checked_object_ptr(self.regs[rd], "MEMBER_OP on non-object")? else {
+            return Ok(());
+        };
+        let receiver = self.regs[rd];
+        // 静态操作键在 regs[b]、结果在 regs[a]；动态操作键在 regs[a]、结果在 regs[b]。
+        let (key_reg, result_reg) = match op {
+            OpCode::DYN_MEMBER_INC | OpCode::DYN_MEMBER_DEC => (a, b),
+            _ => (b, a),
+        };
+        let prop_name_si = self.property_key_si(self.regs[key_reg])?;
+        // 静态操作带 IC 扩展字：代理分支不写回 IC（槽恒零），先消费扩展字，
+        // 否则派发循环会错位把扩展字当指令。
+        if op.has_ic_ext_words() {
+            let _ = crate::ic_helper::read_ic_slot0(&self.bytecode, &mut self.pc);
+        }
+        let obj = unsafe { &mut *obj_ptr };
+        let prop_val = self.ordinary_get(obj, prop_name_si, receiver)?;
+        let new_val = self.member_op_new_value(op, prop_val, self.regs[a])?;
+        self.ordinary_set(obj, prop_name_si, new_val, receiver, self.current_strict())?;
+        self.regs[result_reg] = new_val;
+        Ok(())
+    }
+
+    /// 代理接收者全路径的新值计算：强制转换口径与既有 IC 路径各分臂一致。
+    fn member_op_new_value(&mut self, op: OpCode, prop_val: JsValue, rhs: JsValue) -> Result<JsValue, String> {
+        match op {
+            OpCode::MEMBER_INC | OpCode::DYN_MEMBER_INC => {
+                let n = self.coerce_number_bounded(prop_val)?;
+                Ok(JsValue::float(n + 1.0))
+            }
+            OpCode::MEMBER_DEC | OpCode::DYN_MEMBER_DEC => {
+                let n = self.coerce_number_bounded(prop_val)?;
+                Ok(JsValue::float(n - 1.0))
+            }
+            OpCode::COMPOUND_MEMBER_ADD => {
+                let prop_val = self.coerce_primitive_bounded(prop_val, coercion::ToPrimitiveHint::Number)?;
+                let rhs = self.coerce_primitive_bounded(rhs, coercion::ToPrimitiveHint::Number)?;
+                if prop_val.is_symbol() || rhs.is_symbol() {
+                    // 复合成员加法分流同 `+`：字符串分支走 ToString、数值分支走 ToNumber，
+                    // 两者对 Symbol 均抛 TypeError（ECMA-262 §7.1.4 / §7.1.17）。
+                    let msg = if prop_val.is_string() || rhs.is_string() {
+                        "Cannot convert a Symbol value to a string"
+                    } else {
+                        "Cannot convert a Symbol value to a number"
+                    };
+                    self.raise_type_error(msg)?;
+                    return Ok(JsValue::undefined());
+                }
+                if prop_val.is_string() || rhs.is_string() {
+                    let ls = coercion::to_string(prop_val);
+                    let rs = coercion::to_string(rhs);
+                    Ok(self.new_string(&format!("{ls}{rs}")))
+                } else {
+                    let ln = coercion::to_number(prop_val);
+                    let rn = coercion::to_number(rhs);
+                    Ok(JsValue::float(ln + rn))
+                }
+            }
+            OpCode::COMPOUND_MEMBER_SUB => self.member_op_f64(prop_val, rhs, |l, r| l - r),
+            OpCode::COMPOUND_MEMBER_MUL => self.member_op_f64(prop_val, rhs, |l, r| l * r),
+            OpCode::COMPOUND_MEMBER_DIV => self.member_op_f64(prop_val, rhs, |l, r| l / r),
+            OpCode::COMPOUND_MEMBER_MOD => self.member_op_f64(prop_val, rhs, |l, r| l % r),
+            OpCode::COMPOUND_MEMBER_EXP => self.member_op_f64(prop_val, rhs, |l, r| l.powf(r)),
+            OpCode::COMPOUND_MEMBER_BIT_AND => self.member_op_i32(prop_val, rhs, |l, r| l & r),
+            OpCode::COMPOUND_MEMBER_BIT_OR => self.member_op_i32(prop_val, rhs, |l, r| l | r),
+            OpCode::COMPOUND_MEMBER_BIT_XOR => self.member_op_i32(prop_val, rhs, |l, r| l ^ r),
+            OpCode::COMPOUND_MEMBER_SHL => self.member_op_shift(prop_val, rhs, false, false),
+            OpCode::COMPOUND_MEMBER_SHR => self.member_op_shift(prop_val, rhs, true, false),
+            OpCode::COMPOUND_MEMBER_USHR => self.member_op_shift(prop_val, rhs, true, true),
+            _ => unreachable!("non-member opcode passed to member_op_new_value"),
+        }
+    }
+
+    fn member_op_f64(&mut self, prop_val: JsValue, rhs: JsValue, op: impl FnOnce(f64, f64) -> f64) -> Result<JsValue, String> {
+        let ln = self.coerce_number_bounded(prop_val)?;
+        let rn = self.coerce_number_bounded(rhs)?;
+        Ok(JsValue::float(op(ln, rn)))
+    }
+
+    fn member_op_i32(&mut self, prop_val: JsValue, rhs: JsValue, op: impl FnOnce(i32, i32) -> i32) -> Result<JsValue, String> {
+        let ln = self.coerce_int32_bounded(prop_val)?;
+        let rn = self.coerce_int32_bounded(rhs)?;
+        Ok(JsValue::int(op(ln, rn)))
+    }
+
+    fn member_op_shift(&mut self, prop_val: JsValue, rhs: JsValue, is_right: bool, is_unsigned: bool) -> Result<JsValue, String> {
+        let ln = self.coerce_int32_bounded(prop_val)?;
+        let shift = self.coerce_uint32_bounded(rhs)? & 0x1F;
+        Ok(if !is_right {
+            JsValue::int(ln.wrapping_shl(shift))
+        } else if is_unsigned {
+            let u = (ln as u32) >> shift;
+            if u <= i32::MAX as u32 {
+                JsValue::int(u as i32)
+            } else {
+                JsValue::float(u as f64)
+            }
+        } else {
+            JsValue::int(ln >> shift)
+        })
     }
 
     fn dispatch_member_inc(&mut self, rd: usize, a: usize, b: usize) -> Result<(), String> {

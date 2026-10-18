@@ -99,6 +99,10 @@ fn resolve_proto_target_raw(obj: *const JsObject, proto_depth: u8) -> *const JsO
 
 #[inline(always)]
 pub(crate) fn ic_get_hit(obj: &JsObject, shape_id: u32, slot_index: u32, proto_depth: u8) -> Option<JsValue> {
+    // 代理接收者恒 miss：命中路径直读代理自身属性槽会绕过 get trap。
+    if obj.is_proxy_obj() {
+        return None;
+    }
     if shape_id == 0 {
         return None;
     }
@@ -134,6 +138,10 @@ pub(crate) fn ic_get_hit(obj: &JsObject, shape_id: u32, slot_index: u32, proto_d
 /// 空槽（shape_id==0）恒在尾部（FIFO 滚动保证），遇空即停。
 #[inline(never)]
 pub(crate) fn ic_get_hit_poly(obj: &JsObject, bytecode: &[Instr], ext_pc: usize) -> Option<JsValue> {
+    // 代理接收者恒 miss：命中路径直读代理自身属性槽会绕过 get trap。
+    if obj.is_proxy_obj() {
+        return None;
+    }
     for i in 1..IC_SLOTS {
         let base = ext_pc + i * 2;
         let shape_id = bytecode[base] & 0x00FF_FFFF;
@@ -170,6 +178,10 @@ pub(crate) fn ic_get_hit_poly(obj: &JsObject, bytecode: &[Instr], ext_pc: usize)
 
 #[inline(always)]
 pub(crate) fn ic_set_hit(obj: &mut JsObject, shape_id: u32, slot_index: u32, proto_depth: u8, value: JsValue) -> bool {
+    // 代理接收者恒 miss：命中路径直写代理自身属性槽会绕过 set trap。
+    if obj.is_proxy_obj() {
+        return false;
+    }
     if shape_id == 0 {
         return false;
     }
@@ -201,6 +213,10 @@ pub(crate) fn ic_set_hit(obj: &mut JsObject, shape_id: u32, slot_index: u32, pro
 /// 空槽（shape_id==0）恒在尾部（FIFO 滚动保证），遇空即停。
 #[inline(never)]
 pub(crate) fn ic_set_hit_poly(obj: &mut JsObject, bytecode: &[Instr], ext_pc: usize, value: JsValue) -> bool {
+    // 代理接收者恒 miss：命中路径直写代理自身属性槽会绕过 set trap。
+    if obj.is_proxy_obj() {
+        return false;
+    }
     for i in 1..IC_SLOTS {
         let base = ext_pc + i * 2;
         let shape_id = bytecode[base] & 0x00FF_FFFF;
@@ -244,6 +260,10 @@ pub(crate) fn ic_set_hit_poly(obj: &mut JsObject, bytecode: &[Instr], ext_pc: us
 /// 命中遍历从 `pc - IC_EXT_WORDS` 起的扩展字开始。
 #[inline(always)]
 pub(crate) fn ic_set_hit_own(obj: &mut JsObject, bytecode: &[Instr], pc: usize, value: JsValue) -> bool {
+    // 代理接收者恒 miss：命中路径直写代理自身属性槽会绕过 set trap。
+    if obj.is_proxy_obj() {
+        return false;
+    }
     let base = pc - IC_EXT_WORDS;
     let shape_id = bytecode[base] & 0x00FF_FFFF;
     if shape_id == 0 {
@@ -262,6 +282,10 @@ pub(crate) fn ic_set_hit_own(obj: &mut JsObject, bytecode: &[Instr], pc: usize, 
 /// `ext_pc` 为扩展字起始位置（首个扩展字处）。
 #[inline(never)]
 fn ic_set_hit_own_poly(obj: &mut JsObject, bytecode: &[Instr], ext_pc: usize, value: JsValue) -> bool {
+    // 代理接收者恒 miss：命中路径直写代理自身属性槽会绕过 set trap。
+    if obj.is_proxy_obj() {
+        return false;
+    }
     for i in 1..IC_SLOTS {
         let base = ext_pc + i * 2;
         let shape_id = bytecode[base] & 0x00FF_FFFF;
