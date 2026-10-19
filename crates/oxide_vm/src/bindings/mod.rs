@@ -968,6 +968,11 @@ fn bind_iterator_global(env: BindEnv<'_>, global: &mut JsObject) {
         &[
             ("from", oxide_builtins::iterator::iterator_from::<crate::vm::Vm> as *const (), 1),
             ("zip", oxide_builtins::iterator::iterator_zip::<crate::vm::Vm> as *const (), 1),
+            (
+                "zipKeyed",
+                oxide_builtins::iterator::iterator_zip_keyed::<crate::vm::Vm> as *const (),
+                1,
+            ),
             ("concat", oxide_builtins::iterator::iterator_concat::<crate::vm::Vm> as *const (), 0),
         ],
     );

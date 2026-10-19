@@ -20,6 +20,7 @@ const ZIPS_PROP: &str = "__zips__";
 const OPEN_PROP: &str = "__open__";
 const RESULTS_PROP: &str = "__results__";
 const PADDING_PROP: &str = "__padding__";
+const KEYS_PROP: &str = "__keys__";
 const ITEMS_PROP: &str = "__items__";
 const SEG_PROP: &str = "__seg__";
 const CURRENT_PROP: &str = "__current__";
@@ -1489,7 +1490,158 @@ pub fn iterator_zip<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
     } else {
         JsValue::undefined()
     };
-    NativeResult::Ok(make_iterator_zip_helper(vm, &zips, mode, padding_value))
+    NativeResult::Ok(make_iterator_zip_helper(vm, &zips, mode, padding_value, &[]))
+}
+
+/// `Iterator.zipKeyed(iterables, options)`：`iterables` 为对象（属性键=结果键），
+/// 各可枚举属性值须为可展平迭代器；返回迭代器逐键产出 null 原型对象。
+///
+/// # 步骤
+/// 1. 校验 `iterables` 为对象（非对象 TypeError）；读 options/mode/padding
+///    （与 zip 同口径，mode 非法 TypeError、longest 时 padding 非对象 TypeError）。
+/// 2. 遍历 `iterables.[[OwnPropertyKeys]]`：可枚举且值非 undefined 的属性才
+///    收键（`keys`）并 GetIteratorFlattenable 收迭代器（`iters`）；骤发逆序关
+///    已收迭代器透传原值。
+/// 3. longest 且 padding 为对象：逐键 `Get(padding, key)` 预计算 padding 数组
+///    （骤发逆序关已收迭代器透传）；padding 为 undefined 时全位 undefined。
+/// 4. 建 zip wrapper（带 `__keys__` 槽），步进期逐键构造 null 原型结果对象。
+///
+/// # 边界
+/// - 静态方法，无 this 检查。
+/// - 属性值为 undefined 时跳过（不收键、不收迭代器）。
+pub fn iterator_zip_keyed<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
+    let iterables = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
+    let options = if args.len() > 2 { vm.reg(args[2]) } else { JsValue::undefined() };
+    if !iterables.is_object() {
+        return NativeResult::Err(crate::error::create_type_error(vm, "Iterator.zipKeyed iterables must be an object"));
+    }
+    let options_obj = match get_options_object(vm, options) {
+        Ok(o) => o,
+        Err(v) => return NativeResult::Err(v),
+    };
+    let options_ref = unsafe { &*options_obj.as_js_object_ptr() };
+    let mode_si = vm.perm_intern("mode");
+    let mode_val = match vm.ordinary_get(options_ref, mode_si, options_obj) {
+        Ok(v) => v,
+        Err(err) => return NativeResult::Err(engine_error(vm, &err)),
+    };
+    let mode = if mode_val.is_undefined() {
+        0
+    } else if mode_val.is_string() {
+        let units = vm.string_units(mode_val);
+        if is_ascii_str(&units, "shortest") {
+            0
+        } else if is_ascii_str(&units, "longest") {
+            1
+        } else if is_ascii_str(&units, "strict") {
+            2
+        } else {
+            return NativeResult::Err(crate::error::create_type_error(
+                vm,
+                "Iterator.zipKeyed mode must be \"shortest\", \"longest\", or \"strict\"",
+            ));
+        }
+    } else {
+        return NativeResult::Err(crate::error::create_type_error(
+            vm,
+            "Iterator.zipKeyed mode must be \"shortest\", \"longest\", or \"strict\"",
+        ));
+    };
+    let padding = if mode == 1 {
+        let padding_si = vm.perm_intern("padding");
+        let p = match vm.ordinary_get(options_ref, padding_si, options_obj) {
+            Ok(v) => v,
+            Err(err) => return NativeResult::Err(engine_error(vm, &err)),
+        };
+        if !p.is_undefined() && !p.is_object() {
+            return NativeResult::Err(crate::error::create_type_error(
+                vm,
+                "Iterator.zipKeyed padding must be undefined or an object",
+            ));
+        }
+        p
+    } else {
+        JsValue::undefined()
+    };
+    let iterables_obj = unsafe { &*iterables.as_js_object_ptr() };
+    let all_keys = match vm.own_keys(iterables_obj) {
+        Ok(k) => k,
+        Err(e) => return NativeResult::Err(engine_error(vm, &e)),
+    };
+    let mut keys: Vec<JsValue> = Vec::new();
+    let mut iters: Vec<(JsValue, JsValue)> = Vec::new();
+    let enumerable_si = vm.perm_intern("enumerable");
+    for key in all_keys {
+        let key_si = vm.property_key_si(key);
+        let desc = match vm.get_own_property_desc(iterables_obj, key_si) {
+            Ok(d) => d,
+            Err(e) => {
+                let exc = engine_error(vm, &e);
+                close_zip_pairs(vm, &iters, None, Some(exc));
+                return NativeResult::Err(exc);
+            }
+        };
+        let Some(desc_val) = desc else {
+            continue;
+        };
+        if !desc_val.is_object() {
+            continue;
+        }
+        let desc_ref = unsafe { &*desc_val.as_js_object_ptr() };
+        let enumerable = match vm.ordinary_get(desc_ref, enumerable_si, desc_val) {
+            Ok(v) => v,
+            Err(e) => {
+                let exc = engine_error(vm, &e);
+                close_zip_pairs(vm, &iters, None, Some(exc));
+                return NativeResult::Err(exc);
+            }
+        };
+        if !oxide_runtime_api::to_boolean(enumerable) {
+            continue;
+        }
+        let value = match vm.ordinary_get(iterables_obj, key_si, iterables) {
+            Ok(v) => v,
+            Err(e) => {
+                let exc = engine_error(vm, &e);
+                close_zip_pairs(vm, &iters, None, Some(exc));
+                return NativeResult::Err(exc);
+            }
+        };
+        if value.is_undefined() {
+            continue;
+        }
+        keys.push(key);
+        match get_iterator_flattenable(vm, value) {
+            Ok(pair) => iters.push(pair),
+            Err(v) => {
+                close_zip_pairs(vm, &iters, None, Some(v));
+                return NativeResult::Err(v);
+            }
+        }
+    }
+    // longest 且 padding 为对象：逐键 Get(padding, key) 预计算 padding 数组（长度
+    // 恒为元素数）；骤发逆序关已收迭代器透传原值。padding 为 undefined 时全位
+    // undefined（longest 步进期越界落点同样 undefined）。
+    let padding_value = if mode == 1 && padding.is_object() {
+        let padding_ref = unsafe { &*padding.as_js_object_ptr() };
+        let mut pad_values: Vec<JsValue> = Vec::with_capacity(iters.len());
+        for key in &keys {
+            let key_si = vm.property_key_si(*key);
+            let v = match vm.ordinary_get(padding_ref, key_si, padding) {
+                Ok(v) => v,
+                Err(e) => {
+                    let exc = engine_error(vm, &e);
+                    close_zip_pairs(vm, &iters, None, Some(exc));
+                    return NativeResult::Err(exc);
+                }
+            };
+            pad_values.push(v);
+        }
+        make_array_from_list(vm, &pad_values)
+    } else {
+        JsValue::undefined()
+    };
+    NativeResult::Ok(make_iterator_zip_helper(vm, &iters, mode, padding_value, &keys))
 }
 
 /// 建 zip wrapper：空对象挂 `%IteratorHelperPrototype%`，写 `__zips__`（元素
@@ -1499,10 +1651,13 @@ pub fn iterator_zip<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResult {
 /// `__padding__` 存预计算 padding 数组（longest 且 padding 为对象时，长度恒为
 /// 元素数）或 undefined；步进期按 done 位下标取落点值。
 ///
+/// `keys` 非空时（zipKeyed）写 `__keys__` 槽（键数组，与 `__zips__` 同序）：
+/// 步进期据此把结果构造成 null 原型对象（键=结果值）；为空时（zip）构造数组。
+///
 /// 独立构造器（不复用 [`make_iterator_helper`]）：槽位布局不同，zip 无
 /// `__inner__`/`__next__` 槽。
 fn make_iterator_zip_helper<H: VmHost>(
-    vm: &mut H, zips: &[(JsValue, JsValue)], mode: i32, padding: JsValue,
+    vm: &mut H, zips: &[(JsValue, JsValue)], mode: i32, padding: JsValue, keys: &[JsValue],
 ) -> JsValue {
     let helper_proto = vm.builtin_proto(ProtoKind::IteratorHelperProto);
     let wrapper = vm.alloc_object(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(helper_proto)));
@@ -1538,6 +1693,22 @@ fn make_iterator_zip_helper<H: VmHost>(
     vm.set_or_create_prop_value(wrapper_obj, state_si, JsValue::int(0));
     vm.set_or_create_prop_value(wrapper_obj, kind_si, JsValue::int(IteratorHelperKind::Zip as i32));
     vm.set_or_create_prop_value(wrapper_obj, padding_si, padding);
+    if !keys.is_empty() {
+        let keys_arr =
+            vm.alloc_object(JsObject::new_array(EMPTY_SHAPE_ID, JsValue::from_js_object(array_proto), keys.len()));
+        for (i, key) in keys.iter().enumerate() {
+            // SAFETY: keys_arr 是刚经统一入口分配的数组对象，元素区已就绪。
+            unsafe {
+                (*keys_arr).set_prop_at(i, *key);
+            }
+        }
+        // SAFETY: 与 new_array 同 epoch，写入后按实际元素数设 prop_count。
+        unsafe {
+            (*keys_arr).set_prop_count(keys.len());
+        }
+        let keys_si = vm.perm_intern(KEYS_PROP);
+        vm.set_or_create_prop_value(wrapper_obj, keys_si, JsValue::from_js_object(keys_arr));
+    }
     JsValue::from_js_object(wrapper)
 }
 
@@ -1642,16 +1813,17 @@ fn helper_step_zip<H: VmHost>(
     // longest 臂落点值来自预计算 padding 数组（用户调用窗口前读取）。
     let padding_si = vm.perm_intern(PADDING_PROP);
     let padding_val = vm.ordinary_get(helper, padding_si, this_val).unwrap_or(JsValue::undefined());
-    let array_proto = vm.builtin_proto(ProtoKind::ArrayProto);
-    let arr = vm.alloc_object(JsObject::new_array(
-        EMPTY_SHAPE_ID,
-        JsValue::from_js_object(array_proto),
-        iter_count as usize,
-    ));
-    let arr_val = JsValue::from_js_object(arr);
+    // 结果形态：`__keys__` 槽在场（zipKeyed）时构造 null 原型对象（键=结果值），
+    // 否则（zip）构造数组。键数组与 `__zips__` 同序，步进期按下标取键。
+    let keys_si = vm.perm_intern(KEYS_PROP);
+    let keys_val = vm.ordinary_get(helper, keys_si, this_val).unwrap_or(JsValue::undefined());
+    let keys_obj = if keys_val.is_object() {
+        Some(unsafe { &*keys_val.as_js_object_ptr() })
+    } else {
+        None
+    };
     let results_si = vm.perm_intern(RESULTS_PROP);
-    vm.set_or_create_prop_value(helper, results_si, arr_val);
-    let mut arr_len = 0usize;
+    let mut values: Vec<JsValue> = Vec::with_capacity(iter_count as usize);
     for i in 0..iter_count {
         if !zip_bit_open(open, i) {
             // 已关迭代器：longest 臂填 padding 落点续行（结果数组每个输入恒有
@@ -1663,11 +1835,7 @@ fn helper_step_zip<H: VmHost>(
                 } else {
                     JsValue::undefined()
                 };
-                // SAFETY: arr 是刚经统一入口分配的数组对象，元素区已就绪。
-                unsafe {
-                    (*arr).set_prop_at(arr_len, pad);
-                }
-                arr_len += 1;
+                values.push(pad);
             }
             continue;
         }
@@ -1681,11 +1849,7 @@ fn helper_step_zip<H: VmHost>(
         let next_fn = pair_obj.get_prop_at(1);
         match iterator_record_step(vm, next_fn, iter) {
             Ok(Some(value)) => {
-                // SAFETY: arr 是刚经统一入口分配的数组对象，元素区已就绪。
-                unsafe {
-                    (*arr).set_prop_at(arr_len, value);
-                }
-                arr_len += 1;
+                values.push(value);
             }
             Ok(None) => {
                 // 直接重赋值外层掩码：本臂不返回时后续迭代器的清位须在此基础上
@@ -1758,11 +1922,7 @@ fn helper_step_zip<H: VmHost>(
                 } else {
                     JsValue::undefined()
                 };
-                // SAFETY: 同上一分支。
-                unsafe {
-                    (*arr).set_prop_at(arr_len, pad);
-                }
-                arr_len += 1;
+                values.push(pad);
             }
             Err(v) => {
                 open = zip_bit_clear(open, i);
@@ -1774,11 +1934,39 @@ fn helper_step_zip<H: VmHost>(
         }
     }
     vm.set_or_create_prop_value(helper, results_si, JsValue::undefined());
-    // SAFETY: 与 new_array 同 epoch，写入后按实际元素数设 prop_count。
-    unsafe {
-        (*arr).set_prop_count(arr_len);
-    }
-    Ok(Some(arr_val))
+    // 收口：按 `__keys__` 形态构造结果对象。zipKeyed 建 null 原型对象逐键写
+    // 结果值（CreateDataPropertyOrThrow 语义，键已按自身键序收集）；zip 建数组
+    // 按下标写。
+    let result_val = if let Some(keys_arr) = keys_obj {
+        let obj = vm.alloc_object(JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::null()));
+        let obj_ptr = obj;
+        for (i, value) in values.iter().enumerate() {
+            let key = keys_arr.get_prop_at(i);
+            // 键经 ToPropertyKey 归一为 si（字符串/符号统一口径），逐键写结果值。
+            let key_si = vm.property_key_si(key);
+            vm.set_or_create_prop_value(unsafe { &mut *obj_ptr }, key_si, *value);
+        }
+        JsValue::from_js_object(obj)
+    } else {
+        let array_proto = vm.builtin_proto(ProtoKind::ArrayProto);
+        let arr = vm.alloc_object(JsObject::new_array(
+            EMPTY_SHAPE_ID,
+            JsValue::from_js_object(array_proto),
+            values.len(),
+        ));
+        for (i, value) in values.iter().enumerate() {
+            // SAFETY: arr 是刚经统一入口分配的数组对象，元素区已就绪。
+            unsafe {
+                (*arr).set_prop_at(i, *value);
+            }
+        }
+        // SAFETY: 与 new_array 同 epoch，写入后按实际元素数设 prop_count。
+        unsafe {
+            (*arr).set_prop_count(values.len());
+        }
+        JsValue::from_js_object(arr)
+    };
+    Ok(Some(result_val))
 }
 
 /// `Iterator.concat(...items)`：返回按序依次产出各实参元素的迭代器。
