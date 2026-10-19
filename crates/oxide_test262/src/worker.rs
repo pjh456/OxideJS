@@ -201,11 +201,7 @@ pub(crate) fn run_worker(config: &RunConfig) -> bool {
             // test262 宿主约定：每测试以测试文件所在目录为工作目录（importValue
             // 等按相对路径解析 fixture 的 API 依赖此约定）。相对路径以初始工作
             // 目录为基准转绝对：cwd 随测试切换，基准在窗口循环前固定。
-            let test_path = if path.is_absolute() {
-                path
-            } else {
-                base_dir.join(&path)
-            };
+            let test_path = if path.is_absolute() { path } else { base_dir.join(&path) };
             if let Some(dir) = test_path.parent() {
                 let _ = std::env::set_current_dir(dir);
             }

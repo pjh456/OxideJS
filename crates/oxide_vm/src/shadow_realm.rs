@@ -118,12 +118,7 @@ pub(crate) fn evaluate(vm: &mut Vm, args: &[u8]) -> NativeResult {
     };
     let value = match raw_result {
         Ok(v) => v,
-        Err(_) => {
-            return NativeResult::Err(error::create_type_error(
-                vm,
-                "Error evaluating code in ShadowRealm",
-            ))
-        }
+        Err(_) => return NativeResult::Err(error::create_type_error(vm, "Error evaluating code in ShadowRealm")),
     };
 
     // 结果结算：GetWrappedValue(callerRealm, value)。
@@ -289,12 +284,7 @@ fn wrapped_function_call(vm: &mut Vm, args: &[u8]) -> NativeResult {
     };
     let value = match result {
         Ok(v) => v,
-        Err(_) => {
-            return NativeResult::Err(error::create_type_error(
-                vm,
-                "Error calling wrapped function",
-            ))
-        }
+        Err(_) => return NativeResult::Err(error::create_type_error(vm, "Error calling wrapped function")),
     };
 
     // 返回值结算：GetWrappedValue(callerRealm, result)。
@@ -344,9 +334,7 @@ fn resolve_vm(vm: &mut Vm, realm_id: u64) -> &mut Vm {
 /// - 符号：按 realm 重映射（well-known 同下标、注册表符号按 key 复用 / 新建、
 ///   普通符号按描述新建）。
 /// - 其余原始值：直返。
-fn settle_value(
-    vm: &mut Vm, wrapper_realm_id: u64, target_realm_id: u64, value: JsValue,
-) -> Result<JsValue, JsValue> {
+fn settle_value(vm: &mut Vm, wrapper_realm_id: u64, target_realm_id: u64, value: JsValue) -> Result<JsValue, JsValue> {
     if value.is_object() {
         if oxide_builtins::iterator::is_callable(value) {
             return settle_function(vm, wrapper_realm_id, target_realm_id, value);
@@ -382,12 +370,7 @@ fn settle_function(
         let has_own_length = match oxide_builtins::object::own_descriptor_of(target_vm, target_obj, length_si) {
             Ok(Some(_)) => true,
             Ok(None) => false,
-            Err(_) => {
-                return Err(error::create_type_error(
-                    vm,
-                    "ShadowRealm: error checking function length",
-                ))
-            }
+            Err(_) => return Err(error::create_type_error(vm, "ShadowRealm: error checking function length")),
         };
         let name_result = target_vm.ordinary_get(target_obj, name_si, target_fn);
         let length_result = if has_own_length {
@@ -401,15 +384,11 @@ fn settle_function(
     // getter 抛错包 TypeError（规范：WrappedFunctionCreate 从调用方 realm 抛 TypeError）。
     let target_name = match name_result {
         Ok(v) => v,
-        Err(_) => {
-            return Err(error::create_type_error(vm, "ShadowRealm: error reading function name"))
-        }
+        Err(_) => return Err(error::create_type_error(vm, "ShadowRealm: error reading function name")),
     };
     let target_length = match length_result {
         Ok(v) => v,
-        Err(_) => {
-            return Err(error::create_type_error(vm, "ShadowRealm: error reading function length"))
-        }
+        Err(_) => return Err(error::create_type_error(vm, "ShadowRealm: error reading function length")),
     };
 
     // 计算包装后的 name / length。
@@ -422,7 +401,11 @@ fn settle_function(
     // 包装侧：建 WrappedFunction。
     let wrapper_vm = resolve_vm(vm, wrapper_realm_id);
     Ok(create_wrapped_function(
-        wrapper_vm, target_realm_id, keepalive_index, &wrapped_name, wrapped_length,
+        wrapper_vm,
+        target_realm_id,
+        keepalive_index,
+        &wrapped_name,
+        wrapped_length,
     ))
 }
 
@@ -432,9 +415,7 @@ fn settle_function(
 /// 1. 目标侧：读符号描述与注册表 key。
 /// 2. 包装侧：well-known 按同下标、注册表符号按 key 复用 / 新建、
 ///    普通符号按描述新建（不入注册表）。
-fn settle_symbol(
-    vm: &mut Vm, wrapper_realm_id: u64, target_realm_id: u64, value: JsValue,
-) -> Result<JsValue, JsValue> {
+fn settle_symbol(vm: &mut Vm, wrapper_realm_id: u64, target_realm_id: u64, value: JsValue) -> Result<JsValue, JsValue> {
     let local_index = value.as_symbol_local_index();
     // 目标侧：读符号描述与注册表 key。
     let (description, registry_key) = {
