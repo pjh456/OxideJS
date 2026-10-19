@@ -33,6 +33,8 @@ mod proxy;
 mod realm;
 /// session 级 mark-sweep GC：标记-清扫 session arena 对象与 session 字符串。
 pub mod session_gc;
+/// ShadowRealm native 实现（构造器建影子 realm 与实例对象、evaluate / importValue 桩）。
+mod shadow_realm;
 mod suspended;
 /// test262 宿主对象 `$262` 的最小实现（非标准全局，供 test262 套件使用）。
 pub mod test262_host;

@@ -53,6 +53,8 @@ pub mod bind_object;
 pub mod bind_reflect;
 /// RegExp 构造器与原型的 native 方法绑定。
 pub mod bind_regexp;
+/// ShadowRealm 构造器绑定（Box 分配，不占 BuiltinWorld P 字段）。
+pub mod bind_shadow_realm;
 /// Set 构造器与原型的 native 方法绑定。
 pub mod bind_set;
 /// SharedArrayBuffer 构造器与原型的 native 方法绑定。
@@ -1326,6 +1328,7 @@ pub fn bind_global_builtin_slots(
     bind_reflect_global(env, global);
     bind_iterator_global(env, global);
     bind_worker::bind_worker(env, global);
+    bind_shadow_realm::bind_shadow_realm(env, global);
     bind_disposable_stack::bind_disposable_stack(env, global);
     bind_async_disposable_stack::bind_async_disposable_stack(env, global);
     bind_stub_globals(env, global);
@@ -1461,6 +1464,8 @@ pub fn rebind_dirty_builtins(
     // worker 构造器是 Box 分配对象（不在 BuiltinWorld 快照内），不占脏位：
     // 无条件重绑（构造器经 lookup_position 守卫复用，幂等）。
     bind_worker::bind_worker(env, global);
+    // ShadowRealm 构造器同为 Box 分配对象（不占脏位），无条件重绑，幂等。
+    bind_shadow_realm::bind_shadow_realm(env, global);
     // tag 目标横跨多个脏分组（Map/Set/DataView/Math/JSON/迭代器原型），
     // 各组各自重绑后统一补装；安装点自带幂等检查。
     install_to_string_tags(env);

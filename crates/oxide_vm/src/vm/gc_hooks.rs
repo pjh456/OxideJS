@@ -8,7 +8,7 @@ use super::frames::Completion;
 use super::Vm;
 use crate::session_gc::SessionGc;
 
-/// GC 根组来源：`for_each_value` 枚举的 29 个根组，变体顺序与根清单
+/// GC 根组来源：`for_each_value` 枚举的 30 个根组，变体顺序与根清单
 /// 的枚举顺序一致。
 ///
 /// 变体下标是逐组计数数组（`SessionGc::root_counts`）的下标；`COUNT` 与
@@ -41,6 +41,7 @@ pub(crate) enum RootGroup {
     ForInIters,
     Global,
     WorkerObjects,
+    ShadowRealmObjects,
     DisposeStack,
     EventTargets,
     ModuleEvalStates,
@@ -48,7 +49,7 @@ pub(crate) enum RootGroup {
 
 impl RootGroup {
     /// 根组总数（与变体数同源，绑定逐组计数数组的长度）。
-    pub const COUNT: usize = 29;
+    pub const COUNT: usize = 30;
 }
 
 impl Vm {
@@ -56,7 +57,7 @@ impl Vm {
     /// 覆盖执行核心的全部 JsValue 持有点：regs/帧/各栈段/cell/在途异常与完成/
     /// 挂起信号/迭代器/微任务/global/Worker 对象注册表。
     ///
-    /// 闭包接收根组来源（`RootGroup`）与根值：组是枚举顺序中的 29 根组之一，
+    /// 闭包接收根组来源（`RootGroup`）与根值：组是枚举顺序中的 30 根组之一，
     /// 调用方按组计数（如 `SessionGc` 的逐组计数）。
     pub(crate) fn for_each_value(&self, mut f: impl FnMut(RootGroup, JsValue)) {
         for value in &self.regs {
@@ -185,6 +186,11 @@ impl Vm {
         // full_reset 清表），漏根 → sweep 释放 → 事件循环反查悬垂。
         for &worker_obj in self.worker_objects.values() {
             f(RootGroup::WorkerObjects, worker_obj);
+        }
+        // ShadowRealm 实例注册表：实例对象是 GC 根（注册表保活至 full_reset
+        // 清表），漏根 → sweep 释放 → brand 校验解引用悬垂。
+        for (instance_obj, _) in self.shadow_realm_objects.values() {
+            f(RootGroup::ShadowRealmObjects, *instance_obj);
         }
         // EventTarget 监听器注册表：监听器回调是 GC 根（存活目标的回调随目标存活，
         // 漏根 → 回调被 sweep 释放 → 派发解引用悬垂）。弱键剪枝见 sweep；此处

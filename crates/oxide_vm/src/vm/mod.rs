@@ -477,6 +477,10 @@ pub struct Vm {
     /// 是 GC 根（`for_each_value` 遍历），注册表保活至 `worker_terminate` /
     /// `full_reset` 清表，无悬垂风险。
     pub(crate) worker_objects: std::collections::HashMap<u64, JsValue>,
+    /// ShadowRealm 实例注册表：键 = 影子 realm 编号，值 = （实例对象，影子
+    /// Vm）。实例对象是 GC 根（`for_each_value` 遍历）；影子 Vm 不跨线程，
+    /// 随主 Vm 整体迁移，在 `full_reset` / `Drop` 清表时统一释放。
+    pub(crate) shadow_realm_objects: std::collections::HashMap<u64, (JsValue, Vm)>,
 }
 
 impl Drop for Vm {
@@ -534,6 +538,10 @@ impl Drop for Vm {
 //    条目自持模块 Arc 与常量 BigInt 存储（Vec<BigInt>），存储随 Vm 整体迁移
 //    （同不变量 1 条款：Vm 独占分配、地址稳定、跨线程移动不悬垂）；键是
 //    Arc 指针身份，条目自持 Arc 保证键指针在条目存活期内不被分配器复用。
+//
+// 8. shadow_realm_objects 字段（HashMap<u64, (JsValue, Vm)>）：实例对象指针
+//    归不变量 1 覆盖；影子 Vm 各持独立 session 堆、不跨线程共享（同不变量 1
+//    与 3 条款），随主 Vm 整体迁移、地址稳定不悬垂。
 unsafe impl Send for Vm {}
 
 impl Vm {

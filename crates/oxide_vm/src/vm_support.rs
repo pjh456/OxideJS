@@ -257,6 +257,7 @@ impl Vm {
             worker_registry: std::collections::HashMap::new(),
             worker_next_id: 0,
             worker_objects: std::collections::HashMap::new(),
+            shadow_realm_objects: std::collections::HashMap::new(),
         };
         vm.init_generator_intrinsics();
         vm.init_promise_intrinsics();
@@ -426,6 +427,7 @@ impl Vm {
             worker_registry: std::collections::HashMap::new(),
             worker_next_id: 0,
             worker_objects: std::collections::HashMap::new(),
+            shadow_realm_objects: std::collections::HashMap::new(),
         };
         vm.init_generator_intrinsics();
         vm.init_promise_intrinsics();
@@ -562,6 +564,9 @@ impl Vm {
         // Worker 对象注册表持 session 对象指针：teardown 释放全部 session 对象
         // 前须清表，否则残留悬垂指针。
         self.worker_objects.clear();
+        // ShadowRealm 实例注册表同持 session 对象指针（实例对象）：teardown
+        // 释放全部 session 对象前须清表，影子 Vm 随条目 drop 统一释放。
+        self.shadow_realm_objects.clear();
         self.realm.teardown_session_heap_data();
         self.realm.gc.borrow_mut().session_bytes_allocated = 0;
         self.realm.gc.borrow_mut().session_bytes_peak = 0;
