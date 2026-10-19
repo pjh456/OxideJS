@@ -1,8 +1,8 @@
 use crate::vm::Vm;
 use crate::{vm_error, vm_trace};
 use oxide_bytecode::opcode;
-use oxide_runtime_api as coercion;
 use oxide_kernel::shape_forge::EMPTY_SHAPE_ID;
+use oxide_runtime_api as coercion;
 use oxide_types::arguments_map::ArgumentsMapState;
 use oxide_types::mem::P;
 use oxide_types::object::{JsObject, PropAttributes};
