@@ -38,10 +38,7 @@ use crate::vm::Vm;
 pub(crate) fn shadow_realm_constructor(vm: &mut Vm, _args: &[u8]) -> NativeResult {
     // 构造形态校验（规范只有 [[Construct]]）。
     if !vm.constructing_native {
-        return NativeResult::Err(error::create_type_error(
-            vm,
-            "ShadowRealm constructor requires new",
-        ));
+        return NativeResult::Err(error::create_type_error(vm, "ShadowRealm constructor requires new"));
     }
 
     // 建影子 Vm：共享主 Vm 的 KernelCore 与动态编译服务。
@@ -95,10 +92,7 @@ pub(crate) fn evaluate_stub(vm: &mut Vm, args: &[u8]) -> NativeResult {
         return NativeResult::Err(error::create_syntax_error(vm, &msg));
     }
 
-    NativeResult::Err(error::create_type_error(
-        vm,
-        "ShadowRealm.prototype.evaluate is not supported",
-    ))
+    NativeResult::Err(error::create_type_error(vm, "ShadowRealm.prototype.evaluate is not supported"))
 }
 
 /// `ShadowRealm.prototype.importValue` 桩：按规范前置步骤校验后抛 not supported。
@@ -121,10 +115,7 @@ pub(crate) fn import_value_stub(vm: &mut Vm, args: &[u8]) -> NativeResult {
     // 入异常通道）。
     let specifier_val = if args.len() > 1 { vm.reg(args[1]) } else { JsValue::undefined() };
     if let Err(e) = oxide_runtime_api::to_string_full(specifier_val, vm) {
-        let exc = vm
-            .exception_value
-            .take()
-            .unwrap_or_else(|| error::create_from_text(vm, &e));
+        let exc = vm.exception_value.take().unwrap_or_else(|| error::create_from_text(vm, &e));
         return NativeResult::Err(exc);
     }
 
@@ -137,19 +128,13 @@ pub(crate) fn import_value_stub(vm: &mut Vm, args: &[u8]) -> NativeResult {
         ));
     }
 
-    NativeResult::Err(error::create_type_error(
-        vm,
-        "ShadowRealm.prototype.importValue is not supported",
-    ))
+    NativeResult::Err(error::create_type_error(vm, "ShadowRealm.prototype.importValue is not supported"))
 }
 
 /// brand 校验：`this` 须是对象且指针在主 Vm 侧表内（实例对象注册表）。
 fn shadow_realm_brand_check(vm: &mut Vm, this_val: JsValue) -> Result<(), JsValue> {
     if !this_val.is_object() {
-        return Err(error::create_type_error(
-            vm,
-            "ShadowRealm method called on non-object",
-        ));
+        return Err(error::create_type_error(vm, "ShadowRealm method called on non-object"));
     }
     let this_ptr = this_val.as_js_object_ptr();
     let in_table = vm

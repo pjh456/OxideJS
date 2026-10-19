@@ -7,9 +7,7 @@
 //! 原位安装（既有槽更新槽值、无槽新开）。
 
 use crate::bind_constructor;
-use crate::bindings::{
-    apply_binding_table, bind_well_known_data_property, configure_native_constructor, BindEnv,
-};
+use crate::bindings::{apply_binding_table, bind_well_known_data_property, configure_native_constructor, BindEnv};
 use oxide_kernel::shape_forge::EMPTY_SHAPE_ID;
 use oxide_types::object::{JsObject, PropAttributes};
 use oxide_types::value::JsValue;
@@ -45,11 +43,7 @@ pub fn bind_shadow_realm(env: BindEnv<'_>, global: &mut JsObject) {
             let function_proto = world.function_proto.as_ptr() as *mut JsObject;
             let mut ctor = JsObject::new_empty(EMPTY_SHAPE_ID, JsValue::from_js_object(function_proto));
             ctor.set_function(true);
-            configure_native_constructor(
-                &mut ctor,
-                crate::shadow_realm::shadow_realm_constructor as *const (),
-                0,
-            );
+            configure_native_constructor(&mut ctor, crate::shadow_realm::shadow_realm_constructor as *const (), 0);
             let ptr = Box::into_raw(Box::new(ctor));
             world.track_leaked_object(ptr);
             ptr
@@ -130,27 +124,11 @@ pub fn bind_shadow_realm(env: BindEnv<'_>, global: &mut JsObject) {
         // evaluate / importValue 方法（not supported 桩，幂等守卫）。
         let si_evaluate = sf.intern("evaluate").0;
         if sh.lookup_position(proto.shape_id(), si_evaluate).is_none() {
-            apply_binding_table(
-                env,
-                proto,
-                &[(
-                    "evaluate",
-                    crate::shadow_realm::evaluate_stub as *const (),
-                    1,
-                )],
-            );
+            apply_binding_table(env, proto, &[("evaluate", crate::shadow_realm::evaluate_stub as *const (), 1)]);
         }
         let si_import_value = sf.intern("importValue").0;
         if sh.lookup_position(proto.shape_id(), si_import_value).is_none() {
-            apply_binding_table(
-                env,
-                proto,
-                &[(
-                    "importValue",
-                    crate::shadow_realm::import_value_stub as *const (),
-                    2,
-                )],
-            );
+            apply_binding_table(env, proto, &[("importValue", crate::shadow_realm::import_value_stub as *const (), 2)]);
         }
     }
 

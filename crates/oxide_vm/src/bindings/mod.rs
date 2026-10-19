@@ -53,10 +53,10 @@ pub mod bind_object;
 pub mod bind_reflect;
 /// RegExp 构造器与原型的 native 方法绑定。
 pub mod bind_regexp;
-/// ShadowRealm 构造器绑定（Box 分配，不占 BuiltinWorld P 字段）。
-pub mod bind_shadow_realm;
 /// Set 构造器与原型的 native 方法绑定。
 pub mod bind_set;
+/// ShadowRealm 构造器绑定（Box 分配，不占 BuiltinWorld P 字段）。
+pub mod bind_shadow_realm;
 /// SharedArrayBuffer 构造器与原型的 native 方法绑定。
 pub mod bind_shared_array_buffer;
 /// String 构造器与原型的 native 方法绑定。
