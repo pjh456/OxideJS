@@ -24,6 +24,7 @@ impl Vm {
             OpCode::SET_PROP_BATCH => self.dispatch_set_prop_batch(rd, a, b),
             OpCode::GET_PROP_DYNAMIC => self.dispatch_get_prop_dynamic(rd, a, b),
             OpCode::SET_PROP_DYNAMIC => self.dispatch_set_prop_dynamic(rd, a, b),
+            OpCode::SET_PROP_DYNAMIC_STRICT => self.dispatch_set_prop_dynamic_strict(rd, a, b),
             OpCode::SET_ELEM => self.dispatch_set_elem(rd, a, b),
             OpCode::GET_PRIVATE => self.dispatch_get_private(rd, a, b),
             OpCode::SET_PRIVATE => self.dispatch_set_private(rd, a, b),
@@ -648,8 +649,24 @@ impl Vm {
 
     fn dispatch_get_prop_dynamic(&mut self, rd: usize, a: usize, b: usize) -> Result<(), String> {
         vm_trace!("GET_PROP_DYNAMIC rd={} a={} b={}", rd, a, b);
-        let prop_name_si = self.property_key_si(self.regs[a])?;
         let receiver = self.regs[rd];
+        // 基 ToObject 先于键 ToPropertyKey（规范 GetV 步序）：null/undefined 基在
+        // 对象键 toString 副作用之前抛 TypeError。
+        if receiver.is_null() || receiver.is_undefined() {
+            self.raise_type_error("GET_PROP_DYNAMIC on non-object")?;
+            return Ok(());
+        }
+        let pc_before = self.pc;
+        let key_val = self.derive_property_key_value(self.regs[a])?;
+        if self.pc != pc_before {
+            // 键推导在途抛错已展开到 catch/finally 入口：pc 由处理器接管，
+            // 余下读路径不得续行（结果寄存器不得再写）。
+            return Ok(());
+        }
+        // 推导后的键写回键寄存器：复合/逻辑赋值的写侧（SET_PROP_DYNAMIC）
+        // 复用同一键，对象键的 ToPrimitive 副作用只触发一次。
+        self.regs[a] = key_val;
+        let prop_name_si = self.property_key_si(key_val)?;
         // 数组元素 fast path：整数键 + 真数组 + 无元素 meta（无 hole/accessor/描述符）
         // + 界内 → 直读元素区，免 primitive_property_get / checked_object_ptr /
         // ordinary_get 调用链。判定条件与 ordinary_get_inner 数组分支严格等价。
@@ -695,7 +712,13 @@ impl Vm {
         let Some(obj_ptr) = self.set_prop_base(self.regs[rd])? else {
             return Ok(());
         };
+        let pc_before = self.pc;
         let prop_name_si = self.property_key_si(self.regs[a])?;
+        if self.pc != pc_before {
+            // 键推导在途抛错已展开到 catch/finally 入口：pc 由处理器接管，
+            // 余下写路径不得续行（不得写属性）。
+            return Ok(());
+        }
         // 数组元素 fast path：整数键 + 真数组 + 无 meta + 界内 → 直写元素区，
         // 免 __proto__ 查询 / ordinary_set_dispatch / get_own_property_slot 调用链。
         // 与 ordinary_set_inner 数组分支等价（界内写不触发 length 扩展、无 shadow
@@ -727,6 +750,52 @@ impl Vm {
         }
         let value = self.regs[b];
         let obj = unsafe { &mut *obj_ptr };
+        self.ordinary_set_dispatch(obj, prop_name_si, value, self.regs[rd], self.current_strict())?;
+        Ok(())
+    }
+
+    /// 严格 PutValue 属性写（with 对象引用写回）：rd = 基对象、a = 键、b = 值。
+    /// 写时点 HasProperty 检查（含原型链）——属性缺失抛 ReferenceError（读侧
+    /// getter 副作用可能已删除属性）；存在时按 SET_PROP_DYNAMIC 同形 Set。
+    ///
+    /// # 步骤
+    /// 1. 基对象检查（非对象抛 TypeError）。
+    /// 2. 键推导（ToPropertyKey，在途抛错按 pc 变化停行）。
+    /// 3. HasProperty 检查（在途抛错按 pc 变化停行）；缺失抛 ReferenceError。
+    /// 4. 存在走 ordinary_set_dispatch（strict 模式）。
+    fn dispatch_set_prop_dynamic_strict(&mut self, rd: usize, a: usize, b: usize) -> Result<(), String> {
+        vm_trace!("SET_PROP_DYNAMIC_STRICT rd={} a={} b={}", rd, a, b);
+        let Some(obj_ptr) = self.set_prop_base(self.regs[rd])? else {
+            return Ok(());
+        };
+        let pc_before = self.pc;
+        let prop_name_si = self.property_key_si(self.regs[a])?;
+        if self.pc != pc_before {
+            // 键推导在途抛错已展开到 catch/finally 入口：pc 由处理器接管，
+            // 余下写路径不得续行（不得写属性）。
+            return Ok(());
+        }
+        let obj = unsafe { &*obj_ptr };
+        let pc_before = self.pc;
+        let exists = self.has_property(obj, prop_name_si)?;
+        if self.pc != pc_before {
+            // HasProperty 在途抛错已展开：pc 由处理器接管，不得续行。
+            return Ok(());
+        }
+        if !exists {
+            // 错误消息携带属性名（与全局未声明写同形）；键推导后为字符串/符号，
+            // 非字符串按空名兜底（emit 侧保证字符串键）。
+            let name = if self.regs[a].is_string() {
+                // SAFETY: 键推导后为字符串值；错误消息走 lossy 文本。
+                unsafe { (*self.regs[a].as_string_ptr()).as_lossy_str() }.to_string()
+            } else {
+                String::new()
+            };
+            self.raise_error_kind("ReferenceError", &format!("{name} is not defined"))?;
+            return Ok(());
+        }
+        let obj = unsafe { &mut *obj_ptr };
+        let value = self.regs[b];
         self.ordinary_set_dispatch(obj, prop_name_si, value, self.regs[rd], self.current_strict())?;
         Ok(())
     }

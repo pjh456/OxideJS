@@ -424,6 +424,53 @@ impl Vm {
             return Err(format!("DEFINE_GLOBAL_PROP_C constant index {idx} is not a string key"));
         }
         let si = self.property_key_si(key_val)?;
+        self.define_global_prop_c_body(a, si, key_val)
+    }
+
+    /// 严格模式隐式全局写：先 HasProperty 检查（全局环境记录 SetMutableBinding
+    /// 语义）——属性缺失抛 ReferenceError（未解析引用不可 put）；存在时按
+    /// [`dispatch_define_global_prop_c`] 同形定义。
+    ///
+    /// # 步骤
+    /// 1. 键常量解析为属性键 si（与 DEFINE_GLOBAL_PROP_C 同形）。
+    /// 2. HasProperty 检查（含原型链；代理/deferred 命名空间触发可抛错，
+    ///    抛错经 pc 变化停行）。
+    /// 3. 缺失抛 ReferenceError（`{name} is not defined`）；存在走定义体。
+    ///
+    /// # 边界与前提
+    /// - 键常量必须是字符串（emit 侧保证）；非字符串按错误返回。
+    pub(crate) fn dispatch_define_global_prop_c_strict(&mut self, a: usize, key_idx: u16) -> Result<(), String> {
+        let idx = key_idx as usize;
+        vm_trace!("DEFINE_GLOBAL_PROP_C_STRICT value={} idx={}", a, idx);
+        let key_val = self.immutables().get(idx).copied().unwrap_or(JsValue::undefined());
+        if !key_val.is_string() {
+            return Err(format!("DEFINE_GLOBAL_PROP_C_STRICT constant index {idx} is not a string key"));
+        }
+        let si = self.property_key_si(key_val)?;
+        let global_ptr = self.realm.session.borrow().global_object().as_ptr() as *mut JsObject;
+        // SAFETY: 全局对象钉在 session 永久区，指针在 VM 生命周期内有效。
+        let obj = unsafe { &*global_ptr };
+        let pc_before = self.pc;
+        let exists = self.has_property(obj, si)?;
+        if self.pc != pc_before {
+            // HasProperty 在途抛错已展开到 catch/finally 入口：pc 由处理器接管，
+            // 定义不得续行。
+            return Ok(());
+        }
+        if !exists {
+            // SAFETY: key_val 已校验为字符串值；错误消息走 lossy 文本。
+            let name = unsafe { (*key_val.as_string_ptr()).as_lossy_str() };
+            self.raise_error_kind("ReferenceError", &format!("{name} is not defined"))?;
+            return Ok(());
+        }
+        self.define_global_prop_c_body(a, si, key_val)
+    }
+
+    /// 全局对象属性定义体（DEFINE_GLOBAL_PROP_C 与严格变体共用）：既有属性
+    /// 按描述符分流（accessor 走 Set 语义、数据属性按可写性），缺失新建可写/
+    /// 可枚举/可配置属性。
+    fn define_global_prop_c_body(&mut self, a: usize, si: u32, key_val: JsValue) -> Result<(), String> {
+        let _ = key_val;
         let value = self.regs[a];
         let global_ptr = self.realm.session.borrow().global_object().as_ptr() as *mut JsObject;
         // SAFETY: 全局对象钉在 session 永久区，指针在 VM 生命周期内有效。

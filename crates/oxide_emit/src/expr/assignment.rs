@@ -128,15 +128,13 @@ impl Emitter {
             let is_tier = self.is_global_tier_name(ctx, name);
             let is_implicit = ctx.is_implicit_global_reg(var_reg);
             let is_builtin = ctx.is_builtin(name) && !ctx.is_local_shadowing_builtin(name);
-            if is_implicit && ctx.is_strict {
-                // 严格模式未声明复合写：未解析引用不可 put，值无关抛 ReferenceError。
-                return self.emit_strict_undeclared_write(name, ctx);
-            }
-            // RMW 前从全局对象属性取旧值：tier 名（顶层已声明 var）与未声明名同，
-            // 属性缺失按 undefined（GetBaseValue 语义，不抛）；已知 builtin 名（非局部
-            // 遮蔽）读 A 侧属性，属性缺失（delete 真删后）抛 ReferenceError，与裸读
-            // 同形——镜像槽不反映删除，无法自区分缺位与在位 undefined。
-            if is_tier || is_implicit {
+            // RMW 前从全局对象属性取旧值：tier 名（顶层已声明 var）属性缺失按
+            // undefined（GetBaseValue 语义，不抛）；已知 builtin 名（非局部遮蔽）
+            // 读 A 侧属性，属性缺失（delete 真删后）抛 ReferenceError，与裸读同形
+            // ——镜像槽不反映删除，无法自区分缺位与在位 undefined。
+            // 隐式全局（未声明名）旧值读是抛错读：复合赋值的赋值引用解析在
+            // 读旧值时抛 ReferenceError（未声明引用不可 GetValue，两模式同）。
+            if is_tier {
                 let key_idx = ctx.add_constant(Constant::String(name.to_string()));
                 ctx.inst(Inst::new(
                     OpCode::LOAD_GLOBAL_TYPEOF,
@@ -144,7 +142,9 @@ impl Emitter {
                     Operand::Const(key_idx),
                     Operand::None,
                 ));
-            } else if is_builtin {
+            } else if is_implicit || is_builtin {
+                // 隐式全局（未声明名）与已知 builtin 名（非局部遮蔽）同形抛错读：
+                // 属性缺失（delete 真删后）抛 ReferenceError，与裸读同形。
                 let key_idx = ctx.add_constant(Constant::String(name.to_string()));
                 ctx.inst(Inst::new(
                     OpCode::LOAD_GLOBAL,
@@ -159,7 +159,14 @@ impl Emitter {
                 // 引擎侧不保留镜像副本）。
                 self.emit_tier_global_write(name, var_reg, ctx);
             } else if is_implicit {
-                self.emit_implicit_global_write(name, var_reg, ctx);
+                if ctx.is_strict {
+                    // 严格隐式全局写：运行期 HasProperty 检查，属性缺失抛
+                    // ReferenceError（旧值读侧的 getter 副作用可能已删除属性）。
+                    let idx = ctx.add_constant(Constant::String(name.to_string()));
+                    ctx.inst(Inst::define_global_prop_c_strict(Operand::Reg(var_reg), idx));
+                } else {
+                    self.emit_implicit_global_write(name, var_reg, ctx);
+                }
             } else if ctx.targets_writable_builtin(name, var_reg) {
                 // 可写内置名：RMW 新值同步落全局对象属性。
                 self.emit_global_put_write(name, var_reg, ctx);
@@ -514,12 +521,13 @@ impl Emitter {
                         ));
                     } else {
                         let var_reg = ctx.lookup_or_global(name);
-                        // 顶层已声明 var（tier）与未声明名同：旧值读前从全局对象
-                        // 属性取当前值，缺失按 undefined（不抛）；已知 builtin 名
-                        // （非局部遮蔽）读 A 侧属性，属性缺失（delete 真删后）抛
-                        // ReferenceError，与裸读同形——镜像槽不反映删除，无法自
-                        // 区分缺位与在位 undefined。
-                        if self.is_global_tier_name(ctx, name) || ctx.is_implicit_global_reg(var_reg) {
+                        // 顶层已声明 var（tier）：旧值读前从全局对象属性取当前值，
+                        // 缺失按 undefined（不抛）；已知 builtin 名（非局部遮蔽）读
+                        // A 侧属性，属性缺失（delete 真删后）抛 ReferenceError，与
+                        // 裸读同形——镜像槽不反映删除，无法自区分缺位与在位 undefined。
+                        // 隐式全局（未声明名）旧值读是抛错读：逻辑赋值的赋值引用
+                        // 解析在读旧值时抛 ReferenceError（未声明引用不可 GetValue）。
+                        if self.is_global_tier_name(ctx, name) {
                             let key_idx = ctx.add_constant(Constant::String(name.to_string()));
                             ctx.inst(Inst::new(
                                 OpCode::LOAD_GLOBAL_TYPEOF,
@@ -527,7 +535,11 @@ impl Emitter {
                                 Operand::Const(key_idx),
                                 Operand::None,
                             ));
-                        } else if ctx.is_builtin(name) && !ctx.is_local_shadowing_builtin(name) {
+                        } else if ctx.is_implicit_global_reg(var_reg)
+                            || (ctx.is_builtin(name) && !ctx.is_local_shadowing_builtin(name))
+                        {
+                            // 隐式全局（未声明名）与已知 builtin 名（非局部遮蔽）同形抛错读：
+                            // 属性缺失（delete 真删后）抛 ReferenceError，与裸读同形。
                             let key_idx = ctx.add_constant(Constant::String(name.to_string()));
                             ctx.inst(Inst::new(
                                 OpCode::LOAD_GLOBAL,
@@ -546,6 +558,15 @@ impl Emitter {
                     self.emit_logical_assign_test(logical_op, result_reg, store_label, end_label, ctx)?;
                     ctx.labels.set_label_pos(store_label, ctx.insts.len());
                     let val_reg = self.emit_expression(&assign.right, ctx)?;
+                    // NamedEvaluation：RHS 是匿名函数/箭头/class 时按 LHS 标识符推断
+                    // name（仅短路通过、实际写回时才到达此处，与规范求值点一致）。
+                    if crate::is_anonymous_function_definition(&assign.right) {
+                        if let Some(sub_mod) = ctx.nested.last_mut() {
+                            if sub_mod.function_name.is_none() {
+                                sub_mod.function_name = Some(name.to_string());
+                            }
+                        }
+                    }
                     // 短路未通过才写：const 目标在此抛 TypeError（编译期拦截，值无关）。
                     self.emit_const_write_guard(name, ctx)?;
                     // 函数名不可写绑定（sloppy）：put 永不成功，跳过写与命名空间写穿，
@@ -592,8 +613,10 @@ impl Emitter {
                             let is_tier = self.is_global_tier_name(ctx, name);
                             let is_implicit = ctx.is_implicit_global_reg(var_reg);
                             if is_implicit && ctx.is_strict {
-                                // 严格模式未声明写：抛 ReferenceError，后续 LOAD_VAR 不可达。
-                                let _ = self.emit_strict_undeclared_write(name, ctx)?;
+                                // 严格隐式全局写：运行期 HasProperty 检查，属性缺失抛
+                                // ReferenceError（旧值读侧的 getter 副作用可能已删除属性）。
+                                let idx = ctx.add_constant(Constant::String(name.to_string()));
+                                ctx.inst(Inst::define_global_prop_c_strict(Operand::Reg(val_reg), idx));
                             } else if is_tier {
                                 // 顶层已声明 var 逻辑赋值：新值写入全局对象属性（顶层 var 的唯一存储，
                                 // 引擎侧不保留镜像副本）。
@@ -691,12 +714,7 @@ impl Emitter {
                             Operand::Reg(val_reg),
                         ));
                         ctx.inst(Inst::new(op, Operand::Reg(val_reg), Operand::Reg(rhs), Operand::None));
-                        ctx.inst(Inst::new(
-                            OpCode::SET_PROP_DYNAMIC,
-                            Operand::Reg(obj_reg),
-                            Operand::Reg(key_reg),
-                            Operand::Reg(val_reg),
-                        ));
+                        self.emit_put_prop_dynamic(obj_reg, key_reg, val_reg, ctx);
                         ctx.inst(Inst::jmp(end_label));
 
                         // 对象无该属性：回退静态复合赋值，结果写入同一 val_reg。
@@ -845,5 +863,23 @@ impl Emitter {
             Operand::Reg(val_reg),
         ));
         Ok(val_reg)
+    }
+
+    /// 严格 PutValue 属性写（with 对象引用写回）：strict 模式发
+    /// SET_PROP_DYNAMIC_STRICT（写时点 HasProperty 检查，属性缺失抛
+    /// ReferenceError——读侧 getter 副作用可能已删除属性）；sloppy 模式发
+    /// 普通 SET_PROP_DYNAMIC（缺失物化属性）。
+    pub(crate) fn emit_put_prop_dynamic(&self, obj_reg: u32, key_reg: u32, val_reg: u32, ctx: &mut CompileCtx) {
+        let op = if ctx.is_strict {
+            OpCode::SET_PROP_DYNAMIC_STRICT
+        } else {
+            OpCode::SET_PROP_DYNAMIC
+        };
+        ctx.inst(Inst::new(
+            op,
+            Operand::Reg(obj_reg),
+            Operand::Reg(key_reg),
+            Operand::Reg(val_reg),
+        ));
     }
 }

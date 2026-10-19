@@ -329,12 +329,9 @@ impl Emitter {
         let end_label = ctx.next_label_id();
         ctx.inst(Inst::jmp_if_false(has_reg, fallback_label));
 
-        ctx.inst(Inst::new(
-            OpCode::SET_PROP_DYNAMIC,
-            Operand::Reg(obj_reg),
-            Operand::Reg(key_reg),
-            Operand::Reg(val_reg),
-        ));
+        // 写时点 HasProperty 检查（strict 缺失抛 ReferenceError，读侧 getter
+        // 副作用可能已删除属性），与复合赋值同形。
+        self.emit_put_prop_dynamic(obj_reg, key_reg, val_reg, ctx);
         ctx.inst(Inst::jmp(end_label));
 
         ctx.labels.set_label_pos(fallback_label, ctx.insts.len());

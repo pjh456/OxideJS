@@ -765,6 +765,18 @@ define_opcodes! {
     VOID = 0xF3 => "VOID",
         def = Some(SlotSpec::Slot(Slot::Rd)), uses = [],
         pure = true, jump = false, term = false, ic = false,
+    // 严格模式隐式全局写：ext 字 = 键常量池下标（u16）、a 槽 = 值寄存器；
+    // 先 HasProperty 检查（全局环境记录 SetMutableBinding 语义），属性缺失抛
+    // ReferenceError；存在时按 DEFINE_GLOBAL_PROP_C 同形定义。
+    DEFINE_GLOBAL_PROP_C_STRICT = 0xF5 => "DEFINE_GLOBAL_PROP_C_STRICT",
+        def = None, uses = [SlotSpec::Slot(Slot::A)],
+        pure = false, jump = false, term = false, ic = false,
+    // 严格 PutValue 属性写（with 对象引用写回）：rd = 基对象、a = 键、b = 值；
+    // 写时点 HasProperty 检查（含原型链），属性缺失抛 ReferenceError（读侧
+    // getter 副作用可能已删除属性）；存在时按 SET_PROP_DYNAMIC 同形 Set。
+    SET_PROP_DYNAMIC_STRICT = 0xF4 => "SET_PROP_DYNAMIC_STRICT",
+        def = None, uses = [SlotSpec::Slot(Slot::Rd), SlotSpec::Slot(Slot::A), SlotSpec::Slot(Slot::B)],
+        pure = false, jump = false, term = false, ic = false,
 }
 
 /// 4 字节定长指令。
@@ -833,6 +845,7 @@ pub fn ext_word_count(bytecode: &[Instr], pc: usize) -> usize {
         | OpCode::DEFINE_ACCESSOR_DYNAMIC
         | OpCode::DEFINE_PROP_ATTRS
         | OpCode::DEFINE_GLOBAL_PROP_C
+        | OpCode::DEFINE_GLOBAL_PROP_C_STRICT
         | OpCode::DEFINE_GLOBAL_PROP_C_IF_ABSENT
         | OpCode::DELETE_GLOBAL_PROP_C
         | OpCode::DELETE_PROP_STATIC

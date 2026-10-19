@@ -161,6 +161,48 @@ impl Vm {
     ///
     /// 数组元素区的 hole（删除标记）视同不存在；原型链查找止于
     /// `MAX_PROTO_CHAIN_DEPTH` 深度上限。
+    /// 解析属性的访问器 getter（与 `resolve_property` 同形）：沿 shape 链 +
+    /// 原型链，命中属性为访问器且 get 已定义时返回 getter 函数；数据属性或
+    /// 无 getter 返回 None。代理层保守返 None（与 `resolve_property` 同口径）。
+    pub(crate) fn resolve_property_getter(&self, obj: &JsObject, prop_name_si: u32) -> Option<JsValue> {
+        if obj.is_proxy_obj() {
+            return None;
+        }
+        if let Some(pos) = self.kernel_core.shape_forge().lookup_position(obj.shape_id(), prop_name_si) {
+            let val = obj.get_prop_at(pos);
+            if !val.is_undefined() || obj.prop_vec_len() > pos as usize {
+                return obj
+                    .prop_meta_at(pos)
+                    .filter(|m| m.is_accessor && !m.get.is_undefined())
+                    .map(|m| m.get);
+            }
+        }
+        let mut proto = obj.proto();
+        let mut depth = 0usize;
+        while proto.is_object() && depth < MAX_PROTO_CHAIN_DEPTH {
+            depth += 1;
+            let proto_obj = unsafe { &*proto.as_js_object_ptr() };
+            if proto_obj.is_proxy_obj() {
+                return None;
+            }
+            if let Some(pos) = self
+                .kernel_core
+                .shape_forge()
+                .lookup_position(proto_obj.shape_id(), prop_name_si)
+            {
+                let val = proto_obj.get_prop_at(pos);
+                if !val.is_undefined() || proto_obj.prop_vec_len() > pos as usize {
+                    return proto_obj
+                        .prop_meta_at(pos)
+                        .filter(|m| m.is_accessor && !m.get.is_undefined())
+                        .map(|m| m.get);
+                }
+            }
+            proto = proto_obj.proto();
+        }
+        None
+    }
+
     pub(crate) fn resolve_property(&self, obj: &JsObject, prop_name_si: u32) -> Option<JsValue> {
         vm_trace!("resolve_property: shape_id={} prop_name_si={}", obj.shape_id(), prop_name_si);
         // Proxy：本方法是不可变签名，无法同步调 get trap；代理无自身属性，

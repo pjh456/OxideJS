@@ -571,6 +571,12 @@ impl Vm {
                     self.dispatch_define_global_prop_c(a, key_idx)?;
                 }
 
+                OpCode::DEFINE_GLOBAL_PROP_C_STRICT => {
+                    let key_idx = self.bytecode[self.pc] as u16;
+                    self.pc += 1;
+                    self.dispatch_define_global_prop_c_strict(a, key_idx)?;
+                }
+
                 OpCode::DEFINE_GLOBAL_PROP_IF_ABSENT => {
                     self.dispatch_define_global_prop_if_absent(rd, a, b)?;
                 }
@@ -642,6 +648,7 @@ impl Vm {
                 | OpCode::SET_PROP_BATCH
                 | OpCode::GET_PROP_DYNAMIC
                 | OpCode::SET_PROP_DYNAMIC
+                | OpCode::SET_PROP_DYNAMIC_STRICT
                 | OpCode::SET_ELEM
                 | OpCode::GET_PRIVATE
                 | OpCode::SET_PRIVATE

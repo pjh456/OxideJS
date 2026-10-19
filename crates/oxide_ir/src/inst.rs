@@ -242,6 +242,19 @@ impl Inst {
         Self::with_ext(OpCode::DEFINE_GLOBAL_PROP_C, Operand::None, value, Operand::None, &[key_idx as u32])
     }
 
+    /// 严格模式全局写：ext = [key_idx]（键常量池下标），value 放 a 槽。运行期先做
+    /// HasProperty 检查——属性缺失抛 ReferenceError（严格模式未声明标识符写），
+    /// 存在则定义可写/可枚举/可配置数据属性。
+    pub fn define_global_prop_c_strict(value: Operand, key_idx: u16) -> Self {
+        Self::with_ext(
+            OpCode::DEFINE_GLOBAL_PROP_C_STRICT,
+            Operand::None,
+            value,
+            Operand::None,
+            &[key_idx as u32],
+        )
+    }
+
     /// 顶层 var 声明的全局属性 define-if-absent：target 为全局对象，value/key 为寄存器。
     /// 既有属性零动作；缺失新建可写/可枚举/不可配置（脚本 GDI 序言，CreateGlobalVarBinding
     /// 对既有数据描述符零修改）。

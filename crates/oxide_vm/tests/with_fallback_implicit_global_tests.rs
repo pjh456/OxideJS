@@ -59,12 +59,12 @@ fn with_fallback_declared_var_writes_outer_binding() {
 }
 
 #[test]
-fn with_fallback_compound_undeclared_write_keeps_existing_behavior() {
-    // 复合赋值回退臂走静态复合路径：未声明名旧值按 undefined 读
-    // （GetBaseValue 语义不抛），复合运算结果落隐式全局。
-    assert_eq!(
-        eval("var o={}; with(o){x+=1;} isNaN(globalThis.x)"),
-        "true",
-        "with 回退未声明名复合赋值保持既有读 undefined 行为"
+fn with_fallback_compound_undeclared_write_throws() {
+    // 复合赋值回退臂走静态复合路径：未声明名旧值读在 lval 求值步抛
+    // ReferenceError（未解析引用不可 GetValue，两模式同），不物化隐式全局。
+    let s = eval("var o={}; with(o){x+=1;}");
+    assert!(
+        s.contains("ReferenceError") && s.contains("x is not defined"),
+        "with 回退未声明名复合赋值应抛 ReferenceError，实际 {s}"
     );
 }

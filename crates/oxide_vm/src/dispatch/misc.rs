@@ -1,8 +1,10 @@
 use crate::vm::Vm;
 use crate::{vm_error, vm_trace};
 use oxide_bytecode::opcode;
+use oxide_runtime_api as coercion;
 use oxide_kernel::shape_forge::EMPTY_SHAPE_ID;
 use oxide_types::arguments_map::ArgumentsMapState;
+use oxide_types::mem::P;
 use oxide_types::object::{JsObject, PropAttributes};
 use oxide_types::private_key::{encode_symbol_key, make_int_key};
 use oxide_types::value::{JsType, JsValue};
@@ -19,6 +21,28 @@ impl Vm {
         } else {
             vm_error!("LOAD_CONST index {} out of bounds (len={})", idx, imm.len());
             Err(format!("constant index {idx} out of bounds"))
+        }
+    }
+
+    /// 全局对象属性读（含访问器 getter 调用）：命中属性时若为访问器则以
+    /// 全局对象为 receiver 调用 getter（getter 副作用先于后续写生效），返回
+    /// getter 结果；命中数据属性返回槽值；未命中返回 None。getter 抛错经
+    /// `raise_call_error` 就地展开（pc 已改写），调用方须按 pc 变化停行。
+    fn global_prop_read_with_getter(&mut self, global: &P<JsObject>, si: u32) -> Result<Option<JsValue>, String> {
+        let Some(val) = self.resolve_property(global, si) else {
+            return Ok(None);
+        };
+        let Some(getter) = self.resolve_property_getter(global, si) else {
+            return Ok(Some(val));
+        };
+        // SAFETY: 全局对象钉在 session 永久区，指针在 VM 生命周期内有效。
+        let global_val = JsValue::from_js_object(global.as_ptr() as *mut JsObject);
+        match self.call_function_sync(getter, global_val, &[]) {
+            Ok(v) => Ok(Some(v)),
+            Err(err) => {
+                self.raise_call_error(&err)?;
+                Ok(None)
+            }
         }
     }
 
@@ -44,7 +68,14 @@ impl Vm {
             let session = self.realm.session.borrow();
             session.global_object().clone()
         };
-        if let Some(val) = self.resolve_property(&global, si) {
+        let pc_before = self.pc;
+        let hit = self.global_prop_read_with_getter(&global, si)?;
+        if self.pc != pc_before {
+            // getter 在途抛错已展开到 catch/finally 入口：pc 由处理器接管，
+            // 不得续行（结果寄存器不得再写、不得抛未解析引用）。
+            return Ok(true);
+        }
+        if let Some(val) = hit {
             self.regs[rd] = val;
             Ok(false)
         } else {
@@ -71,9 +102,18 @@ impl Vm {
             return Err(format!("LOAD_GLOBAL_TYPEOF constant index {idx} is not a string key"));
         }
         let si = self.property_key_si(key_val)?;
-        let session = self.realm.session.borrow();
-        let global = session.global_object();
-        self.regs[rd] = self.resolve_property(global, si).unwrap_or(JsValue::undefined());
+        let global = {
+            let session = self.realm.session.borrow();
+            session.global_object().clone()
+        };
+        // typeof 访问器属性同样触发 getter（getter 抛错时 typeof 不豁免，异常照抛）。
+        let pc_before = self.pc;
+        let hit = self.global_prop_read_with_getter(&global, si)?;
+        if self.pc != pc_before {
+            // getter 在途抛错已展开：pc 由处理器接管，不得续行。
+            return Ok(());
+        }
+        self.regs[rd] = hit.unwrap_or(JsValue::undefined());
         Ok(())
     }
 
@@ -105,12 +145,19 @@ impl Vm {
             self.regs[rd] = val;
             return Ok(false);
         }
-        // 回退全局对象属性读（未声明名与 known builtin 名同形 LOAD_GLOBAL）。
-        let global_hit = {
+        // 回退全局对象属性读（未声明名与 known builtin 名同形 LOAD_GLOBAL）；
+        // 访问器属性调用 getter（receiver = 全局对象），裸读必须触发 getter。
+        let global = {
             let session = self.realm.session.borrow();
-            let global = session.global_object().clone();
-            self.resolve_property(&global, si)
+            session.global_object().clone()
         };
+        let pc_before = self.pc;
+        let global_hit = self.global_prop_read_with_getter(&global, si)?;
+        if self.pc != pc_before {
+            // getter 在途抛错已展开到 catch/finally 入口：pc 由处理器接管，
+            // 不得续行（结果寄存器不得再写、不得抛未解析引用）。
+            return Ok(true);
+        }
         if let Some(val) = global_hit {
             self.regs[rd] = val;
             Ok(false)
@@ -194,6 +241,38 @@ impl Vm {
         let obj_val = oxide_runtime_api::to_object(val, self)?;
         self.regs[rd] = obj_val;
         Ok(())
+    }
+
+    /// ToPropertyKey：推导属性键值。Symbol 原样返回；对象经 ToPrimitive(string
+    /// hint) 后 ToString；其余原始值直接 ToString。
+    ///
+    /// # 边界与前提
+    /// - 对象键的 toString/valueOf 调用有用户副作用，可能抛异常；抛错经
+    ///   `raise_call_error` 就地展开（pc 已改写），调用方须按 pc 变化停行。
+    ///
+    /// # 副作用
+    /// - 成功路径返回推导后的字符串/Symbol 值；抛错路径经 `unwind` 改写
+    ///   pc / 异常通道并返回 undefined（调用方不得再使用）。
+    pub(crate) fn derive_property_key_value(&mut self, val: JsValue) -> Result<JsValue, String> {
+        vm_trace!("derive_property_key_value: {:?}", val);
+        if val.is_symbol() {
+            return Ok(val);
+        }
+        let pc_before = self.pc;
+        let prim = if val.is_object() {
+            coercion::to_primitive(val, coercion::ToPrimitiveHint::String, self)?
+        } else {
+            val
+        };
+        if self.pc != pc_before {
+            // ToPrimitive 在途抛错已展开：pc 由处理器接管，结果值不得使用。
+            return Ok(JsValue::undefined());
+        }
+        if prim.is_symbol() {
+            return Ok(prim);
+        }
+        let units = oxide_runtime_api::to_units_full(prim, self)?;
+        Ok(self.new_string_units_owned(units))
     }
 
     pub(crate) fn dispatch_load_var(&mut self, rd: usize, a: usize) -> Result<bool, String> {

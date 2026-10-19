@@ -86,17 +86,19 @@ fn sloppy_update_operator_undeclared_write_lands_on_global() {
     assert!(r.is_bool() && r.as_bool(), "z++ 未声明写应落全局 NaN（undefined+1），实际 {:?}", r);
 }
 
+// ── 复合赋值：未声明名旧值读在 lval 求值步抛 ReferenceError（未解析引用不可
+// GetValue，两模式同），不物化全局 NaN ──
 #[test]
-fn sloppy_compound_operator_undeclared_write_is_nan() {
-    let s = eval_str("w += 1; typeof w");
-    assert_eq!(s, "number", "w += 1 未声明名应为 NaN（typeof number），实际 {s}");
+fn sloppy_compound_operator_undeclared_write_throws() {
+    let result = eval("w += 1");
+    assert_err_contains(result, "w is not defined");
 }
 
-// ── 逻辑赋值：未声明名 ||= 短路建全局 ──
+// ── 逻辑赋值：未声明名旧值读抛 ReferenceError，短路路径不可达，不物化全局 ──
 #[test]
-fn sloppy_logical_assign_undeclared_write_lands_on_global() {
-    let r = eval_many(&["p ||= 5", "globalThis.p === 5"]).unwrap();
-    assert!(r.is_bool() && r.as_bool(), "p ||= 5 未声明写应落全局为 5，实际 {:?}", r);
+fn sloppy_logical_assign_undeclared_write_throws() {
+    let result = eval("p ||= 5");
+    assert_err_contains(result, "p is not defined");
 }
 
 // ── for-in 左侧未声明标识符：首个键后建全局 ──
