@@ -6,14 +6,14 @@ use std::sync::{Arc, OnceLock};
 
 use oxide_bytecode::module::CompiledModule;
 use oxide_bytecode::opcode::{self, OpCode};
-use oxide_runtime_api::CompilerService;
+use oxide_runtime_api::{CompilerService, ModuleSourceLoader};
 use oxide_types::object::PropAttributes;
 use oxide_types::value::JsValue;
 
 use super::Vm;
 use crate::vm_support::FunctionFlags;
 
-/// 缺省 no-op 编译服务：两方法均返 `Err`（错误消息指向「未安装编译服务」）。
+/// 缺省 no-op 编译服务：三方法均返 `Err`（错误消息指向「未安装编译服务」）。
 ///
 /// 供不需要动态编译的 `Vm` 实例（构造器缺省值）；生产 entry points 与
 /// 动态编译测试经 `set_compiler_service` 注入真实实现。
@@ -25,6 +25,12 @@ impl CompilerService for NoopCompilerService {
     }
 
     fn compile_eval_script(&self, _source: &str) -> Result<CompiledModule, String> {
+        Err("dynamic compilation unavailable: no compiler service installed".to_string())
+    }
+
+    fn compile_module(
+        &self, _source: &str, _module_path: &str, _loader: &mut dyn ModuleSourceLoader,
+    ) -> Result<CompiledModule, String> {
         Err("dynamic compilation unavailable: no compiler service installed".to_string())
     }
 }
@@ -90,6 +96,13 @@ impl Vm {
         // 子树重编号 + 追加：base = 当前代际平表长度，DFS 前序压入，push 序即新
         // flat_id。make_mut 彼时平表 Arc 强引用唯一持有者是本表，原地扩展不分叉。
         let table = self.current_table_mut();
+        // 空表（新 Vm / full_reset 后首个动态函数）补占位模块：函数对象落 index 0
+        // 会被 sub_module_index()==0 守卫误判为无本体函数对象。
+        if table.modules.is_empty() {
+            Arc::make_mut(&mut table.modules).insert(0, Arc::new(CompiledModule::new()));
+            table.immutables.insert(0, OnceLock::new());
+            table.si_tables.insert(0, OnceLock::new());
+        }
         let base = table.modules.len() as u32;
         let mut added = Vec::new();
         rehome_subtree(&anonymous, base, &mut added);
@@ -150,6 +163,13 @@ impl Vm {
         // 根模块 flat_id=0 传 base+1，重编号后落 base（避开 sub_module_index()==0
         // 守卫）。make_mut 彼时平表 Arc 强引用唯一持有者是本表，原地扩展不分叉。
         let table = self.current_table_mut();
+        // 空表（新 Vm / full_reset 后首段动态脚本）补占位模块：首个动态脚本的根
+        // 落 index 0 会被 sub_module_index()==0 守卫误判为无本体函数对象。
+        if table.modules.is_empty() {
+            Arc::make_mut(&mut table.modules).insert(0, Arc::new(CompiledModule::new()));
+            table.immutables.insert(0, OnceLock::new());
+            table.si_tables.insert(0, OnceLock::new());
+        }
         let base = table.modules.len() as u32;
         let mut added = Vec::new();
         rehome_subtree(&module, base + 1, &mut added);
@@ -189,6 +209,13 @@ impl Vm {
         // 根模块 flat_id=0 传 base+1，重编号后落 base（避开 sub_module_index()==0
         // 守卫）。make_mut 彼时平表 Arc 强引用唯一持有者是本表，原地扩展不分叉。
         let table = self.current_table_mut();
+        // 空表（新 Vm / full_reset 后首段动态脚本）补占位模块：首个动态脚本的根
+        // 落 index 0 会被 sub_module_index()==0 守卫误判为无本体函数对象。
+        if table.modules.is_empty() {
+            Arc::make_mut(&mut table.modules).insert(0, Arc::new(CompiledModule::new()));
+            table.immutables.insert(0, OnceLock::new());
+            table.si_tables.insert(0, OnceLock::new());
+        }
         let base = table.modules.len() as u32;
         let mut added = Vec::new();
         rehome_subtree(&module, base + 1, &mut added);

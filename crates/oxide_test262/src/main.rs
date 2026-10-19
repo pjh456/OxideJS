@@ -103,19 +103,31 @@ fn run_worker_window(
     let harness_sources = HARNESS.get_or_init(HarnessSources::new);
     let mut stats = RunStats::default();
     let mut tests_since_kernel_reset = 0usize;
+    // test262 宿主约定：每测试以测试文件所在目录为工作目录（importValue 等
+    // 按相对路径解析 fixture 的 API 依赖此约定）。相对路径以初始工作目录为
+    // 基准转绝对：cwd 随测试切换，基准必须在循环前固定。
+    let base_dir = std::env::current_dir().unwrap_or_default();
 
     for i in start..end {
         let path_str = params.paths[i].display().to_string();
         // 始终记录当前测试路径，使 panic hook 能标识 Rust panic。
         // 诊断需要最后一行 stderr 的 OS 级崩溃时设置 OXIDE_TEST262_RUNNING_LOG=1。
         CURRENT_TEST_PATH.with(|p| *p.borrow_mut() = path_str.clone());
+        let test_path = if params.paths[i].is_absolute() {
+            params.paths[i].clone()
+        } else {
+            base_dir.join(&params.paths[i])
+        };
+        if let Some(dir) = test_path.parent() {
+            let _ = std::env::set_current_dir(dir);
+        }
         if params.log_running_tests {
             test262_debug!("running: {}", path_str);
             eprintln!("  [worker] running: {path_str}");
         }
 
         let result = process_path(
-            &params.paths[i],
+            &test_path,
             &params.filter,
             params.no_skip,
             params.no_regalloc,

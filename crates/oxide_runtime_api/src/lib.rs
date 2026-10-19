@@ -30,7 +30,7 @@ pub use coercion::{
     to_string_for_string_constructor, to_string_full, to_string_value_full, to_uint32, to_units_full,
     well_known_symbol_name, write_number_into, ToPrimitiveHint,
 };
-pub use compiler_service::CompilerService;
+pub use compiler_service::{CompilerService, ModuleSourceLoader};
 pub use event_target::{EventTargetState, ListenerEntry};
 pub use host::{ModuleEvalState, ProtoKind, ShapeNode, VmHost};
 pub use native_result::NativeResult;

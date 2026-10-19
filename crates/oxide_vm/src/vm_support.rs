@@ -258,6 +258,9 @@ impl Vm {
             worker_next_id: 0,
             worker_objects: std::collections::HashMap::new(),
             shadow_realm_objects: std::collections::HashMap::new(),
+            shadow_keepalive: std::vec::Vec::new(),
+            wrapped_function_state: std::collections::HashMap::new(),
+            owner_vm: std::ptr::null_mut(),
         };
         vm.init_generator_intrinsics();
         vm.init_promise_intrinsics();
@@ -428,6 +431,9 @@ impl Vm {
             worker_next_id: 0,
             worker_objects: std::collections::HashMap::new(),
             shadow_realm_objects: std::collections::HashMap::new(),
+            shadow_keepalive: std::vec::Vec::new(),
+            wrapped_function_state: std::collections::HashMap::new(),
+            owner_vm: std::ptr::null_mut(),
         };
         vm.init_generator_intrinsics();
         vm.init_promise_intrinsics();
@@ -567,6 +573,11 @@ impl Vm {
         // ShadowRealm 实例注册表同持 session 对象指针（实例对象）：teardown
         // 释放全部 session 对象前须清表，影子 Vm 随条目 drop 统一释放。
         self.shadow_realm_objects.clear();
+        // WrappedFunction 保活表与状态表同持 session 对象指针（原函数 /
+        // WrappedFunction 对象）：teardown 释放全部 session 对象前须清表，
+        // 否则残留悬垂指针成 GC 根。
+        self.shadow_keepalive.clear();
+        self.wrapped_function_state.clear();
         self.realm.teardown_session_heap_data();
         self.realm.gc.borrow_mut().session_bytes_allocated = 0;
         self.realm.gc.borrow_mut().session_bytes_peak = 0;

@@ -25,7 +25,7 @@ use oxide_types::value::JsValue;
 /// - 构造器与原型对象经 `Box::into_raw` 登记 world 释放登记表（session 收尾统一
 ///   释放）；全局 `ShadowRealm` 槽经 `bind_constructor!` 原位安装。
 /// - prototype 上装 `constructor` 指回构造器、`@@toStringTag` 数据属性
-///   "ShadowRealm" 与 `evaluate` / `importValue` 方法（not supported 桩）。
+///   "ShadowRealm" 与 `evaluate` / `importValue` 方法（真实现）。
 ///
 /// `realm_id` 经 `@@toStringTag` 符号键编码使用（well-known 符号键按
 /// （realm 编号，局部下标）编码）。
@@ -121,14 +121,14 @@ pub fn bind_shadow_realm(env: BindEnv<'_>, global: &mut JsObject) {
             );
         }
 
-        // evaluate / importValue 方法（not supported 桩，幂等守卫）。
+        // evaluate / importValue 方法（真实现，幂等守卫）。
         let si_evaluate = sf.intern("evaluate").0;
         if sh.lookup_position(proto.shape_id(), si_evaluate).is_none() {
-            apply_binding_table(env, proto, &[("evaluate", crate::shadow_realm::evaluate_stub as *const (), 1)]);
+            apply_binding_table(env, proto, &[("evaluate", crate::shadow_realm::evaluate as *const (), 1)]);
         }
         let si_import_value = sf.intern("importValue").0;
         if sh.lookup_position(proto.shape_id(), si_import_value).is_none() {
-            apply_binding_table(env, proto, &[("importValue", crate::shadow_realm::import_value_stub as *const (), 2)]);
+            apply_binding_table(env, proto, &[("importValue", crate::shadow_realm::import_value as *const (), 2)]);
         }
     }
 

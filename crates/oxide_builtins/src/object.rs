@@ -1434,7 +1434,7 @@ pub fn object_define_property<H: VmHost>(vm: &mut H, args: &[u8]) -> NativeResul
 ///
 /// # 副作用
 /// - 在 epoch 分配一个描述符对象
-fn own_descriptor_of<H: VmHost>(vm: &mut H, obj: &JsObject, key_si: u32) -> Result<Option<JsValue>, JsValue> {
+pub fn own_descriptor_of<H: VmHost>(vm: &mut H, obj: &JsObject, key_si: u32) -> Result<Option<JsValue>, JsValue> {
     // Proxy [[GetOwnProperty]]：getOwnPropertyDescriptor trap 以（target、P）
     // 调用；trap 缺失落穿 target 的自身描述符（target 自身为代理时经递归再
     // 路由）；trap 返 undefined 表示无属性（target 自身属性不可配置或 target

@@ -481,6 +481,21 @@ pub struct Vm {
     /// Vm）。实例对象是 GC 根（`for_each_value` 遍历）；影子 Vm 不跨线程，
     /// 随主 Vm 整体迁移，在 `full_reset` / `Drop` 清表时统一释放。
     pub(crate) shadow_realm_objects: std::collections::HashMap<u64, (JsValue, Vm)>,
+    /// WrappedFunction 保活表：本 Vm 的 GC 根，存放被 WrappedFunction 包装的
+    /// 原函数（本 Vm 堆内对象）。WrappedFunction 持有跨 realm 逻辑边，原函数
+    /// 须在属主 Vm 本表保活防属主 GC 回收；条目随 WrappedFunction 消亡孤儿至
+    /// Vm 收尾（规模有界于包装数）。
+    pub(crate) shadow_keepalive: std::vec::Vec<JsValue>,
+    /// WrappedFunction 状态表：键 = WrappedFunction 对象指针，值 =
+    /// （原函数属主 realm 编号，属主 Vm 保活表下标）。是 GC 根（键保活
+    /// WrappedFunction）；值非 GC 边。主 Vm 与影子 Vm 均可持有（包装方向
+    /// 双向：evaluate 结果包装影子函数、包装函数实参包装主 realm 函数）。
+    pub(crate) wrapped_function_state: std::collections::HashMap<*mut JsObject, (u64, usize)>,
+    /// 属主 Vm 指针（影子 realm 侧）：影子 Vm 建时指向创建它的属主 Vm，主 Vm
+    /// 恒空。供跨 realm 结算沿属主链上溯解析远端 realm 的属主 Vm（嵌套影子
+    /// realm 包装主 realm 函数场景）。与属主 Vm 同线程、同生命周期（属主 Vm
+    /// 侧表持影子 Vm，先于影子 Vm 存活），指针有效。
+    pub(crate) owner_vm: *mut Vm,
 }
 
 impl Drop for Vm {

@@ -45,11 +45,13 @@ pub(crate) enum RootGroup {
     DisposeStack,
     EventTargets,
     ModuleEvalStates,
+    ShadowKeepalive,
+    WrappedFunctionState,
 }
 
 impl RootGroup {
     /// 根组总数（与变体数同源，绑定逐组计数数组的长度）。
-    pub const COUNT: usize = 30;
+    pub const COUNT: usize = 32;
 }
 
 impl Vm {
@@ -204,6 +206,19 @@ impl Vm {
         // session GC 回收 → 后续读点（缓存命名空间取回 / 再查）解引用悬垂。
         for state in self.module_eval_states.values() {
             f(RootGroup::ModuleEvalStates, state.namespace);
+        }
+        // WrappedFunction 保活表（影子 realm 侧）：原函数是 GC 根，漏根 →
+        // 影子 GC 回收 → WrappedFunction 持悬垂引用。
+        for &value in &self.shadow_keepalive {
+            f(RootGroup::ShadowKeepalive, value);
+        }
+        // WrappedFunction 状态表（主 realm 侧）：键（WrappedFunction 对象）是 GC 根，
+        // 漏根 → sweep 释放 → 调用点反查悬垂。
+        for &wrapped_ptr in self.wrapped_function_state.keys() {
+            if wrapped_ptr.is_null() {
+                continue;
+            }
+            f(RootGroup::WrappedFunctionState, JsValue::from_js_object(wrapped_ptr));
         }
     }
 
