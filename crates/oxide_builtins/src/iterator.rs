@@ -1949,11 +1949,8 @@ fn helper_step_zip<H: VmHost>(
         JsValue::from_js_object(obj)
     } else {
         let array_proto = vm.builtin_proto(ProtoKind::ArrayProto);
-        let arr = vm.alloc_object(JsObject::new_array(
-            EMPTY_SHAPE_ID,
-            JsValue::from_js_object(array_proto),
-            values.len(),
-        ));
+        let arr =
+            vm.alloc_object(JsObject::new_array(EMPTY_SHAPE_ID, JsValue::from_js_object(array_proto), values.len()));
         for (i, value) in values.iter().enumerate() {
             // SAFETY: arr 是刚经统一入口分配的数组对象，元素区已就绪。
             unsafe {
